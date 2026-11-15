@@ -12,9 +12,16 @@
 # (-IncludeCopyOnly where the start set is a copy-only full) against the same server:
 #  R1  pgvrc1: a full and three logs -> steps full, log, log, log; verdict 'restorable from these backups to <the third log's
 #      finish>'; equal to dbatools.
-#  R2  pgvrc2: a full, two logs, a differential, two logs -> full, differential, then the logs whose last_lsn passes the
-#      differential's (the two after it); equal to dbatools.
-#  R3  pgvrc3: R2's shape and then a copy-only full and one log -> the start set is the copy-only full (F1), then the log;
+#  R2  pgvrc2: a full, two logs, a differential, two logs, a row written before each log -> full, differential, then the
+#      logs whose last_lsn passes the differential's (the two after it); equal to dbatools. (Changed after run 304p2: with
+#      no write between, msdb's first log after the differential ended at the differential's last_lsn - R2b.)
+#  R2b pgvrc2b: a full, a row, a differential and a log right after it with no write between: when msdb's log ends at
+#      the differential's last_lsn (304p2: log 344..440, differential ..440) it applies nothing -> steps full,
+#      differential; dbatools -Last lists that log too (its last_lsn passes the start's first_lsn) - a difference on
+#      purpose, a named row; when the log runs past it this run, steps full, differential, log equal to dbatools and the
+#      difference NOT PROVEN that run.
+#  R3  pgvrc3: R2's shape (a row before each log) and then a copy-only full, a row and one log -> the start set is the
+#      copy-only full (F1), then the log;
 #      equal to dbatools -Last -IncludeCopyOnly; differs from dbatools' default (which starts at the normal full) - on
 #      purpose, a named row.
 #  R5  pgvrc5: a full and three logs, the second log's msdb rows deleted by hand -> steps full, log 1; verdict 'broken
@@ -65,7 +72,7 @@ printf "CREATE LOGIN pgvrc_mon WITH PASSWORD = N'%s', CHECK_POLICY = OFF; GRANT 
   | docker exec -i -e SQLCMDPASSWORD "$SQL" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -d master -i /dev/stdin >/dev/null
 sq "CREATE USER pgvrc_mon FOR LOGIN pgvrc_mon; ALTER ROLE db_datareader ADD MEMBER pgvrc_mon;" msdb >/dev/null
 docker exec "$SQL" mkdir -p /var/opt/mssql/bk
-for d in pgvrc1 pgvrc2 pgvrc3 pgvrc5 pgvrc6 pgvrc7 pgvrc8 pgvrc9; do sq "CREATE DATABASE [$d]; ALTER DATABASE [$d] SET RECOVERY FULL;" >/dev/null; done
+for d in pgvrc1 pgvrc2 pgvrc2b pgvrc3 pgvrc5 pgvrc6 pgvrc7 pgvrc8 pgvrc9; do sq "CREATE DATABASE [$d]; ALTER DATABASE [$d] SET RECOVERY FULL;" >/dev/null; done
 psql "$PGVIGIL_REPO_DSN" -XAtqc "CREATE DATABASE $REPO_DB" >/dev/null; MADE_DB=1
 export PGVIGIL_REPO_DSN_PROOF="$RDSN" MSSQL_M_DSN="sqlserver://pgvrc_mon:$PM@127.0.0.1:$P22?database=master&encrypt=true&TrustServerCertificate=true"
 cat > "$CFG" <<EOF
@@ -88,11 +95,16 @@ steps() { q "select string_agg(role || ':' || coalesce(from_instance, ''), ',' o
 ids() { q "select string_agg(s.backup_set_id::text, ',' order by c.step) from pgvigil.mssql_restore_steps c join pgvigil.mssql_restore_sets s on s.backup_set_uuid = c.backup_set_uuid where c.instance_id=$(iid) and c.database_name='$1' and c.step > 0"; }
 verdict() { q "select verdict from pgvigil.mssql_restore_verdicts where instance_id=$(iid) and database_name='$1'"; }
 bk() { sq "BACKUP $1 TO DISK = N'/var/opt/mssql/bk/$2' WITH FORMAT${3:-};" >/dev/null; }
+# one row written in a database: a log backup after it has something to apply
+wr() { sq "IF OBJECT_ID(N'dbo.pgvrc_w') IS NULL CREATE TABLE dbo.pgvrc_w (i int IDENTITY PRIMARY KEY, at datetime2 DEFAULT SYSDATETIME()); INSERT dbo.pgvrc_w DEFAULT VALUES;" "$1" >/dev/null; }
 
 echo "== the backups"
 bk "DATABASE pgvrc1" r1f.bak; for k in 1 2 3; do bk "LOG pgvrc1" r1l$k.trn; done
-bk "DATABASE pgvrc2" r2f.bak; bk "LOG pgvrc2" r2l1.trn; bk "LOG pgvrc2" r2l2.trn; bk "DATABASE pgvrc2" r2d.bak ", DIFFERENTIAL"; bk "LOG pgvrc2" r2l3.trn; bk "LOG pgvrc2" r2l4.trn
-bk "DATABASE pgvrc3" r3f.bak; bk "LOG pgvrc3" r3l1.trn; bk "DATABASE pgvrc3" r3d.bak ", DIFFERENTIAL"; bk "LOG pgvrc3" r3l2.trn; bk "DATABASE pgvrc3" r3c.bak ", COPY_ONLY"; bk "LOG pgvrc3" r3l3.trn
+bk "DATABASE pgvrc2" r2f.bak; wr pgvrc2; bk "LOG pgvrc2" r2l1.trn; wr pgvrc2; bk "LOG pgvrc2" r2l2.trn; wr pgvrc2; bk "DATABASE pgvrc2" r2d.bak ", DIFFERENTIAL"
+wr pgvrc2; bk "LOG pgvrc2" r2l3.trn; wr pgvrc2; bk "LOG pgvrc2" r2l4.trn
+bk "DATABASE pgvrc2b" r2bf.bak; wr pgvrc2b; bk "DATABASE pgvrc2b" r2bd.bak ", DIFFERENTIAL"; bk "LOG pgvrc2b" r2bl.trn
+bk "DATABASE pgvrc3" r3f.bak; wr pgvrc3; bk "LOG pgvrc3" r3l1.trn; wr pgvrc3; bk "DATABASE pgvrc3" r3d.bak ", DIFFERENTIAL"; wr pgvrc3; bk "LOG pgvrc3" r3l2.trn
+wr pgvrc3; bk "DATABASE pgvrc3" r3c.bak ", COPY_ONLY"; wr pgvrc3; bk "LOG pgvrc3" r3l3.trn
 bk "DATABASE pgvrc5" r5f.bak; for k in 1 2 3; do bk "LOG pgvrc5" r5l$k.trn; done
 GONE=$(sq "SELECT backup_set_id FROM msdb.dbo.backupset WHERE database_name = N'pgvrc5' AND type = 'L' ORDER BY backup_set_id OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY")
 sq "DECLARE @m int = (SELECT media_set_id FROM msdb.dbo.backupset WHERE backup_set_id = $GONE);
@@ -112,6 +124,16 @@ G=$(steps pgvrc1); V=$(verdict pgvrc1)
 [ "$G" = "full:pgvrc-m,log:pgvrc-m,log:pgvrc-m,log:pgvrc-m" ] && [[ "$V" == "restorable from these backups to "* ]] || fail "R1: $G | $V"; ok "R1: $G | $V"
 G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc2' and step > 0")
 [ "$G" = "full,diff,log,log" ] || fail "R2: $G | $(verdict pgvrc2) | sets: $(q "select string_agg(role || ' ' || backup_set_id || ' ' || first_lsn || '-' || last_lsn || coalesce(' db ' || database_backup_lsn, '') || ' ' || sink, '; ' order by last_lsn) from pgvigil.mssql_restore_sets where instance_id=$(iid) and database_name='pgvrc2'") | msdb: $(sq "SELECT STRING_AGG(type + ' ' + CAST(backup_set_id AS varchar(9)) + ' ' + CAST(first_lsn AS varchar(25)) + '-' + CAST(last_lsn AS varchar(25)), '; ') WITHIN GROUP (ORDER BY backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'pgvrc2'")"; ok "R2: $G"
+G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc2b' and step > 0")
+IFS='|' read -r LL2B DL2B LID2B <<<"$(sq "SELECT CAST(l.last_lsn AS varchar(25)) + '|' + CAST(d.last_lsn AS varchar(25)) + '|' + CAST(l.backup_set_id AS varchar(12)) FROM msdb.dbo.backupset l JOIN msdb.dbo.backupset d ON d.database_name = l.database_name AND d.type = 'I' WHERE l.database_name = N'pgvrc2b' AND l.type = 'L'" | tr -d '\r')"
+R2B=
+if [ -n "$LL2B" ] && [ "$LL2B" = "$DL2B" ]; then
+  [ "$G" = "full,diff" ] || fail "R2b: $G, want full,diff (the log $LID2B ends at the differential's last_lsn $DL2B: it applies nothing)"
+  R2B=1; ok "R2b: the log $LID2B ends at the differential's last_lsn $DL2B and is no step: $G"
+else
+  [ "$G" = "full,diff,log" ] || fail "R2b: $G (the log ends at $LL2B, the differential at $DL2B)"
+  notproven "R2b: the named difference from dbatools - this run's log ran past the differential ($LL2B > $DL2B): $G"
+fi
 G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc3' and step > 0")
 [ "$G" = "copy_full,log" ] || fail "R3: $G"; ok "R3: the copy-only full is the start set: $G"
 G=$(q "select string_agg(role, ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='pgvrc5' and step > 0"); V=$(verdict pgvrc5)
@@ -135,7 +157,7 @@ if [ -z "${PROOF_SKIP_DBATOOLS:-}" ]; then
     Install-Module dbatools -RequiredVersion 2.9.1 -Scope CurrentUser -Force -AcceptLicense | Out-Null
     Import-Module dbatools; Set-DbatoolsConfig -FullName sql.connection.trustcert -Value $true | Out-Null
     $c = [pscredential]::new("sa", (ConvertTo-SecureString $env:SAPW -AsPlainText -Force))
-    foreach ($row in @(@("pgvrc1", $false), @("pgvrc2", $false), @("pgvrc3", $true), @("pgvrc3", $false), @("pgvrc5", $false), @("pgvrc9", $false))) {
+    foreach ($row in @(@("pgvrc1", $false), @("pgvrc2", $false), @("pgvrc2b", $false), @("pgvrc3", $true), @("pgvrc3", $false), @("pgvrc5", $false), @("pgvrc9", $false))) {
       $b = @(Get-DbaDbBackupHistory -SqlInstance sql22 -SqlCredential $c -Database $row[0] -Last -IncludeCopyOnly:$row[1])
       "{0}|{1}|{2}" -f $row[0], $row[1], (($b | Sort-Object { [decimal]$_.LastLsn }, Type | ForEach-Object { $_.BackupSetID }) -join ",") }' 2>"$WORK/dbatools.err" | tr -d '\r' > "$WORK/dbatools.txt" || true
   if [ -s "$WORK/dbatools.txt" ]; then
@@ -143,6 +165,10 @@ if [ -z "${PROOF_SKIP_DBATOOLS:-}" ]; then
     dt() { grep "^$1|$2|" "$WORK/dbatools.txt" | cut -d'|' -f3; }
     for x in "pgvrc1 False" "pgvrc2 False" "pgvrc3 True"; do set -- $x; [ "$(dt $1 $2)" = "$(ids $1)" ] || fail "R1-R3 vs dbatools: $1 (IncludeCopyOnly $2) dbatools $(dt $1 $2), pgvigil $(ids $1)"; done
     [ "$(dt pgvrc3 False)" != "$(ids pgvrc3)" ] || fail "R3: dbatools' default should start at the normal full"
+    if [ -n "$R2B" ]; then
+      [ "$(dt pgvrc2b False)" = "$(ids pgvrc2b),$LID2B" ] || fail "R2b vs dbatools: dbatools $(dt pgvrc2b False), want pgvigil's $(ids pgvrc2b) and the log $LID2B"
+      ok "R2b: dbatools 2.9.1 -Last lists $(dt pgvrc2b False): pgvigil's $(ids pgvrc2b) and the log $LID2B that applies nothing - a difference on purpose"
+    else [ "$(dt pgvrc2b False)" = "$(ids pgvrc2b)" ] || fail "R2b vs dbatools: dbatools $(dt pgvrc2b False), pgvigil $(ids pgvrc2b)"; fi
     [ "$(dt pgvrc9 False)" = "$(ids pgvrc9)" ] || fail "R9 vs dbatools: dbatools $(dt pgvrc9 False), pgvigil $(ids pgvrc9)"
     D5=$(dt pgvrc5 False); [ "$(echo "$D5" | tr ',' '\n' | wc -l)" = 3 ] || fail "R5: dbatools listed $D5 (want the full and logs 1 and 3, no gap named)"
     ok "R1, R2, R3 (-IncludeCopyOnly), R9 equal to dbatools 2.9.1; R3 differs from its default on purpose; R5: dbatools lists $D5 and names no gap"
