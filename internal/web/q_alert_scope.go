@@ -11,6 +11,8 @@ package web
 //   history    the findings history (open, close, severity, the hourly sample) of one instance (instance_id), or of
 //              the fleet, in the window (at most 90 days)
 //   digests    the digests sent, failed or empty in the window
+//   rules      0154's fields of every rule live or ended in the window (the tag list and its words, the family, the
+//              band and zone of a baseline rule, the flapping opt-out), merged into the rules page by rule id
 // POST /api/alertwindows makes, edits or ends one window the way of q_alert_rules.go: the UI login, the X-Pgvigil
 // header and the actions door's audit pool; pgvigil.import_alert_window writes the row and its log line in one call.
 // The minimum role for the write is operator (B24f).
@@ -74,6 +76,12 @@ SELECT h.snapshot_at, h.finding_key, h.instance_id, h.instance_name, h.source, h
  ORDER BY h.snapshot_at, h.finding_key
  LIMIT 20000`
 
+const sqlAlertScopeRules = `
+SELECT r.rule_id, r.scope_tags, pgvigil.alert_scope_text(r.scope_tags) AS scope_text, r.op_family, r.band_pct, r.zone,
+       r.ignore_flapping
+  FROM pgvigil.alert_rules r
+ WHERE r.ended_at IS NULL OR r.ended_at >= $1`
+
 const sqlDigests = `
 SELECT l.channel, l.at, l.due_at, l.since, l.outcome, l.groups, l.alerts, l.error
   FROM pgvigil.digest_log l
@@ -104,6 +112,7 @@ func (s *Server) AlertScope(w http.ResponseWriter, r *http.Request) {
 		{"overrides", sqlAlertOverrides, nil},
 		{"history", sqlFindingsHistory, []any{from, to, inst}},
 		{"digests", sqlDigests, []any{from, to}},
+		{"rules", sqlAlertScopeRules, []any{from}},
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)

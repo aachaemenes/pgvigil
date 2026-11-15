@@ -194,6 +194,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     missing.tests ? notRead('tests') : grid(rowsOf(d.tests), testCols, 'No test was asked in the time range.'));
   sec.append(el('h3', {}, `Held sends ${rangeLabel(ctx)} `, whatIsThis('What a mute, a silence or a blackout kept from a channel: the alert, the channel, the first and last pass of the sender that held it, and how many passes.', 'Held sends')),
     grid(rowsOf(ad.suppressed).filter(inFolder), heldCols, 'Nothing held in the time range.'));
+  sec.append(await whyHeldView(ctx, inLog));
   sec.append(el('h3', {}, `Send log ${rangeLabel(ctx)}`),
     grid(log, logCols, 'No send attempt in the time range.'));
   sec.append(el('h3', {}, `Acknowledge log ${rangeLabel(ctx)}`),
@@ -755,4 +756,41 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(seg, body);
   await show(cur);
   return sec;
+}
+
+// whyHeldView (task 403a, PM Added 9): every send a window, the digest carry-over or the flapping hold kept from a
+// channel, one line per alert and channel saying why (0154's alert_held_all; the acks' own holds are Held sends
+// above), and the rule series marked flapping now. A repository before 0154 shows neither.
+const holdWords: Record<string, string> = {
+  blackout: 'a blackout window', mute: 'a mute window', digest: 'held for the daily digest', flapping: 'flapping: sent once, its repeats held',
+};
+async function whyHeldView(ctx: Ctx, inLog: (r: Row) => boolean): Promise<HTMLElement> {
+  const box = el('div', {});
+  let held: Row[], flapping: Row[];
+  try {
+    held = rowsOf((await get<{ held?: Table | null }>('alertscope', { ...window_(ctx), part: 'held' })).held)
+      .filter(r => r.hold_source !== 'ack').map(r => ({ ...r, instance: r.instance_name })).filter(inLog);
+    flapping = rowsOf((await get<{ flapping?: Table | null }>('alertscope', { part: 'flapping' })).flapping);
+  } catch { return box; }
+  box.append(el('h3', {}, `Why held: windows, digest and flapping ${rangeLabel(ctx)} `, whatIsThis('One line per alert and channel a window, the daily digest or the flapping hold kept from that channel: which hold (the window or the rule), the first and last pass that held it and how many. A digest-held alert reaches its channel in the daily digest only; a flapping one was sent once, then its repeats were held until its last 12 results steady.', 'Why held')),
+    grid(held, [
+      { key: 'hold_kind', label: 'why', fmt: (v, r) => `${holdWords[String(v)] ?? String(v)} (${r.hold_source === 'rule' ? 'rule' : 'window'} ${String(r.hold_id)})` },
+      { key: 'instance_name', label: 'instance' },
+      { key: 'setting', label: 'alert', fmt: (v, r) => [r.source, v].filter(x => x != null && x !== '').map(String).join(': ') },
+      { key: 'severity' },
+      { key: 'channel' },
+      { key: 'first_at', label: 'first held', fmt: fmtTime },
+      { key: 'last_at', label: 'last held', fmt: fmtTime },
+      { key: 'passes', num: true },
+    ], 'Nothing held by a window, the digest or the flapping hold in the time range.'),
+    el('h3', {}, 'Flapping now'),
+    grid(flapping, [
+      { key: 'flapping_since', label: 'flapping since', fmt: fmtTime },
+      { key: 'instance' },
+      { key: 'metric', fmt: (v, r) => `${String(v)}${r.database != null ? ` [${String(r.database)}]` : ''}` },
+      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''}` },
+      { key: 'state' },
+      { key: 'results', label: 'last 12 results', fmt: v => Array.isArray(v) ? (v as unknown[]).map(String).join(' ') : '' },
+    ], 'No alert rule series is flapping.'));
+  return box;
 }
