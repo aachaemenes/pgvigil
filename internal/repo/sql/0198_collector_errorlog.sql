@@ -15,7 +15,8 @@
 --                  reads them
 --   the classifier collection_error_class(status, note, stage): the type ('error' -> Error, 'partial' -> Warning: the
 --                  run finished carrying a collector_error row, 'skipped' -> Skipped) and the stage as the pages show
---                  them. pgvigil never retries a run, so DBA Dash's Retry type has no rows here. 'ok' rows (0139's
+--                  them ('import' is the repository's side: a write, or the read of the collector's own cursor).
+--                  pgvigil never retries a run, so DBA Dash's Retry type has no rows here. 'ok' rows (0139's
 --                  'rollup healed') are not errors: their type is NULL
 --   the index      (instance_id, snapshot_at): the page's per-instance views and the Summary's failing run, found by
 --                  instance, snapshot and collection (log_collection writes collection_dates and collection_log from one
@@ -26,8 +27,10 @@ DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collection_log_stage_check'
                     AND conrelid = 'pgvigil.collection_log'::regclass) THEN
+    -- NOT VALID: every row is NULL when it is added, so the scan under the ALTER's lock would find nothing; new rows
+    -- are checked all the same
     ALTER TABLE pgvigil.collection_log ADD CONSTRAINT collection_log_stage_check
-      CHECK (stage IN ('connect', 'collect', 'import', 'other'));
+      CHECK (stage IN ('connect', 'collect', 'import', 'other')) NOT VALID;
   END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS collection_log_instance_idx ON pgvigil.collection_log (instance_id, snapshot_at);
