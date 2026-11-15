@@ -1,4 +1,5 @@
-// Accessibility check of the web UI with axe-core over a headless Chromium (CDP): every root tab and every
+// Accessibility check of the web UI with axe-core over a headless Chromium (CDP): every root tab, the pages a tag
+// folder gained (TAGALL) and every
 // tab of two PostgreSQL instances and of two SQL Server instances, in the light and the dark theme, against the WCAG 2.1 A and AA rules (Section 508
 // points at WCAG 2.0 AA; 2.1 AA covers it). Usage:
 //   node scripts/a11y-check.mjs <cdp port> <base url/> <path to axe.min.js> [<json out>]
@@ -111,6 +112,21 @@ let offFail = 0; let selftest = null;
 pages.push('#/summary|range');   // the Summary once more with the range panel open, so axe scans the panel too
 // a Diff with both sides picked (the walk above opens only its empty form): two instances, then one instance at two times
 pages.push(`#/diff?m=i&a=${onprem.instance_id}&b=${cloud.instance_id}`, `#/diff?m=t&a=${onprem.instance_id}&ta=${encodeURIComponent(new Date(Date.now() - 86400e3).toISOString())}`);
+// TAGALL: the pages a tag folder gained (router.ts tagPages), opened under the tag click-check.mjs takes (both engines,
+// not every instance, a top-level folder: the demo's env:prod) - their scope lines, narrowed pickers and folder headings
+// scanned -, Imported servers under a PostgreSQL-only tag (its one line, no grid) and Data retention under untagged
+const tagCount = new Map();
+for (const r of rows) for (const t of (Array.isArray(r.tags) ? r.tags : [])) {
+  const e = tagCount.get(t) ?? { n: 0, engines: new Set() }; e.n++; e.engines.add(r.engine === 'sqlserver' ? 'sqlserver' : 'postgres'); tagCount.set(t, e);
+}
+const groupBy = (await (await fetch(U + 'api/tags')).json()).group_by ?? [];
+const topLevel = t => !groupBy.length || (groupBy[0] === 'tag' ? !String(t).includes(':') : String(t).toLowerCase().startsWith(groupBy[0].toLowerCase() + ':'));
+const bothTag = [...tagCount.entries()].filter(([t, e]) => e.n < rows.length && e.engines.size === 2 && topLevel(t)).sort((a, b) => b[1].n - a[1].n || (a[0] < b[0] ? -1 : 1))[0]?.[0];
+const pgOnlyTag = [...tagCount.entries()].filter(([, e]) => e.engines.size === 1 && e.engines.has('postgres')).map(([t]) => t).sort()[0];
+if (!bothTag || !pgOnlyTag) { console.log(`FAIL the demo has no tag folder of both engines (${bothTag}) or no PostgreSQL-only tag (${pgOnlyTag}): the TAGALL pages would go unchecked`); process.exit(1); }
+const tagAll = ['diff', 'pgthresholds', 'retention', 'dbadash', 'admin_instances', 'admin_applications', 'admin', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules'];
+pages.push(...tagAll.map(t => `#/${t}?tag=${encodeURIComponent(bothTag)}`), `#/dbadash?tag=${encodeURIComponent(pgOnlyTag)}`, '#/retention?tag=untagged');
+console.log(`TAGALL pages in the check: ${tagAll.length + 2} (tag ${bothTag}, PostgreSQL-only ${pgOnlyTag}, untagged)`);
 const statusPages = pages.filter(h => /^#\/(summary|perfsummary|dbadash|alerts)\b/.test(h));
 for (const [style, list] of [['solid', pages], ['quiet', statusPages]])
 for (const theme of ['light', 'dark']) {
