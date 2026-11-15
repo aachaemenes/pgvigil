@@ -161,9 +161,23 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if loopback {
 		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
 	}
+	// task CQ (487): actions.via queue - serve connects to nothing but the repository: every instance's dsn, actions_dsn
+	// and explain_dsn is blanked before anything reads them (no door, plan gate or admin door resolves one), serve keeps
+	// no audit login (the collector that runs a request writes its audit), and SetQueue below refuses a collector login
+	logDSN := cfg.Repository.DSN()
+	if cfg.Actions.Queue() {
+		qcfg := *cfg
+		qcfg.Instances = make([]config.Instance, len(cfg.Instances))
+		for i, in := range cfg.Instances {
+			in.DSNRaw, in.ActionsDSNRaw, in.ExplainDSNRaw = "", "", ""
+			qcfg.Instances[i] = in
+		}
+		cfg, logDSN = &qcfg, ""
+		log.Info("serve sends its actions and community runs through the repository (actions.via queue): it connects to no monitored server")
+	}
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
 		SessionTTL: time.Duration(*sessionHours) * time.Hour,
-		Actions:    &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
+		Actions:    &web.ActionsConfig{LogDSN: logDSN, Doors: actions.DoorsFromConfig(cfg)},
 		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine(),
 		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}})
 	if err != nil {
@@ -171,6 +185,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
+	if cfg.Actions.Queue() {
+		if err := srv.SetQueue(ctx, cfg.Repository.DSN()); err != nil {
+			_ = ln.Close()
+			return &configError{err}
+		}
+	}
 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
 	// check); serve starts either way and the page says the same words
 	if why := srv.StoreReportsOff(ctx); why != "" {

@@ -16,6 +16,7 @@ import { Ctx, tabsFor } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 import { folderWords, inTagScope, tagWords } from './fleet';
+import { asRun, isQueued, Queued, waitRequest } from './request';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
 // state: needs | note | not_checked | demo; source: where the server read it (server, configuration, repository, live)
@@ -32,9 +33,11 @@ interface SampleAnswer extends SampleMark {
   tool: string; name: string; instance: string; database?: string; params: Record<string, string>;
   param_doc: { name: string; type: string; help?: string }[] | null; dropped: string[] | null; cut: string[] | null; scrubbed: string[] | null; sets: ResultSet[];
 }
-interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string }
+// via 'queue': this serve sends the runs through the repository to the collector named (actions.via queue)
+interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string; via?: string; collector?: string }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
-interface Params { installed: boolean; params: ProcParam[]; left_out: string[]; help_sets: ResultSet[]; help_error?: string; static_params?: { name: string; type: string; label?: string; default?: string }[] }
+// help_via 'queue': the procedure's @help is its own request (POST community/run?help=1), not part of the form
+interface Params { installed: boolean; params: ProcParam[]; left_out: string[]; help_sets: ResultSet[]; help_error?: string; static_params?: { name: string; type: string; label?: string; default?: string }[]; help_via?: string }
 interface GlennQuery { n: number; name: string; about: string; text: string }
 
 const logCols: Col[] = [
@@ -298,12 +301,35 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     const params: Record<string, string> = {};
     for (const [n, i] of inputs) if (i.value.trim() !== '') params[n] = i.value;
     try {
-      const r = await post<{ runs: InstanceRun[]; ran_at: string }>('community/run', { instance_id: instance, tool: t.id, database: d.database ?? '', params, timeout_secs: Number(timeout.value || 60) });
-      res.replaceChildren(resultView(r.runs, undefined, t.name));
-      status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
+      const r = await post<{ runs: InstanceRun[]; ran_at: string } | Queued>('community/run', { instance_id: instance, tool: t.id, database: d.database ?? '', params, timeout_secs: Number(timeout.value || 60) });
+      if (isQueued(r)) {
+        res.replaceChildren();
+        const e = await waitRequest(r, status);   // the collector runs it; status says each state
+        res.replaceChildren(resultView([asRun(e, d.instance, d.engine)], undefined, t.name));
+      } else {
+        res.replaceChildren(resultView(r.runs, undefined, t.name));
+        status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
+      }
     } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; }
     finally { offControl(run, null, status); }
   });
+  if (p.help_via === 'queue' && t.help) {
+    // queue mode: the procedure's own help is a request of its own, run by the collector
+    const det = el('details', {}, el('summary', {}, `${t.name}'s own help`));
+    const hs = el('p', { class: 'meta', role: 'status' }), hb = el('div', {});
+    const ask = el('button', { type: 'button' }, `Run ${t.name} ${t.help} = 1`);
+    ask.addEventListener('click', async () => {
+      offControl(ask, 'running', hs);
+      try {
+        const q = await post<Queued>('community/run?help=1', { instance_id: instance, tool: t.id, database: d.database ?? '' });
+        const e = await waitRequest(q, hs);
+        if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal ?? e.outcome ?? e.state));
+        else hb.replaceChildren(...(e.result?.sets ?? []).flatMap((s, i) => [el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)]));
+      } catch (e) { hb.replaceChildren(errorBox(e)); hs.textContent = ''; } finally { offControl(ask, null, hs); }
+    });
+    det.append(ask, hs, hb);
+    sec.append(det);
+  }
   if (p.help_sets.length || p.help_error) {
     const det = el('details', {}, el('summary', {}, `${t.name}'s own help`));
     if (p.help_error) det.append(errorBox(p.help_error));
@@ -396,9 +422,14 @@ function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
       res.replaceChildren(busy);
       offControl(b, 'running', busy);   // one run at a time from this button
       try {
-        const r = await post<{ runs: InstanceRun[] }>('community/run', { instance_id: instance, tool: t.id, database: db.value, text: q.text, query_name: `${q.n} ${q.name}` });
+        const r = await post<{ runs: InstanceRun[] } | Queued>('community/run', { instance_id: instance, tool: t.id, database: db.value, text: q.text, query_name: `${q.n} ${q.name}` });
+        let runs: InstanceRun[];
+        if (isQueued(r)) {
+          const e = await waitRequest(r, busy);   // queue mode: the collector runs the query
+          runs = [asRun(e, e.instance ?? '', 'sqlserver')];
+        } else runs = r.runs;
         res.replaceChildren(el('details', {}, el('summary', {}, `Query ${q.n}: the text sent`), el('pre', { class: 'sql', tabindex: '0' }, q.text)),
-          resultView(r.runs, undefined, `Query ${q.n} ${q.name}`));
+          resultView(runs, undefined, `Query ${q.n} ${q.name}`));
       } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); }
     });
     return b;

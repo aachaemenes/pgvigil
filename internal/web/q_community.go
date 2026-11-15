@@ -516,6 +516,15 @@ func (s *Server) communityOff() *toolNeed {
 
 // communityOffWords is serverOff in the Community tools page's words, "" = nothing missing.
 func (s *Server) communityOffWords() string {
+	if q := s.queue(); q != nil { // queue mode: the collector runs it and writes the audit (q_requests.go)
+		switch {
+		case s.auth == nil:
+			return "Running a tool needs a signed-in user: this server runs without the UI login (pgvigil serve -no-login, or pgvigil demo -serve)."
+		case q.off != "":
+			return "Running a tool needs " + q.off + "."
+		}
+		return ""
+	}
 	if w := s.serverOff(); w != "" {
 		return "Running a tool needs " + w + "."
 	}
@@ -1100,6 +1109,10 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
+	if q := s.queue(); q != nil { // queue mode: the live collector's published tools (q_requests.go)
+		s.queuedCommunity(w, r, q, id, name, engine, db)
+		return
+	}
 	ds := s.doorsNow() // the request's one door set
 	demo, err := s.demoWithoutDoor(ctx, ds, id, name, engine)
 	if err != nil {
@@ -1367,6 +1380,10 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if s.queue() != nil { // queue mode: the form from the live collector's published list (q_requests.go)
+		s.queuedCommunityParams(w, r, t, name)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), runBudget)
 	defer cancel()
 	out := struct {
@@ -1456,6 +1473,14 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	in, user, name, t, ok := s.communityGate(w, r)
 	if !ok {
+		return
+	}
+	if q := s.queue(); q != nil { // queue mode: an ask the collector runs (?help=1: the procedure's @help) (q_requests.go)
+		if r.URL.Query().Get("help") == "1" {
+			s.queuedCommunityHelp(w, r, q, in, user, name, t)
+		} else {
+			s.queuedCommunityRun(w, r, q, in, user, name, t)
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), runBudget)
