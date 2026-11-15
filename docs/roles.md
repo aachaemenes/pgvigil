@@ -6,7 +6,7 @@ page.
 | Role | What it may do |
 |---|---|
 | viewer | read every page, export, copy, run a stored custom report; change nothing |
-| operator | what a viewer may, and act on a monitored server - cancel a query, end a session, KILL, start or stop a job, evict a plan, EXPLAIN and EXPLAIN ANALYZE, try a hypothetical index, run a community tool, send a report by mail - and acknowledge, note, dismiss, mute one instance with an end |
+| operator | what a viewer may, and act on a monitored server - cancel a query, end a session, KILL, start or stop a job, evict a plan, EXPLAIN and EXPLAIN ANALYZE, try a hypothetical index, run the index advisor, run a community tool, send a report by mail - and acknowledge, note, dismiss, mute one instance with an end |
 | admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job thresholds, job exclusions, custom reports and their folders, report mail schedules, a mute or blackout over every instance, a tag, or with no end |
 
 Each action still needs what it needed before the roles: an instance's own opt-in (`actions:`, `explain_analyze`,
@@ -26,9 +26,10 @@ A control that is off for a reason of the server's own - no actions door, an ins
 that reason and not the role's: it is the first that would have to change. A dialog that only reads opens for every
 role (a job's thresholds, a rule's values); its Save is the one that is off.
 
-A mute, a silence or a blackout over more than one instance (every instance, a tag) or with no end needs the admin
-role, whichever page asks: `Mute similar` is off below admin, and the mute dialog asks an operator for one instance
-and an end. The edit of a mute rule is held to the same rule as a new one.
+A mute, a silence or a blackout over more than one instance (every instance, a tag), with no end, or with an end more
+than 7 days after now (or after its start) needs the admin role, whichever page asks; a mute of one alert is one
+scope: `Mute similar` is off below admin, and the mute dialog asks an operator for one instance
+and an end within 7 days. The edit of a mute rule is held to the same rule as a new one.
 
 The answers the pages read say what the session's role may do (`can: {operator, admin}`) beside their own `writable`
 and `reason`, so a page shows a role changed since it was loaded at its next read; the server decides at every
@@ -90,7 +91,6 @@ a signed-in user of any role. This table is the server's own list: a test compar
 |---|---|---|
 | `POST /api/login` | anyone | sign in |
 | `POST /api/logout` | anyone | sign out |
-| `POST /api/indexes/advise` | viewer | read an index advice (stores nothing) |
 | `POST /api/mssql/actions/preview` | viewer | preview an action's statement (runs nothing) |
 | `POST /api/community/glenn/parse` | viewer | read a diagnostic file (stores nothing) |
 | `POST /api/community/params` | viewer | read a tool's parameters (@help) |
@@ -109,6 +109,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/plans/explain` | operator | EXPLAIN (stores a plan row) |
 | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |
 | `POST /api/plans/hypo` | operator | try a hypothetical index |
+| `POST /api/indexes/advise` | operator | run the index advisor (hypothetical indexes and EXPLAIN on the monitored server; nothing is created) |
 | `POST /api/community/run` | operator | run a community tool (a script runs as the read login in a rolled-back transaction) |
 | `POST /api/reportmail/send` | operator | send a report by mail now |
 | `POST /api/reportmail/test` | operator | send a schedule's test mail |

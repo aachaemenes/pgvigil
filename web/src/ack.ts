@@ -191,10 +191,15 @@ export interface AckDialog {
 // ackDialog: the one dialog every write goes through - what it does, its fields, then the server's answer
 export function ackDialog(o: AckDialog) {
   const fields: HTMLElement[] = [];
-  // a mute, a silence or a blackout with no end needs the admin role (the handler checks it: wideMute). Below admin the
-  // dialog does not offer 'no expiry' and says why (null for an admin and with the login off)
-  const openEnded = (Array.isArray(o.body) ? o.body : [o.body]).some(b => b.kind === 'mute' || b.kind === 'silence' || b.kind === 'blackout')
-    ? roleWhy(wideMute.need, wideMute.what) : null;
+  // a mute, a silence or a blackout over more than one instance (no instance, a tag) or open-ended (no end, or an end
+  // more than 7 days away) needs the admin role (the handler checks it: wideMute; a one-alert mute is one scope).
+  // Below admin a row that reaches wide makes Save need admin; else the dialog offers no 'no expiry' and holds a
+  // blackout's end to 7 days, and says why (null for an admin and with the login off)
+  const rows0 = Array.isArray(o.body) ? o.body : [o.body];
+  const scoped = rows0.filter(b => b.kind === 'mute' || b.kind === 'silence' || b.kind === 'blackout');
+  const wideWhy = scoped.length ? roleWhy(wideMute.need, wideMute.what) : null;
+  const wide = !!wideWhy && scoped.some(b => b.tag || !(Number(b.instance_id) > 0 || (b.kind === 'mute' && b.finding_key)));
+  const openEnded = wide ? null : wideWhy;
   const untilSel = el('select', { 'aria-label': 'until' }, ...untilChoices.filter(([, h]) => h > 0 || !openEnded).map(([t, h]) => el('option', { value: String(h) }, t)));
   if (o.expiry) {
     untilSel.value = '24'; fields.push(el('label', {}, 'Until ', untilSel));
@@ -232,7 +237,12 @@ export function ackDialog(o: AckDialog) {
     if (o.blackout) { x.starts_at = fromInput(from.value).toISOString(); x.until = fromInput(to.value).toISOString(); }
     return x;
   });
-  const valid = () => (o.noteField !== 'required' && o.noteField !== 'label') || note.value.trim().length > 0;
+  const noteOK = () => (o.noteField !== 'required' && o.noteField !== 'label') || note.value.trim().length > 0;
+  // a blackout's end at most 7 days after its start (or now) below admin (the lead 13:3x)
+  const inCeiling = () => !o.blackout || !openEnded
+    || fromInput(to.value).getTime() - Math.max(Date.now(), fromInput(from.value).getTime()) <= 7 * 86400e3;
+  const valid = () => noteOK() && inCeiling();
+  const needs = () => !noteOK() ? (o.noteField === 'label' ? 'a label' : 'a note') : `an end at most 7 days after the start (${openEnded})`;
   confirmDialog(o.title, o.what, 'Save', async () => {
     const rows = build();
     if (!rows.length) return { outcome: 'nothing to do', detail: 'every row picked already holds this' };
@@ -246,7 +256,7 @@ export function ackDialog(o: AckDialog) {
     if (done === 0) throw new Error(rows.length > 1 ? `0 of ${rows.length} saved; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : refused[0] ?? 'refused');
     return { outcome: refused.length ? 'partly done' : 'done',
       detail: `${done} of ${rows.length} saved` + (refused.length ? `; ${refused.length} refused: ${[...new Set(refused)].join('; ')}` : '') };
-  }, o.after, fields, valid, [note], o.noteField === 'label' ? 'a label' : 'a note', 'ack');
+  }, o.after, fields, valid, [note, from, to], needs, 'ack', wide ? wideMute : undefined);
 }
 
 // confirmDialog: a modal with what the write does, its fields, Save / Back, and the answer in place
@@ -254,17 +264,22 @@ export function ackDialog(o: AckDialog) {
 // way meanwhile (aria-disabled, described by those words) - never a Save that is greyed without a word. route: the
 // route Save posts to: below its need Save is off with the role's words in the same place (B24f), whatever the fields
 // hold - a dialog opened from a menu or a link says so before anything is typed.
+// needOver: a need above the route's (wideMute: a row that reaches past one instance). The answer's 'can' that drew the
+// control that opened the dialog decides here too (needs.ts lastCan).
 function confirmDialog(title: string, what: string, go: string, run: () => Promise<AckResult>, after: () => void,
-  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = [], needs = '', route: WriteRoute = 'ack') {
+  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = [], needs: string | (() => string) = '',
+  route: WriteRoute = 'ack', needOver?: { need: Need; what: string }) {
   const ok = markNeed(el('button', { type: 'submit' }, go), route);
-  const role = routeWhy(route);
+  if (needOver) ok.dataset.need = needOver.need;
+  const role = needOver ? roleWhy(needOver.need, needOver.what) : routeWhy(route);
+  const needText = () => (typeof needs === 'function' ? needs() : needs) || 'the fields above';
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const needP = el('p', { class: 'meta' });
   let saving = false;
   const check = () => {
     if (saving) return;
-    const why = role ?? (valid() ? null : `Saving needs ${needs || 'the fields above'}`);
+    const why = role ?? (valid() ? null : `Saving needs ${needText()}`);
     needP.textContent = why ? why + '.' : '';
     offControl(ok, why, needP);
   };

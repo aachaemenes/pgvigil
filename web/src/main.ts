@@ -328,7 +328,7 @@ function showLogin(message = '') {
     btn.disabled = true; err.hidden = true;
     try {
       session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
-      setWho(session);
+      setWho(session); sessionRead = true;
       pass.value = '';
       loginShown = false;
       document.body.classList.remove('signin');
@@ -409,9 +409,16 @@ function rangeNote(ctx: Ctx, gen: number): HTMLElement {
   return note;
 }
 
+// sessionRead: GET /api/session answered at least once with this tab's session (a 5xx or a lost network leaves it
+// false); the session is read again at a Refresh and at every render until it has (review-18 b24f2 S3 / N6: the
+// header's role and the pages' role checks follow it)
+let sessionRead = false;
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
+  if (force || !sessionRead) {
+    try { session = await get<Session>('session'); setWho(session); sessionRead = true; } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  }
   const gen = ++generation;
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
   const ctx = parse();
@@ -585,6 +592,6 @@ watchHiddenTab(() => loginShown || refreshSecs() === 0);
 mailRenderBoot();
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
-  try { session = await get<Session>('session'); setWho(session); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  try { session = await get<Session>('session'); setWho(session); sessionRead = true; } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
   void render();
 })();

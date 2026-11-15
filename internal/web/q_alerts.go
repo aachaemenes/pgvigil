@@ -390,7 +390,7 @@ func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 		}
 		one := (oldFinding != nil && *oldFinding != "") || in.InstanceID > 0 ||
 			(!in.AnyInstance && (oldInst != nil || (oldName != nil && *oldName != "")))
-		if err == nil && kind == "mute" && (!one || in.Tag != "" || in.Until == nil) {
+		if err == nil && kind == "mute" && (!one || in.Tag != "" || openEnded(in.StartsAt, in.Until, time.Now())) {
 			if err := s.needErr(r, needAdmin, "a fleet-wide or open-ended mute"); err != nil {
 				return err
 			}

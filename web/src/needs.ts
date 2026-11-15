@@ -15,6 +15,7 @@ export interface Can { operator: boolean; admin: boolean }
 // internal/web/roles.go's needs (web.go's s.post lines) and routeWhat: roles_test.go TestPageNeedsMatch reads this
 // table, one route a line, and fails on any difference.
 export const routeNeeds = {
+  'indexes/advise': ['operator', 'running the index advisor'],
   'actions/cancel': ['operator', 'cancelling a query'],
   'actions/terminate': ['operator', 'ending a session'],
   'mssql/actions/run': ['operator', 'running an action on a SQL Server instance'],
@@ -52,17 +53,29 @@ export const routeNeeds = {
 export type WriteRoute = keyof typeof routeNeeds;
 
 let who: Session = { login: false };
-export function setWho(s: Session): void { who = s; }
+// lastCan: the newest 'can' a server answer gave this page (review-18 b24f2 S2 / S3) - a dialog opened from a control
+// decides by the same word as the control did, and a session that could not be read is no open door when an answer
+// says what the role may do
+let lastCan: Can | null = null;
+export function setWho(s: Session): void { who = s; lastCan = null; }
 const rank: Record<string, number> = { viewer: 1, operator: 2, admin: 3 };
 
 // roleWhy: null when the session may make a change of this need, else why not in the server's words (roles.go
-// roleWords). can: a server answer's own word on it, which decides over the role this page signed in with.
+// roleWords). can: a server answer's own word on it (else the newest one this page had), which decides over the role
+// this page signed in with; with the login off (-no-login, the demo) every answer says yes (roles.go roleCan).
 export function roleWhy(need: Need, what: string, can?: Can | null): string | null {
-  if (!who.login || !who.user) return null;
-  if (who.role_error) return who.role_error;
+  if (can) lastCan = can;
+  const c = can ?? lastCan;
   const role = who.role ?? '';
   const held = (rank[role] ?? 0) >= rank[need];
-  if (can ? can[need] : held) return null;
+  if (c) { if (c[need]) return null; }
+  else {
+    if (!who.login || !who.user) return null;
+    if (who.role_error) return who.role_error;
+    if (held) return null;
+  }
+  if (!who.login || !who.user) return `${what} needs the ${need} role (this page could not read who is signed in: load it again)`;
+  if (who.role_error) return who.role_error;
   if (held) return `${what} needs the ${need} role, and ${who.user}'s role changed after this page was loaded: load the page again`;
   return `${what} needs the ${need} role: ${who.user} is ${role === 'viewer' ? 'a' : 'an'} ${role || 'user with no role'} (an admin changes it with 'pgvigil user role ${who.user} ${need}' on the server)`;
 }
@@ -123,6 +136,17 @@ export function needControl<T extends HTMLElement>(c: T, route: WriteRoute, at: 
 export function markNeed<T extends HTMLElement>(c: T, route: WriteRoute): T {
   c.dataset.need = routeNeeds[route][0];
   return c;
+}
+
+// dialogRole: a dialog's go button that keeps its own off state (a typed confirmation, the fields): it carries the
+// route's need, and below it is off with the role's words in a note of the dialog's (returned for the caller to
+// place), whatever is typed - the dialog's check and its submit leave it off while why is set (review-18 b24f2 B1)
+export function dialogRole(go: HTMLElement, route: WriteRoute, can?: Can | null): { why: string | null; note: HTMLElement } {
+  markNeed(go, route);
+  const why = routeWhy(route, can);
+  const note = el('p', { class: 'meta off-reason' }, why ? why + '.' : '');
+  if (why) offControl(go, why, note);
+  return { why, note };
 }
 
 // needWords: the sentence a dialog or a form shows for the write its own Save makes (the Save is marked with
