@@ -229,3 +229,58 @@ func TestSchemaPayloadCap(t *testing.T) {
 // runBatched is RunOnce's batch path, wired in collect.go by the wave's join (the slice does not own collect.go); the
 // proof's section G runs it end to end.
 var _ = runBatched
+
+// A26 (the lead's 13:4x): under query_text full a function's body is stored as text after its hashed form, with what
+// may be a password masked; the hash and def_hash are the same bytes as under none (and as before A26), so a change of
+// the policy, or the upgrade, records no change; the hashed form rides for the payload cap's fall-back and never
+// reaches the import.
+func TestSchemaFinishModeBodies(t *testing.T) {
+	mk := func() Row {
+		return Row{"kind": "obj", "object_kind": "function", "identity": "public.f(integer)", "owner": "app", "acl": "",
+			"definition": "function returns integer language plpgsql",
+			"body":       "begin perform dblink_connect('host=x password=S3cret'); alter role r password 'Two'; return 1; end"}
+	}
+	full, none := mk(), mk()
+	schemaFinishMode([]Row{full}, "full")
+	schemaFinish([]Row{none})
+	if full["hash"] != none["hash"] || full["def_hash"] != none["def_hash"] {
+		t.Fatalf("the hashes differ by policy: %v / %v and %v / %v", full["hash"], full["def_hash"], none["hash"], none["def_hash"])
+	}
+	fd, nd := full["definition"].(string), none["definition"].(string)
+	if !strings.HasPrefix(fd, nd+"\n") || !strings.Contains(fd, "dblink_connect") {
+		t.Errorf("under full the definition is not the hashed form and the body's text: %q", fd)
+	}
+	if strings.Contains(fd, "S3cret") || strings.Contains(fd, "Two") {
+		t.Errorf("a password stayed in the stored text: %q", fd)
+	}
+	if full[schemaHashedKey] != nd {
+		t.Errorf("the fall-back form %q, want the hashed form %q", full[schemaHashedKey], nd)
+	}
+	if _, ok := none[schemaHashedKey]; ok {
+		t.Error("a hash-only row carries a fall-back form")
+	}
+	if def := func() string { r := mk(); schemaFinishMode([]Row{r}, ""); return r["definition"].(string) }(); def != fd {
+		t.Errorf("no policy (the configuration's default, full) stores %q", def)
+	}
+	// a body change is still a change
+	ch := mk()
+	ch["body"] = strings.Replace(ch["body"].(string), "return 1", "return 2", 1)
+	schemaFinishMode([]Row{ch}, "full")
+	if ch["hash"] == full["hash"] {
+		t.Error("a body change left the hash")
+	}
+	// the cap's fall-back puts the hashed form back; the drop takes the key out before the import
+	rows := []Row{full}
+	if !schemaHashesOnly(rows) || full["definition"] != nd {
+		t.Errorf("schemaHashesOnly left %q", full["definition"])
+	}
+	again := mk()
+	schemaFinishMode([]Row{again}, "full")
+	schemaDropHashed([]Row{again})
+	if _, ok := again[schemaHashedKey]; ok {
+		t.Error("schemaDropHashed left the fall-back form in the row")
+	}
+	if schemaPayloadSize([]Row{{schemaHashedKey: strings.Repeat("x", 1000)}}) > 100 {
+		t.Error("the fall-back form counts toward the payload's size")
+	}
+}

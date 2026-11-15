@@ -185,7 +185,7 @@ function objectsBlock(rows: Row[]): HTMLElement {
 // objectsSection: the database picker; each pick reads that database's objects
 function objectsSection(ctx: Ctx, instance: number, dbs: Row[]): HTMLElement {
   const sec = el('div', {}, el('h3', {}, 'Objects'),
-    el('p', { class: 'meta' }, 'The current snapshot of one database: every object with its definition (a function\'s body as its SHA-256), '
+    el('p', { class: 'meta' }, 'The current snapshot of one database: every object with its definition (a function\'s body as text where the instance\'s query_text is full, else as its SHA-256), '
       + 'its owner and its ACL (empty: the built-in default). A column, index, constraint or trigger belongs to its table; its owner is the table\'s.'));
   const pick = el('select', { 'aria-label': 'database of the objects' }, ...dbs.map(d => el('option', { value: String(d.dbid) }, String(d.datname)))) as HTMLSelectElement;
   const out = el('div');
@@ -212,7 +212,8 @@ const aboutText = 'Read hourly on every database the monitoring login can connec
   + 'or dropped with its table is shown as the table\'s one row. The schemas of extensions and the catalogs are left out. '
   + 'The statement text needs the opt-in event trigger (pgvigil roles prints it; a superuser installs it per database): '
   + 'where it is installed the client\'s query text (every statement sent together) and its role stand beside the change; '
-  + 'elsewhere the change is still found, without them. A text that may carry a password is not kept.';
+  + 'elsewhere the change is still found, without them. A text that may carry a password is not kept; a function\'s body is kept as text, '
+  + 'a password in it masked, where the instance\'s query_text is full (the default), as its SHA-256 otherwise.';
 
 const mssqlAboutText = 'Read on the databases of the instance\'s mssql_schema.databases (pgvigil.yaml; none = the collection is off): '
   + 'schemas, tables with each column, index, constraint and DML trigger, views, procedures, functions, synonyms, sequences and user types. '

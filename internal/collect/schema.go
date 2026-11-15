@@ -350,6 +350,9 @@ func schemaPayloadSize(rows []Row) int {
 	for _, r := range rows {
 		n += 16
 		for k, v := range r {
+			if k == schemaHashedKey { // the fall-back form never reaches the import
+				continue
+			}
 			n += len(k) + 8
 			if s, ok := v.(string); ok {
 				n += len(s)
@@ -415,7 +418,7 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 		var rows []Row
 		var readErr error
 		if db == cur {
-			rows, readErr = schemaRead(ctx, conn, since)
+			rows, readErr = schemaRead(ctx, conn, since, in.QueryText)
 		} else {
 			rows, readErr = schemaReadOther(ctx, in, db, since)
 		}
@@ -447,10 +450,18 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 			dbErr(db, readErr.Error())
 			continue
 		case schemaPayloadSize(objs) > maxPayload:
+			// bodies as text past the cap: this database's bodies as their hashes (the hash is the same: no change is
+			// recorded), said; still over = not snapshotted, as before
+			if schemaHashesOnly(objs) && schemaPayloadSize(objs) <= maxPayload {
+				final = append(final, Row{"kind": "collector_error", "source": "schema text:" + db,
+					"message": fmt.Sprintf("bodies kept as hashes in %s: their text is over the %d MB one import takes", db, maxPayload>>20)})
+				break
+			}
 			dbErr(db, fmt.Sprintf("about %d MB of definitions, over the %d MB one import takes: the database is not snapshotted",
 				schemaPayloadSize(objs)>>20, maxPayload>>20))
 			continue
 		}
+		schemaDropHashed(objs)
 		if err := emit(objs); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -486,11 +497,11 @@ func (c schemaCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info p
 // the moment its snapshot stands for), then the event trigger's state and rows. A failure of the trigger's read is
 // noted on the database's row and the objects still count; a failure of the objects read still returns the trigger's
 // rows, with the error.
-func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time) ([]Row, error) {
+func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time, mode string) ([]Row, error) {
 	if _, err := conn.Exec(ctx, `SET search_path = pg_catalog`); err != nil {
 		return nil, fmt.Errorf("search_path: %w", err)
 	}
-	db, objs, objErr := schemaObjects(ctx, conn)
+	db, objs, objErr := schemaObjects(ctx, conn, mode)
 	ddl, status, table, note := schemaDDL(ctx, conn, since)
 	if objErr != nil {
 		return ddl, objErr
@@ -506,7 +517,7 @@ func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time) ([]Row, e
 }
 
 // schemaObjects reads the database row and its objects in one snapshot.
-func schemaObjects(ctx context.Context, conn *pgx.Conn) (Row, []Row, error) {
+func schemaObjects(ctx context.Context, conn *pgx.Conn, mode string) (Row, []Row, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin: %w", err)
@@ -534,7 +545,7 @@ func schemaObjects(ctx context.Context, conn *pgx.Conn) (Row, []Row, error) {
 	if len(objs) > schemaMaxObjects {
 		return nil, nil, fmt.Errorf("over %d objects: the database is not snapshotted (schemaMaxObjects)", schemaMaxObjects)
 	}
-	schemaFinish(objs)
+	schemaFinishMode(objs, mode)
 	dbRows[0]["objects"] = len(objs)
 	return dbRows[0], objs, nil
 }
@@ -598,13 +609,30 @@ func schemaDDLCursor(datname string, last time.Time) Row {
 	return Row{"kind": "ddl_cursor", "datname": datname, "read_to": last.Add(time.Hour - time.Microsecond)}
 }
 
-// schemaFinish turns each object row into its stored shape: a function's body becomes its hash at the end of the
-// definition, the hash of kind, definition, owner and ACL is added, and a definition over schemaMaxDef is cut (after
-// hashing, so a change past the cut still shows as a change).
-func schemaFinish(objs []Row) {
+// schemaFinish is schemaFinishMode under 'none': a function's body as its hash only.
+func schemaFinish(objs []Row) { schemaFinishMode(objs, "none") }
+
+// schemaHashedKey holds, for a row whose definition carries its body's text, the hashed form a database over the
+// payload cap falls back to (schemaHashesOnly); it never reaches the import (schemaDropHashed).
+const schemaHashedKey = "hashed_definition"
+
+// maskBody masks what may be a password in a function's body: maskText's two rules, without the statements cap.
+func maskBody(s string) string {
+	s = maskPasswordRE.ReplaceAllString(s, "${1}'<masked>'")
+	return maskConnRE.ReplaceAllString(s, "${1}=<masked>")
+}
+
+// schemaFinishMode turns each object row into its stored shape (task A26, the lead's 13:4x): the hashed form is the
+// definition with its body's hash at the end ('body sha256:<16 hex>'), and the hash of kind, hashed form, owner and
+// ACL, and def_hash, are taken over it - the same bytes as before A26 under every policy, so a change of query_text
+// (or the upgrade) records no change. The definition stored is the hashed form, followed under query_text 'full' (or
+// no policy: the configuration's default) by the body's text with what may be a password masked. A definition over
+// schemaMaxDef is cut after hashing, so a change past the cut still shows as a change.
+func schemaFinishMode(objs []Row, mode string) {
 	for _, o := range objs {
 		def, _ := o["definition"].(string)
-		if body, ok := o["body"].(string); ok {
+		body, hasBody := o["body"].(string)
+		if hasBody {
 			sum := sha256.Sum256([]byte(body))
 			def += " body sha256:" + hex.EncodeToString(sum[:])[:16]
 		}
@@ -621,7 +649,32 @@ func schemaFinish(objs []Row) {
 		// the definition's own hash: a change past the cut is seen even when the owner or ACL changed with it
 		dh := sha256.Sum256([]byte(def))
 		o["def_hash"] = hex.EncodeToString(dh[:])
-		o["definition"] = schemaCut(def, schemaMaxDef)
+		stored := def
+		if hasBody && (mode == "" || mode == "full") {
+			stored = def + "\n" + maskBody(body)
+			o[schemaHashedKey] = schemaCut(def, schemaMaxDef)
+		}
+		o["definition"] = schemaCut(stored, schemaMaxDef)
+	}
+}
+
+// schemaHashesOnly puts the hashed form back in every row that carries a body's text; false when none does.
+func schemaHashesOnly(objs []Row) bool {
+	found := false
+	for _, o := range objs {
+		if h, ok := o[schemaHashedKey]; ok {
+			o["definition"] = h
+			delete(o, schemaHashedKey)
+			found = true
+		}
+	}
+	return found
+}
+
+// schemaDropHashed takes the fall-back form out before the import.
+func schemaDropHashed(objs []Row) {
+	for _, o := range objs {
+		delete(o, schemaHashedKey)
 	}
 }
 
@@ -661,5 +714,5 @@ func schemaReadOther(ctx context.Context, in config.Instance, db string, since *
 	if _, err := conn.Exec(ctx, sessionSetup); err != nil {
 		return nil, fmt.Errorf("session setup: %w", err)
 	}
-	return schemaRead(ctx, conn, since)
+	return schemaRead(ctx, conn, since, in.QueryText)
 }

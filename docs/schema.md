@@ -12,7 +12,7 @@ to, it reads one row per object:
 | index                       | `pg_get_indexdef`, marked `(INVALID)` when invalid                                     |
 | constraint                  | `pg_get_constraintdef`, marked `NOT VALID` when not validated                          |
 | trigger                     | `pg_get_triggerdef`, marked when disabled, replica or always                           |
-| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source |
+| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source; where the instance's `query_text` is `full` (the default) the source's text follows it, a password in it masked (since A26: the history shows what changed) |
 | view, materialized view     | `pg_get_viewdef`                                                                       |
 | sequence                    | the type, start, increment, min, max, cache, cycle, and the column that owns it (an owned sequence belongs to that table) |
 
