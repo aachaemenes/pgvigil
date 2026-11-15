@@ -1,8 +1,8 @@
 diff --git i/docs/performance.md w/docs/performance.md
-index daea736..4618d17 100644
+index daea736..572c9df 100644
 --- i/docs/performance.md
 +++ w/docs/performance.md
-@@ -52,6 +52,27 @@ with a sample in any chart). Each title opens the detailed page.
+@@ -52,6 +52,29 @@ with a sample in any chart). Each title opens the detailed page.
  API: `GET /api/performance?instance=N&from=&to=[&part=]` - parts `meta`, `grid` and, per engine, `cpu`, `sessions`,
  `waits`, `db`, `io` (PostgreSQL) or `cpu`, `sessions`, `waits`, `db`, `io` (SQL Server).
  
@@ -12,13 +12,15 @@ index daea736..4618d17 100644
 +(`GET /api/frame/events`), and each one is an info finding for 24 hours: `instance restarted`, `instance failed over`,
 +`crash restart`, `build changed`. They come from the reads pgvigil already makes: an instance's first read is no event.
 +
-+- SQL Server: the start time moved by over 120 s. On another machine (a failover cluster's physical node, else the
-+  machine name) a failover; on the same machine a restart when the new start is after the read before; any other move
-+  on the same machine is the host's clock stepping, no event.
++- SQL Server: the start time moved. On another machine (a failover cluster's physical node, else the machine name) a
++  failover; on the same machine a restart when the start moved by over 120 s and the new start is after the read before
++  (the server's own clock at that read); any other move on the same machine is the host's clock stepping, no event.
 +- PostgreSQL: the postmaster's start moved. A new start after the read before is a restart; a start at or before it
 +  is a failover (a node already up took over), whatever the server's address: a container or pod recreated on a new
-+  address reads restart, and a promotion behind a virtual IP or over a Unix socket reads failover. The edge: a standby
-+  created and promoted between two reads started after the read before, so it reads restart (the timeline is not read).
++  address reads restart, and a promotion behind a virtual IP or over a Unix socket reads failover. "The read before" is
++  the server's own clock at that read. Two edges read restart, since the timeline is not read: a standby created and
++  promoted between two reads, and a managed high-availability failover whose standby runs no PostgreSQL until it takes
++  over (an Amazon RDS Multi-AZ DB instance, Cloud SQL HA); the event's words keep both addresses.
 +- A crash restart (PostgreSQL 15 and later): the statistics were reset with the postmaster kept, the server's crash
 +  recovery; a crash the server log already reports is one finding, the log's. On 14 and older only the server log's
 +  finding names it.
@@ -31,7 +33,7 @@ index daea736..4618d17 100644
  
  The SQL Server columns and charts on SQL Server 2016 (task 164), on Windows (task 144), on Amazon RDS for SQL Server (task 165) and on Azure SQL Managed Instance: `scripts/proof-mssql-perf.sh` runs on SQL Server 2017 to 2025 in Linux containers (through `scripts/proof-mssql-versions.sh`).
 diff --git i/internal/mssql/instance.go w/internal/mssql/instance.go
-index bcd7ac4..dbf1275 100644
+index bcd7ac4..88a2b87 100644
 --- i/internal/mssql/instance.go
 +++ w/internal/mssql/instance.go
 @@ -22,6 +22,8 @@ func (instanceCollector) Applies(Info) (bool, string)    { return true, "" }
@@ -43,7 +45,7 @@ index bcd7ac4..dbf1275 100644
    CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS server_name,
    CAST(SERVERPROPERTY('InstanceName') AS nvarchar(128)) AS instance_name,
    CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition,
-@@ -40,10 +42,13 @@ const configSQL = `SELECT 'config' AS kind, CAST(name AS nvarchar(128)) AS name,
+@@ -40,10 +42,15 @@ const configSQL = `SELECT 'config' AS kind, CAST(name AS nvarchar(128)) AS name,
    CAST(is_dynamic AS int) AS is_dynamic, CAST(is_advanced AS int) AS is_advanced
  FROM sys.configurations ORDER BY name`
  
@@ -55,7 +57,9 @@ index bcd7ac4..dbf1275 100644
    max_workers_count, scheduler_count, CAST(virtual_machine_type_desc AS nvarchar(60)) AS virtual_machine_type,
 -  CONVERT(varchar(33), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), sqlserver_start_time), 126) + 'Z' AS started_at_utc
 +  CONVERT(varchar(33), DATEADD(MILLISECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) % 1000 AS int),
-+    DATEADD(SECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) / 1000 AS int), SYSUTCDATETIME())), 126) + 'Z' AS started_at_utc
++    DATEADD(SECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) / 1000 AS int), SYSUTCDATETIME())), 126) + 'Z' AS started_at_utc,
++  -- task 404 (0155): the server's own clock at this read, the read 0155 compares the next start with
++  CONVERT(varchar(33), SYSUTCDATETIME(), 126) + 'Z' AS server_utc
  FROM sys.dm_os_sys_info`
  
  func (instanceCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
@@ -84,7 +88,7 @@ index 40526c2..c1a123d 100644
    GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
    DELETE FROM pgvigil.statements_info WHERE snapshot_at < now() - make_interval(days => p_days);
 diff --git i/internal/web/q_frame.go w/internal/web/q_frame.go
-index b9cdd5f..71b4335 100644
+index b9cdd5f..f0efa48 100644
 --- i/internal/web/q_frame.go
 +++ w/internal/web/q_frame.go
 @@ -16,7 +16,8 @@ import (
@@ -97,21 +101,22 @@ index b9cdd5f..71b4335 100644
  //       events); each with the tab of the page that holds its rows and of_kind, the window's count of its kind (above
  //       the cap the page says 'the newest 200 of n'). limits: the server limits a chart may draw as a line, by name
  //       (max_connections), as the newest read before the window's end holds them.
-@@ -116,13 +117,28 @@ SELECT at, kind, label, tab, of_kind FROM (
+@@ -116,13 +117,29 @@ SELECT at, kind, label, tab, of_kind FROM (
        LEFT JOIN pgvigil.mssql_config_history p ON p.instance_id = h.instance_id AND p.name = h.name AND p.valid_to = h.valid_from
       WHERE h.instance_id = $1 AND NOT h.first_read AND h.valid_from > $2 AND h.valid_from <= $3
      UNION ALL
 +    -- the newest start where no restart or failover of 0155 was seen since it (an instance first read after it started;
-+    -- a failover onto a node up for days is dated at the read, its node's start is not marked again: 404 review A, 1 and 3)
++    -- a failover onto a node up for days is dated at the read, its node's start is not marked again: 404 review A, 1 and 3;
++    -- 120 s below the start, as 0155's tolerance, so a clock step after a quick read does not mark it again: review B, 10)
      SELECT st.postmaster_start, 'restart', 'PostgreSQL started', 'summary'
        FROM pgvigil.instance_state st
       WHERE st.instance_id = $1 AND st.postmaster_start > $2 AND st.postmaster_start <= $3
-+       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= st.postmaster_start)
++       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= st.postmaster_start - interval '120 seconds')
      UNION ALL
      SELECT m.started_at, 'restart', 'SQL Server started', 'summary'
        FROM pgvigil.mssql_instance m
       WHERE m.instance_id = $1 AND m.started_at > $2 AND m.started_at <= $3
-+       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= m.started_at)
++       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= m.started_at - interval '120 seconds')
 +    UNION ALL
 +    -- task 404 (0155): each restart, failover, crash restart and build change seen between two reads
 +    -- a PostgreSQL build is the Versions tab's (version_history); an availability group's failover is marked once, by

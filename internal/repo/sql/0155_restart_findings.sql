@@ -5,20 +5,28 @@
 -- (0001), each overwritten at every read, and PostgreSQL's version_history (0035). No restart history, no finding.
 --
 --   instance_events        one row per event an UPDATE of a read row shows, written by AFTER UPDATE triggers:
---     mssql_instance  the start moved by over 120 s (the start is SYSUTCDATETIME() less the ticks since the start, read
---                     by instance.go, so a host's clock step moves it too): another machine = 'failover' (the physical
---                     node, ComputerNamePhysicalNetBIOS, where both reads carry it: a failover cluster keeps its
---                     virtual MachineName; else machine_name: the AG listener's new replica); on the same machine a
---                     new start after the read before = 'restart', any other move no event (a clock step: the lead's
---                     11-14 22:5x, F16's clock rule (a)); product_version changed = 'build' (old and new with the
---                     update level).
+--     mssql_instance  another machine with the start moved = 'failover' (the physical node,
+--                     ComputerNamePhysicalNetBIOS, where both reads carry it: a failover cluster keeps its virtual
+--                     MachineName; else machine_name: the AG listener's new replica), whatever the move (404 review B,
+--                     11: a replica started within 120 s of the old primary is a failover too); on the same machine the
+--                     start moved by over 120 s (the start is SYSUTCDATETIME() less the ticks since the start, read by
+--                     instance.go, so a host's clock step moves it too) and after the read before = 'restart', any other
+--                     move no event (a clock step: the lead's 11-14 22:5x, F16's clock rule (a)); product_version
+--                     changed = 'build' (old and new with the update level). 'The read before' is the server's own
+--                     clock at that read (server_utc, SYSUTCDATETIME() in instance.go's sysinfo read), the collector's
+--                     read time only where it is missing: the start is on the server's clock (404 review B, 8).
 --     instance_state  postmaster_start moved (exact: no tolerance), the read newer than the stored one: a new start
---                     after the read before = 'restart'; a start at or before it = 'failover' (a node already up took
---                     over), whatever the address (the lead's 11-14 23:1x, finding 7 (a): inet_server_addr() no longer
+--                     after the read before (its server_now, the server's clock; the collector's read time where it
+--                     is missing) = 'restart'; a start at or before it = 'failover' (a node already up took over),
+--                     whatever the address (the lead's 11-14 23:1x, finding 7 (a): inet_server_addr() no longer
 --                     decides, so a recreated container or pod reads 'restart', and a VIP or a Unix socket, which keep
---                     one address or none, reads a promotion as 'failover'; server_addr stays in the words). The edge:
---                     a standby created and promoted between two reads started after the read before and reads
---                     'restart' (the timeline is not read).
+--                     one address or none, reads a promotion as 'failover'; server_addr stays in the words). The edges
+--                     read 'restart' (the timeline is not read): a standby created and promoted between two reads, and
+--                     a managed HA failover whose standby runs no PostgreSQL until it takes over (an Amazon RDS
+--                     Multi-AZ DB instance, Cloud SQL HA: its PostgreSQL starts after the read before; the words keep
+--                     both addresses). A start equal to the newest restart or failover's new one writes nothing: 0086's
+--                     import keeps no read-time guard, so a late read of the old node can come between two reads of the
+--                     new one (404 review B, 12).
 --     dbstats_last    0011's restart epoch rose with the postmaster start unchanged, the commits fell, and stats_reset
 --                     unchanged or NULL = 'crash restart' (the postmaster stays up through crash recovery; a manual
 --                     pg_stat_reset moves stats_reset to a time; PostgreSQL 15 and later drop every statistics entry
@@ -40,7 +48,8 @@
 --   restart_findings       info, 24 hours after the event: 'instance restarted', 'instance failed over', 'crash restart',
 --                          'build changed' (both engines), in pgvigil.findings' columns (the arm is in the join file);
 --                          a crash restart the server log's pg_crashes (0103) already reports between the two reads is
---                          left out (one finding, the log's, which the Summary acknowledges)
+--                          left out (one finding, the log's, which the Summary acknowledges; a log line up to a minute
+--                          after the read that saw it counts, the log's time being the server's clock)
 SET LOCAL lock_timeout = '20s';
 
 CREATE TABLE IF NOT EXISTS pgvigil.instance_events (
@@ -59,8 +68,11 @@ ALTER TABLE pgvigil.instance_events ADD COLUMN IF NOT EXISTS prev_at timestamptz
 -- the physical node of a failover cluster instance (SERVERPROPERTY('ComputerNamePhysicalNetBIOS'), instance.go: WIRING);
 -- 0063's import below stores it
 ALTER TABLE pgvigil.mssql_instance ADD COLUMN IF NOT EXISTS physical_machine text;
+-- the server's own UTC clock at the read (sysinfo's SYSUTCDATETIME(), instance.go: WIRING): the read before on the
+-- start's clock (404 review B, 8)
+ALTER TABLE pgvigil.mssql_instance ADD COLUMN IF NOT EXISTS server_utc timestamptz;
 
--- 0063's import, whole, with its two marked changes (the physical node)
+-- 0063's import, whole, with its three marked changes (the physical node, the server's clock)
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_instance(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -78,14 +90,15 @@ BEGIN
   INSERT INTO pgvigil.mssql_instance AS m (instance_id, snapshot_at, machine_name, server_name, instance_name, edition, engine_edition,
       product_version, product_level, product_update_level, product_update_reference, server_collation, is_clustered, is_hadr_enabled,
       is_integrated_security_only, sysinfo_read, cpu_count, hyperthread_ratio, physical_memory_mb, committed_target_mb,
-      max_workers_count, scheduler_count, virtual_machine_type, started_at, physical_machine)
+      max_workers_count, scheduler_count, virtual_machine_type, started_at, physical_machine, server_utc)
   VALUES (p_instance_id, p_snapshot_at, v_s->>'machine_name', v_s->>'server_name', v_s->>'instance_name', v_s->>'edition',
       (v_s->>'engine_edition')::int, v_s->>'product_version', v_s->>'product_level', v_s->>'product_update_level',
       v_s->>'product_update_reference', v_s->>'collation', (v_s->>'is_clustered')::int = 1, (v_s->>'is_hadr_enabled')::int = 1,
       (v_s->>'is_integrated_security_only')::int = 1, v_i IS NOT NULL, (v_i->>'cpu_count')::int, (v_i->>'hyperthread_ratio')::int,
       (v_i->>'physical_memory_kb')::bigint / 1024, (v_i->>'committed_target_kb')::bigint / 1024, (v_i->>'max_workers_count')::int,
       (v_i->>'scheduler_count')::int, v_i->>'virtual_machine_type', (v_i->>'started_at_utc')::timestamptz,
-      nullif(v_s->>'physical_machine', ''))  -- task 404 change 1 of 2: the node the instance runs on (an FCI's)
+      nullif(v_s->>'physical_machine', ''),  -- task 404 change 1 of 3: the node the instance runs on (an FCI's)
+      (v_i->>'server_utc')::timestamptz)      -- task 404 change 3 of 3: the server's clock at the read
   ON CONFLICT (instance_id) DO UPDATE SET
       snapshot_at = EXCLUDED.snapshot_at, machine_name = EXCLUDED.machine_name, server_name = EXCLUDED.server_name,
       instance_name = EXCLUDED.instance_name, edition = EXCLUDED.edition, engine_edition = EXCLUDED.engine_edition,
@@ -101,7 +114,8 @@ BEGIN
       scheduler_count = coalesce(EXCLUDED.scheduler_count, m.scheduler_count),
       virtual_machine_type = coalesce(EXCLUDED.virtual_machine_type, m.virtual_machine_type),
       started_at = coalesce(EXCLUDED.started_at, m.started_at),
-      physical_machine = coalesce(EXCLUDED.physical_machine, m.physical_machine)  -- task 404 change 2 of 2
+      physical_machine = coalesce(EXCLUDED.physical_machine, m.physical_machine),  -- task 404 change 2 of 3
+      server_utc = EXCLUDED.server_utc  -- change 3 of 3: never kept from an older read (none = the read's time is used)
   WHERE m.snapshot_at <= EXCLUDED.snapshot_at;
 
   INSERT INTO pgvigil.mssql_config AS c (instance_id, name, value, value_in_use, minimum, maximum, is_dynamic, is_advanced, snapshot_at)
@@ -135,18 +149,19 @@ CREATE OR REPLACE FUNCTION pgvigil.mssql_instance_events() RETURNS trigger LANGU
 DECLARE
   v_other boolean;
   v_kind  text;
+  v_prev  timestamptz := coalesce(OLD.server_utc, OLD.snapshot_at);  -- the read before, on the start's clock
 BEGIN
-  IF NEW.started_at IS NOT NULL AND OLD.started_at IS NOT NULL
-     AND abs(extract(epoch FROM NEW.started_at - OLD.started_at)) > 120 THEN
+  IF NEW.started_at IS NOT NULL AND OLD.started_at IS NOT NULL AND NEW.started_at IS DISTINCT FROM OLD.started_at THEN
     v_other := CASE WHEN NEW.physical_machine IS NOT NULL AND OLD.physical_machine IS NOT NULL
                       THEN upper(NEW.physical_machine) <> upper(OLD.physical_machine)
                     WHEN NEW.machine_name IS NOT NULL AND OLD.machine_name IS NOT NULL
                       THEN upper(NEW.machine_name) <> upper(OLD.machine_name)
                     ELSE false END;
-    v_kind := CASE WHEN v_other THEN 'failover' WHEN NEW.started_at > OLD.snapshot_at THEN 'restart' END;
+    v_kind := CASE WHEN v_other THEN 'failover'
+                   WHEN abs(extract(epoch FROM NEW.started_at - OLD.started_at)) > 120 AND NEW.started_at > v_prev THEN 'restart' END;
     IF v_kind IS NOT NULL THEN
       INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
-      VALUES (NEW.instance_id, CASE WHEN NEW.started_at > OLD.snapshot_at THEN NEW.started_at ELSE NEW.snapshot_at END, v_kind,
+      VALUES (NEW.instance_id, CASE WHEN NEW.started_at > v_prev THEN NEW.started_at ELSE NEW.snapshot_at END, v_kind,
               pgvigil.instance_event_start(coalesce(OLD.physical_machine, OLD.machine_name), OLD.started_at),
               pgvigil.instance_event_start(coalesce(NEW.physical_machine, NEW.machine_name), NEW.started_at),
               'mssql_instance', NEW.snapshot_at, OLD.snapshot_at)
@@ -156,7 +171,7 @@ BEGIN
   IF NEW.product_version IS NOT NULL AND OLD.product_version IS NOT NULL AND NEW.product_version <> OLD.product_version THEN
     INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
     VALUES (NEW.instance_id,
-            CASE WHEN NEW.started_at IS NOT NULL AND NEW.started_at IS DISTINCT FROM OLD.started_at AND NEW.started_at > OLD.snapshot_at
+            CASE WHEN NEW.started_at IS NOT NULL AND NEW.started_at IS DISTINCT FROM OLD.started_at AND NEW.started_at > v_prev
                  THEN NEW.started_at ELSE NEW.snapshot_at END,
             'build', OLD.product_version || coalesce(' ' || nullif(OLD.product_update_level, ''), ''),
             NEW.product_version || coalesce(' ' || nullif(NEW.product_update_level, ''), ''), 'mssql_instance', NEW.snapshot_at,
@@ -172,12 +187,19 @@ CREATE TRIGGER mssql_instance_events AFTER UPDATE ON pgvigil.mssql_instance
   EXECUTE FUNCTION pgvigil.mssql_instance_events();
 
 CREATE OR REPLACE FUNCTION pgvigil.pg_instance_events() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  v_prev timestamptz := coalesce(OLD.server_now, OLD.snapshot_at);  -- the read before, on the start's clock
+  v_new  text := pgvigil.instance_event_start(NEW.server_addr, NEW.postmaster_start);
 BEGIN
-  IF NEW.postmaster_start IS NOT NULL AND OLD.postmaster_start IS NOT NULL THEN
+  IF NEW.postmaster_start IS NOT NULL AND OLD.postmaster_start IS NOT NULL
+     -- the start the newest restart or failover already moved to (a late read of the old node came between): nothing
+     AND v_new IS DISTINCT FROM (SELECT e.new_value FROM pgvigil.instance_events e
+                                  WHERE e.instance_id = NEW.instance_id AND e.kind IN ('restart', 'failover')
+                                  ORDER BY e.seen_at DESC LIMIT 1) THEN
     INSERT INTO pgvigil.instance_events (instance_id, at, kind, old_value, new_value, source, seen_at, prev_at)
-    VALUES (NEW.instance_id, CASE WHEN NEW.postmaster_start > OLD.snapshot_at THEN NEW.postmaster_start ELSE NEW.snapshot_at END,
-            CASE WHEN NEW.postmaster_start > OLD.snapshot_at THEN 'restart' ELSE 'failover' END,
-            pgvigil.instance_event_start(OLD.server_addr, OLD.postmaster_start), pgvigil.instance_event_start(NEW.server_addr, NEW.postmaster_start),
+    VALUES (NEW.instance_id, CASE WHEN NEW.postmaster_start > v_prev THEN NEW.postmaster_start ELSE NEW.snapshot_at END,
+            CASE WHEN NEW.postmaster_start > v_prev THEN 'restart' ELSE 'failover' END,
+            pgvigil.instance_event_start(OLD.server_addr, OLD.postmaster_start), v_new,
             'instance_state', NEW.snapshot_at, OLD.snapshot_at)
     ON CONFLICT DO NOTHING;
   END IF;
@@ -253,4 +275,4 @@ SELECT e.instance_id, 'info'::text AS severity,
    AND NOT (e.kind = 'crash restart' AND EXISTS (
          SELECT 1 FROM pgvigil.pg_crashes c
           WHERE c.instance_id = e.instance_id AND c.at > coalesce(e.prev_at, e.at - interval '1 hour') - interval '1 minute'
-            AND c.at <= e.seen_at));
+            AND c.at <= e.seen_at + interval '1 minute'));  -- the log's time is the server's clock (404 review B, 12)
