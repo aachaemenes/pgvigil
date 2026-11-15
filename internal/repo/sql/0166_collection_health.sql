@@ -769,7 +769,8 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autova
 -- The collection counters chartable and alertable, as DBA Dash's: per collection (the sub-series slot 'database' carries
 -- the collection; the instance's series is the worst collection each hour: the B6g-4 fold, the lead's 14:5x (a) #6 - a
 -- rule naming no collection watches that series, so its run may pass from one collection to another hour by hour, and
--- its alert names no collection; a 'below' rule must name one, the worst being the highest), from the hour rows (one
+-- its alert names no collection - an alert that names its collection is a rule per collection (the lead's 15:3x (b));
+-- a 'below' rule must name one, the worst being the highest), from the hour rows (one
 -- point an hour, stamped at the hour's END so two points are exactly 60 minutes apart and an hourly collection's
 -- 60-minute rule never turns on a few ms of ticker jitter: #2 - so a failure at 10:17 is 'beyond since 11:00', and a
 -- page range under an hour may hold no point; every collector summed; fresh for 2 hours - a collection run less often
