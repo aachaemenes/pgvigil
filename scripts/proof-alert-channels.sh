@@ -906,6 +906,14 @@ unack() { q "select pgvigil.import_ack(now(), '{\"op\":\"end\",\"ui_user\":\"pro
 keyof() { q "select string_agg(finding_key, ',') from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and setting ilike '%$1%'"; }
 back() { q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '2 hours' where channel = 'sb' and finding_key = '$1' and cleared_at is null" >/dev/null; }
 tsof() { q "select ts from pgvigil.alert_threads where channel = 'sb' and finding_key = '$1' order by posted_at desc limit 1"; }
+# sdiag <key> <rule id>: what the store holds for a row that failed - sb's alert_state rows, sb's attempts, the finding,
+# the rule's end
+sdiag() {
+  echo "sb state: $(q "select string_agg(left(finding_key, 10) || ' cleared ' || coalesce(to_char(cleared_at, 'HH24:MI:SS'), '-') || ' missing ' || coalesce(to_char(missing_since, 'HH24:MI:SS'), '-') || ' last ' || coalesce(to_char(last_sent_at, 'HH24:MI:SS'), '-'), '; ') from pgvigil.alert_state where channel = 'sb'")" \
+       "| sb log: $(q "select string_agg(outcome || ' f' || n_firing || ' r' || n_repeat || ' z' || n_resolved || coalesce(' ' || left(error, 80), ''), ', ' order by snapshot_at) from pgvigil.alert_log where channel = 'sb'")" \
+       "| finding $(q "select count(*) from pgvigil.alert_findings where finding_key = '$1'") row(s) now" \
+       "| rule $2 ended: $(q "select ended_at is not null from pgvigil.alert_rules where rule_id = $2")"
+}
 endall; RID=""   # the earlier parts' rules on the seeded instance (by query: see endall)
 sample 0 0 1; pass sab0   # the earlier parts' findings cleared on these channels
 SL0=$(sl count)
@@ -936,7 +944,7 @@ TS2=$(tsof "$KS"); [[ $TS2 != "$TS1" ]] || fail "S3: the thread did not move to 
 ok "S3: a reply Slack refused as a reply went as a new post ${g} s later; the thread is now $TS2, the first post $TS1 kept in older_ts (its buttons still act)"
 endrule "$R1"; sample 0 0 1; pass S4
 i=$((SL0 + 4))
-[[ $(sl count) == $((SL0 + 5)) && $(sl body $i thread_ts) == "$TS2" && -z $(sl body $i reply_broadcast) && $(sl has $i RESOLVED) == yes ]] || fail "S4: the recovery: thread_ts '$(sl body $i thread_ts)' resolved $(sl has $i RESOLVED)"
+[[ $(sl count) == $((SL0 + 5)) && $(sl body $i thread_ts) == "$TS2" && -z $(sl body $i reply_broadcast) && $(sl has $i RESOLVED) == yes ]] || fail "S4: the recovery: $(( $(sl count) - SL0 )) calls (wanted 5), thread_ts '$(sl body $i thread_ts)' resolved $(sl has $i RESOLVED); $(sdiag "$KS" "$R1")"
 ok "S4: the recovery is a reply in thread $TS2, not broadcast"
 R1=$(rule sessions.idle_in_txn 39 40); sample 50 0 1; KS2=$(keyof "idle in"); pass S5
 i=$((SL0 + 5))
