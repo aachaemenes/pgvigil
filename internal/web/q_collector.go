@@ -25,8 +25,8 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 
 // sqlCollectorFindings: the collector's findings ($1 the instance, 0 = all: an instance sees its own and the
 // repository-wide ones) - every finding of pgvigil's own health, read from pgvigil.findings' own arms (0121's, B6.4's: a
-// collection that runs long, the alert sender idle, the repository's autovacuum behind), deduplicated by the findings
-// view's own key. Never pgvigil.findings itself: a filter on source cannot pass its DISTINCT ON, so a fleet-wide load
+// collection that runs long and a collector host whose collections run long, the alert sender idle, the repository's
+// autovacuum behind), deduplicated by the findings view's own key. Never pgvigil.findings itself: a filter on source cannot pass its DISTINCT ON, so a fleet-wide load
 // built every arm (B6.2 part c #5). 403b's K3 (an alert channel failing) is read here where its arm is joined: a
 // WIRING line at the join. K3 is alert_findings' arm through alert_channel_findings (never findings': its ck CTE
 // reads findings), so the guard walks the arms of both views and names K3 by its view (TestCollectorFindingsReadsItsArms;
@@ -41,12 +41,14 @@ WITH f AS (
           UNION ALL
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.alert_sender_idle_findings
           UNION ALL
-          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.repository_autovacuum_findings) x
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.repository_autovacuum_findings
+          UNION ALL
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_fold) x
    WHERE x.source IN ('pgvigil collector', 'pgvigil repository') AND ($1::int = 0 OR x.instance_id IS NULL OR x.instance_id = $1)
    ORDER BY x.instance_id, x.setting, x.value, x.detail
 )
 SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at,
-       CASE WHEN f.source = 'pgvigil repository' AND f.setting NOT IN ('alert sender idle', 'repository autovacuum behind', 'alert channel failing')
+       CASE WHEN f.source = 'pgvigil repository' AND f.setting NOT IN ('alert sender idle', 'repository autovacuum behind', 'alert channel failing', 'collections run long')
             THEN pgvigil.collector_claim(f.detail) END AS why
   FROM f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id

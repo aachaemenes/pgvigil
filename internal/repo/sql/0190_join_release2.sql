@@ -32,6 +32,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- alert_findings below leaves it out), the repository's autovacuum behind
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collection_runs_long_findings
     UNION ALL
+    -- B6.4 #4 (0166, WIRING): a collector host whose runs run long, one alert for its instances (its members held)
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collection_runs_long_fold
+    UNION ALL
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.alert_sender_idle_findings
     UNION ALL
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.repository_autovacuum_findings
@@ -496,6 +499,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT value FROM slow_folds WHERE kind = 'target' GROUP BY value HAVING bool_and(under_host)
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
+  ), long_held AS MATERIALIZED (   -- B6.4 #4 (0166, WIRING): the members of a standing 'collections run long' fold and
+    -- the severity at or under which their own 'collection runs long' is held
+    SELECT instance_id, severity FROM pgvigil.collection_runs_long_held
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
@@ -517,6 +523,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
                 AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'slow connect'
                 AND EXISTS (SELECT 1 FROM slow_held WHERE slow_held.instance_id = sc.instance_id))
+       AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'collection runs long'
+                AND EXISTS (SELECT 1 FROM long_held WHERE long_held.instance_id = sc.instance_id
+                               AND pgvigil.severity_rank(sc.severity) <= pgvigil.severity_rank(long_held.severity)))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'slow connects'
                 AND EXISTS (SELECT 1 FROM slow_under WHERE slow_under.value = sc.value))
   ), s AS (
@@ -564,8 +573,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM s
    WHERE NOT EXISTS (SELECT 1 FROM sc WHERE sc.channel = s.channel AND sc.finding_key = s.finding_key)
      -- a collector's 'slow connects' is not 'resolved' while that collector's own 'collector or network' stands (its
-     -- connects stopped being judged because it stopped, not because they got faster)
-     AND NOT (s.source = 'pgvigil repository' AND s.setting = 'slow connects'
+     -- connects stopped being judged because it stopped, not because they got faster); its 'collections run long' alike
+     -- (B6.4 #4: its runs stopped being judged, they did not get shorter)
+     AND NOT (s.source = 'pgvigil repository' AND s.setting IN ('slow connects', 'collections run long')
               AND EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = s.value))
      AND (NOT s.instance_active OR s.present
           OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)

@@ -270,6 +270,82 @@ SELECT h.instance_id,
  GROUP BY h.instance_id, h.collection
 HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 
+-- 'collections run long' (B6.4 #4, the lead's 03:2x (a) and 04:2x (i)-(iii); source 'pgvigil repository', the value the
+-- collector's HOST): a host slow while its runs succeed (CPU-starved) forms no 'collector or network' parent, so each
+-- of its instances would send its own 'collection runs long' - one alert per host instead, on the slow-connect fold's
+-- shape (0121 collector_slow_folds). Over the finding's own window (the current and the previous UTC hour) and the
+-- host's OWN rows (collection_health_hour by collector_heartbeat.host, every run of the host summed): an instance is
+-- JUDGED on the host when a collection of it has 5 or more runs there, and runs LONG there by the finding's rule on
+-- those rows (more than 5 % over half the interval: warning; over all of it: critical). The fold FORMS when more than
+-- half AND at least 3 of the judged run long, and while its alert is open on a configured channel it STANDS until a
+-- quarter or less, or under 3, do (collection_runs_long_open: the hysteresis); critical when more than half of the
+-- judged run long at critical. Its members' own 'collection runs long' at or under its level - the higher of its level
+-- now and the level its open alert was sent at - are HELD (alert_due's term, 0190 WIRING, through
+-- collection_runs_long_held); one above it is sent on its own. Its alert is not resolved while the host's own
+-- 'collector or network' stands (alert_due). An arm of 0190's pgvigil.findings (WIRING).
+CREATE OR REPLACE FUNCTION pgvigil.collection_runs_long_open(p_host text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
+                  WHERE s.cleared_at IS NULL AND s.missing_since IS NULL AND s.source = 'pgvigil repository'
+                    AND s.setting = 'collections run long' AND s.value = p_host)
+$$;
+
+CREATE OR REPLACE VIEW pgvigil.collection_runs_long_fold AS
+WITH r AS (   -- each instance's collections on each host over the window, with 5 or more runs there
+  SELECT hb.host, h.instance_id, sum(h.runs) AS runs, sum(h.runs_over_half) AS half, sum(h.runs_over_interval) AS over_i,
+         max(greatest(h.last_ok_at, h.last_failure_at, h.last_partial_at)) AS at
+    FROM pgvigil.collection_health_hour h
+    JOIN (SELECT DISTINCT collector_id, host FROM pgvigil.collector_heartbeat) hb ON hb.collector_id = h.collector_id
+    JOIN pgvigil.instances i ON i.instance_id = h.instance_id AND i.is_active
+   WHERE h.hour >= date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 hour'
+   GROUP BY hb.host, h.instance_id, h.collection
+  HAVING sum(h.runs) >= 5
+), m AS (     -- per host and judged instance: its level there (0 not long, 1 warning, 2 critical)
+  SELECT r.host, r.instance_id, max(r.at) AS at,
+         max(CASE WHEN r.over_i * 20 > r.runs THEN 2 WHEN r.half * 20 > r.runs THEN 1 ELSE 0 END) AS level
+    FROM r GROUP BY r.host, r.instance_id
+), hs AS (
+  SELECT m.host, count(*) AS judged, count(*) FILTER (WHERE m.level >= 1) AS long_n, count(*) FILTER (WHERE m.level = 2) AS crit_n,
+         max(m.at) FILTER (WHERE m.level >= 1) AS at
+    FROM m GROUP BY m.host
+), hf AS (
+  SELECT hs.*, CASE WHEN hs.crit_n * 2 > hs.judged THEN 2 ELSE 1 END AS level
+    FROM hs
+   WHERE CASE WHEN hs.long_n >= 3 AND hs.long_n * 2 > hs.judged THEN true
+              WHEN hs.long_n >= 3 AND hs.long_n * 4 > hs.judged THEN pgvigil.collection_runs_long_open(hs.host)
+              ELSE false END
+), sent AS (  -- the highest level the fold's open alert was sent at (as collection_runs_long_open's alerts)
+  SELECT s.value AS host, max(CASE s.severity WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END) AS level
+    FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
+   WHERE s.cleared_at IS NULL AND s.missing_since IS NULL AND s.source = 'pgvigil repository' AND s.setting = 'collections run long'
+   GROUP BY s.value
+), fa AS (
+  SELECT hf.host, greatest(hf.level, coalesce(max(sent.level), 0)) AS held_level,
+         array_agg(m.instance_id ORDER BY m.instance_id) AS members,
+         string_agg(i.name, ', ' ORDER BY m.level DESC, i.name) AS names
+    FROM hf JOIN m ON m.host = hf.host AND m.level >= 1
+    JOIN pgvigil.instances i ON i.instance_id = m.instance_id
+    LEFT JOIN sent ON sent.host = hf.host
+   GROUP BY hf.host, hf.level
+)
+SELECT NULL::int AS instance_id, CASE WHEN hf.level = 2 THEN 'critical' ELSE 'warning' END AS severity,
+       'collections run long'::text AS setting, hf.host AS value, NULL::boolean AS is_set,
+       'what slows the collector host itself - its CPU, memory or disks (the Collector page''s load and run duration), or fewer instances on it'::text AS suggested,
+       'all'::text AS platforms,
+       format('collections run long on collector %s: %s of its %s judged instance(s) since %s UTC (%s at critical): %s - the collector''s own load, not the servers''; the members'' own ''collection runs long'' alerts are held while this stands, unless one is over this alert''s level',
+              hf.host, hf.long_n, hf.judged,
+              to_char((date_trunc('hour', now() AT TIME ZONE 'UTC') - interval '1 hour'), 'YYYY-MM-DD HH24:MI'), hf.crit_n, fa.names) AS detail,
+       'pgvigil repository'::text AS source, hf.at AS at,
+       fa.members, CASE WHEN fa.held_level = 2 THEN 'critical' ELSE 'warning' END AS held_severity
+  FROM hf JOIN fa ON fa.host = hf.host;
+
+-- collection_runs_long_held: per member of a standing fold, the severity at or under which its own 'collection runs
+-- long' is held (the highest over its folds: an instance read by two hosts); alert_due (0190) reads it once a pass
+CREATE OR REPLACE VIEW pgvigil.collection_runs_long_held AS
+SELECT m.instance_id, CASE max(CASE f.held_severity WHEN 'critical' THEN 2 ELSE 1 END) WHEN 2 THEN 'critical' ELSE 'warning' END AS severity
+  FROM pgvigil.collection_runs_long_fold f CROSS JOIN LATERAL unnest(f.members) AS m(instance_id)
+ GROUP BY m.instance_id;
+
 -- 'alert sender idle' (CHK#35; source 'pgvigil repository', no instance): alert channels configured (a contact's route is
 -- not one) and the rules last judged more than 180 s ago - ONE number with the Alert rules page's line (alert_rules.ts
 -- 'ago > 180'). Only while a live run says it sends (its beat's sends_alerts: B6.2 part c #3, the lead's 03:2x) - never

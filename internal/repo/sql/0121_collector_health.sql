@@ -659,8 +659,8 @@ SELECT DISTINCT x.instance_id
 CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   -- B6.4 (WIRING): 'collection runs long' with the collector's own kinds - held while a parent stands for its instance (a
-  -- cut or a host down slows the runs it does not fail); a host that is slow while its runs succeed forms no parent, and
-  -- each instance's collections then alert on their own (B6.2 part c #4)
+  -- cut or a host down slows the runs it does not fail); a host that is slow while its runs succeed forms no parent:
+  -- its instances fold into ONE 'collections run long' of the host instead (0166 collection_runs_long_fold, B6.4 #4)
   SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect',
                                                                     'collection runs long'))
       OR (p_source = 'collector' AND p_setting = 'server unreachable')   -- 0118's (task 177 D30), where no heartbeat covers the instance
@@ -702,12 +702,12 @@ RETURNS SETOF int LANGUAGE sql STABLE AS $$
 $$;
 
 -- alert_key: an alert's key. The repository-wide 'collector or network' is keyed on its value AS IT IS - the value
--- names the collector's host, and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
+-- names the collector's host (and the host-valued folds alike: 'slow connects', B6.4 #4's 'collections run long'), and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
 -- and 'pgv-2' shared one key and the second, cut by the same event, was never sent. Every other finding keeps 0059's
 -- key. alert_findings (0190) and the alert page's two queries call it, so they agree.
 CREATE OR REPLACE FUNCTION pgvigil.alert_key(p_instance_id int, p_source text, p_setting text, p_value text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects')
+  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects', 'collections run long')
               THEN md5('0' || E'\x1f' || p_source || E'\x1f' || p_setting || E'\x1f' || coalesce(p_value, ''))
               ELSE pgvigil.alert_finding_key(coalesce(p_instance_id, 0), p_source, p_setting, p_value) END
 $$;

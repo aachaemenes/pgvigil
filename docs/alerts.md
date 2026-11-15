@@ -135,7 +135,7 @@ severity floor, scoped channels too), instead of one per instance:
 
 Only the alerts a shared cause explains wait under it: *authentication failing*, *collection failing*, *server
 unreachable*, *collection runs long* (a cut or a host down slows the runs it does not fail; a host that is slow while
-its runs succeed forms no parent, so each instance's collections then alert on their own), and the findings judged by
+its runs succeed forms no parent: its instances fold into one *collections run long* of the host, below), and the findings judged by
 their age on data the cut stops refreshing (*job run over twice its
 average*, *job schedule missed*, *a job runs far longer than its average*, *amcheck older than N d*, *unused index*).
 Every other finding comes from the last good read and is sent as it is: a disk filling up before the cut may be its
@@ -247,7 +247,7 @@ collection still runs within 5 minutes of a start.
 
 ## pgvigil's own health
 
-Three findings watch pgvigil itself. Each shows on the Collector page and the Summary like any finding.
+Four findings watch pgvigil itself. Each shows on the Collector page and the Summary like any finding.
 
 **collection runs long** (warning or critical, source `pgvigil collector`, per instance and collection): over the
 current and the previous UTC hour, with 5 or more runs, more than 5 % of the collection's runs took longer than half of
@@ -255,6 +255,18 @@ its interval (warning), or more than 5 % took longer than the whole interval (cr
 interval). The interval is the shortest one the collection's runs were scheduled at. It is sent like any finding and is
 held under a collector's parent (above). The Collector page's *Run duration per minute* chart draws each minute's 95th
 percentile and its longest run: one collection running long moves no 95th percentile among a minute's many runs.
+
+**collections run long** (warning or critical, source `pgvigil repository`, valued by the collector's host): a
+collector host that is slow while its runs succeed (short of CPU, memory or disk) makes many of its instances run long
+at once, and forms no *collector or network* parent because nothing fails. Instead of one *collection runs long* per
+instance, the host gets one alert. Over the same two UTC hours, and on the host's own runs only, an instance is
+judged there when a collection of it ran 5 or more times on that host, and runs long there by the rule above. The
+alert forms when more than half of the host's judged instances, and at least 3, run long. Once it has been sent, it
+stands until a quarter or less of them, or fewer than 3, still do. It is critical when more than half run long at
+critical. While it stands, its members' own *collection runs long* alerts are held when they are at or under its
+level; a member above it (a critical one under a warning alert) is sent on its own. It is not resolved while the
+host's own *collector or network* stands: the runs stopped being judged because the host stopped, not because they
+got shorter. An instance read by two hosts is judged on each by its own runs there.
 
 **alert sender idle** (warning, source `pgvigil repository`, no instance): alert channels are configured (a contact's
 route is not one) and no alert rule has been judged for more than 180 s while a collector beats - the same line as the
