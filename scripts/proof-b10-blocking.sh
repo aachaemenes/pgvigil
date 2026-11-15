@@ -408,7 +408,7 @@ if fn import_block_hourly; then
 else check "no import_block_hourly" "yes" "O: a capped call"; fi
 
 echo "--- P. the next call's wait in the repository's own zone (repo.NextBlockHourly's SQL)"
-NX=$(sed -n 's/.*QueryRow(ctx, `\(SELECT extract(epoch FROM date_trunc[^`]*\)`).*/\1/p' "$(dirname "$0")/../internal/repo/blockhourly.go" 2>/dev/null)
+NX=$(sed -n 's/.*QueryRow(ctx, `\(SELECT extract(epoch FROM date_trunc[^`]*\)`).*/\1/p' "$(dirname "$0")/../internal/repo/blockhourly.go" 2>/dev/null || true)   # no file (a tree before it) = no SQL: P's FAIL row, not the proof's end
 if [ -n "$NX" ]; then
   pz() { psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "set timezone = '$1'" -c "select to_char(now() + make_interval(secs => w) + interval '30 seconds', 'MI') || '|' || to_char((now() + make_interval(secs => w) + interval '30 seconds') at time zone 'UTC', 'MI') || '|' || (w > 0 and w <= 3600) from ($NX) x(w)"; }
   check "$(pz UTC)" "16|16|true" "P: under UTC the next call is at 16 past the hour, within the hour"
