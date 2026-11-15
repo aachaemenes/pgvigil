@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // The Alerts tab at the root (task 60): GET /api/alerts?[from=&to=][&part=channels|open|log] (Server.Alerts) is the
@@ -375,12 +377,20 @@ func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 			return errors.New("any_instance and instance_id name two scopes: send one")
 		}
 		// an edit writes the rule's successor, a mute like any other (review-16 S5): one over more than one instance
-		// (every instance, a tag) or with no end needs admin. The edit keeps the old rule's kind, and its instance
-		// where it names none, so both are read here; a rule that is not there is the store's answer below.
+		// (every instance, a tag) or with no end needs admin. The successor keeps the old rule's kind, its one alert
+		// (finding_key) and, where the edit names none, its instance - by id, or by name when the instance was removed
+		// since (0093 import_ack_change) - so they are read here. A rule that is not there is the store's answer
+		// below; any other read error refuses the edit (review-18 b24f1 S1: the check never fails open).
 		var kind string
 		var oldInst *int
-		if err := s.pool.QueryRow(ctx, `SELECT kind, instance_id FROM pgvigil.acks WHERE ack_id = $1`, in.AckID).Scan(&kind, &oldInst); err == nil && kind == "mute" &&
-			(in.AnyInstance || in.Tag != "" || in.Until == nil || (in.InstanceID <= 0 && oldInst == nil)) {
+		var oldName, oldFinding *string
+		err := s.pool.QueryRow(ctx, `SELECT kind, instance_id, instance_name, finding_key FROM pgvigil.acks WHERE ack_id = $1`, in.AckID).Scan(&kind, &oldInst, &oldName, &oldFinding)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("rule %d could not be read: %w", in.AckID, err)
+		}
+		one := (oldFinding != nil && *oldFinding != "") || in.InstanceID > 0 ||
+			(!in.AnyInstance && (oldInst != nil || (oldName != nil && *oldName != "")))
+		if err == nil && kind == "mute" && (!one || in.Tag != "" || in.Until == nil) {
 			if err := s.needErr(r, needAdmin, "a fleet-wide or open-ended mute"); err != nil {
 				return err
 			}

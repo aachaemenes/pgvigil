@@ -120,7 +120,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/admin/applications/contacts` | admin | an application's contacts |
 | `POST /api/admin/applications/assign` | admin | assign instances to an application |
 | `POST /api/admin/applications/routes` | admin | an application's routes |
-| `POST /api/admin/applications/import` | admin | import application contacts |
+| `POST /api/admin/applications/import` | admin | import the applications inventory file (CSV, JSON or .xlsx; contacts are never in it) |
 | `POST /api/alertrules` | admin | an alert rule |
 | `POST /api/alertrules/end` | admin | end an alert rule |
 | `POST /api/drives/thresholds` | admin | a drive threshold |
