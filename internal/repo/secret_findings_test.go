@@ -20,7 +20,10 @@ func TestSecretFindingsOnAStore(t *testing.T) {
 	if dsn == "" {
 		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// 5 minutes: the read of pgvigil.findings below (the joined union, for one instance) takes 47-52 s on the package's
+	// store on an idle box and passed a minute under load (b24p-run1 at :71, b24p-run2c); the test's subject is the
+	// secret finding, not that read's speed
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
