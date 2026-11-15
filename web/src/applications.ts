@@ -9,7 +9,7 @@
 // only when asked, so an export of this page carries them only while they are shown (the page is never mailed). The route and the
 // tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
-import { fleet, inTagScope } from './fleet';
+import { fleet, fleetWideNote, inTagScope, tagWords } from './fleet';
 import { Ctx } from './router';
 import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
 
@@ -109,10 +109,12 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
     const one = openId ? await oneSection(openId) : null;
     if (mine !== seq) return;
     root.replaceChildren(
-      el('h2', {}, 'Applications'),
+      el('h2', {}, 'Applications' + (tag ? ` - ${tagWords(tag)}` : '')),
       el('p', { class: 'meta' }, `${apps.length} application(s); ${un.length} database(s) with none. `,
         'An application is set on a whole server (its databases inherit it) or on one database (its own beats the server\'s); every server it is on carries the tag application:<name>, ',
         'which thresholds, acknowledgements and alert rules may be scoped by. Until the viewer / operator / admin roles exist, any signed-in user may change applications.'),
+      // under a tag folder (TAGALL) the databases are the folder's; the applications and their log are every folder's
+      fleetWideNote(ctx, 'The applications and their change log are one list') ?? '',
       whyNot ? el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${whyNot}.`) : '',
       status,
       // decision E5: an application: tag from pgvigil.yaml (or an older override) is not taken - named, never dropped silently
