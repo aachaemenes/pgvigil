@@ -294,13 +294,15 @@ pass() {
   "$BIN" collect -config "$CFG" -once mssql_requests >"$d/collector.log" 2>&1 || true
   ks_chain_release
   runphase after
-  q "select coalesce((select status || chr(9) || coalesce(note, '') from pgvigil.collection_log where instance_id = $MSID and collection = 'mssql_requests' order by snapshot_at desc limit 1), 'none' || chr(9))" > "$d/collector.tsv"
+  # the run's own status: collection_dates holds every collection's latest run (collection_log only the runs that
+  # were not ok - pgvigil.log_collection, 0001)
+  q "select coalesce((select status || chr(9) || coalesce(note, '') from pgvigil.collection_dates where instance_id = $MSID and collection = 'mssql_requests'), 'none' || chr(9))" > "$d/collector.tsv"
   # no row: the run ended before it could log one (a failed Detect, the instance row, the command itself) - its own
   # last lines are the note (the run's passwords taken out), and the line goes to the job log either way
   if [[ $(cut -f1 "$d/collector.tsv") == none ]]; then
     local why; why=$(tail -n 3 "$d/collector.log" | tr '\n\t' '  ')
     why=${why//"$RPW"/***}; why=${why//"$MSSQL_SA_PASSWORD"/***}
-    printf 'none\tno collection_log row; collect -once said: %s\n' "${why:-nothing}" > "$d/collector.tsv"
+    printf 'none\tno collection_dates row; collect -once said: %s\n' "${why:-nothing}" > "$d/collector.tsv"
   fi
   echo "collector mssql_requests ($label): $(tr '\t' ' ' < "$d/collector.tsv")"
   # the siblings (F3): every other kit procedure revoked from the read login, the tool run with its form's defaults;
@@ -355,7 +357,10 @@ azure = [("sp_LogHunter", "This will not run on Azure SQL DB"), ("sp_IndexCleanu
          ("sp_HealthParser", "This won't work in Azure"), ("sp_QuickieStore", "Not all Azure offerings are supported")]
 for proc, text in azure:
     src = open(os.path.join(os.environ["DEFS"], f"def.src.{proc}.sql"), errors="replace").read() if os.path.exists(os.path.join(os.environ["DEFS"], f"def.src.{proc}.sql")) else ""
+    # the message as the error carries it, or as the source's T-SQL literal writes it (each apostrophe doubled)
     i = src.find(text)
+    if i < 0:
+        i = src.find(text.replace("'", "''"))
     if i < 0:
         out = "absent"
     else:
