@@ -34,6 +34,7 @@
 #      100 MB), over = a note, never a FAIL.
 #  A.  the API: /api/schema on the SQL Server instance has the trace, mssql_dbs and who parts; part=change gives the
 #      procedure's whole before / after with the password masked.
+#  P11. /api/diff in databases mode (a = b, db_a shop, db_b reborn): a schema part comparing the two (Part C).
 #  The first line is 'containers: <SQL Server> <repository>' (a job that kills this script removes exactly those).
 #  The last line is 'proof-mssql-schema: PASS (...)' and exit 0 only when every row holds.
 #  NOT PROVEN HERE: a torn read (unit-tested), the 160 MB fall-back (unit-tested), 3,000 databases' baseline, the
@@ -277,5 +278,11 @@ curl -fs "http://127.0.0.1:$PORT/api/schema?instance=$(iid a26-notrace)&from=$(d
 eq "A: a26-notrace's trace trusted" "$(jq -r '(.trace.columns | index("trusted")) as $i | .trace.rows[0][$i]' "$WORK/nt.json")" false
 ok "A API: the trace, mssql_dbs and changes parts; part=change gives the whole masked text; a26-notrace's trace not trusted"
 
+echo "--- P11. the Diff page's schema compare on SQL Server (Part C)"
+curl -fs "http://127.0.0.1:$PORT/api/diff?a=$(iid a26-full)&b=$(iid a26-full)&db_a=shop&db_b=reborn" > "$WORK/d.json" || fail "P11: GET /api/diff: $(tail -3 "$WORK/serve.log")"
+jq -e '.schema' "$WORK/d.json" >/dev/null || fail "P11: no schema part on SQL Server: $(head -c 300 "$WORK/d.json")"
+grep -q 'dbo.r' "$WORK/d.json" && grep -q 'dbo.Orders' "$WORK/d.json" || fail "P11: the two databases' objects are not compared: $(head -c 300 "$WORK/d.json")"
+ok "P11 the Diff page: shop and reborn compared by their schema objects on SQL Server"
+
 echo "NOT PROVEN: a torn read and the 160 MB fall-back (unit-tested), 3,000 databases' baseline, the Schema tab in a browser (proof-a11y at the join), SQL Server 2016 / 2019, Azure SQL Database"
-echo "proof-mssql-schema: PASS (R0, P1, P2, P7a, P8, P8b, P3, P4, P5, P7b, $B1W, P6, S10, S9, A)"
+echo "proof-mssql-schema: PASS (R0, P1, P2, P7a, P8, P8b, P3, P4, P5, P7b, $B1W, P6, S10, S9, A, P11)"
