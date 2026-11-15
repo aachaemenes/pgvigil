@@ -274,7 +274,20 @@ MIN=$(pq 'min_over_time(up{job="pgvigil"}[90s])')
 kill $TLS 2>/dev/null
 
 echo "== P8 scale"; b0=$bad
+# P8 starts only under a 5-minute load below PROM_LOAD_MAX (8), waited for PROM_LOAD_WAIT s (300): on a loaded box the
+# seed of 1,000 instances outlasts the demo's 30-minute catch-up (2170 s at a load of 25) and the render reads stale
+# data; the demo takes whole days only (-days 1 at least), so a shorter seed is not at hand
+load5() { cut -d' ' -f2 /proc/loadavg; }
+P8GO=1; w0=$(date +%s)
 if [[ ${PROM_SCALE:-1000} -gt 0 ]]; then
+  until awk -v l="$(load5)" -v m="${PROM_LOAD_MAX:-8}" 'BEGIN { exit !(l + 0 < m + 0) }'; do
+    (( $(date +%s) - w0 >= ${PROM_LOAD_WAIT:-300} )) && { P8GO=0; break; }; sleep 15
+  done
+fi
+if [[ ${PROM_SCALE:-1000} -gt 0 && $P8GO == 0 ]]; then
+  echo "NOT PROVEN P8: the box's 5-minute load stayed at ${PROM_LOAD_MAX:-8} or more for ${PROM_LOAD_WAIT:-300} s (now $(load5)): the seed of ${PROM_SCALE:-1000} instances is not started on a loaded box"
+elif [[ ${PROM_SCALE:-1000} -gt 0 ]]; then
+  echo "P8 starts at a 5-minute load of $(load5) (waited $(( $(date +%s) - w0 )) s)"
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB8" >/dev/null || fail "create $DB8"
   t0=$(date +%s); "$BIN" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB8" -days 1 -instances "${PROM_SCALE:-1000}" -workers 16 > "$WORK/demo8.log" 2>&1 || { tail -3 "$WORK/demo8.log"; fail "the scale seed"; }
   echo "seeded ${PROM_SCALE:-1000} instances in $(( $(date +%s) - t0 )) s"
