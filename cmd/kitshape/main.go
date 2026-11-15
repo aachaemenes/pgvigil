@@ -171,7 +171,8 @@ func portFile(dir string, p kits.Port) string {
 	return filepath.Join(dir, filepath.FromSlash(p.Repo), filepath.FromSlash(p.Path))
 }
 
-// ports: each port's block in the newest file (a file not fetched is a line, not a stop)
+// ports: each port's block in the newest file; a file not there is DRIFT 'file gone' (kitwatch.sh leaves a file out
+// only on the fetch's 404, and stops on any other failure), a file there but unreadable stops the command
 func ports(args []string) error {
 	fs := flag.NewFlagSet("ports", flag.ContinueOnError)
 	manifest, dir, out := fs.String("manifest", "", "ports.json"), fs.String("dir", "", "the fetched files"), fs.String("out", "", "the lines file")
@@ -185,9 +186,12 @@ func ports(args []string) error {
 	var lines []kits.Line
 	for _, p := range ps {
 		b, err := os.ReadFile(portFile(*dir, p))
-		if err != nil {
-			lines = append(lines, kits.Line{Class: kits.Info, Tool: p.Name, Kind: "not fetched", What: fmt.Sprintf("port %s (%s): %s/%s was not read: %v", p.Name, p.GoFile, p.Repo, p.Path, err)})
+		if errors.Is(err, os.ErrNotExist) {
+			lines = append(lines, kits.PortFileGone(p)...)
 			continue
+		}
+		if err != nil {
+			return fmt.Errorf("port %s: %w", p.Name, err)
 		}
 		lines = append(lines, kits.ComparePort(p, b)...)
 	}

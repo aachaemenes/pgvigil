@@ -70,6 +70,9 @@ type Run struct {
 	// HardSiblings: the kit procedures without whose EXECUTE the tool's run with the form's defaults fails (F3: found by
 	// revoking every other kit procedure from the read login and running it, then one at a time)
 	HardSiblings []string `json:"hard_siblings,omitempty"`
+	// SiblingsUnknown: why the siblings were not found (the control run - the defaults, every grant - was not done, or
+	// a run of the search timed out): nothing of them is compared, one INFO line says so
+	SiblingsUnknown string `json:"siblings_unknown,omitempty"`
 }
 
 // Line is one difference, keyed by tool, kind and what for 'new since the last run'.

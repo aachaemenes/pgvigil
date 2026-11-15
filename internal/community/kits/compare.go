@@ -25,18 +25,38 @@ func Compare(want, got Run) []Line {
 	default:
 		add(Break, "outcome", "%s -> %s%s", want.Outcome, got.Outcome, strings.TrimSuffix(": "+got.Message, ": "))
 	}
+	// the sets and the columns read by name only when this run's sets are comparable: a timeout or a failed run has
+	// none to speak of (its outcome line says it)
 	if got.Outcome == want.Outcome || got.Outcome == "done" || got.Outcome == "declined" {
-		compareSets(want.Sets, got.Sets, got.AtSetCap, add)
+		compareSets(got.Tool, want.Sets, got.Sets, got.AtSetCap, add)
+		for _, n := range want.ReadByName {
+			if !hasColumn(got.Sets, n) {
+				add(Break, "read by name", "%s, which pgvigil reads by name, is not in the shape", n)
+			}
+		}
 	}
 	if got.AtSetCap {
 		add(Info, "set cap", "the run returned more than pgvigil's 50 result sets: the ones past it were not read")
 	}
-	for _, n := range want.ReadByName {
-		if !hasColumn(got.Sets, n) {
-			add(Break, "read by name", "%s, which pgvigil reads by name, is not in the shape", n)
-		}
-	}
 	compareParams(want, got, add)
+	compareSiblings(want, got, add)
+	if got.Described < want.Described {
+		add(Break, "help", "descriptions %d of %d form parameters (was %d): the help form's cells are not read", got.Described, len(got.FormParams), want.Described)
+	}
+	return out
+}
+
+// compareSiblings: a procedure the tool now fails without is BREAK, one it no longer needs DRIFT - unless either side's
+// search did not finish (SiblingsUnknown): then one INFO line and nothing compared
+func compareSiblings(want, got Run, add func(Class, string, string, ...any)) {
+	switch {
+	case got.SiblingsUnknown != "":
+		add(Info, "siblings unknown", "this run's: %s - not compared", got.SiblingsUnknown)
+		return
+	case want.SiblingsUnknown != "":
+		add(Info, "siblings unknown", "the baseline's: %s - not compared", want.SiblingsUnknown)
+		return
+	}
 	var newSib, goneSib []string
 	for _, x := range got.HardSiblings {
 		if !slices.Contains(want.HardSiblings, x) {
@@ -54,10 +74,6 @@ func Compare(want, got Run) []Line {
 	if len(goneSib) > 0 {
 		add(Drift, "sibling no longer needed", "%s", strings.Join(goneSib, ", "))
 	}
-	if got.Described < want.Described {
-		add(Break, "help", "descriptions %d of %d form parameters (was %d): the help form's cells are not read", got.Described, len(got.FormParams), want.Described)
-	}
-	return out
 }
 
 func hasColumn(sets []Set, name string) bool {
@@ -100,10 +116,10 @@ func colList(s Set) string { return strings.Join(names(s), ", ") }
 // its columns, or at its own place the same set without rows: 'no rows', INFO): a set skipped in got is added (DRIFT),
 // a set of want with no match is removed (BREAK) - unless got was cut before it (a truncated set, the set cap): then
 // the rest is 'unread' (INFO).
-func compareSets(want, got []Set, atCap bool, add func(Class, string, string, ...any)) {
+func compareSets(tool string, want, got []Set, atCap bool, add func(Class, string, string, ...any)) {
 	j := 0
 	for i, w := range want {
-		if j < len(got) && noRows(w, got[j]) {
+		if j < len(got) && noRows(tool, w, got[j]) {
 			if len(got[j].Columns) == 1 {
 				add(Info, "no rows", "set %d came back as its one-column %s set (no rows this run): its columns (%s) not compared", i+1, got[j].Columns[0].Name, colList(w))
 			} else {
@@ -139,20 +155,26 @@ func compareSets(want, got []Set, atCap bool, add func(Class, string, string, ..
 	}
 }
 
-// noRows: a section without rows comes back as one column in place of its columns (sp_HealthParser's finding = 'no
-// queries with significant waits found ...', sp_PressureDetector's THREADPOOL = 'No current THREADPOOL waits'), so
-// its shape follows the data. Checked only at the set's own place in the order: one of the two sets has one column,
-// named in a column of the other (equal or contained, any case), which has three or more.
-func noRows(a, b Set) bool {
+// noRowsPlaceholder: the two tools whose section without rows comes back as one column in place of its columns, and
+// that column's exact name (sp_HealthParser's finding = 'no queries with significant waits found ...',
+// sp_PressureDetector's THREADPOOL = 'No current THREADPOOL waits'): their shape follows the data, not the kit
+var noRowsPlaceholder = map[string]string{"sp_HealthParser": "finding", "sp_PressureDetector": "threadpool"}
+
+// noRows: at the set's own place in the order, for those two tools only, one of the two sets is the tool's one-column
+// placeholder (its exact name, any case) and the other has three or more columns, one of which names it.
+func noRows(tool string, a, b Set) bool {
+	ph, ok := noRowsPlaceholder[tool]
+	if !ok {
+		return false
+	}
 	one, full := a, b
 	if len(one.Columns) != 1 {
 		one, full = b, a
 	}
-	if len(one.Columns) != 1 || len(full.Columns) < 3 {
+	if len(one.Columns) != 1 || len(full.Columns) < 3 || !strings.EqualFold(one.Columns[0].Name, ph) {
 		return false
 	}
-	n := strings.ToLower(one.Columns[0].Name)
-	return n != "" && slices.ContainsFunc(names(full), func(x string) bool { return strings.Contains(x, n) })
+	return slices.ContainsFunc(names(full), func(x string) bool { return strings.Contains(x, ph) })
 }
 
 // compareColumns compares one aligned set's columns by name: removed (BREAK), added (DRIFT), the coarse type (BREAK),
@@ -303,6 +325,12 @@ func (p Port) ItemsOf(block string) []string {
 func Hash(block string) string {
 	h := sha256.Sum256([]byte(block))
 	return hex.EncodeToString(h[:])
+}
+
+// PortFileGone: the port's file is not in the newest kit (the fetch's 404): DRIFT, as an anchor gone - the block moved
+// or went, re-read where (a fetch that failed otherwise stops the run: kitwatch.sh's exit 3)
+func PortFileGone(p Port) []Line {
+	return []Line{{Class: Drift, Tool: p.Name, Kind: "file gone", What: fmt.Sprintf("port %s (%s): %s/%s is gone from the newest kit: re-read where it moved", p.Name, p.GoFile, p.Repo, p.Path)}}
 }
 
 // ComparePort says how the newest file's block differs from the port's (never BREAK: a stale copy does not stop
