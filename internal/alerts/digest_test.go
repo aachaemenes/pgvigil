@@ -153,7 +153,8 @@ func TestChannelDigestAndChecks(t *testing.T) {
 	if _, err := Parse([]byte(strings.Replace(cfg, "%d", "8", 1))); err != nil {
 		t.Errorf("digest_hour 8: %v", err)
 	}
-	pd := "repository: {dsn: env:X}\nalerts:\n  - {name: p, kind: pagerduty, digest_hour: 8, pagerduty: {routing_key: env:K}}\n"
+	t.Setenv("PGV_TEST_DIGEST_PD", "a-routing-key") // the key read at load is not what this test is about
+	pd := "repository: {dsn: env:X}\nalerts:\n  - {name: p, kind: pagerduty, digest_hour: 8, pagerduty: {routing_key: env:PGV_TEST_DIGEST_PD}}\n"
 	if _, err := Parse([]byte(pd)); err == nil || !strings.Contains(err.Error(), "digest_hour") {
 		t.Errorf("a pagerduty digest: %v", err)
 	}
