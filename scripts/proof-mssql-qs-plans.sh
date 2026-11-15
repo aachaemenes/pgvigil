@@ -216,6 +216,9 @@ instances:
     engine: sqlserver
     dsn: env:PGV_Q_MON
     query_text: normalized
+EOF
+# part C's instances only when C runs: their schedules name collections a tree without them refuses (its red is C's own)
+if part C; then cat >> "$TMPD/m.yaml" <<'EOF'
   - name: rpon
     engine: sqlserver
     dsn: env:PGV_Q_MON
@@ -234,6 +237,7 @@ instances:
     schedules:
       mssql_running_plans: 1m
 EOF
+fi
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "A: migrate"; }
 col() { local i=$1; shift; for c in "$@"; do timeout 180 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; fail "collect $i $c"; }; done; }
 col sqlfull mssql_instance mssql_plancache
