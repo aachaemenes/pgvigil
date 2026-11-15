@@ -1,0 +1,31 @@
+# The click-through's expected FAIL rows (scripts/clickthrough-grade.mjs): kind | scope | page | control | why, and the smallest fix and its file
+# Empty before the first run: that run's FAIL rows, by cause, are listed here after it.
+# the third run's review: a read with nothing to see is a FAIL now (it was graded ok), these by cause
+reads | * | ^(drives|dbspace|dbfiles|collectiondates|rp_finder|retention)$ | ^B (Refresh|Search|Preview)$ | a re-read whose rows are the same (Refresh, the finder's Search with its fields as they were, retention's Preview at the age shown): nothing changes and nothing says it read again; fix: a 'read at <time>' line beside the button, or Preview off with words while its age is the one shown (web/src/drives.ts:139 / :340 / :397, web/src/collectiondates.ts:25, web/src/reports.ts:129, web/src/retention.ts:41)
+# a row outside the fifth run, named as a finding (the deadlock Graph)
+reads | ms | ^mssql_deadlocks$ | ^B cell 1$ | the Graph button of the deadlock the page already draws (the newest, opened at load: mssql_deadlocks.ts:163) reads it again and draws the same panel - only the focus moves to it, and nothing says it is the one shown; fix: the open row's Graph button marked aria-current with 'shown below' beside it (web/src/mssql_deadlocks.ts:146) - a finding, built with the deadlock work
+# the second review: a pressed button (aria-pressed) is no longer the current choice; the two that are one choice of a set
+NOTHING | root | ^admin$ | ^B Servers$ | Admin's 'Servers', the tab already shown (a pressed button of the tab set, aria-pressed): its click changes nothing and nothing says it is the one shown; fix: the shown tab marked aria-current (web/src/alerts.ts:728 / :737)
+NOTHING | root | ^alert$ | ^B at the firing$ | the alert page's 'at the firing', the view already shown (pressed, one of 'at the firing' / 'now'): its click changes nothing and nothing says it is the one shown; fix: the shown view marked aria-current (web/src/alert_page.ts:251)
+# must rows: a control the walk must reach, a row of the kinds named, else MISSING and the run fails (the PostgreSQL
+# re-grade's BUILT-NOT-CLICKED rows A22 / G05 and E304)
+must link | pg | ^tree$ | ^tree drive  | a PostgreSQL instance's Storage folder: a node per volume with its used / free bar beside its name, its click lands on the Storage tab (web/src/treemenu.ts:530-560; A22 / G05)
+must link | ms | ^tree$ | ^tree drive  | a SQL Server instance's Storage folder: the same nodes, its click lands on its Storage tab (web/src/treemenu.ts:530-560)
+must dialog | pg | ^pgbackups$ | ^B cell 2$ | the Base backups tab's threshold Change opens the dialog 'Threshold <key>' (web/src/pg_backups.ts:51-125; E304)
+must write held | pg | ^pgbackups$ | ^B cell 2 > dlg B Set$ | the dialog's Set sends POST /api/pg/thresholds, held by the walk (the write itself: proof-pg-backups-roles.sh A3, S9, S11) (E304)
+must disabled | pg | ^pgbackups$ | ^B cell 2 > dlg B Inherit$ | the dialog's Inherit off with its words at a level with no threshold of its own (E304)
+must redraws | pg | ^pgbackups$ | ^B cell 2 > dlg B Back$ | the dialog's Back closes it unsaved (E304)
+must status|disabled | root | ^pgthresholds$ | ^B Set\.\.\.$ | the root Thresholds page's Set...: on the demo refused in words (a change past the demo's instances) (web/src/pg_backups.ts:366-439; E304)
+# the findings build (rel-findings): each control the walk found doing nothing or only reading again is off with its
+# words in that state now (its NOTHING / reads row out of this file: such a row again is NEW); a row's Draw on the strip
+# whose query has no interval in the range says so under the strip (web/src/timestrip.ts stripOverlay's none)
+must disabled | * | .* | ^B Chart menu: .* > menu B Pick series > B All$ | a chart's Pick series 'All' with every series shown: off, 'every series is shown' (web/src/chart.ts); None the same with none shown
+must disabled | * | .* | menu B Columns\.\.\. > B Show every column$ | the grid's Columns... 'Show every column' with none hidden: off, 'every column is shown' (web/src/gridtools.ts)
+must disabled | * | .* | menu B Columns\.\.\. > B Reset this grid$ | 'Reset this grid' with nothing changed: off, 'nothing in this grid is changed from its default' (web/src/gridtools.ts)
+must disabled | * | ^statements$ | ^B Reset all$ | the statements filter's 'Reset all' with no filter set: off, 'no filter is set: nothing to reset' (web/src/stmt_filter.ts)
+# the findings review's fold (review-13 should 4): Activity's Latest is off ('this is the newest snapshot: the page follows it')
+# only while auto refresh is on; the walk pauses it in every document (clickthrough.mjs), and paused Latest reads the
+# newest again (a hashchange on the same address) - with no newer snapshot that is a re-read with the same rows
+reads | * | ^activity$ | ^B Latest$ | Activity's 'Latest' with auto refresh 'Off (paused)' (the walk's state): it reads the newest snapshot again, the same rows when none is newer; off with its words only while auto refresh is on (web/src/running.ts, review-13 should 4)
+must disabled | root | ^diff$ | ^B Compare$ | Diff's 'Compare' while a pick is missing: off, the hint its reason ('Pick instance A.') (web/src/diff.ts)
+must disabled | ms | ^mssql_running$ | ^B (Later|Latest)$ | 'Later' and 'Latest' at the newest snapshot: off, 'this is the newest snapshot' (web/src/mssql_running.ts)

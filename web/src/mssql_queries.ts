@@ -268,7 +268,8 @@ export async function qsOverlay(ctx: Ctx, strip: HTMLElement, row: Row): Promise
   const win = window_(ctx);
   const d = await get<{ series: Table | null }>('mssql/querystore/query', { instance: ctx.instance, ...win, db: text(row.database_name), query: text(row.query_id), hash: text(row.query_hash) });
   const pts = rowsOf(d.series).map(r => ({ t: Date.parse(text(r.snapshot_at)), v: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms) }));
-  stripOverlay(strip, Date.parse(win.from), Date.parse(win.to), pts, `The line: query ${text(row.query_id)} of ${text(row.database_name)}, its average duration per interval (every plan).`);
+  stripOverlay(strip, Date.parse(win.from), Date.parse(win.to), pts, `The line: query ${text(row.query_id)} of ${text(row.database_name)}, its average duration per interval (every plan).`,
+    `Query ${text(row.query_id)} of ${text(row.database_name)} has no interval in this range: no line to draw.`);
 }
 
 // ---- the page

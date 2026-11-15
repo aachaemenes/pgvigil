@@ -180,6 +180,12 @@ export function foldedGrid(f: Fold): HTMLElement {
 
 // ---- the snapshot row: Earlier, the time, Later, Latest, and the picker
 
+// refreshPaused: the auto refresh set to 'Off (paused)' in this browser (main.ts refreshSecs reads the same key: a value
+// of 0 pauses, anything else refreshes)
+function refreshPaused(): boolean {
+  try { return Number(localStorage.getItem('pgvigil.refresh') ?? '30') === 0; } catch { return false; }
+}
+
 // unread: the snapshot list could not be read (Earlier and Later are then off for THAT reason, not for 'none')
 interface Steps { shown?: unknown; earlier?: unknown; later?: unknown; latest?: unknown; unread?: boolean }
 
@@ -198,8 +204,14 @@ function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElemen
   // under a custom range the page shows the range's end: Latest returns to a range that follows now
   const latest = el('button', { type: 'button', title: isLive(ctx) ? 'The newest snapshot' : 'The newest snapshot (switches the range to the last hour)' }, 'Latest');
   latest.addEventListener('click', () => {
-    location.hash = isLive(ctx) ? href(ctx, { tab: TAB, at: undefined }) : href(ctx, { tab: TAB, at: undefined, range: { preset: '1h' } });
+    const h = isLive(ctx) ? href(ctx, { tab: TAB, at: undefined }) : href(ctx, { tab: TAB, at: undefined, range: { preset: '1h' } });
+    // the same address (auto refresh paused on the newest): the page reads the newest again (only a hashchange redraws)
+    if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange')); else location.hash = h;
   });
+  // no snapshot picked under a range that follows now, auto refresh on: the page shows the newest and keeps to it, so
+  // Latest would change nothing - off with that reason beside it (the walk's NOTHING row); with auto refresh 'Off
+  // (paused)' the page does not follow, and Latest reads the newest again
+  if (!ctx.at && isLive(ctx) && !refreshPaused()) offBeside(latest, 'this is the newest snapshot: the page follows it');
   const newest = steps.shown != null && steps.shown === steps.latest;
   const hist = ctx.at ? 'history: auto refresh off' : at ? 'the end of the custom range: auto refresh off' : '';
   return el('div', { class: 'picker' },

@@ -13,7 +13,7 @@
 // header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event with the
 // menu's items before it shows them, and the tools add theirs.
 import { Cell, Kind, Status, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, statusOf, typed } from './export';
-import { cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel } from './ui';
+import { cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, offControl } from './ui';
 
 type Item = [string, () => void];
 interface MenuDetail { table?: HTMLTableElement; td?: Element | null; items?: Item[] }
@@ -26,6 +26,8 @@ interface Grouping { col: string; agg: Agg; box: HTMLElement }
 const MAX_COLS = 80, FREEZE_POS = 24, MAX_FROZEN = 12;
 const groupings = new WeakMap<HTMLTableElement, Grouping>();   // a grouped grid's panel
 const panels = new WeakMap<HTMLTableElement, HTMLElement>();   // a grid's open chooser
+const panelBacks = new WeakMap<HTMLTableElement, HTMLElement | null>();   // where an open chooser's Close sends the focus
+const panelStates = new WeakMap<HTMLTableElement, () => void>();   // an open chooser's read of its off buttons
 const anchors = new WeakMap<HTMLTableElement, HTMLTableCellElement>();   // the cell a Shift+click measures from
 // by the grid's key, so they hold when the page draws the grid again: the choices of a browser that keeps nothing,
 // the grouping, the open chooser
@@ -198,6 +200,7 @@ function line(t: HTMLTableElement): HTMLElement {
 const picked = (t: HTMLTableElement) => [...t.querySelectorAll<HTMLTableCellElement>(':scope > tbody > tr > td.gt-sel')];
 const colOf = (td: Element) => [...td.parentElement!.children].indexOf(td);
 function stats(t: HTMLTableElement) {
+  if (panels.get(t)?.isConnected) panelStates.get(t)?.();   // the selection changed: an open chooser's Reset reads it
   const sel = picked(t);
   if (!sel.length) { const had = lineOf(t); if (had) had.textContent = ''; return; }
   const p = line(t);
@@ -366,7 +369,7 @@ function group(t: HTMLTableElement, col: string | null, agg: Agg = groupings.get
   for (const [v, l] of [['sum', 'sum'], ['avg', 'average'], ['min', 'min'], ['max', 'max']]) pick.append(el('option', v === agg ? { value: v, selected: '' } : { value: v }, l));
   pick.addEventListener('change', () => { group(t, col, pick.value as Agg); (groupings.get(t)?.box.querySelector('select') as HTMLElement | null)?.focus(); });
   const off = el('button', { type: 'button', class: 'link' }, 'Ungroup');
-  off.addEventListener('click', () => { group(t, null); (wrapOf(t) as HTMLElement).focus?.(); });
+  off.addEventListener('click', () => { group(t, null); redrawPanel(t); (wrapOf(t) as HTMLElement).focus?.(); });
   const table = el('table', { class: 'gt-table' },
     el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, ns[at]), el('th', { scope: 'col', class: 'num' }, 'rows'), ...numCols.map(j => el('th', { scope: 'col', class: 'num' }, `${ns[j]} (${agg})`)))),
     el('tbody', {}, ...[...groups.entries()].sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0])).map(([key, x]) =>
@@ -380,6 +383,12 @@ function group(t: HTMLTableElement, col: string | null, agg: Agg = groupings.get
 }
 
 // ---- the chooser ---------------------------------------------------------------------------------------------
+
+// redrawPanel: a choice made outside an open chooser (the grid's menu, the group box's Ungroup) draws it again from
+// what is kept, so its ticks and its off buttons say what is now true; the focus stays where it is
+function redrawPanel(t: HTMLTableElement) {
+  if (panels.get(t)?.isConnected) chooser(t, panelBacks.get(t) ?? null, false);
+}
 
 // chooser: the panel with every tool of a grid: each column's tick, its data bars, the frozen columns, the group-by,
 // a column's cells for the selection line. back: where the focus returns on Close; focus false = drawn again after
@@ -429,12 +438,28 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const done = el('button', { type: 'button' }, 'Close');
   done.addEventListener('click', close);
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
+  // Show every column with none hidden, Reset this grid with nothing changed from its default: a click would change
+  // nothing - each off with its reason, read again on every change in the panel (the walk's NOTHING rows)
+  const offNote = el('span', { class: 'off-reason' });
+  const offState = () => {
+    const noneHidden = hidden.size === 0;
+    const plain = noneHidden && barsOn.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0;
+    const why = [noneHidden ? 'every column is shown' : '', plain ? 'nothing in this grid is changed from its default' : ''].filter(Boolean);
+    offNote.textContent = why.join('; ');
+    offControl(all, noneHidden ? 'every column is shown' : null, offNote);
+    offControl(reset, plain ? 'nothing in this grid is changed from its default' : null, offNote);
+  };
+  box.addEventListener('change', offState);
+  all.addEventListener('click', offState);
+  offState();
   box.append(el('p', { class: 'meta' }, 'Columns of this grid: shown when ticked. The choice is kept in this browser.'), list,
     el('p', {}, el('label', {}, 'Freeze the first ', freeze, ' column(s)'), ' ', el('label', {}, 'Group by ', by), ' ', el('label', {}, 'Sum the cells of ', sum)),
-    el('p', {}, all, ' ', reset, ' ', done));
+    el('p', {}, all, ' ', reset, ' ', done, ' ', offNote));
   const host = boxOf(t);
   if (host.classList.contains('grid-box')) host.insertBefore(box, host.firstChild); else host.before(box);
   panels.set(t, box);
+  panelBacks.set(t, back);
+  panelStates.set(t, offState);
   openPanels.add(k);
   if (focus) (box.querySelector('input') as HTMLElement | null)?.focus();
 }
@@ -457,18 +482,20 @@ export function menuItems(t: HTMLTableElement, td: Element | null, back: HTMLEle
     [`Copy ${what} as Markdown`, () => { const s = shown(t); void copyText((mark ? mark.replace(/[\\|*_`<[\]]/g, '\\$&') + '\n\n' : '') + toMarkdown(s)).then(said(t, `${s.rows.length} rows as Markdown`)); }],
     [`Copy ${what} as HTML with the colours`, () => { const s = shown(t); void copyHtml(s, mark).then(said(t, `${s.rows.length} rows as HTML`)); }],
   ];
+  // a change from the menu while the chooser is open draws the chooser again (its ticks and its off buttons)
+  const then = (f: () => void) => () => { f(); redrawPanel(t); };
   if (n !== undefined) {
-    if (visible > 1) items.push([`Hide column ${n}`, () => save(t, { ...p, hidden: [...new Set([...p.hidden, n])] })]);
+    if (visible > 1) items.push([`Hide column ${n}`, then(() => save(t, { ...p, hidden: [...new Set([...p.hidden, n])] }))]);
     const upTo = hs.slice(0, j + 1).filter(h => !h.hasAttribute('data-gt-hidden')).length;
-    if (j < FREEZE_POS && upTo <= MAX_FROZEN && upTo < visible && frozen !== upTo) items.push([`Freeze the columns up to ${n}`, () => save(t, { ...p, frozen: upTo })]);
-    if (groupings.get(t)?.col !== n) items.push([`Group by ${n}`, () => group(t, n)]);
+    if (j < FREEZE_POS && upTo <= MAX_FROZEN && upTo < visible && frozen !== upTo) items.push([`Freeze the columns up to ${n}`, then(() => save(t, { ...p, frozen: upTo }))]);
+    if (groupings.get(t)?.col !== n) items.push([`Group by ${n}`, then(() => group(t, n))]);
     if (hs[j].classList.contains('num')) {
       const on = barred.has(n);
-      items.push([on ? `No data bars on ${n}` : `Data bars on ${n}`, () => save(t, { ...p, bars: on ? p.bars.filter(x => x !== n) : [...p.bars, n] })]);
+      items.push([on ? `No data bars on ${n}` : `Data bars on ${n}`, then(() => save(t, { ...p, bars: on ? p.bars.filter(x => x !== n) : [...p.bars, n] }))]);
     }
   }
-  if (frozen) items.push(['Unfreeze the columns', () => save(t, { ...p, frozen: 0 })]);
-  if (groupings.has(t)) items.push(['Ungroup', () => group(t, null)]);
+  if (frozen) items.push(['Unfreeze the columns', then(() => save(t, { ...p, frozen: 0 }))]);
+  if (groupings.has(t)) items.push(['Ungroup', then(() => group(t, null))]);
   if (sel) items.push(['Clear the selection', () => clear(t)]);
   items.push(['Columns...', () => chooser(t, back)]);
   return items;

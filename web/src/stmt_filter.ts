@@ -9,6 +9,7 @@ import { Row, rowsOf, Table } from './api';
 import { LoginRequired } from './api';
 import { Ctx, window_ } from './router';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
+import { offBeside } from './ack';
 import { sqlCell } from './sqlview';
 
 export const groupKinds: [string, string][] = [['query', 'statement'], ['db', 'database'], ['user', 'user'], ['client', 'client host']];
@@ -90,6 +91,8 @@ function facetPanel(facets: Row[]): HTMLElement {
   const box = el('div', { class: 'facets', role: 'group', 'aria-label': 'Filter the statements', style: 'flex:0 0 17rem;max-width:100%;border:1px solid var(--line);background:var(--card);padding:.6rem;border-radius:6px' });
   const reset = el('button', { type: 'button', class: 'link' }, 'Reset all');
   reset.addEventListener('click', () => setHash(q => { for (const [, p] of dims) q.delete(p); }));
+  // nothing ticked: a click would change nothing - off with that reason beside it (the walk's NOTHING row)
+  if (!Object.keys(ticks).length) offBeside(reset, 'no filter is set: nothing to reset');
   box.append(el('div', { style: 'display:flex;justify-content:space-between;align-items:baseline' }, el('strong', {}, 'Filters'), reset));
   for (const [dim, param, label] of dims) {
     const vals = facets.filter(f => f.dim === dim);

@@ -1,7 +1,7 @@
 import uPlot from 'uplot';
 import { get, Row, rowsOf, Table } from './api';
 import { href, MAX_RANGE_MS, parse, window_ } from './router';
-import { copyText, el, readWindowWords, saveBlob, showMenu } from './ui';
+import { copyText, el, offControl, readWindowWords, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
 import type { ChartNumbers, PictureBox } from './export_chart';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
@@ -545,9 +545,33 @@ function pickSeries(box: HTMLElement, u: uPlot, back: HTMLElement) {
   };
   const bAll = el('button', { type: 'button' }, 'All'), bNone = el('button', { type: 'button' }, 'None'), done = el('button', { type: 'button' }, 'Done');
   bAll.addEventListener('click', all(true)); bNone.addEventListener('click', all(false));
+  // All with every series shown, None with none shown: a click would change nothing - each off with its reason, read
+  // from the chart's own series (the legend shows and hides them too) after every tick, All / None and legend click
+  // (the walk's NOTHING rows)
+  const pickNote = el('span', { class: 'off-reason' });
+  const offState = () => {
+    const n = u.series.length - 1, on = u.series.slice(1).filter(s => s.show).length;
+    pickNote.textContent = on === n ? 'every series is shown' : on === 0 ? 'no series is shown' : '';
+    offControl(bAll, on === n ? 'every series is shown' : null, pickNote);
+    offControl(bNone, on === 0 ? 'no series is shown' : null, pickNote);
+  };
+  ticks.forEach(t => t.querySelector('input')?.addEventListener('change', offState));
+  bAll.addEventListener('click', offState); bNone.addEventListener('click', offState);
+  offState();
   const panel = el('fieldset', { class: 'chart-pick', style: 'margin:.3rem 0;display:flex;flex-wrap:wrap;gap:.2rem .8rem;align-items:center' },
-    el('legend', {}, 'Series shown'), ...ticks, el('span', {}, bAll, ' ', bNone, ' ', done));
-  const close = () => { panel.remove(); back.focus(); };
+    el('legend', {}, 'Series shown'), ...ticks, el('span', {}, bAll, ' ', bNone, ' ', done, ' ', pickNote));
+  // the legend's click (one series on / off) and double-click (that series alone, isolateOnDoubleClick) run first on
+  // the legend's row; here, after them, the ticks and the off buttons follow the series - while this panel is open
+  const legendWatch = new AbortController();
+  const fromLegend = () => {
+    if (!panel.isConnected) { legendWatch.abort(); return; }
+    ticks.forEach((t, k) => { (t.querySelector('input') as HTMLInputElement).checked = !!u.series[k + 1].show; });
+    offState();
+  };
+  const legend = u.root.querySelector('.u-legend');
+  legend?.addEventListener('click', fromLegend, { signal: legendWatch.signal });
+  legend?.addEventListener('dblclick', fromLegend, { signal: legendWatch.signal });
+  const close = () => { legendWatch.abort(); panel.remove(); back.focus(); };
   done.addEventListener('click', close);
   panel.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
   box.querySelector('h3')?.after(panel);

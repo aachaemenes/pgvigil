@@ -177,6 +177,9 @@ export function timeStrip(title: string, t0: number, t1: number, times: number[]
     el('div', { class: 'strip-head' }, el('b', {}, title), said, whole, asRange),
     ...(note ? [el('p', { class: 'meta strip-note' }, note)] : []),
     band,
+    // stripOverlay's 'none' words: a status line there from the start and empty, so a screen reader says the words
+    // when they are set into it
+    el('div', { class: 'meta strip-overlay-say', role: 'status' }),
     el('div', { class: 'strip-ends meta', 'aria-hidden': 'true' }, el('span', {}, at(t0, t1)), el('span', {}, at(t1, t0))));
 }
 
@@ -197,13 +200,20 @@ export function rereadStrip(title: string, win: { from: string; to: string }, po
 // stripOverlay: one row's own measure drawn as a line over a strip's band (PerformanceMonitor's row overlay over its time
 // slicer, server-tabs.js:1146-1150), scaled to its own largest point; an empty list takes the line away. The line is a
 // picture of what the row's own chart and grid say in numbers: hidden from a screen reader, which reads label instead.
-export function stripOverlay(strip: HTMLElement, t0: number, t1: number, points: { t: number; v: number | null }[], label: string): void {
+// none: the words under the strip when the row has no point in the range (no line is drawn; without them a click on the
+// row's Draw took the old line away and said nothing - the walk's Draw finding)
+export function stripOverlay(strip: HTMLElement, t0: number, t1: number, points: { t: number; v: number | null }[], label: string, none?: string): void {
   const band = strip.querySelector<HTMLElement>('.strip-band');
   if (!band) return;
   band.querySelector('svg.strip-overlay')?.remove();
   strip.querySelector('.strip-overlay-note')?.remove();
+  const say = strip.querySelector<HTMLElement>('.strip-overlay-say');   // timeStrip's empty status line (none: a strip of another maker)
+  if (say) say.textContent = '';
   const pts = points.filter(p => p.v != null && p.t >= t0 && p.t <= t1);
-  if (!pts.length || !(t1 > t0)) return;
+  if (!pts.length || !(t1 > t0)) {
+    if (none) { if (say) say.textContent = none; else band.after(el('p', { class: 'meta strip-overlay-note', role: 'status' }, none)); }
+    return;
+  }
   const top = Math.max(...pts.map(p => Number(p.v))) || 1;
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
