@@ -14,7 +14,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
-import { fleet, inTagScope, notReadYet, tagsOf, tagWords } from './fleet';
+import { fleet, fleetWideNote, folderWords, inTagScope, notReadYet, tagsOf, tagWords, writtenTag } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
 import { fromInput, toInput } from './tz';
@@ -179,7 +179,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   if (tagIds) sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(ctx.tag!)} - the open alerts, their history, the held sends and the send log of its ${tagIds.size} instance(s), and those of no instance (the collector, the repository) as in every folder. The channels, silenced servers and blackouts, mute rules, known patterns, send tests and the acknowledge log are the whole repository's.`));
   // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
   sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
-    el('a', { href: href(ctx, { tab: 'alertrules', tag: undefined }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
+    el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
   sec.append(el('h3', {}, 'Channels'),
     grid(chans, channelCols(ad, redraw), 'No channel recorded: the alert sender has not run with a channel configured.'));
   sec.append(el('h3', {}, 'Open alerts'));
@@ -661,15 +661,25 @@ const builtIn: Row[] = [
   { finding: 'server unreachable', engine: 'both', warning: '', critical: 'the newest read could not connect or log in', from: 'Server Unreachable (ConnectionAlertPolicy)' },
 ];
 export async function adminView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', { class: 'admin' }, el('h2', {}, 'Admin'),
+  // under a tag folder (TAGALL): the servers, alert settings, overrides and server actions of the folder's instances - a
+  // rule is the folder's when it covers one of them (every instance's, a tag one of them carries, an instance's own)
+  const scoped = ctx.tag && !ctx.instance ? ctx.tag : undefined;
+  const folder = async () => {
+    const mine = (await fleet()).instances.filter(r => !scoped || inTagScope(scoped, r));
+    return { mine, ids: new Set(mine.map(r => Number(r.instance_id))), tags: new Set([...mine.flatMap(tagsOf), ...(writtenTag(scoped) ? [scoped!] : [])]) };
+  };
+  const ruleIn = (f: { ids: Set<number>; tags: Set<string> }, r: Row) => !scoped || r.scope === 'fleet'
+    || (r.scope === 'tag' && f.tags.has(String(r.tag))) || (r.scope === 'instance' && f.ids.has(Number(r.instance_id)));
+  const sec = el('section', { class: 'admin' }, el('h2', {}, 'Admin' + (scoped ? ` - ${tagWords(scoped)}` : '')),
     el('p', { class: 'meta' }, 'What this pgvigil runs with, read only: the configuration file (pgvigil.yaml) and ', el('a', { href: href(ctx, { tab: 'admin_instances', instance: undefined }) }, 'Admin > Instances'), ' are the sources of the servers (a page change applies within 15 seconds, a file change takes a reload of the service); the configuration file is the source of the notification channels and the action switches; the alert rules and their overrides are written on ',
       el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), '; acknowledgements, mutes and channel tests on ', el('a', { href: href(ctx, { tab: 'alerts', instance: undefined }) }, 'Alerts'), '.'));
+  if (scoped) sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(scoped)} - the servers, the alert settings, the overrides and the server actions of its instances.`));
   const tabs: [string, string, () => Promise<HTMLElement>][] = [
     ['servers', 'Servers', async () => {
-      const insts = (await fleet()).instances;
+      const insts = (await folder()).mine;
       const want = ['name', 'engine', 'platform', 'server_version', 'is_replica', 'tags', 'last_seen', 'collections_failing'];
       const keys = want.filter(k => insts.some(r => k in r));
-      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each named in pgvigil.yaml (instances:) and read by the collector at least once (a server of the file never reached is listed after its first read), or added on Admin > Instances (listed from its add: 'not read yet' until a read connects); last seen and the collections failing now.`),
+      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) ${scoped ? `in ${folderWords(scoped)}` : 'in the repository'}: each named in pgvigil.yaml (instances:) and read by the collector at least once (a server of the file never reached is listed after its first read), or added on Admin > Instances (listed from its add: 'not read yet' until a read connects); last seen and the collections failing now.`),
         grid(insts, keys.map(k => ({ key: k, ...(k === 'name' ? { fmt: (v: unknown, r: Row) => el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id) }) }, String(v)) } : {}),
           ...(k === 'last_seen' ? { label: 'last seen', fmt: (v: unknown, r: Row) => notReadYet(r) || fmtTime(v) } : {}), ...(k === 'collections_failing' ? { label: 'collections failing', num: true } : {}),
           ...(k === 'is_replica' ? { label: 'replica', fmt: (v: unknown) => v ? 'yes' : '' } : {}),
@@ -682,6 +692,7 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
       const gone = all.length - rows.length;
       const cols = ['name', 'kind', 'destination', 'min_severity', 'instances', 'tags', 'quiet_hours', 'repeat_secs', 'recovery', 'open_alerts', 'last_outcome', 'last_error'];
       return el('div', {}, el('p', { class: 'meta' }, `${rows.length} channel(s) (the configuration's alerts:): where each alert goes, from which severity, and for which instances.${gone ? ` ${gone} channel(s) no longer in the configuration are left out (Alerts lists them).` : ''}`),
+        fleetWideNote(ctx, 'The notification routes are one list') ?? '',
         grid(rows, cols.map(k => ({ key: k, ...(/destination|instances|tags|last_error/.test(k) ? { wide: true } : {}), ...(k === 'min_severity' ? { label: 'from severity' } : {}),
           ...(k === 'repeat_secs' ? { label: 'repeat (s)', num: true } : {}), ...(k === 'open_alerts' ? { label: 'open alerts', num: true } : {}),
           ...(k === 'recovery' ? { fmt: (v: unknown) => v ? 'on' : 'off' } : {}), ...(/instances|tags/.test(k) ? { fmt: (v: unknown) => Array.isArray(v) ? (v.length ? v.join(', ') : 'all') : String(v ?? '') } : {}) })),
@@ -689,15 +700,18 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
     }],
     ['settings', 'Alert settings', async () => {
       const d = await get<{ rules?: Table | null; inforce?: Table | null; sender?: Table | null }>('alertrules', window_(ctx));
-      const on = rowsOf(d.rules).filter(r => r.live && r.enabled);
+      const f = scoped ? await folder() : null;
+      const on = rowsOf(d.rules).filter(r => r.live && r.enabled && (!f || ruleIn(f, r)));
+      const inforce = rowsOf(d.inforce).filter(r => !f || f.ids.has(Number(r.instance_id)));
       const noChannel = Number(rowsOf(d.sender)[0]?.channels ?? 0) === 0;
       return el('div', {},
-        on.length ? el('p', { class: 'will-alert' }, willAlert(on, r => String(r.name ?? `${String(r.family_label ?? '')}: ${String(r.label ?? r.metric)}`), noChannel)) : el('p', { class: 'meta' }, 'No alert rule is switched on.'),
+        on.length ? el('p', { class: 'will-alert' }, willAlert(on, r => String(r.name ?? `${String(r.family_label ?? '')}: ${String(r.label ?? r.metric)}`), noChannel))
+          : el('p', { class: 'meta' }, scoped ? `No alert rule that covers an instance of ${tagWords(scoped)} is switched on.` : 'No alert rule is switched on.'),
         el('h3', {}, 'Built-in thresholds (PerformanceMonitor\'s defaults)'),
         grid(builtIn, [{ key: 'finding' }, { key: 'engine' }, { key: 'warning' }, { key: 'critical' }, { key: 'from', label: 'PerformanceMonitor\'s setting', wide: true }]),
         el('h3', {}, 'Thresholds in force per instance'),
-        rowsOf(d.inforce).length > 500 ? el('p', { class: 'meta' }, `The first 500 of ${rowsOf(d.inforce).length} rows; Alert rules lists them all.`) : '',
-        grid(rowsOf(d.inforce).slice(0, 500), Object.keys(rowsOf(d.inforce)[0] ?? {}).filter(k => !k.startsWith('_') && k !== 'tags').slice(0, 9).map(k => ({ key: k })), 'No threshold in force.'));
+        inforce.length > 500 ? el('p', { class: 'meta' }, `The first 500 of ${inforce.length} rows; Alert rules lists them all.`) : '',
+        grid(inforce.slice(0, 500), Object.keys(rowsOf(d.inforce)[0] ?? {}).filter(k => !k.startsWith('_') && k !== 'tags').slice(0, 9).map(k => ({ key: k })), 'No threshold in force.'));
     }],
     ['overrides', 'Threshold overrides', async () => {
       const d = await get<{ rules?: Table | null }>('alertrules', window_(ctx));
@@ -711,15 +725,16 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
         const tag = r.scope === 'instance' ? live.find(w => w.scope === 'tag' && same(w, r) && tags.includes(String(w.tag))) : undefined;
         return tag ? `tag rule ${String(tag.rule_id)}${wide ? ` and fleet rule ${String(wide.rule_id)}` : ''}` : wide ? `fleet rule ${String(wide.rule_id)}` : 'none (no wider rule on this metric: a rule of its own scope)';
       };
-      const rows = live.filter(r => r.scope !== 'fleet');
+      const f = scoped ? await folder() : null;
+      const rows = live.filter(r => r.scope !== 'fleet' && (!f || ruleIn(f, r)));
       return el('div', {}, el('p', { class: 'meta' }, 'A tag or an instance rule overrides a fleet rule on the same metric (an instance rule over a tag rule): made and edited on ',
         el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), ' (its Thresholds in force line opens an override).'),
         grid(rows, [{ key: 'rule_id', label: 'rule', num: true }, { key: 'metric', fmt: (v, r) => `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` },
           { key: 'scope', label: 'covers', fmt: (v, r) => scopeWords(v, r.tag ?? r.instance_name) }, { key: 'op', label: 'alert when', fmt: (_v, r) => conditionWords(r) },
-          { key: 'enabled', label: 'on', fmt: v => v ? 'on' : 'off' }, { key: 'overrides', fmt: (_v, r) => over(r) }], 'No override: every live rule covers the fleet.'));
+          { key: 'enabled', label: 'on', fmt: v => v ? 'on' : 'off' }, { key: 'overrides', fmt: (_v, r) => over(r) }], scoped ? `No override covers an instance of ${tagWords(scoped)}.` : 'No override: every live rule covers the fleet.'));
     }],
     ['actions', 'Server actions', async () => {
-      const ms = (await fleet()).instances.filter(r => r.engine === 'sqlserver');
+      const ms = (await folder()).mine.filter(r => r.engine === 'sqlserver');
       const rows: Row[] = [];
       for (let i = 0; i < ms.length; i += 8) {      // eight at a time: a large fleet in a few round trips, the server not flooded
         const part = ms.slice(i, i + 8);

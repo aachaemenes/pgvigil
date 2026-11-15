@@ -7,6 +7,7 @@
 // takes a change within 15 s, without a restart. The route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
+import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
 import { moveSection } from './migrate';
 
@@ -62,8 +63,12 @@ const platOpts = (engine: string): [string, string][] => engine === 'sqlserver'
   ? [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['azuresqldb', 'Azure SQL Database'], ['azuresqlmi', 'Azure SQL Managed Instance'], ['cloudsql', 'Google Cloud SQL']]
   : [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['aurora', 'Aurora'], ['azure', 'Azure'], ['cloudsql', 'Cloud SQL'], ['alloydb', 'AlloyDB']];
 
-export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
+export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   const root = el('section', { class: 'admin-instances' });
+  // under a tag folder (TAGALL): the instances of the folder, as the tree reads its tags (a collected instance's tags, else
+  // the row's own), and an Add that starts with the folder's tag when it is a written one
+  const scoped = ctx.tag && !ctx.instance ? ctx.tag : undefined;
+  const newTag = writtenTag(scoped) ?? '';
   // task 206: Move from DBA Dash (migrate.ts) reads and redraws itself; one node kept across this page's redraws, told
   // to read again after each of this page's writes, and redrawing this page after an add of its own
   const moves = moveSection(() => { void draw(); });
@@ -73,13 +78,23 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
-    const page = rowsOf(d.page), file = rowsOf(d.file), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
+    let inFolder: (r: Row) => boolean = () => true;
+    if (scoped) {
+      const f = await fleet().catch((e: unknown) => { throw new Error(`the instances of ${tagWords(scoped)} could not be read: ${e instanceof Error ? e.message : String(e)}`); });
+      const live = new Map(f.instances.map(r => [String(r.name), r]));
+      inFolder = r => inTagScope(scoped, live.get(String(r.name)) ?? { tags: String(r.tags ?? '').split(/\s+/).filter(Boolean) });
+    }
+    const pageAll = rowsOf(d.page), fileAll = rowsOf(d.file);
+    const page = pageAll.filter(inFolder), file = fileAll.filter(inFolder), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
     whyNot = d.writable ? '' : String(d.why_not ?? '');
     root.replaceChildren(
-      el('h2', {}, 'Instances'),
+      el('h2', {}, 'Instances' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
         'A change reaches the collector within 15 seconds, without a restart (inventory generation ', String(d.generation), '). ',
         d.secret_dir ? `Credentials are written to their own files in ${d.secret_dir}; the repository keeps only each file's name.` : ''),
+      scoped ? el('p', { class: 'meta' }, `In view: ${tagWords(scoped)} - the instances added here and those of pgvigil.yaml that are in the folder.`
+        + (pageAll.length + fileAll.length > page.length + file.length ? ` Not listed here: ${pageAll.length + fileAll.length - page.length - file.length} instance(s) of other folders (All instances lists them).` : '')) : '',
+      fleetWideNote(ctx, 'The sync sources, the proposed servers, the moves of imported servers and the change log are one list') ?? '',
       // read only on this server: a note, not an error (the page works; the join's w9c)
       d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
       status,
@@ -154,7 +169,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     const host = input('host', { required: '' }), port = input('port', { inputmode: 'numeric', size: '6' }), dbname = input('dbname');
     const auth = select('auth', authOpts('postgres')), platform = select('platform', platOpts('postgres'));
     const login = input('login'), password = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
-    const options = input('options', { placeholder: 'e.g. TrustServerCertificate=true or sslmode=require' }), tags = input('tags', { placeholder: 'env:prod team:billing' });
+    const options = input('options', { placeholder: 'e.g. TrustServerCertificate=true or sslmode=require' }), tags = input('tags', { placeholder: 'env:prod team:billing', ...(newTag ? { value: newTag } : {}) });
     const legend = el('legend', {}, 'Add an instance');
     const submit = el('button', { type: 'submit' }, 'Add'), test = el('button', { type: 'button' }, 'Test the connection'), cancel = el('button', { type: 'button', hidden: '' }, 'Cancel the edit');
     engine.addEventListener('change', () => { auth.replaceChildren(...authOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); platform.replaceChildren(...platOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); });

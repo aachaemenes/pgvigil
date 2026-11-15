@@ -612,6 +612,162 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
   }
 }
 
+// TAGALL (a tag folder holds every page the root holds): every page a folder of 'All instances' lists (its caret key r/<group>) is listed by the tag folder's folder of the
+// same group (t:<folder>/<group>), each link carrying tag=<tag>, and the tag's main strip carries every page of the root's
+// main strip; the tag holds both engines (`tag` above), so no page is excused by its engine. One row per page missing.
+{
+  const sc = `tag ${tag}`;
+  // a folder's pages by the tab of every link under it (a nested Custom reports folder counts as its tab), opened when closed
+  const folderTabs = (keyRe, topLink) => ev(`(async () => {
+    const want = ${JSON.stringify(topLink)};
+    const scopeBox = () => want ? [...document.querySelectorAll('#tree .folder')].find(f => [...f.querySelectorAll(':scope > .folder-head a')].some(a => ((a.getAttribute('href') || '').split('?')[1] || '').split('&').includes(want))) : document.querySelector('#tree');
+    // the tree draws after the page: wait for it (10 s)
+    for (let i = 0; i < 50 && !(scopeBox()?.querySelector('button.caret')); i++) await new Promise(r => setTimeout(r, 200));
+    // the top-level group folders only, on both sides: the root's 'r/<group>', the tag folder's 't:<its path>/<group>'
+    // (tree.ts: its caret 'f:<path>', its groups at depth 0 only); a nested Custom reports folder ('.../reports/cr') counts
+    // under its group by its links, never as a group of its own
+    const own = want ? (scopeBox()?.querySelector(':scope > .folder-head button.caret')?.dataset.key ?? '') : '';
+    const path = own.replace(/^f:/, ''), pre = want ? 't:' + (path.endsWith('/') ? path.slice(0, -1) : path) + '/' : 'r/';
+    const isGroup = k => k.startsWith(pre) && /^[a-z]+$/.test(k.slice(pre.length));
+    const carets = () => { const b = scopeBox(); return b ? [...b.querySelectorAll('button.caret')].filter(c => isGroup(c.dataset.key || '')) : []; };
+    for (const c of carets()) if (c.getAttribute('aria-expanded') !== 'true') { c.click(); await new Promise(r => setTimeout(r, 300)); }
+    const out = {};
+    for (const c of carets()) {
+      const g = (c.dataset.key || '').split('/').pop();
+      const box = c.closest('.tree-node')?.parentElement;
+      out[g] = box ? [...box.querySelectorAll('a')].map(a => a.getAttribute('href') || '').filter(h => h.startsWith('#/')).map(h => ({ tab: h.slice(2).split('?')[0], tagged: ((h.split('?')[1] || '').split('&')).includes(want) })) : [];
+    }
+    return out;
+  })()`, true);
+  await go(`#/summary`);
+  const root = await folderTabs('', '');
+  await go(`#/summary?tag=${encodeURIComponent(tag)}`);
+  const inTag = await folderTabs('', 'tag=' + encodeURIComponent(tag));
+  let missing = 0;
+  for (const [g, links] of Object.entries(root)) {
+    const have = new Set((inTag[g] ?? []).map(l => l.tab));
+    for (const t of new Set(links.map(l => l.tab))) {
+      if (have.has(t)) continue;
+      missing++;
+      record({ scope: sc, kind: 'tag-all', column: g, engine: '', link: `All instances > ${g} > ${t}`, landed: inTag[g] ? `the tag folder's ${g} lists ${[...have].join(', ') || 'nothing'}` : `the tag folder has no ${g} folder`, verdict: `FAIL ${t} is under All instances > ${g} and not under ${tag} > ${g}` });
+    }
+    for (const l of (inTag[g] ?? []).filter(l => !l.tagged)) missing++, record({ scope: sc, kind: 'tag-all', column: g, engine: '', link: `${tag} > ${g} > ${l.tab}`, landed: 'its link carries no tag=', verdict: `FAIL ${l.tab} under ${tag} > ${g} does not carry the tag` });
+  }
+  // the main strip: the root's main tabs against the tag's
+  const strip = () => ev(`[...document.querySelectorAll('#tabs a:not(.tab-back)')].map(a => { const h = a.getAttribute('href') || ''; return [h.slice(2).split('?')[0], (h.split('?')[1] || '').split('&').includes(${JSON.stringify('tag=' + encodeURIComponent(tag))})]; })`);
+  await go(`#/summary`);
+  const rootStrip = (await strip()).map(([t]) => t);
+  await go(`#/summary?tag=${encodeURIComponent(tag)}`);
+  const tagStripRows = await strip();
+  const tagStrip = new Set(tagStripRows.map(([t]) => t));
+  for (const t of rootStrip.filter(t => !tagStrip.has(t))) { missing++; record({ scope: sc, kind: 'tag-all', column: 'main strip', engine: '', link: `the root strip's ${t}`, landed: `the tag's strip: ${[...tagStrip].join(', ')}`, verdict: `FAIL ${t} is on the root's strip and not on ${tag}'s` }); }
+  for (const [t] of tagStripRows.filter(([, k]) => !k)) { missing++; record({ scope: sc, kind: 'tag-all', column: 'main strip', engine: '', link: `${tag}'s strip ${t}`, landed: 'its link carries no tag=', verdict: `FAIL ${t} on ${tag}'s strip does not carry the tag` }); }
+  // a read of nothing is no 'ok': the root's eight folders of groups and a main strip must have been read
+  const rootGroupsWant = ['conf', 'checks', 'hadr', 'storage', 'jobs', 'doors', 'admin', 'reports'];
+  const unread = rootGroupsWant.filter(g => !root[g]?.length);
+  if (unread.length || !rootStrip.length) { missing++; record({ scope: sc, kind: 'tag-all', column: 'the read', engine: '', link: 'All instances', landed: `root folders read: ${Object.keys(root).join(', ') || 'none'}; root strip: ${rootStrip.length} tab(s)`, verdict: `FAIL the root was not read (no ${unread.join(', ') || 'strip'})` }); }
+  if (!missing) record({ scope: sc, kind: 'tag-all', column: 'every group', engine: '', link: `${Object.keys(root).length} root folders and the main strip`, landed: `${tag}'s folders hold every page`, verdict: 'ok (TAGALL: every root page under the tag folder)' });
+}
+
+// TAGALL pages (the design's T2 / T3): each page the tag folder gained, opened under ?tag=<tag>, is drawn with no error box,
+// keeps the tag in its address, and says what it holds - its heading names the folder ('<page> - tag <tag>') or it carries
+// the one line of a list or a setting for the whole repository (fleet.ts fleetWideNote, p.fleet-wide). One row per page.
+{
+  const sc = `tag ${tag}`;
+  const pages = ['diff', 'pgthresholds', 'retention', 'dbadash', 'admin_instances', 'admin_applications', 'admin', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules'];
+  const named = `tag ${tag}`;
+  for (const t of pages) {
+    const drawn = await go(`#/${t}?tag=${encodeURIComponent(tag)}`);
+    const l = await landing();
+    const wide = await ev(`!!document.querySelector('main p.fleet-wide')`);
+    const kept = paramsOf(l.hash).get('tag') === tag && tabOf(l.hash) === t;
+    const says = l.h2.includes(named) || wide;
+    const verdict = !drawn ? 'FAIL not drawn (no heading in 15 s)' : l.err.length ? `FAIL an error box: ${l.err[0]}` : !kept ? `FAIL the address lost the tag or the page: ${l.hash}`
+      : !says ? `FAIL it names no folder and says nothing of the whole repository (heading '${l.h2}')` : `ok (TAGALL page: ${wide ? 'the whole-repository line' : 'the heading names the folder'})`;
+    record({ scope: sc, kind: 'tag-all-page', column: t, engine: '', link: `#/${t}?tag=${tag}`, landed: `${l.hash} - '${l.h2}'${wide ? ' + the whole-repository line' : ''}`, verdict });
+  }
+}
+
+// TAGALL behaviour (the design's T2, the review of rel-tagall #3): what a page under ?tag=<tag> lists or picks is the
+// folder's, and the root's is every instance's. Each row names what it read; a row the demo cannot judge says 'not seen'.
+{
+  const sc = `tag ${tag}`;
+  const q = encodeURIComponent(tag);
+  const tagsOfRow = r => Array.isArray(r.tags) ? r.tags.map(String) : [];
+  const inTagIds = new Set(insts.filter(r => tagsOfRow(r).includes(tag)).map(r => String(r.instance_id)));
+  const outside = insts.find(r => !inTagIds.has(String(r.instance_id)));
+  const inside = insts.find(r => inTagIds.has(String(r.instance_id)));
+  const row = (column, link, landed, verdict) => record({ scope: sc, kind: 'tag-all-t2', column, engine: '', link, landed, verdict });
+  const same = (a, b) => a.length === b.size && a.every(x => b.has(x));
+  const options = sel => ev(`[...document.querySelectorAll(${JSON.stringify(sel)} + ' option')].map(o => o.value).filter(Boolean)`);
+  // Community tools: the instance picker
+  await go('#/community'); const cRoot = await options('main select[aria-label="Instance"]');
+  await go(`#/community?tag=${q}`); const cTag = await options('main select[aria-label="Instance"]');
+  row('community', `#/community and #/community?tag=${tag}`, `root ${cRoot.length} option(s), the folder ${cTag.length}`,
+    cRoot.length === insts.length && same(cTag, inTagIds) ? 'ok (TAGALL: the picker is the folder\'s; the root\'s every instance)' : `FAIL the picker: root ${cRoot.length} of ${insts.length}, the folder [${cTag.join(',')}] not its ${inTagIds.size} [${[...inTagIds].join(',')}]`);
+  // Diff: both pickers; a pick outside the folder in the address is dropped and nothing is compared
+  await go(`#/diff?tag=${q}`); const dA = await options('#diff-a');
+  row('diff', `#/diff?tag=${tag}`, `picker A ${dA.length} option(s)`, same(dA, inTagIds) ? 'ok (TAGALL: picker A is the folder\'s)' : `FAIL picker A [${dA.join(',')}] not the folder's [${[...inTagIds].join(',')}]`);
+  if (outside && inside) {
+    await go(`#/diff?tag=${q}&m=i&a=${outside.instance_id}&b=${inside.instance_id}`); await sleep(2500);
+    const d = await ev(`({ a: document.querySelector('#diff-a')?.value ?? 'none', grids: document.querySelectorAll('main [aria-label="Diff result"] table').length, said: (document.querySelector('main [aria-label="Diff result"]')?.textContent ?? '').slice(0, 120) })`);
+    row('diff', `#/diff?tag=${tag}&a=${outside.name}`, `A '${d.a}', result tables ${d.grids}, '${d.said}'`, d.a === '' && d.grids === 0 ? 'ok (TAGALL: a pick outside the folder is dropped, nothing compared)' : `FAIL the outside pick ${outside.name} kept or compared (A '${d.a}', ${d.grids} result table(s))`);
+  } else row('diff', 'an instance outside the folder', 'none', 'not seen: every instance is in the folder');
+  // Admin > Overview > Servers: the folder's instances
+  await go(`#/admin?tag=${q}&atab=servers`);
+  for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main table.grid tbody tr')`)); i++) await sleep(200);
+  const sv = await ev(`[...document.querySelectorAll('main table.grid tbody tr')].map(r => r.cells[0]?.textContent.trim())`);
+  const want = new Set(insts.filter(r => inTagIds.has(String(r.instance_id))).map(r => String(r.name)));
+  row('admin', `#/admin?tag=${tag}&atab=servers`, `${sv.length} server(s)`, same(sv, want) ? 'ok (TAGALL: Servers lists the folder\'s instances)' : `FAIL Servers [${sv.join(', ')}] not the folder's [${[...want].join(', ')}]`);
+  // Thresholds: the instance places of the form and the scope line above the levels
+  await go(`#/pgthresholds?tag=${q}`);
+  const th = await ev(`(() => { const l = document.querySelector('main select[aria-label="level"]'); if (!l) return { why: 'no level picker' };
+    if (![...l.options].some(o => o.value === 'instance')) return { why: 'no instance level' };
+    l.value = 'instance'; l.dispatchEvent(new Event('change'));
+    const p = [...document.querySelectorAll('main select[aria-label="where"] option')].map(o => o.value).filter(Boolean);
+    const line = [...document.querySelectorAll('main p')].find(x => x.textContent.startsWith('In view:'));
+    const lv = [...document.querySelectorAll('main h3')].find(x => x.textContent.startsWith('Set levels'));
+    return { p, before: !!(line && lv && (line.compareDocumentPosition(lv) & Node.DOCUMENT_POSITION_FOLLOWING)) }; })()`);
+  row('pgthresholds', `#/pgthresholds?tag=${tag}`, th.why ?? `places [${th.p.join(',')}], the scope line before the levels ${th.before}`,
+    th.why ? `FAIL ${th.why}` : th.p.length && th.p.every(x => inTagIds.has(x)) && th.before ? 'ok (TAGALL: the places are the folder\'s; its scope line under the heading)' : `FAIL places [${th.p.join(',')}] (the folder's [${[...inTagIds].join(',')}]), the scope line before the levels ${th.before}`);
+  // Applications: the folder's applications (a server's application is its tag application:<name>)
+  const appsIn = new Set(insts.filter(r => inTagIds.has(String(r.instance_id))).flatMap(tagsOfRow).filter(t => t.toLowerCase().startsWith('application:')).map(t => t.slice(12).toLowerCase()));
+  const openNames = () => ev(`[...document.querySelectorAll('main table.grid button[aria-label^="Open "]')].map(b => b.getAttribute('aria-label').slice(5))`);
+  await go('#/admin_applications'); const aRoot = await openNames();
+  await go(`#/admin_applications?tag=${q}`); const aTag = await openNames();
+  const aWant = aRoot.filter(n => appsIn.has(n.toLowerCase()));
+  row('admin_applications', `#/admin_applications?tag=${tag}`, `root [${aRoot.join(', ')}], the folder [${aTag.join(', ')}]`,
+    aWant.length === aRoot.length ? `not seen: every application (${aRoot.length}) has a server in the folder` : same(aTag, new Set(aWant)) ? 'ok (TAGALL: the folder\'s applications)' : `FAIL the folder lists [${aTag.join(', ')}], its applications are [${aWant.join(', ')}]`);
+  // Imported servers under a PostgreSQL-only tag: one line, no SQL Server grid (any written tag of PostgreSQL alone)
+  const pgOnly = [...tagCount.entries()].filter(([, e]) => e.engines.size === 1 && e.engines.has('postgres')).map(([t]) => t).sort()[0];
+  if (pgOnly) {
+    await go(`#/dbadash?tag=${encodeURIComponent(pgOnly)}`);
+    const dd = await ev(`({ said: (document.querySelector('main')?.textContent ?? '').includes('SQL Server servers only'), grids: document.querySelectorAll('main table.grid').length })`);
+    row('dbadash', `#/dbadash?tag=${pgOnly}`, `the line ${dd.said}, ${dd.grids} grid(s)`, dd.said && dd.grids === 0 ? 'ok (TAGALL: a PostgreSQL-only folder: one line, no SQL Server grid)' : `FAIL under ${pgOnly}: the line ${dd.said}, ${dd.grids} grid(s)`);
+    // ... and a top-level PostgreSQL-only tag folder carries no Doors folder (the engine rule)
+    if (topLevel(pgOnly)) {
+      await go(`#/summary?tag=${encodeURIComponent(pgOnly)}`); await sleep(800);
+      const doors = await ev(`[...document.querySelectorAll('#tree button.caret')].some(c => /^t:.*\\/doors$/.test(c.dataset.key || '') && (c.closest('.folder')?.querySelector(':scope > .folder-head a')?.getAttribute('href') || '').includes(${JSON.stringify('tag=' + encodeURIComponent(pgOnly))}))`);
+      row('doors', `the folder ${pgOnly}`, `a Doors folder ${doors}`, doors ? `FAIL the PostgreSQL-only folder ${pgOnly} carries Doors` : 'ok (TAGALL: no Doors folder where no SQL Server instance is)');
+    } else row('doors', `the folder ${pgOnly}`, 'not a top-level folder', `not seen: ${pgOnly} has no folder of its own at the tree's top`);
+  } else row('dbadash', 'a PostgreSQL-only tag', 'none', 'not seen: the demo has no tag of PostgreSQL instances alone');
+  // Recycle Bin: an inactive instance is listed under a folder only when it carries the folder's tag (its row's tags)
+  const rb = await (await fetch(U + 'api/reports?r=recycle')).json().catch(() => ({}));
+  const rbT = rb.instances ?? {}, rbC = rbT.columns ?? [], rbRows = (rbT.rows ?? []).map(r => Object.fromEntries(rbC.map((c, i) => [c, r[i]])));
+  const gone = rbRows.filter(r => r.is_active === false);
+  if (!gone.length) row('rp_recycle', 'an inactive instance', `${rbRows.length} row(s), none inactive`, 'not seen: the demo has no inactive instance');
+  else {
+    await go(`#/rp_recycle?tag=${q}`); await sleep(500);
+    const listed = await ev(`[...document.querySelectorAll('main table.grid tbody tr')].map(r => r.cells[1]?.textContent.trim())`);
+    const wrong = gone.filter(r => !('tags' in r) || !tagsOfRow(r).includes(tag)).map(r => String(r.instance)).filter(n => listed.includes(n));
+    row('rp_recycle', `#/rp_recycle?tag=${tag}`, `${gone.length} inactive at the root; listed [${listed.join(', ')}]`, !('tags' in gone[0]) ? 'FAIL the recycle read carries no tags' : wrong.length ? `FAIL inactive instances of other tags listed: ${wrong.join(', ')}` : 'ok (TAGALL: the inactive instances that carried the tag)');
+  }
+  // the folder of no tag says its own name in the whole-repository line
+  await go('#/retention?tag=untagged');
+  const ul = await ev(`document.querySelector('main p.fleet-wide')?.textContent ?? 'none'`);
+  row('retention', '#/retention?tag=untagged', ul, ul === 'Data retention is one setting for the whole repository: the untagged folder shows all of it.' ? 'ok (TAGALL: the untagged folder named as such)' : `FAIL the line under untagged: '${ul}'`);
+}
+
 // TAGTREE rows (the lead's 07:35 GO): (a) the tag folder's own Jobs folder holds the Jobs page of that tag
 {
   const sc = `tag ${tag}`;

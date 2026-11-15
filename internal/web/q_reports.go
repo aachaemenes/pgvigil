@@ -414,8 +414,10 @@ SELECT to_timestamp(floor(extract(epoch FROM snapshot_at) / $4) * $4) AS at, eng
 const sqlRepRecycle = `
 SELECT i.instance_id, i.name AS instance, coalesce(i.engine, 'postgres') AS engine, i.is_active, i.last_seen,
        (SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id) AS last_collection,
-       floor(extract(epoch FROM now() - coalesce((SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id), i.last_seen)))::bigint AS secs_since
+       floor(extract(epoch FROM now() - coalesce((SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id), i.last_seen)))::bigint AS secs_since,
+       coalesce(tm.tags, i.tags) AS tags   -- the tags kept on the row, as the fleet reads them: a tag folder's inactive ones (TAGALL)
   FROM pgvigil.instances i
+  LEFT JOIN pgvigil.instance_tags_merged tm ON tm.instance_id = i.instance_id
  WHERE ($1::int[] IS NULL OR i.instance_id = ANY($1::int[]))
    AND (NOT i.is_active OR coalesce((SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id), i.last_seen) < now() - interval '1 day')
  ORDER BY i.is_active, i.name`

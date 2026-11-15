@@ -50,10 +50,13 @@ node scripts/a11y-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$AXE" "${PGVIGIL_A
   grep -q '^off-reason: [1-9]' "$WORK/a11y.txt" && fail "an off control has no visible reason on a page (the 'off' lines above; every page is held to it)"
   grep -q '^off-reason self-test:' "$WORK/a11y.txt" && ! grep -q '^off-reason self-test: planted off buttons without a reason counted 5 of 5$' "$WORK/a11y.txt" \
     && fail "the off-reason check's self-test did not count its 5 planted buttons"
+  grep -q '^FAIL the demo has no tag folder' "$WORK/a11y.txt" && fail "$(grep -m1 '^FAIL the demo has no tag folder' "$WORK/a11y.txt")"
   echo "chromium alive: $(kill -0 $CHR 2>/dev/null && echo yes || echo no); its log's last lines:"; tail -15 "$WORK/chrome.log" | cut -c1-300
   fail "a page did not render or axe did not run on it"; }
 # the demo has SQL Server instances: a check that walked none of their pages has not checked them
 sqlp=$(sed -n 's/^SQL Server pages in the check: \([0-9]*\)$/\1/p' "$WORK/a11y.txt"); (( ${sqlp:-0} > 0 )) || fail "no SQL Server page was in the check"
+# a tag folder's pages (TAGALL): a check that opened none under ?tag= has not checked them
+tagp=$(sed -n 's/^TAGALL pages in the check: \([0-9]*\) .*/\1/p' "$WORK/a11y.txt"); (( ${tagp:-0} > 0 )) || fail "no page under a tag folder was in the check"
 nodes=$(sed -n 's/^total: [0-9]* rule(s), \([0-9]*\) node(s).*/\1/p' "$WORK/a11y.txt")
 [[ -n "$nodes" ]] || fail "no total line"
 (( nodes <= MAX )) || fail "$nodes violation node(s), the proof allows $MAX"

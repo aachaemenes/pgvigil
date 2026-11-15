@@ -10,7 +10,7 @@
 // 'threshold' dialog (metrics.ts). The route and the root tab are the shell's. Task 151 (K07.07): Thresholds in force,
 // every threshold each instance is judged by, a rule's line opening an override for the instance or one of its tags.
 import { get, post, Row, rowsOf, Table } from './api';
-import { fleet, tagsOf } from './fleet';
+import { fleet, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
 import { Ctx, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, showMenu } from './ui';
@@ -113,13 +113,13 @@ export const STARTERS: { name: string; metric: string; op: 'above' | 'below'; wa
 
 // starterButton: 'Starter rules', a menu of the starters; an item opens the rule dialog filled with it (read-only, the
 // dialog shows the values and says why Save is off)
-function starterButton(door: RulesDoor, after: () => void): HTMLElement {
+function starterButton(door: RulesDoor, after: () => void, tag?: string): HTMLElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-haspopup': 'menu' }, 'Starter rules') as HTMLButtonElement;
   b.addEventListener('click', () => {
     void catalog().catch((e: unknown) => { b.title = 'The metric catalog could not be read: ' + (e instanceof Error ? e.message : String(e)); return [] as Row[]; }).then(cat => {
       const keys = new Set(cat.map(c => String(c.key)));
       const items: [string, () => void][] = STARTERS.filter(x => keys.has(x.metric)).map(x => [x.name, () => {
-        void ruleDialog({ door, metric: x.metric, prefill: { op: x.op, warning: x.warning, critical: x.critical, for_minutes: x.for_minutes, name: x.name }, after });
+        void ruleDialog({ door, metric: x.metric, prefill: { op: x.op, warning: x.warning, critical: x.critical, for_minutes: x.for_minutes, name: x.name }, tag, after });
       }]);
       const r = b.getBoundingClientRect();
       showMenu(r.left, r.bottom + 2, items.length ? items : [[b.title.startsWith('The metric catalog') ? b.title : 'No starter fits this server\'s metrics', () => { /* nothing */ }]], b);
@@ -300,13 +300,34 @@ const what = () => whatIsThis('A rule watches one metric of the Metrics page: ab
 
 // alertRulesView: the root page - the rules, what the sender last made of each, and the log of every change
 export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'Alert rules'));
+  const scoped = ctx.tag && !ctx.instance ? ctx.tag : undefined;
+  const sec = el('section', {}, el('h2', {}, 'Alert rules' + (scoped ? ` - ${tagWords(scoped)}` : '')));
   let d: RulesData;
   try { d = await get<RulesData>('alertrules', window_(ctx)); } catch (e) { sec.append(errorBox(e)); return sec; }
-  const all = rowsOf(d.rules), state = rowsOf(d.state), log = rowsOf(d.log), sender = rowsOf(d.sender)[0] ?? {};
+  // under a tag folder (TAGALL): the rules that cover one of its instances - every instance's, a tag's that one of them
+  // carries (the folder's own tag too) and an instance's own -, their state and log, and the thresholds in force on them
+  let ids: Set<number> | null = null, folderTags = new Set<string>();
+  try {
+    const f = scoped ? await fleet() : null;
+    if (f && scoped) {
+      const mine = f.instances.filter(r => inTagScope(scoped, r));
+      ids = new Set(mine.map(r => Number(r.instance_id)));
+      folderTags = new Set([...mine.flatMap(tagsOf), ...(writtenTag(scoped) ? [scoped] : [])]);
+    }
+  } catch (e) { sec.append(errorBox(new Error(`the instances of ${tagWords(scoped!)} could not be read: ${e instanceof Error ? e.message : String(e)}`))); return sec; }
+  const ruleIn = (r: Row) => r.scope === 'fleet' || (r.scope === 'tag' && folderTags.has(String(r.tag))) || (r.scope === 'instance' && !!ids?.has(Number(r.instance_id)));
+  const rulesAll = rowsOf(d.rules), logAll = rowsOf(d.log);
+  const all = ids ? rulesAll.filter(ruleIn) : rulesAll;
+  const ruleIds = new Set(all.map(r => Number(r.rule_id)));
+  const state = ids ? rowsOf(d.state).filter(r => ids!.has(Number(r.instance_id))) : rowsOf(d.state);
+  const log = ids ? logAll.filter(r => ruleIds.has(Number(r.rule_id))) : logAll;
+  const inforce = ids ? rowsOf(d.inforce).filter(r => ids!.has(Number(r.instance_id))) : rowsOf(d.inforce);
+  const sender = rowsOf(d.sender)[0] ?? {};
+  // a new rule under a folder of a written tag starts on that tag (the folders of no tag are no rule's scope)
+  const newTag = writtenTag(scoped);
   const live = all.filter(r => r.live), off = live.filter(r => !r.enabled).length;
   const firing = state.filter(r => r.state === 'warning' || r.state === 'critical').length;
-  const newRule = () => el('span', {}, ruleButton(d, 'New rule', 'New rule', () => { void ruleDialog({ door: d, after: redraw }); }), ' ', starterButton(d, () => redraw()));
+  const newRule = () => el('span', {}, ruleButton(d, 'New rule', 'New rule', () => { void ruleDialog({ door: d, tag: newTag, after: redraw }); }), ' ', starterButton(d, () => redraw(), newTag));
   // who judges the rules: the alert sender, with at least one channel
   const noChannel = Number(sender.channels ?? 0) === 0, ago = Number(sender.evaluated_secs_ago ?? 0);
   const judged = sender.evaluated_at == null
@@ -319,7 +340,13 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
       : `The alert sender last judged the rules ${fmtTime(sender.evaluated_at)}.`;
   sec.append(el('p', { class: 'meta' }, live.length
     ? `${live.length} rule(s) live${off ? ` (${off} switched off)` : ''}, ${firing} firing on an instance. ${judged} `
-    : `No alert rule yet. ${judged} `, what()));
+    : `${ids ? `No live alert rule covers an instance of ${tagWords(scoped!)}.` : 'No alert rule yet.'} ${judged} `, what()));
+  if (ids) {
+    const left = [[rulesAll.length - all.length, 'rule'], [logAll.length - log.length, 'log row']].filter(([n]) => Number(n) > 0)
+      .map(([n, w]) => `${fmtNum(n)} ${String(w)}${n === 1 ? '' : 's'}`);
+    sec.append(el('p', { class: 'meta' }, `In view: ${tagWords(scoped!)} - the rules that cover one of its ${fmtNum(ids.size)} instance(s) (every instance's, a tag's one of them carries, an instance's own), their state and log on its instances, and the thresholds in force on them.`
+      + (left.length ? ` Not listed here: ${left.join(', ')} of other instances and tags (All instances lists them).` : '')));
+  }
   // the rules in force as one sentence (PerformanceMonitor's 'will alert when' summary over its active rules)
   const on = live.filter(r => r.enabled);
   if (on.length) sec.append(el('p', { class: 'will-alert' }, willAlert(on, r => String(r.name ?? `${String(r.family_label ?? '')}: ${String(r.label ?? r.metric)}`), noChannel)));
@@ -404,7 +431,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'detail', wide: true },
   ];
   sec.append(el('h3', {}, `Rule log ${rangeLabel(ctx)}`), grid(log, logCols, 'No rule was made, edited, switched or ended in the time range.'));
-  sec.append(inForceView(d, rowsOf(d.inforce), all));
+  sec.append(inForceView(d, inforce, all));
   return sec;
 }
 
