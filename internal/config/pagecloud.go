@@ -7,9 +7,9 @@ package config
 //
 //   - pgvigil.yaml's doors.page_cloud_blocks, off by default, lets a page block be used at all;
 //   - a block's target must be the instance's own host BY NAME at the merge: an RDS instance endpoint
-//     <db_instance>.<x>.<region>.rds.amazonaws.com or a cluster's writer / reader endpoint
-//     <cluster>.cluster-[ro-]<x>.<region>.rds.amazonaws.com (China: .amazonaws.com.cn, either order of the region
-//     and 'rds'), an Azure SQL logical server <server>.database.windows.net (.usgovcloudapi.net, .chinacloudapi.cn);
+//     <db_instance>.<x>.<region>.rds.<the partition's domain> or a cluster's writer / reader endpoint
+//     <cluster>.cluster-[ro-]<x>.<region>.rds.<the partition's domain> (China: its .cn domain, either order of the
+//     region and 'rds'), an Azure SQL logical server <server>.database.windows.net (.usgovcloudapi.net, .chinacloudapi.cn);
 //     a custom endpoint, a CNAME, a private DNS name or an address refuses the block with both names (pgvigil.yaml's
 //     block stays the door there);
 //   - and an aws: block, which names a resource of the collector host's own account, is checked again by the
@@ -80,8 +80,8 @@ var (
 	azureGroup  = regexp.MustCompile(`^[-A-Za-z0-9_.()]{1,90}$`) // the store's class (0193), ASCII whatever its collation
 	azureServer = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	azureSuffix = map[string]string{"": ".database.windows.net", "public": ".database.windows.net", "usgov": ".database.usgovcloudapi.net", "china": ".database.chinacloudapi.cn"}
-	// an instance's or a cluster's endpoint: <id>.[cluster-[ro-]]<x>.<region>.rds.amazonaws.com, the China partition's
-	// .amazonaws.com.cn in either order (<region>.rds. or rds.<region>.: AWS China's RDS pages show no instance
+	// an instance's or a cluster's endpoint: <id>.[cluster-[ro-]]<x>.<region>.rds.<the partition's domain>, the China
+	// partition's .cn domain in either order (<region>.rds. or rds.<region>.: AWS China's RDS pages show no instance
 	// example; the provider's own Endpoint.Address decides at the collector); a custom endpoint is not matched (its
 	// first label is the endpoint's own name, not its cluster's)
 	rdsEndpoint = regexp.MustCompile(`^([a-z][a-z0-9-]*)\.(cluster-(?:ro-)?)?[a-z0-9]+\.(?:([a-z0-9-]+)\.rds\.amazonaws\.com|([a-z0-9-]+)\.rds\.amazonaws\.com\.cn|rds\.([a-z0-9-]+)\.amazonaws\.com\.cn)$`)
@@ -101,7 +101,7 @@ func PageCloudShape(p PageInstance) string {
 		case p.Engine != EnginePostgres:
 			return "the aws: block is PostgreSQL's (on SQL Server it waits for its own reads)"
 		case !awsRegion.MatchString(a.Region):
-			return fmt.Sprintf("aws.region %s is not an AWS region (us-east-2)", orNone(a.Region))
+			return fmt.Sprintf("aws.region %s is not an AWS region code", orNone(a.Region))
 		case a.DBInstance == "" && a.Cluster == "":
 			return "the aws: block names its db_instance or cluster"
 		case a.Profile != "" && !awsProfile.MatchString(a.Profile):
@@ -176,7 +176,7 @@ func rdsHostMatch(host string, a *PageAWS) string {
 			names = append(names, n)
 		}
 	}
-	want := fmt.Sprintf("%s.<x>.%s.rds.amazonaws.com", strings.Join(names, " or "), a.Region)
+	want := fmt.Sprintf("%s.<x>.%s.rds.<the partition's domain>", strings.Join(names, " or "), a.Region)
 	m := rdsEndpoint.FindStringSubmatch(host)
 	if net.ParseIP(host) != nil || m == nil {
 		return fmt.Sprintf("the aws: block names %s, but the instance's host %s is not an RDS endpoint (%s): an alias or an address cannot be matched, pgvigil.yaml's block is the door there", strings.Join(names, " / "), orNone(host), want)

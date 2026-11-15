@@ -64,7 +64,7 @@ BEGIN
       END IF;
     END LOOP;
     IF coalesce(p_aws->>'region', '') !~ '^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-[0-9]{1,2}$' THEN
-      RETURN format('aws.region %s is not an AWS region (us-east-2)', coalesce(p_aws->>'region', '(none)'));
+      RETURN format('aws.region %s is not an AWS region code', coalesce(p_aws->>'region', '(none)'));
     END IF;
     IF coalesce(p_aws->>'db_instance', '') = '' AND coalesce(p_aws->>'cluster', '') = '' THEN
       RETURN 'the aws: block names its db_instance or cluster';
