@@ -8,9 +8,35 @@ import (
 	"testing"
 )
 
-// rightsLiteral finds the rights checks in a statement's text: HAS_PERMS_BY_NAME(...), HAS_DBACCESS(...),
-// IS_SRVROLEMEMBER(...), IS_ROLEMEMBER(...), IS_MEMBER(...) up to their first closing bracket.
-var rightsLiteral = regexp.MustCompile(`(HAS_PERMS_BY_NAME|HAS_DBACCESS|IS_SRVROLEMEMBER|IS_ROLEMEMBER|IS_MEMBER)\([^)]*\)?`)
+// rightsCall is where a rights check starts: HAS_PERMS_BY_NAME(, HAS_DBACCESS(, IS_SRVROLEMEMBER(, IS_ROLEMEMBER(,
+// IS_MEMBER(.
+var rightsCall = regexp.MustCompile(`\b(HAS_PERMS_BY_NAME|HAS_DBACCESS|IS_SRVROLEMEMBER|IS_ROLEMEMBER|IS_MEMBER)\(`)
+
+// rightsLiterals finds the rights checks in a source's text: each name's call up to its BALANCED closing bracket (a
+// check's own inner brackets - DB_NAME(), QUOTENAME(...), to_regprocedure(...) - are part of it), or to the line's end.
+func rightsLiterals(src string) []string {
+	var out []string
+	for _, at := range rightsCall.FindAllStringIndex(src, -1) {
+		depth, end := 0, len(src)
+	scan:
+		for i := at[1] - 1; i < len(src); i++ {
+			switch src[i] {
+			case '\n':
+				end = i
+				break scan
+			case '(':
+				depth++
+			case ')':
+				if depth--; depth == 0 {
+					end = i + 1
+					break scan
+				}
+			}
+		}
+		out = append(out, src[at[0]:end])
+	}
+	return out
+}
 
 // TestRightsCatalogueNamesEveryCheck (ST2, row R6): every rights check a statement of this package asks about is
 // named by a right of the catalogue (its Checks) or by a listed exception with its reason. A collector that asks
@@ -42,7 +68,7 @@ func TestRightsCatalogueNamesEveryCheck(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, lit := range rightsLiteral.FindAllString(string(b), -1) {
+		for _, lit := range rightsLiterals(string(b)) {
 			seen[lit] = true
 			if _, ok := known[lit]; !ok {
 				t.Errorf("%s asks %s: no right of the catalogue (rights.go) and no exception names it", f, lit)
@@ -61,7 +87,7 @@ func TestRightsCatalogueNamesEveryCheck(t *testing.T) {
 }
 
 // unquoted is a statement with its string literals taken out: a permission's name ('ALTER TRACE', 'EXECUTE') is a
-// value the server is asked about, not a statement (run st12e: the scan took 'ALTER TRACE' for an ALTER).
+// value the server is asked about, not a statement: the scan once took 'ALTER TRACE' for an ALTER.
 func unquoted(q string) string { return regexp.MustCompile(`'[^']*'`).ReplaceAllString(q, "''") }
 
 // TestRightsCatalogueShape: keys unique and usable as column names; each right has its words, a check that reads only
@@ -95,9 +121,10 @@ func TestRightsCatalogueShape(t *testing.T) {
 	}
 }
 
-// TestRightsOnPlatforms: which rights are listed where. Azure SQL Database lists its database right alone; a managed
-// platform lists the registry rights as not applying; before SQL Server 2022 the audit's events say why; Amazon RDS
-// lists its own reader.
+// TestRightsOnPlatforms: which rights are listed where. Azure SQL Database lists its database right alone - or, on Basic,
+// S0, S1 and in an elastic pool, ##MS_ServerStateReader## (Detect asks the server-level right there); a managed platform
+// lists the registry rights as not applying; Cloud SQL lists CONNECT ANY DATABASE as not grantable; before SQL Server
+// 2022 the audit's events say why; Amazon RDS lists its own reader.
 func TestRightsOnPlatforms(t *testing.T) {
 	listed := func(i Info) (apply, off, hidden string) {
 		var a, o, h []string
@@ -113,21 +140,97 @@ func TestRightsOnPlatforms(t *testing.T) {
 		}
 		return strings.Join(a, " "), strings.Join(o, " "), strings.Join(h, " ")
 	}
-	const server = "view_server_state view_any_definition msdb_reader database_access restore_history"
+	const (
+		head    = "view_server_state view_any_definition msdb_reader"
+		azHide  = "view_database_state azure_server_state_reader"
+		dbRight = "view_any_definition msdb_reader database_access restore_history registry_instance registry_machine default_trace audit_events audit_events_rds sp_whoisactive"
+	)
 	for _, c := range []struct {
 		name               string
 		info               Info
 		apply, off, hidden string
 	}{
-		{"SQL Server 2022", Info{Major: 16}, server + " registry_instance registry_machine default_trace audit_events sp_whoisactive", "", "view_database_state audit_events_rds"},
-		{"SQL Server 2019", Info{Major: 15}, server + " registry_instance registry_machine default_trace sp_whoisactive", "audit_events", "view_database_state audit_events_rds"},
-		{"Azure SQL Database", Info{Kind: KindAzureDB, Major: 12}, "view_database_state", "", "view_server_state view_any_definition msdb_reader database_access restore_history registry_instance registry_machine default_trace audit_events audit_events_rds sp_whoisactive"},
-		{"Azure SQL Managed Instance", Info{Kind: KindAzureMI, Major: 12}, server + " default_trace audit_events sp_whoisactive", "registry_instance registry_machine", "view_database_state audit_events_rds"},
-		{"Amazon RDS 2019", Info{Kind: KindRDS, Major: 15}, server + " default_trace audit_events_rds sp_whoisactive", "registry_instance registry_machine", "view_database_state audit_events"},
+		{"SQL Server 2022", Info{Major: 16}, head + " database_access restore_history registry_instance registry_machine default_trace audit_events sp_whoisactive", "", azHide + " audit_events_rds"},
+		{"SQL Server 2019", Info{Major: 15}, head + " database_access restore_history registry_instance registry_machine default_trace sp_whoisactive", "audit_events", azHide + " audit_events_rds"},
+		{"Azure SQL Database (a vCore database)", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "GP_Gen5_2"}, "view_database_state", "", "view_server_state azure_server_state_reader " + dbRight},
+		{"Azure SQL Database S0", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "S0"}, "azure_server_state_reader", "", "view_server_state view_database_state " + dbRight},
+		{"Azure SQL Database in an elastic pool", Info{Kind: KindAzureDB, Major: 12, ServiceObjective: "ElasticPool"}, "azure_server_state_reader", "", "view_server_state view_database_state " + dbRight},
+		{"Azure SQL Managed Instance", Info{Kind: KindAzureMI, Major: 12}, head + " database_access restore_history default_trace audit_events sp_whoisactive", "registry_instance registry_machine", azHide + " audit_events_rds"},
+		{"Amazon RDS 2019", Info{Kind: KindRDS, Major: 15}, head + " database_access restore_history default_trace audit_events_rds sp_whoisactive", "registry_instance registry_machine", azHide + " audit_events"},
+		{"Google Cloud SQL 2022", Info{Kind: KindCloudSQL, Major: 16}, head + " restore_history default_trace audit_events sp_whoisactive", "database_access registry_instance registry_machine", azHide + " audit_events_rds"},
 	} {
 		if a, o, h := listed(c.info); a != c.apply || o != c.off || h != c.hidden {
 			t.Errorf("%s:\n apply  %s\n   want %s\n off    %s\n   want %s\n hidden %s\n   want %s", c.name, a, c.apply, o, c.off, h, c.hidden)
 		}
+	}
+}
+
+// TestRightsGuard (review F1): a name the server answered that holds a line break or another control character -
+// the login, the server, a user, a listed database - prints no script and takes every statement out; so does an
+// account with no login of its own (a Windows group's member); a plain name prints one.
+func TestRightsGuard(t *testing.T) {
+	read := func(login, server, db string) RightsRead {
+		return RightsRead{Login: login, Server: server, Missing: 1, MissingCore: 1, Rights: []RightState{
+			{Key: "database_access", Name: "CONNECT ANY DATABASE", Core: true, For: "each database", State: "missing",
+				Grant: "USE master;\nGRANT CONNECT ANY DATABASE TO [m];", Databases: []string{db}}}}
+	}
+	for _, c := range []struct {
+		name, login, server, db string
+		own                     bool
+		script                  bool
+	}{
+		{"plain names", "m", "S1", "[app]", true, true},
+		{"a database across a line break", "m", "S1", "[a\nALTER SERVER ROLE sysadmin ADD MEMBER [m];--]", true, false},
+		{"a login with a carriage return", "m\rx", "S1", "[app]", true, false},
+		{"a server name with U+2028", "m", "S1\u2028x", "[app]", true, false},
+		{"a tab in a database name", "m", "S1", "[a\tb]", true, false},
+		{"a Windows group's member", "CORP\\svc", "S1", "[app]", false, false},
+	} {
+		r := read(c.login, c.server, c.db)
+		r.guard(rightsIdentity{login: c.login, server: c.server, ownLogin: c.own}, Info{Major: 16})
+		got := r.Script("now")
+		if c.script != (got != "") {
+			t.Errorf("%s: script printed %v (want %v): no_script %q", c.name, got != "", c.script, r.NoScript)
+		}
+		if !c.script && (r.NoScript == "" || r.Rights[0].Grant != "" || strings.Contains(got, "ALTER SERVER ROLE")) {
+			t.Errorf("%s: no_script %q, a statement left %q", c.name, r.NoScript, r.Rights[0].Grant)
+		}
+	}
+}
+
+// TestRightsGrantFor (review F5): a server permission names the login; a database's names the user the read found
+// mapped to the login's SID, under its own name; with none found the block finds it when it runs, creates one only
+// where neither it nor a same-named user is there, and raises an error rather than grant to a same-named user that is
+// not the login's. Names are filled in one pass: a login whose name holds a placeholder's text is not filled again.
+func TestRightsGrantFor(t *testing.T) {
+	byKey := map[string]Right{}
+	for _, r := range Rights {
+		byKey[r.Key] = r
+	}
+	id := rightsIdentity{login: "m{p}", quoted: "[m{p}]", literal: "N'm{p}'", ownLogin: true, users: map[string]string{"msdb": "[mon_user]"}}
+	if got := grantFor(byKey["view_server_state"], id); got != "USE master;\nGRANT VIEW SERVER STATE TO [m{p}];" {
+		t.Errorf("a server permission: %q", got)
+	}
+	if got := grantFor(byKey["msdb_reader"], id); got != "USE msdb;\nALTER ROLE db_datareader ADD MEMBER [mon_user];\nGO" {
+		t.Errorf("a database's, the user found: %q", got)
+	}
+	got := grantFor(byKey["registry_instance"], id) // master: no user found
+	for _, want := range []string{
+		"USE master;\n",
+		"DECLARE @pgv_user sysname = (SELECT name FROM sys.database_principals WHERE sid = SUSER_SID(N'm{p}'));",
+		"IF @pgv_user IS NULL AND DATABASE_PRINCIPAL_ID(N'm{p}') IS NULL",
+		"CREATE USER [m{p}] FOR LOGIN [m{p}];",
+		"RAISERROR(N'pgvigil: a user named as the login is in this database but is not mapped to the login",
+		"DECLARE @pgv_sql nvarchar(max) = N'GRANT EXECUTE ON dbo.xp_instance_regread TO ' + QUOTENAME(@pgv_user) + N';';",
+		"EXEC sys.sp_executesql @pgv_sql;",
+		"\nGO",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the block without a user found lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "EXEC (") {
+		t.Errorf("the block runs a function call through EXEC (), which T-SQL refuses:\n%s", got)
 	}
 }
 
@@ -149,5 +252,53 @@ func TestRightsScript(t *testing.T) {
 	}
 	if got := (RightsRead{Login: "m", Server: "S"}).Script("now"); got != "" {
 		t.Errorf("nothing missing printed %q", got)
+	}
+}
+
+// TestRightsMsdbTables (review F12): every msdb table a collector asks msdbReadable about - a literal argument, or a
+// table of an inline list it loops over - is one msdb_reader's check asks, so the row never reads 'held' while a
+// collection is skipped for a table it does not ask.
+func TestRightsMsdbTables(t *testing.T) {
+	asked := map[string]bool{}
+	for _, tb := range msdbReaderTables {
+		asked[tb] = true
+		if !strings.Contains(msdbReaderCheck(), "N'msdb.dbo."+tb+"'") {
+			t.Errorf("msdb_reader's check does not ask %s", tb)
+		}
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal := regexp.MustCompile(`msdbReadable\(ctx, conn, "(\w+)"\)`)
+	inline := regexp.MustCompile(`range \[\]string\{([^}]*)\} \{\s*if err := msdbReadable\(`)
+	word := regexp.MustCompile(`"(\w+)"`)
+	found := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tables []string
+		for _, m := range literal.FindAllStringSubmatch(string(b), -1) {
+			tables = append(tables, m[1])
+		}
+		for _, m := range inline.FindAllStringSubmatch(string(b), -1) {
+			for _, w := range word.FindAllStringSubmatch(m[1], -1) {
+				tables = append(tables, w[1])
+			}
+		}
+		for _, tb := range tables {
+			found++
+			if !asked[tb] {
+				t.Errorf("%s asks msdbReadable about msdb.dbo.%s: msdb_reader's check (msdbReaderTables) does not", f, tb)
+			}
+		}
+	}
+	if found < 3 {
+		t.Errorf("only %d msdb tables found at the calls: the scan is broken", found)
 	}
 }

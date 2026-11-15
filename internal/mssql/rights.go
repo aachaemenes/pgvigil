@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // The rights pgvigil's monitoring login needs on a SQL Server instance (the ServiceConfig takes, ST2; DBA Dash's
@@ -30,17 +31,18 @@ type Right struct {
 	Check string
 	// Null is the state a NULL answer means ("" = missing).
 	Null string
-	// Grant is the statement that gives it; {login} is the login as QUOTENAME writes it, {login_text} the same name as
-	// a string literal.
+	// Grant is the statement that gives it. {login} is the login as QUOTENAME writes it; {p} is the principal the
+	// statement names: the login itself for a server permission, the login's user in UserDB for a database's (resolved
+	// by its SID at the read, so a user of another name is named as it is and one that is not there is created first).
 	Grant string
+	// UserDB is the database whose user {p} is ("" = {p} is the login: a server permission).
+	UserDB string
 	// Checks are the collectors' literals this right covers (TestRightsCatalogueNamesEveryCheck).
 	Checks []string
 	// On says whether the right applies to this server: "" yes; "hide" = not listed at all there; any other text =
 	// listed as 'not on this server' with that reason.
 	On func(Info) string
 }
-
-const rightsUser = "IF DATABASE_PRINCIPAL_ID({login_text}) IS NULL CREATE USER {login} FOR LOGIN {login};\n"
 
 // notAzureDB: Azure SQL Database has no server-level rights of this kind (one database is the instance).
 func notAzureDB(i Info) string {
@@ -65,20 +67,61 @@ func hostOnly(i Info) string {
 	return ""
 }
 
+// azureServerState: Azure SQL Database's tiers where Detect asks the server-level right (detectSQL's own list).
+func azureServerState(i Info) bool {
+	switch i.ServiceObjective {
+	case "Basic", "S0", "S1", "ElasticPool":
+		return true
+	}
+	return false
+}
+
+// rightsNoAccessWhere: the online databases the login cannot enter - the ones a grant could open: MULTI_USER, and not
+// a platform's own (rdsadmin, gcloud_cloudsqladmin: platformOwnDatabase). A WHERE condition over sys.databases d.
+const rightsNoAccessWhere = `d.state = 0 AND d.user_access = 0 AND d.name NOT IN (N'rdsadmin', N'gcloud_cloudsqladmin') AND HAS_DBACCESS(d.name) = 0`
+
+// msdbReaderTables: the msdb tables the collectors ask msdbReadable about - backups.go's backupFileTables, jobs.go's
+// jobTables and log shipping's two (TestRightsMsdbTables holds the list to every call); msdb_reader's check asks each.
+var msdbReaderTables = append(append(append([]string{}, backupFileTables...), jobTables...), "log_shipping_monitor_primary", "log_shipping_monitor_secondary")
+
+// msdbReaderCheck: msdb is entered and every table of msdbReaderTables is readable.
+func msdbReaderCheck() string {
+	var b strings.Builder
+	b.WriteString("CASE WHEN ISNULL(HAS_DBACCESS('msdb'), 0) = 1")
+	for _, t := range msdbReaderTables {
+		b.WriteString(" AND ISNULL(HAS_PERMS_BY_NAME(N'msdb.dbo." + t + "', 'OBJECT', 'SELECT'), 0) = 1")
+	}
+	b.WriteString(" THEN 1 ELSE 0 END")
+	return b.String()
+}
+
 // Rights is the catalogue, in the page's order: the core rights first.
 var Rights = []Right{
 	{Key: "view_server_state", Name: "VIEW SERVER STATE", Core: true,
 		For:    "the live reads: running queries and blocking, waits, CPU and memory, the performance counters, which audit is started, the registry view (from SQL Server 2022 VIEW SERVER PERFORMANCE STATE alone serves the performance reads)",
 		Check:  "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE')",
-		Grant:  "USE master;\nGRANT VIEW SERVER STATE TO {login};",
+		Grant:  "USE master;\nGRANT VIEW SERVER STATE TO {p};",
 		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE')"}, On: notAzureDB},
 	{Key: "view_database_state", Name: "VIEW DATABASE STATE", Core: true,
 		For:    "the live reads of the database (Azure SQL Database: one database is the instance)",
 		Check:  "HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE STATE')",
 		Grant:  "-- in the database itself\nGRANT VIEW DATABASE STATE TO {user};",
-		Checks: []string{"HAS_PERMS_BY_NAME(DB_NAME()"},
+		Checks: []string{"HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE STATE')"},
 		On: func(i Info) string {
-			if i.Kind != KindAzureDB {
+			if i.Kind != KindAzureDB || azureServerState(i) {
+				return "hide"
+			}
+			return ""
+		}},
+	// Azure SQL Database on Basic, S0, S1 or in an elastic pool: Detect asks the server-level right there (Microsoft's
+	// DMV pages name the server admin or ##MS_ServerStateReader##), so that is the row
+	{Key: "azure_server_state_reader", Name: "##MS_ServerStateReader## (the logical server's role)", Core: true,
+		For:    "the live reads of the database on Basic, S0, S1 or in an elastic pool, where VIEW DATABASE STATE does not serve the DMVs",
+		Check:  "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE')",
+		Grant:  "-- in the logical server's master database, for the server's login (a contained database user cannot be a member)\nALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER {login};",
+		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE')"},
+		On: func(i Info) string {
+			if i.Kind != KindAzureDB || !azureServerState(i) {
 				return "hide"
 			}
 			return ""
@@ -86,45 +129,52 @@ var Rights = []Right{
 	{Key: "view_any_definition", Name: "VIEW ANY DEFINITION", Core: true,
 		For:    "every database's metadata: the audits and their specifications, the definitions of objects and jobs",
 		Check:  "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')",
-		Grant:  "USE master;\nGRANT VIEW ANY DEFINITION TO {login};",
+		Grant:  "USE master;\nGRANT VIEW ANY DEFINITION TO {p};",
 		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')"}, On: notAzureDB},
 	{Key: "msdb_reader", Name: "msdb: a user with db_datareader", Core: true,
-		For: "msdb: the Agent jobs and their history, the backup history",
-		Check: "CASE WHEN ISNULL(HAS_DBACCESS('msdb'), 0) = 1 AND ISNULL(HAS_PERMS_BY_NAME(N'msdb.dbo.backupset', 'OBJECT', 'SELECT'), 0) = 1" +
-			" AND ISNULL(HAS_PERMS_BY_NAME(N'msdb.dbo.sysjobs', 'OBJECT', 'SELECT'), 0) = 1" +
-			" AND ISNULL(HAS_PERMS_BY_NAME(N'msdb.dbo.sysjobhistory', 'OBJECT', 'SELECT'), 0) = 1 THEN 1 ELSE 0 END",
-		Grant:  "USE msdb;\n" + rightsUser + "ALTER ROLE db_datareader ADD MEMBER {login};",
+		For:   "msdb: the Agent jobs and their history, the backup history",
+		Check: msdbReaderCheck(),
+		Grant: "ALTER ROLE db_datareader ADD MEMBER {p};", UserDB: "msdb",
 		Checks: []string{"HAS_DBACCESS('msdb')", `HAS_PERMS_BY_NAME(N'msdb.dbo."+table+"', 'OBJECT', 'SELECT')`},
 		On:     notAzureDB},
 	{Key: "database_access", Name: "CONNECT ANY DATABASE", Core: true,
 		For:    "each database's own reads: indexes, storage and files, Query Store, the database options, the database audit specifications, replication",
-		Check:  "CASE WHEN EXISTS (SELECT 1 FROM sys.databases d WHERE d.state = 0 AND HAS_DBACCESS(d.name) = 0) THEN 0 ELSE 1 END",
-		Grant:  "USE master;\nGRANT CONNECT ANY DATABASE TO {login};",
-		Checks: []string{"HAS_DBACCESS(d.name)", "HAS_DBACCESS(name)"}, On: notAzureDB},
+		Check:  "CASE WHEN ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'CONNECT ANY DATABASE'), 0) = 1 THEN 1 WHEN EXISTS (SELECT 1 FROM sys.databases d WHERE " + rightsNoAccessWhere + ") THEN 0 ELSE 1 END",
+		Grant:  "USE master;\nGRANT CONNECT ANY DATABASE TO {p};",
+		Checks: []string{"HAS_DBACCESS(d.name)", "HAS_DBACCESS(name)"},
+		On: func(i Info) string {
+			switch i.Kind {
+			case KindAzureDB:
+				return "hide"
+			case KindCloudSQL:
+				return "Google Cloud SQL's administrator cannot grant CONNECT ANY DATABASE: the login is made a user of each database it must read"
+			}
+			return ""
+		}},
 	{Key: "restore_history", Name: "SELECT on msdb.dbo.restorehistory",
-		For:    "a restored database's restore date (the index usage window starts there); db_datareader in msdb gives it",
-		Check:  "HAS_PERMS_BY_NAME(N'msdb.dbo.restorehistory', 'OBJECT', 'SELECT')",
-		Grant:  "USE msdb;\n" + rightsUser + "GRANT SELECT ON dbo.restorehistory TO {login};",
+		For:   "a restored database's restore date (the index usage window starts there); db_datareader in msdb gives it",
+		Check: "HAS_PERMS_BY_NAME(N'msdb.dbo.restorehistory', 'OBJECT', 'SELECT')",
+		Grant: "GRANT SELECT ON dbo.restorehistory TO {p};", UserDB: "msdb",
 		Checks: []string{"HAS_PERMS_BY_NAME(N'msdb.dbo.restorehistory', 'OBJECT', 'SELECT')"}, On: notAzureDB},
 	{Key: "registry_instance", Name: "EXECUTE on master.dbo.xp_instance_regread",
-		For:    "Properties: the TCP port, the protocols and the encryption settings where the registry view does not hold them",
-		Check:  "HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')",
-		Grant:  "USE master;\n" + rightsUser + "GRANT EXECUTE ON dbo.xp_instance_regread TO {login};",
+		For:   "Properties: the TCP port, the protocols and the encryption settings where the registry view does not hold them",
+		Check: "HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')",
+		Grant: "GRANT EXECUTE ON dbo.xp_instance_regread TO {p};", UserDB: "master",
 		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')"}, On: hostOnly},
 	{Key: "registry_machine", Name: "EXECUTE on master.dbo.xp_regread",
-		For:    "Properties: Win32PrioritySeparation and the power plan (a Windows host)",
-		Check:  "HAS_PERMS_BY_NAME(N'master.dbo.xp_regread', 'OBJECT', 'EXECUTE')",
-		Grant:  "USE master;\n" + rightsUser + "GRANT EXECUTE ON dbo.xp_regread TO {login};",
+		For:   "Properties: Win32PrioritySeparation and the power plan (a Windows host)",
+		Check: "HAS_PERMS_BY_NAME(N'master.dbo.xp_regread', 'OBJECT', 'EXECUTE')",
+		Grant: "GRANT EXECUTE ON dbo.xp_regread TO {p};", UserDB: "master",
 		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.xp_regread', 'OBJECT', 'EXECUTE')"}, On: hostOnly},
 	{Key: "default_trace", Name: "ALTER TRACE",
 		For:    "the default trace's events (mssql_defaulttrace). It also lets the login start and stop server traces: give it only where that is accepted",
 		Check:  "HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER TRACE')",
-		Grant:  "USE master;\nGRANT ALTER TRACE TO {login};",
+		Grant:  "USE master;\nGRANT ALTER TRACE TO {p};",
 		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER TRACE')"}, On: notAzureDB},
 	{Key: "audit_events", Name: "VIEW SERVER SECURITY AUDIT",
 		For:    "the audit's events from its files (mssql_audit; SQL Server 2022 and later)",
 		Check:  "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER SECURITY AUDIT')",
-		Grant:  "USE master;\nGRANT VIEW SERVER SECURITY AUDIT TO {login};",
+		Grant:  "USE master;\nGRANT VIEW SERVER SECURITY AUDIT TO {p};",
 		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER SECURITY AUDIT')"},
 		On: func(i Info) string {
 			switch {
@@ -136,10 +186,10 @@ var Rights = []Right{
 			return ""
 		}},
 	{Key: "audit_events_rds", Name: "SELECT on msdb.dbo.rds_fn_get_audit_file",
-		For:    "the audit's events on Amazon RDS (its own reader function)",
-		Check:  "HAS_PERMS_BY_NAME(N'msdb.dbo.rds_fn_get_audit_file', 'OBJECT', 'SELECT')",
-		Null:   "not there: the instance has no audit option group (msdb.dbo.rds_fn_get_audit_file is absent)",
-		Grant:  "USE msdb;\n" + rightsUser + "GRANT SELECT ON dbo.rds_fn_get_audit_file TO {login};",
+		For:   "the audit's events on Amazon RDS (its own reader function)",
+		Check: "HAS_PERMS_BY_NAME(N'msdb.dbo.rds_fn_get_audit_file', 'OBJECT', 'SELECT')",
+		Null:  "not there: the instance has no audit option group (msdb.dbo.rds_fn_get_audit_file is absent)",
+		Grant: "GRANT SELECT ON dbo.rds_fn_get_audit_file TO {p};", UserDB: "msdb",
 		Checks: []string{"HAS_PERMS_BY_NAME(N'msdb.dbo.rds_fn_get_audit_file', 'OBJECT', 'SELECT')"},
 		On: func(i Info) string {
 			if i.Kind != KindRDS {
@@ -148,11 +198,11 @@ var Rights = []Right{
 			return ""
 		}},
 	{Key: "sp_whoisactive", Name: "EXECUTE on master.dbo.sp_WhoIsActive",
-		For:    "Running queries through sp_WhoIsActive, where it is installed in master",
-		Check:  "CASE WHEN OBJECT_ID(N'master.dbo.sp_WhoIsActive', 'P') IS NULL THEN NULL ELSE HAS_PERMS_BY_NAME(N'master.dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE') END",
-		Null:   "not installed: master holds no sp_WhoIsActive (pgvigil reads the DMVs itself)",
-		Grant:  "USE master;\n" + rightsUser + "GRANT EXECUTE ON dbo.sp_WhoIsActive TO {login};",
-		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE')", "HAS_PERMS_BY_NAME(QUOTENAME(DB_NAME()", "HAS_PERMS_BY_NAME(N'dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE')"},
+		For:   "Running queries through sp_WhoIsActive, where it is installed in master",
+		Check: "CASE WHEN OBJECT_ID(N'master.dbo.sp_WhoIsActive', 'P') IS NULL THEN NULL ELSE HAS_PERMS_BY_NAME(N'master.dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE') END",
+		Null:  "not installed, or not visible to this login: master shows it no sp_WhoIsActive (a procedure it may not run is hidden from a login without VIEW ANY DEFINITION; pgvigil reads the DMVs itself)",
+		Grant: "GRANT EXECUTE ON dbo.sp_WhoIsActive TO {p};", UserDB: "master",
+		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE')", "HAS_PERMS_BY_NAME(QUOTENAME(DB_NAME()) + N'.dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE')", "HAS_PERMS_BY_NAME(N'dbo.sp_WhoIsActive', 'OBJECT', 'EXECUTE')"},
 		On:     notAzureDB},
 }
 
@@ -177,9 +227,9 @@ type RightState struct {
 	// State: held, missing, or the words of a right that does not apply here ('not on this server: ...', 'not
 	// installed: ...').
 	State string
-	// Grant is the statement for this login; "" unless the right is missing.
+	// Grant is the statement for this login; "" unless the right is missing (and a script may be printed).
 	Grant string
-	// Databases names the databases the login cannot enter (database_access; the first 20).
+	// Databases names the databases the login cannot enter, as QUOTENAME writes them (database_access; the first 20).
 	Databases []string
 }
 
@@ -189,16 +239,32 @@ type RightsRead struct {
 	Rights                  []RightState
 	// Missing counts every missing right; MissingCore the needed ones among them.
 	Missing, MissingCore int
+	// NoScript says why no script is printed though rights are missing ("" = one is printed).
+	NoScript string
 }
 
-// rightsIdentitySQL: the login as the server names it, quoted both ways by the server itself, the server's name, and
-// on Azure SQL Database the database user.
-const rightsIdentitySQL = `SELECT CAST(SUSER_SNAME() AS nvarchar(128)), CAST(QUOTENAME(SUSER_SNAME()) AS nvarchar(258)),
-  CAST(N'N' + QUOTENAME(SUSER_SNAME(), '''') AS nvarchar(260)), CAST(ISNULL(@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS nvarchar(128)),
-  CAST(QUOTENAME(USER_NAME()) AS nvarchar(258))`
+// rightsIdentity is who the connection is, as the server answers it.
+type rightsIdentity struct {
+	login, quoted, literal, server, user string
+	// ownLogin: a server principal has the connection's SID (false: the account signs in through a Windows group).
+	ownLogin bool
+	// users: the login's user in a database, as QUOTENAME writes it ("" = none mapped, or not readable).
+	users map[string]string
+}
 
-// rightsNoAccessSQL: the online databases the login cannot enter.
-const rightsNoAccessSQL = `SELECT TOP (21) CAST(d.name AS nvarchar(128)) FROM sys.databases d WHERE d.state = 0 AND HAS_DBACCESS(d.name) = 0 ORDER BY d.name`
+// rightsIdentitySQL: the login as the server names it (a contained user has none: its user name), quoted both ways by
+// the server itself, the server's name, the database user, and whether a login of its own carries the SID.
+const rightsIdentitySQL = `SELECT CAST(ISNULL(SUSER_SNAME(), USER_NAME()) AS nvarchar(128)), CAST(QUOTENAME(ISNULL(SUSER_SNAME(), USER_NAME())) AS nvarchar(258)),
+  CAST(N'N' + QUOTENAME(ISNULL(SUSER_SNAME(), USER_NAME()), '''') AS nvarchar(260)), CAST(ISNULL(@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS nvarchar(128)),
+  CAST(QUOTENAME(USER_NAME()) AS nvarchar(258)),
+  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals p WHERE p.sid = SUSER_SID()) THEN 1 ELSE 0 END AS int)`
+
+// rightsUserSQL: the login's own user in a database ({db}: master or msdb), found by its SID - whatever its name.
+const rightsUserSQL = `SELECT TOP (1) CAST(QUOTENAME(dp.name) AS nvarchar(258)) FROM {db}.sys.database_principals dp
+ WHERE dp.sid = SUSER_SID() AND dp.type IN ('S', 'U', 'E', 'X', 'G') AND dp.name NOT IN (N'dbo', N'guest')`
+
+// rightsNoAccessSQL: the online databases the login cannot enter that a grant could open, as QUOTENAME writes them.
+const rightsNoAccessSQL = `SELECT TOP (21) CAST(QUOTENAME(d.name) AS nvarchar(258)) FROM sys.databases d WHERE ` + rightsNoAccessWhere + ` ORDER BY d.name`
 
 // rightsSQL is the one statement that asks every right that applies to the server: a column per right, by its key.
 func rightsSQL(apply []Right) string {
@@ -209,6 +275,43 @@ func rightsSQL(apply []Right) string {
 	return "SELECT " + strings.Join(cols, ",\n  ")
 }
 
+// unsafeName says whether a name the server answered may not be printed into a script: a line break or any other
+// control character would end a comment line and start a statement of the name's own.
+func unsafeName(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '\u0085' || r == '\u2028' || r == '\u2029' {
+			return true
+		}
+	}
+	return false
+}
+
+// grantFor is a right's statement for this identity. A server permission names the login. A database's names the
+// login's user there: the one the read found mapped to its SID, under whatever name. Where the read found none (the
+// login may not read that database), the block finds the user by the SID when it runs: none at all = it is created
+// under the login's name; a user of that name that is NOT mapped to the login (an orphan left by a restore) raises an
+// error instead of being granted to. Each block is a batch of its own (GO).
+func grantFor(r Right, id rightsIdentity) string {
+	fill := func(text, p string) string {
+		return strings.NewReplacer("{p}", p, "{login}", id.quoted, "{login_text}", id.literal, "{user}", id.user).Replace(text)
+	}
+	if r.UserDB == "" {
+		return fill(r.Grant, id.quoted)
+	}
+	if u := id.users[r.UserDB]; u != "" {
+		return "USE " + r.UserDB + ";\n" + fill(r.Grant, u) + "\nGO"
+	}
+	// the statement as a string the block runs through sp_executesql, the user's name filled in when it runs (EXEC ()
+	// takes no function call; the catalogue's statements hold no quote, one would be doubled)
+	dyn := "N'" + strings.ReplaceAll(fill(r.Grant, "\x00"), "'", "''") + "'"
+	dyn = strings.Replace(dyn, "\x00", "' + QUOTENAME(@pgv_user) + N'", 1)
+	return fill("USE "+r.UserDB+";\n"+
+		"DECLARE @pgv_user sysname = (SELECT name FROM sys.database_principals WHERE sid = SUSER_SID({login_text}));\n"+
+		"IF @pgv_user IS NULL AND DATABASE_PRINCIPAL_ID({login_text}) IS NULL\nBEGIN\n    CREATE USER {login} FOR LOGIN {login};\n    SET @pgv_user = {login_text};\nEND\n"+
+		"IF @pgv_user IS NULL\n    RAISERROR(N'pgvigil: a user named as the login is in this database but is not mapped to the login (left by a restore?): repair it with ALTER USER ... WITH LOGIN, then run this block again', 16, 1);\n"+
+		"ELSE\nBEGIN\n    DECLARE @pgv_sql nvarchar(max) = "+dyn+";\n    EXEC sys.sp_executesql @pgv_sql;\nEND\nGO", id.quoted)
+}
+
 // ReadRights asks the server, as the connection's login, which rights of the catalogue it holds. It reads only.
 func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRead, error) {
 	info, err := Detect(ctx, conn, platform)
@@ -216,11 +319,23 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 		return RightsRead{}, err
 	}
 	var out RightsRead
-	var quoted, literal, user string
-	if err := conn.QueryRowContext(ctx, rightsIdentitySQL).Scan(&out.Login, &quoted, &literal, &out.Server, &user); err != nil {
+	id := rightsIdentity{users: map[string]string{}}
+	var own sql.NullInt64
+	if err := conn.QueryRowContext(ctx, rightsIdentitySQL).Scan(&id.login, &id.quoted, &id.literal, &id.server, &id.user, &own); err != nil {
 		return RightsRead{}, err
 	}
-	out.Platform = string(info.Kind)
+	id.ownLogin = own.Int64 == 1
+	out.Login, out.Server, out.Platform = id.login, id.server, string(info.Kind)
+	if info.Kind != KindAzureDB {
+		// the login's own user in master and in msdb, by its SID; a database it cannot read answers nothing, and the
+		// block then creates the user under a guard
+		for _, db := range []string{"master", "msdb"} {
+			var u sql.NullString
+			if err := conn.QueryRowContext(ctx, strings.Replace(rightsUserSQL, "{db}", db, 1)).Scan(&u); err == nil && u.Valid {
+				id.users[db] = u.String
+			}
+		}
+	}
 	var apply []Right
 	states := map[string]string{}
 	for _, r := range Rights {
@@ -246,7 +361,6 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 			answers[r.Key] = vals[i]
 		}
 	}
-	fill := strings.NewReplacer("{login}", quoted, "{login_text}", literal, "{user}", user)
 	for _, r := range Rights {
 		st := RightState{Key: r.Key, Name: r.Name, For: r.For, Core: r.Core}
 		if why, off := states[r.Key]; off {
@@ -265,7 +379,7 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 			st.State = r.Null
 		default:
 			st.State = "missing"
-			st.Grant = fill.Replace(r.Grant)
+			st.Grant = grantFor(r, id)
 			out.Missing++
 			if r.Core {
 				out.MissingCore++
@@ -276,7 +390,41 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 		}
 		out.Rights = append(out.Rights, st)
 	}
+	out.guard(id, info)
 	return out, nil
+}
+
+// guard decides whether a script may be printed at all, and takes every statement out when it may not: a name the
+// server answered that holds a line break or a control character (it could end a comment line and start a statement
+// of its own), or an account with no login of its own to grant to.
+func (r *RightsRead) guard(id rightsIdentity, info Info) {
+	names := []string{id.login, id.server, id.user, id.users["master"], id.users["msdb"]}
+	for _, s := range r.Rights {
+		names = append(names, s.Databases...)
+	}
+	switch {
+	case r.Missing == 0:
+		return
+	case func() bool {
+		for _, n := range names {
+			if unsafeName(n) {
+				return true
+			}
+		}
+		return false
+	}():
+		r.NoScript = "no script is printed: a name this server answered (the login, the server, a user or a database) holds a line break or a control character, which could put a statement of its own into the script. Write the statements by hand from the list."
+	case !id.ownLogin && info.Kind != KindAzureDB:
+		r.NoScript = "no script is printed: this account has no login of its own on the server (it signs in through a Windows group's login). Grant the rights to that group's login, or create a login for the account."
+	default:
+		return
+	}
+	for i := range r.Rights {
+		r.Rights[i].Grant = ""
+		if unsafeName(strings.Join(r.Rights[i].Databases, "")) {
+			r.Rights[i].Databases = nil
+		}
+	}
 }
 
 // rightsNoAccess names the online databases the login cannot enter (nil when the read fails: the row still says missing).
@@ -297,9 +445,10 @@ func rightsNoAccess(ctx context.Context, conn *sql.Conn) []string {
 }
 
 // Script is the printed script of the missing rights: a comment head that says whose it is and that pgvigil ran
-// nothing, then each missing right's statement under a comment naming it. "" when nothing is missing.
+// nothing, then each missing right's statement under a comment naming it. "" when nothing is missing or no script
+// may be printed (NoScript says why). Every name in it is one guard let through: none holds a line break.
 func (r RightsRead) Script(at string) string {
-	if r.Missing == 0 {
+	if r.Missing == 0 || r.NoScript != "" {
 		return ""
 	}
 	var b strings.Builder

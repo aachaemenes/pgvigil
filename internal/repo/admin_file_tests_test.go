@@ -14,7 +14,7 @@ import (
 // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): import_admin_file_test (migration 0261, the
 // ServiceConfig takes' ST1) keeps the last connection test of an instance of pgvigil.yaml by its name and audits it as
 // the page's own tests are; it refuses a name the file does not list and a name the page owns, keeps the newer of two
-// tests, and drops the rows of names the file no longer lists.
+// tests (an older one is audited, answered 'not kept'), and prunes nothing (another serve's file may name other rows).
 func TestAdminFileTestsOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -113,7 +113,7 @@ func TestAdminFileTestsOnAStore(t *testing.T) {
 	}
 
 	// the newer test wins: a late answer of an older test changes nothing, a newer one replaces
-	if got := call(now.Add(-time.Minute), a, false, "an older test, answered late", names); got != "done|tested "+a {
+	if got := call(now.Add(-time.Minute), a, false, "an older test, answered late", names); got != "done|not kept: a newer test of "+a+" is stored" {
 		t.Errorf("an older test: %s", got)
 	}
 	if got := one(`SELECT tested_ok::text || '|' || tested_detail FROM pgvigil.admin_file_tests WHERE name = $1`, a); got != "true|connected: PostgreSQL 17.2, as pgvigil_monitor" {
@@ -126,11 +126,14 @@ func TestAdminFileTestsOnAStore(t *testing.T) {
 		t.Errorf("after a newer test: %s", got)
 	}
 
-	// a name the file no longer lists loses its row at the next test of any other
+	// a test with a file that no longer lists a name (another serve's, or a later one) leaves that name's row alone
 	if got := call(now.Add(2*time.Minute), b, true, "connected", []string{a, b, p}); got != "done|tested "+b {
 		t.Errorf("b again: %s", got)
 	}
-	if got := one(`SELECT string_agg(name, ', ' ORDER BY name) FROM pgvigil.admin_file_tests WHERE name LIKE $1`, fmt.Sprintf("ftest-%%-%d", tag)); got != a+", "+b {
-		t.Errorf("after the file dropped a name: %s (want %s, %s)", got, a, b)
+	if got := one(`SELECT string_agg(name, ', ' ORDER BY name) FROM pgvigil.admin_file_tests WHERE name LIKE $1`, fmt.Sprintf("ftest-%%-%d", tag)); got != a+", "+b+", "+gone {
+		t.Errorf("after a file without a name: %s (want %s, %s, %s: nothing pruned)", got, a, b, gone)
+	}
+	if got := one(`SELECT detail FROM pgvigil.admin_audit WHERE ui_user = $1 AND target = $2 ORDER BY audit_id DESC LIMIT 1 OFFSET 1`, user, a); got != "failed: an older test, answered late (not kept: a newer test is stored)" {
+		t.Errorf("the older test's audit row: %s", got)
 	}
 }

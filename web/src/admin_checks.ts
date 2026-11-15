@@ -28,8 +28,8 @@ const AT_ONCE = 6;
 
 // ageWords: an age in seconds as DBA Dash's Snapshot Age words, two units at most ('26 seconds', '1 hour 3 minutes')
 export function ageWords(v: unknown): string {
-  const s = Number(v);
-  if (v == null || v === '' || !Number.isFinite(s) || s < 0) return '';
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '';
+  const s = Math.max(0, Number(v)); // the repository's clock a little behind a snapshot reads as 0, never as nothing
   const unit = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
   if (s < 120) return unit(Math.floor(s), 'second');
   const m = Math.floor(s / 60);
@@ -103,9 +103,11 @@ export function instanceChecks(deps: Deps) {
         + 'pgvigil never grants anything: the script below is printed to copy and to run as an administrator of that server.'),
       grid(rows, rightCols, 'No right is listed for this platform.'),
     ];
+    const noScript = String(b.no_script ?? '');
+    if (noScript) kids.push(el('p', { class: 'meta', id: 'admin-instance-rights-noscript', role: 'note' }, noScript));
     if (script) {
       const pre = el('pre', { id: 'admin-instance-rights-script', tabindex: '0', 'aria-label': `The GRANT script for ${name}` }, script);
-      // the visible words are the start of the label (WCAG 2.5.3, Label in Name: axe's label-content-name-mismatch, run st12s)
+      // the visible words are the start of the label (WCAG 2.5.3, Label in Name: axe's label-content-name-mismatch)
       const copy = el('button', { type: 'button', 'aria-label': `Copy the GRANT script for ${name}` }, 'Copy the GRANT script');
       copy.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(script); deps.say(`The GRANT script for ${name} is on the clipboard (${script.split('\n').length} lines). Nothing was run.`); }
@@ -177,13 +179,17 @@ export function instanceChecks(deps: Deps) {
         const n = { connected: 0, failed: 0, 'not tested': 0 };
         let done = 0;
         deps.say(`Checking ${names.length} instance${names.length === 1 ? '' : 's'}, ${AT_ONCE} at a time…`);
-        await fanOut(names, AT_ONCE, async name => {
-          n[await testOne(name)]++;
-          deps.say(`Checking: ${++done} of ${names.length} answered (${n.connected} connected, ${n.failed} failed${n['not tested'] ? `, ${n['not tested']} not tested` : ''})…`);
-        });
-        busy = false;
-        b.removeAttribute('aria-busy');
-        await deps.draw();
+        try {
+          await fanOut(names, AT_ONCE, async name => {
+            n[await testOne(name)]++;
+            deps.say(`Checking: ${++done} of ${names.length} answered (${n.connected} connected, ${n.failed} failed${n['not tested'] ? `, ${n['not tested']} not tested` : ''})…`);
+          });
+        } finally {
+          // no redraw: each row's cell holds its answer, and a form being typed in is not rebuilt (the next read of the
+          // page shows the kept results)
+          busy = false;
+          b.removeAttribute('aria-busy');
+        }
         deps.say(`Checked ${names.length}: ${n.connected} connected, ${n.failed} failed${n['not tested'] ? `, ${n['not tested']} not tested` : ''}`
           + (off ? `; ${off} disabled, not checked.` : '.'), n.failed + n['not tested'] > 0);
       });

@@ -5,9 +5,10 @@
 # (scripts/st12-wiring.patch: applied to the run's own copy when the tree does not hold them).
 #
 # Expected (written before the first run):
-#  C1  Check all. pgvigil.yaml holds seven instances: f-sql (SQL Server 2022, a login with every right), f-pg
-#      (PostgreSQL 16), f-down (a port nothing listens on) and the four of the Rights rows (f-bare, f-bare2, f-odd,
-#      f-pgmon: each connects); the page holds p-up and p-off (added through the API; p-off disabled).
+#  C1  Check all. pgvigil.yaml holds eight instances: f-sql (SQL Server 2022, a login with every right), f-pg
+#      (PostgreSQL 16), f-down (a port nothing listens on), f-bad (a dsn that does not parse, a password in it) and the
+#      four of the Rights rows (f-bare, f-bare2, f-odd, f-pgmon: each connects); the page holds p-up and p-off (added
+#      through the API; p-off disabled).
 #      a  (the API, one test each) op 'test' of f-sql and f-pg answers ok true 'connected: ...'; of f-down ok false
 #         with the connect error, inside 10 seconds; each result is kept (the part 'checks': tested_ok true / true /
 #         false) and audited ('instance tested', done); no answer and no 'checks' row holds a password or a dsn.
@@ -16,9 +17,10 @@
 #      b  after one collection of f-sql and of f-pg: their 'checks' rows hold last_collected and an age of 0 to 120 s
 #         equal to the repository's own (within 5 s); f-down's hold none; a collection of f-pg that ended in an error
 #         (put into collection_dates by hand) shows failing_n 1 with its name and note.
-#      c  (the page, light) the button 'Check all' fills each row's 'last test' and ends 'Checked 8: 7 connected, 1
-#         failed; 1 disabled, not checked.' (the seven of the file and p-up; the first run's expected said 4: it had
-#         counted three of the file's seven); p-off was not asked (its row keeps tested_at NULL, no audit row); after a
+#      d  f-bad: op 'test' and op 'rights' answer ok false with the fixed words 'the instance's dsn in pgvigil.yaml does
+#         not parse (its text is not shown: it may hold a password)'; its password is in no answer, row or log.
+#      c  (the page, light) the button 'Check all' fills each row's 'last test' and ends 'Checked 9: 7 connected, 2
+#         failed; 1 disabled, not checked.' (the eight of the file and p-up; f-down and f-bad fail); p-off was not asked (its row keeps tested_at NULL, no audit row); after a
 #         reload both tables still show the results; 'last collected' reads '<n> second(s)|minute(s) ago' for f-sql.
 #  C2  the page's gate (this base has no reader / admin split): op 'test' and op 'rights' without the X-Pgvigil header
 #      answer 403, without a session 401; op 'rights' of a name that is neither the page's nor the file's answers ok
@@ -44,6 +46,9 @@
 #  P   (the page, light and dark, signed in) the Rights link of f-bare2 (a second bare login, never granted) fills the
 #      box with the list and the script; 'Copy the GRANT script' is there; the page draws with no error box; axe-core 4.14.0
 #      (WCAG 2.1 A and AA) 0 violation nodes with the box open. Skipped (NOT PROVEN) without chromium and node.
+#  R7  (the review's F1) a database whose name holds a line break, made by sa: Rights of f-bare2 lists its rights and
+#      prints NO script, with the reason 'no script is printed: a name this server answered ... holds a line break or
+#      a control character ...'; the database is dropped after.
 #  R6 is the build's own row (the catalogue tests, red first with a planted check): not rerun here.
 #
 # Needs: docker (SQL Server 2022 Developer, PostgreSQL 16), psql, curl, python3, a go toolchain, node and npm (the web
@@ -68,7 +73,7 @@ notproven() { echo "NOT PROVEN: $*"; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
 TMPD=$(mktemp -d); SRVPID=; CHRPID=
-SA_PW=$(pw); FULL_PW=$(pw); BARE_PW=$(pw); ODD_PW=$(pw); PG_PW=$(pw); MON_PW=$(pw); UPW=$(pw)
+SA_PW=$(pw); FULL_PW=$(pw); BARE_PW=$(pw); ODD_PW=$(pw); PG_PW=$(pw); MON_PW=$(pw); UPW=$(pw); BAD_PW=$(pw)
 export PG_PW
 printf 'ACCEPT_EULA=Y\nMSSQL_AGENT_ENABLED=true\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 printf 'POSTGRES_PASSWORD=%s\n' "$PG_PW" > "$TMPD/pg.env"
@@ -106,7 +111,7 @@ for a in sys.argv[1:]:
 print(json.dumps(d))' "$@"; }
 # api METHOD path [body]: the answer in $TMPD/ans.json, the code printed. Every answer is kept too under
 # $TMPD/answers/ for the leak check, each under a name of its own (api mostly runs inside \$(...), a subshell: a shell
-# counter would not move there and the answers would overwrite each other - run st12r)
+# counter would not move there and the answers would overwrite each other)
 mkdir -p "$TMPD/answers"
 api() { local code; if [[ $# -ge 3 ]]; then printf '%s' "$3" > "$TMPD/body.json"; code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -X "$1" --data @"$TMPD/body.json" "$U/api/$2");
   else code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -b "$TMPD/cj" "$U/api/$2"); fi; cp "$TMPD/ans.json" "$(mktemp "$TMPD/answers/XXXXXXXX")"; echo "$code"; }
@@ -147,7 +152,7 @@ sqok "A: the logins" "CREATE DATABASE [$UDB];
   CREATE USER [$FULL] FOR LOGIN [$FULL]; GRANT EXECUTE ON dbo.xp_instance_regread TO [$FULL]; GRANT EXECUTE ON dbo.xp_regread TO [$FULL];"
 sqok "A: the full login's msdb user" "CREATE USER [$FULL] FOR LOGIN [$FULL]; ALTER ROLE db_datareader ADD MEMBER [$FULL];" msdb
 PMON="Pgc \"Mon $SUF"; PMONQ="\"Pgc \"\"Mon $SUF\""; CDB=pgc_closed_$SUF
-mq "CREATE ROLE $PMONQ LOGIN PASSWORD '$MON_PW'" >/dev/null; mq "CREATE DATABASE $CDB" >/dev/null; mq "REVOKE CONNECT ON DATABASE $CDB FROM PUBLIC" >/dev/null
+printf "CREATE ROLE %s LOGIN PASSWORD '%s';\n" "$PMONQ" "$MON_PW" | PGPASSWORD="$PG_PW" psql "host=127.0.0.1 port=$PP user=postgres dbname=postgres" -Xq -v ON_ERROR_STOP=1 >/dev/null; mq "CREATE DATABASE $CDB" >/dev/null; mq "REVOKE CONNECT ON DATABASE $CDB FROM PUBLIC" >/dev/null
 ok "A: SQL Server on $PS (logins $FULL, $BARE, $BARE2, '$ODD'; a user database $UDB), PostgreSQL on $PP (the role '$PMON' without pg_monitor; $CDB closed to PUBLIC); nothing listens on $PDOWN"
 
 echo "== B. the build, the repository, serve =="
@@ -169,6 +174,9 @@ export CR_SQL_DSN="$(msdsn "$FULL" "$FULL_PW")" CR_BARE_DSN="$(msdsn "$BARE" "$B
 export CR_PG_DSN="host=127.0.0.1 port=$PP user=postgres password=$PG_PW dbname=postgres"
 export CR_PGMON_DSN="host=127.0.0.1 port=$PP user='$PMON' password=$MON_PW dbname=postgres"
 export CR_DOWN_DSN="host=127.0.0.1 port=$PDOWN user=postgres password=$PG_PW dbname=postgres"
+# a dsn that does not parse (sslmode's value misspelled), its password written with spaces around '=': pgconn's own
+# masking does not catch that spelling, so its parse error would carry the password (the review's F4)
+export CR_BAD_DSN="host=127.0.0.1 port=$PP user=postgres password = '$BAD_PW' dbname=postgres sslmode=verify-ful"
 cat > "$CFGD/pgvigil.yaml" <<EOF
 repository:
   dsn: "$PGDSN"
@@ -180,6 +188,7 @@ instances:
   - {name: f-pg, dsn: env:CR_PG_DSN}
   - {name: f-pgmon, dsn: env:CR_PGMON_DSN}
   - {name: f-down, dsn: env:CR_DOWN_DSN}
+  - {name: f-bad, dsn: env:CR_BAD_DSN}
 EOF
 "$TMPD/pgvigil" migrate -config "$CFGD/pgvigil.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "B: migrate"; }
 PGVIGIL_PASSWORD="$UPW" "$TMPD/pgvigil" user add -config "$CFGD/pgvigil.yaml" "$USR" >/dev/null 2>&1 || fail "B: user add"
@@ -187,7 +196,7 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); p
 (umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORT") >"$TMPD/serve.log" 2>&1 & SRVPID=$!
 for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
 kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.log" >&2; fail "B: serve exited"; }
-python3 -c 'import json, sys; json.dump({"username": sys.argv[1], "password": sys.argv[2]}, open(sys.argv[3], "w"))' "$USR" "$UPW" "$TMPD/login.json"
+P_USR="$USR" P_UPW="$UPW" python3 -c 'import json, os, sys; json.dump({"username": os.environ["P_USR"], "password": os.environ["P_UPW"]}, open(sys.argv[1], "w"))' "$TMPD/login.json"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "B: the UI login"
 ok "B: built, migrated, serve on $PORT, signed in as $USR"
 
@@ -213,6 +222,10 @@ DOWN=$(ans detail | head -c 100)
   || fail "C1a: the kept results: f-sql $(check f-sql tested_ok), f-pg $(check f-pg tested_ok), f-down $(check f-down tested_ok); sources $(check f-sql source) / $(check p-up source)"
 NA=$(pq "SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance tested' AND outcome = 'done' AND target IN ('f-sql', 'f-pg', 'f-down')")
 [[ "$NA" == 3 ]] || fail "C1a: $NA audit rows of the three tests, want 3"
+BADW="the instance's dsn in pgvigil.yaml does not parse (its text is not shown: it may hold a password)"
+code=$(api POST admin/instances "$(js op=test name=f-bad)"); [[ "$code" == 200 && "$(ans ok)" == False && "$(ans detail)" == "$BADW" ]] || fail "C1d: test f-bad: $code $(cat "$TMPD/ans.json")"
+code=$(rights f-bad); [[ "$code" == 200 && "$(ans ok)" == False && "$(ans detail)" == "$BADW" ]] || fail "C1d: Rights of f-bad: $code $(cat "$TMPD/ans.json")"
+ok "C1d: f-bad's dsn does not parse: Test and Rights answer '$BADW'"
 ok "C1a: op 'test' of the file's instances: f-sql and f-pg connected, f-down failed in $((T1 - T0)) s ('$DOWN'); the three results kept and audited"
 # b: the ages
 collect mssql_instance f-sql; collect activity f-pg
@@ -292,14 +305,18 @@ NR=$(pq "SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance rights' A
 ok "R5 (PostgreSQL): the role's memberships and the door functions ($G0) equal before and after ten Rights reads; Rights of f-down: '$(ans detail | head -c 80)'; $NR Rights clicks audited"
 
 echo "== the answers hold no password and no dsn =="
-# grep answers 1 when it finds nothing - the good case here: its status is taken out of the pipeline (run st12q: under
+# grep answers 1 when it finds nothing - the good case here: its status is taken out of the pipeline (under
 # pipefail the empty result ended the proof without a word)
-HITS=$(for s in "$SA_PW" "$FULL_PW" "$BARE_PW" "$ODD_PW" "$PG_PW" "$MON_PW" "$UPW" "sqlserver://" "password="; do { grep -lF -- "$s" "$TMPD"/answers/* 2>/dev/null || true; } | head -2; done | sort -u | tr '\n' ' ')
+# the passwords as a pattern file of mode 600 (grep -f): never on a command line
+printf '%s\n' "$SA_PW" "$FULL_PW" "$BARE_PW" "$ODD_PW" "$PG_PW" "$MON_PW" "$UPW" "$BAD_PW" "sqlserver://" "password=" > "$TMPD/leak.pat"
+HITS=$({ grep -lF -f "$TMPD/leak.pat" "$TMPD"/answers/* 2>/dev/null || true; } | sort -u | tr '\n' ' ')
 [[ -z "$HITS" ]] || fail "a password or a connection string is in an API answer: $HITS"
 NANS=$(ls "$TMPD/answers" | wc -l)
-[[ "$NANS" -ge 37 ]] || fail "the leak check read $NANS saved answers (want 37 or more: every call of the run)"
-if grep -qF -e "$FULL_PW" -e "$BARE_PW" -e "$PG_PW" -e "$MON_PW" "$TMPD/serve.log"; then fail "a password is in serve's log"; fi
-ok "no password and no connection string in any of the $NANS API answers or in serve's log"
+[[ "$NANS" -ge 39 ]] || fail "the leak check read $NANS saved answers (want 39 or more: every call of the run)"
+pq "SELECT coalesce(detail, '') FROM pgvigil.admin_audit UNION ALL SELECT coalesce(tested_detail, '') FROM pgvigil.admin_file_tests UNION ALL SELECT coalesce(tested_detail, '') FROM pgvigil.admin_instances" > "$TMPD/repo-text.txt"
+if grep -qF -f "$TMPD/leak.pat" "$TMPD/repo-text.txt"; then fail "a password or a connection string is in the repository's audit or test rows"; fi
+if grep -qF -f "$TMPD/leak.pat" "$TMPD/serve.log"; then fail "a password or a connection string is in serve's log"; fi
+ok "no password and no connection string in any of the $NANS API answers, the repository's audit and test rows, or serve's log"
 
 echo "== C1c and P. the page in headless Chromium =="
 if command -v chromium >/dev/null && command -v node >/dev/null && [[ -z "${PROOF_SKIP_PAGE:-}" ]]; then
@@ -371,7 +388,7 @@ d = json.load(open(sys.argv[1])); bad = []
 if d.get("login") != 200: bad.append(f"the page's sign-in answered {d.get('login')}")
 l = d["light"]
 if not l.get("clicked") or not l.get("done"): bad.append(f"Check all: clicked {l.get('clicked')}, ended {l.get('done')}, the status {l.get('status')!r}")
-if l.get("status") != "Checked 8: 7 connected, 1 failed; 1 disabled, not checked.": bad.append(f"Check all's last line: {l.get('status')!r}")
+if l.get("status") != "Checked 9: 7 connected, 2 failed; 1 disabled, not checked.": bad.append(f"Check all's last line: {l.get('status')!r}")
 rows = l.get("rows") or {}
 for n, want in (("f-sql", "connected"), ("p-up", "connected"), ("f-down", "failed")):
     got = (rows.get(n) or {}).get("last test", "")
@@ -400,6 +417,13 @@ PY
 else
   notproven "C1c and P: chromium or node is not on this machine (the page's Check all and the Rights box were not clicked)"
 fi
+echo "== R7. a database whose name holds a line break =="
+sqok "R7: the database" "DECLARE @n sysname = N'pgc' + NCHAR(10) + N'lf $SUF', @s nvarchar(400); SET @s = N'CREATE DATABASE ' + QUOTENAME(@n); EXEC (@s);"
+code=$(rights f-bare2); NS=$(ans no_script)
+[[ "$code" == 200 && "$(ans ok)" == True && "$(script | wc -c)" == 0 && "$NS" == "no script is printed: a name this server answered"*"line break"* && "$(state view_server_state)" == missing ]] \
+  || fail "R7: Rights of f-bare2 with the database there: $code, the script $(script | wc -c) bytes, no_script '$NS', view_server_state '$(state view_server_state)'"
+sqok "R7: the database dropped" "DECLARE @n sysname = N'pgc' + NCHAR(10) + N'lf $SUF', @s nvarchar(400); SET @s = N'DROP DATABASE ' + QUOTENAME(@n); EXEC (@s);"
+ok "R7: with a database named across a line break, Rights of f-bare2 lists its rights and prints no script: '$(printf '%s' "$NS" | cut -c1-90)...'"
 NB=$(sq "SELECT COUNT(*) FROM sys.server_permissions p JOIN sys.server_principals l ON l.principal_id = p.grantee_principal_id WHERE l.name = N'$BARE2' AND p.permission_name <> N'CONNECT SQL'" | tr -d ' \r')
 [[ "$NB" == 0 ]] || fail "f-bare2 (never granted by the proof) holds $NB server permissions after the run"
 echo "NOT PROVEN: Azure SQL Database, Azure SQL Managed Instance, Amazon RDS, SQL Server before 2022, Windows - which rights are listed there is the catalogues' unit tests"

@@ -10,9 +10,34 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
 
-// rightsLiteral finds the rights checks in a statement's text: pg_has_role(...) and has_*_privilege(...) up to their
-// first closing bracket.
-var rightsLiteral = regexp.MustCompile(`(pg_has_role|has_[a-z_]+_privilege)\([^)]*\)?`)
+// rightsCall is where a rights check starts: pg_has_role( and has_*_privilege(.
+var rightsCall = regexp.MustCompile(`\b(pg_has_role|has_[a-z_]+_privilege)\(`)
+
+// rightsLiterals finds the rights checks in a source's text: each name's call up to its BALANCED closing bracket (a
+// check's own inner brackets - DB_NAME(), QUOTENAME(...), to_regprocedure(...) - are part of it), or to the line's end.
+func rightsLiterals(src string) []string {
+	var out []string
+	for _, at := range rightsCall.FindAllStringIndex(src, -1) {
+		depth, end := 0, len(src)
+	scan:
+		for i := at[1] - 1; i < len(src); i++ {
+			switch src[i] {
+			case '\n':
+				end = i
+				break scan
+			case '(':
+				depth++
+			case ')':
+				if depth--; depth == 0 {
+					end = i + 1
+					break scan
+				}
+			}
+		}
+		out = append(out, src[at[0]:end])
+	}
+	return out
+}
 
 // TestRightsCatalogueNamesEveryCheck (ST2, row R6): every rights check a statement of this package asks about is
 // named by a right of the catalogue (its Checks) or by a listed exception with its reason. A collector that asks
@@ -43,7 +68,7 @@ func TestRightsCatalogueNamesEveryCheck(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, lit := range rightsLiteral.FindAllString(string(b), -1) {
+		for _, lit := range rightsLiterals(string(b)) {
 			seen[lit] = true
 			if _, ok := known[lit]; !ok {
 				t.Errorf("%s asks %s: no right of the catalogue (rights.go) and no exception names it", f, lit)
@@ -136,4 +161,55 @@ func TestRightsScript(t *testing.T) {
 	if got := (RightsRead{Login: "m", Server: "S"}).Script("now"); got != "" {
 		t.Errorf("nothing missing printed %q", got)
 	}
+}
+
+// TestRightsGuard (review F1): a name the server answered that holds a line break or another control character - the
+// login, the server, the database, a listed database - prints no script and takes every statement out; a plain name
+// prints one, with the database it is run in named in its head (review F7).
+func TestRightsGuard(t *testing.T) {
+	read := func(login, server, db, listed string) RightsRead {
+		return RightsRead{Login: login, Server: server, Database: db, Missing: 1, MissingCore: 1, Rights: []RightState{
+			{Key: "connect", Name: "CONNECT on every database", Core: true, For: "each database", State: "missing",
+				Grant: `GRANT CONNECT ON DATABASE ` + listed + ` TO "m";`, Databases: []string{listed}}}}
+	}
+	for _, c := range []struct {
+		name, login, server, db, listed string
+		script                          bool
+	}{
+		{"plain names", "m", "pg1", "app", "crm", true},
+		{"a listed database across a line break", "m", "pg1", "app", "\"x\nALTER ROLE m SUPERUSER;--\"", false},
+		{"a role across a line break", "x\nALTER ROLE m SUPERUSER;--", "pg1", "app", "crm", false},
+		{"a cluster_name with U+2029", "m", "pg1 x", "app", "crm", false},
+	} {
+		r := read(c.login, c.server, c.db, c.listed)
+		r.guard()
+		got := r.Script("now")
+		if c.script != (got != "") {
+			t.Errorf("%s: script printed %v (want %v): no_script %q", c.name, got != "", c.script, r.NoScript)
+		}
+		if c.script && !strings.Contains(got, "-- Run it connected to the database app: ") {
+			t.Errorf("%s: the head does not name the database:\n%s", c.name, got)
+		}
+		if !c.script && (r.NoScript == "" || r.Rights[0].Grant != "" || strings.Contains(got, "SUPERUSER")) {
+			t.Errorf("%s: no_script %q, a statement left %q", c.name, r.NoScript, r.Rights[0].Grant)
+		}
+	}
+}
+
+// TestRightsDoorGuarded (review F7): the server log's door is printed as CREATE OR REPLACE (a door made for an earlier
+// role does not stop the script), granted to the role's placeholder.
+func TestRightsDoorGuarded(t *testing.T) {
+	for _, r := range Rights {
+		if r.Key != "server_log_read" {
+			continue
+		}
+		if !strings.Contains(r.Grant, "CREATE OR REPLACE FUNCTION public.pgvigil_read_log(") || strings.Contains(strings.Replace(r.Grant, "CREATE OR REPLACE FUNCTION", "", 1), "CREATE FUNCTION") {
+			t.Errorf("the door is not CREATE OR REPLACE:\n%s", r.Grant)
+		}
+		if !strings.Contains(r.Grant, "{role}") || strings.Contains(r.Grant, "<login>") {
+			t.Errorf("the door's grantee is not the role's placeholder:\n%s", r.Grant)
+		}
+		return
+	}
+	t.Fatal("no server_log_read right")
 }

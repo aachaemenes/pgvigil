@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,7 +22,6 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
-	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // rightsRow is one right as the page shows it; the two engines' reads are turned into it.
@@ -36,7 +34,7 @@ type rightsAnswer struct {
 	login, server, platform string
 	rows                    []rightsRow
 	missing, missingCore    int
-	script                  string
+	script, noScript        string
 }
 
 // instanceLogin resolves an instance's engine, platform and connection string: the page's by its stored credential,
@@ -54,8 +52,9 @@ func (s *Server) instanceLogin(ctx context.Context, name string) (engine, plat, 
 	if !ok {
 		return "", "", "", fmt.Errorf("no instance %q among the page's and the file's", name)
 	}
-	if dsn = fi.DSN(); strings.TrimSpace(dsn) == "" {
-		return "", "", "", errors.New(emptyFileDSN)
+	dsn = fi.DSN()
+	if why := fileDSNError(engineOf(fi), dsn); why != "" {
+		return "", "", "", errors.New(why)
 	}
 	return engineOf(fi), fi.Platform, dsn, nil
 }
@@ -73,9 +72,10 @@ func readRights(ctx context.Context, engine, plat, dsn string, at time.Time) (ri
 	}
 	switch engine {
 	case config.EngineSQLServer:
-		db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-admin-rights"))
+		// every connection's socket ends at the read's deadline (a server that never answers the login holds nothing)
+		db, err := openBoundedMSSQL(dsn, "pgvigil-admin-rights")
 		if err != nil {
-			return rightsAnswer{}, fmt.Errorf("the connection string: %w", err)
+			return rightsAnswer{}, errors.New("the connection string does not parse (its text is not shown: it may hold a password)")
 		}
 		defer func() { _ = db.Close() }()
 		conn, err := db.Conn(cctx)
@@ -87,7 +87,7 @@ func readRights(ctx context.Context, engine, plat, dsn string, at time.Time) (ri
 		if err != nil {
 			return rightsAnswer{}, err
 		}
-		out := rightsAnswer{login: r.Login, server: r.Server, platform: "SQL Server, " + r.Platform, missing: r.Missing, missingCore: r.MissingCore, script: r.Script(stamp)}
+		out := rightsAnswer{login: r.Login, server: r.Server, platform: "SQL Server, " + r.Platform, missing: r.Missing, missingCore: r.MissingCore, script: r.Script(stamp), noScript: r.NoScript}
 		for _, x := range r.Rights {
 			out.rows = append(out.rows, rightsRow{x.Name, x.State, kindOf(x.Core), x.For, x.Key})
 		}
@@ -102,7 +102,7 @@ func readRights(ctx context.Context, engine, plat, dsn string, at time.Time) (ri
 		if err != nil {
 			return rightsAnswer{}, err
 		}
-		out := rightsAnswer{login: r.Login, server: r.Server, platform: "PostgreSQL, " + r.Platform, missing: r.Missing, missingCore: r.MissingCore, script: r.Script(stamp)}
+		out := rightsAnswer{login: r.Login, server: r.Server, platform: "PostgreSQL, " + r.Platform, missing: r.Missing, missingCore: r.MissingCore, script: r.Script(stamp), noScript: r.NoScript}
 		for _, x := range r.Rights {
 			out.rows = append(out.rows, rightsRow{x.Name, x.State, kindOf(x.Core), x.For, x.Key})
 		}
@@ -136,7 +136,7 @@ func (s *Server) instanceRights(w http.ResponseWriter, r *http.Request, user str
 			}
 			audit(true, fmt.Sprintf("%d needed and %d optional missing, as %s", a.missingCore, a.missing-a.missingCore, a.login))
 			s.reply(w, r, map[string]any{"ok": true, "login": a.login, "server": a.server, "platform": a.platform, "missing": a.missing,
-				"missing_needed": a.missingCore, "rights": t, "script": a.script}, nil)
+				"missing_needed": a.missingCore, "rights": t, "script": a.script, "no_script": a.noScript}, nil)
 			return
 		}
 	}
