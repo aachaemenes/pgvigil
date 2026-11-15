@@ -1104,3 +1104,30 @@ LANGUAGE sql STABLE AS $$
    WHERE sp.span >= 300
    ORDER BY sp.at
 $$;
+
+-- mssql_wait_core_summary: the figure over a whole window for the Performance summary, time-weighted (never an average
+-- of points): the waits not left out of the stored reads in (p_from, p_to] in seconds / S / their summed interval in
+-- minutes, 2 decimals; S = the window's newest scheduler count above 0, in (p_from - 15 min, p_to]. NULL with no count
+-- or under 300 s of reads.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_wait_core_summary(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS double precision
+LANGUAGE sql STABLE AS $$
+  WITH r AS (
+    SELECT sum(x.secs) AS span, sum(x.wait_s) AS wait_s
+      FROM (SELECT max(w.interval_secs)::double precision AS secs,
+                   coalesce(sum(w.wait_ms) FILTER (WHERE NOT w.is_benign AND i.wait_type IS NULL), 0)::double precision / 1000 AS wait_s
+              FROM pgvigil.mssql_wait_sample w
+              LEFT JOIN pgvigil.mssql_wait_percore_ignored i ON i.wait_type = w.wait_type
+             WHERE w.instance_id = p_instance_id AND w.snapshot_at > p_from AND w.snapshot_at <= p_to
+             GROUP BY w.snapshot_at) x),
+  k AS (
+    SELECT s.schedulers
+      FROM pgvigil.mssql_sched_sample s
+     WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from - interval '15 minutes' AND s.snapshot_at <= p_to
+       AND s.schedulers > 0
+     ORDER BY s.snapshot_at DESC
+     LIMIT 1)
+  SELECT round((r.wait_s / k.schedulers / (r.span / 60))::numeric, 2)::double precision
+    FROM r, k
+   WHERE r.span >= 300
+$$;
