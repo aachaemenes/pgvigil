@@ -27,6 +27,8 @@ alerts:
     recovery: true                # a message when the finding clears (default true)
     clear_after: 10m              # how long a finding must stay gone before it is resolved (default 10m; 0 = at once)
     max_per_hour: 30              # optional send cap (default 0 = none); see "The send cap"
+    digest_hour: 8                # optional: one daily digest at 08:00 in timezone; see "Windows and the daily digest"
+    checks: [backups]             # optional: only the findings of these checks (a source or setting; default all)
     templates:                    # optional; see "Templates"
       subject: {firing: "{severity}: {setting} on {instance}"}
       line: {resolved: "OK again: {instance} {setting}"}
@@ -278,6 +280,60 @@ The sender gives the evaluation 30 seconds a pass: past that the rules keep thei
 pass's summary line says "alert rules not judged" with the reason, and the findings still go out. A rule on a
 database that is later dropped stays held until someone ends the rule.
 
+## Windows and the daily digest
+
+A **window** holds alerts on chosen weekdays during a daily span in an IANA time zone, for one instance, a tag list
+or every instance (or the scope of an alert rule, copied). Make one on the Alert rules page, under **Windows**.
+
+- **blackout** and **mute**: nothing is sent while the window holds. The held sends are logged. The Alerts page says
+  why each one was held, under **Why held**.
+- **digest**: info and warning alerts (or info alone) are held for the channel's **daily digest**. A critical alert is
+  never held this way: it pages at once.
+- A span whose end comes before its start runs across midnight, as part of the day it starts.
+- Local time follows the zone's own rules. On a spring-forward day a span inside the skipped hour holds nothing. In
+  the repeated hour of a fall-back day, it holds for both passes of that hour.
+- A window never holds pgvigil's own alerts about the repository or a collector.
+- When several holds match, the first wins: a blackout over a mute, a mute over the digest, the digest over the
+  flapping hold.
+
+A channel with `digest_hour` gets one message a day at that hour, in its `timezone`. It lists the alerts a digest
+window held on it since its last digest, grouped by instance and check: how many, when first and last held, the
+highest severity and the newest detail, at most 40 groups and then '+N more'.
+- **Empty days.** Nothing is sent on a day with none.
+- **What does not stop it.** The digest waits out the channel's quiet hours and back-off and counts against its
+  `max_per_hour`. A failed digest is tried again on the next pass. An hour missed while pgvigil was down is sent once,
+  carrying everything since the last digest.
+- **After the window.** An alert first held by a digest window, and never sent on that channel, stays held after the
+  window ends while it keeps standing. It reaches the channel in the digest only, and no recovery is sent for it. An
+  escalation past the window's ceiling is sent at once.
+- **Where it can be set.** Only on a mail, chat or file channel: a PagerDuty or Opsgenie channel opens an incident per
+  alert and is refused. A route channel takes its base channel's digest hour.
+
+**Rule kinds.** Beside `above` and `below`, a rule can be:
+- `rises`: the rise from one sample to the next is beyond the value;
+- `above_baseline`: above the same local hour's average over the last 7 days, widened by a band (default 20 %), AND
+  above the rule's own value. Until 7 days of that hour are known, the rule judges by its own value alone, and its
+  alert says 'no baseline yet (N of 7 days)'.
+
+Rules of different kinds on one metric and scope work side by side. Within one kind, an instance's rule wins over a
+tag-list rule, and a tag-list rule over the fleet's. Between two tag lists, the one with more AND terms wins, then the
+newer rule. The rules grid says which rule overrides which, and on how many instances.
+
+**Tag lists.** A rule or a window may cover a tag list, for example `(env:prod OR env:stage) AND app:billing`: within
+one key any value, across keys every key. Keys are compared without case. A tag that no instance carries widens
+nothing.
+
+**Flapping** (SQLWATCH's rule). A rule's series whose last 12 results within 6 hours change 4 to 7 times
+(a change ratio of 0.35 to 0.65) is marked flapping. Its alert is sent once, saying so, and its repeats and re-firings
+are held until the ratio falls under 0.35. An escalation is still sent. A rule can opt out ('never hold as
+flapping'). The Alerts page lists the series flapping now.
+
+**Findings history.** Every finding's open, close and severity change is kept, whatever the channels, plus one sample
+an hour while it stands, for 90 days. The Alert rules page draws one instance's timeline.
+
+`checks:` on a channel limits it to the findings of those checks (a finding's source or setting, without case; the
+check a mute rule names). For example, backups go to one team and blocking to another.
+
 ## Destinations and the rules they keep
 
 - **Only the configured destination.** A webhook's redirect is never followed: the send is refused, and the log says
@@ -444,6 +500,24 @@ Writes from the UI go through `pgvigil.import_alert_test`, `pgvigil.import_alert
 `pgvigil.import_ack_change` (the actions door's audit login, as `import_ack`; `POST /api/alerts/test`,
 `/api/alerts/dismiss`, `/api/alerts/mute`). The sender reads the requests through `pgvigil.alert_tests_due` and answers
 through `pgvigil.alert_test_record`; its login needs nothing new (0093 grants `pgvigil_alerter` the test table).
+
+## In the repository (migration 0154)
+
+| Object | What it holds |
+|---|---|
+| `pgvigil.alert_windows` | Every blackout, mute and digest window: its scope, weekdays, daily span, zone, the digest's ceiling, who made and ended it (an edit ends the row and writes its successor). Not purged (an audit). |
+| `pgvigil.alert_window_log` | Every attempt from the UI, done or refused. |
+| `pgvigil.alert_held` | The sends a window, the digest carry-over or the flapping hold kept from a channel (first, last, passes, the newest detail); `alert_held_all` adds 0073's `ack_suppressed`. |
+| `pgvigil.alert_hold(...)` | The one hold test of the sender (`alert_mark` and `alert_due`). |
+| `pgvigil.digest_log` | Every digest: sent, failed, refused or empty. `digest_due`, `digest_items` and `digest_record` are the sender's. |
+| `pgvigil.findings_history` | The findings history (monthly partitions, kept 90 days); `findings_history_run` writes it each pass. |
+| `pgvigil.alert_rules` | Gains `scope_tags`, `band_pct`, `zone`, `ignore_flapping` and the kind (`op_family`); `op` takes `rises` and `above_baseline`; one live rule per metric, scope, series and kind. |
+| `pgvigil.alert_rule_state` | Keyed by kind too; gains the last 12 results, `flapping_since` and the baseline judged against. |
+| `pgvigil.alert_rule_baseline` | The hour's baseline per baseline rule, instance and series. |
+| `pgvigil.alert_rule_overrides` | Per live rule, the rule of its kind in force instead of it, and on how many instances. |
+
+Writes from the UI go through `pgvigil.import_alert_window` and `pgvigil.import_alert_rule` (the actions door's audit
+login; `POST /api/alertwindows`, `/api/alertrules`); the pages read `GET /api/alertscope`.
 
 ## Proof
 
