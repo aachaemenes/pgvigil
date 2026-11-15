@@ -86,6 +86,9 @@ func TestCloudReplicasPageOnAStore(t *testing.T) {
 			"message": "Multi-AZ instance failover started.", "source": "rds events"})
 	imp("rep", r1, rn.Add(-2*time.Minute), res(r1, "replica", db1, nil, "error"))
 	imp("rep", r1, rn.Add(-time.Minute), res(r1, "replica", db1, nil, "error"))
+	// and the source's own read of the last minutes: an instance reads its resources only while its read is fresh
+	// (part b finding 9: cloud_replica_readers, 15 minutes)
+	imp("src", db1, rn.Add(-90*time.Second), res(db1, "source", "", []string{r1}, ""))
 
 	type row = map[string]any
 	query := func(sql string, args ...any) []row {
