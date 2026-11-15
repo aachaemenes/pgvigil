@@ -76,13 +76,15 @@ cleanup() {
   rc=$?; set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" >/dev/null 2>&1
   docker rm -f "$MCT" "$PCT" >/dev/null 2>&1 || echo "CLEANUP: containers $MCT / $PCT not removed" >&2
-  rm -f "$CFG" "$OUT" "$DDL" "$OUT.head" "$OUT.serve"
+  rm -f "$CFG" "$OUT" "$DDL" "$OUT.head" "$OUT.serve" "${LF:-}"
   exit $rc
 }
 trap cleanup EXIT
-export SQLCMDPASSWORD="$SAPW"
+export SQLCMDPASSWORD="$SAPW" MSSQL_SA_PASSWORD="$SAPW"
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
-docker run -d --name "$MCT" --user root -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$SAPW" -e MSSQL_MEMORY_LIMIT_MB=2048 -p "127.0.0.1:$MPORT:1433" "$MIMG" >/dev/null
+# the password by name from this shell's environment: never on a command line (ps) - docker inspect still shows the
+# container's environment to the docker group while the container lives (the run's own container, removed at the end)
+docker run -d --name "$MCT" --user root -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_MEMORY_LIMIT_MB=2048 -p "127.0.0.1:$MPORT:1433" "$MIMG" >/dev/null
 docker run -d --name "$PCT" -e POSTGRES_HOST_AUTH_METHOD=trust -p "127.0.0.1:$PPORT:5432" "$PIMG" -c max_connections=300 >/dev/null
 sq() { docker exec -e SQLCMDPASSWORD "$MCT" $SQLCMD -S localhost -U sa -C -I -b -W -h -1 -s '|' -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
 work() { docker exec -e SQLCMDPASSWORD "$MCT" $SQLCMD -S localhost -U sa -C -I -d "$DB" "${@:2}" -Q "$1"; }
@@ -91,7 +93,11 @@ for i in $(seq 1 60); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 3; done; 
 for i in $(seq 1 30); do psql "host=127.0.0.1 port=$PPORT user=postgres" -XAtqc "select 1" >/dev/null 2>&1 && break; sleep 2; done
 export PGVIGIL_REPO_DSN="host=127.0.0.1 port=$PPORT user=postgres dbname=postgres"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
-sq "CREATE LOGIN [$L1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1]; CREATE DATABASE [$DB];"
+# the login's password through a file copied into the container (sqlcmd -Q would show it in ps), removed at once
+LF=$(umask 077; mktemp)
+printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [%s]; GRANT VIEW ANY DEFINITION TO [%s]; CREATE DATABASE [%s];\n" "$L1" "$P1" "$L1" "$L1" "$DB" > "$LF"
+sqfile "$LF" >/dev/null || { rm -f "$LF"; fail "the monitor login"; }
+rm -f "$LF"; docker exec "$MCT" rm -f "/tmp/b10_$SUF.sql"
 sq "CREATE TABLE dbo.b10 (id int PRIMARY KEY, v int); INSERT dbo.b10 VALUES (1, 0);" "$DB"
 export MSSQL_MON_DSN="sqlserver://$L1:$P1@127.0.0.1:$MPORT?database=master&encrypt=true&TrustServerCertificate=true"
 N1=proof-b10-ms-$SUF
