@@ -423,6 +423,8 @@ type Column struct {
 	Type string // format_type(): 'timestamp with time zone', 'numeric(5,2)', 'text[]'
 	OID  uint32
 	Mod  int32
+	// NotNull: the column is NOT NULL
+	NotNull bool
 }
 
 // Resolved is a table of the map as this repository holds it and this configuration carries it.
@@ -431,7 +433,7 @@ type Resolved struct {
 	Key         []string  // the primary key
 	Columns     []Column  // the columns exported, in the table's own order
 	Dropped     []Dropped // the columns left behind under this configuration
-	HasInstance bool      // it has an instance_id: read one instance at a time
+	HasInstance bool      // it has a NOT NULL instance_id: read one instance at a time
 	Bytes       int64     // its size with its indexes (a partitioned table: its partitions')
 	Skip        string    // why it is not exported under this configuration ("" = exported)
 }
@@ -455,7 +457,7 @@ SELECT c.relname::text,
  WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
  ORDER BY c.relname`
 	storeColumnsSQL = `/* pgvigil-export:catalog */
-SELECT c.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod), a.atttypid::oid, a.atttypmod
+SELECT c.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod), a.atttypid::oid, a.atttypmod, a.attnotnull
   FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND a.attnum > 0 AND NOT a.attisdropped
  ORDER BY c.relname, a.attnum`
@@ -512,7 +514,7 @@ func Resolve(ctx context.Context, q Querier, opt Options) ([]Resolved, error) {
 	for rows.Next() {
 		var table string
 		var c Column
-		if err := rows.Scan(&table, &c.Name, &c.Type, &c.OID, &c.Mod); err != nil {
+		if err := rows.Scan(&table, &c.Name, &c.Type, &c.OID, &c.Mod, &c.NotNull); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("the repository's columns: %w", err)
 		}
@@ -535,8 +537,8 @@ func Resolve(ctx context.Context, q Querier, opt Options) ([]Resolved, error) {
 		}
 		timeSeen := r.Time == ""
 		for _, c := range all[r.Name] {
-			if c.Name == "instance_id" {
-				r.HasInstance = true
+			if c.Name == "instance_id" && c.NotNull {
+				r.HasInstance = true // a nullable instance_id (a line of the service itself) is read without the join
 			}
 			if c.Name == r.Time {
 				timeSeen = true

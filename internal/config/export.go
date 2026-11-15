@@ -135,8 +135,8 @@ func (b *ByteSize) UnmarshalYAML(n *yaml.Node) error {
 var exportName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,30}$`)
 
 func (e *Export) validate() error {
-	if !exportName.MatchString(e.Name) {
-		return fmt.Errorf("export.name: lower-case letters, digits, '_' and '-', a letter first, at most 31 characters (got %q)", e.Name)
+	if !exportName.MatchString(e.Name) || strings.Contains(e.Name, "__") {
+		return fmt.Errorf("export.name: lower-case letters, digits, '_' and '-', a letter first, no '__', at most 31 characters (got %q)", e.Name)
 	}
 	if strings.TrimSpace(e.DSNRaw) == "" {
 		return fmt.Errorf("export.dsn is required: the export's own login, IN ROLE pgvigil_reader alone (env:NAME or file:/path)")
