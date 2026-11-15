@@ -32,8 +32,8 @@ type Config struct {
 	// An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
 	// Probe (B24h; dbachecks Instance#3, Server#4 / #5): how the collector checks that a host answers - icmp (the
-	// default: an unprivileged ICMP socket where the system allows it, else the TCP connect time), tcp (the TCP
-	// handshake to the instance's own port), off. ProbeEveryMinute probes every host each minute (an admin's opt-in:
+	// default; until B24h-2 it is measured as tcp), tcp (the TCP handshake to the port the instance's last opened
+	// connection used), off. ProbeEveryMinute probes every host each minute (an admin's opt-in:
 	// a per-minute sweep can trip an IDS); by default a host is probed only after a collection of it failed.
 	Probe            string `yaml:"probe"`
 	ProbeEveryMinute bool   `yaml:"probe_every_minute"`

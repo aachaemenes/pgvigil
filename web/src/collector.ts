@@ -24,7 +24,10 @@ function probeWords(r: Row): string {
   const rounds = Number(r.probe_rounds_1h ?? 0), answered = Number(r.probe_answered_1h ?? 0);
   if (!rounds) return '-';
   if (answered > 0) return `${msOf(r.probe_avg_s)} (${String(r.probe_method ?? '')}, ${answered} of ${rounds})`;
-  return r.probe_last_answered == null ? 'never answered (blocked or not allowed)' : `not answering since ${fmtTime(r.probe_last_answered)}`;
+  // a TCP probe goes to the port a connection of the instance opened: its silence is no blocked ICMP (the B24h-1 review
+  // part b #11); an opened connection counts as an answer (part a #1), so 'never' is ICMP's case alone
+  if (r.probe_last_answered == null) return String(r.probe_method ?? '') === 'tcp' ? 'no answer to the TCP handshake on its port' : 'never answered (blocked or not allowed)';
+  return `not answering since ${fmtTime(r.probe_last_answered)}`;
 }
 
 type Parts = Record<string, Table | null>;
