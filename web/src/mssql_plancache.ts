@@ -3,7 +3,8 @@
 // apart, with a scope for the databases that have no Query Store; and what the cache holds per database (single-use
 // plans, one statement compiled into many plans, how recent the plans are) with its two lists. Data from
 // /api/mssql/plancache; the route and the tab's entry are the shell's.
-import { get, Row, rowsOf, Table } from './api';
+import { get, post, Row, rowsOf, Table } from './api';
+import { mssqlActionsState } from './mssql_actions';
 import { openText } from './filedrop';
 import { lineChart } from './chart';
 import { queryHistory } from './mssql_queries';
@@ -215,6 +216,22 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
   }
   const entries = rowsOf(d.entries);
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  // the actions door's plan_evict (task 406): on, or off with its reason said once above the grid
+  const st = await mssqlActionsState(ctx.instance);
+  const evictOff = st.actions.plan_evict?.enabled ? '' : st.actions.plan_evict?.reason || 'actions are off for this instance';
+  const evictNote = evictOff ? el('p', { class: 'meta', id: `evict-off-${String(row.query_key)}` }, `Evict is off for this instance: ${evictOff}`) : '';
+  const evictBtn = (e: Row) => {
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `Evict the plan ${String(e.plan_handle)}` }, 'Evict') as HTMLButtonElement;
+    if (evictOff) {
+      b.setAttribute('aria-disabled', 'true');
+      b.setAttribute('aria-describedby', `evict-off-${String(row.query_key)}`);
+      b.style.opacity = '.55';
+      b.style.cursor = 'not-allowed';
+      return b;
+    }
+    b.addEventListener('click', () => { void evictDialog(ctx, String(e.plan_handle), b, () => { void cachedPlans(ctx, row, box); }); });
+    return b;
+  };
   const act = (e: Row, label: string, batch: boolean, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${String(e.plan_handle)} at ${String(e.stmt_start)}` }, label) as HTMLButtonElement;
     if (d.fetch_off) {
@@ -249,8 +266,9 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
       { key: 'execution_count', label: 'executions', num: true }, { key: 'cpu_ms', label: 'CPU (ms)', num: true, fmt: num3 },
       { key: 'download', label: 'statement plan', fmt: (_, e) => el('span', {}, act(e, 'Download .sqlplan', false, false), ' ', act(e, 'Open', false, true)) },
       { key: 'batch', label: 'batch plan', fmt: (_, e) => el('span', {}, act(e, 'Download batch', true, false), ' ', act(e, 'Open batch', true, true)) },
+      { key: 'evict', label: 'remove from the cache', fmt: (_, e) => evictBtn(e) },
     ], 'The last plan cache read held no entry for this statement: it left the cache.'),
-    status);
+    evictNote, status);
   (box.firstElementChild as HTMLElement).focus();
 }
 
@@ -321,4 +339,62 @@ function runningPlansSection(ctx: Ctx): HTMLElement {
     box.replaceChildren(...kids);
   })();
   return box;
+}
+
+// ---- evict one plan through the actions door (task 406, Opserver's remove-plan) -------------------------------------
+
+type EvictPreview = { ok: boolean; reason?: string; statement: string; what?: string; note?: string;
+  target: { plan_handle?: string; objtype?: string; plan_created?: string; plan_database?: string; plan_object?: string; plan_statements?: number;
+    plan_uses?: number; plan_size_kb?: number; plan_batch?: string; plan_route?: string } };
+
+async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: () => void) {
+  const close = el('button', { type: 'button' }, 'Cancel');
+  const body = el('div', {}, el('p', { class: 'meta', role: 'status' }, 'Reading the plan through the read login ...'));
+  const dlg = el('dialog', { class: 'act-dialog', 'aria-label': 'Evict one plan from the plan cache', style: 'max-width:min(96vw,48rem)' },
+    el('h3', {}, 'Evict one plan from the plan cache'), body, el('div', { style: 'margin-top:.6rem' }, close)) as HTMLDialogElement;
+  close.addEventListener('click', () => dlg.close());
+  dlg.addEventListener('close', () => { dlg.remove(); if (back.isConnected) back.focus(); });
+  document.body.append(dlg);
+  dlg.showModal();
+  let pv: EvictPreview;
+  try {
+    pv = await post<EvictPreview>('mssql/actions/preview', { instance_id: ctx.instance, action: 'plan_evict', plan_handle: handle });
+  } catch (e) {
+    body.replaceChildren(errorBox(e));
+    return;
+  }
+  const t = pv.target ?? {};
+  const facts: [string, string][] = [
+    ['removes', `the plan of ${pv.what ?? 'this batch'}: ${fmtNum(t.plan_statements ?? 0)} statement(s) compile again at their next run`],
+    ['kind (objtype)', t.objtype ?? ''], ['compiled (server clock)', t.plan_created ?? ''], ['uses', fmtNum(t.plan_uses ?? 0)],
+    ['size', `${fmtNum(t.plan_size_kb ?? 0)} KB`], ['route', t.plan_route === 'signed procedure' ? 'the signed procedure master.dbo.pgvigil_evict_plan' : 'DBCC FREEPROCCACHE itself (the actions login holds ALTER SERVER STATE)'],
+    ['plan handle', t.plan_handle ?? handle], ['statement', pv.statement],
+  ];
+  const kids: (Node | string)[] = [el('dl', { class: 'props' }, ...facts.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)]))];
+  if (t.plan_batch) kids.push(el('pre', { class: 'sql', tabindex: '0' }, t.plan_batch));
+  if (pv.note) kids.push(el('p', { class: 'meta' }, `${pv.note}.`));
+  if (!pv.ok) {
+    kids.push(el('p', { class: 'error', role: 'alert' }, `Nothing to confirm: ${pv.reason ?? 'refused'}.`));
+    body.replaceChildren(...kids);
+    return;
+  }
+  const last8 = (t.plan_handle ?? handle).slice(-8).toUpperCase();
+  const reason = el('textarea', { rows: '2', cols: '60', minlength: '5', maxlength: '500', 'aria-label': 'Reason (kept in the actions log)' }) as HTMLTextAreaElement;
+  const confirm = el('input', { type: 'text', size: '10', 'aria-label': `Type the handle's last 8 hex digits (${last8}) to confirm` }) as HTMLInputElement;
+  const run = el('button', { type: 'button' }, 'Evict the plan');
+  const res = el('p', { role: 'status', 'aria-live': 'polite' });
+  run.addEventListener('click', async () => {
+    res.textContent = 'Sending ...';
+    try {
+      const r = await post<{ outcome: string; detail: string }>('mssql/actions/run', { instance_id: ctx.instance, action: 'plan_evict', plan_handle: t.plan_handle ?? handle,
+        objtype: t.objtype ?? '', plan_created: t.plan_created ?? '', job_name: pv.what ?? '', reason: reason.value, confirm: confirm.value });
+      res.textContent = `${r.outcome}: ${r.detail}`;
+      after();
+    } catch (e) {
+      res.textContent = e instanceof Error ? e.message : String(e);
+    }
+  });
+  kids.push(el('label', {}, 'Reason (kept in the actions log) ', reason), el('label', {}, `Type ${last8} (the handle's last 8 hex digits) `, confirm), el('div', {}, run), res);
+  body.replaceChildren(...kids);
+  confirm.focus();
 }
