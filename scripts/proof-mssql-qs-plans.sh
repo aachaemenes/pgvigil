@@ -623,11 +623,12 @@ CODE=$(box rpon true); [[ "$CODE" == 409 ]] && grep -q 'pgvigil.yaml' "$TMPD/adm
 CODE=$(box rppage3 true); [[ "$CODE" == 200 ]] || fail "C6 R3: ticking rppage3: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"
 [[ "$(pq "SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance running_plans' AND target = 'rppage3' AND outcome = 'done' AND ui_user = '$USR'")" == 1 ]] || fail "C6 R3: no audit row for the tick"
 lastrun() { pq "SELECT coalesce(max(c.snapshot_at)::text, '') FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND c.collection = 'mssql_running_plans'"; }
-hold 8 200; bg sw 200 "$(victim sw 8) /* pgvc-switch */"; waitreq pgvc-switch >/dev/null
-"$TMPD/pgvigil" run -config "$TMPD/collector.yaml" >"$TMPD/run.log" 2>&1 & RUNPID=$!
-for _ in $(seq 1 60); do [[ -n "$(lastrun rppage3)" && -n "$(lastrun rpon)" ]] && break; sleep 2; done
-sleep 5   # the first reads of the ticked instances end
+# the blocked statement past the duration threshold (10 s) before the collector starts, so each first read keeps it
+hold 8 200; bg sw 200 "$(victim sw 8) /* pgvc-switch */"; waitreq pgvc-switch >/dev/null; sleep 12
 SWQ=$(req pgvc-switch | cut -d'|' -f1); SWQ="0x${SWQ:2}"; SWQ=${SWQ^^}; SWQ="0x${SWQ:2}"
+"$TMPD/pgvigil" run -config "$TMPD/collector.yaml" >"$TMPD/run.log" 2>&1 & RUNPID=$!
+swrows() { pq "SELECT count(*) FROM pgvigil.mssql_running_plan p JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND p.query_hash = '$SWQ'"; }
+for _ in $(seq 1 65); do [[ "$(swrows rppage3)" -ge 1 && "$(swrows rpon)" -ge 1 ]] && break; sleep 2; done
 # R5: the box cleared while pgvigil run runs: no read of rppage3 starts after the collector's next read of the list
 CODE=$(box rppage3 false); [[ "$CODE" == 200 ]] || fail "C6 R5: clearing rppage3: HTTP $CODE $(head -c 300 "$TMPD/adm.out")"
 TOFF=$(pq "SELECT now()")
