@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // The Schema tab (task 59): GET /api/schema?instance=<id>&[from=&to=]&[db=<dbid>] (Server.Schema): the schema
@@ -16,6 +17,15 @@ import (
 // counts are whole; their 'dropped' counts each object once and leaves out a dropped partition, as the warning finding
 // does (a retention job's routine). The database page's Schema section reads the same with db. No Summary column: the findings reach
 // the Findings through schema_findings.
+//
+// A SQL Server instance (task A26, the collection mssql_schema, 0267) reads the same tables: its state is
+// mssql_schema's collection row, its databases carry mssql_schema_dbs' state, note and read_at (part mssql_dbs: every
+// database the collection has seen, the never-read and not-readable ones too), its changes come from
+// mssql_schema_changes_window with the default trace's candidates (who_*), and part trace says whether the default
+// trace is trusted (its reader's state, the instance's platform) and the oldest whole read; it has no event trigger log.
+// Both engines: the lists carry their text cut (changes at 400 characters a side, objects at 1,000, with a cut flag),
+// and ?change_at=<the change's snapshot_at>&db=&kind=&identity=[&attribute=] (part change) gives one change's whole
+// before and after (the Schema tab's side-by-side view).
 
 const sqlSchemaState = `
 SELECT c.status, c.note, c.snapshot_at
@@ -34,7 +44,47 @@ SELECT d.dbid, d.datname, d.objects, d.ddl_log, d.ddl_log_table, d.ddl_log_note,
  WHERE d.instance_id = $1 AND ($4::bigint IS NULL AND d.is_present OR d.dbid = $4)
  ORDER BY d.datname`
 
-const sqlSchemaChanges = `SELECT * FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint)`
+// the cut columns of a change list (both engines): 400 characters a side, cut true when either side is longer
+const schemaChangeCut = `left(w.before, 400) AS before, left(w.after, 400) AS after,
+       coalesce(length(w.before) > 400 OR length(w.after) > 400, false) AS cut`
+
+const sqlSchemaChanges = `
+SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
+       ` + schemaChangeCut + `, w.statement, w.statement_role, w.statement_at, w.statement_tag, w.ddl_log
+  FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint) w`
+
+const sqlMSSQLSchemaChanges = `
+SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
+       ` + schemaChangeCut + `, w.who_login, w.who_host, w.who_program, w.who_at, w.who_n, w.who_list, w.who_note
+  FROM pgvigil.mssql_schema_changes_window($1, $2, $3, $4::bigint) w`
+
+const sqlMSSQLSchemaState = `
+SELECT c.status, c.note, c.snapshot_at
+  FROM pgvigil.collection_dates c
+ WHERE c.instance_id = $1 AND c.collection = 'mssql_schema'`
+
+const sqlMSSQLSchemaDBs = `
+SELECT m.database_id AS dbid, m.name AS datname, m.state, m.note, m.read_at, m.snapshot_at
+  FROM pgvigil.mssql_schema_dbs m
+ WHERE m.instance_id = $1 AND ($2::bigint IS NULL OR m.database_id = $2) AND m.state <> 'gone'
+ ORDER BY m.name`
+
+// the default trace's state for the tab's words: trusted while its reader read it within 15 minutes (0267's rule)
+const sqlMSSQLSchemaTrace = `
+SELECT i.platform, r.state AS reader_state, r.snapshot_at AS reader_at, r.note AS reader_note,
+       coalesce(r.state = 'read' AND r.snapshot_at > now() - interval '15 minutes', false) AS trusted,
+       (SELECT min(m.read_at) FROM pgvigil.mssql_schema_dbs m WHERE m.instance_id = i.instance_id AND m.state <> 'gone') AS oldest_read_at
+  FROM pgvigil.instances i
+  LEFT JOIN pgvigil.mssql_reader_state r ON r.instance_id = i.instance_id AND r.reader = 'defaulttrace'
+ WHERE i.instance_id = $1`
+
+// one change whole (both engines): the side-by-side view's two texts
+const sqlSchemaChange = `
+SELECT c.snapshot_at, c.prev_at, c.datname, c.kind, c.identity, c.change, c.attribute, c.before, c.after
+  FROM pgvigil.schema_changes c
+ WHERE c.instance_id = $1 AND c.snapshot_at = $2 AND c.dbid = $3 AND c.kind = $4 AND c.identity = $5
+   AND ($6::text IS NULL OR c.attribute = $6)
+ LIMIT 1`
 
 const sqlSchemaDDL = `
 SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_type, l.object_identity, l.role_name, l.statement
@@ -44,7 +94,8 @@ SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_t
  LIMIT 1000`
 
 const sqlSchemaObjects = `
-SELECT o.kind, o.identity, o.schema_name, o.object_name, o.parent, o.definition, o.owner, o.acl, o.first_seen, o.last_changed,
+SELECT o.kind, o.identity, o.schema_name, o.object_name, o.parent, left(o.definition, 1000) AS definition,
+       coalesce(length(o.definition) > 1000, false) AS def_cut, o.owner, o.acl, o.first_seen, o.last_changed,
        count(*) OVER () AS total
   FROM pgvigil.schema_objects o
  WHERE o.instance_id = $1 AND o.dbid = $2 AND o.is_present
@@ -73,12 +124,43 @@ func (s *Server) Schema(w http.ResponseWriter, r *http.Request) {
 		}
 		db = &n
 	}
-	parts := []part{
-		{"state", sqlSchemaState, []any{id}},
-		{"databases", sqlSchemaDatabases, []any{id, from, to, db}},
-		{"changes", sqlSchemaChanges, []any{id, from, to, db}},
-		{"ddl", sqlSchemaDDL, []any{id, from, to, db}},
-		{"findings", sqlSchemaFindings, []any{id}},
+	var engine string
+	if err := s.pool.QueryRow(r.Context(), `SELECT coalesce(engine, 'postgres') FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&engine); err != nil {
+		writeErr(w, http.StatusNotFound, errors.New("no such instance"))
+		return
+	}
+	q := r.URL.Query()
+	if at := q.Get("change_at"); at != "" {
+		t, err := time.Parse(time.RFC3339Nano, at)
+		if err != nil || db == nil || q.Get("kind") == "" || q.Get("identity") == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("a change is named by change_at (its snapshot_at), db, kind and identity"))
+			return
+		}
+		var attr *string
+		if a := q.Get("attribute"); a != "" {
+			attr = &a
+		}
+		s.multiPart(w, r, []part{{"change", sqlSchemaChange, []any{id, t, *db, q.Get("kind"), q.Get("identity"), attr}}})
+		return
+	}
+	var parts []part
+	if engine == "sqlserver" {
+		parts = []part{
+			{"state", sqlMSSQLSchemaState, []any{id}},
+			{"databases", sqlSchemaDatabases, []any{id, from, to, db}},
+			{"mssql_dbs", sqlMSSQLSchemaDBs, []any{id, db}},
+			{"changes", sqlMSSQLSchemaChanges, []any{id, from, to, db}},
+			{"trace", sqlMSSQLSchemaTrace, []any{id}},
+			{"findings", sqlSchemaFindings, []any{id}},
+		}
+	} else {
+		parts = []part{
+			{"state", sqlSchemaState, []any{id}},
+			{"databases", sqlSchemaDatabases, []any{id, from, to, db}},
+			{"changes", sqlSchemaChanges, []any{id, from, to, db}},
+			{"ddl", sqlSchemaDDL, []any{id, from, to, db}},
+			{"findings", sqlSchemaFindings, []any{id}},
+		}
 	}
 	if db != nil {
 		parts = append(parts, part{"objects", sqlSchemaObjects, []any{id, *db}})
