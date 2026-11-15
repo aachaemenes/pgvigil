@@ -193,3 +193,92 @@ func TestRolesValidUntilInfinityImport(t *testing.T) {
 		t.Errorf("role_attributes %q, want %q", got, want)
 	}
 }
+
+// TestRolesMinusInfinityText: since PGINF a role VALID UNTIL '-infinity' (or 'infinity') reaches the repository, and
+// the two texts built from it took to_char of a non-finite timestamp, which is NULL: role_flags dropped 'valid until'
+// (an always-expired password read like none) and the 'login without a way in' finding's detail was NULL. Migration
+// 0270 writes the value itself for a non-finite one. The flags read directly; the finding through the live roles
+// collection with every hba rule it read made password-only (scram-sha-256), so the '-infinity' login role has no
+// other way in. PGVIGIL_REPO_DSN as TestRolesValidUntilInfinityImport; skipped without it.
+func TestRolesMinusInfinityText(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r, err := repo.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var flags string
+	if err := conn.QueryRow(ctx, `SELECT concat_ws(' | ',
+	         pgvigil.role_flags(false, true, false, false, true, false, false, -1, '-infinity'),
+	         pgvigil.role_flags(false, true, false, false, true, false, false, -1, 'infinity'),
+	         pgvigil.role_flags(false, true, false, false, true, false, false, -1, '2026-01-02 03:04+00'),
+	         pgvigil.role_flags(false, true, false, false, true, false, false, -1, NULL))`).Scan(&flags); err != nil {
+		t.Fatal(err)
+	}
+	if want := "login,valid until -infinity | login,valid until infinity | login,valid until 2026-01-02 03:04 UTC | login"; flags != want {
+		t.Errorf("role_flags\n got %q\nwant %q", flags, want)
+	}
+	sfx := strconv.FormatInt(time.Now().UnixNano()%1_000_000_000_000, 10)
+	role := "pginf_exp_" + sfx
+	defer func() {
+		if _, err := conn.Exec(context.Background(), `DROP ROLE IF EXISTS `+role); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := conn.Exec(ctx, `CREATE ROLE `+role+` LOGIN VALID UNTIL '-infinity'`); err != nil {
+		t.Fatal(err)
+	}
+	name := "pginf-exp-" + sfx
+	id, err := r.EnsureInstance(ctx, name, "onprem", "fixture", 180000, false, []string{"fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id); err != nil {
+			t.Error(err)
+		}
+	}()
+	rows, err := rolesCollector{}.RunInstance(ctx, conn, platformInfoNone, config.Instance{Name: name, DSNRaw: dsn}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nh := 0
+	for _, row := range rows {
+		if row["kind"] == "hba" {
+			row["auth_method"] = "scram-sha-256" // every rule password-only: the role's one way in has expired
+			nh++
+		}
+	}
+	if nh == 0 {
+		t.Fatal("the roles collection read no hba rule (the finding needs them: a superuser login reads pg_hba_file_rules)")
+	}
+	if err := r.Import(ctx, id, "roles", time.Now().UTC(), rows); err != nil {
+		t.Fatal(err)
+	}
+	var detail *string
+	if err := conn.QueryRow(ctx, `SELECT detail FROM pgvigil.role_findings WHERE instance_id = $1 AND setting = 'login without a way in' AND value = $2`,
+		id, role).Scan(&detail); err != nil {
+		t.Fatalf("no 'login without a way in' finding for %s: %v", role, err)
+	}
+	want := role + " is admitted only by password (scram-sha-256) and its password expired -infinity: no other method lets it in"
+	if detail == nil || *detail != want {
+		got := "NULL"
+		if detail != nil {
+			got = *detail
+		}
+		t.Errorf("the finding's detail\n got %q\nwant %q", got, want)
+	}
+}

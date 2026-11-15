@@ -15,7 +15,11 @@
 #     TestQueryJSONValues                FAIL 'query: the table does not marshal ... unsupported value: NaN'
 #     TestPgCellJSONValues               FAIL 'the cells do not marshal ... unsupported value: NaN' (added with the
 #                                        review's fold; red on f22a85b3, whose fix did not reach custom reports' pgCell)
-#   green (the fix): all five PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: ok for
+#   PGINF-2 (migration 0270, written 2026-11-15 15:4x before its run):
+#     TestRolesMinusInfinityText         red (the tests on 70f74171): FAIL - role_flags got 'login | login | login,valid
+#                                        until 2026-01-02 03:04 UTC | login' (the non-finite 'valid until' dropped) and
+#                                        the finding's detail got NULL; green (0270): PASS
+#   green (the fix): all six PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: ok for
 #     ./internal/collect/ and ./internal/web/ - their other tests gated on PGVIGIL_REPO_DSN / PGVIGIL_REPO_TEST_DSN
 #     run against this throwaway database too (collect: dms, statements, pi, versions, cloudwatch_io; web: actions,
 #     q_plans, q_storage, migrate, perf_scope and more); every other database test skips without its own variable.
@@ -39,14 +43,14 @@ RC=0
 go vet ./internal/collect/ ./internal/web/ || { echo "FAIL go vet"; RC=1; }
 W=$(mktemp -d); trap 'cleanup; rm -rf "$W"' EXIT
 pick() { grep -E '^(=== RUN|--- |ok|FAIL|PASS|panic)|jsonvalue_test.go' "$1"; }
-go test ./internal/collect/ -run '^(TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport)$' -count=1 -v > "$W/c.out" 2>&1 || RC=1
+go test ./internal/collect/ -run '^(TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestRolesMinusInfinityText)$' -count=1 -v > "$W/c.out" 2>&1 || RC=1
 pick "$W/c.out"
 go test ./internal/web/ -run '^(TestQueryJSONValues|TestPgCellJSONValues)$' -count=1 -v > "$W/w.out" 2>&1 || RC=1
 pick "$W/w.out"
-# a test that skipped (its variable unset) or matched nothing passes go test: the five are counted
-NP=$(cat "$W/c.out" "$W/w.out" | grep -cE '^--- PASS: (TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestQueryJSONValues|TestPgCellJSONValues) ')
+# a test that skipped (its variable unset) or matched nothing passes go test: the six are counted
+NP=$(cat "$W/c.out" "$W/w.out" | grep -cE '^--- PASS: (TestRowsToMapsJSONValues|TestRowsToMapsInfinityLive|TestRolesValidUntilInfinityImport|TestRolesMinusInfinityText|TestQueryJSONValues|TestPgCellJSONValues) ')
 NS=$(cat "$W/c.out" "$W/w.out" | grep -c '^--- SKIP')
-[ "$NP" = 5 ] && [ "$NS" = 0 ] || { echo "FAIL $NP of the 5 rows passed, $NS skipped"; RC=1; }
+[ "$NP" = 6 ] && [ "$NS" = 0 ] || { echo "FAIL $NP of the 6 rows passed, $NS skipped"; RC=1; }
 [ "$RC" = 0 ] || { echo "pginf: the whole output of the rows:"; cat "$W/c.out" "$W/w.out"; }
 if [ "${PGINF_FULL:-0}" = 1 ]; then
   echo "pginf: the whole collect and web packages"
