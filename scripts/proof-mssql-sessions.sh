@@ -146,7 +146,8 @@ SAMPLER=
 sample_on() { : >"$TMPD/sample.out"; ( while :; do sq "SELECT CONCAT(CONVERT(varchar(12), SYSDATETIME(), 114), ' s', r.session_id, ' ', r.status, ' ', ISNULL(r.wait_type, '-'), ' ', r.wait_time, 'ms cpu ', r.cpu_time, ' el ', r.total_elapsed_time, ' grant_kb ', r.granted_query_memory * 8, ' asked_kb ', ISNULL(g.requested_memory_kb, 0), ' ideal_kb ', ISNULL(g.ideal_memory_kb, 0), ' | ', LEFT(REPLACE(REPLACE(SUBSTRING(t.text, r.statement_start_offset / 2 + 1, 400), CHAR(10), ' '), CHAR(13), ' '), 110))
   FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
   LEFT JOIN sys.dm_exec_query_memory_grants g ON g.session_id = r.session_id AND g.request_id = r.request_id WHERE s.login_name = '$MON'" master 10 2>/dev/null >>"$TMPD/sample.out"; sleep 2; done ) & SAMPLER=$!; }
-sample_off() { [[ -n "$SAMPLER" ]] && { kill "$SAMPLER" 2>/dev/null; wait "$SAMPLER" 2>/dev/null; }; SAMPLER=; }
+# (wait answers the killed sampler's 143: under set -e that status must not end the proof)
+sample_off() { if [[ -n "$SAMPLER" ]]; then kill "$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true; fi; SAMPLER=; }
 col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; sample_off; [[ -s "$TMPD/sample.out" ]] && sed 's/^/     SAMPLE /' "$TMPD/sample.out" >&2; memstat "at the failed collect" >&2; fail "collect $i $c"; }; done; }
 col ss mssql_instance; col ssnone mssql_instance
 ISS=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ss'"); INONE=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ssnone'")
