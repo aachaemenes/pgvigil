@@ -192,6 +192,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		// the collector's error log and the SQL Server error stream (collector_errors_demo.go, 0198), after the acks
+		if e := SeedCollectorErrors(ctx, pool, o.Prefix, o.End); e != nil {
+			err = fmt.Errorf("collector errors demo: %w", e)
+		}
+	}
+	if err == nil {
 		// alert rules on the demo fleet's metrics, judged once at the seed's end (alert_rules_demo.go, task 131)
 		if e := SeedAlertRules(ctx, pool, o.Prefix, o.End); e != nil {
 			err = fmt.Errorf("alert rules demo: %w", e)
