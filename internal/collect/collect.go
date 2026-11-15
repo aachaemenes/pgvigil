@@ -109,6 +109,7 @@ type Result struct {
 	Duration time.Duration
 	Note     string // " (skipped: <why>)" when the collection does not apply
 	Err      error
+	Outcome  string // OutcomePartial when the run ended with a collector error row; "" = derived (outcomeOf)
 }
 
 // sessionSetup keeps a collector from joining a convoy on a busy server: read
@@ -229,5 +230,5 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
-	return Result{Rows: len(rows), Duration: d}
+	return Result{Rows: len(rows), Duration: d, Outcome: partialOutcome(status)}
 }

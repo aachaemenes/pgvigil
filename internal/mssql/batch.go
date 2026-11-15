@@ -142,5 +142,5 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	d := time.Since(start)
 	logRun(status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "batches", batches, "ms", d.Milliseconds())
-	return collect.Result{Rows: n, Duration: d, Note: partialNote(status, note)}
+	return collect.Result{Rows: n, Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status)}
 }

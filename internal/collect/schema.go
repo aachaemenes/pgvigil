@@ -327,7 +327,7 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	d := time.Since(start)
 	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
-	return Result{Rows: n, Duration: d}
+	return Result{Rows: n, Duration: d, Outcome: partialOutcome(status)}
 }
 
 // schemaMaxPayload caps one import call's payload, estimated (schemaPayloadSize), well under PostgreSQL's 256 MB jsonb

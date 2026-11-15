@@ -570,7 +570,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	logRun(instanceID, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
-	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note)}
+	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status)}
 }
 
 // timeoutNote says so when an error is the run's own deadline: the driver's text for it names no cause.

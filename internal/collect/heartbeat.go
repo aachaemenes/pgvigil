@@ -74,11 +74,13 @@ type Heartbeat struct {
 	pool     *pgxpool.Pool
 	log      *slog.Logger
 	mu       sync.Mutex
-	runs     map[[2]string]*runAgg // engine, collection
-	load     map[string]*loadAgg   // instance name
-	streaks  map[[2]string]*streak // instance name, collection
-	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
-	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
+	runs     map[[2]string]*runAgg    // engine, collection
+	load     map[string]*loadAgg      // instance name
+	streaks  map[[2]string]*streak    // instance name, collection
+	hourly   map[healthKey]*healthAgg // B6.1: instance, collection, UTC hour (health.go)
+	hourNew  time.Time                // the newest hour counted
+	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
+	targets  map[string]string        // instance name: its dial target (InstanceTarget: N8)
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -380,6 +382,7 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.health(instance, collection, res, now, every) // B6.1's hourly counts: every outcome, a skip too
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
 		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
@@ -485,6 +488,7 @@ type beat struct {
 	Runs       []beatRun    `json:"runs"`
 	Load       []beatLoad   `json:"load"`
 	Streaks    []beatStreak `json:"streaks"`
+	Health     []beatHealth `json:"health"` // B6.1: running totals per instance, collection and UTC hour (import_collection_health)
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -495,7 +499,7 @@ func (h *Heartbeat) take() beat {
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
 	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
-		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}}
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Health: h.takeHealth()}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
@@ -665,6 +669,12 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	if err != nil {
 		h.log.Warn("heartbeat: the beat was not written", "err", err)
 		return
+	}
+	if len(b.Health) > 0 {
+		// running totals: a beat lost here is repaired by the next one
+		if _, err := h.pool.Exec(bctx, `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, h.id, string(body)); err != nil {
+			h.log.Warn("heartbeat: the hourly collection health was not written", "err", err)
+		}
 	}
 	if !known { // the row is gone (trimmed after 8 days without a beat, or deleted): claimed again
 		if err := h.claim(ctx); err != nil {
