@@ -30,6 +30,10 @@ CREATE ROLE %[2]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth
 -- report on the store is refused and the page says why. Name its dsn in reports_dsn (env:NAME or file:/path), as
 -- the repository's.
 CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
+-- optional: serve's login in queue mode (actions: via: queue, docs/queue.md) - the UI's roles and pgvigil_requester,
+-- which may only write a request and cancel its own; never the collector's login. (Or GRANT pgvigil_requester to the
+-- UI's login above.)
+-- CREATE ROLE pgvigil_ui_queue LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth, pgvigil_requester;
 -- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
 -- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
 -- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
