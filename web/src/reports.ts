@@ -569,7 +569,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
       grid(pg, [instCol(ctx), { key: 'role_name', label: 'Role' }, { key: 'is_superuser', label: 'Superuser', fmt: yes },
         { key: 'valid_until', label: 'Valid Until', fmt: x => x == null ? 'no expiry' : fmtTime(x) },
         { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: x => x == null ? '' : Number(x) < 0 ? 'crit' : Number(x) <= 30 ? 'warn' : 'status ok' },
-        { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x == null ? 'status none' : x === 'md5' ? 'warn' : 'status ok' }],
+        { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x == null ? 'status none' : x === 'md5' ? 'warn' : x === 'scram-sha-256' ? 'status ok' : 'status none' }],   // 'other' (plain text) and 'none' are not judged here
       'No PostgreSQL login role is stored for this scope.'));
   }
 });
