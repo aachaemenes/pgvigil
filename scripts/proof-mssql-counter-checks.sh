@@ -45,6 +45,22 @@
 #  E. not provokable on a box, the rule's path only: free_list_stalls_s, lazy_writes_s, buffer_cache_hit_pct,
 #     ple_per_4gb, errors_offline_s - an instance rule with a threshold the newest point crosses fires (the point
 #     printed); NOT PROVEN live at the seeded threshold.
+#  D with the floors (FL6, the lead's 19:4x / 19:5x; red on fd7b9bb at G, on 3e745fa at G1): each floored check's load
+#     reads at its floor or more (5 Batch Requests/s; 1 Full Scan/s and 10 Index Searches/s), else it fails as too
+#     small; its clear leg reads ok, or 'na' with no finding and the floors' words naming the input under its floor - a
+#     hard clear either way, no NOT PROVEN for it (the CEIP windows read 'na').
+#  G. the floors: G0 at every instance read of the run each floored metric's point has no value exactly when an input
+#     of the same read is under its floor (0152's numbers = 0153's metric_floors), both sides seen; G1 an instance rule
+#     on compiles_per_100_batches at the seed's thresholds, a read 20 s after the one before with nothing of the proof
+#     running: the point has no value, batch_requests_s under 5, state 'na', no finding, the state's value the
+#     batch_requests_s point and its threshold 5; G2 the same on full_scans_per_search (value and threshold those of
+#     an input under its floor); G3 the transitions through the alert sender ('pgvigil alerts', a file drop, clear
+#     delay 0) on compiles_per_100_batches: a rule that never fires (critical 1e6) reads ok after a load, na after a
+#     quiet read, ok again after a load, and the drop holds no file of it (ok -> na and na -> ok silent); a rule that
+#     fires on any value (critical 0) reads na after a quiet read (no file), critical after a load (ONE firing file:
+#     na -> critical as from ok), na after a quiet read (no resolved file yet: 0059 waits for an ok collection), and
+#     after one more read and pass ONE resolved file, and no more after another (critical -> na resolved with its
+#     normal notification).
 #  F. at the end every seeded row but the ended one keeps its rule_id, op, thresholds, for_minutes and enabled false
 #     as read at A.
 # NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken
@@ -185,15 +201,15 @@ p_timeouts() { bg 20 "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITF
   for _ in $(seq 1 6); do sq "SET LOCK_TIMEOUT 200; SELECT v FROM dbo.t WHERE id = 1;" pgvctr >/dev/null 2>&1 || true; done; sleep 3; }
 p_longwait() { bg 20 "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:07'; ROLLBACK;"; sleep 1.5
   for _ in 1 2 3; do sq "SET LOCK_TIMEOUT 1500; SELECT v FROM dbo.t WHERE id = 1;" pgvctr >/dev/null 2>&1 || true; done; sleep 2; }
-p_compiles() { sq "$(for i in $(seq 1 20); do echo "SELECT COUNT(*) FROM dbo.t WHERE v >= 0 AND id <> $((RANDOM * 100 + i));"; echo GO; done)" pgvctr >/dev/null; }
-p_splits() { sq "$(for _ in $(seq 1 20); do echo "INSERT dbo.sp (pad) SELECT TOP (400) 'x' FROM sys.all_objects;"; echo GO; done)" pgvctr >/dev/null; }
+p_compiles() { sq "$(for i in $(seq 1 60); do echo "SELECT COUNT(*) FROM dbo.t WHERE v >= 0 AND id <> $((RANDOM * 100 + i));"; echo GO; done)" pgvctr >/dev/null; }
+p_splits() { sq "$(for _ in $(seq 1 40); do echo "INSERT dbo.sp (pad) SELECT TOP (400) 'x' FROM sys.all_objects;"; echo GO; done)" pgvctr >/dev/null; }
 p_scans() { sq "DECLARE @i int = 0, @x int; WHILE @i < 200 BEGIN SELECT @x = v FROM dbo.t WHERE id = @i + 1; SET @i += 1; END;
   $(for _ in $(seq 1 20); do echo "SELECT @x = COUNT(*) FROM dbo.h; SELECT @x = COUNT(*) FROM dbo.big;"; done)" pgvctr >/dev/null; }
 # the inputs of a ratio at the newest instance read: object|counter|rate per second
 rates() { pq "SELECT string_agg(v.counter || ' ' || coalesce(round(v.rate::numeric, 2)::text, 'no rate'), ', ' ORDER BY v.counter)
   FROM pgvigil.mssql_counter_values($SB, (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance') - interval '1 second', now(), 'instance') v
   WHERE v.object = '$1' AND v.counter IN ($2) AND v.inst = '_Total'"; }
-p_lookups() { sq "$(for _ in $(seq 1 10); do echo "SELECT COUNT(*) FROM dbo.big;"; echo GO; done)" pgvctr >/dev/null; }
+p_lookups() { sq "$(for _ in $(seq 1 20); do echo "SELECT COUNT(*) FROM dbo.big;"; echo GO; echo "SELECT 1;"; echo GO; done)" pgvctr >/dev/null; }
 p_cold() { sq "CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;" pgvctr >/dev/null; sq "SELECT COUNT(*) FROM dbo.big WHERE pad <> 'z';" pgvctr >/dev/null; }
 # cold single-page reads: 1,500 random seeks after DROPCLEANBUFFERS (one page an I/O, whether the counter counts pages or I/Os)
 p_coldseek() { sq "CHECKPOINT; DBCC DROPCLEANBUFFERS WITH NO_INFOMSGS;" pgvctr >/dev/null
@@ -312,8 +328,18 @@ PY
 # D_FROM=<metric>: a diagnostic run starts D at that check (the checks before it skipped); such a run ends 'PARTIAL', never
 # 'PROOF OK'
 D_FROM=${D_FROM:-}; D_REACHED=0
+# the floors (FL6): HAVE_FLOORS when 0153 holds metric_floors (fd7b9bb does not: D runs as before, G is red)
+HAVE_FLOORS=$(pq "SELECT to_regclass('pgvigil.metric_floors') IS NOT NULL")
+# floored <metric>: each floor of the metric with its input's point at the metric's newest read ('' = no floor)
+floored() { [[ "$HAVE_FLOORS" == t ]] || return 0
+  pq "WITH p AS (SELECT x.at, x.metric, x.value FROM pgvigil.metric_points($SB, 'counters', now() - interval '10 minutes', now()) x),
+  n AS (SELECT max(p.at) AS at FROM p WHERE p.metric = '$1')
+  SELECT string_agg(f.unit || ' ' || coalesce(pgvigil.metric_num(i.value), 'none') || '/s (floor ' || pgvigil.metric_num(f.floor) || '/s'
+                    || CASE WHEN i.value IS NULL OR i.value < f.floor THEN ': under it)' ELSE ')' END, ', ' ORDER BY f.unit)
+    FROM pgvigil.metric_floors f CROSS JOIN n LEFT JOIN p i ON i.metric = split_part(f.input_key, '.', 2) AND i.at = n.at
+   WHERE f.key = 'counters.$1'"; }
 judge() {
-  local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v v2
+  local m=$1 fn=$2 c=${3:-mssql_counters} s op w cr rid st1 st2 f1 f2 v v2 fl fl2
   if [[ -n "$D_FROM" && $D_REACHED == 0 && "$m" != logins_s ]]; then
     if [[ "$m" == "$D_FROM" ]]; then D_REACHED=1; else echo "   $m skipped (D_FROM=$D_FROM)"; CLEARED=1; return 0; fi
   fi
@@ -323,17 +349,23 @@ judge() {
   [[ -n "$rid" ]] || fail "$m: the instance rule was refused"
   # the read after the load waits 2 s: SQL Server publishes some counters a moment after the statement ends (run chk5
   # read a ratio's full scans and its index searches in two reads 0.3 s apart)
-  col "$c"; $fn; sleep 2; col "$c"; run; st1=$(state "$m"); f1=$(findings "$m"); v=$(point "$m")
+  col "$c"; $fn; sleep 2; col "$c"; run; st1=$(state "$m"); f1=$(findings "$m"); v=$(point "$m"); fl=$(floored "$m")
   [[ -n "${4:-}" ]] && echo "   $m's inputs at that read: $($4)"
+  [[ -n "$fl" ]] && echo "   $m's floors at that read: $fl"
   local scope=instance; [[ "$c" == mssql_counters_db ]] && scope=database
   sleep 2; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"; run; st2=$(state "$m"); f2=$(findings "$m"); v2=$(point "$m")
+  fl2=$(floored "$m")
   [[ -n "${4:-}" ]] && echo "   $m's inputs after the quiet reads: $($4)"
+  [[ -n "$fl2" ]] && echo "   $m's floors after the quiet reads: $fl2"
   rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$rid\"}" >/dev/null
   echo "   $m ($op ${w:-} / ${cr:-}): $v after the load -> $st1 ($f1 finding); quiet ($v2) -> $st2 ($f2)"
+  if [[ "$fl" == *"under it"* ]]; then echo "   $m: the load's read is under a floor ($fl): the load is too small to judge it"; return 1; fi
   [[ ( "$st1" == warning || "$st1" == critical ) && "$f1" == 1 ]] || return 1
   CLEARED=1; [[ "$st2" == ok && "$f2" == 0 ]] && return 0
+  # FL3: under a floor the check is not judged ('na', no finding): a hard clear, the window's background named above
+  [[ -n "$fl2" && "$st2" == na && "$f2" == 0 && "$fl2" == *"under it"* ]] && return 0
   CLEARED=0
-  if [[ -n "$DIAG_OTHER" ]]; then echo "NOT PROVEN clear: $m stayed $st2 at $v2 with named background in the window: $DIAG_OTHER"; return 0; fi
+  if [[ -z "$fl2" && -n "$DIAG_OTHER" ]]; then echo "NOT PROVEN clear: $m stayed $st2 at $v2 with named background in the window: $DIAG_OTHER"; return 0; fi
   return 1
 }
 judge logins_s p_logins && [[ $CLEARED == 1 ]] || fail "C: logins_s (fire and clear both hard here)"
@@ -406,6 +438,71 @@ for m in free_list_stalls_s lazy_writes_s buffer_cache_hit_pct ple_per_4gb error
 done
 ok "E: free list stalls, lazy writes, hit ratio, page life expectancy per 4 GB, offline errors: each metric reaches its rule (NOT PROVEN live at the seeded thresholds)"
 
+echo "== G. the floors: not judged under a floor (FL6) =="
+[[ "$HAVE_FLOORS" == t ]] || fail "G: no pgvigil.metric_floors (FL2 not in this tree)"
+# G0: 0152's no-value points against 0153's floors over every instance read of the run
+G0=$(pq "WITH p AS (SELECT x.at, x.metric, x.value FROM pgvigil.metric_points($SB, 'counters', now() - interval '3 hours', now()) x),
+  j AS (SELECT f.key, r.at, r.value, bool_or(i.value < f.floor) AS under, count(i.value) AS inputs, count(*) AS floors
+          FROM pgvigil.metric_floors f JOIN p r ON r.metric = split_part(f.key, '.', 2)
+          LEFT JOIN p i ON i.metric = split_part(f.input_key, '.', 2) AND i.at = r.at
+         GROUP BY f.key, r.at, r.value)
+  SELECT count(*) FILTER (WHERE j.inputs < j.floors OR (j.value IS NULL) <> coalesce(j.under, false)) || '|' || count(*) || '|' || count(*) FILTER (WHERE j.under) FROM j")
+[[ "$(cut -d'|' -f1 <<<"$G0")" == 0 && "$(cut -d'|' -f3 <<<"$G0")" -gt 0 && "$(cut -d'|' -f3 <<<"$G0")" -lt "$(cut -d'|' -f2 <<<"$G0")" ]] \
+  || fail "G0: floored points against metric_floors [$G0] (want 0 differences | points | under a floor, both sides seen)"
+ok "G0: at each of $(cut -d'|' -f2 <<<"$G0") floored points the value is missing exactly when an input of the same read is under its floor ($(cut -d'|' -f3 <<<"$G0") under)"
+# instance rule helpers: on <metric> <warning> <critical> -> rule_id; off <rule_id>
+on() { rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"counters.$1\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"chkbox\",\"warning\":$2,\"critical\":$3,\"for_minutes\":0}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")'; }
+off() { rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$1\"}" >/dev/null; }
+vt() { pq "SELECT coalesce(pgvigil.metric_num(value), 'NULL') || '|' || coalesce(pgvigil.metric_num(threshold), 'NULL') FROM pgvigil.alert_rule_state
+  WHERE instance_id = $SB AND metric = 'counters.$1' AND database = ''"; }
+newest() { pq "SELECT coalesce(pgvigil.metric_num(value), 'NULL') FROM pgvigil.metric_points($SB, 'counters', now() - interval '10 minutes', now()) WHERE metric = '$1' ORDER BY at DESC LIMIT 1"; }
+quiet() { sleep 20; col mssql_counters; }
+# G1, G2: one quiet read under each floor
+for m in compiles_per_100_batches full_scans_per_search; do
+  s=$(SEEDOF "$m"); rid=$(on "$m" "$(cut -d'|' -f4 <<<"$s")" "$(cut -d'|' -f5 <<<"$s")"); [[ -n "$rid" ]] || fail "G: the instance rule on $m was refused"
+  col mssql_counters; quiet; run
+  st=$(state "$m"); f=$(findings "$m"); fl=$(floored "$m"); p=$(newest "$m"); got=$(vt "$m")
+  b=$(newest batch_requests_s); fs=$(newest full_scans_s); se=$(newest index_searches_s)
+  off "$rid"
+  echo "   $m after a quiet read: point $p, state $st, $f finding(s), value|threshold $got; floors: $fl"
+  [[ "$fl" == *"under it"* ]] || fail "G: $m: the quiet read is over its floors ($fl): something ran in the window"
+  if [[ "$m" == compiles_per_100_batches ]]; then want="$b|5"; ok1=$([[ "$got" == "$want" ]] && echo y)
+  else ok1=$(python3 -c "import sys; fs, se, g = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+w = ([f'{sys.argv[1]}|1'] if fs < 1 else []) + ([f'{sys.argv[2]}|10'] if se < 10 else [])
+print('y' if g in w else '')" "$fs" "$se" "$got"); want="an input under its floor and that floor ($fs|1 or $se|10)"; fi
+  [[ "$p" == NULL && "$st" == na && "$f" == 0 && -n "$ok1" ]] || fail "G: $m under its floor: point $p (want NULL), state $st (want na), $f finding(s) (want 0), value|threshold $got (want $want)"
+done
+ok "G1, G2: under a floor compiles_per_100_batches and full_scans_per_search read 'na' with no finding; the state carries the input's value and the floor"
+# G3: the transitions through the sender
+mkdir -p "$TMPD/drop"; CFGA=$TMPD/ma.yaml; cp "$CFG" "$CFGA"
+printf 'alerts:\n  - {name: drop, kind: file, min_severity: warning, clear_after: 0, instances: [chkbox], file: {dir: %s}}\n' "$TMPD/drop" >> "$CFGA"
+pass() { "$TMPD/pgvigil" alerts -config "$CFGA" > "$TMPD/pass.$1.out" 2>&1 || fail "G3: the sender's pass $1: $(tail -3 "$TMPD/pass.$1.out")"
+  ! grep -q 'alert rules not judged' "$TMPD/pass.$1.out" || fail "G3: pass $1: $(cat "$TMPD/pass.$1.out")"; }
+files() { python3 -c 'import glob, json, sys
+print(sum(1 for f in glob.glob(sys.argv[1] + "/*.json") if json.load(open(f)).get("event") == sys.argv[2]
+          and "compilations per 100 batch requests" in json.load(open(f)).get("setting", "")))' "$TMPD/drop" "$1"; }
+sent() { echo "firing $(files firing) resolved $(files resolved) escalated $(files escalated) repeat $(files repeat)"; }
+loadread() { col mssql_counters; p_compiles; sleep 2; col mssql_counters; }
+M=compiles_per_100_batches
+step() { # step <label> <want state> <want files>
+  local st; st=$(state "$M"); echo "   $1: $st, point $(newest "$M"), batch requests $(newest batch_requests_s)/s; drop: $(sent)"
+  [[ "$st" == "$2" && "$(sent)" == "$3" ]] || fail "G3: $1: state $st (want $2), drop [$(sent)] (want [$3])"; }
+NONE="firing 0 resolved 0 escalated 0 repeat 0"
+rid=$(on "$M" null 1000000); [[ -n "$rid" ]] || fail "G3: the never-firing rule was refused"
+loadread; pass a1; step "a never-firing rule after a load" ok "$NONE"
+quiet; pass a2; step "after a quiet read (ok -> na)" na "$NONE"
+loadread; pass a3; step "after a load (na -> ok)" ok "$NONE"
+off "$rid"
+rid=$(on "$M" null 0); [[ -n "$rid" ]] || fail "G3: the firing rule was refused"
+quiet; pass b1; step "a rule firing on any value, after a quiet read" na "$NONE"
+loadread; pass b2; step "after a load (na -> critical)" critical "firing 1 resolved 0 escalated 0 repeat 0"
+quiet; pass b3; step "after a quiet read (critical -> na)" na "firing 1 resolved 0 escalated 0 repeat 0"
+quiet; pass b4; step "after one more read and pass" na "firing 1 resolved 1 escalated 0 repeat 0"
+quiet; pass b5; step "after another" na "firing 1 resolved 1 escalated 0 repeat 0"
+off "$rid"
+ok "G3: ok -> na and na -> ok send nothing; na -> critical sends one firing; critical -> na sends one resolved (after the read 0059 waits for), and nothing more"
+
 echo "== F. the seeded rows at the end =="
 pq "SELECT metric || '|' || rule_id || '|' || op || '|' || coalesce(warning::text, '') || '|' || coalesce(critical::text, '') || '|' || for_minutes || '|' || enabled || '|' || scope
       FROM pgvigil.alert_rules WHERE created_by = 'pgvigil' AND client = '0153 seed' AND ended_at IS NULL ORDER BY metric" > "$TMPD/seed-f"
@@ -414,4 +511,4 @@ ok "F: the 19 live seeded rows as read at A (rule_id, op, thresholds, for_minute
 
 echo "NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low page life expectancy and a database taken offline at the seeded thresholds; SQL Server 2016, Managed Instance, a Windows host"
 [[ -n "$D_FROM" ]] && { echo "PARTIAL: D from $D_FROM (a diagnostic run, not a proof)"; exit 3; }
-echo "PROOF OK: mssql counter checks (A B C D E F)"
+echo "PROOF OK: mssql counter checks (A B C D E G F)"
