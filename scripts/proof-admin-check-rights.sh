@@ -82,6 +82,8 @@ cleanup() {
   exit $rc
 }
 trap cleanup EXIT
+# a command that fails without a message of its own says where (set -e would end the proof without a word)
+trap 'echo "FAIL: the proof stopped at line $LINENO: a command failed without its own message" >&2' ERR
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 # sq: T-SQL as sa through stdin (the password from the container's own environment file)
 sq() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -b -I -W -h -1 -s "|" -d "$0" -i /dev/stdin' "${2:-master}"; }
@@ -286,9 +288,12 @@ NR=$(pq "SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance rights' A
 ok "R5 (PostgreSQL): the role's memberships and the door functions ($G0) equal before and after ten Rights reads; Rights of f-down: '$(ans detail | head -c 80)'; $NR Rights clicks audited"
 
 echo "== the answers hold no password and no dsn =="
-HITS=$(for s in "$SA_PW" "$FULL_PW" "$BARE_PW" "$ODD_PW" "$PG_PW" "$MON_PW" "$UPW" "sqlserver://" "password="; do grep -lF -- "$s" "$TMPD"/answers/*.json 2>/dev/null | head -2; done | sort -u | tr '\n' ' ')
+# grep answers 1 when it finds nothing - the good case here: its status is taken out of the pipeline (run st12q: under
+# pipefail the empty result ended the proof without a word)
+HITS=$(for s in "$SA_PW" "$FULL_PW" "$BARE_PW" "$ODD_PW" "$PG_PW" "$MON_PW" "$UPW" "sqlserver://" "password="; do { grep -lF -- "$s" "$TMPD"/answers/*.json 2>/dev/null || true; } | head -2; done | sort -u | tr '\n' ' ')
 [[ -z "$HITS" ]] || fail "a password or a connection string is in an API answer: $HITS"
-grep -qF -e "$FULL_PW" -e "$BARE_PW" -e "$PG_PW" -e "$MON_PW" "$TMPD/serve.log" && fail "a password is in serve's log"
+[[ "$NANS" -ge 30 && "$(ls "$TMPD/answers" | wc -l)" == "$NANS" ]] || fail "the leak check read $(ls "$TMPD/answers" | wc -l) saved answers of $NANS (want 30 or more, all saved)"
+if grep -qF -e "$FULL_PW" -e "$BARE_PW" -e "$PG_PW" -e "$MON_PW" "$TMPD/serve.log"; then fail "a password is in serve's log"; fi
 ok "no password and no connection string in any of the $NANS API answers or in serve's log"
 
 echo "== C1c and P. the page in headless Chromium =="
