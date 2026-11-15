@@ -28,7 +28,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -174,6 +176,10 @@ func (cc *customCollector) RunInstance(ctx context.Context, conn *sql.Conn, info
 		cc.mark(in.Name, c, now)
 		res := runCustomCheck(ctx, in, info, c)
 		rows = append(rows, res.row(c.Name))
+		if c.Rule == "status" && res.Status != "error" {
+			// the check's current set: import_mssql_custom replaces the stored one with it (a failed run keeps it)
+			rows = append(rows, statusPayload(c.Name, res.StatusRows)...)
+		}
 	}
 	return rows, nil
 }
@@ -201,17 +207,18 @@ IF @@TRANCOUNT = 0 OR CURRENT_TRANSACTION_ID() <> @pgvigil_tx
   THROW 50266, N'the check ended the transaction it ran in and went on in another', 1;
 IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;`
 
-// customResult is one run of one check (the PostgreSQL collection's result row).
+// customResult is one run of one check (the PostgreSQL collection's result row; a status check's rows beside it).
 type customResult struct {
-	Status   string // ok | warning | critical | error
-	Value    *float64
-	RowCount int
-	Columns  []string
-	Cells    [][]any
-	Kept     bool
-	Note     string
-	Err      string
-	Took     time.Duration
+	StatusRows []statusRow // rule status: the rows kept (at most statusMaxRows)
+	Status     string      // ok | warning | critical | error
+	Value      *float64
+	RowCount   int
+	Columns    []string
+	Cells      [][]any
+	Kept       bool
+	Note       string
+	Err        string
+	Took       time.Duration
 }
 
 func (r customResult) row(name string) collect.Row {
@@ -345,6 +352,26 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 			return customResult{}, fmt.Errorf("the value column %q is not among the columns the check returns (%s)", c.Value, strings.Join(cols, ", "))
 		}
 	}
+	// rule status: DBA Dash's columns by name, every row read and judged, at most statusMaxRows kept
+	status := c.Rule == "status"
+	var six [4]int
+	var sNote string
+	var sRows []statusRow
+	var sCount statusCounts
+	types := make([]string, len(cts))
+	for i, ct := range cts {
+		types[i] = ct.DatabaseTypeName()
+	}
+	if status {
+		names := make([]string, len(cts))
+		for i, ct := range cts {
+			names[i] = ct.Name()
+		}
+		var err error
+		if six, sNote, err = statusColumns(names); err != nil {
+			return customResult{}, err
+		}
+	}
 	var cells [][]any
 	var value *float64
 	n := 0
@@ -356,6 +383,16 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 	for rows.Next() {
 		if err := rows.Scan(ptrs...); err != nil {
 			return customResult{}, err
+		}
+		if status {
+			sr, err := statusRowOf(vals, types, six, keep)
+			if err != nil {
+				return customResult{}, fmt.Errorf("row %d: %w", n+1, err)
+			}
+			sCount.add(sr.Status)
+			if len(sRows) < statusMaxRows {
+				sRows = append(sRows, sr)
+			}
 		}
 		if n == 0 && vi >= 0 {
 			v, ok, err := mssqlread.Number(vals[vi], cts[vi].DatabaseTypeName())
@@ -403,6 +440,26 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 	}
 	if more > 0 {
 		notes = append(notes, fmt.Sprintf("the first of %d result sets read", more+1))
+	}
+	if status {
+		if err := statusDuplicate(sRows); err != nil {
+			return customResult{}, err
+		}
+		st, v, jn := sCount.judge()
+		for _, w := range []string{sNote, jn} {
+			if w != "" {
+				notes = append(notes, w)
+			}
+		}
+		if n > statusMaxRows {
+			notes = append(notes, fmt.Sprintf("the first %d of %d status rows kept", statusMaxRows, n))
+		}
+		res.Note = strings.Join(notes, "; ")
+		res.Value, res.Status, res.StatusRows = &v, st, sRows
+		if res.StatusRows == nil {
+			res.StatusRows = []statusRow{}
+		}
+		return res, nil
 	}
 	if c.Rule == "rows" {
 		v := float64(n)
@@ -536,4 +593,172 @@ func traceChanges(before, after map[int]string) string {
 		}
 	}
 	return strings.Join(said, ", ")
+}
+
+// ---- rule status: DBA Dash's custom check (ST6b) ---------------------------------------------------------------
+
+// statusMaxRows bounds the rows a status check keeps (DBA Dash keeps every row; every row is judged here, the rest
+// counted in the run's note).
+const statusMaxRows = 1000
+
+// statusMaxName is DBA Dash's nvarchar(128) for Test and Context (its dbo.CustomChecks type).
+const statusMaxName = 128
+
+// statusRow is one row of a status check: DBA Dash's dbo.DBADash_CustomCheck result (Test, Context, Status 1
+// critical / 2 warning / 3 N/A / 4 OK, Info).
+type statusRow struct {
+	Test, Context string
+	Status        int
+	Info          *string // nil: NULL, or not kept (query_text other than full)
+}
+
+// statusColumns finds Test, Context, Status and Info among the check's columns by name, without case (the first of
+// each; Info may be absent: -1); a column that is none of them is named in the note.
+func statusColumns(cols []string) (ix [4]int, note string, err error) {
+	ix = [4]int{-1, -1, -1, -1}
+	names := [4]string{"Test", "Context", "Status", "Info"}
+	var others []string
+	for i, c := range cols {
+		found := false
+		for k, n := range names {
+			if ix[k] < 0 && strings.EqualFold(c, n) {
+				ix[k], found = i, true
+				break
+			}
+		}
+		if !found {
+			others = append(others, c)
+		}
+	}
+	for k := 0; k < 3; k++ {
+		if ix[k] < 0 {
+			return ix, "", fmt.Errorf("the check returns no column %s: a status check returns Test, Context, Status and Info (DBA Dash's custom check, dbo.DBADash_CustomCheck)", names[k])
+		}
+	}
+	if len(others) > 0 {
+		word := "column"
+		if len(others) > 1 {
+			word = "columns"
+		}
+		note = fmt.Sprintf("%d other %s not read (%s)", len(others), word, strings.Join(others, ", "))
+	}
+	return ix, note, nil
+}
+
+// statusText is a Test / Context / Info cell as text (NULL: ok false).
+func statusText(v any, typ string) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	if s, ok := mssqlread.Cell(v, typ).(string); ok {
+		return s, true
+	}
+	return fmt.Sprint(mssqlread.Cell(v, typ)), true
+}
+
+// statusRowOf reads one row's four columns (Info kept only when keep, capped at collect.CustomMaxCell characters).
+func statusRowOf(vals []any, types []string, ix [4]int, keep bool) (statusRow, error) {
+	var r statusRow
+	for k, dst := range []*string{&r.Test, &r.Context} {
+		name := [2]string{"Test", "Context"}[k]
+		t, ok := statusText(vals[ix[k]], types[ix[k]])
+		if !ok {
+			return r, fmt.Errorf("%s is NULL: DBA Dash's custom check names each row by its Test and Context", name)
+		}
+		if len([]rune(t)) > statusMaxName {
+			return r, fmt.Errorf("%s is longer than %d characters (DBA Dash's nvarchar(%d))", name, statusMaxName, statusMaxName)
+		}
+		*dst = t
+	}
+	sv := vals[ix[2]]
+	if sv == nil {
+		return r, errors.New("Status is NULL: each row's Status is 1 critical, 2 warning, 3 N/A or 4 OK (DBA Dash's custom check)")
+	}
+	f, _, err := mssqlread.Number(sv, types[ix[2]])
+	if err != nil || f != math.Trunc(f) || f < 1 || f > 4 {
+		shown := fmt.Sprint(sv)
+		if s, ok := sv.(string); ok {
+			shown = fmt.Sprintf("%q", s)
+		} else if err == nil {
+			shown = strconv.FormatFloat(f, 'f', -1, 64)
+		}
+		return r, fmt.Errorf("Status %s is not 1 to 4: each row's Status is 1 critical, 2 warning, 3 N/A or 4 OK (DBA Dash's custom check)", shown)
+	}
+	r.Status = int(f)
+	if keep && ix[3] >= 0 {
+		if t, ok := statusText(vals[ix[3]], types[ix[3]]); ok {
+			t = collect.CapCustomText(t, collect.CustomMaxCell)
+			r.Info = &t
+		}
+	}
+	return r, nil
+}
+
+// statusCounts is the rows of a run by their Status.
+type statusCounts struct{ critical, warning, na, ok, total int }
+
+func (c *statusCounts) add(status int) {
+	c.total++
+	switch status {
+	case 1:
+		c.critical++
+	case 2:
+		c.warning++
+	case 3:
+		c.na++
+	default:
+		c.ok++
+	}
+}
+
+// judge is the run's status (the worst row: critical, warning, else ok), its value (the rows at warning or critical:
+// the chart) and a note when nothing was judged.
+func (c statusCounts) judge() (string, float64, string) {
+	v := float64(c.critical + c.warning)
+	switch {
+	case c.critical > 0:
+		return "critical", v, ""
+	case c.warning > 0:
+		return "warning", v, ""
+	case c.total == 0:
+		return "ok", v, "no row: nothing to judge (DBA Dash's N/A)"
+	case c.na == c.total:
+		return "ok", v, "every row N/A (DBA Dash's status 3): nothing to judge"
+	}
+	return "ok", v, ""
+}
+
+// statusJudge judges a set of rows (statusCounts.judge over them).
+func statusJudge(rows []statusRow) (string, float64, string) {
+	var c statusCounts
+	for _, r := range rows {
+		c.add(r.Status)
+	}
+	return c.judge()
+}
+
+// statusDuplicate refuses a (Test, Context) pair that comes twice: DBA Dash keeps one row per pair (its key).
+func statusDuplicate(rows []statusRow) error {
+	seen := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		k := r.Test + "\x00" + r.Context
+		if seen[k] {
+			return fmt.Errorf("Test %q and Context %q come twice: DBA Dash's custom check keeps one row per Test and Context", r.Test, r.Context)
+		}
+		seen[k] = true
+	}
+	return nil
+}
+
+// statusPayload is a status check's rows as the payload's status_row rows (import_mssql_custom, 0263).
+func statusPayload(check string, rows []statusRow) []collect.Row {
+	out := make([]collect.Row, 0, len(rows))
+	for _, r := range rows {
+		var info any
+		if r.Info != nil {
+			info = *r.Info
+		}
+		out = append(out, collect.Row{"kind": "status_row", "check_name": check, "test": r.Test, "context": r.Context, "status": r.Status, "info": info})
+	}
+	return out
 }
