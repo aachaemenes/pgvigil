@@ -1118,6 +1118,11 @@ UNIT_TEXT = re.compile(r'-?[\d\s,.\u202f\u00a0]*\d ?(?:B|KB|MB|GB|TB|PB|ms|s|min
 AGES = {'Memory Dump', 'Corruption', 'Last Good Check DB', 'Instance Uptime', 'Snapshot Age', 'Alerts'}
 SIZE_U = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 DUR_MS = {'ms': 1, 's': 1000, 'min': 60000}
+# a screen figure that groups its thousands in the language's way ('1,672.00'; fr-FR '1 672,00')
+GROUPED_SCREEN = r'\d,\d{3}(?!\d)' if sys.argv[3].startswith('en') else r'\d[\s\u202f\u00a0]\d{3}(?!\d)'
+def fmt_code(fid):
+    # a number format's code by its id: the workbook's own, else Excel's built-in ones the export can name
+    return FMT_CODES.get(fid) or {0: 'General', 1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 9: '0%', 10: '0.00%'}.get(fid, '')
 def digits_(t):
     t = re.sub(r'[\s\u202f\u00a0]', '', t)
     t = t.replace(',', '') if want.startswith('en') else t.replace(',', '.')
@@ -1650,6 +1655,17 @@ for key, tab, inst in PAGES:
                 CONVERTED[0] += ncmp
                 if ncmp or off_:
                     check(not off_, f"{key}: sheet '{names[gsheet[i] - 1]}' {ncmp} figure(s) in its unit-headed columns = the screen's, converted, within the shown precision ({off_[:3]})")
+                # (X7, the page's grouping) a number under a grouped format ('#,##0.00') only in a column whose screen figures
+                # group their thousands: an ungrouped figure on the page exports ungrouped
+                goff, ngrp = [], 0
+                for j in range(len(g['head'])):
+                    gr_ = [k_ for k_ in range(len(g['cells'])) if (k_ + 2, j) in cells and cells[(k_ + 2, j)][1] is not None and fmt_code(cx[cells[(k_ + 2, j)][0]]['fmt']).startswith('#,##')]
+                    if not gr_: continue
+                    ngrp += 1
+                    if not any(re.search(GROUPED_SCREEN, r_[j]['t'] or '') for r_ in g['cells'] if j < len(r_)):
+                        goff.append(f"{colname(j)} '{g['head'][j]}': {len(gr_)} cell(s) under a grouped format, no screen figure grouped")
+                if ngrp or goff:
+                    check(not goff, f"{key}: sheet '{names[gsheet[i] - 1]}' a grouped number format only where the screen groups the column's figures ({ngrp} grouped column(s); {goff[:3]})")
                 # (X13) the most decimals the screen shows in each column of this grid, for xlsx-check's page - a grid the
                 # screen drew whole only (a long grid's rows past the drawn ones can show more: the writer reads them all)
                 if len(g['cells']) == g['rows']:
@@ -1845,6 +1861,19 @@ for key, tab, inst in PAGES:
                 if b_ is None or v_ is None or abs(v_ - float(b_) / 1024 ** dpk_p) > 1e-9 * max(1.0, abs(v_)) or shown_k != dpk_k or number(t_) is None or abs(number(t_) - round(v_, dpk_k)) > 1e-9:
                     dpk_bad.append(f"{nm} {w}: page {t_!r}, workbook {v_}, API {b_}")
         check(dpk_seen >= 2 and not dpk_bad, f"{key}: every size figure shows {dpk_k} decimals; each workbook cell = the API's bytes / 1024^{dpk_p} exact, rounding to the screen's figure ({dpk_seen} figures; {dpk_bad[:3]})")
+        # (the page's grouping) each size column under the screen's grouping: '#,##0.00' where a figure of the column groups
+        # its thousands ('1,672.00'), the plain fixed decimals where none does (an ungrouped figure exports ungrouped; TB / 3
+        # never groups)
+        dpk_fo, dpk_gr = [], 0
+        for j, w in enumerate(dpk_want, 1):
+            if j >= len(dpk_cols): continue
+            dpk_s = [row[j]['t'] for row in (dpk_g.get('cells') or []) if j < len(row) and row[j]['t'] not in ('', 'not read')]
+            if not dpk_s: continue
+            dpk_x = any(re.search(GROUPED_SCREEN, t_) for t_ in dpk_s); dpk_gr += dpk_x
+            dpk_w = ('#,##' if dpk_x else '') + ('0.' + '0' * dpk_k if dpk_k else '0')
+            dpk_f = {fmt_code(cx[s_]['fmt']) for (r_, c_), (s_, v_, _t) in dpk_c.items() if r_ > 1 and c_ == dpk_cols[j] and v_ is not None}
+            if dpk_f != {dpk_w}: dpk_fo.append(f"{w}: {sorted(dpk_f)}, want {dpk_w!r}")
+        check(not dpk_fo, f"{key}: each size column's number format follows the screen's grouping, grouped only where a figure groups its thousands ({dpk_gr} grouped column(s); {dpk_fo[:3]})")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
