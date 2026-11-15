@@ -8,6 +8,12 @@
 #   scripts/lab/azure-sqldb.sh logins              (where 1433 reaches) the collector's contained user and its right
 #   scripts/lab/azure-sqldb.sh vmdoor <ip>         (tier pool) the VM's ssh door admits this address only
 #   scripts/lab/azure-sqldb.sh status              what this lab holds now, read from Azure
+#   scripts/lab/azure-sqldb.sh geo-up              (tier basic) a second server in PGVIGIL_LAB_AZ_GEO_REGION and the
+#                                                  database's Basic geo-secondary there (task 390a)
+#   scripts/lab/azure-sqldb.sh fg-make             (geo) a failover group (Manual) over the two servers holding the database
+#   scripts/lab/azure-sqldb.sh fg-policy <Manual|Automatic>  the group's read-write policy (Automatic: grace 1 hour)
+#   scripts/lab/azure-sqldb.sh fg-failover [force] the group's planned failover to its secondary (force: with data loss)
+#   scripts/lab/azure-sqldb.sh geo-unlink          the group deleted, then the geo link removed (both databases stay)
 #   scripts/lab/azure-sqldb.sh down                delete everything it made and read the listing back
 #
 # Settings (environment):
@@ -27,6 +33,9 @@
 #                                Standard IPv4 USD 0.005 / h, its 30 GB Standard SSD OS disk (E4) USD 2.40 a month)
 #   PGVIGIL_LAB_AZ_VM_SIZE       (tier pool) the VM's size, default Standard_B2ats_v2; up refuses a size whose family
 #                                quota in the region (or the region's cores) has no room for it, before anything is made
+#   PGVIGIL_LAB_AZ_GEO_REGION    (geo-up) the second server's region: a failover group's secondary "can't be in the
+#                                same Azure region" (Microsoft); the geo-secondary is Basic too ("the same service
+#                                tier" is required): USD 0.161 a day in eastus (Azure's retail prices, read 2026-11-14)
 #   PGVIGIL_LAB_DIR              the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE         the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
 #   AZ                           the Azure CLI, default az on the PATH
@@ -203,9 +212,14 @@ allow)
   need_az; load; shift
   [ $# -ge 1 ] || fail "allow <ip> [<ip> ...]: one address at least"
   for a in "$@"; do ip_ok "$a" || fail "not one IPv4 address: $a (a range or 0.0.0.0 is never admitted)"; done
-  fw_clear >/dev/null
-  n=0; for a in "$@"; do n=$((n + 1))
-    az_ sql server firewall-rule create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "pgv-reader-$n" --start-ip-address "$a" --end-ip-address "$a" >/dev/null
+  for SRV in "$AZ_SERVER" ${GEO_SERVER:-}; do
+    rules=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$SRV" --query '[].name' -o tsv)
+    for r in $rules; do az_ sql server firewall-rule delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$SRV" -n "$r" >/dev/null; done
+    n=0; for a in "$@"; do n=$((n + 1))
+      az_ sql server firewall-rule create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$SRV" -n "pgv-reader-$n" --start-ip-address "$a" --end-ip-address "$a" >/dev/null
+    done
+    GOT=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$SRV" --query '[].[startIpAddress,endIpAddress]' -o tsv | awk '{ print ($1 == $2 ? $1 : "RANGE " $1 "-" $2) }' | sort -u)
+    [ "$GOT" = "$(printf '%s\n' "$@" | sort -u)" ] || fail "the firewall of $SRV reads '$(tr '\n' ' ' <<<"$GOT")', not the addresses given: run allow again or down"
   done
   # the door read back: exactly the addresses given, each a single address
   GOT=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[startIpAddress,endIpAddress]' -o tsv | awk '{ print ($1 == $2 ? $1 : "RANGE " $1 "-" $2) }' | sort -u)
@@ -299,7 +313,102 @@ SELECT 'logins: ' + name + ' (' + type_desc COLLATE DATABASE_DEFAULT + ', ' + au
 FROM sys.database_principals WHERE name = N'$VM_NAME';
 SQL
   fi
+  if [ -n "${GEO_SERVER:-}" ]; then
+    # the geo-secondary's own server: pgv_conn in its master (a login is the server's; the contained user came with the
+    # database's copy)
+    docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$GEO_HOST,$AZ_PORT" -U "$ADMIN_USER" -d master -C -b -l 60 -h -1 -W -i /dev/stdin <<SQL
+SET NOCOUNT ON;
+IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = N'$CONN_USER') CREATE LOGIN [$CONN_USER] WITH PASSWORD = N'$CONN_PW';
+ELSE ALTER LOGIN [$CONN_USER] WITH PASSWORD = N'$CONN_PW';
+GO
+ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER [$CONN_USER];
+ALTER SERVER ROLE ##MS_DatabaseConnector## ADD MEMBER [$CONN_USER];
+GO
+SELECT 'logins: ' + @@SERVERNAME + ' ' + p.name + ' in ' + ISNULL((SELECT STRING_AGG(r.name, ', ') WITHIN GROUP (ORDER BY r.name) FROM sys.server_role_members m
+          JOIN sys.server_principals r ON r.principal_id = m.role_principal_id WHERE m.member_principal_id = p.principal_id), 'no server role')
+FROM sys.sql_logins p WHERE p.name = N'$CONN_USER';
+SQL
+  fi
   echo "logins: Microsoft says a server role's membership may take up to 5 minutes to take effect"
+  ;;
+geo-up)
+  need_az; load; : "${PGVIGIL_LAB_AZ_GEO_REGION:?the region of the second server}"
+  [ "${AZ_TIER:-}" = basic ] || fail "geo-up is the basic tier's (a Basic geo-secondary of a Basic database)"
+  [ -z "${GEO_SERVER:-}" ] || fail "the geo-secondary's server $GEO_SERVER is in the state already (status, or down)"
+  [ "$PGVIGIL_LAB_AZ_GEO_REGION" != "${PGVIGIL_LAB_AZ_REGION:-}" ] || fail "the geo region must differ from the primary's (a failover group's secondary can't be in the same region)"
+  CAP=$(az_ sql db list-editions -l "$PGVIGIL_LAB_AZ_GEO_REGION" --edition Basic --query '[0].status' -o tsv)
+  case $CAP in Available|Default) ;; *) fail "the region $PGVIGIL_LAB_AZ_GEO_REGION refuses Basic for this subscription ($CAP)" ;; esac
+  G=${AZ_SERVER}-geo
+  ( umask 077; printf 'GEO_SERVER=%s\nGEO_HOST=%s.database.windows.net\nGEO_REGION=%s\nFG_NAME=%s-fg\n' "$G" "$G" "$PGVIGIL_LAB_AZ_GEO_REGION" "$AZ_SERVER" >> "$STATE" )
+  load
+  BODY=$(umask 077; mktemp "$DIR/azsrv.XXXXXX.json")
+  trap 'rm -f "$BODY"' EXIT
+  python3 - "$BODY" "$PGVIGIL_LAB_AZ_GEO_REGION" "$PGVIGIL_LAB_PROOF" "$ADMIN_USER" "$ADMIN_PW" <<'GEOPY'
+import json, sys
+body, region, tag, user, pw = sys.argv[1:6]
+json.dump({"location": region, "tags": {"pgvigil-proof": tag},
+  "properties": {"administratorLogin": user, "administratorLoginPassword": pw, "version": "12.0",
+                 "minimalTlsVersion": "1.2", "publicNetworkAccess": "Enabled", "restrictOutboundNetworkAccess": "Disabled"}},
+  open(body, "w"))
+GEOPY
+  "$AZ" rest --method put --uri "https://management.azure.com/subscriptions/$PGVIGIL_LAB_AZ_SUBSCRIPTION/resourceGroups/$PGVIGIL_LAB_AZ_GROUP/providers/Microsoft.Sql/servers/$GEO_SERVER?api-version=2023-08-01" --body "@$BODY" --only-show-errors >/dev/null
+  rm -f "$BODY"
+  st=
+  for _ in $(seq 1 60); do
+    st=$(az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$GEO_SERVER" --query state -o tsv 2>/dev/null || true)
+    [ "$st" = Ready ] && break; sleep 10
+  done
+  [ "$st" = Ready ] || fail "the server $GEO_SERVER is not Ready after 10 min (state '${st:-none}'); down removes it"
+  echo "made: logical server $GEO_SERVER in $PGVIGIL_LAB_AZ_GROUP ($PGVIGIL_LAB_AZ_GEO_REGION), tag pgvigil-proof=$PGVIGIL_LAB_PROOF, TLS 1.2+"
+  rules=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$GEO_SERVER" --query '[].name' -o tsv)
+  for r in $rules; do az_ sql server firewall-rule delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$GEO_SERVER" -n "$r" >/dev/null; done
+  az_ sql db replica create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" --partner-server "$GEO_SERVER" \
+    --partner-resource-group "$PGVIGIL_LAB_AZ_GROUP" --secondary-type Geo --service-objective Basic --backup-storage-redundancy Local \
+    --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[name,currentServiceObjectiveName,status]' -o tsv
+  echo "made: the geo-secondary $GEO_SERVER/$AZ_DB (Basic), tag pgvigil-proof=$PGVIGIL_LAB_PROOF"
+  LS=
+  for _ in $(seq 1 60); do
+    LS=$(az_ sql db replica list-links -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" --query '[0].[replicationState,role,partnerRole]' -o tsv 2>/dev/null || true)
+    case $LS in CATCH_UP*) break ;; esac; sleep 10
+  done
+  echo "geo link: ${LS:-not read} (replicationState, role, partnerRole); now allow <ip> again (both servers), then logins"
+  ;;
+fg-make)
+  need_az; load; [ -n "${GEO_SERVER:-}" ] || fail "fg-make needs geo-up first"
+  az_ sql failover-group create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --partner-server "$GEO_SERVER" \
+    --failover-policy Manual --add-db "$AZ_DB" --query '[name,replicationRole,replicationState]' -o tsv
+  echo "made: failover group $FG_NAME (Manual) over $AZ_SERVER and $GEO_SERVER holding $AZ_DB (undo: geo-unlink or down)"
+  ;;
+fg-policy)
+  need_az; load; [ -n "${FG_NAME:-}" ] || fail "no failover group in this lab"
+  case ${2:-} in
+    Manual) az_ sql failover-group update -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --failover-policy Manual \
+              --query '[name,readWriteEndpoint.failoverPolicy]' -o tsv ;;
+    Automatic) az_ sql failover-group update -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --failover-policy Automatic --grace-period 1 \
+                 --query '[name,readWriteEndpoint.failoverPolicy,readWriteEndpoint.failoverWithDataLossGracePeriodMinutes]' -o tsv ;;
+    *) fail "fg-policy Manual|Automatic" ;;
+  esac
+  ;;
+fg-failover)
+  need_az; load; [ -n "${FG_NAME:-}" ] || fail "no failover group in this lab"
+  ROLE=$(az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" --query replicationRole -o tsv)
+  if [ "$ROLE" = Primary ]; then TO=$GEO_SERVER; else TO=$AZ_SERVER; fi
+  case ${2:-} in
+    "") az_ sql failover-group set-primary -g "$PGVIGIL_LAB_AZ_GROUP" -s "$TO" -n "$FG_NAME" ;;
+    force) az_ sql failover-group set-primary -g "$PGVIGIL_LAB_AZ_GROUP" -s "$TO" -n "$FG_NAME" --allow-data-loss ;;
+    *) fail "fg-failover [force]" ;;
+  esac
+  echo "failover: $FG_NAME's primary is now $TO ($(az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$TO" -n "$FG_NAME" --query replicationRole -o tsv) there)"
+  ;;
+geo-unlink)
+  need_az; load; [ -n "${GEO_SERVER:-}" ] || fail "no geo link in this lab"
+  if [ -n "${FG_NAME:-}" ] && az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" >/dev/null 2>&1; then
+    az_ sql failover-group delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME"; echo "deleted: failover group $FG_NAME"
+  fi
+  P=$(az_ sql db replica list-links -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" --query '[0].role' -o tsv 2>/dev/null || true)
+  if [ "$P" = Primary ]; then PRI=$AZ_SERVER; SEC=$GEO_SERVER; else PRI=$GEO_SERVER; SEC=$AZ_SERVER; fi
+  az_ sql db replica delete-link -g "$PGVIGIL_LAB_AZ_GROUP" -s "$PRI" -n "$AZ_DB" --partner-server "$SEC" --partner-resource-group "$PGVIGIL_LAB_AZ_GROUP" --yes
+  echo "removed: the geo link of $AZ_DB between $PRI (primary) and $SEC; both databases stay until down"
   ;;
 status)
   need_az
@@ -335,6 +444,18 @@ down)
     [ "$LEFT_VM" = 0 ] || fail "the VM's pieces are not all gone (above): the state file $STATE stays"
     rm -f "$VM_KEY" "$VM_KEY.pub"
   fi
+  if [ -n "${GEO_SERVER:-}" ]; then
+    if [ -n "${FG_NAME:-}" ] && az_ sql failover-group show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME" >/dev/null 2>&1; then
+      az_ sql failover-group delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$FG_NAME"; echo "deleted: failover group $FG_NAME"
+    fi
+    if az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$GEO_SERVER" >/dev/null 2>&1; then
+      az_ sql server delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$GEO_SERVER" --yes
+      echo "deleted: logical server $GEO_SERVER (the geo-secondary and its firewall rules with it)"
+    fi
+    LEFT_GEO=$(az_ sql server list -g "$PGVIGIL_LAB_AZ_GROUP" --query "length([?name=='$GEO_SERVER'])" -o tsv)
+    echo "read back: servers named $GEO_SERVER $LEFT_GEO"
+    [ "$LEFT_GEO" = 0 ] || fail "the geo server is not gone (above): the state file $STATE stays"
+  fi
   if az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$AZ_SERVER" >/dev/null 2>&1; then
     az_ sql server delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$AZ_SERVER" --yes
     echo "deleted: logical server $AZ_SERVER (its database and firewall rules with it)"
@@ -350,5 +471,5 @@ down)
   rm -f "$STATE"
   echo "down: 0 left"
   ;;
-*) sed -n '2,13p' "$0"; exit 2 ;;
+*) sed -n '2,18p' "$0"; exit 2 ;;
 esac
