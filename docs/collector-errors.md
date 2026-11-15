@@ -43,7 +43,8 @@ Acknowledge on an instance's row (or Acknowledge all in view, one write per inst
 to the newest shown: the page greys them and counts the new ones, and the Summary's Collection Errors cell leaves them
 out of its 24-hour count and stops calling a collection failing whose failed run is under the mark - until a newer
 error comes (DBA Dash's Acknowledge Errors, which is one date for the whole repository). It is offered only with no
-filter set, because it covers every error of the instance, shown or not. Who and when are kept (the acknowledgements'
+filter set and a range of 24 hours or more that ends now, because it covers every error of the instance, shown or
+not, and the Summary counts the last 24 hours; an instance with nothing new since its mark is not offered it again. Who and when are kept (the acknowledgements'
 log); Unacknowledge brings them back. The mark is the error log's row number (`log_id`), not a time: a run's time is
 when it started, so a long run that fails later would otherwise count as acknowledged.
 

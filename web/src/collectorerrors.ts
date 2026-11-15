@@ -7,7 +7,7 @@
 // view) takes the instance's errors up to its newest out of the Summary's counts until a newer one comes; it is offered
 // only with no filter set, as it covers every error of the instance. Data from GET /api/collectorerrors.
 import { get, Row, rowsOf, Table } from './api';
-import { AckBody, ackDialog, endAck, endButton, loadAckSafe, writeButton } from './ack';
+import { AckBody, ackDialog, ackOn, endAck, endButton, loadAckSafe, writeButton } from './ack';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { fleet, inTagScope, tagWords } from './fleet';
@@ -45,7 +45,12 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
     return `${path}?${q.toString()}`;
   };
   const filtered = !!(f.coll || f.type || f.stage || f.q || f.service);
-  const params: Record<string, string | number | undefined> = { ...window_(ctx), view, coll: f.coll, type: f.type, stage: f.stage, q: f.q,
+  // an acknowledgement covers every error of an instance up to its newest, and the Summary counts the last 24 hours: it
+  // is offered only with no filter set and a range of 24 hours or more that ends now, so nothing it covers went unseen
+  const win = window_(ctx);
+  const wide = Date.parse(win.from) <= Date.now() - 24 * 3600000 + 60000 && Date.parse(win.to) >= Date.now() - 5 * 60000;
+  const canAck = !filtered && wide;
+  const params: Record<string, string | number | undefined> = { ...win, view, coll: f.coll, type: f.type, stage: f.stage, q: f.q,
     skipped: f.skipped === '1' ? 1 : undefined, service: f.service === '1' ? 1 : undefined };
   let folder = ' of the fleet';
   try {
@@ -93,9 +98,11 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
     if (mine === seq) body.replaceChildren(...render(d));
   };
   const redraw = () => { void draw(); };
+  let said = ''; // what the last Unacknowledge could not end, shown once on the next drawing
   const render = (d: Record<string, Part>): Node[] => {
   const out: Node[] = [];
   const rows = rowsOf(d.rows), marks = rowsOf(d.marks), cards = rowsOf(d.insights);
+  if (said) { out.push(el('p', { class: 'meta', role: 'status' }, said)); said = ''; }
 
   // the suggestions: one card per kind, naming its instances (DBA Dash's insight card)
   for (const c of cards) out.push(el('div', { class: 'card warn', role: 'note' }, badge('Suggestion', 'warn'), ' ', String(c.text ?? ''), ' ',
@@ -103,17 +110,32 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
 
   // the acknowledgement of the instance in scope
   const ackBody = (r: Row): AckBody => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: 'collector errors', seen_state: `log_id:${Number(r.max_log_id)}`, until_change: true });
+  // Unacknowledge ends every live row of the instance: the first through the dialog, the rest after it, any refusal
+  // said on the page; no control where this serve cannot write for the instance
   const unack = (m: Row): HTMLElement => {
     const ids = (m.ack_ids as number[] | null) ?? [];
-    if (!ids.length) return el('span');
+    if (!ids.length || !ackOn(ad, Number(m.instance_id))) return el('span');
     return endButton(ids[0], `Unacknowledge the collector errors of ${String(m.instance)}`, async () => {
-      for (const id of ids.slice(1)) { try { await endAck(id); } catch { /* the first answer is shown; the rest are tried */ } }
+      const not: string[] = [];
+      for (const id of ids.slice(1)) { try { await endAck(id); } catch (e) { not.push(e instanceof Error ? e.message : String(e)); } }
+      if (not.length) said = `${ids.length - not.length} of ${ids.length} acknowledgement rows of ${String(m.instance)} ended; not: ${[...new Set(not)].join('; ')}`;
       redraw();
     }, 'Unacknowledge');
   };
+  const ackButton = (r: Row, name: string): HTMLElement => writeButton(ad, 'Acknowledge', `Acknowledge the collector errors of ${name}`, () => ackDialog({
+    title: `Acknowledge the collector errors of ${name}`,
+    what: 'Its errors up to the newest (every one of them, in this range or before it) leave the Summary\'s error count and its failing collections until a newer one comes. Who and when are kept; Unacknowledge brings them back.',
+    body: ackBody(r), expiry: false, noteField: 'optional', after: redraw,
+  }), { instance: Number(r.instance_id), name });
+  // an instance with nothing new since its mark gets no second row
+  const ackable = (r: Row): boolean => canAck && r.max_log_id != null && (r.mark == null || Number(r.new_since_mark ?? 0) > 0);
   if (ctx.instance) {
     const m = marks[0];
-    if (m) out.push(el('p', { class: 'meta' }, `Acknowledged up to log_id ${String(m.mark ?? '?')}: the errors up to it are greyed and left out of the Summary. `, unack(m)));
+    const top = rows.reduce((x, r) => Math.max(x, Number(r.max_log_id ?? 0)), 0);
+    const line = el('p', { class: 'meta' }, m ? `Acknowledged up to log_id ${String(m.mark ?? '?')}: the errors up to it are greyed and left out of the Summary. ` : '');
+    if (m) line.append(unack(m), ' ');
+    if (canAck && top > 0 && (!m || top > Number(m.mark ?? 0))) line.append(ackButton({ instance_id: ctx.instance, max_log_id: top }, String(m?.instance ?? 'this instance')));
+    if (line.childNodes.length) out.push(line);
   }
 
   // the grid of the view
@@ -134,7 +156,9 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
     ...countCols.filter(([k]) => k !== 'skipped' || f.skipped === '1').map(([k, label, key, val]) => ({ key: k, label, num: true,
       fmt: (v: unknown, r: Row) => countLink(r, key, val)(v) } as Col)),
     { key: 'first_at', label: 'first', fmt: fmtTime }, { key: 'last_at', label: 'last', fmt: fmtTime },
-    { key: 'last_message', label: 'last message', wide: true, fmt: v => el('span', { title: String(v ?? '') }, String(v ?? '')) },
+    // the first 1000 characters; a longer one opens whole (DBA Dash's Last Message link)
+    { key: 'last_message', label: 'last message', wide: true, fmt: (v, r) => String(r.last_message_full ?? '').length > String(v ?? '').length
+      ? el('details', {}, el('summary', {}, String(v ?? '')), el('pre', { class: 'wrap' }, String(r.last_message_full))) : String(v ?? '') },
   ];
   if (view === 'instance') {
     cols = [
@@ -147,11 +171,7 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
         const m = marks.find(x => Number(x.instance_id) === Number(r.instance_id));
         const box = el('span', {}, v == null ? '' : `up to ${String(v)} (${fmtNum(r.new_since_mark ?? 0)} new) `);
         if (m) box.append(unack(m), ' ');
-        if (r.max_log_id != null && !filtered) box.append(writeButton(ad, 'Acknowledge', `Acknowledge the collector errors of ${String(r.instance)}`, () => ackDialog({
-          title: `Acknowledge the collector errors of ${String(r.instance)}`,
-          what: 'Its errors up to the newest shown leave the Summary\'s error count and its failing collections until a newer one comes. Who and when are kept; Unacknowledge brings them back.',
-          body: ackBody(r), expiry: false, noteField: 'optional', after: redraw,
-        }), { instance: Number(r.instance_id), name: String(r.instance) }));
+        if (ackable(r)) box.append(ackButton(r, String(r.instance)));
         return box;
       } },
     ];
@@ -169,14 +189,15 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'type', fmt: v => badge(String(v ?? ''), v === 'Error' ? 'crit' : v === 'Warning' ? 'warn' : '') },
       { key: 'stage', fmt: v => el('a', { href: to({ stage: String(v) }) }, String(v ?? '')) },
       { key: 'note', wide: true, fmt: (v, r) => el('span', { class: r.acked ? 'muted' : '' }, String(v ?? ''), r.acked ? ' (acknowledged)' : '') },
-      { key: 'link', label: 'handled on', fmt: v => v ? el('a', { href: String(v) }, String(v).replace('#/', '')) : '' },
+      { key: 'link', label: 'handled on', fmt: v => v ? el('a', { href: href(ctx, { tab: String(v).replace('#/', ''), instance: undefined }) }, String(v).replace('#/', '')) : '' },
     ];
   }
   // Acknowledge every instance in view: one write per instance, offered only with no filter set
-  if (filtered) out.push(el('p', { class: 'meta' }, 'Clear the filters to acknowledge: an acknowledgement covers every error of an instance up to its newest, shown or not.'));
-  if (view === 'instance' && !ctx.instance && !filtered) {
-    const all = rows.filter(r => r.instance_id != null && r.max_log_id != null);
-    if (all.length) out.push(el('div', { class: 'toolbar' }, writeButton(ad, `Acknowledge all ${fmtNum(all.length)} in view`, 'Acknowledge the collector errors of every instance in view', () => ackDialog({
+  if (!canAck) out.push(el('p', { class: 'meta' }, (filtered ? 'Clear the filters' : 'Widen the range to the last 24 hours or more, ending now,')
+    + ' to acknowledge: an acknowledgement covers every error of an instance up to its newest, shown or not.'));
+  if (view === 'instance' && !ctx.instance && canAck) {
+    const all = rows.filter(r => r.instance_id != null && ackable(r));
+    if (all.length) out.push(el('div', { class: 'toolbar' }, writeButton(ad, `Acknowledge all ${fmtNum(all.length)} in view`, `Acknowledge all ${fmtNum(all.length)} in view: the collector errors of every instance in view`, () => ackDialog({
       title: `Acknowledge the collector errors of ${fmtNum(all.length)} instance(s)`,
       what: 'Each instance\'s errors up to its newest shown leave the Summary\'s counts until a newer one comes: one write per instance, the answer says which were refused.',
       body: all.map(ackBody), expiry: false, noteField: 'optional', after: redraw,

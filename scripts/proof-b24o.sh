@@ -53,7 +53,7 @@
 #     an instance-only label hide nothing; noise=1 shows the 17806 lines labelled; tag= narrows to its instances;
 #     agstate names the instance whose AlwaysOn_health is stopped. RED: no route.
 #  G. the pages (headless chromium): #/collectorerrors lists the target; at one instance per collection; Acknowledge
-#     offered with no filter and not with coll=; the page says pgvigil never retries; #/mssqlerrors lists 824 with its
+#     offered with no filter over 7 days, not with coll= and not over the last hour (it would cover errors not shown); the page says pgvigil never retries; #/mssqlerrors lists 824 with its
 #     Learn link and the stopped AlwaysOn_health; Collection dates links to #/collectorerrors; the error-log finding on
 #     #/findings links to #/mssqlerrors. (proof-a11y.sh runs once over the build: both themes, the new tabs.) RED: the
 #     pages do not exist.
@@ -336,9 +336,9 @@ echo "--- G. the pages"
 if command -v chromium >/dev/null; then
   page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "$U2/#/$1" 2>/dev/null || true; }
   has() { grep -qF -- "$2" <<<"$1" && echo yes || echo no; }
-  G1=$(page "collectorerrors?from=$FROM&to=$TO"); G2=$(page "collectorerrors?i=$PGI&from=$FROM&to=$TO"); G3=$(page "collectorerrors?coll=activity&from=$FROM&to=$TO")
-  check "$(has "$G1" "$PGT")|$(has "$G2" ">schema<")|$(has "$G1" "Acknowledge")|$(has "$G3" "Acknowledge")|$(has "$G1" "never retries")" "yes|yes|yes|no|yes" \
-    "G: the list, one instance per collection, Acknowledge only unfiltered, the words on retries"
+  G1=$(page "collectorerrors?w=7d"); G2=$(page "collectorerrors?i=$PGI&from=$FROM&to=$TO"); G3=$(page "collectorerrors?coll=activity&w=7d"); G7=$(page "collectorerrors?w=1h")
+  check "$(has "$G1" "$PGT")|$(has "$G2" ">schema<")|$(has "$G1" "Acknowledge")|$(has "$G3" "Acknowledge")|$(has "$G7" "Acknowledge")|$(has "$G1" "never retries")" "yes|yes|yes|no|no|yes" \
+    "G: the list, one instance per collection, Acknowledge only unfiltered over 24 h or more ending now (not at w=1h), the words on retries"
   G4=$(page "mssqlerrors?from=$FROM&to=$TO")
   check "$(has "$G4" "mssqlserver-824-database-engine-error")|$(has "$G4" "AlwaysOn_health not read")" "yes|yes" "G: the stream with its Learn link and the stopped AlwaysOn_health"
   G5=$(page "collectiondates?i=$PGI"); G6=$(page "findings")
