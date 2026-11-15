@@ -199,8 +199,8 @@ func TestDoorFoldA(t *testing.T) {
 	if resources != 2 || !strings.Contains(strings.Join(notes, " "), "DescribeEvents") {
 		t.Errorf("a refused DescribeEvents: %d resources, notes %v - want the read standing (2 resources) and the refusal noted", resources, notes)
 	}
-	if points != 2 || cw.calls < 2 {
-		t.Errorf("%d points over %d GetMetricData call(s), want 2 (the -1 dropped, the second page read)", points, cw.calls)
+	if points != 1 || cw.calls < 2 {
+		t.Errorf("%d points over %d GetMetricData call(s), want 1 (the -1 on the first page dropped, the 4 read from the second)", points, cw.calls)
 	}
 	if cw.window != 20*time.Minute {
 		t.Errorf("GetMetricData's window %v, want 20m", cw.window)

@@ -375,7 +375,8 @@ type AWS struct {
 	// from it); nil = the dms collection skips this instance.
 	DMS *DMS `yaml:"dms"`
 	// Replicas switches on the provider replica door (task 390b P1): rds:DescribeDBInstances for the DB instance's
-	// read replicas and their status, cloudwatch:GetMetricData for each replica's ReplicaLag. Off by default (the
+	// read replicas and their status, cloudwatch:GetMetricData for each replica's ReplicaLag, rds:DescribeEvents for
+	// the instance's own failover events (P3). Off by default (the
 	// lead's Q8: its own door; the io, logs and dms reads of the same block keep theirs); it needs db_instance.
 	Replicas bool `yaml:"replicas"`
 }
@@ -384,8 +385,9 @@ type AWS struct {
 // replication metrics are read (Cloud SQL Admin instances.get, Cloud Monitoring timeSeries.list). The credential is
 // Application Default Credentials (the attached service account through the metadata server, a workload identity
 // federation file, gcloud's application-default sign-in) or the file CredentialsFile names (a service account key is a
-// stored secret: the docs say so); nothing is stored here. The identity needs cloudsql.instances.get and
-// monitoring.timeSeries.list (roles/cloudsql.viewer and roles/monitoring.viewer, or a custom role with the two).
+// stored secret: the docs say so); nothing is stored here. The identity needs cloudsql.instances.get,
+// cloudsql.instances.list (operations.list, P3: Google's table names both) and monitoring.timeSeries.list
+// (roles/cloudsql.viewer and roles/monitoring.viewer, or a custom role with the three).
 type GCP struct {
 	Project         string `yaml:"project"`
 	Instance        string `yaml:"instance"`         // the Cloud SQL instance's name (not its connection name)
@@ -631,6 +633,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
 			case in.AWS != nil && (strings.TrimSpace(in.AWS.Cluster) != "" || strings.TrimSpace(in.AWS.LogGroup) != "" || in.AWS.DMS != nil):
 				return fmt.Errorf("instance %q: the aws: block on engine sqlserver takes region, profile, db_instance and replicas (cluster, log_group and dms are PostgreSQL's)", in.Name)
+			case in.AWS != nil && (!in.AWS.Replicas || strings.TrimSpace(in.AWS.DBInstance) == ""):
+				// its one reader on SQL Server is the provider replica door (390b review part a, finding 1)
+				return fmt.Errorf("instance %q: the aws: block on engine sqlserver is the provider replica door: it needs replicas: true and db_instance", in.Name)
 			case in.GCP != nil:
 				return fmt.Errorf("instance %q: the gcp: block is PostgreSQL's (Cloud SQL for SQL Server's replicas are not read)", in.Name)
 			case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):

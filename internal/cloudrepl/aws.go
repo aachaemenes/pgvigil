@@ -231,7 +231,7 @@ func (r *AWSReader) lag(ctx context.Context, region string, ids []string) ([]Poi
 				continue
 			}
 			for j := range m.Timestamps {
-				if j < len(m.Values) {
+				if j < len(m.Values) && m.Values[j] >= 0 { // a negative value is no lag (390b review part a, finding 3)
 					out = append(out, Point{ResourceID: ids[k], Metric: "replica_lag", Unit: "s", At: m.Timestamps[j].UTC(), Value: m.Values[j]})
 				}
 			}
@@ -293,6 +293,9 @@ func awsErr(call, region string, err error) error {
 		switch ae.ErrorCode() {
 		case "Throttling", "ThrottlingException", "RequestLimitExceeded", "TooManyRequestsException", "RequestThrottled":
 			return &Throttled{Door: call + " in " + region, Code: ae.ErrorCode(), Message: ae.ErrorMessage()}
+		case "ExpiredToken", "ExpiredTokenException", "InvalidClientTokenId", "UnrecognizedClientException", "InvalidSignatureException":
+			// the credential itself (390b review part a, finding 8): never worded as a missing right
+			return fmt.Errorf("%s in %s refused (%s: %s): the sign-in was refused or has expired", call, region, ae.ErrorCode(), ae.ErrorMessage())
 		}
 		return fmt.Errorf("%s in %s refused (%s: %s): the identity needs %s", call, region, ae.ErrorCode(), ae.ErrorMessage(), call)
 	}

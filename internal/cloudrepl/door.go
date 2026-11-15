@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -39,10 +40,11 @@ type Door struct {
 	Region func(ctx context.Context, profile string) (string, error) // the profile's region when the aws: block names none
 	Now    func() time.Time
 
-	mu   sync.Mutex
-	aws  map[string]*AWSReader
-	gcp  map[string]*GCPReader
-	held map[string]held
+	mu    sync.Mutex
+	aws   map[string]*AWSReader
+	gcp   map[string]*GCPReader
+	gcpAt map[string]time.Time // each reader's credentials file modification time at its build
+	held  map[string]held
 }
 
 type held struct {
@@ -61,8 +63,10 @@ const restFor = awsListAge
 // instance's own, notes = the sentences of the calls refused or failed), then a 'resource' row per resource and a
 // 'point' row per datapoint and a 'failover' row per phase of the instance's own provider failover (P3); a read with
 // notes adds a collector_error row (the run is partial). A throttle is a read
-// with its sentence and no call until the door's rest ends. A read that cannot start (no credentials, the instance not
-// found) is an error.
+// with its sentence and no call until the door's rest ends. A read that cannot start is an error on Google (no
+// Application Default Credentials, a credentials file refused: NewGCPReader) - the collection fails and its 'collection
+// failing' finding speaks; on AWS the SDK resolves its credentials at each call, so no credentials is a refused call:
+// a note, a partial run and the 'cloud door failing' finding after 3 reads (390b review part a, finding 9).
 func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, error) {
 	provider, why := Which(in)
 	var self, key string
@@ -183,21 +187,29 @@ func (d *Door) awsReader(profile string) *AWSReader {
 	return r
 }
 
-// gcpReader: one reader per credentials file (an error is not kept: the next run tries again)
+// gcpReader: one reader per credentials file, built again when the file's modification time moves (a rotated key
+// written over the same path: 390b review part a, finding 10); an error is not kept: the next run tries again
 func (d *Door) gcpReader(file string) (*GCPReader, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.gcp == nil {
 		d.gcp = map[string]*GCPReader{}
+		d.gcpAt = map[string]time.Time{}
 	}
-	if r, ok := d.gcp[file]; ok {
+	var mod time.Time
+	if file != "" {
+		if st, err := os.Stat(file); err == nil {
+			mod = st.ModTime()
+		}
+	}
+	if r, ok := d.gcp[file]; ok && d.gcpAt[file].Equal(mod) {
 		return r, nil
 	}
 	r, err := d.NewGCP(file)
 	if err != nil {
 		return nil, err
 	}
-	d.gcp[file] = r
+	d.gcp[file], d.gcpAt[file] = r, mod
 	return r, nil
 }
 

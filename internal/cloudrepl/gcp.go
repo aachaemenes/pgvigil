@@ -47,12 +47,12 @@ type GCPReader struct {
 	Now           func() time.Time
 }
 
-// NewGCPReader: Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud's application-default
+// NewGCPReader builds the reader from Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud's application-default
 // sign-in, the attached service account through the metadata server), or the file the gcp: block's credentials_file
 // names - a service account key or a workload identity federation file, nothing else (the file is the host
 // administrator's, read as such).
 func NewGCPReader(credentialsFile string) (*GCPReader, error) {
-	ctx := context.Background() // the token source keeps it for every refresh: never a run's context
+	ctx := gcpTokenContext() // the token source keeps it for every refresh: never a run's context
 	var creds *google.Credentials
 	var err error
 	if f := strings.TrimSpace(credentialsFile); f != "" {
@@ -83,6 +83,13 @@ func NewGCPReader(credentialsFile string) (*GCPReader, error) {
 	return &GCPReader{HTTP: client, AdminURL: "https://sqladmin.googleapis.com", MonitoringURL: "https://monitoring.googleapis.com", Now: time.Now}, nil
 }
 
+// gcpTokenContext is the token source's context: a 30 s client for the token fetch itself (oauth2.Transport does not
+// pass a request's context to it - a token endpoint that accepts and never answers would hang the run and, under the
+// token source's lock, every later read on that credentials file: 390b review part a, finding 6)
+func gcpTokenContext() context.Context {
+	return context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: 30 * time.Second})
+}
+
 // gcpInstance: the fields of a Cloud SQL Admin DatabaseInstance this reader uses
 type gcpInstance struct {
 	Name               string   `json:"name"`
@@ -96,8 +103,9 @@ type gcpInstance struct {
 
 // gcpRef: an instance as Cloud SQL names it - project:instance, or a bare name in the reader's project
 func gcpRef(ref, project string) (proj, name string) {
-	if p, n, ok := strings.Cut(ref, ":"); ok {
-		return p, n
+	// split at the LAST colon: a domain-scoped project is 'example.com:proj' (390b review part a, finding 12)
+	if i := strings.LastIndex(ref, ":"); i > 0 {
+		return ref[:i], ref[i+1:]
 	}
 	return project, ref
 }
@@ -245,7 +253,9 @@ func (m *gcpMon) replica(ctx context.Context, project, name string) ([]Point, st
 	}
 	for _, s := range series {
 		for _, p := range s.Points {
-			if v, ok := p.Value.number(); ok {
+			// below 0 = 'replication is inactive' (Google's metrics page): the state says Stopped or Error, the lag is
+			// not a number of seconds (390b review part a, finding 3)
+			if v, ok := p.Value.number(); ok && v >= 0 {
 				pts = append(pts, Point{ResourceID: id, Metric: "replica_lag", Unit: "s", At: p.Interval.EndTime.UTC(), Value: v})
 			}
 		}
@@ -274,9 +284,22 @@ func (m *gcpMon) byteLag(ctx context.Context, project, source string, replicas m
 		return nil, err
 	}
 	var pts []Point
+	var unmatched []string
 	for _, s := range series {
-		id, ok := replicas[strings.ToLower(s.Metric.Labels["replica_name"])]
-		if s.Metric.Labels["replica_lag_type"] != byteLagReplay || !ok {
+		if s.Metric.Labels["replica_lag_type"] != byteLagReplay {
+			continue
+		}
+		// the label's form is not documented ('Name of the replica'): matched whole, then after its last ':'
+		// (390b review part a, finding 5); a series naming no replica of this read is said once
+		label := strings.ToLower(s.Metric.Labels["replica_name"])
+		id, ok := replicas[label]
+		if !ok {
+			if i := strings.LastIndex(label, ":"); i >= 0 {
+				id, ok = replicas[label[i+1:]]
+			}
+		}
+		if !ok {
+			unmatched = append(unmatched, s.Metric.Labels["replica_name"])
 			continue
 		}
 		for _, p := range s.Points {
@@ -284,6 +307,9 @@ func (m *gcpMon) byteLag(ctx context.Context, project, source string, replicas m
 				pts = append(pts, Point{ResourceID: id, Metric: "replica_byte_lag", Unit: "bytes", At: p.Interval.EndTime.UTC(), Value: v})
 			}
 		}
+	}
+	if len(unmatched) > 0 {
+		m.notes = append(m.notes, fmt.Sprintf("replica_byte_lag on %s names replicas this read does not hold (%s): their byte lag is not stored", gcpID(project, source), strings.Join(unmatched, ", ")))
 	}
 	return pts, nil
 }
@@ -404,7 +430,10 @@ func (g *GCPReader) call(ctx context.Context, call, project, u string, out any) 
 		return &Throttled{Door: call + " in project " + project, Code: code, Message: msg}
 	case resp.StatusCode == http.StatusNotFound && call == callAdminGet:
 		return &gcpNotFound{msg: fmt.Sprintf("%s in project %s: not found (%s)", call, project, msg)}
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	case resp.StatusCode == http.StatusUnauthorized:
+		// the credential itself (390b review part a, finding 8): never worded as a missing right
+		return fmt.Errorf("%s in project %s refused (%s: %s): the sign-in was refused or has expired", call, project, code, msg)
+	case resp.StatusCode == http.StatusForbidden:
 		return fmt.Errorf("%s in project %s refused (%s: %s): the identity needs %s", call, project, code, msg, gcpNeeds(call))
 	}
 	return fmt.Errorf("%s in project %s failed (%s: %s)", call, project, code, msg)

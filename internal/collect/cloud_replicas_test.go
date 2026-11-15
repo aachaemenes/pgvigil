@@ -28,7 +28,11 @@ func TestCloudReplicasCollection(t *testing.T) {
 	aws := config.Instance{Name: "pg1", AWS: &config.AWS{Region: "us-east-2", DBInstance: "db1", Replicas: true}}
 	c := cloudReplicasCollector{}
 	rows, err := c.RunInstance(context.Background(), nil, platform.Info{Kind: platform.RDS}, aws, nil)
-	if reached != 1 || (err == nil && (len(rows) == 0 || !strings.Contains(strings.Join(rows[0]["notes"].([]string), " "), "stand-in"))) {
+	var notes []string
+	if len(rows) > 0 {
+		notes, _ = rows[0]["notes"].([]string)
+	}
+	if reached != 1 || (err == nil && !strings.Contains(strings.Join(notes, " "), "stand-in")) {
 		t.Errorf("an RDS instance with aws.replicas: reached %d, rows %v, err %v - want the door read", reached, rows, err)
 	}
 	for name, run := range map[string]struct {
