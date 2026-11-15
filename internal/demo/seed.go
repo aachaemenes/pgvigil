@@ -65,9 +65,10 @@ type Fleet struct {
 	ids  []int
 	opts Options
 	last time.Time
-	// healthFrom: the first minute this fleet logged its runs (B6.2: the hourly collection health counts from it, so
-	// its failed runs are the errors collection_log holds)
-	healthFrom time.Time
+	// histFrom .. histTo: the seeded 24 hours of runs (B6.2: the hourly collection health and the history's errors);
+	// ticked: the minutes a Tick (or the seed's own stamp) logged since, kept 3 hours (health_demo.go known)
+	histFrom, histTo time.Time
+	ticked           map[time.Time]bool
 }
 
 // IDs are the instance ids this fleet seeded, in its order (the demo's write door writes for these and no other).
@@ -161,15 +162,26 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	}
 	st.Instances = len(f.gens)
 	done := atomic.Int64{}
+	// the seed's last runs: stamped at the anchor when the seed ticks up to now (catchUp), else when each instance's
+	// import finished (an anchor far back must not leave the overview's stale check firing until the first live tick);
+	// the 24 hours before the anchor carry their failed runs in collection_log (B6.2: the hourly rows count them)
+	anchor := o.End.UTC().Truncate(time.Minute)
+	f.histFrom, f.histTo, f.ticked = anchor.Add(-24*time.Hour), anchor.Add(-time.Minute), map[time.Time]bool{}
+	atAnchor := time.Since(o.End) <= catchUpWindow
 	err = f.each(ctx, &st, func(ctx context.Context, i int, imp *importer) error {
 		for _, t := range grid {
 			if err := imp.steps(ctx, f.ids[i], f.gens[i].Step(t)); err != nil {
 				return err
 			}
 		}
-		// stamped when this instance's import finished, not at the anchor: a long seed must not
-		// leave the overview's stale check firing until the first live tick
-		if err := imp.logCollections(ctx, f.ids[i], f.gens[i], time.Now().UTC()); err != nil {
+		if err := imp.logHistoryErrors(ctx, f.ids[i], f.gens[i], f.histFrom, f.histTo); err != nil {
+			return err
+		}
+		stamp := anchor
+		if !atAnchor {
+			stamp = time.Now().UTC()
+		}
+		if err := imp.logCollections(ctx, f.ids[i], f.gens[i], stamp); err != nil {
 			return err
 		}
 		if k := done.Add(1); k%50 == 0 || int(k) == len(f.gens) {
@@ -213,8 +225,9 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
-		f.healthFrom = time.Now().UTC().Truncate(time.Minute)
-		err = f.writeHealth(ctx, f.healthFrom)
+		// the 24 hours and the stamp's minute (an anchor far back: its minutes since are not known, nothing counted)
+		f.ticked[anchor] = atAnchor
+		err = f.writeHealthSpan(ctx, f.histFrom, anchor)
 	}
 	if err == nil {
 		err = f.catchUp(ctx, &st)
@@ -264,6 +277,16 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 		return imp.logCollections(ctx, f.ids[i], f.gens[i], t)
 	})
 	if err == nil {
+		// the minute is known to the hourly rows only once every instance logged it (a failed tick counts nothing)
+		if f.ticked == nil {
+			f.ticked = map[time.Time]bool{}
+		}
+		f.ticked[t] = true
+		for m := range f.ticked {
+			if m.Before(t.Add(-3 * time.Hour)) {
+				delete(f.ticked, m)
+			}
+		}
 		err = f.writeHealth(ctx, t)
 	}
 	if err == nil {

@@ -7,10 +7,12 @@ import (
 	"time"
 )
 
-// The demo's hourly collection health (B6.2, the lead's 23:2x call B6.2-b): the demo has no heartbeat, so the fleet
-// writes collection_health_hour itself, under the collector id 'demo', from the same per-minute rule its logged runs
-// follow (runStatus), counted from the first minute it logged - its failed runs are then the errors collection_log
-// holds, and the Collection Health page's rates, Failed counts and error list agree.
+// The demo's hourly collection health (B6.2, the lead's 23:2x call B6.2-b and 00:5x call on the review's #3): the demo
+// has no heartbeat, so the fleet writes collection_health_hour itself, under the collector id 'demo', from the same
+// per-minute rule its logged runs follow (runStatus): the seed writes the last 24 hours with one collection_log error
+// per failed minute (logHistoryErrors), and each Tick adds the minute it logged. Only the minutes known to be run are
+// counted (the seeded 24 hours and every minute a Tick logged: a tick that failed or was dropped counts nothing), so
+// the page's Failed counts and its error list agree.
 
 // demoHealth: one instance, collection and UTC hour's totals (the JSON keys are the INSERT's record columns)
 type demoHealth struct {
@@ -31,15 +33,18 @@ type demoHealth struct {
 }
 
 // healthRows: the totals of every instance and collection for each UTC hour, over the minutes from .. to (both
-// included): a known run (ok, partial, error) counts its duration, a skip does not; the last ok includes a partial
-// (a success for Last Success, as the collector's)
-func healthRows(gens []*Gen, ids []int, from, to time.Time) []demoHealth {
+// included) that known holds (nil = every one): a known run (ok, partial, error) counts its duration, a skip does not;
+// the last ok includes a partial (a success for Last Success, as the collector's)
+func healthRows(gens []*Gen, ids []int, from, to time.Time, known func(time.Time) bool) []demoHealth {
 	from, to = from.UTC().Truncate(time.Minute), to.UTC().Truncate(time.Minute)
 	var out []demoHealth
 	for i, g := range gens {
 		for _, c := range g.Collections() {
 			idx := map[time.Time]int{}
 			for m := from; !m.After(to); m = m.Add(time.Minute) {
+				if known != nil && !known(m) {
+					continue
+				}
 				h := m.Truncate(time.Hour)
 				k, ok := idx[h]
 				if !ok {
@@ -76,20 +81,27 @@ func healthRows(gens []*Gen, ids []int, from, to time.Time) []demoHealth {
 	return out
 }
 
+// known: a minute the hourly rows count - inside the seeded 24 hours, or one a Tick logged
+func (f *Fleet) known(m time.Time) bool {
+	return (!f.histFrom.IsZero() && !m.Before(f.histFrom) && !m.After(f.histTo)) || f.ticked[m]
+}
+
 // writeHealth writes the hour of t and the hour before it (its last minutes land in the next hour's first tick), from
-// the first logged minute; nothing before the fleet logged
+// the seeded history's start at the earliest
 func (f *Fleet) writeHealth(ctx context.Context, t time.Time) error {
-	if f.healthFrom.IsZero() {
-		return nil
-	}
 	from := t.UTC().Truncate(time.Hour).Add(-time.Hour)
-	if from.Before(f.healthFrom) {
-		from = f.healthFrom
+	if from.Before(f.histFrom) {
+		from = f.histFrom
 	}
-	if from.After(t) {
+	return f.writeHealthSpan(ctx, from, t)
+}
+
+// writeHealthSpan writes every hour from .. to over the known minutes (the seed: the 24 hours at once)
+func (f *Fleet) writeHealthSpan(ctx context.Context, from, to time.Time) error {
+	if f.histFrom.IsZero() || from.After(to) {
 		return nil
 	}
-	body, err := json.Marshal(healthRows(f.gens, f.ids, from, t))
+	body, err := json.Marshal(healthRows(f.gens, f.ids, from, to, f.known))
 	if err != nil {
 		return err
 	}
@@ -106,6 +118,30 @@ ON CONFLICT (hour, instance_id, collection, collector_id) DO UPDATE
        last_ok_at = EXCLUDED.last_ok_at, last_failure_at = EXCLUDED.last_failure_at, last_partial_at = EXCLUDED.last_partial_at
  WHERE (h.runs, h.skipped) IS DISTINCT FROM (EXCLUDED.runs, EXCLUDED.skipped)`, string(body)); err != nil {
 		return fmt.Errorf("demo collection health: %w", err)
+	}
+	return nil
+}
+
+// logHistoryErrors logs, in order, one collection_log error per minute from .. to (both included) whose run fails by
+// runStatus (a StmtBroken instance's statements): the 24 hours the hourly rows cover hold the errors they count (the
+// lead's 00:5x call on the review of B6.2, #3). One statement per failing collection.
+func (m *importer) logHistoryErrors(ctx context.Context, id int, g *Gen, from, to time.Time) error {
+	for _, c := range g.Collections() {
+		var ats []time.Time
+		var mss []int
+		note := ""
+		for t := from; !t.After(to); t = t.Add(time.Minute) {
+			if st, n := runStatus(g, c, t); st == "error" {
+				ats, mss, note = append(ats, t), append(mss, runMs(g, c, t)), n
+			}
+		}
+		if len(ats) == 0 {
+			continue
+		}
+		if _, err := m.pool.Exec(ctx, `SELECT count(pgvigil.log_collection($1, $2, x.at, x.ms, 'error', $5))
+  FROM unnest($3::timestamptz[], $4::int[]) WITH ORDINALITY AS x(at, ms, n)`, id, c, ats, mss, nullIf(note)); err != nil {
+			return fmt.Errorf("log_collection history %s: %w", c, err)
+		}
 	}
 	return nil
 }
