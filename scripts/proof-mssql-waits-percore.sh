@@ -37,7 +37,8 @@
 #     out); it holds the lock wait and not the WAITFOR.
 #  E. the APIs: GET /api/metrics/series?metric=waits.wait_s_per_core_min gives D's point; GET /api/perfsummary's
 #     wait_s_core_min for the container equals mssql_wait_core_summary over the same window; GET /api/mssql/checks
-#     ?part=build_docs for the container's version equals python's reading of checks.go's catalogue (the build's own
+#     ?part=build_docs for the container's version (the dotted build inside the instance row's first line of
+#     @@VERSION) equals python's reading of checks.go's catalogue (the build's own
 #     page when listed, Microsoft's build list in words when not, the newest build's page).
 #  F. the links' data (python over doclinks.ts): 25 error ranges from 0 to 49999 with no gap or overlap, both sides of
 #     every boundary in the range that holds it, 50000 in none; the URL forms of the wait types and the ranges (no
@@ -284,7 +285,10 @@ ok2 = (pv is None and psum == '-') or (pv not in (None, 'no row') and psum != '-
 d = (rows(sys.argv[3], 'build_docs') or [{}])[0]
 src = open(sys.argv[8]).read()
 cat = src[src.index('const buildCatalogue = `') + 24:]; cat = cat[:cat.index('`')]
-parts = (ver.split('.') + ['0', '0', '0'])[:3]; major, build = int(parts[0] or 0), int(parts[2] or 0)
+# the instance row's version is the first line of @@VERSION ('Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) -
+# 16.0.4325.4 (X64)'): the dotted build inside it (box run 412proof1 read the whole line as a product version)
+vm = re.search(r'\b(\d+)\.(\d+)\.(\d+)(?:\.\d+)?\b', ver)
+major, build = (int(vm.group(1)), int(vm.group(3))) if vm else (0, 0)
 rowsm = [l.split('|') for l in cat.strip().splitlines() if l.split('|')[0] == str(major)]
 lst = 'https://support.microsoft.com/kb/321185'
 def page(r): return lst if (r[7].strip() == '' or 'info.microsoft.com' in r[7]) else r[7].strip()

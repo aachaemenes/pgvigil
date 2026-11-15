@@ -44,10 +44,10 @@ index ad9f4acf..de3419bc 100644
  A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
 diff --git i/internal/mssql/builddocs_test.go w/internal/mssql/builddocs_test.go
 new file mode 100644
-index 00000000..a6a27b36
+index 00000000..a942df11
 --- /dev/null
 +++ w/internal/mssql/builddocs_test.go
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,65 @@
 +package mssql
 +
 +import (
@@ -90,6 +90,18 @@ index 00000000..a6a27b36
 +	}
 +	if d := BuildDocsOf("15.0.4470.1"); d["build_url"] != "https://support.microsoft.com/kb/5090407" {
 +		t.Errorf("BuildDocsOf(15.0.4470.1): %v", d)
++	}
++	// what the instance row holds is the first line of @@VERSION, not the bare product version (box run 412proof1: no
++	// link on any real instance): the dotted build inside it is the one read
++	if d := BuildDocsOf("Microsoft SQL Server 2019 (RTM-CU32-GDR) (KB5090407) - 15.0.4470.1 (X64) "); d["build_url"] != "https://support.microsoft.com/kb/5090407" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 15.0.4470.1): %v", d)
++	}
++	if d := BuildDocsOf("Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) - 16.0.4325.4 (X64)"); d["build_url"] != buildListURL ||
++		!strings.Contains(d["build_url_words"].(string), "a build newer than the catalogue") || d["newest_build"] != "16.0.4255" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 16.0.4325.4): %v", d)
++	}
++	if d := BuildDocsOf("Microsoft SQL Azure (RTM) - 12.0.2000.8"); len(d) != 0 {
++		t.Errorf("BuildDocsOf(Azure SQL Database, a major the catalogue lacks): %v", d)
 +	}
 +	// every page of the catalogue is empty or Microsoft's, with no blank around it
 +	for major, rows := range builds {
