@@ -11,7 +11,8 @@ is set up on a monitored server.
   was refused goes on with the next), Skipped (the collection did not apply, or the login lacks a right it needs:
   hidden unless the Skipped picker shows it). pgvigil never retries a run, so DBA Dash's Retry type has no rows here.
 - **Stage**: Connect (the server did not answer; DBA Dash counts this under Collect), Collect (the read on the server),
-  Import (the write into the repository, a batch part included), Other (the service's own work, such as a rollup's
+  Import (the repository's side: a write, a batch part included, or the read of the collector's own cursor; the
+  run's note then leads with that error), Other (the service's own work, such as a rollup's
   heal). A row written before migration 0198 has no stage of its own: it is read from its note ('connect: ' is Connect,
   'rollup ' is Other, anything else Collect). There is no WMI stage: pgvigil reads nothing through WMI.
 - **(the service)**: the service's own failures where pgvigil already stores them - an alert send that failed or was

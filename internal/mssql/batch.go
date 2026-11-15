@@ -88,9 +88,17 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	repoCtx := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	}
-	// a batch whose import failed makes the run's stage 'import' (0198), whether RunBatches returned the error or turned
-	// it into a collector_error row and went on (the Extended Events and audit readers' fail())
-	stage := ""
+	// a failed repository call - a batch's import, or the read of the collector's own cursor - makes the run's stage
+	// 'import' (0198), whether RunBatches returned the error or turned it into a collector_error row and went on (the
+	// Extended Events and audit readers' fail()); the first such error leads the run's note, so the note and the stage
+	// tell of the same failure
+	stage, repoErr := "", ""
+	repoFailed := func(msg string) {
+		stage = "import"
+		if repoErr == "" {
+			repoErr = msg
+		}
+	}
 	logRun := func(status, note string) {
 		rctx, cancel := repoCtx()
 		defer cancel()
@@ -109,7 +117,9 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		defer cancel()
 		f, off, at, seq, found, err := st.MSSQLCursor(rctx, instanceID, source)
 		if err != nil {
-			return Cursor{}, fmt.Errorf("the cursor of %s: %w", source, err)
+			err = fmt.Errorf("the cursor of %s: %w", source, err)
+			repoFailed(err.Error())
+			return Cursor{}, err
 		}
 		return Cursor{Found: found, FileName: f, FileOffset: off, LastEventAt: at, LastSeq: seq}, nil
 	}
@@ -121,7 +131,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		rctx, cancel := repoCtx()
 		defer cancel()
 		if err := st.Import(rctx, instanceID, name, start, rows); err != nil {
-			stage = "import"
+			repoFailed("import: " + err.Error())
 			return err
 		}
 		batches++
@@ -144,6 +154,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		return collect.Result{Rows: n, Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)
+	note = collect.LeadNote(repoErr, note)
 	logRun(status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "batches", batches, "ms", d.Milliseconds())
 	return collect.Result{Rows: n, Duration: d, Note: partialNote(status, note)}

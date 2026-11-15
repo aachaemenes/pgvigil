@@ -656,8 +656,15 @@ func TestRunBatched(t *testing.T) {
 	// run is partial and its stage still 'import' (0198)
 	sw := &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
 	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true})
-	if res.Err != nil || sw.status != "partial" || sw.stage != "import" {
+	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || !strings.HasPrefix(sw.note, "import: the repository is away") {
 		t.Fatalf("a swallowed failed batch: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
+	}
+	// a read that failed before the swallowed import (its collector_error row first in the tail): the note still leads
+	// with the import's error, so the note and the stage tell of the same failure
+	sw = &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
+	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true, tail: []collect.Row{{"kind": "collector_error", "source": "src_read", "message": "the ring buffer is gone"}}})
+	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || sw.note != "import: the repository is away; src_read: the ring buffer is gone" {
+		t.Fatalf("a read error before a swallowed import: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
 	}
 	// the next run goes on from the stored cursor: events 11 to 25, none twice
 	st.failAt = 0

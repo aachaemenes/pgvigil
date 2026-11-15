@@ -502,11 +502,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
 	var rows []collect.Row
+	cursorFailed := false // the read of the collector's own cursor failed: the repository's side, stage 'import' (0198)
 	if cc, ok := c.(CursorCollector); ok {
 		rows, err = cc.RunFrom(sctx, conn, info, func(_ context.Context, source string) (int64, bool, error) {
 			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			defer ccancel()
-			return r.MSSQLSeqCursor(cctx, instanceID, source)
+			seq, found, cerr := r.MSSQLSeqCursor(cctx, instanceID, source)
+			if cerr != nil {
+				cursorFailed = true
+			}
+			return seq, found, cerr
 		})
 	} else {
 		rows, err = c.Run(sctx, conn, info)
@@ -518,7 +523,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	if err != nil {
 		err = timeoutNote(sctx, limit, err)
-		logRun(instanceID, "error", err.Error())
+		if cursorFailed {
+			logStage(instanceID, "error", err.Error(), "import")
+		} else {
+			logRun(instanceID, "error", err.Error())
+		}
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	collect.ApplyTextPolicy(rows, in.QueryText)
