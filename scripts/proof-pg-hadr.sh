@@ -174,43 +174,43 @@
 #        raises - silent]
 #   G    (review 21:27 #6) on platform rds the standby row keeps its receive_lsn (only Aurora takes the short read)
 #        [red ok: a guard - a gate written as 'every managed platform' fails it]
-# The lead's 07:3x call #4 (written 2026-11-15 07:5x PST before its runs): an Aurora cluster's backups are the
-# cluster's - 'retention under N days' and 'no snapshot in 24 h' fire ONCE per cluster, on its writer; a reader's
-# backups cell names the instance that holds them. Red = this tree as it is (rel-hadr-s1: the rules are 0103's, every
-# instance with the cluster's cloud row raises); green = this tree with scripts/aurora-cluster-backups-wiring.patch
-# applied (git apply: 0190, backups.go and its test, q_backups.go, backups.ts and README are the lead's files). Stand-in
-# Aurora instances, no server behind them: each 'read' is one pgvigil.import_backups of an archiver row
-# (is_replica as named) and a cloud row of resource_kind 'cluster' (retention 1 day), with no snapshot listed:
-#   AB   hadr-ab-r (made first: the lowest id) a reader and hadr-ab-w the writer of cluster ab-one, one read each: the
-#        two rules once, on hadr-ab-w ('no snapshot in 24 h' and 'retention under 7 days'); backup_status.
-#        cluster_backups_on 'hadr-ab-w' on hadr-ab-r and NULL on hadr-ab-w [red FAIL: four findings, both instances;
-#        no column cluster_backups_on]
-#   AB2  hadr-ab-x the writer of another cluster ab-two keeps its own two findings (judged on hadr-ab-x alone: the
-#        review 08:05 #2 - on red hadr-ab-r still raises) [red ok: a guard - a dedupe that ignores the cluster's name
-#        fails it]
-#   AB3  a failover (hadr-ab-r read as the writer, hadr-ab-w as a reader): the findings move to hadr-ab-r, the cell of
-#        hadr-ab-w names hadr-ab-r [red FAIL]
-#   AB4  the writer's reads stop (hadr-ab-r's rows read 2 hours ago): hadr-ab-w, a reader read fresh, raises the two
-#        once (no writer read in the hour holds them; the overview keeps reads of the last hour) [red ok: a guard - a
-#        holder chosen without the read's age leaves the cluster silent]
-#   AB5  hadr-ab-r read fresh again, then made inactive (the cluster's writer not monitored): hadr-ab-w raises the two
-#        [red ok: a guard - a holder chosen among inactive instances leaves the cluster silent]
-#   (the lead 07:4x: a cluster is matched by its lower-cased DBClusterArn where both cloud rows carry one, by its
-#   identifier only where one does not - AB-AB5 above carry no ARN: the identifier's fallback; written 07:5x before
-#   their runs)
+# The lead's call #4 (07:3x; the ARN 07:4x; the review 08:05; the stable holder 08:1x - this text rewritten 08:1x before
+# any run of these rows): an Aurora cluster's backups are the cluster's - 'retention under N days' and 'no snapshot in
+# 24 h' fire ONCE per cluster, on a STABLE member: the lowest instance id among the cluster's active instances read in
+# the last hour (not necessarily the writer), so a failover neither moves, resolves nor reopens them; the other
+# instances' backups cells name that holder. The cluster's key: its lower-cased DBClusterArn; a row with no ARN (read by
+# a collector before the ARN) takes the one ARN its identifier carries among the rows, else keeps its identifier.
+# Red = this tree as it is (rel-hadr-s1: the rules are 0103's, every instance with the cluster's cloud row raises);
+# red2 = this tree with 4bd8df9e's patch applied (the holder its WRITER); green = this tree with
+# scripts/aurora-cluster-backups-wiring.patch applied (git apply: 0190, backups.go and its test, q_backups.go,
+# queries.go, backups.ts, fleet.ts and README are the lead's files). Stand-in Aurora instances, no server behind them:
+# each 'read' is one pgvigil.import_backups of an archiver row (is_replica as named) and a cloud row of resource_kind
+# 'cluster' (retention 1 day, an ARN where named), with no snapshot listed:
+#   AB   hadr-ab-w (made first: the lowest id) the writer and hadr-ab-r a reader of cluster ab-one (no ARN: the
+#        identifier), one read each: the two rules once, on hadr-ab-w ('no snapshot in 24 h' and 'retention under 7
+#        days'); backup_status.cluster_backups_on 'hadr-ab-w' on hadr-ab-r and NULL on hadr-ab-w [red FAIL: four
+#        findings, both instances; no column cluster_backups_on] [red2 ok]
+#   AB2  hadr-ab-x the writer of another cluster ab-two keeps its own two findings (judged on hadr-ab-x alone)
+#        [red ok, red2 ok: a guard - a dedupe that ignores the cluster's key fails it]
+#   AB3  a failover (hadr-ab-r read as the writer, hadr-ab-w as a reader): the two STAY on hadr-ab-w (their value
+#        unchanged, so the alert keeps its key), hadr-ab-r's cell names hadr-ab-w [red FAIL: both raise] [red2 FAIL: the
+#        findings move to the new writer hadr-ab-r]
+#   AB4  the holder's reads stop (hadr-ab-w's rows read 2 hours ago): hadr-ab-r, read fresh, raises the two once (the
+#        overview keeps reads of the last hour) [red ok, red2 ok: a guard - a holder chosen without the read's age
+#        leaves the cluster silent]
+#   AB5  hadr-ab-w read fresh again, then made inactive (the holder not monitored): hadr-ab-r raises the two [red ok,
+#        red2 ok: a guard - a holder chosen among inactive instances leaves the cluster silent]
 #   AB6  hadr-ab-y and hadr-ab-z, writers of two clusters of one identifier ab-same in two regions (two ARNs): each keeps
-#        its own two findings [red ok: a guard - a match by the identifier alone fails it]
-#   AB7  hadr-ab-z read as a reader with hadr-ab-y's ARN: the two once, on hadr-ab-y; hadr-ab-z's cell names hadr-ab-y
-#        [red FAIL: both raise; no column cluster_backups_on]
-#   (the review 08:05 #1, written 08:1x before their runs: a row with no ARN - read by a collector before the ARN, for
-#   one read after the upgrade - takes the one ARN its identifier carries among the rows, else stays on its identifier;
-#   one holder per cluster key, so a mix never silences a cluster - it may raise twice until the next read)
-#   AB8  hadr-ab-a (made first) a reader with ARN m and hadr-ab-e the writer with no ARN, identifier ab-mix: the two
-#        once, on hadr-ab-e; hadr-ab-a's cell names hadr-ab-e [red FAIL: both raise]
+#        its own two findings [red ok, red2 ok: a guard - a match by the identifier alone fails it]
+#   AB7  hadr-ab-z read as a reader with hadr-ab-y's ARN: the two once, on hadr-ab-y (the lower id); hadr-ab-z's cell
+#        names hadr-ab-y [red FAIL: both raise; no column cluster_backups_on] [red2 ok]
+#   AB8  hadr-ab-a (made first) a reader with ARN m and hadr-ab-e the writer with no ARN, identifier ab-mix: hadr-ab-e
+#        takes ARN m - the two once, on hadr-ab-a (the lower id); hadr-ab-e's cell names hadr-ab-a [red FAIL: both
+#        raise] [red2 FAIL: on the writer hadr-ab-e]
 #   AB9  hadr-ab-d the writer of another ab-mix (ARN n): no cluster silent - hadr-ab-d keeps its two; hadr-ab-e (no ARN,
-#        two ARNs carry its identifier now) and hadr-ab-a each raise theirs (six) [red ok: a guard - b8c5a400's match
-#        (the ARN when both rows carry one, else the identifier) does not chain: hadr-ab-e, the lowest writer, holds for
-#        hadr-ab-d and hadr-ab-a and only it raises]
+#        two ARNs carry its identifier now) and hadr-ab-a each raise theirs (six; a mix may raise twice until the next
+#        read, never silence) [red ok, red2 ok: a guard - a match that does not chain (b8c5a400's: the ARN when both
+#        rows carry one, else the identifier) lets hadr-ab-e hold for hadr-ab-d, which stays silent]
 # Task 375's rows (migration 0150), written before the first run 2026-11-14 18:0x PST; red = the tree before 375
 # (rel-hadr-s1 ef59fba: no 0150 - its functions, views and checks do not exist, so every row below fails there):
 #   RU1  the rig's own samples (hadr-p, hadr-s): every (kind, key, UTC hour) of replication_hourly equals a direct
@@ -894,10 +894,10 @@ if want AF; then
   CFG=$OCFG
 fi
 
-# ---- AB: an Aurora cluster's backups read on its writer and a reader (the lead 07:3x #4): once per cluster -----------
+# ---- AB: an Aurora cluster's backups read on its instances (the lead's call #4): once per cluster, a stable holder ---
 if want AB; then
-  ABR=$(q "select pgvigil.ensure_instance('hadr-ab-r', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")   # first: the lowest id
-  ABW=$(q "select pgvigil.ensure_instance('hadr-ab-w', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
+  ABW=$(q "select pgvigil.ensure_instance('hadr-ab-w', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")   # first: the lowest id
+  ABR=$(q "select pgvigil.ensure_instance('hadr-ab-r', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
   ABX=$(q "select pgvigil.ensure_instance('hadr-ab-x', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
   abread() { # abread <instance_id> <is_replica true|false> <cluster> [arn]: one backups import as the collector sends it on Aurora
     local arn=""; [[ -n "${4:-}" ]] && arn=",\"arn\":\"$4\""
@@ -912,9 +912,9 @@ if want AB; then
   abread "$ABR" true ab-one; abread "$ABW" false ab-one
   r=$(abf); r2=$(abcell)
   echo "  AB findings: $r; cells: $r2"
-  [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days" ]] && ok "AB one Aurora cluster read on its writer and a reader: the two rules once, on the writer ($r)" \
+  [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days" ]] && ok "AB one Aurora cluster read on two instances: the two rules once, on the lowest id hadr-ab-w ($r)" \
     || fail "AB one cluster, two instances: '$r' (expected only 'hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days')"
-  [[ "$r2" == "hadr-ab-r=hadr-ab-w hadr-ab-w=-" ]] && ok "AB the reader's backups cell names the writer that holds the cluster's backups ($r2)" \
+  [[ "$r2" == "hadr-ab-r=hadr-ab-w hadr-ab-w=-" ]] && ok "AB the other instance's backups cell names the holder of the cluster's backups ($r2)" \
     || fail "AB cluster_backups_on: '$r2' (expected 'hadr-ab-r=hadr-ab-w hadr-ab-w=-')"
   abread "$ABX" false ab-two
   r=$(abf hadr-ab-x)
@@ -923,16 +923,16 @@ if want AB; then
   q "update pgvigil.instances set is_active = false where instance_id = $ABX" >/dev/null
   abread "$ABR" false ab-one; abread "$ABW" true ab-one   # a failover: hadr-ab-r is the writer now
   r=$(abf); r2=$(abcell)
-  [[ "$r" == "hadr-ab-r no snapshot in 24 h, hadr-ab-r retention under 7 days" && "$r2" == "hadr-ab-r=- hadr-ab-w=hadr-ab-r" ]] \
-    && ok "AB3 after a failover the findings move to the new writer hadr-ab-r ($r; $r2)" || fail "AB3 after a failover: '$r', cells '$r2' (expected only hadr-ab-r's two, 'hadr-ab-r=- hadr-ab-w=hadr-ab-r')"
-  q "update pgvigil.backup_state set snapshot_at = now() - interval '2 hours' where instance_id = $ABR" >/dev/null   # the writer's reads stop
+  [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days" && "$r2" == "hadr-ab-r=hadr-ab-w hadr-ab-w=-" ]] \
+    && ok "AB3 after a failover the findings stay on their holder hadr-ab-w, now a reader ($r; $r2)" || fail "AB3 after a failover: '$r', cells '$r2' (expected only hadr-ab-w's two, 'hadr-ab-r=hadr-ab-w hadr-ab-w=-': the holder is stable)"
+  q "update pgvigil.backup_state set snapshot_at = now() - interval '2 hours' where instance_id = $ABW" >/dev/null   # the holder's reads stop
   r=$(abf)
-  [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days" ]] && ok "AB4 the writer's reads 2 hours old: the reader read fresh raises the two once ($r)" \
-    || fail "AB4 the writer's reads stopped: '$r' (expected only hadr-ab-w's two)"
-  abread "$ABR" false ab-one; q "update pgvigil.instances set is_active = false where instance_id = $ABR" >/dev/null
+  [[ "$r" == "hadr-ab-r no snapshot in 24 h, hadr-ab-r retention under 7 days" ]] && ok "AB4 the holder's reads 2 hours old: hadr-ab-r, read fresh, raises the two once ($r)" \
+    || fail "AB4 the holder's reads stopped: '$r' (expected only hadr-ab-r's two)"
+  abread "$ABW" true ab-one; q "update pgvigil.instances set is_active = false where instance_id = $ABW" >/dev/null
   r=$(abf)
-  [[ "$r" == "hadr-ab-w no snapshot in 24 h, hadr-ab-w retention under 7 days" ]] && ok "AB5 the cluster's writer not monitored (inactive): the reader raises the two ($r)" \
-    || fail "AB5 the writer inactive: '$r' (expected only hadr-ab-w's two)"
+  [[ "$r" == "hadr-ab-r no snapshot in 24 h, hadr-ab-r retention under 7 days" ]] && ok "AB5 the holder not monitored (inactive): hadr-ab-r raises the two ($r)" \
+    || fail "AB5 the holder inactive: '$r' (expected only hadr-ab-r's two)"
   q "update pgvigil.instances set is_active = false where instance_id in ($ABR, $ABW, $ABX)" >/dev/null
   # AB6 / AB7 (the lead 07:4x): the ARN, where the cloud rows carry one, decides the cluster (stand-in ARNs, no real account)
   ABY=$(q "select pgvigil.ensure_instance('hadr-ab-y', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")
@@ -945,7 +945,7 @@ if want AB; then
   abread "$ABZ" true ab-same "$ARNA"
   r=$(abf); r2=$(abcell)
   [[ "$r" == "hadr-ab-y no snapshot in 24 h, hadr-ab-y retention under 7 days" && "$r2" == "hadr-ab-y=- hadr-ab-z=hadr-ab-y" ]] \
-    && ok "AB7 a writer and a reader of one ARN: the two once, on the writer ($r; $r2)" || fail "AB7 one ARN, a writer and a reader: '$r', cells '$r2' (expected only hadr-ab-y's two, 'hadr-ab-y=- hadr-ab-z=hadr-ab-y')"
+    && ok "AB7 a writer and a reader of one ARN: the two once, on the lower id hadr-ab-y ($r; $r2)" || fail "AB7 one ARN, a writer and a reader: '$r', cells '$r2' (expected only hadr-ab-y's two, 'hadr-ab-y=- hadr-ab-z=hadr-ab-y')"
   q "update pgvigil.instances set is_active = false where instance_id in ($ABY, $ABZ)" >/dev/null
   # AB8 / AB9 (the review 08:05 #1): a row with no ARN beside rows with one, of one identifier
   ABA=$(q "select pgvigil.ensure_instance('hadr-ab-a', 'aurora', 'PostgreSQL 18.0', 180000, false, '{}')")   # first: the lowest id
@@ -954,9 +954,9 @@ if want AB; then
   ARNM='arn:aws:rds:region-a:000000000000:cluster:ab-mix'; ARNN='arn:aws:rds:region-b:000000000000:cluster:ab-mix'
   abread "$ABA" true ab-mix "$ARNM"; abread "$ABE" false ab-mix
   r=$(abf); r2=$(abcell)
-  [[ "$r" == "hadr-ab-e no snapshot in 24 h, hadr-ab-e retention under 7 days" && "$r2" == "hadr-ab-a=hadr-ab-e hadr-ab-e=-" ]] \
-    && ok "AB8 a writer read without an ARN and a reader with one, of one identifier: the two once, on the writer ($r; $r2)" \
-    || fail "AB8 the ARN and no ARN: '$r', cells '$r2' (expected only hadr-ab-e's two, 'hadr-ab-a=hadr-ab-e hadr-ab-e=-')"
+  [[ "$r" == "hadr-ab-a no snapshot in 24 h, hadr-ab-a retention under 7 days" && "$r2" == "hadr-ab-a=- hadr-ab-e=hadr-ab-a" ]] \
+    && ok "AB8 a writer read without an ARN and a reader with one, of one identifier: one cluster, the two once, on the lower id hadr-ab-a ($r; $r2)" \
+    || fail "AB8 the ARN and no ARN: '$r', cells '$r2' (expected only hadr-ab-a's two, 'hadr-ab-a=- hadr-ab-e=hadr-ab-a')"
   abread "$ABD" false ab-mix "$ARNN"
   r=$(abf)
   [[ "$r" == "hadr-ab-a no snapshot in 24 h, hadr-ab-a retention under 7 days, hadr-ab-d no snapshot in 24 h, hadr-ab-d retention under 7 days, hadr-ab-e no snapshot in 24 h, hadr-ab-e retention under 7 days" ]] \
