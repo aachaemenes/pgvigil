@@ -274,7 +274,8 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'read_bytes', label: 'read', num: true, fmt: fmtBytes },
     // task 177 D14: sp_PressureDetector's KB per read and per write (file stats)
     { key: '_kb_read', label: 'KB per read', num: true, fmt: (_v, row) => Number(row.reads) > 0 ? fmtNum(Math.round(10 * Number(row.read_bytes) / 1024 / Number(row.reads)) / 10) : '' },
-    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc !== 'LOG' ? 'status none' : Number(v) >= 20 ? 'warn' : 'status ok' },
+    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc === 'LOG' ? (Number(v) >= 20 ? 'warn' : 'status ok')
+      : row.type_desc === 'ROWS' ? (Number(v) > 100 ? 'warn' : 'status ok') : 'status none' },   // data files as the check 'slow data file writes' (0124)
     { key: 'writes', num: true },
     { key: 'write_bytes', label: 'written', num: true, fmt: fmtBytes },
     { key: '_kb_write', label: 'KB per write', num: true, fmt: (_v, row) => Number(row.writes) > 0 ? fmtNum(Math.round(10 * Number(row.write_bytes) / 1024 / Number(row.writes)) / 10) : '' },
