@@ -7,12 +7,17 @@
 -- Sources (clickthrough/audit-sqltools-join.md B4): SQLWATCH's default checks (Script.PostDeployment-
 -- CreateDefaultChecks.sql L456-1127: CHK#12-#25, CHK#29-#33; CTR#10, CTR#28, OVW#93, PBI#5) and Zabbix's MSSQL
 -- template (zbx:873-881 FREE_LIST_STALLS.MAX 2, zbx:1061-1069 LAZY_WRITES.MAX 20: Z92, Z93). The departures:
---   - 'above' is strictly greater (0085): SQLWATCH's '>= 1' lock waits become above 0.999 (CHK#24).
+--   - 'above' is strictly greater (0085): SQLWATCH's '>= 1' lock waits become above 0.9995 (CHK#24: 0152 stores a rate
+--     rounded to 3 decimals as a 4-byte float, and 0.999 so stored reads above 0.999 itself).
 --   - lock timeouts judge 'Lock Timeouts (timeout > 0)/sec': a NOWAIT or LOCK_TIMEOUT 0 probe is not a fault (F18).
 --   - read-ahead is a percentage of page reads (SQLWATCH compares a 0-1 fraction with 20 / 25 and never fires: D3).
 --   - the buffer cache hit ratio warns under 90 with no critical (a weak signal: D4).
 --   - page life expectancy is judged per 4 GB of the lowest memory node's database pages (300 s per 4 GB, D5 / F19).
---   - a ratio under its denominator's floor is 0 (0152's metric_points): a quiet server never trips a ratio (F21).
+--   - a ratio under its denominator's floor is 0 (0152's metric_points), so a server under the floor never trips a
+--     ratio (F21); an otherwise idle server can still pass it: SQL Server's own telemetry (SQLServerCEIP) pushed
+--     compilations to 139.7 per 100 batches and full scans per search to 0.0128 on the proof's quiet container (chk13).
+--   - SQLWATCH CHK#32 judges kill-connection and database-offline errors summed (critical above 1); here each is its own
+--     rule (each names its cause).
 --   - page reads, page writes and lock requests measure volume, not a fault: their notes say so (F21).
 --
 -- The seed (F22): a rule is written only when the fleet has never had a rule on that metric, live or ended - an
@@ -45,10 +50,10 @@ WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
    'SQLWATCH CHK#22. Measures volume, not a fault: switch it on with a threshold fitted to this server.'),
   ('SQL Server: lock timeouts', 'counters.lock_timeouts_gt0_s', 'above', 0, 1, 15,
    'SQLWATCH CHK#23 on Lock Timeouts (timeout > 0)/sec: a NOWAIT or LOCK_TIMEOUT 0 probe is not counted.'),
-  ('SQL Server: lock waits', 'counters.lock_waits_s', 'above', 0.1, 0.999, 15,
-   'SQLWATCH CHK#24 (its critical is 1 or more a second; a rule''s above is strict, so 0.999).'),
+  ('SQL Server: lock waits', 'counters.lock_waits_s', 'above', 0.1, 0.9995, 15,
+   'SQLWATCH CHK#24 (its critical is 1 or more a second; a rule''s above is strict and the rate is stored to 3 decimals, so 0.9995).'),
   ('SQL Server: read-ahead share of page reads', 'counters.readahead_pct', 'above', 20, 25, 15,
-   'SQLWATCH CHK#25 as a percentage. Read-ahead is most reads during scans; for a DBA who wants to see scans.'),
+   'SQLWATCH CHK#25 as a percentage, 0 under 1 page read a second. Read-ahead is most reads during scans; for a DBA who wants to see scans.'),
   ('SQL Server: buffer cache hit ratio', 'counters.buffer_cache_hit_pct', 'below', 90, NULL, 15,
    'SQLWATCH CHK#29, CTR#10, OVW#93, PBI#5. A weak signal on its own: read it beside page life expectancy.'),
   ('SQL Server: page life expectancy per 4 GB', 'counters.ple_per_4gb', 'below', 300, 200, 15,
@@ -56,9 +61,9 @@ WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
   ('SQL Server: logins', 'counters.logins_s', 'above', 2, 5, 15,
    'SQLWATCH CHK#31. Logins a second; a pool that does not reuse its connections shows here.'),
   ('SQL Server: kill-connection errors', 'counters.errors_kill_s', 'above', 0, 1, 0,
-   'SQLWATCH CHK#32, Prometheus S20. Errors severe enough to end the connection (severity 20 and up).'),
+   'SQLWATCH CHK#32 (there summed with database offline errors), Prometheus S20. Errors severe enough to end the connection (severity 20 and up).'),
   ('SQL Server: database offline errors', 'counters.errors_offline_s', 'above', 0, 1, 0,
-   'SQLWATCH CHK#32. Errors that took a database offline.'),
+   'SQLWATCH CHK#32 (there summed with kill-connection errors). Errors that took a database offline.'),
   ('SQL Server: log growths', 'counters.log_growths', 'above', 0, NULL, 0,
    'SQLWATCH CHK#33, CTR#28. A transaction log grew in the read (every database summed); presize the log.')
 ), made AS (
@@ -72,5 +77,5 @@ WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
   RETURNING rule_id, metric, name
 )
 INSERT INTO pgvigil.alert_rule_log (at, ui_user, client, op, rule_id, metric, outcome, detail)
-SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.name || ': seeded off (task 402)'
+SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.name || ': seeded off by the upgrade (0153)'
   FROM made m;

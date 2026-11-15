@@ -27,7 +27,8 @@
 #  C. on by an instance rule (F20): an enabled instance rule on counters.logins_s at 2 / 5 for 0 minutes; the same
 #     load: state critical, one alert_rule_findings row naming it, the grid's rule the instance's with metric_status
 #     critical; two quiet reads: state ok and no finding; the seed keeps its rule_id and enabled false; GET
-#     /api/alertrules?part=rules lists the seed with enabled false.
+#     /api/alertrules?part=rules lists the seed with enabled false; GET /api/metrics?family=counters gives the seeded page
+#     lookups row rule_enabled false, its name ending '(off: colours only, no alert)', no rule state (402 part A's S1).
 #  D. each provoked check, judged as C at the seeded thresholds (warning or critical after the load, ok after two
 #     quiet reads; from run chk11 the second quiet read 60 s after the first, the product's interval, and the window
 #     named: batches and RPCs by program, statistics updates, scans and seeks per object; a clear held up by named
@@ -153,7 +154,7 @@ want = {'full_scans_per_search': ('above', 0.001, 0.01, 15), 'compiles_per_100_b
         'free_list_stalls_s': ('above', 2, 5, 5), 'lazy_writes_s': ('above', 20, 25, 5), 'page_reads_s': ('above', 90, 120, 15),
         'page_lookups_per_batch': ('above', 100, 120, 15), 'page_writes_s': ('above', 90, 120, 15),
         'avg_lock_wait_ms': ('above', 500, 1000, 15), 'lock_requests_s': ('above', 1000, 1200, 15),
-        'lock_timeouts_gt0_s': ('above', 0, 1, 15), 'lock_waits_s': ('above', 0.1, 0.999, 15), 'readahead_pct': ('above', 20, 25, 15),
+        'lock_timeouts_gt0_s': ('above', 0, 1, 15), 'lock_waits_s': ('above', 0.1, 0.9995, 15), 'readahead_pct': ('above', 20, 25, 15),
         'buffer_cache_hit_pct': ('below', 90, None, 15), 'ple_per_4gb': ('below', 300, 200, 15), 'logins_s': ('above', 2, 5, 15),
         'errors_kill_s': ('above', 0, 1, 0), 'errors_offline_s': ('above', 0, 1, 0), 'log_growths': ('above', 0, None, 0)}
 got, bad = {}, []
@@ -351,6 +352,18 @@ print(f"   /api/alertrules: rule {sys.argv[2]} enabled {r[0].get('enabled') if r
 sys.exit(0 if r and r[0].get('enabled') is False else 1)
 PY
 ok "C: on by an instance rule: critical with its finding, ok after two quiet reads; the seed kept its rule_id and stays off (the API says so)"
+# the review's S1 (402 part A): the grid says a seeded rule is off, never 'not judged yet' (the wiring's q_metrics.go
+# rule_enabled; metrics.ts writes 'off: colours only, no alert' in the rule cell)
+curl -fs -m 20 "http://127.0.0.1:$PORT/api/metrics?instance=$SB&family=counters" > "$TMPD/grid.json" || fail "C: GET /api/metrics: $(tail -3 "$TMPD/serve.log")"
+python3 - "$TMPD/grid.json" <<'PY2' || fail "C: the grid's off seed"
+import json, sys
+t = json.load(open(sys.argv[1]))['grid']; rows = [dict(zip(t['columns'], r)) for r in t['rows']]
+r = [x for x in rows if x.get('key') == 'counters.page_lookups_per_batch' and x.get('database') in (None, '')]
+got = (r[0].get('rule_enabled'), str(r[0].get('rule_name', '')).endswith('(off: colours only, no alert)'), r[0].get('rule_state')) if r else None
+print(f"   the grid's page lookups row: rule_enabled, the name says off, the state: {got}")
+sys.exit(0 if got == (False, True, None) else 1)
+PY2
+ok "C: the grid marks the seeded page lookups rule off (rule_enabled false, its name says so, no state)"
 
 echo "== D. each provoked check =="
 judge errors_kill_s p_kill || fail "D: errors_kill_s"

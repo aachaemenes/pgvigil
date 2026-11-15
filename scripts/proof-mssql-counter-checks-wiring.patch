@@ -1,7 +1,8 @@
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 2ea6318..d9a594a 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -1021,3 +1021,28 @@
+@@ -1021,3 +1021,28 @@ LANGUAGE sql STABLE AS $$
      CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
                                                    s.cpu_count, wg.q::int) l
  $$;
@@ -30,3 +31,20 @@ diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_j
 +     AND r.created_by = 'pgvigil' AND r.client = '0153 seed' AND r.database IS NOT DISTINCT FROM p_database
 +     AND NOT EXISTS (SELECT 1 FROM e)
 +$$;
+diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
+index 62f936b..83f386d 100644
+--- i/internal/web/q_metrics.go
++++ w/internal/web/q_metrics.go
+@@ -26,8 +26,11 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
+        pgvigil.metric_status(g.op, g.avg_value, g.warning, g.critical) AS avg_status,
+        pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
+        g.rule_id, g.rule_name, g.op, g.warning, g.critical, g.for_minutes, g.rule_scope, g.rule_target, g.rule_database,
+-       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at
++       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at,
++       -- task 402: a seeded rule colours while off (the join file's metric_rule); the page says it sends nothing
++       ar.enabled AS rule_enabled
+   FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5, $6) g
++  LEFT JOIN pgvigil.alert_rules ar ON ar.rule_id = g.rule_id
+   LEFT JOIN pgvigil.alert_rule_state s
+     ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
+  ORDER BY g.family_sort, g.sort`
