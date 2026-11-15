@@ -1066,8 +1066,10 @@ COMMENT ON VIEW pgvigil.mssql_wait_percore_ignored IS 'SQLMonitor''s per-core li
 -- minutes sum under 300 s (a fresh instance, a single read seconds after the one before, collect -once) or at a read
 -- with no stored pair (a restart's, a clear's: 0064 stores none). S = the newest scheduler count of mssql_sched_sample
 -- at or before R and after R - 15 min, above 0 (VISIBLE ONLINE schedulers, cpu.go); none (mssql_cpu off or skipped,
--- Azure SQL Database) = a point with NO value (not judged: metric_na_reasons says why). One range scan of each sample
--- table per call.
+-- Azure SQL Database) = a point with NO value (not judged: metric_na_reasons says why). One range scan of
+-- mssql_wait_sample per call; each read's own 10 minutes gathered once by a window function (the walk then runs over those
+-- few reads only, so the cost grows with the window, not its square: the 412 build review's S1); the scheduler count per
+-- point through the (instance_id, snapshot_at) index of each month partition (0002).
 CREATE OR REPLACE FUNCTION pgvigil.mssql_wait_core_points(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (at timestamptz, metric text, value double precision)
 LANGUAGE sql STABLE AS $$
@@ -1083,17 +1085,23 @@ LANGUAGE sql STABLE AS $$
       FROM pgvigil.mssql_sched_sample s
      WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from - interval '15 minutes' AND s.snapshot_at <= p_to
        AND s.schedulers > 0),
-  sp AS (
-    SELECT r.at, x.span, x.wait_s
+  -- each read with the reads of [R - 10 min, R] as three aligned arrays (one frame feeds all three in one row order); the
+  -- walk below drops R - 10 min itself, so the span stays (R - 10 min, R]
+  a AS (
+    SELECT r.at, array_agg(r.at) OVER f AS ats, array_agg(r.secs) OVER f AS secs, array_agg(r.wait_s) OVER f AS waits
       FROM r
+    WINDOW f AS (ORDER BY r.at RANGE BETWEEN interval '10 minutes' PRECEDING AND CURRENT ROW)),
+  sp AS (
+    SELECT a.at, x.span, x.wait_s
+      FROM a
       CROSS JOIN LATERAL (
         SELECT sum(y.secs) AS span, sum(y.wait_s) AS wait_s
           FROM (SELECT q.secs, q.wait_s,
                        coalesce(sum(q.secs) OVER (ORDER BY q.at DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS before
-                  FROM r q
-                 WHERE q.at > r.at - interval '10 minutes' AND q.at <= r.at) y
+                  FROM unnest(a.ats, a.secs, a.waits) AS q(at, secs, wait_s)
+                 WHERE q.at > a.at - interval '10 minutes') y
          WHERE y.before < 300) x
-     WHERE r.at > p_from)
+     WHERE a.at > p_from)
   SELECT sp.at, 'wait_s_per_core_min'::text,
          CASE WHEN k1.schedulers IS NOT NULL
               THEN round((sp.wait_s / k1.schedulers / (sp.span / 60))::numeric, 2)::double precision END
