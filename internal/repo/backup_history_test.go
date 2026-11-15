@@ -172,11 +172,13 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	if got := one(`SELECT pgvigil.mssql_hadr_cursor($1, 'backup_history')::text`, a); got != "0" {
 		t.Errorf("a database listed again: the cursor %s, want 0", got)
 	}
-	// a database created anew under its old name loses the sets stored for the old one
+	// a database created anew under its old name loses the sets stored for the old one - those that finished more than
+	// 0066's hour of slack before its creation; the five within the hour (full 12, the diff, the copy-only full, logs
+	// 112 and 113) stay by that rule (run 301ba)
 	history(a, bkRows{db("hdb", -30*time.Minute), db("other", -30*24*time.Hour), db("back", -40*24*time.Hour),
 		read(0, "read"), cursor("backup_history", 113, 8), cursor("restore_history", 0, 0)})
-	if got := count(a, `database_name = 'hdb'`); got != "0" {
-		t.Errorf("a database created anew: %s old sets kept, want 0", got)
+	if got := one(`SELECT string_agg(backup_set_id::text, ',' ORDER BY backup_set_id) FROM pgvigil.mssql_backup_history WHERE instance_id = $1 AND database_name = 'hdb'`, a); got != "12,50,51,112,113" {
+		t.Errorf("a database created anew: the sets kept %s, want 12,50,51,112,113 (the hour of slack)", got)
 	}
 
 	// ---- H2: M = 20 restores per destination and restore type, newest first; the server's local time stored as UTC
