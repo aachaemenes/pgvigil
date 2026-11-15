@@ -111,6 +111,25 @@ check('R3 date/month', picks.every(p => p.held && p.shown) && dToday.w === 'toda
   && mThis.w === 'mtd' && mLast.from === cPrev.from && mLast.to === cPrev.to && !!mLast.from && m2.to === mLast.from && hours(m2) >= 28 * 24 - 1 && hours(m2) <= 31 * 24 + 1,
   `a pick alone held the page ${picks.map(p => p.held).join('/')}, Show there ${picks.map(p => p.shown).join('/')}; Date: Today w=${dToday.w}; Yesterday ${dYest.from} - ${dYest.to} (calendar ${cYest.from} - ${cYest.to}); 2 days ago ${d2.from} - ${d2.to} (${hours(d2)} h); Month: This w=${mThis.w}; Last ${mLast.from} - ${mLast.to} (calendar ${cPrev.from} - ${cPrev.to}); 2 months ago ${m2.from} - ${m2.to}`);
 
+// R3b. Show beside Date and Month is off with its reason until a pick (a control works or says why it does not): off
+// with 'pick a day first' / 'pick a month first' and the page held when clicked; on after a pick; off again when the
+// select is back on its first option (red before: Show was on with nothing picked and its click did nothing)
+const showOf = which => `(() => { const s = ${rangePanel}.querySelectorAll('select.range-daymonth')[${which}]; return s && s.closest('.range-daymonth-row').querySelector('button.range-daymonth-go'); })()`;
+const showState = which => ev(`(() => { const b = ${showOf(which)}; if (!b) return 'none'; const n = document.getElementById(b.getAttribute('aria-describedby') || '');
+  return (b.getAttribute('aria-disabled') === 'true' ? 'off' : 'on') + ':' + (n ? n.textContent.trim() : ''); })()`);
+const setPick = (which, v) => ev(`(() => { const s = ${rangePanel}.querySelectorAll('select.range-daymonth')[${which}]; s.value = '${v}'; s.dispatchEvent(new Event('change')); return 'ok'; })()`);
+const r3b = [];
+for (const [which, word] of [[0, 'day'], [1, 'month']]) {
+  await go('#/summary?w=1h'); await openRange();
+  const before = await showState(which);
+  await ev(`(() => { const b = ${showOf(which)}; if (b) b.click(); return 'ok'; })()`); await sleep(600);
+  const held = (await ev('location.hash')) === '#/summary?w=1h';
+  await setPick(which, '1'); const picked = await showState(which);
+  await setPick(which, ''); const back = await showState(which);
+  r3b.push({ word, ok: before === `off:pick a ${word} first` && held && picked === 'on:' && back === `off:pick a ${word} first`, before, held, picked, back });
+}
+check('R3b show off until a pick', r3b.every(x => x.ok), JSON.stringify(r3b));
+
 // R4. Zoom out: 180 days to a year; off at a year with its words, the key '-' changing nothing; an old 4h address
 const zoomBtn = `document.querySelector('#bar .range button[aria-label^="Zoom out"]')`;
 const zoom = async () => { await ev(`${zoomBtn}.click(); 'ok'`); await sleep(1200); return (await params()).get('w'); };
