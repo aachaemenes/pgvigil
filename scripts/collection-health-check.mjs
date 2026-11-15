@@ -51,15 +51,15 @@ const open = async hash => {
   await cmd('Page.navigate', { url: 'about:blank' });
   await cmd('Page.navigate', { url: U + hash });
   for (let i = 0; i < 100; i++) {
-    if (await ev(`[...document.querySelectorAll('main h2')].some(h => h.textContent.trim() === 'Collection Health') && !!document.querySelector('main table thead')`)) break;
+    if (await ev(`[...document.querySelectorAll('main h2')].some(h => h.textContent.trim() === 'Collection Health') && !!document.querySelector('main section[data-drawn] .ch-grid table thead')`)) break;
     await sleep(150);
   }
   await sleep(300);
   return ev(`(() => {
     const sec = [...document.querySelectorAll('main section')].find(s => s.querySelector('h2')?.textContent.trim() === 'Collection Health');
     if (!sec) return null;
-    const t = sec.querySelector('table'), clean = s => s.replace(/[\\u25b2\\u25bc]/g, '').trim();
-    const heads = [...(t?.querySelectorAll('thead th') ?? [])].map(th => clean(th.textContent));
+    const t = sec.querySelector('.ch-grid table');
+    const heads = [...(t?.querySelectorAll('thead th') ?? [])].map(th => (th.querySelector('.th-label') ?? th).textContent.trim());
     const rows = [...(t?.querySelectorAll('tbody tr') ?? [])].map(tr => {
       const cells = [...tr.children];
       const o = {};
@@ -72,6 +72,8 @@ const open = async hash => {
   })()`);
 };
 const setStatus = only => ev(`(() => { for (const i of document.querySelectorAll('main input[name=ch-status]')) { i.checked = ${JSON.stringify(only)} === null || i.value === ${JSON.stringify(only)}; i.dispatchEvent(new Event('change', { bubbles: true })); } return true; })()`);
+// drawnAs: the page's own mark that a draw with these statuses and this grain has ended (up to 15 s)
+const drawnAs = async want => { for (let i = 0; i < 100; i++) { if (await ev(`document.querySelector('main section[data-drawn]')?.dataset.drawn === ${JSON.stringify(want)}`)) return true; await sleep(150); } return false; };
 const setShow = v => ev(`(() => { const s = document.querySelector('main #ch-show'); if (!s) return false; s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
 
 const COLS = ['Instance', 'Collection', 'Status', 'Status Reason', 'Runs', 'Succeeded %', 'Failed %', 'Failed % 24hrs', 'Succeeded', 'Partial', 'Failed',
@@ -99,13 +101,13 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
   const p0 = await open('#/collectionhealth?w=24h');
   if (p0) {
     for (const [v, w] of [['critical', 'Critical'], ['warning', 'Warning'], ['na', 'N/A'], ['ok', 'OK']]) {
-      await setStatus(v); await sleep(800);
-      const p = await ev(`[...document.querySelectorAll('main section table tbody tr')].length`);
-      const st = await ev(`(() => { const t = document.querySelector('main section table'); const hs = [...t.querySelectorAll('thead th')].map(th => th.textContent.trim()); const k = hs.indexOf('Status'); return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.textContent.trim()); })()`);
+      await setStatus(v); await drawnAs(`${v}|instance`);
+      const p = await ev(`document.querySelectorAll('main .ch-grid table tbody tr').length`);
+      const st = await ev(`(() => { const t = document.querySelector('main .ch-grid table'); if (!t) return []; const hs = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()); const k = hs.indexOf('Status'); return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.textContent.trim()); })()`);
       say(st.every(s => s === w) && (v !== 'critical' || st.length > 0), `CH6 Status ${w} alone`, `${p} row(s): ${[...new Set(st)].join(', ') || 'none'}`);
     }
-    await setStatus(null); await setShow('collection'); await sleep(1000);
-    const heads = await ev(`[...document.querySelectorAll('main section table thead th')].map(th => th.textContent.replace(/[\\u25b2\\u25bc]/g, '').trim())`);
+    await setStatus(null); await setShow('collection'); await drawnAs('critical,warning,na,ok|collection');
+    const heads = await ev(`[...document.querySelectorAll('main .ch-grid table thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim())`);
     say(eq(heads, BYCOLL), 'CH6 Row per collection columns', heads.join(' | '));
   } else say(false, 'CH6 Status / Show', 'no tab');
 }

@@ -86,7 +86,7 @@ export const groups: Group[] = [
   // QS is SQL Server's Query Store alone: PostgreSQL has none, its statement store is the column pg_stat_statements below
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true, dd: true },
   { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', dd: true },
-  { key: 'errors', label: 'Collection Health', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
+  { key: 'errors', label: 'Collection Health', checks: ['collection failing'], tab: 'collectionhealth', mssql: ['errors', 'collectionhealth', 'Collection Health'], dd: true, both: true },
   { key: 'snapshot', label: 'Snapshot Age', checks: ['collection stale'], tab: 'collectiondates', mssql: ['snapshot', 'collectiondates', 'Collection'], dd: true, both: true },
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true, dd: true, plain: true },
   { key: 'identity', label: 'Identity Columns', checks: [], tab: 'summary', mssql: ['identity', 'mssqlchecks', 'Identity columns', 'identity'], mssqlOnly: true, dd: true },

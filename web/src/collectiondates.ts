@@ -66,7 +66,9 @@ export async function collectionDatesView(ctx: Ctx): Promise<HTMLElement> {
   }
   statusSel.addEventListener('change', () => { lsSet('pgvigil.collectionDatesStatus', statusSel.value); void draw(); });
   refresh.addEventListener('click', () => void draw());
-  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'cd-status' }, 'Status ', statusSel)), body);
+  // B6.2: each collection's runs, failure rates and status by DBA Dash's rule are on Collection Health
+  const health = el('a', { href: href(ctx, { tab: 'collectionhealth' }) }, 'Collection Health');
+  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'cd-status' }, 'Status ', statusSel), ' ', health), body);
   if (ctx.instance) sec.insertBefore(await collectorLine(ctx), body); // task 201: the collector's line
   await draw();
   return sec;
