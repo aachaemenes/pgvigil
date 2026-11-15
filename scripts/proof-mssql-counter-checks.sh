@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Proof of task 402 (B4): the checks over SQL Server's performance counters - 0153's twenty fleet rules seeded OFF on
-# the 'counters' metrics of 0152, the join file's metric_rule (a seeded rule colours the Metrics grid on or off, and
-# notifies only when on), each rule switched on through an enabled instance rule, its condition provoked on a SQL
-# Server container, alert_rules_run's state and finding read, the load stopped and the clear read.
+# Proof of task 402 (B4): the checks over SQL Server's performance counters - 0153's twenty-one fleet rules seeded OFF
+# (twenty on the 'counters' metrics of 0152; one on the client timeouts per minute, B24 Fixed 1, part T), the join
+# file's metric_rule (a seeded rule colours the Metrics grid on or off, and notifies only when on), each rule switched
+# on through an enabled instance rule, its condition provoked on a SQL Server container (the client timeouts by a Go
+# client's cancels), alert_rules_run's state and finding read, the load stopped and the clear read.
 # Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, curl, python3, ss, and:
 #   ADMIN_DSN       a superuser connection to a PostgreSQL sandbox in keyword form (default 'host=127.0.0.1 port=5432
 #                   user=postgres dbname=postgres'); the proof makes its own repository database and drops it.
@@ -17,9 +18,9 @@
 # the seeded thresholds (F20: the seeded fleet row is never edited), so a run stays short.
 #
 # Expected (written before the first run; red on 16240ee at A: '0 seeded rules', no 0153 there):
-#  A. the seed (F22): after migrate, 20 rules at fleet scope, created_by 'pgvigil', client '0153 seed', enabled false,
-#     their thresholds and for_minutes as the design's table; 20 alert_rule_log rows 'seed'; a second migrate adds
-#     nothing (20 and 20); the page reads rule ended through import_alert_rule, then 0153 run again by hand: no new
+#  A. the seed (F22): after migrate, 21 rules at fleet scope (the twenty counters and B24 Fixed 1's client timeouts at
+#     9.999 / 59.999 for 0 minutes), created_by 'pgvigil', client '0153 seed', enabled false, their thresholds and
+#     for_minutes as the design's table; 21 alert_rule_log rows 'seed'; a second migrate adds nothing (21 and 21); the page reads rule ended through import_alert_rule, then 0153 run again by hand: no new
 #     page reads rule and no new log row (a metric that ever had a fleet rule is never seeded again).
 #  B. the owner line (the join file's metric_rule): 60 logins between two reads: metric_grid's counters.logins_s row
 #     carries the seed's rule_id, 2 and 5, a name ending '(off: colours only, no alert)', and metric_status
@@ -70,6 +71,38 @@
 #     under its floor (the proof's own floored() line; the product's page words are NOT PROVEN, as G says) - a hard
 #     clear either way, no NOT PROVEN for it; a clear read over its floor that still holds takes up to two more quiet
 #     pairs, each printed, and stays hard (finding 6).
+#  T. client timeouts (B24 Fixed 1, written before its first run): T0 mssql_attention_left_out on eleven built cases in
+#     PerformanceMonitor's order: 'under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio
+#     metadata|Azure Data Studio metadata|counts|under 1 ms|pgvigil's own reads|counts' (a NULL duration counts; a name
+#     rule before the 1 ms floor, the floor before azdata's shapes). T1 built rows (chkxs1: reads 60 s apart, the newest
+#     storing 200 counted rows): its point 66.67 (200 over the 3 minutes back to its base), an instance rule at the
+#     seed's 9.999 / 59.999 goes critical at that read; a quiet read after it: still critical (the 3-minute window holds
+#     the burst), as PerformanceMonitor's own text says of a storm. T2 built rows (chkxs2: a done read, a read cut
+#     before the capture (no new_events) storing 6 rows, a done read storing 4): one point per metric, at the last read,
+#     counted 5 (10 rows over 2 minutes), none at the cut read. T4 (the lead's 22:4x, F1 S3: PerformanceMonitor's
+#     judged count; red on bfb184d: 50.00, warning) built reads a minute apart: 50 rows stored while the event_counter
+#     moved 300: 300.00, critical at the seed's thresholds (a storm past the ring buffer); no row stored and the counter
+#     +30: 30.00; the counter gone down (the session made again) with 20 rows: 20.00. The built reads' counters move
+#     with their rows (T1 0 then 200; T2 0, 6, 10); T3's hand rule scales by the counter as the function does. T3 live on the container, pgvigil's attention session
+#     made by sa from 'pgvigil mssql-xe -print': each mssql_xe read writes one mssql_attention_reads row (read_done);
+#     a Go client (go-mssqldb, a connection per batch, a 2 s context timeout on WAITFOR DELAY 10 s, every batch of a
+#     phase at once, the reads about 60 s apart): T3a 30 under 'proof-app' - exactly 30 rows with its marker, the
+#     counter's change at that read at least the rows stored, every row's interrupt_us 1.5-3 s (PerformanceMonitor's
+#     reading of the field: about the client's timeout), the point equal to PerformanceMonitor's span rule over the
+#     stored rows, scaled by the counter's change as the function does (recomputed in python from the reads and the
+#     rows), between 10 and 60, the instance rule warning; quiet reads until that rule's point is 0: state ok. T3b 60
+#     under SSMS IntelliSense's name and 20 under 'vscode-mssql-ObjectExplorer': per program 60 rows 'SSMS
+#     IntelliSense' and 20 'VS Code mssql metadata' (F1 part B, finding 4: each app's own count and reason), the
+#     counted point 0, state ok, the left-out point as recomputed. T3c under
+#     'azdata' 10 'create table #sver ...' batches (the marker after the statement) left out as Azure Data Studio
+#     metadata, 10 query-editor batches counted; the counted point as recomputed. The XE API's attentions carry
+#     left_out with those reasons. A cancel under 1 ms is proven on the function only, live 'NOT PROVEN live' unless
+#     one occurs. The reads table's cost printed after T3 (F1 part B, finding 2; the design's F3): its rows, bytes a
+#     row (pg_column_size), the table with its indexes, the attentions' read index over its partitions, and bytes a
+#     day per instance at one read a minute - printed, not judged. T5 (F1 part B, finding 1) the trigger's path on a
+#     built instance through import_mssql_xe: an attention state row with no new_events (a cut read) at 2 minutes
+#     before XT, one with new_events 3 and counter 7 at 1 minute, the first payload again at its own time, a 'slow'
+#     state row: the reads table holds '2m false -, 1m true 7' (the repeat changes nothing, 'slow' writes no row).
 #  G. the floors: G0 at every instance read of the run each floored metric's point has no value exactly when an input
 #     of the same read is under its floor (0152's metric_floors), both sides seen; G1 an instance rule
 #     on compiles_per_100_batches at the seed's thresholds, a read 60 s after the one before with nothing of the proof
@@ -92,7 +125,8 @@
 #     no critical, a quiet read (na, no file), a load (warning, ONE firing file), a quiet read (na), one more read and
 #     pass (ONE resolved); G6 a flap held by the clear delay (a destination with clear_after 5m; '300' with no unit was
 #     refused by the configuration: finding 1): critical 0 for 0
-#     minutes, a load (one firing), a quiet read (na), a load within 300 s (critical): one firing and no resolved -
+#     minutes, a load (one firing), a quiet read (na), a second quiet read and pass (still na and no resolved: with
+#     clear_after 0 that pass resolves, G3's b4), a load within the 5 minutes (critical): one firing and no resolved -
 #     one open alert (a rule of 0 minutes; with more minutes a flap resolves and fires again, docs/alerts.md).
 #     G_FROM=G3, G4, G5 or G6 starts G there (GC, G0-G2 and the parts before it skipped; such a run ends PARTIAL). G1 also reads FL4 through the API: the grid's
 #     compilations row has no current value, floor 5, unit 'batch requests', input counters.batch_requests_s; its
@@ -200,7 +234,7 @@ col mssql_instance mssql_counters mssql_counters_db
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'chkbox'")
 seeds() { pq "SELECT count(*) FROM pgvigil.alert_rules WHERE created_by = 'pgvigil' AND client = '0153 seed'"; }
 slog() { pq "SELECT count(*) FROM pgvigil.alert_rule_log WHERE op = 'seed' AND client = '0153 seed'"; }
-NS=$(seeds); [[ "$NS" == 20 ]] || fail "A: $NS seeded rules (want 20)"
+NS=$(seeds); [[ "$NS" == 21 ]] || fail "A: $NS seeded rules (want 21)"
 pq "SELECT metric || '|' || rule_id || '|' || op || '|' || coalesce(warning::text, '') || '|' || coalesce(critical::text, '') || '|' || for_minutes || '|' || enabled || '|' || scope
       FROM pgvigil.alert_rules WHERE created_by = 'pgvigil' AND client = '0153 seed' ORDER BY metric" > "$TMPD/seed-a"
 python3 - "$TMPD/seed-a" <<'PY' || fail "A: a seeded rule differs from the design's table"
@@ -212,7 +246,8 @@ want = {'full_scans_per_search': ('above', 0.001, 0.01, 15), 'compiles_per_100_b
         'avg_lock_wait_ms': ('above', 500, 1000, 15), 'lock_requests_s': ('above', 1000, 1200, 15),
         'lock_timeouts_gt0_s': ('above', 0, 1, 15), 'lock_waits_s': ('above', 0.1, 0.9995, 15), 'readahead_pct': ('above', 20, 25, 15),
         'buffer_cache_hit_pct': ('below', 90, None, 15), 'ple_per_4gb': ('below', 300, 200, 15), 'logins_s': ('above', 2, 5, 15),
-        'errors_kill_s': ('above', 0, 1, 0), 'errors_offline_s': ('above', 0, 1, 0), 'log_growths': ('above', 0, None, 0)}
+        'errors_kill_s': ('above', 0, 1, 0), 'errors_offline_s': ('above', 0, 1, 0), 'log_growths': ('above', 0, None, 0),
+        'client_timeouts_per_min': ('above', 9.999, 59.999, 0)}
 got, bad = {}, []
 for l in open(sys.argv[1]):
     m, rid, op, w, c, f, en, sc = l.rstrip('\n').split('|')
@@ -222,17 +257,17 @@ for k, v in want.items():
     if got.get(k) != v: bad.append(f'{k}: {got.get(k)} != {v}')
 print(f'   {len(got)} seeded rules read; differences: {len(bad)}')
 for b in bad: print('   FAIL ' + b)
-sys.exit(1 if bad or len(got) != 20 else 0)
+sys.exit(1 if bad or len(got) != 21 else 0)
 PY
-NL=$(slog); [[ "$NL" == 20 ]] || fail "A: $NL seed log rows (want 20)"
+NL=$(slog); [[ "$NL" == 21 ]] || fail "A: $NL seed log rows (want 21)"
 "$TMPD/pgvigil" migrate -config "$CFG" > "$TMPD/migrate2.out" 2>&1 || { cat "$TMPD/migrate2.out" >&2; fail "A: the second migrate"; }
-[[ "$(seeds)|$(slog)" == "20|20" ]] || fail "A: the second migrate: $(seeds) rules, $(slog) log rows"
+[[ "$(seeds)|$(slog)" == "21|21" ]] || fail "A: the second migrate: $(seeds) rules, $(slog) log rows"
 PR=$(pq "SELECT rule_id FROM pgvigil.alert_rules WHERE metric = 'counters.page_reads_s' AND client = '0153 seed'")
 rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$PR\"}" | grep -q '"done"' || fail "A: ending the page reads rule"
 psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0153_mssql_counter_checks.sql >/dev/null || fail "A: 0153 run again by hand"
-[[ "$(seeds)|$(slog)" == "20|20" && $(pq "SELECT count(*) FROM pgvigil.alert_rules WHERE metric = 'counters.page_reads_s' AND ended_at IS NULL") == 0 ]] \
+[[ "$(seeds)|$(slog)" == "21|21" && $(pq "SELECT count(*) FROM pgvigil.alert_rules WHERE metric = 'counters.page_reads_s' AND ended_at IS NULL") == 0 ]] \
   || fail "A: 0153 again after the end: $(seeds) rules, $(slog) log rows"
-ok "A: 20 rules seeded off at fleet scope as the design's table, 20 log rows; a second migrate and 0153 again after an end add nothing"
+ok "A: 21 rules seeded off at fleet scope as the design's table, 21 log rows; a second migrate and 0153 again after an end add nothing"
 
 # the provocations; each ends with nothing of its own still running
 # 60 logins in one container session's loop (a docker exec per login is too slow to pass 5 a second)
@@ -594,6 +629,288 @@ for m in free_list_stalls_s lazy_writes_s buffer_cache_hit_pct ple_per_4gb error
 done
 ok "E: free list stalls, lazy writes, hit ratio, page life expectancy per 4 GB, offline errors: each metric reaches its rule (NOT PROVEN live at the seeded thresholds)"
 
+echo "== T. client timeouts (B24 Fixed 1) =="
+if [[ -n "$D_FROM" ]]; then echo "   T skipped (D_FROM=$D_FROM)"; else
+XM=xe.client_timeouts_per_min
+xstate() { pq "SELECT state FROM pgvigil.alert_rule_state WHERE instance_id = $1 AND metric = '$XM' AND database = ''"; }
+xrule() { rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"$XM\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"$1\",\"warning\":9.999,\"critical\":59.999,\"for_minutes\":0}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")'; }
+xend() { rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$1\"}" >/dev/null; }
+# the function's newest point of a metric over the last 30 minutes
+xpoint() { pq "SELECT round(value::numeric, 2) FROM pgvigil.mssql_attention_points($1, now() - interval '30 minutes', now()) WHERE metric = '$2' ORDER BY at DESC LIMIT 1"; }
+
+# T0: the left-out rules on built cases, in PerformanceMonitor's order
+LO=$(pq "SELECT string_agg(coalesce(pgvigil.mssql_attention_left_out(p, s, d), 'counts'), '|' ORDER BY n) FROM (VALUES
+  (1, 'proof-app', 'x', 500::bigint), (2, 'proof-app', 'x', NULL::bigint),
+  (3, 'Microsoft SQL Server Management Studio - Transact-SQL IntelliSense  ', 'x', 500), (4, 'vscode-mssql', 'x', 5000000),
+  (5, ' VSCODE-MSSQL-ObjectExplorer ', 'x', 5000000), (6, 'azdata', '  create table #SVer (a int)', 5000000),
+  (7, 'azdata', 'select c.name from sys.all_columns as clmns', 5000000), (8, 'azdata', 'select 1', 5000000),
+  (9, 'azdata', 'create table #sver (a int)', 500), (10, 'pgvigil', 'x', 5000000), (11, NULL, NULL, NULL)) v(n, p, s, d)")
+echo "   T0: $LO"
+[[ "$LO" == "under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio metadata|Azure Data Studio metadata|counts|under 1 ms|pgvigil's own reads|counts" ]] \
+  || fail "T0: the left-out reasons"
+ok "T0: the left-out rules in PerformanceMonitor's order (names, then under 1 ms with NULL counted, then azdata's shapes), pgvigil's own reads"
+
+# built instances: reads 60 s apart, rows stored at a read (snapshot_at) one second after their event
+for m in "now()" "now() - interval '1 hour'"; do pq "SELECT pgvigil.mssql_event_partition('mssql_attentions', $m)" >/dev/null; done
+xinst() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+  VALUES ('$1', 'sqlserver', '{}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1; }
+# the built reads and rows hang off one time XT (each psql call has its own now(): a row must sit at its read exactly)
+XT=$(pq "SELECT date_trunc('second', now())")
+# xread <instance> <minutes before XT> <done: true|false> [<the event_counter's count at that read>, default 0]: the
+# rate is PerformanceMonitor's judged count, so a built read's counter moves with the rows it stores (F1 S3)
+xread() { pq "INSERT INTO pgvigil.mssql_attention_reads (instance_id, snapshot_at, state, read_done, new_events, counter, missed_events)
+  VALUES ($1, '$XT'::timestamptz - interval '$2 minutes', 'running', $3, CASE WHEN $3 THEN 0 END, ${4:-0}, 0)" >/dev/null; }
+# xrows <instance> <minutes before XT> <n> <program>: n rows stored at that read, each a second before it
+xrows() { pq "INSERT INTO pgvigil.mssql_attentions (instance_id, event_at, event_key, snapshot_at, session_id, interrupt_us, statement, program_name)
+  SELECT $1, '$XT'::timestamptz - interval '$2 minutes' - interval '1 second', 'b$2-' || g, '$XT'::timestamptz - interval '$2 minutes',
+         60, 2000000, 'WAITFOR DELAY ''00:00:10''', '$4' FROM generate_series(1, $3) g" >/dev/null; }
+
+# T1: the burst (the pass's F1): reads at 5, 4, 3, 2 minutes back, the read 1 minute back stores 200 counted rows
+XS1=$(xinst chkxs1); [[ "$XS1" =~ ^[0-9]+$ ]] || fail "T1: the built instance [$XS1]"
+for t in 5 4 3 2; do xread "$XS1" "$t" true 0; done; xread "$XS1" 1 true 200; xrows "$XS1" 1 200 proof-app
+P1=$(xpoint "$XS1" client_timeouts_per_min)
+R1=$(xrule chkxs1); [[ -n "$R1" ]] || fail "T1: the instance rule on chkxs1 was refused"
+run; S1=$(xstate "$XS1")
+xread "$XS1" 0 true 200; P1b=$(xpoint "$XS1" client_timeouts_per_min); run; S1b=$(xstate "$XS1"); xend "$R1"
+echo "   T1: the burst read's point $P1 -> $S1; a quiet read after it: $P1b -> $S1b"
+[[ "$P1|$S1|$P1b|$S1b" == "66.67|critical|66.67|critical" ]] || fail "T1: the burst [$P1|$S1|$P1b|$S1b] (want 66.67|critical|66.67|critical)"
+ok "T1: 200 timeouts in one read go critical at that read (200 over the 3 minutes back) and stay critical a quiet read later"
+
+# T2: a read cut before the capture (no new_events) stores 6 rows; the next done read's span holds them
+XS2=$(xinst chkxs2); [[ "$XS2" =~ ^[0-9]+$ ]] || fail "T2: the built instance [$XS2]"
+xread "$XS2" 3 true 0; xread "$XS2" 2 false 6; xread "$XS2" 1 true 10; xrows "$XS2" 2 6 proof-app; xrows "$XS2" 1 4 proof-app
+P2=$(pq "SELECT string_agg(round(extract(epoch FROM '$XT'::timestamptz - at) / 60) || 'm ' || metric || ' ' || round(value::numeric, 2), ', ' ORDER BY at, metric)
+  FROM pgvigil.mssql_attention_points($XS2, now() - interval '30 minutes', now())")
+echo "   T2: $P2"
+[[ "$P2" == "1m client_timeouts_left_out_per_min 0.00, 1m client_timeouts_per_min 5.00" ]] || fail "T2: the points around a cut read [$P2]"
+ok "T2: a cut read gives no point and its 6 rows count in the next done read's span (10 over 2 minutes)"
+
+# T4 (the lead's 22:4x, F1 S3; red on bfb184d: 50.00, warning): PerformanceMonitor's judged count - a storm past the
+# ring buffer (the read stores 50 rows, the event_counter moved 300) reads 300 a minute, critical; T4b no row stored,
+# the counter +30: 30 (the whole change); T4c the counter gone down (the session made again), 20 rows: 20 (the rows alone)
+XS4=$(xinst chkxs4); [[ "$XS4" =~ ^[0-9]+$ ]] || fail "T4: the built instance [$XS4]"
+xread "$XS4" 2 true 1000; xread "$XS4" 1 true 1300; xrows "$XS4" 1 50 proof-app
+P4=$(xpoint "$XS4" client_timeouts_per_min)
+R4=$(xrule chkxs4); [[ -n "$R4" ]] || fail "T4: the instance rule on chkxs4 was refused"
+run; S4=$(xstate "$XS4"); xend "$R4"
+XS4b=$(xinst chkxs4b); xread "$XS4b" 2 true 0; xread "$XS4b" 1 true 30; P4b=$(xpoint "$XS4b" client_timeouts_per_min)
+XS4c=$(xinst chkxs4c); xread "$XS4c" 2 true 1000; xread "$XS4c" 1 true 15; xrows "$XS4c" 1 20 proof-app; P4c=$(xpoint "$XS4c" client_timeouts_per_min)
+echo "   T4: a storm past the ring buffer $P4 -> $S4; no row stored, the counter +30: $P4b; the counter gone down, 20 rows: $P4c"
+[[ "$P4|$S4|$P4b|$P4c" == "300.00|critical|30.00|20.00" ]] || fail "T4: [$P4|$S4|$P4b|$P4c] (want 300.00|critical|30.00|20.00)"
+ok "T4: a storm the ring buffer cut reads 300 a minute, critical; the whole counter change with no row stored; the stored rows after a counter reset"
+
+# T5 (F1 part B, finding 1): the trigger's path - four imports through import_mssql_xe on a built instance
+XS5=$(xinst chkxs5); [[ "$XS5" =~ ^[0-9]+$ ]] || fail "T5: the built instance [$XS5]"
+xi() { pq "SELECT pgvigil.import_mssql_xe($XS5, '$XT'::timestamptz - interval '$1 minutes', '[$2]'::jsonb)" >/dev/null; }
+xi 2 '{"kind":"state","capture":"attention","state":"running"}'
+xi 1 '{"kind":"state","capture":"attention","state":"running","new_events":3,"counter":7}'
+xi 2 '{"kind":"state","capture":"attention","state":"running"}'
+xi 1 '{"kind":"state","capture":"slow","state":"running","new_events":1}'
+P5=$(pq "SELECT coalesce(string_agg(round(extract(epoch FROM '$XT'::timestamptz - snapshot_at) / 60) || 'm ' || read_done || ' ' || coalesce(counter::text, '-'), ', ' ORDER BY snapshot_at), 'none')
+  FROM pgvigil.mssql_attention_reads WHERE instance_id = $XS5")
+echo "   T5: the reads table after four imports: $P5"
+[[ "$P5" == "2m false -, 1m true 7" ]] || fail "T5: the trigger's rows [$P5] (want '2m false -, 1m true 7')"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $XS5" >/dev/null
+ok "T5: through import_mssql_xe a cut read is not done, a done read keeps its counter, a repeat and another capture add no row"
+
+# T3: live. pgvigil's sessions made by sa from the printed script; a Go client's cancels
+"$TMPD/pgvigil" mssql-xe -print -install-id "c$SUF" > "$TMPD/xe.sql" || fail "T3: mssql-xe -print"
+XO=$(sq "$(cat "$TMPD/xe.sql")" master 300 2>&1) || fail "T3: the printed script: $XO"
+[[ $(grep -c "^started: pgvigil_c${SUF}_" <<<"$XO") == 4 ]] || fail "T3: four sessions started: $XO"
+mkdir -p "$TMPD/attn"; cp go.mod go.sum "$TMPD/attn/"; sed -i 's/^module .*/module attnproof/' "$TMPD/attn/go.mod"
+cat > "$TMPD/attn/main.go" <<'GO'
+// attn: the proof's client timeouts. Every batch on a connection of its own, connected first, then run under a
+// context that times out; all batches of a call at once.
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"flag"
+	"fmt"
+	"net/url"
+	"os"
+	"sync"
+	"time"
+
+	_ "github.com/microsoft/go-mssqldb"
+)
+
+func main() {
+	app := flag.String("app", "", "the application name of every connection")
+	n := flag.Int("n", 1, "how many batches, all at once")
+	batch := flag.String("sql", "", "the batch")
+	timeout := flag.Duration("timeout", 2*time.Second, "the context timeout of each batch")
+	flag.Parse()
+	dsn := os.Getenv("ATTN_DSN") + "&app+name=" + url.QueryEscape(*app)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	cancelled, other := 0, []string{}
+	for i := 0; i < *n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := one(dsn, *batch, *timeout)
+			mu.Lock()
+			defer mu.Unlock()
+			if errors.Is(err, context.DeadlineExceeded) {
+				cancelled++
+			} else {
+				other = append(other, fmt.Sprint(err))
+			}
+		}()
+	}
+	wg.Wait()
+	fmt.Printf("cancelled %d of %d\n", cancelled, *n)
+	for _, e := range other {
+		fmt.Println("not cancelled:", e)
+	}
+	if cancelled != *n {
+		os.Exit(1)
+	}
+}
+
+func one(dsn, batch string, timeout time.Duration) error {
+	db, err := sql.Open("sqlserver", dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	cctx, cc := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cc()
+	if err := db.PingContext(cctx); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err = db.ExecContext(ctx, batch)
+	if ctx.Err() == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	if err == nil {
+		return errors.New("the batch ended before its timeout")
+	}
+	return err
+}
+GO
+(cd "$TMPD/attn" && GOFLAGS=-mod=mod go build -o "$TMPD/attn-bin" .) || fail "T3: the Go client's build"
+export ATTN_DSN="sqlserver://sa:$(urlq "$SA_PW")@127.0.0.1:$PORT_SQL?database=pgvctr&encrypt=true&TrustServerCertificate=true"
+attn() { "$TMPD/attn-bin" -app "$1" -n "$2" -sql "$3" -timeout 2s > "$TMPD/attn.out" 2>&1 || { cat "$TMPD/attn.out" >&2; fail "T3: the client ($1, $2)"; }; }
+NX=0; LASTX=0
+# a read of the capture about 60 s after the one before (the sessions dispatch every 5 s: 7 s after a load at least)
+xr() { local w=$(( 60 - ($(date +%s) - LASTX) )); (( w > 7 )) || w=7; sleep "$w"; col mssql_xe; LASTX=$(date +%s); NX=$((NX + 1)); }
+# PerformanceMonitor's rule in python over the stored reads and rows: the newest done read's counted and left-out rates
+hand() { pq "SELECT 'r|' || extract(epoch FROM snapshot_at) || '|' || coalesce(counter::text, '') FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB AND read_done AND state = 'running'
+  UNION ALL SELECT 'e|' || extract(epoch FROM snapshot_at) || '|' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us), '')
+    FROM pgvigil.mssql_attentions WHERE instance_id = $SB" > "$TMPD/hand"
+  python3 - "$TMPD/hand" <<'PY'
+import sys
+reads, rows, ctr = [], [], {}
+for l in open(sys.argv[1]):
+    f = l.rstrip('\n').split('|')
+    if f[0] == 'r':
+        reads.append(float(f[1])); ctr[float(f[1])] = int(f[2]) if f[2] else None
+    else: rows.append((float(f[1]), f[2]))
+runs = sorted(reads, reverse=True)
+runs = [r for r in runs if r >= runs[0] - 3600] if runs else runs   # ReadLookbackMinutes 60
+if len(runs) < 2: print('none'); sys.exit(0)
+oldest = 0
+for k in range(len(runs) - 1):            # AttentionEvaluator.OldestTaken
+    oldest = k
+    if (runs[0] - runs[k + 1]) / 60 >= 3: break
+base, newest = runs[oldest + 1], runs[0]
+cov = max(1.0, (newest - base) / 60)
+c = sum(1 for s, w in rows if base < s <= newest and w == '')
+x = sum(1 for s, w in rows if base < s <= newest and w != '')
+# PerformanceMonitor's judged count: the counter's change times the stored share; the whole change with no row; the
+# rows alone when a counter is missing or went down
+tot = None if ctr.get(newest) is None or ctr.get(base) is None else ctr[newest] - ctr[base]
+if tot is not None and tot >= 0:
+    c, x = (tot, 0) if c + x == 0 else (tot * c / (c + x), tot * x / (c + x))
+print(f'{c / cov:.2f}|{x / cov:.2f}')
+PY
+}
+fn() { echo "$(xpoint "$SB" client_timeouts_per_min)|$(xpoint "$SB" client_timeouts_left_out_per_min)"; }
+# same <a|b> <c|d>: the two pairs within 0.01 (PostgreSQL's numeric round and python's format may differ in the last digit)
+same() { python3 -c "import sys; a = [float(x) for x in sys.argv[1].split('|')]; b = [float(x) for x in sys.argv[2].split('|')]; sys.exit(0 if len(a) == len(b) == 2 and all(abs(x - y) <= 0.011 for x, y in zip(a, b)) else 1)" "$1" "$2" 2>/dev/null; }
+ctr() { pq "SELECT coalesce(counter, 0) FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB ORDER BY snapshot_at DESC LIMIT 1"; }
+# mark <marker>: the stored rows with the marker per program and reason, 'program:rows:reason ; ...' in order (F1 part
+# B, finding 4: each app's own count, so a double on one and a loss on another cannot sum to the total)
+mark() { pq "SELECT coalesce(string_agg(x.program_name || ':' || x.n || ':' || x.reason, ' ; ' ORDER BY x.program_name COLLATE \"C\", x.reason COLLATE \"C\"), 'none')
+  FROM (SELECT program_name, coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us), 'counts') AS reason, count(*) AS n
+          FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND statement LIKE '%$1%' GROUP BY 1, 2) x"; }
+pq "SELECT count(*) FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB" > "$TMPD/nx0"; NX0=$(cat "$TMPD/nx0")
+xr; xr
+RX=$(xrule chkbox); [[ -n "$RX" ]] || fail "T3: the instance rule on chkbox was refused"
+
+# T3a: 30 cancels under an application of no rule
+M1="pgvchk-t3a-$SUF"; C0=$(ctr)
+attn proof-app 30 "WAITFOR DELAY '00:00:10'; /* $M1 */"; xr
+K1=$(mark "$M1"); C1=$(ctr); H1=$(hand); F1=$(fn); run; S3a=$(xstate "$SB")
+IU=$(pq "SELECT min(interrupt_us) || '|' || max(interrupt_us) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND statement LIKE '%$M1%'")
+echo "   T3a: rows $K1, the counter $C0 -> $C1, interrupt_us $IU, by hand $H1, the function $F1 -> $S3a"
+[[ "$K1" == "proof-app:30:counts" ]] || fail "T3a: the stored rows [$K1] (want proof-app:30:counts)"
+(( C1 - C0 >= 30 )) || fail "T3a: the counter moved $((C1 - C0)) for 30 stored rows"
+python3 -c "import sys; a, b = map(int, sys.argv[1].split('|')); sys.exit(0 if 1500000 <= a and b <= 3000000 else 1)" "$IU" \
+  || fail "T3a: interrupt_us [$IU] is not about the client's 2 s timeout (PerformanceMonitor's reading)"
+same "$H1" "$F1" || fail "T3a: the function [$F1] against PerformanceMonitor's rule by hand [$H1]"
+python3 -c "import sys; v = float(sys.argv[1].split('|')[0]); sys.exit(0 if 9.999 < v < 59.999 else 1)" "$F1" || fail "T3a: the point [$F1] is outside the warning band (the reads' spacing)"
+[[ "$S3a" == warning ]] || fail "T3a: the rule's state [$S3a] (want warning)"
+for _ in 1 2 3 4 5; do xr; H=$(hand); [[ "${H%%|*}" == 0.00 ]] && break; done
+F=$(fn); run; S=$(xstate "$SB"); echo "   T3a clear: by hand $H, the function $F -> $S"
+[[ "${H%%|*}" == 0.00 && "$S" == ok ]] && same "$H" "$F" || fail "T3a: the clear [$H|$F|$S]"
+ok "T3a: 30 cancels stored once each (interrupt_us about the timeout), the rate as PerformanceMonitor's rule, warning, then ok"
+
+# T3b: SSMS IntelliSense and a VS Code metadata connection, left out by name
+M2="pgvchk-t3b-$SUF"
+attn "Microsoft SQL Server Management Studio - Transact-SQL IntelliSense" 60 "WAITFOR DELAY '00:00:10'; /* $M2 */"
+attn vscode-mssql-ObjectExplorer 20 "WAITFOR DELAY '00:00:10'; /* $M2 */"; xr
+K2=$(mark "$M2"); H2=$(hand); F2=$(fn); run; S3b=$(xstate "$SB")
+echo "   T3b: rows $K2, by hand $H2, the function $F2 -> $S3b"
+[[ "$K2" == "Microsoft SQL Server Management Studio - Transact-SQL IntelliSense:60:SSMS IntelliSense ; vscode-mssql-ObjectExplorer:20:VS Code mssql metadata" ]] \
+  || fail "T3b: the stored rows [$K2]"
+same "$H2" "$F2" && [[ "${F2%%|*}" == 0.00 && "$S3b" == ok ]] || fail "T3b: [$H2|$F2|$S3b] (want the counted rate 0, ok)"
+ok "T3b: 80 tool cancels left out by name, 60 and 20 each under its own reason: the counted rate 0, ok; the left-out rate as recomputed"
+
+# T3c: azdata - the metadata shape left out, the query editor's batches counted
+M3="pgvchk-t3c-$SUF"
+attn azdata 10 "create table #sver (a int); WAITFOR DELAY '00:00:10'; /* $M3 s */"
+attn azdata 10 "WAITFOR DELAY '00:00:10'; /* $M3 q */"; xr
+K3s=$(mark "$M3 s"); K3q=$(mark "$M3 q"); H3=$(hand); F3=$(fn)
+echo "   T3c: the metadata shape $K3s, the editor $K3q, by hand $H3, the function $F3"
+[[ "$K3s|$K3q" == "azdata:10:Azure Data Studio metadata|azdata:10:counts" ]] && same "$H3" "$F3" || fail "T3c: [$K3s|$K3q|$H3|$F3]"
+ok "T3c: azdata's 'create table #sver' left out, its query editor's batches counted"
+
+NR=$(pq "SELECT count(*) || '|' || bool_and(read_done) FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB")
+[[ "$NR" == "$((NX0 + NX))|true" ]] || fail "T3: the reads table [$NR] (want $((NX0 + NX)) rows, every one done)"
+# the reads table's cost (F1 part B, finding 2; the design's F3): printed for the report, not judged
+CS=$(pq "SELECT count(*) || ' reads, ' || coalesce(round(avg(pg_column_size(a.*)))::text, '-') || ' bytes a row, about '
+  || coalesce(round(avg(pg_column_size(a.*)) * 1440)::text, '-') || ' bytes a day per instance at one read a minute (before its index entries)'
+  FROM pgvigil.mssql_attention_reads a WHERE a.instance_id = $SB")
+CT=$(pq "SELECT pg_size_pretty(pg_total_relation_size('pgvigil.mssql_attention_reads')) || ' the reads table with its indexes; '
+  || pg_size_pretty(coalesce((SELECT sum(pg_relation_size(t.relid)) FROM pg_partition_tree('pgvigil.mssql_attentions_read_idx') t), 0)) || ' the attentions'' read index over its partitions'")
+echo "   the cost: $CS; $CT"
+NS1=$(pq "SELECT count(*) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000")
+if [[ "$NS1" == 0 ]]; then echo "NOT PROVEN live: no cancel under 1 ms (the floor is proven on the function, T0)"
+else [[ $(pq "SELECT count(*) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000 AND pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us) IS NULL") == 0 ]] \
+  || fail "T3: a cancel under 1 ms counted"; ok "T3: $NS1 live cancel(s) under 1 ms left out"; fi
+curl -fs -m 20 "http://127.0.0.1:$PORT/api/mssql/xe?instance=$SB&part=attentions&from=$(urlq "$(date -u -d '-30 min' +%Y-%m-%dT%H:%M:%SZ)")&to=$(urlq "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" > "$TMPD/att.json" \
+  || fail "T3: GET /api/mssql/xe?part=attentions: $(tail -3 "$TMPD/serve.log")"
+python3 - "$TMPD/att.json" "$M2" "$M3" <<'PY' || fail "T3: the XE API's left_out"
+import json, sys
+t = json.load(open(sys.argv[1]))['attentions']; rows = [dict(zip(t['columns'], r)) for r in t['rows']]
+def why(m): return sorted({str(r.get('left_out')) for r in rows if m in (r.get('statement') or '')})
+got = (why(sys.argv[2]), why(sys.argv[3] + ' s'), why(sys.argv[3] + ' q'))
+print(f'   the XE API: {got}')
+sys.exit(0 if got == (['SSMS IntelliSense', 'VS Code mssql metadata'], ['Azure Data Studio metadata'], ['None']) else 1)
+PY
+xend "$RX"
+ok "T3: one mssql_attention_reads row per read, all done; the XE API names each left-out reason"
+fi
+
 echo "== G. the floors: not judged under a floor (FL6) =="
 G_FROM=${G_FROM:-}
 case "$G_FROM" in ''|G3|G4|G5|G6) ;; *) fail "G_FROM=$G_FROM (want G3, G4, G5 or G6)" ;; esac
@@ -751,4 +1068,4 @@ echo "NOT PROVEN HERE: free list stalls, lazy writes, a low hit ratio, a low pag
 [[ -n "$D_FROM" ]] && { echo "PARTIAL: D from $D_FROM (a diagnostic run, not a proof)"; exit 3; }
 [[ "$QUIET" != 60 ]] && { echo "PARTIAL: QUIET=$QUIET, not the product's 60 s (a diagnostic run, not a proof)"; exit 3; }
 [[ -n "$G_FROM" ]] && { echo "PARTIAL: G from $G_FROM (a diagnostic run, not a proof)"; exit 3; }
-echo "PROOF OK: mssql counter checks (A B C D E G F)"
+echo "PROOF OK: mssql counter checks (A B C D E T G F)"

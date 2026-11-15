@@ -1,3 +1,15 @@
+diff --git i/THIRD-PARTY-NOTICES.md w/THIRD-PARTY-NOTICES.md
+index d3a338a2..bf5def09 100644
+--- i/THIRD-PARTY-NOTICES.md
++++ w/THIRD-PARTY-NOTICES.md
+@@ -119,6 +119,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
+ | The memory reads and their shapes (the grants with their queries, the semaphores, the grant cap and reduced grants, the largest clerks and caches, stolen memory, the resource monitor's low-memory records, the plan cache by cache and object type with its bloat level) and the memory findings' rules (sp_Blitz 145 / 146, sp_BlitzFirst 45 / 46, grant timeouts), ported from the procedures' text and PerformanceMonitor's collectors | DarlingData (darlingdata-20261101): sp_PressureDetector (its memory section); PerformanceMonitor 3.12.0: MemoryGrantsCollector, MemoryPressureEventsCollector, PlanCacheStatsCollector and the Memory tab's columns; SQL Server First Responder Kit 8.34: sp_BlitzFirst (45, 46), sp_Blitz (145, 146) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/mssql/memory.go, internal/repo/sql/0119_darling_memory.sql, web/src/mssql_perf.ts |
+ | The performance counter list and its storage per series (a cumulative counter as its rate and its total), the CPU details, the thread row with its runnable line and THREADPOOL waits, the scheduler pressure line beside pgvigil's own level, the sessions by application, host and database with their totals, tempdb space per session, SLEEP_TASK kept at an average of 1,000 ms or more, the remote admin connections line, and the findings on other processes holding the CPU, a long open transaction and slow data file writes | DarlingData (darlingdata-20261101): sp_PressureDetector (its perfmon list, CPU and thread usage sections, tempdb per session); PerformanceMonitor 3.12.0: PerfmonStatsCollector, CpuSchedulerStatsCollector, SessionStatsCollector, SessionSummaryStatsCollector, ClassifyCpuSchedulerPressure, the perfmon panel's and the Activity tab's columns | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/cpu.go, internal/mssql/activity.go, internal/mssql/waits.go (sleepTaskSpills), internal/mssql/checks.go, internal/repo/sql/0124_darling_cpu.sql, web/src/mssql_perf.ts, web/src/metrics.ts |
+ | PerformanceMonitor's alert defaults as findings (dead tuples, replay lag, slot WAL, a volume under 5 / 2 GB free, AG secondary 300 s, runnable queue 8 / 16 per scheduler, long-running requests at 30 min with its exclusions as data, Server Unreachable on any failed connect) and the Admin page's five tabs | PerformanceMonitor 3.12.0: CustomAlertTemplates.cs, DarlingConfig.cs, RunnableQueueEvaluator.cs, DarlingAlertReadAdapter.cs, LongRunningQueryExclusions.cs, ConnectionAlertPolicy.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0118_darling_alerts.sql, web/src/alerts.ts (builtIn, adminView) |
++| The Client Timeouts rate (the reads back to 3 minutes, the attentions over the span, at least a minute; its floors 10 and 60 a minute) and its left-out events (the SSMS IntelliSense prefix and suffix, the five VS Code mssql metadata names, the 1 ms floor with a missing duration counted, Azure Data Studio's two metadata statement shapes), as data | PerformanceMonitor 3.13.0: AttentionEvaluator.cs, AttentionWindowSql.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0153_mssql_counter_checks.sql (mssql_attention_left_out, mssql_attention_points, the seed) |
+ | The Query Store regression tests (cost: Regular CPU per run more than 25 % above the baseline's adding at least 1,000 ms over the window; timeouts / errors: at least 3 Aborted / Exception runs at twice the baseline's per-hour rate, or any where the baseline had none), the 7-day baseline, a row placed by its last run, the severity bands, the order and the 200-row cap with the failures' third; the compare picks (Previous period, Yesterday, Last week) and their column labels; the plan cache's hashes and handles and the procedures' spilled pages | PerformanceMonitor 3.12.0: QueryStoreRegressionRules.cs, PerformanceMonitor.Darling.Storage/QueryStoreRegressionBaseline.cs, top-compare.js, server-tabs.js, DarlingDataReader.cs, DarlingMcpDataTools.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_querystore.go (qsRegBase, sqlMSSQLQSRegressed, sqlMSSQLQSCompare), internal/web/q_mssql_plancache.go (sqlMSSQLPCCompare), internal/web/q_mssql_procs.go (sqlMSSQLProcCompare, sqlMSSQLProcs), internal/web/q_mssql_plancache.go (sqlMSSQLPCTop), web/src/mssql_querystore.ts, web/src/mssql_plancache.ts, web/src/mssql_procs.ts |
+ | The Queries view's section order, the query heatmap (its bins aiming at 144 columns, seven log10 buckets per metric, eight log-scale shades, its legend, cell words and 'Show as table', 'Show Active Queries at This Time' at the bin's middle, the 7-day reach), the time strips over Active queries and the Query Store grid with a row's overlay, the wait filter's words, the per-query trend and the procedure history's four metrics, the Query Store overhead's sleep waits and its memory clerk line | PerformanceMonitor 3.12.0: server-tabs.js, query-heatmap.js, query-heatmap-model.js, time-slicer.js, stats-history.js, charts.js, DarlingQueryHeatmapReader.cs, DarlingMcpQueryHeatmapTools.cs, DarlingMcpTrendTools.cs, ViewerDataService.QueryStoreClutter.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_plancache.go, web/src/mssql_queries.ts, web/src/mssql_querystore.ts, web/src/timestrip.ts, and the wiring's mssql_running.ts, mssql_procs.ts |
+ 
 diff --git i/docs/alerts.md w/docs/alerts.md
 index bbc51aaf..2ed61ace 100644
 --- i/docs/alerts.md
@@ -31,7 +43,7 @@ index bbc51aaf..2ed61ace 100644
  | `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
  | `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |
 diff --git i/docs/metrics.md w/docs/metrics.md
-index 1026fd6d..b05dcbd2 100644
+index 1026fd6d..62b30b9c 100644
 --- i/docs/metrics.md
 +++ w/docs/metrics.md
 @@ -12,10 +12,10 @@ One row per counter, over the time range picked in the header:
@@ -47,11 +59,143 @@ index 1026fd6d..b05dcbd2 100644
  | threshold | *New threshold* where none is in force; *Edit* for the rule in force; *Override here* to give this instance its own rule over a wider one. |
  | chart | Draws the row over the range, with its thresholds as flat lines. *Chart every row* draws the family. |
  
+@@ -36,6 +36,7 @@ The families:
+ | SQL Server | CPU | SQL Server's, the other processes' and the machine's CPU. |
+ | SQL Server | Scheduler | Batch requests, transactions, compilations and recompilations per second; runnable tasks, the work queue, pending IO, workers. |
+ | SQL Server | Memory | Page life expectancy, memory grants pending and outstanding, total and target server memory, the buffer pool, the plan cache, stolen and available memory, physical memory used. |
++| SQL Server | Extended Events | The attention capture of `mssql_xe` (pgvigil's own session): client timeouts per minute over the newest 3 minutes of reads (PerformanceMonitor 3.13.0's rule: the reads back to 3 minutes, the attentions they stored over that span, at least a minute), without SSMS IntelliSense, the VS Code mssql metadata connections, cancels under 1 ms (a cancel of a command that had already finished), Azure Data Studio's metadata statements and pgvigil's own reads; those are their own metric, and the XE page's Attentions grid names each one's reason. A read the run did not finish gives no point (the next read's span covers it); a ring buffer that dropped events between reads undercounts; an `mssql_xe` interval over 10 minutes gives no fresh point; with `query_text: none` no statement is stored, so Azure Data Studio's metadata reads count (as in PerformanceMonitor). The seeded rule (off) warns at 10 a minute and pages at 60; a firing alert whose capture stops is held, where PerformanceMonitor resolves it after 30 minutes. pgvigil's own reads are left out by the collector's app name `pgvigil` (a DSN that sets its own app name is not recognised). |
+ | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
+ 
+ A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
+diff --git i/internal/mssql/xe.go w/internal/mssql/xe.go
+index 7015820b..241e2fa9 100644
+--- i/internal/mssql/xe.go
++++ w/internal/mssql/xe.go
+@@ -754,7 +754,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+ 		return items[i].seq < items[j].seq
+ 	})
+ 	wanted := nameSet(events)
+-	state["new_events"] = len(items)
++	// new_events (and scanned_events) go into the state after the batches below: a read whose batch failed to import
++	// has none, so it is no done read (0153's mssql_attention_reads) and the cursor takes its events again next run
++	var newEvents any = len(items)
++	var scanned any
+ 	if c.source != "product" {
+ 		var n int64
+ 		for _, it := range items {
+@@ -762,7 +765,7 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+ 				n++
+ 			}
+ 		}
+-		state["new_events"], state["scanned_events"] = n, int64(len(items))
++		newEvents, scanned = n, int64(len(items))
+ 	}
+ 	var notes []string
+ 	if cur.Found && !oldest.IsZero() && oldest.After(cur.LastEventAt) {
+@@ -786,6 +789,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+ 			return fmt.Errorf("import a batch of %s: %w", source, err)
+ 		}
+ 	}
++	state["new_events"] = newEvents
++	if scanned != nil {
++		state["scanned_events"] = scanned
++	}
+ 	state["unknown_events"] = unknown
+ 	if old > 0 {
+ 		notes = append(notes, fmt.Sprintf("%d event(s) older than %d days were not stored", old, int(xeMaxAge.Hours()/24)))
+diff --git i/internal/mssql/xe_ring_test.go w/internal/mssql/xe_ring_test.go
+index a2948039..ebed8c29 100644
+--- i/internal/mssql/xe_ring_test.go
++++ w/internal/mssql/xe_ring_test.go
+@@ -110,3 +110,44 @@ func TestRingRowsSysHealth(t *testing.T) {
+ 		t.Fatalf("no wrap note: %v", side)
+ 	}
+ }
++
++// TestRingRowsFailedBatchNotDone (B24 Fixed 1, its build review part A, finding 1): a ring read whose batch import
++// fails leaves no new_events (nor scanned_events) in its state, so 0153's mssql_attention_reads never marks that read
++// done and the cursor takes its events again next run; before, new_events was set ahead of the batches.
++func TestRingRowsFailedBatchNotDone(t *testing.T) {
++	cutAt := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
++	head := `<RingBufferTarget truncated="0" processingTime="0" totalEventsProcessed="900" eventCount="4" droppedCount="0" memoryUsed="4096">`
++	ring, err := parseRing(head + fixtureSystemClean + fixtureResourceWarning + fixBatch + fixtureBroker + `</RingBufferTarget>`)
++	if err != nil {
++		t.Fatal(err)
++	}
++	was := xeBatchEvents
++	xeBatchEvents = 1 // one event per batch: three batches past the cursor
++	defer func() { xeBatchEvents = was }()
++	for _, c := range []xeContext{{source: "system_health", session: "system_health"}, {source: "product", session: "pgvigil_attention"}} {
++		calls := 0
++		r := &xeRun{ctx: context.Background(), info: Info{Kind: KindAzureMI}, now: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC),
++			opt:    BatchOptions{Deadline: time.Now().Add(time.Hour)},
++			cursor: func(context.Context, string) (Cursor, error) { return Cursor{Found: true, LastEventAt: cutAt}, nil },
++			emit: func([]collect.Row) error {
++				calls++
++				if calls == 2 {
++					return context.Canceled // the store refused the second batch
++				}
++				return nil
++			}}
++		state := collect.Row{}
++		if err := r.ringRows(sysHealthSource, ring, 0, sysEventList(), c, state); err == nil {
++			t.Fatalf("%s: the failed batch gave no error", c.source)
++		}
++		if v, ok := state["new_events"]; ok {
++			t.Fatalf("%s: a read whose second batch failed carries new_events %v: it would count as a done read", c.source, v)
++		}
++		if v, ok := state["scanned_events"]; ok {
++			t.Fatalf("%s: a read whose second batch failed carries scanned_events %v", c.source, v)
++		}
++		if calls != 2 {
++			t.Fatalf("%s: %d batch imports, want 2 (the read stops at the failed one)", c.source, calls)
++		}
++	}
++}
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 2ea63181..769302b2 100644
+index 2ea63181..3e98a53d 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -1021,3 +1021,136 @@ LANGUAGE sql STABLE AS $$
+@@ -349,6 +349,9 @@ BEGIN
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   DELETE FROM pgvigil.mssql_xe_state WHERE snapshot_at < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  -- task 402 (0153, B24 Fixed 1): the attention capture's reads, a plain table (no partition is made inside 0065's import)
++  DELETE FROM pgvigil.mssql_attention_reads WHERE snapshot_at < now() - make_interval(days => p_days);
++  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   -- a cursor goes only with an instance no collection has reached for the whole window: a quiet source (no deadlock
+   -- in a month) of a server still read keeps its place, or its file would be read again from the start
+   -- the instance's own error-log search strings ('errorlog:search', 0091) are a setting, not a place in a file: they
+@@ -776,7 +779,17 @@ SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v
+   -- task 401 (0152): the SQL Server counters family
+   UNION ALL
+   SELECT m.engine, m.family, m.family_label, m.family_sort, m.metric, m.label, m.unit, m.per_database, m.fresh_secs, m.sort
+-    FROM pgvigil.mssql_counter_metrics m) AS v;
++    FROM pgvigil.mssql_counter_metrics m
++  -- task 402 (0153, B24 Fixed 1): the attention capture's client timeouts rate (mssql_attention_points); fresh 10
++  -- minutes, so an mssql_xe interval up to 5 minutes keeps its points fresh
++  UNION ALL
++  SELECT * FROM (VALUES
++    ('sqlserver', 'xe', 'Extended Events', 55, 'client_timeouts_per_min',
++     'client timeouts per minute (tools, pgvigil and cancels under 1 ms left out)', 'per_min', false, 600, 1),
++    ('sqlserver', 'xe', 'Extended Events', 55, 'client_timeouts_left_out_per_min',
++     'attentions left out per minute (SSMS IntelliSense, VS Code metadata, under 1 ms, Azure Data Studio metadata, pgvigil)',
++     'per_min', false, 600, 2)
++  ) AS x(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)) AS v;
+ 
+ CREATE OR REPLACE FUNCTION pgvigil.metric_points(p_instance_id int, p_family text, p_from timestamptz, p_to timestamptz,
+                                                  p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
+@@ -976,6 +989,9 @@ BEGIN
+   ELSIF p_family = 'counters' THEN
+     -- task 401 (0152): the SQL Server counters family
+     RETURN QUERY SELECT * FROM pgvigil.mssql_counter_points(p_instance_id, p_from, p_to, p_lookback, p_database);
++  ELSIF p_family = 'xe' THEN
++    -- task 402 (0153, B24 Fixed 1): a point per done read of the attention capture, PerformanceMonitor's 3-minute rate
++    RETURN QUERY SELECT * FROM pgvigil.mssql_attention_points(p_instance_id, p_from, p_to);
+   ELSE
+     RAISE EXCEPTION 'metric_points: no metric family %', p_family USING ERRCODE = '22023';
+   END IF;
+@@ -1021,3 +1037,136 @@ LANGUAGE sql STABLE AS $$
      CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
                                                    s.cpu_count, wg.q::int) l
  $$;
@@ -247,6 +391,20 @@ index 62f936bf..ba7d3a04 100644
    LEFT JOIN pgvigil.alert_rule_state s
      ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
   ORDER BY g.family_sort, g.sort`
+diff --git i/internal/web/q_mssql_xe.go w/internal/web/q_mssql_xe.go
+index 90dfddb4..c3f9fd75 100644
+--- i/internal/web/q_mssql_xe.go
++++ w/internal/web/q_mssql_xe.go
+@@ -138,7 +138,8 @@ SELECT e.event_at, e.event_name, e.duration_ms, e.cpu_ms, e.logical_reads, e.phy
+  LIMIT 500`
+ 
+ const sqlMSSQLXEAttentions = `
+-SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.database_name, a.interrupt_us, a.statement
++SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.database_name, a.interrupt_us, a.statement,
++       pgvigil.mssql_attention_left_out(a.program_name, a.statement, a.interrupt_us) AS left_out
+   FROM pgvigil.mssql_attentions a
+  WHERE a.instance_id = $1 AND a.event_at > $2 AND a.event_at <= $3
+  ORDER BY a.event_at DESC
 diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
 index 08bfdcaf..fee8172f 100644
 --- i/internal/web/q_perfsummary.go
@@ -295,10 +453,27 @@ index 08bfdcaf..fee8172f 100644
      SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
             (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
 diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
-index 751c72e1..7a1201b8 100644
+index 751c72e1..e28df5ec 100644
 --- i/web/src/alert_rules.ts
 +++ w/web/src/alert_rules.ts
-@@ -76,7 +76,8 @@ export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string =>
+@@ -28,7 +28,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null
+ // what a rule's values are counted in, as the dialog and the grids say it
+ const unitWords: Record<string, string> = {
+   count: 'a count', pct: 'percent', secs: 'seconds', xids: 'transaction ids', per_s: 'per second',
+-  bytes_per_s: 'bytes per second', ms: 'milliseconds', mb: 'MB', bytes: 'bytes',
++  bytes_per_s: 'bytes per second', ms: 'milliseconds', mb: 'MB', bytes: 'bytes', per_min: 'per minute',
+ };
+ export const unitWord = (unit: unknown): string => unitWords[String(unit ?? '')] ?? String(unit ?? '');
+ 
+@@ -42,6 +42,7 @@ export function fmtMetric(v: unknown, unit: unknown): string {
+     case 'secs': return Math.abs(n) < 60 ? fmtNum(n) + ' s' : fmtSecs(n);
+     case 'ms': return fmtNum(n) + ' ms';
+     case 'per_s': return fmtNum(n) + '/s';
++    case 'per_min': return fmtNum(n) + '/min';
+     case 'bytes_per_s': return fmtBytes(n) + '/s';
+     case 'bytes': return fmtBytes(n);
+     case 'mb': return fmtNum(n) + ' MB';
+@@ -76,7 +77,8 @@ export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string =>
    if (v == null) return '';
    const s = String(v);
    const kind = s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : '';
@@ -308,7 +483,7 @@ index 751c72e1..7a1201b8 100644
    return badge(held ? `${words}, held (no fresh sample)` : words, kind);
  };
  
-@@ -359,7 +360,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -359,7 +361,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
          : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
          : r.evaluated_at == null ? 'not judged yet'
          : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
@@ -318,7 +493,7 @@ index 751c72e1..7a1201b8 100644
        { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
        { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
        { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
-@@ -383,9 +385,10 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -383,9 +386,10 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
      { key: 'instance' },
      { key: 'metric', fmt: (v, r) => r.label == null ? String(v) : `${String(r.family_label)}: ${String(r.label)}` },
      { key: 'database', fmt: v => String(v ?? '') },
@@ -332,6 +507,30 @@ index 751c72e1..7a1201b8 100644
      { key: 'sample_at', label: 'sample', fmt: fmtTime },
      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(r.scope, r.target)})` },
      { key: 'since', label: 'in this state since', fmt: fmtTime },
+diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
+index 87040eb5..1c0c88b3 100644
+--- i/web/src/mssql_xe.ts
++++ w/web/src/mssql_xe.ts
+@@ -300,6 +300,8 @@ const attentionCols: Col[] = [
+   { key: 'database_name', label: 'database' },
+   { key: 'interrupt_us', label: 'interrupt took (microseconds)', num: true },
+   { key: 'statement', label: 'the cancelled statement', wide: true },
++  // task 402 (B24 Fixed 1): why an attention is not in the client timeouts rate (0153's mssql_attention_left_out); blank = it counts
++  { key: 'left_out', label: 'left out', fmt: v => v == null ? '' : String(v) },
+ ];
+ 
+ async function openShape(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
+@@ -347,7 +349,9 @@ export async function mssqlSlow(ctx: Ctx): Promise<HTMLElement> {
+ 
+     const att = el('section', {}, el('h3', {}, 'Attentions'), captureNote(d, 'attention', 'attention'),
+       el('p', { class: 'meta' }, 'An attention is a client cancelling its request: a command timeout in the application, or a user pressing cancel. '
+-        + 'The statement is what was running; the time shown is how long the interrupt itself took, not how long the request had run.'),
++        + 'The statement is what was running; the time shown is how long the interrupt itself took, not how long the request had run. '
++        + '\'left out\' names why an attention is not in the client timeouts rate (Metrics, Extended Events): SSMS IntelliSense, the VS Code '
++        + 'mssql metadata connections, a cancel under 1 ms, Azure Data Studio\'s metadata statements, pgvigil\'s own reads; a blank one counts.'),
+       grid(rowsOf(d.attentions), attentionCols, 'No attention in this window.'));
+     sec.append(att);
+   } catch (e) {
 diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
 index 038cb291..efcfb652 100644
 --- i/web/src/perfsummary.ts
