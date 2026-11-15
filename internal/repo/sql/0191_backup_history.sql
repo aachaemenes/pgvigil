@@ -29,7 +29,7 @@
 -- written: the lists copy 0157's (task 406, plan_evict) whole and add verify_backup (no pid) and the outcomes started,
 -- cut by shutdown and ended unknown; 0194 (B9c) copies these, 0300 re-creates each CHECK once with every slice's list.
 -- Lock footprint: three new tables' worth of CREATE, and an ACCESS EXCLUSIVE lock on actions_log while each CHECK is
--- validated (a small audit table).
+-- validated and a SHARE lock while actions_log_verify_idx is built (a small audit table).
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_history (
   instance_id            int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_history (
   has_checksums          boolean,
   is_damaged             boolean,
   is_password_protected  boolean,
+  is_snapshot            boolean,
+  has_bulk_logged_data   boolean,
+  is_readonly            boolean,
+  is_force_offline       boolean,
+  is_single_user         boolean,
+  encryptor_type         text,
   key_algorithm          text,
   compression_algorithm  text,
   family_count           int,
@@ -175,18 +181,22 @@ BEGIN
 
   INSERT INTO pgvigil.mssql_backup_history AS h (instance_id, backup_set_uuid, backup_set_id, database_name, backup_type, is_copy_only,
          start_at, finish_at, size_bytes, compressed_bytes, recovery_model, user_name, machine_name, server_name, set_name,
-         has_checksums, is_damaged, is_password_protected, key_algorithm, compression_algorithm, family_count, position,
+         has_checksums, is_damaged, is_password_protected, is_snapshot, has_bulk_logged_data, is_readonly, is_force_offline,
+         is_single_user, encryptor_type, key_algorithm, compression_algorithm, family_count, position,
          device_kind, path, first_lsn, last_lsn, checkpoint_lsn, database_backup_lsn, differential_base_guid, read_at)
   SELECT DISTINCT ON (x.backup_set_uuid) p_instance_id, x.backup_set_uuid, x.backup_set_id, x.database_name,
          CASE x.backup_type WHEN 'full' THEN 'D' WHEN 'diff' THEN 'I' ELSE 'L' END, coalesce(x.is_copy_only, 0) = 1,
          x.start_utc, x.finish_utc, x.size_bytes, x.compressed_bytes, x.recovery_model, x.user_name, x.machine_name, x.server_name,
-         nullif(x.set_name, ''), x.has_checksums = 1, x.is_damaged = 1, x.is_password_protected = 1, nullif(x.key_algorithm, ''),
+         nullif(x.set_name, ''), x.has_checksums = 1, x.is_damaged = 1, x.is_password_protected = 1, x.is_snapshot = 1,
+         x.has_bulk_logged_data = 1, x.is_readonly = 1, x.is_force_offline = 1, x.is_single_user = 1, nullif(x.encryptor_type, ''),
+         nullif(x.key_algorithm, ''),
          nullif(x.compression_algorithm, ''), x.family_count, x.position, x.device_kind, x.path, x.first_lsn, x.last_lsn,
          x.checkpoint_lsn, x.database_backup_lsn, x.differential_base_guid, p_snapshot_at
     FROM jsonb_to_recordset(p_payload) AS x(kind text, database_name text, backup_type text, is_copy_only int, backup_set_id bigint,
          backup_set_uuid uuid, start_utc timestamptz, finish_utc timestamptz, size_bytes bigint, compressed_bytes bigint,
          recovery_model text, user_name text, machine_name text, server_name text, set_name text, has_checksums int,
-         is_damaged int, is_password_protected int, key_algorithm text, compression_algorithm text, family_count int,
+         is_damaged int, is_password_protected int, is_snapshot int, has_bulk_logged_data int, is_readonly int,
+         is_force_offline int, is_single_user int, encryptor_type text, key_algorithm text, compression_algorithm text, family_count int,
          position int, device_kind text, path text, first_lsn text, last_lsn text, checkpoint_lsn text, database_backup_lsn text,
          differential_base_guid uuid)
     JOIN pg_temp.bkh_db d ON d.database_name = x.database_name
@@ -408,5 +418,8 @@ ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_pid_check;
 ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_pid_check CHECK (pid IS NOT NULL OR action IN ('explain_analyze', 'hypo_index', 'job_start', 'job_stop', 'plan_evict', 'verify_backup'));
 ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_outcome_check;
 ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_outcome_check CHECK (outcome IN ('done', 'refused', 'failed', 'started', 'cut by shutdown', 'ended unknown'));
+
+-- the Backup history's 'last verify' (one row per set: the newest verify of its uuid) reads by this
+CREATE INDEX IF NOT EXISTS actions_log_verify_idx ON pgvigil.actions_log (instance_id, action, target_id, at DESC);
 
 SELECT pgvigil.apply_roles();

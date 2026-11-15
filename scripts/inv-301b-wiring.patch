@@ -20,22 +20,23 @@ index 56af0bc..2c23d6a 100644
  	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
  	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
 diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
-index 687cb06..da8b5b7 100644
+index 687cb06..948968b 100644
 --- c/cmd/pgvigil/serve.go
 +++ i/cmd/pgvigil/serve.go
-@@ -177,6 +177,11 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+@@ -177,6 +177,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
  		}
  	}
  	srv.SetMSSQLActions(doors)
-+	// task 301b: verify_backup's bound, and the verifies a stopped serve left with no end row
++	// task 301b: verify_backup's bound, and the verifies a stopped serve left with no end row (now, then hourly)
 +	srv.SetVerifyTimeout(cfg.VerifyTimeout.Duration)
 +	if err := srv.SweepVerifies(ctx); err != nil {
 +		log.Warn("actions: the verifies left by a stopped serve were not swept", "err", err)
 +	}
++	go srv.VerifySweepsHourly(ctx)
  	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
  	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
  	pgJobs := map[string][]string{}
-@@ -212,6 +217,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+@@ -212,6 +218,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
  	}
  	select {
  	case <-ctx.Done():
@@ -44,10 +45,10 @@ index 687cb06..da8b5b7 100644
  		defer cancel()
  		return hs.Shutdown(sctx)
 diff --git c/docs/sqlserver-actions.md i/docs/sqlserver-actions.md
-index dfce885..c1a00ff 100644
+index dfce885..0542bbf 100644
 --- c/docs/sqlserver-actions.md
 +++ i/docs/sqlserver-actions.md
-@@ -73,6 +73,31 @@ Both connections are open and the actions login is checked before the last read
+@@ -73,6 +73,40 @@ Both connections are open and the actions login is checked before the last read
  
  A kill rolls the session's open transaction back. A long transaction takes about as long to roll back as it took to run, and the session stays visible in that state until it is done.
  
@@ -68,12 +69,21 @@ index dfce885..c1a00ff 100644
 +    GRANT CREATE DATABASE TO pgvigil_actions;
 +
 +How it runs: the request carries the set's backup_set_uuid and what Preview showed; the read login reads the set
-+again (its disk files, position, checksums, size) and any difference refuses; RESTORE HEADERONLY of the file and
++again (its database, type, finish, disk files, position, checksums, size) and any difference refuses; RESTORE HEADERONLY of the file and
 +position (on the actions login) must name the set's uuid, else the file now holds another backup set; then RESTORE
 +VERIFYONLY with the paths and the position as parameters (the audit keeps the statement with no path in it). The
 +verify runs detached from the request, bounded by `verify_timeout` (top level, default 2h), one per instance; the
 +audit writes `started`, then `done` or `failed` with the server's own words ('The backup set on file 1 is valid.'),
-+`cut by shutdown` when serve stops under it, and `ended unknown` at serve's next start for a verify that had no end.
++`cut by shutdown` when serve stops under it, and `ended unknown` for a verify that has no end while no verify holds
++its instance's lock (serve was killed under it: its session, and the lock, are gone) - looked for at serve's start
++and every hour, whatever the row's age. One verify per instance is a session advisory lock on the repository,
++held on a connection of its own for the run: behind a connection pooler in transaction mode (PgBouncer
++`pool_mode = transaction`) a session lock does not hold, so serve's repository DSN names the server or a session-mode
++pool. Where the read login holds VIEW SERVER STATE, it looks every minute for the verify's session: when the
++session no longer runs the RESTORE twice in a row (the server restarted, failed over or ended it), the verify ends
++`failed` with those words; without that right a lost connection is seen only at `verify_timeout`. A refused attempt
++(a second click while one runs, the wrong typed name) writes `refused` and sends nothing; the grid's last verify
++shows the newest verify that was sent. While serve stops, a new verify is refused ('serve is stopping').
 +Not offered: a URL, tape, virtual-device or NUL backup, password-protected media, an encrypted backup.
 +
  ## The log
@@ -170,7 +180,7 @@ index b2ff5a1..63590d0 100644
  func ValidAction(s string) bool {
 diff --git c/internal/mssql/backup_checks_wiring.go i/internal/mssql/backup_checks_wiring.go
 new file mode 100644
-index 0000000..dc0b226
+index 0000000..fbba3f5
 --- /dev/null
 +++ i/internal/mssql/backup_checks_wiring.go
 @@ -0,0 +1,15 @@
@@ -186,58 +196,71 @@ index 0000000..dc0b226
 +		if !i.CheckBackupFiles {
 +			return nil
 +		}
-+		return i.Pool
++		return i.BackupFilePool
 +	}
 +}
 diff --git c/internal/mssql/detect.go i/internal/mssql/detect.go
-index 70bb240..a3354ec 100644
+index 70bb240..f928f65 100644
 --- c/internal/mssql/detect.go
 +++ i/internal/mssql/detect.go
-@@ -44,6 +44,11 @@ type Info struct {
+@@ -44,6 +44,12 @@ type Info struct {
  	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
  	ServiceObjective string
  	PoolTag          string
 +	// task 301b (the runner sets them from the instance's configuration): the two opt-ins of mssql_backup_checks, and
-+	// the instance's pool, from which the file check takes its own short-lived connections
++	// the file check's own pool (openBackupFilePool; never the collection's, which Connect caps at one connection),
++	// from which it takes its short-lived connections
 +	ReadAutoCloseDatabases bool
 +	CheckBackupFiles       bool
-+	Pool                   *sql.DB
++	BackupFilePool         *sql.DB
  }
  
  // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
 diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
-index d9e4822..9fcd736 100644
+index d9e4822..35da2c9 100644
 --- c/internal/mssql/mssql.go
 +++ i/internal/mssql/mssql.go
-@@ -477,6 +477,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+@@ -477,6 +477,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
  			info.PoolTag = t.Value
  		}
  	}
 +	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
 +	info.CheckBackupFiles = in.Reads != nil && in.Reads.BackupFiles
-+	info.Pool = db
++	if info.CheckBackupFiles && name == Prefix+"backup_checks" {
++		// the file check's own pool (run 301bp4: the collection's is capped at its one connection); a pool that does
++		// not open leaves it nil, and the read says 'not judged: no connection for the file check'
++		if fp, ferr := openBackupFilePool(in); ferr == nil {
++			info.BackupFilePool = fp
++			defer func() { _ = fp.Close() }()
++		}
++	}
  	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
  	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
  	ecancel()
 diff --git c/internal/web/q_mssql_properties.go i/internal/web/q_mssql_properties.go
-index 30ae2a5..3632a44 100644
+index 30ae2a5..7d3715f 100644
 --- c/internal/web/q_mssql_properties.go
 +++ i/internal/web/q_mssql_properties.go
-@@ -23,11 +23,21 @@ import (
+@@ -23,11 +23,26 @@ import (
  //
  // Both read only this slice's tables (0084), mssql_wait_sample, mssql_sched_sample and collection_dates.
  
 +// sqlMSSQLProperties: the stored properties, and beside the default backup path (task 301b, Instance#14) whether the
 +// SQL Server service account sees it - mssql_backup_checks' read (mssql_backup_path_cells, 0191), never a stored
-+// property: its value yes / no, its words the note, its read time the row's.
++// property: its value yes / no, its words the note, its read time the row's. A check of another path than the one stored
++// (the path changed since mssql_backup_checks last read) says so and judges nothing.
  const sqlMSSQLProperties = `
  SELECT p.name, p.grp, p.label, p.value, p.note, p.ord, p.snapshot_at, p.since
    FROM pgvigil.mssql_property p
   WHERE p.instance_id = $1
 - ORDER BY p.ord, p.name`
 +UNION ALL
-+SELECT 'default_backup_path_reachable', p.grp, 'Default backup path reachable', c.reachable,
-+       coalesce(c.default_backup_path_state, 'not read: mssql_backup_checks has not run on this server yet (hourly)'),
++SELECT 'default_backup_path_reachable', p.grp, 'Default backup path reachable',
++       CASE WHEN c.default_backup_path IS NOT DISTINCT FROM p.value THEN c.reachable END,
++       CASE WHEN c.instance_id IS NULL THEN 'not read: mssql_backup_checks has not run on this server yet (hourly)'
++            WHEN c.default_backup_path IS DISTINCT FROM p.value
++              THEN 'not read yet: the path changed since mssql_backup_checks last read it (hourly)'
++            ELSE c.default_backup_path_state END,
 +       p.ord + 1, coalesce(c.read_at, p.snapshot_at), NULL::timestamptz
 +  FROM pgvigil.mssql_property p
 +  LEFT JOIN pgvigil.mssql_backup_path_cells c ON c.instance_id = p.instance_id

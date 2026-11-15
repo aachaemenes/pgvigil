@@ -92,7 +92,8 @@ SELECT i.instance_id, i.name AS instance, x.full_checksums, x.diff_checksums, x.
 
 // sqlMSSQLBackupHistory: $1 the instance, $2 the database. The newest 10 sets per type and copy-only that
 // mssql_backup_history keeps, newest first: DBA Dash's Last Backup columns that msdb's history holds, in its order,
-// then pgvigil's own; last_verify = the newest verify_backup of the set in the actions log (target_id = its uuid).
+// then pgvigil's own; last_verify = the newest verify_backup of the set in the actions log that was sent (target_id =
+// its uuid; a 'refused' row sent nothing and never hides a run's row; 0191's actions_log_verify_idx).
 const sqlMSSQLBackupHistory = `
 SELECT h.database_name, h.recovery_model, CASE h.backup_type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' ELSE 'log' END AS backup_type,
        h.start_at, h.finish_at, extract(epoch FROM h.finish_at - h.start_at)::bigint AS duration_s, h.size_bytes,
@@ -102,7 +103,8 @@ SELECT h.database_name, h.recovery_model, CASE h.backup_type WHEN 'D' THEN 'full
        h.is_damaged, h.has_checksums,
        (h.compressed_bytes IS NOT NULL AND h.size_bytes IS NOT NULL AND h.compressed_bytes < h.size_bytes) AS is_compressed,
        h.is_password_protected, (h.key_algorithm IS NOT NULL AND h.key_algorithm <> 'NO_Encryption') AS is_encrypted,
-       h.key_algorithm, h.compression_algorithm,
+       h.is_snapshot, h.has_bulk_logged_data, h.is_readonly, h.is_force_offline, h.is_single_user,
+       h.key_algorithm, h.encryptor_type, h.compression_algorithm,
        h.path, h.family_count, h.position, h.device_kind, h.user_name, h.machine_name, h.server_name, h.set_name, h.is_copy_only,
        h.first_lsn, h.last_lsn, h.checkpoint_lsn, h.database_backup_lsn, h.differential_base_guid::text AS differential_base_guid,
        h.backup_set_uuid::text AS backup_set_uuid, h.backup_set_id,
@@ -111,6 +113,7 @@ SELECT h.database_name, h.recovery_model, CASE h.backup_type WHEN 'D' THEN 'full
   LEFT JOIN LATERAL (
        SELECT a.outcome, a.at, a.detail, a.ui_user FROM pgvigil.actions_log a
         WHERE a.instance_id = h.instance_id AND a.action = 'verify_backup' AND a.target_id = upper(h.backup_set_uuid::text)
+          AND a.outcome <> 'refused'
         ORDER BY a.at DESC LIMIT 1) v ON true
  WHERE h.instance_id = $1 AND h.database_name = $2
  ORDER BY h.finish_at DESC, h.backup_set_id DESC`

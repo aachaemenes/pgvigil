@@ -17,13 +17,14 @@
 # Nothing it did not make is touched; every container, volume and the repository database go on every exit path.
 #
 # Expected (written before the first run; the facts of probes 301bP1 and 301bP2 behind them):
-#  AC  (the lead's red row, FIRST) an AUTO_CLOSE database pgbhac (FULL, no backup), closed (15 s idle): the error log's
-#      count of 'Starting up database 'pgbhac'' (sp_readerrorlog by sa) is the same after the collections
-#      mssql_backup_history and mssql_backup_checks of the instance without the opt-in (n1 = n0), its cell 'not read:
-#      AUTO_CLOSE (reading would open it)'; the control: sa's USE pgbhac after 15 s raises it by one (it was closed);
-#      the instance with reads.auto_close_databases on: mssql_backup_checks raises it by one (its read opens the
-#      database) and its cell is read. A line (not graded) prints the count around 301's mssql_backups and
-#      mssql_backup_files.
+#  AC  (the lead's red row, FIRST; a timing row: red under load is rerun once before it is graded a fault) an
+#      AUTO_CLOSE database pgbhac (FULL, no backup). First the control that 15 s idle closes it on this box: after
+#      15 s the instance with reads.auto_close_databases on reads it - mssql_backup_checks raises the error log's count
+#      of 'Starting up database 'pgbhac'' (sp_readerrorlog by sa) by one and its cell is read. Then, after the same
+#      15 s, the count is the same after the collections mssql_backup_history and mssql_backup_checks of the instance
+#      without the opt-in (n1 = n0), its cell 'not read: AUTO_CLOSE (reading would open it)'; the second control: sa's
+#      USE pgbhac after 15 s raises it by one (it was closed). A line (not graded) prints the count around 301's
+#      mssql_backups and mssql_backup_files.
 #  H1  pgbh1: 12 fulls, then 70 logs, then a copy-only full: the first read stores the newest 10 fulls and the newest 10
 #      logs (msdb's, by finish) and the copy-only one; the cursor = msdb's newest backup_set_id; one more log and a
 #      second read: the 10 fulls keep the first read's read_at (they lie more than 50 sets behind the cursor: not read
@@ -65,11 +66,18 @@
 #      h  serve stopped (SIGTERM) one second into the verify of a 1 GB full: its end row 'cut by shutdown' (a timing
 #         row: a verify that ended first says so and the row is NOT PROVEN for that run). i  a 'started' row three hours
 #         old with no end, put in by hand: serve's next start writes 'ended unknown' for it.
-#      j  every verify_backup row of the run: no '/backups' in its statement.
+#      k  (the lead's P3.4, RED) serve killed (SIGKILL: no end row, its lock gone with its session) one second into a
+#         verify of the 1 GB full: its 'started' row, seconds old (inside verify_timeout), gets 'ended unknown' at the
+#         next start (a timing row as h: a verify that ended first is NOT PROVEN for that run).
+#      l  (the lead's P3.4, NEGATIVE CONTROL) a 'started' row a minute old while another session holds the instance's
+#         lock (as a live verify does): serve's start leaves it 'started'; with the lock let go, the next start sweeps it.
+#      j  every verify_backup row of the run: no '/backups' in its statement, and some hold RESTORE VERIFYONLY.
 #  I   (the page, light and dark, signed in) #/mssqlbackups?i=<bh-m>&db=pgbh6: the Backup history grid's header =
-#      DBA Dash's 18 Last Backup columns msdb's history holds, in order, then pgvigil's 15; one row per stored set of
+#      DBA Dash's 24 Last Backup columns msdb's history holds, in order, then pgvigil's 15; one row per stored set of
 #      pgbh6; set a's last verify cell 'done ...'; Verify buttons on disk rows; the grid's right-click menu on a row
-#      holds 'Verify this backup...'; the Backup checks grid drawn; db=pgbh2r: its Restore history 2 rows; axe-core
+#      holds 'Verify this backup...'; the Backup checks grid drawn, its read line (read while SELECT on restorehistory
+#      is denied) 'the restores: not read: no right (SELECT on msdb.dbo.restorehistory) - the restores read before
+#      stay'; db=pgbh2r: its Restore history 2 rows; axe-core
 #      4.14.0 (WCAG 2.1 A and AA) 0 violation nodes. Skipped (NOT PROVEN) without chromium and node.
 #  H5  the default backup path: '/var/opt/mssql/data' stored by mssql_properties (default_backup_path), reachable yes,
 #      the API's Properties row 'Default backup path reachable' yes, no finding; mssql-conf filelocation.defaultbackupdir
@@ -224,6 +232,12 @@ cell() { q "select $3 from pgvigil.mssql_backup_check_cells where instance_id=$(
 
 echo "== AC an AUTO_CLOSE database is not opened by the read (the lead's red row)"
 sq "CREATE DATABASE pgbhac; ALTER DATABASE pgbhac SET RECOVERY FULL; ALTER DATABASE pgbhac SET AUTO_CLOSE ON;" >/dev/null
+# the control first: 15 s idle closes it on this box (the opt-in read opens it again: one more line)
+sleep 15; N3=$(starts "$SQL" pgbhac)
+reads bh-ac mssql_backup_checks
+sleep 3; N4=$(starts "$SQL" pgbhac)
+CA=$(cell bh-ac pgbhac pseudo_simple)
+[ "$N4" = $((N3 + 1)) ] && [ "${CA#not read: AUTO_CLOSE}" = "$CA" ] || fail "AC opt-in: the count $N3 -> $N4 (want one more), the cell '$CA' (a timing row: rerun once)"
 sleep 15; N0=$(starts "$SQL" pgbhac)
 reads bh-off mssql_backup_history mssql_backup_checks
 sleep 3; N1=$(starts "$SQL" pgbhac)
@@ -231,14 +245,8 @@ C=$(cell bh-off pgbhac pseudo_simple)
 sleep 15; sq "USE pgbhac; SELECT DB_NAME();" >/dev/null
 sleep 3; N2=$(starts "$SQL" pgbhac)
 [ -n "$N0" ] && [ "$N0" -ge 1 ] && [ "$N1" = "$N0" ] && [ "$C" = "not read: AUTO_CLOSE (reading would open it)" ] && [ "$N2" = $((N1 + 1)) ] \
-  || fail "AC: the error log's count $N0 before the read, $N1 after (want equal), $N2 after sa's USE (want $((N1 + 1))); the cell '$C'"
-ok "AC: the closed AUTO_CLOSE database stayed closed through mssql_backup_history and mssql_backup_checks ($N0 -> $N1 'Starting up database' lines; the cell '$C'); sa's USE after 15 s opened it ($N2): it had been closed"
-sleep 15; N3=$(starts "$SQL" pgbhac)
-reads bh-ac mssql_backup_checks
-sleep 3; N4=$(starts "$SQL" pgbhac)
-C=$(cell bh-ac pgbhac pseudo_simple)
-[ "$N4" = $((N3 + 1)) ] && [ "${C#not read: AUTO_CLOSE}" = "$C" ] || fail "AC opt-in: the count $N3 -> $N4 (want one more), the cell '$C'"
-ok "AC: reads.auto_close_databases on: mssql_backup_checks opened it ($N3 -> $N4) and read it: '$C'"
+  || fail "AC: the error log's count $N0 before the read, $N1 after (want equal), $N2 after sa's USE (want $((N1 + 1))); the cell '$C' (a timing row: rerun once)"
+ok "AC: 15 s idle closes it here (the opt-in read opened it: $N3 -> $N4, its cell '$CA'); after the same 15 s the closed AUTO_CLOSE database stayed closed through mssql_backup_history and mssql_backup_checks ($N0 -> $N1; the cell '$C'); sa's USE after 15 s opened it ($N2): it had been closed"
 sleep 15; N5=$(starts "$SQL" pgbhac)
 reads bh-off mssql_backups mssql_backup_files
 sleep 3; N6=$(starts "$SQL" pgbhac)
@@ -340,7 +348,9 @@ sq "BACKUP DATABASE pgbh6 TO DISK = N'/backups/h6/a.bak' WITH FORMAT, CHECKSUM;
     BACKUP DATABASE pgbh6 TO DISK = N'/backups/h6/gone.bak' WITH FORMAT, CHECKSUM;
     BACKUP DATABASE pgbh6 TO DISK = N'/backups/h6/i.bak' WITH FORMAT, CHECKSUM;" >/dev/null
 # an encrypted full (a certificate in master)
-sq "CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'$(pw)'; CREATE CERTIFICATE pgbh_cert WITH SUBJECT = 'pgbh proof';" >/dev/null 2>&1 || true
+sqin "$SQL" >/dev/null 2>&1 <<SQL || true
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'$(pw)'; CREATE CERTIFICATE pgbh_cert WITH SUBJECT = 'pgbh proof';
+SQL
 sq "BACKUP DATABASE pgbh6 TO DISK = N'/backups/h6/enc.bak' WITH FORMAT, ENCRYPTION (ALGORITHM = AES_256, SERVER CERTIFICATE = pgbh_cert);" >/dev/null 2>&1 || true
 # the uuid of the newest set written to a file (and its position)
 uuidof() { sq "SELECT TOP (1) CAST(b.backup_set_uuid AS varchar(36)) FROM msdb.dbo.backupset b JOIN msdb.dbo.backupmediafamily f ON f.media_set_id = b.media_set_id WHERE f.physical_device_name = N'$1' ORDER BY b.backup_set_id DESC"; }
@@ -350,11 +360,13 @@ reads bh-m mssql_backups mssql_backup_history
 PORT=$((20000 + RANDOM % 10000)); U="http://127.0.0.1:$PORT"
 for n in bh-kill bh-sys bh-dbc bh-nocd; do q "select pgvigil.ensure_instance('$n', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')" >/dev/null; done
 PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" "$USR" >/dev/null 2>&1 || fail "setup: user add"
+# the UI login's body in a file of mode 600: no password on a command line (ps shows argv)
+(umask 077; jq -nc --arg u "$USR" --arg p "$UPW" '{username: $u, password: $p}' > "$WORK/login.json") || fail "setup: the login body"
 startserve() {
   "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" >>"$LOG" 2>&1 & SRVPID=$!
   for _ in $(seq 1 80); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.25; done
   kill -0 "$SRVPID" 2>/dev/null || fail "setup: serve exited: $(tail -5 "$LOG")"
-  [ "$(curl -s -o "$BODY" -w '%{http_code}' -c "$CJ" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "{\"username\":\"$USR\",\"password\":\"$UPW\"}" "$U/api/login")" = 200 ] || fail "setup: the UI login: $(cat "$BODY")"
+  [ "$(curl -s -o "$BODY" -w '%{http_code}' -c "$CJ" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$WORK/login.json" "$U/api/login")" = 200 ] || fail "setup: the UI login: $(cat "$BODY")"
 }
 startserve
 post() { curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data "$2" "$U/api/mssql/actions/verify/$1"; }
@@ -370,7 +382,7 @@ audits() { q "select count(*) from pgvigil.actions_log where action='verify_back
 # a: a full with checksums; a newer full before Run (the uuid names the set verified)
 [ "$(preview bh-m "$UA")" = 200 ] || fail "H6a preview: $(cat "$WORK/prev.json")"
 [ "$(jq -r '[.ok, (.set.paths | join(",")), .set.position, .set.has_checksums] | map(tostring) | join("|")' "$WORK/prev.json")" = "true|/backups/h6/a.bak|1|true" ] \
-  && ! jq -r .statement "$WORK/prev.json" | grep -q /backups || fail "H6a preview: $(cat "$WORK/prev.json")"
+  && jq -r .statement "$WORK/prev.json" | grep -q 'RESTORE VERIFYONLY' && ! jq -r .statement "$WORK/prev.json" | grep -q /backups || fail "H6a preview: $(cat "$WORK/prev.json")"
 sq "BACKUP DATABASE pgbh6 TO DISK = N'/backups/h6/newer.bak' WITH FORMAT, CHECKSUM;" >/dev/null; UNEW=$(uuidof /backups/h6/newer.bak)
 [ "$(run bh-m "$UA")" = 202 ] && [ "$(jb .outcome)" = started ] || fail "H6a run: $(cat "$BODY")"
 E=$(endrow "$UA")
@@ -384,7 +396,7 @@ ok "H6b: the full striped over two files: both paths shown, done"
 [ "$(run bh-m "$UC")" = 202 ] || fail "H6c run: $(cat "$BODY")"; E=$(endrow "$UC"); [ "${E%%|*}" = done ] && [[ "$E" == *"The backup set on file 2 is valid."* ]] || fail "H6c: $E"
 ok "H6c: the second set of ap.bak (position 2): done, 'The backup set on file 2 is valid.'"
 [ "$(preview bh-m "$UD")" = 200 ] && [ "$(jq -r .set.has_checksums "$WORK/prev.json")" = false ] || fail "H6d preview: $(cat "$WORK/prev.json")"
-[ "$(run bh-m "$UD")" = 202 ] || fail "H6d run: $(cat "$BODY")"; E=$(endrow "$UD"); [ "${E%%|*}" = done ] && [[ "$E" != *CHECKSUM* ]] || fail "H6d: $E"
+[ "$(run bh-m "$UD")" = 202 ] || fail "H6d run: $(cat "$BODY")"; E=$(endrow "$UD"); [ "${E%%|*}" = done ] && [[ "$E" == *"RESTORE VERIFYONLY"* ]] && [[ "$E" != *CHECKSUM* ]] || fail "H6d: $E"
 ok "H6d: a full without checksums: the statement without CHECKSUM, done"
 
 # e: refusals (each 409, one 'refused' row, nothing sent)
@@ -396,9 +408,16 @@ preview bh-m "$UD" >/dev/null; cp "$WORK/set.json" "$WORK/setD.json"
 refused "a wrong confirmation" bh-m "$UD" pgbh6x "$WORK/setD.json" "the typed confirmation is not the database's name"
 jq -c '.paths = ["/etc/passwd"]' "$WORK/setD.json" > "$WORK/crafted.json"
 refused "a crafted body" bh-m "$UD" pgbh6 "$WORK/crafted.json" "is not as shown"
-psql "$RDSN" -XAtqc "select pg_advisory_lock(30117, $I), pg_sleep(60)" >/dev/null 2>&1 & LOCKPID=$!
-sleep 2; refused "the lock held" bh-m "$UD" pgbh6 "$WORK/setD.json" "one at a time"
-kill "$LOCKPID" 2>/dev/null; wait "$LOCKPID" 2>/dev/null || true; LOCKPID=
+# lockhold: another session holds instance $I's verify lock (as a live verify does); lockfree ends that session (a
+# killed psql leaves its backend in pg_sleep, the lock held, until the sleep ends) and waits until the lock is gone
+lockheld() { q "select count(*) from pg_locks where locktype='advisory' and classid=30117 and objid=$I and objsubid=2 and granted"; }
+lockhold() { PGAPPNAME=pgbh-lock psql "$RDSN" -XAtqc "select pg_advisory_lock(30117, $I), pg_sleep(300)" >/dev/null 2>&1 & LOCKPID=$!
+  for _ in $(seq 1 40); do [ "$(lockheld)" = 1 ] && return 0; sleep 0.25; done; fail "the lock holder did not take the lock"; }
+lockfree() { q "select count(pg_terminate_backend(pid)) from pg_stat_activity where application_name='pgbh-lock'" >/dev/null
+  wait "$LOCKPID" 2>/dev/null || true; LOCKPID=
+  for _ in $(seq 1 40); do [ "$(lockheld)" = 0 ] && return 0; sleep 0.25; done; fail "the lock holder's lock stayed"; }
+lockhold; refused "the lock held" bh-m "$UD" pgbh6 "$WORK/setD.json" "one at a time"
+lockfree
 refused "no actions_dsn" bh-off "$UD" pgbh6 "$WORK/setD.json" "has no actions_dsn"
 refused "not on the list" bh-kill "$UD" pgbh6 "$WORK/setD.json" "verify_backup is not on the instance's actions: list"
 refused "a sysadmin login" bh-sys "$UD" pgbh6 "$WORK/setD.json" "is sysadmin or holds CONTROL SERVER"
@@ -434,6 +453,13 @@ case "${E%%|*}" in
   done) notproven "H6h: the verify of the 1 GB full ended before serve stopped (done): 'cut by shutdown' not seen in this run" ;;
   *) fail "H6h: the end row after the shutdown: $E" ;;
 esac
+# k (the lead's P3.4, RED): serve killed one second into a verify of the 1 GB full; the next start sweeps its row
+startserve
+T0=$(q "select now()")
+[ "$(preview bh-m "$UBIG")" = 200 ] && [ "$(run bh-m "$UBIG" pgbh6big)" = 202 ] || fail "H6k run: $(cat "$BODY")"
+sleep 1; kill -KILL "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=
+kseen() { q "select string_agg(outcome, ',' order by at, action_id) from pgvigil.actions_log where action='verify_backup' and target_id=upper('$UBIG') and at >= '$T0'"; }
+K1=$(kseen)
 # i: a 'started' row three hours old with no end; serve's start writes 'ended unknown'
 q "select pgvigil.import_mssql_actions_log($I, now() - interval '3 hours', jsonb_build_array(jsonb_build_object('instance_name', 'bh-m', 'ui_user', '$USR',
    'action', 'verify_backup', 'target', 'pgbh6 full', 'target_id', upper('$UNEW'), 'reason', 'the 301b proof: a verify serve never ended', 'outcome', 'started')))" >/dev/null
@@ -441,21 +467,48 @@ startserve
 G=$(q "select outcome || '|' || detail from pgvigil.actions_log where action='verify_backup' and target_id=upper('$UNEW') and outcome='ended unknown'")
 [[ "$G" == "ended unknown|ended unknown: serve stopped"* ]] || fail "H6i: serve's start wrote '$G'"
 ok "H6i: $G"
+K2=$(kseen); KD=$(q "select detail from pgvigil.actions_log where action='verify_backup' and target_id=upper('$UBIG') and at >= '$T0' and outcome='ended unknown'")
+if [ "$K1" = started ]; then
+  [ "$K2" = "started,ended unknown" ] && [[ "$KD" == "ended unknown: serve stopped"* ]] || fail "H6k: after the kill '$K1', after the next start '$K2' ($KD)"
+  ok "H6k: serve killed one second into the verify: its row '$K1' (seconds old, inside verify_timeout) swept at the next start: '$K2' - $KD"
+else
+  [ "${K1%%,*}" = started ] || fail "H6k: the rows after the kill: '$K1'"
+  notproven "H6k: the verify of the 1 GB full ended before serve was killed ('$K1'): the sweep of a killed run's row not seen in this run"
+fi
+# l (the lead's P3.4, NEGATIVE CONTROL): no sweep while the instance's lock is held
+LT=00000000-0000-0000-0000-0000000301B4
+lseen() { q "select string_agg(outcome, ',' order by at, action_id) from pgvigil.actions_log where action='verify_backup' and target_id='$LT'"; }
+q "select pgvigil.import_mssql_actions_log($I, now() - interval '1 minute', jsonb_build_array(jsonb_build_object('instance_name', 'bh-m', 'ui_user', '$USR',
+   'action', 'verify_backup', 'target', 'pgbh6 full', 'target_id', '$LT', 'reason', 'the 301b proof: a verify that still runs', 'outcome', 'started')))" >/dev/null
+lockhold
+kill -TERM "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=
+startserve; sleep 2; L1=$(lseen)
+lockfree
+kill -TERM "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=
+startserve; sleep 2; L2=$(lseen)
+[ "$L1" = started ] && [ "$L2" = "started,ended unknown" ] || fail "H6l: while the lock was held '$L1' (want started), after it was let go '$L2' (want started,ended unknown)"
+ok "H6l: a minute-old 'started' row kept '$L1' through serve's start while another session held the instance's lock; with the lock let go the next start swept it: '$L2'"
 # j: no path in any statement
 NP=$(q "select count(*) from pgvigil.actions_log where action='verify_backup' and statement like '%/backups%'"); NA=$(q "select count(*) from pgvigil.actions_log where action='verify_backup'")
-[ "$NP" = 0 ] || fail "H6j: $NP of $NA verify_backup rows hold a path in their statement"
+NS=$(q "select count(*) from pgvigil.actions_log where action='verify_backup' and statement like 'RESTORE VERIFYONLY%'")
+[ "$NP" = 0 ] && [ "$NS" -gt 0 ] || fail "H6j: $NP of $NA verify_backup rows hold a path in their statement; $NS hold a RESTORE VERIFYONLY statement (want more than 0)"
 ok "H6j: none of the $NA verify_backup rows holds a path in its statement ($(q "select string_agg(outcome || ' ' || n, ', ' order by outcome) from (select outcome, count(*) n from pgvigil.actions_log where action='verify_backup' group by outcome) x"))"
 
 echo "== I the page in a headless Chromium"
 if command -v chromium >/dev/null && command -v node >/dev/null && [ -z "${PROOF_SKIP_PAGE:-}" ]; then
+  # the read line while SELECT on restorehistory is denied (7fe457f5's page line: it compared the payload word and so
+  # never showed): the read stores the state, the page draws the stored one
+  sq "DENY SELECT ON OBJECT::dbo.restorehistory TO pgbh_mon;" msdb >/dev/null
   reads bh-m mssql_backup_history mssql_backup_checks
+  sq "REVOKE SELECT ON OBJECT::dbo.restorehistory FROM pgbh_mon;" msdb >/dev/null
   (cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || fail "I: npm install axe-core failed"
   CDP=$((PORT + 1)); chromium --headless=new ${PGVIGIL_CHROMIUM_FLAGS:-} --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
   CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   NH=$(q "select count(*) from pgvigil.mssql_backup_history where instance_id=$I and database_name='pgbh6'")
   cat > "$WORK/page.mjs" <<'JS'
-const [port, U, axePath, inst, user, pass] = process.argv.slice(2);
+const [port, U, axePath, inst, user] = process.argv.slice(2);
+const pass = process.env.PGV_PROOF_UPW ?? '';
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -485,6 +538,7 @@ for (const theme of ['light', 'dark']) {
       r.verified = await ev(`[...document.querySelectorAll('#mssql-backups-history-grid [data-verify-uuid]')].map(e => e.getAttribute('data-full'))`);
       r.buttons = await ev(`document.querySelectorAll('#mssql-backups-history-grid button.act-verify').length`);
       r.checks = await ev(`!!document.querySelector('#mssql-backups-checks-grid table.grid')`);
+      r.noright = await ev(`document.querySelector('main').innerText.includes('the restores: not read: no right (SELECT on msdb.dbo.restorehistory) - the restores read before stay')`);
       r.menu = await ev(`(() => { const td = document.querySelector('#mssql-backups-history-grid table.grid > tbody > tr > td'); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
         const m = [...document.querySelectorAll('.menu [role=menuitem]')].map(b => b.textContent); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return m; })()`);
     }
@@ -497,13 +551,14 @@ for (const theme of ['light', 'dark']) {
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
-  node "$WORK/page.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$I" "$USR" "$UPW" > "$WORK/page.json" 2> "$WORK/page.err" || fail "I: the page check did not run: $(tail -c 400 "$WORK/page.err")"
+  PGV_PROOF_UPW="$UPW" node "$WORK/page.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$I" "$USR" > "$WORK/page.json" 2> "$WORK/page.err" || fail "I: the page check did not run: $(tail -c 400 "$WORK/page.err")"
   kill "$CHR" 2>/dev/null || true; CHR=
   NH=$NH python3 - "$WORK/page.json" <<'PYI' || fail "I: the page"
 import json, os, sys
 d = json.load(open(sys.argv[1]))
 want = ["database", "recovery model", "type", "start date", "finish date", "duration", "backup size", "backup MB/s", "backup size (compressed)",
-        "compression saving %", "backup write MB/s", "is damaged", "checksum", "is compressed", "password protected", "encrypted", "key algorithm",
+        "compression saving %", "backup write MB/s", "is damaged", "checksum", "is compressed", "password protected", "encrypted",
+        "snapshot backup", "has bulk logged data", "readonly", "force offline", "single user", "key algorithm", "encryptor type",
         "compression algorithm", "last verify", "to (the first file)", "files", "position in the file", "device", "taken by", "machine", "set name",
         "copy-only", "first LSN", "last LSN", "checkpoint LSN", "database backup LSN", "base (a differential's full)", "backup set"]
 bad = []
@@ -517,10 +572,11 @@ if h.get("rows") != int(os.environ["NH"]): bad.append(f"the Backup history rows:
 if not any(str(v).startswith("done ") for v in h.get("verified") or []): bad.append(f"no last verify cell 'done ...': {h.get('verified')}")
 if not h.get("buttons"): bad.append("no Verify button")
 if not h.get("checks"): bad.append("no Backup checks grid")
+if not h.get("noright"): bad.append("the read line without 'the restores: not read: no right (SELECT on msdb.dbo.restorehistory) - the restores read before stay'")
 if "Verify this backup..." not in (h.get("menu") or []): bad.append(f"the right-click menu: {h.get('menu')}")
 if d["rest-light"].get("rows") != 2: bad.append(f"the Restore history of pgbh2r: {d['rest-light'].get('rows')} rows")
 if bad: print("\n".join(bad)); sys.exit(1)
-print(f"ok   I: light and dark: drawn, no error box, 0 axe violation nodes; Backup history header = DBA Dash's 18 + pgvigil's 15 in order, {h['rows']} rows, {h['buttons']} Verify buttons, a 'done' last verify, the menu {h['menu']}; Backup checks drawn; pgbh2r's Restore history 2 rows")
+print(f"ok   I: light and dark: drawn, no error box, 0 axe violation nodes; Backup history header = DBA Dash's 24 + pgvigil's 15 in order, {h['rows']} rows, {h['buttons']} Verify buttons, a 'done' last verify, the menu {h['menu']}; Backup checks drawn, the denied read's line shown; pgbh2r's Restore history 2 rows")
 PYI
 else notproven "I: the page - no chromium or node here (or PROOF_SKIP_PAGE)"; fi
 

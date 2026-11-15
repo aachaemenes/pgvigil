@@ -343,7 +343,9 @@ const verifyCell = (on: VerifyOnOff, open: (r: Row) => void) => (v: unknown, r: 
   const said = v ? `${String(v)} ${fmtTime(r.verify_at)}${r.verify_user ? ` by ${String(r.verify_user)}` : ''}` : 'never';
   const out = el('span', { 'data-full': said, 'data-verify-uuid': String(r.backup_set_uuid ?? ''), style: 'white-space:nowrap' },
     el('span', { class: verifyCls(v), title: String(r.verify_detail ?? '') }, said));
-  if (on.enabled && r.device_kind === 'disk') {
+  if (on.enabled && r.device_kind !== 'disk') {
+    out.append(el('span', { class: 'meta', style: 'margin-left:.4rem' }, 'not offered: not a disk backup'));
+  } else if (on.enabled) {
     const b = el('button', { type: 'button', class: 'act-verify', style: 'font-size:12px;padding:0 .4rem;margin-left:.4rem', title: 'RESTORE VERIFYONLY of this backup' }, 'Verify');
     b.addEventListener('click', () => open(r));
     out.append(b);
@@ -351,8 +353,8 @@ const verifyCell = (on: VerifyOnOff, open: (r: Row) => void) => (v: unknown, r: 
   return out;
 };
 const historyCols = (verify: Col): Col[] => [
-  // DBA Dash's Last Backup columns that msdb's history holds, in its order (the partner, snapshot and state flags are
-  // the newest set's only: the panel above)
+  // DBA Dash's Last Backup columns that msdb's history holds, in its order (its partner pair is the log-shipping
+  // partner's backup, which a server's own history does not hold)
   { key: 'database_name', label: 'database' },
   { key: 'recovery_model', label: 'recovery model', fmt: words },
   { key: 'backup_type', label: 'type', fmt: (v, r) => (typeWord[String(v) as keyof typeof typeWord] ?? String(v ?? '')) + (r.is_copy_only === true ? ', copy-only' : '') },
@@ -369,7 +371,13 @@ const historyCols = (verify: Col): Col[] => [
   { key: 'is_compressed', label: 'is compressed', fmt: yesNo },
   { key: 'is_password_protected', label: 'password protected', fmt: yesNo },
   { key: 'is_encrypted', label: 'encrypted', fmt: yesNo },
+  { key: 'is_snapshot', label: 'snapshot backup', fmt: yesNo },
+  { key: 'has_bulk_logged_data', label: 'has bulk logged data', fmt: yesNo },
+  { key: 'is_readonly', label: 'readonly', fmt: yesNo },
+  { key: 'is_force_offline', label: 'force offline', fmt: yesNo },
+  { key: 'is_single_user', label: 'single user', fmt: yesNo },
   { key: 'key_algorithm', label: 'key algorithm' },
+  { key: 'encryptor_type', label: 'encryptor type' },
   { key: 'compression_algorithm', label: 'compression algorithm' },
   // pgvigil's own
   verify,
@@ -402,8 +410,12 @@ async function historyParts(ctx: Ctx, asked: string, dbName: string): Promise<HT
     : st.actions?.verify_backup ?? { enabled: false, reason: 'this server\'s actions door does not offer verify_backup' };
   const out: HTMLElement[] = [];
   const box = el('div', { id: 'mssql-backups-history-grid' });
-  const draw = (rows: Row[]) => box.replaceChildren(grid(rows, historyCols({ key: 'verify_outcome', label: 'last verify', fmt: verifyCell(on, open) }),
+  let drawn: Row[] = [];
+  const draw = (rows: Row[]) => {
+    drawn = rows;
+    box.replaceChildren(grid(rows, historyCols({ key: 'verify_outcome', label: 'last verify', fmt: verifyCell(on, open) }),
     'mssql_backup_history has stored no backup of this database.'));
+  };
   // after a verify was sent: the grid read again, so its last verify cell shows 'started' and later the end
   const reload = () => {
     get<Record<'history', Table | null>>('mssql/backup_files', { instance: ctx.instance, db: asked, part: 'history' })
@@ -422,7 +434,7 @@ async function historyParts(ctx: Ctx, asked: string, dbName: string): Promise<HT
     const d = (e as CustomEvent<{ table: HTMLTableElement; td: Element | null; items: [string, () => void][] }>).detail;
     const uuid = d.td?.parentElement?.querySelector('[data-verify-uuid]')?.getAttribute('data-verify-uuid');
     if (!on.enabled || !uuid || !box.contains(d.table)) return;
-    const r = (h instanceof Error ? [] : rowsOf(h.history)).find(x => x.backup_set_uuid === uuid);
+    const r = drawn.find(x => x.backup_set_uuid === uuid);
     if (r && r.device_kind === 'disk') d.items.push(['Verify this backup...', () => open(r)]);
   });
   out.push(box, el('h3', { id: 'mssql-backups-restores' }, `Restore history: ${asked}`),
@@ -469,11 +481,12 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
     body.replaceChildren(el('p', {}, badge('not possible', 'warn'), ' ', p.reason ?? s.not_offered ?? ''), shown);
     return;
   }
-  const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
-  const typed = el('input', { type: 'text', 'aria-label': 'type the database name to confirm', placeholder: s.database, autocomplete: 'off' });
+  // each field is named by the label that wraps it (WCAG 2.5.3: no aria-label that differs from the visible words)
+  const reason = el('textarea', { rows: '3', maxlength: '500', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
+  const typed = el('input', { type: 'text', placeholder: s.database, autocomplete: 'off' });
   const go = el('button', { type: 'submit', disabled: '' }, 'Verify');
   const msg = el('p', { class: 'meta', role: 'status' });
-  const check = () => { go.disabled = typed.value.trim() !== s.database || reason.value.trim().length < 5; };
+  const check = () => { go.disabled = sent || typed.value.trim() !== s.database || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
   typed.addEventListener('input', check);
   body.replaceChildren(
@@ -488,17 +501,19 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
   reason.focus();
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
+    if (sent || go.disabled) return;
+    sent = true; // one send per dialog: a second click, or an edit after the reply, sends nothing
     go.disabled = true;
     msg.textContent = 'Sending...';
     try {
       const out = await post<{ outcome: string; detail: string }>('mssql/actions/verify/run', {
         instance_id: ctx.instance, backup_set_uuid: s.backup_set_uuid, shown: s, reason: reason.value, confirm: typed.value.trim(),
       });
-      sent = true;
       msg.replaceChildren(badge(out.outcome, 'ok'), ' ', out.detail || 'the verify runs on the server; its end goes to the Actions log');
+      go.remove();
       no.textContent = 'Close';
     } catch (e) {
-      sent = true;
+      go.remove();
       msg.replaceChildren(badge('not started', 'crit'), ' ', e instanceof Error ? e.message : String(e));
       no.textContent = 'Close';
     }
@@ -568,11 +583,11 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
     const [d, loc] = await Promise.all([
       get<Record<FleetParts, Table | null>>('mssql/backups', { problems: problems ? 1 : undefined }),
       // task 301's texts and findings: a store without them still draws the rest
-      get<Record<'by_instance' | 'findings', Table | null>>('mssql/backup_files').catch(() => null),
+      get<Record<'by_instance' | 'findings' | 'check_findings', Table | null>>('mssql/backup_files').catch(() => null),
     ]);
     const texts = new Map(rowsOf(loc?.by_instance ?? null).map(r => [Number(r.instance_id), r]));
     const inst = rowsOf(d.by_instance).filter(keep).map(r => ({ ...texts.get(Number(r.instance_id)), ...r }));
-    const findings = [...rowsOf(d.findings), ...rowsOf(loc?.findings ?? null)].filter(keep);
+    const findings = [...rowsOf(d.findings), ...rowsOf(loc?.findings ?? null), ...rowsOf(loc?.check_findings ?? null)].filter(keep);
     const sum = (k: string) => inst.reduce((a, r) => a + n0(r[k]), 0);
     const noFull = sum('full_late') + sum('full_never'), noLog = sum('log_late') + sum('log_never'), unread = inst.filter(r => !r.snapshot_at).length;
     sec.append(el('div', { class: 'tiles' },

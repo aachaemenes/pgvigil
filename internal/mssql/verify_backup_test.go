@@ -52,7 +52,8 @@ func TestVerifyNotOffered(t *testing.T) {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
 		}
 	}
-	shown := VerifySet{Position: 2, HasChecksums: true, SizeBytes: 100, Paths: []string{"/b/s1.bak", "/b/s2.bak"}}
+	shown := VerifySet{Database: "app", Type: "full", FinishUTC: "2026-11-15T06:00:00Z", Position: 2, HasChecksums: true, SizeBytes: 100,
+		Paths: []string{"/b/s1.bak", "/b/s2.bak"}}
 	same := shown
 	if !sameSet(same, shown) {
 		t.Error("the same set reads as changed")
@@ -64,7 +65,24 @@ func TestVerifyNotOffered(t *testing.T) {
 		"a stripe": {Position: 2, HasChecksums: true, SizeBytes: 100, Paths: []string{"/b/s1.bak"}},
 		"a path":   {Position: 2, HasChecksums: true, SizeBytes: 100, Paths: []string{"/b/s1.bak", "/c/s2.bak"}},
 	} {
+		now.Database, now.Type, now.FinishUTC = shown.Database, shown.Type, shown.FinishUTC
 		if sameSet(now, shown) {
+			t.Errorf("%s changed and reads as the same set", name)
+		}
+	}
+	// the typed confirmation is checked against the shown database: a body naming another database, type or finish for
+	// the uuid is not the set (review part 3, finding 7)
+	for name, now := range map[string]VerifySet{"database": {Database: "other"}, "type": {Type: "log"}, "finish": {FinishUTC: "2026-11-14T06:00:00Z"}} {
+		c := shown
+		switch name {
+		case "database":
+			c.Database = now.Database
+		case "type":
+			c.Type = now.Type
+		default:
+			c.FinishUTC = now.FinishUTC
+		}
+		if sameSet(c, shown) {
 			t.Errorf("%s changed and reads as the same set", name)
 		}
 	}

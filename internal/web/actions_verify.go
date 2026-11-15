@@ -4,7 +4,8 @@ package web
 // by its backup_set_uuid through the instance's read login; POST /api/mssql/actions/verify/run checks it again, audits
 // 'started' and runs RESTORE VERIFYONLY detached from the request (a verify outlives the request's 30 seconds), its end
 // audited when it returns - 'cut by shutdown' when serve stops under it (StopVerifies); at serve's start a 'started'
-// row older than verify_timeout with no end gets 'ended unknown: serve stopped' (SweepVerifies). One verify per
+// row with no end gets 'ended unknown: serve stopped' while no verify holds its instance's lock (SweepVerifies, at
+// serve's start and hourly). One verify per
 // instance: a session-level advisory lock on the repository, held for the run on a connection of its own (never one of
 // the UI pool's: a verify may run for hours). A session lock does not hold through a pooler in transaction mode
 // (docs/sqlserver-actions.md). The checks are internal/mssql
@@ -87,35 +88,105 @@ func (s *Server) StopVerifies(limit time.Duration) {
 	}
 }
 
-// sqlVerifySweep writes 'ended unknown' for each 'started' verify older than the timeout with no end of its own (serve
-// stopped under it without writing its end): an end is a later row of the same set on the instance with an end's
-// outcome (a 'refused' second click is none) and no other 'started' row of the instance between them (one verify per
-// instance at a time). A row whose instance was removed since (instance_id NULL) is left alone: it cannot be imported.
-const sqlVerifySweep = `
-SELECT pgvigil.import_mssql_actions_log(a.instance_id, now(), jsonb_build_array(jsonb_build_object(
-         'instance_name', a.instance_name, 'ui_user', a.ui_user, 'client', a.client, 'action', 'verify_backup',
-         'target', a.target, 'target_id', a.target_id, 'reason', a.reason, 'outcome', 'ended unknown',
-         'detail', 'ended unknown: serve stopped (no end was written for the verify started ' || to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC)',
-         'statement', a.statement)))
-  FROM pgvigil.actions_log a
- WHERE a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started' AND a.at < now() - make_interval(secs => $1)
-   AND a.instance_id IS NOT NULL
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log e
+// sqlVerifyEndOf: an end of the 'started' row a - a later row of the same set on the instance with an end's outcome (a
+// 'refused' second click is none) and no other 'started' row of the instance between them (one verify per instance).
+const sqlVerifyEndOf = `SELECT 1 FROM pgvigil.actions_log e
                     WHERE e.instance_id = a.instance_id AND e.action = 'verify_backup' AND e.target_id = a.target_id
                       AND e.at >= a.at AND e.action_id <> a.action_id
                       AND e.outcome IN ('done', 'failed', 'cut by shutdown', 'ended unknown')
                       AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log o
                                        WHERE o.instance_id = a.instance_id AND o.action = 'verify_backup' AND o.outcome = 'started'
-                                         AND o.action_id <> a.action_id AND o.at > a.at AND o.at <= e.at))`
+                                         AND o.action_id <> a.action_id AND o.at > a.at AND o.at <= e.at)`
 
-// SweepVerifies is serve's start: the verifies a stopped serve left without an end row.
+// sqlVerifyOpen: the instances with a 'started' verify and no end of its own. A row whose instance was removed since
+// (instance_id NULL) is left alone: it cannot be imported.
+const sqlVerifyOpen = `
+SELECT DISTINCT a.instance_id FROM pgvigil.actions_log a
+ WHERE a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started' AND a.instance_id IS NOT NULL
+   AND NOT EXISTS (` + sqlVerifyEndOf + `)`
+
+// sqlVerifySweep writes 'ended unknown' for each 'started' verify of instance $1 with no end of its own - run only
+// while the sweep holds the instance's lock, so no verify is running there (whatever the row's age: the lead's P3.4).
+const sqlVerifySweep = `
+SELECT count(pgvigil.import_mssql_actions_log(a.instance_id, now(), jsonb_build_array(jsonb_build_object(
+         'instance_name', a.instance_name, 'ui_user', a.ui_user, 'client', a.client, 'action', 'verify_backup',
+         'target', a.target, 'target_id', a.target_id, 'reason', a.reason, 'outcome', 'ended unknown',
+         'detail', 'ended unknown: serve stopped (no end was written for the verify started ' || to_char(a.at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC, and no verify holds the instance''s lock)',
+         'statement', a.statement))))
+  FROM pgvigil.actions_log a
+ WHERE a.instance_id = $1 AND a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started'
+   AND NOT EXISTS (` + sqlVerifyEndOf + `)`
+
+// SweepVerifies writes 'ended unknown' for the verifies a stopped serve left without an end row: an instance's rows
+// only while its lock is free (the lock is the truth of a running verify - a killed serve's session, and its lock, are
+// gone; a live verify holds it on its own connection), whatever their age. Serve runs it at its start and hourly
+// (VerifySweepsHourly). The sweep holds the lock while it writes, so no verify starts under it.
 func (s *Server) SweepVerifies(ctx context.Context) error {
 	m := s.mssqlDoor()
 	if m == nil || m.a == nil || m.a.audit == nil {
 		return nil
 	}
-	_, err := m.a.audit.Exec(ctx, sqlVerifySweep, s.verifies().timeout.Seconds())
-	return err
+	rows, err := m.a.audit.Query(ctx, sqlVerifyOpen)
+	if err != nil {
+		return err
+	}
+	var ids []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return err
+	}
+	c, err := pgx.ConnectConfig(ctx, s.pool.Config().ConnConfig.Copy())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close(context.Background()) }()
+	var errs []error
+	for _, id := range ids {
+		var locked bool
+		if err := c.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, $2)`, verifyLockClass, id).Scan(&locked); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !locked {
+			continue // a verify runs there now
+		}
+		var n int
+		if err := m.a.audit.QueryRow(ctx, sqlVerifySweep, id).Scan(&n); err != nil {
+			errs = append(errs, err)
+		} else if n > 0 {
+			s.log.Info("actions: verifies with no end row marked 'ended unknown'", "instance_id", id, "rows", n)
+		}
+		if _, err := c.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, verifyLockClass, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// VerifySweepsHourly runs SweepVerifies every hour until ctx ends (serve's start runs the first itself).
+func (s *Server) VerifySweepsHourly(ctx context.Context) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sctx, cancel := context.WithTimeout(ctx, time.Minute)
+			if err := s.SweepVerifies(sctx); err != nil {
+				s.log.Warn("actions: the hourly sweep of verifies with no end row failed", "err", err)
+			}
+			cancel()
+		}
+	}
 }
 
 type verifyBody struct {
