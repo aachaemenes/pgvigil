@@ -148,6 +148,12 @@ WITH dl AS (
    WHERE d.event_at > now() - interval '1 hour'
      AND NOT pgvigil.mssql_deadlock_is_monitors(d.instance_id, d.processes)   -- (0165) the monitor's own: stored, shown, not counted
    GROUP BY d.instance_id
+), hw AS MATERIALIZED (
+  -- (0165) the last hour's waits, read ONCE per instance with a head's reports in it (not once per head)
+  SELECT x.instance_id, w.blocked_spid, w.blocking_spid, w.started_at, w.last_seen_at
+    FROM (SELECT DISTINCT r.instance_id FROM pgvigil.mssql_blocked_reports r
+           WHERE r.event_at > now() - interval '1 hour' AND r.head_key IS NOT NULL) x
+   CROSS JOIN LATERAL pgvigil.mssql_block_waits(x.instance_id, now() - interval '1 hour', now()) w
 ), heads AS (
   SELECT b.instance_id, b.head_key, count(*) AS reports, count(DISTINCT b.blocked_spid) AS blocked_sessions,
          max(b.wait_ms) AS worst_wait_ms, max(b.event_at) AS last_at,
@@ -155,8 +161,9 @@ WITH dl AS (
          (array_agg(b.blocking_spid ORDER BY b.event_at DESC))[1] AS spid,
          (array_agg(b.blocking_status ORDER BY b.event_at DESC))[1] AS status,
          -- (0165) the waits these reports belong to (a 65 s wait is one, however many reports it gave)
-         (SELECT count(*) FROM pgvigil.mssql_block_waits(b.instance_id, now() - interval '1 hour', now()) w
-           WHERE EXISTS (SELECT 1 FROM pgvigil.mssql_blocked_reports r
+         (SELECT count(*) FROM hw w
+           WHERE w.instance_id = b.instance_id
+             AND EXISTS (SELECT 1 FROM pgvigil.mssql_blocked_reports r
                           WHERE r.instance_id = b.instance_id AND r.head_key = b.head_key AND r.blocked_spid = w.blocked_spid
                             AND r.blocking_spid = w.blocking_spid AND r.event_at BETWEEN w.started_at AND w.last_seen_at)) AS waits
     FROM pgvigil.mssql_blocked_reports b
