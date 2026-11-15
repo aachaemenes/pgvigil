@@ -26,7 +26,10 @@
 #      equal to dbatools -Last -IncludeCopyOnly; differs from dbatools' default (which starts at the normal full) - on
 #      purpose, a named row.
 #  R4  pgvrc4: only a copy-only full, a row, a log -> steps copy_full, log; equal to dbatools -IncludeCopyOnly; dbatools'
-#      default lists nothing (no full that is not copy-only) - a difference on purpose, a named row.
+#      default lists nothing (no full that is not copy-only) - a difference on purpose, a named row. (Added after run
+#      304p4 stopped in the backups with no message: if SQL Server refuses a log backup after a copy-only full alone -
+#      Msg 4214, the design pass's open question - the row prints the refusal and expects steps copy_full with
+#      'restorable to the full of <t> UTC only'.)
 #  R5  pgvrc5: a full and three logs, the second log's msdb rows deleted by hand -> steps full, log 1; verdict 'broken
 #      before the log of ...; restorable to <log 1's restore time> UTC'; the finding 'the log chain is broken' (warning);
 #      dbatools -Last lists the full and logs 1 and 3 and names no gap.
@@ -139,9 +142,11 @@ iid() { [ -n "$I" ] || I=$(q "select instance_id from pgvigil.instances where na
 steps() { q "select string_agg(role || ':' || coalesce(from_instance, ''), ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$(iid) and database_name='$1' and step > 0"; }
 ids() { q "select string_agg(s.backup_set_id::text, ',' order by c.step) from pgvigil.mssql_restore_steps c join pgvigil.mssql_restore_sets s on s.backup_set_uuid = c.backup_set_uuid where c.instance_id=$(iid) and c.database_name='$1' and c.step > 0"; }
 verdict() { q "select verdict from pgvigil.mssql_restore_verdicts where instance_id=$(iid) and database_name='$1'"; }
-bk() { sq "BACKUP $1 TO DISK = N'/var/opt/mssql/bk/$2' WITH FORMAT${3:-};" >/dev/null; }
+bk() { local o; o=$(sq "BACKUP $1 TO DISK = N'/var/opt/mssql/bk/$2' WITH FORMAT${3:-};" 2>&1) || fail "BACKUP $1 to $2: $o"; }
+# a statement whose failure stops the proof with SQL Server's message (never a silent set -e exit)
+run() { local o; o=$(sq "$@" 2>&1) || fail "the statement failed ($(printf '%s' "$1" | head -c 100)): $o"; }
 # one row written in a database: a log backup after it has something to apply
-wr() { sq "IF OBJECT_ID(N'dbo.pgvrc_w') IS NULL CREATE TABLE dbo.pgvrc_w (i int IDENTITY PRIMARY KEY, at datetime2 DEFAULT SYSDATETIME()); INSERT dbo.pgvrc_w DEFAULT VALUES;" "$1" >/dev/null; }
+wr() { run "IF OBJECT_ID(N'dbo.pgvrc_w') IS NULL CREATE TABLE dbo.pgvrc_w (i int IDENTITY PRIMARY KEY, at datetime2 DEFAULT SYSDATETIME()); INSERT dbo.pgvrc_w DEFAULT VALUES;" "$1"; }
 # a database's newest set of a type (msdb's backup_set_id) and a set's restore time to the minute, as the chain words it
 lastid() { sq "SELECT MAX(backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'$1' AND type = '$2'" | tr -d '\r '; }
 rtime() { sq "SELECT FORMAT(COALESCE(last_valid_restore_time, backup_start_date), 'yyyy-MM-dd HH:mm') FROM msdb.dbo.backupset WHERE backup_set_id = $1" | tr -d '\r'; }
@@ -167,26 +172,27 @@ sq "BACKUP DATABASE pgvrc7 TO DISK = N'/var/opt/mssql/bk/r7a.bak', DISK = N'/var
     BACKUP LOG pgvrc7 TO DISK = N'/var/opt/mssql/bk/r7la.trn', DISK = N'/var/opt/mssql/bk/r7lb.trn' WITH FORMAT;" >/dev/null
 sq "BACKUP DATABASE pgvrc8 TO DISK = N'/var/opt/mssql/bk/r8.bak' WITH FORMAT; BACKUP LOG pgvrc8 TO DISK = N'/var/opt/mssql/bk/r8.bak' WITH NOINIT;" >/dev/null
 bk "DATABASE pgvrc9" r9f.bak; bk "LOG pgvrc9" r9c.trn ", COPY_ONLY"
-bk "DATABASE pgvrc4" r4c.bak ", COPY_ONLY"; wr pgvrc4; bk "LOG pgvrc4" r4l.trn
+bk "DATABASE pgvrc4" r4c.bak ", COPY_ONLY"; wr pgvrc4
+R4L=; R4MSG=$(sq "BACKUP LOG pgvrc4 TO DISK = N'/var/opt/mssql/bk/r4l.trn' WITH FORMAT;" 2>&1) && R4L=1
 # R11 part a: a safety copy-only full after the rows, then a restore over the database from the first full, a row, a log
 bk "DATABASE pgvrc11" r11a.bak; wr pgvrc11; bk "LOG pgvrc11" r11l1.trn; for k in 1 2 3; do wr pgvrc11; done; bk "LOG pgvrc11" r11l2.trn
 for k in 1 2 3; do wr pgvrc11; done; bk "DATABASE pgvrc11" r11s.bak ", COPY_ONLY"; R11S=$(lastid pgvrc11 D)
 echo "     R11 before the restore: $(forks pgvrc11)"
-sq "RESTORE DATABASE pgvrc11 FROM DISK = N'/var/opt/mssql/bk/r11a.bak' WITH REPLACE, RECOVERY;" >/dev/null
+run "RESTORE DATABASE pgvrc11 FROM DISK = N'/var/opt/mssql/bk/r11a.bak' WITH REPLACE, RECOVERY;"
 echo "     R11 after the restore:  $(forks pgvrc11)"
 wr pgvrc11; bk "LOG pgvrc11" r11l3.trn
 R11A=$(sq "SELECT backup_set_id FROM msdb.dbo.backupset WHERE database_name = N'pgvrc11' AND type = 'D' AND is_copy_only = 0 ORDER BY backup_set_id OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY" | tr -d '\r '); R11L3=$(lastid pgvrc11 L)
 bk "DATABASE pgvrc12" r12f.bak; for k in 1 2 3 4 5; do wr pgvrc12; bk "LOG pgvrc12" r12l$k.trn; done
 bk "DATABASE pgvrc14" r14f.bak; wr pgvrc14; bk "LOG pgvrc14" r14l.trn
-sq "RESTORE DATABASE pgvrc14c FROM DISK = N'/var/opt/mssql/bk/r14f.bak' WITH MOVE N'pgvrc14' TO N'/var/opt/mssql/data/pgvrc14c.mdf', MOVE N'pgvrc14_log' TO N'/var/opt/mssql/data/pgvrc14c_log.ldf', NORECOVERY;
-    RESTORE LOG pgvrc14c FROM DISK = N'/var/opt/mssql/bk/r14l.trn' WITH RECOVERY;" >/dev/null
+run "RESTORE DATABASE pgvrc14c FROM DISK = N'/var/opt/mssql/bk/r14f.bak' WITH MOVE N'pgvrc14' TO N'/var/opt/mssql/data/pgvrc14c.mdf', MOVE N'pgvrc14_log' TO N'/var/opt/mssql/data/pgvrc14c_log.ldf', NORECOVERY;
+    RESTORE LOG pgvrc14c FROM DISK = N'/var/opt/mssql/bk/r14l.trn' WITH RECOVERY;"
 DUPS=$(sq "SELECT COUNT(*) FROM (SELECT backup_set_uuid FROM msdb.dbo.backupset WHERE database_name = N'pgvrc14' GROUP BY backup_set_uuid HAVING COUNT(*) > 1) x" | tr -d '\r ')
 bk "DATABASE pgvrc16" r16f.bak; wr pgvrc16; bk "DATABASE pgvrc16" r16d.bak ", DIFFERENTIAL"
 bk "DATABASE pgvrc17" r17a.bak; wr pgvrc17; bk "LOG pgvrc17" r17l.trn
-bk "DATABASE pgvrc18" r18f.bak; wr pgvrc18; bk "LOG pgvrc18" r18l1.trn; sq "BACKUP DATABASE pgvrc18 TO DISK = N'NUL';" >/dev/null; wr pgvrc18; bk "LOG pgvrc18" r18l2.trn
-w19() { s19 "IF OBJECT_ID(N'dbo.pgvrc_w') IS NULL CREATE TABLE dbo.pgvrc_w (i int IDENTITY PRIMARY KEY); INSERT dbo.pgvrc_w DEFAULT VALUES;" pgvrc19 >/dev/null; }
-s19 "BACKUP DATABASE pgvrc19 TO DISK = N'/var/opt/mssql/bk/r19f.bak' WITH FORMAT;" >/dev/null
-for k in 1 2; do w19; s19 "BACKUP LOG pgvrc19 TO DISK = N'/var/opt/mssql/bk/r19l$k.trn' WITH FORMAT;" >/dev/null; done
+bk "DATABASE pgvrc18" r18f.bak; wr pgvrc18; bk "LOG pgvrc18" r18l1.trn; run "BACKUP DATABASE pgvrc18 TO DISK = N'NUL';"; wr pgvrc18; bk "LOG pgvrc18" r18l2.trn
+w19() { C=$SQL19 run "IF OBJECT_ID(N'dbo.pgvrc_w') IS NULL CREATE TABLE dbo.pgvrc_w (i int IDENTITY PRIMARY KEY); INSERT dbo.pgvrc_w DEFAULT VALUES;" pgvrc19; }
+C=$SQL19 run "BACKUP DATABASE pgvrc19 TO DISK = N'/var/opt/mssql/bk/r19f.bak' WITH FORMAT;"
+for k in 1 2; do w19; C=$SQL19 run "BACKUP LOG pgvrc19 TO DISK = N'/var/opt/mssql/bk/r19l$k.trn' WITH FORMAT;"; done
 read2 "the read"; read2 "the 2019 read" pgvrc-19
 
 echo "== the chains"
@@ -221,7 +227,10 @@ T1=$(rtime "$(lastid pgvrc1 L)"); [[ "$(verdict pgvrc1)" == "restorable from the
 L1=$(sq "SELECT MIN(backup_set_id) FROM msdb.dbo.backupset WHERE database_name = N'pgvrc5' AND type = 'L'" | tr -d '\r '); T5=$(rtime "$L1")
 [[ "$(verdict pgvrc5)" == *"; restorable to $T5 UTC" ]] || fail "R5 time: $(verdict pgvrc5) (log 1: $T5)"; ok "R5: restorable to $T5 UTC, log 1's time"
 G=$(q "select server_gaps from pgvigil.mssql_restore_reads where instance_id=$(iid) and database_name='pgvrc6'"); [ "$G" = 0 ] || fail "R6: gaps on this server $G, want 0"; ok "R6: gaps on this server 0"
-G=$(roles pgvrc4); [ "$G" = "copy_full,log" ] || fail "R4: $G"; ok "R4: only a copy-only full: $G"
+G=$(roles pgvrc4)
+if [ -n "$R4L" ]; then [ "$G" = "copy_full,log" ] || fail "R4: $G"; ok "R4: only a copy-only full, then a log: $G"
+else [ "$G" = "copy_full" ] && [[ "$(verdict pgvrc4)" == "restorable to the full of "*" UTC only" ]] || fail "R4: $G | $(verdict pgvrc4) (the log was refused: $R4MSG)"
+  ok "R4: SQL Server refused a log backup after a copy-only full alone ($(printf '%s' "$R4MSG" | tr '\n' ' ' | grep -o 'Msg [0-9]*' | head -1)): $G | $(verdict pgvrc4)"; fi
 G=$(ids pgvrc11); [ "$G" = "$R11A,$R11L3" ] && [[ "$(verdict pgvrc11)" == "restorable from these backups to "* ]] || fail "R11a: $G, want $R11A,$R11L3 | $(verdict pgvrc11) | sets: $(q "select string_agg(role || ' ' || backup_set_id || ' ' || last_lsn || ' ' || coalesce(last_recovery_fork_guid, '-'), '; ' order by finish_at) from pgvigil.mssql_restore_sets where instance_id=$(iid) and database_name='pgvrc11'")"
 ok "R11a: after the restore over with a log only: the first full $R11A (parent fork, up to the fork point) and the new fork's log $R11L3"
 G=$(roles pgvrc14); N=$(q "select count(*) from pgvigil.mssql_restore_sets where instance_id=$(iid) and database_name='pgvrc14'")
@@ -240,7 +249,7 @@ ok "R15: SQL Server $(s19 "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varch
 echo "== R11b and R17: the restore over gets a new full; a database dropped and created again"
 wr pgvrc11; bk "DATABASE pgvrc11" r11n.bak; R11N=$(lastid pgvrc11 D); wr pgvrc11; bk "LOG pgvrc11" r11l4.trn; R11L4=$(lastid pgvrc11 L)
 LN=$(sq "SELECT CAST(last_lsn AS varchar(25)) FROM msdb.dbo.backupset WHERE backup_set_id = $R11N" | tr -d '\r '); LS=$(sq "SELECT CAST(last_lsn AS varchar(25)) FROM msdb.dbo.backupset WHERE backup_set_id = $R11S" | tr -d '\r ')
-sq "DROP DATABASE pgvrc17; CREATE DATABASE pgvrc17; ALTER DATABASE pgvrc17 SET RECOVERY FULL;" >/dev/null
+run "DROP DATABASE pgvrc17; CREATE DATABASE pgvrc17; ALTER DATABASE pgvrc17 SET RECOVERY FULL;"
 bk "DATABASE pgvrc17" r17b.bak; R17B=$(lastid pgvrc17 D); wr pgvrc17; bk "LOG pgvrc17" r17m.trn; R17M=$(lastid pgvrc17 L)
 read2 "the second read"
 G=$(ids pgvrc11); [ "$G" = "$R11N,$R11L4" ] || fail "R11b: $G, want $R11N,$R11L4 (S $R11S: last_lsn $LS, N's $LN)"
@@ -296,6 +305,7 @@ echo "== R13 the group"
 if [ -n "${PROOF_AG:-}" ]; then
   AGTAG=pgvrcag$(printf '%04x' "$SUF"); AGSA="S$(head -c 14 /dev/urandom | od -An -tx1 | tr -d ' \n')!a"
   if KEEP=1 PGVIGIL_DAG_TAG=$AGTAG PGVIGIL_DAG_SA=$AGSA bash scripts/dag/trial.sh > "$WORK/ag.log" 2>&1 && grep -q "DAG FORMED" "$WORK/ag.log"; then
+    agrun() { local o; o=$(agq "$@" 2>&1) || fail "the lab statement failed on $1 ($(printf '%s' "$2" | head -c 80)): $o"; }
     agq() { SQLCMDPASSWORD="$AGSA" docker exec -e SQLCMDPASSWORD "$AGTAG-$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -W -h -1 -d master -Q "SET NOCOUNT ON; $2"; }
     for n in d1a d1b; do
       printf "CREATE LOGIN pgvrc_mon WITH PASSWORD = N'%s', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO pgvrc_mon; GRANT VIEW ANY DEFINITION TO pgvrc_mon;\n" "$PM" \
@@ -318,19 +328,19 @@ if [ -n "${PROOF_AG:-}" ]; then
       ok "R13: from $n one chain $G"
     done
     IA=$(q "select instance_id from pgvigil.instances where name='pgvrc-ag-d1a'"); IB=$(q "select instance_id from pgvigil.instances where name='pgvrc-ag-d1b'")
-    agq d1b "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/l3.trn' WITH FORMAT;" >/dev/null; sleep 1
-    agq d1a "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/l4.trn' WITH FORMAT;" >/dev/null
+    agrun d1b "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/l3.trn' WITH FORMAT;"; sleep 1
+    agrun d1a "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/l4.trn' WITH FORMAT;"
     collect mssql_restore_chain pgvrc-ag-d1a || fail "R13b: the read of d1a"
     V=$(q "select verdict from pgvigil.mssql_restore_verdicts where instance_id=$IA and database_name='dagdb'")
     [[ "$V" == "not yet read from pgvrc-ag-d1b"* ]] || fail "R13b: d1a read alone: $V"; ok "R13b: d1a read alone: $V"
     collect mssql_restore_chain pgvrc-ag-d1b || fail "R13b: the read of d1b"
     G=$(q "select string_agg(replace(from_instance, 'pgvrc-ag-', ''), ',' order by step) from pgvigil.mssql_restore_steps where instance_id=$IA and database_name='dagdb' and step > 0")
     [ "$G" = "d1a,d1b,d1a,d1b,d1a" ] || fail "R13b: after d1b's read: $G | $(q "select verdict from pgvigil.mssql_restore_verdicts where instance_id=$IA and database_name='dagdb'")"; ok "R13b: after d1b's read one chain $G"
-    for k in 5 6 7; do agq d1a "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/l$k.trn' WITH FORMAT;" >/dev/null; sleep 1; done
+    for k in 5 6 7; do agrun d1a "BACKUP LOG dagdb TO DISK = N'/var/opt/mssql/bk/l$k.trn' WITH FORMAT;"; sleep 1; done
     GONE=$(agq d1a "SELECT b.backup_set_id FROM msdb.dbo.backupset b JOIN msdb.dbo.backupmediafamily f ON f.media_set_id = b.media_set_id WHERE b.database_name = N'dagdb' AND f.physical_device_name = N'/var/opt/mssql/bk/l6.trn'" | tr -d '\r ')
-    agq d1a "USE msdb; DECLARE @m int = (SELECT media_set_id FROM dbo.backupset WHERE backup_set_id = $GONE);
+    agrun d1a "USE msdb; DECLARE @m int = (SELECT media_set_id FROM dbo.backupset WHERE backup_set_id = $GONE);
       DELETE FROM dbo.backupfilegroup WHERE backup_set_id = $GONE; DELETE FROM dbo.backupfile WHERE backup_set_id = $GONE;
-      DELETE FROM dbo.backupset WHERE backup_set_id = $GONE; DELETE FROM dbo.backupmediafamily WHERE media_set_id = @m; DELETE FROM dbo.backupmediaset WHERE media_set_id = @m;" >/dev/null
+      DELETE FROM dbo.backupset WHERE backup_set_id = $GONE; DELETE FROM dbo.backupmediafamily WHERE media_set_id = @m; DELETE FROM dbo.backupmediaset WHERE media_set_id = @m;"
     for n in d1a d1b; do collect mssql_ag "pgvrc-ag-$n" && collect mssql_restore_chain "pgvrc-ag-$n" || fail "R13c: the read of $n"; done
     V=$(q "select state || '|' || verdict from pgvigil.mssql_restore_verdicts where instance_id=$IA and database_name='dagdb'")
     F=$(q "select count(*) from pgvigil.mssql_restore_findings where instance_id in ($IA, $IB) and object='dagdb'")
