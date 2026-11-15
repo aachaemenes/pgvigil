@@ -25,9 +25,15 @@
 #  C. the container removed and run on NEW on the same volume (msdb's upgrade: up to 600 s): ONE more 'restart' and ONE
 #     'build' event at the new start, the build's words naming OLD's and NEW's SERVERPROPERTY('ProductVersion');
 #     frame marks: restart 2, build 1; findings: 'instance restarted' 2, 'build changed' 1.
-#  D. built rows on a second instance (an INSERT, then UPDATEs of its mssql_instance row): the INSERT = no event; the
-#     start 60 s later = none; 1 h later on the same machine = 'restart'; 1 h earlier = 'failover'; 2 h later on another
-#     machine_name = 'failover'; the product_version changed with the start unchanged = 'build' at that read's time.
+#  D. built rows on a second instance (an INSERT, then UPDATEs of its mssql_instance row, the reads a minute apart;
+#     the lead's 11-14 22:5x, F17 (a) and F16's clock rule (a); red on 168ca53 at T4): the INSERT = no event; the start
+#     60 s later = none; T4 the start 5 minutes later and T4b 5 minutes earlier on the same machine (a clock step: the
+#     new start before the read before) = none; a new start 30 s after the read before = 'restart' at that start; FCI
+#     the same virtual machine_name, physical_machine NODE1 then NODE2 with a new start = 'failover'; another
+#     machine_name up 3 days = 'failover' at its read (not 3 days back) and a 'instance failed over' finding; the
+#     product_version changed with the start unchanged = 'build' at that read's time. D2 built rows on a PostgreSQL
+#     instance (T1 / T2): over onto a standby up 3 days, back, over again onto it = three 'failover' events at their
+#     reads and three findings (red on 168ca53: two events, at the starts, no finding).
 #  E. the PostgreSQL container on PG_OLD with its volume: two reads of instance, versions and dbstats write no event;
 #     docker restart: ONE 'restart' at pg_postmaster_start_time() exactly; 40 commits, two dbstats reads, a backend killed
 #     with SIGKILL (the postmaster runs crash recovery and stays up), the next dbstats read: ONE 'crash restart', the
@@ -178,19 +184,40 @@ ok "C: a restart and a build change at the new start, the build's words naming b
 echo "== D. built rows: the tolerance and the kinds =="
 SY=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          VALUES ('rstsyn', 'sqlserver', '{}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1)
-T0=$(pq "SELECT date_trunc('second', now()) - interval '1 day'")
-pq "INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, machine_name, product_version, started_at) VALUES ($SY, now(), 'hosta', '16.0.1000.1', '$T0')" >/dev/null
+# the reads a minute apart from R0, 30 minutes back: rk <k> is read k's time; the start a day before R0
+R0=$(pq "SELECT date_trunc('second', now()) - interval '30 minutes'"); S0=$(pq "SELECT '$R0'::timestamptz - interval '1 day'")
+rk() { echo "'$R0'::timestamptz + interval '$1 minutes'"; }
+pq "INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, machine_name, product_version, started_at) VALUES ($SY, $(rk 0), 'hosta', '16.0.1000.1', '$S0')" >/dev/null
 DK=$(evs "$SY")
-up() { pq "UPDATE pgvigil.mssql_instance SET snapshot_at = now(), $1 WHERE instance_id = $SY" >/dev/null; evs "$SY"; }
-D1_=$(up "started_at = '$T0'::timestamptz + interval '60 seconds'")
-D2_=$(up "started_at = '$T0'::timestamptz + interval '1 hour'")
-D3_=$(up "started_at = '$T0'::timestamptz")
-D4_=$(up "machine_name = 'hostb', started_at = '$T0'::timestamptz + interval '2 hours'")
-D5_=$(up "product_version = '16.0.1001.2'")
-echo "   insert: $DK; +60 s: $D1_; +1 h: $D2_; back 1 h: $D3_; another host +2 h: $D4_; a build: $D5_"
-[[ "$DK|$D1_|$D2_|$D3_|$D4_|$D5_" == "none|none|restart=1|failover=1 restart=1|failover=2 restart=1|build=1 failover=2 restart=1" ]] || fail "D: the kinds"
-[[ $(pq "SELECT abs(extract(epoch FROM at - now())) < 60 FROM pgvigil.instance_events WHERE instance_id = $SY AND kind = 'build'") == t ]] || fail "D: the build without a moved start is not at its read"
-ok "D: no event within 120 s or for a first read; later = restart, earlier or another host = failover, a build at its read"
+up() { pq "UPDATE pgvigil.mssql_instance SET snapshot_at = $(rk "$1"), $2 WHERE instance_id = $SY" >/dev/null; evs "$SY"; }
+D1_=$(up 1 "started_at = '$S0'::timestamptz + interval '60 seconds'")
+D4_=$(up 2 "started_at = '$S0'::timestamptz + interval '5 minutes'")
+D4b=$(up 3 "started_at = '$S0'::timestamptz - interval '5 minutes'")
+D2_=$(up 4 "started_at = $(rk 3) + interval '30 seconds'")
+up 5 "physical_machine = 'NODE1'" >/dev/null
+DF_=$(up 6 "physical_machine = 'NODE2', started_at = $(rk 5) + interval '20 seconds'")
+DA_=$(up 7 "machine_name = 'hostb', physical_machine = NULL, started_at = $(rk 7) - interval '3 days'")
+DAT=$(pq "SELECT round(extract(epoch FROM at - ($(rk 7))))::int || '|' || (SELECT count(*) FROM pgvigil.restart_findings f WHERE f.instance_id = $SY AND f.setting = 'instance failed over' AND f.at = e.at)
+  FROM pgvigil.instance_events e WHERE e.instance_id = $SY AND e.kind = 'failover' ORDER BY e.seen_at DESC LIMIT 1")
+D5_=$(up 8 "product_version = '16.0.1001.2'")
+echo "   insert: $DK; +60 s: $D1_; T4 +5 min: $D4_; T4b -5 min: $D4b; a start after the read: $D2_; FCI: $DF_; another host up 3 days: $DA_ (at - its read, findings: $DAT); a build: $D5_"
+[[ "$DK|$D1_|$D4_|$D4b|$D2_|$DF_|$DA_|$D5_" == "none|none|none|none|restart=1|failover=1 restart=1|failover=2 restart=1|build=1 failover=2 restart=1" ]] || fail "D: the kinds"
+[[ "$DAT" == "0|1" ]] || fail "D: the failover onto a node up 3 days [$DAT] (want at its read: 0, one finding)"
+[[ $(pq "SELECT abs(extract(epoch FROM at - ($(rk 8)))) < 1 FROM pgvigil.instance_events WHERE instance_id = $SY AND kind = 'build'") == t ]] || fail "D: the build without a moved start is not at its read"
+ok "D: no event within 120 s, for a first read or for a clock step on one machine; a start after the read before = restart; another node (an FCI's physical name) or another host = failover, at its read when the node was up; a build at its read"
+# D2 (T1 / T2): a PostgreSQL instance's failovers onto a standby up 3 days, at their reads
+SP=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('rstpgsyn', 'postgres', '{}', now(), now(), true, 'postgres') RETURNING instance_id" | head -1)
+pq "INSERT INTO pgvigil.instance_state (instance_id, snapshot_at, postmaster_start, server_addr) VALUES ($SP, $(rk 0), $(rk 0) - interval '10 days', '10.0.0.1')" >/dev/null
+ps_() { pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk "$1"), postmaster_start = $(rk "$1") - interval '$2', server_addr = '$3' WHERE instance_id = $SP" >/dev/null; }
+ps_ 1 '3 days' 10.0.0.2; P1_=$(pq "SELECT count(*) || '|' || count(*) FILTER (WHERE at = ($(rk 1))) FROM pgvigil.instance_events WHERE instance_id = $SP")
+pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk 2), postmaster_start = $(rk 2) - interval '5 days', server_addr = '10.0.0.1' WHERE instance_id = $SP" >/dev/null
+pq "UPDATE pgvigil.instance_state SET snapshot_at = $(rk 3), postmaster_start = $(rk 1) - interval '3 days', server_addr = '10.0.0.2' WHERE instance_id = $SP" >/dev/null
+P3_=$(pq "SELECT (SELECT count(*) FROM pgvigil.instance_events WHERE instance_id = $SP AND kind = 'failover') || '|' || (SELECT count(*) FROM pgvigil.restart_findings WHERE instance_id = $SP)")
+echo "   PostgreSQL: over onto a standby up 3 days: events|at its read $P1_; over, back, over: failovers|findings $P3_"
+[[ "$P1_" == "1|1" && "$P3_" == "3|3" ]] || fail "D2: [$P1_] [$P3_] (want 1|1, then 3|3)"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $SP" >/dev/null
+ok "D2: a PostgreSQL failover onto a standby up 3 days is dated at its read with its finding; over, back and over again: three events, three findings"
 
 echo "== E. PostgreSQL on $PG_OLD: restarted, crashed, recreated on $PG_NEW =="
 docker volume create "$PGVOL" >/dev/null; pg_run "$PG_OLD"; pg_up
