@@ -26,7 +26,9 @@
 #     SELECT; the login has EXECUTE on the procedure only): its one row kept (ownership chaining); p_missing names a
 #     procedure that does not exist: its error says so with Msg 2812 and the grant; p_nogrant (a procedure the login
 #     may not EXECUTE): its error names Msg 229 and the grant.
-#  F  the fence, one instance per login, each with the check v_dbs only: the collection's row in collection_dates
+#  F  the fence, one instance per login, each with the check v_dbs only (bulkadmin where the server takes it: SQL
+#     Server on Linux before 2022 refuses the role, Msg 16202 - then the bare ADMINISTER BULK OPERATIONS, or the row is
+#     NOT RUN on that version, said; added after run 1): the collection's row in collection_dates
 #     is an error naming the right, and NO custom_results row, for a sysadmin ('role sysadmin'), CONTROL SERVER,
 #     ALTER ANY CONNECTION, IMPERSONATE on sa ('IMPERSONATE on login sa'), bulkadmin ('ADMINISTER BULK OPERATIONS'),
 #     and the documented login with db_datawriter in pgvp_app ('in database pgvp_app DELETE, INSERT, UPDATE'). The documented login
@@ -124,7 +126,7 @@ for k in $LOGINS; do PWS[$k]=$(pw); done
     printf "GRANT VIEW SERVER STATE TO [pgv_%s_%s]; GRANT VIEW ANY DEFINITION TO [pgv_%s_%s]; GRANT CONNECT ANY DATABASE TO [pgv_%s_%s]; GRANT ALTER TRACE TO [pgv_%s_%s];\n" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF"
     printf "USE msdb; CREATE USER [pgv_%s_%s] FOR LOGIN [pgv_%s_%s]; ALTER ROLE db_datareader ADD MEMBER [pgv_%s_%s];\nUSE master; CREATE USER [pgv_%s_%s] FOR LOGIN [pgv_%s_%s]; GRANT EXECUTE ON master.sys.xp_readerrorlog TO [pgv_%s_%s];\nGO\n" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF"
   done
-  printf "ALTER SERVER ROLE sysadmin ADD MEMBER [pgv_sa_%s];\nGRANT CONTROL SERVER TO [pgv_ctl_%s];\nGRANT ALTER ANY CONNECTION TO [pgv_conn_%s];\nGRANT IMPERSONATE ON LOGIN::[sa] TO [pgv_imp_%s];\nALTER SERVER ROLE bulkadmin ADD MEMBER [pgv_bulk_%s];\nGO\n" "$SUF" "$SUF" "$SUF" "$SUF" "$SUF"
+  printf "ALTER SERVER ROLE sysadmin ADD MEMBER [pgv_sa_%s];\nGRANT CONTROL SERVER TO [pgv_ctl_%s];\nGRANT ALTER ANY CONNECTION TO [pgv_conn_%s];\nGRANT IMPERSONATE ON LOGIN::[sa] TO [pgv_imp_%s];\nGO\n" "$SUF" "$SUF" "$SUF" "$SUF"
   # the databases: an application database with a table no login may write, and a utility database with the procedures
   cat <<SQL
 CREATE DATABASE pgvp_app;
@@ -148,6 +150,14 @@ GRANT EXECUTE ON dbo.pgv_check_secret TO [pgv_mon_$SUF];
 GO
 SQL
 } | sqs >/dev/null
+# bulkadmin on its own: SQL Server on Linux before 2022 refuses the role (Msg 16202, run 1 on 2019 / 2017); then the bare
+# right; a server that refuses both leaves the bulk row NOT RUN on that version, said
+BULK_OK=1
+if ! sq "ALTER SERVER ROLE bulkadmin ADD MEMBER [pgv_bulk_$SUF];" >/dev/null 2>"$WORK/bulk.err"; then
+  if ! sq "GRANT ADMINISTER BULK OPERATIONS TO [pgv_bulk_$SUF];" >/dev/null 2>>"$WORK/bulk.err"; then
+    BULK_OK=; echo "NOT RUN F bulk on $PV: the server refuses bulkadmin and ADMINISTER BULK OPERATIONS ($(grep -o 'Msg [0-9]*' "$WORK/bulk.err" | sort -u | tr '\n' ' '))"
+  fi
+fi
 dsn() { echo "sqlserver://pgv_$1_$SUF:${PWS[$1]}@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"; }
 for k in $LOGINS; do export "MS_$(tr '[:lower:]' '[:upper:]' <<<"$k")=$(dsn "$k")"; done
 
@@ -241,6 +251,7 @@ ok "E: the PostgreSQL check pg_only is on no SQL Server instance"
 echo "--- F: the fence, one login at a time"
 for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" "imp|IMPERSONATE on login sa" "bulk|ADMINISTER BULK OPERATIONS" "dw|in database pgvp_app DELETE, INSERT, UPDATE"; do
   k=${pair%%|*}; want=${pair#*|}; inst=st6-$k-$SUF
+  [[ $k == bulk && -z $BULK_OK ]] && continue
   collect "$inst"
   st=$(q "select status || '|' || coalesce(note, '') from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = '$inst' and d.collection = 'mssql_custom'")
   [[ ${st%%|*} == error && $st == *"custom checks refused on this instance"*"$want"* ]] || fail "F: $k: $st; $(tail -2 "$OUT")"
