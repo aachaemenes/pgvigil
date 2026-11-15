@@ -9,7 +9,9 @@
 // for the server's own reason, which comes first (no door, an instance not opted in: counted as 'own'). A control at
 // or below the role must not be off with the role's words. The pages of MUST carry a control of the need named, and
 // the pages of WORDS show the role's words to a role below (the ack seat writes on this serve: scripts/proof-uiroles-
-// pages.sh). Prints one line per page that holds such a control, each FAIL, the totals; exit 1 on any FAIL.
+// pages.sh). Last a click: the instance header's Silence opens nothing where it is off for the role, and its dialog
+// where it is on (closed again, nothing saved). Prints one line per page that holds such a control, each FAIL, the
+// totals; exit 1 on any FAIL.
 const [port, U, user, pw, role] = process.argv.slice(2);
 const rank = { viewer: 1, operator: 2, admin: 3 };
 if (!rank[role]) { console.log(`FAIL: role '${role}' is not viewer, operator or admin`); process.exit(2); }
@@ -135,6 +137,28 @@ for (const [scope, hash] of pages) {
   }
   console.log(`page ${hash}: ${cs.length} control(s) with a need - ${line.role} off for the role, ${line.own} off for the server's own reason, ${line.on} on`);
 }
+// a click: the instance header's Silence (or Unsilence) on the PostgreSQL instance's Summary. Off for the role, a click
+// opens nothing; on, it opens its dialog, whose Save carries the need and is not off for the role. Nothing is saved.
+await cmd('Page.navigate', { url: U + `#/summary?i=${pg.instance_id}` }); await sleep(400); await settled();
+const click = await ev(`(async () => {
+  const b = [...document.querySelectorAll('[data-need="operator"]')].find(e => /^(Silence|Unsilence)/.test((e.textContent || '').trim()));
+  if (!b) return { found: false };
+  const off = b.getAttribute('aria-disabled') === 'true';
+  b.click();
+  await new Promise(r => setTimeout(r, 700));
+  const d = document.querySelector('dialog[open]');
+  const out = { found: true, off, dialog: !!d, title: d ? (d.getAttribute('aria-label') || '') : '',
+    save: d ? [...d.querySelectorAll('[data-need]')].map(e => ({ need: e.dataset.need, off: e.getAttribute('aria-disabled') === 'true', title: e.title })) : [] };
+  if (d) { d.close(); d.remove(); }
+  return out;
+})()`, true);
+if (!click.found) bad(`click: no Silence / Unsilence control with data-need=operator on #/summary?i=${pg.instance_id}`);
+else if (rank.operator > rank[role]) {
+  if (click.off && !click.dialog) console.log(`ok   click: the off Silence clicked as a ${role}: nothing opened`);
+  else bad(`click: Silence as a ${role}: off ${click.off}, a dialog opened ${click.dialog} ('${click.title}')`);
+} else if (!click.off && click.dialog && click.save.length && click.save.every(x => x.need === 'operator' && !anyRole.test(x.title))) console.log(`ok   click: Silence clicked as an ${role}: '${click.title}' opened, its Save carries the operator need and is not off for the role`);
+else bad(`click: Silence as ${role}: off ${click.off}, dialog ${click.dialog} ('${click.title}'), its controls ${JSON.stringify(click.save).slice(0, 200)}`);
+
 for (const [k, need] of MUST) {
   const s = seen.get(`${k}|${need}`);
   if (s?.n) console.log(`ok   must ${k}: ${s.n} control(s) need ${need}`);
