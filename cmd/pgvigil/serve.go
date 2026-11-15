@@ -21,6 +21,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/web"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -52,6 +53,11 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
+	// the Daily checks mail's block (reports.daily_checks): a missing or unknown key stops serve here, by its name
+	dailyChecks, err := reportmail.LoadDailyChecks(*path)
+	if err != nil {
+		return err
+	}
 	// the custom: list (task 61): with it the stale check counts the custom collection among the expected ones
 	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
 		return err
@@ -204,7 +210,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
 	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
 	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
-	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
+	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender); the Daily checks
+	// mail's block is applied by the same loop, at its start
+	srv.SetDailyChecks(dailyChecks)
 	go srv.RunReportMail(ctx)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them

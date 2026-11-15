@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/reportmail"
 )
 
 // The values the tests seed into a configuration: none of them may be in any file of a report.
@@ -383,6 +385,36 @@ func TestReportZip(t *testing.T) {
 	}
 }
 
+// The Daily checks mail's block (reports.daily_checks) refused by the configuration check: the check line names the key
+// and never the value - a mistyped address or an application contact's channel name is in no file of the report.
+func TestReportDailyChecksCheckLine(t *testing.T) {
+	dir := t.TempDir()
+	for i, c := range []struct{ to, channel, want, leak string }{
+		// the channel of row 0 is no plain word: a masked value is taken out of the check line as a whole word
+		{"[LeakAddr9zq]", "relay7q", "reports.daily_checks: to: address 1 of the list", "LeakAddr9zq"},
+		{"[dba@example.org]", "contact-Leak7chq", "reports.daily_checks: channel names an application contact", "Leak7chq"},
+	} {
+		cfg := filepath.Join(dir, fmt.Sprintf("daily%d.yaml", i))
+		text := "repository:\n  dsn: \"host=127.0.0.1 port=1 user=u_daily dbname=d_daily\"\nreports:\n  daily_checks:\n    enabled: true\n" +
+			"    at: \"07:00\"\n    tz: UTC\n    to: " + c.to + "\n    as: alice\n    channel: " + c.channel + "\n"
+		if err := os.WriteFile(cfg, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, fmt.Sprintf("daily%d.zip", i))
+		if err := runReportTo(context.Background(), []string{"-config", cfg, "-out", out}, io.Discard); err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		files := readZip(t, out)
+		// the loader names the file, which the report writes as <the configuration file>
+		if !strings.Contains(files["config.yaml"], "# configuration check: config <the configuration file>: "+c.want) {
+			t.Errorf("row %d: the check line does not hold %q:\n%s", i, c.want, files["config.yaml"])
+		}
+		for name, body := range files {
+			noLeak(t, name, body, c.leak, dir)
+		}
+	}
+}
+
 // What stays out of error text by its shape or by the order of the passes, whatever the configuration knows.
 func TestReportScrubShapes(t *testing.T) {
 	// an instance named after its host's first label: the host goes whole, with and without -names
@@ -465,7 +497,7 @@ func TestReportKnowsEveryConfigKey(t *testing.T) {
 			walk(f.Type)
 		}
 	}
-	for _, v := range []any{config.Config{}, alerts.Settings{}, collect.CustomCheck{}} {
+	for _, v := range []any{config.Config{}, alerts.Settings{}, collect.CustomCheck{}, reportmail.DailyChecks{}} {
 		walk(reflect.TypeOf(v))
 	}
 	if len(seen) < 8 {
