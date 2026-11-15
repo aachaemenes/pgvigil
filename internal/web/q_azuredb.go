@@ -26,7 +26,7 @@ import (
 // over the sum of the counted samples (exactly the minutes' weighted average), the four histograms sum each bucket,
 // and the 'hot' shares are the samples at 70 % and over of those counted (as the Performance summary's)
 var azdbWindowCols = `
-       sum(a.samples)::bigint AS samples, sum(a.minutes)::bigint AS minutes,
+       sum(a.samples)::bigint AS samples, coalesce(sum(a.minutes), 0)::bigint AS minutes,
        round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 2) AS avg_cpu_percent,
        max(a.max_cpu_percent) AS max_cpu_percent,
        round(sum(a.data_io_total) / nullif(sum(a.data_io_counted), 0), 2) AS avg_data_io_percent,
@@ -89,9 +89,10 @@ SELECT a.snapshot_at AS minute, a.snapshot_at, a.samples, a.avg_cpu_percent, a.m
 
 // the window's hours, newest first, through the same split as the summary (pgvigil.mssql_azuredb_window): a built hour
 // whole, an edge or unbuilt hour from its minutes, its minutes counted (partial: fewer than 60 minutes in the window);
-// the page lists them for a window over a day (B2a-N2)
+// the page lists them for a window over a day and draws its charts from them (snapshot_at: the chart's x) (B2a-N2)
 const sqlAzureDBHours = `
-SELECT date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour, sum(a.minutes)::int AS minutes, sum(a.samples)::bigint AS samples,
+SELECT date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour,
+       date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS snapshot_at, sum(a.minutes)::int AS minutes, sum(a.samples)::bigint AS samples,
        round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 2) AS avg_cpu_percent, max(a.max_cpu_percent) AS max_cpu_percent,
        round(sum(a.data_io_total) / nullif(sum(a.data_io_counted), 0), 2) AS avg_data_io_percent, max(a.max_data_io_percent) AS max_data_io_percent,
        round(sum(a.log_write_total) / nullif(sum(a.log_write_counted), 0), 2) AS avg_log_write_percent, max(a.max_log_write_percent) AS max_log_write_percent,

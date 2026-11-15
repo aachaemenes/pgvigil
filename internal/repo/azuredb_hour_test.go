@@ -427,6 +427,20 @@ SELECT CASE WHEN h.instance_id IS NULL THEN 'no hour row'
 	}
 	check("an hour imported under +05:30", h0.Add(12*time.Hour))
 
+	// 'pgvigil purge' makes this month's and the next month's hours partition (AzureDBHourMonths), never a trigger call
+	// (the review's finding 5: a CREATE ... PARTITION OF takes ACCESS EXCLUSIVE on the parent)
+	if err := (&Repo{pool: pool}).AzureDBHourMonths(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []time.Time{time.Now().UTC(), time.Now().UTC().AddDate(0, 1, 0)} {
+		if s := str(`SELECT coalesce(to_regclass($1)::text, 'none')`, "pgvigil.mssql_azuredb_hour_"+m.Format("200601")); s == "none" {
+			t.Errorf("after AzureDBHourMonths: no hours partition for %s", m.Format("2006-01"))
+		}
+	}
+	if s := str(`SELECT (position('1 month' IN pg_get_functiondef('pgvigil.mssql_azuredb_hour_heal(int, int, boolean)'::regprocedure)) > 0)::text`); s != "false" {
+		t.Error("mssql_azuredb_hour_heal (a trigger call's heal) still makes a month ahead")
+	}
+
 	// purge's hours: a month older than 730 days dropped (another such month of the store may go too), the rest kept
 	old := time.Now().UTC().AddDate(-3, 0, 0)
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_partition($1)`, old); err != nil {

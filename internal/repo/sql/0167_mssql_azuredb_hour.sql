@@ -13,12 +13,17 @@
 --   filled            by a statement-level AFTER INSERT trigger with a transition table on mssql_azuredb_minute (its
 --                     one writer, import_mssql_azuredb_resources, inserts with ON CONFLICT DO NOTHING: a minute read
 --                     twice is not inserted again, so never counted again): per instance, its own lock key in its own
---                     statement, lock_timeout 5 s (a wait that would reach the collector's 30 s repository timeout is
---                     an error the body catches, never a cancel it cannot), the instance's dirty hours healed under a
---                     200 ms budget, then the touched hours RECOMPUTED from the stored minutes (never added to).
+--                     statement, lock_timeout 5 s for that instance's block alone (a wait that would reach the
+--                     collector's 30 s repository timeout is an error the body catches, never a cancel it cannot; the
+--                     caller's own lock_timeout is back after the block, and on an error the block's rollback restores
+--                     it), the instance's dirty hours healed under a 200 ms budget, then the touched hours RECOMPUTED
+--                     from the stored minutes (never added to).
 --   a failure         never fails the import: the body catches it, merges the hours into the instance's dirty range
 --                     and writes one 'rollup failed' row in collection_log (collection 'mssql_azuredb_hour') at most once
---                     an hour; the next trigger call of the instance and 'pgvigil purge' heal it ('rollup healed').
+--                     an hour; the next trigger call of the instance and 'pgvigil purge' heal it ('rollup healed'). The
+--                     record is written under the caller's lock_timeout: it waits for a 'pgvigil purge' heal that holds
+--                     the instance's range (a record lost there would leave an hour short for good); a heal removes a
+--                     range only as it read it (from, to and noted_at: a failure merged meanwhile keeps it).
 --   the first build   none in this file and no row written by it (no migration writes a stored row, docs/upgrade.md):
 --                     never in a trigger call either (1,819 imports a minute must not each spend a heal's budget on it):
 --                     a new instance (no minute older than its first insert) is built from its first minute; one whose
@@ -28,7 +33,10 @@
 --                     per transaction (mssql_azuredb_hour_pending / _heal_one), with no budget.
 --   partitions        by month, made by mssql_azuredb_hour_partition WITHOUT ensure_month_partition's second
 --                     (instance_id, snapshot_at) index (here it is the primary key itself) and with fillfactor 80 (each
---                     import rewrites its current hour's row); the next month's is made ahead by each heal.
+--                     import rewrites its current hour's row); 'pgvigil purge' makes this month's and the next ahead
+--                     once a run (AzureDBHourMonths, lock_timeout 5 s: a CREATE ... PARTITION OF takes ACCESS EXCLUSIVE
+--                     on the parent, never inside a trigger call while a reader holds it); a trigger call makes a month
+--                     only when purge has not (a store where purge is not scheduled).
 --   retention         pgvigil.hours_retention ('mssql_azuredb_hour', 730: DBA Dash's for AzureDBResourceStats_60MIN);
 --                     mssql_azuredb_hour_purge drops older months for purge()'s last block (the join's 0190 line, as
 --                     0139's job_stats_hourly_purge). The minutes keep purge's p_days.
@@ -187,12 +195,13 @@ END $$;
 
 -- one instance's dirty range rebuilt newest week first (the caller holds the instance's lock); an instance met for
 -- the first time with minutes and no first_build row has its whole range queued first; with a budget (ms, NULL = none)
--- the heal stops once it is spent and keeps the rest of the range as it was read; next month's partition made ahead
+-- the heal stops once it is spent and keeps the rest of the range as it was read; the range is changed or removed only
+-- as it was read (from, to, noted_at: a failure merged into it meanwhile keeps it whole); no month made ahead here (a
+-- trigger call must not take the parent's ACCESS EXCLUSIVE for it: AzureDBHourMonths makes it once a purge run)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_azuredb_hour_heal(p_instance_id int, p_budget_ms int DEFAULT NULL, p_first boolean DEFAULT true)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE v record; v_n int := 0; v_t0 timestamptz := clock_timestamp(); v_lo timestamptz; v_hi timestamptz; v_cut timestamptz;
 BEGIN
-  PERFORM pgvigil.mssql_azuredb_hour_partition(now() + interval '1 month');
   IF NOT EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_hour_first_build b WHERE b.instance_id = p_instance_id) THEN
     IF NOT p_first THEN
       RETURN 0;   -- the trigger: a first build is pgvigil purge's (the collector's imports never carry it)
@@ -200,11 +209,11 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = p_instance_id) THEN
       INSERT INTO pgvigil.mssql_azuredb_hour_dirty AS d (instance_id, from_at, to_at, why)
       VALUES (p_instance_id, '-infinity', 'infinity', 'the first build')
-      ON CONFLICT (instance_id) DO UPDATE SET from_at = '-infinity', to_at = 'infinity', noted_at = now();
+      ON CONFLICT (instance_id) DO UPDATE SET from_at = '-infinity', to_at = 'infinity', noted_at = clock_timestamp();
     END IF;
     INSERT INTO pgvigil.mssql_azuredb_hour_first_build (instance_id) VALUES (p_instance_id) ON CONFLICT (instance_id) DO NOTHING;
   END IF;
-  SELECT d.from_at, d.to_at, d.logged_at INTO v FROM pgvigil.mssql_azuredb_hour_dirty d WHERE d.instance_id = p_instance_id;
+  SELECT d.from_at, d.to_at, d.noted_at, d.logged_at INTO v FROM pgvigil.mssql_azuredb_hour_dirty d WHERE d.instance_id = p_instance_id;
   IF NOT FOUND THEN
     RETURN 0;
   END IF;
@@ -217,12 +226,13 @@ BEGIN
     v_n := v_n + pgvigil.mssql_azuredb_hour_rebuild(p_instance_id, v_cut, v_hi);
     v_hi := v_cut;
     IF p_budget_ms IS NOT NULL AND v_hi > v_lo AND clock_timestamp() - v_t0 >= make_interval(secs => p_budget_ms / 1000.0) THEN
-      UPDATE pgvigil.mssql_azuredb_hour_dirty d SET to_at = v_hi, noted_at = now()
-       WHERE d.instance_id = p_instance_id AND d.from_at = v.from_at AND d.to_at = v.to_at;
+      UPDATE pgvigil.mssql_azuredb_hour_dirty d SET to_at = v_hi, noted_at = clock_timestamp()
+       WHERE d.instance_id = p_instance_id AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
       RETURN v_n;
     END IF;
   END LOOP;
-  DELETE FROM pgvigil.mssql_azuredb_hour_dirty d WHERE d.instance_id = p_instance_id AND d.from_at = v.from_at AND d.to_at = v.to_at;
+  DELETE FROM pgvigil.mssql_azuredb_hour_dirty d
+   WHERE d.instance_id = p_instance_id AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
   IF FOUND AND v.logged_at IS NOT NULL THEN
     INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
     VALUES (p_instance_id, 'mssql_azuredb_hour', now(), 'ok',
@@ -232,18 +242,19 @@ BEGIN
   RETURN v_n;
 END $$;
 
--- a trigger call that could not write its hours: merged into the instance's dirty range, and a 'rollup failed' row
--- when the range is new or its last such row is an hour old
+-- a trigger call that could not write its hours: merged into the instance's dirty range (noted_at the clock's, so a
+-- heal that read the range before knows it changed), and a 'rollup failed' row when the range is new or its last such
+-- row is an hour old
 CREATE OR REPLACE FUNCTION pgvigil.mssql_azuredb_hour_failed(p_instance_id int, p_from timestamptz, p_to timestamptz, p_why text)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE v_prev timestamptz; v_had boolean; v_log boolean;
 BEGIN
   SELECT true, d.logged_at INTO v_had, v_prev FROM pgvigil.mssql_azuredb_hour_dirty d WHERE d.instance_id = p_instance_id;
   v_log := v_had IS NULL OR v_prev IS NULL OR v_prev < now() - interval '1 hour';
-  INSERT INTO pgvigil.mssql_azuredb_hour_dirty AS d (instance_id, from_at, to_at, why, logged_at)
-  VALUES (p_instance_id, p_from, p_to, p_why, now())
+  INSERT INTO pgvigil.mssql_azuredb_hour_dirty AS d (instance_id, from_at, to_at, why, noted_at, logged_at)
+  VALUES (p_instance_id, p_from, p_to, p_why, clock_timestamp(), now())
   ON CONFLICT (instance_id) DO UPDATE
-    SET from_at = least(d.from_at, excluded.from_at), to_at = greatest(d.to_at, excluded.to_at), noted_at = now(), why = excluded.why,
+    SET from_at = least(d.from_at, excluded.from_at), to_at = greatest(d.to_at, excluded.to_at), noted_at = clock_timestamp(), why = excluded.why,
         logged_at = CASE WHEN v_log THEN now() ELSE d.logged_at END;
   IF v_log THEN
     INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
@@ -272,18 +283,21 @@ BEGIN
   RETURN pgvigil.mssql_azuredb_hour_heal(p_instance_id);
 END $$;
 
--- the trigger's body: per instance in the statement's rows, lock_timeout 5 s, the lock in its own statement, the
--- dirty range healed under 200 ms, then the touched hours recomputed; any error caught per instance (a lock timeout
--- is one), its record guarded in turn
+-- the trigger's body: per instance in the statement's rows, lock_timeout 5 s inside that instance's block alone, the
+-- lock in its own statement, the dirty range healed under 200 ms, then the touched hours recomputed, then the caller's
+-- lock_timeout back; any error caught per instance (a lock timeout is one: the block's rollback restores the caller's
+-- lock_timeout, SET's docs), its record written under the caller's lock_timeout (a heal_one holding the range is waited
+-- for; the import's own deadline still cancels it, and a cancel fails the import whole: its minutes are read again
+-- by the next run, the database's view holding about an hour)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_azuredb_hour_tg()
 RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE v record;
+DECLARE v record; v_lt text := current_setting('lock_timeout');
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM n) THEN RETURN NULL; END IF;   -- a statement trigger fires on every call: no rows, no lock
-  PERFORM set_config('lock_timeout', '5s', true);
   FOR v IN SELECT x.instance_id, array_agg(DISTINCT date_trunc('hour', x.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS hours
              FROM n x GROUP BY x.instance_id ORDER BY x.instance_id LOOP
     BEGIN
+      PERFORM set_config('lock_timeout', '5s', true);
       PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_azuredb_hour'), v.instance_id);
       -- a new instance (no minute older than this statement's) has nothing to build: built from its first minute
       IF NOT EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_hour_first_build b WHERE b.instance_id = v.instance_id)
@@ -293,8 +307,10 @@ BEGIN
       END IF;
       PERFORM pgvigil.mssql_azuredb_hour_heal(v.instance_id, 200, false);
       PERFORM pgvigil.mssql_azuredb_hour_recompute(v.instance_id, v.hours);
+      PERFORM set_config('lock_timeout', v_lt, true);
     EXCEPTION WHEN OTHERS THEN
       BEGIN
+        PERFORM set_config('lock_timeout', v_lt, true);   -- already so after the block's rollback; said for the reader
         PERFORM pgvigil.mssql_azuredb_hour_failed(v.instance_id, (SELECT min(h) FROM unnest(v.hours) h),
                                                   (SELECT max(h) FROM unnest(v.hours) h) + interval '1 hour', SQLERRM);
       EXCEPTION WHEN OTHERS THEN

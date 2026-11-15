@@ -147,8 +147,15 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		fmt.Println()
 	}
-	// 0167: the hours of Azure SQL Database's resource minutes still waiting (the first build, a failed rollup), each
-	// instance in its own transaction
+	// 0167: this month's and the next month's partition of the Azure SQL Database hours (never an import's trigger's
+	// ACCESS EXCLUSIVE), then the hours still waiting (the first build, a failed rollup), each instance in its own
+	// transaction
+	if err := r.AzureDBHourMonths(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Warn("azure hours: this month's or the next month's partition not made now (a later purge run makes it)", "err", err)
+	}
 	start = time.Now()
 	ainst, arows, afailed, err := r.AzureDBHoursHeal(ctx)
 	if err != nil {
