@@ -622,7 +622,7 @@ echo "== F. the version pin =="
 sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES (DATEADD(day, 1, SYSUTCDATETIME()), '9.9.9')" "$DDB"
 res=$(pages)
 sqok "F: the version row's removal" "DELETE FROM dbo.DBVersionHistory WHERE Version = '9.9.9'" "$DDB"
-[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == 9 ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
+[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == 10 ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
 for pj in "$TMPD"/pages/*.json; do jget "$pj" note | grep -q 'not proven on source version 9.9.9' || fail "F: the note of $(basename "$pj"): $(jget "$pj" note)"; done
 echo "ok   F: on a repository at 9.9.9 every page says proven=false: '$(jget "$TMPD/pages/alerts.json" note)'; the row removed"
 
