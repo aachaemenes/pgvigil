@@ -30,7 +30,7 @@ const cols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'recovery_model', label: 'recovery model', fmt: words },
   { key: 'ag_name', label: 'availability group', fmt: (v, r) => !v ? '' : `${String(v)} (${String(r.replicas_monitored ?? 0)} of ${String(r.replicas_total ?? 0)} replicas monitored)`,
-    cls: (_, r) => r.replicas_unseen === true ? 'warn' : '' },
+    cls: (v, r) => !v ? '' : r.replicas_unseen === true ? 'warn' : 'ok' },
   { key: 'not_judged', label: 'judged', fmt: v => v ? `no: ${String(v)}` : 'yes' },
   { key: 'full_status', label: 'full', cls: critIfFull },
   { key: 'full_at', label: 'last full', fmt: when('full_from'), cls: follows('full_status', true) },

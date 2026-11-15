@@ -94,7 +94,7 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
             tile('cancelled', fmtNum(c.cancelled ?? 0), Number(c.cancelled) > 0 ? 'crit' : '')),
           grid(runs, [
             { key: 'start_time', label: 'start', fmt: fmtTime }, { key: 'duration_s', label: 'took', num: true, fmt: dur },
-            { key: 'outcome', cls: v => v === 'failed' || v === 'cancelled' ? 'status crit' : v === 'succeeded' ? 'status ok' : '' },
+            { key: 'outcome', cls: v => v === 'failed' || v === 'cancelled' ? 'status crit' : v === 'succeeded' ? 'status ok' : v == null || v === '' ? '' : 'status none' },
             { key: 'failed_step', label: 'step that failed' }, { key: 'message', fmt: oneLine },
           ], 'No run of this job in the last 7 days.'));
         requestAnimationFrame(() => { if (h.isConnected) h.focus(); });

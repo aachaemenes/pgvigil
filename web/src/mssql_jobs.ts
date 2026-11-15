@@ -398,8 +398,8 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
     // failed runs in the range (run_status 0 / 'failed'); a job the judge holds critical or warning (a cancel among them)
-    // is never green here
-    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : judged(r) ? '' : 'status ok',
+    // is never green here: N/A; an acknowledged count its Acknowledged pair (every cell of the column carries a status)
+    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? 'status none ack' : 'status crit') : judged(r) ? 'status none' : 'status ok',
       fmt: (v, r) => Number(v) > 0 ? (jobAcked(r) ? `${fmtNum(v)} (acknowledged)` : badge(fmtNum(v), 'crit')) : '0' },
     { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
     { key: 'max_s', label: 'longest', num: true, fmt: dur },
