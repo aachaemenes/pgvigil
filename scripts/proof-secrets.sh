@@ -33,8 +33,10 @@
 #  S3 the bound: in its first 6 minutes the log has at most 2 'password secret read' lines for the secret (one at
 #     start, one past 5 minutes) - both instances share one entry.
 #  S2 a rotation in the real single-user order, the SQL login with CHECK_POLICY=ON: the database's passwords changed
-#     first (ALTER ROLE / ALTER LOGIN), the secret 60 s later: both engines' rows are ok again within 4 minutes of the
-#     secret's change; SQL Server's error log shows the failed logins of the window, and those more than 15 s after
+#     first (ALTER ROLE / ALTER LOGIN) and the login's own sessions ended on both (the collector holds its connections
+#     between runs, and a changed password ends no open session: without this the window has no new login at all -
+#     the lab's first run, 2026-11-15), the secret 60 s later: both engines' rows are ok again, each a row stored after
+#     the secret's change, within 4 minutes; SQL Server's error log shows the failed logins of the window, and those more than 15 s after
 #     its first (past the burst of connects already dialling) are at most one a minute of the window plus one; the
 #     PostgreSQL count the same through PGVIGIL_PROOF_PG_LOG (else NOT PROVEN). The lockout itself is NOT PROVEN
 #     (a Windows lockout policy; the box's SQL Server runs on Linux).
@@ -75,7 +77,7 @@ cleanup() {
   if [ -n "$MADE_SECRET" ]; then
     aws secretsmanager restore-secret --region "$REGION" --secret-id "$SECRET" >/dev/null 2>&1 # a deletion scheduled in S5: restored first
     aws secretsmanager delete-secret --region "$REGION" --secret-id "$SECRET" --force-delete-without-recovery >/dev/null 2>&1 \
-      && echo "LAB GONE: the secret $SECRET force-deleted (read back: $(aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET" >/dev/null 2>&1 && echo STILL THERE || echo gone))" \
+      && echo "LAB GONE: the secret $SECRET force-deleted (read back: $(g=; for _ in $(seq 1 12); do aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET" >/dev/null 2>&1 || { g=1; break; }; sleep 5; done; [ -n "$g" ] && echo gone || echo 'STILL THERE after 60 s'))" \
       || echo "CLEANUP: the secret $SECRET was NOT deleted" >&2
   fi
   [ -n "$MADE_ROLE" ] && padmin "drop role if exists $LOGIN" >/dev/null 2>&1
@@ -120,6 +122,10 @@ once() { "$BIN" collect -config "$CFG" -once "$2" -instance "$1" >> "$OUT" 2>&1 
 status() { q "SELECT d.status || '|' || coalesce(d.note, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.collection = '$2'"; }
 # wait_for <seconds> <instance> <collection> <glob>: polls the row until it matches the glob or the time is up
 wait_for() { local end=$(( $(date +%s) + $1 )) v; while :; do v=$(status "$2" "$3"); [[ $v == $4 ]] && { echo "$v"; return 0; }; [ "$(date +%s)" -ge "$end" ] && { echo "$v"; return 1; }; sleep 5; done; }
+# fresh <instance> <collection> <epoch>: the row's status and note when it was stored after <epoch>, else 'stale|...'
+fresh() { q "SELECT CASE WHEN d.snapshot_at > to_timestamp($3) THEN d.status || '|' || coalesce(d.note, '') ELSE 'stale|' || d.status || ' at ' || to_char(d.snapshot_at, 'HH24:MI:SS') END FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.collection = '$2'"; }
+# wait_fresh <seconds> <instance> <collection> <epoch>: polls until the row is ok and newer than <epoch>, or the time is up
+wait_fresh() { local end=$(( $(date +%s) + $1 )) v; while :; do v=$(fresh "$2" "$3" "$4"); [[ $v == ok* ]] && { echo "$v"; return 0; }; [ "$(date +%s)" -ge "$end" ] && { echo "$v"; return 1; }; sleep 5; done; }
 
 echo "--- S1 both engines through the secret"
 once "sec-pg-$SUF" activity; once "sec-ms-$SUF" mssql_instance
@@ -160,15 +166,21 @@ pgfails() { bash -c "$PGVIGIL_PROOF_PG_LOG" 2>&1 | grep -c "password authenticat
 PGL0=0; [ -n "${PGVIGIL_PROOF_PG_LOG:-}" ] && PGL0=$(pgfails)
 padmin "alter role $LOGIN password $(pgq "$PW2")" >/dev/null
 ms "ALTER LOGIN [$LOGIN] WITH PASSWORD = $(sqlq "$PW2");" >/dev/null
+# a changed password ends no open session: the login's own are ended, so the collector's next run reconnects with the
+# value it holds (the old one) - the failed logins the bound is about
+KPG=$(padmin "select count(pg_terminate_backend(pid)) from pg_stat_activity where usename = $(pgq "$LOGIN")" | tail -1) || true
+KMS=$(ms "DECLARE @k nvarchar(max) = N'', @n int = 0; SELECT @k = @k + N'KILL ' + CAST(session_id AS nvarchar(10)) + N';', @n = @n + 1 FROM sys.dm_exec_sessions WHERE login_name = N'$LOGIN' AND session_id <> @@SPID; EXEC (@k); SELECT @n;" | tr -d '\r' | tail -1) || true
+echo "  the login's sessions ended after the change: PostgreSQL ${KPG:-?}, SQL Server ${KMS:-?}"
+[ "${KPG:-0}" -ge 1 ] && [ "${KMS:-0}" -ge 1 ] || bad "S2: the login's sessions ended: PostgreSQL '${KPG:-}', SQL Server '${KMS:-}' (want at least 1 on each: the collector holds one)"
 sleep 60
 ( umask 077; secretjson "$PW2" > "$WORK/s2.json" )
 aws secretsmanager put-secret-value --region "$REGION" --secret-id "$SECRET" --secret-string "file://$WORK/s2.json" >/dev/null; rm -f "$WORK/s2.json"
 TS=$(date +%s)
 sleep 25 # past the 20 s rows of the window
-R2=$(wait_for 240 "sec-pg-$SUF" activity "ok*") || true
-R3=$(wait_for 60 "sec-ms-$SUF" mssql_instance "ok*") || true
+R2=$(wait_fresh 240 "sec-pg-$SUF" activity "$TS") || true
+R3=$(wait_fresh 60 "sec-ms-$SUF" mssql_instance "$TS") || true
 echo "  after the secret's change ($(( $(date +%s) - TS )) s): PostgreSQL $R2, SQL Server $R3"
-[[ $R2 == ok* && $R3 == ok* ]] && echo "S2 rows: OK" || bad "S2: '$R2' / '$R3' (want ok on both within 4 minutes of the secret's change)"
+[[ $R2 == ok* && $R3 == ok* ]] && echo "S2 rows: OK" || bad "S2: '$R2' / '$R3' (want ok on both, each stored after the secret's change, within 4 minutes of it)"
 MSF=$(ms "CREATE TABLE #pv_el (LogDate datetime, ProcessInfo nvarchar(64), Text nvarchar(max));
 INSERT #pv_el EXEC sp_readerrorlog 0, 1, N'Login failed for user ''$LOGIN''';
 DECLARE @t0 datetime = '$T0', @first datetime;
