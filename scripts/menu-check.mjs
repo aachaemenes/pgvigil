@@ -129,8 +129,9 @@
 //   G-grouped         Group by platform: the grid's menu works, Copy > Grid n rows; the group panel's table has a menu
 //   G-empty0          a grid empty from the start: Copy items off 'No data to copy', Export Excel on, Columns..., 'Rows: 0'
 //   G-dialog          the viewer's grid: the menu inside the dialog, Copy > Cell 'a]b'
-//   G-sql             the fixture's two SQL files on the box's PostgreSQL (standard_conforming_strings on, then off) and a
-//                     SQL Server container (PGVIGIL_MENU_MSSQL / _ENV): every row read back equal, NUL dropped and said,
+//   G-sql             the fixture's two SQL files on the box's PostgreSQL (standard_conforming_strings on, then off, then off
+//                     with the file sent as one query as pgAdmin's F5 does) and a SQL Server container (PGVIGIL_MENU_MSSQL /
+//                     _ENV; the fixture holds a backslash before a line break and a GO line): every row read back equal, NUL dropped and said,
 //                     names "we]ird""name" / column_n, table t intact
 //   G-stmt            a statement cell's button: the grid's menu, Copy > Cell the statement
 //   G-plain           slow.ts's own table.grid: the menu, Copy > Cell
@@ -600,7 +601,9 @@ const GH = 'gm-hostile.json', longText = 'SELECT ' + 'x'.repeat(9993);
 const hostile = [
   ["it's", 'o1'], ['a]b', 'o2'], ['say "hi"', 'o3'], ['trail\\', 'o4'], ['line1\nline2', 'o5'], ['tab\there', 'o6'], ['nul\u0000here', 'o7'], ['00412', 'o8'],
   ['NaN', 'o9'], ['<script>alert(1)</script>', 'o10'], [longText, '100%'], ['\\', "');DROP TABLE t;--"], ['R & D', 'pg_stat_statements'], ['R & D dept', 'o14'],
-].map(([txt, odd], i) => ({ id: i + 1, txt, 'we]ird"name': odd, num: [1, 2.5, -3, 0, 412, 1000000, 7.25, 8, 9, 10, 11, 12, 13, 14][i], '': i < 6 ? null : 'e' + (i + 1) }));
+  // review-15 gm2 B3 and its GO question: T-SQL's backslash line continuation, and a GO line inside a value (sqlcmd)
+  ['back\\\nslash', 'o15'], ['x\nGO\ny', 'o16'],
+].map(([txt, odd], i) => ({ id: i + 1, txt, 'we]ird"name': odd, num: [1, 2.5, -3, 0, 412, 1000000, 7.25, 8, 9, 10, 11, 12, 13, 14, 15, 16][i], '': i < 6 ? null : 'e' + (i + 1) }));
 const want = hostile.map(r => ({ ...r, txt: r.txt.replace(/\u0000/g, '') }));
 const GV = `[...document.querySelectorAll('dialog[open] table.grid')].pop()`;
 const dropHostile = async (rows = hostile, name = GH) => { await closeDialogs(); await go('#/summary');
@@ -985,12 +988,16 @@ await guard('G-sql', async () => {
     if (!/NUL/.test(pgf.text.split('\n').filter(l => l.startsWith('--') || l.startsWith('﻿--')).join(' '))) res.push('the PostgreSQL header names no NUL dropped');
     fs.writeFileSync(path.join(work, 'gm-pg.sql'), pgf.buf); fs.writeFileSync(path.join(work, 'gm-ms.sql'), msf.buf);
     psql('create table if not exists t (x int)');
-    for (const scs of ['on', 'off']) {
+    // -f: psql runs the file a statement at a time; whole: the file as ONE query (psql -c, as pgAdmin's F5 sends it),
+    // lexed before its SET runs - with standard_conforming_strings off it is the hostile row's injection path (gm2 B2)
+    for (const [scs, whole] of [['on', false], ['off', false], ['off', true]]) {
+      const tag = `PostgreSQL (standard_conforming_strings ${scs}${whole ? ', the file as one query' : ''})`;
       try {
-        const o = execFileSync('psql', [`${dsn} dbname=${db}`, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-f', path.join(work, 'gm-pg.sql'), '-c', '\\echo @@READBACK', '-c', 'select row_to_json(g)::text from pg_temp.pgvigil_grid g order by 1'],
+        const o = execFileSync('psql', [`${dsn} dbname=${db}`, '-XAtq', '-v', 'ON_ERROR_STOP=1', ...(whole ? ['-c', pgf.text] : ['-f', path.join(work, 'gm-pg.sql')]), '-c', '\\echo @@READBACK', '-c', 'select row_to_json(g)::text from pg_temp.pgvigil_grid g order by g.id'],
           { encoding: 'utf8', env: { ...process.env, PGOPTIONS: `-c standard_conforming_strings=${scs}` } });
-        cmp(o.split('\n@@READBACK\n')[1]?.split('\n').filter(Boolean).map(l => JSON.parse(l)), `PostgreSQL (standard_conforming_strings ${scs})`);
-      } catch (e) { res.push(`PostgreSQL (${scs}): ${String(e.stderr ?? e.message).split('\n').slice(0, 3).join(' | ')}`); }
+        cmp(o.split('\n@@READBACK\n')[1]?.split('\n').filter(Boolean).map(l => JSON.parse(l)), tag);
+      } catch (e) { res.push(`${tag}: ${String(e.stderr ?? e.message).split('\n').slice(0, 3).join(' | ')}`); }
+      if (psql(`select count(*) from pg_class where relname = 't' and relkind = 'r'`) !== '1') { res.push(`table t is GONE after ${tag}`); psql('create table if not exists t (x int)'); }
     }
     if (psql(`select count(*) from pg_class where relname = 't' and relkind = 'r'`) !== '1') res.push('table t is GONE');
     const sc = process.env.PGVIGIL_MENU_MSSQL, ef = process.env.PGVIGIL_MENU_MSSQL_ENV;
