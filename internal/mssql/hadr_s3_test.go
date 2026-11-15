@@ -2,6 +2,7 @@ package mssql
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -149,13 +150,13 @@ func TestLogRestoreText(t *testing.T) {
 }
 
 // the configuration read names every job of a log shipping setup with what the repository judges (existence, enabled,
-// its enabled schedules and their shortest interval); the foreign-log read takes only this server's own log backups
-// that are not copy-only, of the last 24 hours, outside the configuration's folders
+// the schedules that still run it and their shortest interval); the foreign-log read takes only this server's own log
+// backups that are not copy-only, of the last 24 hours, and judges them by the one shared fragment
 func TestLogShippingExtrasText(t *testing.T) {
 	for _, want := range []string{"msdb.dbo.log_shipping_primary_databases p", "msdb.dbo.log_shipping_secondary_databases sd",
 		"msdb.dbo.log_shipping_monitor_alert a", "p.backup_job_id AS job_id", "s.copy_job_id), (CAST('restore' AS varchar(10)), s.restore_job_id)",
 		"a.alert_job_id AS job_id", " AS job_exists,", " AS job_enabled,", " AS enabled_schedules,", " AS interval_min",
-		"d.recovery_model_desc", "CAST(sd.restore_mode AS int)", "ss.enabled = 1"} {
+		"d.recovery_model_desc", "CAST(sd.restore_mode AS int)", "d.database_id = DB_ID(p.primary_database)"} {
 		if !strings.Contains(lsConfigSQL, want) {
 			t.Errorf("the configuration read lacks %q", want)
 		}
@@ -163,10 +164,25 @@ func TestLogShippingExtrasText(t *testing.T) {
 	if strings.Count(lsConfigSQL, "LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = x.job_id") != 3 {
 		t.Error("a job the configuration names must be read by LEFT JOIN in each of the three arms (a deleted job is a row, job_exists 0)")
 	}
+	// a schedule counts only while it still runs the job: enabled, repeating, not ended - in the count AND in the
+	// interval of each of the three arms (six subqueries); one of them without it would count a disabled schedule
+	if n := strings.Count(lsConfigSQL, lsScheduleRuns); n != 6 {
+		t.Errorf("the schedule rule is in %d of the 6 schedule subqueries", n)
+	}
+	for _, want := range []string{"ss.enabled = 1", "ss.freq_type IN (4, 8, 16, 32)", "ss.active_end_date >= CONVERT(int, CONVERT(char(8), GETDATE(), 112))"} {
+		if !strings.Contains(lsScheduleRuns, want) {
+			t.Errorf("the schedule rule lacks %q", want)
+		}
+	}
+	// seconds, minutes and hours become minutes; anything else has no interval
+	if !strings.Contains(lsJobColumns, "WHEN 2 THEN ss.freq_subday_interval / 60.0 WHEN 4 THEN ss.freq_subday_interval * 1.0") ||
+		!strings.Contains(lsJobColumns, "WHEN 8 THEN ss.freq_subday_interval * 60.0 END) AS float)") {
+		t.Error("the interval is not seconds / 60, minutes, hours * 60 as a float")
+	}
 	for _, want := range []string{"bs.type = 'L' AND bs.is_copy_only = 0", "DATEADD(hour, -24, GETDATE())",
-		"bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))", "WHERE LEN(t.d1) > 0",
-		`LEFT(n.fn, LEN(t.d1) + 1) <> t.d1 + N'\'`, `(LEN(t.d2) = 0 OR LEFT(n.fn, LEN(t.d2) + 1) <> t.d2 + N'\')`,
-		`REPLACE(ISNULL(mf.physical_device_name, N''), N'/', N'\')`, " AS started_utc,", " AS finished_utc,"} {
+		"bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))",
+		"mf.physical_device_name AS file_name, p.backup_directory, p.backup_share", " AS started_utc,", " AS finished_utc",
+		") mf) x" + lsForeignWhere} {
 		if !strings.Contains(lsForeignSQL, want) {
 			t.Errorf("the foreign-log read lacks %q", want)
 		}
@@ -175,6 +191,86 @@ func TestLogShippingExtrasText(t *testing.T) {
 	if len(lsParts) != 2 || lsParts[0].source != "log shipping configuration" || lsParts[1].source != "log shipping foreign log backups" {
 		t.Errorf("the parts' sources changed: %+v (0143's import keeps a part's stored rows by these names)", lsParts)
 	}
+}
+
+// lsPathCases: a file, the configuration's folder and share, the database - and whether the file is foreign to log
+// shipping. Windows shapes (a local folder, a UNC share named unlike the folder, devices that are no file) and Linux
+// ones (SQL Server's own log shipping there joins the folder and the file with a backslash: seen on a real pair).
+var lsPathCases = []struct {
+	label, file, dir, share, db string
+	foreign                     bool
+}{
+	{"own: in the local folder", `D:\LS\db1_20261115101500.trn`, `D:\LS`, `\\SRV\LSShare`, "db1", false},
+	{"own: the folder given with a trailing separator", `D:\LS\x.trn`, `D:\LS\`, ``, "db1", false},
+	{"own: the folder given with a trailing space", `D:\LS\x.trn`, `D:\LS `, ``, "db1", false},
+	{"own: the folder given with a separator and a space", `D:\LS\x.trn`, `D:\LS\ `, ``, "db1", false},
+	{"own: written through the share, named unlike the folder", `\\SRV\LSShare\x.trn`, `D:\LS`, `\\SRV\LSShare`, "db1", false},
+	{"own: another case", `d:\ls\X.TRN`, `D:\LS`, ``, "db1", false},
+	{"own: Linux, the folder and the file joined by a backslash", `/var/opt/mssql/ship/lsw\lsw_20261115194351.trn`, `/var/opt/mssql/ship/lsw`, `/var/opt/mssql/ship/lsw`, "lsw", false},
+	{"own: Linux, forward slashes only", `/var/opt/mssql/ship/lsw/x.trn`, `/var/opt/mssql/ship/lsw/`, ``, "lsw", false},
+	{"own: log shipping's own name in the folder it had before a move", `D:\OLD\db1_20261115093000.trn`, `E:\LS`, `\\SRV\LS`, "db1", false},
+	{"own: its own name, the database's name holding LIKE wildcards", `X:\o\a_b%c_20261115093000.trn`, `E:\LS`, ``, "a_b%c", false},
+	{"own (a known miss): another job writing below the folder", `D:\LS\SRV\db1\LOG\x.trn`, `D:\LS`, ``, "db1", false},
+	{"foreign: a sibling folder that starts with the folder's name", `D:\LS2\x.trn`, `D:\LS`, ``, "db1", true},
+	{"foreign: another folder, another name", `D:\Backup\db1_backup_2026_11_15_093000.trn`, `E:\LS`, `\\SRV\LS`, "db1", true},
+	{"foreign: 13 digits", `D:\OLD\db1_2026111509300.trn`, `E:\LS`, ``, "db1", true},
+	{"foreign: 14 characters that are not all digits", `D:\OLD\db1_2026111509300x.trn`, `E:\LS`, ``, "db1", true},
+	{"foreign: another database's own name", `D:\OLD\db2_20261115093000.trn`, `E:\LS`, ``, "db1", true},
+	{"foreign: the underscore of the database's name is no wildcard", `X:\o\aXb%c_20261115093000.trn`, `E:\LS`, ``, "a_b%c", true},
+	{"foreign: its own name with another extension", `D:\OLD\db1_20261115093000.bak`, `E:\LS`, ``, "db1", true},
+	{"foreign: the NUL device", `NUL`, `D:\LS`, ``, "db1", true},
+	{"foreign: a virtual device", `{6F9619FF-8B86-D011-B42D-00C04FC964FF}`, `D:\LS`, ``, "db1", true},
+	{"foreign: a URL", `https://account.blob.core.windows.net/logs/db1.trn`, `D:\LS`, ``, "db1", true},
+	{"foreign: no media family", "\x00", `D:\LS`, ``, "db1", true}, // \x00 = a NULL file name
+	{"not judged: a configuration with no folder", `D:\Backup\x.trn`, ``, `\\SRV\LS`, "db1", false},
+	{"not judged: a folder of spaces", `D:\Backup\x.trn`, `  `, ``, "db1", false},
+}
+
+// TestLogShippingForeignPathsLive runs lsForeignWhere - the fragment lsForeignSQL ends with, as it is - over
+// lsPathCases on a real server (PGVIGIL_MSSQL_TEST_DSN; nothing is written or read from msdb: the rows are a VALUES
+// list). scripts/proof-mssql-logshipping.sh runs it against its primary.
+func TestLogShippingForeignPathsLive(t *testing.T) {
+	ctx, conn, _ := liveConn(t)
+	lit := func(v string) string {
+		if v == "\x00" {
+			return "CAST(NULL AS nvarchar(500))"
+		}
+		return "CAST(N'" + strings.ReplaceAll(v, "'", "''") + "' AS nvarchar(500))"
+	}
+	var values, want []string
+	for _, c := range lsPathCases {
+		values = append(values, "("+lit(c.label)+", "+lit(c.file)+", "+lit(c.dir)+", "+lit(c.share)+", "+lit(c.db)+")")
+		if c.foreign {
+			want = append(want, c.label)
+		}
+	}
+	q := "SELECT x.label FROM (VALUES " + strings.Join(values, ",\n ") + ") x (label, file_name, backup_directory, backup_share, database_name)" + lsForeignWhere
+	rows, err := QueryRows(ctx, conn, q)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, q)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, r["label"].(string))
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		isIn := func(list []string, v string) bool {
+			for _, x := range list {
+				if x == v {
+					return true
+				}
+			}
+			return false
+		}
+		for _, c := range lsPathCases {
+			if isIn(got, c.label) != c.foreign {
+				t.Errorf("%q: read as foreign = %v, want %v (file %q, folder %q, share %q, database %q)", c.label, !c.foreign, c.foreign, c.file, c.dir, c.share, c.db)
+			}
+		}
+	}
+	t.Logf("%d cases: %d foreign, %d own or not judged", len(lsPathCases), len(got), len(lsPathCases)-len(got))
 }
 
 // Every statement of the work against a real server (PGVIGIL_MSSQL_TEST_DSN; nothing is written): compiled under
