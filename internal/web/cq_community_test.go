@@ -177,3 +177,27 @@ func TestCommunityThroughTheQueueOnAStore(t *testing.T) {
 		t.Fatalf("pg_running on the allow-listed instance: %v", m)
 	}
 }
+
+// A result over 8 MB is cut from the end until it fits, the cut said and the cut set marked.
+func TestCQSetsCut(t *testing.T) {
+	old := cqResultMax
+	cqResultMax = 4096
+	defer func() { cqResultMax = old }()
+	big := resultSet{Columns: []string{"x"}}
+	for i := 0; i < 1000; i++ {
+		big.Rows = append(big.Rows, []any{strings.Repeat("y", 40)})
+	}
+	small := resultSet{Columns: []string{"a"}, Rows: [][]any{{1}}}
+	out := cqSets(instanceRun{Sets: []resultSet{small, big}})
+	b, _ := json.Marshal(out)
+	sets := out["sets"].([]resultSet)
+	if len(b) > 4096 || !sets[1].Truncated || len(sets[0].Rows) != 1 || !strings.HasPrefix(fmt.Sprint(out["cut"]), "cut at ") {
+		t.Fatalf("the cut: %d bytes, %v", len(b), out["cut"])
+	}
+	if len(big.Rows) != 1000 {
+		t.Fatal("the run's own sets were changed by the cut")
+	}
+	if o := cqSets(instanceRun{Sets: []resultSet{small}}); o["cut"] != nil {
+		t.Fatalf("a small result was cut: %v", o["cut"])
+	}
+}

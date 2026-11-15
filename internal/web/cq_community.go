@@ -93,9 +93,40 @@ func cqParams(env *cq.Env, r cq.Request, in *communityBody) map[string]any {
 	return map[string]any{"values": in.Params, "database": in.Database, "via": "queue", "request_id": r.ID, "collector": env.Host}
 }
 
+// cqResultMax: 0200's CHECK on a stored result (8 MB), less room for the words around the sets.
+var cqResultMax = 8<<20 - 64<<10
+
 // cqSets is a stored result: the run's sets and its words, one shape in both modes ({sets: [{columns, rows, ...}]}).
+// Over cqResultMax the rows are cut from the end (the last set first) until it fits, each cut set marked truncated
+// and the cut said: 'cut at <n> rows: queue mode keeps 8 MB' (the direct reply has no total cap).
 func cqSets(run instanceRun) map[string]any {
-	return map[string]any{"sets": run.Sets, "declined": run.Declined, "error": run.Error, "duration_ms": run.DurationMS}
+	out := map[string]any{"sets": run.Sets, "declined": run.Declined, "error": run.Error, "duration_ms": run.DurationMS}
+	if b, err := json.Marshal(out); err != nil || len(b) <= cqResultMax {
+		return out
+	}
+	sets := make([]resultSet, len(run.Sets))
+	copy(sets, run.Sets)
+	for {
+		i := len(sets) - 1
+		for i >= 0 && len(sets[i].Rows) == 0 {
+			i--
+		}
+		if i < 0 {
+			break
+		}
+		n := len(sets[i].Rows) / 2 // halve the last set with rows until the whole fits
+		sets[i].Rows, sets[i].Truncated = sets[i].Rows[:n:n], true
+		out["sets"] = sets
+		if b, err := json.Marshal(out); err == nil && len(b) <= cqResultMax {
+			break
+		}
+	}
+	kept := 0
+	for _, x := range sets {
+		kept += len(x.Rows)
+	}
+	out["cut"] = fmt.Sprintf("cut at %d rows: queue mode keeps 8 MB", kept)
+	return out
 }
 
 // cqTool is the tool of a payload on this instance, or the gate's words.
