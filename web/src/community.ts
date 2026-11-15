@@ -16,7 +16,7 @@ import { Ctx, tabsFor } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 import { folderWords, inTagScope, tagWords } from './fleet';
-import { asRun, isQueued, Queued, waitRequest } from './request';
+import { asRun, cutWords, isQueued, Queued, waitRequest } from './request';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
 // state: needs | note | not_checked | demo; source: where the server read it (server, configuration, repository, live)
@@ -269,6 +269,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     }
   }
   const table = el('tbody');
+  const helpCells = new Map<string, [HTMLElement, HTMLInputElement]>();   // queue mode: filled by the help run below
   // the values the server presets for this instance (a default the procedure would decline here, or one that reads
   // nothing): filled in and said, the note beside the tool says why
   const preset = new Map(Object.entries(t.preset ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
@@ -279,7 +280,9 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     const v = preset.get(x.name.toLowerCase());
     if (v !== undefined) { i.value = v; filled.push(`${x.name} = ${v}`); }
     inputs.push([x.name, i]);
-    table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length !== 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : /^n/i.test(x.type) ? x.max_length / 2 : x.max_length})` : '')), el('td', {}, i), el('td', {}, x.help ?? '')));
+    const helpCell = el('td', {}, x.help ?? '');
+    helpCells.set(x.name.toLowerCase().replace(/^@/, ''), [helpCell, i]);
+    table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length !== 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : /^n/i.test(x.type) ? x.max_length / 2 : x.max_length})` : '')), el('td', {}, i), helpCell));
   }
   if (p.params.length) {
     sec.append(el('p', { class: 'meta' }, 'Leave a parameter empty to take the procedure\'s own default.'),
@@ -305,7 +308,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
       if (isQueued(r)) {
         res.replaceChildren();
         const e = await waitRequest(r, status);   // the collector runs it; status says each state
-        res.replaceChildren(resultView([asRun(e, d.instance, d.engine)], undefined, t.name));
+        res.replaceChildren(...cutWords(e), resultView([asRun(e, d.instance, d.engine)], undefined, t.name));
       } else {
         res.replaceChildren(resultView(r.runs, undefined, t.name));
         status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
@@ -324,7 +327,14 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
         const q = await post<Queued>('community/run?help=1', { instance_id: instance, tool: t.id, database: d.database ?? '' });
         const e = await waitRequest(q, hs);
         if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal ?? e.outcome ?? e.state));
-        else hb.replaceChildren(...(e.result?.sets ?? []).flatMap((s, i) => [el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)]));
+        else {
+          hb.replaceChildren(...(e.result?.sets ?? []).flatMap((s, i) => [el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)]));
+          // the procedure's own words per parameter, into the form's 'what it does' column (direct mode fills it at once)
+          for (const [k, v] of Object.entries(e.result?.help ?? {})) {
+            const c = helpCells.get(k.toLowerCase().replace(/^@/, ''));
+            if (c && v && !c[0].textContent) { c[0].textContent = v; c[1].title = v; }
+          }
+        }
       } catch (e) { hb.replaceChildren(errorBox(e)); hs.textContent = ''; } finally { offControl(ask, null, hs); }
     });
     det.append(ask, hs, hb);
@@ -424,12 +434,14 @@ function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
       try {
         const r = await post<{ runs: InstanceRun[] } | Queued>('community/run', { instance_id: instance, tool: t.id, database: db.value, text: q.text, query_name: `${q.n} ${q.name}` });
         let runs: InstanceRun[];
+        let cut: HTMLElement[] = [];
         if (isQueued(r)) {
           const e = await waitRequest(r, busy);   // queue mode: the collector runs the query
           runs = [asRun(e, e.instance ?? '', 'sqlserver')];
+          cut = cutWords(e);
         } else runs = r.runs;
         res.replaceChildren(el('details', {}, el('summary', {}, `Query ${q.n}: the text sent`), el('pre', { class: 'sql', tabindex: '0' }, q.text)),
-          resultView(runs, undefined, `Query ${q.n} ${q.name}`));
+          ...cut, resultView(runs, undefined, `Query ${q.n} ${q.name}`));
       } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); }
     });
     return b;

@@ -15,8 +15,8 @@ type CQ struct {
 	// Workers is how many requests run at once (default 4, 1 to 16), plus one slot kept for kill, cancel, terminate and
 	// job stop; at most 2 run on one instance at a time.
 	Workers int `yaml:"workers"`
-	// ResultKeep is how long a read's result stays in the repository: read (the default: until its asker has read it,
-	// or 1 hour) or 7d. 7d opens every stored result to every pgvigil user for 7 days.
+	// ResultKeep is how long a read's result stays in the repository: read (the default and, in this release, the only
+	// value: until its asker has read it, or 1 hour). The 7-day keep comes with the masked result store.
 	ResultKeep string `yaml:"result_keep"`
 }
 
@@ -50,9 +50,11 @@ func (c *Config) validateCQ() error {
 	switch c.CQ.ResultKeep {
 	case "":
 		c.CQ.ResultKeep = "read"
-	case "read", "7d":
+	case "read":
+	case "7d":
+		return fmt.Errorf("cq.result_keep: 7d is not in this release (it comes with the masked result store); read is the default")
 	default:
-		return fmt.Errorf("cq.result_keep must be read or 7d (got %q)", c.CQ.ResultKeep)
+		return fmt.Errorf("cq.result_keep must be read (got %q)", c.CQ.ResultKeep)
 	}
 	for i := range c.Instances {
 		in := &c.Instances[i]

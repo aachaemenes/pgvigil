@@ -84,7 +84,7 @@ func TestQueueOnAStore(t *testing.T) {
 	alice, _ := au.issue("alice", "h")
 	bob, _ := au.issue("bob", "h")
 	// a worker holding the instance, its community door open (the owner writes them, as the worker would)
-	if _, err := pool.Exec(ctx, `SELECT * FROM pgvigil.import_cq_beat($1, 'qhost', $2)`, w, []string{inst}); err != nil {
+	if _, err := pool.Exec(ctx, `SELECT * FROM pgvigil.import_cq_beat($1, 'qhost', $2, NULL)`, w, []string{inst}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_cq_doors($1, $2::jsonb)`, w, fmt.Sprintf(`[{"instance": %q, "kind": "community_run", "open": true}]`, inst)); err != nil {

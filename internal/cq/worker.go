@@ -1,14 +1,17 @@
 package cq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +36,36 @@ const (
 	publishEvery   = 10 * time.Minute
 	publishTimeout = 60 * time.Second
 	publishAtOnce  = 4
+	stopCall       = 5 * time.Second
 )
+
+// StopBudget is how long the worker's stop may take (each run ended within stopWait, then the lease ended within
+// stopCall), with a margin: `pgvigil run` waits this long for it before it exits.
+const StopBudget = stopWait + stopCall + 3*time.Second
+
+// NoNUL returns a JSON text with every \u0000 escape replaced by � (both six bytes): PostgreSQL's jsonb and text
+// refuse U+0000 (22P05), and a SQL Server text cell may hold NCHAR(0). Every backslash of valid JSON starts an escape
+// pair, so stepping over the pairs never mistakes an escaped backslash followed by "u0000" for the escape.
+func NoNUL(b []byte) []byte {
+	if !bytes.Contains(b, []byte(`\u0000`)) {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		if b[i] != '\\' || i+1 >= len(b) {
+			out = append(out, b[i])
+			continue
+		}
+		if b[i+1] == 'u' && i+5 < len(b) && string(b[i+2:i+6]) == "0000" {
+			out = append(out, `�`...)
+			i += 5
+			continue
+		}
+		out = append(out, b[i], b[i+1])
+		i++
+	}
+	return out
+}
 
 // Publisher publishes one held instance's facts into the repository (S5: a page reads them, never a request per view).
 type Publisher func(ctx context.Context, env *Env) error
@@ -74,15 +106,26 @@ func (w *Worker) publish(ctx context.Context) {
 			defer func() { <-sem }()
 			env := w.env(in)
 			for _, p := range ps {
-				cctx, cancel := context.WithTimeout(ctx, publishTimeout)
-				if err := p(cctx, &env); err != nil {
-					w.log.Warn("request queue: a publisher failed", "instance", in.Name, "err", err)
-				}
-				cancel()
+				w.publishOne(ctx, p, &env)
 			}
 		}()
 	}
 	wg.Wait()
+}
+
+// publishOne runs one publisher on one instance under publishTimeout; a panic in it is logged, never the collector's
+// end (the lifted community code ran under net/http's recover before).
+func (w *Worker) publishOne(ctx context.Context, p Publisher, env *Env) {
+	cctx, cancel := context.WithTimeout(ctx, publishTimeout)
+	defer cancel()
+	defer func() {
+		if v := recover(); v != nil {
+			w.log.Error("request queue: a publisher panicked", "instance", env.Instance.Name, "panic", v)
+		}
+	}()
+	if err := p(cctx, env); err != nil {
+		w.log.Warn("request queue: a publisher failed", "instance", env.Instance.Name, "err", err)
+	}
 }
 
 // Source is what the worker reads its held instances from: the repository (the page's list), as the scheduler does.
@@ -176,6 +219,7 @@ func (w *Worker) loop(ctx context.Context, src Source) error {
 			w.claim(ctx)
 			publishNow()
 		case <-pub.C:
+			w.publishDoorsNow(ctx) // the doors too: a page credential that resolves now, a row lost from the store
 			publishNow()
 		case <-beat.C:
 			w.beat(ctx)
@@ -207,6 +251,15 @@ func (w *Worker) setHeld(ctx context.Context, all []config.Instance) {
 	w.mu.Lock()
 	w.held = held
 	w.mu.Unlock()
+	w.publishDoorsNow(ctx)
+}
+
+// publishDoorsNow publishes the doors of the instances held now (at each change of the held set and every
+// publishEvery).
+func (w *Worker) publishDoorsNow(ctx context.Context) {
+	w.mu.Lock()
+	held := maps.Clone(w.held)
+	w.mu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	if err := publishDoors(cctx, w.pool, w.id, doorRows(w.env(config.Instance{}), held)); err != nil {
@@ -229,11 +282,25 @@ func (w *Worker) heldNames() []string {
 	return names
 }
 
-// beat renews the lease (its instances now) and its running rows' lease; the ids it returns are cancels asked.
+// runningIDs is the ids of the requests this worker runs now (the beat renews these alone).
+func (w *Worker) runningIDs() []int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ids := make([]int64, 0, len(w.running))
+	for id := range w.running {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// beat renews the lease (its instances now) and the lease of the runs it still holds in memory - a row whose finish
+// failed, or a claimed row never started, is not renewed and goes 'lost' at the sweep; the ids it returns are cancels
+// asked. Every beat comes from the loop's goroutine, after a claim's starts: a claimed row is in w.running by then.
 func (w *Worker) beat(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	rows, err := w.pool.Query(cctx, `SELECT * FROM pgvigil.import_cq_beat($1, $2, $3)`, w.id, w.host, w.heldNames())
+	rows, err := w.pool.Query(cctx, `SELECT * FROM pgvigil.import_cq_beat($1, $2, $3, $4)`, w.id, w.host, w.heldNames(), w.runningIDs())
 	if err != nil {
 		w.log.Warn("request queue: the lease was not renewed", "err", err)
 		return
@@ -356,6 +423,11 @@ func (w *Worker) claim(ctx context.Context) {
 		got = append(got, c)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		// the rows read before the error start; a row set running but never read is not in w.running, so the beat does
+		// not renew it and the sweep says 'lost' within 30 s
+		w.log.Warn("request queue: the claim's rows were not all read; an unread one goes 'lost'", "err", err, "read", len(got))
+	}
 	for _, c := range got {
 		w.start(ctx, c.r, c.raw)
 	}
@@ -378,12 +450,17 @@ func (w *Worker) start(ctx context.Context, r Request, raw []byte) {
 	go func() {
 		defer w.runs.Done()
 		defer cancel()
+		defer w.done(r, k.Urgent) // recover() works here: done is the deferred call itself
 		start := time.Now()
-		end := w.runOne(rctx, r, raw)
+		end := w.runSafe(rctx, r, raw)
 		w.mu.Lock()
 		cancelled, why := rr.cancelled, rr.why
 		w.mu.Unlock()
-		if cancelled && end.State != "refused" {
+		if cancelled && end.State == "done" {
+			// the cancel landed after the runner had finished: it ran whole, so its end stays done (for a kill, a
+			// 'cancelled' here would be a false word)
+			end.Outcome = strings.TrimSpace(end.Outcome + " (the cancel came after it had ended)")
+		} else if cancelled && end.State != "refused" {
 			end.State, end.Result = "cancelled", nil
 			if end.Outcome == "" {
 				end.Outcome = why
@@ -393,20 +470,39 @@ func (w *Worker) start(ctx context.Context, r Request, raw []byte) {
 			end.Outcome = "the run passed its time (its request expired while it ran)"
 		}
 		w.finish(r, end, time.Since(start))
-		w.mu.Lock()
-		delete(w.running, r.ID)
-		if !k.Urgent {
-			w.regular--
-			if w.byInst[r.Instance]--; w.byInst[r.Instance] <= 0 {
-				delete(w.byInst, r.Instance)
-			}
+	}()
+}
+
+// done gives a run's slot back (deferred first in its goroutine, so a panic in its end gives it back too; the row is
+// then out of w.running, the beat stops renewing it and the sweep says 'lost').
+func (w *Worker) done(r Request, urgent bool) {
+	if v := recover(); v != nil {
+		w.log.Error("request queue: a run's end panicked; its row goes 'lost'", "request", r.ID, "panic", v)
+	}
+	w.mu.Lock()
+	delete(w.running, r.ID)
+	if !urgent {
+		w.regular--
+		if w.byInst[r.Instance]--; w.byInst[r.Instance] <= 0 {
+			delete(w.byInst, r.Instance)
 		}
-		w.mu.Unlock()
-		select {
-		case w.wake <- struct{}{}: // a slot is free: claim again
-		default:
+	}
+	w.mu.Unlock()
+	select {
+	case w.wake <- struct{}{}: // a slot is free: claim again
+	default:
+	}
+}
+
+// runSafe is runOne with a panic ended 'failed' in the panic's words: one bad result never stops the collector.
+func (w *Worker) runSafe(ctx context.Context, r Request, raw []byte) (end End) {
+	defer func() {
+		if v := recover(); v != nil {
+			w.log.Error("request queue: a run panicked", "request", r.ID, "kind", r.Kind, "panic", v)
+			end = End{State: "failed", Outcome: fmt.Sprintf("the collector on %s broke while running it (%v): its log has it", w.host, v)}
 		}
 	}()
+	return w.runOne(ctx, r, raw)
 }
 
 // runOne: the payload decoded, the instance this collector holds, the doors checked again, the runner.
@@ -448,12 +544,13 @@ func (w *Worker) finish(r Request, end End, took time.Duration) {
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		w.log.Warn("request queue: an end was not written", "request", r.ID, "err", err)
+		w.finishBare(r, fmt.Sprintf("its end could not be written: %v", err))
 		return
 	}
+	b = NoNUL(b)
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
-		w.log.Warn("request queue: an end was not written", "request", r.ID, "err", err)
+		w.finishBare(r, fmt.Sprintf("its end could not be written: %v", err))
 		return
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
@@ -467,25 +564,32 @@ func (w *Worker) finish(r Request, end End, took time.Duration) {
 	}
 	var ok bool
 	if err := tx.QueryRow(ctx, `SELECT pgvigil.import_action_finish($1, $2, $3::jsonb)`, w.id, r.ID, string(b)).Scan(&ok); err != nil {
-		w.log.Warn("request queue: an end was not written", "request", r.ID, "err", err)
+		// the end did not go in (a repository blip, the call's time): the transaction is given back first (it may hold
+		// the row), then the end is written bare; if that fails too, the row is out of w.running and goes 'lost'
+		_ = tx.Rollback(ctx)
+		w.finishBare(r, fmt.Sprintf("it ran, but its end could not be written: %v", err))
 		return
 	}
 	if !ok {
-		w.log.Warn("request queue: a run ended after its row was no longer this collector's (lost or swept); its end and audit are dropped", "request", r.ID)
-		return
+		// lost or swept: the end is dropped, the audit rows of a run that did execute are kept
+		w.log.Warn("request queue: a run ended after its row was no longer this collector's (lost or swept); its end is dropped, its audit kept", "request", r.ID)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		w.log.Warn("request queue: an end was not written", "request", r.ID, "err", err)
+		if ok {
+			w.finishBare(r, fmt.Sprintf("it ran, but its end could not be written: %v", err))
+		}
 	}
 }
 
-// finishBare ends a request 'failed' with words and nothing else.
+// finishBare ends a request 'failed' with words and nothing else; a failure here is logged and the row goes 'lost'
+// (the beat no longer renews it).
 func (w *Worker) finishBare(r Request, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	b, _ := json.Marshal(map[string]any{"state": "failed", "outcome": why})
-	if _, err := w.pool.Exec(ctx, `SELECT pgvigil.import_action_finish($1, $2, $3::jsonb)`, w.id, r.ID, string(b)); err != nil {
-		w.log.Warn("request queue: an end was not written", "request", r.ID, "err", err)
+	if _, err := w.pool.Exec(ctx, `SELECT pgvigil.import_action_finish($1, $2, $3::jsonb)`, w.id, r.ID, string(NoNUL(b))); err != nil {
+		w.log.Warn("request queue: an end was not written; the request goes 'lost'", "request", r.ID, "err", err)
 	}
 }
 
@@ -506,7 +610,7 @@ func (w *Worker) stop() {
 	case <-time.After(stopWait):
 		w.log.Warn("request queue: a run did not end in time at the stop; its row goes 'lost' when its lease lapses")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), stopCall)
 	defer cancel()
 	if _, err := w.pool.Exec(ctx, `SELECT pgvigil.import_cq_stop($1)`, w.id); err != nil {
 		w.log.Warn("request queue: the lease was not ended at the stop; it lapses in 45 s", "err", err)

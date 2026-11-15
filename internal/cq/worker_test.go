@@ -327,3 +327,33 @@ func TestWorkerDeadlineOnAStore(t *testing.T) {
 		t.Fatalf("a run past its deadline: %s %q", s, o)
 	}
 }
+
+// NoNUL: a \u0000 escape becomes � (jsonb and text refuse U+0000); an escaped backslash followed by the letters
+// u0000 is not one (review 20261114-215058 finding 1, a SQL Server text cell holding NCHAR(0)).
+func TestNoNUL(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"a":"x\u0000y"}`: `{"a":"x�y"}`,
+		`{"a":"\\u0000"}`:  `{"a":"\\u0000"}`,
+		`{"a":"\\\u0000"}`: `{"a":"\\�"}`,
+		`{"a":"plain \n"}`: `{"a":"plain \n"}`,
+		`["\u0000\u0000"]`: `["��"]`,
+	} {
+		if got := string(NoNUL([]byte(in))); got != want {
+			t.Fatalf("NoNUL(%s) = %s, want %s", in, got, want)
+		}
+	}
+	b, _ := json.Marshal(map[string]string{"cell": "a\x00b"})
+	if got := NoNUL(b); !json.Valid(got) || strings.Contains(string(got), `\u0000`) {
+		t.Fatalf("NoNUL of Go's own encoding: %s", got)
+	}
+}
+
+// A runner that panics ends its request 'failed' in the panic's words; the collector goes on (finding 12).
+func TestRunPanicEndsFailed(t *testing.T) {
+	registerForTest(t, "admin_test", standIn{fn: func(context.Context, *Env, Request) End { panic("boom in a runner") }})
+	w := &Worker{log: slog.New(slog.NewTextHandler(os.Stderr, nil)), host: "h1", held: map[string]config.Instance{"i1": {Name: "i1"}}}
+	end := w.runSafe(context.Background(), Request{ID: 1, Kind: "admin_test", Instance: "i1"}, []byte(`{}`))
+	if end.State != "failed" || !strings.Contains(end.Outcome, "boom in a runner") || !strings.Contains(end.Outcome, "h1") {
+		t.Fatalf("a panicking runner: %+v", end)
+	}
+}

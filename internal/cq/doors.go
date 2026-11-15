@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -85,7 +86,7 @@ func doorNow(env *Env, r Request, run Runner) string {
 				return d.Why
 			}
 			own = true
-		case name != "" && d.Name == name && !d.Open:
+		case name != "" && strings.EqualFold(d.Name, name) && !d.Open: // as the store's lower() match
 			return d.Why
 		}
 	}

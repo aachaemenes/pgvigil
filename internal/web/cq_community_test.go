@@ -191,7 +191,7 @@ func TestCQSetsCut(t *testing.T) {
 	out := cqSets(instanceRun{Sets: []resultSet{small, big}})
 	b, _ := json.Marshal(out)
 	sets := out["sets"].([]resultSet)
-	if len(b) > 4096 || !sets[1].Truncated || len(sets[0].Rows) != 1 || !strings.HasPrefix(fmt.Sprint(out["cut"]), "cut at ") {
+	if cqStoredSize(b) > 4096 || !sets[1].Truncated || len(sets[0].Rows) != 1 || !strings.HasPrefix(fmt.Sprint(out["cut"]), "cut at ") {
 		t.Fatalf("the cut: %d bytes, %v", len(b), out["cut"])
 	}
 	if len(big.Rows) != 1000 {
@@ -199,5 +199,80 @@ func TestCQSetsCut(t *testing.T) {
 	}
 	if o := cqSets(instanceRun{Sets: []resultSet{small}}); o["cut"] != nil {
 		t.Fatalf("a small result was cut: %v", o["cut"])
+	}
+}
+
+// The cut is measured as jsonb's text writes it (review 20261114-215058 finding 4): a separator is one byte more there.
+func TestCQStoredSize(t *testing.T) {
+	if n := cqStoredSize([]byte(`{"a":[1,2]}`)); n != 13 { // jsonb's text: {"a": [1, 2]}
+		t.Fatalf("cqStoredSize = %d, want 13", n)
+	}
+}
+
+// On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): a result of 300,000 rows of ten one-digit cells
+// (6.6 MB as encoding/json writes it, 9.6 MB as jsonb's text) is cut by cqSets until jsonb's text of it fits
+// ui_action_data's 8 MB CHECK (review 20261114-215058 box job 3: before the fold it did not).
+func TestCQSetsFitTheStoreOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	set := resultSet{Columns: []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}}
+	for i := 0; i < 300000; i++ {
+		set.Rows = append(set.Rows, []any{1, 2, 3, 4, 5, 6, 7, 8, 9, 0})
+	}
+	out := cqSets(instanceRun{Sets: []resultSet{set}})
+	if out["cut"] == nil {
+		t.Fatal("a 9.6 MB result was not cut")
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRow(ctx, `SELECT octet_length($1::jsonb::text)`, string(b)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n > 8388608 {
+		t.Fatalf("the cut result is %d bytes as jsonb's text, over the 8 MB CHECK", n)
+	}
+}
+
+// Glenn Berry's queries carry free SQL text: through the queue their named door is shut unless community_allow names
+// them or says all (review 20261114-215058 finding 16); a procedure stays open with the list unset.
+func TestCQScriptToolShutByDefault(t *testing.T) {
+	door := func(list []string) (cq.Door, bool) {
+		in := config.Instance{Name: "ms1", Engine: config.EngineSQLServer, CommunityAllow: list}
+		env := &cq.Env{Cfg: &config.Config{Instances: []config.Instance{in}}, Instance: in}
+		for _, d := range cqCommunityDoors(env) {
+			if d.Name == "glenn_berry" {
+				return d, true
+			}
+		}
+		return cq.Door{}, false
+	}
+	if d, shut := door(nil); !shut || d.Open || !strings.Contains(d.Why, "sends free SQL text") {
+		t.Fatalf("glenn_berry with community_allow unset: %+v %v, want a shut door with the words", d, shut)
+	}
+	for _, list := range [][]string{{"glenn_berry"}, {"SQL Server Diagnostic Queries"}, {"all"}} {
+		if d, shut := door(list); shut {
+			t.Fatalf("glenn_berry with community_allow %v: %+v, want no shut door", list, d)
+		}
+	}
+	if d, shut := door([]string{"sp_Blitz"}); !shut || !strings.Contains(d.Why, "is not in community_allow") {
+		t.Fatalf("glenn_berry with a list that leaves it out: %+v", d)
+	}
+	in := config.Instance{Name: "ms1", Engine: config.EngineSQLServer}
+	for _, d := range cqCommunityDoors(&cq.Env{Cfg: &config.Config{Instances: []config.Instance{in}}, Instance: in}) {
+		if d.Name == "sp_WhoIsActive" {
+			t.Fatalf("sp_WhoIsActive shut with community_allow unset: %+v", d)
+		}
 	}
 }

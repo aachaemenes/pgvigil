@@ -161,8 +161,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if loopback {
 		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
 	}
-	// task CQ (487): actions.via queue - serve connects to nothing but the repository: every instance's dsn, actions_dsn
-	// and explain_dsn is blanked before anything reads them (no door, plan gate or admin door resolves one), serve keeps
+	// task CQ (487): actions.via queue - serve connects to no monitored server: every instance's dsn, actions_dsn and
+	// explain_dsn is blanked before anything reads them (no door, plan gate or admin door resolves one), Admin >
+	// Instances' credentials are not resolved either (doors.page_instance_reads off here: the collector's), serve keeps
 	// no audit login (the collector that runs a request writes its audit), and SetQueue below refuses a collector login
 	logDSN := cfg.Repository.DSN()
 	if cfg.Actions.Queue() {
@@ -172,8 +173,10 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 			in.DSNRaw, in.ActionsDSNRaw, in.ExplainDSNRaw = "", "", ""
 			qcfg.Instances[i] = in
 		}
+		qcfg.Doors.PageInstanceReads = false
 		cfg, logDSN = &qcfg, ""
 		log.Info("serve sends its actions and community runs through the repository (actions.via queue): it connects to no monitored server")
+		log.Warn("queue mode: serve holds no write login to the repository, so acknowledgements, alert-rule edits, applications, Admin > Instances, custom reports and scheduled report mail are off (docs/queue.md)")
 	}
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
 		SessionTTL: time.Duration(*sessionHours) * time.Hour,
@@ -186,7 +189,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	defer srv.Close()
 	if cfg.Actions.Queue() {
-		if err := srv.SetQueue(ctx, cfg.Repository.DSN()); err != nil {
+		if err := srv.SetQueue(ctx, d); err != nil { // serve's own login (-dsn when given), the one its UI pool uses
 			_ = ln.Close()
 			return &configError{err}
 		}

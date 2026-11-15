@@ -1,10 +1,11 @@
 package web
 
 // q_requests.go: serve's side of the request queue (task CQ, 487; migration 0200). With actions.via queue serve
-// connects to nothing but the repository: a community run is an ask (import_action_request) a collector with
-// cq.enabled claims and runs with its own logins, and the page waits on GET /api/requests/<id>?wait=25, answered the
-// moment serve's LISTEN pgvigil_result hears the id (a 1 s read of the open waits while LISTEN is lost). The result is
-// the asker's alone (ui_action_result). Every other door says it is not through the queue yet in this release.
+// connects to no monitored server (the repository alone, and a DBA Dash repository named under dbadash:): a community
+// run is an ask (import_action_request) a collector with cq.enabled claims and runs with its own logins, and the page
+// waits on GET /api/requests/<id>?wait=25, answered the moment serve's LISTEN pgvigil_result hears the id (the row is
+// read every 5 s while LISTEN holds, every 1 s while it is lost). The result is the asker's alone as serve names them
+// (ui_action_result). Every other door is off in queue mode (queueNotYet).
 
 import (
 	"context"
@@ -24,8 +25,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// queueNotYet is the words of a door this release does not send through the queue.
-const queueNotYet = "not through the queue yet: this serve sends its actions to a collector (actions.via queue in pgvigil.yaml), and this one does not go that way in this release"
+// queueNotYet is the words of every door that is off in queue mode: the actions and plans this release does not send
+// through the queue, and serve's own repository writes (acknowledgements, alert rules, applications, Admin > Instances,
+// custom reports, report mail), which ride the audit login a queue-mode serve does not hold.
+const queueNotYet = "off in queue mode (actions.via queue in pgvigil.yaml): this serve holds no login to the monitored servers and no write login to the repository, and in this release only the community tools go through the queue to a collector"
+
+// queueWaitStep: a wait reads the request's row at least this often even while LISTEN holds (behind a
+// transaction-mode pooler LISTEN seems to hold and no notify ever arrives).
+const queueWaitStep = 5 * time.Second
 
 // queueState is serve's queue: the requester login's pool, why asks are refused here (or ""), and the open waits.
 type queueState struct {
@@ -235,7 +242,7 @@ func (s *Server) RequestGet(w http.ResponseWriter, r *http.Request) {
 			s.reply(w, r, m, nil)
 			return
 		}
-		step := left
+		step := min(left, queueWaitStep)
 		if !q.listening.Load() && step > time.Second {
 			step = time.Second // LISTEN lost: read the row every second
 		}
@@ -324,16 +331,19 @@ func (s *Server) queuedCommunityHelp(w http.ResponseWriter, r *http.Request, q *
 	s.replyAsk(w, r, m, err)
 }
 
-// liveTools reads a live worker's published tools of an instance (the newest worker that holds it).
+// liveTools reads a live worker's published tools of an instance (the newest worker that holds it, its open
+// community door first), by that worker's collector id; a tool its community_allow shuts (a shut named door) comes
+// back with the collector's words in Shut.
 func (s *Server) liveTools(ctx context.Context, name string) (host string, rows map[string]cqToolRow, door string, err error) {
 	rows = map[string]cqToolRow{}
 	var open *bool
 	var why *string
-	err = s.pool.QueryRow(ctx, `SELECT w.host,
-		(SELECT d.open FROM pgvigil.action_doors d WHERE d.collector_id = w.collector_id AND d.instance = $1 AND d.kind = 'community_run' AND d.name = ''),
-		(SELECT d.why FROM pgvigil.action_doors d WHERE d.collector_id = w.collector_id AND d.instance = $1 AND d.kind = 'community_run' AND d.name = '')
-		  FROM pgvigil.cq_workers w WHERE $1 = ANY (w.instances) AND w.beat_at > now() - interval '45 seconds'
-		 ORDER BY w.beat_at DESC LIMIT 1`, name).Scan(&host, &open, &why)
+	var cid string
+	err = s.pool.QueryRow(ctx, `SELECT w.collector_id, w.host, d.open, d.why
+		  FROM pgvigil.cq_workers w
+		  LEFT JOIN pgvigil.action_doors d ON d.collector_id = w.collector_id AND d.instance = $1 AND d.kind = 'community_run' AND d.name = ''
+		 WHERE $1 = ANY (w.instances) AND w.beat_at > now() - interval '45 seconds'
+		 ORDER BY d.open DESC NULLS LAST, w.beat_at DESC LIMIT 1`, name).Scan(&cid, &host, &open, &why)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", rows, fmt.Sprintf("no collector takes requests for %s now (cq.enabled in the pgvigil.yaml of the collector that holds it)", name), nil
 	}
@@ -346,9 +356,10 @@ func (s *Server) liveTools(ctx context.Context, name string) (host string, rows 
 	case !*open:
 		door = fmt.Sprintf("%s (the collector on %s)", strings.TrimSpace(deref(why)), host)
 	}
-	tr, err := s.pool.Query(ctx, `SELECT t.tool, t.present, coalesce(t.why, ''), t.params FROM pgvigil.cq_tools t
-		JOIN pgvigil.cq_workers w ON w.collector_id = t.collector_id
-		 WHERE t.instance = $1 AND w.host = $2 AND w.beat_at > now() - interval '45 seconds'`, name, host)
+	tr, err := s.pool.Query(ctx, `SELECT t.tool, t.present, coalesce(t.why, ''), t.params, coalesce(t.database, ''),
+		       (SELECT n.why FROM pgvigil.action_doors n WHERE n.collector_id = t.collector_id AND n.instance = t.instance
+		           AND n.kind = 'community_run' AND lower(n.name) = lower(t.tool) AND NOT n.open)
+		  FROM pgvigil.cq_tools t WHERE t.collector_id = $1 AND t.instance = $2`, cid, name)
 	if err != nil {
 		return host, rows, door, err
 	}
@@ -356,11 +367,15 @@ func (s *Server) liveTools(ctx context.Context, name string) (host string, rows 
 	for tr.Next() {
 		var row cqToolRow
 		var params []byte
-		if err := tr.Scan(&row.Tool, &row.Present, &row.Why, &params); err != nil {
+		var shut *string
+		if err := tr.Scan(&row.Tool, &row.Present, &row.Why, &params, &row.Database, &shut); err != nil {
 			return host, rows, door, err
 		}
 		if len(params) > 0 {
 			row.Params = json.RawMessage(params)
+		}
+		if shut != nil {
+			row.Shut = fmt.Sprintf("%s (the collector on %s)", strings.TrimSpace(*shut), host)
 		}
 		rows[row.Tool] = row
 	}
@@ -394,8 +409,10 @@ func (s *Server) queuedCommunity(w http.ResponseWriter, r *http.Request, q *queu
 		return
 	}
 	out.Collector = host
-	if q.off != "" {
-		out.Needs = append(out.Needs, hardNeed("Running a tool needs "+q.off+".", "", "configuration"))
+	// the sign-in and the requester role first (communityOffWords' queue part: a click would be 403 or refused), then
+	// the collector's own door
+	if w := s.communityOffWords(); w != "" {
+		out.Needs = append(out.Needs, hardNeed(w, "", "configuration"))
 	} else if door != "" {
 		out.Needs = append(out.Needs, hardNeed(door, "", "configuration"))
 	}
@@ -408,11 +425,21 @@ func (s *Server) queuedCommunity(w http.ResponseWriter, r *http.Request, q *queu
 			if t.Kind == "proc" {
 				yes := row.Present
 				ts.Installed = &yes
+				// the collector checks one database (the login's default): its name, not the one picked here
+				checked := row.Database
+				if checked == "" {
+					checked = out.Database
+				}
 				if yes {
-					ts.Where = out.Database + ".dbo"
+					ts.Where = checked + ".dbo"
+				}
+				if engine == "sqlserver" && !strings.EqualFold(checked, out.Database) {
+					ts.Needs = append(ts.Needs, noteNeed(fmt.Sprintf("the collector on %s checked %s in %s; a run in %s looks for it there and says so if it is not installed", host, t.Name, checked, out.Database), "", "repository"))
 				}
 			}
-			if !row.Present && row.Why != "" {
+			if row.Shut != "" {
+				ts.Needs = append(ts.Needs, hardNeed(row.Shut, "", "configuration"))
+			} else if !row.Present && row.Why != "" {
 				ts.Needs = append(ts.Needs, hardNeed(row.Why, "", "server"))
 			}
 		} else if door == "" && q.off == "" {
@@ -471,6 +498,10 @@ func (s *Server) queuedCommunityParams(w http.ResponseWriter, r *http.Request, t
 	}
 	out.Collector = host
 	row, ok := rows[t.ID]
+	if row.Shut != "" {
+		writeErr(w, http.StatusForbidden, errors.New(row.Shut))
+		return
+	}
 	if !ok || !row.Present {
 		why := row.Why
 		if why == "" {

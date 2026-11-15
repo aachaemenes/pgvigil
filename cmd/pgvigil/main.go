@@ -364,8 +364,8 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	defer func() {
 		select {
 		case <-cqDone:
-		case <-time.After(15 * time.Second):
-			log.Warn("request queue: its stop did not finish in 15 s")
+		case <-time.After(cq.StopBudget): // its own stop's bound: each run ended, then the lease
+			log.Warn("request queue: its stop did not finish in time", "waited", cq.StopBudget)
 		}
 	}()
 	return sched.Run(ctx, log, r, cfg)

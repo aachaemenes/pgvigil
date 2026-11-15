@@ -6,6 +6,7 @@ package web
 // in package web, because internal/cq must never import internal/web.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -58,34 +59,54 @@ func cqReadLogin(env *cq.Env) (dsn, kind string, no noDoor) {
 }
 
 // cqCommunityDoors: the kind's door (the read login) and a shut named door per tool ST4's community_allow leaves out
-// (unset = every tool, as today; a tool is named by its id or its name).
+// (unset = every tool, as today; a tool is named by its id or its name). A script tool (Glenn Berry's queries: the
+// payload carries free SQL text) is shut through the queue unless community_allow names it or says all: any holder of
+// the requester login can ask under any user name, where the direct path needs a signed-in user.
 func cqCommunityDoors(env *cq.Env) []cq.Door {
 	_, _, no := cqReadLogin(env)
 	out := []cq.Door{{Name: "", Open: no.Why == "", Why: no.Why}}
 	eng := cqEngine(env.Instance)
+	list := env.Instance.CommunityAllow
 	for _, t := range communityTools {
 		if t.Engine != eng {
 			continue
 		}
-		okID, why := config.Allowed(env.Instance.CommunityAllow, t.ID, "community_allow", true)
-		okName, _ := config.Allowed(env.Instance.CommunityAllow, t.Name, "community_allow", true)
-		if !okID && !okName {
-			out = append(out, cq.Door{Name: t.ID, Open: false, Why: strings.Replace(why, t.ID, t.Name, 1)})
+		def := t.Kind != "script"
+		okID, why := config.Allowed(list, t.ID, "community_allow", def)
+		okName, _ := config.Allowed(list, t.Name, "community_allow", def)
+		if okID || okName {
+			continue
 		}
+		why = strings.Replace(why, t.ID, t.Name, 1)
+		if !def && len(list) == 0 {
+			why = fmt.Sprintf("%s sends free SQL text, so through the request queue it runs only where community_allow names it (%s or all) for this instance", t.Name, t.ID)
+		}
+		out = append(out, cq.Door{Name: t.ID, Open: false, Why: why})
 	}
 	return out
 }
 
 // cqAuditRow writes one custom_report_log row in the worker's transaction (import_custom_report_run, as serve's
-// auditRun does); the queue's own names ride in params.
+// auditRun does); the queue's own names ride in params. The instance's id is resolved by its name in the same
+// transaction (a queue run knows only the name), so the community page's run log, read by instance id, lists it.
 func cqAuditRow(row map[string]any) func(context.Context, pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error {
+		delete(row, "instance_id")
+		if name, _ := row["instance"].(string); name != "" {
+			var id *int64
+			if err := tx.QueryRow(ctx, `SELECT pgvigil.import_cq_instance_id($1)`, name).Scan(&id); err != nil {
+				return err
+			}
+			if id != nil {
+				row["instance_id"] = *id
+			}
+		}
 		b, err := json.Marshal(row)
 		if err != nil {
 			return err
 		}
-		var id int64
-		return tx.QueryRow(ctx, `SELECT pgvigil.import_custom_report_run($1, $2::jsonb)`, time.Now(), string(b)).Scan(&id)
+		var lid int64
+		return tx.QueryRow(ctx, `SELECT pgvigil.import_custom_report_run($1, $2::jsonb)`, time.Now(), string(cq.NoNUL(b))).Scan(&lid)
 	}
 }
 
@@ -96,12 +117,20 @@ func cqParams(env *cq.Env, r cq.Request, in *communityBody) map[string]any {
 // cqResultMax: 0200's CHECK on a stored result (8 MB), less room for the words around the sets.
 var cqResultMax = 8<<20 - 64<<10
 
+// cqStoredSize is the size of a compact JSON text as jsonb's text form writes it, at least: jsonb writes ", " and ": "
+// where encoding/json writes "," and ":", one byte more per separator (counted over the whole text, so a comma or a
+// colon inside a string counts too: the measure errs large). A number jsonb writes longer than Go (1e+21 as 22
+// digits) is past this measure; import_action_finish ends such a result 'failed' with words instead of raising.
+func cqStoredSize(b []byte) int {
+	return len(b) + bytes.Count(b, []byte{','}) + bytes.Count(b, []byte{':'})
+}
+
 // cqSets is a stored result: the run's sets and its words, one shape in both modes ({sets: [{columns, rows, ...}]}).
-// Over cqResultMax the rows are cut from the end (the last set first) until it fits, each cut set marked truncated
-// and the cut said: 'cut at <n> rows: queue mode keeps 8 MB' (the direct reply has no total cap).
+// Over cqResultMax as stored the rows are cut from the end (the last set first) until it fits, each cut set marked
+// truncated and the cut said: 'cut at <n> rows: queue mode keeps 8 MB' (the direct run's reply stops at 24 MB).
 func cqSets(run instanceRun) map[string]any {
 	out := map[string]any{"sets": run.Sets, "declined": run.Declined, "error": run.Error, "duration_ms": run.DurationMS}
-	if b, err := json.Marshal(out); err != nil || len(b) <= cqResultMax {
+	if b, err := json.Marshal(out); err != nil || cqStoredSize(b) <= cqResultMax {
 		return out
 	}
 	sets := make([]resultSet, len(run.Sets))
@@ -117,7 +146,7 @@ func cqSets(run instanceRun) map[string]any {
 		n := len(sets[i].Rows) / 2 // halve the last set with rows until the whole fits
 		sets[i].Rows, sets[i].Truncated = sets[i].Rows[:n:n], true
 		out["sets"] = sets
-		if b, err := json.Marshal(out); err == nil && len(b) <= cqResultMax {
+		if b, err := json.Marshal(out); err == nil && cqStoredSize(b) <= cqResultMax {
 			break
 		}
 	}
@@ -207,16 +236,22 @@ func (cqCommunityHelp) Run(ctx context.Context, env *cq.Env, r cq.Request) cq.En
 		return cq.End{State: "refused", Refusal: err.Error()}
 	}
 	dsn, kind, no := cqReadLogin(env)
-	if no.Why != "" {
-		return cq.End{State: "refused", Refusal: no.Why}
-	}
 	name := env.Instance.Name
+	// the login's and the connection's refusals are audited as the direct form's are (op community_form)
+	formRefused := func(why string) cq.End {
+		return cq.End{State: "refused", Refusal: why, Audit: cqAuditRow(map[string]any{"op": "community_form", "ui_user": r.UIUser,
+			"client": r.Client, "tool": t.ID, "instance": name, "outcome": "refused", "detail": why, "door": nilIfEmpty(kind),
+			"params": map[string]any{"database": db, "via": "queue", "request_id": r.ID, "collector": env.Host}})}
+	}
+	if no.Why != "" {
+		return formRefused(no.Why)
+	}
 	dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
 	if err != nil || why != "" {
 		if why == "" {
 			why = err.Error()
 		}
-		return cq.End{State: "refused", Refusal: why}
+		return formRefused(why)
 	}
 	defer func() { _ = conn.Close(); _ = dbc.Close() }()
 	db = msDB(db)
@@ -258,12 +293,23 @@ func (cqCommunityHelp) Run(ctx context.Context, env *cq.Env, r cq.Request) cq.En
 	return end
 }
 
+// nilIfEmpty: an audit field that is absent rather than "" (import_custom_report_run refuses a door that is not
+// file, page or store).
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // cqToolRow is one row of import_cq_tools' array.
 type cqToolRow struct {
-	Tool    string `json:"tool"`
-	Present bool   `json:"present"`
-	Why     string `json:"why,omitempty"`
-	Params  any    `json:"params,omitempty"`
+	Tool     string `json:"tool"`
+	Present  bool   `json:"present"`
+	Why      string `json:"why,omitempty"`
+	Params   any    `json:"params,omitempty"`
+	Database string `json:"database,omitempty"` // SQL Server: the database the presence was checked in
+	Shut     string `json:"-"`                  // serve's read: the collector's words when its community_allow shuts the tool
 }
 
 // cqPublishTools publishes which community tools this instance has, why not, and each present procedure's parameter
@@ -313,6 +359,9 @@ func cqPublishTools(ctx context.Context, env *cq.Env) error {
 				continue
 			}
 			row := cqToolRow{Tool: t.ID, Why: inst}
+			if eng == config.EngineSQLServer {
+				row.Database = msDB(c.DB) // one database is checked (the login's default): the page says which
+			}
 			if row.Why == "" {
 				row.Why = hard(c.Tools[t.ID]) // a procedure's id is its name
 			}

@@ -85,9 +85,10 @@ func TestActionRequestsOnAStore(t *testing.T) {
 			t.Fatalf("want refused with %q, got %+v", want, a)
 		}
 	}
-	beat := func(w string, insts ...string) []int64 {
+	// beat: the worker's lease, and the lease of the runs it still holds (running)
+	beat := func(w string, running []int64, insts ...string) []int64 {
 		t.Helper()
-		rows, err := pool.Query(ctx, `SELECT * FROM pgvigil.import_cq_beat($1, $2, $3)`, w, "host-"+w, insts)
+		rows, err := pool.Query(ctx, `SELECT * FROM pgvigil.import_cq_beat($1, $2, $3, $4)`, w, "host-"+w, insts, running)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,9 +153,9 @@ func TestActionRequestsOnAStore(t *testing.T) {
 
 	// no worker, then a worker of another instance, then a held instance without a door
 	refused(ask("community_run", i1, "Alice", run), "no collector takes requests (cq.enabled")
-	beat(w1, i2)
+	beat(w1, nil, i2)
 	refused(ask("community_run", i1, "alice", run), "no collector takes requests for "+i1)
-	beat(w1, i1, i2)
+	beat(w1, nil, i1, i2)
 	refused(ask("community_run", i1, "alice", run), "is not through the queue yet on "+i1)
 	doors(w1, fmt.Sprintf(`[{"instance": %q, "kind": "community_run", "open": true},
 		{"instance": %q, "kind": "community_run", "name": "sp_Blitz", "open": false, "why": "sp_Blitz is not in community_allow for this instance"},
@@ -184,6 +185,13 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	refused(ask("pg_terminate", i1, "alice", `{"pid": 4242, "backend_start": "2026-11-14T10:00:00Z", "reason": "x"}`), "the reason is 5 to 500 characters")
 	refused(ask("mssql_plan_evict", i1, "alice", `{"plan_handle": "0x0G", "confirm": "abc", "reason": "a bad plan for days"}`), "is not a hex handle")
 	refused(ask("community_run", i1, "alice", `{"tool": "sp_WhoIsActive", "timeout_secs": 61}`), "timeout_secs is 1 to 60")
+	// a refused payload's timeout never reaches a cast: a refused row, never 22P02 / 22003
+	refused(ask("community_run", i1, "alice", `{"tool": "sp_WhoIsActive", "timeout_secs": "abc"}`), "timeout_secs is not a whole number")
+	refused(ask("community_run", i1, "alice", `{"tool": "sp_WhoIsActive", "timeout_secs": 1.5}`), "timeout_secs is not a whole number")
+	refused(ask("community_run", i1, "alice", `{"tool": "sp_WhoIsActive", "timeout_secs": 99999999999}`), "timeout_secs is 1 to 60")
+	// 100,000 three-byte characters pass the 200,000-character rule and not ui_action_data's 256 KB: words, never 23514
+	long, _ := json.Marshal(map[string]any{"tool": "glenn_berry", "text": strings.Repeat("\u20ac", 100000)})
+	refused(ask("community_run", i1, "alice", string(long)), "the arguments are over 256 KB")
 
 	// an accepted ask notifies its id at commit; a refused one notifies nobody
 	lc, err := pool.Acquire(ctx)
@@ -211,7 +219,7 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	lc.Release()
 
 	// the claim: a worker that holds the instance with its door shut takes nothing; the urgent slot; remaining_ms
-	beat(w2, i1)
+	beat(w2, nil, i1)
 	doors(w2, fmt.Sprintf(`[{"instance": %q, "kind": "community_run", "open": false, "why": "community tools are off on this collector"}]`, i1))
 	if got := claim(w2, 4, 1); len(got) != 0 {
 		t.Fatalf("a worker whose door is shut claimed %+v", got)
@@ -247,6 +255,26 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	if s := state(a1.RequestID); s != "running" {
 		t.Fatalf("claimed request is %s", s)
 	}
+	// the run lease: a beat renews only the runs the worker names (still in its memory); a running row it lost track of
+	// (its finish failed) keeps its old lease_until, so it lapses and the sweep says 'lost'
+	lease := func(id int64) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := pool.QueryRow(ctx, `SELECT lease_until FROM pgvigil.action_requests WHERE request_id = $1`, id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	l0 := lease(a1.RequestID)
+	time.Sleep(1100 * time.Millisecond)
+	beat(w1, nil, i1, i2)
+	if l := lease(a1.RequestID); !l.Equal(l0) {
+		t.Fatalf("a beat that does not name request %d renewed its lease: %v -> %v", a1.RequestID, l0, l)
+	}
+	beat(w1, []int64{a1.RequestID}, i1, i2)
+	if l := lease(a1.RequestID); !l.After(l0) {
+		t.Fatalf("a beat naming request %d did not renew its lease: %v -> %v", a1.RequestID, l0, l)
+	}
 
 	// cancel: another user refused; running -> asked, and the holder's beat returns it; waiting -> cancelled at once
 	var raw []byte
@@ -256,7 +284,7 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_action_cancel($1, 'ALICE')::text`, a1.RequestID).Scan(&raw); err != nil || !strings.Contains(string(raw), `"asked"`) {
 		t.Fatalf("alice's cancel of her running run: %s %v", raw, err)
 	}
-	if ids := beat(w1, i1, i2); len(ids) != 1 || ids[0] != a1.RequestID {
+	if ids := beat(w1, []int64{a1.RequestID}, i1, i2); len(ids) != 1 || ids[0] != a1.RequestID {
 		t.Fatalf("the holder's beat returned %v, want [%d] (the cancel seen without LISTEN)", ids, a1.RequestID)
 	}
 	w := ask("community_run", i1, "alice", run)
@@ -380,9 +408,125 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	}
 }
 
+// On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it), two workers holding one instance (review
+// 20261114-215058 findings 4 and 5):
+//   - a tool one holder's community_allow shuts (a shut named door) and the other's leaves open is accepted, and only
+//     the open holder claims it; the name matches whatever its case;
+//   - shut on every open holder, it is refused with a holder's words;
+//   - a result over 8 MB as jsonb's text ends 'failed' with words (the finish returns true), never 23514.
+func TestActionRequestsNamedDoorsOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sfx := time.Now().UnixNano() % 1000000000
+	inst := fmt.Sprintf("cq-n-%d", sfx)
+	wa, wb := fmt.Sprintf("cq-na-%d", sfx), fmt.Sprintf("cq-nb-%d", sfx)
+	t.Cleanup(func() {
+		c, stop := context.WithTimeout(context.Background(), 20*time.Second)
+		defer stop()
+		_, _ = pool.Exec(c, `DELETE FROM pgvigil.action_requests WHERE instance = $1`, inst)
+		_, _ = pool.Exec(c, `DELETE FROM pgvigil.cq_workers WHERE collector_id = ANY($1)`, []string{wa, wb})
+	})
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%v\n%s", err, sql)
+		}
+	}
+	ask := func(tool string) (outcome, detail string, id int64) {
+		t.Helper()
+		var raw []byte
+		body := fmt.Sprintf(`{"kind": "community_run", "instance": %q, "ui_user": "nina", "args": {"tool": %q}}`, inst, tool)
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.import_action_request($1::jsonb)::text`, body).Scan(&raw); err != nil {
+			t.Fatalf("import_action_request %s: %v", body, err)
+		}
+		var a struct {
+			Outcome   string `json:"outcome"`
+			Detail    string `json:"detail"`
+			RequestID int64  `json:"request_id"`
+		}
+		if err := json.Unmarshal(raw, &a); err != nil {
+			t.Fatal(err)
+		}
+		return a.Outcome, a.Detail, a.RequestID
+	}
+	claim := func(w string) []int64 {
+		t.Helper()
+		rows, err := pool.Query(ctx, `SELECT request_id FROM pgvigil.import_action_claim($1, 4, 1, '{}'::jsonb)`, w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	for _, w := range []string{wa, wb} {
+		exec(`SELECT * FROM pgvigil.import_cq_beat($1, $2, $3, NULL)`, w, "host-"+w, []string{inst})
+	}
+	exec(`SELECT pgvigil.import_cq_doors($1, $2::jsonb)`, wa, fmt.Sprintf(`[{"instance": %q, "kind": "community_run", "open": true},
+		{"instance": %q, "kind": "community_run", "name": "sp_Blitz", "open": false, "why": "sp_Blitz is not in community_allow for this instance"}]`, inst, inst))
+	exec(`SELECT pgvigil.import_cq_doors($1, $2::jsonb)`, wb, fmt.Sprintf(`[{"instance": %q, "kind": "community_run", "open": true}]`, inst))
+
+	out, detail, id := ask("sp_Blitz")
+	if out != "waiting" {
+		t.Fatalf("sp_Blitz shut on %s and open on %s: %s %q, want waiting", wa, wb, out, detail)
+	}
+	if got := claim(wa); len(got) != 0 {
+		t.Fatalf("the holder whose community_allow shuts sp_Blitz claimed %v", got)
+	}
+	if got := claim(wb); len(got) != 1 || got[0] != id {
+		t.Fatalf("the open holder claimed %v, want [%d]", got, id)
+	}
+
+	// an 8 MB result as Go measures it can be over 8 MB as jsonb's text: the end is 'failed' with words
+	var ok bool
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_action_finish($1, $2, jsonb_build_object('state', 'done', 'outcome', 'ran',
+		'result', jsonb_build_object('sets', jsonb_build_array(jsonb_build_object('columns', jsonb_build_array('x'),
+		  'rows', (SELECT jsonb_agg(jsonb_build_array(repeat('y', 1000))) FROM generate_series(1, 9000)))))))`, wb, id).Scan(&ok); err != nil || !ok {
+		t.Fatalf("the finish of a 9 MB result: %v %v, want true and no error", ok, err)
+	}
+	var st, outcome string
+	var bytes *int
+	var kept bool
+	if err := pool.QueryRow(ctx, `SELECT r.state, r.outcome, r.result_bytes, a.result IS NOT NULL FROM pgvigil.action_requests r
+		JOIN pgvigil.ui_action_data a USING (request_id) WHERE r.request_id = $1`, id).Scan(&st, &outcome, &bytes, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if st != "failed" || !strings.Contains(outcome, "over the 8 MB queue mode keeps") || bytes != nil || kept {
+		t.Fatalf("a 9 MB result: %s %q bytes %v kept %v, want failed with the words, nothing kept", st, outcome, bytes, kept)
+	}
+
+	// shut on both holders: refused with a holder's words, whatever the name's case
+	exec(`SELECT pgvigil.import_cq_doors($1, $2::jsonb)`, wb, fmt.Sprintf(`[{"instance": %q, "kind": "community_run", "open": true},
+		{"instance": %q, "kind": "community_run", "name": "sp_Blitz", "open": false, "why": "sp_Blitz is not in community_allow for this instance"}]`, inst, inst))
+	for _, tool := range []string{"sp_Blitz", "SP_BLITZ"} {
+		if out, detail, _ := ask(tool); out != "refused" || !strings.Contains(detail, "sp_Blitz is not in community_allow for this instance (the collector on host-") {
+			t.Fatalf("%s shut on both holders: %s %q", tool, out, detail)
+		}
+	}
+	if out, detail, _ := ask("sp_WhoIsActive"); out != "waiting" {
+		t.Fatalf("a tool no holder shuts: %s %q", out, detail)
+	}
+}
+
 // On a store whose purge() carries scripts/cq-wiring-a.patch (skipped otherwise): a read kind's ended row older than
-// 7 days goes, a newer one stays, an action kind's row stays whatever its age, a waiting one stays; a worker silent
-// for 8 days goes with its doors.
+// 7 days goes, a newer one stays, an action kind's row that ran stays whatever its age, a refused one of any kind goes
+// after 7 days, a waiting one stays; a worker silent for 8 days goes with its doors.
 func TestActionRequestsPurgeOnAWiredStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -420,6 +564,7 @@ func TestActionRequestsPurgeOnAWiredStore(t *testing.T) {
 	}
 	oldRead, newRead := ins("community_run", "read", "done", "8 days"), ins("community_run", "read", "done", "6 days")
 	oldAction, oldWait := ins("mssql_kill", "action", "done", "40 days"), ins("community_run", "read", "waiting", "8 days")
+	oldRefused, newRefused := ins("mssql_kill", "action", "refused", "8 days"), ins("mssql_kill", "action", "refused", "6 days")
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.cq_workers (collector_id, host, instances, started_at, beat_at)
 		VALUES ($1, 'h', '{}', now() - interval '9 days', now() - interval '9 days')`, w); err != nil {
 		t.Fatal(err)
@@ -427,7 +572,7 @@ func TestActionRequestsPurgeOnAWiredStore(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.purge(30)`); err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[int64]bool{oldRead: false, newRead: true, oldAction: true, oldWait: true} {
+	for id, want := range map[int64]bool{oldRead: false, newRead: true, oldAction: true, oldWait: true, oldRefused: false, newRefused: true} {
 		var n int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.action_requests WHERE request_id = $1`, id).Scan(&n); err != nil {
 			t.Fatal(err)

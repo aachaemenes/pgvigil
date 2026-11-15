@@ -146,10 +146,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.cq_tools (
   why           text,
   version       text,
   params        jsonb,
+  database      text,                      -- the database the presence was checked in (SQL Server); NULL = the login's
   at            timestamptz NOT NULL,
   PRIMARY KEY (collector_id, instance, tool)
 );
-COMMENT ON TABLE pgvigil.cq_tools IS 'The community tools each worker found per instance and their parameter lists; replaced per instance by import_cq_tools.';
+COMMENT ON TABLE pgvigil.cq_tools IS 'The community tools each worker found per instance (in one database: the column says which) and their parameter lists; replaced per instance by import_cq_tools.';
 
 -- the live leases: a worker is live while its beat is under 45 s old (three renewals of 15 s); a running request's
 -- lease_until is renewed with the beat and lapses 25 s after the last renewal, so with the 5 s sweep a run whose worker
@@ -186,6 +187,10 @@ DECLARE
 BEGIN
   IF p_args IS NULL OR jsonb_typeof(p_args) <> 'object' THEN
     RETURN 'the request carries no arguments object';
+  END IF;
+  -- ui_action_data's CHECK in words, before it can raise: 200,000 characters of a multibyte text pass the length rule
+  IF octet_length(p_args::text) > 262144 THEN
+    RETURN format('%s: the arguments are over 256 KB', p_kind.kind);
   END IF;
   FOR k IN SELECT jsonb_object_keys(p_args) LOOP
     IF NOT (p_kind.fields ? k OR p_kind.fields ? ('?' || k)) THEN
@@ -279,7 +284,10 @@ BEGIN
     -- an unknown kind is refused without a row: there is no kind to record it under
     RETURN jsonb_build_object('outcome', 'refused', 'detail', format('the queue knows no kind %s', left(coalesce(v_name, ''), 60)));
   END IF;
+  -- the two caps' counts are serialized per user AND per login (two users of one serve share its login); always in this
+  -- order, so two asks never wait on each other in a cycle
   PERFORM pg_advisory_xact_lock(hashtextextended('pgvigil.action_requests:' || v_user, 0));
+  PERFORM pg_advisory_xact_lock(hashtextextended('pgvigil.action_requests.login:' || v_login, 0));
   IF v_inst IS NULL OR length(v_inst) > 200 THEN
     v_why := 'no instance named';
   ELSE
@@ -313,13 +321,22 @@ BEGIN
     END IF;
   END IF;
   IF v_why IS NULL AND v_kind.door_field IS NOT NULL THEN
+    -- a named door (a tool, a job: ST4's lists) is published only when shut, per holder: the ask is taken when ONE live
+    -- holder whose kind door is open has no shut door of that name (the claim takes it only on such a holder), and is
+    -- refused with a shutting holder's words only when every open holder shuts it
     v_dname := v_args ->> v_kind.door_field;
-    SELECT d.open, d.why, w.host INTO v_door FROM pgvigil.action_doors d
-      JOIN pgvigil.cq_workers w ON w.collector_id = d.collector_id
-     WHERE w.beat_at > v_now - make_interval(secs => pgvigil.cq_lease_secs()) AND v_inst = ANY (w.instances)
-       AND d.instance = v_inst AND d.kind = v_kind.kind AND d.name = v_dname
-     ORDER BY d.open DESC LIMIT 1;
-    IF v_door.open IS NOT NULL AND NOT v_door.open THEN
+    IF NOT EXISTS (
+         SELECT 1 FROM pgvigil.cq_workers w JOIN pgvigil.action_doors d ON d.collector_id = w.collector_id
+          WHERE w.beat_at > v_now - make_interval(secs => pgvigil.cq_lease_secs()) AND v_inst = ANY (w.instances)
+            AND d.instance = v_inst AND d.kind = v_kind.kind AND d.name = '' AND d.open
+            AND NOT EXISTS (SELECT 1 FROM pgvigil.action_doors n
+                             WHERE n.collector_id = w.collector_id AND n.instance = v_inst AND n.kind = v_kind.kind
+                               AND lower(n.name) = lower(v_dname) AND NOT n.open)) THEN
+      SELECT n.open, n.why, w.host INTO v_door FROM pgvigil.action_doors n
+        JOIN pgvigil.cq_workers w ON w.collector_id = n.collector_id
+       WHERE w.beat_at > v_now - make_interval(secs => pgvigil.cq_lease_secs()) AND v_inst = ANY (w.instances)
+         AND n.instance = v_inst AND n.kind = v_kind.kind AND lower(n.name) = lower(v_dname) AND NOT n.open
+       ORDER BY w.beat_at DESC LIMIT 1;
       v_why := coalesce(v_door.why, format('%s %s is off for %s', v_kind.door_field, v_dname, v_inst)) || format(' (the collector on %s)', v_door.host);
     END IF;
   END IF;
@@ -335,7 +352,8 @@ BEGIN
           AND (a.payload ->> 'collection' IN (v_args ->> 'collection', '*') OR v_args ->> 'collection' = '*')) THEN
     v_why := format('%s of %s was asked in the last 30 seconds', v_args ->> 'collection', v_inst);
   END IF;
-  v_life := v_kind.lifetime_s + CASE WHEN v_kind.class = 'read'
+  -- the lifetime from a checked timeout only: a refused payload's timeout_secs may not be a number at all
+  v_life := v_kind.lifetime_s + CASE WHEN v_why IS NULL AND v_kind.class = 'read'
                                      THEN coalesce((v_args ->> 'timeout_secs')::int, v_kind.max_timeout_s, 0) ELSE 0 END;
   v_exp := v_now + make_interval(secs => v_life);
   INSERT INTO pgvigil.action_requests (kind, class, instance, ui_user, client, asked_login, asked_at, expires_at, state, done_at, refusal)
@@ -407,9 +425,12 @@ BEGIN
   RETURN v_n;
 END $$;
 
--- import_cq_beat: the worker's lease (its instances now) and its running rows' lease_until, on the repository clock.
--- Returns the ids of its own running requests whose cancel was asked (the poll's cancel read: seen behind a pooler).
-CREATE OR REPLACE FUNCTION pgvigil.import_cq_beat(p_collector_id text, p_host text, p_instances text[])
+-- import_cq_beat: the worker's lease (its instances now) and the lease_until of the running rows it still runs
+-- (p_running, the ids in its memory), on the repository clock. A running row of this worker that is NOT in p_running
+-- (its finish failed, or its claimed row was never started) is not renewed: it lapses and the sweep says 'lost'.
+-- Returns the ids among p_running whose cancel was asked (the poll's cancel read: seen behind a pooler).
+DROP FUNCTION IF EXISTS pgvigil.import_cq_beat(text, text, text[]);  -- an earlier build of this file
+CREATE OR REPLACE FUNCTION pgvigil.import_cq_beat(p_collector_id text, p_host text, p_instances text[], p_running bigint[])
 RETURNS SETOF bigint LANGUAGE plpgsql AS $$
 DECLARE
   v_now  timestamptz := clock_timestamp();
@@ -418,9 +439,10 @@ BEGIN
   VALUES (p_collector_id, left(p_host, 200), coalesce(p_instances, '{}'), v_now, v_now)
   ON CONFLICT (collector_id) DO UPDATE SET host = EXCLUDED.host, instances = EXCLUDED.instances, beat_at = v_now, stopped_at = NULL;
   UPDATE pgvigil.action_requests SET lease_until = v_now + make_interval(secs => pgvigil.cq_run_lease_secs())
-   WHERE taken_by = p_collector_id AND state = 'running';
+   WHERE taken_by = p_collector_id AND state = 'running' AND request_id = ANY (coalesce(p_running, '{}'));
   RETURN QUERY SELECT r.request_id FROM pgvigil.action_requests r
-                WHERE r.taken_by = p_collector_id AND r.state = 'running' AND r.cancel_asked_at IS NOT NULL;
+                WHERE r.taken_by = p_collector_id AND r.state = 'running' AND r.cancel_asked_at IS NOT NULL
+                  AND r.request_id = ANY (coalesce(p_running, '{}'));
 END $$;
 
 -- import_cq_stop: a clean stop ends the lease at once (an insert then refuses instead of waiting for an expiry)
@@ -456,16 +478,17 @@ BEGIN
   RETURN v_n;
 END $$;
 
--- import_cq_tools: one instance's community tools as this worker found them [{tool, present, why?, version?, params?}]
+-- import_cq_tools: one instance's community tools as this worker found them [{tool, present, why?, version?, params?,
+-- database?}]
 CREATE OR REPLACE FUNCTION pgvigil.import_cq_tools(p_collector_id text, p_instance text, p_tools jsonb)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
   v_n  int;
 BEGIN
   DELETE FROM pgvigil.cq_tools WHERE collector_id = p_collector_id AND instance = p_instance;
-  INSERT INTO pgvigil.cq_tools (collector_id, instance, tool, present, why, version, params, at)
+  INSERT INTO pgvigil.cq_tools (collector_id, instance, tool, present, why, version, params, database, at)
   SELECT p_collector_id, left(p_instance, 200), left(t ->> 'tool', 200), coalesce((t ->> 'present')::boolean, false),
-         left(t ->> 'why', 1000), left(t ->> 'version', 100), t -> 'params', clock_timestamp()
+         left(t ->> 'why', 1000), left(t ->> 'version', 100), t -> 'params', left(nullif(t ->> 'database', ''), 128), clock_timestamp()
     FROM jsonb_array_elements(coalesce(p_tools, '[]'::jsonb)) t
    WHERE coalesce(t ->> 'tool', '') <> ''
   ON CONFLICT (collector_id, instance, tool) DO NOTHING;
@@ -505,6 +528,11 @@ BEGIN
      WHERE r.state = 'waiting' AND r.expires_at > v_now AND r.instance = ANY (v_inst)
        AND EXISTS (SELECT 1 FROM pgvigil.action_doors d WHERE d.collector_id = p_collector_id AND d.instance = r.instance
                       AND d.kind = r.kind AND d.name = '' AND d.open)
+       -- and no shut named door of the request's tool or job on THIS worker: the one that would refuse never takes it
+       AND (k.door_field IS NULL OR NOT EXISTS (
+             SELECT 1 FROM pgvigil.action_doors n JOIN pgvigil.ui_action_data a ON a.request_id = r.request_id
+              WHERE n.collector_id = p_collector_id AND n.instance = r.instance AND n.kind = r.kind
+                AND lower(n.name) = lower(a.payload ->> k.door_field) AND NOT n.open))
   ), fit AS (
     SELECT c.rid, c.urgent, c.asked_at,
            row_number() OVER (PARTITION BY c.urgent ORDER BY c.asked_at) AS n_kind
@@ -522,7 +550,7 @@ BEGIN
     RETURNING r.request_id AS rid, r.kind AS rkind, r.instance AS rinst, r.ui_user AS ruser, r.client AS rclient, r.expires_at AS rexp
   )
   SELECT t.rid, t.rkind, t.rinst, t.ruser, t.rclient, a.payload,
-         greatest(0, (extract(epoch FROM (t.rexp - v_now)) * 1000)::bigint)
+         greatest(0, (extract(epoch FROM (t.rexp - clock_timestamp())) * 1000)::bigint)  -- at the claim's end, not its start
     FROM took t JOIN pgvigil.ui_action_data a ON a.request_id = t.rid
    ORDER BY t.rid;
 END $$;
@@ -537,14 +565,25 @@ DECLARE
   v_state  text := p_end ->> 'state';
   v_result jsonb := p_end -> 'result';
   v_keep   text := coalesce(p_end ->> 'keep', 'read');
+  v_out    text := p_end ->> 'outcome';
+  v_bytes  int;
   v_ok     boolean;
 BEGIN
   IF v_state NOT IN ('done', 'failed', 'refused', 'cancelled') THEN
     RAISE EXCEPTION 'import_action_finish: state % is not an end', v_state USING ERRCODE = '22023';
   END IF;
-  UPDATE pgvigil.action_requests SET state = v_state, done_at = v_now, outcome = left(p_end ->> 'outcome', 2000),
+  -- a result over ui_action_data's 8 MB as jsonb's text (the worker cuts by its own measure, which can fall short of
+  -- this one) ends 'failed' with words instead of raising: a raise would leave the row running until its lease lapses
+  v_bytes := octet_length(v_result::text);
+  IF v_bytes > 8388608 THEN
+    v_state := 'failed';
+    v_out := format('it ran, but its result is %s MB as stored, over the 8 MB queue mode keeps: the result is not kept (ask for fewer rows)',
+                    round(v_bytes / 1048576.0, 1));
+    v_result := NULL;
+  END IF;
+  UPDATE pgvigil.action_requests SET state = v_state, done_at = v_now, outcome = left(v_out, 2000),
          refusal = left(p_end ->> 'refusal', 2000), rows_out = (p_end ->> 'rows')::int, duration_ms = (p_end ->> 'duration_ms')::int,
-         result_bytes = CASE WHEN v_result IS NOT NULL THEN octet_length(v_result::text) END,
+         result_bytes = CASE WHEN v_result IS NOT NULL THEN v_bytes END,
          keep_until = CASE WHEN v_result IS NULL THEN NULL WHEN v_keep = '7d' THEN v_now + interval '7 days' ELSE v_now + interval '1 hour' END,
          lease_until = NULL
    WHERE request_id = p_request_id AND taken_by = p_collector_id AND state = 'running';
@@ -555,6 +594,13 @@ BEGIN
   END IF;
   RETURN v_ok;
 END $$;
+
+-- import_cq_instance_id: an instance's id by its name, for the audit rows the worker writes (the collector's login
+-- reads no table; NULL when the name is not registered)
+CREATE OR REPLACE FUNCTION pgvigil.import_cq_instance_id(p_name text)
+RETURNS int LANGUAGE sql STABLE AS $$
+  SELECT i.instance_id FROM pgvigil.instances i WHERE i.name = p_name
+$$;
 
 -- ---- the asker's read ------------------------------------------------------------------------------------------------
 -- ui_action_result: one request's state and, for its asker alone, its result (a 'read' keep is cleared at the next

@@ -6,7 +6,7 @@ import (
 )
 
 // The request queue's keys: the defaults (actions.via direct, cq.workers 4, cq.result_keep read), the bounds and words
-// of a bad value, and ST4's allow-lists (all / none alone; jobs '*' and '-name'; a tool list takes no '*').
+// of a bad value (7d refused until the masked result store), and ST4's allow-lists (all / none alone; jobs '*' and '-name'; a tool list takes no '*').
 func TestValidateCQ(t *testing.T) {
 	c := Config{Instances: []Instance{{Name: "a"}}}
 	if err := c.validateCQ(); err != nil || c.Actions.Via != "direct" || c.CQ.Workers != 4 || c.CQ.ResultKeep != "read" || c.CQ.Enabled {
@@ -19,7 +19,8 @@ func TestValidateCQ(t *testing.T) {
 		{Config{Actions: ActionsVia{Via: "queued"}}, "actions.via must be direct or queue"},
 		{Config{CQ: CQ{Workers: 17}}, "cq.workers must be 1 to 16"},
 		{Config{CQ: CQ{Workers: -1}}, "cq.workers must be 1 to 16"},
-		{Config{CQ: CQ{ResultKeep: "30d"}}, "cq.result_keep must be read or 7d"},
+		{Config{CQ: CQ{ResultKeep: "30d"}}, "cq.result_keep must be read"},
+		{Config{CQ: CQ{ResultKeep: "7d"}}, "7d is not in this release (it comes with the masked result store)"},
 		{Config{Instances: []Instance{{Name: "a", CommunityAllow: []string{"all", "sp_Blitz"}}}}, `instance "a": community_allow: all stands alone`},
 		{Config{Instances: []Instance{{Name: "a", CommunityAllow: []string{"*"}}}}, "the community list takes all, none or tool names"},
 		{Config{Instances: []Instance{{Name: "a", JobsAllow: []string{" "}}}}, `instance "a": jobs_allow: an empty entry`},
