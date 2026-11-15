@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"testing"
@@ -76,7 +77,34 @@ func TestCollectionPerfScaleJ5(t *testing.T) {
 			read, _ := top["Shared Read Blocks"].(float64)
 			t.Logf("J5 %s, %s: median %.0f ms (%.0f / %.0f / %.0f, TIMING OFF), top node %v, shared buffers %.0f (TIMING ON: %.0f ms)",
 				c.name, st.name, ms[1], ms[0], ms[1], ms[2], top["Node Type"], hit+read, tv)
+			// the plan's nodes of 1 s or more (TIMING ON), each with what spilled: the cause of a slow read named by the plan
+			var slow []string
+			slowNodes(top, 1000, &slow)
+			for _, n := range slow {
+				t.Logf("J5 %s, %s: node %s", c.name, st.name, n)
+			}
 		}
 		t.Logf("J5 %s: the page's read (rows + charts + meta medians) %.0f ms", c.name, sum)
+	}
+}
+
+// slowNodes: a plan's nodes whose actual total time is min ms or more, outermost first, with their rows and what they
+// spilled or sorted (the J5 rows read at the root over every collection: 124.7 s in vis-scale3, the cause unread)
+func slowNodes(n map[string]any, min float64, out *[]string) {
+	if ms, _ := n["Actual Total Time"].(float64); ms >= min {
+		s := fmt.Sprintf("%v %.0f ms, %.0f rows", n["Node Type"], ms, n["Actual Rows"])
+		for _, k := range []string{"Relation Name", "Index Name", "Strategy", "Sort Method", "Sort Space Type", "Sort Space Used",
+			"Peak Memory Usage", "Disk Usage", "HashAgg Batches", "Workers Launched", "Presorted Key"} {
+			if v, ok := n[k]; ok {
+				s += fmt.Sprintf("; %s %v", k, v)
+			}
+		}
+		*out = append(*out, s)
+	}
+	kids, _ := n["Plans"].([]any)
+	for _, k := range kids {
+		if m, ok := k.(map[string]any); ok {
+			slowNodes(m, min, out)
+		}
 	}
 }

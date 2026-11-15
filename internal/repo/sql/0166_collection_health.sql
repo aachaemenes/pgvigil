@@ -131,6 +131,10 @@ ALTER TABLE pgvigil.collection_health_hour
   ADD COLUMN IF NOT EXISTS cpu_runs int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS cpu_ms_sum bigint NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS cpu_ms_max int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS reads_sum bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS collection_health_hour_instance ON pgvigil.collection_health_hour (instance_id, hour);
+-- one collection's rows across the fleet (the Collection Performance report and the Collection family at the root): J5
+-- (the review of B6g-3 #6, the lead's 13:3x rule) read 'activity' over 8 days at 2,124 instances x 60 collections in
+-- 5,398 ms without it - every hour row read (742,756 buffers) for 1 in 60. Its cost on the beat's upsert is in the DONE.
+CREATE INDEX IF NOT EXISTS collection_health_hour_collection ON pgvigil.collection_health_hour (collection, hour);
 
 -- 8 days by default (as collector_load); settable up to 30 with
 --   UPDATE pgvigil.hours_retention SET days = 30, changed_at = now() WHERE table_name = 'collection_health_hour';
