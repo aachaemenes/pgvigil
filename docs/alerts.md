@@ -169,7 +169,7 @@ connect, so its first failed connect is already the service's to report - after 
 once an hour, and for one never reached. The service's *server unreachable* and *collection failing* speak only while
 a collector that beats still names the instance: 20 minutes after its last naming (the instance moved to a scheduled
 `pgvigil collect`, or its collector died) they leave the findings, and the scheduled read's own *server unreachable*
-and the Summary's Collection Errors check speak for it. An alert that was open stays open until a read of the instance
+and the Summary's Collection Health column speak for it. An alert that was open stays open until a read of the instance
 is ok - it is never resolved because nobody reads the server any more. An instance moved from the service to a
 scheduled collect while it fails is announced again, once, by the scheduled collect: the two speak for different
 readers.

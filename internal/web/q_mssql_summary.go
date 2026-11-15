@@ -250,8 +250,9 @@ SELECT d.instance_id, count(*)::int AS n,
  WHERE d.is_present AND NOT d.is_template
  GROUP BY d.instance_id`
 
-// The Summary's Snapshot Age and Collection Errors (24hrs) columns for every instance of either engine (DBA Dash's
-// SnapshotAgeStatus and CollectionErrorStatus, task P08): the youngest and the oldest last run of the instance's
+// The Summary's Snapshot Age and Collection Health columns for every instance of either engine (DBA Dash's
+// SnapshotAgeStatus, task P08, and 4.25.0's CollectionHealthStatus, B6.1: ch_level / ch_n / ch_detail from
+// pgvigil.collection_health_summary, 0166 - the page and the Summary read one judgement): the youngest and the oldest last run of the instance's
 // collections that run there and last ended well (not disabled, not skipped, not failed) in seconds, how many of them are
 // stale (older than three intervals, at least 300 s; $2 when no interval is known: the daily check 'collection
 // stale') and how many failed at their last run, and the errors collection_log holds for the last 24 hours. $1 the
@@ -277,9 +278,11 @@ SELECT i.instance_id,
                 FILTER (WHERE c.iv IS DISTINCT FROM 0 AND (c.status = 'error' OR (c.status <> 'skipped'
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)))), '{}') AS detail,
        (SELECT count(*) FROM pgvigil.collection_log l
-         WHERE l.instance_id = i.instance_id AND l.status = 'error' AND l.snapshot_at > now() - interval '24 hours')::int AS errors_24h
+         WHERE l.instance_id = i.instance_id AND l.status = 'error' AND l.snapshot_at > now() - interval '24 hours')::int AS errors_24h,
+       max(h.level) AS ch_level, max(h.n) AS ch_n, max(h.collections) AS ch_detail
   FROM pgvigil.instances i
   LEFT JOIN c ON c.instance_id = i.instance_id
+  LEFT JOIN pgvigil.collection_health_summary($1::jsonb) h ON h.instance_id = i.instance_id
  WHERE i.is_active
  GROUP BY i.instance_id`
 

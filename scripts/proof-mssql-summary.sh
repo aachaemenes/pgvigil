@@ -23,7 +23,7 @@
 #     dialog's POST /api/pg/thresholds calls) dumps = ok|true|0|1|1 file; the roots part names the root row (crash 24 / 168, its threshold_id) and
 #     the key's defaults (crash 48 / 168, uptime 12 / 48).
 #     [review fold 20261111-205600, before the rerun: 24 keys with pctmax; the serve under TZ=UTC]
-#  J. the collect part (Snapshot Age, Collection Errors (24hrs)), one row per active instance of either engine: a (only
+#  J. the collect part (Snapshot Age, Collection Health), one row per active instance of either engine: a (only
 #     mssql_instance, logged now): age_min = age_max under 60 s, stale 0, failing 0, errors_24h 0; b (logged 20 days
 #     ago): stale 1; c (mssql_storage's last run an error, now): failing 1, errors_24h 1 and no age (the ages count
 #     runs that ended well only: review fold); the PostgreSQL instance has a row with no age (nothing ran).

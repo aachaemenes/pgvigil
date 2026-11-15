@@ -8,7 +8,7 @@ import { versionCell } from './versions';
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
 // mssqlFailed: the SQL Server read itself failed (its cells then say so, never 'not yet')
 // pgaudit: the PostgreSQL instances' pgaudit cells (readAuditFleet); pgauditFailed: that read failed
-// collect: every instance's collection ages and errors (Snapshot Age, Collection Errors (24hrs)); roots: the root's uptime
+// collect: every instance's collection ages and health (Snapshot Age, Collection Health); roots: the root's uptime
 // and memory dump thresholds (the Summary's Options dialogs)
 export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; at: number }
 let cache: Fleet | null = null;
@@ -50,7 +50,7 @@ export function forget() { cache = null; }
 // name on a SQL Server page, and the view (cv) of that tab; a group without it is a PostgreSQL check.
 // dd: one of DBA Dash's Summary tests (task P08: its name, its column order, Checks/Summary.Designer.cs); the others are
 // pgvigil's own, after them. plain: DBA Dash's cell is text, not a link (Memory Dump, Is Agent Running, DB Mail).
-// both: read for either engine from the collect part (Snapshot Age, Collection Errors (24hrs)).
+// both: read for either engine from the collect part (Snapshot Age, Collection Health).
 // pgLabel: the group's name in PostgreSQL's words where DBA Dash's is SQL Server's (Memory Dump on PostgreSQL's crash
 // restarts, Last Good Check DB on amcheck ...): labelOf picks it for a PostgreSQL row, page or scope
 export interface Group { key: string; label: string; pgLabel?: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?, string?]; mssqlOnly?: boolean; names?: (checkName: string, checkGroup: string) => boolean; dd?: boolean; plain?: boolean; both?: boolean; cv?: string }   // kind: the Metrics family a PostgreSQL cell opens; cv: the view of a PostgreSQL tab
@@ -86,7 +86,7 @@ export const groups: Group[] = [
   // QS is SQL Server's Query Store alone: PostgreSQL has none, its statement store is the column pg_stat_statements below
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true, dd: true },
   { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', dd: true },
-  { key: 'errors', label: 'Collection Errors (24hrs)', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
+  { key: 'errors', label: 'Collection Health', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
   { key: 'snapshot', label: 'Snapshot Age', checks: ['collection stale'], tab: 'collectiondates', mssql: ['snapshot', 'collectiondates', 'Collection'], dd: true, both: true },
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true, dd: true, plain: true },
   { key: 'identity', label: 'Identity Columns', checks: [], tab: 'summary', mssql: ['identity', 'mssqlchecks', 'Identity columns', 'identity'], mssqlOnly: true, dd: true },
@@ -140,20 +140,21 @@ function versionCellOf(f: Fleet, id: number): Cell {
   return { level: c.level, n: c.detail.length, detail: c.detail, none: c.none, text: c.none ? undefined : c.text };
 }
 
-// collectCell: Snapshot Age and Collection Errors (24hrs) of an instance of either engine, from the collect part:
+// collectCell: Snapshot Age and Collection Health of an instance of either engine, from the collect part:
 // Snapshot Age is a warning while a collection is stale (older than three of its intervals: the daily check
 // 'collection stale'), its text the youngest to the oldest last run (DBA Dash's 'x minutes to y minutes'); Collection
-// Errors is critical while a collection's last run failed, a warning for an error in the last 24 hours, its text that
-// count (DBA Dash's CollectionErrorStatus: retries warning, failures critical)
+// Health is the repository's own judgement (pgvigil.collection_health_summary, 0166: DBA Dash 4.25.0's rule over 24
+// hours from the next whole hour) - the worst collection but N/A, n = the collections at warning or critical; this
+// page derives no tier of its own
 function collectCell(f: Fleet, id: number, key: string): Cell {
   const x = f.collect.find(c => Number(c.instance_id) === id);
   if (!x) return f.mssqlFailed ? { level: 0, n: 0, detail: ['the read of the collection dates failed (GET /api/mssql/summary)'], none: true, text: 'read failed' }
     : { level: 0, n: 0, detail: ['no collection has run for this instance yet'], none: true, text: 'not yet' };
   const lines = Array.isArray(x.detail) ? x.detail.map(String) : [];
   if (key === 'errors') {
-    const failing = Number(x.failing ?? 0), e24 = Number(x.errors_24h ?? 0);
-    const detail = [...lines.filter(l => l.endsWith('the last run failed')), `${e24} collection error(s) in the last 24 hours`];
-    return { level: failing ? 2 : e24 ? 1 : 0, n: failing || e24, detail, value: String(e24) };
+    const level = Math.max(0, Math.min(2, Number(x.ch_level ?? 0))) as Level, n = Number(x.ch_n ?? 0);
+    const detail = x.ch_detail ? String(x.ch_detail).split(', ') : ['every collection judged OK or N/A over the last 24 hours'];
+    return { level, n, detail };
   }
   if (x.age_min_secs == null) return { level: 0, n: 0, detail: ['no collection has run for this instance yet'], none: true, text: 'not yet' };
   const stale = Number(x.stale ?? 0);
@@ -223,7 +224,7 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
   const id = Number(r.instance_id);
   const mine = f.checks.filter(c => Number(c.instance_id) === id);
   const out: Record<string, Cell> = {};
-  // Snapshot Age and Collection Errors are read alike for both engines (collectCell); on a SQL Server instance a group
+  // Snapshot Age and Collection Health are read alike for both engines (collectCell); on a SQL Server instance a group
   // with a SQL Server read takes its cell from that read (no stored read of the group yet = 'not yet', never OK); a
   // PostgreSQL-only group says so
   const otherEngine = r.engine != null && r.engine !== 'postgres';

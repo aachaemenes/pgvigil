@@ -1190,7 +1190,7 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
    -- network' stands, and after it one failed run past its window (collector_in_window)
    -- a streak speaks only while a beating collector still names the instance (collector_covers): only such a run ends
    -- it. An instance moved to a `pgvigil collect` on a schedule, or one whose collector died, leaves this view 20
-   -- minutes after its last naming; the Summary's Collection Errors check reads the scheduled collect's errors
+   -- minutes after its last naming; the Summary's Collection Health column reads the scheduled collect's errors
    AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
 -- the instance's own connect failing, the server not answering (not a refused login: that is 'authentication
