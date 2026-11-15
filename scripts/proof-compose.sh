@@ -144,7 +144,7 @@ full=[t[b] for b in sorted(t)][1:-1]
 sys.exit(0 if s.get('cmp-b-$SUF') == {30.0} and s.get('(other)') == {10.0} and full and all(abs(v-40)<1e-9 for v in full) else 1)" "$(rowsj)" || fail "C4: $(rowsj)"
 ok "C4: top 1 with (other): B 30 and (other) 10, each hour summing to C1's 40"
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"ranked","group_by":"tag","tag_key":"env"}'); expect "$c" 200 "C5"
-[[ $(python3 -c "import json,sys; print([(x['series'], x['value'], x['rank']) for x in json.loads(sys.argv[1])])" "$(rowsj)") == "[('b', 30.0, 1), ('a', 10.0, 2)]" ]] || fail "C5: $(rowsj)"
+[[ $(python3 -c "import json,sys; print([(x['series'], float(x['value']), x['rank']) for x in json.loads(sys.argv[1])])" "$(rowsj)") == "[('b', 30.0, 1), ('a', 10.0, 2)]" ]] || fail "C5: $(rowsj)"
 ok "C5: ranked by env: b 30 first, a 10 second"
 c=$(run '{"metric":"database.deadlocks","aggregate":"sum","shape":"over_time","bucket":"hour"}'); expect "$c" 200 "C6"
 HAND=$(q "select json_agg(json_build_array(b, v) order by b) from (select extract(epoch from b)::bigint b, sum(v)::float8 v from (
