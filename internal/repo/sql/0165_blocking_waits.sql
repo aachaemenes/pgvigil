@@ -270,6 +270,13 @@ BEGIN
   RETURN n;
 END $$;
 
+-- the collector's door to the rollup: `pgvigil run` calls it once an hour (at 16 past) for every engine - a repository
+-- with no SQL Server, whose Extended Events import never runs, is rolled too; the import's own call stays (the
+-- rollup's advisory lock keeps the two apart). apply_roles makes an import_ function SECURITY DEFINER for
+-- pgvigil_collector
+CREATE OR REPLACE FUNCTION pgvigil.import_block_hourly(p_now timestamptz DEFAULT now())
+RETURNS int LANGUAGE sql AS $$ SELECT pgvigil.rollup_block_hourly(p_now) $$;
+
 -- ---- PostgreSQL deadlocks from the log -----------------------------------------------------------------------------
 -- each deadlock's two statements as the log's DETAIL gives them ('Process 4242: UPDATE ...'), sorted, as one pair
 CREATE OR REPLACE VIEW pgvigil.pg_deadlock_pairs AS

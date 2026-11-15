@@ -62,6 +62,15 @@
 #  L. one window per wait: a SQL Server wait seen from 20 s before an hour's end to 20 s after it (reports every 5 s) and
 #     a PostgreSQL one sampled across the same end: each function gives 0 for the hour before the end and 1 for the
 #     hour after; a wait that ended 30 s before the end: 1 and 0. RED: 1 and 1 (counted in both windows).
+#  M. the rollup's own door (pgvigil.import_block_hourly, which `pgvigil run` calls at 16 past each hour for every
+#     engine): a PostgreSQL instance first seen 29 days ago with one Lock wait in the same weekday and hour 1, 2, 3 and 4
+#     weeks back and 6 in the last finished hour, its hours written ONLY by the door called in time order (one call a
+#     day: 24 hours a call, then 16 past the last hour): 'blocking at 3x this hour''s usual' fires off its floor - '6
+#     waits in the hour from ..., 6.0 times its usual of 1.0', not 'no usual yet'. RED: no import_block_hourly.
+#  N. two callers in the same minute: one holds the door 3 s, the other calls 1 s in: the second returns 0, the
+#     first writes the instance's hours, each hour one row. RED: no import_block_hourly.
+#  (Not here: that `pgvigil run` calls the door at 16 past - sched's TestNextBlockHourly holds the time, a run over
+#  the hour's 16th minute would show the call.)
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 MIMG=${PGVIGIL_B10_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}; PIMG=${PGVIGIL_B10_PG_IMAGE:-postgres:18}
@@ -340,6 +349,38 @@ if fn mssql_block_waits; then
 else check "no mssql_block_waits" "0|1" "L: SQL Server one window per wait"; fi
 if fn pg_block_waits; then check "$(wl pg_block_waits "$LP" "")" "0|1" "L: PostgreSQL, a wait across the end: in the later hour only"
 else check "no pg_block_waits" "0|1" "L: PostgreSQL one window per wait"; fi
+
+echo "--- M. the rollup's hourly door: a PostgreSQL instance's spike off its floor"
+if fn import_block_hourly; then
+  M=$(syn m postgres); HM=$(q "select date_trunc('hour', now()) - interval '1 hour'")
+  q "update pgvigil.instances set first_seen = '$HM'::timestamptz - interval '29 days' where instance_id = $M" >/dev/null
+  for w in 4 3 2 1 0; do q "select pgvigil.ensure_month_partition('activity_sample', '$HM'::timestamptz - make_interval(weeks => $w))" >/dev/null; done
+  q "insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
+     select $M, '$HM'::timestamptz - make_interval(weeks => w) + interval '10 minutes', 200 + w, '$HM'::timestamptz - interval '40 days', 'b10', 'app', 'active', 'Lock', 'transactionid', '$HM'::timestamptz - make_interval(weeks => w), '{100}'
+       from generate_series(1, 4) w
+     union all
+     select $M, '$HM'::timestamptz + interval '10 minutes', 300 + k, '$HM'::timestamptz - interval '40 days', 'b10', 'app', 'active', 'Lock', 'transactionid', '$HM'::timestamptz + make_interval(secs => k), '{100}'
+       from generate_series(1, 6) k" >/dev/null
+  q "DO \$m\$ DECLARE a timestamptz; BEGIN
+       FOR a IN SELECT g FROM generate_series('$HM'::timestamptz - interval '28 days', '$HM'::timestamptz, interval '1 day') g ORDER BY g LOOP
+         PERFORM pgvigil.import_block_hourly(a);
+       END LOOP;
+       PERFORM pgvigil.import_block_hourly('$HM'::timestamptz + interval '1 hour 16 minutes');
+       PERFORM pgvigil.import_block_hourly('$HM'::timestamptz + interval '1 hour 16 minutes');
+     END \$m\$" >/dev/null
+  check "$(q "select count(*) from pgvigil.mssql_block_hourly where instance_id = $M and waits = 1")|$(q "select waits from pgvigil.mssql_block_hourly where instance_id = $M and hour = '$HM'::timestamptz")" "4|6" "M: the door wrote the 4 weekly hours (1 wait each) and the last (6)"
+  check "$(finding "$M" "blocking at 3x this hour''s usual" | grep -c '^warning|6 waits in the hour from .*, 6.0 times its usual of 1.0 (this weekday and hour over 4 weeks)$')" 1 "M: the spike off its floor on PostgreSQL ('6.0 times its usual of 1.0')"
+else check "no import_block_hourly" "yes" "M: the rollup's hourly door"; fi
+
+echo "--- N. two callers in the same minute"
+if fn import_block_hourly; then
+  NI=$(syn n postgres); q "update pgvigil.instances set first_seen = now() - interval '5 hours' where instance_id = $NI" >/dev/null
+  AT=$(q "select now()")
+  ( psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN" -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" -c "select pg_sleep(3)" -c "COMMIT" > "$OUT.n1" 2>&1 ) & NP=$!
+  sleep 1; N2=$(q "select pgvigil.import_block_hourly('$AT'::timestamptz)"); wait $NP; N1=$(head -1 "$OUT.n1")
+  NE=$(q "select count(*) from pgvigil.instances i, generate_series(date_trunc('hour', i.first_seen), date_trunc('hour', '$AT'::timestamptz - interval '15 minutes') - interval '1 hour', interval '1 hour') g where i.instance_id = $NI")
+  check "$N2|$(q "select count(*) || '/' || count(distinct hour) from pgvigil.mssql_block_hourly where instance_id = $NI")|$([ "${N1:-0}" -ge "$NE" ] 2>/dev/null && echo first-wrote || echo "first $N1")" "0|$NE/$NE|first-wrote" "N: the second caller returns 0, the first writes the $NE hours, each once"
+else check "no import_block_hourly" "yes" "N: two callers in the same minute"; fi
 
 echo
 [ "$bad" = 0 ] && echo "proof-b10-blocking: every row ok" || { echo "proof-b10-blocking: $bad row(s) FAIL"; exit 1; }
