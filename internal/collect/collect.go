@@ -207,13 +207,13 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	// cursor where it was and the next run reads the same lines again (import_plans is idempotent on the plan key).
 	if extra := planRowsFromLog(name, rows, in.QueryText); len(extra) > 0 {
 		if err := r.Import(ctx, instanceID, "plans", start, extra); err != nil {
-			_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+			_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
 			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start)}
 		}
 	}
 	applyTextPolicy(rows, in.QueryText)
 	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)

@@ -302,11 +302,15 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	conn *pgx.Conn, info platform.Info, instanceID int, start time.Time) Result {
 	n, parts := 0, 0 // n: the data rows (the last call's seen and end rows are bookkeeping)
 	status, note := "ok", ""
+	// a part whose import failed makes the run's stage 'import' (0198), whether RunBatches returned the error or turned
+	// it into a collector_error row and went on (schemaCollector's per-database parts do)
+	stage := ""
 	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
 		return r.LogCursor(ctx, instanceID, source)
 	}, func(rows []Row) error {
 		applyTextPolicy(rows, in.QueryText)
 		if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+			stage = "import"
 			return err
 		}
 		parts++
@@ -321,11 +325,11 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 		return nil
 	})
 	if err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), stage)
 		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)
-	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
+	_ = r.LogCollectionStage(ctx, instanceID, name, start, d, status, note, stage)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
 	return Result{Rows: n, Duration: d}
 }

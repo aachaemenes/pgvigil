@@ -445,13 +445,15 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	limit := runTimeout(c)
 	sctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	logRun := func(instanceID int, status, note string) {
+	// logStage records the run with where it failed (0198: 'import' for a write into the repository); logRun names none
+	logStage := func(instanceID int, status, note, stage string) {
 		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 		defer rcancel()
-		if err := r.LogCollection(rctx, instanceID, name, start, time.Since(start), status, note); err != nil {
+		if err := r.LogCollectionStage(rctx, instanceID, name, start, time.Since(start), status, note, stage); err != nil {
 			log.Warn("the collection's result was not recorded", "instance", in.Name, "collection", name, "status", status, "err", err)
 		}
 	}
+	logRun := func(instanceID int, status, note string) { logStage(instanceID, status, note, "") }
 	db, conn, err := Connect(sctx, in)
 	if err != nil {
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
@@ -495,7 +497,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	err = StoreHADRThresholds(tctx, r, instanceID, name, start, in.MSSQLThresholds)
 	tcancel()
 	if err != nil {
-		logRun(instanceID, "error", err.Error())
+		logStage(instanceID, "error", err.Error(), "import")
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
@@ -524,7 +526,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	err = r.Import(ictx, instanceID, name, start, rows)
 	icancel()
 	if err != nil {
-		logRun(instanceID, "error", err.Error())
+		logStage(instanceID, "error", err.Error(), "import")
 		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)

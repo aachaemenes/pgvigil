@@ -78,7 +78,7 @@ const batchMargin = 10 * time.Second
 type batchStore interface {
 	MSSQLCursor(ctx context.Context, instanceID int, source string) (fileName string, fileOffset int64, lastEventAt time.Time, lastSeq int64, found bool, err error)
 	Import(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, rows []map[string]any) error
-	LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error
+	LogCollectionStage(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note, stage string) error
 }
 
 // runBatched is RunOnce's path for a BatchCollector. sctx is the run's SQL Server side context (its deadline is the
@@ -88,10 +88,13 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	repoCtx := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	}
+	// a batch whose import failed makes the run's stage 'import' (0198), whether RunBatches returned the error or turned
+	// it into a collector_error row and went on (the Extended Events and audit readers' fail())
+	stage := ""
 	logRun := func(status, note string) {
 		rctx, cancel := repoCtx()
 		defer cancel()
-		if err := st.LogCollection(rctx, instanceID, name, start, time.Since(start), status, note); err != nil {
+		if err := st.LogCollectionStage(rctx, instanceID, name, start, time.Since(start), status, note, stage); err != nil {
 			log.Warn("the collection's result was not recorded", "instance", in.Name, "collection", name, "status", status, "err", err)
 		}
 	}
@@ -118,6 +121,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		rctx, cancel := repoCtx()
 		defer cancel()
 		if err := st.Import(rctx, instanceID, name, start, rows); err != nil {
+			stage = "import"
 			return err
 		}
 		batches++
