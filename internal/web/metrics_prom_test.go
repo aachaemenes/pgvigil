@@ -272,8 +272,10 @@ func TestPromGet(t *testing.T) {
 	cache := st.cfg.cache()
 	release := make(chan struct{})
 	var calls atomic.Int32
+	started := make(chan struct{}, 16)
 	render := func(ctx context.Context, _ *promState) ([]byte, error) {
 		calls.Add(1)
+		started <- struct{}{}
 		select {
 		case <-release:
 		case <-ctx.Done():
@@ -291,6 +293,14 @@ func TestPromGet(t *testing.T) {
 		go func() { defer wg.Done(); _, _, _ = st.get(context.Background(), 50*time.Millisecond, render) }()
 	}
 	wg.Wait()
+	// the one render runs in its own goroutine and every get above returned the old body at once: wait until it has
+	// started (on a loaded box it had not yet, and this read 0), then give a wrong second one the time to show
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no render started within 10 s")
+	}
+	time.Sleep(100 * time.Millisecond)
 	if n := calls.Load(); n != 1 {
 		t.Errorf("renders started: %d, want 1", n)
 	}
