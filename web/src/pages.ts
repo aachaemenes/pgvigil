@@ -11,7 +11,7 @@ import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid
 import { dailyMailControl } from './reportmail';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
-import { dbinfoFleetView } from './dbinfo';
+import { dbinfoFleetView, dbLink } from './dbinfo';
 import { sessionSetsSection } from './sessionsets';
 import { pgConfigSection } from './pgconfig';
 import { backupsFleetView } from './backups';
@@ -768,7 +768,8 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
     lineChart('Sessions', rowsOf(sess), [{ key: 'total', label: 'total' }, { key: 'active', label: 'active' }, { key: 'idle_in_txn', label: 'idle in txn' }, { key: 'waiting_lock', label: 'lock waits' }]),
     lineChart('Transactions / s', rowsOf(db), [{ key: 'commits_s', label: 'commits' }, { key: 'rollbacks_s', label: 'rollbacks' }])));
   const dbCols: Col[] = [
-    { key: 'datname', label: 'database' },
+    // a name opens the database's page (its drill-down), as a database in the tree does
+    { key: 'datname', label: 'database', fmt: (v, x) => x.dbid == null ? String(v ?? '') : dbLink(ctx, v, x.dbid) },
     { key: 'size_bytes', label: 'size', num: true, fmt: fmtBytes },
     { key: 'xid_age', label: 'xid age', num: true },
     { key: 'mxid_age', label: 'mxid age', num: true },

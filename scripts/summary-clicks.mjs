@@ -177,8 +177,14 @@ const enumerate = full => ev(`(() => { ${PARTS}
       const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
       // drawn off the page (a screen reader's words: position absolute, left -10000px): nobody clicks it
       if (r.right <= 0 || r.left >= document.documentElement.scrollWidth) continue;
-      const base = e.closest('h1, h2, h3, h4, h5, h6') ? 'heading' : e.closest('table.props th, dt') ? 'label' : e.closest('table.props td, dd') ? 'value'
-        : e.closest('a, button') ? 'control' : e.closest('[data-nolink]') ? 'nolink' : 'text';
+      // a disabled control is plain only when it says why (its title, or the off-reason words beside it: Allen 11-12)
+      const offBtn = e.closest('button:disabled, [aria-disabled="true"]');
+      const base = e.closest('h1, h2, h3, h4, h5, h6') ? 'heading'
+        : e.closest('table.props th, dt, .healthcal-head, .healthcal-month, .off-reason, .u-legend .u-series:first-child') ? 'label'
+        : e.closest('table.props td, dd') ? 'value'
+        : offBtn && (offBtn.title || offBtn.parentElement?.querySelector('.off-reason')) ? 'off'
+        : e.closest('a, button') ? 'control' : e.closest('[data-nolink]') ? 'nolink'
+        : e.closest('tbody td') && e.closest('tr')?.querySelector('a[href], button:not(:disabled)') ? 'cell' : 'text';
       for (const n of e.childNodes) {
         if (n.nodeType !== 3) continue;
         const own = n.textContent.replace(/\\s+/g, ' ').trim();
@@ -254,7 +260,9 @@ const snap = () => ev(`(() => {
   const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const modal = [...document.querySelectorAll('dialog[open], [role=dialog], [role=menu], .menu')].filter(vis).length;
   const sort = [...document.querySelectorAll('th[aria-sort]')].map(t => t.getAttribute('aria-sort')).join(',');
-  return { hash: location.hash, modal, sort, view: inView.join('\\n'), all: all.join('\\n') };
+  // a chart legend's series switched off (uPlot's u-off), a pressed or selected control: a change drawn on a canvas
+  const marks = [...document.querySelectorAll('.u-off, [aria-pressed="true"], [aria-selected="true"]')].length;
+  return { hash: location.hash, modal, sort, marks, view: inView.join('\\n'), all: all.join('\\n') };
 })()`);
 const mouse = async (type, x, y) => cmd('Input.dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: type === 'mouseMoved' ? 0 : 1 });
 
@@ -264,7 +272,8 @@ const line = r => `${r.verdict.startsWith('FAIL') ? 'FAIL' : r.verdict.startsWit
 const fail = r => { results.push(r); fails++; console.log(line(r)); };
 const save = () => fs.writeFileSync(`${outDir}/summary-clicks.json`, JSON.stringify({ scopes, results, dialogs }, null, 1));
 const plainKinds = { heading: 'a heading: it names what is beside it', label: 'a label: it names what is beside it',
-  value: "a properties table's value", nolink: "marked as text (DBA Dash's text cell, or this page's own name)" };
+  value: "a properties table's value", nolink: "marked as text (DBA Dash's text cell, or this page's own name)",
+  off: 'a control that is off and says why', cell: "a grid cell whose row has its link (DBA Dash's grids: text beside the row's link)" };
 // one click: the verdict of one target (throws when the page hangs or the socket closes)
 const clickOne = async (scope, t) => {
   const p = await locate(t);
@@ -281,6 +290,7 @@ const clickOne = async (scope, t) => {
   if (dialogs.length > d0) effects.push('opens a browser dialog: ' + dialogs.slice(d0).join(' / ').slice(0, 80));
   if (after.modal > before.modal) effects.push('opens a dialog or a menu');
   if (after.sort !== before.sort) effects.push('sort mark ' + (after.sort || 'none'));
+  if (after.marks !== before.marks) effects.push('switches a series or a control (' + before.marks + ' -> ' + after.marks + ' marked)');
   if (after.hash === before.hash && after.view !== before.view) effects.push('changes the view');
   const offView = after.hash === before.hash && after.view === before.view && after.all !== before.all;
   r.hit = p.hit;

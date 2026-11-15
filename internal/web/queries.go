@@ -305,10 +305,11 @@ SELECT count(*) AS changes, max(changed_at) AS last_change
   FROM pgvigil.instance_setting_history
  WHERE instance_id = $1`
 
-// sqlDatabases is one instance's database inventory, present and largest first.
+// sqlDatabases is one instance's database inventory, present and largest first; dbid opens a database's page (the
+// instance Summary's names are links).
 const sqlDatabases = `
 SELECT datname, owner, encoding, size_bytes, xid_age, mxid_age, can_connect, allow_conn, conn_limit,
-       is_template, tablespace, first_seen, snapshot_at, is_present
+       is_template, tablespace, first_seen, snapshot_at, is_present, dbid
   FROM pgvigil.databases
  WHERE instance_id = $1
  ORDER BY is_present DESC, size_bytes DESC NULLS LAST, datname`
