@@ -454,8 +454,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT kind, value, under_host, held FROM pgvigil.collector_slow_folds
   ), slow_held AS MATERIALIZED (   -- the members a standing fold holds (those at or under its level)
     SELECT DISTINCT m.instance_id FROM slow_folds f CROSS JOIN LATERAL unnest(f.held) AS m(instance_id)
-  ), slow_under AS MATERIALIZED (  -- a server's fold under its collector's standing fold: held
-    SELECT value FROM slow_folds WHERE kind = 'target' AND under_host
+  ), slow_under AS MATERIALIZED (  -- a server's fold under its collector's standing fold: held (a server two collectors
+    -- fold - one alert key - only when it is under the fold of every one of them)
+    SELECT value FROM slow_folds WHERE kind = 'target' GROUP BY value HAVING bool_and(under_host)
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
   ), ch AS (
@@ -522,6 +523,10 @@ LANGUAGE sql STABLE SET jit = off AS $$
          s.first_sent_at, s.send_count
     FROM s
    WHERE NOT EXISTS (SELECT 1 FROM sc WHERE sc.channel = s.channel AND sc.finding_key = s.finding_key)
+     -- a collector's 'slow connects' is not 'resolved' while that collector's own 'collector or network' stands (its
+     -- connects stopped being judged because it stopped, not because they got faster)
+     AND NOT (s.source = 'pgvigil repository' AND s.setting = 'slow connects'
+              AND EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = s.value))
      AND (NOT s.instance_active OR s.present
           OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)
               AND s.source = 'pgvigil repository')
