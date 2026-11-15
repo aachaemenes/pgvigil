@@ -211,11 +211,15 @@ func (r customResult) row(name string) collect.Row {
 func runCustomCheck(ctx context.Context, in config.Instance, info Info, c collect.CustomCheck) (res customResult) {
 	start := time.Now()
 	defer func() { res.Took = time.Since(start) }()
-	fail := func(err error) customResult {
-		return customResult{Status: "error", Err: collect.CapCustomText(collect.MaskCustomText(customErrText(err, c)), collect.CustomMaxError)}
-	}
 	cctx, cancel := context.WithTimeout(ctx, customCheckTimeout)
 	defer cancel()
+	fail := func(err error) customResult {
+		// the check's own deadline, whatever error the driver made of its cancel
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			err = context.DeadlineExceeded
+		}
+		return customResult{Status: "error", Err: collect.CapCustomText(collect.MaskCustomText(customErrText(err, c)), collect.CustomMaxError)}
+	}
 	db, conn, err := Connect(cctx, in)
 	if err != nil {
 		return fail(err)
