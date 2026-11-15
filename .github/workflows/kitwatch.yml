@@ -49,8 +49,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # SQL Server 2022 CU28 = 16.0.4325.4, the build the stored samples were captured on (com.microsoft.version)
-      MSSQL_IMAGE: mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:e10cd49443c94dbdcb7a050987db22ff4d8c87052ac53768abe1ed848d3fcef6
+      # SQL Server 2022 CU28 = 16.0.4325.4, the build the stored samples were captured on (com.microsoft.version); the
+      # digest is the OCI manifest's the registry stores (its Docker v2 form is a conversion it cannot serve by digest)
+      MSSQL_IMAGE: mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:4525e3efac9f3e241cb003bb2ff2a82818b502f37e12049d788b1a9fa7e13b7f
       PGVIGIL_ADMIN_DSN: "host=localhost port=5432 user=postgres password=kitwatch sslmode=disable"
       GH_TOKEN: ${{ github.token }}
     steps:
