@@ -36,6 +36,10 @@ var RunsAs string
 // HeartbeatInfo is what the caller knows about this collector.
 type HeartbeatInfo struct {
 	Version string
+	// the reachability probe (B24h-1b, probe.go): 'tcp', 'icmp' (B24h-2; read as tcp until then), 'off'; "" = icmp;
+	// ProbeEveryMinute probes every known address each minute (the opt-in), else only after a failed collection
+	Probe            string
+	ProbeEveryMinute bool
 }
 
 const histBuckets = 19 // b 0 = under 1 ms, b n = 2^(n-1) to 2^n ms, b 18 = 131 s and over
@@ -85,6 +89,7 @@ type Heartbeat struct {
 	streaks  map[[2]string]*streak // instance name, collection
 	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
 	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
+	probe    *prober               // the reachability probe (B24h-1b); nil when 'off'
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -386,6 +391,9 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if res.Err != nil && h.probe != nil {
+		h.probe.noteFailed(instance) // B24h-1b: the default mode probes an address after a failed collection
+	}
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
 		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
@@ -495,6 +503,8 @@ type beat struct {
 	Runs       []beatRun    `json:"runs"`
 	Load       []beatLoad   `json:"load"`
 	Streaks    []beatStreak `json:"streaks"`
+	// the probe's rows since the last beat (B24h-1b; read by import_collector_probe, 0254; import_collector_beat leaves it)
+	Probes []beatProbe `json:"probes"`
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -505,7 +515,10 @@ func (h *Heartbeat) take() beat {
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
 	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
-		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}}
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Probes: []beatProbe{}}
+	if h.probe != nil {
+		b.Probes = append(b.Probes, h.probe.take()...)
+	}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
@@ -579,6 +592,12 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 		return nil, err
 	}
 	h.loadStreaks(ctx)
+	switch info.Probe {
+	case "off":
+	case "", "icmp", "tcp":
+		h.probe = newProber("tcp", info.ProbeEveryMinute) // B24h-1: the TCP measure ('icmp' lands in B24h-2)
+		go h.probe.loop(ctx)
+	}
 	current.Store(h)
 	log.Info("heartbeat started", "collector", h.id, "runs_as", runsAs())
 	done := make(chan struct{})

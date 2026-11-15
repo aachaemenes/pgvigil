@@ -372,8 +372,21 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("session setup %s: %w", in.Name, err)
 	}
+	collect.NoteRemote(in.Name, dl.lastRemote()) // B24h-1b: the probe's target is the address this connection used
 	dl.done()
 	return db, conn, nil
+}
+
+// lastRemote: the address (ip:port) of the connection the dialer opened last ("" when none)
+func (d *deadlineDialer) lastRemote() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i := len(d.conns) - 1; i >= 0; i-- {
+		if c := d.conns[i]; c != nil && c.Conn != nil && c.RemoteAddr() != nil {
+			return c.RemoteAddr().String()
+		}
+	}
+	return ""
 }
 
 // QueryRows runs one statement and returns its rows keyed by the result's column names as written. The contract

@@ -145,6 +145,9 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("session setup %s: %w", in.Name, err)
 	}
+	if nc := conn.PgConn().Conn(); nc != nil && nc.RemoteAddr() != nil {
+		NoteRemote(in.Name, nc.RemoteAddr().String()) // B24h-1b: the probe's target is the address this connection used
+	}
 	return conn, nil
 }
 
