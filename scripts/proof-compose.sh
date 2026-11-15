@@ -83,8 +83,9 @@ q "insert into pgvigil.dbstats (instance_id, snapshot_at, dbid, datname, stats_r
      from generate_series(0, 240) k
      cross join (values ($IA, 1), ($IB, 5)) s(i, every)
     where k % s.every = 0" >/dev/null || fail "dbstats"
-FROM_ISO=$(q "select to_char(to_timestamp($NOW) - interval '3 hours' at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+FROM_ISO=$(q "select to_char((to_timestamp($NOW) - interval '3 hours') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 TO_ISO=$(q "select to_char(to_timestamp($NOW) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+[[ -n "$FROM_ISO" && -n "$TO_ISO" ]] || fail "setup: the window's ends"
 ok "setup: A ($IA, every minute), B ($IB, every 5 minutes), C ($IC, SQL Server); the window $FROM_ISO .. $TO_ISO"
 
 # ---- serve -----------------------------------------------------------------------------------------------------------------
