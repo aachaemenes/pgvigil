@@ -493,3 +493,7 @@ button.link.silence-btn:hover:not(:disabled):not([aria-disabled="true"]) { color
 .healthcal-word { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); }
 .healthcal-day h4 { margin: var(--sp-3) 0 var(--sp-1); }
 .healthcal-drills a { margin-right: var(--sp-3); }
+/* the agent door (investigate.ts): a report's texts as the agent wrote them, wrapped, never markup */
+pre.report-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.askbox { max-width: 48rem; margin: .4rem 0 .6rem; }
+.inv-detail { margin-top: 1rem; }

@@ -9,6 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { alertCol } from './alerts';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { sqlCell, whatIsThis } from './sqlview';
+import { investigateCol, investigations } from './investigate';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
@@ -131,7 +132,8 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
 // turns the instance name into a link to that instance's Findings tab).
 export async function findingsView(instance?: number, keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
   // an instance with no settings read yet has no findings either: the empty text must not call it clean
-  const [f, cfg] = await Promise.all([get('findings', { instance }), instance ? get<{ state: Table | null }>('config', { instance }) : Promise.resolve(null)]);
+  // the agent door's list (null = off): the column of each finding's request or its Investigate button
+  const [f, cfg, inv] = await Promise.all([get('findings', { instance }), instance ? get<{ state: Table | null }>('config', { instance }) : Promise.resolve(null), investigations(instance)]);
   let rows = rowsOf(f);
   if (keep) rows = rows.filter(keep);
   const noRead = !!instance && rowsOf(cfg?.state).length === 0;
@@ -146,6 +148,7 @@ export async function findingsView(instance?: number, keep?: (r: Row) => boolean
     { key: 'platforms', label: 'applies to' },
     { key: 'source' },
     alertCol,
+    ...(inv ? [investigateCol(inv)] : []),
   ];
   return el('section', {}, el('h2', {}, 'Findings'),
     el('p', { class: 'meta' }, `${crit} critical, ${warn} warning, ${rows.length - crit - warn} advice. Parameters off their recommended range for the platform, from the latest settings read.`),
