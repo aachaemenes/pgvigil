@@ -1161,7 +1161,8 @@ if want CL; then
   [[ "$r" == "unknown,primary" ]] && ok "RB2 hadr-p's bands (never changed role): $r" || fail "RB2 hadr-p's bands: '$r', expected unknown,primary"
   # RB3 a change of system identifier starts a band with a break (a stand-in row on hadr-c, removed after)
   k=$(q "insert into pgvigil.pg_role_changes (instance_id, changed_at, changed_at_source, detected_at, prev_read_at, change, from_role, to_role, postmaster_restarted)
-         values ($CID, now() - interval '5 seconds', 'read', now(), now() - interval '1 minute', 'another cluster', 'standby', 'standby', false) returning change_id")
+         select $CID, rs.first_read_at + (now() - rs.first_read_at) / 2, 'read', now(), now() - interval '1 minute', 'another cluster', 'standby', 'standby', false
+           from pgvigil.pg_role_state rs where rs.instance_id = $CID returning change_id")   # between hadr-c's first role read and now (5 s back fell before it in a run without SQ)
   r=$(q "select string_agg(role || ':' || break_before, ',' order by from_at) from pgvigil.pg_role_bands($CID, now() - interval '1 day', now())")
   q "delete from pgvigil.pg_role_changes where change_id = $k" >/dev/null
   [[ "$r" == "unknown:false,standby:false,standby:true" ]] && ok "RB3 'another cluster' starts a band with a break: $r" || fail "RB3 bands: '$r', expected unknown:false,standby:false,standby:true"
@@ -1227,7 +1228,7 @@ if want CL; then
   read_ hadr-s 1
   cq "select pg_promote()" >/dev/null
   for _ in $(seq 1 30); do [[ "$(cq 'select pg_is_in_recovery()')" == f ]] && break; sleep 1; done
-  rc_ hadr-c hadr-s; sleep 60; rc_ hadr-c hadr-s
+  rc_ hadr-c hadr-s hadr-p; sleep 60; rc_ hadr-c hadr-s hadr-p   # hadr-p too: its role read must stay fresh (3 minutes) for hadr-s to name it
   r=$(finding "$CID" 'two primaries'); r2=$(finding "$SID_" 'two primaries')
   r3=$(q "select coalesce(primary_slot, '-') || '|' || coalesce(last_primary_slot, '-') from pgvigil.pg_repl_standby_state where instance_id = $CID")
   [[ "$r3" == *\|hadrc_slot ]] && ok "CL1b hadr-c's last slot kept past its promotion (primary_slot|last_primary_slot): $r3" || fail "CL1b hadr-c's slot after its promotion: '$r3', expected '<any>|hadrc_slot'"
