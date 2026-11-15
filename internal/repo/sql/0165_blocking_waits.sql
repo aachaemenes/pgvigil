@@ -121,6 +121,8 @@ BEGIN
   ON CONFLICT (instance_id) DO UPDATE SET app_name = EXCLUDED.app_name, read_at = EXCLUDED.read_at;
   PERFORM pgvigil.import_mssql_xe_pre0165(p_instance_id, p_snapshot_at,
     (SELECT coalesce(jsonb_agg(r), '[]'::jsonb) FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' IS DISTINCT FROM 'monitor_app'));
+  -- the hours that ended since the last import, rolled for the spike's usual (nothing to do most minutes)
+  PERFORM pgvigil.rollup_block_hourly(p_snapshot_at);
 END $$;
 
 -- ---- 0065's findings: the head-statement finding's detail in waits; the monitor's own deadlocks not counted ------
@@ -196,6 +198,54 @@ SELECT ag.instance_id, CASE WHEN ag.failover THEN 'critical' ELSE 'warning' END,
          || coalesce('; ' || ag.last_change, '')
   FROM ag;
 
+-- ---- the hourly rollup and the spike (PerformanceMonitor Fixed 25) -----------------------------------------------
+-- one row per instance and finished hour: its waits and its deadlocks (the monitor's own left out; PostgreSQL's from
+-- the log), written once: from the instance's first sight, at most 7 days back, then each hour as it ends (the
+-- Extended Events import calls it; any caller may). The spike's usual reads it: a store kept under 28 days rides on
+-- the floor alone
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_block_hourly (
+  instance_id int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  hour        timestamptz NOT NULL,
+  waits       int NOT NULL,
+  deadlocks   int NOT NULL,
+  PRIMARY KEY (instance_id, hour)
+);
+CREATE OR REPLACE FUNCTION pgvigil.rollup_block_hourly(p_now timestamptz DEFAULT now())
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE n int := 0; r record;
+BEGIN
+  FOR r IN
+    SELECT i.instance_id, i.engine, h.hour
+      FROM pgvigil.instances i
+      CROSS JOIN LATERAL generate_series(
+             greatest(date_trunc('hour', coalesce(i.first_seen, p_now)), date_trunc('hour', p_now) - interval '7 days',
+                      coalesce((SELECT max(b.hour) + interval '1 hour' FROM pgvigil.mssql_block_hourly b WHERE b.instance_id = i.instance_id), '-infinity'::timestamptz)),
+             date_trunc('hour', p_now) - interval '1 hour', interval '1 hour') h(hour)
+     WHERE i.is_active AND i.engine IN ('sqlserver', 'postgres')
+  LOOP
+    INSERT INTO pgvigil.mssql_block_hourly (instance_id, hour, waits, deadlocks)
+    VALUES (r.instance_id, r.hour,
+            CASE WHEN r.engine = 'sqlserver' THEN (SELECT count(*) FROM pgvigil.mssql_block_waits(r.instance_id, r.hour, r.hour + interval '1 hour'))
+                 ELSE (SELECT count(*) FROM pgvigil.pg_block_waits(r.instance_id, r.hour, r.hour + interval '1 hour')) END,
+            CASE WHEN r.engine = 'sqlserver' THEN
+                   (SELECT count(*) FROM pgvigil.mssql_deadlocks d WHERE d.instance_id = r.instance_id AND d.event_at > r.hour
+                       AND d.event_at <= r.hour + interval '1 hour' AND NOT pgvigil.mssql_deadlock_is_monitors(d.instance_id, d.processes))
+                 ELSE (SELECT count(*) FROM pgvigil.log_events e WHERE e.instance_id = r.instance_id AND e.kind = 'deadlock'
+                          AND e.snapshot_at > r.hour AND e.snapshot_at <= r.hour + interval '1 hour') END)
+    ON CONFLICT DO NOTHING;
+    n := n + 1;
+  END LOOP;
+  RETURN n;
+END $$;
+
+-- ---- PostgreSQL deadlocks from the log -----------------------------------------------------------------------------
+-- each deadlock's two statements as the log's DETAIL gives them ('Process 4242: UPDATE ...'), sorted, as one pair
+CREATE OR REPLACE VIEW pgvigil.pg_deadlock_pairs AS
+SELECT e.instance_id, e.snapshot_at AS at,
+       (SELECT string_agg(m[1], ' | ' ORDER BY m[1]) FROM regexp_matches(coalesce(e.detail, ''), '^Process \d+: (.*)$', 'gn') m) AS pair
+  FROM pgvigil.log_events e
+ WHERE e.kind = 'deadlock' AND e.snapshot_at > now() - interval '31 days';
+
 -- ---- the hour arm (PerformanceMonitor Changed 27, Release 6) ------------------------------------------------------
 -- 'blocking events in the last hour' (warning): 3 or more waits with the longest 15 s or more, or one of 60 s or more,
 -- SQL Server from mssql_block_waits, PostgreSQL from pg_block_waits; beside the snapshot rule 'a blocking chain'
@@ -212,4 +262,37 @@ SELECT i.instance_id, 'warning'::text AS severity, 'blocking events in the last 
       SELECT p.wait_ms, p.last_seen_at FROM pgvigil.pg_block_waits(i.instance_id, now() - interval '1 hour', now()) p WHERE i.engine = 'postgres') x) w
  WHERE i.is_active
    AND (w.n >= 3 AND w.worst >= 15000 OR w.worst >= 60000)
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_running_findings f WHERE f.instance_id = i.instance_id AND f.check_name = 'a blocking chain');
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_running_findings f WHERE f.instance_id = i.instance_id AND f.check_name = 'a blocking chain')
+UNION ALL
+-- the spike: one of the last 4 finished hours at 3 times its usual (the same weekday and hour over the last 4 weeks),
+-- the floors 5 waits / 3 deadlocks; under 4 weeks of that hour's history it fires on the floor alone, said so
+(SELECT DISTINCT ON (s.instance_id, s.check_name) s.instance_id, 'warning', s.check_name, s.what, s.hour + interval '1 hour',
+       s.n || ' ' || s.what || ' in the hour from ' || to_char(s.hour, 'YYYY-MM-DD HH24:00') || ', '
+         || CASE WHEN s.samples >= 4 THEN round(s.n / nullif(s.usual, 0), 1) || ' times its usual of ' || round(s.usual, 1) || ' (this weekday and hour over 4 weeks)'
+                 ELSE 'no usual yet (' || s.samples || ' of 4 weeks of history for this hour): fired on the floor of ' || s.floor END
+  FROM (
+    SELECT h.instance_id, h.hour, k.what, k.check_name, k.floor, k.n,
+           (SELECT avg(CASE k.what WHEN 'waits' THEN b.waits ELSE b.deadlocks END) FROM pgvigil.mssql_block_hourly b
+             WHERE b.instance_id = h.instance_id AND b.hour IN (h.hour - interval '1 week', h.hour - interval '2 weeks', h.hour - interval '3 weeks', h.hour - interval '4 weeks')) AS usual,
+           (SELECT count(*) FROM pgvigil.mssql_block_hourly b
+             WHERE b.instance_id = h.instance_id AND b.hour IN (h.hour - interval '1 week', h.hour - interval '2 weeks', h.hour - interval '3 weeks', h.hour - interval '4 weeks')) AS samples
+      FROM pgvigil.mssql_block_hourly h
+     CROSS JOIN LATERAL (VALUES ('waits', 'blocking at 3x this hour''s usual', 5, h.waits), ('deadlocks', 'deadlocks at 3x this hour''s usual', 3, h.deadlocks)) k(what, check_name, floor, n)
+     WHERE h.hour >= date_trunc('hour', now()) - interval '4 hours' AND h.hour < date_trunc('hour', now())) s
+ WHERE s.n >= s.floor AND (s.samples < 4 OR s.n >= 3 * s.usual)
+ ORDER BY s.instance_id, s.check_name, s.hour DESC)
+UNION ALL
+-- PostgreSQL deadlocks (from the log): a pair of statements not seen in the 30 days before, or 5 in an hour
+SELECT n.instance_id, 'warning', 'a deadlock between a new pair of statements', left(n.pair, 200), n.at,
+       'a deadlock between ' || replace(n.pair, ' | ', ' and ') || ', a pair not seen in the 30 days before'
+  FROM (SELECT DISTINCT ON (d.instance_id, d.pair) d.* FROM pgvigil.pg_deadlock_pairs d
+         WHERE d.at > now() - interval '1 hour' AND d.pair IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_deadlock_pairs o WHERE o.instance_id = d.instance_id AND o.pair = d.pair
+                              AND o.at < d.at AND o.at >= d.at - interval '30 days')
+         ORDER BY d.instance_id, d.pair, d.at DESC) n
+UNION ALL
+SELECT d.instance_id, 'warning', 'deadlocks in the last hour', 'deadlocks', max(d.at), count(*) || ' deadlock(s) in the last hour'
+  FROM pgvigil.pg_deadlock_pairs d
+ WHERE d.at > now() - interval '1 hour'
+ GROUP BY d.instance_id
+HAVING count(*) >= 5;
