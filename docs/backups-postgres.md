@@ -4,10 +4,46 @@ Two collections and two tabs per instance, two fleet pages, and five Summary col
 
 | collection | every | reads | needs |
 | --- | --- | --- | --- |
-| `backup_tools` | 15 min | which backup tool the server's `archive_command` and `restore_command` name; that tool's own JSON, run on the collector's host; a standby's replay | pg_monitor (it reads both commands); the tool on the collector's host |
+| `backup_tools` | 15 min | which backup tool the server's `archive_command` and `restore_command` name; with `backups: read_tools: true`, that tool's own JSON, run on the collector's host; a standby's replay | any login (every role that logs in reads both commands with SHOW); the tool on the collector's host |
+| `backup_dest` | 15 min | where the WAL, the base backups and the restore go, built from `archive_command`, `archive_library` (with `basic_archive.archive_directory`) and `restore_command`; with `backups: read_tools: true`, the tool's own configuration on the collector's host (pgBackRest's files and `PGBACKREST_REPOn_*`, `barman show-servers`) | any login; for the tool read, the tool and read access to its configuration on the collector's host |
 | `rolechange` | 1 min | `pg_is_in_recovery()`, the timeline, `pg_control_system()`'s system identifier, the postmaster's start, the newest timeline history file in `pg_wal`; Patroni's `/cluster` where Patroni is seen | pg_monitor for `pg_control_*` and `pg_ls_waldir()` (without it those parts stay empty) |
 
 `backup_tools` does not run on RDS, Aurora, Azure, Cloud SQL or AlloyDB: those platforms take their own backups (the `backups` collection in the README's table reads RDS and Aurora's snapshots and restore window). `rolechange` runs everywhere.
+
+## The tool read is opt-in
+
+Running a backup tool and reading its configuration happen on the collector's host as the collector's account, and a tool's configuration can hold a repository's keys and passphrase. So both are off until an instance asks for them in `pgvigil.yaml`:
+
+```yaml
+instances:
+  - name: pg1
+    backups:
+      read_tools: true
+```
+
+Off, the Base backups tab names the tool the server uses and says `not read: the tool read is off for this instance`, its base backups are not judged (an info finding, `base backups not read`, and a grey Summary cell, never green), and 'Where the backups go' shows only what the server's own settings name. A tool's failure is said in fixed words (an exit code, no answer in 60 s, could not run, not the JSON expected, not in the answer): its stderr is never stored or logged.
+
+## Where the backups go
+
+The collection `backup_dest` reads the archiver's settings and names, per instance, **base backups to**, **WAL to** and **restore from**, each with where it was read. No command text is stored: a destination is built from pieces that each pass a plain pattern (a scheme, a host, a port, a path, a bucket), a URL keeps `scheme://host[:port]/path` only (its `user:password@` and its query go), and anything else is `not known`, never guessed. The commands are cut as a shell cuts a plain line (the lexer is written in `internal/collect/backup_dest.go`'s header): a variable taints its word, a command substitution its whole segment, a newline or an unclosed quote the whole command.
+
+| the server's setting names | what is shown |
+| --- | --- |
+| `pgbackrest --stanza=S archive-push` | pgBackRest stanza S, its inline repository options; with read_tools, each `repoN` as the collector host's pgBackRest configuration names it (`[S:archive-push]` over `[S]` over `[global:archive-push]` over `[global]`, `PGBACKREST_REPOn_*` over the file, the server's own inline options over all; a `repoN-host` = that host's configuration, not read); base backups go to the same repository |
+| `barman-wal-archive [options] HOST SERVER` | barman server SERVER on HOST; with read_tools, its `basebackups_directory` and `wals_directory` from `barman show-servers` (only those keys, the method and the retention: never its conninfo) |
+| `barman-cloud-wal-archive [options] URL SERVER` | the URL and the endpoint |
+| `WALG_S3_PREFIX=... wal-g wal-push` (or `WALG_FILE_PREFIX`, wal-e's `--s3-prefix`) | the prefix; an `envdir` or a `--config` file is named as where it lives, else 'in the server's environment' |
+| `aws s3 cp`, `gsutil cp`, `az storage blob upload`, `azcopy`, `s3cmd put`, `rclone copy`, `mc cp`, `curl -T` | the bucket, container or remote and the path |
+| `rsync` or `scp` to `host:/path` or `host::module` (into `.../SERVER/incoming` = barman) | the host and the directory |
+| `cp`, `copy`, `install`, `dd of=`, a compressor with `> file` | the directory of the file it writes |
+| `archive_library = 'basic_archive'` | `basic_archive.archive_directory` (a library wins over `archive_command` on every version) |
+| a script (`/path/x.sh %p %f`) | 'a script (x.sh): the destination is inside it - not known' |
+| `archive_mode = off`, no command | WAL is not archived |
+| `true`, `:`, `cp %p /dev/null` with archive_mode on | WAL is discarded (a warning) |
+
+A password, a key or a token on the command line (`PGPASSWORD=`, `--password=`, `sshpass -p`, `curl -u user:pass`, a URL's `user:password@` or a signature, an inline rclone remote's secret) is never kept: it raises the warning `a credential is written in the archiver's command` - both settings are readable by every role that logs in. A key's id, type, name or file, `StrictHostKeyChecking` and barman's `--sse-customer-key file://...` are not credentials. A standby with `archive_mode = on` (not `always`) does not archive and says so; a `restore_command` on a primary is 'set, not in use'. On RDS and Aurora the line is the service's (retention, the restorable window, the backup window); Azure, Cloud SQL and AlloyDB 'kept by the service (not read by pgvigil)'.
+
+Where nothing can be read (a `pg_basebackup` from cron leaves no trace in the server), a person enters it with **Edit**: never a credential (refused), at most 500 characters, shown beside a value read and never over it, with who and when, its history kept.
 
 ## Base backups (pgBackRest, barman)
 
