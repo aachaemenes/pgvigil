@@ -102,11 +102,13 @@ fails that send as above, and the log's error says which.
 
 **Alert channel failing.** When a channel's last three send attempts (alerts or a Send test) all failed or were
 refused, the repository raises its own finding *alert channel failing* (warning, instance `pgvigil`, its value the
-channel's name), and the other channels are sent it like any repository-wide alert: every channel at or under warning,
+channel's name; critical while one of those failed sends carried an alert that is critical now, so a channel losing
+criticals is told to the channels at a critical floor too), and the other channels are sent it like any repository-wide
+alert: every channel at or under its severity,
 scoped ones too, never an application contact's route. The detail names the channel's kind and destination (a
 webhook's scheme and host only), the newest failed attempt and its error. The failing channel itself is never sent its
 own alert. The next send that goes through ends it, and the other channels get its recovery. A channel whose floor is
-critical is not told: set one channel at warning to hear of the others.
+critical hears it only while criticals are being lost: set one channel at warning to hear of every failing channel.
 
 One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
@@ -353,6 +355,59 @@ an hour while it stands, for 90 days. The Alert rules page draws one instance's 
 `checks:` on a channel limits it to the findings of those checks (a finding's source or setting, without case; the
 check a mute rule names). For example, backups go to one team and blocking to another.
 
+## The Slack bot, attachment, and Acknowledge from Slack
+
+**The Slack bot** (`kind: slack`, `slack: {bot_token: env:SLACK_BOT_TOKEN, channel: C0123ABCD}`, task 403b) posts through
+Slack's Web API (`chat.postMessage`) with a bot token (`xoxb-...`, through `env:` or `file:` only), to the channel's id
+(never its name). Unlike the incoming webhook, every alert keeps a thread: a repeat, an escalation (also shown in the
+channel) and the recovery are replies in the thread of the post that first carried the alert. A post carries up to 20
+alerts; the replies are sent one per thread, each as its own send, after the new alerts and at most 20 a pass (the rest
+go next pass), one Slack call a second. A post whose thread Slack no longer takes is posted anew. `api_url` is
+`https://slack.com/api` (the default) or `https://slack-gov.com/api` for GovSlack. A finding's text is escaped, so it
+never mentions a person or the channel. Every alert with a page address carries an *Open in pgvigil* button; Teams cards
+(the webhook's `teams` format) carry the same button, which opens the alert's page, where it is acknowledged.
+NOT PROVEN LIVE: the lab's Slack app has the incoming-webhook scope only and no Slack token is stored; the proof runs the
+bot against a stand-in of Slack's API.
+
+**Attachment** (Changed 24). While a CPU, blocking or deadlock alert stands on a channel (sent there, not held, not a
+flapping rule's), a new finding on the same instance is attached to it there instead of being sent: no new message,
+page or incident on any channel kind. What makes a finding an anchor is a fixed list (`pgvigil.alert_anchor_checks`):
+a rule on the metrics `sql_pct`, `total_pct`, `cpu_pct`, `blocked`, `heads`, `waiting_lock` or `deadlocks`, SQL Server's
+*a blocking chain* and *deadlocks in the last hour* - never a word in a check's name. A finding attaches only while the
+anchor's first send is at most 60 minutes old and the finding was never sent on that channel; it then stays attached
+while that occurrence stands. A critical alert and an escalation are never attached, and an anchor is never attached
+itself. On the Slack bot each attached finding is one reply in the anchor's thread; on every channel the anchor's
+recovery lists what was attached while it stood, and a daily digest lists them. When the anchor resolves, a finding
+that still stands fires as itself, its line saying what it was attached to. Two findings that fire in the same pass as
+their anchor go in the same message as it.
+
+**Acknowledge and Mute 1 h from Slack** (A38) - a door outside the UI login, OFF by default:
+
+```yaml
+doors: {slack_actions: true}          # the one switch (Site settings lists it); default false
+slack_apps:
+  - app_id: A0123ABCD                 # the Slack app whose Interactivity Request URL is https://<serve>/api/slack/actions
+    team_id: T0123ABCD                # its workspace (enterprise_id: E0123ABCD on Enterprise Grid)
+    signing_secret: env:SLACK_SIGNING_SECRET
+    users: {U0123ABCD: alice}         # Slack user id -> pgvigil user: who may click
+alerts:
+  - {name: ops-slack, kind: slack, slack: {bot_token: env:SLACK_BOT_TOKEN, channel: C0123ABCD, app_id: A0123ABCD}}
+```
+
+With the door on, a Slack bot channel's posts carry *Acknowledge* and *Mute 1 h* on each new or escalated alert. serve
+mounts `POST /api/slack/actions` (404 while the door is off), reads only the listed apps' signing secrets (never a
+channel's token), and refuses to start under `-no-login`. Each request is checked before anything in it is read: its
+size, its form type, a timestamp within 5 minutes, and Slack's signature (HMAC-SHA256 over the raw body, compared in
+constant time) against the app's secret; then the payload's app and workspace must be that app's. A replayed request
+is not taken twice. A click is then refused, to the clicker alone, when the Slack user is not mapped, the mapped
+pgvigil user is disabled or gone, acknowledgements are off on this server, the clicked post's alert has cleared (a newer
+post carries the open one), or it is already acknowledged or muted. Otherwise it is written as the mapped user through
+the actions door's audit login (client `slack:<workspace>/<user>`, the Slack identity in the audit row): *Acknowledge*
+stops that alert's repeats on every channel while it stands; *Mute 1 h* holds it on every channel for an hour, its
+escalation included (the button asks first). The outcome is posted back through the click's reply address. Limits: 20
+requests a second, 30 clicks a minute per Slack user. After the roles (B24f), a click needs the operator role.
+NOT PROVEN LIVE: no public address and no Slack token in the lab; the proof signs requests itself.
+
 ## Destinations and the rules they keep
 
 - **Only the configured destination.** A webhook's redirect is never followed: the send is refused, and the log says
@@ -588,6 +643,8 @@ through `pgvigil.alert_test_record`; its login needs nothing new (0093 grants `p
 | `pgvigil.alert_rule_baseline` | The hour's baseline per baseline rule, instance and series. |
 | `pgvigil.alert_rule_overrides` | Per live rule, the rule of its kind in force instead of it, and on how many instances. |
 | `pgvigil.alert_channel_quota` | A destination's monthly quota from its newest answer (Pushover's); `alert_channel_quota_low` is the finding *pushover quota low* under 10 % left, and `alert_channel_findings` is both channel findings, the view `alert_findings` reads. |
+| `pgvigil.alert_threads` | The Slack bot's thread per alert occurrence (the post's ts and the Slack channel's id), written with the send's attempt; `alert_threads_purge` drops a closed one's after 90 days. |
+| `pgvigil.alert_anchor_checks` | What makes a finding an anchor for attachment (rule metrics, exact check names); `alert_anchor` is the test, and `alert_held` keeps an attached send with its anchor. |
 | `pgvigil.alert_channel_failing` | Each configured channel whose last three send attempts failed: the repository-wide finding *alert channel failing* (a view over `alert_log`, read through `alert_findings`; the index `alert_log_channel_at_idx` serves it). |
 
 Writes from the UI go through `pgvigil.import_alert_window` and `pgvigil.import_alert_rule` (the actions door's audit
