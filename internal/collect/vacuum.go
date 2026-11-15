@@ -358,7 +358,7 @@ func vacuumTablesReadOther(ctx context.Context, in config.Instance, db, qd, qt s
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 	cfg.Database = db
-	conn, err := connectCounted(ctx, in.Name, cfg)
+	conn, err := connectCounted(ctx, in, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}

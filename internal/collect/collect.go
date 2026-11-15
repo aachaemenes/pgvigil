@@ -22,6 +22,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/platform"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Row is one collected record, column name to value.
@@ -131,10 +132,16 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	var conn *pgx.Conn
 	var took time.Duration
 	if err == nil {
-		InstanceTarget(in.Name, PgTarget(cfg)) // task 201 DONE-2 N8: the dial target on the beat
 		withConnectTimeout(cfg)
 		t0 := time.Now()
-		conn, err = pgx.ConnectConfig(ctx, cfg)
+		// the password from AWS Secrets Manager first (B24e): the target is recorded right before the dial, and a
+		// secret that cannot be read is not the server's failure, so it is not reported as a connect
+		conn, err = dialWithSecret(ctx, in, cfg, func() { InstanceTarget(in.Name, PgTarget(cfg)); t0 = time.Now() }, // task 201 DONE-2 N8
+			func(c *pgx.ConnConfig) (*pgx.Conn, error) { return pgx.ConnectConfig(ctx, c) })
+		var se *secrets.ReadError
+		if errors.As(err, &se) {
+			return nil, fmt.Errorf("connect %s: %w", in.Name, err)
+		}
 		took = connTook(t0) // the slow-connect tier: the connect itself, the session setup after it not counted
 	}
 	err = InstanceConnectTimed(in.Name, err, took)
