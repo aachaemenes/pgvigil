@@ -111,7 +111,7 @@ print('%s|%d|%s|%s|%s' % (names == want, len(full), all(sum(s.values()) == 55 an
 done
 
 echo "--- C. the two stacked charts on the Running queries page"
-page mssql_running > "$OUT.run"
+page mssql_running > "$OUT.run" || true   # a browser that fails draws nothing: the rows FAIL as absent, not the proof's end
 for k in login program; do
   check "$(py "
 import re, sys
@@ -137,7 +137,7 @@ print('%d|%s|%s|%s|%s' % (len(rows), [r['snapshots'] for r in r101], [r['snapsho
 fi
 
 echo "--- E. the chain timeline on the Blocked reports page"
-page mssql_blocked > "$OUT.blk"
+page mssql_blocked > "$OUT.blk" || true
 check "$(py "
 import re, sys
 h = open(sys.argv[1]).read()
