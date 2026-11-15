@@ -1,0 +1,250 @@
+package cloudrepl
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
+)
+
+// Which names the door an instance's configuration opens for the provider replica read: "aws" (P1: the aws: block's
+// replicas switch with its db_instance; off by default, the lead's Q8) or "gcp" (P2: a gcp: block), else "" and why.
+func Which(in config.Instance) (provider, why string) {
+	switch {
+	case in.GCP != nil:
+		return "gcp", ""
+	case in.AWS != nil && in.AWS.Replicas && strings.TrimSpace(in.AWS.DBInstance) != "":
+		return "aws", ""
+	case in.AWS != nil:
+		return "", "the aws: block's replicas switch is off (aws.replicas: true opens the provider replica door, P1)"
+	}
+	return "", "no aws: block with replicas: true and no gcp: block in the config: the provider replicas are not read"
+}
+
+// Door is the process's provider replica door for both engines' collections (cloud_replicas, mssql_cloud_replicas): an
+// AWS reader per profile (its region clients and the run's listings shared by the instances of a run: the design fold
+// 15), a Google reader per credentials file (its token), and a throttled door resting until its next interval.
+type Door struct {
+	NewAWS func(profile string) *AWSReader
+	NewGCP func(credentialsFile string) (*GCPReader, error)
+	Region func(ctx context.Context, profile string) (string, error) // the profile's region when the aws: block names none
+	Now    func() time.Time
+
+	mu   sync.Mutex
+	aws  map[string]*AWSReader
+	gcp  map[string]*GCPReader
+	held map[string]held
+}
+
+type held struct {
+	until time.Time
+	why   string
+}
+
+// Default is the door the collections use.
+var Default = &Door{NewAWS: newAWSReader, NewGCP: NewGCPReader, Region: profileRegion, Now: time.Now}
+
+// restFor: a throttled door rests this long (the collection runs every 5 minutes: the rest of this run and the
+// run's other instances, never the next run)
+const restFor = awsListAge
+
+// Rows is one read of the instance's door as the import's rows: a 'read' row first (provider, resource_id = the
+// instance's own, notes = the sentences of the calls refused or failed), then a 'resource' row per resource and a
+// 'point' row per datapoint; a read with notes adds a collector_error row (the run is partial). A throttle is a read
+// with its sentence and no call until the door's rest ends. A read that cannot start (no credentials, the instance not
+// found) is an error.
+func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, error) {
+	provider, why := Which(in)
+	var self, key string
+	var read func() ([]Resource, []Point, []string, error)
+	switch provider {
+	case "aws":
+		region := strings.TrimSpace(in.AWS.Region)
+		if region == "" {
+			r, err := d.Region(ctx, in.AWS.Profile)
+			if err != nil {
+				return nil, err
+			}
+			region = r
+		}
+		self, key = strings.ToLower(strings.TrimSpace(in.AWS.DBInstance)), "aws|"+in.AWS.Profile+"|"+region
+		r := d.awsReader(in.AWS.Profile)
+		read = func() ([]Resource, []Point, []string, error) { return r.Read(ctx, region, self) }
+	case "gcp":
+		self, key = in.GCP.ResourceID(), "gcp|"+in.GCP.CredentialsFile+"|"+strings.ToLower(in.GCP.Project)
+		r, err := d.gcpReader(in.GCP.CredentialsFile)
+		if err != nil {
+			return nil, err
+		}
+		read = func() ([]Resource, []Point, []string, error) { return r.Read(ctx, in.GCP.Project, in.GCP.Instance) }
+	default:
+		return nil, errors.New(why)
+	}
+	if w, ok := d.resting(key); ok {
+		return noteRows(provider, self, []string{w}), nil
+	}
+	res, pts, notes, err := read()
+	var th *Throttled
+	if errors.As(err, &th) {
+		w := th.Error()
+		d.rest(key, w)
+		return noteRows(provider, self, []string{w}), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows := noteRows(provider, self, notes)
+	head := rows[0]
+	rows = rows[1:]
+	for _, x := range res {
+		ids := x.ReplicaIDs
+		if ids == nil {
+			ids = []string{}
+		}
+		rows = append(rows, map[string]any{"kind": "resource", "provider": x.Provider, "resource_id": x.ID, "engine": x.Engine,
+			"region": x.Region, "role": x.Role, "source_id": x.SourceID, "replica_ids": ids, "cascaded": x.Cascaded,
+			"status": x.Status, "repl_status": x.ReplStatus, "repl_note": x.ReplNote})
+	}
+	for _, p := range pts {
+		rows = append(rows, map[string]any{"kind": "point", "provider": provider, "resource_id": p.ResourceID, "metric": p.Metric,
+			"unit": p.Unit, "at": p.At.UTC().Format(time.RFC3339), "value": p.Value})
+	}
+	return append([]map[string]any{head}, rows...), nil
+}
+
+// noteRows: the read row, and a collector_error row when the read has notes
+func noteRows(provider, self string, notes []string) []map[string]any {
+	if notes == nil {
+		notes = []string{}
+	}
+	rows := []map[string]any{{"kind": "read", "provider": provider, "resource_id": self, "notes": notes}}
+	if len(notes) > 0 {
+		rows = append(rows, map[string]any{"kind": "collector_error", "source": "cloud_replicas:" + provider, "message": strings.Join(notes, "; ")})
+	}
+	return rows
+}
+
+func (d *Door) resting(key string) (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	h, ok := d.held[key]
+	if !ok || !d.Now().Before(h.until) {
+		delete(d.held, key)
+		return "", false
+	}
+	return h.why + " (the door rests until " + h.until.UTC().Format("15:04:05") + " UTC)", true
+}
+
+func (d *Door) rest(key, why string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.held == nil {
+		d.held = map[string]held{}
+	}
+	d.held[key] = held{until: d.Now().Add(restFor), why: why}
+}
+
+func (d *Door) awsReader(profile string) *AWSReader {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.aws == nil {
+		d.aws = map[string]*AWSReader{}
+	}
+	r, ok := d.aws[profile]
+	if !ok {
+		r = d.NewAWS(profile)
+		d.aws[profile] = r
+	}
+	return r
+}
+
+// gcpReader: one reader per credentials file (an error is not kept: the next run tries again)
+func (d *Door) gcpReader(file string) (*GCPReader, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.gcp == nil {
+		d.gcp = map[string]*GCPReader{}
+	}
+	if r, ok := d.gcp[file]; ok {
+		return r, nil
+	}
+	r, err := d.NewGCP(file)
+	if err != nil {
+		return nil, err
+	}
+	d.gcp[file] = r
+	return r, nil
+}
+
+// loadAWS: the SDK's credential chain for a profile in a region (environment, the profile, `aws login`, the
+// instance role), as the io and logs collections load it
+func loadAWS(ctx context.Context, profile, region string) (aws.Config, error) {
+	opts := []func(*awsconfig.LoadOptions) error{}
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	if profile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("aws config: %w", err)
+	}
+	return cfg, nil
+}
+
+// profileRegion: the region the profile (or the environment) names
+func profileRegion(ctx context.Context, profile string) (string, error) {
+	cfg, err := loadAWS(ctx, profile, "")
+	if err != nil {
+		return "", err
+	}
+	if cfg.Region == "" {
+		return "", errors.New("the aws: block names no region and neither its profile nor the environment does (aws.region)")
+	}
+	return cfg.Region, nil
+}
+
+// newAWSReader: P1's clients for a profile, one RDS and one CloudWatch client per region, kept for the process
+func newAWSReader(profile string) *AWSReader {
+	var mu sync.Mutex
+	cfgs := map[string]aws.Config{}
+	cfgFor := func(ctx context.Context, region string) (aws.Config, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if c, ok := cfgs[region]; ok {
+			return c, nil
+		}
+		c, err := loadAWS(ctx, profile, region)
+		if err == nil {
+			cfgs[region] = c
+		}
+		return c, err
+	}
+	return &AWSReader{
+		RDS: func(ctx context.Context, region string) (RDSAPI, error) {
+			c, err := cfgFor(ctx, region)
+			if err != nil {
+				return nil, err
+			}
+			return rds.NewFromConfig(c), nil
+		},
+		CW: func(ctx context.Context, region string) (CWAPI, error) {
+			c, err := cfgFor(ctx, region)
+			if err != nil {
+				return nil, err
+			}
+			return cloudwatch.NewFromConfig(c), nil
+		},
+		Now: time.Now,
+	}
+}

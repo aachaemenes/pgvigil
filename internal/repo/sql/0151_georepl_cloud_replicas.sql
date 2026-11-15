@@ -570,6 +570,12 @@ BEGIN
     WHERE g.snapshot_at < EXCLUDED.snapshot_at;
 END $$;
 
+-- SQL Server's collection is mssql_cloud_replicas (every SQL Server collection's name starts mssql_): the same import
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_cloud_replicas(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE sql AS $$
+  SELECT pgvigil.import_cloud_replicas(p_instance_id, p_snapshot_at, p_payload)
+$$;
+
 -- cloud_replica_readers: per active instance the resources its read covers - its own, its direct replicas and its
 -- direct source (as the current rows name them)
 CREATE OR REPLACE VIEW pgvigil.cloud_replica_readers AS
