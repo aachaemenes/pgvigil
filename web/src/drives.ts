@@ -342,24 +342,60 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
   const daySel = el('select', { id: 'dbs-days' }, ...days.map(n => el('option', { value: String(n) }, `${n} days`)));
   daySel.value = String(day);
   const refresh = el('button', { type: 'button' }, 'Refresh');
+  // Unit and Decimal places, DBA Dash's DB Space pickers: MB / GB / TB (default GB; 1 GB = 1024 MB) and 0 - 3 decimals
+  // (default 1). One choice for every DB Space page, kept in this browser under the grid tools' prefix (so a mailed DB
+  // Space reads in the unit its schedule was made in); the default is kept as no key; a stored value it does not know
+  // is the default. A pick draws the grids again from the data already read
+  const units = ['MB', 'GB', 'TB'], places = [0, 1, 2, 3];
+  const keyU = 'pgvigil.grid.dbspace.size-unit', keyD = 'pgvigil.grid.dbspace.size-decimals';
+  let unit = lsGet(keyU) ?? 'GB'; if (!units.includes(unit)) unit = 'GB';
+  let dp = Number(lsGet(keyD) ?? 1); if (!places.includes(dp)) dp = 1;
+  const unitSel = el('select', { id: 'dbs-unit' }, ...units.map(u => el('option', { value: u }, u))) as HTMLSelectElement;
+  const dpSel = el('select', { id: 'dbs-dp' }, ...places.map(n => el('option', { value: String(n) }, String(n)))) as HTMLSelectElement;
+  unitSel.value = unit; dpSel.value = String(dp);
+  const keep = (k: string, v: string, dflt: string) => { try { if (v === dflt) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private window */ } };
+  // the grid's sort and filters by column KEY (the keys stay, a unit changes only the headings): read from the clicks and
+  // typing on the drawn grid, given again to the grid drawn in the new unit
+  let sort: { key: string; asc: boolean } | undefined, replaying = false;
+  const filt = new Map<string, string>();
+  const follow = (box: HTMLElement, cols: Col[]) => {
+    const t = box.querySelector('table.grid'); if (!t) return;
+    const ths = [...t.querySelectorAll(':scope > thead > tr:first-child > th')];
+    const ins = [...t.querySelectorAll<HTMLInputElement>('thead input.filter')];
+    ths.forEach((th, j) => th.addEventListener('click', () => { if (replaying) return; const k = cols[j]?.key; if (!k) return; sort = { key: k, asc: sort?.key === k ? !sort.asc : true }; }));
+    ins.forEach((inp, j) => inp.addEventListener('input', () => { const k = cols[j]?.key; if (!k) return; if (inp.value.trim()) filt.set(k, inp.value); else filt.delete(k); }));
+    replaying = true;
+    if (sort) { const j = cols.findIndex(c => c.key === sort!.key); const th = ths[j] as HTMLElement | undefined; if (th) { th.click(); if (!sort.asc) th.click(); } }
+    replaying = false;
+    for (const [k, v] of filt) { const j = cols.findIndex(c => c.key === k); const inp = ins[j]; if (inp) { inp.value = v; inp.dispatchEvent(new Event('input')); } }
+  };
+  let last: { d: Parts<'instances' | 'databases' | 'history'>; sc: Awaited<ReturnType<typeof scope>> } | undefined;
   async function draw() {
-    let d: Parts<'instances' | 'databases' | 'history'>;
-    let sc: Awaited<ReturnType<typeof scope>>;
     try {
-      sc = await scope(ctx);
-      d = await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day });
+      const sc = await scope(ctx);
+      last = { d: await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day }), sc };
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
-    // the GB columns (DBA Dash's unit, the folder's grid and an instance's alike) hold the GB figure rounded to 0.1 and show
-    // it with one decimal always, as DBA Dash does ('12.0', the locale's form: fr-FR '12,0'); the export writes the number
-    // under '0.0' (export.ts typed: a figure in fixed decimals)
-    const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
-    const fmtGB = (v: unknown) => v == null || v === '' ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    render();
+  }
+  function render() {
+    if (!last) return;
+    const { d, sc } = last;
+    // a size in the unit picked, EXACT (bytes / 1024^p: the figure and the cell's format round, the value does not), shown
+    // with exactly the decimals picked in the locale's form ('12.0', fr-FR '12,0'); the export writes the number under
+    // that many decimals (export.ts typed: a figure in fixed decimals)
+    const div = 1024 ** (2 + units.indexOf(unit));   // MB 1024^2, GB 1024^3, TB 1024^4 (DBA Dash's divisors)
+    const inUnit = (v: unknown) => v == null ? null : Number(v) / div;
+    const fig = (v: unknown) => v == null || v === '' ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    const head = (w: string) => `${w} (${unit})`;
+    // a size column whose figures all show 0 while its bytes are above 0 (TB with no decimal): said under the grid
+    const zeroNote = (rows: Row[], keys: string[]) => keys.some(k => rows.some(r => Number(r[k]) > 0) && rows.every(r => r[k] == null || Number(fig(r[k]).replace(/[^\d]/g, '')) === 0))
+      ? el('p', { class: 'meta' }, `Every figure shows 0 in ${unit} with ${dp} decimal${dp === 1 ? '' : 's'}: pick a smaller unit or more decimals to see the sizes.`) : '';
     if (!ctx.instance) {
-      const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes) }));
+      const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated: inUnit(r.allocated_bytes), used: inUnit(r.used_bytes) }));
       const cols: Col[] = [
         { key: 'instance', label: 'name', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
-        { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtGB(v) },
-        { key: 'used_gb', label: 'used (GB)', num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fmtGB(v) },
+        { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v) },
+        { key: 'used', label: head('used'), num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fig(v) },
         { key: 'databases', num: true }, { key: 'engine' },
         { key: 'history', label: 'history', fmt: (_v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace'), 'aria-label': `View the history of ${String(r.instance)}` }, 'View') },
       ];
@@ -368,31 +404,38 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
           + 'Used: the space used inside SQL Server\'s files where every file\'s was read; a PostgreSQL file holds no unallocated space to read, so it is not given there.'),
         // the DB Space row: the pie takes the room its grid leaves (app.css .dbs-row), as DBA Dash's DB Space pie does
         el('div', { class: 'cards dbs-row', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
-          grid(rows, cols, 'No database size read yet.'),
-          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })));
+          followed(grid(rows, cols, 'No database size read yet.'), cols),
+          donutChart('DB Space (allocated)', rows.map(r => ({ label: String(r.instance), value: Number(r.allocated_bytes ?? 0), href: instHref(ctx, r.instance_id, 'dbspace') })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
+        zeroNote(rows, ['allocated', 'used']));
       return;
     }
-    const dbs: Row[] = rowsOf(d.databases).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes), data_gb: toGB(r.data_bytes), log_gb: toGB(r.log_bytes) }));
+    const dbs: Row[] = rowsOf(d.databases).map((r): Row => ({ ...r, allocated: inUnit(r.allocated_bytes), used: inUnit(r.used_bytes), data: inUnit(r.data_bytes), log: inUnit(r.log_bytes) }));
     const hist = rowsOf(d.history), engine = rowsOf(d.instances)[0]?.engine;
     const cols: Col[] = [
       // the name opens the database, as its slice does (DBA Dash's Name drill)
       { key: 'database', fmt: (v, r) => { const to = dbSlice(ctx, engine, r); return to ? el('a', { href: to }, String(v ?? '')) : String(v ?? ''); } },
-      { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtGB(v) },
-      { key: 'used_gb', label: 'used (GB)', num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fmtGB(v) },
+      { key: 'allocated', label: head('allocated'), num: true, fmt: v => fig(v) },
+      { key: 'used', label: head('used'), num: true, fmt: v => v == null ? (engine === 'postgres' ? 'not read' : '') : fig(v) },
       // a PostgreSQL database has no data and log files of its own to size: those two columns are SQL Server's only
-      ...(engine === 'postgres' ? [] : [{ key: 'data_gb', label: 'data (GB)', num: true, fmt: (v: unknown) => fmtGB(v) }, { key: 'log_gb', label: 'log (GB)', num: true, fmt: (v: unknown) => fmtGB(v) }] as Col[]),
+      ...(engine === 'postgres' ? [] : [{ key: 'data', label: head('data'), num: true, fmt: (v: unknown) => fig(v) }, { key: 'log', label: head('log'), num: true, fmt: (v: unknown) => fig(v) }] as Col[]),
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
       el('div', { class: 'dbs-row', style: 'display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start' },
-        grid(dbs, cols, 'No database size read yet.'),
+        followed(grid(dbs, cols, 'No database size read yet.'), cols),
         // a database opens its own page: PostgreSQL's database page, SQL Server's files of that database (dbSlice)
         donutChart('DB Space by database', dbs.map(r => ({ label: String(r.database), value: Number(r.allocated_bytes ?? 0), href: dbSlice(ctx, engine, r) })), v => fmtBytes(v), 10, false, 'Nothing to show yet.', { big: true })),
+      zeroNote(dbs, ['allocated', 'used', 'data', 'log']),
       lineChart(`History: the databases' space over ${day} days`, hist, [{ key: 'allocated_bytes', label: 'allocated' }, { key: 'used_bytes', label: 'used' }], v => fmtBytes(v)));
   }
+  const followed = (box: HTMLElement, cols: Col[]) => { follow(box, cols); return box; };
   daySel.addEventListener('change', () => { day = Number(daySel.value); lsSet('pgvigil.dbspaceDays', String(day)); void draw(); });
   refresh.addEventListener('click', () => void draw());
-  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', ctx.instance ? el('label', { for: 'dbs-days' }, 'History ', daySel) : ''), body);
+  unitSel.addEventListener('change', () => { unit = unitSel.value; keep(keyU, unit, 'GB'); render(); });
+  dpSel.addEventListener('change', () => { dp = Number(dpSel.value); keep(keyD, String(dp), '1'); render(); });
+  // the toolbar stays outside the drawn area: a pick keeps the focus on its select
+  sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'dbs-unit' }, 'Unit ', unitSel), ' ',
+    el('label', { for: 'dbs-dp' }, 'Decimal places ', dpSel), ' ', ctx.instance ? el('label', { for: 'dbs-days' }, 'History ', daySel) : ''), body);
   await draw();
   return sec;
 }
