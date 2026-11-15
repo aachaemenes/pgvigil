@@ -89,7 +89,8 @@ export async function geoReplBlock(ctx: Ctx): Promise<HTMLElement> {
   else sec.append(el('p', { class: 'empty' }, read.groups_status === 'skipped' ? `mssql_failover_groups is skipped: ${String(read.groups_note ?? '')}.`
     : read.groups_status === 'error' ? `mssql_failover_groups failed: ${String(read.groups_note ?? '')}.`
     : 'No failover group read for this database\'s server (the azure: block names its server for the Resource Manager read).'));
-  const series = rowsOf(d.series);
+  // the chart's x axis runs oldest first (uPlot's aligned data): the read answers newest first
+  const series = rowsOf(d.series).slice().reverse();
   if (series.length) sec.append(lineChart('Replication lag and unsent window (the primary\'s)', series, [
     { key: 'replication_lag_sec', label: 'lag' }, { key: 'unsent_s', label: 'unsent window' },
   ], v => `${fmtNum(v)} s`));
