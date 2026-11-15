@@ -662,6 +662,25 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
   if (!missing) record({ scope: sc, kind: 'tag-all', column: 'every group', engine: '', link: `${Object.keys(root).length} root folders and the main strip`, landed: `${tag}'s folders hold every page`, verdict: 'ok (TAGALL: every root page under the tag folder)' });
 }
 
+// TAGALL pages (the design's T2 / T3): each page the tag folder gained, opened under ?tag=<tag>, is drawn with no error box,
+// keeps the tag in its address, and says what it holds - its heading names the folder ('<page> - tag <tag>') or it carries
+// the one line of a list or a setting for the whole repository (fleet.ts fleetWideNote, p.fleet-wide). One row per page.
+{
+  const sc = `tag ${tag}`;
+  const pages = ['diff', 'pgthresholds', 'retention', 'dbadash', 'admin_instances', 'admin_applications', 'admin', 'rp_recycle', 'customreports', 'community', 'reportmail', 'alertrules'];
+  const named = `tag ${tag}`;
+  for (const t of pages) {
+    const drawn = await go(`#/${t}?tag=${encodeURIComponent(tag)}`);
+    const l = await landing();
+    const wide = await ev(`!!document.querySelector('main p.fleet-wide')`);
+    const kept = paramsOf(l.hash).get('tag') === tag && tabOf(l.hash) === t;
+    const says = l.h2.includes(named) || wide;
+    const verdict = !drawn ? 'FAIL not drawn (no heading in 15 s)' : l.err.length ? `FAIL an error box: ${l.err[0]}` : !kept ? `FAIL the address lost the tag or the page: ${l.hash}`
+      : !says ? `FAIL it names no folder and says nothing of the whole repository (heading '${l.h2}')` : `ok (TAGALL page: ${wide ? 'the whole-repository line' : 'the heading names the folder'})`;
+    record({ scope: sc, kind: 'tag-all-page', column: t, engine: '', link: `#/${t}?tag=${tag}`, landed: `${l.hash} - '${l.h2}'${wide ? ' + the whole-repository line' : ''}`, verdict });
+  }
+}
+
 // TAGTREE rows (the lead's 07:35 GO): (a) the tag folder's own Jobs folder holds the Jobs page of that tag
 {
   const sc = `tag ${tag}`;
