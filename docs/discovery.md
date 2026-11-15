@@ -116,3 +116,7 @@ block: give it one in Admin > Instances > Edit > Cloud.
 - That `rds:DescribeSourceRegions` covers every region the account holds servers in, without `ec2:DescribeRegions`: outside the lab it is RDS's own list.
 - The Azure and GCP list-only custom roles: creating a role in a lab is the owner's hand.
 - The GCP `SERVICE_DISABLED` project check live: the lab's host account is refused by scope first.
+- A page instance's `aws:` block in the AWS isolated partitions (their own domains): the block's host is matched by name
+  to an RDS endpoint of the commercial or China partitions' domains (GovCloud shares the commercial one), so an isolated
+  partition's host is refused at the approve; the collector's own check against RDS's `Endpoint.Address` is the one
+  that names no domain. No lab there.
