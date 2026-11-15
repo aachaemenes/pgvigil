@@ -104,6 +104,9 @@ type Instance struct {
 	// Azure names an Azure SQL Database's logical server in Azure Resource Manager for the failover group read
 	// (mssql_failover_groups, task 390a); nil = no Azure door (no call to Resource Manager). SQL Server only.
 	Azure *Azure `yaml:"azure"`
+	// GCP names a Cloud SQL for PostgreSQL instance for the provider replica read (cloud_replicas, task 390b P2); nil =
+	// no Google door (no call to Google). PostgreSQL only.
+	GCP *GCP `yaml:"gcp"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
 	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
@@ -371,6 +374,27 @@ type AWS struct {
 	// DMS names the replication tasks whose state rides on this instance (the tasks that feed it or read
 	// from it); nil = the dms collection skips this instance.
 	DMS *DMS `yaml:"dms"`
+	// Replicas switches on the provider replica door (task 390b P1): rds:DescribeDBInstances for the DB instance's
+	// read replicas and their status, cloudwatch:GetMetricData for each replica's ReplicaLag. Off by default (the
+	// lead's Q8: its own door; the io, logs and dms reads of the same block keep theirs); it needs db_instance.
+	Replicas bool `yaml:"replicas"`
+}
+
+// GCP is an instance's door to Google Cloud (task 390b P2): the Cloud SQL for PostgreSQL instance whose replicas and
+// replication metrics are read (Cloud SQL Admin instances.get, Cloud Monitoring timeSeries.list). The credential is
+// Application Default Credentials (the attached service account through the metadata server, a workload identity
+// federation file, gcloud's application-default sign-in) or the file CredentialsFile names (a service account key is a
+// stored secret: the docs say so); nothing is stored here. The identity needs cloudsql.instances.get and
+// monitoring.timeSeries.list (roles/cloudsql.viewer and roles/monitoring.viewer, or a custom role with the two).
+type GCP struct {
+	Project         string `yaml:"project"`
+	Instance        string `yaml:"instance"`         // the Cloud SQL instance's name (not its connection name)
+	CredentialsFile string `yaml:"credentials_file"` // optional: else Application Default Credentials
+}
+
+// ResourceID names the Cloud SQL instance as Cloud Monitoring's database_id label does: project:instance.
+func (g GCP) ResourceID() string {
+	return strings.ToLower(g.Project + ":" + g.Instance)
 }
 
 // Azure is an instance's door to Azure Resource Manager (task 390a): the logical server whose failover groups are read.
@@ -605,8 +629,10 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: explain_dsn, explain_analyze and hypo_index are PostgreSQL's", in.Name)
 			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
-			case in.AWS != nil:
-				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
+			case in.AWS != nil && (strings.TrimSpace(in.AWS.Cluster) != "" || strings.TrimSpace(in.AWS.LogGroup) != "" || in.AWS.DMS != nil):
+				return fmt.Errorf("instance %q: the aws: block on engine sqlserver takes region, profile, db_instance and replicas (cluster, log_group and dms are PostgreSQL's)", in.Name)
+			case in.GCP != nil:
+				return fmt.Errorf("instance %q: the gcp: block is PostgreSQL's (Cloud SQL for SQL Server's replicas are not read)", in.Name)
 			case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
 				return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
 			case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
@@ -630,6 +656,12 @@ func (c *Config) Validate() error {
 		}
 		if v := strings.TrimSpace(in.ExplainDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: explain_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
+		}
+		if in.AWS != nil && in.AWS.Replicas && strings.TrimSpace(in.AWS.DBInstance) == "" {
+			return fmt.Errorf("instance %q: aws.replicas reads an RDS DB instance's read replicas: it needs aws.db_instance (Aurora's replicas are not this door)", in.Name)
+		}
+		if in.GCP != nil && (strings.TrimSpace(in.GCP.Project) == "" || strings.TrimSpace(in.GCP.Instance) == "") {
+			return fmt.Errorf("instance %q: the gcp: block names project and instance", in.Name)
 		}
 		if in.AWS != nil && in.AWS.DMS != nil {
 			for _, t := range in.AWS.DMS.Tasks {
