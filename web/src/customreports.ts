@@ -11,7 +11,7 @@
 import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
-import { fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
+import { fleetWideNote, folderWords, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 
 export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean }
@@ -408,7 +408,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const noInst = def.engine !== 'store' && !mine.length && !gone;
   const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
     : def.engine === 'store' && d.state.store ? d.state.store
-    : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance${folderTag ? ` in the folder ${tagWords(folderTag)}` : ''} to run it on.` : '';
+    : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance${folderTag ? ` in ${folderWords(folderTag)}` : ''} to run it on.` : '';
   // 'said': report mail carries this paragraph's words (reportmail.ts notesOf) - a run that is not made says why
   const runOff = el('p', { class: 'meta off-reason said' }, runWhy);
   if (runWhy) offControl(runBtn, runWhy, runOff);
@@ -416,10 +416,10 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
   sec.append(form);
-  if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from the folder ${tagWords(folderTag)}: a run from here goes to its instances`
+  if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from ${folderWords(folderTag)}: a run from here goes to its instances`
     + (runTag ? '.' : ', one at a time (the folder is no tag a run can name).')));
   if (runWhy) sec.append(runOff);
-  if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, folderTag ? `No active instance in the folder ${tagWords(folderTag)}.` : 'No active instance: a run reads none.'));
+  if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, folderTag ? `No active instance in ${folderWords(folderTag)}.` : 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});
   sec.append(status, out);

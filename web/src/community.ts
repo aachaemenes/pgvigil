@@ -15,7 +15,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, tabsFor } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
-import { inTagScope, tagWords } from './fleet';
+import { folderWords, inTagScope, tagWords } from './fleet';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
 // state: needs | note | not_checked | demo; source: where the server read it (server, configuration, repository, live)
@@ -65,7 +65,7 @@ export async function communityView(ctx: Ctx): Promise<HTMLElement> {
   const t = await get<Table>('instances');
   const insts = rowsOf(t).filter(r => !tag || inTagScope(tag, r));
   if (tag && insts.length === 0) {
-    sec.append(el('p', { class: 'empty' }, `No instance is in the folder ${tagWords(tag)}.`));
+    sec.append(el('p', { class: 'empty' }, `No instance is in ${folderWords(tag)}.`));
     return sec;
   }
   const pick = el('select', { 'aria-label': 'Instance' }) as HTMLSelectElement;

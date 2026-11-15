@@ -359,12 +359,18 @@ export function writtenTag(tag?: string): string | undefined {
   return tag;
 }
 
+// folderWords: a tree folder by its name in a sentence - 'the folder tag env:prod', 'the untagged folder', 'the folder
+// (no env)' (tagWords names the instances; the two folders of no tag read wrongly after 'the folder')
+export function folderWords(tag: string): string {
+  return tag === 'untagged' ? 'the untagged folder' : `the folder ${tagWords(tag)}`;
+}
+
 // fleetWideNote: the one line a root page opened under a tag folder (TAGALL) says of what it holds for the whole
 // repository - what = '<the thing> is one setting' or '<the things> are one list'; null at the root and on an
 // instance's page
 export function fleetWideNote(ctx: { tag?: string; instance?: number }, what: string): HTMLElement | null {
   if (!ctx.tag || ctx.instance) return null;
-  return el('p', { class: 'meta fleet-wide' }, `${what} for the whole repository: the folder ${tagWords(ctx.tag)} shows all of it.`);
+  return el('p', { class: 'meta fleet-wide' }, `${what} for the whole repository: ${folderWords(ctx.tag)} shows all of ${/ are one /.test(what) ? 'them' : 'it'}.`);
 }
 
 // tagScopeIds: the instance ids of a fleet page's tag scope (null with no tag, or on an instance's page); a fleet read

@@ -12,7 +12,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href, window_ } from './router';
-import { fleet, inTagScope, tagWords } from './fleet';
+import { fleet, folderWords, inTagScope, tagWords } from './fleet';
 import { hashParam } from './dbinfo';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 
@@ -202,7 +202,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     .sort((x, y) => x.name.localeCompare(y.name));
   const engineOf = (id?: number) => insts.find(i => i.id === id)?.engine;
   if (tag && insts.length === 0) {
-    sec.append(el('p', { class: 'empty' }, `No instance is in the folder ${tagWords(tag)}.`));
+    sec.append(el('p', { class: 'empty' }, `No instance is in ${folderWords(tag)}.`));
     return sec;
   }
 
