@@ -523,7 +523,8 @@ hold() { # hold <table> [schm]: a session (host pgvhold_<table>) holding the tab
       AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1') AND request_mode = '$mode' AND request_status = 'GRANT'")" -ge 1 ]] && return 0
     sleep 0.25
   done
-  echo "     the holder printed: $(head -c 600 "$TMPD/hold-$1.out")"
+  echo "     the holder printed: $(head -c 600 "$TMPD/hold-$1.out"); its shell $(kill -0 "${BG[-1]}" 2>/dev/null && echo alive || echo gone)"
+  sq "SELECT CONCAT('     user session ', session_id, ' host ', host_name, ' program ', program_name, ' status ', status) FROM sys.dm_exec_sessions WHERE is_user_process = 1" || true
   sq "SELECT CONCAT('     session ', s.session_id, ' host ', s.host_name, ' program ', s.program_name, ' status ', s.status, ' request ', r.command, ' wait ', r.wait_type,
       ' blocked by ', r.blocking_session_id, ' resource ', r.wait_resource) FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id
     WHERE s.host_name LIKE 'pgvhold_%' OR s.program_name LIKE 'pgvigil%' OR r.blocking_session_id > 0" || true
@@ -596,6 +597,7 @@ st=$(poll "$RID" 20); [[ "$st" == cancelled ]] || fail "G5: the row is $st"
 echo "ok   G5: a second start refused ('one at a time'); Cancel: the request gone from sys.dm_exec_requests within 5 s, the row cancelled"
 release
 # G6: a held Sch-M lock: the read ends near 30 s, the rows before kept, where it stopped named
+out=$(sqh pgvtry "BEGIN TRAN; ALTER TABLE dbo.f1 ADD zz int NULL; WAITFOR DELAY '00:00:01'; ROLLBACK;" 2>&1); echo "     G6: the Sch-M statement alone (1 s): exit $?, output '$out'"
 hold f1 schm
 frag "$ION" LIMITED "$TMPD/g6.json" >/dev/null; RID=$(jget "$TMPD/g6.json" 'd.get("read_id")')
 st=$(poll "$RID" 60); secs=$(readcol secs); note=$(readcol note); kept=$(readcol rows_kept)
