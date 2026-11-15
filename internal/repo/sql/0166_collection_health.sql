@@ -105,8 +105,26 @@ CREATE TABLE IF NOT EXISTS pgvigil.collection_health_hour (
   last_ok_at       timestamptz,
   last_failure_at  timestamptz,
   last_partial_at  timestamptz,
+  -- B6g-1: the imports (N27: import_failed is inside failed; import_runs = the runs that attempted an import, the
+  -- divisor of its average; the times in ms, apart from dur_ms_sum, which holds them too) and the runs that read their
+  -- own session's CPU and logical reads at their end (N25 / N26: SQL Server; cpu_runs = those runs). The LAST columns,
+  -- each with a default: a row written by position, or by a collector from before them, holds zeros
+  import_failed    int NOT NULL DEFAULT 0,
+  import_runs      int NOT NULL DEFAULT 0,
+  import_ms_sum    bigint NOT NULL DEFAULT 0,
+  import_ms_max    int NOT NULL DEFAULT 0,
+  cpu_runs         int NOT NULL DEFAULT 0,
+  cpu_ms_sum       bigint NOT NULL DEFAULT 0,
+  cpu_ms_max       int NOT NULL DEFAULT 0,
+  reads_sum        bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (hour, instance_id, collection, collector_id)
 ) WITH (fillfactor = 70);
+-- a store that applied this file before B6g-1 has the table without them (the file is edited in place until v0.4.0)
+ALTER TABLE pgvigil.collection_health_hour
+  ADD COLUMN IF NOT EXISTS import_failed int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS import_runs int NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS import_ms_sum bigint NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS import_ms_max int NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cpu_runs int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS cpu_ms_sum bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cpu_ms_max int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS reads_sum bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS collection_health_hour_instance ON pgvigil.collection_health_hour (instance_id, hour);
 
 -- 8 days by default (as collector_load); settable up to 30 with
@@ -126,18 +144,27 @@ LANGUAGE plpgsql SET jit = off AS $$
 DECLARE n int; v_host text; v_long int[];
 BEGIN
   INSERT INTO pgvigil.collection_health_hour AS h (hour, instance_id, collection, collector_id, runs, ok, partial, failed, skipped,
-         rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at, last_partial_at)
+         rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at, last_partial_at,
+         import_failed, import_runs, import_ms_sum, import_ms_max, cpu_runs, cpu_ms_sum, cpu_ms_max, reads_sum)
   SELECT x.hour, i.instance_id, x.collection, p_id, x.runs, x.ok, x.partial, x.error, x.skipped, x.rows, x.dur_ms_sum, x.dur_ms_max,
-         x.over_half, x.over_interval, nullif(x.interval_s, 0), x.last_ok_at, x.last_error_at, x.last_partial_at
+         x.over_half, x.over_interval, nullif(x.interval_s, 0), x.last_ok_at, x.last_error_at, x.last_partial_at,
+         -- B6g-1's keys: a collector from before them sends none (zeros)
+         coalesce(x.import_failed, 0), coalesce(x.import_runs, 0), coalesce(x.import_ms_sum, 0), coalesce(x.import_ms_max, 0),
+         coalesce(x.cpu_runs, 0), coalesce(x.cpu_ms_sum, 0), coalesce(x.cpu_ms_max, 0), coalesce(x.reads_sum, 0)
     FROM jsonb_to_recordset(coalesce(p_beat -> 'health', '[]')) AS x(instance text, collection text, hour timestamptz, runs int, ok int,
            partial int, error int, skipped int, rows bigint, dur_ms_sum bigint, dur_ms_max int, over_half int, over_interval int,
-           interval_s int, last_ok_at timestamptz, last_error_at timestamptz, last_partial_at timestamptz)
+           interval_s int, last_ok_at timestamptz, last_error_at timestamptz, last_partial_at timestamptz,
+           import_failed int, import_runs int, import_ms_sum bigint, import_ms_max int, cpu_runs int, cpu_ms_sum bigint, cpu_ms_max int,
+           reads_sum bigint)
     JOIN pgvigil.instances i ON i.name = x.instance
   ON CONFLICT (hour, instance_id, collection, collector_id) DO UPDATE
      SET runs = EXCLUDED.runs, ok = EXCLUDED.ok, partial = EXCLUDED.partial, failed = EXCLUDED.failed, skipped = EXCLUDED.skipped,
          rows_written = EXCLUDED.rows_written, dur_ms_sum = EXCLUDED.dur_ms_sum, dur_ms_max = EXCLUDED.dur_ms_max,
          runs_over_half = EXCLUDED.runs_over_half, runs_over_interval = EXCLUDED.runs_over_interval, interval_s = EXCLUDED.interval_s,
-         last_ok_at = EXCLUDED.last_ok_at, last_failure_at = EXCLUDED.last_failure_at, last_partial_at = EXCLUDED.last_partial_at
+         last_ok_at = EXCLUDED.last_ok_at, last_failure_at = EXCLUDED.last_failure_at, last_partial_at = EXCLUDED.last_partial_at,
+         import_failed = EXCLUDED.import_failed, import_runs = EXCLUDED.import_runs, import_ms_sum = EXCLUDED.import_ms_sum,
+         import_ms_max = EXCLUDED.import_ms_max, cpu_runs = EXCLUDED.cpu_runs, cpu_ms_sum = EXCLUDED.cpu_ms_sum,
+         cpu_ms_max = EXCLUDED.cpu_ms_max, reads_sum = EXCLUDED.reads_sum
    -- a row the beat sends unchanged (the hour before, a slow collection's) is not written again: every counted run
    -- raises runs or skipped, so a change is never missed, and a lost beat still differs from the stored row
    WHERE (h.runs, h.skipped) IS DISTINCT FROM (EXCLUDED.runs, EXCLUDED.skipped);
@@ -190,12 +217,20 @@ CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_
 RETURNS TABLE (instance_id int, collection text, status text, status_reason text, failing_minutes int, consecutive_failures int,
                runs int, ok int, partial int, failed int, skipped int, failed_pct numeric, problem_pct numeric,
                last_run_at timestamptz, last_ok_at timestamptz, last_failure_at timestamptz, last_partial_at timestamptz,
-               dur_sum numeric, dur_max int, rows_written numeric)
+               dur_sum numeric, dur_max int, rows_written numeric,
+               -- B6g-1: Failed holds import_failed; the CPU and reads are NULL where no run of the range read its
+               -- session (PostgreSQL: 'not read by pgvigil'), never 0
+               import_failed int, import_runs int, import_sum numeric, import_max int,
+               cpu_runs int, cpu_sum numeric, cpu_max int, reads_sum numeric)
 LANGUAGE sql STABLE SET jit = off AS $$
   WITH h AS (
     SELECT h.instance_id, h.collection, sum(h.runs)::int AS runs, sum(h.ok)::int AS ok, sum(h.partial)::int AS partial,
            sum(h.failed)::int AS failed, sum(h.skipped)::int AS skipped,
-           sum(h.dur_ms_sum) AS dur_sum, max(h.dur_ms_max) AS dur_max, sum(h.rows_written) AS rows_written
+           sum(h.dur_ms_sum) AS dur_sum, max(h.dur_ms_max) AS dur_max, sum(h.rows_written) AS rows_written,
+           sum(h.import_failed)::int AS import_failed, sum(h.import_runs)::int AS import_runs,
+           sum(h.import_ms_sum) AS import_sum, max(h.import_ms_max) AS import_max, sum(h.cpu_runs)::int AS cpu_runs,
+           sum(h.cpu_ms_sum) FILTER (WHERE h.cpu_runs > 0) AS cpu_sum, max(h.cpu_ms_max) FILTER (WHERE h.cpu_runs > 0) AS cpu_max,
+           sum(h.reads_sum) FILTER (WHERE h.cpu_runs > 0) AS reads_sum
       FROM pgvigil.collection_health_hour h
      WHERE h.hour >= date_trunc('hour', (p_rate_from AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
        AND (p_rate_to IS NULL OR h.hour < p_rate_to)
@@ -207,7 +242,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
            coalesce(h.runs, 0) AS runs, coalesce(h.ok, 0) AS ok, coalesce(h.partial, 0) AS partial,
            coalesce(h.failed, 0) AS failed, coalesce(h.skipped, 0) AS skipped,
            s.last_run_at, s.last_status, coalesce(s.consecutive_failures, 0) AS cf, s.last_ok_at, s.last_failure_at, s.last_partial_at,
-           h.dur_sum, h.dur_max, h.rows_written
+           h.dur_sum, h.dur_max, h.rows_written,
+           coalesce(h.import_failed, 0) AS import_failed, coalesce(h.import_runs, 0) AS import_runs, h.import_sum, h.import_max,
+           coalesce(h.cpu_runs, 0) AS cpu_runs, h.cpu_sum, h.cpu_max, h.reads_sum
       FROM h FULL JOIN (SELECT x.* FROM pgvigil.collection_run_status x
                          WHERE (p_instances IS NULL OR x.instance_id = ANY (p_instances)) AND (p_collection IS NULL OR x.collection = p_collection)) s
              ON s.instance_id = h.instance_id AND s.collection = h.collection
@@ -243,7 +280,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
          t.fm, t.cf, t.runs, t.ok, t.partial, t.failed, t.skipped,
          CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
          CASE WHEN t.known > 0 THEN round(100.0 * (t.failed + t.partial) / t.known, 1) END,
-         t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at, t.dur_sum, t.dur_max, t.rows_written
+         t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at, t.dur_sum, t.dur_max, t.rows_written,
+         t.import_failed, t.import_runs, t.import_sum, t.import_max, t.cpu_runs, t.cpu_sum, t.cpu_max, t.reads_sum
     FROM t
 $$;
 
