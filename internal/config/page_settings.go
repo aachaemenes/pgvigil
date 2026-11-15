@@ -47,7 +47,8 @@ func ParsePageSettings(raw []byte) (PageSettings, error) {
 	}
 	for k, n := range v.Schedules {
 		sec, err := n.Int64()
-		if err != nil || sec < 0 || time.Duration(sec)*time.Second > PageScheduleCeiling {
+		// the ceiling in seconds before the multiplication: a huge number would wrap round to a small interval (ST5a's review F2)
+		if err != nil || sec < 0 || sec > int64(PageScheduleCeiling/time.Second) {
 			return PageSettings{}, fmt.Errorf("its settings in Admin > Instances give %s %s: not whole seconds from 0 (off) to 30 days", k, n)
 		}
 		if ps.Schedules == nil {

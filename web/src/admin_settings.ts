@@ -118,9 +118,15 @@ export function instanceSettings(deps: Deps) {
       await deps.draw();
     });
     const close = el('button', { type: 'button', class: 'link', 'aria-label': `Close the settings of ${name}` }, 'Close');
-    close.addEventListener('click', () => box.replaceChildren());
+    // Close hands focus back to the row's Settings button (the page may have drawn the row again since: found by name)
+    close.addEventListener('click', () => {
+      box.replaceChildren();
+      const opener = Array.from(document.querySelectorAll<HTMLElement>('button[data-settings-of]')).find(b => b.dataset.settingsOf === name);
+      opener?.focus();
+    });
+    const title = el('h3', { id: 'admin-instance-settings-title', tabindex: '-1' }, `Settings: ${name}`);
     box.replaceChildren(
-      el('h3', { id: 'admin-instance-settings-title' }, `Settings: ${name}`),
+      title,
       el('p', { class: 'meta' }, 'Each collection runs at its default unless an interval is set here: 5m, 1h, 2d, or off. '
         + `An interval set here is ${everyWords(floor)} or more, and comes before pgvigil.yaml's global schedules: for this instance. `
         + 'The collector takes a change within 15 seconds and restarts this instance\'s collections alone.'),
@@ -130,11 +136,12 @@ export function instanceSettings(deps: Deps) {
         el('tbody', {}, ...rows)),
       el('div', {}, save, ' ', close));
     box.scrollIntoView({ block: 'nearest' });
+    title.focus(); // a screen reader hears the panel open (ST5a's review F5)
   }
 
   // the row's link: its own settings' words, the panel on a click
   const settingsButton = (name: string, engine: string): HTMLElement => {
-    const b = el('button', { type: 'button', class: 'link', 'aria-label': `Settings of ${name}: ${summary(name)}` }, 'Settings');
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `Settings of ${name}: ${summary(name)}`, 'data-settings-of': name }, 'Settings');
     b.title = summary(name);
     b.addEventListener('click', () => show(name, engine));
     return b;

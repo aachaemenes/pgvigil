@@ -19,6 +19,7 @@ func TestPageSettings(t *testing.T) {
 		{`{"schedules": {"statements": -1}}`, "its settings in Admin > Instances give statements -1: not whole seconds from 0 (off) to 30 days"},
 		{`{"schedules": {"statements": 1.5}}`, "its settings in Admin > Instances give statements 1.5: not whole seconds from 0 (off) to 30 days"},
 		{`{"schedules": {"statements": 2592001}}`, "its settings in Admin > Instances give statements 2592001: not whole seconds from 0 (off) to 30 days"},
+		{`{"schedules": {"statements": 18446744134}}`, "its settings in Admin > Instances give statements 18446744134: not whole seconds from 0 (off) to 30 days"},
 		{`{"query_text": "raw"}`, `its settings in Admin > Instances give query_text "raw": not full, normalized or none`},
 		{`{"disabled": ["x"]}`, `its settings in Admin > Instances do not parse: json: unknown field "disabled"`},
 		{`[]`, "its settings in Admin > Instances do not parse: json: cannot unmarshal array"},

@@ -23,7 +23,8 @@ repository keeps for it. **Settings** on the instance's row opens them below the
 
 The collector takes a change within 15 seconds and restarts that instance's collections alone; the other instances
 run on. The stale and failing checks (Collection Dates, the Summary, the daily checks) judge the instance by its own
-intervals: a collection set off is shown off, not stale.
+intervals: a collection set off is shown off, not stale. `pgvigil mcp` reads the list of Admin > Instances every 15
+seconds for the same judgement (its read doors stay `pgvigil.yaml`'s).
 
 Every save is one row in *Changes* (`instance settings`), with what was set; a refusal is one too, with its reason: a
 collection of another engine or of no engine, an interval under a minute or over 30 days, the running plans box's

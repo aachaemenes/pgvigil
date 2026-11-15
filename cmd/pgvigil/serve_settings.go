@@ -15,7 +15,13 @@ func pageSettingsConfig(cfg *config.Config) *web.PageSettingsConfig {
 	cat := map[string][]web.PageCollectionView{}
 	for _, e := range []string{config.EnginePostgres, config.EngineSQLServer} {
 		for _, c := range engines.PageCatalogue(e) {
-			cat[e] = append(cat[e], web.PageCollectionView{Name: c.Name, DefaultS: int(cfg.Interval(config.Instance{}, c.Name, c.Default) / time.Second),
+			// 'by default' on a page instance of the engine: 0 where its gate shuts the collection there (amcheck runs only
+			// where the instance itself names it, whatever the file's global schedules: say - ST5a's review F4)
+			def := int(cfg.Interval(config.Instance{}, c.Name, c.Default) / time.Second)
+			if skip, _ := engines.Gated(config.Instance{Engine: e}, c.Name); skip {
+				def = 0
+			}
+			cat[e] = append(cat[e], web.PageCollectionView{Name: c.Name, DefaultS: def,
 				BuiltinS: int(c.Default / time.Second), Box: c.Box, Never: c.Never})
 		}
 	}

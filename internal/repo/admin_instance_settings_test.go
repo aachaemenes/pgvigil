@@ -135,6 +135,31 @@ func TestAdminInstanceSettingsOnAStore(t *testing.T) {
 		t.Errorf("a refusal changed the settings: statements %s", got)
 	}
 
+	// the collector's and the reader's own rights (ST5a's review F6): a member of each runs the inventory statement the
+	// collector and serve send and sees the stored settings (0263's grants, kept by apply_roles)
+	for _, member := range []string{"pgvigil_collector", "pgvigil_reader"} {
+		role := fmt.Sprintf("iset_%s_%d", member[len("pgvigil_"):], tag)
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s NOLOGIN IN ROLE %s`, role, member)); err != nil {
+			t.Skipf("this store's login may not make roles (it needs CREATE ROLE and SET ROLE): %v", err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP ROLE IF EXISTS %s`, role)) })
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(ctx, `SET ROLE `+role); err != nil {
+			conn.Release()
+			t.Fatal(err)
+		}
+		var got *string
+		err = conn.QueryRow(ctx, `SELECT s.settings->'schedules'->>'statements' FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) WHERE i.name = $1`, name).Scan(&got)
+		_, _ = conn.Exec(context.Background(), `RESET ROLE`)
+		conn.Release()
+		if err != nil || got == nil || *got != "60" {
+			t.Errorf("the inventory statement as a member of %s: %v (%v), want statements 60", member, got, err)
+		}
+	}
+
 	// back to the defaults
 	if got := call(name, `{}`, nil); got != "done|settings of "+name+" saved: every setting at its default" {
 		t.Errorf("the defaults: %s", got)
