@@ -75,7 +75,8 @@ export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = fa
 export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string => {
   if (v == null) return '';
   const s = String(v);
-  const kind = s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : 'none';
+  // pending = judged beyond its threshold, not yet held for its minutes: a warning (judged, so not N/A; not OK)
+  const kind = s === 'critical' ? 'crit' : s === 'warning' || s === 'pending' ? 'warn' : s === 'ok' ? 'ok' : 'none';
   const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)' : s;
   return badge(held ? `${words}, held (no fresh sample)` : words, kind);
 };
@@ -359,7 +360,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
         : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
         : r.evaluated_at == null ? 'not judged yet'
         : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
-        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : ''].filter(Boolean).join(', ') || badge('ok', 'ok'), cls: (v, r) => !r.live || !r.enabled || (Number(r.covers) !== 0 && Number(r.in_force) !== 0 && r.evaluated_at != null && (Number(v) > 0 || !(Number(r.pending) || Number(r.nodata)))) ? '' : 'status none' },
+        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : ''].filter(Boolean).join(', ') || badge('ok', 'ok'), cls: (v, r) => !r.live || !r.enabled ? ''
+        : Number(r.covers) === 0 || Number(r.in_force) === 0 || r.evaluated_at == null ? 'status none'
+        : Number(v) > 0 ? '' : Number(r.pending) ? 'status warn' : Number(r.nodata) ? 'status none' : '' },
       { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
       { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
