@@ -35,9 +35,9 @@ func TestImportSchema0267Is0058PlusTheGoneArm(t *testing.T) {
 	const arm = `  -- A26 (0267): the objects of a database gone from the read go with it (0058 marked the database row only, so its
   -- objects stayed present on the page and purge's NOT is_present line never took them)
   UPDATE pgvigil.schema_objects o SET is_present = false, snapshot_at = p_snapshot_at
-    FROM pgvigil.schema_databases d
-   WHERE d.instance_id = p_instance_id AND NOT d.is_present
-     AND o.instance_id = d.instance_id AND o.dbid = d.dbid AND o.is_present;
+    FROM pgvigil.schema_databases sd
+   WHERE sd.instance_id = p_instance_id AND NOT sd.is_present
+     AND o.instance_id = sd.instance_id AND o.dbid = sd.dbid AND o.is_present;
 `
 	got := body("0267_mssql_schema.sql")
 	if strings.Count(got, arm) != 1 {

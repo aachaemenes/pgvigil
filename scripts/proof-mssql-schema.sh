@@ -103,9 +103,11 @@ for d in shop quiet locked gone1 big mid; do sq "CREATE DATABASE [$d]" >/dev/nul
 sq "CREATE USER a26full FOR LOGIN a26full; DENY VIEW DEFINITION TO a26full;" locked >/dev/null || fail "the DENY in locked"
 sq "CREATE TABLE dbo.t (a int);" locked >/dev/null; sq "CREATE TABLE dbo.g (a int);" gone1 >/dev/null
 sq "CREATE TABLE dbo.q (a int);" quiet >/dev/null
-sq "DECLARE @i int = 0; WHILE @i < 10001 BEGIN EXEC (N'CREATE TABLE dbo.t' + CAST(@i AS nvarchar(10)) + N' (a int)'); SET @i += 1; END" big >/dev/null || fail "big's 10,001 tables"
+sq "DECLARE @i int = 0; WHILE @i < 10001 BEGIN EXEC (N'CREATE TABLE dbo.t' + CAST(@i AS nvarchar(10)) + N' (a int)'); SET @i += 1; END" big > "$WORK/sq.out" 2>&1 \
+  || fail "big's 10,001 tables: $(tail -4 "$WORK/sq.out" | tr '\n' ' ' | cut -c1-400); the disk: $(df -BM --output=avail / | tail -1) free; big has $(sq "SELECT COUNT(*) FROM sys.tables" big 2>&1 | tail -1) tables"
 sq "DECLARE @i int = 0, @b nvarchar(max) = REPLICATE(CAST(N'-- filler line for the size of a real procedure body ' AS nvarchar(max)), 150);
-    WHILE @i < 2000 BEGIN EXEC (N'CREATE PROCEDURE dbo.p' + CAST(@i AS nvarchar(10)) + N' AS BEGIN ' + @b + NCHAR(10) + N'SELECT 1; END'); SET @i += 1; END" mid >/dev/null || fail "mid's 2,000 procedures"
+    WHILE @i < 2000 BEGIN EXEC (N'CREATE PROCEDURE dbo.p' + CAST(@i AS nvarchar(10)) + N' AS BEGIN ' + @b + NCHAR(10) + N'SELECT 1; END'); SET @i += 1; END" mid > "$WORK/sq.out" 2>&1 \
+  || fail "mid's 2,000 procedures: $(tail -4 "$WORK/sq.out" | tr '\n' ' ' | cut -c1-400); the disk: $(df -BM --output=avail / | tail -1) free"
 cat > "$WORK/shop.sql" <<'SQL'
 CREATE SCHEMA app;
 GO

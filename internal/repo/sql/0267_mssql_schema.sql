@@ -280,9 +280,9 @@ BEGIN
   -- A26 (0267): the objects of a database gone from the read go with it (0058 marked the database row only, so its
   -- objects stayed present on the page and purge's NOT is_present line never took them)
   UPDATE pgvigil.schema_objects o SET is_present = false, snapshot_at = p_snapshot_at
-    FROM pgvigil.schema_databases d
-   WHERE d.instance_id = p_instance_id AND NOT d.is_present
-     AND o.instance_id = d.instance_id AND o.dbid = d.dbid AND o.is_present;
+    FROM pgvigil.schema_databases sd
+   WHERE sd.instance_id = p_instance_id AND NOT sd.is_present
+     AND o.instance_id = sd.instance_id AND o.dbid = sd.dbid AND o.is_present;
 END $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_schema(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)

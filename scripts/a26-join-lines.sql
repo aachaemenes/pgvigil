@@ -5,9 +5,11 @@
 -- import_pg_job_actions_log): ONE arm, at the run's 'end' call, after the UPDATE that marks a database gone -
 --
 --   UPDATE pgvigil.schema_objects o SET is_present = false, snapshot_at = p_snapshot_at
---     FROM pgvigil.schema_databases d
---    WHERE d.instance_id = p_instance_id AND NOT d.is_present
---      AND o.instance_id = d.instance_id AND o.dbid = d.dbid AND o.is_present;
+--     FROM pgvigil.schema_databases sd
+--    WHERE sd.instance_id = p_instance_id AND NOT sd.is_present
+--      AND o.instance_id = sd.instance_id AND o.dbid = sd.dbid AND o.is_present;
+--
+-- (its alias is sd, never d: d is import_schema's own loop record, which PL/pgSQL would bind 'd.instance_id' to)
 --
 -- Why (the lead's 14:4x, S10 of A26's design pass): 0058 marked only the database row, so a dropped or no longer
 -- connectable database's objects stayed present on the Schema tab and in the Diff page's compares, and purge's
