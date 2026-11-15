@@ -59,7 +59,7 @@ func TestCollectionHealthCostOnAStore(t *testing.T) {
 		rows, err := pool.Query(ctx, `SELECT `+key+`::text, concat_ws('|', r.failed, r.import_failed, r.failed_pct, coalesce(r.avg_import_ms::text, 'NULL'),
 		           coalesce(r.max_import_ms::text, 'NULL'), coalesce(r.total_cpu_ms::text, 'NULL'), coalesce(r.avg_cpu_ms::text, 'NULL'),
 		           coalesce(r.max_cpu_ms::text, 'NULL'), coalesce(r.logical_reads::text, 'NULL'), coalesce(r.avg_logical_reads::text, 'NULL'))
-		      FROM (`+stmt+`) r`, args...)
+		      FROM (`+stmt+"\n"+`) r`, args...) // a line of its own: the statements end in a line comment
 		if err != nil {
 			t.Fatalf("the page's statement with the cost columns: %v", err)
 		}
