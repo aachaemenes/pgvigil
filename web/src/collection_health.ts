@@ -119,7 +119,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       // B6g-1 (N25 / N26): the run's own session's cost, read at the run's end on SQL Server; a PostgreSQL row says so
       ...([['total_cpu_ms', 'Total CPU (ms)'], ['avg_cpu_ms', 'Avg CPU (ms)'], ['max_cpu_ms', 'Max CPU (ms)'], ['logical_reads', 'Logical Reads'], ['avg_logical_reads', 'Avg Logical Reads']] as const)
         .map(([key, label]): Col => ({ key, label, num: true, fmt: (v, r) => costWords(v, r.engine) ?? fmtNum(v),
-          title: 'Of the run\'s own session on SQL Server (cpu_time, logical_reads of sys.dm_exec_sessions), read at the run\'s end, over the runs that read it.' })),
+          title: 'Of the run\'s own session on SQL Server (cpu_time, logical_reads of sys.dm_exec_sessions), read at the run\'s end, over the runs that read it.  A run cut by its own timeout is not read: the driver drops its connection.' })),
       { key: 'rows', label: 'Rows', num: true, fmt: fmtNum },
       { key: 'errors', label: 'Errors', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'errors') : fmtNum(v) },
       { key: 'thresholds', label: 'Thresholds' },
@@ -153,7 +153,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         + 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
         + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
         + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
-        + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end; a PostgreSQL row says not read by pgvigil. '
+        + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
         + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads, the highest logical reads of one run; '
         + 'no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
         + 'the Status column shows the word as well as the colour.'),

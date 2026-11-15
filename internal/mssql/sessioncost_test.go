@@ -65,9 +65,10 @@ func (r *costRows) Next(dest []driver.Value) error {
 }
 
 // TestSessionCost (B6g-1 row G1; N25, N26): the run's own cost is read at its end from the session's own row - one
-// statement, no permission beyond the login's - on a context the run's deadline and a shutdown do not cut (a run that
-// ended BY its timeout is the costly one), bounded by sessionCostTimeout; an answer that cannot be read is 'not read'
-// (nil), never a zero.
+// statement, no permission beyond the login's - on a context of its own after the run's context ended, bounded by
+// sessionCostTimeout; an answer that cannot be read is 'not read' (nil), never a zero. (This driver keeps every
+// connection: what the real driver does after a deadline - the connection dropped, nothing read - is
+// TestSessionCostLive's.)
 func TestSessionCost(t *testing.T) {
 	d := &costDriver{rows: [][]driver.Value{{int64(1234), int64(56789)}}}
 	db := sql.OpenDB(costConnector{d})

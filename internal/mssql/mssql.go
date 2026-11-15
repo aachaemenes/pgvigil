@@ -505,7 +505,10 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
 	// B6g-1 (N25 / N26): the run's own cost, read at its end on the run's one connection. Registered after the close
-	// above, so it runs before it; every return below carries it - a failed read, a skip, a timeout, a failed import
+	// above, so it runs before it; every return below carries it - a failed read, a skip, a failed import - but a run
+	// cut by its OWN timeout: the driver drops a connection whose statement hit its deadline (go-mssqldb takes
+	// context.DeadlineExceeded for a broken connection), so there is nothing left to read (proven on SQL Server 2022:
+	// TestSessionCostLive); such a run is not a cpu run and the hour's averages are over the runs that were read
 	defer func() { endRead(ctx, conn, &res) }()
 
 	info, err := Detect(sctx, conn, in.Platform)
@@ -547,7 +550,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	tcancel()
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
-		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Outcome: collect.OutcomeImportFailed}
+		// the HADR thresholds are configuration, not collected rows: a plain error in the hour (its log row's stage is
+		// 'import', the repository's side; the lead 11-15 11:2x)
+		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
 	var rows []collect.Row
@@ -574,9 +579,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		err = timeoutNote(sctx, limit, err)
 		out := collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 		if cursorFailed {
-			// the run ended at the repository's side (stage 'import'): 'import failed' for the hour's counts too
+			// the read of the collector's own cursor failed: the repository's side (stage 'import' on its log row), but
+			// no collected row was written - a plain error in the hour (Import Failed = a write of collected rows failed)
 			logStage(instanceID, "error", err.Error(), "import")
-			out.Outcome = collect.OutcomeImportFailed
 		} else {
 			logRun(instanceID, "error", err.Error())
 		}
@@ -629,9 +634,10 @@ const sessionCostTimeout = 10 * time.Second
 
 // sessionCost reads the run's own cost at its end: cpu_time in ms and logical_reads of the run's session. A run holds
 // ONE connection from its connect to its close (Connect: one *sql.Conn of a pool of one), so the session's totals are
-// the run's. The read is made on a context the run's deadline and a shutdown do not cut - a run that ended by its
-// timeout is the one whose cost matters - within sessionCostTimeout. nil, nil = not read (the connection is gone, a
-// NULL, no row): never a zero that would read as 'no CPU'.
+// the run's. The read is made on a context of its own within sessionCostTimeout (a run's context may be over by then).
+// A run cut by its own timeout is NOT read: the driver dropped the connection with its statement (the lead 11-15
+// 11:2x: said, not worked around in v0.4.0). nil, nil = not read (the connection is gone, a NULL, no row): never a
+// zero that would read as 'no CPU'.
 func sessionCost(ctx context.Context, conn *sql.Conn) (cpuMs, reads *int64) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCostTimeout)
 	defer cancel()

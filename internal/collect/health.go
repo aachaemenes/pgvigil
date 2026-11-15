@@ -15,8 +15,10 @@ const (
 	OutcomePartial = "partial"
 	OutcomeError   = "error"
 	OutcomeSkipped = "skipped"
-	// OutcomeImportFailed (B6g-1, N27): the read succeeded and a write into the repository failed, so the run ended
-	// as an error at its import (collection_log: 'error', stage 'import'). An error for every count that judges, and
+	// OutcomeImportFailed (B6g-1, N27): the read succeeded and the write of its collected rows into the repository
+	// failed, so the run ended as an error at that write - DBA Dash's meaning (the lead 11-15 11:2x). Set only where a
+	// TimedImport returned the error that ended the run; the log's stage 'import' is wider (any failure on the
+	// repository's side: a cursor read, a thresholds store), which the hour counts as a plain error. An error for every count that judges, and
 	// counted once more as Import Failed. DBA Dash keeps its FailedCount and ImportFailedCount apart and judges their
 	// sum; pgvigil's failed holds both and the page shows failed - import_failed beside Import Failed
 	OutcomeImportFailed = "import failed"

@@ -47,7 +47,11 @@ then failed at their write into the repository. Failed % is over both, as the st
 and **Max Import** are the time of the writes into the repository alone, over the runs that wrote; Avg Duration and Max
 Duration are the whole run and include them. **Total CPU**, **Avg CPU**, **Max CPU**, **Logical Reads** and **Avg
 Logical Reads** are the run's own session's on SQL Server (`cpu_time` and `logical_reads` of `sys.dm_exec_sessions`,
-read at the run's end, over the runs that read them); a PostgreSQL row says *not read by pgvigil*.
+read at the run's end, over the runs that read them); a PostgreSQL row says *not read by pgvigil*. A run cut by its own
+timeout is not read: the SQL Server driver drops the connection of a statement that hit its deadline, so the CPU columns
+leave such runs out. **Import Failed** is DBA Dash's: the runs whose write of collected rows failed. The collector's
+error log calls a wider set of failures stage *Import* - any failure on the repository's side, a cursor read or a
+thresholds store among them - which Collection Health counts as plain failures.
 
 What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warnings, Retried, No Status, the import's
 own CPU and reads, the highest logical reads of one run, the Import Lag chart (pgvigil writes into the repository
