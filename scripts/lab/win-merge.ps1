@@ -19,7 +19,15 @@
 #           xp_instance_regread and raises 21028 when it is absent, 0 or unread) by setup.exe /QUIET /ACTION=Install /FEATURES=Replication
 #           /INSTANCENAME=<it> /IACCEPTSQLSERVERLICENSETERMS /UPDATEENABLED=False, run as SYSTEM through this script's
 #           one-shot task (removed on every path); the instance is named in <LabDir>\merge-feature.txt BEFORE setup
-#           runs, and the check is read back. Then builds, in Microsoft's documented
+#           runs, and the check is read back. SQL Server Agent loads its job subsystems only when it starts, and the
+#           feature's setup adds Snapshot / LogReader / Distribution / Merge rows to msdb.dbo.syssubsystems without
+#           restarting it (an Agent started before the feature refuses the snapshot job: 'The Snapshot subsystem failed
+#           to load ... The job has been suspended'): so the Agent of each instance the feature was added to is
+#           restarted (the Agent service only, never the engine: the mirroring session is untouched; a run of
+#           win-mirroring.ps1's 1-minute Database Mirroring Monitor Job caught by it is cut, the next minute's runs) and
+#           read back: the service Running, and the newest '[432] There are <n> subsystems in the subsystems cache'
+#           line its SQLAGENT.OUT (the instance's SQLServerAgent\ErrorLogFile registry value) has written since the
+#           restart, n equal to msdb.dbo.syssubsystems' rows, Snapshot and Merge among them. Then builds, in Microsoft's documented
 #           order (sp_adddistributor, sp_adddistributiondb, sp_adddistpublisher, sp_replicationdboption 'merge
 #           publish', sp_addmergepublication, sp_addpublication_snapshot, sp_addmergearticle,
 #           sp_startpublication_snapshot, sp_addmergesubscription, sp_addmergepushsubscription_agent with
@@ -59,7 +67,10 @@
 #   up      'publisher <host>\PGVPRINCIPAL, subscriber <host>\PGVMIRROR (16.0.1000.6)'; for each instance
 #           'replication feature <inst>: absent - setup as SYSTEM (a few minutes)', '... setup /ACTION=Install as SYSTEM
 #           exit 0' (or 3010), '... read back: installed' (a few minutes each), the mirroring roles of pgvmirror printed after (a feature setup may restart an engine); the
-#           ISO 'dismounted' when this script mounted it; the folder's rights printed
+#           ISO 'dismounted' when this script mounted it; for each instance the feature was added to 'SQL Server Agent
+#           SQLAgent$<inst>: restarting (... msdb.dbo.syssubsystems has 11)' and '... Running; <its SQLAGENT.OUT>
+#           '[432] There are 11 subsystems in the subsystems cache' (msdb.dbo.syssubsystems 11)' within seconds (11 on
+#           SQL Server 2022 with the feature: hour 4's read; the check is n = the rows, not the number); the folder's rights printed
 #           ('ReplData before: ...', when it exists); 'folder: <ReplData> made' when it was absent (before the
 #           distributor: sp_adddistpublisher refuses a working directory that does not exist, Msg 21037);
 #           'distributor: distribution made, working directory <the instance's ReplData>'; 'grant:
@@ -277,6 +288,55 @@ function Set-ReplicationFeature([object]$inst, [string]$op, [string]$setupExe) {
     if ($now -ne $want) { throw "the Replication feature on $($inst.Name) reads $(if ($now) { 'installed' } else { 'not installed' }) after setup /ACTION=$op" }
 }
 
+# the instance's SQL Server Agent log (SQLAGENT.OUT): the path in its SQLServerAgent\ErrorLogFile registry value
+function Get-AgentLogPath([object]$inst) {
+    $instId = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL' -Name $inst.Name -ErrorAction Stop).($inst.Name)
+    return [string](Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$instId\SQLServerAgent" -Name 'ErrorLogFile' -ErrorAction Stop).ErrorLogFile
+}
+
+# n of the newest '[432] There are <n> subsystems in the subsystems cache' line the Agent wrote at or after $since (the
+# log's own local time, whole seconds), -1 when there is none yet or the file cannot be opened now (the Agent renames it
+# at start). Opened with FileShare ReadWrite: the Agent holds it open; UTF-16 with a byte order mark.
+function Get-AgentSubsystemCount([string]$logFile, [datetime]$since) {
+    $logText = $null
+    try {
+        $stream = New-Object System.IO.FileStream ($logFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try { $textReader = New-Object System.IO.StreamReader ($stream, [System.Text.Encoding]::Unicode, $true); $logText = $textReader.ReadToEnd() } finally { $stream.Dispose() }
+    } catch [System.IO.IOException] { return -1 }
+    $found = -1
+    foreach ($logLine in ($logText -split "`r?`n")) {
+        if ($logLine -match '^\s*(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) - .*\[432\] There are (\d+) subsystems in the subsystems cache') {
+            $lineTime = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+            if ($lineTime -ge $since) { $found = [int]$Matches[2] }
+        }
+    }
+    return $found
+}
+
+# the instance's SQL Server Agent restarted (the Agent service only: the engine and its mirroring session untouched) so
+# it loads the subsystems the Replication feature added, read back: Running, and its log's [432] count since the restart
+# equal to msdb.dbo.syssubsystems' rows, Snapshot and Merge among them; any difference throws
+function Restart-LabAgent([object]$inst) {
+    $svcName = "SQLAgent`$$($inst.Name)"
+    $logFile = Get-AgentLogPath $inst
+    $rowsWant = [int](Get-LabValue $inst 'SELECT COUNT(*) FROM msdb.dbo.syssubsystems')
+    $replRows = [int](Get-LabValue $inst "SELECT COUNT(*) FROM msdb.dbo.syssubsystems WHERE subsystem IN (N'Snapshot', N'Merge')")
+    if ($replRows -ne 2) { throw "msdb.dbo.syssubsystems on $($inst.Name) holds $replRows of Snapshot / Merge after the feature (2 wanted)" }
+    $now = Get-Date
+    $since = $now.AddTicks(-($now.Ticks % [TimeSpan]::TicksPerSecond))   # the log's times are whole seconds
+    Say "SQL Server Agent ${svcName}: restarting (it loads its job subsystems only when it starts; msdb.dbo.syssubsystems has $rowsWant)"
+    Restart-Service -Name $svcName -ErrorAction Stop
+    if (-not (Wait-Until 60 { [string](Get-Service -Name $svcName -ErrorAction Stop).Status -eq 'Running' })) {
+        throw "$svcName is $([string](Get-Service -Name $svcName -ErrorAction Stop).Status) 60 s after its restart"
+    }
+    $hold = @{ n = -1 }   # the block below runs in Wait-Until's scope: it fills the table, never a variable of its own
+    if (-not (Wait-Until 120 { $hold.n = Get-AgentSubsystemCount $logFile $since; $hold.n -ge 0 })) {
+        throw "no '[432] ... subsystems in the subsystems cache' line in $logFile since $($since.ToString('yyyy-MM-dd HH:mm:ss')), 120 s after the restart"
+    }
+    Say "SQL Server Agent ${svcName}: Running; $logFile '[432] There are $($hold.n) subsystems in the subsystems cache' (msdb.dbo.syssubsystems $rowsWant)"
+    if ($hold.n -ne $rowsWant) { throw "the Agent of $($inst.Name) loaded $($hold.n) subsystems; msdb.dbo.syssubsystems has $rowsWant" }
+}
+
 # the names this script makes, as found now (each a count; 0 = absent)
 function Get-LabNames {
     return [pscustomobject]@{
@@ -382,6 +442,8 @@ function Invoke-Up {
                 $roleRow = Invoke-LabSql $inst "SELECT CAST(d.name AS nvarchar(128)) AS db, CAST(m.mirroring_role_desc AS nvarchar(60)) AS role, CAST(m.mirroring_state_desc AS nvarchar(60)) AS state FROM sys.database_mirroring m JOIN sys.databases d ON d.database_id = m.database_id WHERE m.mirroring_guid IS NOT NULL"
                 foreach ($roleLine in $roleRow) { Say "mirroring on $($inst.Name) after the feature: $($roleLine.db) $($roleLine.role) $($roleLine.state)" }
             }
+            # the Agent loads the feature's subsystems only when it starts: each instance the feature was added to
+            foreach ($inst in $missing) { Restart-LabAgent $inst }
         }
         Invoke-LabSql $pubInst "EXEC sp_adddistributor @distributor = @@SERVERNAME, @password = @pw;" 'master' @{ pw = (New-LabPassword) } | Out-Null
         Invoke-LabSql $pubInst "EXEC sp_adddistributiondb @database = N'$distDb', @security_mode = 1;" | Out-Null
