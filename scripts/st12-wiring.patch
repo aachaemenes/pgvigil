@@ -1,0 +1,102 @@
+diff --git c/internal/web/q_instances_admin.go i/internal/web/q_instances_admin.go
+index 3665d14..fbf12ea 100644
+--- c/internal/web/q_instances_admin.go
++++ i/internal/web/q_instances_admin.go
+@@ -258,6 +258,11 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 		out[p.k] = t
+ 	}
++	// ST1 (Check all): every instance's last test, last collection and failing collection (q_instances_checks.go)
++	if err := s.instanceChecks(ctx, a, out); err != nil {
++		s.reply(w, r, nil, fmt.Errorf("checks: %w", err))
++		return
++	}
+ 	var gen int64
+ 	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
+ 		s.reply(w, r, nil, err)
+@@ -435,6 +440,10 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+ 	op, name := str(in, "op"), str(in, "name")
+ 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames()}
+ 	if op == "test" {
++		// ST1 (Check all): an instance of pgvigil.yaml is tested as the file's own dsn (q_instances_checks.go)
++		if s.fileInstanceTest(w, r, user, in) {
++			return
++		}
+ 		s.instanceTest(w, r, user, in)
+ 		return
+ 	}
+diff --git c/web/src/admin_instances.ts i/web/src/admin_instances.ts
+index 61db660..d5aab04 100644
+--- c/web/src/admin_instances.ts
++++ i/web/src/admin_instances.ts
+@@ -10,6 +10,7 @@ import { Ctx } from './router';
+ import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
+ import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+ import { moveSection } from './migrate';
++import { instanceChecks } from './admin_checks';
+ 
+ // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
+ // described by that sentence (its id), so the reason is words on the page for each of them
+@@ -29,6 +30,7 @@ function offRead(c: Element, why: string): void {
+ interface AdminData {
+   file: Table | null; page: Table | null; sources: Table | null; proposals: Table | null; audit: Table | null;
+   generation: number; secret_dir: string; dbadash: string[]; writable: boolean; why_not: string;
++  checks?: Table | null; // ST1 (Check all): admin_checks.ts
+ }
+ 
+ // send POSTs and answers the server's outcome: a refusal (409) carries its reason, which the status line shows
+@@ -74,6 +76,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+   const moves = moveSection(() => { void draw(); });
+   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
++  // ST1 and ST2: Check all, the last test and last collected cells of both tables, the Rights read (admin_checks.ts)
++  const checks = instanceChecks({ send, say, draw: () => draw(), lock: c => lock(c), why });
+ 
+   async function draw(): Promise<void> {
+     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
+@@ -87,6 +91,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+     const pageAll = rowsOf(d.page), fileAll = rowsOf(d.file);
+     const page = pageAll.filter(inFolder), file = fileAll.filter(inFolder), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
+     whyNot = d.writable ? '' : String(d.why_not ?? '');
++    checks.set(d);
+     root.replaceChildren(
+       el('h2', {}, 'Instances' + (scoped ? ` - ${tagWords(scoped)}` : '')),
+       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
+@@ -99,6 +104,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+       d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
+       status,
+       instanceForm(d),
++      checks.control(page, file),
+       el('h3', {}, 'Instances added here'),
+       // task 406: what the running plans box collects, in words, beside the grid that holds it (only where a SQL Server
+       // instance was added here: a PostgreSQL-only list names no SQL Server collection)
+@@ -109,7 +115,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+       grid(page, pageCols, 'No instance was added here yet.'),
+       el('h3', {}, 'Instances from pgvigil.yaml'),
+       el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
+-      grid(file, [{ key: 'name' }, { key: 'engine' }, { key: 'platform' }, { key: 'tags', wide: true }, { key: 'source' }], 'pgvigil.yaml lists no instance.'),
++      grid(file, checks.fileCols(), 'pgvigil.yaml lists no instance.'),
++      checks.rightsBox,
+       el('h3', {}, 'Sync sources'),
+       el('p', { class: 'meta' }, 'A source never adds or removes an instance by itself: its new servers are proposed below, a server gone from it is marked gone.'),
+       grid(sources, sourceCols, 'No sync source yet.'),
+@@ -239,8 +246,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+       });
+       return lock(el('label', {}, cb, ' each minute'));
+     } },
+-    { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
+-    { key: 'last_collected', label: 'last collected', fmt: fmtTime },
++    { key: 'tested_ok', label: 'last test', fmt: (_v, r) => checks.lastTest(String(r.name)) },
++    { key: 'last_collected', label: 'last collected', fmt: (_v, r) => checks.lastCollected(String(r.name)) },
+     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },
+     { key: 'actions', fmt: (_v, r) => {
+       const n = String(r.name);
+@@ -255,7 +262,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.disabled ? 'Enable' : 'Disable'} ${n}` }, r.disabled ? 'Enable' : 'Disable');
+       toggle.addEventListener('click', () => { void act('admin/instances', { op: r.disabled ? 'enable' : 'disable', name: n }, r.disabled ? `${n} enabled: collected again within 15 seconds.` : `${n} disabled: its collections stop within 15 seconds.`); });
+       const rm = removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); });
+-      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm));
++      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm, ' ', checks.rightsButton(n)));
+     } },
+   ];
+ 
