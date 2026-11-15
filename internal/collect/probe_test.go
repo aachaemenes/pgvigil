@@ -90,8 +90,10 @@ func TestProbeTCP(t *testing.T) {
 		t.Errorf("default mode, the next round with nothing failed: %+v, want no probe", rows)
 	}
 
-	// an address that never answered: probed again only after 15 minutes
-	p = newProber("tcp", true)
+	// an address that never answered: probed again only after 15 minutes. A TCP address always answered once (an opened
+	// connection is a TCP answer: the review of B24h-1 part a #1), so the throttle is B24h-2's ICMP measure's - a
+	// prober of another method stands for it here
+	p = newProber("icmp", true)
 	p.connectMax = 20 * time.Millisecond
 	p.dial = func(ctx context.Context, addr string) error { <-ctx.Done(); return ctx.Err() }
 	p.noteRemote("i9", "black", "10.255.255.1:5432")

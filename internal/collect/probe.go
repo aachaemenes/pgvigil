@@ -21,7 +21,7 @@ import (
 const (
 	probeRoundMax   = 40 * time.Second // a round's hard deadline: an address not done by then is 'not probed'
 	probeConnectMax = time.Second      // one connect's wait (Instance#3: an answer within 1000 ms)
-	probeInFlight   = 32               // probes at once (Q3: 2,124 hosts in about 20 s at one connect's wait)
+	probeInFlight   = 32               // probes at once at least (probeInFlightFor sizes each round: Q3's 20 s)
 	probeNeverEvery = 15 * time.Minute // an address that never answered is probed this often at most
 )
 
@@ -38,6 +38,22 @@ type beatProbe struct {
 	MsMax    int       `json:"ms_max"`
 }
 
+// beatOpened: an address a connection of an instance opened to since the last beat - a TCP answer (the review of
+// B24h-1 part a #1): the repository sets the host's last answer from it (import_collector_probe)
+type beatOpened struct {
+	Host    string    `json:"host"`
+	Address string    `json:"address"`
+	At      time.Time `json:"at"`
+}
+
+// probeInFlightFor: the probes at once for a round of n addresses, so the round ends within 20 s at one connect's wait
+// (the design fold's Q3: 2,124 hosts in about 20 s; the review of B24h-1 part a #5 - 32 fixed took 66 s), 32 at least,
+// 512 at most
+func probeInFlightFor(n int, connectMax time.Duration) int {
+	ms := int(connectMax / time.Millisecond)
+	return min(max(32, (n*ms+19999)/20000), 512)
+}
+
 type prober struct {
 	method     string // 'tcp' (B24h-1: 'icmp' reads as tcp until B24h-2)
 	every      bool   // probe_every_minute
@@ -52,11 +68,13 @@ type prober struct {
 	answered map[string]bool      // address: answered at least once since the collector started
 	tried    map[string]time.Time // address: when it was last probed
 	out      []beatProbe
+	opened   map[string]beatOpened // address: its newest opened connection since the last beat
 }
 
 func newProber(method string, every bool) *prober {
 	return &prober{method: method, every: every, connectMax: probeConnectMax, roundMax: probeRoundMax, dial: dialTCP,
-		addrOf: map[string]string{}, hostOf: map[string]string{}, due: map[string]bool{}, answered: map[string]bool{}, tried: map[string]time.Time{}}
+		addrOf: map[string]string{}, hostOf: map[string]string{}, due: map[string]bool{}, answered: map[string]bool{}, tried: map[string]time.Time{},
+		opened: map[string]beatOpened{}}
 }
 
 func dialTCP(ctx context.Context, addr string) error {
@@ -67,7 +85,9 @@ func dialTCP(ctx context.Context, addr string) error {
 	return err
 }
 
-// noteRemote: the instance's connection opened to addr (its RemoteAddr), reached by the dial host
+// noteRemote: the instance's connection opened to addr (its RemoteAddr), reached by the dial host. An opened
+// connection is a TCP answer (the review of B24h-1 part a #1): the address is answered from now on (so a host that goes
+// down is probed every minute after a failure, never throttled as one that never answered), and the beat carries it
 func (p *prober) noteRemote(instance, host, addr string) {
 	if addr == "" {
 		return
@@ -75,6 +95,23 @@ func (p *prober) noteRemote(instance, host, addr string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.addrOf[instance], p.hostOf[addr] = addr, host
+	if p.method == "tcp" {
+		p.answered[addr] = true
+	}
+	p.opened[addr] = beatOpened{Host: host, Address: addr, At: time.Now().UTC()}
+}
+
+// takeOpened hands the opened addresses since the last beat to the beat, sorted by address
+func (p *prober) takeOpened() []beatOpened {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]beatOpened, 0, len(p.opened))
+	for _, o := range p.opened {
+		out = append(out, o)
+	}
+	p.opened = map[string]beatOpened{}
+	sort.Slice(out, func(i, j int) bool { return out[i].Address < out[j].Address })
+	return out
 }
 
 // noteFailed: a collection of the instance failed - its address is probed in the next round (the default mode)
@@ -108,7 +145,7 @@ func (p *prober) round(ctx context.Context, now time.Time) {
 	rctx, cancel := context.WithTimeout(ctx, p.roundMax)
 	defer cancel()
 	res := make([]beatProbe, len(addrs))
-	sem := make(chan struct{}, probeInFlight)
+	sem := make(chan struct{}, probeInFlightFor(len(addrs), p.connectMax))
 	var wg sync.WaitGroup
 	for i, a := range addrs {
 		res[i] = beatProbe{Address: a, Method: p.method, At: now}
@@ -135,7 +172,8 @@ func (p *prober) round(ctx context.Context, now time.Time) {
 			}
 			res[i].Sent, res[i].Answered = 1, &ans
 			if ans == 1 {
-				ms := took.Milliseconds()
+				// a handshake under a millisecond is 1 ms, never 0 (the review of B24h-1 part a #9)
+				ms := max(took.Milliseconds(), 1)
 				res[i].MsSum, res[i].MsMax = ms, int(ms)
 			}
 		}(i, a)
@@ -196,7 +234,10 @@ func probeable(addr string) bool {
 	return ip != nil && !ip.IsLoopback()
 }
 
-// targetHost: the first host of a dial target ('postgres:db1:5432,db2:5433' -> 'db1')
+// targetHost: the first host of a dial target ('postgres:db1:5432,db2:5433' -> 'db1'), as 0254's collector_target_host
+// cuts it: an IPv6 literal written bare by PgTarget ('postgres:2001:db8::1:5432', pgx strips its brackets) loses its
+// trailing ':port' (the review of B24h-1 part a #4), and a SQL Server named instance its '\name' (part b #6: one box,
+// one host)
 func targetHost(t string) string {
 	if i := strings.IndexByte(t, ':'); i >= 0 {
 		t = t[i+1:]
@@ -205,9 +246,26 @@ func targetHost(t string) string {
 		t = t[:i]
 	}
 	if h, _, err := net.SplitHostPort(t); err == nil {
-		return h
+		t = h
+	} else if i := strings.LastIndexByte(t, ':'); i > 0 && allDigits(t[i+1:]) {
+		t = t[:i]
+	}
+	if i := strings.IndexByte(t, '\\'); i >= 0 {
+		t = t[:i]
 	}
 	return t
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // take hands the rounds' rows to the beat

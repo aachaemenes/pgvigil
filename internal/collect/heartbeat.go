@@ -393,8 +393,12 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if res.Err != nil && h.probe != nil {
-		h.probe.noteFailed(instance) // B24h-1b: the default mode probes an address after a failed collection
+	// B24h-1b: the default mode probes an address after a collection failed at its connect or got no answer - never after
+	// a query the server refused on a connection that opened (the review of B24h-1 part a #3: a missing grant probed
+	// every minute)
+	var ce *connectError
+	if res.Err != nil && h.probe != nil && (errors.As(res.Err, &ce) || NoAnswer(res.Err)) {
+		h.probe.noteFailed(instance)
 	}
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
