@@ -65,10 +65,13 @@ func TestSecretFindingsOnAStore(t *testing.T) {
 	if sev, object, detail := finding(); sev != "critical" || object != "AccessDeniedException, pgvigil/read" || !strings.Contains(detail, "GetSecretValue") {
 		t.Fatalf("an unreadable secret: %q %q %q, want critical, the object 'AccessDeniedException, pgvigil/read', the right named", sev, object, detail)
 	}
+	// pgvigil.findings names a check in its setting column (0190's union); the error is read, never dropped
 	var unreachable int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.findings WHERE instance_id = $1 AND check_name ILIKE '%unreachable%'`, id).Scan(&unreachable)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.findings WHERE instance_id = $1 AND (setting ILIKE '%unreachable%' OR setting ILIKE '%collection failing%')`, id).Scan(&unreachable); err != nil {
+		t.Fatal(err)
+	}
 	if unreachable != 0 {
-		t.Error("an unreadable secret raised 'server unreachable'")
+		t.Error("an unreadable secret raised 'server unreachable' or 'collection failing'")
 	}
 	logc("statements", "ok", "", now)
 	if sev, _, _ := finding(); sev != "" {
