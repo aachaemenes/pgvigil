@@ -63,6 +63,14 @@ func TestReplicationStatementsLive(t *testing.T) {
 		}
 		t.Logf("%s: %d row(s)", name, len(rows))
 	}
+	// the probe the collector runs before the subscriptions statement (q10repl3: its alias was the keyword MERGE)
+	if mt, err := QueryRows(ctx, conn, replMergeTablesSQL(dist)); err != nil || len(mt) != 1 {
+		t.Errorf("merge tables: %v %v", mt, err)
+	} else if v := mt[0]["has_merge"]; v != int64(0) && v != int64(1) {
+		t.Errorf("merge tables: has_merge %v (want 0 or 1)", v)
+	} else {
+		t.Logf("merge tables: has_merge %v", v)
+	}
 }
 
 // The failing time and the error over crafted history (PGVIGIL_MSSQL_TEST_REPLSTUB: a database with tables in the
@@ -84,10 +92,10 @@ FROM `+quoteName(stub)+`.dbo.MSdistribution_agents a`)
 	// as the collector does: the merge arm only where the database has the merge tables (this stub has none: the
 	// statement without them must still read its distribution agents - the guard of replMergeTablesSQL)
 	mt, err := QueryRows(ctx, conn, replMergeTablesSQL(stub))
-	if err != nil || len(mt) != 1 {
-		t.Fatalf("the merge tables of the stub: %v %v", mt, err)
+	if err != nil || len(mt) != 1 || mt[0]["has_merge"] != int64(0) {
+		t.Fatalf("the merge tables of the stub (it has none: has_merge 0): %v %v", mt, err)
 	}
-	got, err := QueryRows(ctx, conn, replSubscriptionsOf(stub, false, mt[0]["merge"] == int64(1)))
+	got, err := QueryRows(ctx, conn, replSubscriptionsOf(stub, false, false))
 	if err != nil {
 		t.Fatalf("the subscriptions read of the stub: %v", err)
 	}

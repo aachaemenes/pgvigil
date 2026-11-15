@@ -35,7 +35,9 @@
 #      [red at first: five 'not read as a merge subscription', five 'still read as an agent row'; at the q10a fold's
 #      fixture run, on the code before it: merge-retrying's code 20084 if the tie falls on the row inserted first (it
 #      may fall either way: a green there proves nothing), merge-pull2's type green (the tie-break was right, the test
-#      could not see it)]
+#      could not see it)]. The collector's probe replMergeTablesSQL first: has_merge 1 on this stub (all four tables)
+#      [red at the q10repl3 fixture run: the probe's alias was the keyword MERGE, Msg 156 'Incorrect syntax near the
+#      keyword 'merge'' - no server had run the probe before].
 #  T3. go test ./internal/mssql/ (the unit tests, no server). [green before and after]
 #  T4. stored merge subscription rows, two reads 2 minutes apart, through import_mssql_replication on a stub instance:
 #      findings exactly

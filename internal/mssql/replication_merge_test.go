@@ -59,7 +59,12 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 	if err != nil || len(want) == 0 {
 		t.Fatalf("the stub's expectations: %v %v", want, err)
 	}
-	got, err := QueryRows(ctx, conn, replSubscriptionsFor(stub, false))
+	// as the collector does: the probe first (this stub has the four merge tables: has_merge 1)
+	mt, err := QueryRows(ctx, conn, replMergeTablesSQL(stub))
+	if err != nil || len(mt) != 1 || mt[0]["has_merge"] != int64(1) {
+		t.Fatalf("the merge tables of the stub (it has all four: has_merge 1): %v %v", mt, err)
+	}
+	got, err := QueryRows(ctx, conn, replSubscriptionsOf(stub, false, true))
 	if err != nil {
 		t.Fatalf("the subscriptions read of the stub: %v", err)
 	}
