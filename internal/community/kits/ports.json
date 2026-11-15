@@ -344,5 +344,147 @@
     "begin": "RAISERROR('Parsing blocked queries', 0, 0) WITH NOWAIT;",
     "end": "RAISERROR('Parsing blocking queries', 0, 0) WITH NOWAIT;",
     "sha256": ""
+  },
+  {
+    "name": "pmPerfmonCounters",
+    "go_file": "internal/mssql/cpu.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/PerfmonStatsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), PerfmonStatsCollector.DefaultCounters (61)",
+    "begin": "public static readonly IReadOnlyList<string> DefaultCounters = new[]",
+    "end": "};",
+    "sha256": "",
+    "item_re": "\"([^\"]+)\""
+  },
+  {
+    "name": "pmCpuSchedulerStats",
+    "go_file": "internal/mssql/cpu.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/CpuSchedulerStatsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), CpuSchedulerStatsCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
+  },
+  {
+    "name": "pmMemoryGrants",
+    "go_file": "internal/mssql/memory.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/MemoryGrantsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), MemoryGrantsCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
+  },
+  {
+    "name": "pmSessionStats",
+    "go_file": "internal/mssql/activity.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/SessionStatsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), SessionStatsCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
+  },
+  {
+    "name": "pmSessionSummaryStats",
+    "go_file": "internal/mssql/activity.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/SessionSummaryStatsCollector.cs",
+    "follows": "3.12.0 (65bdb5f946f7), SessionSummaryStatsCollector.QueryText",
+    "begin": "private const string QueryText = @\"",
+    "end": "\";",
+    "sha256": ""
+  },
+  {
+    "name": "pmRunnableQueue",
+    "go_file": "internal/repo/sql/0118_darling_alerts.sql",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Alerting/RunnableQueueEvaluator.cs",
+    "follows": "3.12.0 (65bdb5f946f7), RunnableQueueEvaluator's window and bars (8 / 16 per scheduler)",
+    "begin": "public static class RunnableQueueEvaluator",
+    "end": "public static (int Warning, int Critical) ClampBars",
+    "sha256": ""
+  },
+  {
+    "name": "pmLongRunningExclusions",
+    "go_file": "internal/repo/sql/0118_darling_alerts.sql",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Alerting/LongRunningQueryExclusions.cs",
+    "follows": "3.12.0 (65bdb5f946f7), LongRunningQueryExclusions' seeded program prefix and logins",
+    "begin": "public const string DefaultProgramNamePrefix",
+    "end": "public static readonly LongRunningQueryExclusions Defaults",
+    "sha256": "",
+    "item_re": "\"([^\"]+)\";"
+  },
+  {
+    "name": "pmConnectionAlertPolicy",
+    "go_file": "internal/repo/sql/0118_darling_alerts.sql",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Common/ConnectionAlertPolicy.cs",
+    "follows": "3.12.0 (65bdb5f946f7), ConnectionAlertPolicy (Server Unreachable)",
+    "begin": "public static class ConnectionAlertPolicy",
+    "end": "\n}",
+    "sha256": ""
+  },
+  {
+    "name": "pmCustomAlertTemplates",
+    "go_file": "internal/repo/sql/0118_darling_alerts.sql",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "Darling/PerformanceMonitor.Darling.Storage/CustomAlertTemplates.cs",
+    "follows": "3.12.0 (65bdb5f946f7), CustomAlertTemplates (dead tuples, replay lag, slot WAL, volume free space)",
+    "begin": "public static class CustomAlertTemplates",
+    "end": "\n}",
+    "sha256": ""
+  },
+  {
+    "name": "pmAlertsConfig",
+    "go_file": "internal/repo/sql/0118_darling_alerts.sql",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "Darling/PerformanceMonitor.Darling.Service/DarlingConfig.cs",
+    "follows": "3.12.0 (65bdb5f946f7), DarlingConfig's AlertsConfig defaults (AG lag 300 s, long-running 30 min, low disk 10 % / 5 GB)",
+    "begin": "public sealed class AlertsConfig",
+    "end": "\n}",
+    "sha256": ""
+  },
+  {
+    "name": "pmDeadlockSession",
+    "go_file": "internal/mssql/xe.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "Darling/PerformanceMonitor.Darling.Service/DarlingXeSessions.cs",
+    "follows": "3.12.0 (65bdb5f946f7), the deadlock session's create",
+    "begin": "CREATE EVENT SESSION [{DeadlocksCollector.XeSessionName}]",
+    "end": "STARTUP_STATE = ON",
+    "sha256": ""
+  },
+  {
+    "name": "pmBlockedProcessSession",
+    "go_file": "internal/mssql/xe.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "Darling/PerformanceMonitor.Darling.Service/DarlingXeSessions.cs",
+    "follows": "3.12.0 (65bdb5f946f7), the blocked-process session's create",
+    "begin": "CREATE EVENT SESSION [{BlockedProcessReportCollector.XeSessionName}]",
+    "end": "STARTUP_STATE = ON",
+    "sha256": ""
+  },
+  {
+    "name": "pmAttentionSession",
+    "go_file": "internal/mssql/xe.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/AlwaysOnXeSessions.cs",
+    "follows": "3.12.0 (65bdb5f946f7), the attention session's targets (event_counter + ring buffer) and its server create",
+    "begin": "private const string AttentionTargets =",
+    "end": "BuildAttentionServerStartSql();",
+    "sha256": ""
+  },
+  {
+    "name": "pmDatabaseSessionBuilder",
+    "go_file": "internal/mssql/xe.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/AlwaysOnXeSessions.cs",
+    "follows": "3.12.0 (65bdb5f946f7), the ON DATABASE session builder (Azure SQL Database)",
+    "begin": "return \"\\nCREATE EVENT SESSION [\" + sessionName + \"]\\n\"",
+    "end": "+ \");\\n\";",
+    "sha256": ""
   }
 ]
