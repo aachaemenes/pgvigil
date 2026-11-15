@@ -157,6 +157,13 @@
 #        raises through that login too (a stand-in view; its self-check beside the functions'); the wait is for the
 #        login's last grant on hadr-s. AF runs before CC: once hadr-c streams from hadr-s, the senders read's position
 #        call reaches a stand-in and the read is partial
+#   AF2  (in AF, the lead 06:2x; written 2026-11-15 06:3x before its runs, from Q7 lab run 2's facts: on a real Aurora
+#        17.9 reader the rolechange read fails on pg_stat_get_wal_receiver() and the backups read on
+#        pg_last_xlog_receive_location(), SQLSTATE 0A000) a 'rolechange' and a 'backups' read of hadr-sa: each status
+#        'ok' with the note 'not read on Aurora: pg_stat_get_wal_receiver() is not supported' (rolechange) / 'not read
+#        on Aurora: pg_last_wal_receive_lsn() is not supported' (backups); hadr-sa's role read stored (is_replica true)
+#        [red FAIL, the tip without the WIRING hunk (rolechange.go, backups.go, collect.go are the lead's): both reads
+#        'error' on the stand-ins, no role state]. Green = the tip with notes/teams/pdfp-hadr-s1-q7-wiring.patch
 #   AU2  (in AU, review 21:27 #1) aurora-w made inactive (no monitored writer reads the replicas): aurora-r raises
 #        'Aurora replica lag' critical reader-1 and warning reader-2 [red FAIL, 8f12dff: a reader in recovery never
 #        raises - silent]
@@ -817,6 +824,15 @@ if want AF; then
   r2=$(finding "$AFID" 'Aurora replica lag'); r3=$(finding "$AFID" 'receiver down')
   [[ "$r" == "true|false|ok"* && -z "$r2$r3" ]] && ok "AF hadr-sa (platform aurora, its WAL functions raise): in recovery, no receiver, the read ok ($r); no 'Aurora replica lag', no 'receiver down' on it" \
     || fail "AF hadr-sa: '$r' (expected true|false|ok), 'Aurora replica lag' '$r2', 'receiver down' '$r3' (expected none)"
+  # AF2 (the lead 06:2x, from Q7 lab run 2's facts: on a real Aurora reader the rolechange read fails on
+  # pg_stat_get_wal_receiver and the backups read on pg_last_xlog_receive_location, SQLSTATE 0A000 - the stand-ins
+  # here raise the same calls): each read succeeds and its log says what it could not read on Aurora
+  for c in rolechange backups; do "$BIN" collect -config "$CFG" -once "$c" -instance hadr-sa >>"$WORK/collect.out" 2>&1; echo "  AF2 a '$c' read of hadr-sa exit $?"; done
+  r=$(q "select coalesce(string_agg(collection || ' ' || status || ': ' || coalesce(note, ''), '; ' order by collection), 'none') from pgvigil.collection_dates where instance_id = $AFID and collection in ('rolechange', 'backups')")
+  r2=$(q "select coalesce((select is_replica::text from pgvigil.pg_role_state where instance_id = $AFID), 'none')")
+  [[ "$r" == "backups ok: not read on Aurora: pg_last_wal_receive_lsn() is not supported"*"; rolechange ok: not read on Aurora: pg_stat_get_wal_receiver() is not supported"* && "$r2" == true ]] \
+    && ok "AF2 the rolechange and backups reads of an Aurora reader succeed and say what they could not read ($r; role is_replica $r2)" \
+    || fail "AF2 rolechange / backups on an Aurora reader: '$r', role is_replica '$r2' (expected both 'ok: not read on Aurora: <function> is not supported', is_replica true)"
   q "update pgvigil.instances set is_active = false where instance_id in ($AFID, $AFW)" >/dev/null   # it is hadr-s: the later rows read hadr-s itself
   pq "drop schema aurora_fake cascade; drop role pgva" >/dev/null   # the schema first: its grants to pgva keep the role
   CFG=$OCFG
