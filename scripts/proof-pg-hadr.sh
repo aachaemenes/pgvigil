@@ -178,8 +178,8 @@
 # cluster's - 'retention under N days' and 'no snapshot in 24 h' fire ONCE per cluster, on its writer; a reader's
 # backups cell names the instance that holds them. Red = this tree as it is (rel-hadr-s1: the rules are 0103's, every
 # instance with the cluster's cloud row raises); green = this tree with scripts/aurora-cluster-backups-wiring.patch
-# applied (git apply: 0190's backup_status and backup_rule_hits, q_backups.go, backups.ts are the lead's files). Three
-# stand-in Aurora instances, no server behind them: each 'read' is one pgvigil.import_backups of an archiver row
+# applied (git apply: 0190, backups.go and its test, q_backups.go, backups.ts and README are the lead's files). Stand-in
+# Aurora instances, no server behind them: each 'read' is one pgvigil.import_backups of an archiver row
 # (is_replica as named) and a cloud row of resource_kind 'cluster' (retention 1 day), with no snapshot listed:
 #   AB   hadr-ab-r (made first: the lowest id) a reader and hadr-ab-w the writer of cluster ab-one, one read each: the
 #        two rules once, on hadr-ab-w ('no snapshot in 24 h' and 'retention under 7 days'); backup_status.
