@@ -11,7 +11,8 @@
 # Needs go, psql, chromium, node 22+, ss; the web bundle internal/web/dist/app.js built first (npm run build in web/).
 #   PGVIGIL_ADMIN_DSN       keyword-form connection to a cluster as a login that may create a database (not needed
 #                           with PGVIGIL_DEMO_URL)
-#   PGVIGIL_DEMO_URL        a demo already served (http://127.0.0.1:<port>/): no build, no seed
+#   PGVIGIL_DEMO_URL        a demo already served (http://127.0.0.1:<port>/): no build, no seed (and so no standing
+#                           repository-wide alert for the click map's tag Alerts row: that row is red there)
 #   PGVIGIL_DEMO_WAIT_S     seconds to wait for the seeded demo (default 300)
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
@@ -106,12 +107,28 @@ else
 fi
 
 echo "== the click map on the same build (scripts/click-check.mjs)"
+# the click map's tag Alerts row needs a repository-wide alert standing (no instance: 0190's alert_findings names it
+# 'pgvigil', its instance_id NULL), as proof-clickmap.sh seeds it; here it stands for the click map alone and is
+# deleted before the page walk, so the walk's rows are not changed by it
+REPO_ALERT=""
+if [[ -z "${PGVIGIL_DEMO_URL:-}" ]]; then
+  [[ $(psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "select count(*) from pgvigil.instances where name = 'pgvigil'") == 0 ]] \
+    || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
+  psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
+    values ('demo-spool', 'fx-repo-wide', NULL, 'pgvigil', 'pgvigil collector', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null \
+    || fail "the repository-wide alert for the click map"
+  REPO_ALERT=1
+fi
 CDP=$(freeport)
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome-map" --no-first-run --disable-gpu --lang=en-US about:blank > "$WORK/chrome-map.log" 2>&1 &
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 node scripts/click-check.mjs "$CDP" "$URL" "$OUT/click.json" > "$OUT/click.txt" 2>&1; echo "the click map: rc $? - $(grep -E '^links: ' "$OUT/click.txt" | tail -1)"
 kill "$CHR" 2>/dev/null; CHR=""
+if [[ -n "$REPO_ALERT" ]]; then
+  psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "delete from pgvigil.alert_state where finding_key = 'fx-repo-wide' and instance_id is null" >/dev/null \
+    || fail "the repository-wide alert was not deleted before the walk"
+fi
 
 echo "== the pages"
 TMPDIR="$WORK" node scripts/clickthrough.mjs list "$(freeport)" "$URL" "$OUT/pages.json" "$N" 2> "$OUT/list.log" || { tail -5 "$OUT/list.log"; fail "the page list"; }
