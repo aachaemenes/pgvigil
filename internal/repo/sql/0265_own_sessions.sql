@@ -69,6 +69,8 @@ END $$;
 -- own_shown_pg / own_shown_mssql: a row shown even when it is pgvigil's own (the reasons above; a transaction over 60 s
 -- on either engine, whatever its current statement's age, holds the xmin horizon or the log). The SQL Server row's
 -- other half - another row names it as blocker - is the caller's (a set-level test).
+-- Each never answers NULL: a NULL here made the callers' hide NULL - the row left out of the grid (NOT NULL filters it)
+-- but never counted in own_hidden (the own pages' '(n hidden)': an own idle backend with no transaction).
 CREATE OR REPLACE FUNCTION pgvigil.own_shown_pg(p_wait_type text, p_is_blocker boolean, p_state text, p_query_start timestamptz,
                                                 p_state_change timestamptz, p_xact_start timestamptz, p_at timestamptz)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
@@ -77,7 +79,7 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
       OR (p_state LIKE 'idle in transaction%' AND p_at - p_state_change > interval '60 seconds')
       -- a transaction over 60 s holds the xmin horizon whatever its statements' length (the collector caps a statement at
       -- 30 s: a long REPEATABLE READ read of short statements is only seen here)
-      OR p_at - p_xact_start > interval '60 seconds'
+      OR coalesce(p_at - p_xact_start > interval '60 seconds', false)   -- no transaction (xact_start NULL): no reason
 $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.own_shown_mssql(p_session_id int, p_blocking int, p_head int, p_in_cycle boolean,
@@ -88,7 +90,8 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT coalesce(p_blocking, 0) NOT IN (0, p_session_id)        -- blocked by another session (a negative id too)
       OR p_head IS NOT NULL OR coalesce(p_in_cycle, false)        -- in a blocking chain
       OR coalesce(p_elapsed_ms, 0) > 60000
-      OR (p_request_id IS NULL AND coalesce(p_open_tran, 0) > 0 AND p_at - p_last_end > interval '60 seconds')
+      OR (p_request_id IS NULL AND coalesce(p_open_tran, 0) > 0
+          AND coalesce(p_at - p_last_end > interval '60 seconds', true))   -- an open transaction of unknown age: shown
       OR coalesce(p_grant_kb, 0) > 102400 OR coalesce(p_tempdb_kb, 0) > 102400
       OR coalesce(p_tran_age_ms, 0) > 60000                     -- a transaction over 60 s (the server's own clock)
 $$;
