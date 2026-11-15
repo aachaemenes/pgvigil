@@ -238,7 +238,9 @@ func installScript(name, server, db string, tools []toolState) (script string, n
 		}
 		fmt.Fprintf(&b, " %s%s", testedVersions[g].Words, sep)
 	}
-	fmt.Fprintf(&b, "\n# to install those, download their release files and add -LocalFile <the file> to each line.\n")
+	// dbatools 2.9.0's help: -LocalFile is the release's zip (the Kit and Darling Data: the zip only; sp_WhoIsActive:
+	// the zip or its .sql)
+	fmt.Fprintf(&b, "\n# to install those, download each release's zip and add -LocalFile <the zip> to its line (sp_WhoIsActive also takes its .sql).\n")
 	fmt.Fprintf(&b, "$SqlInstance = %s   # %s in pgvigil\n", psQuote(server), name)
 	for _, g := range testedOrder {
 		if need[g] {
