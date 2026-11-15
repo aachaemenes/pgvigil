@@ -26,24 +26,23 @@ const chScope = `($3::int = 0 OR %[1]s.instance_id = $3) AND ($4::int[] IS NULL 
 
 func chScopeOf(alias string) string { return strings.ReplaceAll(chScope, "%[1]s", alias) }
 
-// the first whole hour of the range (rounded up, as collection_health's p_rate_from)
-const chHourFrom = `date_trunc('hour', ($1::timestamptz AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'`
+// the hour that holds the range's start (rounded DOWN, as DBA Dash's page: CollectionHealth_Get @FromHour; the lead's
+// 00:5x call on the review's #6) - the Summary's rate keeps rounding up (collection_health_summary)
+const chHourFrom = `date_trunc('hour', $1::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
 
 // sqlCHRows: one row per instance and collection. $7 the expected intervals (the stale check's), $6 the statuses
 // shown (NULL = all).
 var sqlCHRows = `
 WITH c AS (
   SELECT c.*, i.name AS instance, i.engine
-    FROM pgvigil.collection_health($1::timestamptz, $7::jsonb, $2::timestamptz) c
+    FROM pgvigil.collection_health(` + chHourFrom + `, $7::jsonb, $2::timestamptz,
+                                   CASE WHEN $3::int > 0 THEN ARRAY[$3::int] ELSE $4::int[] END, nullif($5::text, '')) c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id
    WHERE ` + chScopeOf("c") + `
-), d AS (
-  SELECT h.instance_id, h.collection, sum(h.dur_ms_sum) AS dur_sum, max(h.dur_ms_max) AS dur_max, sum(h.rows_written) AS rows_written
-    FROM pgvigil.collection_health_hour h
-   WHERE h.hour >= ` + chHourFrom + ` AND h.hour < $2::timestamptz AND ` + chScopeOf("h") + `
-   GROUP BY h.instance_id, h.collection
-), s AS (   -- the Summary's rate: its window, 24 hours from the next whole hour
-  SELECT h.instance_id, h.collection, sum(h.failed) AS failed24, sum(h.ok + h.partial + h.failed) AS known24
+), s AS (   -- the Summary's rate: its window, 24 hours from the next whole hour; the known runs only of an instance with a
+            -- failure or a partial in it (DBA Dash's SummaryKnownCount, CollectionHealth_Get :244; the lead's 00:5x on #9a)
+  SELECT h.instance_id, h.collection, sum(h.failed) AS failed24,
+         CASE WHEN sum(h.failed) + sum(h.partial) > 0 THEN sum(h.ok + h.partial + h.failed) ELSE 0 END AS known24
     FROM pgvigil.collection_health_hour h
    WHERE h.hour >= date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '23 hours' AND ` + chScopeOf("h") + `
    GROUP BY h.instance_id, h.collection
@@ -55,11 +54,10 @@ WITH c AS (
 )
 SELECT c.instance_id, c.instance, c.engine, c.collection, c.status, c.status_reason, c.runs, c.ok, c.partial, c.failed, c.skipped,
        c.failed_pct, c.problem_pct, s.failed24, s.known24, c.consecutive_failures, c.last_run_at, c.last_ok_at, c.last_failure_at,
-       d.dur_sum, d.dur_max, d.rows_written, coalesce(e.errors, 0) AS errors,
+       c.dur_sum, c.dur_max, c.rows_written, coalesce(e.errors, 0) AS errors,
        CASE WHEN c.consecutive_failures > 0 AND c.last_ok_at IS NOT NULL THEN c.last_ok_at ELSE c.last_failure_at - interval '10 minutes' END AS errors_from,
        c.last_failure_at + interval '1 hour' AS errors_to
   FROM c
-  LEFT JOIN d ON d.instance_id = c.instance_id AND d.collection = c.collection
   LEFT JOIN s ON s.instance_id = c.instance_id AND s.collection = c.collection
   LEFT JOIN e ON e.instance_id = c.instance_id AND e.collection = c.collection`
 
@@ -68,10 +66,8 @@ SELECT c.instance_id, c.instance, c.engine, c.collection, c.status, c.status_rea
 const chCols = `
        r.runs, round(100.0 * (r.ok + r.partial) / nullif(r.ok + r.partial + r.failed, 0), 2) AS succeeded_pct,
        round(100.0 * r.failed / nullif(r.ok + r.partial + r.failed, 0), 2) AS failed_pct,
-       -- DBA Dash's 0.00 for a collection with a run but no hourly row in the last 24 hours (a weekly one, one failing
-       -- for more than a day: CollectionHealth_Get :441-443); blank only with no run at all
-       CASE WHEN coalesce(r.known24, 0) = 0 THEN CASE WHEN r.last_run_at IS NOT NULL THEN 0.00 END
-            ELSE round(100.0 * r.failed24 / r.known24, 2) END AS failed_pct_24h,
+       -- DBA Dash's 0 where nothing failed in the summary's period, even with no run in it (CollectionHealth_Get :441-443)
+       CASE WHEN coalesce(r.failed24, 0) = 0 THEN 0.00 ELSE round(100.0 * r.failed24 / nullif(r.known24, 0), 2) END AS failed_pct_24h,
        r.ok + r.partial AS succeeded, r.partial, r.failed, r.consecutive_failures AS failures_in_a_row,
        r.last_run_at, r.last_ok_at AS last_success, r.last_failure_at AS last_failure,
        round(r.dur_sum::numeric / nullif(r.ok + r.partial + r.failed, 0)) AS avg_duration_ms, r.dur_max AS max_duration_ms,
@@ -82,7 +78,7 @@ var sqlCHInstance = `WITH r AS (` + sqlCHRows + `)
 SELECT r.instance_id, r.instance, r.engine, r.collection, r.status, r.status_reason,` + chCols + `
   FROM r
  WHERE $6::text[] IS NULL OR r.status = ANY ($6)
- ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'ok' THEN 3 ELSE 4 END, r.instance, r.collection`
+ ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4 END, failed_pct DESC NULLS LAST, r.instance, r.collection   -- DBA Dash's: Status, FailedPct DESC, Name`
 
 // sqlCHCollection: Row per collection over the instances in scope (CollectionHealth_Get.sql:395-440, :508-517): the
 // sums, the latest times, the worst status but N/A (all N/A = N/A), the errors' window the widest; Instance and Status
@@ -103,7 +99,7 @@ var sqlCHCollection = `WITH x AS (` + sqlCHRows + `), r AS (
 SELECT r.collection, r.status, r.instances, r.failing_instances,` + chCols + `
   FROM r
  WHERE $6::text[] IS NULL OR r.status = ANY ($6)
- ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'ok' THEN 3 ELSE 4 END, r.collection`
+ ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4 END, failed_pct DESC NULLS LAST, r.collection   -- DBA Dash's: Status, FailedPct DESC, Name`
 
 // sqlCHRuns: the Runs chart - runs per bucket of $6 seconds by outcome, over the collections in scope
 var sqlCHRuns = `

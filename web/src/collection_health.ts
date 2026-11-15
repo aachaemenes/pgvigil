@@ -87,7 +87,12 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'runs', label: 'Runs', num: true, fmt: fmtNum },
       { key: 'succeeded_pct', label: 'Succeeded %', num: true, fmt: pct },
       { key: 'failed_pct', label: 'Failed %', num: true, fmt: pct },
-      { key: 'failed_pct_24h', label: 'Failed % 24hrs', num: true, fmt: pct },
+      // DBA Dash's own words (CollectionHealthView.cs FailedPct24Hrs) without its 'since errors were acknowledged' (pgvigil's
+      // summary rates a fixed 24 hours), and over which instances it is counted (the lead's 00:5x call on the review's #9a)
+      { key: 'failed_pct_24h', label: 'Failed % 24hrs', num: true, fmt: pct,
+        title: 'Runs that failed over the period the summary rates - the last 24hrs, from the start of the next hour.  The summary\'s status is from this '
+          + 'rate and the failures in a row now, whatever period is selected here.  Over the instances of a collection (a row per collection), the runs '
+          + 'are counted on the instances with a failed or a partial run in that period, as DBA Dash counts them.' },
       { key: 'succeeded', label: 'Succeeded', num: true, fmt: fmtNum },
       { key: 'partial', label: 'Partial', num: true, fmt: fmtNum },
       { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'failed') : fmtNum(v) },

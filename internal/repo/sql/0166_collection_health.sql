@@ -160,25 +160,35 @@ END $$;
 -- B6.1 has no acknowledge). An inactive instance is not listed (DBA Dash's CollectionHealth_Get: IsActive = 1).
 -- The Summary and the page both read this. p_rate_to (B6.2: a picked range in the past) ends the runs counted
 -- (hours that begin before it; NULL = now); the failures in a row are always now's, as DBA Dash's.
-CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL, p_rate_to timestamptz DEFAULT NULL)
+-- p_instances / p_collection (the review of B6.2, part a #4): the page's scope applied inside, on the hourly scan and on
+-- the run status side, so an instance's page never aggregates the fleet; the durations and rows written come from the
+-- same scan (the page read them twice). NULL = every instance / every collection (the Summary's call)
+CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL, p_rate_to timestamptz DEFAULT NULL,
+                                                     p_instances int[] DEFAULT NULL, p_collection text DEFAULT NULL)
 RETURNS TABLE (instance_id int, collection text, status text, status_reason text, failing_minutes int, consecutive_failures int,
                runs int, ok int, partial int, failed int, skipped int, failed_pct numeric, problem_pct numeric,
-               last_run_at timestamptz, last_ok_at timestamptz, last_failure_at timestamptz, last_partial_at timestamptz)
+               last_run_at timestamptz, last_ok_at timestamptz, last_failure_at timestamptz, last_partial_at timestamptz,
+               dur_sum numeric, dur_max int, rows_written numeric)
 LANGUAGE sql STABLE SET jit = off AS $$
   WITH h AS (
     SELECT h.instance_id, h.collection, sum(h.runs)::int AS runs, sum(h.ok)::int AS ok, sum(h.partial)::int AS partial,
-           sum(h.failed)::int AS failed, sum(h.skipped)::int AS skipped
+           sum(h.failed)::int AS failed, sum(h.skipped)::int AS skipped,
+           sum(h.dur_ms_sum) AS dur_sum, max(h.dur_ms_max) AS dur_max, sum(h.rows_written) AS rows_written
       FROM pgvigil.collection_health_hour h
      WHERE h.hour >= date_trunc('hour', (p_rate_from AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
        AND (p_rate_to IS NULL OR h.hour < p_rate_to)
+       AND (p_instances IS NULL OR h.instance_id = ANY (p_instances)) AND (p_collection IS NULL OR h.collection = p_collection)
      GROUP BY h.instance_id, h.collection
   ), k AS (
     SELECT coalesce(h.instance_id, s.instance_id) AS instance_id, coalesce(h.collection, s.collection) AS collection,
            h.instance_id IS NOT NULL AS in_range,
            coalesce(h.runs, 0) AS runs, coalesce(h.ok, 0) AS ok, coalesce(h.partial, 0) AS partial,
            coalesce(h.failed, 0) AS failed, coalesce(h.skipped, 0) AS skipped,
-           s.last_run_at, s.last_status, coalesce(s.consecutive_failures, 0) AS cf, s.last_ok_at, s.last_failure_at, s.last_partial_at
-      FROM h FULL JOIN pgvigil.collection_run_status s ON s.instance_id = h.instance_id AND s.collection = h.collection
+           s.last_run_at, s.last_status, coalesce(s.consecutive_failures, 0) AS cf, s.last_ok_at, s.last_failure_at, s.last_partial_at,
+           h.dur_sum, h.dur_max, h.rows_written
+      FROM h FULL JOIN (SELECT x.* FROM pgvigil.collection_run_status x
+                         WHERE (p_instances IS NULL OR x.instance_id = ANY (p_instances)) AND (p_collection IS NULL OR x.collection = p_collection)) s
+             ON s.instance_id = h.instance_id AND s.collection = h.collection
      WHERE h.instance_id IS NOT NULL OR s.consecutive_failures > 0   -- failing now: listed with no run in the range
   ), j AS (
     SELECT k.*, i.name,
@@ -211,7 +221,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
          t.fm, t.cf, t.runs, t.ok, t.partial, t.failed, t.skipped,
          CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
          CASE WHEN t.known > 0 THEN round(100.0 * (t.failed + t.partial) / t.known, 1) END,
-         t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at
+         t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at, t.dur_sum, t.dur_max, t.rows_written
     FROM t
 $$;
 

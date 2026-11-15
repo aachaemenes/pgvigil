@@ -98,3 +98,20 @@ func TestCollectionHealthErrorsOnAsk(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectionHealthRangeShape (the review of B6.2, part a #6 and #9a, the lead's 00:5x calls): the page reads its hourly
+// rows from the hour that holds the range's start (DBA Dash's @FromHour, rounded down) and passes collection_health its
+// scope; the rows are ordered as DBA Dash's: Status (critical, warning, N/A, OK), the range's Failed % down, the name
+func TestCollectionHealthRangeShape(t *testing.T) {
+	if strings.Contains(chHourFrom, "+ interval '1 hour'") {
+		t.Errorf("chHourFrom rounds up: %s", chHourFrom)
+	}
+	if !strings.Contains(sqlCHRows, "CASE WHEN $3::int > 0 THEN ARRAY[$3::int] ELSE $4::int[] END, nullif($5::text, '')) c") {
+		t.Errorf("sqlCHRows does not pass collection_health its scope (the instances and the collection)")
+	}
+	for name, q := range map[string]string{"sqlCHInstance": sqlCHInstance, "sqlCHCollection": sqlCHCollection} {
+		if !strings.Contains(q, "WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4") || !strings.Contains(q, "failed_pct DESC NULLS LAST") {
+			t.Errorf("%s is not in DBA Dash's order (Status, Failed %% down, name)", name)
+		}
+	}
+}
