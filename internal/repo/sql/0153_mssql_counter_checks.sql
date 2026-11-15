@@ -16,9 +16,8 @@
 --   - a ratio under its denominator's floor is 0 (0152's metric_points): a quiet server never trips a ratio (F21).
 --   - page reads, page writes and lock requests measure volume, not a fault: their notes say so (F21).
 --   - client timeouts (B24 Fixed 1): PerformanceMonitor's '>= 10' / '>= 60' a minute become above 9.999 / 59.999 on a
---     rate rounded to 2 places as it rounds it; the rate counts the rows the reads stored, not its event_counter
---     change scaled by the stored share (a full ring buffer undercounts a storm); the floors only, no per-server
---     baseline; pgvigil's own reads left out (the section at the end names each).
+--     rate rounded to 2 places as it rounds it; the floors only, no per-server baseline; pgvigil's own reads left out
+--     (the section at the end names each).
 --
 -- The seed (F22): a rule is written only when the fleet has never had a rule on that metric, live or ended - an
 -- upgrade never brings back a rule a DBA ended or replaced, and a re-run adds nothing. created_by 'pgvigil' with the
@@ -97,13 +96,15 @@ SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 --     newest done read at or before R - 3 minutes, else the oldest done read before R (a short history), both within
 --     the 60 minutes before R (PerformanceMonitor's ReadLookbackMinutes: after a gap the first read back gives no point
 --     and the next one's base is it); none = no point. client_timeouts_per_min = the counted rows stored in (B, R] over
---     greatest(1, the minutes from B to R), rounded to 2 places; client_timeouts_left_out_per_min the same for the
---     rows left out. Each stored row is judged once, its counts summed per read that stored it, then per span. A read
+--     greatest(1, the minutes from B to R), rounded to 2 places - the counted rows scaled to the event_counter's exact
+--     change over (B, R] (PerformanceMonitor's judged count: the change times the counted share of the stored rows; the
+--     whole change when no row was stored; the stored rows alone when a counter is missing or went down, the session
+--     made again: the lead's 11-14 22:4x, F1 S3); client_timeouts_left_out_per_min the same for the rows left out. Each stored row is judged once, its counts summed per read that stored it, then per span. A read
 --     that was not done only widens the next span; its stored rows count there.
 -- The departures: a rule's 'above' is strict and PerformanceMonitor's bars are '>=' (the seed's 9.999 / 59.999, on a
 -- rate rounded to 2 places as PerformanceMonitor rounds it: 9.995 reads 10.00 and fires); the
--- rate counts the rows the reads stored (a ring buffer that dropped events between reads undercounts; missed_events
--- keeps the count per read); the floors only (PerformanceMonitor's 3 x / 10 x a server's p99.9 needs a baseline the
+-- rate is PerformanceMonitor's (the event_counter's change scaled by the stored share, so a ring buffer that dropped
+-- events between reads still counts them; missed_events keeps the count per read); the floors only (PerformanceMonitor's 3 x / 10 x a server's p99.9 needs a baseline the
 -- rule engine has not); pgvigil's own reads are left out.
 SET LOCAL lock_timeout = '20s';
 
@@ -165,14 +166,14 @@ CREATE OR REPLACE FUNCTION pgvigil.mssql_attention_points(p_instance_id int, p_f
 RETURNS TABLE (at timestamptz, metric text, value double precision)
 LANGUAGE sql STABLE AS $$
   WITH r AS (
-    SELECT a.snapshot_at AS at
+    SELECT a.snapshot_at AS at, a.counter
       FROM pgvigil.mssql_attention_reads a
      WHERE a.instance_id = p_instance_id AND a.snapshot_at > p_from AND a.snapshot_at <= p_to
        AND a.read_done AND a.state = 'running'),
   b AS (
     -- OldestTaken: the reads newest first until the span from the read before the oldest taken one reaches 3 minutes,
     -- over the 60 minutes before R that PerformanceMonitor reads back (ReadLookbackMinutes)
-    SELECT r.at,
+    SELECT r.at, r.counter,
            coalesce((SELECT max(x.snapshot_at) FROM pgvigil.mssql_attention_reads x
                       WHERE x.instance_id = p_instance_id AND x.read_done
                         AND x.snapshot_at <= r.at - interval '3 minutes' AND x.snapshot_at >= r.at - interval '60 minutes'),
@@ -193,14 +194,28 @@ LANGUAGE sql STABLE AS $$
        AND e.event_at > (SELECT min(b.base_at) FROM b) - interval '1 day' AND e.event_at <= (SELECT max(b.at) FROM b)
      GROUP BY e.snapshot_at),
   c AS (
-    SELECT b.at, b.base_at, coalesce(sum(s.counted), 0) AS counted, coalesce(sum(s.left_out), 0) AS left_out
+    SELECT b.at, b.base_at, coalesce(sum(s.counted), 0) AS counted, coalesce(sum(s.left_out), 0) AS left_out,
+           b.counter - (SELECT x.counter FROM pgvigil.mssql_attention_reads x
+                         WHERE x.instance_id = p_instance_id AND x.snapshot_at = b.base_at) AS total
       FROM b LEFT JOIN s ON s.snapshot_at > b.base_at AND s.snapshot_at <= b.at
      WHERE b.base_at IS NOT NULL
-     GROUP BY b.at, b.base_at)
-  SELECT c.at, m.metric,
-         round((m.n / greatest(1.0, extract(epoch FROM c.at - c.base_at) / 60.0))::numeric, 2)::double precision
-    FROM c CROSS JOIN LATERAL (VALUES ('client_timeouts_per_min', c.counted::numeric),
-                                      ('client_timeouts_left_out_per_min', c.left_out::numeric)) AS m(metric, n)
+     GROUP BY b.at, b.base_at, b.counter),
+  -- PerformanceMonitor's judged count (AttentionEvaluator.Evaluate): the event_counter's exact change over the span
+  -- times the share of the stored rows that count (the left-out share for the left-out rate); with no stored row the
+  -- whole change counts; a counter missing or gone down (the session made again) leaves the stored rows alone
+  j AS (
+    SELECT c.at, c.base_at,
+           CASE WHEN c.total IS NULL OR c.total < 0 THEN c.counted::numeric
+                WHEN c.counted + c.left_out = 0 THEN c.total::numeric
+                ELSE c.total * c.counted::numeric / (c.counted + c.left_out) END AS counted,
+           CASE WHEN c.total IS NULL OR c.total < 0 THEN c.left_out::numeric
+                WHEN c.counted + c.left_out = 0 THEN 0::numeric
+                ELSE c.total * c.left_out::numeric / (c.counted + c.left_out) END AS left_out
+      FROM c)
+  SELECT j.at, m.metric,
+         round((m.n / greatest(1.0, extract(epoch FROM j.at - j.base_at) / 60.0))::numeric, 2)::double precision
+    FROM j CROSS JOIN LATERAL (VALUES ('client_timeouts_per_min', j.counted),
+                                      ('client_timeouts_left_out_per_min', j.left_out)) AS m(metric, n)
    ORDER BY 1, 2
 $$;
 

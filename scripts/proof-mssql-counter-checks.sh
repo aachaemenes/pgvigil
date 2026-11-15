@@ -53,7 +53,11 @@
 #     seed's 9.999 / 59.999 goes critical at that read; a quiet read after it: still critical (the 3-minute window holds
 #     the burst), as PerformanceMonitor's own text says of a storm. T2 built rows (chkxs2: a done read, a read cut
 #     before the capture (no new_events) storing 6 rows, a done read storing 4): one point per metric, at the last read,
-#     counted 5 (10 rows over 2 minutes), none at the cut read. T3 live on the container, pgvigil's attention session
+#     counted 5 (10 rows over 2 minutes), none at the cut read. T4 (the lead's 22:4x, F1 S3: PerformanceMonitor's
+#     judged count; red on bfb184d: 50.00, warning) built reads a minute apart: 50 rows stored while the event_counter
+#     moved 300: 300.00, critical at the seed's thresholds (a storm past the ring buffer); no row stored and the counter
+#     +30: 30.00; the counter gone down (the session made again) with 20 rows: 20.00. The built reads' counters move
+#     with their rows (T1 0 then 200; T2 0, 6, 10); T3's hand rule scales by the counter as the function does. T3 live on the container, pgvigil's attention session
 #     made by sa from 'pgvigil mssql-xe -print': each mssql_xe read writes one mssql_attention_reads row (read_done);
 #     a Go client (go-mssqldb, a connection per batch, a 2 s context timeout on WAITFOR DELAY 10 s, every batch of a
 #     phase at once, the reads about 60 s apart): T3a 30 under 'proof-app' - exactly 30 rows with its marker, the
@@ -456,9 +460,10 @@ xinst() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, l
   VALUES ('$1', 'sqlserver', '{}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1; }
 # the built reads and rows hang off one time XT (each psql call has its own now(): a row must sit at its read exactly)
 XT=$(pq "SELECT date_trunc('second', now())")
-# xread <instance> <minutes before XT> <done: true|false>
+# xread <instance> <minutes before XT> <done: true|false> [<the event_counter's count at that read>, default 0]: the
+# rate is PerformanceMonitor's judged count, so a built read's counter moves with the rows it stores (F1 S3)
 xread() { pq "INSERT INTO pgvigil.mssql_attention_reads (instance_id, snapshot_at, state, read_done, new_events, counter, missed_events)
-  VALUES ($1, '$XT'::timestamptz - interval '$2 minutes', 'running', $3, CASE WHEN $3 THEN 0 END, 0, 0)" >/dev/null; }
+  VALUES ($1, '$XT'::timestamptz - interval '$2 minutes', 'running', $3, CASE WHEN $3 THEN 0 END, ${4:-0}, 0)" >/dev/null; }
 # xrows <instance> <minutes before XT> <n> <program>: n rows stored at that read, each a second before it
 xrows() { pq "INSERT INTO pgvigil.mssql_attentions (instance_id, event_at, event_key, snapshot_at, session_id, interrupt_us, statement, program_name)
   SELECT $1, '$XT'::timestamptz - interval '$2 minutes' - interval '1 second', 'b$2-' || g, '$XT'::timestamptz - interval '$2 minutes',
@@ -466,23 +471,37 @@ xrows() { pq "INSERT INTO pgvigil.mssql_attentions (instance_id, event_at, event
 
 # T1: the burst (the pass's F1): reads at 5, 4, 3, 2 minutes back, the read 1 minute back stores 200 counted rows
 XS1=$(xinst chkxs1); [[ "$XS1" =~ ^[0-9]+$ ]] || fail "T1: the built instance [$XS1]"
-for t in 5 4 3 2 1; do xread "$XS1" "$t" true; done; xrows "$XS1" 1 200 proof-app
+for t in 5 4 3 2; do xread "$XS1" "$t" true 0; done; xread "$XS1" 1 true 200; xrows "$XS1" 1 200 proof-app
 P1=$(xpoint "$XS1" client_timeouts_per_min)
 R1=$(xrule chkxs1); [[ -n "$R1" ]] || fail "T1: the instance rule on chkxs1 was refused"
 run; S1=$(xstate "$XS1")
-xread "$XS1" 0 true; P1b=$(xpoint "$XS1" client_timeouts_per_min); run; S1b=$(xstate "$XS1"); xend "$R1"
+xread "$XS1" 0 true 200; P1b=$(xpoint "$XS1" client_timeouts_per_min); run; S1b=$(xstate "$XS1"); xend "$R1"
 echo "   T1: the burst read's point $P1 -> $S1; a quiet read after it: $P1b -> $S1b"
 [[ "$P1|$S1|$P1b|$S1b" == "66.67|critical|66.67|critical" ]] || fail "T1: the burst [$P1|$S1|$P1b|$S1b] (want 66.67|critical|66.67|critical)"
 ok "T1: 200 timeouts in one read go critical at that read (200 over the 3 minutes back) and stay critical a quiet read later"
 
 # T2: a read cut before the capture (no new_events) stores 6 rows; the next done read's span holds them
 XS2=$(xinst chkxs2); [[ "$XS2" =~ ^[0-9]+$ ]] || fail "T2: the built instance [$XS2]"
-xread "$XS2" 3 true; xread "$XS2" 2 false; xread "$XS2" 1 true; xrows "$XS2" 2 6 proof-app; xrows "$XS2" 1 4 proof-app
+xread "$XS2" 3 true 0; xread "$XS2" 2 false 6; xread "$XS2" 1 true 10; xrows "$XS2" 2 6 proof-app; xrows "$XS2" 1 4 proof-app
 P2=$(pq "SELECT string_agg(round(extract(epoch FROM now() - at) / 60) || 'm ' || metric || ' ' || round(value::numeric, 2), ', ' ORDER BY at, metric)
   FROM pgvigil.mssql_attention_points($XS2, now() - interval '30 minutes', now())")
 echo "   T2: $P2"
 [[ "$P2" == "1m client_timeouts_left_out_per_min 0.00, 1m client_timeouts_per_min 5.00" ]] || fail "T2: the points around a cut read [$P2]"
 ok "T2: a cut read gives no point and its 6 rows count in the next done read's span (10 over 2 minutes)"
+
+# T4 (the lead's 22:4x, F1 S3; red on bfb184d: 50.00, warning): PerformanceMonitor's judged count - a storm past the
+# ring buffer (the read stores 50 rows, the event_counter moved 300) reads 300 a minute, critical; T4b no row stored,
+# the counter +30: 30 (the whole change); T4c the counter gone down (the session made again), 20 rows: 20 (the rows alone)
+XS4=$(xinst chkxs4); [[ "$XS4" =~ ^[0-9]+$ ]] || fail "T4: the built instance [$XS4]"
+xread "$XS4" 2 true 1000; xread "$XS4" 1 true 1300; xrows "$XS4" 1 50 proof-app
+P4=$(xpoint "$XS4" client_timeouts_per_min)
+R4=$(xrule chkxs4); [[ -n "$R4" ]] || fail "T4: the instance rule on chkxs4 was refused"
+run; S4=$(xstate "$XS4"); xend "$R4"
+XS4b=$(xinst chkxs4b); xread "$XS4b" 2 true 0; xread "$XS4b" 1 true 30; P4b=$(xpoint "$XS4b" client_timeouts_per_min)
+XS4c=$(xinst chkxs4c); xread "$XS4c" 2 true 1000; xread "$XS4c" 1 true 15; xrows "$XS4c" 1 20 proof-app; P4c=$(xpoint "$XS4c" client_timeouts_per_min)
+echo "   T4: a storm past the ring buffer $P4 -> $S4; no row stored, the counter +30: $P4b; the counter gone down, 20 rows: $P4c"
+[[ "$P4|$S4|$P4b|$P4c" == "300.00|critical|30.00|20.00" ]] || fail "T4: [$P4|$S4|$P4b|$P4c] (want 300.00|critical|30.00|20.00)"
+ok "T4: a storm the ring buffer cut reads 300 a minute, critical; the whole counter change with no row stored; the stored rows after a counter reset"
 
 # T3: live. pgvigil's sessions made by sa from the printed script; a Go client's cancels
 "$TMPD/pgvigil" mssql-xe -print -install-id "c$SUF" > "$TMPD/xe.sql" || fail "T3: mssql-xe -print"
@@ -573,15 +592,16 @@ NX=0; LASTX=0
 # a read of the capture about 60 s after the one before (the sessions dispatch every 5 s: 7 s after a load at least)
 xr() { local w=$(( 60 - ($(date +%s) - LASTX) )); (( w > 7 )) || w=7; sleep "$w"; col mssql_xe; LASTX=$(date +%s); NX=$((NX + 1)); }
 # PerformanceMonitor's rule in python over the stored reads and rows: the newest done read's counted and left-out rates
-hand() { pq "SELECT 'r|' || extract(epoch FROM snapshot_at) FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB AND read_done AND state = 'running'
+hand() { pq "SELECT 'r|' || extract(epoch FROM snapshot_at) || '|' || coalesce(counter::text, '') FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB AND read_done AND state = 'running'
   UNION ALL SELECT 'e|' || extract(epoch FROM snapshot_at) || '|' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us), '')
     FROM pgvigil.mssql_attentions WHERE instance_id = $SB" > "$TMPD/hand"
   python3 - "$TMPD/hand" <<'PY'
 import sys
-reads, rows = [], []
+reads, rows, ctr = [], [], {}
 for l in open(sys.argv[1]):
     f = l.rstrip('\n').split('|')
-    if f[0] == 'r': reads.append(float(f[1]))
+    if f[0] == 'r':
+        reads.append(float(f[1])); ctr[float(f[1])] = int(f[2]) if f[2] else None
     else: rows.append((float(f[1]), f[2]))
 runs = sorted(reads, reverse=True)
 runs = [r for r in runs if r >= runs[0] - 3600] if runs else runs   # ReadLookbackMinutes 60
@@ -594,6 +614,11 @@ base, newest = runs[oldest + 1], runs[0]
 cov = max(1.0, (newest - base) / 60)
 c = sum(1 for s, w in rows if base < s <= newest and w == '')
 x = sum(1 for s, w in rows if base < s <= newest and w != '')
+# PerformanceMonitor's judged count: the counter's change times the stored share; the whole change with no row; the
+# rows alone when a counter is missing or went down
+tot = None if ctr.get(newest) is None or ctr.get(base) is None else ctr[newest] - ctr[base]
+if tot is not None and tot >= 0:
+    c, x = (tot, 0) if c + x == 0 else (tot * c / (c + x), tot * x / (c + x))
 print(f'{c / cov:.2f}|{x / cov:.2f}')
 PY
 }
