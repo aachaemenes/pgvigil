@@ -48,6 +48,12 @@
 #     msdb still 1 (the database row wins); msdb's row at 0: full_status 'not judged'; the door refuses a negative age,
 #     a database row on an instance it does not know, and an instance scope (the yaml's); every row ended: model 100.
 #     Red on f8e89d2: no import_mssql_protection_override.
+#  R2. High CPU (Changed 12, Release 5, D2 a, F12): R2a after migrate one fleet rule 'SQL Server: High CPU' on cpu.sql_pct,
+#     above 79.999 / 94.999 for 4 minutes, enabled false, created_by 'pgvigil', client '0156 seed', one 'seed' log row;
+#     0156 run again by hand adds nothing, nor after the rule is ended. R2b on a built active instance cpusyn's CPU
+#     records one minute apart, an instance rule at the seed's thresholds and minutes: four records at 96 % read
+#     'pending', the fifth 'critical'; four at 85 % and a fifth at 85 % 'warning'; a record at 79 % after them 'ok'.
+#     NOT PROVEN live: a CPU loop per scheduler on the shared box (the design pass's finding 18).
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -242,4 +248,34 @@ NL=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log"); [[ "$NL" 
 config; col mssql_backups
 ok "R5: the default, the strictest tag, a tag at 0 beside 24, a database row over the tags and the yaml, the yaml over the tags, 0 = not judged; three refusals; $NL attempts logged"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6 R5)"
+echo "== R2. High CPU (Changed 12) =="
+HC=$(pq "SELECT rule_id || '|' || op || '|' || warning || '|' || critical || '|' || for_minutes || '|' || enabled || '|' || scope || '|' || created_by
+  FROM pgvigil.alert_rules WHERE metric = 'cpu.sql_pct' AND client = '0156 seed'")
+HL=$(pq "SELECT count(*) FROM pgvigil.alert_rule_log WHERE op = 'seed' AND client = '0156 seed'")
+echo "   the seed: $HC; log rows $HL"
+[[ "$HC" =~ ^[0-9]+\|above\|79\.999\|94\.999\|4\|false\|fleet\|pgvigil$ && "$HL" == 1 ]] || fail "R2a: the seeded rule [$HC], $HL log row(s)"
+HID=${HC%%|*}
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R2a: 0156 run again by hand"
+pq "SELECT pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"proof405\",\"rule_id\":\"$HID\"}'::jsonb)" | grep -q '"done"' || fail "R2a: ending the seed"
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R2a: 0156 again after the end"
+[[ $(pq "SELECT count(*) FROM pgvigil.alert_rules WHERE metric = 'cpu.sql_pct' AND client = '0156 seed'") == 1 && \
+   $(pq "SELECT count(*) FROM pgvigil.alert_rule_log WHERE op = 'seed' AND client = '0156 seed'") == 1 ]] || fail "R2a: a re-run seeded again"
+ok "R2a: seeded off as PerformanceMonitor's numbers; 0156 again, and again after the end, adds nothing"
+CS=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('cpusyn', 'sqlserver', '{}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1)
+T0=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '30 minutes', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+pq "SELECT pgvigil.ensure_month_partition('mssql_cpu_sample', '$T0'::timestamptz)" >/dev/null
+pq "SELECT pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"proof405\",\"metric\":\"cpu.sql_pct\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"cpusyn\",\"warning\":79.999,\"critical\":94.999,\"for_minutes\":4}'::jsonb)" | grep -q '"done"' || fail "R2b: the instance rule"
+# rec <minute after T0> <pct>: one CPU record of cpusyn; judge <minute>: the rules judged at that record's time
+rec() { pq "INSERT INTO pgvigil.mssql_cpu_sample (instance_id, snapshot_at, record_id, sql_pct, other_pct, idle_pct)
+  VALUES ($CS, '$T0'::timestamptz + interval '$1 minutes', $1, $2, NULL, NULL)" >/dev/null; }
+judge() { pq "SELECT count(*) FROM (SELECT pgvigil.alert_rules_run('$T0'::timestamptz + interval '$1 minutes' + interval '5 seconds')) x" >/dev/null
+  pq "SELECT state FROM pgvigil.alert_rule_state WHERE instance_id = $CS AND metric = 'cpu.sql_pct' AND database = ''"; }
+for m in 0 1 2 3; do rec $m 96; done; A4=$(judge 3); rec 4 96; A5=$(judge 4)
+for m in 10 11 12 13 14; do rec $m 85; done; B5=$(judge 14); rec 15 79; B6=$(judge 15)
+echo "   96 %: after 4 records $A4, after 5 $A5; 85 %: after 5 $B5; then 79 %: $B6"
+[[ "$A4" == pending && "$A5" == critical && "$B5" == warning && "$B6" == ok ]] || fail "R2b: [$A4 $A5 $B5 $B6] (want pending critical warning ok)"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $CS" >/dev/null
+ok "R2b: at the seed's numbers four records read pending and the fifth fires (critical at 96 %, warning at 85 %); 79 % clears"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2)"

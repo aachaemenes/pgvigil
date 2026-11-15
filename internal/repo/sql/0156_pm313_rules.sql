@@ -14,8 +14,11 @@
 --   mssql_protection_overrides       Changed 46: backup ages per tag or database (Admin, audited), the resolver
 --   mssql_protection_limits          (a database row > the instance's yaml > its tags, the strictest > the default) and
 --   mssql_backup_judged              0129's view judged by it, where each age comes from appended.
+--   a seeded rule                    Changed 12 / Release 5: 'SQL Server: High CPU' on cpu.sql_pct, 80 / 95 for 4
+--                                    minutes, OFF.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
--- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85.
+-- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
+-- AlertEngine.cs L1045-1404.
 -- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
 -- upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
 
@@ -651,3 +654,31 @@ SELECT j.instance_id, j.instance, j.database_name, j.snapshot_at, j.state, j.rec
        -- where each age the database is judged by comes from (0156: an override, pgvigil.yaml or the default)
        j.full_hours_from, j.log_minutes_from
   FROM j;
+
+-- ---- High CPU (Changed 12, Release 5) --------------------------------------------------------------------------------
+
+-- PerformanceMonitor 3.13.0's High CPU alert (AlertEngine.cs L1045-1404: 5 samples in a row at or over 80 %, critical
+-- at 95 %) as a starter rule, seeded OFF (the lead's D2 a: 0074's 'CPU at 90 % or more' already alerts; a second CPU
+-- page at upgrade would double it). 0153's seed rule: written only when the fleet has never had a rule on cpu.sql_pct,
+-- live or ended, so an upgrade never brings back a rule a DBA ended or replaced, and a re-run adds nothing; created_by
+-- 'pgvigil' with the client '0156 seed', one alert_rule_log row. Its 15-minute clear hold and its once-per-incident
+-- page are B5's flapping hold (task 403): not built twice. 'above' is strict (0085), so 'at or over 80' is above
+-- 79.999 (as 0153's lock waits).
+WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
+  ('SQL Server: High CPU', 'cpu.sql_pct', 'above', 79.999, 94.999, 4,
+   'PerformanceMonitor 3.13 High CPU: SQL Server''s CPU at 80 % or more for 5 samples in a row (5 or 6 one-minute '
+   'samples: the rule''s minutes run from the first sample to the newest, on ring-buffer times read again at each read), '
+   'critical at 95 %. A channel''s clear delay (clear_after_secs, 600 s by default) holds the alert open after it clears, '
+   'where PerformanceMonitor holds 15 minutes. Switched on, it pages beside pgvigil''s own ''CPU at 90 % or more''.')
+), made AS (
+  INSERT INTO pgvigil.alert_rules (name, metric, op, warning, critical, for_minutes, scope, note, enabled, created_by,
+                                   created_at, client)
+  SELECT s.name, s.metric, s.op, s.warning, s.critical, s.for_minutes, 'fleet', s.note, false, 'pgvigil', now(), '0156 seed'
+    FROM seed s
+   WHERE EXISTS (SELECT 1 FROM pgvigil.metric_catalog c WHERE c.key = s.metric)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_rules r WHERE r.metric = s.metric AND r.scope = 'fleet')
+  RETURNING rule_id, metric, name
+)
+INSERT INTO pgvigil.alert_rule_log (at, ui_user, client, op, rule_id, metric, outcome, detail)
+SELECT now(), 'pgvigil', '0156 seed', 'seed', m.rule_id, m.metric, 'done', m.name || ': seeded off (task 405)'
+  FROM made m;
