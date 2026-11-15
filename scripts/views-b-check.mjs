@@ -2,7 +2,8 @@
 // Queries - save, load, the default on entering, {None}, the layouts layer, the shared views, the conflict, the time
 // range, a shared link, the mail render. Its cases and their expected results: proof-views-b.sh's header.
 //   VB_U1 / VB_U1PW (a shared editor), VB_U2 / VB_U2PW (not), VB_TAG (a tag of the demo fleet), VB_MSSQL (a SQL Server
-//   instance id), VB_CASES (space-separated case names; empty = all)
+//   instance id), VB_PG (a PostgreSQL instance id, for SHOTS), VB_CASES (space-separated case names; empty = all),
+//   VB_SHOTS (a folder: the SHOTS case saves the five pages' pictures there; unset = no SHOTS case)
 //   node scripts/views-b-check.mjs <cdp port> <base url/>
 // The page contract it checks (the design's B1-B7 and FOLD V1-V7): the View button carries data-view-control and reads
 // 'View: <name>' or 'View: None' (+ ' (changed)'); its menu is ui.ts' role=menu of role=menuitem buttons - the page's own
@@ -274,6 +275,29 @@ await run('W8', async () => {
   await go(`#/perfsummary?view=${S.p1}&mailrender=000000000000000000000000000000000000000000000000`);
   const h = await hiddenCols('Performance summary');
   check('W8', !!s.id && k.view === undefined && f?.rows === all?.rows && !h.includes(S.p1col), `a mail render of #/summary: view=${k.view ?? '(none)'}, ${f?.rows} instance rows (unfocused ${all?.rows}); of p1: hidden ${JSON.stringify(h)}`);
+});
+
+// SHOTS (the design's P2; only with VB_SHOTS = a folder): each of the five view pages with its View menu open, in the
+// light and the dark theme, saved as views-b-<page>-<theme>.png to sit beside the audit's DBA Dash shots of the page
+if (E.VB_SHOTS) await run('SHOTS', async () => {
+  const fs = await import('node:fs');
+  const pages = [['summary', '#/summary?view=none'], ['perfsummary', '#/perfsummary?view=none'], ['slowqueries', '#/slowqueries?view=none'],
+    ...(E.VB_PG ? [['slowqueries-instance', `#/slowqueries?i=${E.VB_PG}&view=none`]] : []),
+    ...(E.VB_MSSQL ? [['mssql-slow', `#/mssql_slow?i=${E.VB_MSSQL}&view=none`]] : [])];
+  const made = [];
+  for (const theme of ['light', 'dark']) {
+    await go('#/about');
+    await P.ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
+    await P.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+    for (const [name, h] of pages) {
+      await go(h);
+      if (await vcText() === null) continue;
+      await openMenu();
+      const d = await P.send('Page.captureScreenshot', { format: 'png' });
+      if (d.result?.data) { fs.writeFileSync(`${E.VB_SHOTS}/views-b-${name}-${theme}.png`, Buffer.from(d.result.data, 'base64')); made.push(`${name}-${theme}`); }
+    }
+  }
+  check('SHOTS', made.length === pages.length * 2, `${made.length} of ${pages.length * 2} pictures in ${E.VB_SHOTS}: ${made.join(', ')}`);
 });
 
 console.log(failed ? `${failed} case(s) failed` : 'all cases ok');

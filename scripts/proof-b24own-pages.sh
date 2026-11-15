@@ -6,6 +6,7 @@
 # Needs: go, psql, curl, python3, ss, node, npm, chromium, rsync, and
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 13+ cluster as a superuser: the proof seeds the demo fleet
 #                      (7 days) into a repository database of its own and drops it on every exit path the shell can catch
+#   PGVIGIL_OWN_SHOTS  a folder: the five own pages with the switch off, light and dark (the design's P2); unset = none
 # The tree is copied into the proof's folder; the wiring patches and the web bundle are applied and built THERE (P3).
 #
 # Staged (no collector: the pages read stored reads): one newest read T on a SQL Server and a PostgreSQL instance of the
@@ -170,7 +171,7 @@ chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/ch
 CHR=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.2; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
-OP_U=$U1 OP_PW=$U1PW OP_MS=$IMS OP_PG=$IPG node "$SRC/scripts/own-pages-check.mjs" "$CDP" "$U/" | tee "$WORK/check.txt"
+OP_U=$U1 OP_PW=$U1PW OP_MS=$IMS OP_PG=$IPG OP_SHOTS=${PGVIGIL_OWN_SHOTS:-} node "$SRC/scripts/own-pages-check.mjs" "$CDP" "$U/" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}
 (( rc == 0 && O4 )) || fail "own-pages-check: $(grep -c '^FAIL' "$WORK/check.txt") case(s) failed; O4 $( ((O4)) && echo ok || echo failed)"
 echo "PASS: proof-b24own-pages"

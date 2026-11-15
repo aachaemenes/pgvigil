@@ -6,6 +6,7 @@
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 13+ cluster as a superuser: the proof makes a repository
 #                      database, seeds the demo fleet into it (7 days) and drops it on every exit path the shell can catch
 #   PGVIGIL_VB_CASES   the browser cases to run (default: all of views-b-check.mjs)
+#   PGVIGIL_VB_SHOTS   a folder: the five pages with the View menu open, light and dark (the design's P2); unset = none
 # The tree is copied into the proof's folder first; the wiring patches (slice A's, B24 OWN's, this slice's docs) and the web bundle
 # are applied and built THERE, never in this checkout (the FOLD P3).
 #
@@ -123,7 +124,8 @@ CHR=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.2; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 MSSQL_I=$(q "select instance_id from pgvigil.instances where engine = 'sqlserver' order by instance_id limit 1" 2>/dev/null || true)
-VB_U1=$U1 VB_U1PW=$U1PW VB_U2=$U2 VB_U2PW=$U2PW VB_TAG=$TAG VB_MSSQL=$MSSQL_I VB_CASES=${PGVIGIL_VB_CASES:-} \
+PG_I=$(q "select instance_id from pgvigil.instances where engine <> 'sqlserver' and is_active order by instance_id limit 1" 2>/dev/null || true)
+VB_U1=$U1 VB_U1PW=$U1PW VB_U2=$U2 VB_U2PW=$U2PW VB_TAG=$TAG VB_MSSQL=$MSSQL_I VB_PG=$PG_I VB_CASES=${PGVIGIL_VB_CASES:-} VB_SHOTS=${PGVIGIL_VB_SHOTS:-} \
   node "$SRC/scripts/views-b-check.mjs" "$CDP" "$U/" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}
 (( rc == 0 && TF == 0 )) || fail "views-b-check: $(grep -c '^FAIL' "$WORK/check.txt") case(s) failed; T $( ((TF)) && echo failed || echo ok)"

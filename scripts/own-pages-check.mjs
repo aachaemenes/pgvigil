@@ -1,7 +1,8 @@
 // B24 OWN's pages in the browser (proof-b24own-pages.sh): the switch 'Show pgvigil's own sessions (n hidden)', the
 // 'pgvigil' mark, own=1 kept across the snapshot steps, the figures' words, the alert page's reads. Its cases and their
 // expected results: proof-b24own-pages.sh's header (the staged read T and its rows).
-//   OP_U / OP_PW (a UI user), OP_MS (the SQL Server instance id), OP_PG (the PostgreSQL instance id)
+//   OP_U / OP_PW (a UI user), OP_MS (the SQL Server instance id), OP_PG (the PostgreSQL instance id), OP_SHOTS (a
+//   folder: the SHOTS case saves the five pages' pictures there; unset = no SHOTS case)
 //   node scripts/own-pages-check.mjs <cdp port> <base url/>
 // The page contract (the design's O1-O3, FOLD O5-O8): the switch is input[type=checkbox][data-own-switch] in a label
 // reading "Show pgvigil's own sessions (n hidden)"; a shown own row holds span.own-mark 'pgvigil'; a figure counted from
@@ -103,6 +104,26 @@ await run('O3', async () => {
   const sent = reqs.filter(u => /\/api\/(mssql\/running|activity)\?/.test(u));
   const link = await ev(`(() => { const l = [...document.querySelectorAll('main a')].find(x => x.textContent.trim() === 'Running queries'); return l ? l.getAttribute('href') : null; })()`);
   check('O3', sent.length > 0 && sent.every(u => /[?&]own=1(&|$)/.test(u)) && /[?&]own=1(&|$)/.test(link ?? ''), `the alert ${a}: its reads ${JSON.stringify(sent.map(u => u.replace(/^.*\/api\//, '')))}, its Running queries link ${link}`);
+});
+
+// SHOTS (the design's P2; only with OP_SHOTS = a folder): the five own pages with the switch off, in the light and the
+// dark theme, saved as own-<page>-<theme>.png
+if (E.OP_SHOTS) await run('SHOTS', async () => {
+  const fs = await import('node:fs');
+  const pages = [['running-pg', `#/activity?i=${E.OP_PG}`], ['running-mssql', `#/mssql_running?i=${E.OP_MS}`],
+    ['waiting-pg', `#/waiting?i=${E.OP_PG}`], ['waiting-mssql', `#/mssql_waiting?i=${E.OP_MS}`], ['queries-mssql', `#/mssqlqueries?i=${E.OP_MS}`]];
+  const made = [];
+  for (const theme of ['light', 'dark']) {
+    await go('#/about');
+    await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
+    await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+    for (const [name, h] of pages) {
+      await go(h);
+      const d = await send('Page.captureScreenshot', { format: 'png' });
+      if (d.result?.data) { fs.writeFileSync(`${E.OP_SHOTS}/own-${name}-${theme}.png`, Buffer.from(d.result.data, 'base64')); made.push(`${name}-${theme}`); }
+    }
+  }
+  check('SHOTS', made.length === pages.length * 2, `${made.length} of ${pages.length * 2} pictures in ${E.OP_SHOTS}: ${made.join(', ')}`);
 });
 
 console.log(failed ? `${failed} case(s) failed` : 'all cases ok');
