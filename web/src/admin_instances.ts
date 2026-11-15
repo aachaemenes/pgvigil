@@ -339,7 +339,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     { key: 'note', label: 'note', wide: true, fmt: (v, r) => {
       const parts: (HTMLElement | string)[] = [];
       if (r.entra_only) parts.push(badge(String(v ?? 'Entra only'), 'warn'));
-      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'none'));
+      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'ok'));   // the auto-pause check judged it: OK without one
       return parts.length ? el('span', {}, ...parts.flatMap((x, i) => i ? [' ', x] : [x])) : '';
     } },
     { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : String(v ?? ''), cls: (v, r) => r.gone || v == null || v === '' ? '' : 'status ok' },
