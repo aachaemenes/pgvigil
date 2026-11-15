@@ -312,7 +312,7 @@ export async function ruleDialog(o: RuleDialog) {
     'Save', () => post<RuleResult>('alertrules', body()), o.after, fields,
     // a read-only server shows the form (a starter's values can be read anywhere) and says why Save is off
     () => o.door.writable ? invalid() : `a server where alert rules can be written (${o.door.reason ?? 'read only here'})`,
-    [metricSel, warn, crit, mins, scope, tagSel, instSel, band, zone]);
+    [metricSel, warn, crit, mins, scope, tagSel, instSel, band, zone, tagTicks]);   // the ticks' change events bubble to their box
 }
 
 // formDialog: a modal with what the write does, its fields, Save / Back, and the server's answer in place. invalid
@@ -557,7 +557,14 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
   const scope = el('select', {}, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tags' }, 'a tag list'), el('option', { value: 'instance' }, 'one instance'));
   scope.value = String(w?.scope ?? 'fleet');
   const instSel = el('select', {}, ...insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
-  if (w?.instance_name != null) { const m = insts.find(i => i.name === w.instance_name); if (m) instSel.value = String(m.instance_id); }
+  if (w?.instance_name != null) {
+    const m = insts.find(i => i.name === w.instance_name);
+    if (m) instSel.value = String(m.instance_id);
+    else {   // the window's instance is gone: never retarget it silently, ask
+      instSel.prepend(el('option', { value: '' }, `${String(w.instance_name)} (not an active instance: pick one)`));
+      instSel.value = '';
+    }
+  }
   const tags = [...new Set(insts.flatMap(tagsOf))].sort();
   const picked = new Set<string>(Array.isArray(w?.scope_tags) ? (w!.scope_tags as unknown[]).map(String) : []);
   const ticks = el('div', { style: 'max-height:10em;overflow:auto' });
@@ -580,27 +587,34 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
     return { cb, label: el('label', {}, cb, ' ', d) };
   });
   const start = el('input', { type: 'time', value: String(w?.start_local ?? '22:00') });
-  const end = el('input', { type: 'time', value: String(w?.end_local ?? '06:00') });
+  const end = el('input', { type: 'time', value: String(w?.end_local === '24:00' ? '00:00' : w?.end_local ?? '06:00') });
+  // a whole day is 00:00-24:00 (a time field cannot say 24:00): the box sends it
+  const wholeDay = el('input', { type: 'checkbox' });
+  wholeDay.checked = w?.start_local === '00:00' && w?.end_local === '24:00';
   const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'UTC'; } })();
   const zone = el('input', { type: 'text', maxlength: '64', style: 'width:14em', value: String(w?.zone ?? browserZone) });
   const note = el('textarea', { rows: '2', maxlength: '500', style: 'width:100%' });
   note.value = String(w?.note ?? '');
-  const sync = () => { ceilBox.hidden = action.value !== 'digest'; tagsBox.hidden = scope.value !== 'tags'; instBox.hidden = scope.value !== 'instance'; };
-  action.addEventListener('change', sync); scope.addEventListener('change', sync); sync();
+  const sync = () => {
+    ceilBox.hidden = action.value !== 'digest'; tagsBox.hidden = scope.value !== 'tags'; instBox.hidden = scope.value !== 'instance';
+    start.disabled = end.disabled = wholeDay.checked;
+  };
+  action.addEventListener('change', sync); scope.addEventListener('change', sync); wholeDay.addEventListener('change', sync); sync();
   const fields: HTMLElement[] = [
     el('label', {}, 'Action ', action), ceilBox,
     el('span', {}, el('label', {}, 'Covers ', scope), ' ', instBox), tagsBox,
     el('span', {}, ...days.map(x => x.label)),
-    el('span', {}, el('label', {}, 'from ', start), ' ', el('label', {}, 'to ', end), ' ', el('label', {}, 'in ', zone)),
-    el('p', { class: 'meta' }, 'An end before the start runs across midnight, as part of the day it starts.'),
+    el('span', {}, el('label', {}, wholeDay, ' the whole day'), ' ', el('label', {}, 'from ', start), ' ', el('label', {}, 'to ', end), ' ', el('label', {}, 'in ', zone)),
+    el('p', { class: 'meta' }, 'An end before the start runs across midnight, as part of the day it starts; an end of 00:00 runs to midnight. A digest window holds alerts only on channels that have a daily digest (digest_hour).'),
     el('label', {}, 'Name (optional) ', name),
     el('label', {}, 'Note (optional)', el('br'), note),
   ];
   const invalid = () => [
     days.some(x => x.cb.checked) ? '' : 'at least one weekday',
-    start.value === '' || end.value === '' ? 'a start and an end' : start.value === end.value ? 'an end different from the start' : '',
+    wholeDay.checked ? '' : start.value === '' || end.value === '' ? 'a start and an end' : start.value === end.value ? 'an end different from the start (or the whole day)' : '',
     zone.value.trim() === '' ? 'a time zone' : '',
     scope.value === 'tags' && picked.size === 0 ? 'at least one tag' : '',
+    scope.value === 'instance' && instSel.value === '' ? 'an instance' : '',
   ].filter(Boolean).join(', ');
   const body = () => ({
     op: w ? 'edit' : 'add', window_id: w ? Number(w.window_id) : undefined,
@@ -608,16 +622,20 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
     scope_tags: scope.value === 'tags' ? [...picked] : undefined,
     instance_id: scope.value === 'instance' ? Number(instSel.value) : undefined,
     weekdays: days.flatMap((x, i) => x.cb.checked ? [i + 1] : []),
-    start_local: start.value, end_local: end.value, zone: zone.value.trim(),
+    start_local: wholeDay.checked ? '00:00' : start.value, end_local: wholeDay.checked ? '24:00' : end.value, zone: zone.value.trim(),
     severity_ceiling: action.value === 'digest' ? ceiling.value : undefined,
     note: note.value.trim() || undefined,
+    // an edit keeps what the form does not show: its start, its end date and the rule its scope came from
+    starts_at: w?.starts_at != null ? String(w.starts_at) : undefined,
+    until: w?.until != null ? String(w.until) : undefined,
+    from_rule_id: w?.from_rule_id != null ? Number(w.from_rule_id) : undefined,
   });
   formDialog(w ? `Edit window ${String(w.window_id)}` : 'New window',
     w ? 'Saving ends this window and writes its successor (the old row stays). The alert sender reads it from its next pass.'
       : 'The alert sender reads the window from its next pass. Held sends are logged; the Alerts page says why each was held.',
     'Save', () => post<WindowResult>('alertwindows', body()) as Promise<RuleResult>, after, fields,
     () => door.writable ? invalid() : `a server where alert windows can be written (${door.reason ?? 'read only here'})`,
-    [action, scope, start, end, zone, ...days.map(x => x.cb)]);
+    [action, scope, start, end, zone, wholeDay, instSel, ticks, ...days.map(x => x.cb)]);
 }
 
 // ---- the findings history (0154; ENG#7, OVW#137, PBI#3): one instance's timeline -----------------------------------
@@ -642,7 +660,8 @@ function timelineView(ctx: Ctx): HTMLElement {
       samples: ev.filter(e => e.event === 'sample').length,
       last: ev[ev.length - 1].snapshot_at,
     }));
-    out.replaceChildren(grid(lines, [
+    const cut = rows.length > 0 && rows[0].cut === true;
+    out.replaceChildren(cut ? el('p', { class: 'meta' }, 'Only the newest 20,000 rows of the range are shown: pick a shorter range for the rest.') : '', grid(lines, [
       { key: 'finding' }, { key: 'value', wide: true }, { key: 'events', label: 'opened, changed, closed', wide: true },
       { key: 'samples', label: 'hourly samples', num: true }, { key: 'last', label: 'last row', fmt: fmtTime },
     ], `No finding opened, changed or stood on this instance ${rangeLabel(ctx)}.`));

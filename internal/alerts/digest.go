@@ -89,6 +89,8 @@ func runDigests(ctx context.Context, conn *pgxpool.Conn, all []Channel, now time
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// one channel's database error is said and the others go on (never one channel's failure for all)
+	var errs []error
 	for _, o := range owed {
 		c := byName[o.channel]
 		if c == nil {
@@ -96,7 +98,8 @@ func runDigests(ctx context.Context, conn *pgxpool.Conn, all []Channel, now time
 		}
 		groups, err := digestItems(ctx, conn, o.channel, o.since, now)
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("%s: %w", o.channel, err))
+			continue
 		}
 		rec := map[string]any{"channel": o.channel, "due_at": o.dueAt, "since": o.since, "groups": len(groups)}
 		var alerts int64
@@ -107,14 +110,15 @@ func runDigests(ctx context.Context, conn *pgxpool.Conn, all []Channel, now time
 		if len(groups) == 0 {
 			rec["outcome"] = "empty"
 			if err := digestRecord(ctx, conn, now, rec); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("%s: %w", o.channel, err))
 			}
 			continue
 		}
 		if c.MaxPerHour > 0 {
 			used, err := digestCapUsed(ctx, conn, c.Name, now)
 			if err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("%s: %w", o.channel, err))
+				continue
 			}
 			if used >= c.MaxPerHour {
 				continue // owed again: a later pass sends it once the hour allows (nothing recorded)
@@ -137,11 +141,13 @@ func runDigests(ctx context.Context, conn *pgxpool.Conn, all []Channel, now time
 		} else {
 			res.Digests++
 		}
+		// a record that fails after a sent digest leaves it owed: the next pass sends it again (as an alert whose
+		// alert_record fails), said here so the double is explained
 		if err := digestRecord(context.WithoutCancel(ctx), conn, time.Now(), rec); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("%s: the digest's record (it is owed again): %w", o.channel, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // digestItems reads one channel's digest groups held after since.

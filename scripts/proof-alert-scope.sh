@@ -37,8 +37,11 @@
 #     - holds at Mon 23:30 and Tue 05:59 local;
 #     - not at Tue 06:00, nor at Sun 23:30 (Sunday not in it).
 #     Spring forward, 2026-03-08: a Sunday window 02:00-03:00 holds at none of 07:00, 07:30, 08:00, 08:30 UTC (the
-#     skipped hour). Fall back, 2026-11-01: a Sunday window 01:00-02:00 holds at 06:30 UTC (01:30 CDT) AND at 07:30 UTC
-#     (01:30 CST).
+#     skipped hour), while a Sunday window 01:00-04:00 holds at 07:30 UTC (01:30 CST) and 08:30 UTC (03:30 CDT) - the
+#     zone is read (review M6). Fall back, 2026-11-01: a Sunday window 01:00-02:00 holds at 06:30 UTC (01:30 CDT) AND at
+#     07:30 UTC (01:30 CST). A whole day 00:00-24:00 holds at 23:59:30 (review M5).
+#     digest_due at chosen times (a channel with digest_hour 3 UTC): owed once at 06:00 with no digest (a restart across
+#     the hour); none once it is recorded; none at 02:00 the next day; owed at 05:00 the next day, since the last one.
 #     digest_hour_at:
 #     - 2026-03-08 09:00 UTC, hour 2 = 2026-03-08 08:00 UTC (02:00 is skipped: 03:00 CDT);
 #     - 2026-03-08 07:30 UTC, hour 2 = 2026-03-07 08:00 UTC (yesterday's 02:00 CST).
@@ -65,10 +68,13 @@
 #     - a digest window alone: digest via window; with severity critical: NULL;
 #     - a fleet window against source 'pgvigil repository': NULL;
 #     - a tags window (env:proofh AND app:h) matches; (env:proofh AND app:other) does not.
-#     Carry-over: an alert_held digest row of K on channel c, last_at now - 2 min, every window ended:
+#     Digest holds only on a channel with a digest (alert_hold's p_digest): the same digest window on a channel without
+#     one: NULL (review 20261114-230812 blocker 1).
+#     Carry-over: an alert_held digest row of K on channel c, every window ended:
 #     - the hold is 'digest' via carry;
 #     - with an open alert_state row of (c, K): NULL;
-#     - with last_at older than clear_after: NULL.
+#     - last_at 20 min old but missing_since NULL (the sender away: quiet hours, a back-off): still carried (review H2);
+#     - missing_since 20 min old (the finding gone longer than clear_after): NULL.
 #  K. rule kinds (seeded activity_summary samples, alert_rules_run at chosen times):
 #     - a threshold rule (idle_in_txn above 3) and a rises rule (rises by more than 4, for 0 min) on one metric and
 #       scope both live: two alert_rule_state rows (threshold, rise). A jump 2 -> 8: both fire, two findings, the rise
@@ -92,15 +98,17 @@
 #     - gone: 1 'close' row.
 #     The history rows = the changes plus the samples (4); findings_history_last holds none of its keys after the close.
 #  D. the digest, by real passes of BIN (the wiring applied). A file channel 'dig' with digest_hour = the current UTC
-#     hour (timezone UTC), a fleet digest window covering now (ceiling warning), and a rule finding at warning on the
-#     seeded instance:
-#     - pass 1: no firing file; one digest file (one group, the instance and 'alert rule: ...'); digest_log sent;
-#       alert_held holds the digest row;
-#     - pass 2: no second digest, no firing file;
-#     - the window ended, pass 3: no firing file (the carry-over);
-#     - the finding cleared, passes 4 and 5: no resolved file;
-#     - a critical finding while a new digest window covers now: a firing file at once;
-#     - a second channel 'dig2' with digest_hour now and nothing held: digest_log 'empty', no file in its drop.
+#     hour (timezone UTC), a channel 'drop' with no digest_hour, a fleet digest window covering now (ceiling warning),
+#     and a rule finding at warning on the seeded instance:
+#     - pass 1: 'drop' gets the firing (no digest: the window holds nothing there, review blocker 1); 'dig' gets no
+#       firing and one digest file (one group naming the instance); digest_log sent; alert_held holds dig's row;
+#     - pass 2: no second digest, no firing on dig;
+#     - the window ended, pass 3: no firing on dig (the carry-over);
+#     - the finding cleared, passes 4 and 5: no resolved file on dig;
+#     - a critical finding while a new digest window covers now: a critical file on dig at once;
+#     - a second channel 'dig2' with digest_hour now and nothing held: digest_log 'empty', no file in its drop;
+#     - a mute window, then a blackout window, over a standing finding: alert_mark logs a 'mute' and a 'blackout' row
+#       for 'drop' (the held-sends log per kind, review M7).
 #  A pass's summary line must not say 'findings history not written' or 'digests not read'.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -124,7 +132,7 @@ cleanup() {
 }
 trap cleanup EXIT
 for t in psql curl python3 ss go tar git; do command -v $t >/dev/null || fail "$t is not on this machine"; done
-# the windows below span 00:00-23:59 UTC and the digest hour is the current one: never start in the last minutes of an hour
+# the digest hour below is the current one: never start in the last minutes of an hour
 while (( $(date -u +%-M) >= 50 )); do echo "waiting for the hour to turn (UTC $(date -u +%H:%M))"; sleep 60; done
 freeport() {
   local p
@@ -226,7 +234,14 @@ wo() { q "select pgvigil.alert_window_open(('$1')::timestamptz, '$2', '$3', '$4'
 for t in '07:00' '07:30' '08:00' '08:30'; do
   [[ $(wo "2026-03-08 $t UTC" '{7}' 02:00 03:00) == false ]] || fail "Z: the skipped hour held at $t UTC"
 done
+[[ "$(wo '2026-03-08 07:30 UTC' '{7}' 01:00 04:00) $(wo '2026-03-08 08:30 UTC' '{7}' 01:00 04:00)" == "true true" ]] || fail "Z: the spring-forward day's 01:00-04:00 window does not hold"
 [[ "$(wo '2026-11-01 06:30 UTC' '{7}' 01:00 02:00) $(wo '2026-11-01 07:30 UTC' '{7}' 01:00 02:00)" == "true true" ]] || fail "Z: the repeated hour is not held twice"
+[[ $(wo '2026-11-16 23:59:30 America/Chicago' '{1}' 00:00 24:00) == true ]] || fail "Z: a whole day 00:00-24:00 does not hold at 23:59:30"
+dd() { q "select count(*) || '|' || coalesce(to_char(max(since) at time zone 'UTC', 'YYYY-MM-DD HH24:MI'), '') from pgvigil.digest_due(('$1')::timestamptz, '[{\"name\":\"zz$SUF\",\"digest_hour\":3,\"timezone\":\"UTC\"}]'::jsonb)"; }
+[[ $(dd '2026-11-20 06:00 UTC') == 1\|* ]] || fail "Z: the digest owed after a restart across its hour: $(dd '2026-11-20 06:00 UTC')"
+q "select pgvigil.digest_record('2026-11-20 06:00 UTC', '{\"channel\":\"zz$SUF\",\"due_at\":\"2026-11-20T03:00:00Z\",\"since\":\"2026-11-19T03:00:00Z\",\"outcome\":\"sent\"}'::jsonb)" >/dev/null
+[[ $(dd '2026-11-20 06:01 UTC') == 0\|* && $(dd '2026-11-21 02:00 UTC') == 0\|* ]] || fail "Z: a digest owed twice"
+[[ $(dd '2026-11-21 05:00 UTC') == "1|2026-11-20 06:00" ]] || fail "Z: the next day's digest: $(dd '2026-11-21 05:00 UTC')"
 eqv "pgvigil.digest_hour_at('2026-03-08 09:00 UTC', 2, '$Z') = '2026-03-08 08:00 UTC'" true Z
 eqv "pgvigil.digest_hour_at('2026-03-08 07:30 UTC', 2, '$Z') = '2026-03-07 08:00 UTC'" true Z
 eqv "pgvigil.alert_rule_hour_at('2026-11-02 15:45 UTC', '$Z') = '2026-11-02 15:00 UTC'" true Z
@@ -255,9 +270,9 @@ win() {      # win <json>: one window through the store's door, its id
   q "select pgvigil.import_alert_window(now(), '$1'::jsonb || '{\"op\":\"add\",\"ui_user\":\"proof\"}'::jsonb)->>'window_id'"
 }
 endwin() { q "select pgvigil.import_alert_window(now(), '{\"op\":\"end\",\"ui_user\":\"proof\",\"window_id\":$1}'::jsonb)->>'outcome'" >/dev/null; }
-ALLDAY='"weekdays":[1,2,3,4,5,6,7],"start_local":"00:00","end_local":"23:59","zone":"UTC"'
-hold() {     # hold <channel> <key> <source> <severity>: alert_hold now on the seeded instance, as 'kind/via' or NULL
-  q "select coalesce((h).kind || '/' || (h).via, 'NULL') from (select pgvigil.alert_hold(now(), '$1', '$INSTH', '{env:proofh,app:h}', '$2', '$3', 'x', 'v', '$4') h) z"
+ALLDAY='"weekdays":[1,2,3,4,5,6,7],"start_local":"00:00","end_local":"24:00","zone":"UTC"'
+hold() {     # hold <channel> <key> <source> <severity> [digest true|false]: alert_hold now on the seeded instance, 'kind/via' or NULL
+  q "select coalesce((h).kind || '/' || (h).via, 'NULL') from (select pgvigil.alert_hold(now(), '$1', '$INSTH', '{env:proofh,app:h}', '$2', '$3', 'x', 'v', '$4', 600, ${5:-true}) h) z"
 }
 
 # ---- H: the hold test --------------------------------------------------------------------------------------------------
@@ -273,6 +288,7 @@ W2=$(win "{\"action\":\"mute\",\"scope\":\"fleet\",$ALLDAY}"); W3=$(win "{\"acti
 [[ $(hold c "$K" 'alert rule' warning) == mute/window ]] || fail "H: window mute + digest: $(hold c "$K" 'alert rule' warning)"
 endwin "$W2"
 [[ $(hold c "$K" 'alert rule' warning) == digest/window ]] || fail "H: digest alone: $(hold c "$K" 'alert rule' warning)"
+[[ $(hold c "$K" 'alert rule' warning false) == NULL ]] || fail "H: a digest window held on a channel with no digest"
 [[ $(hold c "$K" 'alert rule' critical) == NULL ]] || fail "H: a critical was digest-held"
 [[ $(hold c "$K" 'pgvigil repository' warning) == NULL ]] || fail "H: a repository-wide alert was held by a window"
 endwin "$W3"
@@ -290,8 +306,11 @@ q "insert into pgvigil.alert_state (channel, finding_key, instance_name, severit
 [[ $(hold c "$K" 'alert rule' warning) == NULL ]] || fail "H: the carry-over held an alert sent on the channel"
 q "delete from pgvigil.alert_state where channel = 'c' and finding_key = '$K'" >/dev/null
 q "update pgvigil.alert_held set last_at = now() - interval '20 minutes' where finding_key = '$K'" >/dev/null
-[[ $(hold c "$K" 'alert rule' warning) == NULL ]] || fail "H: the carry-over outlived the channel's clear_after"
-ok "H: precedence, the ceiling, repository alerts, tag windows, the carry-over and its two ends"
+[[ $(hold c "$K" 'alert rule' warning) == digest/carry ]] || fail "H: the carry-over lapsed while the sender was away (missing_since NULL)"
+[[ $(hold c "$K" 'alert rule' warning false) == NULL ]] || fail "H: the carry-over held on a channel with no digest"
+q "update pgvigil.alert_held set missing_since = now() - interval '20 minutes' where finding_key = '$K'" >/dev/null
+[[ $(hold c "$K" 'alert rule' warning) == NULL ]] || fail "H: the carry-over outlived the finding's absence past clear_after"
+ok "H: precedence, the ceiling, digest channels only, repository alerts, tag windows, the carry-over and its ends"
 
 # ---- K: rule kinds -------------------------------------------------------------------------------------------------------
 T0=$(q "select date_trunc('minute', now())")
@@ -450,21 +469,27 @@ WD=$(win "{\"action\":\"digest\",\"scope\":\"fleet\",$ALLDAY}")
 RD=$(rule "{\"op_dir\":\"above\",\"warning\":3,\"critical\":50,\"for_minutes\":0,\"scope\":\"instance\",\"instance_name\":\"$INSTH\"}")
 fresh() { sample "now() - interval '5 seconds'" "$1"; }
 fresh 5; pass d1
-[[ $(files drop '"firing"') == 0 ]] || fail "D: pass 1 sent a firing alert under the digest window"
+[[ $(files drop '"firing"') == 1 ]] || fail "D: 'drop' has no digest: pass 1 should send it the firing ($(files drop '"firing"'))"
+[[ $(files dig '"firing"') == 0 ]] || fail "D: pass 1 sent dig a firing alert under the digest window"
 [[ $(ls "$WORK/dig" | wc -l) == 1 && $(q "select count(*) from pgvigil.digest_log where channel = 'dig' and outcome = 'sent'") == 1 ]] || fail "D: pass 1's digest: $(ls "$WORK/dig") / $(q "select outcome from pgvigil.digest_log")"
 grep -qF "$INSTH" "$WORK/dig"/* || fail "D: the digest does not name the instance"
-[[ $(q "select count(*) from pgvigil.alert_held where hold_kind = 'digest' and channel = 'drop'") -ge 1 ]] || fail "D: no digest row held for 'drop'"
+[[ $(q "select count(*) from pgvigil.alert_held where hold_kind = 'digest' and channel = 'dig'") -ge 1 && $(q "select count(*) from pgvigil.alert_held where hold_kind = 'digest' and channel = 'drop'") == 0 ]] || fail "D: the digest rows held (dig one or more, drop none)"
 fresh 5; pass d2
-[[ $(ls "$WORK/dig" | wc -l) == 1 && $(files drop '"firing"') == 0 ]] || fail "D: pass 2 sent a second digest or a firing alert"
+[[ $(ls "$WORK/dig" | wc -l) == 1 && $(files dig '"firing"') == 0 ]] || fail "D: pass 2 sent dig a second digest or a firing alert"
 endwin "$WD"; fresh 5; pass d3
-[[ $(files drop '"firing"') == 0 ]] || fail "D: the window's end fired the digest-held alert"
+[[ $(files dig '"firing"') == 0 ]] || fail "D: the window's end fired the digest-held alert on dig"
 fresh 0; pass d4; fresh 0; pass d5
-[[ $(files drop '"resolved"') == 0 ]] || fail "D: a recovery was sent for a digest-held alert"
+[[ $(files dig '"resolved"') == 0 ]] || fail "D: a recovery was sent for a digest-held alert on dig"
 WD2=$(win "{\"action\":\"digest\",\"scope\":\"fleet\",$ALLDAY}")
 fresh 60; pass d6
-[[ $(files drop '"critical"') -ge 1 ]] || fail "D: a critical under a digest window was not paged at once"
+[[ $(files dig '"critical"') -ge 1 ]] || fail "D: a critical under a digest window was not paged at once on dig"
 [[ $(ls "$WORK/dig2" | wc -l) == 0 && $(q "select count(*) from pgvigil.digest_log where channel = 'dig2' and outcome = 'empty'") == 1 ]] || fail "D: the empty channel: $(ls "$WORK/dig2") / $(q "select string_agg(outcome, ',') from pgvigil.digest_log where channel = 'dig2'")"
-endwin "$WD2"; endrule "$RD"
-ok "D: digest-held (no firing), one digest, no second, the window's end fires nothing, no recovery, a critical pages, an empty day"
+endwin "$WD2"
+fresh 0; pass d7; fresh 0; pass d8                        # the critical clears on every channel first
+WM=$(win "{\"action\":\"mute\",\"scope\":\"fleet\",$ALLDAY}"); fresh 5; pass d9; endwin "$WM"
+WK=$(win "{\"action\":\"blackout\",\"scope\":\"fleet\",$ALLDAY}"); fresh 5; pass d10; endwin "$WK"
+[[ $(q "select count(distinct hold_kind) from pgvigil.alert_held where channel = 'drop' and hold_kind in ('mute', 'blackout')") == 2 ]] || fail "D: alert_mark did not log a mute and a blackout row for drop"
+endrule "$RD"
+ok "D: no digest = no digest hold; digest-held (no firing), one digest, no second, the window's end fires nothing, no recovery, a critical pages, an empty day, the held log per kind"
 
 echo "PROOF OK: 403a M R T Z C H K F Y W D"

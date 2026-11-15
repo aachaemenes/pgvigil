@@ -1,5 +1,5 @@
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index a994399..61ce6a5 100644
+index a994399..ff5e286 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
 @@ -189,9 +189,12 @@ BEGIN
@@ -17,16 +17,17 @@ index a994399..61ce6a5 100644
       -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
       -- ACCESS EXCLUSIVE on its parent)
       ORDER BY p.relname, c.relname
-@@ -468,16 +471,18 @@ LANGUAGE sql STABLE SET jit = off AS $$
+@@ -468,16 +471,19 @@ LANGUAGE sql STABLE SET jit = off AS $$
             coalesce(c.repo_wide, true) AS repo_wide
        FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
             AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
 -                repo_wide boolean)
-+                repo_wide boolean, checks text[])
++                repo_wide boolean, checks text[], digest boolean)
    ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
                 -- task 310 - an application contact's route says repo_wide false)
 -    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
-+    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, ch.clear_after_secs AS ch_clear_after, f.*
++    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, ch.clear_after_secs AS ch_clear_after,
++           coalesce(ch.digest, false) AS ch_digest, f.*
        FROM ch JOIN pgvigil.alert_findings f
 -        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide)
 +        ON (pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide))
@@ -36,10 +37,30 @@ index a994399..61ce6a5 100644
      SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor
 -       AND pgvigil.ack_hold(p_at, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value) IS NULL
 +       AND pgvigil.alert_hold(p_at, sc.channel, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value,
-+                              sc.severity, sc.ch_clear_after) IS NULL   -- task 403a: every hold (0154), acks first
++                              sc.severity, sc.ch_clear_after, sc.ch_digest) IS NULL   -- task 403a: every hold (0154), acks first
         AND NOT (pgvigil.collector_shared_cause(sc.source, sc.setting)
                  AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
    ), s AS (
+diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
+index 5ce8225..2e76b44 100644
+--- i/internal/web/q_alert_rules.go
++++ w/internal/web/q_alert_rules.go
+@@ -105,12 +105,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
+ // where it does not: those are read only here, the file is their source.
+ const sqlThresholdsInForce = `
+ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
+-       e.database, e.rule_id, e.name AS rule_name, e.scope, coalesce(e.tag, e.instance_name) AS target, e.op,
++       e.database, e.rule_id, e.name AS rule_name, e.scope,
++       coalesce(e.tag, e.instance_name, pgvigil.alert_scope_text(e.scope_tags)) AS target, e.op,   -- task 403a: a tag list's words
+        e.warning, e.critical, e.for_minutes, NULL::text AS value,
+        (SELECT string_agg('rule ' || o.rule_id || ' (' || o.scope || coalesce(' ' || coalesce(o.tag, o.instance_name), '') || ')', ', '
+                           ORDER BY o.level DESC, o.rule_id DESC)
+           FROM pgvigil.alert_rule_scope o
+          WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
++           AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
+            AND o.rule_id <> e.rule_id) AS overrides,
+        coalesce(t.tags, '{}'::text[]) AS tags
+   FROM pgvigil.alert_rules_effective e
 diff --git i/internal/web/web.go w/internal/web/web.go
 index 6290ed6..56b60de 100644
 --- i/internal/web/web.go

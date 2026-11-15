@@ -8,8 +8,9 @@
 --                       ends the row and writes the next one, so the table is its own history.
 --   alert_window_log    every attempt from the UI (done or refused): who, from where, what.
 --   alert_held          the sends every hold but 0073's acks held, per hold, channel and alert (first, last, passes,
---                       the newest detail); ack_suppressed keeps the ack kinds unchanged. alert_held_all is the union,
---                       the one read behind the 'why held' line and the digest.
+--                       the newest detail; a digest row's missing_since); ack_suppressed keeps the sends an ack held
+--                       first by precedence (an ack mute behind a window blackout is logged under the window).
+--                       alert_held_all is the union, the one read behind the 'why held' line and the digest.
 --   alert_hold(...)     the ONE hold test, called by alert_mark (here) and alert_due (0190's, a wiring line): the
 --                       first hold by precedence - blackout (an ack, then a window) > mute (an ack mute or silence, then
 --                       a window) > digest (a window, then the carry-over) > flapping - or NULL.
@@ -18,11 +19,14 @@
 --                       (the timeline); monthly partitions, kept 90 days (findings_history_days; the purge line is a
 --                       wiring line). No detail is stored: a detail can carry statement text (0029's plan findings).
 --
+-- Digest holds apply only on a channel that has a daily digest (its digest_hour; the sender passes 'digest'): on any
+-- other channel a digest window holds nothing, so no alert is held for a digest that never comes.
 -- The digest carry-over: an alert first held by a digest window on a channel, never sent there, stays held after the
--- window ends while it keeps standing (alert_held's row is refreshed every pass; a gap longer than the channel's
--- clear_after ends it). So the window's end fires nothing, no recovery is ever owed (nothing was sent: there is no
--- alert_state row), and the alert reaches the channel in the digest only. An escalation past the window's ceiling is
--- not held and fires at once.
+-- window ends while it keeps standing. It ends when the finding has been gone for the channel's clear_after
+-- (alert_held.missing_since, set by alert_mark as 0059 sets alert_state's) - never because the sender did not look
+-- (quiet hours, a back-off, a restart). So the window's end fires nothing, no recovery is ever owed (nothing was sent:
+-- there is no alert_state row), and the alert reaches the channel in the digest only. An escalation past the window's
+-- ceiling is not held and fires at once.
 --
 -- Migration order: Migrate applies every missing file in name order, so on a fresh store this file runs BEFORE 0190
 -- and on a store already at 0190 after it. Nothing here replaces an object 0190 defines (alert_due, alert_findings,
@@ -100,6 +104,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_windows (
   CONSTRAINT "weekdays are 1 to 7, at least one" CHECK (
     cardinality(weekdays) BETWEEN 1 AND 7 AND weekdays <@ ARRAY[1, 2, 3, 4, 5, 6, 7]),
   CONSTRAINT "a window starts and ends at different times" CHECK (start_local <> end_local),
+  CONSTRAINT "a window starts before 24:00 (an end of 24:00 is the day's end)" CHECK (start_local < '24:00'),
   CONSTRAINT "a digest window has its ceiling, no other window has one" CHECK (
     (action = 'digest') = (severity_ceiling IS NOT NULL)),
   CONSTRAINT "until is after starts_at" CHECK (until IS NULL OR starts_at IS NULL OR until > starts_at)
@@ -173,6 +178,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_held (
   setting        text,
   value          text,
   detail         text,                      -- the newest detail, as the alert's own message would carry it
+  missing_since  timestamptz,               -- a digest row: the first pass that no longer saw its finding (the carry-over)
   first_at       timestamptz NOT NULL,
   last_at        timestamptz NOT NULL,
   passes         int NOT NULL DEFAULT 1,
@@ -216,6 +222,10 @@ BEGIN
   UPDATE pgvigil.alert_state s SET missing_since = NULL
    WHERE s.cleared_at IS NULL AND s.missing_since IS NOT NULL AND s.channel = ANY (v_names)
      AND EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = s.finding_key);
+  -- the carry-over's clock: a digest row whose finding is gone is marked at the first pass that no longer sees it
+  UPDATE pgvigil.alert_held d SET missing_since = p_at
+   WHERE d.hold_kind = 'digest' AND d.missing_since IS NULL AND d.channel = ANY (v_names)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = d.finding_key);
 
   WITH h AS MATERIALIZED (
     SELECT x.channel, x.finding_key, x.instance_id, x.instance, x.severity, x.source, x.setting, x.value, x.detail,
@@ -223,9 +233,10 @@ BEGIN
       FROM (SELECT DISTINCT ON (c.name, f.finding_key) c.name AS channel, f.finding_key, f.instance_id, f.instance,
                    f.severity, f.source, f.setting, f.value, f.detail,
                    pgvigil.alert_hold(p_at, c.name, f.instance, f.tags, f.finding_key, f.source, f.setting, f.value,
-                                      f.severity, c.clear_after_secs) AS hold
+                                      f.severity, c.clear_after_secs, coalesce(c.digest, false)) AS hold
               FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
-                   AS c(name text, min_severity text, instances text[], tags text[], clear_after_secs int, checks text[])
+                   AS c(name text, min_severity text, instances text[], tags text[], clear_after_secs int, checks text[],
+                        digest boolean)
               JOIN pgvigil.alert_findings f ON pgvigil.alert_in_scope(f.instance, f.tags, coalesce(c.instances, '{}'), coalesce(c.tags, '{}'))
              WHERE pgvigil.severity_rank(f.severity) >= pgvigil.severity_rank(c.min_severity)
                AND pgvigil.alert_checks_match(c.checks, f.source, f.setting)
@@ -245,7 +256,8 @@ BEGIN
          h.value, h.detail, p_at, p_at, 1
     FROM h WHERE h.via <> 'ack'
   ON CONFLICT (hold_kind, hold_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at,
-    passes = y.passes + 1, severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail;
+    passes = y.passes + 1, severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail,
+    missing_since = NULL;
 END $$;
 
 -- import_alert_window: one attempt from the UI (the actions door's audit login; minimum role operator, B24f).
@@ -299,7 +311,7 @@ BEGIN
       v_rule := (p_payload->>'from_rule_id')::bigint;
       IF v_scope IS NULL THEN        -- the rule's scope, copied
         SELECT CASE r.scope WHEN 'tag' THEN 'tags' ELSE r.scope END,
-               CASE WHEN r.scope = 'tag' THEN pgvigil.alert_scope_norm(ARRAY[r.tag]) END, r.instance_name
+               CASE r.scope WHEN 'tag' THEN pgvigil.alert_scope_norm(ARRAY[r.tag]) WHEN 'tags' THEN r.scope_tags END, r.instance_name
           INTO v_scope, v_tags, v_inst
           FROM pgvigil.alert_rules r WHERE r.rule_id = v_rule AND r.ended_at IS NULL;
         IF v_scope IS NULL THEN
@@ -402,8 +414,9 @@ LANGUAGE sql STABLE AS $$
                              WHERE l.channel = c.name AND l.outcome IN ('sent', 'empty')), p_at - interval '7 days'),
                   p_at - interval '7 days')
     FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb)) AS c(name text, digest_hour int, timezone text)
-    CROSS JOIN LATERAL (SELECT pgvigil.digest_hour_at(p_at, c.digest_hour, coalesce(nullif(c.timezone, ''), 'UTC')) AS due_at) d
-   WHERE c.digest_hour BETWEEN 0 AND 23
+    CROSS JOIN LATERAL (SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_timezone_names z WHERE z.name = coalesce(nullif(c.timezone, ''), 'UTC'))
+                                    THEN pgvigil.digest_hour_at(p_at, c.digest_hour, coalesce(nullif(c.timezone, ''), 'UTC')) END AS due_at) d
+   WHERE c.digest_hour BETWEEN 0 AND 23 AND d.due_at IS NOT NULL   -- a zone this server does not know: that channel only waits
      AND NOT EXISTS (SELECT 1 FROM pgvigil.digest_log l
                       WHERE l.channel = c.name AND l.at >= d.due_at AND l.outcome IN ('sent', 'refused', 'empty'))
 $$;
@@ -454,6 +467,11 @@ GRANT SELECT, INSERT ON pgvigil.findings_history TO pgvigil_alerter;
 -- the standing set the history compares each pass with (one row per standing finding key)
 CREATE TABLE IF NOT EXISTS pgvigil.findings_history_last (
   finding_key    text PRIMARY KEY,
+  instance_id    int,                       -- kept for the close row (the instance's timeline filters on it)
+  instance_name  text,
+  source         text,
+  setting        text,
+  value          text,
   severity       text,
   opened_at      timestamptz NOT NULL,
   sampled_at     timestamptz NOT NULL
@@ -505,7 +523,7 @@ BEGIN
                 WHEN l.sampled_at <= p_at - interval '1 hour' THEN 'sample' END AS event
       FROM cur c LEFT JOIN pgvigil.findings_history_last l USING (finding_key)
     UNION ALL
-    SELECT l.finding_key, NULL, NULL, NULL, NULL, NULL, l.severity, NULL, 'close'
+    SELECT l.finding_key, l.instance_id, l.instance_name, l.source, l.setting, l.value, l.severity, NULL, 'close'
       FROM pgvigil.findings_history_last l
      WHERE NOT EXISTS (SELECT 1 FROM cur c WHERE c.finding_key = l.finding_key)
   ), w AS (
@@ -519,9 +537,12 @@ BEGIN
     DELETE FROM pgvigil.findings_history_last l
      WHERE NOT EXISTS (SELECT 1 FROM cur c WHERE c.finding_key = l.finding_key)
   ), u AS (
-    INSERT INTO pgvigil.findings_history_last AS l (finding_key, severity, opened_at, sampled_at)
-    SELECT ev.finding_key, ev.severity, p_at, p_at FROM ev WHERE ev.event IN ('open', 'severity', 'sample')
-    ON CONFLICT (finding_key) DO UPDATE SET severity = EXCLUDED.severity, sampled_at = EXCLUDED.sampled_at
+    INSERT INTO pgvigil.findings_history_last AS l (finding_key, instance_id, instance_name, source, setting, value, severity,
+                                                    opened_at, sampled_at)
+    SELECT ev.finding_key, ev.instance_id, ev.instance, ev.source, ev.setting, ev.value, ev.severity, p_at, p_at
+      FROM ev WHERE ev.event IN ('open', 'severity', 'sample')
+    ON CONFLICT (finding_key) DO UPDATE SET severity = EXCLUDED.severity, sampled_at = EXCLUDED.sampled_at,
+      instance_id = EXCLUDED.instance_id, instance_name = EXCLUDED.instance_name
   )
   SELECT count(*) INTO n FROM w;
   RETURN n;
@@ -921,12 +942,14 @@ SELECT s.instance_id, s.state AS severity,
 -- through the wiring line, alert_due. An ack blackout, silence or mute is 0073's (ack_rule_matches; a paused rule holds
 -- nothing); a window holds inside its span, a digest window only up to its ceiling; the digest carry-over (this
 -- file's header) only while the alert was never sent on the channel and its digest row was refreshed within the
--- channel's clear_after; the flapping hold last - a rule's alert whose series is marked flapping is held on a channel
+-- channel's clear_after (missing_since) - both digest holds on a channel with a digest only (p_digest); the
+-- flapping hold last - a rule's alert whose series is marked flapping is held on a channel
 -- once that channel was sent it (any occurrence) since the mark at its severity or higher: the first send after the
 -- mark goes out (its detail says flapping), its repeats and re-firings are held, an escalation is sent.
 CREATE OR REPLACE FUNCTION pgvigil.alert_hold(p_at timestamptz, p_channel text, p_instance text, p_tags text[],
                                               p_finding_key text, p_source text, p_setting text, p_value text,
-                                              p_severity text, p_clear_after_secs int DEFAULT 600)
+                                              p_severity text, p_clear_after_secs int DEFAULT 600,
+                                              p_digest boolean DEFAULT false)
 RETURNS pgvigil.alert_hold_t LANGUAGE sql STABLE AS $$
   SELECT ROW(h.kind, h.id, h.via)::pgvigil.alert_hold_t
     FROM (
@@ -941,13 +964,15 @@ RETURNS pgvigil.alert_hold_t LANGUAGE sql STABLE AS $$
         FROM pgvigil.alert_windows w
        WHERE w.ended_at IS NULL AND pgvigil.alert_window_live(w, p_at)
          AND pgvigil.alert_window_matches(w, p_instance, p_tags, p_source)
-         AND (w.action <> 'digest' OR pgvigil.severity_rank(p_severity) <= pgvigil.severity_rank(w.severity_ceiling))
+         AND (w.action <> 'digest'
+              OR (p_digest AND pgvigil.severity_rank(p_severity) <= pgvigil.severity_rank(w.severity_ceiling)))
       UNION ALL
       SELECT 3, 3, 'digest', d.hold_id, 'carry'
         FROM pgvigil.alert_held d
         JOIN pgvigil.alert_windows w ON w.window_id = d.hold_id
-       WHERE d.hold_kind = 'digest' AND d.channel = p_channel AND d.finding_key = p_finding_key
-         AND d.last_at >= p_at - make_interval(secs => greatest(coalesce(p_clear_after_secs, 600), 60))
+       WHERE p_digest AND d.hold_kind = 'digest' AND d.channel = p_channel AND d.finding_key = p_finding_key
+         AND (d.missing_since IS NULL
+              OR d.missing_since > p_at - make_interval(secs => greatest(coalesce(p_clear_after_secs, 600), 60)))
          AND pgvigil.severity_rank(p_severity) <= pgvigil.severity_rank(w.severity_ceiling)
          AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state st
                           WHERE st.channel = p_channel AND st.finding_key = p_finding_key AND st.cleared_at IS NULL)

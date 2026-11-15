@@ -288,8 +288,10 @@ or every instance (or the scope of an alert rule, copied). Make one on the Alert
 - **blackout** and **mute**: nothing is sent while the window holds. The held sends are logged. The Alerts page says
   why each one was held, under **Why held**.
 - **digest**: info and warning alerts (or info alone) are held for the channel's **daily digest**. A critical alert is
-  never held this way: it pages at once.
-- A span whose end comes before its start runs across midnight, as part of the day it starts.
+  never held this way: it pages at once. A digest window holds alerts only on channels that have a `digest_hour`; on
+  any other channel it holds nothing, so no alert waits for a digest that never comes.
+- A span whose end comes before its start runs across midnight, as part of the day it starts; an end of 00:00 runs to
+  midnight, and a whole day is 00:00 to 24:00.
 - Local time follows the zone's own rules. On a spring-forward day a span inside the skipped hour holds nothing. In
   the repeated hour of a fall-back day, it holds for both passes of that hour.
 - A window never holds pgvigil's own alerts about the repository or a collector.
@@ -304,8 +306,11 @@ highest severity and the newest detail, at most 40 groups and then '+N more'.
   `max_per_hour`. A failed digest is tried again on the next pass. An hour missed while pgvigil was down is sent once,
   carrying everything since the last digest.
 - **After the window.** An alert first held by a digest window, and never sent on that channel, stays held after the
-  window ends while it keeps standing. It reaches the channel in the digest only, and no recovery is sent for it. An
-  escalation past the window's ceiling is sent at once.
+  window ends while it keeps standing. It reaches the channel in each day's digest while it stands, and no recovery is
+  sent for it. It ends once the finding has been gone for the channel's `clear_after`; quiet hours, a back-off or a
+  restart of pgvigil do not end it. An escalation past the window's ceiling is sent at once.
+- **The digest's zone.** `timezone` must be an IANA name the repository knows (not `Local`); a channel whose zone the
+  repository does not know gets no digest until it does.
 - **Where it can be set.** Only on a mail, chat or file channel: a PagerDuty or Opsgenie channel opens an incident per
   alert and is refused. A route channel takes its base channel's digest hour.
 
@@ -313,7 +318,8 @@ highest severity and the newest detail, at most 40 groups and then '+N more'.
 - `rises`: the rise from one sample to the next is beyond the value;
 - `above_baseline`: above the same local hour's average over the last 7 days, widened by a band (default 20 %), AND
   above the rule's own value. Until 7 days of that hour are known, the rule judges by its own value alone, and its
-  alert says 'no baseline yet (N of 7 days)'.
+  alert says 'no baseline yet (N of 7 days)'. A day without samples in that hour counts as unknown. So does the hour a
+  spring-forward day skips: for a week after, that hour judges by the rule's own value.
 
 Rules of different kinds on one metric and scope work side by side. Within one kind, an instance's rule wins over a
 tag-list rule, and a tag-list rule over the fleet's. Between two tag lists, the one with more AND terms wins, then the

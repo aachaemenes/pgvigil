@@ -167,3 +167,34 @@ func TestChannelDigestAndChecks(t *testing.T) {
 		t.Errorf("checks %v: want [backups]", got)
 	}
 }
+
+func TestWindowWholeDayAndDigestZone(t *testing.T) {
+	pay, err := WindowPayload(WindowRequest{Action: "blackout", Scope: "fleet", Weekdays: []int{6, 7}, Start: "00:00", End: "24:00", Zone: "UTC"}, nil)
+	if err != nil || pay["end_local"] != "24:00" {
+		t.Fatalf("a whole day 00:00-24:00: %v %v", pay, err)
+	}
+	if _, err := WindowPayload(WindowRequest{Action: "blackout", Scope: "fleet", Weekdays: []int{1}, Start: "24:00", End: "02:00", Zone: "UTC"}, nil); err == nil {
+		t.Error("a start of 24:00 accepted")
+	}
+	cfg := "repository: {dsn: env:X}\nalerts:\n  - {name: m, kind: file, digest_hour: 8, timezone: Local, file: {dir: /tmp}}\n"
+	if _, err := Parse([]byte(cfg)); err == nil || !strings.Contains(err.Error(), "IANA") {
+		t.Errorf("a digest in timezone Local: %v", err)
+	}
+}
+
+// a route channel is a copy of its base's built channel (routes.go): it takes the base's digest hour
+func TestRouteKeepsDigestHour(t *testing.T) {
+	st, err := Parse([]byte(`
+repository: {dsn: env:X}
+alerts:
+  - {name: mail, kind: smtp, digest_hour: 7, timezone: America/Chicago,
+     smtp: {host: 127.0.0.1, port: 2525, tls: none, from: a@example.org, to: [dba@example.org]}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := derive(st.Channels, []route{{ID: 7, ContactID: 3, Role: "support", App: "Billing", Channel: "mail", Mail: "ann@example.org"}})
+	if len(ds) != 1 || ds[0].note != "" || ds[0].ch.DigestHour == nil || *ds[0].ch.DigestHour != 7 || ds[0].ch.Timezone != "America/Chicago" {
+		t.Fatalf("the route channel: %+v", ds)
+	}
+}

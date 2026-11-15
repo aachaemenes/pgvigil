@@ -194,7 +194,7 @@ type WindowRequest struct {
 	FromRuleID      int64    `json:"from_rule_id"` // copies the live rule's scope when Scope is empty
 	Weekdays        []int    `json:"weekdays"`     // ISO: 1 Monday .. 7 Sunday
 	Start           string   `json:"start_local"`  // HH:MM in Zone
-	End             string   `json:"end_local"`    // HH:MM in Zone; before Start = across midnight (the start day's)
+	End             string   `json:"end_local"`    // HH:MM in Zone, or 24:00 (the day's end); before Start = across midnight
 	Zone            string   `json:"zone"`
 	SeverityCeiling string   `json:"severity_ceiling"` // digest: info | warning (default warning); a critical always pages
 	StartsAt        string   `json:"starts_at"`
@@ -273,8 +273,12 @@ func WindowPayload(in WindowRequest, inst func(id int) string) (map[string]any, 
 		return nil, errors.New("start_local is HH:MM")
 	}
 	end, err := time.Parse("15:04", in.End)
+	if in.End == "24:00" { // the day's end: a whole day is 00:00-24:00
+		end, err = time.Parse("15:04", "23:59")
+		end = end.Add(time.Minute)
+	}
 	if err != nil {
-		return nil, errors.New("end_local is HH:MM")
+		return nil, errors.New("end_local is HH:MM (or 24:00, the day's end)")
 	}
 	if start.Equal(end) {
 		return nil, errors.New("a window starts and ends at different times (end before start = across midnight)")

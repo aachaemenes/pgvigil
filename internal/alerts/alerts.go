@@ -316,6 +316,9 @@ func (c *Channel) validate() error {
 		if incidentKind(c.Kind) {
 			return fmt.Errorf("digest_hour: a %s channel opens an incident per alert, never a daily message: set it on a mail, chat or file channel", c.Kind)
 		}
+		if c.Timezone == "Local" {
+			return errors.New("digest_hour: timezone must be an IANA name (the repository reads the digest hour in it; Local is this machine's only)")
+		}
 	}
 	if len(c.Checks) > maxChecks {
 		return fmt.Errorf("checks: at most %d (got %d)", maxChecks, len(c.Checks))
@@ -835,8 +838,9 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		due = append(due, map[string]any{"name": c.Name, "min_severity": c.MinSeverity, "instances": nonNil(c.Instances),
 			"tags": nonNil(c.Tags), "repeat_secs": int(c.RepeatEvery().Seconds()),
 			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery(),
-			"repo_wide": !routed[c.Name],   // a route never takes the repository-wide findings (0190 alert_due)
-			"checks":    nonNil(c.Checks)}) // A31: the checks the channel takes ([] = all; alert_due's wiring line)
+			"repo_wide": !routed[c.Name],      // a route never takes the repository-wide findings (0190 alert_due)
+			"checks":    nonNil(c.Checks),     // A31: the checks the channel takes ([] = all; alert_due's wiring line)
+			"digest":    c.DigestHour != nil}) // digest holds apply only on a channel with a daily digest (0154 alert_hold)
 	}
 	if len(due) == 0 {
 		return res, outcome, nil

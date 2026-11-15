@@ -67,14 +67,17 @@ SELECT o.rule_id, o.by_rule_id, b.name AS by_rule_name, o.instances
   JOIN pgvigil.alert_rules b ON b.rule_id = o.by_rule_id
  ORDER BY o.rule_id, o.instances DESC`
 
+// the newest 20,000 rows of the window, oldest first (a long window keeps its recent end; cut = the page says so)
 const sqlFindingsHistory = `
-SELECT h.snapshot_at, h.finding_key, h.instance_id, h.instance_name, h.source, h.setting, h.value, h.event, h.severity,
-       h.metric_value
-  FROM pgvigil.findings_history h
- WHERE h.snapshot_at >= greatest($1::timestamptz, now() - interval '90 days') AND h.snapshot_at <= $2
-   AND ($3::int IS NULL OR h.instance_id = $3)
- ORDER BY h.snapshot_at, h.finding_key
- LIMIT 20000`
+SELECT x.*, count(*) OVER () = 20000 AS cut
+  FROM (SELECT h.snapshot_at, h.finding_key, h.instance_id, h.instance_name, h.source, h.setting, h.value, h.event,
+               h.severity, h.metric_value
+          FROM pgvigil.findings_history h
+         WHERE h.snapshot_at >= greatest($1::timestamptz, now() - interval '90 days') AND h.snapshot_at <= $2
+           AND ($3::int IS NULL OR h.instance_id = $3)
+         ORDER BY h.snapshot_at DESC, h.finding_key
+         LIMIT 20000) x
+ ORDER BY x.snapshot_at, x.finding_key`
 
 const sqlAlertScopeRules = `
 SELECT r.rule_id, r.scope_tags, pgvigil.alert_scope_text(r.scope_tags) AS scope_text, r.op_family, r.band_pct, r.zone,
