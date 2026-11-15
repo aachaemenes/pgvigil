@@ -1,12 +1,12 @@
 diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
-index 56af0bc..36d7b70 100644
+index 56af0bc..c0acf5b 100644
 --- c/cmd/pgvigil/report.go
 +++ i/cmd/pgvigil/report.go
 @@ -286,6 +286,7 @@ func osRelease() string {
  var keepKeys = map[string]bool{
  	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
  	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
-+	"check_files": true, "auto_close_databases": true,
++	"check_files": true, "auto_close_databases": true, "verify_timeout": true,
  	// alerts:
  	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
  	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -15,15 +15,84 @@ index 56af0bc..36d7b70 100644
  	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
  	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
 -	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
-+	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "check_files": true, "reads": true, "auto_close_databases": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "check_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
  	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
  	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
  	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
+diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
+index 687cb06..da8b5b7 100644
+--- c/cmd/pgvigil/serve.go
++++ i/cmd/pgvigil/serve.go
+@@ -177,6 +177,11 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		}
+ 	}
+ 	srv.SetMSSQLActions(doors)
++	// task 301b: verify_backup's bound, and the verifies a stopped serve left with no end row
++	srv.SetVerifyTimeout(cfg.VerifyTimeout.Duration)
++	if err := srv.SweepVerifies(ctx); err != nil {
++		log.Warn("actions: the verifies left by a stopped serve were not swept", "err", err)
++	}
+ 	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
+ 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
+ 	pgJobs := map[string][]string{}
+@@ -212,6 +217,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	}
+ 	select {
+ 	case <-ctx.Done():
++		srv.StopVerifies(30 * time.Second) // task 301b: a running verify's end row ('cut by shutdown') before serve goes
+ 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+ 		defer cancel()
+ 		return hs.Shutdown(sctx)
+diff --git c/docs/sqlserver-actions.md i/docs/sqlserver-actions.md
+index dfce885..c1a00ff 100644
+--- c/docs/sqlserver-actions.md
++++ i/docs/sqlserver-actions.md
+@@ -73,6 +73,31 @@ Both connections are open and the actions login is checked before the last read
+ 
+ A kill rolls the session's open transaction back. A long transaction takes about as long to roll back as it took to run, and the session stays visible in that state until it is done.
+ 
++## verify_backup (task 301b)
++
++RESTORE VERIFYONLY of one backup set from the backup history's grid (a set's Verify, in its right-click menu): it
++reads the backup file(s) and checks the set can be restored, with CHECKSUM where the set has checksums. Off unless
++the instance's `actions:` list names `verify_backup` - and on the site's switch list it says what it opens: **it gives
++the actions login CREATE DATABASE: it can restore a copy of any database whose backup file the SQL Server service
++account can read** (as that login, under a new name, owned by it). RESTORE VERIFYONLY itself creates no database and
++writes no restorehistory row.
++
++The grant, in master only (the narrower of the two forms that work; never dbcreator, never ALTER ANY DATABASE -
++pgvigil refuses a login that holds either, as it refuses sysadmin and CONTROL SERVER):
++
++    USE master;
++    CREATE USER pgvigil_actions FOR LOGIN pgvigil_actions;
++    GRANT CREATE DATABASE TO pgvigil_actions;
++
++How it runs: the request carries the set's backup_set_uuid and what Preview showed; the read login reads the set
++again (its disk files, position, checksums, size) and any difference refuses; RESTORE HEADERONLY of the file and
++position (on the actions login) must name the set's uuid, else the file now holds another backup set; then RESTORE
++VERIFYONLY with the paths and the position as parameters (the audit keeps the statement with no path in it). The
++verify runs detached from the request, bounded by `verify_timeout` (top level, default 2h), one per instance; the
++audit writes `started`, then `done` or `failed` with the server's own words ('The backup set on file 1 is valid.'),
++`cut by shutdown` when serve stops under it, and `ended unknown` at serve's next start for a verify that had no end.
++Not offered: a URL, tape, virtual-device or NUL backup, password-protected media, an encrypted backup.
++
+ ## The log
+ 
+ Every attempt is written to `pgvigil.actions_log` in the repository before the reply is sent: the UI user and their address, the instance, the action, the statement, the target (session id, login, program and host, or the job's name and id), the reason, the outcome and the server's message.
 diff --git c/internal/config/config.go i/internal/config/config.go
-index b32669a..d75196a 100644
+index b32669a..87bb97f 100644
 --- c/internal/config/config.go
 +++ i/internal/config/config.go
-@@ -85,6 +85,8 @@ type Instance struct {
+@@ -25,6 +25,8 @@ type Config struct {
+ 	// always masked), normalized (every literal replaced by ?), none (no statement text at all,
+ 	// only hashes and counters). An instance's own query_text overrides it.
+ 	QueryText string `yaml:"query_text"`
++	// VerifyTimeout bounds one verify_backup (task 301b: RESTORE VERIFYONLY of a large backup runs for hours); 0 = 2h.
++	VerifyTimeout Duration `yaml:"verify_timeout"`
+ 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
+ 	UI UI `yaml:"ui"`
+ 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
+@@ -85,6 +87,8 @@ type Instance struct {
  	Actions []string `yaml:"actions"`
  	// Backups tunes the backups collection's rules; nil = the defaults.
  	Backups *Backups `yaml:"backups"`
@@ -32,7 +101,7 @@ index b32669a..d75196a 100644
  	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
  	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
  	ExplainAnalyze bool `yaml:"explain_analyze"`
-@@ -351,6 +353,17 @@ type Backups struct {
+@@ -351,6 +355,17 @@ type Backups struct {
  	// show-servers, barman-cloud-backup-list) and read its configuration on the collector's host (task 302's fold F1:
  	// off by default - it runs programs as the collector's account and opens files that hold a repository's keys).
  	ReadTools bool `yaml:"read_tools"`
@@ -50,6 +119,19 @@ index b32669a..d75196a 100644
  }
  
  // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+diff --git c/internal/mssql/actions.go i/internal/mssql/actions.go
+index b2ff5a1..63590d0 100644
+--- c/internal/mssql/actions.go
++++ i/internal/mssql/actions.go
+@@ -46,7 +46,7 @@ const (
+ )
+ 
+ // ActionKinds lists every action, in the order the documentation gives them.
+-var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop}
++var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop, ActionVerifyBackup}
+ 
+ // ValidAction says whether s names an action (the config's validation of an actions: list).
+ func ValidAction(s string) bool {
 diff --git c/internal/mssql/backup_checks_wiring.go i/internal/mssql/backup_checks_wiring.go
 new file mode 100644
 index 0000000..dc0b226
@@ -101,3 +183,17 @@ index d9e4822..88e1784 100644
  	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
  	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
  	ecancel()
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 878c193..4696353 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -345,6 +345,9 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)
+ 	api.HandleFunc("POST /api/mssql/actions/preview", s.MSSQLActionPreview)
+ 	api.HandleFunc("POST /api/mssql/actions/run", s.MSSQLActionRun)
++	// task 301b: verify_backup has its own two routes (a detached run; actions_verify.go)
++	api.HandleFunc("POST /api/mssql/actions/verify/preview", s.MSSQLVerifyPreview)
++	api.HandleFunc("POST /api/mssql/actions/verify/run", s.MSSQLVerifyRun)
+ 	api.HandleFunc("GET /api/plans", s.Plans)
+ 	api.HandleFunc("GET /api/plan", s.Plan)
+ 	api.HandleFunc("GET /api/mssql/summary", s.MSSQLSummary)
