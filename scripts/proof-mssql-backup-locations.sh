@@ -40,7 +40,8 @@
 #  L9  (F3) pgvbkv: a full in its own data directory -> same_volume 'yes: ... is in /var/opt/mssql/data/, the directory
 #      of ...' and 'a full backup on the volume of the database's own files'; then a full into /var/opt/mssql/pgvbk_sib/
 #      (a sibling directory on the same filesystem) and one on another docker volume: each 'not judged: on Linux only ...',
-#      no finding. The Windows mounted-folder and Cluster Shared Volume rows: TestBackupLocationsOnAStore.
+#      no finding; one into /var/opt/mssql/data/pgvbk_below/ (below the data directory: it may be a mounted folder - added
+#      with the review of run 11) 'not judged: /var/opt/mssql/data/pgvbk_below/ is below /var/opt/mssql/data/, ...', no finding. The Windows mounted-folder and Cluster Shared Volume rows: TestBackupLocationsOnAStore.
 #  L10 (F11) pgvbkr: fulls to /backups, then /backups2, then /backups again: roots seen 2; 'a backup destination not
 #      seen before' (info) after the second; still 2 roots after the third.
 #  L16 (F2) pgvbkd: a full now and a differential whose dates are hand-set 30 days back (another database's, before this
@@ -130,7 +131,7 @@ ENVF=$WORK/sql.env; printf 'ACCEPT_EULA=Y\nMSSQL_PID=Developer\nMSSQL_SA_PASSWOR
 docker run -d --name "$SQL" --label pgvigil-proof=inv301 --network "$NET" --network-alias sql22 --env-file "$ENVF" -v "$VB1:/backups" -v "$VB2:/backups2" -p 127.0.0.1::1433 "$IMG22" >/dev/null
 [ -n "${PROOF_SKIP_2019:-}" ] || docker run -d --name "$SQL19" --label pgvigil-proof=inv301 --env-file "$ENVF" -p 127.0.0.1::1433 "$IMG19" >/dev/null
 up "$SQL" || fail "SQL Server 2022 did not come up: $(docker logs --tail 20 "$SQL" 2>&1)"
-docker exec -u root "$SQL" bash -c 'chown -R mssql /backups /backups2 && mkdir -p /var/opt/mssql/pgvbk_sib && chown mssql /var/opt/mssql/pgvbk_sib'
+docker exec -u root "$SQL" bash -c 'chown -R mssql /backups /backups2 && mkdir -p /var/opt/mssql/pgvbk_sib /var/opt/mssql/data/pgvbk_below && chown mssql /var/opt/mssql/pgvbk_sib /var/opt/mssql/data/pgvbk_below'
 P22=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 echo "  SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20)) + ' ' + CAST(SERVERPROPERTY('Edition') AS varchar(60))") on 127.0.0.1:$P22"
 
@@ -357,10 +358,14 @@ read2 L9a
 V=$(L same_volume pgvbkv full); F=$(q "select check_name from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkv' and severity='warning'")
 [[ "$V" == "yes: /var/opt/mssql/data/pgvbkv_full.bak is in /var/opt/mssql/data/, the directory of /var/opt/mssql/data/pgvbkv"* ]] && [ "$F" = "a full backup on the volume of the database's own files" ] || fail "L9 own directory: $V | $F"
 ok "L9: $V -> '$F'"
-for P in /var/opt/mssql/pgvbk_sib/pgvbkv.bak /backups/v/pgvbkv.bak; do
+for P in /var/opt/mssql/pgvbk_sib/pgvbkv.bak /backups/v/pgvbkv.bak /var/opt/mssql/data/pgvbk_below/pgvbkv.bak; do
   sleep 1; sq "BACKUP DATABASE pgvbkv TO DISK = N'$P' WITH FORMAT;" >/dev/null; read2 "L9 $P"
   V=$(L same_volume pgvbkv full)
-  [[ "$V" == "not judged: on Linux only a backup in the directory of the database's own files is judged"* ]] || fail "L9 $P: $V"
+  case "$P" in
+    */pgvbk_below/*) W9="not judged: /var/opt/mssql/data/pgvbk_below/ is below /var/opt/mssql/data/, the directory of /var/opt/mssql/data/pgvbkv" ;;
+    *) W9="not judged: on Linux only a backup in the directory of the database's own files is judged" ;;
+  esac
+  [[ "$V" == "$W9"* ]] || fail "L9 $P: $V"
   [ "$(q "select count(*) from pgvigil.mssql_backup_loc_findings where instance_id=$(iid) and object='pgvbkv' and severity='warning'")" = 0 ] || fail "L9 $P: a warning"
   ok "L9: $P - not judged, no warning"
 done
