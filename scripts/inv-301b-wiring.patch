@@ -1,0 +1,103 @@
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index 56af0bc..36d7b70 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -286,6 +286,7 @@ func osRelease() string {
+ var keepKeys = map[string]bool{
+ 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
+ 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
++	"check_files": true, "auto_close_databases": true,
+ 	// alerts:
+ 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
+ 	"clear_after": true, "port": true, "tls": true, "format": true,
+@@ -307,7 +308,7 @@ var knownKeys = map[string]bool{
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+ 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
+ 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+-	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "check_files": true, "reads": true, "auto_close_databases": true,
+ 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
+ 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
+ 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
+diff --git c/internal/config/config.go i/internal/config/config.go
+index b32669a..d75196a 100644
+--- c/internal/config/config.go
++++ i/internal/config/config.go
+@@ -85,6 +85,8 @@ type Instance struct {
+ 	Actions []string `yaml:"actions"`
+ 	// Backups tunes the backups collection's rules; nil = the defaults.
+ 	Backups *Backups `yaml:"backups"`
++	// Reads holds the opt-ins of reads with a side effect on the server (task 301b); nil = all off.
++	Reads *Reads `yaml:"reads"`
+ 	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
+ 	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
+ 	ExplainAnalyze bool `yaml:"explain_analyze"`
+@@ -351,6 +353,17 @@ type Backups struct {
+ 	// show-servers, barman-cloud-backup-list) and read its configuration on the collector's host (task 302's fold F1:
+ 	// off by default - it runs programs as the collector's account and opens files that hold a repository's keys).
+ 	ReadTools bool `yaml:"read_tools"`
++	// CheckFiles lets mssql_backup_checks ask SQL Server whether the newest backups' files are still where msdb says
++	// they were written (task 301b, Database#7: off by default - the SQL Server service account then touches every
++	// backup share once an hour).
++	CheckFiles bool `yaml:"check_files"`
++}
++
++// Reads holds the opt-ins of reads that have a side effect on the monitored server; nil = all off.
++type Reads struct {
++	// AutoCloseDatabases lets mssql_backup_checks read an AUTO_CLOSE database's recovery status (task 301b: the read
++	// opens a closed AUTO_CLOSE database - off by default, the database is then 'not read').
++	AutoCloseDatabases bool `yaml:"auto_close_databases"`
+ }
+ 
+ // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+diff --git c/internal/mssql/backup_checks_wiring.go i/internal/mssql/backup_checks_wiring.go
+new file mode 100644
+index 0000000..dc0b226
+--- /dev/null
++++ i/internal/mssql/backup_checks_wiring.go
+@@ -0,0 +1,15 @@
++package mssql
++
++import "database/sql"
++
++// The WIRING of task 301b (scripts/inv-301b-wiring.patch): mssql_backup_checks' two opt-ins and the file check's pool
++// come from the instance's configuration through Info (the runner sets them); without this file both stay off.
++func init() {
++	backupCheckOptions = func(i Info) (bool, bool) { return i.ReadAutoCloseDatabases, i.CheckBackupFiles }
++	backupFileDB = func(i Info) *sql.DB {
++		if !i.CheckBackupFiles {
++			return nil
++		}
++		return i.Pool
++	}
++}
+diff --git c/internal/mssql/detect.go i/internal/mssql/detect.go
+index 70bb240..a3354ec 100644
+--- c/internal/mssql/detect.go
++++ i/internal/mssql/detect.go
+@@ -44,6 +44,11 @@ type Info struct {
+ 	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
+ 	ServiceObjective string
+ 	PoolTag          string
++	// task 301b (the runner sets them from the instance's configuration): the two opt-ins of mssql_backup_checks, and
++	// the instance's pool, from which the file check takes its own short-lived connections
++	ReadAutoCloseDatabases bool
++	CheckBackupFiles       bool
++	Pool                   *sql.DB
+ }
+ 
+ // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
+diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
+index d9e4822..88e1784 100644
+--- c/internal/mssql/mssql.go
++++ i/internal/mssql/mssql.go
+@@ -477,6 +477,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 			info.PoolTag = t.Value
+ 		}
+ 	}
++	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
++	info.CheckBackupFiles = in.Backups != nil && in.Backups.CheckFiles
++	info.Pool = db
+ 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+ 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+ 	ecancel()
