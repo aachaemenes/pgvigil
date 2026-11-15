@@ -7,9 +7,10 @@
 #                   other connection string is ADMIN_DSN with user / password / dbname appended (never a fixed port)
 #   MSSQL_IMAGE     the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
 #   PGVIGIL_PARTS   the parts to run (default every part this file has)
-#   PGVIGIL_SQL_MEM_MB  SQL Server's own memory cap in the 6 GB container (MSSQL_MEMORY_LIMIT_MB; default 4096; 0 = none):
-#                   2017 and 2019 size themselves on the host's memory, not the container's (box diag 413-d2017c:
-#                   physical_memory_kb 105517056 in a 6 GB container)
+#   PGVIGIL_SQL_MEM_MB  SQL Server's own memory cap (MSSQL_MEMORY_LIMIT_MB; default 0 = none, the server sizes itself;
+#                   2017 sizes itself on the host: box diag 413-d2017c). A cap HID a 2017 bug of 413's reads (the plan
+#                   cache trimmed under the cap's pressure): A6 runs uncapped, in an 8 GB container for the headroom
+#                   (uncapped 2017 used 5.67 GiB at 5,000 sessions)
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-mssql-sessions-wiring.patch (activity.go's grouping sets, web.go,
 #                   mssql_perf.ts, 0190: the lead's files) to this copy when the tree lacks them.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch.
@@ -65,7 +66,8 @@
 #     401 is not joined; every new control works or is off with its reason.
 #  A6 the read's time: 5,000 sessions held open (from the box's own client pool; fewer than 5,000 held FAILs the row), the groups read and the per-minute
 #     read each timed 3 times: printed as MEASURE lines with the rows and bytes each read stores; a read over 5 s FAILs
-#     the row (the collector budget's share).
+#     the row (the collector budget's share). Each read runs once at the box's few sessions first, so a plan cached
+#     before the surge is the one timed at 5,000 [box diag 413-d2017d: 2017 reused one 44 s CPU-bound], uncapped.
 #  Red on f8e89d2 (before 413): collect refuses mssql_sessions (unknown collection); no route /api/mssql/sessions;
 #  no 'login' group in the activity read's rows.
 set -euo pipefail
@@ -100,8 +102,8 @@ if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && grep -q 'func (s \*Server) MSSQLSessions
 fi
 
 echo "== A. the container ($IMG_SQL) =="
-MEMCAP=(); [[ "${PGVIGIL_SQL_MEM_MB:-4096}" != 0 ]] && MEMCAP=(-e "MSSQL_MEMORY_LIMIT_MB=${PGVIGIL_SQL_MEM_MB:-4096}")
-docker run -d --name "$SQL" --label "$LBL" --memory 6g "${MEMCAP[@]}" --env-file "$TMPD/sa.env" -p 127.0.0.1::1433 "$IMG_SQL" >/dev/null
+MEMCAP=(); [[ "${PGVIGIL_SQL_MEM_MB:-0}" != 0 ]] && MEMCAP=(-e "MSSQL_MEMORY_LIMIT_MB=${PGVIGIL_SQL_MEM_MB}")
+docker run -d --name "$SQL" --label "$LBL" --memory 8g "${MEMCAP[@]}" --env-file "$TMPD/sa.env" -p 127.0.0.1::1433 "$IMG_SQL" >/dev/null
 SQLCMD=
 for _ in $(seq 1 60); do
   for c in /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd; do docker exec "$SQL" test -x "$c" 2>/dev/null && SQLCMD=$c && break 2; done
@@ -151,7 +153,7 @@ sample_off() { if [[ -n "$SAMPLER" ]]; then kill "$SAMPLER" 2>/dev/null || true;
 col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; sample_off; [[ -s "$TMPD/sample.out" ]] && sed 's/^/     SAMPLE /' "$TMPD/sample.out" >&2; memstat "at the failed collect" >&2; fail "collect $i $c"; }; done; }
 col ss mssql_instance; col ssnone mssql_instance
 ISS=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ss'"); INONE=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ssnone'")
-echo "ok   A: SQL Server $VER, pgvss, $(echo $LOGINS | wc -w) logins, instances ss $ISS / ssnone $INONE, SQL memory cap ${PGVIGIL_SQL_MEM_MB:-4096} MB"
+echo "ok   A: SQL Server $VER, pgvss, $(echo $LOGINS | wc -w) logins, instances ss $ISS / ssnone $INONE, SQL memory cap ${PGVIGIL_SQL_MEM_MB:-0} MB"
 memstat "after A"
 
 # hold <login> <seconds> <T-SQL>: one session of <login> in pgvss (host name pgvss-<login>) that runs the batch at once, then
@@ -427,6 +429,9 @@ fi
 if part A6; then
 echo "== A6. the reads' time at about 5,000 sessions =="
 export PGV_HOLD_DSN="sqlserver://l1:$(urlq "$LP_PW")@127.0.0.1:$PORT_SQL?database=pgvss&encrypt=true&TrustServerCertificate=true&connection+timeout=60"
+# the reads compiled first at the few sessions a server has before a surge (as P1 / P1b already did): a plan cached at a
+# low count and reused at 5,000 ran 413's activity read 44 s CPU-bound on 2017 (box diag 413-d2017d; 293 ms recompiled)
+col ss mssql_sessions mssql_activity
 go build -o "$TMPD/hold5k" ./scripts/proof-sessions-hold || fail "A6: build the holder"
 setsid "$TMPD/hold5k" 5000 900 >"$TMPD/hold5k.out" 2>"$TMPD/hold5k.err" & BG+=($!)
 for _ in $(seq 1 300); do grep -q '^held' "$TMPD/hold5k.out" 2>/dev/null && break; sleep 1; done
