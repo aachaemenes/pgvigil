@@ -78,7 +78,8 @@
 #  N. D6 (the rows on other slices' pages, WIRING hunks): after two mssql_cpu and mssql_memory reads with 20 batches
 #     between them: /api/perfsummary's mssql part gives ctrbox compiles_per_100 = round(100 * compilations / batch
 #     requests, 1) from mssql_sched_sample's interval-weighted rates over the same window (0 under 1 batch/s); the CPU
-#     API's sched part carries failed_to_create_worker (0 on a healthy box) at a step; the Memory API's clerk_stats
+#     API's sched part carries failed_to_create_worker (0 on a healthy box) at a step, over two steps at least (three
+#     mssql_cpu reads, the second in the next minute, the wait busy at two batches a second); the Memory API's clerk_stats
 #     names MEMORYCLERK_SQLBUFFERPOOL 'Buffer Pool'; the pages show the summary's 'compilations per 100 batches', the
 #     scheduler trend's 'schedulers that failed to create a worker' and the clerks grid's 'what it is' with Buffer Pool.
 #  L. the version run on each further image: A's setup, B's bracket and C's arithmetic, D's logins, errors and log
@@ -648,6 +649,13 @@ ok "K: the Metrics page's counters (rows = the API's), the histogram, the absent
 
 echo "== N. D6: the Performance summary, the CPU page's scheduler trend, the Memory page's clerk names =="
 col mssql_cpu mssql_memory
+# the next read lands in the next minute: the page's scheduler trend (steps of 60 s over an hour) draws a line only
+# from two steps ('a chart needs two': run proof8 read both reads in one step, proof7 straddled a minute by chance);
+# the wait is kept busy at two batches a second, so the summary's batch rate over the range stays above its 1 batch/s
+# floor
+WAITS=$(( 62 - 10#$(date -u +%S) ))
+sq "$(for _ in $(seq 1 $((WAITS * 2))); do echo "WAITFOR DELAY '00:00:00.500';"; echo GO; done)" >/dev/null
+col mssql_cpu mssql_memory
 sq "$(for i in $(seq 1 20); do echo "SELECT COUNT(*) FROM sys.objects WHERE object_id > $i;"; echo GO; done)" >/dev/null
 sleep 2; col mssql_cpu mssql_memory mssql_counters
 NF=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); NT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
@@ -672,6 +680,7 @@ if got is None or abs(float(got) - exp) > 0.051: bad.append(f'compiles_per_100 {
 fw = [r.get('failed_to_create_worker') for r in rows('mssql_cpu', 'sched')]
 print(f'   sched steps {len(fw)}, failed_to_create_worker at {sum(v is not None for v in fw)} of them: {sorted(set(v for v in fw if v is not None))}')
 if not any(v is not None and float(v) == 0 for v in fw): bad.append('no step with failed_to_create_worker 0')
+if len(fw) < 2: bad.append(f'the sched part has {len(fw)} step: the trend draws nothing from one')
 bp = [r for r in rows('mssql_memory', 'clerk_stats') if r.get('clerk_type') == 'MEMORYCLERK_SQLBUFFERPOOL']
 print(f"   clerk_stats: MEMORYCLERK_SQLBUFFERPOOL named [{bp[0].get('clerk_name') if bp else 'no row'}]")
 if not bp or bp[0].get('clerk_name') != 'Buffer Pool': bad.append('the buffer pool clerk not named Buffer Pool')
