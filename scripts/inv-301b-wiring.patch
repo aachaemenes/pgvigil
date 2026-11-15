@@ -80,7 +80,7 @@ index dfce885..c1a00ff 100644
  
  Every attempt is written to `pgvigil.actions_log` in the repository before the reply is sent: the UI user and their address, the instance, the action, the statement, the target (session id, login, program and host, or the job's name and id), the reason, the outcome and the server's message.
 diff --git c/internal/config/config.go i/internal/config/config.go
-index b32669a..87bb97f 100644
+index b32669a..2feb5da 100644
 --- c/internal/config/config.go
 +++ i/internal/config/config.go
 @@ -25,6 +25,8 @@ type Config struct {
@@ -92,7 +92,15 @@ index b32669a..87bb97f 100644
  	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
  	UI UI `yaml:"ui"`
  	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
-@@ -85,6 +87,8 @@ type Instance struct {
+@@ -78,13 +80,15 @@ type Instance struct {
+ 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
+ 	// accepted: the password of a login that can stop sessions never sits in the file.
+ 	ActionsDSNRaw string `yaml:"actions_dsn"`
+-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop; on PostgreSQL job_stop and
++	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, verify_backup; on PostgreSQL job_stop and
+ 	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
+ 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
+ 	// alone turns them on.
  	Actions []string `yaml:"actions"`
  	// Backups tunes the backups collection's rules; nil = the defaults.
  	Backups *Backups `yaml:"backups"`
@@ -119,6 +127,33 @@ index b32669a..87bb97f 100644
  }
  
  // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+@@ -520,9 +535,9 @@ func (c *Config) Validate() error {
+ 			seen := map[string]bool{}
+ 			for _, a := range in.Actions {
+ 				switch a {
+-				case "kill", "job_start", "job_stop":
++				case "kill", "job_start", "job_stop", "verify_backup":
+ 				default:
+-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
++					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, verify_backup)", in.Name, a)
+ 				}
+ 				if seen[a] {
+ 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
+diff --git c/internal/config/config_test.go i/internal/config/config_test.go
+index 0651639..9aab624 100644
+--- c/internal/config/config_test.go
++++ i/internal/config/config_test.go
+@@ -189,7 +189,9 @@ func TestEngine(t *testing.T) {
+ 	}}
+ 	ok.Instances = append(ok.Instances,
+ 		Instance{Name: "ms-act", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "job_start", "job_stop"}},
+-		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"})
++		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"},
++		// task 301b: RESTORE VERIFYONLY through the door (off unless named here)
++		Instance{Name: "ms-verify", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "verify_backup"}})
+ 	if err := ok.Validate(); err != nil {
+ 		t.Fatalf("a valid two-engine config was rejected: %v", err)
+ 	}
 diff --git c/internal/mssql/actions.go i/internal/mssql/actions.go
 index b2ff5a1..63590d0 100644
 --- c/internal/mssql/actions.go
