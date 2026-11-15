@@ -976,6 +976,16 @@ pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user
 pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"ms-cloud\",\"aws\":null,\"azure\":{\"subscription\":\"0b1f6471-1bf0-4dda-aec3-111122223333\",\"resource_group\":\"rg-proof\",\"server\":\"$PRX\"}}')->>'outcome'" | grep -qx done || fail "P: set ms-cloud's block"
 pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"pg-alias\",\"aws\":{\"region\":\"us-east-2\",\"db_instance\":\"$PRX\"},\"azure\":null}')->>'outcome'" | grep -qx done || fail "P: set pg-alias's block"
 [[ "$(gen)" -gt "$GP" ]] || fail "P: the blocks did not move the generation"
+# the collector reads the list at once when it starts and then every 15 s: its first read can fall between the three
+# sets above, and the rows of the two it holds then come within seconds - so nothing below is read before a list read
+# at (or past) the last set's generation, the read whose lines name pg-alias's block
+GS=$(gen); lr=0
+for _ in $(seq 1 45); do
+  g=$(grep -oE 'instances: list read.*generation=[0-9]+' "$TMPD/run-cloud.log" | grep -oE '[0-9]+$' | sort -n | tail -1 || true)
+  [[ -n "$g" && "$g" -ge "$GS" ]] && { lr=1; break; }
+  sleep 2
+done
+[[ "$lr" == 1 ]] || { grep -E 'instances: ' "$TMPD/run-cloud.log" | tail -12 >&2; fail "P: the collector did not read the list at the sets' generation $GS in 90 s"; }
 row() { pq "SELECT coalesce((SELECT d.status || '|' || coalesce(d.note, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.collection = '$2'), 'none')"; }
 waitrow() { local v=none; for _ in $(seq 1 "$3"); do v=$(row "$1" "$2"); [[ "$v" != none ]] && { echo "$v"; return 0; }; sleep 2; done; echo "$v"; return 1; }
 IO=$(waitrow pg-cloud io 300) || { tail -30 "$TMPD/run-cloud.log" >&2; fail "P: pg-cloud's io has no row in 600 s (its block did not open a loop): $IO"; }
@@ -983,7 +993,7 @@ FG=$(waitrow ms-cloud mssql_failover_groups 300) || { tail -30 "$TMPD/run-cloud.
 # the rows as they are: a loop the block opened, whose run failed at the connect (nothing answers there)
 [[ "$IO" == "error|connect: "* ]] || fail "P: pg-cloud's io row is not the failed connect's: '$IO'"
 [[ "$FG" == "error|connect: "* ]] || fail "P: ms-cloud's mssql_failover_groups row is not the failed connect's: '$FG'"
-grep -q "cloud block is not used.*pg-alias.*billing-$PRX.corp.example" "$TMPD/run-cloud.log" || fail "P: the collector did not log pg-alias's refused block with its host"
+grep -q "cloud block is not used.*pg-alias.*billing-$PRX.corp.example" "$TMPD/run-cloud.log" || { grep -E 'instances: ' "$TMPD/run-cloud.log" | tail -12 >&2; fail "P: the collector did not log pg-alias's refused block with its host"; }
 grep -q "cloud block is not used.*pg-cloud\|cloud block is not used.*ms-cloud" "$TMPD/run-cloud.log" && fail "P: a block whose host matches was not used"
 [[ "$(row pg-alias io)" == none ]] || fail "P: pg-alias's io ran with a refused block: $(row pg-alias io)"
 echo "P: pg-cloud io '${IO:0:160}'; ms-cloud failover groups '${FG:0:160}'"
