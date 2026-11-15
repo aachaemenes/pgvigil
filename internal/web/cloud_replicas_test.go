@@ -79,9 +79,10 @@ func TestCloudReplicasPageOnAStore(t *testing.T) {
 		}
 		imp("src", db1, h0.Add(time.Duration(m+60)*time.Minute), rows...)
 	}
-	// the replica's own reads, the last minutes (the findings judge a read of the last 15 minutes)
+	// the replica's own reads, the last minutes (the findings judge a read of the last 15 minutes; 'stopped' needs
+	// the status to have stood 5 minutes: first seen 8 minutes ago)
 	now, rn := h0.Add(48*time.Hour), time.Now().UTC().Truncate(time.Second)
-	imp("rep", r1, rn.Add(-3*time.Minute), res(r1, "replica", db1, nil, "error"), res(db1, "source", "", []string{r1}, ""),
+	imp("rep", r1, rn.Add(-8*time.Minute), res(r1, "replica", db1, nil, "error"), res(db1, "source", "", []string{r1}, ""),
 		map[string]any{"kind": "failover", "provider": "aws", "resource_id": r1, "at": now.Add(-time.Hour).Format(time.RFC3339), "phase": "started",
 			"message": "Multi-AZ instance failover started.", "source": "rds events"})
 	imp("rep", r1, rn.Add(-2*time.Minute), res(r1, "replica", db1, nil, "error"))

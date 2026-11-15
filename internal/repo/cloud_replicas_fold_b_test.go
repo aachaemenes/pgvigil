@@ -134,7 +134,8 @@ func TestCloudReplicaFindingsFoldB(t *testing.T) {
 		res("dup", "replica", "src", nil, "available", ""))
 	imp("a", now.Add(-20*time.Minute), "src", srcRow(true), res("stale", "replica", "src", nil, "available", ""), res("new", "replica", "src", nil, "creating", ""),
 		res("old", "replica", "src", nil, "available", ""), res("dup", "replica", "src", nil, "available", ""))
-	imp("a", now.Add(-3*time.Minute), "src", srcRow(false), res("status", "replica", "src", nil, "available", "error"))
+	// 'status' reports error 8 minutes before the last read: 'stopped' needs the status to have stood 5 minutes
+	imp("a", now.Add(-8*time.Minute), "src", srcRow(false), res("status", "replica", "src", nil, "available", "error"))
 	imp("a", now.Add(-2*time.Minute), "src", srcRow(true), res("dup", "replica", "src", nil, "available", ""))
 	imp("a", now.Add(-time.Minute), "src", srcRow(false))
 	last := []map[string]any{srcRow(false), res("min", "replica", "src", nil, "available", ""), res("x60", "replica", "src", nil, "available", ""),
@@ -156,7 +157,7 @@ func TestCloudReplicaFindingsFoldB(t *testing.T) {
 	one("a", "provider replica lag", "stale", "", "a resource row 20 minutes old with fresh datapoints (a stale row firing)")
 	one("a", "provider lag missing", "new", "", "a replica seen 30 minutes ago while creating, available since this read (first sight, not 'available')")
 	one("a", "provider lag missing", "old", "warning", "a replica available for 30 minutes with no datapoint (the sanity row)")
-	one("a", "provider replica stopped", "status", "critical", "replication 'error', then a read that reports none (a blank wiping a reported status)")
+	one("a", "provider replica stopped", "status", "critical", "replication 'error' 8 minutes ago, then a read that reports none (a blank wiping a reported status or its time)")
 	var st string
 	if err := pool.QueryRow(ctx, `SELECT repl_status FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = $1`, rid("status")).Scan(&st); err != nil {
 		t.Fatal(err)

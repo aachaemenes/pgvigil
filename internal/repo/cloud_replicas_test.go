@@ -17,7 +17,8 @@ import (
 // read's value replaces an older read's: CloudWatch revises a minute's Maximum); a replica
 // added to a known source, a status change, and a promotion are each one event; the cascaded marker; the findings at
 // the DEFAULT tiers (provider_replica_lag warning 600 s, critical 1800 s, every datapoint of 10 minutes), 'stopped' only
-// on an available replica with a reported status in two reads (fold 9: a blank status is 'not reported yet'), 'lag
+// on an available replica whose reported status other than replicating has stood 5 minutes (a read at least 5 minutes
+// after the one that first saw it; fold 9: a blank status is 'not reported yet'), 'lag
 // missing' after 15 minutes without a datapoint on an available replica, a promotion a warning for 24 hours - each on
 // every instance that reads the resource. Each row names the broken variant it catches.
 func TestCloudReplicasOnAStore(t *testing.T) {
@@ -151,17 +152,33 @@ func TestCloudReplicasOnAStore(t *testing.T) {
 		t.Errorf("r1a added to r1: %d 'added' events on r1, want 1", c)
 	}
 
-	// replication stopped (error) on an available replica in two reads: critical; one read: none yet
+	// replication stopped (error) on an available replica: the rule is by time, not by reads - RDS itself reports
+	// 'Replication has stopped.' for about 2.5 minutes after a replica's reboot (lab RP 2026-11-15), so a status that
+	// has stood under 5 minutes is no finding however many reads saw it; a status that changed and came back starts
+	// its 5 minutes again; a read 6 minutes after the one that first saw it: critical
 	imp("rep", now.Add(2*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
 	if s := finding("rep", "provider replica stopped", r1); s != "" {
-		t.Errorf("one read with error: %q, want none until a second", s)
+		t.Errorf("one read with error: %q, want none", s)
 	}
 	imp("rep", now.Add(3*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
-	if s := finding("rep", "provider replica stopped", r1); s != "critical" {
-		t.Errorf("two reads with error: %q, want critical", s)
+	if s := finding("rep", "provider replica stopped", r1); s != "" {
+		t.Errorf("error in two reads 1 minute apart: %q, want none until it has stood 5 minutes (a rule by reads, not by time)", s)
 	}
-	if c := events(r1, "status"); c != 2 {
-		t.Errorf("r1's replication status '' -> replicating -> error: %d 'status' events, want 2", c)
+	imp("rep", now.Add(4*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "replicating"))
+	if s := finding("rep", "provider replica stopped", r1); s != "" {
+		t.Errorf("replicating again: %q, want none", s)
+	}
+	imp("rep", now.Add(5*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
+	imp("rep", now.Add(9*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
+	if s := finding("rep", "provider replica stopped", r1); s != "" {
+		t.Errorf("a second stop 4 minutes old, 7 after the first: %q, want none (the time counted from the first stop, not from this one)", s)
+	}
+	imp("rep", now.Add(11*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
+	if s := finding("rep", "provider replica stopped", r1); s != "critical" {
+		t.Errorf("error in reads 6 minutes apart: %q, want critical", s)
+	}
+	if c := events(r1, "status"); c != 4 {
+		t.Errorf("r1's replication status '' -> replicating -> error -> replicating -> error: %d 'status' events, want 4", c)
 	}
 	// r1a available and reported, no datapoint: none while it is new (a replica being made), a warning once it has been
 	// seen 15 minutes with none (its first sighting moved back, as the clock would)
@@ -175,8 +192,8 @@ func TestCloudReplicasOnAStore(t *testing.T) {
 		t.Errorf("r1a seen 20 minutes with no lag datapoint: %q, want warning", s)
 	}
 	// r1 promoted: a standalone instance now, its source no longer lists it - 'promoted', a warning for 24 hours
-	imp("rep", now.Add(4*time.Minute), r1, res(r1, "standalone", "", nil, "available", ""))
-	imp("src", now.Add(5*time.Minute), db1, res(db1, "standalone", "", nil, "available", ""))
+	imp("rep", now.Add(12*time.Minute), r1, res(r1, "standalone", "", nil, "available", ""))
+	imp("src", now.Add(13*time.Minute), db1, res(db1, "standalone", "", nil, "available", ""))
 	if c := events(r1, "promoted"); c != 1 {
 		t.Errorf("r1 promoted: %d 'promoted' events, want 1", c)
 	}
