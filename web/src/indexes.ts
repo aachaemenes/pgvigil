@@ -178,7 +178,7 @@ const seqCols: Col[] = [
   { key: 'last_value', label: 'last value', num: true, fmt: fmtNum },
   { key: 'max_value', label: 'its maximum', num: true, fmt: fmtNum },
   { key: 'col_table', label: 'feeds', fmt: (v, r) => v == null ? '' : `${String(v)}.${String(r.col_name ?? '')} (${String(r.col_type ?? '')})` },
-  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : 'status ok' },
+  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: (v, r) => v == null ? '' : r.cycles === true ? 'status none' : Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : 'status ok' },   // a CYCLE sequence is not judged (0095)
   { key: 'readable', label: 'readable', fmt: v => v === false ? badge('no: the login may not read it', 'warn') : '' },
   { key: 'blks_read', label: 'blocks read', num: true, fmt: fmtNum }, { key: 'blks_hit', label: 'blocks hit', num: true, fmt: fmtNum },
 ];
