@@ -381,7 +381,9 @@ dsn, sb = sys.argv[1], sys.argv[2]
 q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F', '|', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
 at = q(f"SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")
 rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate), 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
-pt = lambda m: q(f"SELECT value FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}'")
+# the point AT this read: metric_points also hands back the point its lookback carries in from the read before (box run
+# 401proof12 read '136.73...\n16.00...' for one metric)
+pt = lambda m: q(f"SELECT value FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}' AND at = '{at}'::timestamptz")
 b, c, rc = rate('SQL Statistics', 'Batch Requests/sec'), rate('SQL Statistics', 'SQL Compilations/sec'), rate('SQL Statistics', 'SQL Re-Compilations/sec')
 exp = {'compiles_per_100_batches': 0 if b < 1 else 100 * c / b, 'recompiles_per_100_compiles': 0 if c < 1 else 100 * rc / c}
 bad = [f'{m} {pt(m)} != {e}' for m, e in exp.items() if pt(m) == '' or abs(float(pt(m)) - e) > 1e-6]
