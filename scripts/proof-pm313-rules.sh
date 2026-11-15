@@ -47,6 +47,10 @@
 #     'database row n', model keeps 24; pgvigil.yaml's mssql_thresholds full_backup_hours 100: model 100 'pgvigil.yaml',
 #     msdb still 1 (the database row wins); msdb's row at 0: full_status 'not judged'; the door refuses a negative age,
 #     a database row on an instance it does not know, and an instance scope (the yaml's); every row ended: model 100.
+#     R5b (with the wiring patch) the API under pgvigil serve: GET /api/mssql/protection?instance=pmbox's id answers
+#     overrides, log and limits with writable true; a POST without a session 401, without the X-Pgvigil header 403;
+#     a tag row added 200, a negative age refused 409, the row ended 200; a -no-login serve reads with writable false and
+#     its reason, and refuses a POST 403; the log holds done=2 refused=1 by the proof's user from 127.0.0.1.
 #     Red on f8e89d2: no import_mssql_protection_override.
 #  R2. High CPU (Changed 12, Release 5, D2 a, F12): R2a after migrate one fleet rule 'SQL Server: High CPU' on cpu.sql_pct,
 #     above 79.999 / 94.999 for 4 minutes, enabled false, created_by 'pgvigil', client '0156 seed', one 'seed' log row;
@@ -92,21 +96,23 @@ IMAGE=${PGVIGIL_IMAGE:-2022-latest}
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 LBL=pgvigil-proof=pm313
-PGDB=pgv_pm313_$SUF; MON=pgv_pmon_$SUF; SQL=pgv-pm313-$SUF
+PGDB=pgv_pm313_$SUF; MON=pgv_pmon_$SUF; SQL=pgv-pm313-$SUF; UIUSER=proofpm$SUF; SRVPID=; SRV2PID=
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
 TMPD=$(mktemp -d)
-SA_PW=$(pw); MON_PW=$(pw)
+SA_PW=$(pw); MON_PW=$(pw); UIPW=$(pw)
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\nMSSQL_PID=Developer\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 cleanup() {
+  [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
+  [[ -n "$SRV2PID" ]] && kill "$SRV2PID" 2>/dev/null || true
   docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f -v >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
-for t in docker go psql python3; do command -v "$t" >/dev/null || fail "needs $t"; done
+for t in docker go psql python3 curl ss; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
 # PGVIGIL_WIRING 1 (default): this task's lines in other owners' files (scripts/proof-pm313-rules-wiring.patch) are
 # applied to this copy when it lacks them; 0 = the tree as it is
@@ -283,6 +289,42 @@ J6=$(jb model); [[ "$J6" == "100|pgvigil.yaml|"* ]] || fail "R5: every row ended
 NL=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log"); [[ "$NL" -ge 10 ]] || fail "R5: $NL log rows"
 config; col mssql_backups
 ok "R5: the default, the strictest tag, a tag at 0 beside 24, a database row over the tags and the yaml, the yaml over the tags, 0 = not judged; three refusals; $NL attempts logged"
+freeport() { local lo=$1 hi=$2 p used
+  used=$(ss -Htan) || fail "ss -Htan failed: the ports in use cannot be read"
+  used=$(awk '{n = split($4, a, ":"); print a[n]}' <<<"$used" | sort -u)
+  for _ in $(seq 1 50); do p=$((lo + RANDOM % (hi - lo + 1))); grep -qx "$p" <<<"$used" || { echo "$p"; return 0; }; done
+  fail "no free port in $lo-$hi"; }
+PGVIGIL_PASSWORD=$UIPW "$TMPD/pgvigil" user add -config "$CFG" "$UIUSER" > /dev/null 2>&1 || fail "R5b: user add"
+serve() { local p; for _ in 1 2 3; do p=$(freeport 29000 32499)
+    "$TMPD/pgvigil" serve -config "$CFG" -listen "127.0.0.1:$p" "$@" > "$TMPD/serve-$p.log" 2>&1 & local pid=$!
+    for _ in $(seq 1 60); do grep -q "url=http://127.0.0.1:$p/" "$TMPD/serve-$p.log" 2>/dev/null && { echo "$pid $p"; return 0; }; kill -0 $pid 2>/dev/null || break; sleep 0.5; done
+    kill $pid 2>/dev/null || true; done; fail "R5b: serve never answered: $(tail -3 "$TMPD"/serve-*.log)"; }
+read -r SRVPID SPORT <<<"$(serve)"; read -r SRV2PID SPORT2 <<<"$(serve -no-login)"
+U=http://127.0.0.1:$SPORT; U2=http://127.0.0.1:$SPORT2; JAR=$TMPD/jar
+code() { curl -s -m 20 -o "$TMPD/body" -w '%{http_code}' "$@"; }
+NOW_LOG=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log")
+[[ $(code -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/mssql/protection") == 401 ]] || fail "R5b: a POST without a session: $(cat "$TMPD/body")"
+curl -s -m 20 -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$U/api/login" > /dev/null
+[[ $(code -b "$JAR" -X POST -d '{}' "$U/api/mssql/protection") == 403 ]] || fail "R5b: a POST without the header"
+[[ $(code -b "$JAR" "$U/api/mssql/protection?instance=$SB") == 200 ]] || fail "R5b: GET: $(cat "$TMPD/body")"
+python3 - "$TMPD/body" <<'PY2' || fail "R5b: GET's parts"
+import json, sys
+d = json.load(open(sys.argv[1])); miss = [p for p in ('overrides', 'log', 'limits') if not isinstance(d.get(p), dict)]
+lim = d.get('limits') or {}; rows = [dict(zip(lim.get('columns', []), r)) for r in lim.get('rows', [])]
+print(f"   GET: writable {d.get('writable')}, parts {sorted(k for k in d if isinstance(d[k], dict))}, msdb {[r for r in rows if r.get('database_name') == 'msdb'][:1]}")
+sys.exit(1 if miss or d.get('writable') is not True or not any(r.get('database_name') == 'msdb' for r in rows) else 0)
+PY2
+A1=$(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{"op":"add","scope":"tag","tag":"env:pma","full_backup_hours":36}' "$U/api/mssql/protection")
+OID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("override_id") or "")' "$TMPD/body")
+A2=$(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{"op":"add","scope":"tag","tag":"env:pma","full_backup_hours":-2}' "$U/api/mssql/protection")
+A3=$(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"op\":\"end\",\"override_id\":$OID}" "$U/api/mssql/protection")
+[[ "$A1 $A2 $A3" == "200 409 200" ]] || fail "R5b: POST add / refused / end: $A1 $A2 $A3"
+[[ $(code "$U2/api/mssql/protection") == 200 ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["writable"] is False and "-no-login" in d["reason"] else 1)' "$TMPD/body" \
+  || fail "R5b: the -no-login serve's GET: $(cat "$TMPD/body")"
+[[ $(code -X POST -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{"op":"add","scope":"tag","tag":"x","full_backup_hours":1}' "$U2/api/mssql/protection") == 403 ]] || fail "R5b: the -no-login serve took a POST"
+LOGS=$(pq "SELECT string_agg(outcome || '=' || n, ' ' ORDER BY outcome) FROM (SELECT outcome, count(*) n FROM pgvigil.mssql_protection_override_log WHERE ui_user = '$UIUSER' AND client = '127.0.0.1' GROUP BY 1) x")
+[[ "$LOGS" == "done=2 refused=1" && $(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log") == $((NOW_LOG + 3)) ]] || fail "R5b: the log [$LOGS]"
+ok "R5b: the API: GET with limits; POST 401 / 403 / add 200 / refused 409 / end 200; a -no-login serve read only and refusing; done=2 refused=1 logged"
 
 echo "== R2. High CPU (Changed 12) =="
 HC=$(pq "SELECT rule_id || '|' || op || '|' || warning || '|' || critical || '|' || for_minutes || '|' || enabled || '|' || scope || '|' || created_by
