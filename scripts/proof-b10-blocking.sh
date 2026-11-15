@@ -264,14 +264,14 @@ check "$(has "$K3" 'deadlocks in the last hour')|$(has "$K3" 'a deadlock between
 
 echo "--- L. one window per wait (an hour's end crossed)"
 LS=$(syn ls sqlserver); LP=$(syn lp postgres); BEND="date_trunc('hour', now()) - interval '1 hour'"
-q "select pgvigil.mssql_event_partition('mssql_blocked_reports', now() - interval '1 hour');
+q "select pgvigil.mssql_event_partition('mssql_blocked_reports', $BEND - interval '2 minutes'), pgvigil.mssql_event_partition('mssql_blocked_reports', $BEND + interval '1 minute');
    insert into pgvigil.mssql_blocked_reports (instance_id, event_at, event_key, snapshot_at, database_name, wait_ms, blocked_spid, blocking_spid, blocked_statement, blocking_statement, head_key)
    select $LS, $BEND - interval '20 seconds' + make_interval(secs => k * 5), 'b10-l-' || k, now(), 'b10', k * 5000, 91, 90, 'UPDATE dbo.l SET v = 1', 'UPDATE dbo.l', md5('l')
      from generate_series(1, 8) k
    union all
    select $LS, $BEND - interval '60 seconds' + make_interval(secs => k * 5), 'b10-l2-' || k, now(), 'b10', k * 5000, 92, 90, 'UPDATE dbo.l SET v = 2', 'UPDATE dbo.l', md5('l')
      from generate_series(1, 6) k" >/dev/null
-q "select pgvigil.ensure_month_partition('activity_sample', now() - interval '1 hour');
+q "select pgvigil.ensure_month_partition('activity_sample', $BEND - interval '1 minute'), pgvigil.ensure_month_partition('activity_sample', $BEND + interval '1 minute');
    insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
    select $LP, $BEND + make_interval(secs => s), 103, $BEND - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'transactionid', $BEND - interval '30 seconds', '{100}'
      from unnest(array[-15, 0, 15]) s" >/dev/null
