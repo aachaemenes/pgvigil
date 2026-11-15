@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -67,7 +68,10 @@ SELECT c.instance_id, c.instance, c.engine, c.collection, c.status, c.status_rea
 const chCols = `
        r.runs, round(100.0 * (r.ok + r.partial) / nullif(r.ok + r.partial + r.failed, 0), 2) AS succeeded_pct,
        round(100.0 * r.failed / nullif(r.ok + r.partial + r.failed, 0), 2) AS failed_pct,
-       round(100.0 * r.failed24 / nullif(r.known24, 0), 2) AS failed_pct_24h,
+       -- DBA Dash's 0.00 for a collection with a run but no hourly row in the last 24 hours (a weekly one, one failing
+       -- for more than a day: CollectionHealth_Get :441-443); blank only with no run at all
+       CASE WHEN coalesce(r.known24, 0) = 0 THEN CASE WHEN r.last_run_at IS NOT NULL THEN 0.00 END
+            ELSE round(100.0 * r.failed24 / r.known24, 2) END AS failed_pct_24h,
        r.ok + r.partial AS succeeded, r.partial, r.failed, r.consecutive_failures AS failures_in_a_row,
        r.last_run_at, r.last_ok_at AS last_success, r.last_failure_at AS last_failure,
        round(r.dur_sum::numeric / nullif(r.ok + r.partial + r.failed, 0)) AS avg_duration_ms, r.dur_max AS max_duration_ms,
@@ -103,7 +107,7 @@ SELECT r.collection, r.status, r.instances, r.failing_instances,` + chCols + `
 
 // sqlCHRuns: the Runs chart - runs per bucket of $6 seconds by outcome, over the collections in scope
 var sqlCHRuns = `
-SELECT date_bin(make_interval(secs => $6::int), h.hour, timestamptz '2000-01-01 00:00:00+00') AS at,
+SELECT to_timestamp(floor(extract(epoch FROM h.hour) / $6::int) * $6::int) AS at,   -- the epoch floored: PostgreSQL 13 has no binning function (0054, 0076)
        sum(h.failed)::int AS failed, sum(h.partial)::int AS partial, sum(h.ok)::int AS succeeded
   FROM pgvigil.collection_health_hour h
  WHERE h.hour >= ` + chHourFrom + ` AND h.hour < $2::timestamptz AND ` + chScopeOf("h") + `
@@ -112,7 +116,7 @@ SELECT date_bin(make_interval(secs => $6::int), h.hour, timestamptz '2000-01-01 
 // sqlCHCost: the Cost chart - the time spent collecting per bucket, in seconds (pgvigil has no import step: the page
 // says so where DBA Dash shows its import time and lag)
 var sqlCHCost = `
-SELECT date_bin(make_interval(secs => $6::int), h.hour, timestamptz '2000-01-01 00:00:00+00') AS at,
+SELECT to_timestamp(floor(extract(epoch FROM h.hour) / $6::int) * $6::int) AS at,   -- the epoch floored: PostgreSQL 13 has no binning function (0054, 0076)
        round(sum(h.dur_ms_sum) / 1000.0, 1) AS collecting_s
   FROM pgvigil.collection_health_hour h
  WHERE h.hour >= ` + chHourFrom + ` AND h.hour < $2::timestamptz AND ` + chScopeOf("h") + `
@@ -137,16 +141,19 @@ func chStatuses(v string) ([]string, error) {
 	}
 	var out []string
 	for _, w := range strings.Split(v, ",") {
-		switch strings.TrimSpace(w) {
+		v := strings.TrimSpace(w)
+		switch v {
 		case "critical", "warning", "ok":
-			out = append(out, strings.TrimSpace(w))
 		case "na":
-			out = append(out, "n/a")
+			v = "n/a"
 		default:
 			return nil, errors.New("status must be critical, warning, na or ok, separated by commas")
 		}
+		if !slices.Contains(out, v) { // a repeated word is one status
+			out = append(out, v)
+		}
 	}
-	if len(out) == 4 {
+	if len(out) == 4 { // all four (distinct): no filter
 		return nil, nil
 	}
 	return out, nil
@@ -194,10 +201,24 @@ func (s *Server) CollectionHealth(w http.ResponseWriter, r *http.Request) {
 	coll := q.Get("collection")
 	scope := []any{from, to, id, ids, coll}
 	with := func(x ...any) []any { return append(append([]any{}, scope...), x...) }
-	s.multiPart(w, r, []part{
-		{"collections", rows, with(st, string(exp))},
-		{"runs", sqlCHRuns, with(chBucket(from, to))},
-		{"cost", sqlCHCost, with(chBucket(from, to))},
-		{"errors", sqlCHErrors, with(q.Get("q"))},
-	})
+	all := map[string]part{
+		"collections": {"collections", rows, with(st, string(exp))},
+		"runs":        {"runs", sqlCHRuns, with(chBucket(from, to))},
+		"cost":        {"cost", sqlCHCost, with(chBucket(from, to))},
+		"errors":      {"errors", sqlCHErrors, with(q.Get("q"))},
+	}
+	var ps []part
+	for _, n := range chPartNames(q.Get("part")) {
+		ps = append(ps, all[n])
+	}
+	s.multiPart(w, r, ps)
+}
+
+// chPartNames: the parts a read offers multiPart (which runs the one part= names, or every one offered); the error list
+// only when part=errors asks for it (the Errors link's list) - the page's main read draws no error list
+func chPartNames(part string) []string {
+	if part == "errors" {
+		return []string{"collections", "runs", "cost", "errors"}
+	}
+	return []string{"collections", "runs", "cost"}
 }

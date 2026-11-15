@@ -57,6 +57,13 @@ func TestCollectionHealthHourly(t *testing.T) {
 	if b2 := h.take(); len(b2.Health) != 1 || b2.Health[0].Runs != 8 || b2.Health[0].Ok != 4 {
 		t.Fatalf("second beat %+v, want the running totals runs 8 ok 4", b2.Health)
 	}
+	// a partial is a success for Last Success (health.go's partial branch; the review of B6.2, part a #7): the last
+	// run a partial at +10 s sets both
+	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond, Outcome: OutcomePartial}, at.Add(10*sec), m)
+	if b := h.take(); len(b.Health) != 1 || b.Health[0].LastOk == nil || !b.Health[0].LastOk.Equal(at.Add(10*sec)) ||
+		b.Health[0].LastPartial == nil || !b.Health[0].LastPartial.Equal(at.Add(10*sec)) {
+		t.Fatalf("a partial at +10 s: %+v, want last ok and last partial both at +10 s", b.Health)
+	}
 	// the next hour: 04:00 is still sent beside 05:00 (a run counted into 04:00 after its last beat reaches the store)
 	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond}, at.Add(time.Hour), m)
 	if b3 := h.take(); len(b3.Health) != 2 {

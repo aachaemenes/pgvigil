@@ -53,6 +53,8 @@ func TestCollectionHealthStatuses(t *testing.T) {
 	}{
 		{"", nil, false}, {"critical,na", []string{"critical", "n/a"}, false}, {"ok", []string{"ok"}, false},
 		{"critical,warning,na,ok", nil, false}, {"bad", nil, true}, {"n/a", nil, true},
+		// a repeated word is one status (the review of B6.2, part a #8): four words are 'all four' only when they differ
+		{"ok,ok,ok,ok", []string{"ok"}, false}, {"critical,critical,warning,ok", []string{"critical", "warning", "ok"}, false},
 	} {
 		got, err := chStatuses(c.in)
 		if (err != nil) != c.err || !reflect.DeepEqual(got, c.want) {
@@ -70,6 +72,29 @@ func TestCollectionHealthBucket(t *testing.T) {
 	}{{time.Hour, 3600}, {24 * time.Hour, 3600}, {7 * 24 * time.Hour, 4 * 3600}, {30 * 24 * time.Hour, 16 * 3600}} {
 		if got := chBucket(at, at.Add(c.d)); got != c.want {
 			t.Errorf("chBucket(%v) = %d, want %d", c.d, got, c.want)
+		}
+	}
+}
+
+// TestCollectionHealthPG13: the page's statements run on PostgreSQL 13 (README's floor): no date_bin, which 13 does not
+// have (0054, 0076 and q_mssql_plancache.go floor the epoch instead) - the review of B6.2, part a #1
+func TestCollectionHealthPG13(t *testing.T) {
+	for name, q := range map[string]string{"sqlCHRuns": sqlCHRuns, "sqlCHCost": sqlCHCost, "sqlCHInstance": sqlCHInstance, "sqlCHCollection": sqlCHCollection, "sqlCHErrors": sqlCHErrors} {
+		if strings.Contains(q, "date_bin") {
+			t.Errorf("%s calls date_bin: PostgreSQL 13 has none", name)
+		}
+	}
+}
+
+// TestCollectionHealthErrorsOnAsk: the page's main read (no part=) never runs the error list, which it does not draw;
+// part=errors (the Errors link's list) does - the review of B6.2, part a #5
+func TestCollectionHealthErrorsOnAsk(t *testing.T) {
+	for _, c := range []struct {
+		part string
+		want []string
+	}{{"", []string{"collections", "runs", "cost"}}, {"errors", []string{"collections", "runs", "cost", "errors"}}, {"runs", []string{"collections", "runs", "cost"}}} {
+		if got := chPartNames(c.part); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("part=%q: parts %v, want %v", c.part, got, c.want)
 		}
 	}
 }
