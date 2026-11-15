@@ -90,6 +90,8 @@ type Heartbeat struct {
 	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
 	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
 	probe    *prober               // the reachability probe (B24h-1b); nil when 'off'
+	// noProbeImport: the repository has no import_collector_probe (0254): not asked again this run
+	noProbeImport bool
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -699,7 +701,31 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 		if err := h.claim(ctx); err != nil {
 			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
 		}
+		return
 	}
+	// B24h (0254): the round trips and the probe's rows, through B24h's own import function with the same body (no
+	// joined function changes); a repository without it (42883: not migrated to 0254) is not asked again
+	if !h.noProbeImport && (len(b.Probes) > 0 || anyRoundTrip(b.Load)) {
+		if _, err := h.pool.Exec(bctx, `SELECT pgvigil.import_collector_probe($1, $2, $3::jsonb)`, h.id, minute, string(body)); err != nil {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "42883" {
+				h.noProbeImport = true
+				h.log.Warn("heartbeat: the repository has no import_collector_probe (0254): the round trips and probes are not kept until it is migrated")
+			} else {
+				h.log.Warn("heartbeat: the round trips and probes were not written", "err", err)
+			}
+		}
+	}
+}
+
+// anyRoundTrip: a load row with a round trip measured
+func anyRoundTrip(load []beatLoad) bool {
+	for _, l := range load {
+		if l.RtCount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ChannelBackoff keeps a failing alert channel out of the next passes, as the collector's own alert loop does

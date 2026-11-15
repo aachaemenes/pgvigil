@@ -3,6 +3,8 @@ package collect
 import (
 	"context"
 	"net"
+	"os"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -129,5 +131,21 @@ func TestProbeWiring(t *testing.T) {
 	}
 	if b := h.take(); b.Probes == nil {
 		t.Error("the beat's probes are null, want [] (jsonb_to_recordset refuses null)")
+	}
+}
+
+// TestBeatImportsProbe (B24h-1c): beat() hands the same body to pgvigil.import_collector_probe after
+// import_collector_beat (B6.1's form: B24h's own function, so no joined function changes), and stops calling it on a
+// repository without it (42883: a collector newer than its repository)
+func TestBeatImportsProbe(t *testing.T) {
+	b, err := os.ReadFile("heartbeat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?s)import_collector_beat\(.*import_collector_probe\(\$1, \$2, \$3::jsonb\)`).Match(b) {
+		t.Error("beat() does not call import_collector_probe after import_collector_beat")
+	}
+	if !regexp.MustCompile(`42883`).Match(b) {
+		t.Error("beat() does not stop calling import_collector_probe on a repository without it (42883)")
 	}
 }
