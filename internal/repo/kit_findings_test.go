@@ -12,12 +12,15 @@ import (
 )
 
 // KITWATCH K4.2 (F15, F16): pgvigil.kit_findings, a view of its own in the findings shape - 'sp_WhoIsActive
-// unusable' (warning) on an instance whose newest mssql_requests runs are a streak of at least 5 partial runs over at
-// least 5 minutes with the collector's fallback note AND a shape-class error (207 invalid column, 8144 / 8145 too many
-// or unknown parameters, 213 the column count, 2812 no such procedure); a streak of any other error (a deadlock
-// victim, a lock timeout) is an info 'sp_WhoIsActive failing'; a run that is not the fallback clears it; a shorter or
-// briefer streak raises nothing. collector_findings (0121, another owner's, edited in place) is not redefined: 0139's
-// arm still answers through it. On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it).
+// unusable' (warning) on an instance whose newest mssql_requests reads are a streak of at least 5 reads in a row over
+// at least 5 minutes in which the collector fell back to the DMV read AND the newest one's error is of a shape class
+// (207 invalid column, 8144 / 8145 too many or unknown parameters, 213 the column count, 2812 no such procedure); a
+// streak of any other error (a deadlock victim, a lock timeout) is an info 'sp_WhoIsActive failing'; the next read
+// that is not the fallback clears it at once; a shorter or briefer streak raises nothing, and fallbacks with good reads
+// between them are no streak (a passing error opens and clears nothing). Each read goes in as production writes it:
+// import_mssql_requests (one summary row per read, ok or not) and log_collection (collection_log holds a run only
+// when it is not ok). collector_findings (0121, another owner's, edited in place) is not redefined: 0139's arm still
+// answers through it. On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it).
 func TestKitFindingsOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -31,7 +34,7 @@ func TestKitFindingsOnAStore(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	sfx := time.Now().UnixNano() % 1000000000
-	ids := make([]int, 6)
+	ids := make([]int, 7)
 	for i := range ids {
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
 			fmt.Sprintf("kitfind-%d-%d", i, sfx)).Scan(&ids[i]); err != nil {
@@ -45,29 +48,43 @@ func TestKitFindingsOnAStore(t *testing.T) {
 			t.Logf("cleanup: %v", err)
 		}
 	})
-	logRow := func(inst int, ago time.Duration, status, note string) {
+	base := time.Now()
+	// one read of mssql_requests as the collector writes it (mssql.go: the import, then log_collection with the same
+	// snapshot_at; the partial note '<source>: <message>', requests.go's message with the error's number)
+	read := func(inst int, ago time.Duration, errMsg string, errNum int) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
-		                             VALUES ($1, 'mssql_requests', now() - $2::interval, $3, $4)`, inst, fmt.Sprintf("%d seconds", int(ago.Seconds())), status, note); err != nil {
+		at := base.Add(-ago)
+		source, sourceNote, status, note := "sp_whoisactive", "sp_WhoIsActive in master, completed from the DMVs by session and request id", "ok", ""
+		if errMsg != "" {
+			source, sourceNote, status = "dmv", "sp_WhoIsActive in master failed, the DMV read ran instead", "partial"
+			note = fmt.Sprintf("sp_WhoIsActive: mssql: %s (error %d); the DMV read ran instead", errMsg, errNum)
+		}
+		payload := fmt.Sprintf(`[{"kind":"summary","server_utc":%q,"source":%q,"source_note":%q,"memory_grants_pending":0,"read_ms":5}]`,
+			at.UTC().Format(time.RFC3339Nano), source, sourceNote)
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_requests($1, $2, $3::jsonb)`, inst, at, payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.log_collection($1, 'mssql_requests', $2, 40, $3, $4)`, inst, at, status, note); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// the collector's own note (mssql.go: '<source>: <message>'; requests.go's message with the error's number)
-	fallback := func(msg string, num int) string {
-		return fmt.Sprintf("sp_WhoIsActive: mssql: %s (error %d); the DMV read ran instead", msg, num)
-	}
-	streak := func(inst, n int, every time.Duration, note string) {
+	const shapeMsg, deadlockMsg = "Invalid column name 'tempdb_current'.", "Transaction (Process ID 61) was deadlocked on lock resources with another process and has been chosen as the deadlock victim."
+	streak := func(inst, n int, every time.Duration, msg string, num int) {
 		for i := n; i >= 1; i-- {
-			logRow(inst, time.Duration(i)*every, "partial", note)
+			read(inst, time.Duration(i)*every, msg, num)
 		}
 	}
-	shape, deadlock := fallback("Invalid column name 'tempdb_current'.", 207), fallback("Transaction (Process ID 61) was deadlocked on lock resources with another process and has been chosen as the deadlock victim.", 1205)
-	streak(ids[0], 6, time.Minute, shape)    // a shape-class streak: warning
-	streak(ids[1], 4, time.Minute, shape)    // too few runs: none
-	streak(ids[2], 6, time.Minute, deadlock) // another class: info
-	streak(ids[3], 6, time.Minute, shape)    // then a good run: cleared
-	logRow(ids[3], 10*time.Second, "ok", "") //
-	streak(ids[4], 6, 20*time.Second, shape) // 6 runs inside 2 minutes: too brief, none
+	streak(ids[0], 6, time.Minute, shapeMsg, 207)     // a shape-class streak: warning
+	streak(ids[1], 4, time.Minute, shapeMsg, 207)     // too few reads: none
+	streak(ids[2], 6, time.Minute, deadlockMsg, 1205) // another class: info
+	streak(ids[3], 6, time.Minute, shapeMsg, 207)     // then a good read: cleared at once
+	read(ids[3], 10*time.Second, "", 0)               //
+	streak(ids[4], 6, 20*time.Second, shapeMsg, 207)  // 6 reads inside 2 minutes: too brief, none
+	for _, h := range []time.Duration{8, 6, 4, 2} {   // five deadlock fallbacks 2 h apart, a good read a minute after
+		read(ids[6], h*time.Hour, deadlockMsg, 1205) // each but the newest: no streak, none
+		read(ids[6], h*time.Hour-time.Minute, "", 0)
+	}
+	read(ids[6], 2*time.Minute, deadlockMsg, 1205)
 	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
 	                             VALUES ($1, 'job_stats_hourly', now() - interval '30 minutes', 'error',
 	                                     'rollup failed for the mssql_job_runs hours 2026-11-14 10:00 to 2026-11-14 11:00 UTC (the runs are stored; the hours are rebuilt by the next import or purge): x')`, ids[5]); err != nil {
@@ -87,10 +104,11 @@ func TestKitFindingsOnAStore(t *testing.T) {
 		want string
 	}{
 		{"a shape-class streak of 6 over 6 minutes", ids[0], "warning|sp_WhoIsActive unusable|pgvigil collector"},
-		{"4 runs", ids[1], "none"},
+		{"4 reads", ids[1], "none"},
 		{"a deadlock-victim streak", ids[2], "info|sp_WhoIsActive failing|pgvigil collector"},
-		{"a good run after the streak", ids[3], "none"},
-		{"6 runs inside 2 minutes", ids[4], "none"},
+		{"a good read after the streak", ids[3], "none"},
+		{"6 reads inside 2 minutes", ids[4], "none"},
+		{"five fallbacks 2 h apart with good reads between", ids[6], "none"},
 	} {
 		if g := got(c.inst); g != c.want {
 			t.Errorf("%s: %s, want %s", c.what, g, c.want)
@@ -100,8 +118,8 @@ func TestKitFindingsOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT detail FROM pgvigil.kit_findings WHERE instance_id = $1`, ids[0]).Scan(&detail); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(detail, "tempdb_current") || !strings.Contains(detail, "207") {
-		t.Errorf("the finding's detail %q does not carry the server's error", detail)
+	if !strings.Contains(detail, "tempdb_current") || !strings.Contains(detail, "207") || !strings.Contains(detail, "6 mssql_requests reads") {
+		t.Errorf("the finding's detail %q does not carry the streak's reads and the server's error", detail)
 	}
 	// 0121's view is the owner's: its 0139 arm still answers (this task never redefines collector_findings)
 	var n int
