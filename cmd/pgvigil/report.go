@@ -295,12 +295,15 @@ var keepKeys = map[string]bool{
 	"import": true,
 	// custom:
 	"every": true, "rule": true, "compare": true, "warning": true, "critical": true,
+	// export: its knobs and the kind of destination; its name, paths, bucket, container and endpoint name the site
+	"type": true, "settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
+	"snapshot_max_bytes": true, "statement_timeout": true,
 }
 
 // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
 // names with their numbers (a threshold that is no number, backup_exclude's database patterns, is masked), action
 // names, the tag keys the tree groups by.
-var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "disabled": true, "actions": true, "group_by": true}
+var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "disabled": true, "actions": true, "group_by": true, "carry": true}
 
 // knownKeys are the keys of the configuration file (the yaml tags of config.Config, alerts.Settings and
 // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
@@ -320,6 +323,10 @@ var knownKeys = map[string]bool{
 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
 	"warning": true, "critical": true,
+	"export": true, "state_dir": true, "destination": true, "type": true, "path": true, "bucket": true, "prefix": true,
+	"endpoint": true, "account_url": true, "container": true, "connection_string": true, "sas_url": true,
+	"settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
+	"snapshot_max_bytes": true, "statement_timeout": true, "carry": true, "tables": true, "exclude": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another

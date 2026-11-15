@@ -125,9 +125,11 @@ func (d *folder) Delete(_ context.Context, key string) error {
 
 func (d *folder) List(_ context.Context, prefix string) ([]string, error) {
 	var keys []string
-	dir := d.path(prefix)
-	if !strings.HasSuffix(prefix, "/") {
-		dir = filepath.Dir(dir)
+	// the folder to walk: the prefix itself when it names one ("" is the root, "_manifests/"), else the folder its
+	// last part sits in ("_manifests/prod__2026" walks _manifests); never above the root
+	dir := d.root
+	if i := strings.LastIndex(prefix, "/"); i >= 0 {
+		dir = d.path(prefix[:i])
 	}
 	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {

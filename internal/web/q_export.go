@@ -20,5 +20,10 @@ SELECT s.name, s.destination, s.last_run_at, s.last_outcome, s.last_error, s.new
 
 // Export answers GET /api/export: the export's last windows, its state and the service's lines about it.
 func (s *Server) Export(w http.ResponseWriter, r *http.Request) {
+	// a repository not migrated to 0256 yet has no record of an export: nothing to show, and no error on the page
+	if hv, err := s.query(r.Context(), `SELECT to_regclass('pgvigil.export_runs') IS NOT NULL`); err != nil || len(hv.Rows) != 1 || hv.Rows[0][0] != true {
+		s.reply(w, r, map[string]*table{}, err)
+		return
+	}
 	s.multiPart(w, r, []part{{"runs", sqlExportRuns, nil}, {"state", sqlExportState, nil}, {"service", sqlExportService, nil}})
 }
