@@ -58,7 +58,7 @@ export async function retentionView(_ctx: Ctx): Promise<HTMLElement> {
       { key: 'table_name', label: 'Table' },
       { key: 'size_bytes', label: 'Size', num: true, fmt: fmtBytes },
       { key: 'rows_estimate', label: 'Rows (estimate)', num: true, fmt: fmtNum },
-      { key: 'retention', label: 'Retention', cls: (v, r) => r.note != null && String(r.note).startsWith('partitioned') ? 'warn' : v == null || v === '' ? '' : v === 'kept whole' ? 'status none' : 'status ok' },
+      { key: 'retention', label: 'Retention', cls: (v, r) => r.note != null && String(r.note).startsWith('partitioned') ? 'warn' : v == null || v === '' ? '' : 'status ok' },   // 'kept whole' too: the check judges it (only a partitioned one warns)
       { key: 'column_name', label: 'By column' },
       { key: 'same_as', label: 'Same as' },
       { key: 'partitions', label: 'Partitions', num: true, fmt: v => Number(v) > 0 ? fmtNum(v) : '' },
