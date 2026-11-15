@@ -103,15 +103,18 @@
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
 #        Agent alerts), mssqlstorage (the Drives screen: 0 rows on Linux, as C's), mssqlfiles, mssqlconfig and
 #        mssqlproperties as the repository's screens with rows (mssqlstorage: as many as part C's DrivesReport_Get),
+#        the tenth screen collectionhealth (B6.3) by version - on 4.25.0 the repository's screen with rows, on 4.24.1
+#        a screen with no call (no row, no grid; its gate's words read by CH9b below) -,
 #        every other tab its one 'not read for an imported server' line and no grid row; no tab but the seven live
-#        screens holds 'DBADash' or 'DBA Dash' text; the tree shows 'Imported: lab' and no such text; the Imported servers
-#        page names the source product on its settings line only;
+#        screens (and collectionhealth's rows on 4.25.0: the source's data) holds 'DBADash' or 'DBA Dash' text; the tree
+#        shows 'Imported: lab' and no such text; the Imported servers page names the source product on its settings
+#        line only;
 #     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
 #        under DBA Dash's display name;
 #     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same tabs (Availability
 #        kept); mssqlcpu and jobstimeline render pgvigil's own pages over the imported rows (a grid row or a chart),
-#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the eight
-#        other screen tabs as in G1, every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
+#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the other
+#        screen tabs as in G1 (collectionhealth by version), every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
 #        Storage page there; it lists the databases of pgvigil's own file read, which an imported server has not.]
 # NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the imported-server match
 # with two repositories under one display name, a repository removed from the configuration, or a collection attempt on
@@ -729,7 +732,7 @@ G168="availability counters findings jobstimeline mssql_blocked mssql_deadlocks 
 for k in $G168; do [[ " $GKEYS " == *" $k "* ]] || fail "G: task 168's SQL Server tab $k is no longer in router.ts mssqlInstanceTabs"; done
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
-  local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage " n line k
+  local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage $GDATA " n line k
   n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == "$GWANT" ]] || fail "$4: $n tabs walked (want $GWANT, router.ts mssqlInstanceTabs): $out"
   local walked; walked=$(echo "$out" | awk '/^tab /{print $2}' | LC_ALL=C sort | tr '\n' ' ')
   [[ "$walked" == "$(printf '%s\n' "${GK[@]}" | LC_ALL=C sort | tr '\n' ' ')" ]] || fail "$4: the walked tabs ($walked) are not router.ts mssqlInstanceTabs ($GKEYS)"
@@ -748,12 +751,19 @@ gtabs() {
       [[ "$line" == *" source=screen "* ]] || fail "$4: $k is not the repository's screen: $line"
       r=$(echo "$line" | sed -n 's/.* rows=\([0-9]*\) .*/\1/p')
       [[ "$k" == mssqlstorage ]] && { [[ "$r" == "$n_drv" ]] || fail "$4: the Drives screen shows $r rows (want $n_drv, part C's DrivesReport_Get)"; } || (( r > 0 )) || fail "$4: $k shows no row: $line"
+    elif [[ "$GGATED" == *" $k "* ]]; then
+      [[ "$line" == *" source=screen "* && "$line" == *" rows=0 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k on $DDV is not the screen with no call (no row, no grid): $line"
     else
       [[ "$line" == *" source=none "* && "$line" == *" notread=1 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k is not one 'not read' line: $line"
     fi
   done < <(echo "$out" | grep '^tab ')
 }
 SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlproperties"
+# B6.3: the tenth screen by version (dbadash.ts tabSources: collectionhealth is a screen on both) - on 4.25.0 the
+# repository's screen with rows, which are the source's data as the live screens' rows are; on 4.24.1 the screen makes
+# no call: no row, no grid, its gate's words (read by CH9b below), and pgvigil's words name no source product
+GDATA=""; GGATED=" collectionhealth "
+[[ "$DDV" == 4.25.0 ]] && { SCREENS="$SCREENS collectionhealth"; GDATA="collectionhealth"; GGATED=""; }
 # the Drives screen's rows as part C read them (DrivesReport_Get through the read login)
 n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(s.get("rows") or []) for s in d.get("results") or []))' "$TMPD/pages/drives.json")
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
