@@ -95,6 +95,18 @@ send that went out but whose record in the repository then failed (the repositor
 sent again by the next pass. Two senders at the same time (the service and a `pgvigil alerts` by hand) do not both
 send: a pass holds an advisory lock in the repository, and a second sender skips its pass.
 
+A webhook that answers 429 with a `Retry-After` of 10 seconds or less (in seconds, or as a date) is waited out inside
+the send's 30 seconds and posted once more; the second answer stands. A longer `Retry-After`, none, or a second 429
+fails that send as above, and the log's error says which.
+
+**Alert channel failing.** When a channel's last three send attempts (alerts or a Send test) all failed or were
+refused, the repository raises its own finding *alert channel failing* (warning, instance `pgvigil`, its value the
+channel's name), and the other channels are sent it like any repository-wide alert: every channel at or under warning,
+scoped ones too, never an application contact's route. The detail names the channel's kind and destination (a
+webhook's scheme and host only), the newest failed attempt and its error. The failing channel itself is never sent its
+own alert. The next send that goes through ends it, and the other channels get its recovery. A channel whose floor is
+critical is not told: set one channel at warning to hear of the others.
+
 One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
 column; renamed, it is a new channel and sends the standing findings again.
@@ -521,9 +533,12 @@ through `pgvigil.alert_test_record`; its login needs nothing new (0093 grants `p
 | `pgvigil.alert_rule_state` | Keyed by kind too; gains the last 12 results, `flapping_since` and the baseline judged against. |
 | `pgvigil.alert_rule_baseline` | The hour's baseline per baseline rule, instance and series. |
 | `pgvigil.alert_rule_overrides` | Per live rule, the rule of its kind in force instead of it, and on how many instances. |
+| `pgvigil.alert_channel_failing` | Each configured channel whose last three send attempts failed: the repository-wide finding *alert channel failing* (a view over `alert_log`, read through `alert_findings`; the index `alert_log_channel_at_idx` serves it). |
 
 Writes from the UI go through `pgvigil.import_alert_window` and `pgvigil.import_alert_rule` (the actions door's audit
-login; `POST /api/alertwindows`, `/api/alertrules`); the pages read `GET /api/alertscope`.
+login; `POST /api/alertwindows`, `/api/alertrules`); the pages read `GET /api/alertscope`. Its part `alerts` is one
+instance's alerts over the window (`instance_id` required; filtered by the instance before its limit of 1,000), which
+the MCP tool `alert_history` reads with the instance's findings history, up to 90 days back ([mcp.md](mcp.md)).
 
 ## Proof
 

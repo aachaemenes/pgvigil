@@ -1,3 +1,15 @@
+diff --git i/docs/mcp.md w/docs/mcp.md
+index 153d897f..604a328c 100644
+--- i/docs/mcp.md
++++ w/docs/mcp.md
+@@ -22,6 +22,7 @@
+ | `plan_findings` | `plan_id`, or `instance` with `queryid`, `from`, `to`, `hours` | one captured plan with the plan rules it hits, or the plans captured in a window (default 24 hours) to find a `plan_id` | `/api/plan`, `/api/plans` |
+ | `table_state` | `instance`, `table` (name or schema.table), `database` | the table's latest sizes, tuples, bloat, visibility, vacuum and analyze history, scans, XID age and checks, with its database's summary | `/api/tables` |
+ | `storage_forecast` | `instance` (optional) | volumes with free space, growth per day and days until full; with `instance`, also database and table growth and the storage checks; without it, the fleet and the repository's own size | `/api/storage`, `/api/storage/fleet` |
++| `alert_history` | `instance`, `from`, `to`, `hours` | one instance's alerts over the window (default 24 hours, at most 90 days, the alert log's reach): each firing with its clearance, severity, check, value, threshold, channels and sends; and its findings history (each open, close, severity change and hourly sample), sent or not | `/api/alertscope` |
+ 
+ An instance is named by its name (as `fleet_summary` lists it) or its `instance_id`. Times are RFC 3339 (`2026-11-09T08:00:00Z`). Each list in a reply is cut at 200 rows and each text at 20,000 characters; a cut says so in the reply.
+ 
 diff --git i/internal/mcp/applications_test.go w/internal/mcp/applications_test.go
 index 9da543d4..89dd2f05 100644
 --- i/internal/mcp/applications_test.go
