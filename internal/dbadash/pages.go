@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,26 @@ func Proven(v string) bool {
 		}
 	}
 	return false
+}
+
+// versionAtLeast: a DBVersionHistory version (4.25.0, 4.25.0.7) at or past another, part by part as numbers; an
+// empty or unreadable version is not
+func versionAtLeast(v, min string) bool {
+	vs, ms := strings.Split(strings.TrimSpace(v), "."), strings.Split(min, ".")
+	for i := range ms {
+		if i >= len(vs) {
+			return false
+		}
+		a, errA := strconv.Atoi(vs[i])
+		b, errB := strconv.Atoi(ms[i])
+		if errA != nil || errB != nil {
+			return false
+		}
+		if a != b {
+			return a > b
+		}
+	}
+	return true
 }
 
 // PageDef is one page: its key in the URL, DBADash's own name for the screen, the procedure and how it is called.
@@ -137,10 +158,14 @@ var Pages = []PageDef{
 
 // gateNote: why a page whose procedure came with a later DBA Dash (Since) is not read - the procedure absent from the
 // repository, or the login without EXECUTE on it; "" to read it (and for every page with no Since)
-func gateNote(def PageDef, exists, canExec bool) string {
+func gateNote(def PageDef, exists, canExec bool, version string) string {
 	switch {
 	case def.Since == "":
 		return ""
+	case !exists && versionAtLeast(version, def.Since):
+		// OBJECT_ID is NULL for an object the login has no right on (SQL Server's metadata visibility): on a repository
+		// of the procedure's version or later an unseen procedure is the missing GRANT (the review of B6.2, part b #2)
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (docs/dbadash.md's GRANT, on DBA Dash %s and later)", def.Procedure, def.Since)
 	case !exists:
 		return fmt.Sprintf("not read: %s is not in this DBA Dash repository (it came with DBA Dash %s)", def.Procedure, def.Since)
 	case !canExec:
@@ -295,7 +320,7 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
        CAST(ISNULL(HAS_PERMS_BY_NAME(@p, 'OBJECT', 'EXECUTE'), 0) AS bit)`, sql.Named("p", def.Procedure)).Scan(&exists, &canExec); err != nil {
 			return PageReply{}, fmt.Errorf("%s's presence: %w", def.Procedure, err)
 		}
-		if n := gateNote(def, exists, canExec); n != "" {
+		if n := gateNote(def, exists, canExec, out.Version); n != "" {
 			if out.Note != "" {
 				n = out.Note + "; " + n
 			}

@@ -48,20 +48,30 @@ func TestCollectionHealthPage(t *testing.T) {
 			t.Errorf("%s = %v, want true (DBA Dash's default)", k, got[k])
 		}
 	}
+	noProc := "not read: dbo.CollectionHealth_Get is not in this DBA Dash repository (it came with DBA Dash 4.25.0)"
+	noExec := "not read: this login has no EXECUTE on dbo.CollectionHealth_Get (docs/dbadash.md's GRANT, on DBA Dash 4.25.0 and later)"
 	for _, c := range []struct {
 		exists, exec bool
+		version      string
 		want         string
 	}{
-		{false, false, "not read: dbo.CollectionHealth_Get is not in this DBA Dash repository (it came with DBA Dash 4.25.0)"},
-		{true, false, "not read: this login has no EXECUTE on dbo.CollectionHealth_Get (docs/dbadash.md's GRANT, on DBA Dash 4.25.0 and later)"},
-		{true, true, ""},
+		{false, false, "4.24.1", noProc},
+		{true, false, "4.25.0", noExec},
+		{true, true, "4.25.0", ""},
+		// the review of B6.2, part b #2: OBJECT_ID is NULL for a procedure the login has no right on, so on a repository
+		// of 4.25.0 or later an unseen procedure is the missing GRANT, never a missing procedure
+		{false, false, "4.25.0", noExec},
+		{false, false, "4.25.0.7", noExec},
+		{false, false, "4.26.1", noExec},
+		{false, false, "", noProc},
+		{false, false, "4.24.9", noProc},
 	} {
-		if g := gateNote(p, c.exists, c.exec); g != c.want {
-			t.Errorf("gateNote(exists %v, exec %v) = %q, want %q", c.exists, c.exec, g, c.want)
+		if g := gateNote(p, c.exists, c.exec, c.version); g != c.want {
+			t.Errorf("gateNote(exists %v, exec %v, version %q) = %q, want %q", c.exists, c.exec, c.version, g, c.want)
 		}
 	}
 	// a page with no Since is never gated
-	if b, _ := PageByKey("backups"); b.Since != "" || gateNote(b, false, false) != "" {
+	if b, _ := PageByKey("backups"); b.Since != "" || gateNote(b, false, false, "4.25.0") != "" {
 		t.Errorf("backups gated: %+v", b)
 	}
 }

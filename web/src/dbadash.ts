@@ -181,12 +181,24 @@ function instanceHref(ctx: Ctx, d: DBADashData, repo: string, id: unknown): stri
 
 // B6.3: DBA Dash 4.25.0's own tooltip for its Summary's Collection Health column, quoted from its GUI
 // (DBADashGUI/Checks/Summary.Designer.cs L433, CollectionErrorStatus.ToolTipText) - the lead's 23:4x call B6.3-c
+// DBA Dash 4.24.1's tooltip of its errors column (Checks/Summary.Designer.cs L433), word for word
+const collectionErrorsTip241 = 'Count of errors encountered by the DBA Dash service during data collection or import for the instance.  Retries are highlighted as warning, failures are critical.';
+// a repository version at 4.25.0 or later: 0138's dbadash_health_version, word for word in its rule
+const healthVersion = (v: unknown) => {
+  const s = String(v ?? '');
+  if (!/^[0-9]{1,9}(\.[0-9]{1,9})*$/.test(s)) return false;
+  const p = s.split('.').map(Number);
+  return p[0] > 4 || (p[0] === 4 && (p[1] ?? 0) >= 25);
+};
 const collectionHealthTip = 'Collections at warning or critical: failing in a row for long enough, or a high failure rate since errors were acknowledged (24hrs at most) - thresholds configured in the Collection Health tab.  For an instance whose DBA Dash service predates collection health, the count of collection and import errors in the last 24hrs.  Click to see collection health.';
 
 // the fleet grid: one row per instance, one cell per Summary status in the source's column order; a repository at 4.25.0
 // or later (the column named 'Collection Health') has DBA Dash's tooltip on it and its cell opens the instance's
 // Collection Health screen, as DBA Dash's does
 function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLElement {
+  // each row's repository at 4.25.0 or later (0138's dbadash_health_version): its cell lands on Collection Health, a
+  // 4.24.1 one's on the old landing, whatever the other repositories are (the review of B6.2, part b #5)
+  const repoHealth = new Map(rowsOf(d.repositories).map(r => [String(r.repository), healthVersion(r.version)]));
   const cols: Col[] = [
     { key: 'level', label: 'level', fmt: v => ldot(Number(v ?? 0), levelWords[Number(v ?? 0)]) },
     { key: 'display_name', label: 'instance', fmt: (v, r) => el('a', { href: instanceHref(ctx, d, String(r.repository), r.instance_id) }, String(v)) },
@@ -194,12 +206,15 @@ function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLEl
     { key: 'pgvigil', label: 'in pgvigil', fmt: (_v, r) => { const pv = pgvigilOf(d, String(r.repository), Number(r.instance_id)); return pv ? (pv.collected ? 'collected' : 'imported') : 'not imported'; } },
     { key: 'last_collection', label: 'last collection', fmt: v => v == null ? 'never' : fmtTime(v) },
     ...checks.map(c => {
-      const health = c.status_key === 'CollectionErrorStatus' && ownLabel(c.label) === 'Collection Health';
+      const errCol = c.status_key === 'CollectionErrorStatus', label = ownLabel(c.label);
+      // the header's tooltip: 4.25.0's for 'Collection Health', 4.24.1's for 'Collection errors (24hrs)', both (4.25.0's
+      // first) on a mixed fleet's 'Collection Health / Collection errors (24hrs)' (the review of B6.2, part b #6)
+      const tips = errCol ? [label.startsWith('Collection Health') ? collectionHealthTip : '', /Collection errors/.test(label) ? collectionErrorsTip241 : ''].filter(Boolean) : [];
       return {
-        key: 's_' + String(c.status_key), label: ownLabel(c.label), ...(health ? { title: collectionHealthTip } : {}),
+        key: 's_' + String(c.status_key), label, ...(tips.length ? { title: tips.join('\n') } : {}),
         cls: (_v: unknown, r: Row) => 'status ' + codeClass(num((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)])),
-        fmt: (_v: unknown, r: Row) => statusCell((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)], ownLabel(c.label), undefined,
-          health ? dbadashHref(ctx, String(r.repository), r.instance_id, 'collectionhealth') : instanceHref(ctx, d, String(r.repository), r.instance_id)),
+        fmt: (_v: unknown, r: Row) => statusCell((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)], label, undefined,
+          errCol && repoHealth.get(String(r.repository)) ? dbadashHref(ctx, String(r.repository), r.instance_id, 'collectionhealth') : instanceHref(ctx, d, String(r.repository), r.instance_id)),
       } as Col;
     }),
   ];
@@ -445,7 +460,8 @@ const asUTC = (v: unknown) => String(v ?? '').replace(' ', 'T') + 'Z';
 // its column aliases, the columns it hides; the row's status (DBA Dash hides the Status column and colours the row)
 // colours Status Reason here, its word where the reason is empty
 const chSets = ['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights'];
-const chHidden = new Set(['InstanceID', 'Reference', 'Step', 'Status', 'LastStatus', 'ErrorsFrom', 'ErrorsTo', 'DrillGroupByInstance', 'LastDurationMs',
+// UnknownCount: DBA Dash's 'No Status' column is Visible = false (CollectionHealthView.cs L210; the review of B6.2, part b #4)
+const chHidden = new Set(['InstanceID', 'Reference', 'Step', 'Status', 'LastStatus', 'ErrorsFrom', 'ErrorsTo', 'DrillGroupByInstance', 'LastDurationMs', 'UnknownCount',
   'TotalDurationMs', 'MaxLogicalReads', 'TotalLogicalReads', 'TotalImportMs', 'AvgImportLogicalReads', 'TotalImportLogicalReads']);
 const chAlias: Record<string, string> = {
   InstanceDisplayName: 'Instance', Name: 'Collection', StatusReason: 'Status Reason', InstanceCount: 'Instances', FailingInstanceCount: 'Failing Instances',
@@ -457,9 +473,12 @@ const chAlias: Record<string, string> = {
   TotalImportCpuMs: 'Total Import CPU (ms)', AvgImportLagSec: 'Avg Import Lag (sec)', MaxImportLagSec: 'Max Import Lag (sec)', ErrorCount: 'Errors',
   ThresholdLevel: 'Thresholds', SnapshotDate: 'Date',
 };
+// a result set's own aliases where DBA Dash gives them per set (CollectionHealthView.cs L253-273: Cost's Value 'Seconds',
+// Import Lag's SnapshotDate 'Date Collected' and Value 'Seconds'; the review of B6.2, part b #7)
+const chAliasOf: Record<number, Record<string, string>> = { 2: { Value: 'Seconds' }, 3: { SnapshotDate: 'Date Collected', Value: 'Seconds' } };
 function chShape(cols: Col[], k: number): Col[] {
   const shown = cols.filter(c => !(k === 0 && chHidden.has(c.key)));
-  for (const c of shown) c.label = chAlias[c.key] ?? c.label;
+  for (const c of shown) c.label = chAliasOf[k]?.[c.key] ?? chAlias[c.key] ?? c.label;
   const reason = shown.find(c => c.key === 'StatusReason');
   if (reason) {
     reason.cls = (_v: unknown, r: Row) => 'status ' + codeClass(num(r.Status));
