@@ -40,7 +40,8 @@ scoped by that tag, the change is refused and names them; tick "also rewrite" (r
 them with it. An application still assigned is removed only with "with its assignments" ticked, and the page asks twice.
 An edit made from a page that read the application before someone else changed it is refused ("stale"): open it again.
 
-Until the viewer, operator and admin roles exist, any signed-in user may change applications. A server running with
+Changing an application needs the admin role ([roles.md](roles.md)): a viewer or an operator sees the page read
+only, with the role's words. A server running with
 `-no-login`, `pgvigil demo -serve`, or without the actions door's audit login shows the page read only, each control
 off with the reason.
 
