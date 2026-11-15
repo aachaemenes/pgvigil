@@ -152,7 +152,8 @@
 #     and the power plan's cell 'not read' on a Linux host; Procedures shows the proof's procedure with 11
 #     executions under dbo, and its name opens it read by read (2 reads); Index locks shows PK_pv_lock on pv_lock
 #     with at least 1 row lock wait, 1 escalation attempt and 1 escalation; Waits shows the forced lock wait's type with both
-#     rates and a description, the grid has one row per wait type of the window, no row taller than 320 px and a
+#     rates and a description (its row found by the wait type's own link: the cell also holds a 'requests' link since
+#     D10's Queries page), the grid has one row per wait type of the window, no row taller than 320 px and a
 #     description column at least 300 px wide (corrected after the first look: the column had collapsed to one
 #     character and a row was thousands of pixels tall; the first run's checks did not see it); the fleet Running
 #     queries row of the stored snapshot reads 4.0 MB, 5.0 MB, 2, 800, 1, 500 and a PostgreSQL row's six cells are
@@ -878,7 +879,7 @@ for (const theme of ['light', 'dark']) {
   await shot('indexlocks', theme);
 
   check(await go(`#/mssql_waits?i=${a.iid}&w=6h`, 'wait time (ms/sec/core)'), T + 'Waits rendered with the rate columns');
-  const w = await pv(`const t = gridOf('wait time (ms/sec/core)'); const tr = rowWith(t, 'wait type', ${JSON.stringify(a.lck)}); return tr ? { rate: text(t, tr, 'wait time (ms/sec)'), core: text(t, tr, 'wait time (ms/sec/core)'), desc: text(t, tr, 'description') } : null;`);
+  const w = await pv(`const t = gridOf('wait time (ms/sec/core)'); const tr = rowsOf(t).find(r => cell(t, r, 'wait type')?.querySelector('a')?.textContent.trim() === ${JSON.stringify(a.lck)}); return tr ? { rate: text(t, tr, 'wait time (ms/sec)'), core: text(t, tr, 'wait time (ms/sec/core)'), desc: text(t, tr, 'description') } : null;`);
   check(w && w.rate !== '' && w.core !== '' && (w.desc ?? '').length > 40, T + `Waits: ${a.lck} ${JSON.stringify(w)?.slice(0, 160)}`);
   await shot('waits', theme);
   // the grid's layout: every wait type of the window is a row, and no row is taller than a wrapped description needs
