@@ -215,3 +215,24 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 `door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
+
+## The probes: /livez and /readyz (web:)
+
+`pgvigil serve` answers two probes for a load balancer or an orchestrator, without the UI login and with nothing but
+their words:
+
+- `GET /livez` - `200 ok` while the process answers. It reads nothing.
+- `GET /readyz` - `200 ok` while the repository answers and its schema is current (the check `pgvigil run` makes at its
+  start), else `503 not ready: <why>` (`the repository does not answer`, or `the repository's schema is behind this
+  binary (needs <migration>)`). The answer is kept 5 seconds: a burst of probes runs one check. The repository's own
+  error stays in the log (it can name the login and the address).
+
+`/readyz` is open while the UI login is off. With the login on it answers `404` unless the configuration opens it:
+
+```yaml
+web:
+  readyz_without_login: true   # default false: /readyz then needs nothing from the caller
+```
+
+The collector's own state (a collection failing, the alert sender idle, the repository's autovacuum behind) is a
+finding on the Collector page and the Summary, never a probe's answer.

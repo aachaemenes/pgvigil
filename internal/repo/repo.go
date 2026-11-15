@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -195,6 +196,16 @@ func schemaMissingFile(names []string) string {
 // was. A store that records that file but has no such function (one migrated by an earlier build of it) is an error
 // that names the repair.
 func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
+	return SchemaCurrentWith(ctx, r.pool)
+}
+
+// RowQuerier is what SchemaCurrentWith reads through: a pool, a connection or a transaction
+type RowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// SchemaCurrentWith is SchemaCurrent over any pool or connection (B6.4: serve's /readyz reads it on the UI pool)
+func SchemaCurrentWith(ctx context.Context, q RowQuerier) (bool, string, error) {
 	names, err := migrationNames()
 	if err != nil {
 		return false, "", err
@@ -204,7 +215,7 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 		latest = names[len(names)-1]
 	}
 	var missing []string
-	err = r.pool.QueryRow(ctx, `SELECT pgvigil.schema_missing($1::text[])`, names).Scan(&missing)
+	err = q.QueryRow(ctx, `SELECT pgvigil.schema_missing($1::text[])`, names).Scan(&missing)
 	if err == nil {
 		ok, name := schemaState(names, missing)
 		return ok, name, nil
@@ -214,7 +225,7 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
 	var have *string
-	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
+	if err := q.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
 		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
 	defines := schemaMissingFile(names)
