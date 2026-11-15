@@ -422,7 +422,7 @@ diff -ru a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
    { key: 'subscriber', fmt: (v, r) => `${String(v ?? '')}.${String(r.subscriber_db ?? '')}` },
 -  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
 +  { key: 'subscription_type', label: 'type' }, { key: 'subscription_status', label: 'subscription' },
-+  // a merge agent is read as its subscription (agent 'merge': no status, commands or latency at the distributor)
++  // a merge agent is read as its subscription (agent 'merge': no subscription status, commands or latency at the distributor)
 +  { key: 'agent_type', label: 'agent' },
 +  { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
 +  { key: 'job_state', label: 'job', fmt: jobCell, cls: jobCls },

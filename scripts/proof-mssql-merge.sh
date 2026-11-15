@@ -53,7 +53,11 @@
 #      - the merge series' samples store latency NULL, the distribution series' a number (0142 :294) [red: merge 0 / 3600];
 #      - a log reader (continuous, its job stopped at both reads) of a database pdbm whose only subscriptions are merge
 #        ones raises nothing: 'stopped' covers a merge agent itself, never widens the log reader's rule (review q10a S1)
-#        [red at the q10a fold's fixture run: 'a replication agent is stopped' on logreader / lr-pdbm].
+#        [red at the q10a fold's fixture run: 'a replication agent is stopped' on logreader / lr-pdbm];
+#      - a read that carries a failed merge-tables probe's collector_error (its source as replProbeError writes it:
+#        'distribution (merge tables check)') beside fresh rows replaces the instance's old rows: only the fresh
+#        distribution subscription is left, at its new last run (review q10d S2) [green on arrival: it guards a correct
+#        rule; TestReplicationProbeErrorKeepsNothing pins the source text, red under a mutation to the database alone].
 #  T5. the container, its network and the repository removed. 'PROOF OK (part T)'.
 #
 # Expected, part W: in the header of part W below.
@@ -235,6 +239,12 @@ warning:a replication agent keeps failing or retrying:merge / merge-failing'
   if [ "$GOT" = "$WANT" ]; then ok "T4: the findings as expected"; else red "T4-findings"; diff <(echo "$WANT") <(echo "$GOT") | sed 's/^/    /' || true; fi
   LAT=$(q "select string_agg(agent_type || '/' || coalesce(subscriber_db, '?') || '=' || coalesce(latency_s::text, 'null'), ',' order by agent_type, subscriber_db) from pgvigil.mssql_repl_sample where instance_id = $ST and snapshot_at = '$T2'::timestamptz and kind = 'subscription'")
   if [ "$LAT" = "distribution/d1=0,distribution/d2=0,merge/s1=null,merge/s2=null,merge/s3=null,merge/s4=null,merge/s9=null" ]; then ok "T4: the samples' latency (merge NULL): $LAT"; else red "T4-samples" "$LAT"; fi
+  # a failed probe's row keeps nothing at the import (review q10d S2)
+  SP=$(q "select pgvigil.ensure_instance('proof-merge-probe-$HX', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+  q "select pgvigil.import_mssql_replication($SP, '$T1'::timestamptz, '[$(row merge merge-old s6 null 4 "$L1"), $(row distribution dist-keep d6 '"active"' 2 "$L1" ', "undistributed": 0')]'::jsonb)" >/dev/null
+  q "select pgvigil.import_mssql_replication($SP, '$T2'::timestamptz, '[{\"kind\": \"collector_error\", \"source\": \"distribution (merge tables check)\", \"message\": \"lock request time out\"}, $(row distribution dist-keep d6 '"active"' 2 "$L2" ', "undistributed": 0')]'::jsonb)" >/dev/null
+  PR=$(q "select string_agg(kind || '/' || agent_type || '/' || agent_name || ':' || (last_run_at = '$L2'::timestamptz)::text, ',' order by kind, agent_name) from pgvigil.mssql_replication_state where instance_id = $SP")
+  if [ "$PR" = "subscription/distribution/dist-keep:true" ]; then ok "T4: a failed probe's row keeps nothing: $PR"; else red "T4-probe" "$PR"; fi
   echo "--- T5. removed (cleanup follows)"
   if [ ${#RED[@]} -gt 0 ]; then echo "PART T RED: ${RED[*]}"; exit 1; fi
   OKLINE="PROOF OK (part T)"
