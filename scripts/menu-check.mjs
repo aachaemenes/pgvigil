@@ -797,7 +797,9 @@ await guard('G-rownum', async () => {
   await gmOpen(gCell('platform')); await gmPick('Hide column platform'); await sleep(300);
   const hiddenHead = await ev(`[...${GT}.querySelectorAll('thead tr:first-child th')].filter(h => h.hasAttribute('data-gt-hidden')).map(h => h.textContent.trim()).join(',')`);
   await gmOpen(gCell('sessions')); const fz = await ev(`(() => { const b = [...document.querySelectorAll('.tm-menu button')].find(b => b.textContent.startsWith('Freeze the columns up to sessions')); b?.click(); return !!b; })()`); await sleep(300);
-  const frozenLast = await ev(`(() => { const hs = [...${GT}.querySelectorAll('thead tr:first-child th')]; const st = hs.filter(h => getComputedStyle(h).position === 'sticky'); return st.length ? st[st.length - 1].textContent.trim() : ''; })()`);
+  // the frozen columns: the table's gt-f<n> classes (gridtools apply) - every header cell is sticky (the header row stays in
+  // view), so 'position: sticky' cannot tell a frozen one (b3: it named the last column)
+  const frozenLast = await ev(`(() => { const t = ${GT}, hs = [...t.querySelectorAll('thead tr:first-child th')]; const fs = [...t.classList].map(c => /^gt-f(\\d+)$/.exec(c)).filter(Boolean).map(m => Number(m[1])); return fs.length ? hs[Math.max(...fs) - 1]?.textContent.trim() ?? '' : ''; })()`);
   const v = await ev(`${gCell('sessions')}.textContent.trim()`), eq = (await gCol('sessions')).filter(x => x === v).length;
   await gmOpen(gCell('sessions')); await gmPick('Filter by value:'); await sleep(500); const fv = await gCol('sessions');
   const grid = await gmCopy(gCell('sessions'), 'Copy', 'Grid');
@@ -839,20 +841,25 @@ await guard('G-transpose', async () => {
 await guard('G-filters', async () => {
   await gFresh();
   const ses0 = await gCol('sessions'), plat0 = await gCol('platform'), n = ses0.length;
-  const v = await ev(`${gCell('sessions')}.textContent.trim()`), x = gNum(v);
+  // the value: one that two or more rows share (Exclude value then leaves a row), else the first row's; the menus open on
+  // a cell holding it, and Clear filters on the header (b3: the AND left no row, so no first row's cell was there)
+  const shared = ses0.find((s, i) => s !== '' && ses0.indexOf(s) !== i);
+  const v = shared ?? await ev(`${gCell('sessions')}.textContent.trim()`), x = gNum(v);
+  const vCell = `${gRows}.map(tr => tr.children[${gIx('sessions')}]).find(td => td.textContent.trim() === ${JSON.stringify(v)})`;
+  const head0 = `${GT}.querySelector('thead tr:first-child th')`;
   const menuAct = start => ev(`(() => { const b = [...document.querySelectorAll('.tm-menu button')].find(b => b.textContent.startsWith(${JSON.stringify(start)}) && b.getAttribute('aria-disabled') !== 'true'); b?.click(); return !!b; })()`);
   // Filter by value on sessions, then Exclude value on the platform of the first row it leaves: both hold (AND)
-  await gmOpen(gCell('sessions')); const f1 = await menuAct('Filter by value'); await sleep(500);
+  await gmOpen(vCell); const f1 = await menuAct('Filter by value'); await sleep(500);
   const ex = await ev(`${gCell('platform')}?.textContent.trim() ?? ''`);
   await gmOpen(gCell('platform')); const x1 = await menuAct('Exclude value'); await sleep(500);
   const both = await gCol('sessions'), bothP = await gCol('platform'), wantBoth = ses0.filter((s, i) => gNum(s) === x && plat0[i] !== ex).length;
-  await gmOpen(gCell('sessions')); await gmPick('Clear filters'); await sleep(500);
+  await gmOpen(head0); await gmPick('Clear filters'); await sleep(500);
   const back = (await gCol('sessions')).length;
   // All filters: each operator from a prompt holding the clicked value, against the count by hand (number cells only)
   const ops = { '=': a => a === x, '<>': a => a !== x, '>': a => a > x, '<': a => a < x, '>=': a => a >= x, '<=': a => a <= x };
   const opRes = [];
   for (const [op, test] of Object.entries(ops)) {
-    await gmOpen(`${gRows}.map(tr => tr.children[${gIx('sessions')}]).find(td => td.textContent.trim() === ${JSON.stringify(v)})`);
+    await gmOpen(vCell);
     const okk = await gmPick('All filters', op); await sleep(300); const was = okk ? await gPrompt(null) : null; await sleep(500);
     const got = (await gCol('sessions')).length, want = ses0.filter(s => gNum(s) !== null && test(gNum(s))).length;
     opRes.push(`${op} ${v}: ${got}/${want}${was === v ? '' : ` (prompt held '${was}')`}`);
@@ -913,13 +920,16 @@ await guard('G-bars', async () => {
   const worse = await pick('Traffic light (higher is worse)'); await sleep(300); const wHi = await look(hi), wLo = await look(lo);
   const htmlWorse = (await gmFile(gCell('sessions'), 'HTML', 'html'))?.text ?? null;
   const better = await pick('Traffic light (higher is better)'); await sleep(300); const bHi = await look(hi), bLo = await look(lo);
-  await send('Page.reload'); await sleep(1500); await go('#/instances'); const kept = await look(hi);
-  const removed = await pick('Remove'); await sleep(300); const gone = await look(hi);
+  // after the reload the column's highest cell is found again: the live demo may have stored a newer sample (b3: the
+  // cell holding the old highest value was gone)
+  await send('Page.reload'); await sleep(1500); await go('#/instances');
+  const ses2 = (await gCol('sessions')).map(gNum), hi2 = Math.max(...ses2.filter(x => x !== null)), kept = await look(hi2);
+  await gmOpen(cellAt(hi2)); const removed = await gmPick('Data bar', 'Remove'); await sleep(300); const gone = await look(hi2);
   const status = c => /\b(ok|warn|crit|status)\b/.test(c?.cls ?? '');
   // traffic lights: their own classes (never a status's), worse / better the two colours swapped, not in the files
   check('G-bars', underOk && worse && !!wHi && !!wLo && wHi.bg !== wLo.bg && !status(wHi) && !status(wLo) && better && bHi?.bg === wLo.bg && bLo?.bg === wHi.bg && kept?.bg === bHi?.bg
     && !!htmlBefore && tableOf(htmlBefore) === tableOf(htmlWorse) && removed && gone?.bg !== bHi?.bg && !/gradient/.test(gone?.img ?? ''),
-    `Under value ${under}: ${JSON.stringify(u)}; worse ${worse}: ${hi} ${wHi?.bg} '${wHi?.cls}' / ${lo} ${wLo?.bg}; better ${better}: ${bHi?.bg} / ${bLo?.bg}; after a reload ${kept?.bg}; the HTML file's table the same with the lights on ${!!htmlBefore && tableOf(htmlBefore) === tableOf(htmlWorse)}; Remove ${removed}: ${gone?.bg} ${gone?.img}`);
+    `Under value ${under}: ${JSON.stringify(u)}; worse ${worse}: ${hi} ${wHi?.bg} '${wHi?.cls}' / ${lo} ${wLo?.bg}; better ${better}: ${bHi?.bg} / ${bLo?.bg}; after a reload (highest ${hi2}) ${kept?.bg}; the HTML file's table the same with the lights on ${!!htmlBefore && tableOf(htmlBefore) === tableOf(htmlWorse)}; Remove ${removed}: ${gone?.bg} ${gone?.img}`);
 });
 
 await guard('G-keys', async () => {
@@ -1024,18 +1034,35 @@ await guard('G-sql', async () => {
     const sc = process.env.PGVIGIL_MENU_MSSQL, ef = process.env.PGVIGIL_MENU_MSSQL_ENV;
     if (!sc || !ef) res.push('no SQL Server given (PGVIGIL_MENU_MSSQL / PGVIGIL_MENU_MSSQL_ENV: proof-gridmenu.sh starts one)');
     else {
-      const rb = `\nGO\nPRINT '@@READBACK';\nDECLARE @o int = OBJECT_ID('tempdb..#pgvigil_grid');
-SELECT STRING_AGG(CONVERT(varchar(max), CONVERT(varbinary(max), CAST(name AS nvarchar(max))), 2), '|') WITHIN GROUP (ORDER BY column_id) FROM tempdb.sys.columns WHERE object_id = @o;
-DECLARE @s nvarchar(max) = N'SELECT ' + (SELECT STRING_AGG(CAST(N'ISNULL(CONVERT(varchar(max), CONVERT(varbinary(max), CAST(' + QUOTENAME(name) + N' AS nvarchar(max))), 2), ''NULL'')' AS nvarchar(max)), N' + ''|'' + ') WITHIN GROUP (ORDER BY column_id) FROM tempdb.sys.columns WHERE object_id = @o)
-  + N' FROM #pgvigil_grid ORDER BY ' + (SELECT QUOTENAME(name) FROM tempdb.sys.columns WHERE object_id = @o AND column_id = 1);
+      // the read-back: sqlcmd refuses -h -1 with -y 0 (b3), and -y caps a value's width at 8,000: each name and each cell
+      // as UTF-16 hex in lines of its own, a cell in 4,000-character chunks ('@@N|<column>|<hex>', '@@C|<row>|<column>|
+      // <chunk>|<hex>', 'NULL' for a NULL), put together here
+      const rb = `\nGO\nSET NOCOUNT ON;\nDECLARE @o int = OBJECT_ID('tempdb..#pgvigil_grid'), @v nvarchar(max), @s nvarchar(max);
+SELECT '@@N|' + CAST(column_id AS varchar(10)) + '|' + CONVERT(varchar(max), CONVERT(varbinary(max), CAST(name AS nvarchar(max))), 2) FROM tempdb.sys.columns WHERE object_id = @o ORDER BY column_id;
+SELECT @v = STRING_AGG(CAST(N'(' + CAST(column_id AS nvarchar(10)) + N', CONVERT(varchar(max), CONVERT(varbinary(max), CAST(g.' + QUOTENAME(name) + N' AS nvarchar(max))), 2))' AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY column_id) FROM tempdb.sys.columns WHERE object_id = @o;
+SET @s = N'SELECT ''@@C|'' + CAST(g.pgvigil_rn AS varchar(10)) + ''|'' + CAST(c.k AS varchar(10)) + ''|'' + CAST(n.i AS varchar(10)) + ''|'' + ISNULL(SUBSTRING(c.h, n.i * 4000 + 1, 4000), ''NULL'')
+  FROM (SELECT ROW_NUMBER() OVER (ORDER BY ' + (SELECT QUOTENAME(name) FROM tempdb.sys.columns WHERE object_id = @o AND column_id = 1) + N') AS pgvigil_rn, * FROM #pgvigil_grid) g
+  CROSS APPLY (VALUES ' + @v + N') c(k, h)
+  CROSS APPLY (SELECT TOP (ISNULL(LEN(c.h), 0) / 4000 + 1) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 FROM sys.all_objects) n(i)
+  ORDER BY g.pgvigil_rn, c.k, n.i';
 EXEC (@s);\nGO\n`;
       try {
-        const o = execFileSync('docker', ['exec', '-i', '--env-file', ef, sc, 'bash', '-c', 'SQLCMDPASSWORD=$SA_PW /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -x -w 65535 -f 65001 -y 0 -h -1 -d tempdb -i /dev/stdin'],
-          { input: Buffer.concat([msf.buf, Buffer.from(rb, 'utf8')]), encoding: 'utf8', maxBuffer: 64 << 20 });
-        const after = o.split('@@READBACK')[1]?.split('\n').map(l => l.trimEnd()).filter(l => l && !/rows? affected/.test(l)) ?? [];
+        const o = execFileSync('docker', ['exec', '-i', '--env-file', ef, sc, 'bash', '-c', 'SQLCMDPASSWORD=$SA_PW /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -x -w 65535 -f 65001 -y 8000 -h -1 -d tempdb -i /dev/stdin'],
+          { input: Buffer.concat([msf.buf, Buffer.from(rb, 'utf8')]), encoding: 'utf8', maxBuffer: 256 << 20 });
+        const ls = o.split('\n').map(l => l.trim());
         const hex = h => h === 'NULL' ? null : Buffer.from(h, 'hex').toString('utf16le');
-        const names = (after[0] ?? '').split('|').map(hex);
-        cmp(after.slice(1).map(l => Object.fromEntries(l.split('|').map((h, k) => [names[k] ?? 'c' + k, hex(h)]))), 'SQL Server');
+        const names = new Map(ls.filter(l => l.startsWith('@@N|')).map(l => { const [, k, h] = l.split('|'); return [Number(k), hex(h)]; }));
+        const cells = new Map();   // row -> column -> chunks
+        for (const l of ls.filter(l => l.startsWith('@@C|'))) {
+          const [, r, k, i, h = ''] = l.split('|');
+          if (!cells.has(+r)) cells.set(+r, new Map());
+          const row = cells.get(+r); if (!row.has(+k)) row.set(+k, []);
+          row.get(+k)[+i] = h;
+        }
+        const rows = [...cells.keys()].sort((a, b) => a - b).map(r => Object.fromEntries([...cells.get(r).keys()].sort((a, b) => a - b)
+          .map(k => { const ch = cells.get(r).get(k); return [names.get(k) ?? 'c' + k, ch.length === 1 && ch[0] === 'NULL' ? null : hex(ch.join(''))]; })));
+        if (!names.size) res.push(`SQL Server: no read-back lines (sqlcmd said: ${ls.filter(Boolean).slice(-3).join(' | ').slice(0, 300)})`);
+        else cmp(rows, 'SQL Server');
       } catch (e) { res.push(`SQL Server: ${String([e.stderr, e.stdout, e.message].find(x => x && String(x).trim())).split('\n').filter(Boolean).slice(0, 3).join(' | ')}`); }
     }
   }
@@ -1065,11 +1092,14 @@ await guard('G-plain', async () => {
 
 await guard('G-mssql', async () => {
   // a SQL Server instance's grid: the same menu
-  await go(`#/drives?i=${idOf('demo-onprem-sql01')}`); await sleep(500);
-  const L = await gmOpen(`document.querySelector('main table.grid tbody td')`), top = (L[0] ?? []).map(x => x.label);
+  await go(`#/drives?i=${idOf('demo-onprem-sql01')}`);
+  // the grid comes after the page's own read (go() returns when the section is drawn): a cell waited for, up to 20 s
+  let cellThere = false;
+  for (let i = 0; i < 40 && !cellThere; i++) { cellThere = await ev(`!!document.querySelector('main table.grid tbody td')`); if (!cellThere) await sleep(500); }
+  const L = cellThere ? await gmOpen(`document.querySelector('main table.grid tbody td')`) : [], top = (L[0] ?? []).map(x => x.label);
   const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row numbers', 'All filters', 'Clear filters'];
   await gmClose();
-  check('G-mssql', wantTop.every(w => top.includes(w)), `demo-onprem-sql01's Drives grid: ${top.join(' / ') || '(no .tm-menu)'}`);
+  check('G-mssql', wantTop.every(w => top.includes(w)), `demo-onprem-sql01's Drives grid: ${cellThere ? top.join(' / ') || '(no .tm-menu)' : 'no grid cell on the page in 20 s'}`);
 });
 
 await guard('G-chart', async () => {
