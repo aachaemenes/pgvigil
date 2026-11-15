@@ -74,7 +74,10 @@ export function notesOf(root: ParentNode, fallback: string): { head: string; tex
 // attribute is one the server's mail checker takes (internal/reportmail/reportmail.go CheckBody: a document's and a
 // table's tags, no div, no b, no data-* but a cell's data-status): what the page said is a table too, each line its
 // head in a th and its words in a td.
-export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: string, said: { head: string; text: string }[] = []): string {
+// emptyWords: per section, the sentence the screen shows for a grid with no row ('All checks pass: ...'), undefined
+// for a grid with rows: the body prints it under the grid's header row, where a grid without it says 'No rows.'
+export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: string, said: { head: string; text: string }[] = [],
+  emptyWords: (string | undefined)[] = []): string {
   const box = 'border:1px solid #c8ccd4;padding:3px 8px;font-size:11pt;' + FONT;
   const cell = box + ';white-space:nowrap';
   const line = (k: string, v: string) => `<tr><th style="${cell};background:#0063a3;color:#ffffff;font-weight:bold;text-align:left">${esc(k)}</th><td style="${cell};color:#1d1d1f">${esc(v)}</td></tr>`;
@@ -84,8 +87,11 @@ export function mailHtml(m: Meta, secs: Section[], nums: boolean[][], title: str
     + line('Time zone', timeZone(m.at)) + '</table>';
   const parts = secs.map((s, i) => {
     const h = `<h3 style="margin:16px 0 4px 0;font-size:13pt;font-weight:bold;${FONT};color:#0063a3">${esc(s.name)}</h3>`;
-    const note = s.note ? `<p style="margin:2px 0 4px 0;font-size:9pt;${FONT};color:#5f6368">${esc(s.note)}</p>` : '';
-    const empty = s.rows.length ? '' : `<p style="margin:2px 0 4px 0;font-size:10pt;${FONT};color:#5f6368">No rows.</p>`;
+    // an empty grid's note ends with its sentence (export.ts walk): the sentence is printed once, below, in the body's size
+    const words = s.rows.length ? undefined : emptyWords[i];
+    const noteText = words ? [s.sample, s.read].filter(Boolean).join('; ') : s.note;
+    const note = noteText ? `<p style="margin:2px 0 4px 0;font-size:9pt;${FONT};color:#5f6368">${esc(noteText)}</p>` : '';
+    const empty = s.rows.length ? '' : `<p style="margin:2px 0 4px 0;font-size:10pt;${FONT};color:#5f6368">${esc(words || 'No rows.')}</p>`;
     return h + note + toHtml({ cols: s.cols, rows: s.rows, num: nums[i], borders: true }) + empty;
   }).join('');
   return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
@@ -118,19 +124,39 @@ export function routeOf(hash = location.hash): string {
 // The workbook is the one Export .xlsx writes of the same page (export.ts pageBook: every section in page order, the
 // empty grids a sheet of the header row each, the sheets named alike); the body shows the grids with rows, as numbers()
 // pairs them. A page whose grids are all empty is mailed too.
+// bodySections: the mail body's sections in the page's order - every grid, one with no row too (its header row and
+// the sentence the screen shows for it) - with each one's number columns and, for an empty grid, its sentence. The
+// sections with their empties are export.ts's (the workbook's); which of them is an empty grid is read from the page in
+// the same order (a table, or a p.empty that names columns). Should the two ever disagree, the body is the tables alone.
+function bodySections(root: ParentNode, fallback: string): { secs: Section[]; nums: boolean[][]; words: (string | undefined)[] } {
+  const tnums = numbers(root);
+  const all = sections(root, fallback, true);
+  const els = [...root.querySelectorAll<HTMLElement>('table.grid, table.props, p.empty[data-cols]')].filter(e => {
+    if (e.tagName === 'TABLE') return true;
+    try { const c: unknown = JSON.parse(e.dataset.cols ?? '[]'); return Array.isArray(c) && c.length > 0; } catch { return false; }
+  });
+  if (els.length !== all.length) return { secs: sections(root, fallback), nums: tnums, words: [] };
+  const nums: boolean[][] = [], words: (string | undefined)[] = [];
+  let t = 0;
+  for (const e of els) {
+    if (e.tagName === 'TABLE') { nums.push(tnums[t++] ?? []); words.push(undefined); }
+    else { nums.push([]); words.push((e.textContent ?? '').replace(/\s+/g, ' ').trim() || undefined); }
+  }
+  return { secs: all, nums, words };
+}
+
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
   const pb = await pageBook(ctx, root, m.tab), book = pb.items.map(f => f.sec);
   if (!book.length) throw new Error('nothing to mail: no grid on this page');
-  const secs = sections(root!, m.tab);
-  const nums = numbers(root!);
+  const body = bodySections(root!, m.tab);
   const win = `${m.window} (${stamp(m.from)} to ${stamp(m.to)}, ${zoneName()})`;
   const title = `${m.tab} - ${m.instance}`;
   const z = await zip(workbook(m, book), m.at);
   const xlsx = b64(new Uint8Array(await z.arrayBuffer()));
   return {
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
-    html: mailHtml(m, secs, nums, title, notesOf(root!, m.tab)), xlsx, xlsx_name: exportName(m, 'xlsx'),
+    html: mailHtml(m, body.secs, body.nums, title, notesOf(root!, m.tab), body.words), xlsx, xlsx_name: exportName(m, 'xlsx'),
     grids: pb.found.length, rows: pb.found.reduce((n, f) => n + f.sec.rows.length, 0),   // the page's grids, as before: no tiles, cards' or charts' rows
   };
 }
@@ -166,7 +192,9 @@ export function mailRenderBoot(): boolean {
     try {
       await settled();
       const main = document.getElementById('main');
-      if (!main?.querySelector('table.grid, table.props')) throw new Error('the page drew no grid: ' + (main?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300));
+      // a grid with no row is a grid too (ui.ts grid: its note p.empty carries its columns): a page whose grids are
+      // all empty - the Daily checks page on a day every check passes - is mailed, with each grid's own sentence
+      if (!main?.querySelector('table.grid, table.props, p.empty[data-cols]')) throw new Error('the page drew no grid: ' + (main?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300));
       const body = await buildMail(parse(), main);
       await post('reportmail/rendered', { key, ...body });
     } catch (e) {
@@ -402,6 +430,77 @@ async function act(op: string, id: unknown, words: string): Promise<string> {
   return res.detail || words;
 }
 
+// ---- the Daily checks mail's control (the Daily checks page; migration 0258, internal/web/q_reportmail_kept.go) ----
+
+interface DailyState {
+  kept: boolean; owner: string; writable: boolean; reason?: string; user?: string; kept_by?: string; schedule_id?: number;
+  at?: string; timezone?: string; recipients?: string[]; channel?: string; as?: string; next_at?: string; attach_xlsx?: boolean;
+  as_off?: string; browser_note?: string;
+}
+
+// dailyMailControl: one line on the Daily checks page (the root scope only: null under a tag) - whether the page is
+// mailed every day, its next send, to how many addresses and as whom, and the control that turns it on or off. Where
+// this page cannot change it (no login or audit login, no smtp channel, the setting in pgvigil.yaml) the control is
+// off with the reason beside it. The line is a p.meta: never one of the lines a mail carries as 'What the page said'.
+export async function dailyMailControl(ctx: Ctx): Promise<HTMLElement | null> {
+  if (ctx.tag || ctx.instance != null) return null;
+  const line = el('p', { class: 'meta daily-mail' });
+  let d: DailyState;
+  try { d = (await get<{ daily: DailyState }>('reportmail', { part: 'daily' })).daily; }
+  catch (e) { line.textContent = `Mail daily: its state could not be read (${message(e)}).`; return line; }
+  const n = d.recipients?.length ?? 0;
+  line.append(d.kept ? badge('on', 'ok') : badge('off', 'none'), ' ',
+    d.kept ? `Mail daily: on, next send ${d.next_at ? fmtTime(d.next_at) : 'not set'} (${d.at ?? ''} ${d.timezone ?? ''}) to ${n} address${n === 1 ? '' : 'es'}, drawn as ${d.as ?? ''}. `
+      : 'Mail daily: off. ');
+  const why = el('span', { class: 'off-reason' });
+  const off = d.writable ? null : (d.reason || 'the Daily checks mail cannot be changed here');
+  if (off) why.textContent = off;
+  const keep = el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...');
+  if (off) offControl(keep, off, why); else keep.addEventListener('click', () => { void dailyMailDialog(d); });
+  line.append(keep, ' ');
+  if (d.kept) {
+    const drop = el('button', { type: 'button', class: 'link' }, 'Turn off');
+    if (off) offControl(drop, off, why);
+    else drop.addEventListener('click', () => {
+      dialog('Turn off the daily mail', 'The Daily checks page is no longer mailed; its sends stay in the Report mail log.', 'Turn off', [],
+        async () => (await post<WriteResult>('reportmail', { op: 'daily_drop' })).detail, () => '', [], redraw);
+    });
+    line.append(drop, ' ');
+  }
+  line.append(why);
+  if (d.as_off) line.append(' ', badge('user off', 'warn'), ' ', d.as_off);
+  if (d.browser_note && (d.kept || d.writable)) line.append(' ', badge('no browser', 'warn'), ' ', d.browser_note + '.');
+  return line;
+}
+
+// dailyMailDialog: the hour, the zone, the addresses and the smtp channel of the daily mail; the page is drawn as the
+// admin who keeps it
+async function dailyMailDialog(d: DailyState) {
+  let md: MailData;
+  try { md = await door(true); } catch (e) { window.alert('Report mail could not load: ' + message(e)); return; }
+  const at = el('input', { type: 'time', value: d.at || '07:00', step: '60', required: '' });
+  const tz = el('select', {});
+  const zs = zones(), want = d.timezone || browserZone();
+  if (!zs.includes(want)) zs.unshift(want);
+  for (const z of zs) tz.append(el('option', { value: z }, z));
+  tz.value = want;
+  const to = el('textarea', { rows: '2', style: 'width:100%', placeholder: 'dba@example.org, oncall@example.org' });
+  to.value = (d.recipients ?? []).join(', ');
+  const chan = channelSelect(md, d.channel ?? '');
+  const attach = el('input', { type: 'checkbox' });
+  attach.checked = d.attach_xlsx !== false;
+  const fields = [el('label', {}, 'At ', at), el('label', {}, 'Time zone ', tz),
+    el('label', {}, `To (one or more addresses, at most ${md.door.max_recipients}) `, to), el('label', {}, 'Channel (the alerts: smtp relay) ', chan),
+    el('label', {}, attach, ' attach the workbook (.xlsx)')];
+  const invalid = () => !/^\d\d:\d\d$/.test(at.value) ? 'the hour' : !addrList(to.value).length ? 'an address' : !chan.value ? 'an smtp channel' : '';
+  const what = `The Daily checks page is drawn on the server in a headless browser as you (${d.user || md.door.user}) once a day at this hour and mailed: its grid in its colours, 'All checks pass' on a day nothing fails, and its workbook.`
+    + (md.door.browser ? '' : ` ${md.door.browser_reason ?? 'This server has no headless browser'}.`);
+  dialog(d.kept ? 'Change the daily mail' : 'Mail the Daily checks every day', what, d.kept ? 'Save' : 'Mail daily', fields, async () => {
+    const res = await post<WriteResult>('reportmail', { op: 'daily_keep', at: at.value, timezone: tz.value, recipients: addrList(to.value), channel: chan.value, attach_xlsx: attach.checked });
+    return res.detail;
+  }, invalid, [], redraw);
+}
+
 // ---- the page --------------------------------------------------------------------------------------------------
 
 const whenCol = (key: string, label: string): Col => ({ key, label, fmt: v => v == null ? '' : fmtTime(v) });
@@ -470,15 +569,17 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'last_outcome', label: 'last outcome', fmt: v => v == null ? '' : outcomeBadge(String(v)) },
     { key: 'last_error', label: 'last error', wide: true },
     { key: 'schedule_id', label: 'actions', fmt: (v, r) => el('span', {},
-      button('Edit', `Change schedule ${String(r.name)}`, null, () => { void scheduleDialog({ schedule: r }); }), ' ',
+      // the schedule the Daily checks mail's setting keeps is changed there, never here (the repository refuses it too)
+      r.kept_as ? el('span', { class: 'meta' }, r.kept_by === 'file' ? 'kept by pgvigil.yaml (reports.daily_checks) ' : 'kept by Mail daily on the Daily checks page ')
+        : button('Edit', `Change schedule ${String(r.name)}`, null, () => { void scheduleDialog({ schedule: r }); }), ' ',
       button('Send test', `Send a test of schedule ${String(r.name)} now`, door0.browser ? null : (door0.browser_reason || 'no headless browser on this server: a test is drawn on the server'), () => {
         dialog(`Send a test of ${String(r.name)}`, `The page is drawn now on the server as you and mailed to ${String(r.recipients)} with [test] in its subject.`, 'Send test', [],
           async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw);
       }), ' ',
-      button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, null, () => {
+      ...(r.kept_as ? [] : [button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, null, () => {
         confirmAct(`${r.enabled ? 'Turn off' : 'Turn on'} ${String(r.name)}`, r.enabled ? 'No mail goes out until it is turned on again.' : 'The next send is the cron line\'s next time.', r.enabled ? 'Turn off' : 'Turn on', r.enabled ? 'disable' : 'enable', v);
       }), ' ',
-      button('End', `End schedule ${String(r.name)}`, null, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })) },
+      button('End', `End schedule ${String(r.name)}`, null, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })])) },
   ];
   box.append(el('h3', {}, 'Schedules'), grid(schedRows, sched, 'No schedule yet: open a page, press Mail... and Schedule this page, or New schedule above.'));
 
