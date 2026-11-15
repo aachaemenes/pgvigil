@@ -8,6 +8,7 @@ import { Ctx, href, isMssql, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, showMenu, tile } from './ui';
+import { dailyMailControl } from './reportmail';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
@@ -72,7 +73,8 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
     { key: 'at', label: 'when', fmt: fmtTime },
     { key: 'detail', wide: true },
   ];
-  return el('section', {}, el('h2', {}, 'Daily checks' + scopeLabel(ctx)), el('p', { class: 'meta' }, 'The state now; the time range applies to the instance tabs.'), tiles,
+  return el('section', {}, el('h2', {}, 'Daily checks' + scopeLabel(ctx)), el('p', { class: 'meta' }, 'The state now; the time range applies to the instance tabs.'),
+    await dailyMailControl(ctx), tiles,
     grid(rows, cols, 'All checks pass: no failing or stale collections, replication problems, failed jobs, deadlocks or checksum failures.'));
 }
 

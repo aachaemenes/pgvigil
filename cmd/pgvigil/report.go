@@ -25,6 +25,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/reportmail"
 )
 
 // supportAddress is where a problem report goes; pgvigil never sends anything there itself.
@@ -160,7 +161,10 @@ func checkConfig(path string, raw []byte) error {
 	if _, _, err := collect.ParseCustomChecks(raw, cfg.Instances); err != nil {
 		return err
 	}
-	_, err = alerts.LoadFile(path)
+	if _, err := alerts.LoadFile(path); err != nil {
+		return err
+	}
+	_, err = reportmail.LoadDailyChecks(path) // reports.daily_checks: a missing or unknown key, by its name
 	return err
 }
 
@@ -295,6 +299,8 @@ var keepKeys = map[string]bool{
 	"import": true,
 	// custom:
 	"every": true, "rule": true, "compare": true, "warning": true, "critical": true,
+	// reports: daily_checks: the switch, its hour and its zone (the addresses, the user and the channel are masked)
+	"enabled": true, "at": true, "tz": true,
 }
 
 // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
@@ -320,6 +326,7 @@ var knownKeys = map[string]bool{
 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
 	"warning": true, "critical": true,
+	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
