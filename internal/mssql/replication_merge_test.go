@@ -33,7 +33,10 @@ func TestReplicationMergeShape(t *testing.T) {
 // The merge rows over crafted history (PGVIGIL_MSSQL_TEST_MERGESTUB: a database with tables in the shape of a
 // distribution database's merge tables, made by proof-mssql-merge.sh part T). Each agent's history marks the session
 // whose start its failing time must equal with the comment 'expected since', and the cause code with 'expected code
-// <n>'; an agent that must not be failing has neither. Every merge agent is one subscription row and no agent row.
+// <n>'; an agent that must not be failing has neither. Every merge agent is one subscription row and no agent row;
+// its last run is its newest session's end, or its start while it runs; its subscriber falls back to MSmerge_agents'
+// subscriber_name where the server map has no entry ('SUBX'); its type is the subscription's of its own publication
+// (written here, not recomputed: merge-idle and merge-pull2 subscribe s1 to two publications, push and pull).
 func TestReplicationMergeLive(t *testing.T) {
 	ctx, conn, _ := liveConn(t)
 	stub := os.Getenv("PGVIGIL_MSSQL_TEST_MERGESTUB")
@@ -46,10 +49,10 @@ func TestReplicationMergeLive(t *testing.T) {
              WHERE x.agent_id = a.id AND h.comments = N'expected since')`)+` AS since,
   CAST((SELECT MAX(h.comments) FROM `+s+`.dbo.MSmerge_history h WHERE h.agent_id = a.id AND h.comments LIKE N'expected code %') AS nvarchar(100)) AS code,
   (SELECT TOP (1) x.runstatus FROM `+s+`.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) AS runstatus,
-  CASE (SELECT TOP (1) m.subscription_type FROM `+s+`.dbo.MSmerge_subscriptions m WHERE m.publisher_id = a.publisher_id AND m.publisher_db = a.publisher_db
-                                                 AND m.subscriber_id = a.subscriber_id AND m.subscriber_db = a.subscriber_db)
-       WHEN 0 THEN 'push' WHEN 1 THEN 'pull' WHEN 2 THEN 'anonymous' END AS subscription_type
+  `+utcText(`(SELECT TOP (1) COALESCE(x.end_time, x.start_time) FROM `+s+`.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC)`)+` AS last_run
 FROM `+s+`.dbo.MSmerge_agents a`)
+	types := map[string]string{"merge-idle": "push", "merge-retrying": "push", "merge-failed-again": "push", "merge-recovered": "push",
+		"merge-never-ok": "pull", "merge-pull2": "pull"}
 	if err != nil || len(want) == 0 {
 		t.Fatalf("the stub's expectations: %v %v", want, err)
 	}
@@ -86,8 +89,14 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 		if fmt.Sprint(r["runstatus"]) != fmt.Sprint(w["runstatus"]) {
 			t.Errorf("%s: runstatus %v, want the newest session's %v", name, r["runstatus"], w["runstatus"])
 		}
-		if fmt.Sprint(r["subscription_type"]) != fmt.Sprint(w["subscription_type"]) {
-			t.Errorf("%s: subscription type %v, want %v", name, r["subscription_type"], w["subscription_type"])
+		if fmt.Sprint(r["subscription_type"]) != types[name] {
+			t.Errorf("%s: subscription type %v, want %v", name, r["subscription_type"], types[name])
+		}
+		if fmt.Sprint(r["last_run_utc"]) != fmt.Sprint(w["last_run"]) {
+			t.Errorf("%s: last run %v, want the newest session's end or start %v", name, r["last_run_utc"], w["last_run"])
+		}
+		if r["subscriber"] != "SUBX" {
+			t.Errorf("%s: subscriber %v, want SUBX (MSmerge_agents.subscriber_name)", name, r["subscriber"])
 		}
 		if r["subscription_status"] != nil || r["undistributed"] != nil || r["latency_ms"] != nil {
 			t.Errorf("%s: status %v, undistributed %v, latency %v: the distributor keeps none of them for merge (want NULL)",

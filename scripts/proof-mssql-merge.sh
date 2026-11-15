@@ -27,8 +27,15 @@
 #      error, never the deadlock row of a healthy session); merge-failed-again (failed 6 h ago, healthy 5 h ago, failed
 #      5 min ago, a session in progress now) runstatus 3, failing since 5 min, error 2627; merge-recovered (failed,
 #      then idle) runstatus 4, not failing; merge-never-ok (one failed session, a pull subscription) runstatus 6,
-#      failing since its start, error 20598, type pull. Status, undistributed and latency NULL on every merge row.
-#      [red: five 'not read as a merge subscription', five 'still read as an agent row']
+#      failing since its start, error 20598, type pull; merge-pull2 (a second publication, mpub2, pulled to the same s1
+#      as merge-idle) type pull while merge-idle stays push (the type matched to the agent's own publication). Status, undistributed and latency NULL on every
+#      merge row; the last run its newest session's end, or its start while it runs; the subscriber SUBX (MSmerge_agents'
+#      name: the server map has none). merge-retrying's error stack holds two coded rows in one second (20084, the
+#      replication message, and 18456, the engine's): 18456 every time (review q10a S2).
+#      [red at first: five 'not read as a merge subscription', five 'still read as an agent row'; at the q10a fold's
+#      fixture run, on the code before it: merge-retrying's code 20084 if the tie falls on the row inserted first (it
+#      may fall either way: a green there proves nothing), merge-pull2's type green (the tie-break was right, the test
+#      could not see it)]
 #  T3. go test ./internal/mssql/ (the unit tests, no server). [green before and after]
 #  T4. stored merge subscription rows, two reads 2 minutes apart, through import_mssql_replication on a stub instance:
 #      findings exactly
@@ -41,7 +48,10 @@
 #        (not active) with its job stopped stays silent (the rule is not widened past merge) [green before];
 #      - a merge row carrying commands and an hour-old pending age (never read for merge: the guard) raises no latency
 #        finding (0142 :411) [red: critical 'replication latency over the threshold' on mpub -> S.s2];
-#      - the merge series' samples store latency NULL, the distribution series' a number (0142 :294) [red: merge 0 / 3600].
+#      - the merge series' samples store latency NULL, the distribution series' a number (0142 :294) [red: merge 0 / 3600];
+#      - a log reader (continuous, its job stopped at both reads) of a database pdbm whose only subscriptions are merge
+#        ones raises nothing: 'stopped' covers a merge agent itself, never widens the log reader's rule (review q10a S1)
+#        [red at the q10a fold's fixture run: 'a replication agent is stopped' on logreader / lr-pdbm].
 #  T5. the container, its network and the repository removed. 'PROOF OK (part T)'.
 #
 # Expected, part W: in the header of part W below.
@@ -129,12 +139,12 @@ CREATE TABLE dbo.MSmerge_history (session_id int, agent_id int, comments nvarcha
 CREATE TABLE dbo.MSmerge_subscriptions (publisher_id smallint, publisher_db sysname, publication_id int, subscriber_id smallint,
   subscriber_db sysname, subscription_type int, sync_type tinyint, status tinyint, subscription_time datetime);
 DECLARE @b datetime = GETDATE();
-INSERT dbo.MSpublications VALUES (0, N'p', N'mpub', 1, 2);
+INSERT dbo.MSpublications VALUES (0, N'p', N'mpub', 1, 2), (0, N'p', N'mpub2', 2, 2);
 INSERT dbo.MSmerge_agents VALUES (1, N'merge-idle', 0, N'p', N'mpub', 1, N's1', NULL, N'SUBX'), (2, N'merge-retrying', 0, N'p', N'mpub', 1, N's2', NULL, N'SUBX'),
   (3, N'merge-failed-again', 0, N'p', N'mpub', 1, N's3', NULL, N'SUBX'), (4, N'merge-recovered', 0, N'p', N'mpub', 1, N's4', NULL, N'SUBX'),
-  (5, N'merge-never-ok', 0, N'p', N'mpub', 1, N's5', NULL, N'SUBX');
+  (5, N'merge-never-ok', 0, N'p', N'mpub', 1, N's5', NULL, N'SUBX'), (6, N'merge-pull2', 0, N'p', N'mpub2', 1, N's1', NULL, N'SUBX');
 INSERT dbo.MSmerge_subscriptions VALUES (0, N'p', 1, 1, N's1', 0, 1, 0, @b), (0, N'p', 1, 1, N's2', 0, 1, 0, @b), (0, N'p', 1, 1, N's3', 0, 1, 0, @b),
-  (0, N'p', 1, 1, N's4', 0, 1, 0, @b), (0, N'p', 1, 1, N's5', 1, 1, 0, @b);
+  (0, N'p', 1, 1, N's4', 0, 1, 0, @b), (0, N'p', 1, 1, N's5', 1, 1, 0, @b), (0, N'p', 2, 1, N's1', 1, 1, 0, @b);
 INSERT dbo.MSmerge_sessions (session_id, agent_id, start_time, end_time, delivery_rate, runstatus) VALUES
   (101, 1, DATEADD(minute, -3, @b), DATEADD(minute, -2, @b), 0, 4), (102, 1, DATEADD(minute, -2, @b), DATEADD(minute, -1, @b), 0, 4),
   (201, 2, DATEADD(minute, -40, @b), DATEADD(minute, -39, @b), 12.5, 2), (202, 2, DATEADD(minute, -8, @b), DATEADD(minute, -7, @b), NULL, 5),
@@ -162,6 +172,7 @@ INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES (50
 INSERT dbo.MSrepl_errors (id, time, error_code, error_text) VALUES
   (21, DATEADD(minute, -8, @b), N'', N'The merge process was unable to connect to the Subscriber.'),
   (22, DATEADD(minute, -2, @b), N'', N'The merge process could not connect to the Subscriber ''SUBX''.'),
+  (22, DATEADD(minute, -2, @b), N'20084', N'The process could not connect to Subscriber ''SUBX''.'),
   (22, DATEADD(minute, -2, @b), N'18456', N'Login failed for user ''sa''.'),
   (23, DATEADD(minute, -40, @b), N'1205', N'Transaction was deadlocked and has been chosen as the deadlock victim.'),
   (31, DATEADD(hour, -6, @b), N'20598', N'an old failure'),
@@ -204,7 +215,10 @@ SQL
       $(row merge merge-failing s3 null 5 "$at" ", \"failing_since_utc\": \"$F12\""), $(job merge merge-failing running),
       $(row merge merge-failed s4 null 6 "$at" ", \"failing_since_utc\": \"$F1\""), $(job merge merge-failed running),
       $(row distribution dist-active d1 '"active"' 2 "$at" ', "undistributed": 0'), $(job distribution dist-active stopped),
-      $(row distribution dist-subscribed d2 '"subscribed"' 2 "$at" ', "undistributed": 0'), $(job distribution dist-subscribed stopped)]"; }
+      $(row distribution dist-subscribed d2 '"subscribed"' 2 "$at" ', "undistributed": 0'), $(job distribution dist-subscribed stopped),
+      $(row merge merge-pdbm s9 null 4 "$at" ', "publisher_db": "pdbm"'), $(job merge merge-pdbm running),
+      {\"kind\": \"agent\", \"distribution_db\": \"distribution\", \"agent_type\": \"logreader\", \"agent_name\": \"lr-pdbm\", \"publisher\": \"P\", \"publisher_db\": \"pdbm\", \"runstatus\": 2, \"last_run_utc\": \"$at\"},
+      $(job logreader lr-pdbm stopped)]"; }
   q "select pgvigil.import_mssql_replication($ST, '$T1'::timestamptz, '$(payload "$L1")'::jsonb)" >/dev/null
   q "select pgvigil.import_mssql_replication($ST, '$T2'::timestamptz, '$(payload "$L2")'::jsonb)" >/dev/null
   WANT='warning:a replication agent failed:merge / merge-failed
@@ -214,7 +228,7 @@ warning:a replication agent keeps failing or retrying:merge / merge-failing'
   GOT=$(q "select severity || ':' || check_name || ':' || object from pgvigil.mssql_repl_findings where instance_id = $ST order by check_name, object")
   if [ "$GOT" = "$WANT" ]; then ok "T4: the findings as expected"; else red "T4-findings"; diff <(echo "$WANT") <(echo "$GOT") | sed 's/^/    /' || true; fi
   LAT=$(q "select string_agg(agent_type || '/' || coalesce(subscriber_db, '?') || '=' || coalesce(latency_s::text, 'null'), ',' order by agent_type, subscriber_db) from pgvigil.mssql_repl_sample where instance_id = $ST and snapshot_at = '$T2'::timestamptz")
-  if [ "$LAT" = "distribution/d1=0,distribution/d2=0,merge/s1=null,merge/s2=null,merge/s3=null,merge/s4=null" ]; then ok "T4: the samples' latency (merge NULL): $LAT"; else red "T4-samples" "$LAT"; fi
+  if [ "$LAT" = "distribution/d1=0,distribution/d2=0,merge/s1=null,merge/s2=null,merge/s3=null,merge/s4=null,merge/s9=null" ]; then ok "T4: the samples' latency (merge NULL): $LAT"; else red "T4-samples" "$LAT"; fi
   echo "--- T5. removed (cleanup follows)"
   if [ ${#RED[@]} -gt 0 ]; then echo "PART T RED: ${RED[*]}"; exit 1; fi
   echo "PROOF OK (part T)"
