@@ -174,3 +174,77 @@ func TestProbeThresholdsMatchOnAStore(t *testing.T) {
 		t.Errorf("the levels as set: %s (want own 0.09 and off empty)", sample)
 	}
 }
+
+// TestProbeFormingOnAStore (the B24h-1 review part b #5): collector_probe_forming - an instance crossed into a slow round
+// trip (its last 5 measured minutes over the warning, the 5 before the newest not) waits while 3 or more of its
+// collector host's instances crossed: three crossing together are listed; an instance slow in both windows never
+// crossed; two crossing are no forming fold. One transaction rolled back.
+func TestProbeFormingOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for _, crossing := range []int{3, 2} {
+		func() {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			sfx := time.Now().UnixNano() % 1000000000
+			col := fmt.Sprintf("pf-%d-%d", crossing, sfx)
+			if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_heartbeat (collector_id, host, os, runs_as, version, pid, started_at, beat_at)
+				VALUES ($1, $1, 'linux', 'console', 'x', 1, now() - interval '1 hour', now())`, col); err != nil {
+				t.Fatal(err)
+			}
+			want := map[int]bool{}
+			for k := 1; k <= crossing+1; k++ {
+				var id int
+				if err := tx.QueryRow(ctx, `INSERT INTO pgvigil.instances (name, platform) VALUES ($1, 'self-managed') RETURNING instance_id`,
+					fmt.Sprintf("pf-%d-%d-%d", crossing, k, sfx)).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				slowBoth := k == crossing+1 // the last one slow in both windows
+				for m := 1; m <= 6; m++ {
+					ms := 20
+					if m == 1 {
+						ms = 200 // the newest minute: the 5-minute average goes over 40 ms, the window before stays at 20 ms
+					}
+					if slowBoth {
+						ms = 60
+					}
+					if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, target, rt_count, rt_ms_sum, rt_ms_max)
+						VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, 1, 1, 1, 0, 0, $4, 1, $5, $5)`, m, id, col, fmt.Sprintf("postgres:h%d-%d:5432", k, sfx), ms); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !slowBoth && crossing >= 3 {
+					want[id] = true
+				}
+			}
+			rs, err := tx.Query(ctx, `SELECT f.instance_id FROM pgvigil.collector_probe_forming f JOIN pgvigil.collector_load l ON l.instance_id = f.instance_id AND l.collector_id = $1 GROUP BY f.instance_id`, col)
+			if err != nil {
+				t.Fatalf("the forming view: %v", err)
+			}
+			got := map[int]bool{}
+			for rs.Next() {
+				var id int
+				if err := rs.Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				got[id] = true
+			}
+			rs.Close()
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("%d crossing together: forming %v, want %v", crossing, got, want)
+			}
+		}()
+	}
+}

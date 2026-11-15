@@ -148,15 +148,30 @@ WITH m AS (
    WHERE l.minute > now() - interval '20 minutes' AND l.rt_count > 0 AND h.retired_at IS NULL
    GROUP BY h.host, l.instance_id, l.minute
 ), w AS (
-  SELECT host, instance_id, sum(n) AS n, sum(ms) AS ms, max(mx) AS mx, max(minute) AS newest
+  -- the last 5 measured minutes, and the 5 before the newest (the window a measured minute ago: 'crossed' below)
+  SELECT host, instance_id, sum(n) FILTER (WHERE k <= 5) AS n, sum(ms) FILTER (WHERE k <= 5) AS ms, max(mx) FILTER (WHERE k <= 5) AS mx,
+         max(minute) AS newest, sum(n) FILTER (WHERE k BETWEEN 2 AND 6) AS n_prev, sum(ms) FILTER (WHERE k BETWEEN 2 AND 6) AS ms_prev
     FROM (SELECT m.*, row_number() OVER (PARTITION BY m.host, m.instance_id ORDER BY m.minute DESC) AS k FROM m) r
-   WHERE k <= 5 GROUP BY host, instance_id
+   WHERE k <= 6 GROUP BY host, instance_id
 )
 SELECT w.host AS collector_host, w.instance_id, i.name, w.n, round(w.ms::numeric / w.n / 1000, 3) AS avg_s, round(w.mx::numeric / 1000, 3) AS max_s,
-       th.warn, coalesce(w.ms::numeric / w.n / 1000 > th.warn, false) AS slow
+       th.warn, coalesce(w.ms::numeric / w.n / 1000 > th.warn, false) AS slow,
+       -- crossed: slow now and not a measured minute ago (the B24h-1 review part b #5, collector_connects' form): the
+       -- forming wait below reads it
+       coalesce(w.ms::numeric / w.n / 1000 > th.warn AND w.n_prev >= 3 AND w.ms_prev::numeric / w.n_prev / 1000 <= th.warn, false) AS crossed
   FROM w JOIN pgvigil.instances i ON i.instance_id = w.instance_id AND i.is_active
   LEFT JOIN pgvigil.collector_probe_thresholds th ON th.instance_id = w.instance_id AND th.key = 'round_trip_time'
  WHERE w.n >= 3 AND w.newest >= now() - interval '8 minutes';
+
+-- collector_probe_forming: 3 or more of a collector host's instances crossed into a slow round trip in their newest
+-- measured minute - B24h's fold may be forming: a NEW 'query round trip slow' or 'ping slow' of them waits (the join's
+-- line 3 term, as slow-connect's collector_slow_forming: the B24h-1 review part b #5 - the first member was sent before
+-- the fold formed)
+CREATE OR REPLACE VIEW pgvigil.collector_probe_forming AS
+SELECT x.instance_id
+  FROM (SELECT r.instance_id, r.crossed, count(*) FILTER (WHERE r.crossed) OVER (PARTITION BY r.collector_host) AS n
+          FROM pgvigil.collector_round_trips r) x
+ WHERE x.crossed AND x.n >= 3;
 
 -- collector_pings: per collector host and probed address, its probed minutes of the last 5 of the 20 (answered or not;
 -- 'not probed' rows left out) of the per-minute rounds only (probe_every_minute: the review of B24h-1 part b #7, the

@@ -30,6 +30,11 @@
 --    AND NOT (sc.source = 'pgvigil collector' AND sc.setting IN ('query round trip slow', 'ping slow', 'host not answering ping')
 --             AND EXISTS (SELECT 1 FROM pgvigil.collector_probe_judged j JOIN pgvigil.collector_slow_folds f ON f.kind = 'host' AND f.host = j.collector_host
 --                          WHERE j.instance_id = sc.instance_id))
+--    the forming wait (part b #5): a NEW probe finding of an instance whose collector's fold may be forming waits, as a
+--    new 'slow connect' does (0190 L536-537; a CTE probe_forming AS MATERIALIZED (SELECT instance_id FROM
+--    pgvigil.collector_probe_forming) beside slow_forming):
+--    AND NOT (m.source = 'pgvigil collector' AND m.setting IN ('query round trip slow', 'ping slow')
+--             AND EXISTS (SELECT 1 FROM probe_forming WHERE probe_forming.instance_id = m.instance_id))
 --    and in alert_due's resolve arm, as 'slow connects' is guarded (0190 L563-564): the fold is not resolved while its
 --    collector's parent stands (part b #2: its round trips leave the judged set 8 minutes into an outage)
 --    AND NOT (s.source = 'pgvigil repository' AND s.setting = 'network slow from this collector'
