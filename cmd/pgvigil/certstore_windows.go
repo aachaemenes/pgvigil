@@ -489,12 +489,20 @@ func grantKeyAccess(store, thumbprint, account string, out, errw io.Writer) erro
 	}
 	var sid *windows.SID
 	var use uint32
+	// '.\user' is this machine's user: LookupAccountName's forms are DOMAIN\user and user [unverified whether it reads
+	// '.' itself; P5 grants with '.\user'], so the dot becomes the computer name
+	lookup := account
+	if rest, ok := strings.CutPrefix(account, `.\`); ok {
+		if cn, cerr := windows.ComputerName(); cerr == nil {
+			lookup = cn + `\` + rest
+		}
+	}
 	if strings.HasPrefix(strings.ToUpper(account), "S-1-") {
 		if sid, err = windows.StringToSid(account); err == nil {
 			_, _, use, err = sid.LookupAccount("")
 		}
 	} else {
-		sid, _, use, err = windows.LookupSID("", account)
+		sid, _, use, err = windows.LookupSID("", lookup)
 	}
 	if err != nil {
 		return fmt.Errorf("-account %s does not resolve to one account: %w (nothing was changed)", account, err)
