@@ -326,7 +326,8 @@ collect "$DD"
 [[ $(res "$DD" d_big "status || ' ' || value || ' ' || row_count") == "critical 1 1001" && $(q "select count(*) || '|' || count(*) filter (where test = 'db1001' and status = 1) from pgvigil.custom_status_rows r join pgvigil.instances i using (instance_id) where i.name = '$DD' and r.check_name = 'd_big'") == "1000|1" \
    && $(cfind "$DD" d_big) == "critical|custom check d_big: db1001 (c)|Status 1" && $(res "$DD" d_big "note") == *"1000 of 1001 status rows kept: every row at critical or warning first"* ]] \
   || fail "D: d_big (1,001 rows, the last critical): $(res "$DD" d_big "status || ' ' || coalesce(value::text, '') || ' ' || coalesce(row_count::text, '') || ' ' || coalesce(note, '') || ' ' || coalesce(error, '')"), findings $(cfind "$DD" d_big)"
-sq "ALTER PROCEDURE dbo.DBADash_CustomCheck AS SELECT 1 / 0 AS Test;" pgvp_util >/dev/null
+# an ALTER PROCEDURE opens its own batch: through stdin (sq's -Q sends 'SET NOCOUNT ON; ' before it: Msg 111, run 2)
+printf 'USE pgvp_util;\nGO\nALTER PROCEDURE dbo.DBADash_CustomCheck AS SELECT 1 / 0 AS Test;\nGO\n' | sqs >/dev/null
 collect "$DD"
 [[ $(res "$DD" d_dbadash "status") == error && $(res "$DD" d_dbadash "error") == *"Divide by zero"* && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" \
    && $(q "select count(*) from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$DD' and f.setting = 'custom check d_dbadash' and f.value = '(error)'") == 1 ]] \
