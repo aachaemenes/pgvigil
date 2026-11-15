@@ -104,14 +104,20 @@ for c in "$C17" "$C13" "$C18" "$C15"; do
   su "$c" "ALTER SYSTEM SET archive_command = '/bin/true'" >/dev/null; su "$c" "SELECT pg_reload_conf()" >/dev/null
 done
 sleep 1
-# ALTER SYSTEM's value is read where it was applied (pg_file_settings); SHOW is the effective value. PostgreSQL 16 and
-# later SHOW archive_command as '(disabled)' while archive_mode is off (xlog.c show_archive_command), so the off
-# container (18) wants '(disabled)' there, every other container the command itself
+# ALTER SYSTEM's value: pg_file_settings shows the files' winning line; SHOW is the effective value. Every version
+# SHOWs archive_command as '(disabled)' while archive_mode is off (show_archive_command: guc.c up to 15, xlog.c from
+# 16), so on the off container (18) SHOW wants '(disabled)' and pg_settings' source must show the server took the
+# value from postgresql.auto.conf (a reload not yet processed, or a -c on the command line, would show otherwise);
+# every other container SHOWs the command itself
 for spec in "$C17 on" "$C13 on" "$C18 off" "$C15 on"; do
   set -- $spec
   F=$(su "$1" "SELECT setting FROM pg_file_settings WHERE name = 'archive_command' AND applied"); S=$(su "$1" "SHOW archive_command")
   want=/bin/true; [ "$2" = off ] && want='(disabled)'
   [ "$F" = /bin/true ] && [ "$S" = "$want" ] || fail "the store: $1's archive_command did not take ALTER SYSTEM (applied: [$F], SHOW: [$S], want [/bin/true] and [$want])"
+  if [ "$2" = off ]; then
+    SRC=$(su "$1" "SELECT source || '|' || coalesce(sourcefile, '') FROM pg_settings WHERE name = 'archive_command'")
+    [[ "$SRC" == "configuration file|"*"/postgresql.auto.conf" ]] || fail "the store: $1's archive_command is not the server's from postgresql.auto.conf (source: [$SRC])"
+  fi
 done
 port() { docker port "$1" 5432/tcp | head -1 | sed 's/.*://'; }
 psql "$PGVIGIL_REPO_DSN" -XAtqc "CREATE DATABASE $REPO_DB" >/dev/null; MADE_DB=1
