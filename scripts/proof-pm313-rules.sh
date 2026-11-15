@@ -54,6 +54,13 @@
 #     records one minute apart, an instance rule at the seed's thresholds and minutes: four records at 96 % read
 #     'pending', the fifth 'critical'; four at 85 % and a fifth at 85 % 'warning'; a record at 79 % after them 'ok'.
 #     NOT PROVEN live: a CPU loop per scheduler on the shared box (the design pass's finding 18).
+#  R1. write latency (Changed 2, F6, F7, D1 a): on a built active instance iosyn's file reads of the last hour: tempdb data
+#     files at 12 ms (300 writes) warning, 32 ms critical, 9.9 ms and 249 writes at 20 ms none; a user data file at 200 ms
+#     over 5,000 writes raises nothing (red on f8e89d2: 'slow data file writes' on it) and the tempdb sentences give its
+#     average; log files at 12 ms over 300 writes warning, 35 ms critical, 19 ms over 1,000 writes warning (red on
+#     f8e89d2: under 20 ms). The retirement: an open alert of 'slow data file writes' on the user file and one on tempdb;
+#     0156 run again: the user file's closed with no recovery and a 'cleared' alert_log row 'rule retired', tempdb's open;
+#     a third run adds no row. NOT PROVEN live: the box's disk cannot be slowed to an exact latency.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -278,4 +285,37 @@ echo "   96 %: after 4 records $A4, after 5 $A5; 85 %: after 5 $B5; then 79 %: $
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $CS" >/dev/null
 ok "R2b: at the seed's numbers four records read pending and the fifth fires (critical at 96 %, warning at 85 %); 79 % clears"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2)"
+echo "== R1. write latency (Changed 2) =="
+IO=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('iosyn', 'sqlserver', '{}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1)
+pq "SELECT pgvigil.ensure_month_partition('mssql_fileio_sample', now() - interval '10 minutes')" >/dev/null
+# io <db id> <file id> <db> <file> <ROWS|LOG> <writes> <write stall ms>
+io() { pq "INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, file_name, type_desc,
+  reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs)
+  VALUES ($IO, now() - interval '10 minutes', $1, $2, '$3', '$4', '$5', 0, 0, 0, $6, 0, $7, 60)" >/dev/null; }
+io 2 1 tempdb tempdev ROWS 300 3600; io 2 3 tempdb temp2 ROWS 300 9600; io 2 4 tempdb temp3 ROWS 300 2970; io 2 5 tempdb temp4 ROWS 249 4980
+io 5 1 userdb ud1 ROWS 5000 1000000; io 5 2 userdb udlog LOG 300 3600; io 6 2 userdb2 log2 LOG 300 10500; io 7 2 userdb3 log3 LOG 1000 19000
+CF=$(pq "SELECT string_agg(severity || ' ' || check_name || ' ' || object, '; ' ORDER BY object COLLATE "C") FROM pgvigil.mssql_cpu_findings WHERE instance_id = $IO")
+PF=$(pq "SELECT string_agg(severity || ' ' || check_name || ' ' || object, '; ' ORDER BY object COLLATE "C") FROM pgvigil.mssql_perf_findings WHERE instance_id = $IO")
+TD=$(pq "SELECT detail FROM pgvigil.mssql_cpu_findings WHERE instance_id = $IO AND object = 'tempdb: tempdev'")
+echo "   data files: $CF"; echo "   log files: $PF"; echo "   tempdev: $TD"
+[[ "$CF" == "critical slow data file writes tempdb: temp2; warning slow data file writes tempdb: tempdev" ]] \
+  || fail "R1: the data file findings [$CF] (want tempdev warning, temp2 critical, nothing on userdb)"
+[[ "$TD" == *"The user databases' data files averaged 200.0 ms per write over 5000 writes"* ]] || fail "R1: the tempdb sentence [$TD]"
+[[ "$PF" == "critical slow log writes userdb2: log2; warning slow log writes userdb3: log3; warning slow log writes userdb: udlog" ]] \
+  || fail "R1: the log file findings [$PF] (want udlog warning, log2 critical, log3 warning)"
+ok "R1: tempdb data files judged at 10 / 30 ms over 250 writes, a user data file never; log files at 10 / 30 ms over 250 writes"
+ast() { pq "INSERT INTO pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
+  VALUES ('drop', '$1', $IO, 'iosyn', 'mssql_cpu', 'slow data file writes', '$2', 'warning', now() - interval '1 hour', now() - interval '1 hour')" >/dev/null; }
+ast proofkey-user 'userdb: ud1'; ast proofkey-tempdb 'tempdb: tempdev'
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R1: 0156 run again"
+RU=$(pq "SELECT (cleared_at IS NOT NULL) || '|' || (recovery_sent_at IS NULL) FROM pgvigil.alert_state WHERE finding_key = 'proofkey-user'")
+RT=$(pq "SELECT (cleared_at IS NULL) FROM pgvigil.alert_state WHERE finding_key = 'proofkey-tempdb'")
+RL=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND error LIKE 'rule retired (task 405, D1)%' AND 'proofkey-user' = ANY (keys)")
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f internal/repo/sql/0156_pm313_rules.sql >/dev/null || fail "R1: 0156 a third time"
+RL2=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND error LIKE 'rule retired (task 405, D1)%'")
+[[ "$RU" == "t|t" && "$RT" == t && "$RL" == 1 && "$RL2" == 1 ]] || fail "R1: the retirement: user file [$RU] (want cleared, no recovery), tempdb open [$RT], log rows $RL then $RL2 (want 1, 1)"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $IO" >/dev/null
+ok "R1: the open alert on a user data file closed as 'rule retired' with no recovery, tempdb's kept; a re-run adds nothing"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1)"

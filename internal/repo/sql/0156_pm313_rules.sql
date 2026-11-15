@@ -16,6 +16,9 @@
 --   mssql_backup_judged              0129's view judged by it, where each age comes from appended.
 --   a seeded rule                    Changed 12 / Release 5: 'SQL Server: High CPU' on cpu.sql_pct, 80 / 95 for 4
 --                                    minutes, OFF.
+--   mssql_cpu_findings               Changed 2: 0124's view, 'slow data file writes' on tempdb's data files only at 10 / 30
+--   mssql_perf_findings              ms over 250 writes; 0074's view, 'slow log writes' at 10 / 30 ms over 250 writes;
+--                                    the open alerts on user data files closed as 'rule retired' (D1).
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
 -- AlertEngine.cs L1045-1404.
@@ -682,3 +685,182 @@ WITH seed (name, metric, op, warning, critical, for_minutes, note) AS (VALUES
 INSERT INTO pgvigil.alert_rule_log (at, ui_user, client, op, rule_id, metric, outcome, detail)
 SELECT now(), 'pgvigil', '0156 seed', 'seed', m.rule_id, m.metric, 'done', m.name || ': seeded off (task 405)'
   FROM made m;
+
+-- ---- write latency (Changed 2) ------------------------------------------------------------------------------------
+
+-- PerformanceMonitor 3.13.0 judges write latency on log files and tempdb's data files only (PgAnomalyDetector.cs
+-- L401-426, PgFactCollector.Storage.cs L174-262), scored concerning at 10 ms and critical at 30 ms (FactScorer.cs L397)
+-- over 250 writes (IoVolumeFloor.cs L42); a user data file is a sentence of its own, never scored. The lead's calls
+-- (F6, F7, D1 a): 0124's 'slow data file writes' judges tempdb's data files only at 10 / 30 ms over 250 writes an
+-- hour, its text giving the user data files' average; 0074's 'slow log writes' moves to 10 / 30 ms over 250 writes
+-- (from 20 ms over 1,000, warning only: more alerts at an upgraded site, a release-note line); each stays per file
+-- (PerformanceMonitor scores one server-wide figure: a stated departure). The two views are 0124's and 0074's whole
+-- otherwise.
+CREATE OR REPLACE VIEW pgvigil.mssql_cpu_findings AS
+SELECT c.instance_id, 'warning'::text AS severity, 'other processes use the CPU'::text AS check_name, 'cpu'::text AS object, c.at,
+       format('processes other than SQL Server used %s %% of the machine''s CPU on average over the last %s minute(s) (peak %s %%; '
+              || 'SQL Server %s %%): something else on the host competes with SQL Server for the CPU '
+              || '(sp_PressureDetector lists each record at %s %% or more).', round(c.other_avg, 1), c.n, c.other_max,
+              round(c.sql_avg, 1), 50) AS detail
+  FROM (SELECT s.instance_id, count(*) AS n, avg(s.other_pct) AS other_avg, max(s.other_pct) AS other_max, avg(s.sql_pct) AS sql_avg,
+               max(s.snapshot_at) AS at
+          FROM pgvigil.mssql_cpu_sample s
+         WHERE s.snapshot_at > now() - interval '15 minutes' AND s.other_pct IS NOT NULL
+         GROUP BY s.instance_id) c
+ WHERE c.n >= 10 AND c.other_avg >= 50
+UNION ALL
+SELECT t.instance_id,
+       CASE WHEN t.idle AND t.age >= interval '4 hours' THEN 'critical' ELSE 'warning' END,
+       'a transaction open for a long time', 'session ' || t.session_id, t.snapshot_at,
+       format('session %s (%s, %s on %s, database %s) has had a transaction open since %s (%s), %s; %s',
+              t.session_id, coalesce(t.login_name, 'login not read'), coalesce(t.program_name, 'no program name'),
+              coalesce(t.host_name, 'no host name'), coalesce(t.database_name, '?'),
+              to_char(t.tran_start AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS "UTC"'), justify_interval(date_trunc('second', t.age)),
+              CASE WHEN t.idle THEN 'idle: the application left it open; it holds its locks and keeps the log from being reused until it ends'
+                   ELSE 'running: a long statement or batch holds it (a rebuild or a load can; its age alone is not a fault)' END,
+              CASE WHEN t.statement IS NULL THEN 'its last statement was not read.' ELSE 'its last statement: ' || left(t.statement, 300) END)
+  FROM (SELECT r.instance_id, r.snapshot_at, r.session_id, r.login_name, r.program_name, r.host_name, r.database_name, r.tran_start,
+               r.snapshot_at - r.tran_start AS age, coalesce(r.status, '') = 'sleeping' AS idle, st.statement
+          FROM pgvigil.mssql_requests r
+          JOIN (SELECT q.instance_id, max(q.snapshot_at) AS at FROM pgvigil.mssql_requests_summary q
+                 WHERE q.snapshot_at > now() - interval '10 minutes' GROUP BY q.instance_id) n
+            ON n.instance_id = r.instance_id AND n.at = r.snapshot_at
+          LEFT JOIN pgvigil.mssql_statement_text st ON st.instance_id = r.instance_id AND st.text_id = r.text_id
+         WHERE r.tran_start IS NOT NULL AND r.session_id > 50) t
+ WHERE (t.idle AND t.age >= interval '30 minutes') OR (NOT t.idle AND t.age >= interval '4 hours')
+UNION ALL
+SELECT f.instance_id, CASE WHEN f.ms >= 30 THEN 'critical' ELSE 'warning' END, 'slow data file writes', f.database_name || ': ' || f.file_name, f.at,
+       format('%s ms per write on average over the last hour (%s writes) to %s in tempdb (PerformanceMonitor 3.13 scores write latency '
+              || 'concerning at 10 ms and critical at 30 ms over 250 writes): spills, sorts and work tables wait on tempdb''s writes.%s',
+              round(f.ms, 1), f.writes, f.file_name,
+              coalesce(' The user databases'' data files averaged ' || round(u.ms, 1) || ' ms per write over ' || u.writes
+                       || ' writes in the same hour; they are not judged: their writes are asynchronous (checkpoint and the lazy writer).', ''))
+  FROM (SELECT s.instance_id, s.database_name, s.file_name, sum(s.writes) AS writes,
+               sum(s.write_stall_ms)::numeric / nullif(sum(s.writes), 0) AS ms, max(s.snapshot_at) AS at
+          FROM pgvigil.mssql_fileio_sample s
+         WHERE s.snapshot_at > now() - interval '1 hour' AND s.type_desc = 'ROWS' AND s.database_name = 'tempdb'
+         GROUP BY s.instance_id, s.database_name, s.file_name) f
+  LEFT JOIN LATERAL (SELECT sum(s.writes) AS writes, sum(s.write_stall_ms)::numeric / nullif(sum(s.writes), 0) AS ms
+                       FROM pgvigil.mssql_fileio_sample s
+                      WHERE s.instance_id = f.instance_id AND s.snapshot_at > now() - interval '1 hour' AND s.type_desc = 'ROWS'
+                        AND s.database_name NOT IN ('tempdb', 'master', 'model', 'msdb')
+                     HAVING sum(s.writes) > 0) u ON true
+ WHERE f.writes >= 250 AND f.ms >= 10;
+
+COMMENT ON VIEW pgvigil.mssql_cpu_findings IS 'Task 177 D14: other processes using the CPU, a transaction open for a long time; task 405: slow tempdb data file writes.';
+
+CREATE OR REPLACE VIEW pgvigil.mssql_perf_findings AS
+SELECT t.instance_id, 'warning'::text AS severity, 'tempdb has fewer data files than recommended'::text AS check_name,
+       'tempdb'::text AS object, t.snapshot_at AS at,
+       format('%s data file(s) on %s logical processors: Microsoft''s starting point is %s (as many as the processors, eight at most; '
+              || 'more by fours only while allocation contention stays).', t.data_files, t.cpu_count, t.recommended_files) AS detail
+  FROM pgvigil.mssql_tempdb t
+ WHERE t.insufficient_files AND t.snapshot_at > now() - interval '3 hours'
+UNION ALL
+SELECT t.instance_id, 'warning', 'tempdb data files differ in size', 'tempdb', t.snapshot_at,
+       format('the data files run from %s to %s: SQL Server fills them in proportion to their free space, so the largest takes most '
+              || 'allocations and the contention more files were meant to spread comes back.', pg_size_pretty(t.min_file_bytes), pg_size_pretty(t.max_file_bytes))
+  FROM pgvigil.mssql_tempdb t
+ WHERE NOT t.even_size AND t.snapshot_at > now() - interval '3 hours'
+UNION ALL
+SELECT t.instance_id, 'warning', 'tempdb data files differ in growth', 'tempdb', t.snapshot_at,
+       'the data files grow by different steps: the next growth leaves them of different sizes.'
+  FROM pgvigil.mssql_tempdb t
+ WHERE NOT t.even_growth AND t.snapshot_at > now() - interval '3 hours'
+UNION ALL
+SELECT t.instance_id, 'info', 'a tempdb data file grows by per cent', 'tempdb: ' || coalesce(f.file_name, f.file_id::text), t.snapshot_at,
+       format('%s grows by %s %% of its size (%s now): each growth is larger than the last; a fixed size is the usual choice.',
+              coalesce(f.file_name, f.file_id::text), f.growth_pct, pg_size_pretty(f.size_bytes))
+  FROM pgvigil.mssql_tempdb t
+  JOIN pgvigil.mssql_tempdb_files f ON f.instance_id = t.instance_id
+ WHERE f.type_desc = 'ROWS' AND f.growth_pct > 0 AND t.snapshot_at > now() - interval '3 hours'
+UNION ALL
+SELECT t.instance_id, 'warning', 'tempdb trace flags 1117 / 1118 off before SQL Server 2016', 'tempdb', t.snapshot_at,
+       format('SQL Server %s: trace flag 1117 is %s and 1118 is %s. Before 2016 they make the data files grow together and allocate '
+              || 'full extents; from 2016 this is tempdb''s default and the flags are no longer required.', t.major,
+              CASE WHEN t.tf1117 THEN 'on' ELSE 'off' END, CASE WHEN t.tf1118 THEN 'on' ELSE 'off' END)
+  FROM pgvigil.mssql_tempdb t
+ WHERE t.flags_required AND (t.tf1117 IS FALSE OR t.tf1118 IS FALSE) AND t.snapshot_at > now() - interval '3 hours'
+UNION ALL
+SELECT c.instance_id, CASE WHEN c.cpu_avg >= 95 THEN 'critical' ELSE 'warning' END, 'CPU at 90 % or more', 'cpu', c.at,
+       CASE WHEN c.machine
+            THEN format('the machine''s CPU averaged %s %% over the last %s minute(s) (SQL Server %s %%, other processes %s %%, peak %s %%).',
+                        round(c.cpu_avg, 1), c.n, round(c.sql_avg, 1), round(c.cpu_avg - c.sql_avg, 1), c.cpu_max)
+            ELSE format('the SQL Server process''s CPU averaged %s %% over the last %s minute(s), peak %s %% (a Linux host: the other processes are not read).',
+                        round(c.cpu_avg, 1), c.n, c.cpu_max) END
+  FROM (SELECT s.instance_id, count(*) AS n, avg(coalesce(100 - s.idle_pct, s.sql_pct)) AS cpu_avg, avg(s.sql_pct) AS sql_avg,
+               max(coalesce(100 - s.idle_pct, s.sql_pct)) AS cpu_max, bool_and(s.idle_pct IS NOT NULL) AS machine,
+               max(s.snapshot_at) AS at
+          FROM pgvigil.mssql_cpu_sample s
+         WHERE s.snapshot_at > now() - interval '15 minutes'
+         GROUP BY s.instance_id) c
+ WHERE c.n >= 10 AND c.cpu_avg >= 90
+UNION ALL
+SELECT p.instance_id, 'warning', 'scheduler pressure', 'schedulers', p.at,
+       CASE WHEN p.runnable_per_sched >= 1
+            THEN format('%s runnable task(s) per scheduler on average over the last %s reads (%s schedulers): work is ready and waits for a CPU '
+                        || '(SOS_SCHEDULER_YIELD and signal wait follow).', round(p.runnable_per_sched, 2), p.n, p.schedulers)
+            ELSE format('tasks waited in the work queue in %s of the last %s reads (at most %s): they wait for a worker thread (%s of %s in use '
+                        || 'at the newest read); THREADPOOL waits follow.', p.queued_reads, p.n, p.max_queue, p.workers, p.max_workers) END
+  FROM (SELECT s.instance_id, count(*) AS n, avg(s.runnable_tasks::numeric / nullif(s.schedulers, 0)) AS runnable_per_sched,
+               count(*) FILTER (WHERE s.work_queue > 0) AS queued_reads, max(s.work_queue) AS max_queue, max(s.snapshot_at) AS at,
+               (array_agg(s.schedulers ORDER BY s.snapshot_at DESC))[1] AS schedulers,
+               (array_agg(s.current_workers ORDER BY s.snapshot_at DESC))[1] AS workers,
+               (array_agg(s.max_workers ORDER BY s.snapshot_at DESC))[1] AS max_workers
+          FROM pgvigil.mssql_sched_sample s
+         WHERE s.snapshot_at > now() - interval '15 minutes'
+         GROUP BY s.instance_id) p
+ WHERE p.n >= 10 AND (p.runnable_per_sched >= 1 OR p.queued_reads * 2 >= p.n)
+UNION ALL
+SELECT m.instance_id, 'warning', 'available physical memory is low', 'memory', m.snapshot_at,
+       format('the OS says "%s": %s available of %s; the SQL Server process uses %s%s.', m.system_state, pg_size_pretty(m.available_kb * 1024),
+              pg_size_pretty(m.physical_kb * 1024), pg_size_pretty(m.process_kb * 1024),
+              CASE WHEN m.process_low THEN ' and has had a low-memory notification' ELSE '' END)
+  FROM (SELECT DISTINCT ON (s.instance_id) s.* FROM pgvigil.mssql_memory_sample s
+         WHERE s.snapshot_at > now() - interval '15 minutes' ORDER BY s.instance_id, s.snapshot_at DESC) m
+ WHERE m.system_state ILIKE '%memory is low%'
+UNION ALL
+SELECT g.instance_id, 'warning', 'queries wait for memory grants', 'memory grants', g.at,
+       format('queries waited for a memory grant in %s of the last %s reads (at most %s at once): RESOURCE_SEMAPHORE waits; '
+              || 'the largest grant granted was %s.', g.waiting_reads, g.n, g.max_waiting, pg_size_pretty(g.max_grant_kb * 1024))
+  FROM (SELECT s.instance_id, count(*) AS n, count(*) FILTER (WHERE greatest(s.grants_pending, s.grants_waiting, s.sem_waiting) > 0) AS waiting_reads,
+               max(greatest(s.grants_pending, s.grants_waiting, s.sem_waiting)) AS max_waiting, max(s.max_grant_kb) AS max_grant_kb,
+               max(s.snapshot_at) AS at
+          FROM pgvigil.mssql_memory_sample s
+         WHERE s.snapshot_at > now() - interval '15 minutes'
+         GROUP BY s.instance_id) g
+ WHERE g.waiting_reads >= 3
+UNION ALL
+SELECT f.instance_id, CASE WHEN f.type_desc = 'LOG' THEN CASE WHEN f.write_ms >= 30 THEN 'critical' ELSE 'warning' END
+                          WHEN f.read_ms >= 100 THEN 'critical' ELSE 'warning' END,
+       CASE WHEN f.type_desc = 'LOG' THEN 'slow log writes' ELSE 'slow data file reads' END,
+       coalesce(f.database_name, 'database ' || f.database_id) || ': ' || coalesce(f.file_name, 'file ' || f.file_id), f.at,
+       CASE WHEN f.type_desc = 'LOG'
+            THEN format('the log file''s writes took %s ms on average over the last hour (%s writes): every commit waits for them (WRITELOG; '
+                        'PerformanceMonitor 3.13 scores write latency concerning at 10 ms and critical at 30 ms over 250 writes).',
+                        round(f.write_ms, 1), f.writes)
+            ELSE format('the data file''s reads took %s ms on average over the last hour (%s reads): PAGEIOLATCH waits follow.',
+                        round(f.read_ms, 1), f.reads) END
+  FROM (SELECT s.instance_id, s.database_id, s.file_id, max(s.database_name) AS database_name, max(s.file_name) AS file_name,
+               max(s.type_desc) AS type_desc, sum(s.reads) AS reads, sum(s.writes) AS writes, max(s.snapshot_at) AS at,
+               sum(s.read_stall_ms)::numeric / nullif(sum(s.reads), 0) AS read_ms,
+               sum(s.write_stall_ms)::numeric / nullif(sum(s.writes), 0) AS write_ms
+          FROM pgvigil.mssql_fileio_sample s
+         WHERE s.snapshot_at > now() - interval '1 hour'
+         GROUP BY s.instance_id, s.database_id, s.file_id) f
+ WHERE (f.type_desc = 'LOG' AND f.writes >= 250 AND f.write_ms >= 10)
+    OR (f.type_desc IS NOT NULL AND f.type_desc <> 'LOG' AND f.reads >= 1000 AND f.read_ms >= 50);
+
+-- D1's retirement: an open alert of 'slow data file writes' on a user database's file (no longer judged) closes as
+-- 'rule retired', not as a recovery: its alert_state row is cleared with no recovery message, and one 'cleared' row
+-- per channel and instance in alert_log says why. A re-run finds none open.
+SELECT pgvigil.ensure_month_partition('alert_log', now());
+WITH r AS (
+  UPDATE pgvigil.alert_state a SET missing_since = coalesce(a.missing_since, now()), cleared_at = now()
+   WHERE a.cleared_at IS NULL AND a.source = 'mssql_cpu' AND a.setting = 'slow data file writes' AND a.value NOT LIKE 'tempdb: %'
+  RETURNING a.channel, a.instance_id, a.finding_key
+)
+INSERT INTO pgvigil.alert_log (snapshot_at, instance_id, channel, n_resolved, outcome, error, keys)
+SELECT now(), r.instance_id, r.channel, count(*), 'cleared',
+       'rule retired (task 405, D1): a user data file''s write latency is no longer judged; no recovery is sent', array_agg(r.finding_key)
+  FROM r GROUP BY r.channel, r.instance_id;
