@@ -155,6 +155,89 @@ export function passes(f: string, words: string, num: boolean): boolean {
   return f.startsWith('!') ? !w.includes(f.slice(1).toLowerCase()) : w.includes(f.toLowerCase());
 }
 
+// ---- a filter's conditions (task GM) ----------------------------------------------------------------------------
+// A typed filter with no double quote keeps its meaning whole (passes: '>5', '!x', and 'R & D' is the words 'R & D').
+// One with quotes is a list of conditions a row must all meet, joined by ' & ' outside the quotes (a quote inside one is
+// doubled):  "x" the words hold x;  !"x" they do not;  ="x"  <>"x"  >"x"  <"x"  >="x"  <="x" (a number column compares
+// the number shown, as passes does; a text column the words, case aside);  like "a%"  not like "a%" (% any run, _ one
+// character, \% \_ \\ themselves);  in:"a","b"  !in:"a","b" (the words one of them / none of them);  an operator with a
+// bare number (>5) as passes. A condition that reads as none of these makes the whole filter typed words again. The grid
+// menu writes every condition quoted. compileFilter reads a filter once per redraw.
+const QV = '"((?:[^"]|"")*)"';
+const unq = (s: string) => s.replace(/""/g, '"');
+export const quoteFilter = (v: string) => '"' + v.replace(/"/g, '""') + '"';
+function splitConds(f: string): string[] {
+  const out: string[] = []; let cur = '', q = false;
+  for (let i = 0; i < f.length; i++) {
+    const ch = f[i];
+    if (ch === '"') { if (q && f[i + 1] === '"') { cur += '""'; i++; continue; } q = !q; cur += ch; continue; }
+    if (!q && f.startsWith(' & ', i)) { out.push(cur.trim()); cur = ''; i += 2; continue; }
+    cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+function likeRe(p: string): RegExp {
+  let r = '';
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i];
+    if (ch === '\\' && i + 1 < p.length) { r += p[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); continue; }
+    r += ch === '%' ? '.*' : ch === '_' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp('^' + r + '$', 'is');
+}
+function condTest(c: string, num: boolean): ((w: string) => boolean) | undefined {
+  let m = new RegExp('^(!?)' + QV + '$').exec(c);
+  if (m) { const v = unq(m[2]).toLowerCase(), not = m[1] === '!'; return w => w.toLowerCase().includes(v) !== not; }
+  m = new RegExp('^(<>|>=|<=|=|>|<)\\s*' + QV + '$').exec(c);
+  if (m) {
+    const op = m[1], v = unq(m[2]), n = num && reading(typedNumber(v), true);
+    if (n) return op === '<>' ? w => !!reading(w) && !passes('=' + v, w, true) : w => passes(op + v, w, true);
+    const lv = v.toLowerCase();
+    return w => { const x = w.toLowerCase(), k = x.localeCompare(lv); return op === '=' ? x === lv : op === '<>' ? x !== lv : op === '>' ? k > 0 : op === '<' ? k < 0 : op === '>=' ? k >= 0 : k <= 0; };
+  }
+  m = new RegExp('^(not like|like)\\s+' + QV + '$', 'i').exec(c);
+  if (m) { const re = likeRe(unq(m[2])), not = m[1].toLowerCase() === 'not like'; return w => re.test(w) !== not; }
+  m = new RegExp('^(!?)in:\\s*(' + QV + '(?:\\s*,\\s*' + QV + ')*)$').exec(c);
+  if (m) {
+    const set = new Set([...m[2].matchAll(new RegExp(QV, 'g'))].map(x => unq(x[1]).toLowerCase())), not = m[1] === '!';
+    return w => set.has(w.toLowerCase()) !== not;
+  }
+  if (/^(>=|<=|>|<|=)\s*[^"\s]/.test(c) && !c.includes('"')) return w => passes(c, w, num);
+  return undefined;
+}
+export function compileFilter(f: string, num: boolean): (w: string) => boolean {
+  if (!f.includes('"')) return w => passes(f, w, num);
+  const tests = splitConds(f).map(c => condTest(c, num));
+  if (tests.some(t => !t)) return w => passes(f, w, num);
+  return w => tests.every(t => t!(w));
+}
+
+// ---- the grid menu's ask (task GM) -----------------------------------------------------------------------------------
+// ui.ts asks, gridtools.ts gridMenu answers (done): a grid of grid(), a table.grid a page draws itself, the group panel's
+// .gt-table, a grid empty from the start (empty: its p.empty[data-cols], as the export reads it)
+export interface GridMenuAsk { table: HTMLTableElement | null; empty?: Element | null; td: Element | null; th: Element | null; x: number; y: number; back: HTMLElement; done: boolean }
+export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done'>): boolean {
+  const detail: GridMenuAsk = { ...d, done: false };
+  at.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail }));
+  return detail.done;
+}
+// every table.grid not drawn by grid(), the group panel's table and a grid empty from the start: one handler for all of
+// them (grid()'s own stop at their wrap)
+if (typeof document !== 'undefined') document.addEventListener('contextmenu', e => {
+  const tgt = e.target;
+  if (!(tgt instanceof Element) || tgt.closest('input, textarea, select, a[href], .grid-wrap') || String(window.getSelection() ?? '').trim()) return;
+  const host = tgt.closest('table.grid, table.gt-table, .empty-grid');
+  if (!host) return;
+  const table = host.tagName === 'TABLE' ? host as HTMLTableElement : null;
+  const cell = tgt.closest('td, th');
+  const td = table && cell?.tagName === 'TD' && cell.closest('table') === table && cell.parentElement?.parentElement?.tagName === 'TBODY' ? cell : null;
+  const th = table && cell?.tagName === 'TH' && cell.closest('table') === table && !!cell.closest('thead') ? cell : null;
+  const r = tgt.getBoundingClientRect();
+  const back = (document.activeElement instanceof HTMLElement ? document.activeElement : document.body);
+  if (askGridMenu(host, { table, empty: table ? null : host.querySelector('p.empty[data-cols]'), td, th, x: e.clientX || r.left + 8, y: e.clientY || r.top + 8, back })) e.preventDefault();
+});
+
 // one small menu at a time (the grids' copy menu): Escape, a click elsewhere or a choice closes it and gives the focus back
 let openMenu: { box: HTMLElement; back: HTMLElement | null } | null = null;
 function closeMenu() { if (!openMenu) return; const m = openMenu; openMenu = null; m.box.remove(); if (m.back?.isConnected) m.back.focus(); }
@@ -227,7 +310,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   const filterBtns: HTMLButtonElement[] = [];
   for (const c of cols) {
     const name = c.label ?? c.key;
-    const fb = el('button', { type: 'button', class: 'filter-btn', title: 'Filter ' + name, 'aria-label': 'Filter ' + name, 'aria-expanded': 'false' }) as HTMLButtonElement;   // its glyph is CSS (::before), so a header's text stays its label
+    // (tabindex -1: the grid is one tab stop; F2 on its header cell opens the filter row - the ARIA grid pattern)
+    const fb = el('button', { type: 'button', class: 'filter-btn', title: 'Filter ' + name, 'aria-label': 'Filter ' + name, 'aria-expanded': 'false', tabindex: '-1' }) as HTMLButtonElement;   // its glyph is CSS (::before), so a header's text stays its label
     filterBtns.push(fb);
     fb.addEventListener('click', e => {
       e.stopPropagation();
@@ -268,8 +352,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   function draw() {
     let data = scope ? rows.filter(scope) : [...rows];
     if (filters.size) {
-      const active = cols.filter(c => filters.has(c.key));
-      data = data.filter(r => active.every(c => passes(filters.get(c.key)!, words(fmtCell(c, r)), !!c.num)));
+      const active = cols.filter(c => filters.has(c.key)).map(c => [c, compileFilter(filters.get(c.key)!, !!c.num)] as const);
+      data = data.filter(r => active.every(([c, t]) => t(words(fmtCell(c, r)))));
     }
     if (sortKey) {
       const col = cols.find(c => c.key === sortKey)!;
@@ -291,13 +375,16 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       const next = Math.min(GRID_PAGE, data.length - drawn.length);
       const step = el('button', { type: 'button', class: 'link' }, `Show ${next} more`);
       // the clicked button is replaced: the focus goes to the next 'Show more', else to the grid (WCAG 2.4.3)
-      const refocus = () => { ((more.querySelector('button') ?? table.parentElement) as HTMLElement | null)?.focus(); };
+      const refocus = () => { const b = more.querySelector('button') as HTMLElement | null; if (b) b.focus(); else rove(true); };
       step.addEventListener('click', () => { limit += GRID_PAGE; draw(); refocus(); });
       const all = el('button', { type: 'button', class: 'link' }, `Show all ${data.length}`);
       all.addEventListener('click', () => { limit = Infinity; draw(); refocus(); });
       more.append(`The first ${drawn.length} of ${data.length} rows. `, step, ' · ', all);
     }
+    const had = tbody.contains(document.activeElement);
     tbody.replaceChildren(...drawn.map(rowEl));
+    table.setAttribute('aria-rowcount', String(data.length));
+    quiet(); rove(had);
   }
   function rowEl(r: Record<string, unknown>): HTMLTableRowElement {
     const tr = el('tr') as HTMLTableRowElement;
@@ -316,11 +403,66 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     }
     return tr;
   }
+  // ---- the keyboard (the ARIA grid pattern, task GM): the grid is one tab stop, its current cell (a roving tabindex);
+  // the arrows, Home / End (Ctrl: the first / last row), PageUp / PageDown move it (PageDown past the drawn rows reaches
+  // 'Show more'); Enter or F2 reaches a cell's own link or button (Escape there comes back to the cell); on a header
+  // cell Enter sorts and F2 opens the filter row; the menu key or Shift+F10 opens the grid's menu at the cell
+  table.setAttribute('role', 'grid');
+  let cur: [number, number] = [0, 0];   // the current cell: its drawn row (-1 the header) and its column
+  const vis = (j: number) => { const h = head.children[j] as HTMLElement | undefined; return !!h && getComputedStyle(h).display !== 'none'; };
+  const cellAt = (r: number, j: number) => (r < 0 ? head.children[j] : tbody.children[r]?.children[j]) as HTMLElement | undefined;
+  const firstCol = () => { for (let j = 0; j < cols.length; j++) if (vis(j)) return j; return 0; };
+  const lastCol = () => { for (let j = cols.length - 1; j >= 0; j--) if (vis(j)) return j; return 0; };
+  const stepCol = (j: number, by: number) => { for (let k = j + by; k >= 0 && k < cols.length; k += by) if (vis(k)) return k; return j; };
+  function rove(focus: boolean) {
+    if (cur[0] >= tbody.children.length) cur[0] = tbody.children.length - 1;
+    if (!vis(cur[1])) cur[1] = firstCol();
+    const c = cellAt(cur[0], cur[1]) ?? cellAt(-1, cur[1]);
+    table.querySelectorAll<HTMLElement>(':scope > thead > tr > th[tabindex], :scope > tbody > tr > td[tabindex]').forEach(x => { if (x !== c) x.removeAttribute('tabindex'); });
+    if (!c) return;
+    c.tabIndex = 0;
+    if (focus) { c.focus({ preventScroll: true }); c.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  }
+  // a cell's own links and buttons leave the tab order (Enter or F2 reaches them)
+  function quiet() { tbody.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, summary, [tabindex]').forEach(x => { if (x.tagName !== 'TD') x.tabIndex = -1; }); }
+  table.addEventListener('keydown', e => {
+    const t = e.target as HTMLElement, cell = t.closest('td, th') as HTMLElement | null;
+    if (!cell || cell.closest('table') !== table || cell.parentElement === filterRow) return;
+    if (t !== cell) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cell.focus(); } return; }
+    const r = cell.parentElement === head ? -1 : [...tbody.children].indexOf(cell.parentElement!), j = [...cell.parentElement!.children].indexOf(cell);
+    cur = [r, j];
+    const last = tbody.children.length - 1;
+    let to: [number, number] | null = null;
+    if (e.key === 'ArrowDown') to = [Math.min(last, r + 1), j];
+    else if (e.key === 'ArrowUp') to = [Math.max(-1, r - 1), j];
+    else if (e.key === 'ArrowRight') to = [r, stepCol(j, 1)];
+    else if (e.key === 'ArrowLeft') to = [r, stepCol(j, -1)];
+    else if (e.key === 'Home') to = [e.ctrlKey ? 0 : r, firstCol()];
+    else if (e.key === 'End') to = [e.ctrlKey ? last : r, lastCol()];
+    else if (e.key === 'PageUp') to = [Math.max(0, r - 10), j];
+    else if (e.key === 'PageDown') {
+      if (r + 10 > last && !more.hidden) { e.preventDefault(); (more.querySelector('button') as HTMLElement | null)?.focus(); return; }
+      to = [Math.min(last, r + 10), j];
+    } else if (e.key === 'Enter' || e.key === 'F2') {
+      e.preventDefault();
+      if (r < 0) { if (e.key === 'Enter') cell.click(); else (cell.querySelector('.filter-btn') as HTMLElement | null)?.click(); return; }
+      (cell.querySelector('a[href], button, input, select, textarea, summary') as HTMLElement | null)?.focus();
+      return;
+    } else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault();
+      const b = cell.getBoundingClientRect();
+      openGrid(cell, b.left + 8, b.bottom - 4, cell);
+      return;
+    }
+    if (!to) return;
+    e.preventDefault();
+    cur = to; rove(true);
+  });
   models.set(table, { cols, rows: () => shown,
     allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[],
     text: (r, c) => words(fmtCell(c, r)) });
   draw();
-  const wrap = el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
+  const wrap = el('div', { class: 'grid-wrap' }, table);   // its scroll is the keyboard's through the table's current cell (one tab stop)
   const tsv = (trs: Element[]) => trs.filter(tr => !tr.classList.contains('trend-row')).map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
   const header = () => cols.map(c => c.label ?? c.key).join('\t');
   // a copy that says what it did, in the grid's own status line, for a moment
@@ -329,29 +471,36 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     count.textContent = ok ? 'Copied ' + what : 'Not copied: the browser refused the clipboard';
     window.setTimeout(() => { if (count.textContent?.startsWith('Copied') || count.textContent?.startsWith('Not copied')) count.textContent = before; }, 2500);
   };
-  wrap.addEventListener('contextmenu', e => {
-    // the browser's own menu stays on a field (paste), a link (open in a new tab), a button, and over selected text
-    if ((e.target as Element).closest('input, textarea, select, button, a[href]') || String(window.getSelection() ?? '').trim()) return;
-    // a grid inside a grid's row (a statement's History) answers for itself; the outer grid does not replace its menu
-    if ((e.target as Element).closest('.grid-wrap') !== wrap) return;
-    e.stopPropagation();
-    const hit = (e.target as Element).closest('tbody td');
-    const td = hit && hit.parentElement?.parentElement === tbody && !hit.parentElement.classList.contains('trend-row') ? hit : null;
+  // openGrid: the grid's menu (gridtools.ts gridMenu answers the ask) at a cell, a header cell or none; the cell becomes
+  // the current one, so the menu gives the focus back to it. With no grid tools on the page: the three copies.
+  function openGrid(cell: Element | null, x: number, y: number, back: HTMLElement) {
+    const td = cell?.tagName === 'TD' && cell.parentElement?.parentElement === tbody && !cell.parentElement.classList.contains('trend-row') ? cell : null;
+    const th = cell?.tagName === 'TH' && cell.parentElement === head ? cell : null;
+    if (td) cur = [[...tbody.children].indexOf(td.parentElement!), [...td.parentElement!.children].indexOf(td)];
+    else if (th) cur = [-1, [...head.children].indexOf(th)];
+    if (td || th) rove(false);
+    if (askGridMenu(table, { table, td, th, x, y, back: (td ?? th ?? back) as HTMLElement })) return;
     const items: [string, () => void][] = [];
     if (td) {
       items.push(['Copy cell', () => { void copyText(cellText(td)).then(done('the cell')); }]);
       items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])).then(done('the row')); }]);
     }
     items.push([filters.size || scope ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => {
-      // every row, the ones past the grid's page built off the screen (the grid itself stays as drawn)
       void copyText(header() + '\n' + tsv(models.get(table)!.allRows!())).then(done(shown.length + ' rows'));
     }]);
-    // the grid tools (gridtools.ts) add their lines to this menu: the copies with the colours, the columns, the groups, the bars
-    wrap.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail: { table, td, items } }));
+    showMenu(x, y, items, (td as HTMLElement | null) ?? back);
+  }
+  wrap.addEventListener('contextmenu', e => {
+    // the browser's own menu stays on a field (paste), a link (open in a new tab) and over selected text; a statement's
+    // button (sqlview.ts) gets the grid's menu (its Copy > Cell is the whole statement)
+    const tgt = e.target as Element;
+    if (tgt.closest('input, textarea, select, a[href]') || String(window.getSelection() ?? '').trim()) return;
+    // a grid inside a grid's row (a statement's History) answers for itself; the outer grid does not replace its menu
+    if (tgt.closest('.grid-wrap') !== wrap) return;
+    e.stopPropagation();
     e.preventDefault();
-    const r = (e.target as Element).getBoundingClientRect();
-    const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;
-    showMenu(x, y, items, (td as HTMLElement | null) ?? wrap);
+    const r = tgt.getBoundingClientRect();
+    openGrid(tgt.closest('td, th'), e.clientX || r.left + 8, e.clientY || r.top + 8, table);
   });
   const box = el('div', { class: 'grid-box' }, count, wrap, more);
   scopes.set(box, (keep, note = '') => { scope = keep; scopeNote = note; draw(); });
