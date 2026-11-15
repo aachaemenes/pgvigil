@@ -10,6 +10,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// TestJITOffStatement: the statement migrate runs (and prints for a database's owner) names the database as a quoted
+// identifier, so an odd name cannot change the statement.
+func TestJITOffStatement(t *testing.T) {
+	for db, want := range map[string]string{
+		"pgvigil":         `ALTER DATABASE "pgvigil" SET jit = off`,
+		`we"ird db`:       `ALTER DATABASE "we""ird db" SET jit = off`,
+		"x; DROP TABLE y": `ALTER DATABASE "x; DROP TABLE y" SET jit = off`,
+	} {
+		if got := jitOffStatement(db); got != want {
+			t.Errorf("jitOffStatement(%q) = %s; want %s", db, got, want)
+		}
+	}
+}
+
 // explained is the part of EXPLAIN (ANALYZE, FORMAT JSON) this test reads.
 type explained []struct {
 	Plan struct {

@@ -215,3 +215,17 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 `door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
+
+## The repository's own sessions run without jit
+
+Every `pgvigil migrate` (and so `install`, `install -upgrade` and `demo`) sets `jit = off` on the repository database
+(`ALTER DATABASE <the repository> SET jit = off`) when the setting is not there yet and its login owns that database or
+is a superuser. Every new session on that database then plans without jit: Grafana's login, psql, a BI tool and
+pgvigil's own processes. The reason: the findings view and the heavy functions cross the server's `jit_above_cost`
+even on a near-empty repository, and with jit on each such read spends its time compiling with LLVM (a 55 s read
+against 0.5 s without jit was measured on PostgreSQL 18). `pgvigil serve` already starts its sessions with `jit = off`,
+and the alert sender's functions carry their own `SET jit = off`. When the login does not own the database, migrate
+logs one WARN with the statement for the database's owner to run once. A login role's own setting
+(`ALTER ROLE <login> SET jit = on`) or a session's startup parameter outranks the database's: that is how an
+application that shares the repository database keeps jit on for its own login. Connections to a monitored instance
+are unchanged: that server's jit is its owner's choice.

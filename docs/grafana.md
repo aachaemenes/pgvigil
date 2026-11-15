@@ -44,9 +44,12 @@ Make the login on the repository's server as the repository owner. It is a membe
 CREATE ROLE pgvigil_grafana LOGIN PASSWORD '<a long random password>' IN ROLE pgvigil_reader;
 ALTER ROLE pgvigil_grafana SET default_transaction_read_only = on;
 ALTER ROLE pgvigil_grafana SET statement_timeout = '30s';
+ALTER ROLE pgvigil_grafana SET jit = off;
 GRANT CONNECT ON DATABASE pgvigil TO pgvigil_grafana;
 REVOKE TEMP ON DATABASE pgvigil FROM PUBLIC;
 ```
+
+`jit = off`: the findings view and pgvigil's other heavy reads cross the server's `jit_above_cost` even on a small repository, and with jit on each read spends its time compiling (seconds, against well under one without). `pgvigil migrate` already sets `jit = off` on the repository database when its login owns that database; the role's own line keeps it off where the database's setting is missing or a site keeps jit on there.
 
 The last line matters: PUBLIC holds TEMP on every database by default, so without it a Viewer could fill the server's temp space with temporary tables through the datasource. pgvigil's own imports should keep working (not proven: no proof collects after the REVOKE): they create their temporary tables inside SECURITY DEFINER functions, which run as the repository owner (a database's owner holds TEMP whatever PUBLIC holds).
 

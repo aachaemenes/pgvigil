@@ -14,10 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -30,6 +32,17 @@ var migrations embed.FS
 // Repo is an open repository.
 type Repo struct {
 	pool *pgxpool.Pool
+	log  *slog.Logger
+}
+
+// SetLog names the logger Migrate writes its warnings to (slog's default when none is set).
+func (r *Repo) SetLog(l *slog.Logger) { r.log = l }
+
+func (r *Repo) logger() *slog.Logger {
+	if r.log != nil {
+		return r.log
+	}
+	return slog.Default()
 }
 
 // Open connects to the repository.
@@ -81,6 +94,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 );`); err != nil {
 		return 0, fmt.Errorf("schema_version: %w", err)
 	}
+	if warn, err := repositoryJITOff(ctx, c.Conn()); err != nil {
+		return 0, fmt.Errorf("repository jit setting: %w", err)
+	} else if warn != "" {
+		r.logger().Warn(warn)
+	}
 	names, err := migrationNames()
 	if err != nil {
 		return 0, err
@@ -129,6 +147,46 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 		applied++
 	}
 	return applied, nil
+}
+
+// jitOffStatement is the statement that turns jit off for every new session of the repository database db.
+func jitOffStatement(db string) string {
+	return "ALTER DATABASE " + pgx.Identifier{db}.Sanitize() + " SET jit = off"
+}
+
+// repositoryJITOff runs on every migrate, before the files: it sets jit = off on the repository database, so every
+// NEW session there plans without jit - Grafana's login, psql, a BI tool and pgvigil's own processes alike. The
+// findings view (a union of many arms) and the heavy functions cross jit_above_cost even on a near-empty store, and
+// each read then spends its time compiling with LLVM (a 55 s read against 0.5 s without jit, PostgreSQL 18). Serve's
+// own pool already starts with jit off, and the sender's heavy functions carry SET jit = off; this covers the rest.
+// It runs only when the current role owns the database (or is a superuser), and only when the setting is not there
+// already; otherwise it returns the warning that prints the statement for the database's owner. A login role's own
+// setting or a session's startup parameter still wins over the database's (a site that wants jit on for a login sets
+// it there). PostgreSQL before 11 has no jit: nothing to do. A refused ALTER is a warning, never a failed migrate.
+func repositoryJITOff(ctx context.Context, c *pgx.Conn) (warn string, err error) {
+	var db string
+	var version int
+	var mayAlter, alreadyOff bool
+	if err := c.QueryRow(ctx, `SELECT d.datname,
+       current_setting('server_version_num')::int,
+       pg_has_role(current_user, d.datdba, 'USAGE') OR coalesce((SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = current_user), false),
+       EXISTS (SELECT 1 FROM pg_db_role_setting s
+                WHERE s.setdatabase = d.oid AND s.setrole = 0 AND 'jit=off' = ANY (s.setconfig))
+  FROM pg_database d
+ WHERE d.datname = current_database()`).Scan(&db, &version, &mayAlter, &alreadyOff); err != nil {
+		return "", err
+	}
+	if version < 110000 || alreadyOff {
+		return "", nil
+	}
+	stmt := jitOffStatement(db)
+	if !mayAlter {
+		return fmt.Sprintf("the repository database %s runs its sessions with the server's jit setting: this login does not own it, so migrate cannot turn jit off there; the findings and other heavy reads of other logins (Grafana, psql) may spend seconds compiling each read. The database's owner runs once: %s;", db, stmt), nil
+	}
+	if _, err := c.Exec(ctx, stmt); err != nil {
+		return fmt.Sprintf("the repository database %s: %s was refused (%v); the database's owner runs it once", db, stmt, err), nil
+	}
+	return "", nil
 }
 
 // migrationNames is the embedded migration files in name order, the order Migrate applies them in.
