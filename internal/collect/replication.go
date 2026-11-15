@@ -135,11 +135,13 @@ SELECT 'aurora_replica' AS kind, server_id, session_id, durable_lsn::text AS dur
 
 // auroraStandbySQL is the 'standby' row of an Aurora reader. An Aurora reader applies the writer's log stream to its
 // cache from the shared storage, not through a WAL receiver, and its standbySQL read raised on a real reader
-// (proof-pg-aurora.sh's Q7 run: no standby state stored, so 0141's reader exclusion never applied). Reported rejected
-// on Aurora (third-party reports, not AWS's documentation): pg_last_xact_replay_timestamp() and
-// pg_stat_get_wal_receiver() (pg_stat_wal_receiver); the WAL position functions and pg_is_wal_replay_paused() are left
-// out too, unproven either way (the Q7 lab's probe prints each). The row says only that the server is in recovery -
-// no receiver, positions, conninfo or restore_command (NULL: no 'receiver down', no 'replay paused').
+// (proof-pg-aurora.sh's Q7 run: no standby state stored, so 0141's reader exclusion never applied). A real Aurora
+// PostgreSQL 17.9 reader rejects every call standbySQL and receiverSQL make beyond pg_is_in_recovery() - SQLSTATE
+// 0A000, "currently not supported for Aurora": pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn(),
+// pg_last_xact_replay_timestamp(), pg_is_wal_replay_paused() and pg_stat_wal_receiver (pg_stat_get_wal_receiver())
+// (proof-pg-aurora.sh's Q7a-probe, 2026-11-15; AWS's documentation does not list them). The row says only that the
+// server is in recovery - no receiver, positions, conninfo or restore_command (NULL: no 'receiver down', no 'replay
+// paused').
 const auroraStandbySQL = `
 SELECT 'standby' AS kind, false AS has_receiver, NULL::boolean AS conninfo_set, NULL::boolean AS restore_set,
        NULL::text AS primary_slot_name, NULL::bigint AS min_apply_delay_ms, NULL::text AS receive_lsn, NULL::text AS replay_lsn,
