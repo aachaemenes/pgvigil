@@ -91,7 +91,8 @@ func TestRightsCatalogueNamesEveryCheck(t *testing.T) {
 func unquoted(q string) string { return regexp.MustCompile(`'[^']*'`).ReplaceAllString(q, "''") }
 
 // TestRightsCatalogueShape: keys unique and usable as column names; each right has its words, a check that reads only
-// (judged outside its string literals) and a statement that names the login only through the placeholders.
+// (judged outside its string literals) and a statement that names its principal only through a placeholder ({p} the
+// login or its user, {login} the login, {user} the database user).
 func TestRightsCatalogueShape(t *testing.T) {
 	key := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	write := regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|DENY|REVOKE|EXEC|EXECUTE)\b`)
@@ -104,8 +105,11 @@ func TestRightsCatalogueShape(t *testing.T) {
 		if r.Name == "" || r.For == "" || r.Check == "" || r.Grant == "" || r.On == nil || len(r.Checks) == 0 {
 			t.Errorf("%s: a field is empty", r.Key)
 		}
-		if !strings.Contains(r.Grant, "{login}") && !strings.Contains(r.Grant, "{user}") {
+		if !strings.Contains(r.Grant, "{p}") && !strings.Contains(r.Grant, "{login}") && !strings.Contains(r.Grant, "{user}") {
 			t.Errorf("%s: its statement names no principal placeholder: %s", r.Key, r.Grant)
+		}
+		if r.UserDB != "" && r.UserDB != "master" && r.UserDB != "msdb" {
+			t.Errorf("%s: its user's database %q is neither master nor msdb (the read resolves those two)", r.Key, r.UserDB)
 		}
 		if m := regexp.MustCompile(`(?i)\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|SHUTDOWN|sysadmin|CONTROL SERVER|securityadmin|db_owner)\b`).FindString(r.Grant); m != "" {
 			t.Errorf("%s: its statement holds %q", r.Key, m)

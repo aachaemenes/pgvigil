@@ -26,7 +26,7 @@
 #      answer 403, without a session 401; op 'rights' of a name that is neither the page's nor the file's answers ok
 #      false 'no instance ...'.
 #  R1  f-sql (a login granted every right the catalogue names): Rights answers missing 0, missing_needed 0, an empty
-#      script, sp_WhoIsActive 'not installed'.
+#      script, sp_WhoIsActive 'not installed, or not visible to this login: ...'.
 #  R2  (RED first) f-bare (a login of the public role only): mssql_jobs is skipped for it; Rights lists as missing
 #      VIEW SERVER STATE, VIEW ANY DEFINITION, msdb, CONNECT ANY DATABASE (needed; the database it cannot enter
 #      named) and, of the optional ones, ALTER TRACE and VIEW SERVER SECURITY AUDIT. It HOLDS the two registry rights
@@ -251,7 +251,7 @@ ok "C2: op 'test' and op 'rights' answer 403 without the X-Pgvigil header and 40
 
 echo "== R1. a login with every right =="
 code=$(rights f-sql); [[ "$code" == 200 && "$(ans ok)" == True ]] || fail "R1: $code $(cat "$TMPD/ans.json")"
-[[ "$(ans missing)|$(ans missing_needed)|$(script | wc -c)|$(ans login)" == "0|0|0|$FULL" && "$(state sp_whoisactive)" == "not installed:"* ]] \
+[[ "$(ans missing)|$(ans missing_needed)|$(script | wc -c)|$(ans login)" == "0|0|0|$FULL" && "$(state sp_whoisactive)" == "not installed, or not visible to this login:"* ]] \
   || fail "R1: missing $(ans missing) (needed $(ans missing_needed)): $(missing); sp_WhoIsActive '$(state sp_whoisactive)'; the script: $(script | head -5)"
 ok "R1: f-sql as $FULL: nothing missing, no script; sp_WhoIsActive '$(state sp_whoisactive | cut -c1-40)...'"
 
