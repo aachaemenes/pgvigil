@@ -145,6 +145,13 @@
 # lost without invalidation_reason), a database walsender (a table copy) kept out of the links, a named synchronous
 # standby whose link is down, 'sending server not read', a WAL receiver without a replay position (pg_receivewal),
 # 0006's standby-side 'replay lag' for a standby no monitored primary sends to.
+#   AF   task 374's Q7 fix (written 2026-11-14 18:4x, after the real reader's Q7 run stored no standby state for it):
+#        hadr-s read as 'hadr-sa', platform aurora, through a login whose search_path puts raising stand-ins of
+#        pg_last_wal_receive_lsn, pg_last_wal_replay_lsn, pg_last_xact_replay_timestamp and pg_is_wal_replay_paused
+#        before pg_catalog (and a stand-in aurora_replica_status: the writer's row and one replica at 20 ms);
+#        'standby_replay_lag' warning 0 on it, two reads: its standby state in recovery with no receiver, its read 'ok';
+#        no 'Aurora replica lag' and no 'receiver down' on it [red FAIL, 86c4079: the 'standby' read raises - no state,
+#        the read partial, 'Aurora replica lag' raised on the reader]
 # Task 375's rows (migration 0150), written before the first run 2026-11-14 18:0x PST; red = the tree before 375
 # (rel-hadr-s1 ef59fba: no 0150 - its functions, views and checks do not exist, so every row below fails there):
 #   RU1  the rig's own samples (hadr-p, hadr-s): every (kind, key, UTC hour) of replication_hourly equals a direct
@@ -192,15 +199,15 @@
 # (the topology needs the other's name or cluster_name in the link, or a 'cluster' tag), confl_active_logicalslot
 # (PostgreSQL 16+), the hours' series past the cap, the purge command's Go loop (the lead's wiring).
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
-# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
-# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU6 RU, CL1-CL4 CL1b RB RB2 CL); an unknown name stops the run; unset = all.
+# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU AF RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
+# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU6 RU, CL1-CL4 CL1b RB RB2 CL; AF); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); FAILS=0
 fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 ok() { echo "ok   $*"; }
-ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL "
+ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL AF "
 if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
   PO=""; for n in ${PROOF_ONLY//,/ }; do
     case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-6]) n=RU ;; CL[1-4]|CL1b|RB|RB2) n=CL ;; esac
@@ -712,6 +719,38 @@ if want AU; then
   r=$(q "select count(*) from pgvigil.findings where instance_id = $AR and setting = 'Aurora replica lag'")
   [[ "$r" == "0" ]] && ok "AU no 'Aurora replica lag' raised by a reader" || fail "AU a reader raised 'Aurora replica lag': '$r'"
   q "update pgvigil.instances set is_active = false where instance_id in ($AW, $AR)" >/dev/null
+fi
+
+# ---- AF: an Aurora reader whose WAL functions raise (task 374's Q7 fix; a stand-in: hadr-s read as platform aurora) --
+if want AF; then
+  pq "create schema aurora_fake" >/dev/null
+  for f in "pg_last_wal_receive_lsn|pg_lsn" "pg_last_wal_replay_lsn|pg_lsn" "pg_last_xact_replay_timestamp|timestamptz" "pg_is_wal_replay_paused|boolean"; do
+    pq "create function aurora_fake.${f%%|*}() returns ${f##*|} language plpgsql as \$\$ begin raise exception 'a stand-in Aurora reader: ${f%%|*}() is not available'; end \$\$" >/dev/null
+  done
+  pq "create function aurora_fake.aurora_replica_status() returns table (server_id text, session_id text, durable_lsn pg_lsn, highest_lsn_rcvd pg_lsn,
+        current_read_lsn pg_lsn, cpu real, iops real, replica_lag_in_msec real, log_stream_speed_in_kib_per_second real, log_buffer_sequence_number bigint,
+        oldest_read_view_lsn pg_lsn, last_update_timestamp timestamptz) language sql as \$\$
+        select 'hadr-af-w'::text, 'MASTER_SESSION_ID'::text, '0/1'::pg_lsn, null::pg_lsn, null::pg_lsn, 1::real, 1::real, null::real, 0::real, 0::bigint, null::pg_lsn, now()
+        union all select 'hadr-af-r', 'af-session', '0/1', '0/1', '0/1', 1, 1, 20, 0, 0, '0/1', now() \$\$" >/dev/null
+  pq "create role pgva login password '$MPW' in role pg_monitor; alter role pgva set search_path = aurora_fake, pg_catalog, public" >/dev/null
+  for _ in $(seq 1 30); do [[ "$(sq "select count(*) from pg_proc where proname = 'aurora_replica_status'")" == 1 ]] && break; sleep 1; done
+  OCFG=$CFG; { cat "$OCFG"; printf '  - name: hadr-sa\n    platform: aurora\n    dsn: "host=127.0.0.1 port=%s user=pgva password=%s dbname=postgres sslmode=disable"\n' "$SP" "$MPW"; } > "$WORK/pgvigil-af.yaml"
+  CFG=$WORK/pgvigil-af.yaml
+  "$BIN" collect -config "$CFG" -once instance -instance hadr-sa >>"$WORK/collect.out" 2>&1 || fail "AF instance read of hadr-sa: $(tail -1 "$WORK/collect.out")"
+  AFID=$(q "select instance_id from pgvigil.instances where name = 'hadr-sa'")
+  r=$(psql "host=127.0.0.1 port=$SP user=pgva password=$MPW sslmode=disable dbname=postgres" -XAtq -c "select pg_last_wal_replay_lsn()" 2>&1 | tail -1)
+  [[ "$r" == *"stand-in Aurora reader"* ]] && ok "AF the stand-in raises through hadr-sa's login: $r" || fail "AF the stand-in does not raise: '$r'"
+  q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"key\":\"standby_replay_lag\",\"level\":\"instance\",\"instance_id\":$AFID,\"warn\":0,\"crit\":300,\"ui_user\":\"proof\"}'::jsonb)" >/dev/null
+  read_ hadr-sa 2
+  r=$(q "select coalesce((select in_recovery || '|' || has_receiver from pgvigil.pg_repl_standby_state where instance_id = $AFID), 'no state') || '|' ||
+             coalesce((select d.status || ' ' || coalesce(d.note, '') from pgvigil.collection_dates d where d.instance_id = $AFID and d.collection = 'replication'
+                        order by d.snapshot_at desc limit 1), 'no read')")
+  r2=$(finding "$AFID" 'Aurora replica lag'); r3=$(finding "$AFID" 'receiver down')
+  [[ "$r" == "true|false|ok"* && -z "$r2$r3" ]] && ok "AF hadr-sa (platform aurora, its WAL functions raise): in recovery, no receiver, the read ok ($r); no 'Aurora replica lag', no 'receiver down' on it" \
+    || fail "AF hadr-sa: '$r' (expected true|false|ok), 'Aurora replica lag' '$r2', 'receiver down' '$r3' (expected none)"
+  q "update pgvigil.instances set is_active = false where instance_id = $AFID" >/dev/null   # it is hadr-s: the later rows read hadr-s itself
+  pq "drop role pgva; drop schema aurora_fake cascade" >/dev/null
+  CFG=$OCFG
 fi
 
 # ---- RP: replay paused on the standby -------------------------------------------------------------------------------
