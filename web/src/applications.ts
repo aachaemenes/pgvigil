@@ -9,6 +9,7 @@
 // only when asked, so an export of this page carries them only while they are shown (the page is never mailed). The route and the
 // tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
+import { fleet, tagsOf } from './fleet';
 import { Ctx } from './router';
 import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
 
@@ -63,7 +64,7 @@ const tierOf = (v: string) => v === '' ? null : Number(v);
 const where = (r: Row) => r.database_name == null ? `the whole server ${str(r.instance)}` : `${str(r.database_name)} on ${str(r.instance)}`;
 const pickKey = (r: Row) => `${str(r.instance_id)}\t${str(r.database_name)}`;
 
-export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
+export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
   const root = el('section', { class: 'applications' });
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; };
@@ -87,10 +88,17 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
 
   async function draw(): Promise<void> {
     const mine = ++seq;
-    const [d, u] = await Promise.all([get<ListData>('applications'), get<UnData>('applications/unassigned')]);
+    const [d, u, f] = await Promise.all([get<ListData>('applications'), get<UnData>('applications/unassigned'), fleet()]);
     if (mine !== seq) return;
     whyNot = d.can_edit ? '' : str(d.why_not);
-    const apps = rowsOf(d.applications), un = rowsOf(u.unassigned), marked = rowsOf(u.marked), audit = rowsOf(d.audit), fileTags = rowsOf(d.file_tags);
+    // the databases follow the tree's scope as every page does (a tag folder shows its own servers' databases only, and the
+    // sentence names only the system databases of the engines in view); applications themselves are fleet-wide
+    const inView = f.instances.filter(r => !ctx.tag || (ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag)));
+    const viewIds = new Set(inView.map(r => String(r.instance_id)));
+    const scoped = (rs: Row[]): Row[] => ctx.tag ? rs.filter(r => viewIds.has(str(r.instance_id))) : rs;
+    const msIn = inView.some(r => r.engine === 'sqlserver'), pgIn = inView.some(r => r.engine !== 'sqlserver');
+    const sysDbs = [pgIn ? 'template0, template1, rdsadmin' : '', msIn ? 'master, model, msdb, tempdb' : ''].filter(Boolean).join(', ');
+    const apps = rowsOf(d.applications), un = scoped(rowsOf(u.unassigned)), marked = scoped(rowsOf(u.marked)), audit = rowsOf(d.audit), fileTags = rowsOf(d.file_tags);
     const onList = new Set(un.map(pickKey));
     for (const k of [...picked]) if (!onList.has(k)) picked.delete(k);
     if (openId && !apps.some(a => Number(a.app_id) === openId)) openId = 0;
@@ -111,7 +119,8 @@ export async function adminApplicationsView(_ctx: Ctx): Promise<HTMLElement> {
       grid(apps, listCols, 'No application yet: add one above.'),
       one ?? '',
       el('h3', {}, `Databases with no application (${un.length})`),
-      el('p', { class: 'meta' }, 'Every present database of a monitored server with no application of its own or of its server\'s; system databases (template0, template1, rdsadmin, master, model, msdb, tempdb) are left out. Tick rows, then assign them or mark them not an application.'),
+      el('p', { class: 'meta' }, `Every present database of a monitored server${ctx.tag ? ' in this folder' : ''} with no application of its own or of its server's; `
+        + (sysDbs ? `system databases (${sysDbs}) are left out. ` : '') + 'Tick rows, then assign them or mark them not an application.'),
       unGrid(un),
       selectedForm(apps),
       el('h3', {}, `Marked not an application (${marked.length})`),

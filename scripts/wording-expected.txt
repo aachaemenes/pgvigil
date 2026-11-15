@@ -186,3 +186,5 @@ must-not | ms-tag | ^jobs\?tag= | prose | pg_ | jobs_fleet_status.ts: the senten
 must-not | ms-tag | ^jobs\?tag= | prose | pgAgent | jobs_fleet_status.ts: the sentence names the schedulers of the engines in view | -
 must-not | ms-tag | ^jobs\?tag= | heading | PostgreSQL | jobsreport.ts: no PostgreSQL schedule checks without a PostgreSQL instance in view (pages.ts jobsRoot) | -
 must-not | ms-tag | ^jobs\?tag= | tile | PostgreSQL | jobsreport.ts: no PostgreSQL schedule checks without a PostgreSQL instance in view (pages.ts jobsRoot) | -
+must-not | pg-tag | ^admin_applications\?tag= | prose | tempdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view (red on 946b61a, j14b) | -
+must-not | pg-tag | ^admin_applications\?tag= | prose | msdb | applications.ts: the databases follow the tree's scope and the sentence names only the system databases of the engines in view (red on 946b61a, j14b) | -
