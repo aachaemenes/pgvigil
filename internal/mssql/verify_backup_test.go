@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	mssqldb "github.com/microsoft/go-mssqldb"
 )
 
 // TestVerifyStatementHoldsNoPath: the statement text names parameters only (the audit keeps it with no path in it);
@@ -25,7 +27,7 @@ func TestVerifyStatementHoldsNoPath(t *testing.T) {
 		}
 	}
 	args := verifyArgs([]string{`/var/opt/mssql/data/pb3_s1.bak`, `/var/opt/mssql/data/pb3_s2.bak`}, 2)
-	if len(args) != 3 || args[0].(sql.NamedArg).Name != "d1" || args[1].(sql.NamedArg).Value != `/var/opt/mssql/data/pb3_s2.bak` || args[2].(sql.NamedArg).Name != "f" || args[2].(sql.NamedArg).Value != 2 {
+	if len(args) != 3 || args[0].(sql.NamedArg).Name != "d1" || args[1].(sql.NamedArg).Value != `/var/opt/mssql/data/pb3_s2.bak` || args[2].(sql.NamedArg).Name != "f" || args[2].(sql.NamedArg).Value != int32(2) {
 		t.Errorf("the parameters: %#v", args)
 	}
 }
@@ -118,5 +120,21 @@ func TestValidateVerifyAndRow(t *testing.T) {
 	row := VerifyRow(time.Unix(0, 0), ok, res)
 	if row.PID != nil || row.Action != "verify_backup" || row.TargetID != u || row.Target != "pb1 full 2026-11-15T12:43:14Z" || strings.Contains(row.Statement, "/b/") {
 		t.Errorf("the audit row: %+v", row)
+	}
+}
+
+// TestVerifyServerMessageKeepsEveryError (run 301bp5's red H6f, F7): a refused RESTORE's errors all, in order - the
+// driver's error names the last one (Msg 3013) and lists every one in All.
+func TestVerifyServerMessageKeepsEveryError(t *testing.T) {
+	first := mssqldb.Error{Number: 3201, Class: 16, State: 2, Message: "Cannot open backup device '/b/gone.bak'. Operating system error 2(The system cannot find the file specified.)."}
+	last := mssqldb.Error{Number: 3013, Class: 16, State: 1, Message: "RESTORE HEADERONLY is terminating abnormally."}
+	err := last
+	err.All = []mssqldb.Error{first, last}
+	want := "Msg 3201, Level 16, State 2: " + first.Message + " | Msg 3013, Level 16, State 1: " + last.Message
+	if got := verifyServerMessage(err); got != want {
+		t.Errorf("got %s\nwant %s", got, want)
+	}
+	if got := verifyServerMessage(last); got != "Msg 3013, Level 16, State 1: "+last.Message {
+		t.Errorf("one error: %s", got)
 	}
 }

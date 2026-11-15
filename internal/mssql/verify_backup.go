@@ -333,7 +333,7 @@ func VerifyPrepare(ctx context.Context, d Door, r VerifyRequest) (VerifyJob, Ver
 		return refuse(now, "backup set %s is not as shown (its files, position, checksums or size changed): read it again", r.UUID)
 	}
 	if got, err := headerGUID(ctx, act, now); err != nil {
-		msg := serverMessage(err)
+		msg := verifyServerMessage(err)
 		return VerifyJob{}, VerifyResult{Outcome: OutcomeFailed, Detail: "RESTORE HEADERONLY failed: " + msg,
 			Statement: verifyStatement("HEADERONLY", len(now.Paths), false), ServerMessage: msg, Set: now}
 	} else if !strings.EqualFold(got, now.UUID) {
@@ -434,6 +434,21 @@ func VerifyRun(ctx context.Context, d Door, job VerifyJob) VerifyResult {
 	return res
 }
 
+// verifyServerMessage is every error the server sent for one statement, in order (F7: a refused RESTORE comes as Msg
+// 3201 'Cannot open backup device ... Operating system error 2' then Msg 3013 '... terminating abnormally', and
+// serverMessage keeps the last one only).
+func verifyServerMessage(err error) string {
+	var me mssqldb.Error
+	if !errors.As(err, &me) || len(me.All) <= 1 {
+		return serverMessage(err)
+	}
+	parts := make([]string, 0, len(me.All))
+	for _, e := range me.All {
+		parts = append(parts, serverMessage(e))
+	}
+	return strings.Join(parts, " | ")
+}
+
 // errVerifyLost is the watcher's cause: the actions session no longer runs the verify.
 var errVerifyLost = errors.New("the verify's session no longer runs the RESTORE")
 
@@ -491,7 +506,7 @@ func runWithMessages(ctx context.Context, c *sql.Conn, query string, args ...any
 	retmsg := &sqlexp.ReturnMessage{}
 	rows, err := c.QueryContext(ctx, query, append([]any{retmsg}, args...)...)
 	if err != nil {
-		return nil, []string{serverMessage(err)}
+		return nil, []string{verifyServerMessage(err)}
 	}
 	defer func() { _ = rows.Close() }()
 	for active := true; active; {
@@ -513,7 +528,7 @@ func runWithMessages(ctx context.Context, c *sql.Conn, query string, args ...any
 		}
 	}
 	if err := rows.Err(); err != nil && ctx.Err() == nil {
-		errs = append(errs, serverMessage(err))
+		errs = append(errs, verifyServerMessage(err))
 	}
 	return notices, errs
 }

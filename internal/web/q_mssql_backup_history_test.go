@@ -63,6 +63,14 @@ func TestMSSQLBackupHistoryAPIOnAStore(t *testing.T) {
 		{"kind": "files_read", "state": "read"},
 		{"kind": "default_path", "path": "/var/opt/mssql/data", "state": "directory", "detail": "a directory the service account sees (writing not tried)"},
 	}
+	// the file row names the full the Backups tab judges (0140's, seeded by seedBackupLocations): the collector reads
+	// both from the same msdb, and a file row of another set is held (0191's mssql_backup_file_newer)
+	var judgedFull string
+	if err := pool.QueryRow(ctx, `SELECT lower(backup_set_uuid) FROM pgvigil.mssql_backup_locations
+	                                WHERE instance_id = $1 AND database_name = 'lnx' AND backup_type = 'full' AND judged`, id).Scan(&judgedFull); err != nil {
+		t.Fatalf("the seeded judged full of lnx: %v", err)
+	}
+	checks[2]["backup_set_uuid"] = judgedFull
 	for _, c := range []struct {
 		fn   string
 		rows []map[string]any

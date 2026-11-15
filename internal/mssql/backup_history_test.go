@@ -75,7 +75,8 @@ func TestBackupHistorySQLReadsOnly(t *testing.T) {
 		if strings.Contains(strings.ToLower(q), "xp_fileexist") {
 			t.Errorf("%s: calls xp_fileexist", name)
 		}
-		if name != "path reg" && strings.Contains(strings.ToUpper(q), "EXEC") {
+		// EXEC as a statement (EXEC / EXECUTE then a name), not the permission's name in HAS_PERMS_BY_NAME(..., 'EXECUTE')
+		if name != "path reg" && regexp.MustCompile(`(?i)\bEXEC(UTE)?\s`).MatchString(q) {
 			t.Errorf("%s: an EXEC", name)
 		}
 	}

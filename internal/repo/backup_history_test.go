@@ -157,11 +157,11 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT pg_get_functiondef('pgvigil.mssql_hadr_cursor(int, text)'::regprocedure)`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	defer func() { // before the pool's own deferred Close (a t.Cleanup would run after it)
 		if _, err := pool.Exec(context.Background(), before); err != nil {
 			t.Errorf("mssql_hadr_cursor not put back: %v", err)
 		}
-	})
+	}()
 	exec(string(joined))
 	for src, want := range map[string]string{"backup_history": "112", "backup_history_mark": "7", "restore_history": "0", "restore_history_mark": "0", "backup_sets": "<nil>"} {
 		if got := one(`SELECT pgvigil.mssql_hadr_cursor($1, $2)::text`, a, src); got != want {
