@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Proof of SQL Server log shipping read from restore history (task 384; migration 0143, internal/mssql/logshipping.go):
+# Proof of SQL Server log shipping read from restore history (task 384; migration 0143, internal/mssql/logshipping.go)
+# and of the log shipping extras (task LSX, parts I-M: the jobs, msdb's own alert, a log backup outside log shipping,
+# the primary's recovery model):
 # a REAL pair of SQL Server 2022 containers sharing one Docker volume for the log backups, the primary on a clock
 # eight hours off UTC (backupset.time_zone), log restores applied by hand and by SQL Server's own log shipping jobs.
 #
@@ -46,6 +48,28 @@
 #  G. a missing copy: lsm dropped on the secondary; the next read stores lsm as kind 'pair' (no database) with its source
 #     and raises 'a log shipping copy is missing' (warning) for it; no 'restore' row of lsm is left.
 #  H. the primary's read: none of its ONLINE databases is a restore row (the primary is not judged as a secondary).
+#  The log shipping extras (task LSX), on F's pair lsw, the primary read too; skipped with F when msdb's procedures refuse:
+#  I. log shipping's jobs: with the three jobs disabled (F left them so) 'a log shipping job is disabled' critical for
+#     LSCopy_lsw and LSRestore_lsw on the secondary and for LSBackup_lsw on the primary, 'is disabled' in the detail;
+#     the restore job enabled again with no schedule (msdb's procedures make the jobs without one: sa's own count 0)
+#     still critical, 'has no enabled schedule'; a schedule every minute attached to each of the three and the jobs
+#     enabled: no such finding, the stored interval 1 minute each. The statements pass live against the primary as
+#     the monitoring login with the configuration present. The monitor's alert job, if msdb made one here, is printed
+#     with the stored jobs, never asserted.
+#  J. msdb's own alert: F made both configurations with the alert off: 'the log shipping alert is off' info on both;
+#     the secondary's restore threshold 1 minute with its restore job every minute: 'a log shipping alert threshold is
+#     under three times its job interval' info with Microsoft's words (error 14421); none for the primary (60 minutes,
+#     the backup job every minute). The secondary's alert on and its threshold 45 minutes
+#     (sp_change_log_shipping_secondary_database): both gone there.
+#  K. a log backup outside log shipping: a COPY_ONLY log backup of lsw to another folder: no stored row, no finding
+#     (none for log shipping's own backups either, at least one by then); a plain log backup there: 'a log backup
+#     outside log shipping broke the chain' critical on the primary naming that file, '1 log backup', the log shipping
+#     folder and the job 'not known' (this proof reads no job history); a second one: '2 log backups', the newest named.
+#  L. the primary's recovery model: BULK_LOGGED -> 'a log-shipped database is in BULK_LOGGED recovery' warning; SIMPLE
+#     -> 'a log-shipped database is in SIMPLE recovery' critical with Microsoft's sentence, the warning gone; FULL
+#     again -> neither.
+#  M. a job gone: the copy job deleted (sp_delete_job) while the configuration names it: 'a log shipping job is
+#     missing' critical naming the copy job's id. If SQL Server refuses the delete, M prints 'M NOT PROVEN' with its words.
 #  NOT PROVEN HERE: the SIMPLE-recovery exclusion of the tiers (DBA Dash's recovery_model <> 3: a SIMPLE database takes
 #  no log backup, so no real one has a log restore to judge; the clause is kept as DBA Dash's); a mirrored database
 #  (excluded: proven on the Windows mirroring lab, scripts/proof-mssql-mirroring.sh M8); an availability group secondary
@@ -53,7 +77,10 @@
 #  the exclusion is proven over stub rows, scripts/proof-mssql-hadr.sh stubs); the RECOVERING-after-a-log-restore
 #  branch of the reader; backupset.time_zone 127 (unknown: this server's offset taken); the latency's critical tier; a STANDBY
 #  (read-only) secondary of SQL Server's log shipping (the restore jobs here use NORECOVERY); a share between two
-#  machines (one Docker volume stands in for it).
+#  machines (one Docker volume stands in for it). Of the extras: Windows paths with a UNC backup_share (the folder test
+#  runs on Linux paths here; Windows-shaped rows are in the store test only); the job named for a foreign log backup
+#  (this proof reads no job history: 'not known' here, 'probably the job ...' in the store test only); the monitor's
+#  alert job disabled; a monitor on a third server.
 set -euo pipefail
 IMAGE=${PGVIGIL_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu-22.04}
 : "${PGVIGIL_REPO_DSN:?a superuser keyword DSN of the PostgreSQL sandbox}"
@@ -285,4 +312,102 @@ IP=$(q "select instance_id from pgvigil.instances where name = '$NP'")   # the i
 [ -n "$IP" ] || fail "H: the primary's read made no instance"
 [ "$(q "select count(*) from pgvigil.mssql_logrestore_state where instance_id = $IP and kind = 'restore'")" = 0 ] || fail "H: the primary has restore rows"
 ok "H: the primary stores no restore row"
-echo "PROOF OK (A-D, G, H$([ -n "$FOK" ] && echo ', F' || echo '; F NOT PROVEN'))"
+
+MOK=1
+if [ -n "$FOK" ]; then
+  pfinding() { q "select string_agg(severity, ',' order by severity) from pgvigil.mssql_hadr_findings where instance_id = $IP and check_name = '$1' and object like '$2%'"; }
+  detail() { q "select detail from pgvigil.mssql_hadr_findings where instance_id = $1 and check_name = '$2' and object like '$3%' limit 1"; }
+  JD='a log shipping job is disabled'
+
+  echo "--- I. log shipping's jobs"
+  collect "$NS"; collect "$NP"
+  echo "  stored jobs: $(q "select string_agg(role || ' ' || coalesce(nullif(database_name, ''), '-') || ' ' || job_role || ' ' || coalesce(job_name, '?') || ' exists ' || coalesce(job_exists::text, '-') || ' enabled ' || coalesce(job_enabled::text, '-') || ' schedules ' || coalesce(enabled_schedules::text, '-'), '; ' order by instance_id, role, job_role) from pgvigil.mssql_logship_config where instance_id in ($IS, $IP)")"
+  for o in 'secondary / lsw / LSCopy_lsw' 'secondary / lsw / LSRestore_lsw'; do
+    [ "$(finding "$JD" "$o")" = critical ] || fail "I: '$o' disabled: '$(finding "$JD" "$o")', want critical"
+  done
+  [ "$(pfinding "$JD" 'primary / lsw / LSBackup_lsw')" = critical ] || fail "I: the primary's backup job disabled: '$(pfinding "$JD" 'primary / lsw / LSBackup_lsw')', want critical"
+  detail "$IS" "$JD" 'secondary / lsw / LSRestore_lsw' | grep -q 'is disabled' || fail "I: the detail does not say 'is disabled': $(detail "$IS" "$JD" 'secondary / lsw / LSRestore_lsw')"
+  [ "$(ss "SELECT COUNT(*) FROM msdb.dbo.sysjobschedules js JOIN msdb.dbo.sysjobs j ON j.job_id = js.job_id WHERE j.name = N'LSRestore_lsw'")" = 0 ] \
+    || fail "I: LSRestore_lsw has a schedule (msdb's procedures were expected to make none)"
+  ss "EXEC msdb.dbo.sp_update_job @job_name = N'LSRestore_lsw', @enabled = 1;" >/dev/null
+  collect "$NS"
+  [ "$(finding "$JD" 'secondary / lsw / LSRestore_lsw')" = critical ] || fail "I: enabled with no schedule: '$(finding "$JD" 'secondary / lsw / LSRestore_lsw')', want critical"
+  detail "$IS" "$JD" 'secondary / lsw / LSRestore_lsw' | grep -q 'has no enabled schedule' || fail "I: the detail does not say 'has no enabled schedule': $(detail "$IS" "$JD" 'secondary / lsw / LSRestore_lsw')"
+  addsched() {   # addsched <sp|ss> <job>: a schedule every minute attached, the job enabled
+    $1 "EXEC msdb.dbo.sp_add_schedule @schedule_name = N'$2 every minute', @enabled = 1, @freq_type = 4, @freq_interval = 1, @freq_subday_type = 4, @freq_subday_interval = 1;
+EXEC msdb.dbo.sp_attach_schedule @job_name = N'$2', @schedule_name = N'$2 every minute';
+EXEC msdb.dbo.sp_update_job @job_name = N'$2', @enabled = 1;" >/dev/null
+  }
+  addsched sp LSBackup_lsw; addsched ss LSCopy_lsw; addsched ss LSRestore_lsw
+  collect "$NS"; collect "$NP"
+  [ -z "$(finding "$JD" 'secondary / lsw /')" ] || fail "I: scheduled and enabled, still: '$(finding "$JD" 'secondary / lsw /')'"
+  [ -z "$(pfinding "$JD" 'primary / lsw /')" ] || fail "I: the primary's job scheduled and enabled, still: '$(pfinding "$JD" 'primary / lsw /')'"
+  iv=$(q "select string_agg(job_role || ' ' || interval_min::float8, ',' order by job_role) from pgvigil.mssql_logship_config where instance_id in ($IS, $IP) and database_name = 'lsw'")
+  [ "$iv" = "backup 1,copy 1,restore 1" ] || fail "I: the stored intervals: $iv"
+  PGVIGIL_MSSQL_TEST_DSN="$MSSQL_PRI_DSN" go test -count=1 -run 'TestHADRS3StatementsLive' ./internal/mssql/ > "$OUT" 2>&1 || { cat "$OUT"; fail "I: TestHADRS3StatementsLive against the primary"; }
+  ok "I: the three jobs disabled = critical; enabled with no schedule = critical; scheduled every minute = none (intervals $iv); the statements live against $PRI"
+
+  echo "--- J. msdb's own alert"
+  AO='the log shipping alert is off'; T3='a log shipping alert threshold is under three times its job interval'
+  [ "$(finding "$AO" 'secondary / lsw')" = info ] || fail "J: the secondary's alert off: '$(finding "$AO" 'secondary / lsw')', want info"
+  [ "$(pfinding "$AO" 'primary / lsw')" = info ] || fail "J: the primary's alert off: '$(pfinding "$AO" 'primary / lsw')', want info"
+  [ "$(finding "$T3" 'secondary / lsw')" = info ] || fail "J: the restore threshold 1 minute with a job every minute: '$(finding "$T3" 'secondary / lsw')', want info"
+  d=$(detail "$IS" "$T3" 'secondary / lsw')
+  grep -q 'every 1 minute' <<<"$d" && grep -q 'at least three times the frequency of the restore job' <<<"$d" || fail "J: the detail: $d"
+  [ -z "$(pfinding "$T3" 'primary / lsw')" ] || fail "J: the primary's threshold 60 with a job every minute judged: '$(pfinding "$T3" 'primary / lsw')'"
+  ss "EXEC master.dbo.sp_change_log_shipping_secondary_database @secondary_database = N'lsw', @threshold_alert_enabled = 1, @restore_threshold = 45;" >/dev/null
+  collect "$NS"
+  [ -z "$(finding "$AO" 'secondary / lsw')" ] || fail "J: the alert on, still: '$(finding "$AO" 'secondary / lsw')'"
+  [ -z "$(finding "$T3" 'secondary / lsw')" ] || fail "J: the threshold 45, still: '$(finding "$T3" 'secondary / lsw')'"
+  ok "J: the alert off = info on both; a threshold under three intervals = info with Microsoft's words; both gone once changed"
+
+  echo "--- K. a log backup outside log shipping"
+  CH='a log backup outside log shipping broke the chain'
+  docker exec -u 0 "$PRI" mkdir -p "$SHIP/other"; docker exec -u 0 "$PRI" chown 10001:0 "$SHIP/other"
+  sp "BACKUP LOG [lsw] TO DISK = '$SHIP/other/lsw_copyonly.trn' WITH COPY_ONLY, INIT, FORMAT;" >/dev/null
+  collect "$NP"
+  [ "$(sp "SELECT COUNT(*) FROM msdb.dbo.backupset WHERE database_name = N'lsw' AND type = 'L' AND is_copy_only = 0")" -ge 1 ] || fail "K: log shipping has no log backup of its own yet"
+  [ "$(q "select count(*) from pgvigil.mssql_logship_foreign_logs where instance_id = $IP")" = 0 ] \
+    || fail "K: stored as foreign with only a copy-only backup and log shipping's own: $(q "select string_agg(file_name, ', ') from pgvigil.mssql_logship_foreign_logs where instance_id = $IP")"
+  [ -z "$(pfinding "$CH" 'primary / lsw')" ] || fail "K: a finding with only a copy-only backup: '$(pfinding "$CH" 'primary / lsw')'"
+  sp "BACKUP LOG [lsw] TO DISK = '$SHIP/other/lsw_foreign1.trn' WITH INIT, FORMAT;" >/dev/null
+  collect "$NP"
+  [ "$(pfinding "$CH" 'primary / lsw')" = critical ] || fail "K: after a plain log backup elsewhere: '$(pfinding "$CH" 'primary / lsw')', want critical"
+  d=$(detail "$IP" "$CH" 'primary / lsw')
+  for want in "$SHIP/other/lsw_foreign1.trn" '1 log backup that is' "folder $SHIP/lsw " 'is not known'; do
+    grep -qF -- "$want" <<<"$d" || fail "K: the detail lacks '$want': $d"
+  done
+  sleep 2; sp "BACKUP LOG [lsw] TO DISK = '$SHIP/other/lsw_foreign2.trn' WITH INIT, FORMAT;" >/dev/null
+  collect "$NP"
+  d=$(detail "$IP" "$CH" 'primary / lsw')
+  for want in "$SHIP/other/lsw_foreign2.trn" '2 log backups that are'; do
+    grep -qF -- "$want" <<<"$d" || fail "K: the detail lacks '$want': $d"
+  done
+  [ "$(pfinding "$CH" 'primary / lsw')" = critical ] || fail "K: two files: '$(pfinding "$CH" 'primary / lsw')', want ONE critical"
+  ok "K: copy-only and log shipping's own = none; a plain log backup elsewhere = critical naming it; two = one finding, the newest named"
+
+  echo "--- L. the primary's recovery model"
+  RB='a log-shipped database is in BULK_LOGGED recovery'; RS='a log-shipped database is in SIMPLE recovery'
+  sp "ALTER DATABASE [lsw] SET RECOVERY BULK_LOGGED;" >/dev/null; collect "$NP"
+  [ "$(pfinding "$RB" 'primary / lsw')" = warning ] && [ -z "$(pfinding "$RS" 'primary / lsw')" ] || fail "L: BULK_LOGGED: '$(pfinding "$RB" 'primary / lsw')' / '$(pfinding "$RS" 'primary / lsw')', want warning / none"
+  sp "ALTER DATABASE [lsw] SET RECOVERY SIMPLE;" >/dev/null; collect "$NP"
+  [ "$(pfinding "$RS" 'primary / lsw')" = critical ] && [ -z "$(pfinding "$RB" 'primary / lsw')" ] || fail "L: SIMPLE: '$(pfinding "$RS" 'primary / lsw')' / '$(pfinding "$RB" 'primary / lsw')', want critical / none"
+  detail "$IP" "$RS" 'primary / lsw' | grep -q 'switching the database to simple recovery will cause log shipping to stop functioning' || fail "L: the detail lacks Microsoft's sentence"
+  sp "ALTER DATABASE [lsw] SET RECOVERY FULL;" >/dev/null; collect "$NP"
+  [ -z "$(pfinding "$RS" 'primary / lsw')" ] && [ -z "$(pfinding "$RB" 'primary / lsw')" ] || fail "L: FULL again: '$(pfinding "$RS" 'primary / lsw')' / '$(pfinding "$RB" 'primary / lsw')', want none"
+  ok "L: BULK_LOGGED = warning, SIMPLE = critical with Microsoft's sentence, FULL = none"
+
+  echo "--- M. a log shipping job deleted"
+  CID=$(ss "SELECT CAST(copy_job_id AS varchar(36)) FROM msdb.dbo.log_shipping_secondary WHERE primary_database = N'lsw'")
+  if ! ss "EXEC msdb.dbo.sp_delete_job @job_name = N'LSCopy_lsw';" > "$OUT" 2>&1; then
+    MOK=; echo "  M NOT PROVEN: SQL Server refused the delete: $(tr '\n' ' ' < "$OUT" | cut -c1-300)"
+  else
+    collect "$NS"
+    [ "$(finding 'a log shipping job is missing' "secondary / lsw / copy job $CID")" = critical ] \
+      || fail "M: the copy job $CID deleted: '$(finding 'a log shipping job is missing' 'secondary / lsw')', want critical ($(q "select string_agg(check_name || ' | ' || object, '; ') from pgvigil.mssql_hadr_findings where instance_id = $IS and check_name like 'a log shipping job%'"))"
+    ok "M: the copy job deleted = 'a log shipping job is missing' critical naming its id $CID"
+  fi
+fi
+PROVEN="A-D, G, H"
+if [ -n "$FOK" ]; then PROVEN="$PROVEN, F, I-L"; [ -n "$MOK" ] && PROVEN="$PROVEN, M" || PROVEN="$PROVEN; M NOT PROVEN"; else PROVEN="$PROVEN; F and I-M NOT PROVEN"; fi
+echo "PROOF OK ($PROVEN)"
