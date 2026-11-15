@@ -221,7 +221,7 @@ index 40526c2..d1e5b4d 100644
 + WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('info', 'warning', 'critical');
 +COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, replay lag, slot WAL, a volume under 5 GB free, an AG secondary behind, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
 diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
-index 078fe43..dd5de4b 100644
+index 078fe43..6f7f6b3 100644
 --- i/internal/web/q_mssql_perf.go
 +++ w/internal/web/q_mssql_perf.go
 @@ -325,7 +325,7 @@ const (
@@ -233,6 +233,16 @@ index 078fe43..dd5de4b 100644
    FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
   ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
  	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
+@@ -390,6 +390,9 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
+ 		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
+ 		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
+ 		{"rg", sqlMSSQLResourceGovernor, []any{id}},
++		// task 405 (Fixed 8; the lead's 22:4x on S4): PerformanceMonitor's max server memory number, 0156's, the one the
++		// Server options check states in its words (checks.go pmMemorySuggestion)
++		{"suggestion", `SELECT * FROM pgvigil.mssql_memory_suggestion($1)`, []any{id}},
+ 		{"skipped", sqlMSSQLMemorySkipped, []any{id}},
+ 	})
+ }
 diff --git i/internal/web/q_mssql_protection.go w/internal/web/q_mssql_protection.go
 new file mode 100644
 index 0000000..5c1e24d
@@ -447,6 +457,34 @@ index 0000000..5c1e24d
 +	w.WriteHeader(code)
 +	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": res.Outcome, "detail": res.Detail, "override_id": res.OverrideID})
 +}
+diff --git i/internal/web/q_waits.go w/internal/web/q_waits.go
+index 6e2c11b..327b5e8 100644
+--- i/internal/web/q_waits.go
++++ w/internal/web/q_waits.go
+@@ -97,6 +97,15 @@ SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
+  ORDER BY q.samples DESC, q.queryid
+  LIMIT 50`
+ 
++// sqlWaitsPoison (task 405, Changed 19; the lead's 11-14 22:4x on S4): PerformanceMonitor's poison wait at the window's
++// end (0156's pg_poison_wait_findings): each finding with its top statements, their text from statement_text as the
++// collector stored it (the query_text policy and the credential mask applied there, before the store: never a raw
++// text), or the one info row 'not judged: needs pg_wait_sampling' where no wait_sample row was written in a day.
++const sqlWaitsPoison = `
++SELECT p.severity, p.check_name, p.object, p.at, p.detail, p.query
++  FROM pgvigil.pg_poison_wait_findings($1, $2) p
++ ORDER BY CASE p.severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, p.object`
++
+ // sqlWaitsState: the waits collection's last run on the instance (why it is skipped, where it is).
+ const sqlWaitsState = `
+ SELECT c.status, c.note, c.snapshot_at
+@@ -124,6 +133,7 @@ func (s *Server) Waits(w http.ResponseWriter, r *http.Request) {
+ 		{"series", sqlWaitsSeries, []any{id, from, to}},
+ 		{"queries", sqlWaitsQueries, []any{id, from, to}},
+ 		{"locktree", sqlWaitsLockTree, []any{id, to}},
++		{"poison", sqlWaitsPoison, []any{id, to}},
+ 	})
+ }
+ 
 diff --git i/internal/web/web.go w/internal/web/web.go
 index 5def140..19859da 100644
 --- i/internal/web/web.go
@@ -592,10 +630,30 @@ index 7fe364d..3aaaafb 100644
    summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
    tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
 diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
-index 823b6dd..7dc2e07 100644
+index 823b6dd..743fffb 100644
 --- i/web/src/mssql_perf.ts
 +++ w/web/src/mssql_perf.ts
-@@ -426,6 +426,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
+@@ -136,7 +136,7 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
+ // (sp_PressureDetector's) and the plan cache by type with its bloat level.
+ type MemoryParts = 'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks' | 'pools_window' | 'semaphores_window' | 'pools_newest'
+   | 'semaphores_newest' | 'pool_series' | 'rmon' | 'rmon_hourly' | 'caches' | 'plancache' | 'plancache_types' | 'plancache_trend'
+-  | 'grants_now' | 'rg' | 'skipped';
++  | 'grants_now' | 'rg' | 'skipped' | 'suggestion';
+ const mbOf = (v: unknown) => v == null ? '-' : fmtNum(Math.round(Number(v) / 102.4) / 10) + ' MB';
+ const grantWindowCols = (bySem: boolean): Col[] => [
+   { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
+@@ -192,6 +192,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(props([
+     ['max server memory', l.max_server_memory_mb == null ? 'not read (mssql_instance)' : `${fmtNum(l.max_server_memory_mb)} MB`
+       + (l.physical_kb ? ` (${fmtNum(Math.round(100 * Number(l.max_server_memory_mb) * 1024 / Number(l.physical_kb)))} % of physical)` : '')],
++    // task 405 (Fixed 8; the lead's 22:4x on S4): PerformanceMonitor's number beside the setting (0156's
++    // mssql_memory_suggestion, the one the Server options check states; none on a Managed Instance)
++    ...rowsOf(d.suggestion).slice(0, 1).map(sg => ['PerformanceMonitor\'s suggestion', `${fmtNum(sg.suggested_mb)} MB (${String(sg.status)}; `
++      + `leaving ${fmtNum(sg.reserve_mb)} MB of ${fmtNum(sg.ram_mb)} MB for the OS): ${String(sg.message ?? '')}`] as [string, string]),
+     ['SQL Server process working set', kb(l.process_kb) + (l.process_low ? ' - the process had a low-memory notification' : '')],
+     ['committed / target', `${kb(l.committed_kb)} of ${kb(l.committed_target_kb)}`],
+     ['memory grants', `${fmtNum(l.sem_granted ?? 0)} granted (${kb(l.sem_granted_kb)} of a ${kb(l.sem_target_kb)} target), ${fmtNum(l.sem_waiting ?? 0)} waiting; `
+@@ -426,6 +430,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
    grid(rmon, [
      { key: 'sample_at', label: 'time', fmt: fmtTime },
      { key: 'notification', label: 'notification' },
@@ -629,3 +687,47 @@ index 2e453d1..433d0d7 100644
    // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
    { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
  ];
+diff --git i/web/src/waits.ts w/web/src/waits.ts
+index cce445b..5dbf68e 100644
+--- i/web/src/waits.ts
++++ w/web/src/waits.ts
+@@ -7,7 +7,7 @@ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+ 
+-interface WaitsData { state: Table | null; events: Table | null; series: Table | null; queries: Table | null; locktree: Table | null }
++interface WaitsData { state: Table | null; events: Table | null; series: Table | null; queries: Table | null; locktree: Table | null; poison: Table | null }
+ 
+ const sourceText: Record<string, string> = {
+   pg_wait_sampling: 'pg_wait_sampling: every backend sampled every profile period (10 ms by default)',
+@@ -35,6 +35,14 @@ const queryCols: Col[] = [
+   { key: 'query', wide: true },
+ ];
+ 
++// task 405 (Changed 19): PerformanceMonitor's poison waits, each with its top statements as the collector stored them
++const poisonCols: Col[] = [
++  { key: 'severity', fmt: v => badge(String(v ?? ''), v === 'critical' ? 'crit' : 'warn') },
++  { key: 'object', label: 'event' },
++  { key: 'detail', label: 'what it means', wide: true },
++  { key: 'query', label: 'top statements (as stored: the text policy and the credential mask applied)', wide: true },
++];
++
+ const treeCols: Col[] = [
+   { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${(Number(r.level) - 1) * 1.2}em` }, (Number(r.level) > 1 ? '└ ' : '') + String(v)) },
+   { key: 'blocked', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
+@@ -89,6 +97,15 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
+     sec.append(el('h3', {}, 'Statements that waited most'), grid(rowsOf(d.queries), queryCols,
+       'No statement identified (query ids need compute_query_id, on by default with pg_stat_statements).'));
+   }
++  // task 405 (Changed 19; the lead's 22:4x on S4): the poison wait at the window's end; without pg_wait_sampling the
++  // page says it is not judged, in words, never an empty grid
++  const poison = rowsOf(d.poison), judged = poison.filter(r => r.severity !== 'info');
++  sec.append(el('h3', {}, 'Poison waits'));
++  if (poison.length && !judged.length) sec.append(el('p', { class: 'meta' }, String(poison[0].detail ?? '')));
++  else sec.append(el('p', { class: 'meta' }, 'PerformanceMonitor\'s poison waits: IPC:BtreePage and IPC:BufferIO, the backends '
++    + 'waiting on them on average over the newest 10 minutes of the window (1.0 or more there and in the 10 before: a warning; '
++    + '10.0 or more: critical at once).'),
++    grid(judged, poisonCols, 'No poison wait: IPC:BtreePage and IPC:BufferIO under 1.0 waiting backends on average over the newest 10 minutes of the window.'));
+   const tree = rowsOf(d.locktree);
+   sec.append(el('h3', {}, 'Lock tree'), el('p', { class: 'meta' },
+     (tree.length ? `The activity snapshot of ${fmtTime(tree[0].snapshot_at)}. ` : '')

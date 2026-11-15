@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of task 405 (B11): PerformanceMonitor 3.13.0's moved rules in pgvigil (0156) against a SQL Server container
 # and rows built for the edges a container cannot reach.
-# Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, python3, and:
+# Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, python3, curl, node, npm, chromium, ss, and:
 #   ADMIN_DSN       a superuser connection to a PostgreSQL sandbox in keyword form (default 'host=127.0.0.1 port=5432
 #                   user=postgres dbname=postgres'); the proof makes its own repository database and drops it.
 #   PGVIGIL_IMAGE   the SQL Server image (default 2022-latest).
@@ -101,6 +101,17 @@
 #     finding 4: the words reach the Findings page and a channel set to info; red on 234aacc: the info row left out).
 #     NOT PROVEN live: no PostgreSQL image on
 #     the box carries pg_wait_sampling.
+#  R10. the readers (the lead's 11-14 22:4x on S4: nothing a collection stores goes without a page; red on 3a36717: no
+#     poison part, no suggestion part, nothing on the pages), with the wiring patch under pgvigil serve: R10a GET
+#     /api/waits at R4's time gives a poison part - pgsyn1's warning on IPC:BufferIO with 'queryid 42: SELECT pgv_poison
+#     FROM t' (statement_text's text, as the collector's text policy and credential mask stored it), pgsyn4's one info
+#     row 'not judged: needs pg_wait_sampling ...'; R10b GET /api/mssql/memory?part=suggestion on pmbox at max server
+#     memory's default gives 0156's mssql_memory_suggestion, the same number the Server options check states in its
+#     words ('PerformanceMonitor's suggestion: about N MB', checks.go, read from mssql_server_option); R10c in headless
+#     Chromium: the Waits page's 'Poison waits' holds a grid with pgsyn1's event and statement, pgsyn4's says 'not
+#     judged: needs pg_wait_sampling' with no grid, the SQL Server Memory page's 'PerformanceMonitor's suggestion'
+#     row starts with the API's number. NOT PROVEN here: the credential mask itself (task 415's, on the collector's
+#     side: R4's statement is written straight into statement_text).
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -110,7 +121,7 @@ IMAGE=${PGVIGIL_IMAGE:-2022-latest}
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 LBL=pgvigil-proof=pm313
-PGDB=pgv_pm313_$SUF; MON=pgv_pmon_$SUF; SQL=pgv-pm313-$SUF; UIUSER=proofpm$SUF; SRVPID=; SRV2PID=
+PGDB=pgv_pm313_$SUF; MON=pgv_pmon_$SUF; SQL=pgv-pm313-$SUF; UIUSER=proofpm$SUF; SRVPID=; SRV2PID=; CHRPID=
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
@@ -121,20 +132,25 @@ printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\nMSSQL_PID=Developer\n' "$
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$SRV2PID" ]] && kill "$SRV2PID" 2>/dev/null || true
+  if [[ -n "$CHRPID" ]]; then kill -- "-$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; fi
   docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f -v >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
-for t in docker go psql python3 curl ss; do command -v "$t" >/dev/null || fail "needs $t"; done
+for t in docker go psql python3 curl node npm chromium setsid ss; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
 # PGVIGIL_WIRING 1 (default): this task's lines in other owners' files (scripts/proof-pm313-rules-wiring.patch) are
-# applied to this copy when it lacks them; 0 = the tree as it is
-if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q 'memory_node_id' internal/mssql/memory.go; then
-  git apply scripts/proof-pm313-rules-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-pm313-rules-wiring.patch >/dev/null \
-    || fail "405's wiring patch"
-  echo "405's wiring applied to this copy"
+# applied to the run's own copy of the tree when it lacks them; 0 = the copy as it is. The web bundle and the binary
+# are built in that copy (R10's pages need the patched bundle); the tree the proof runs from is never changed.
+GSRC=$TMPD/src; mkdir -p "$GSRC"
+tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
+if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q 'memory_node_id' "$GSRC/internal/mssql/memory.go"; then
+  (cd "$GSRC" && { git apply scripts/proof-pm313-rules-wiring.patch 2>"$TMPD/apply.err" || patch -p1 --forward < scripts/proof-pm313-rules-wiring.patch >>"$TMPD/apply.err" 2>&1; }) \
+    || fail "405's wiring patch: $(cat "$TMPD/apply.err")"
+  echo "405's wiring applied to the run's copy"
 fi
+(cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "the web build"; }
 sq() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-180}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqb() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-180}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqok() { local out; out=$(sqb "$2" "${3:-master}" 2>&1) || fail "$1: $out"; }
@@ -154,7 +170,7 @@ sqok "the table" "CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NOT NUL
 sqok "the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF;
   GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON];"
 export PGV_PM_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
-go build -o "$TMPD/pgvigil" ./cmd/pgvigil
+(cd "$GSRC" && go build -o "$TMPD/pgvigil" ./cmd/pgvigil) || fail "the build"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
 PGDSN="${ADMIN_DSN/dbname=postgres/dbname=$PGDB}"; [[ "$PGDSN" == *"dbname=$PGDB"* ]] || PGDSN="$PGDSN dbname=$PGDB"
 CFG=$TMPD/m.yaml
@@ -522,4 +538,80 @@ PW=("$pw4|info|not judged" "$pw5|critical|IPC:BtreePage"); (( pw4 < pw5 )) && PW
 [[ "$PA" == "$PWANT" ]] || fail "R4: darling_alert_findings' poison arm [$PA] (want [$PWANT]: $pw5's critical and $pw4's 'not judged' info row)"
 ok "R4: darling_alert_findings' poison arm: the critical and the 'not judged' info row"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8 R4)"
+echo "== R10. the readers (the lead's 22:4x on S4: nothing a collection stores goes without a page) =="
+# R10a the Waits API's poison part at R4's time: pgsyn1's warning with its statement as statement_text holds it (the
+# text policy and the credential mask apply before the store), pgsyn4's 'not judged: needs pg_wait_sampling'
+pq "UPDATE pgvigil.instances SET is_active = true WHERE instance_id IN ($pw1, $pw4)" >/dev/null
+WF=$(pq "SELECT to_char(('$TP'::timestamptz - interval '30 minutes') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+for pi in "$pw1" "$pw4"; do
+  [[ $(code "$U2/api/waits?instance=$pi&from=$WF&to=$TP") == 200 ]] || fail "R10a: GET /api/waits for $pi: $(cat "$TMPD/body")"
+  cp "$TMPD/body" "$TMPD/waits-$pi.json"; done
+python3 - "$TMPD/waits-$pw1.json" "$TMPD/waits-$pw4.json" <<'PY10' || fail "R10a: the Waits API's poison part"
+import json, sys
+def rows(p):
+    t = json.load(open(p)).get('poison') or {}
+    return [dict(zip(t.get('columns') or [], r)) for r in t.get('rows') or []]
+a, b = rows(sys.argv[1]), rows(sys.argv[2])
+print(f"   pgsyn1: {[(r.get('severity'), r.get('object'), r.get('query')) for r in a]}; pgsyn4: {[(r.get('severity'), str(r.get('detail'))[:40]) for r in b]}")
+ok = (len(a) == 1 and a[0].get('severity') == 'warning' and a[0].get('object') == 'IPC:BufferIO'
+      and a[0].get('query') == 'queryid 42: SELECT pgv_poison FROM t'
+      and len(b) == 1 and b[0].get('severity') == 'info' and str(b[0].get('detail')).startswith('not judged: needs pg_wait_sampling'))
+sys.exit(0 if ok else 1)
+PY10
+ok "R10a: GET /api/waits' poison part: pgsyn1's warning with its statement as stored, pgsyn4's 'not judged: needs pg_wait_sampling'"
+# R10b the Memory API's suggestion = 0156's function = the number the Server options check states (checks.go's words in
+# mssql_server_option), on the container at max server memory's default
+col mssql_instance mssql_checks
+CN=$(pq "SELECT substring(detail from 'PerformanceMonitor''s suggestion: about ([0-9]+) MB') FROM pgvigil.mssql_server_option
+  WHERE instance_id = $SB AND lower(name) = 'max server memory (mb)' ORDER BY snapshot_at DESC LIMIT 1")
+FN=$(pq "SELECT suggested_mb FROM pgvigil.mssql_memory_suggestion($SB)")
+[[ $(code "$U2/api/mssql/memory?instance=$SB&part=suggestion") == 200 ]] || fail "R10b: GET the suggestion: $(cat "$TMPD/body")"
+AN=$(python3 -c 'import json, sys; t = json.load(open(sys.argv[1])).get("suggestion") or {}; r = [dict(zip(t.get("columns") or [], x)) for x in t.get("rows") or []]; print(r[0].get("suggested_mb") if r else "")' "$TMPD/body")
+echo "   the suggestion: the Server options check's words $CN MB, 0156's $FN MB, the Memory API's $AN MB"
+[[ -n "$CN" && "$CN" == "$FN" && "$FN" == "$AN" ]] || fail "R10b: checks.go [$CN], mssql_memory_suggestion [$FN], the API [$AN] (want one number)"
+ok "R10b: the Memory page's suggestion ($AN MB) is the number the Server options check states"
+# R10c the pages in headless Chromium: the Waits page's poison grid with pgsyn1's statement, pgsyn4's words and no grid,
+# the SQL Server Memory page's 'PerformanceMonitor's suggestion' with the API's number
+setsid chromium --headless=new --remote-debugging-port=0 --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu about:blank > "$TMPD/chrome.log" 2>&1 & CHRPID=$!
+CDP=; for _ in $(seq 1 60); do [ -s "$TMPD/chrome/DevToolsActivePort" ] && CDP=$(head -1 "$TMPD/chrome/DevToolsActivePort"); [ -n "$CDP" ] && curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+[[ "$CDP" =~ ^[0-9]+$ ]] || fail "R10c: Chromium never answered"
+cat > "$TMPD/r10.mjs" <<'PAGE'
+const [port, base, p1, p4, sb, wf, tp, sugg] = process.argv.slice(2);
+setTimeout(() => { console.log('FAIL the page check did not end in 120 s'); process.exit(2); }, 120000).unref();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map(); const thrown = [];
+ws.addEventListener('message', m => { const d = JSON.parse(m.data);
+  if (d.method === 'Runtime.exceptionThrown') thrown.push(d.params.exceptionDetails?.exception?.description ?? 'exception');
+  if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async e => (await cmd('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true })).result?.result?.value;
+const until = async (e, ms = 45000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await ev(e); if (v) return v; await sleep(300); } return null; };
+let failed = 0; const check = (l, ok, w) => { if (!ok) failed++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${l}: ${w}`); };
+await cmd('Page.enable'); await cmd('Runtime.enable');
+// the section after the 'Poison waits' heading, up to the next heading: its text and whether it holds a grid
+const poison = `(() => { const h = [...document.querySelectorAll('main h3')].find(x => x.textContent.trim() === 'Poison waits'); if (!h) return null;
+  let t = h.nextElementSibling, text = '', grid = false; while (t && t.tagName !== 'H3') { text += t.textContent + ' '; if (t.matches?.('table.grid') || t.querySelector?.('table.grid')) grid = true; t = t.nextElementSibling; }
+  return { text, grid }; })()`;
+const range = `&from=${encodeURIComponent(wf)}&to=${encodeURIComponent(tp)}`;
+await cmd('Page.navigate', { url: `${base}/#/waits?i=${p1}${range}` });
+const a = await until(poison);
+check('waits pgsyn1', !!a && a.grid && a.text.includes('IPC:BufferIO') && a.text.includes('queryid 42: SELECT pgv_poison FROM t'), a ? a.text.slice(0, 160) : 'no Poison waits section');
+await cmd('Page.navigate', { url: `${base}/#/waits?i=${p4}${range}` }); await sleep(300);
+const b = await until(`(() => { const v = ${poison}; return v && v.text.trim() ? v : null; })()`);
+check('waits pgsyn4', !!b && !b.grid && b.text.trim().startsWith('not judged: needs pg_wait_sampling'), b ? b.text.slice(0, 120) : 'no Poison waits section');
+await cmd('Page.navigate', { url: `${base}/#/mssqlmemory?i=${sb}&w=1h` });
+const s = await until(`(() => { const td = [...document.querySelectorAll('main table.props th, main table.props td')].find(x => x.textContent.trim() === "PerformanceMonitor's suggestion");
+  return td ? td.nextElementSibling?.textContent ?? '' : null; })()`);
+const n = s ? (s.match(/^[\d,. ]+/)?.[0] ?? '').replace(/[^\d]/g, '') : '';
+check('memory', n === sugg, `'PerformanceMonitor's suggestion' ${s ? s.slice(0, 120) : 'not shown'} (the API's ${sugg} MB)`);
+check('pages', thrown.length === 0, thrown.length ? thrown.slice(0, 3).join(' | ') : 'no exception');
+process.exit(failed ? 1 : 0);
+PAGE
+timeout 140 node "$TMPD/r10.mjs" "$CDP" "$U2" "$pw1" "$pw4" "$SB" "$WF" "$TP" "$AN" || fail "R10c: a page check failed"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id IN ($pw1, $pw4)" >/dev/null
+ok "R10c: the Waits page draws pgsyn1's poison wait with its statement and pgsyn4's 'not judged' words without a grid; the Memory page states the suggestion"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8 R4 R10)"
