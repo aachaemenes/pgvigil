@@ -283,17 +283,18 @@ func cqPublishTools(ctx context.Context, env *cq.Env) error {
 			}
 			row := cqToolRow{Tool: t.ID, Why: inst}
 			if row.Why == "" {
-				row.Why = hard(append(c.Tools[t.Name], c.Tools[t.ID]...))
+				row.Why = hard(c.Tools[t.ID]) // a procedure's id is its name
 			}
+			installed := c.Installed[strings.ToLower(t.Name)] // keyed lower-case, as Community reads it
 			switch {
 			case t.Kind == "proc":
-				row.Present = c.Installed[t.Name] && row.Why == ""
+				row.Present = installed && row.Why == ""
 				if row.Present && conn != nil {
 					if params, _, found, err := readProcParams(ctx, conn, msDB(c.DB), t.Name, t.Help); err == nil && found {
 						row.Params = params
 					}
 				}
-				if !c.Installed[t.Name] && row.Why == "" {
+				if !installed && row.Why == "" {
 					row.Why = fmt.Sprintf("%s is not installed in %s on %s: pgvigil never installs it; get it from %s", t.Name, msDB(c.DB), name, t.URL)
 				}
 			default:
