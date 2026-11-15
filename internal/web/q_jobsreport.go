@@ -78,12 +78,15 @@ SELECT count(*) AS jobs, count(*) FILTER (WHERE r.fail_streak > 0) AS failing,
 // its newest failed step in the step log. 'last run failed'
 // is DBA Dash's IsLastFail: a last run that failed or was cancelled (a cancelled run is a failure there, 0137). Ordered
 // as DBA Dash orders it: the last run failed first, then the newest failure, then critical, warning.
+// B9-10: running_since - the job runs now since then (SQL Agent: mssql_jobs.running_since from the newest read;
+// pg_cron / pgAgent: the oldest run without an end the newest read of its job still saw, pg_jobs_running's rule, 0102);
+// last_secs - the last finished run's seconds (SQL Agent: its newest step-0 row; PostgreSQL: its newest run with an end).
 const sqlJobStatusFleet = `
 SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.job_id, v.job_name,
        coalesce(m.enabled, g.active) AS enabled, m.category, m.description,
        v.status, v.reason, v.level, v.threshold_id, v.last_outcome, coalesce(v.last_outcome IN ('failed', 'cancelled'), false) AS last_run_failed,
        v.last_failed_at, v.last_succeeded_at, v.fail_24h, v.fail_7d, v.step_fail_24h, v.step_fail_7d, fs.step_id AS failed_step_id,
-       fs.step_name AS failed_step, v.horizon_min
+       fs.step_name AS failed_step, v.horizon_min, lr.running_since, lr.last_secs
   FROM pgvigil.job_status_view(coalesce($1::int[], ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active))) v
   JOIN pgvigil.instances i ON i.instance_id = v.instance_id AND i.is_active
   LEFT JOIN pgvigil.mssql_jobs m ON v.scheduler = 'sqlagent' AND m.instance_id = v.instance_id AND m.job_id = v.job_id
@@ -99,6 +102,21 @@ SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.j
                          AND s.job_id = CASE WHEN v.scheduler = 'pgagent' THEN v.job_id::bigint END
                          AND s.status = 'failed' AND s.start_time > now() - make_interval(mins => v.horizon_min)
                        ORDER BY s.start_time DESC LIMIT 1)) fs ON true
+  LEFT JOIN LATERAL (SELECT CASE WHEN v.scheduler = 'sqlagent' THEN m.running_since
+                                 ELSE (SELECT min(x.start_time) FROM pgvigil.job_runs x
+                                        WHERE x.instance_id = v.instance_id AND x.scheduler = v.scheduler
+                                          AND x.job_id = CASE WHEN v.scheduler <> 'sqlagent' THEN v.job_id::bigint END
+                                          AND x.end_time IS NULL AND x.status NOT IN ('succeeded', 'failed', 'internal error', 'aborted')
+                                          AND g.is_present AND x.snapshot_at >= g.snapshot_at - interval '1 second') END AS running_since,
+                            CASE WHEN v.scheduler = 'sqlagent'
+                                 THEN (SELECT r.duration_s::float8 FROM pgvigil.mssql_job_runs r
+                                        WHERE r.instance_id = v.instance_id AND r.job_id = v.job_id AND r.step_id = 0
+                                        ORDER BY r.snapshot_at DESC LIMIT 1)
+                                 ELSE (SELECT x.duration_secs FROM pgvigil.job_runs x
+                                        WHERE x.instance_id = v.instance_id AND x.scheduler = v.scheduler
+                                          AND x.job_id = CASE WHEN v.scheduler <> 'sqlagent' THEN v.job_id::bigint END
+                                          AND x.end_time IS NOT NULL
+                                        ORDER BY x.start_time DESC LIMIT 1) END AS last_secs) lr ON true
  ORDER BY coalesce(v.last_outcome IN ('failed', 'cancelled'), false) DESC, v.last_failed_at DESC NULLS LAST,
           CASE v.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, i.name, v.scheduler, v.job_name`
 
@@ -107,8 +125,15 @@ SELECT v.instance_id, i.name AS instance, i.engine, i.platform, v.scheduler, v.j
 // status grid is drawn (the lead's 05:4x, (a)). Read from 0139's hourly table through job_stats_7day, with DBA Dash
 // 4.24.1's arithmetic (AgentJob7Day.sql: step 0, the hours that started within 1 / 7 days, the average of each hour's
 // total / (failed + succeeded), whole seconds), not from every run; 'building' when the instance's hours of the 7 days
-// are not built yet (its four values are then NULL; the page says 'being built').
-const sqlJobStatsFleet = `SELECT instance_id, scheduler, job_id, ok_24h, ok_7d, max_secs_7d, avg_secs_7d, building FROM pgvigil.job_stats_7day($1::int[])`
+// are not built yet (its four values are then NULL; the page says 'being built'). B9-10: failed_7d, the step-0
+// failures of the same hours (0139's failed holds the cancels and aborts, 0149's rule), so the page's 'failure rate 7
+// days' is failed / (failed + succeeded) over one window; NULL while building.
+const sqlJobStatsFleet = `SELECT s.instance_id, s.scheduler, s.job_id, s.ok_24h, s.ok_7d, s.max_secs_7d, s.avg_secs_7d, s.building,
+       CASE WHEN NOT s.building THEN coalesce(f.failed, 0) END AS failed_7d
+  FROM pgvigil.job_stats_7day($1::int[]) s
+  LEFT JOIN LATERAL (SELECT sum(h.failed) AS failed FROM pgvigil.job_stats_hourly h
+                      WHERE h.instance_id = s.instance_id AND h.scheduler = s.scheduler AND h.job_id = s.job_id
+                        AND h.step_id = 0 AND h.snapshot_at >= now() - interval '168 hours') f ON true`
 
 // idsParam reads ?ids=1,2,3 (the instances of the page's view): nil when absent, an error on anything but positive ids.
 func idsParam(r *http.Request) ([]int32, error) {
