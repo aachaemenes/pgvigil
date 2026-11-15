@@ -88,18 +88,24 @@ WITH l AS (
     FROM pgvigil.collector_load l
    WHERE l.minute > now() - interval '24 hours' AND ($1::int = 0 OR l.instance_id = $1)
    GROUP BY l.instance_id, l.minute
-), pr AS (
+), prh AS (
   -- B24h (0254): the instance's host's probe over the hour - its probed host through collector_instance_hosts, every
-  -- collector host summed; when its address last answered (collector_probe_host)
+  -- collector host summed; when its address last answered (collector_probe_host). One row per probed host: an
+  -- instance two collector hosts read under two dial names has two
   SELECT ih.instance_id, max(p.method) AS method, count(*) FILTER (WHERE p.answered IS NOT NULL) AS rounds,
-         sum(p.answered) AS answered, round(sum(p.ms_sum)::numeric / nullif(sum(p.answered), 0) / 1000, 3) AS avg_s,
-         round(max(p.ms_max) FILTER (WHERE p.answered > 0)::numeric / 1000, 3) AS max_s,
+         sum(p.answered) AS answered, sum(p.ms_sum) AS ms_sum, max(p.ms_max) FILTER (WHERE p.answered > 0) AS ms_max,
          (SELECT max(ph.last_answered) FROM pgvigil.collector_probe_host ph WHERE ph.host = ih.host) AS last_answered
     FROM pgvigil.collector_instance_hosts ih
     JOIN pgvigil.collector_heartbeat h ON h.host = ih.collector_host
     JOIN pgvigil.collector_probe p ON p.collector_id = h.collector_id AND p.host = ih.host AND p.minute > now() - interval '1 hour'
    WHERE ($1::int = 0 OR ih.instance_id = $1)
    GROUP BY ih.instance_id, ih.host
+), pr AS (
+  -- one row per instance (the review B6f8 #1: a row per probed host multiplied the load's rows in the join below)
+  SELECT instance_id, max(method) AS method, sum(rounds) AS rounds, sum(answered) AS answered,
+         round(sum(ms_sum)::numeric / nullif(sum(answered), 0) / 1000, 3) AS avg_s,
+         round(max(ms_max)::numeric / 1000, 3) AS max_s, max(last_answered) AS last_answered
+    FROM prh GROUP BY instance_id
 )
 SELECT i.instance_id, i.name AS instance, i.engine,
        round(avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour'), 1) AS conns_per_min,

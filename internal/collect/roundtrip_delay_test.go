@@ -17,8 +17,8 @@ import (
 // TestPgRoundTripThroughDelay (B24h-1 P3, the fold's #4; a box row: PGVIGIL_REPO_TEST_DSN names a PostgreSQL server):
 // MeasurePgRoundTrip through a proxy that holds every frontend message asking the server for an answer ('Q' a simple
 // query, 'S' an extended-protocol Sync) 50 ms before passing it on - a server that answers 50 ms late. The measure
-// reads 50-75 ms, and the proxy sees exactly one 'Q' and no 'P' (Parse) from it: one simple-protocol message, one
-// round trip (a Parse first would be two round trips and read about 100 ms).
+// reads 50-99 ms (two round trips would read 100 or more), and the proxy sees exactly one 'Q' and no 'P' (Parse)
+// from it: one simple-protocol message, one round trip (a Parse first would be two round trips and read about 100 ms).
 func TestPgRoundTripThroughDelay(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -64,8 +64,10 @@ func TestPgRoundTripThroughDelay(t *testing.T) {
 	if l.RtCount != 1 {
 		t.Fatalf("measures kept %d, want 1 (the load row %+v)", l.RtCount, l)
 	}
-	if l.RtMsMax < 50 || l.RtMsMax > 75 {
-		t.Errorf("the round trip read %d ms through a 50 ms delay, want 50-75 (one round trip)", l.RtMsMax)
+	// one round trip is 50 ms and more (time.Sleep's floor); two are 100 and more (the mutant's floor), so the ceiling
+	// sits at 100, not near 50: a loaded box's sleep overshoot is not a fault (the review B6f8 #3)
+	if l.RtMsMax < 50 || l.RtMsMax >= 100 {
+		t.Errorf("the round trip read %d ms through a 50 ms delay, want 50-99 (one round trip; two would be 100 or more)", l.RtMsMax)
 	}
 	if q != 1 || pp != 0 {
 		t.Errorf("the proxy saw %d 'Q' and %d 'P' from the measure, want 1 and 0 (one simple-protocol message)", q, pp)
