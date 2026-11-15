@@ -133,7 +133,7 @@ BEGIN
   SET @n5_ord += 1;
 END
 SELECT CAST(N'N5|sa-enum|' + ISNULL(k, N'<NULL>') + N'|' + ISNULL(value_name, N'<NULL>') + N'|'
-       + CASE WHEN value_name NOT IN (N'ForceEncryption', N'ForceStrictEncryption', N'ListenOnAllIPs', N'Enabled', N'TcpPort', N'TcpDynamicPorts',
+       + CASE WHEN value_name NOT IN (N'ForceEncryption', N'ForceStrictEncryption', N'ForceStrict', N'ListenOnAllIPs', N'Enabled', N'TcpPort', N'TcpDynamicPorts',
                                       N'Win32PrioritySeparation') THEN N'<not printed>'
               WHEN value_data IS NULL THEN N'<NULL>' ELSE CAST(value_data AS nvarchar(300)) END + N'|~' AS nvarchar(900)) AS line
   FROM #n5_enum ORDER BY id;
