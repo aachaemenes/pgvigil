@@ -97,6 +97,46 @@ SELECT b.bucket AS snapshot_at, count(s.bucket)::int AS snapshots, count(*) FILT
 // sqlMssqlBlockPairs: the blocked / blocking pairs of the minute snapshots over the window (migration 0116)
 const sqlMssqlBlockPairs = `SELECT * FROM pgvigil.mssql_block_pairs($1, $2, $3) LIMIT 500`
 
+// sqlMssqlBlockedBy (SQLMonitor's blocked sessions per lead-blocker login / program): per step, the blocked sessions
+// behind each chain head's login (%[1]s = head_login) or program (head_program), the most in one snapshot of the step;
+// the 8 with the most over the range by name, the rest as 'Other'. A blocked session is a request blocked by another
+// session in the snapshot (its head the chain's, mssql_blocking's head of that snapshot).
+const sqlMssqlBlockedBy = `
+WITH v AS (
+  SELECT q.snapshot_at, coalesce(nullif(k.%[1]s, ''), '(unknown)') AS who, count(*) AS n
+    FROM pgvigil.mssql_requests q
+    JOIN pgvigil.mssql_blocking k ON k.instance_id = q.instance_id AND k.snapshot_at = q.snapshot_at AND k.head_session_id = q.head_session_id
+   WHERE q.instance_id = $1 AND q.snapshot_at > $2 AND q.snapshot_at <= $3
+     AND q.blocking_session_id > 0 AND q.session_id <> q.head_session_id
+   GROUP BY 1, 2
+), top AS (
+  SELECT v.who FROM v GROUP BY v.who ORDER BY sum(v.n) DESC, v.who LIMIT 8
+), w AS (
+  SELECT to_timestamp(floor(extract(epoch FROM v.snapshot_at) / $4) * $4) AS bucket, v.snapshot_at,
+         CASE WHEN v.who IN (SELECT who FROM top) THEN v.who ELSE 'Other' END AS who, sum(v.n) AS n
+    FROM v GROUP BY 1, 2, 3
+)
+SELECT w.bucket AS snapshot_at, w.who, max(w.n)::int AS blocked
+  FROM w GROUP BY w.bucket, w.who
+ ORDER BY w.bucket, w.who`
+
+// sqlMssqlChains (the chain timeline): one row per chain over the range - a head session and its transaction (its
+// start; a head with no open transaction read is one chain per stretch of snapshots it heads) - first and last seen,
+// the snapshots, its longest wait and most victims, the head's login, program and last statement
+const sqlMssqlChains = `
+SELECT b.head_session_id, b.head_tran_start AS tran_start, min(b.snapshot_at) AS first_at, max(b.snapshot_at) AS last_at,
+       count(*)::int AS snapshots, max(b.longest_wait_ms) AS longest_wait_ms, max(b.victims)::int AS victims_max,
+       (array_agg(b.head_login ORDER BY b.snapshot_at DESC))[1] AS head_login,
+       (array_agg(b.head_program ORDER BY b.snapshot_at DESC))[1] AS head_program,
+       (array_agg(b.head_database ORDER BY b.snapshot_at DESC))[1] AS head_database,
+       left((array_agg(t.statement ORDER BY b.snapshot_at DESC))[1], 500) AS statement
+  FROM pgvigil.mssql_blocking b
+  LEFT JOIN pgvigil.mssql_statement_text t ON t.text_id = b.head_text_id
+ WHERE b.instance_id = $1 AND b.snapshot_at > $2 AND b.snapshot_at <= $3
+ GROUP BY b.head_session_id, b.head_tran_start
+ ORDER BY min(b.snapshot_at), b.head_session_id
+ LIMIT 500`
+
 const sqlMssqlDeadlockTrend = `
 WITH b AS (
   SELECT g AS bucket FROM generate_series(to_timestamp(floor(extract(epoch FROM $2::timestamptz) / $4) * $4), $3::timestamptz, make_interval(secs => $4)) g
@@ -139,6 +179,9 @@ func (s *Server) BlockingHistory(w http.ResponseWriter, r *http.Request) {
 			{"trend", sqlMssqlBlockingTrend, []any{id, from, to, step}},
 			{"deadlock_trend", sqlMssqlDeadlockTrend, []any{id, from, to, step}},
 			{"pairs", sqlMssqlBlockPairs, []any{id, from, to}},
+			{"by_login", fmt.Sprintf(sqlMssqlBlockedBy, "head_login"), []any{id, from, to, step}},
+			{"by_program", fmt.Sprintf(sqlMssqlBlockedBy, "head_program"), []any{id, from, to, step}},
+			{"chains", sqlMssqlChains, []any{id, from, to}},
 		})
 		return
 	}

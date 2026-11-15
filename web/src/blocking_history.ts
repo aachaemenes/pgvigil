@@ -17,7 +17,29 @@ import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from '
 import { sqlCell, whatIsThis } from './sqlview';
 
 type PgParts = 'meta' | 'summary' | 'episodes' | 'trend' | 'xmin_summary' | 'xmin_pins' | 'xmin_now';
-type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs';
+type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs' | 'by_login' | 'by_program' | 'chains';
+
+// stackBy: a by_login / by_program part as a stacked chart's rows - one row per step, each series the running total of
+// the names under it (lineChart's stacked form), the names by their sum over the range, 'Other' on top
+export function stackBy(part: Row[]): { rows: Row[]; series: { key: string; label: string }[] } {
+  const sum = new Map<string, number>();
+  for (const r of part) sum.set(String(r.who), (sum.get(String(r.who)) ?? 0) + Number(r.blocked ?? 0));
+  const names = [...sum.keys()].filter(n => n !== 'Other').sort((a, b) => sum.get(b)! - sum.get(a)! || a.localeCompare(b));
+  if (sum.has('Other')) names.push('Other');
+  const at = new Map<string, Row>();
+  for (const r of part) {
+    const k = String(r.snapshot_at), row = at.get(k) ?? { snapshot_at: r.snapshot_at };
+    row['v' + names.indexOf(String(r.who))] = Number(r.blocked ?? 0);
+    at.set(k, row);
+  }
+  const rows = [...at.values()].sort((a, b) => Date.parse(String(a.snapshot_at)) - Date.parse(String(b.snapshot_at))).map(r => {
+    let t = 0;
+    const o: Row = { snapshot_at: r.snapshot_at };
+    names.forEach((_, i) => { t += Number(r['v' + i] ?? 0); o['s' + i] = t; });
+    return o;
+  });
+  return { rows, series: names.map((n, i) => ({ key: 's' + i, label: n })) };
+}
 
 const sampledNote = 'From the activity samples (pg_stat_activity once a minute: active and idle-in-transaction sessions and every blocker a Lock '
   + 'waiter names). A chain shorter than a minute can fall between two captures, so every count is a floor. A head blocks others and is not '
@@ -124,9 +146,11 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'blocking-history' }, el('h3', {}, `Blocking over the range (${rangeLabel(ctx)})`));
   try {
     const q = { instance: ctx.instance, ...window_(ctx) };
-    const [d, p] = await Promise.all([
+    const [d, p, bl, bp] = await Promise.all([
       get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'trend' }),
       get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'pairs' }),
+      get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'by_login' }),
+      get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'by_program' }),
     ]);
     const trend: Row[] = rowsOf(d.trend).map(r => ({
       ...r,
@@ -153,6 +177,11 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
       lineChart(`Longest and summed wait behind blockers (per ${per})`, trend,
         [{ key: 'longest_wait_s', label: 'longest wait' }, { key: 'summed_wait_s', label: 'summed wait (one snapshot)' }], v => fmtSecs(Math.floor(v))),
       lineChart(`Blocked-process reports (per ${per})`, trend, [{ key: 'reports', label: 'reports' }, { key: 'blocked_transactions', label: 'blocked transactions' }])));
+    // who led the chains (SQLMonitor's blocked sessions per lead-blocker login and program): the 8 with the most by name
+    const byL = stackBy(rowsOf(bl.by_login)), byP = stackBy(rowsOf(bp.by_program));
+    if (byL.rows.length) sec.append(el('div', { class: 'charts' },
+      lineChart(`Blocked sessions by lead-blocker login (the most in one snapshot, per ${per})`, byL.rows, byL.series, v => fmtNum(v), { stacked: true }),
+      lineChart(`Blocked sessions by lead-blocker program (the most in one snapshot, per ${per})`, byP.rows, byP.series, v => fmtNum(v), { stacked: true })));
     const pairs = rowsOf(p.pairs);
     // the note is the title of a 'what is this' link, as the page's other notes (mssql_running.ts): a page is its grids
     sec.append(el('h4', {}, 'Who blocked whom (the minute snapshots) ', whatIsThis('One row per blocked session and the session that blocked it, from the Running queries snapshots of the range: '

@@ -124,7 +124,7 @@ i = h.find('Chains over the range')
 if i < 0: print('absent'); sys.exit()
 s = h[i:]
 bars = re.findall(r'<rect[^>]*class=\"chain-bar ([a-z]+)\"[^>]*>\s*<title>([^<]*)</title>', s)
-print('%d|%d|%d|%s' % (len(bars), sum(b[0] == 'crit' for b in bars), sum(b[0] == 'warn' for b in bars), all('l' in b[1] and 'p' in b[1] for b in bars)))" "$OUT.blk")" "11|3|8|True" "E: 11 bars, 3 critical, 8 warning, each titled with its login and program"
+print('%d|%d|%d|%s' % (len(bars), sum(b[0] == 'crit' for b in bars), sum(b[0] == 'warn' for b in bars), all(re.search(r'login l(\\d+), program p\\1\\b', b[1]) for b in bars)))" "$OUT.blk")" "11|3|8|True" "E: 11 bars, 3 critical, 8 warning, each titled 'login lk, program pk'"
 
 echo
 [ "$bad" = 0 ] && echo "proof-b10-charts: every row ok" || { echo "proof-b10-charts: $bad row(s) FAIL"; exit 1; }

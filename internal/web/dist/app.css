@@ -493,3 +493,5 @@ button.link.silence-btn:hover:not(:disabled):not([aria-disabled="true"]) { color
 .healthcal-word { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); }
 .healthcal-day h4 { margin: var(--sp-3) 0 var(--sp-1); }
 .healthcal-drills a { margin-right: var(--sp-3); }
+/* the chain timeline (mssql_xe.ts): one bar per blocking chain, its longest wait's band */
+.chain-timeline { display: block; width: 100%; height: auto; max-height: 24rem; } .chain-bar.crit { fill: var(--crit); } .chain-bar.warn { fill: var(--warn); } .chain-bar.none { fill: var(--text-muted); }
