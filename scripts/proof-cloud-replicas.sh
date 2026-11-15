@@ -24,10 +24,11 @@
 #      'added' event; both instances' pages (GET /api/cloud/replicas) list both resources; the replica's own read stores
 #      no second row of either.
 #  R-C replay held by a long REPEATABLE READ on the replica (max_standby_streaming_delay -1 in the lab's parameter
-#      group; a delete and VACUUM of the proof's table on the source, a write every 20 s) for 12 minutes: the
-#      'provider replica lag' finding at the DEFAULT tiers (warning 600 s) on both instances; released: the clear read
-#      within 10 minutes; then an instance-level tier on the source (warn 10, crit 15 minutes) and a 16-minute hold: the
-#      finding critical on the source, warning on the replica (the default); the tier taken back (inherit).
+#      group; a delete and VACUUM of the proof's table on the source, a write every 20 s), 16 minutes of reads with
+#      instance-level tiers (the source warn 1 / crit 2 minutes, the replica warn 1): the 'provider replica lag'
+#      finding critical on the source, warning on the replica; released: both cleared within 10 minutes; the tiers
+#      taken back (inherit). The default 10 minutes is the same rule with its own number: a hold would run past 21
+#      minutes before every datapoint of a 10-minute window is over 600 s (review 055507 finding 4), so it is not held.
 #  R-D 15 idle minutes: the idle lag's maximum printed (AWS: 'up to five minutes' on an idle source), no lag finding at
 #      the defaults.
 #  R-E the replica rebooted: its status read 'rebooting' (or the read between), no 'provider lag missing' and no
@@ -98,7 +99,8 @@ run() { "$BIN" collect -config "$CFG" -once cloud_replicas -instance "$N-$1" > "
 status() { q "SELECT d.status || '|' || coalesce(d.note, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$N-$1' AND d.collection = 'cloud_replicas'"; }
 iid() { q "SELECT instance_id FROM pgvigil.instances WHERE name = '$N-$1'"; }
 finding() { q "SELECT coalesce(max(f.severity), '') FROM pgvigil.cloud_replica_findings f WHERE f.instance_id = $(iid "$1") AND f.check_name = '$2' AND f.object = '$3'"; }
-tier() { q "SELECT pgvigil.import_pg_threshold(now(), jsonb_build_object('op', '$2', 'ui_user', 'proof', 'key', 'provider_replica_lag', 'level', 'instance', 'instance_id', $(iid "$1"), 'warn', ${3:-null}, 'crit', ${4:-null}))" >/dev/null; }
+tier() { local o; o=$(q "SELECT pgvigil.import_pg_threshold(now(), jsonb_build_object('op', '$2', 'ui_user', 'proof', 'key', 'provider_replica_lag', 'level', 'instance', 'instance_id', $(iid "$1"), 'warn', ${3:-null}, 'crit', ${4:-null}))::text")
+  case $o in *'"refused"'*) bad "the tier $2 ${3:-} ${4:-} on $1 was refused: $o" ;; esac; }
 writecfg; "$BIN" migrate -config "$CFG" >/dev/null
 
 echo "--- R-A the source alone"
@@ -139,30 +141,30 @@ hold() {
     -c "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM public.pgvproof_cr_$SUF; SELECT pg_sleep($1 * 60); COMMIT" >/dev/null 2>&1 &
   HOLD_PID=$!
   sleep 10
-  src "DELETE FROM public.pgvproof_cr_$SUF WHERE id % 2 = 0; VACUUM public.pgvproof_cr_$SUF" >/dev/null
+  # two calls: VACUUM refuses a transaction block, and one -c string of two statements is one (review 055507 finding 2)
+  src "DELETE FROM public.pgvproof_cr_$SUF WHERE id % 2 = 0" >/dev/null
+  src "VACUUM public.pgvproof_cr_$SUF" >/dev/null
   ( while :; do src "INSERT INTO public.pgvproof_cr_$SUF VALUES ((random() * 1e9)::int, 1) ON CONFLICT DO NOTHING" >/dev/null 2>&1; sleep 20; done ) &
   WRITE_PID=$!
 }
 release() { stopbg; rep "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep%' AND pid <> pg_backend_pid()" >/dev/null 2>&1 || true; }
 
-echo "--- R-C replay held 12 minutes at the default tiers"
-hold 14
-for i in $(seq 1 14); do sleep 60; run src; run rep; done
-W1=$(finding src 'provider replica lag' "$REP_ID"); W2=$(finding rep 'provider replica lag' "$REP_ID")
-L=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag' AND snapshot_at > now() - interval '15 minutes'")
-release
-for i in $(seq 1 10); do sleep 60; run src; run rep; [ -z "$(finding src 'provider replica lag' "$REP_ID")" ] && break; done
-C1=$(finding src 'provider replica lag' "$REP_ID")
-echo "  held: the source's '$W1', the replica's '$W2' (lag up to $L s); released: '$C1' after $i minute(s)"
-[ "$W1" = warning ] && [ "$W2" = warning ] && [ -z "$C1" ] && echo "R-C (warning): OK" || bad "R-C: '$W1' '$W2' then '$C1' (want warning, warning, cleared)"
-tier src set 10 15
-hold 18
-for i in $(seq 1 18); do sleep 60; run src; run rep; done
+echo "--- R-C replay held: the source's tier warn 1 / crit 2 minutes, the replica's warn 1"
+# the rule fires when every datapoint of the 10 minutes to the newest is over the tier: at the default 10 minutes a
+# hold would run past 21 minutes first (review 055507 finding 4), so one hold proves both severities at small tiers
+tier src set 1 2; tier rep set 1
+hold 30   # pg_sleep's ceiling: release ends the hold after the 16 reads, so replay is held through the last of them
+for i in $(seq 1 16); do sleep 60; run src; run rep; done
 K1=$(finding src 'provider replica lag' "$REP_ID"); K2=$(finding rep 'provider replica lag' "$REP_ID")
-release; tier src inherit
-echo "  16 minutes held with the source's own tier 10 / 15: the source's '$K1', the replica's '$K2'"
-[ "$K1" = critical ] && [ "$K2" = warning ] && echo "R-C (critical): OK" || bad "R-C critical: '$K1' '$K2' (want critical on the source, warning on the replica)"
-for i in $(seq 1 10); do sleep 60; run src; run rep; [ -z "$(finding src 'provider replica lag' "$REP_ID")" ] && break; done
+L=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag' AND snapshot_at > now() - interval '20 minutes'")
+release
+C1=x; C2=x
+for i in $(seq 1 10); do sleep 60; run src; run rep
+  C1=$(finding src 'provider replica lag' "$REP_ID"); C2=$(finding rep 'provider replica lag' "$REP_ID"); [ -z "$C1$C2" ] && break; done
+tier src inherit; tier rep inherit
+echo "  held: the source's '$K1' (tier 1 / 2), the replica's '$K2' (tier 1) (lag up to $L s); released: '$C1' '$C2' after $i minute(s)"
+[ "$K1" = critical ] && [ "$K2" = warning ] && [ -z "$C1$C2" ] && echo "R-C: OK" \
+  || bad "R-C: '$K1' '$K2' then '$C1' '$C2' (want critical on the source, warning on the replica, both cleared)"
 
 echo "--- R-D 15 idle minutes"
 for i in $(seq 1 15); do sleep 60; run src; done

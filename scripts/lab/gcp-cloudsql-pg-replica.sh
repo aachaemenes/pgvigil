@@ -3,14 +3,14 @@
 # scripts/proof-cloud-replicas.sh (its C rows), made and removed from the machine that holds the gcloud sign-in.
 #
 #   scripts/lab/gcp-cloudsql-pg-replica.sh up            enable the Cloud SQL Admin API if off, make the primary and the state file
-#   scripts/lab/gcp-cloudsql-pg-replica.sh replica       the primary's read replica (the standby flags below)
+#   scripts/lab/gcp-cloudsql-pg-replica.sh replica       the primary's read replica (the standby flags below; the primary's authorized networks)
 #   scripts/lab/gcp-cloudsql-pg-replica.sh allow <ip>    both instances' authorized networks admit this address only
-#   scripts/lab/gcp-cloudsql-pg-replica.sh logins        (where 5432 reaches) the collector's login on the primary (pg_monitor)
-#   scripts/lab/gcp-cloudsql-pg-replica.sh repl-off      the replica's replication disabled (C-E; one trial: Google's patch flag)
+#   scripts/lab/gcp-cloudsql-pg-replica.sh logins        (where 5432 reaches) the collector's login on the primary (pg_monitor; the API's cloudsqlsuperuser revoked)
+#   scripts/lab/gcp-cloudsql-pg-replica.sh repl-off      the replica's replication disabled (C-E; Google's manage-replicas page: it restarts the replica)
 #   scripts/lab/gcp-cloudsql-pg-replica.sh repl-on       the replica's replication enabled again
 #   scripts/lab/gcp-cloudsql-pg-replica.sh promote       promote the replica to a standalone instance (C-F)
 #   scripts/lab/gcp-cloudsql-pg-replica.sh status        what this lab holds now, read from Google
-#   scripts/lab/gcp-cloudsql-pg-replica.sh down          delete both instances, read the listing back, disable the API if up enabled it
+#   scripts/lab/gcp-cloudsql-pg-replica.sh down          delete both instances, read the instances and backups back, disable the API if up enabled it
 #
 # Settings (environment):
 #   PGVIGIL_LAB_PROOF        the proof's label value: both instances carry pgvigil-proof=<value> (required)
@@ -22,19 +22,21 @@
 # What it makes, each labelled pgvigil-proof=<value>: the primary - PostgreSQL 16, db-custom-1-3840 (1 vCPU / 3.75 GB),
 # Enterprise edition, zonal, 10 GB SSD without auto-resize, automated backups and point-in-time recovery off (Google's
 # create-replica page: 'Cloud SQL creates a backup, if needed, and creates the replica'), deletion protection off,
-# public IPv4 with NO authorized network until 'allow'; the replica - the same region, version and tier (Google: the
-# replica inherits the primary's machine type), the flags max_standby_streaming_delay = -1 and hot_standby_feedback =
+# public IPv4 with NO authorized network until 'allow'; the replica - the same region, version, tier and edition
+# (Enterprise: a PostgreSQL 16 replica defaults to Enterprise Plus), the primary's authorized networks as they stand at
+# its create (each instance has its own; read back), the flags max_standby_streaming_delay = -1 and hot_standby_feedback =
 # off (the design's fold 10: a long read on the replica holds replay for as long as it runs, so the proof's lag fault is
-# deterministic). About USD 0.07 an hour each (Google's price for 1 vCPU / 3.75 GB) plus the disks: the lead's estimate
-# for the lab's hour USD 0.05-0.28; the lab rules: one lab at a time, every resource named to the harness before it is
+# deterministic). About USD 0.07 an hour each (Google's price for 1 vCPU / 3.75 GB) plus the disks; with the proof the
+# lab stands about 1.6-2.7 h (the proof's Length line: about USD 0.15-0.40, an estimate); the lab rules: one lab at a time, every resource named to the harness before it is
 # made, down the same day and read back, stop and ask over USD 5.
 # The postgres user's and the collector's passwords are made here from /dev/urandom, written only to the mode-600 state
 # file <dir>/gcp-cloudsql-pg-replica.env, handed to Google in a mode-600 request body (the access token in a mode-600
 # header file), each removed right after the call, and to psql in PGPASSWORD: never on a command line, in the output
 # or a log.
 # down deletes the replica, then the primary (a promoted replica is a standalone instance: deleted the same), reads
-# the project's instances back by name and by the label, and removes the state file only when none is left; the API is
-# disabled again only if up was the one that enabled it.
+# the project's instances back by name and by the label and the project's backups back by the two names (a retained
+# backup is billed), and removes the state file only when none is left; the API is disabled again only if up was the
+# one that enabled it.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DIR=${PGVIGIL_LAB_DIR:-.lab}
@@ -130,20 +132,30 @@ EOF
 replica)
   need; load; body
   absent "$REP_INSTANCE" || fail "the replica $REP_INSTANCE exists already"
-  jq -n --arg n "$REP_INSTANCE" --arg m "$PRI_INSTANCE" --arg r "$LAB_REGION" --arg v "$VERSION" --arg t "$TIER" --arg l "$PGVIGIL_LAB_PROOF" '{
+  # each Cloud SQL instance has its own authorized networks (RDS's two share one security group): the replica takes
+  # the primary's as they stand (allow ran before), read back after the create (review 055507 finding 1)
+  NETS=$(api GET "instances/$PRI_INSTANCE" | jq -c '.settings.ipConfiguration.authorizedNetworks // []')
+  WANT=$(jq -r 'map(.value) | join(";")' <<<"$NETS")
+  # edition ENTERPRISE as the primary's: a PostgreSQL 16 replica defaults to Enterprise Plus, which refuses the
+  # db-custom tier (Google's create-replica page; finding 3)
+  jq -n --arg n "$REP_INSTANCE" --arg m "$PRI_INSTANCE" --arg r "$LAB_REGION" --arg v "$VERSION" --arg t "$TIER" --arg l "$PGVIGIL_LAB_PROOF" --argjson nets "$NETS" '{
     name: $n, masterInstanceName: $m, region: $r, databaseVersion: $v,
-    settings: {tier: $t, availabilityType: "ZONAL", deletionProtectionEnabled: false,
+    settings: {tier: $t, edition: "ENTERPRISE", availabilityType: "ZONAL", deletionProtectionEnabled: false,
                databaseFlags: [{name: "max_standby_streaming_delay", value: "-1"}, {name: "hot_standby_feedback", value: "off"}],
-               ipConfiguration: {ipv4Enabled: true, authorizedNetworks: []},
+               ipConfiguration: {ipv4Enabled: true, authorizedNetworks: $nets},
                userLabels: {"pgvigil-proof": $l}}}' > "$BODY"
   OP=$(api POST instances "$BODY" | jq -r .name); rm -f "$BODY"
   [ -n "$OP" ] && [ "$OP" != null ] || fail "the replica's create returned no operation (down removes what was made)"
   echo "accepted: read replica $REP_INSTANCE of $PRI_INSTANCE, operation $OP - waiting"
   wait_op "$OP"
   REP_IP=$(ipof "$REP_INSTANCE"); [ -n "$REP_IP" ] || fail "the replica's address was not read back"
-  F=$(g sql instances describe "$REP_INSTANCE" --format='value(settings.databaseFlags[].name,settings.databaseFlags[].value)')
+  # the address is recorded before any further read (finding 10): a failed read below leaves a replica repl-off,
+  # promote and allow can still name
   ( umask 077; printf 'REP_IP=%s\n' "$REP_IP" >> "$STATE" )
-  echo "made: read replica $REP_INSTANCE at $REP_IP (flags read back: $F), label pgvigil-proof=$PGVIGIL_LAB_PROOF (undo: down)"
+  F=$(g sql instances describe "$REP_INSTANCE" --format='value(settings.databaseFlags[].name,settings.databaseFlags[].value)')
+  GOT=$(g sql instances describe "$REP_INSTANCE" --format='value(settings.ipConfiguration.authorizedNetworks[].value)')
+  [ "$GOT" = "$WANT" ] || fail "the replica's authorized networks read '$GOT', not the primary's '$WANT': run allow <ip> again (it patches both) or down"
+  echo "made: read replica $REP_INSTANCE at $REP_IP (flags read back: $F; authorized networks read back: ${GOT:-none}), label pgvigil-proof=$PGVIGIL_LAB_PROOF (undo: down)"
   ;;
 allow)
   need; load; shift
@@ -165,10 +177,22 @@ logins)
   OP=$(api POST "instances/$PRI_INSTANCE/users" "$BODY" | jq -r .name); rm -f "$BODY"; wait_op "$OP"
   PGPASSWORD="$ADMIN_PW" psql "host=$PRI_IP port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtq -v ON_ERROR_STOP=1 \
     -c "GRANT pg_monitor TO $MON_USER" >/dev/null || fail "GRANT pg_monitor TO $MON_USER was refused (above): the login stays, without the role"
-  G=$(PGPASSWORD="$ADMIN_PW" psql "host=$PRI_IP port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtq \
-    -c "SELECT pg_has_role('$MON_USER', 'pg_monitor', 'member')")
-  [ "$G" = t ] || fail "$MON_USER is not a member of pg_monitor (read back '$G')"
-  echo "made: login $MON_USER on $PRI_INSTANCE with pg_monitor (read back), its password in $STATE only (undo: down)"
+  # a user made through the API is put in cloudsqlsuperuser by Google (its users page), so pg_has_role would read
+  # true through that path whatever the GRANT did: the DIRECT grant is read from pg_auth_members (finding 8)
+  dm() { PGPASSWORD="$ADMIN_PW" psql "host=$PRI_IP port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtq -v ON_ERROR_STOP=1 \
+    -c "SELECT count(*) FROM pg_auth_members m WHERE m.member = '$MON_USER'::regrole AND m.roleid = '$1'::regrole"; }
+  G=$(dm pg_monitor); [ "$G" = 1 ] || fail "$MON_USER holds no direct grant of pg_monitor (pg_auth_members read back '$G')"
+  # then the API's cloudsqlsuperuser taken away, so the collector's login is a pg_monitor login; a refusal (the
+  # postgres user may hold no ADMIN OPTION on it) is printed and kept: the C rows run no SQL on this login
+  PGPASSWORD="$ADMIN_PW" psql "host=$PRI_IP port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtq -v ON_ERROR_STOP=1 \
+    -c "REVOKE cloudsqlsuperuser FROM $MON_USER" >/dev/null || true
+  SU=$(dm cloudsqlsuperuser)
+  case $SU in
+    0) SUW="not in cloudsqlsuperuser (read back)" ;;
+    1) SUW="STILL in cloudsqlsuperuser (the REVOKE above was refused: this lab's collector login holds more than pg_monitor)" ;;
+    *) fail "$MON_USER's cloudsqlsuperuser membership was not read ('$SU')" ;;
+  esac
+  echo "made: login $MON_USER on $PRI_INSTANCE with pg_monitor (direct grant read back), $SUW, its password in $STATE only (undo: down)"
   ;;
 repl-off|repl-on)
   need; load
@@ -208,6 +232,13 @@ down)
   done
   echo "read back: instances named $PRI_INSTANCE / $REP_INSTANCE or labelled pgvigil-proof=$PGVIGIL_LAB_PROOF $LEFT"
   [ "$LEFT" = 0 ] || fail "an instance is left (above): the state file $STATE stays"
+  # a backup the replica's create took (Google: 'creates a backup, if needed') outlives its instance only when it is
+  # retained, and a retained backup is billed: the project's backups are read back too, every field of each searched
+  # for the two names (no field name assumed; finding 9)
+  B=$(g sql backups list --instance=- --format=json) || fail "the backups read-back failed (gcloud above): the state file $STATE stays"
+  BL=$(jq -r --arg p "$PRI_INSTANCE" '.[] | select(tostring | contains($p)) | (.name // .id // "?") + " " + (.instance // "?")' <<<"$B")
+  echo "read back: backups naming $PRI_INSTANCE / $REP_INSTANCE $(grep -c . <<<"$BL" || true)"
+  [ -z "$BL" ] || fail "a backup of this lab is left (billed while retained): $(tr '\n' ';' <<<"$BL") - delete it in the console's Backups page or with gcloud sql backups delete; the state file $STATE stays"
   if [ "${API_ENABLED_HERE:-0}" = 1 ]; then
     g services disable "$API" || fail "the project's $API stays enabled (undo: gcloud services disable $API --project $PGVIGIL_LAB_GCP_PROJECT, with --force if gcloud refuses it for recent use; --force also disables services that depend on it): the state file $STATE stays"
     echo "undone: the project's $API disabled again"
