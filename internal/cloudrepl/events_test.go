@@ -67,14 +67,14 @@ func TestFailoverEvents(t *testing.T) {
 		ev(now.Add(-10*time.Minute), "Abandoning user requested failover since a failover recently occurred on the database instance."),
 	}}
 	r := &AWSReader{Events: func(context.Context, string) (RDSEventsAPI, error) { return fe, nil }, Now: func() time.Time { return now }}
-	fs, err := r.Failovers(context.Background(), "us-east-2", "DB1")
+	fs, err := r.Failovers(context.Background(), "us-east-2", "DB1", east1+"db1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	phases := map[string]int{}
 	for _, f := range fs {
 		phases[f.Phase]++
-		if f.ResourceID != "db1" || f.Source != "rds events" || f.Message == "" {
+		if f.ResourceID != east1+"db1" || f.Source != "rds events" || f.Message == "" {
 			t.Errorf("a failover row %+v", f)
 		}
 	}
@@ -90,7 +90,7 @@ func TestFailoverEvents(t *testing.T) {
 		t.Errorf("the request %+v: want db1, db-instance, failover, from 2 hours back", in)
 	}
 	fe.err = &smithy.GenericAPIError{Code: "AccessDenied", Message: "not authorized to perform: rds:DescribeEvents"}
-	if _, err := r.Failovers(context.Background(), "us-east-2", "db1"); err == nil || !strings.Contains(err.Error(), "rds:DescribeEvents") {
+	if _, err := r.Failovers(context.Background(), "us-east-2", "db1", east1+"db1"); err == nil || !strings.Contains(err.Error(), "rds:DescribeEvents") {
 		t.Errorf("AccessDenied: %v, want the right named", err)
 	}
 

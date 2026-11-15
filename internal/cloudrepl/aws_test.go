@@ -94,8 +94,20 @@ func (f *fakeCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDataIn
 	return out, nil
 }
 
+// east and west: the recorded answers' account in us-east-2 and us-west-2 (every DescribeDBInstances answer carries the
+// instance's DBInstanceArn: 390b ID (a), the resource's key)
+const (
+	east1 = "arn:aws:rds:us-east-2:123456789012:db:"
+	west2 = "arn:aws:rds:us-west-2:123456789012:db:"
+)
+
 func db(id, status, source string, replicas []string, infos ...rdstypes.DBInstanceStatusInfo) rdstypes.DBInstance {
-	d := rdstypes.DBInstance{DBInstanceIdentifier: aws.String(id), DBInstanceStatus: aws.String(status), Engine: aws.String("postgres"),
+	return dbAt(east1+strings.ToLower(id), id, status, source, replicas, infos...)
+}
+
+// dbAt: an answer's DB instance with its own ARN
+func dbAt(arn, id, status, source string, replicas []string, infos ...rdstypes.DBInstanceStatusInfo) rdstypes.DBInstance {
+	d := rdstypes.DBInstance{DBInstanceIdentifier: aws.String(id), DBInstanceArn: aws.String(arn), DBInstanceStatus: aws.String(status), Engine: aws.String("postgres"),
 		ReadReplicaDBInstanceIdentifiers: replicas, StatusInfos: infos}
 	if source != "" {
 		d.ReadReplicaSourceDBInstanceIdentifier = aws.String(source)
@@ -120,7 +132,7 @@ func TestAWSReplicas(t *testing.T) {
 		db("db1-r1", "available", "db1", []string{"db1-r1a"}, replicating("replicating")),
 		db("db1-r1a", "available", "db1-r1", nil),
 	}}
-	west := &fakeRDS{list: []rdstypes.DBInstance{db("db1-r2", "available", "arn:aws:rds:us-east-2:123456789012:db:db1", nil, replicating("error"))}}
+	west := &fakeRDS{list: []rdstypes.DBInstance{dbAt(west2+"db1-r2", "db1-r2", "available", east1+"db1", nil, replicating("error"))}}
 	cwEast := &fakeCW{lag: map[string][]float64{"db1-r1": {3, 4}, "db1-r1a": {9}}}
 	cwWest := &fakeCW{lag: map[string][]float64{"db1-r2": {120}}}
 	now := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
@@ -141,16 +153,16 @@ func TestAWSReplicas(t *testing.T) {
 	for _, x := range res {
 		byID[x.ID] = x
 	}
-	if s := byID["db1"]; s.Role != "source" || strings.Join(s.ReplicaIDs, ",") != "db1-r1,db1-r2" || s.Region != "us-east-2" || s.Provider != "aws" {
+	if s := byID[east1+"db1"]; s.Role != "source" || strings.Join(s.ReplicaIDs, ",") != east1+"db1-r1,"+west2+"db1-r2" || s.Region != "us-east-2" || s.Provider != "aws" {
 		t.Errorf("db1: %+v", s)
 	}
-	if r1 := byID["db1-r1"]; r1.Role != "replica" || r1.SourceID != "db1" || !r1.Cascaded || r1.ReplStatus != "replicating" {
+	if r1 := byID[east1+"db1-r1"]; r1.Role != "replica" || r1.SourceID != east1+"db1" || !r1.Cascaded || r1.ReplStatus != "replicating" {
 		t.Errorf("db1-r1 (a replica that is a source too): %+v", r1)
 	}
-	if r2 := byID["db1-r2"]; r2.Role != "replica" || r2.Region != "us-west-2" || r2.SourceID != "db1" || r2.ReplStatus != "error" || r2.ReplNote != "the replica's own words" {
+	if r2 := byID[west2+"db1-r2"]; r2.Role != "replica" || r2.Region != "us-west-2" || r2.SourceID != east1+"db1" || r2.ReplStatus != "error" || r2.ReplNote != "the replica's own words" {
 		t.Errorf("db1-r2 (another region's): %+v", r2)
 	}
-	if _, ok := byID["other"]; ok || len(res) != 3 {
+	if _, ok := byID[east1+"other"]; ok || len(res) != 3 {
 		t.Errorf("resources %v: want db1 and its two replicas only", res)
 	}
 	got := map[string]int{}
@@ -160,7 +172,7 @@ func TestAWSReplicas(t *testing.T) {
 		}
 		got[p.ResourceID]++
 	}
-	if got["db1-r1"] != 2 || got["db1-r2"] != 1 || len(got) != 2 {
+	if got[east1+"db1-r1"] != 2 || got[west2+"db1-r2"] != 1 || len(got) != 2 {
 		t.Errorf("points per replica %v, want db1-r1 2 and db1-r2 1 (each replica's own lag, read in its region)", got)
 	}
 	if east.calls != 2 || west.calls != 1 {
@@ -187,10 +199,11 @@ func TestAWSReplicas(t *testing.T) {
 		CW: func(context.Context, string) (CWAPI, error) {
 			return &fakeCW{lag: map[string][]float64{"dbx": {7}}}, nil
 		},
-		Now: func() time.Time { return now },
+		Caller: func(context.Context) (string, string, error) { return "aws", "123456789012", nil },
+		Now:    func() time.Time { return now },
 	}
 	res, pts, notes, err = denied.Read(context.Background(), "us-east-2", "dbx")
-	if err != nil || len(pts) != 1 || len(notes) != 1 || !strings.Contains(notes[0], "AccessDenied") || !strings.Contains(notes[0], "rds:DescribeDBInstances") {
+	if err != nil || len(pts) != 1 || pts[0].ResourceID != east1+"dbx" || len(notes) != 1 || !strings.Contains(notes[0], "AccessDenied") || !strings.Contains(notes[0], "rds:DescribeDBInstances") {
 		t.Errorf("AccessDenied: err %v, %d points, notes %q; want the lag read and one note naming the right", err, len(pts), notes)
 	}
 	if len(res) != 0 {

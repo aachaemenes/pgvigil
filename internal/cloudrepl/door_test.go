@@ -60,18 +60,18 @@ func TestDoorRows(t *testing.T) {
 	if regionAsked != "lab" {
 		t.Errorf("no aws.region: the profile's region not asked (%q)", regionAsked)
 	}
-	if len(rows) == 0 || rows[0]["kind"] != "read" || rows[0]["provider"] != "aws" || rows[0]["resource_id"] != "db1" {
+	if len(rows) == 0 || rows[0]["kind"] != "read" || rows[0]["provider"] != "aws" || rows[0]["resource_id"] != east1+"db1" {
 		t.Fatalf("the first row %v, want the read row naming db1 (lower case)", rows)
 	}
 	kinds := map[string]int{}
 	for _, r := range rows {
 		kinds[r["kind"].(string)]++
 		if r["kind"] == "point" {
-			if _, err := time.Parse(time.RFC3339, r["at"].(string)); err != nil || r["metric"] != "replica_lag" || r["resource_id"] != "db1-r1" {
+			if _, err := time.Parse(time.RFC3339, r["at"].(string)); err != nil || r["metric"] != "replica_lag" || r["resource_id"] != east1+"db1-r1" {
 				t.Errorf("a point row %v", r)
 			}
 		}
-		if r["kind"] == "resource" && r["resource_id"] == "db1-r1" && (r["source_id"] != "db1" || r["repl_status"] != "replicating" || r["role"] != "replica") {
+		if r["kind"] == "resource" && r["resource_id"] == east1+"db1-r1" && (r["source_id"] != east1+"db1" || r["repl_status"] != "replicating" || r["role"] != "replica") {
 			t.Errorf("db1-r1's row %v", r)
 		}
 	}
