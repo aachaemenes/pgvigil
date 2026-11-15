@@ -56,6 +56,12 @@ type loadAgg struct {
 	timed     int
 	connMsSum int64
 	connMsMax int
+	// the query round trip (B24h-1a, roundtrip.go): the minute's measures (one an instance), their ms summed and the
+	// longest; rtClaimed while a collection measures
+	rtCount   int
+	rtMsSum   int64
+	rtMsMax   int
+	rtClaimed bool
 }
 
 type streak struct {
@@ -467,6 +473,10 @@ type beatLoad struct {
 	Timed        int   `json:"timed,omitempty"`
 	ConnectMsSum int64 `json:"connect_ms_sum,omitempty"`
 	ConnectMsMax int   `json:"connect_ms_max,omitempty"`
+	// the query round trip (B24h-1a): read by import_collector_probe (0254), which import_collector_beat leaves alone
+	RtCount int   `json:"rt_count,omitempty"`
+	RtMsSum int64 `json:"rt_ms_sum,omitempty"`
+	RtMsMax int   `json:"rt_ms_max,omitempty"`
 }
 
 type beatStreak struct {
@@ -504,7 +514,7 @@ func (h *Heartbeat) take() beat {
 	for name, l := range h.load {
 		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
 			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name],
-			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax})
+			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax, RtCount: l.rtCount, RtMsSum: l.rtMsSum, RtMsMax: l.rtMsMax})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}

@@ -170,6 +170,8 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return Result{Err: err, Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(ctx) }()
+	// the minute's query round trip on this connection, when no collection of the instance took it yet (B24h-1a)
+	MeasurePgRoundTrip(ctx, in.Name, conn)
 
 	info, err := platform.Detect(ctx, conn, in.Platform)
 	if err != nil {

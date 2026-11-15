@@ -496,6 +496,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return collect.Result{Err: cerr, Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
+	// the minute's query round trip on this connection (B24h-1a): one batch with no parameters - one TDS round trip
+	// (go-mssqldb sends sp_executesql only for a statement with arguments)
+	collect.TimeRoundTrip(in.Name, func() error { _, err := conn.ExecContext(sctx, "SELECT 1"); return err })
 
 	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {
