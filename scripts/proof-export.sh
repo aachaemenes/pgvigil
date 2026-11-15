@@ -165,9 +165,10 @@
 #              named colour pairs only, the fixed header, one table each, no pane, the formats General / '0' / '0.0%' /
 #              '0.00%' / 'yyyy-MM-dd HH:mm' / 'yyyy-MM-dd' and a fixed count of decimals '0.0' .., booleans, widths, no app
 #              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook. X18 (a status column has a status
-#              or N/A on every cell) on every page; scripts/x18-scan.py first: every status column of web/src (a
-#              warning or critical badge, inline or through a helper) has a cls (its values read by review) or is on its
-#              reviewed list with each badge of class ok / none
+#              or N/A on every cell) on every page; scripts/x18-scan.py first: every BADGE-DRAWN status column of
+#              web/src (a warning or critical badge, inline or through a helper) has a cls (its values read by review) or
+#              is on its reviewed list with each badge of class ok / none; the columns coloured by a cls alone or by an
+#              OK badge alone are not held by the scan (x18-scan.py --wide lists them)
 #   decimals   (X13) no number cell shows more decimals than its column shows on the screen (nor fewer under a fixed
 #              format): the read-back takes each grid column's most decimals from the screen's text (a grid drawn whole;
 #              not a chart's series: the driver reads one point of it) into page-<lang>.json and runs

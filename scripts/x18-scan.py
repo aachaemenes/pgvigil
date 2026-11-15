@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""A status column's other cells, on the screen's side of xlsx-check's X18. A status column is a grid column (a Col
-literal `{ key: '...', ... }` in web/src) that draws a warning or critical badge on some rows - in its own text or
-through a helper of its file that does. Its other value-holding cells must carry a status too: OK where the column's
-check judged the row and found nothing, N/A where it did not judge it. Two ways pass:
+"""A status column's other cells, on the screen's side of xlsx-check's X18, for the BADGE-DRAWN status columns: a
+grid column (a Col literal `{ key: '...', ... }` in web/src, on one line or several) that draws a warning or critical
+badge on some rows - in its own text or through a helper of its file that does. X18 itself counts any column with an
+OK, warning or critical fill: a column coloured by its cls alone, or by an OK badge alone, is NOT held here - `--wide`
+lists those as candidates (an '' branch may hold only empty values: each read one by one). A badge-drawn status
+column's other value-holding cells must carry a status too: OK where the column's check judged the row and found
+nothing, N/A where it did not judge it. Two ways pass:
   - the column's cls (a 'status ok' / 'status none' class on the cell), or
   - the column is on the REVIEWED list below (read one by one: its other cells are empty, or each is a badge whose
     class is a status), and every badge it draws - in its text and in its helpers - has a status class: never ''
@@ -12,6 +15,7 @@ does neither is a FAIL; a REVIEWED entry that matches no status column is a FAIL
 follows the source).
 
 usage: x18-scan.py <the web/src folder>   prints one line per FAIL, then the counts; exit 1 on any FAIL
+       x18-scan.py --wide <the web/src folder>   the candidates beyond the badge scan; exit 1 on any
 """
 import glob
 import re
