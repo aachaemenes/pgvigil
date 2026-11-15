@@ -10,6 +10,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
 import { stripGrid } from './timestrip';
+import { planSourcesCol } from './mssql_plancache';
 
 type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'block_findings' | 'block_rollup' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
 type XE = Record<XEParts, Table | null>;
@@ -303,13 +304,15 @@ const attentionCols: Col[] = [
 ];
 
 async function openShape(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
+  const planBox = el('div', { class: 'xe-plans' });
   try {
     const t = await get<Table>('mssql/xe/slow', { instance: ctx.instance, ...window_(ctx), shape: text(row.shape_key) });
     panel.show(
       el('pre', { class: 'sql', tabindex: '0' }, text(row.shape) || '(no statement text is stored for these events)'),
       el('p', { class: 'meta' }, 'The slowest 500 completions of this shape in the window. A completion\'s query hash and plan hash are those of the '
         + 'longest statement it ran (SQL Server gives the completion itself none); they match Query Store and sys.dm_exec_query_stats.'),
-      grid(rowsOf(t), eventCols, 'No completion of this shape in this window.'),
+      grid(rowsOf(t), [...eventCols, planSourcesCol(ctx, planBox)], 'No completion of this shape in this window.'),
+      planBox,   // task 406 (SQLWATCH COL#27): a completion's plan by its hashes
     );
   } catch (e) {
     panel.show(errorBox(e));

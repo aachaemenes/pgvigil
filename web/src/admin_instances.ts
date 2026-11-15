@@ -85,6 +85,12 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       status,
       instanceForm(d),
       el('h3', {}, 'Instances added here'),
+      // task 406: what the running plans box collects, in words, beside the grid that holds it (only where a SQL Server
+      // instance was added here: a PostgreSQL-only list names no SQL Server collection)
+      !page.some(r => r.engine === 'sqlserver') ? '' : el('p', { class: 'meta', id: 'admin-running-plans-note' }, 'Running plans (SQL Server): a ticked instance reads the plans of its running queries each minute, '
+        + 'the ones over DBA Dash\'s plan threshold. A plan carries the statement\'s text and its literals: passwords are masked, and it is kept only under the query_text policy full. '
+        + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file. '
+        + 'The file\'s global schedules: line for mssql_running_plans comes before this box: 0 turns it off for every instance here, and any other value reads every SQL Server instance here, ticked or not.'),
       grid(page, pageCols, 'No instance was added here yet.'),
       el('h3', {}, 'Instances from pgvigil.yaml'),
       el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
@@ -108,7 +114,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   // never brings an enabled write button back under the read-only note
   let whyNot = '';
   function lock(cell: HTMLElement): HTMLElement {
-    if (whyNot) for (const b of cell.querySelectorAll('button')) offRead(b, whyNot);
+    if (whyNot) for (const b of cell.querySelectorAll('button, input')) offRead(b, whyNot);
     return cell;
   }
 
@@ -203,6 +209,21 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   const pageCols: Col[] = [
     { key: 'name' }, { key: 'engine' }, { key: 'host' }, { key: 'port', num: true }, { key: 'auth' }, { key: 'tags', wide: true },
     { key: 'disabled', label: 'state', fmt: v => badge(v ? 'disabled' : 'collected', v ? 'warn' : '') },
+    { key: 'running_plans', label: 'running plans', fmt: (v, r) => {
+      if (r.engine !== 'sqlserver') return ''; // read on SQL Server only: a PostgreSQL row's cell is empty
+      const n = String(r.name);
+      const cb = el('input', { type: 'checkbox', 'aria-label': `Read the plans of running queries on ${n} each minute`, 'aria-describedby': 'admin-running-plans-note' }) as HTMLInputElement;
+      cb.checked = v === true;
+      cb.addEventListener('change', async () => {
+        const on = cb.checked;
+        cb.disabled = true; // one request at a time; a refusal or a failure puts the box back as the server holds it
+        const done = await act('admin/instances', { op: 'running_plans', name: n, on },
+          on ? `${n}: the plans of its running queries are read each minute from the collector's next read of the list (15 seconds).`
+            : `${n}: the plans of its running queries are no longer read (from the collector's next read of the list, 15 seconds).`);
+        if (!done) { cb.checked = !on; cb.disabled = false; }
+      });
+      return lock(el('label', {}, cb, ' each minute'));
+    } },
     { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
     { key: 'last_collected', label: 'last collected', fmt: fmtTime },
     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },

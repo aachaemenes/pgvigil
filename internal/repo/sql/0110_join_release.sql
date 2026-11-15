@@ -425,7 +425,9 @@ BEGIN
       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
     ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
-                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set') THEN
+                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
+                        -- task 406, 0157: they delete or write for the imports, and the reader never calls them
+                        'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop') THEN
       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
     ELSE

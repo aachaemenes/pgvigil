@@ -44,6 +44,8 @@ type PageInstance struct {
 	DSNRef   string
 	Tags     []string
 	Disabled bool
+	// RunningPlans is the page's running plans box (task 406): mssql_running_plans each minute when ticked
+	RunningPlans bool
 	// Auth and Options: the sign-in and the driver options as the page stored them (never a password); serve's page
 	// door reads them for its words (pagedoor.go), the collector does not
 	Auth    string
@@ -108,6 +110,11 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
 			plat = "auto"
 		}
 		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
+		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
+		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
+		if p.Engine == EngineSQLServer && p.RunningPlans {
+			all[len(all)-1].PageDefaults = map[string]Duration{"mssql_running_plans": {Duration: time.Minute}}
+		}
 	}
 	return all, skipped
 }
@@ -117,6 +124,9 @@ func Fingerprint(in Instance) string {
 	sch := make([]string, 0, len(in.Schedules))
 	for k, v := range in.Schedules {
 		sch = append(sch, k+"="+v.String())
+	}
+	for k, v := range in.PageDefaults {
+		sch = append(sch, "page:"+k+"="+v.String())
 	}
 	sort.Strings(sch)
 	dis := slices.Clone(in.Disabled)

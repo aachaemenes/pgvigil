@@ -232,10 +232,10 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
 	return g, err
 }
 
-// Inventory is the page's instance list and its generation, read in one statement (0131's admin_inventory(),
+// Inventory is the page's instance list and its generation, read in one statement (0157's admin_inventory(),
 // SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
 func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation FROM pgvigil.admin_inventory()`)
+	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans FROM pgvigil.admin_inventory()`)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -245,8 +245,8 @@ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, err
 	for rows.Next() {
 		var name, engine, platform, ref, auth, options *string
 		var tags []string
-		var disabled *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen); err != nil {
+		var disabled, runningPlans *bool
+		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans); err != nil {
 			return nil, 0, err
 		}
 		if name == nil {
@@ -270,6 +270,9 @@ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, err
 		}
 		if options != nil {
 			p.Options = *options
+		}
+		if runningPlans != nil {
+			p.RunningPlans = *runningPlans
 		}
 		out = append(out, p)
 	}

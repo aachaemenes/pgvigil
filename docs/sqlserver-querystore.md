@@ -77,6 +77,24 @@ A window takes every interval of the store that overlaps it: with 60-minute inte
 
 A cleared store (`ALTER DATABASE ... SET QUERY_STORE CLEAR`) numbers its queries and plans again from 1. Rows read before the clear keep the hashes they were read with and never show the text of the query that took their number; they show without text. A plan number that comes back under another query loses the XML stored for it.
 
+### Statistics used, forced plans that fail, one statement everywhere
+
+- A plan's **Statistics used** lists the statistics the optimizer loaded to compile it (the plan's OptimizerStatsUsage, written by SQL Server 2017 and 2016 SP2): rows changed at compile, the table's rows, modified %, the auto-update line and **stale at compile**; 'a plan compiled on stale statistics' is an info finding.
+- **Failures since forced** (under Forced plans): each read that saw a forced plan's failure count change. 'A forced plan fails' is a warning when one read saw 2 or more failures, or two failures were read within 24 hours of each other; one failure alone is held as an info (PerformanceMonitor 3.13's rule); forcing the plan anew starts again.
+- **On every instance**: a query hash on every SQL Server instance over the range, from the plan cache and the Query Store, the most CPU first. A PostgreSQL statement's identifier is its own server's, so PostgreSQL instances are not compared.
+
+### Finding statements by their text
+
+**Find statements** (Top view and the Plan cache tab) searches the stored statement texts of this instance, or every SQL Server instance, for a text (3 to 400 characters, case ignored, `%` and `_` as they are). An instance under `query_text: none` keeps no text and is named, not searched; under `normalized` a literal is stored as `?` and is not found. Without an index each source stops after 4 seconds and says so. The DBA may build the optional trigram indexes, as the repository's owner, outside a transaction:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_pc_text_query_trgm ON pgvigil.mssql_pc_text USING gin (query gin_trgm_ops);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_qs_query_text_trgm ON pgvigil.mssql_qs_query USING gin (query_text gin_trgm_ops);
+```
+
+The search says whether each index is there and valid (a failed `CONCURRENTLY` build leaves an invalid one: drop it and build it again). pgvigil never builds them.
+
 ## The Queries page
 
 The Performance row's Queries tab (in Plan cache's place: the full Plan cache grid keeps its address and opens from the page) is PerformanceMonitor 3.12.0's Queries view in its section order, on what pgvigil stores. Each section reads when it first comes into view, by itself, and the page is not refreshed every 30 s.

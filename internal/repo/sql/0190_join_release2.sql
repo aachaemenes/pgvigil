@@ -12,6 +12,9 @@
 --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
 --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
 --   B2a (0145): mssql_azuredb_minute among purge()'s monthly partition parents (an Azure SQL Database's minutes).
+--   task 406 B12 (0157): no findings arm here (mssql_querystore_findings is 0083's view, re-created by 0157); purge() calls
+--     pgvigil.mssql_qs_plans_purge(p_days); apply_roles() (0110's) keeps mssql_qs_plans_purge, mssql_plan_stats_store and
+--     mssql_plans_policy_drop owner only.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
 --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
 --     'not judged'; the rest 0104's text), and the findings view's 'database xid age' arm leaves an invalid database out.
@@ -341,6 +344,7 @@ BEGIN
   n := n + pgvigil.mssql_running_purge(p_days);
   n := n + pgvigil.mssql_reads_purge(p_days);
   n := n + pgvigil.mssql_plancache_purge(p_days);
+  n := n + pgvigil.mssql_qs_plans_purge(p_days);   -- task 406 (0157): running plans, live captures, plan statistics, forced-plan failures
   -- the PostgreSQL job step runs (161, 0102) past the retention, as job_runs
   DELETE FROM pgvigil.job_step_runs WHERE start_time < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;

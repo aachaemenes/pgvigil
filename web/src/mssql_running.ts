@@ -21,6 +21,7 @@ import { foldedGrid } from './running';
 import { firstChars, sqlCell, whatIsThis } from './sqlview';
 import { mssqlBlockingTrend } from './blocking_history';
 import { mssqlKillCol } from './mssql_actions';
+import { planSourcesCol } from './mssql_plancache';
 import { timeStrip } from './timestrip';
 
 interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null }
@@ -227,12 +228,15 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
     all.delete('wait');
     box.append(el('p', { class: 'meta wait-only' }, `Only requests waiting on ${wait}. `, el('a', { href: `#/mssql_running?${all}` }, 'Show all active queries')));
   }
+  // task 406 (SQLWATCH COL#27): each request's plan by its hashes, listed under the grid
+  const planBox = el('div', { class: 'running-plans' });
+  const withPlan = [...cols, planSourcesCol({ instance } as Ctx, planBox)];
   box.append(foldedGrid({
-    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
+    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...withPlan, killNow] : withPlan, empty: 'Nothing ran and no transaction was open at this snapshot.',
     blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
     age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
     groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
-  }));
+  }), planBox);
   return box;
 }
 

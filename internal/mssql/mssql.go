@@ -556,6 +556,10 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		logRun(instanceID, "error", err.Error())
 		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
+	// task 406: a collector that must learn its rows were stored (mssql_running_plans marks the plans it sent)
+	if as, ok := c.(AfterStorer); ok {
+		as.AfterStore(info, rows)
+	}
 	d := time.Since(start)
 	status, note := "ok", ""
 	for _, row := range rows {

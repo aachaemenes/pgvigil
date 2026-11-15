@@ -111,6 +111,16 @@ func tools() []tool {
 			Description: "Volumes with free space, growth per day over 7 and 30 days and the days until full, soonest first; with instance, also its database and table growth and storage checks.",
 			args:        []arg{{name: "instance", typ: "string", desc: "one instance (name or instance_id); without it, the whole fleet and the repository's own size"}},
 			run:         storageForecast},
+		// task 406 (PerformanceMonitor 3.13 Added 14 and 15): tools_mssql_statements.go
+		{Name: "statement_everywhere", Title: "Statement on every instance (SQL Server)",
+			Description: "SQL Server only: one query hash on every SQL Server instance over a window, per instance, database and source (plan cache, Query Store): executions, CPU, duration, reads, the most CPU first. PostgreSQL statements are not compared (a queryid is its own server's).",
+			args:        []arg{{name: "query_hash", typ: "string", desc: "the query hash, 0x and up to 16 hex digits", required: true}, argFrom, argTo, argHours},
+			run:         statementEverywhere},
+		{Name: "find_statements", Title: "Find statements by text (SQL Server)",
+			Description: "SQL Server only: the stored statement texts holding a text (3 to 400 characters, case ignored), from the plan cache and the Query Store, of one instance or every one, each with its query hash for statement_everywhere. Instances whose query_text policy keeps no text are named, not searched; PostgreSQL instances are not searched.",
+			args: []arg{{name: "text", typ: "string", desc: "the text the statement holds", required: true},
+				{name: "instance", typ: "string", desc: "one SQL Server instance (name or instance_id); without it every one"}},
+			run: findStatements},
 	}
 }
 

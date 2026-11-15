@@ -46,6 +46,14 @@ what happens in the other order, and what the project's own proof showed (`scrip
   Dash import (its "Application" tag) or from an older override is no longer an instance's tag after `migrate`, so an
   alert channel, a threshold, an acknowledgement or an alert rule scoped `tags: [application:X]` stops matching those
   instances until Admin > Applications assigns them to X: assign the applications right after the upgrade.
+- **A SQL Server plan read by its handle is audited.** Plan cache > Cached plans > Download .sqlplan and Open now write a
+  row in the custom reports' log (op `plan_read`: who, the instance, the handle and offsets, never the plan) before the
+  plan is answered, through the actions door's audit login (the config's repository dsn), as a Community tools run is. A
+  serve without it (`pgvigil serve -no-login`, a repository login that may not write the actions log, or one that may not
+  call `import_custom_report_run`) no longer reads plans: the buttons are off and say why.
+- **Plans of running queries are off on every instance.** `mssql_running_plans` and `mssql_live_plans` are new and off
+  by default; an instance added on Admin > Instances has a running plans box, unticked, and an instance of the file
+  takes `schedules:` ([plans of running queries](sqlserver-indexes.md#plans-of-running-queries)).
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.

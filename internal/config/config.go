@@ -91,6 +91,9 @@ type Instance struct {
 	// word is the key "tag". The repository keeps them as written; 'pgvigil tag' overrides a key there.
 	Tags      []string            `yaml:"tags"`
 	Schedules map[string]Duration `yaml:"schedules"`
+	// PageDefaults are an instance's intervals that Admin > Instances gives it (task 406: its running plans
+	// switch); never read from the file. Interval reads them after the file's schedules:, its own and the global.
+	PageDefaults map[string]Duration `yaml:"-"`
 	// Disabled lists collections that never run on this instance.
 	Disabled []string `yaml:"disabled"`
 	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
@@ -103,7 +106,7 @@ type Instance struct {
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop; on PostgreSQL job_stop and
+	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, plan_evict; on PostgreSQL job_stop and
 	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
 	// alone turns them on.
@@ -560,9 +563,9 @@ func (c *Config) Validate() error {
 			seen := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "kill", "job_start", "job_stop":
+				case "kill", "job_start", "job_stop", "plan_evict":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, plan_evict)", in.Name, a)
 				}
 				if seen[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
@@ -640,7 +643,8 @@ func Resolve(v string) string {
 }
 
 // Interval returns the effective interval of a collection for an instance:
-// the instance's override, then the global override, then the default; zero = disabled.
+// the instance's override, then the global override, then the page's default (PageDefaults), then the
+// collection's default; zero = disabled.
 func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
 	for _, d := range in.Disabled {
 		if d == collection {
@@ -651,6 +655,9 @@ func (c *Config) Interval(in Instance, collection string, def time.Duration) tim
 		return v.Duration
 	}
 	if v, ok := c.Schedules[collection]; ok {
+		return v.Duration
+	}
+	if v, ok := in.PageDefaults[collection]; ok {
 		return v.Duration
 	}
 	return def

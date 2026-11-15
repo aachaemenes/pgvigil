@@ -231,7 +231,7 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff()}
 	parts := []struct{ k, q string }{
 		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, a.options, array_to_string(a.tags, ' ') AS tags,
-		        a.disabled, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
+		        a.disabled, a.running_plans, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
 		        a.tested_at, a.tested_ok, a.tested_detail, i.instance_id, i.last_seen,
 		        (SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id AND c.status = 'ok') AS last_collected,
 		        -- task 205's design pass: an approved server its source no longer lists
@@ -438,6 +438,24 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		s.instanceTest(w, r, user, in)
 		return
 	}
+	// task 406: the running plans box of a SQL Server instance added here (0157: off for every instance until ticked)
+	if op == "running_plans" {
+		on, isBool := in["on"].(bool)
+		if !isBool {
+			writeErr(w, http.StatusBadRequest, errors.New("on must be true or false"))
+			return
+		}
+		pay["on"] = on
+		ans, raw, err := s.callImport(ctx, "import_admin_running_plans", pay)
+		if err != nil {
+			s.log.Error("admin instance: not written", "user", user, "op", op, "name", name, "err", err)
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
+			return
+		}
+		s.log.Info("admin instance", "op", op, "name", name, "on", on, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
+		s.answer(w, ans, raw, nil)
+		return
+	}
 	dir := a.secretDir()
 	if dir == "" && (op == "add" || op == "edit") {
 		writeErr(w, http.StatusConflict, errors.New("this server was started without a config file path: credentials cannot be written"))
@@ -501,7 +519,7 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 			previous = have.Ref
 		}
 	default:
-		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove or test"))
+		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans or test"))
 		return
 	}
 	ans, raw, err := s.callImport(ctx, "import_admin_instance", pay)

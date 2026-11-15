@@ -45,6 +45,22 @@ Findings (a read older than three hours raises nothing):
 | single-use plans in the cache | single-use ad hoc or prepared plans are over 10 % of a user database's compiled plans (info) or over 75 % (warning), with 100 at least |
 | one statement compiled into many plans | statements of a query hash with several plans are over 5 % of a user database's cached statements (info) or over 75 % (warning), with 100 at least |
 
+### Cached plans, read on demand
+
+A row of the Plan cache tab's statements has **Cached plans**: each entry the last read held (plan handle, the statement's offsets, plan hash, compile time), with **Download .sqlplan** and **Open** of the statement's plan or the whole batch's, read from the server when asked through the read login (`sys.dm_exec_text_query_plan`). A plan is read under the instance's `query_text` policy `full` only (a plan carries the statement's text and its compiled values) and its T-SQL password forms are masked. Every read writes a row in the custom reports' log first (op `plan_read`: who, from where, the instance, the handle and offsets and what was read, never the plan), through the actions door's audit login: a serve without it (`-no-login`, or no audit login) reads no plan and says why. A read login in `sysadmin` is not refused here, unlike for custom reports: these are pgvigil's own fixed reads, the ones its collections make on that login. The reply says when the plan's hash is not the sample's (compiled again since), when the cache no longer holds it, when the handle holds a parameterized statement's shell, and when the module is encrypted. **Evict** removes the plan through the actions door (`plan_evict`, off by default: [actions](sqlserver-actions.md)). **On every instance** lists the statement's query hash on every SQL Server instance over the range.
+
+### Plans of running queries
+
+`mssql_running_plans` and `mssql_live_plans` are off by default, on every instance: a plan carries the statement's text and its literals (passwords masked), and it is kept only under the `query_text` policy `full`. An instance added on Admin > Instances is switched on by its **running plans** box there (an admin's tick; off again by clearing it; the collector takes it within 15 seconds). For an instance of the configuration file add to it:
+
+```yaml
+    schedules:
+      mssql_running_plans: 1m
+      mssql_live_plans: 1m      # where the build allows it (the table above)
+```
+
+and restart the collector. The file's global `schedules:` line for `mssql_running_plans` comes before the page's box: `0` turns it off for every instance whose own `schedules:` does not name it, the ticked page instances too, and any other value reads every SQL Server instance, ticked or not. When the policy leaves `full`, the plans and live plans kept are dropped at the next read and no longer shown. The tab's **Plans of running queries** lists each plan kept, why (CPU, memory grant, running time, requests), the largest figures a read saw, its plan and its newest live plan, and **Statistics used** (the statistics the plan was compiled with, stale at compile when their changes had passed the auto-update line). A slow query's or a running request's **Plan** lists every plan pgvigil holds or can read for its query and plan hash.
+
 ## Indexes (`mssql_indexes`)
 
 There is one row per index of every user table and indexed view. Each row holds:
