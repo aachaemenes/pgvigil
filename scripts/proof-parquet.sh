@@ -85,8 +85,9 @@
 #  G.  destinations: one window written to a folder, to the S3-compatible server and to Azurite: the three listings
 #      hold the same names, every file's sha256 is the one its own manifest gives, each table's rows are equal across
 #      the three, each manifest is the newest object of its window; a table of about 175 MB of text (over the 64 MB
-#      line, so in parts on S3 and in blocks on Blob) reads back with its row count in all three and in more than
-#      one row group.
+#      line, so in parts on S3; on Blob one Put Blob - the Azure SDK uploads a file of 256 MiB or less in a single
+#      call whatever the block size: azblob v1.8.0 blockblob/client.go L449-457, MaxUploadBlobBytes = 256 MiB in
+#      blockblob/constants.go L15) reads back with its row count in all three and in more than one row group.
 #  H.  the page door: a run by a login in the exporter role leaves one export_runs row per window (outcome ok, its
 #      files / rows / bytes the manifest's) and the export_state row; the same login's own INSERT into export_runs is
 #      refused; GET /api/export lists the runs, and answers nothing (not an error) where the repository has no

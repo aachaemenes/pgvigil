@@ -196,7 +196,9 @@ from an older file is null. The repository's encoding must be UTF8.
   64 MB goes up in parts. pgvigil sends no checksum trailer of its own (S3-compatible stores differ on them).
 - `azure_blob`: `container`, `prefix`, and one way in: `connection_string: env:NAME`, `sas_url: env:NAME` (the
   account's URL with its SAS), or `account_url` with the default credential (a managed identity, the environment,
-  the Azure CLI's login). Rights: read, write, delete and list on the container (Storage Blob Data Contributor).
+  the Azure CLI's login). Rights: read, write, delete and list on the container (Storage Blob Data Contributor;
+  with a user-delegation SAS the identity that signed it needs that data role too). The Azure SDK writes a file
+  of 256 MiB or less in one request and a larger one in 16 MB blocks.
 
 ## The reading session
 
@@ -223,22 +225,25 @@ among them).
 ## Not proven by the proof
 
 `scripts/proof-parquet.sh` reads every file back with an independent reader and writes to an S3-compatible server
-and to Azurite in containers. Beyond it, the export was run by hand against real AWS S3 (`-check`, one window
-read back file by file, an 80 MB file in a multipart upload, S3's own refusal of a second manifest, a re-export)
-and under its own systemd units on a systemd host (as shipped the unit cannot write a folder destination; with the
-drop-in of step 4 it exports as the account `pgvigil`, and its timer and its lock hold). Neither proves:
+and to Azurite in containers. Beyond it, the export was run by hand against real AWS S3 and real Azure Blob
+(`-check`, one window read back file by file with its sha256, size and rows, the store's own refusal of a second
+manifest, a re-export; on S3 an 80 MB file in a multipart upload; on Blob through `sas_url` with a user-delegation
+SAS) and under its own systemd units on a systemd host (as shipped the unit cannot write a folder destination;
+with the drop-in of step 4 it exports as the account `pgvigil`, and its timer and its lock hold). None of it
+proves:
 
-- real Azure Blob, the AWS `profile`, the Azure default credential;
-- the refusal of a second manifest on Blob (the folder's refusal has a unit test; Azurite's is proven);
+- a file over 256 MiB, which the Azure SDK uploads in blocks, on real Azure Blob or on Azurite (every file the
+  runs wrote was under 256 MiB, so each went up in one request); a file is closed at the first row group past
+  256 MiB, so one can be larger by up to a row group;
+- the AWS `profile`, the Azure default credential;
 - the 256 MB line that closes a file at its real size (a unit test crosses it with small files; the 64 MB line of
   a row group and the 1,000,000-row line are crossed for real);
 - the refusal of a repository whose encoding is not UTF8;
 - a session through PgBouncer;
 - the build with FIPS 140-3 on, and the Windows file lock;
 - the Collector page's panel drawn in a browser (the proof reads what it draws from, `GET /api/export`);
-- the door refusing a write that is not the export's own beyond the cases the proof seeds; the `sas_url` and
-  `account_url` ways into Blob (the proof uses a connection string); `-check` against Blob; a table given up after
-  upload failures; the 90-day trim of `export_runs`.
+- the door refusing a write that is not the export's own beyond the cases the proof seeds; the `account_url` way
+  into Blob; a table given up after upload failures; the 90-day trim of `export_runs`.
 
 The layout, the manifest and the rules above follow the file contract of PerformanceMonitor's exporter closely
 (MIT; see THIRD-PARTY-NOTICES.md).
