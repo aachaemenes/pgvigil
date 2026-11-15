@@ -1146,6 +1146,12 @@ SELECT x.instance_id
           FROM pgvigil.collector_connects c) x
  WHERE x.crossed AND x.n >= 3;
 
+-- collection_dont_monitor (B6g-2, the lead's 07:4x DONT-MONITOR (a)): a collection its Collection Health threshold sets
+-- Don't monitor raises no 'collection failing' (below). Its body is 0166's (the thresholds' table is made there, after
+-- this file): this stub lets the view name it on a fresh store, and 0166's CREATE OR REPLACE gives it the body
+CREATE OR REPLACE FUNCTION pgvigil.collection_dont_monitor(p_instance_id int, p_collection text)
+RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT false $$;
+
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 -- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a
 -- cut that turns into a host not seen, is the same alert, repeated once with its new why - alert_due); the claim
@@ -1192,6 +1198,7 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
        'pgvigil collector', s.last_run_at
   FROM pgvigil.collector_streaks_now s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
+   AND NOT pgvigil.collection_dont_monitor(s.instance_id, s.collection)   -- B6g-2: Don't monitor (its Collection Health threshold)
    -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
    -- network' stands, and after it one failed run past its window (collector_in_window)
    -- a streak speaks only while a beating collector still names the instance (collector_covers): only such a run ends

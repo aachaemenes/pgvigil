@@ -39,7 +39,8 @@ SELECT c.instance_id, 'critical' AS severity, 'collection failing' AS check_name
   FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND c.status = 'error'
    AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
-                ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0`},
+                ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0
+   AND NOT pgvigil.collection_dont_monitor(c.instance_id, c.collection)   -- B6g-2: Don't monitor, as 0121's arm`},
 	{"collection stale", `
 SELECT instance_id, 'warning', 'collection stale', collection, snapshot_at,
        'last ' || to_char(now() - snapshot_at, 'DD"d" HH24"h" MI"m"') || ' ago'

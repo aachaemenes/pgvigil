@@ -251,6 +251,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS collection_health_threshold_live
 -- instance), collection (none = every collection), and for a set the columns it gives}; answers {outcome: done |
 -- refused, detail, threshold_id}. A set of no column, a value out of its range, an unknown or inactive instance, an
 -- inherit of a scope with no row of its own: refused in words, nothing written.
+-- collection_dont_monitor (B6g-2, the lead's 07:4x DONT-MONITOR (a)): whether a collection of an instance is set Don't
+-- monitor - resolved as collection_health()'s th CTE resolves it (this instance and collection, this instance, this
+-- collection on every instance, everything, then false: keep the two in step). 0121's 'collection failing' arm and the
+-- overview's check of the same name leave such a collection out; 0121 holds a stub of it for its view's sake
+CREATE OR REPLACE FUNCTION pgvigil.collection_dont_monitor(p_instance_id int, p_collection text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT coalesce(ic.dont_monitor, ia.dont_monitor, ac.dont_monitor, aa.dont_monitor, false)
+    FROM (SELECT 1) one
+    LEFT JOIN pgvigil.collection_health_threshold ic ON ic.ended_at IS NULL AND ic.instance_id = p_instance_id AND ic.collection = p_collection
+    LEFT JOIN pgvigil.collection_health_threshold ia ON ia.ended_at IS NULL AND ia.instance_id = p_instance_id AND ia.collection IS NULL
+    LEFT JOIN pgvigil.collection_health_threshold ac ON ac.ended_at IS NULL AND ac.instance_id IS NULL AND ac.collection = p_collection
+    LEFT JOIN pgvigil.collection_health_threshold aa ON aa.ended_at IS NULL AND aa.instance_id IS NULL AND aa.collection IS NULL
+$$;
+
 CREATE OR REPLACE FUNCTION pgvigil.import_collection_health_threshold(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
