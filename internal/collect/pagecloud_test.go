@@ -133,3 +133,51 @@ func TestPageAWSCheck(t *testing.T) {
 		t.Errorf("a new host: %q, want a new check and the block refused", why)
 	}
 }
+
+// nestedPageRDS is two checks of one block at once, in one goroutine: its first DescribeDBInstances runs a second
+// pageAWSVerdict (the parallel check, which reads the empty cache too and gets the provider's answer), then fails
+// (a throttle or a credential refresh) - the order a collector's first runs of a new instance can meet.
+type nestedPageRDS struct {
+	*fakePageRDS
+	inner func()
+	err   error
+	n     int
+}
+
+func (f *nestedPageRDS) DescribeDBInstances(ctx context.Context, in *rds.DescribeDBInstancesInput, o ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error) {
+	f.n++
+	if f.n == 1 {
+		f.inner()
+		return nil, f.err
+	}
+	return f.fakePageRDS.DescribeDBInstances(ctx, in, o...)
+}
+
+// B24p review 20261115-094955 finding 6: a check that fails while a parallel check of the same block and host keeps
+// it never replaces the kept verdict with a 5-minute refusal - an AWS error is no verdict, a verdict stands.
+func TestPageAWSVerdictParallel(t *testing.T) {
+	ctx := context.Background()
+	own := "db1.c9akciq32.us-east-2.rds.amazonaws.com"
+	base := &fakePageRDS{inst: map[string]rdstypes.DBInstance{"db1": {DBInstanceIdentifier: aws.String("db1"), Endpoint: &rdstypes.Endpoint{Address: aws.String(own)}}}}
+	in := config.Instance{Name: "pg-cloud", AWS: &config.AWS{Region: "us-east-2", DBInstance: "db1"}, PageAWSHost: own}
+	t0 := time.Date(2026, 11, 15, 3, 0, 0, 0, time.UTC)
+	log := slog.New(slog.DiscardHandler)
+	var innerWhy string
+	api := &nestedPageRDS{fakePageRDS: base, err: errors.New("operation error RDS: DescribeDBInstances, https response error StatusCode: 400, api error Throttling: Rate exceeded")}
+	api.inner = func() { innerWhy = pageAWSVerdict(ctx, log, in, t0) }
+	was := newPageAWSAPI
+	defer func() { newPageAWSAPI = was; resetPageAWSVerdicts() }()
+	newPageAWSAPI = func(context.Context, config.AWS) (pageAWSAPI, error) { return api, nil }
+	resetPageAWSVerdicts()
+	outerWhy := pageAWSVerdict(ctx, log, in, t0)
+	if innerWhy != "" {
+		t.Fatalf("the parallel check: %q, want the block kept on the provider's answer", innerWhy)
+	}
+	if outerWhy != "" {
+		t.Errorf("the check that met the throttle after the parallel one kept the block: %q, want the kept verdict", outerWhy)
+	}
+	n := api.n
+	if why := pageAWSVerdict(ctx, log, in, t0.Add(time.Minute)); why != "" || api.n != n {
+		t.Errorf("the next run a minute later: %q after %d call(s), want the kept verdict from the cache and no call (a failed check stored over it)", why, api.n-n)
+	}
+}
