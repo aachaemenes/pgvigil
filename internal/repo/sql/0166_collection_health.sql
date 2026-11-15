@@ -344,7 +344,9 @@ RETURNS TABLE (instance_id int, collection text, status text, status_reason text
                -- B6g-1: Failed holds import_failed; the CPU and reads are NULL where no run of the range read its
                -- session (PostgreSQL: 'not read by pgvigil'), never 0
                import_failed int, import_runs int, import_sum numeric, import_max int,
-               cpu_runs int, cpu_sum numeric, cpu_max int, reads_sum numeric)
+               cpu_runs int, cpu_sum numeric, cpu_max int, reads_sum numeric,
+               -- B6g-2: where the row's thresholds come from (NULL = DBA Dash's defaults alone) and the numbers in words
+               threshold_from text, threshold_words text)
 LANGUAGE sql STABLE SET jit = off AS $$
   WITH h AS (
     SELECT h.instance_id, h.collection, sum(h.runs)::int AS runs, sum(h.ok)::int AS ok, sum(h.partial)::int AS partial,
@@ -392,14 +394,20 @@ LANGUAGE sql STABLE SET jit = off AS $$
            coalesce(ic.warn_fail_pct, ia.warn_fail_pct, ac.warn_fail_pct, aa.warn_fail_pct, 10) AS wpct,
            coalesce(ic.crit_fail_pct, ia.crit_fail_pct, ac.crit_fail_pct, aa.crit_fail_pct, 50) AS cpct,
            coalesce(ic.min_runs, ia.min_runs, ac.min_runs, aa.min_runs, 5) AS mr,
-           coalesce(ic.dont_monitor, ia.dont_monitor, ac.dont_monitor, aa.dont_monitor, false) AS dm
+           coalesce(ic.dont_monitor, ia.dont_monitor, ac.dont_monitor, aa.dont_monitor, false) AS dm,
+           nullif(concat_ws(', ', CASE WHEN ic.threshold_id IS NOT NULL THEN 'this instance and collection' END,
+                            CASE WHEN ia.threshold_id IS NOT NULL THEN 'this instance' END,
+                            CASE WHEN ac.threshold_id IS NOT NULL THEN 'this collection on every instance' END,
+                            CASE WHEN aa.threshold_id IS NOT NULL THEN 'everything' END), '') AS th_from
       FROM j
       LEFT JOIN pgvigil.collection_health_threshold ic ON ic.ended_at IS NULL AND ic.instance_id = j.instance_id AND ic.collection = j.collection
       LEFT JOIN pgvigil.collection_health_threshold ia ON ia.ended_at IS NULL AND ia.instance_id = j.instance_id AND ia.collection IS NULL
       LEFT JOIN pgvigil.collection_health_threshold ac ON ac.ended_at IS NULL AND ac.instance_id IS NULL AND ac.collection = j.collection
       LEFT JOIN pgvigil.collection_health_threshold aa ON aa.ended_at IS NULL AND aa.instance_id IS NULL AND aa.collection IS NULL
   ), t AS (
-    SELECT j.*, th.dm,
+    SELECT j.*, th.dm, th.th_from,
+           format('in a row %s / %s, failing %s / %s min, failed %s / %s %% of %s runs or more', th.wfr, th.cfr, th.wfm, th.cfm,
+                  trim_scale(th.wpct), trim_scale(th.cpct), th.mr) AS th_words,
            CASE WHEN j.cf >= th.cfr AND (j.fm IS NULL OR j.fm >= th.cfm) THEN 2
                 WHEN j.cf >= th.wfr AND (j.fm IS NULL OR j.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
            CASE WHEN j.known >= th.mr AND j.failed * 100 >= th.cpct * j.known AND j.last_status = 'error' THEN 2
@@ -422,7 +430,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
          CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
          CASE WHEN t.known > 0 THEN round(100.0 * (t.failed + t.partial) / t.known, 1) END,
          t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at, t.dur_sum, t.dur_max, t.rows_written,
-         t.import_failed, t.import_runs, t.import_sum, t.import_max, t.cpu_runs, t.cpu_sum, t.cpu_max, t.reads_sum
+         t.import_failed, t.import_runs, t.import_sum, t.import_max, t.cpu_runs, t.cpu_sum, t.cpu_max, t.reads_sum,
+         t.th_from, t.th_words
     FROM t
 $$;
 

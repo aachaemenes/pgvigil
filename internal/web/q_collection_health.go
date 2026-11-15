@@ -63,6 +63,7 @@ SELECT c.instance_id, c.instance, c.engine, c.collection, c.status, c.status_rea
        c.failed_pct, c.problem_pct, s.failed24, s.known24, c.consecutive_failures, c.last_run_at, c.last_ok_at, c.last_failure_at,
        c.dur_sum, c.dur_max, c.rows_written, coalesce(e.errors, 0) AS errors,
        c.import_failed, c.import_runs, c.import_sum, c.import_max, c.cpu_runs, c.cpu_sum, c.cpu_max, c.reads_sum,
+       c.threshold_from, c.threshold_words,
        CASE WHEN c.consecutive_failures > 0 AND c.last_ok_at IS NOT NULL THEN c.last_ok_at ELSE c.last_failure_at - interval '10 minutes' END AS errors_from,
        c.last_failure_at + interval '1 hour' AS errors_to
   FROM c
@@ -88,7 +89,9 @@ const chCols = `
        round(r.import_sum::numeric / nullif(r.import_runs, 0)) AS avg_import_ms, CASE WHEN r.import_runs > 0 THEN r.import_max END AS max_import_ms,
        r.cpu_sum AS total_cpu_ms, round(r.cpu_sum::numeric / nullif(r.cpu_runs, 0)) AS avg_cpu_ms, r.cpu_max AS max_cpu_ms,
        r.reads_sum AS logical_reads, round(r.reads_sum::numeric / nullif(r.cpu_runs, 0)) AS avg_logical_reads,
-       r.rows_written AS rows, r.errors, 'DBA Dash''s defaults' AS thresholds, r.errors_from, r.errors_to,
+       r.rows_written AS rows, r.errors,
+       -- B6g-2: where the numbers come from (DBA Dash's defaults, or the scopes that set them), the numbers in the title
+       coalesce('set on ' || r.threshold_from, 'DBA Dash''s defaults') AS thresholds, r.threshold_words, r.errors_from, r.errors_to,
        ` + chHourFrom + ` AS rate_from, least(` + chHourTo + `, now()) AS rate_to`
 
 // sqlCHInstance: Row per collection per instance (DBA Dash's default), worst first
@@ -116,7 +119,10 @@ var sqlCHCollection = `WITH x AS (` + sqlCHRows + `), r AS (
          min(x.errors_from) AS errors_from, max(x.errors_to) AS errors_to,
          -- the engine where every instance of the row shares one (collection names never cross engines): its cost cells'
          -- words read it - a PostgreSQL collection's 'not read by pgvigil' (the review of B6g-1 part b #1)
-         CASE WHEN min(x.engine) = max(x.engine) THEN min(x.engine) END AS engine
+         CASE WHEN min(x.engine) = max(x.engine) THEN min(x.engine) END AS engine,
+         -- one source and one set of numbers over the instances, else said as differing
+         CASE WHEN count(DISTINCT coalesce(x.threshold_from, '')) = 1 THEN min(x.threshold_from) ELSE 'each instance its own' END AS threshold_from,
+         CASE WHEN count(DISTINCT x.threshold_words) = 1 THEN min(x.threshold_words) ELSE 'each instance its own' END AS threshold_words
     FROM x
    GROUP BY x.collection
 )

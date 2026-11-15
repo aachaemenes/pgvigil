@@ -125,7 +125,8 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'max_import_ms', label: 'Max Import (ms)', num: true, fmt: fmtNum },
       { key: 'rows', label: 'Rows', num: true, fmt: fmtNum },
       { key: 'errors', label: 'Errors', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'errors') : fmtNum(v) },
-      { key: 'thresholds', label: 'Thresholds' },
+      // B6g-2: where the row's numbers come from; the numbers themselves in the title
+      { key: 'thresholds', label: 'Thresholds', fmt: (v, r) => el('span', { title: String(r.threshold_words ?? '') }, String(v ?? '')) },
     ];
     const cols: Col[] = grain === 'collection'
       ? [{ key: 'collection', label: 'Collection' }, statusCol,

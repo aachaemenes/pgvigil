@@ -60,7 +60,7 @@ What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warni
 own CPU and reads (and the Cost chart's Import CPU line), the highest logical reads of one run, the Import Lag chart (pgvigil writes into the repository
 inside the run that collected: no queue stands between the two, so there is no import lag), the insights card, and the
 Steps picker (pgvigil's collections have no steps). Runs and Max Duration are not links (DBA Dash's Collection
-Performance report is a later task), and the thresholds are DBA Dash's defaults, not yet settable. The Status column
+Performance report is a later task), and the thresholds are DBA Dash's defaults until a threshold row sets them (below). The Status column
 shows the word as well as the colour.
 
 A departure from DBA Dash: a collection written in parts (the schema collection's databases, the Extended Events and
@@ -78,3 +78,16 @@ UPDATE pgvigil.hours_retention SET days = 30, changed_at = now() WHERE table_nam
 ```
 
 or `pgvigil purge -hours collection_health_hour=30`. More than 30 is refused.
+
+## Thresholds
+
+DBA Dash's per-collection thresholds: failures in a row and minutes failing for a warning and a critical, the failed
+per cent of the rate for each, the runs the rate needs, and Don't monitor. A row is set for one instance's collection,
+every collection of one instance, one collection on every instance, or everything; each number left empty inherits the
+next level up - this instance and collection, this instance, this collection on every instance, everything, then DBA
+Dash's defaults (in a row 1 / 3, failing 10 / 30 minutes, failed 10 / 50 % of 5 runs or more). Don't monitor makes the
+collection N/A ('not monitored'); a level's 'monitor' over a wider Don't monitor judges it again. The Thresholds cell
+says where a row's numbers come from, and its title the numbers. Any signed-in user sets them (POST
+/api/collectionhealth/thresholds), each change kept with who and when; the demo's door sets them on one demo instance
+only.
+
