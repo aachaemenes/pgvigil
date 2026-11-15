@@ -159,5 +159,78 @@
     "begin": "private const string QueryText = @\"",
     "end": "\";",
     "sha256": ""
+  },
+  {
+    "name": "perfCheckWaitStats",
+    "go_file": "internal/repo/sql/0115_darling_waits.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), its wait stats check (6001: the important waits, their categories and priorities)",
+    "begin": "/* Check for significant wait stats */",
+    "end": "/* Calculate pagelatch wait time for TempDB contention check */",
+    "sha256": "",
+    "item_re": "N'([A-Z0-9_]+)'"
+  },
+  {
+    "name": "perfCheckSignalWaits",
+    "go_file": "internal/repo/sql/0115_darling_waits.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), the signal wait ratio (6101) and SOS_SCHEDULER_YIELD (6102)",
+    "begin": "/* Get total and signal wait times */",
+    "end": "/* Get buffer pool size */",
+    "sha256": ""
+  },
+  {
+    "name": "perfCheckTempdbLatch",
+    "go_file": "internal/repo/sql/0115_darling_waits.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), the tempdb page latch time behind 2010",
+    "begin": "/* Calculate pagelatch wait time for TempDB contention check.",
+    "end": "/* Check for CPU scheduling pressure (signal wait ratio) */",
+    "sha256": ""
+  },
+  {
+    "name": "perfCheckTempdbContention",
+    "go_file": "internal/repo/sql/0115_darling_waits.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), the tempdb allocation contention check (2010)",
+    "begin": "/* Check for TempDB allocation contention based on pagelatch waits */",
+    "end": "/* Memory configuration checks */",
+    "sha256": ""
+  },
+  {
+    "name": "perfCheckForcedGrants",
+    "go_file": "internal/repo/sql/0115_darling_waits.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), forced grants (4101) and grant timeouts",
+    "begin": "/* Check for forced grants and memory grant timeouts - requires VIEW SERVER STATE permission */",
+    "end": "/* Check for SQL Server memory dumps (on-prem only) */",
+    "sha256": ""
+  },
+  {
+    "name": "perfCheckTraceFlags",
+    "go_file": "internal/mssql/checks.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PerfCheck 2.11 (20261101), its global trace flag check (1012) and their priorities",
+    "begin": "/* Check for globally enabled trace flags (not in Azure) */",
+    "end": "/* Memory information - works on all platforms */",
+    "sha256": "",
+    "item_re": "WHEN (\\d+)\\s+THEN"
+  },
+  {
+    "name": "blockViewerChecks",
+    "go_file": "internal/repo/sql/0114_darling_blocking.sql",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_HumanEventsBlockViewer 5.11 (20261101), its findings (checks 1-10, 1000, 1001)",
+    "begin": "RAISERROR('Inserting #block_findings, check_id 1', 0, 1) WITH NOWAIT;",
+    "end": "RAISERROR('Inserting #block_findings, check_id 2147483647', 0, 1) WITH NOWAIT;",
+    "sha256": "",
+    "item_re": "Inserting #block_findings, check_id ([0-9.]+)'"
   }
 ]
