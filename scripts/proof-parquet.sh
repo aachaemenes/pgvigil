@@ -83,7 +83,8 @@
 #  J.  doors and caps: `-plan -json` lists the three due windows and each table's kind and writes nothing; `-check`
 #      exits 0 on a good folder (left empty) and 3 on a destination that cannot be written; a hole between the
 #      oldest manifest and the age line is named with its -from / -to line, exit 1, and `-status -json` lists it;
-#      `-gap` writes gap manifests and the next run exits 0; 1,000,001 rows of one table and window come out as two
+#      `-gap` writes gap manifests and the next run exits 0; a window that ended before the reach and has its first
+#      pass still gets its final pass, and an accepted hole stays a hole; 1,000,001 rows of one table and window come out as two
 #      files (the second __p2) of 1,000,000 and 1 rows in row groups of at most 50,000; `-out` writes an explicit
 #      window to another folder and leaves the configured destination as it was.
 set -euo pipefail
@@ -713,6 +714,12 @@ def row_J():
           f'J: -status lists the aged-out hours and the newest window ({st.get("aged_out")}, {st.get("newest")})')
     rg = export(c, '-gap', iso(Wk(5)[0]), iso(Wk(4)[1])); g5 = man('j', Wk(5)); r2 = export(c)
     check(rg[0] == 0 and g5 and g5.get('gap') is True and g5.get('tables') == [] and r2[0] == 0, f'J: -gap writes gap manifests and the next run exits 0 (rc {rg[0]}, {r2[0]}: {rg[2].strip()[:120]})')
+    # W6 has its first pass and ended before the reach: its final pass is still owed; the two accepted holes are final
+    mkj = lambda w: os.path.exists(f'{root("j")}/_manifests/_final/{NAME}__{stamp(w[0])}__{stamp(w[1])}')
+    cf = cfg('jf', dest={'type': 'folder', 'path': f'{W}/dest-j'}, state=f'{W}/state-j', max_window_age_hours=3, final_after_hours=4)
+    rf = export(cf); m6 = man('j', w6); g5b = man('j', Wk(5))
+    check(rf[0] == 0 and m6 and m6['pass'] == 'final' and mkj(w6) and (man('j', Wk(3)) or {}).get('pass') == 1 and g5b and g5b.get('gap') is True and mkj(Wk(5)),
+          f'J: a window past the reach that has its first pass still gets its final pass; an accepted hole stays a hole (rc {rf[0]}, W6 pass {m6 and m6["pass"]}, marker {mkj(w6)}, the hole still a gap {bool(g5b and g5b.get("gap"))}: {rf[2].strip()[:120]})')
     w5 = Wk(5); cb = cfg('jbig'); rb = window(cb, w5); mb = man('jbig', w5); fs = files(mb, 'host_sample')
     counts = [pq.ParquetFile(f'{root("jbig")}/{p}').metadata for p in fs]
     check(rb[0] == 0 and len(fs) == 2 and fs[1].endswith('__p2.parquet') and not re.search(r'__p\d+\.parquet$', fs[0]) and [m.num_rows for m in counts] == [1000000, 1]

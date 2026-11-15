@@ -189,13 +189,18 @@ func (s *session) due(st *destState) (todo []job, aged []Hour) {
 	}
 	for a := first; !a.Add(time.Hour).Add(s.c.Settle).After(s.now); a = a.Add(time.Hour) {
 		w := Hour{a, a.Add(time.Hour)}
+		finalDue := !w.To.Add(s.c.FinalAfter).After(s.now)
 		if !w.To.After(reach) { // it ended before the reach of a run
-			if !st.done[a] {
+			switch {
+			case !st.done[a]:
 				aged = append(aged, w)
+			case finalDue && !st.final[a]:
+				// its first pass is there: the final pass is owed at any age (an export that was down for days, or a
+				// reach set shorter than final_after_hours, must not leave windows at their first pass for good)
+				todo = append(todo, job{w, true})
 			}
 			continue
 		}
-		finalDue := !w.To.Add(s.c.FinalAfter).After(s.now)
 		switch {
 		case !st.done[a]:
 			todo = append(todo, job{w, finalDue})
@@ -750,6 +755,10 @@ func Gap(ctx context.Context, c Config, from, to time.Time) error {
 		}
 		if err := c.Dest.Put(ctx, manifestKey(c.Name, w, ""), body, true); err != nil {
 			return fmt.Errorf("the gap manifest of %s: %w", isoUTC(w.From), err)
+		}
+		// an accepted hole is final: no later pass fills it behind the operator's back (-from / -to does, by hand)
+		if err := c.Dest.Put(ctx, finalKey(c.Name, w), []byte(now+"\n"), false); err != nil {
+			return fmt.Errorf("the gap marker of %s: %w", isoUTC(w.From), err)
 		}
 		n++
 	}

@@ -49,13 +49,15 @@ manifests - they are its only memory - and exports every window that is due, old
   with what was stored since under a time inside it - a job run that ended later, a Query Store interval read an
   hour late, an hour row rebuilt. The manifest says `"pass": "final"`, and a marker
   `_manifests/_final/<name>__<from>__<to>` follows it. Replace a window's rows when a newer manifest for it arrives.
+  A window that has its first pass gets its final pass at any age: an export that was down for days catches up on
+  them when it next runs.
 - A row stored more than `final_after_hours` after its own time is in neither pass. Re-export those hours by hand:
   `pgvigil export -from 2026-01-31T14:00:00Z -to 2026-01-31T16:00:00Z`. Nothing here claims that no late row is
   ever missed.
 - A run reaches back `max_window_age_hours` (48). An hour between the export's first window and that reach with no
   manifest has **aged out**: every run names it with the `-from / -to` line that fills it and exits 1, and
   `-status` lists it. `pgvigil export -gap <from> <to>` accepts the hole: it writes a manifest with `"gap": true`
-  and no table for each such hour. A new export on an old repository starts `max_window_age_hours` back and names
+  and no table for each such hour, and its final marker (no later pass fills it; `-from / -to` does, by hand). A new export on an old repository starts `max_window_age_hours` back and names
   nothing before its first window.
 - One table cannot stop the export. A table whose read fails leaves its window without a manifest (exit 1) and is
   tried again by the next run; on the third failed run the window completes without it and the manifest's
