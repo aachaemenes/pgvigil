@@ -53,6 +53,11 @@ type fakeCW struct {
 	lag   map[string][]float64
 	err   error
 	asked []string
+	// pages: the first answer holds the first value of each series and a NextToken, the second the rest (part a's
+	// finding 7d); calls and window: what the reader asked
+	pages  bool
+	calls  int
+	window time.Duration
 }
 
 func (f *fakeCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error) {
@@ -61,7 +66,13 @@ func (f *fakeCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDataIn
 	if f.err != nil {
 		return nil, f.err
 	}
+	f.calls++
+	f.window = aws.ToTime(in.EndTime).Sub(aws.ToTime(in.StartTime))
+	second := in.NextToken != nil
 	out := &cloudwatch.GetMetricDataOutput{}
+	if f.pages && !second {
+		out.NextToken = aws.String("page2")
+	}
 	for _, q := range in.MetricDataQueries {
 		m := q.MetricStat.Metric
 		if aws.ToString(m.Namespace) != "AWS/RDS" || aws.ToString(m.MetricName) != "ReplicaLag" || aws.ToString(q.MetricStat.Stat) != "Maximum" ||
@@ -72,6 +83,9 @@ func (f *fakeCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDataIn
 		f.asked = append(f.asked, id)
 		r := cwtypes.MetricDataResult{Id: q.Id}
 		for i, v := range f.lag[id] {
+			if f.pages && (i == 0) == second {
+				continue // the first value on the first page, the rest on the second
+			}
 			r.Timestamps = append(r.Timestamps, in.EndTime.Add(-time.Duration(i+1)*time.Minute))
 			r.Values = append(r.Values, v)
 		}
