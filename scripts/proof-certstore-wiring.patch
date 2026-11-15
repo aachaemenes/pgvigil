@@ -1,0 +1,95 @@
+diff --git i/cmd/pgvigil/cert.go w/cmd/pgvigil/cert.go
+index 647c5fde..2ba8bd7d 100644
+--- i/cmd/pgvigil/cert.go
++++ w/cmd/pgvigil/cert.go
+@@ -22,6 +22,7 @@ import (
+ // runCert writes a self-signed certificate and key for `pgvigil serve -tls-cert -tls-key`:
+ //
+ //	pgvigil cert [-hosts name1,name2,10.0.0.5] [-out dir] [-days 730]
++//	pgvigil cert -grant-key-access <thumbprint> -account <DOMAIN\user> [-store LocalMachine\My]   (Windows, elevated; task B24n)
+ //
+ // ECDSA P-256, the hosts as subject alternative names (default: this machine's name, localhost,
+ // 127.0.0.1). A browser warns about a self-signed certificate; a certificate from the organisation's
+@@ -31,9 +32,15 @@ func runCert(args []string) error {
+ 	hosts := fs.String("hosts", "", "comma-separated DNS names and IP addresses the certificate is for (default: hostname, localhost, 127.0.0.1)")
+ 	out := fs.String("out", ".", "directory for pgvigil.crt and pgvigil.key")
+ 	days := fs.Int("days", 730, "validity in days")
++	grant := fs.String("grant-key-access", "", "Windows, elevated: give -account Read on the private key of the certificate of this thumbprint (task B24n)")
++	account := fs.String("account", "", "with -grant-key-access: the one account serve runs as")
++	store := fs.String("store", `LocalMachine\My`, "with -grant-key-access: the certificate store")
+ 	if err := fs.Parse(args); err != nil {
+ 		return err
+ 	}
++	if *grant != "" {
++		return grantKeyAccess(*store, *grant, *account, os.Stdout, os.Stderr)
++	}
+ 	if *days < 1 || *days > 3650 {
+ 		return errors.New("-days must be 1..3650")
+ 	}
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index ec97781a..095a8af5 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -29,6 +29,7 @@ import (
+ //
+ //	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_UI_DSN] [-open]
+ //	              [-tls-cert pgvigil.crt -tls-key pgvigil.key] [-no-login] [-session-hours 12]
++//	              Windows: [-tls-thumbprint <hex> | -tls-subject <dns name>] [-tls-store LocalMachine\My]   (task B24n)
+ //
+ // -dsn names the UI's repository login (pgvigil_reader + pgvigil_auth); without it the repository
+ // DSN of the config is used. The UI login (pgvigil.ui_users) is on unless -no-login, which a loopback
+@@ -41,6 +42,10 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	dsn := fs.String("dsn", "", "UI connection string (or env:NAME / file:path); default the config's repository dsn")
+ 	tlsCert := fs.String("tls-cert", "", "PEM certificate (with -tls-key): serve HTTPS")
+ 	tlsKey := fs.String("tls-key", "", "PEM private key (with -tls-cert)")
++	// task B24n: a certificate from the Windows store, its key used where it sits (certstore_windows.go)
++	tlsThumb := fs.String("tls-thumbprint", "", "Windows: serve HTTPS with the certificate of this thumbprint in -tls-store")
++	tlsSubject := fs.String("tls-subject", "", "Windows: serve HTTPS with the newest valid certificate for this DNS name in -tls-store (renewals followed hourly)")
++	tlsStore := fs.String("tls-store", `LocalMachine\My`, "Windows: the certificate store -tls-thumbprint and -tls-subject read")
+ 	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
+ 	open := fs.Bool("open", false, "open the UI in an app-mode browser window (Edge or Chrome, its own window) once it listens; the default browser when neither is found")
+ 	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
+@@ -81,17 +86,29 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	if useTLS && (*tlsCert == "" || *tlsKey == "") {
+ 		return errors.New("-tls-cert and -tls-key go together")
+ 	}
++	useStore := *tlsThumb != "" || *tlsSubject != ""
++	if useStore && (useTLS || (*tlsThumb != "" && *tlsSubject != "")) {
++		return errors.New("-tls-thumbprint, -tls-subject and -tls-cert / -tls-key name a certificate each: give one")
++	}
++	useTLS = useTLS || useStore
+ 	loopback := host == "127.0.0.1" || host == "localhost" || host == "::1"
+ 	if !loopback {
+ 		if !useTLS {
+-			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair)", *listen)
++			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair), or on Windows -tls-thumbprint or -tls-subject", *listen)
+ 		}
+ 		if *noLogin {
+ 			return errors.New("-no-login is allowed on a loopback listen (127.0.0.1, localhost, ::1) only")
+ 		}
+ 	}
+ 	var tlsCfg *tls.Config
+-	if useTLS {
++	switch {
++	case useStore:
++		get, err := storeServerTLS(ctx, log, *tlsStore, *tlsThumb, *tlsSubject)
++		if err != nil {
++			return fmt.Errorf("tls: %w", err)
++		}
++		tlsCfg = &tls.Config{GetCertificate: get, MinVersion: tls.VersionTLS12}
++	case useTLS:
+ 		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+ 		if err != nil {
+ 			return fmt.Errorf("tls: %w", err)
+diff --git i/docs/install.html w/docs/install.html
+index 753a3146..004779ee 100644
+--- i/docs/install.html
++++ w/docs/install.html
+@@ -66,6 +66,7 @@ pgvigil roles                       # prints the CREATE ROLE statements to run
+ pgvigil user add admin -config pgvigil.yaml
+ pgvigil run -config pgvigil.yaml
+ pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -tls-key pgvigil.key</code></pre>
++  <p>On Windows, serve can take its certificate from the machine's certificate store instead, with the key left where it is (it is never read or exported): <code>-tls-thumbprint &lt;thumbprint&gt;</code> for one certificate, or <code>-tls-subject &lt;dns name&gt;</code> for the newest valid one that names the host in its Subject Alternative Name (a renewal is picked up within the hour, no restart), from <code>-tls-store</code> (default <code>LocalMachine\My</code>). A missing, expired or ambiguous certificate, or a key the account cannot open, stops serve with one line that says which. To let the account serve runs as read the key: <code>pgvigil cert -grant-key-access &lt;thumbprint&gt; -account DOMAIN\user</code> from an elevated prompt (Read only, to that one account; it prints the key's old access list first), or certlm.msc &gt; the certificate &gt; All Tasks &gt; Manage Private Keys.</p>
+   <p>Adding servers, the SQL Server login, the cloud settings and every option are in the <a href="https://github.com/aachaemenes/pgvigil#readme">documentation</a>. For a site with no internet access, follow the <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">offline install</a>. To move an installed pgvigil to a new release, follow the <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/upgrade.md">upgrade</a> in its order.</p>
+ </div></section>
+ 
