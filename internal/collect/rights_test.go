@@ -60,6 +60,10 @@ func TestRightsCatalogueNamesEveryCheck(t *testing.T) {
 	}
 }
 
+// unquoted is a statement with its string literals taken out: a privilege's name ('CREATE', 'EXECUTE') is a value the
+// server is asked about, not a statement.
+func unquoted(q string) string { return regexp.MustCompile(`'[^']*'`).ReplaceAllString(q, "''") }
+
 // TestRightsCatalogueShape: keys unique and usable as column names; each right has its words, a check that reads only
 // and a statement that names the login only through its placeholder.
 func TestRightsCatalogueShape(t *testing.T) {
@@ -80,12 +84,12 @@ func TestRightsCatalogueShape(t *testing.T) {
 		if m := regexp.MustCompile(`(?i)\b(SUPERUSER|BYPASSRLS|CREATEROLE|pg_read_server_files|pg_write_server_files|pg_execute_server_program)\b`).FindString(r.Grant); m != "" && r.Key != "server_log_read" {
 			t.Errorf("%s: its statement holds %q", r.Key, m)
 		}
-		if m := write.FindString(r.Check); m != "" {
+		if m := write.FindString(unquoted(r.Check)); m != "" {
 			t.Errorf("%s: its check holds a write-shaped word %q", r.Key, m)
 		}
 	}
 	for _, q := range []string{rightsIdentitySQL, rightsNoConnectSQL, rightsSQL(Rights)} {
-		if m := write.FindString(q); m != "" {
+		if m := write.FindString(unquoted(q)); m != "" {
 			t.Errorf("a statement of the read holds %q", m)
 		}
 	}

@@ -60,10 +60,15 @@ func TestRightsCatalogueNamesEveryCheck(t *testing.T) {
 	}
 }
 
-// TestRightsCatalogueShape: keys unique and usable as column names; each right has its words, a check and a statement
-// that names the login only through the placeholders (no name typed into a statement).
+// unquoted is a statement with its string literals taken out: a permission's name ('ALTER TRACE', 'EXECUTE') is a
+// value the server is asked about, not a statement (run st12e: the scan took 'ALTER TRACE' for an ALTER).
+func unquoted(q string) string { return regexp.MustCompile(`'[^']*'`).ReplaceAllString(q, "''") }
+
+// TestRightsCatalogueShape: keys unique and usable as column names; each right has its words, a check that reads only
+// (judged outside its string literals) and a statement that names the login only through the placeholders.
 func TestRightsCatalogueShape(t *testing.T) {
 	key := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	write := regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|DENY|REVOKE|EXEC|EXECUTE)\b`)
 	seen := map[string]bool{}
 	for _, r := range Rights {
 		if !key.MatchString(r.Key) || seen[r.Key] {
@@ -79,12 +84,12 @@ func TestRightsCatalogueShape(t *testing.T) {
 		if m := regexp.MustCompile(`(?i)\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|SHUTDOWN|sysadmin|CONTROL SERVER|securityadmin|db_owner)\b`).FindString(r.Grant); m != "" {
 			t.Errorf("%s: its statement holds %q", r.Key, m)
 		}
-		if m := regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|DENY|REVOKE|EXEC)\b`).FindString(r.Check); m != "" {
+		if m := write.FindString(unquoted(r.Check)); m != "" {
 			t.Errorf("%s: its check holds a write-shaped word %q", r.Key, m)
 		}
 	}
 	for _, q := range []string{rightsIdentitySQL, rightsNoAccessSQL, rightsSQL(Rights)} {
-		if m := regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|DENY|REVOKE|EXEC)\b`).FindString(q); m != "" {
+		if m := write.FindString(unquoted(q)); m != "" {
 			t.Errorf("a statement of the read holds %q", m)
 		}
 	}
