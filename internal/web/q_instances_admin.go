@@ -409,12 +409,13 @@ type pageRow struct {
 	Port                              *int
 	DBName, Login, Options            *string
 	Tags                              []string
+	RunningPlans                      bool // the running plans box (task 406): the Test's list reads it as the scheduler does
 }
 
 func (s *Server) pageInstance(ctx context.Context, name string) (*pageRow, error) {
 	var p pageRow
-	err := s.pool.QueryRow(ctx, `SELECT engine, platform, dsn_ref, auth, host, port, dbname, login, options, tags FROM pgvigil.admin_instances WHERE name = $1`, name).
-		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags)
+	err := s.pool.QueryRow(ctx, `SELECT engine, platform, dsn_ref, auth, host, port, dbname, login, options, tags, running_plans FROM pgvigil.admin_instances WHERE name = $1`, name).
+		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags, &p.RunningPlans)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -601,7 +602,15 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 			return
 		}
 	}
-	t := testConnectionList(ctx, engine, dsn, name)
+	// review 11: the list as the scheduler would build this instance - serve's loaded configuration (its global
+	// schedules:) and, for a stored page instance, the row as the inventory makes it (Merge: its PageDefaults)
+	tin := config.Instance{Name: name, Engine: engine}
+	if stored {
+		if all, _ := config.Merge(nil, []config.PageInstance{{Name: name, Engine: have.Engine, Platform: have.Platform, DSNRef: have.Ref, RunningPlans: have.RunningPlans}}, ""); len(all) == 1 {
+			tin = all[0]
+		}
+	}
+	t := testConnectionList(ctx, engine, dsn, nil, tin, s.schedConfig())
 	okc, detail := t.ok, t.detail
 	out := map[string]any{"ok": okc, "detail": detail}
 	if okc {
@@ -618,8 +627,16 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 
 // testConnection opens one connection (10 s) and reads who answered.
 func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
-	t := testConnectionList(ctx, engine, dsn, "")
+	t := testConnectionList(ctx, engine, dsn, nil, config.Instance{Engine: engine}, nil)
 	return t.ok, t.detail
+}
+
+// schedConfig is serve's loaded configuration (WatchDoors keeps it); nil = the defaults (demo, mcp, a test)
+func (s *Server) schedConfig() *config.Config {
+	if v, ok := schedCfg.Load(s.self()); ok {
+		return v.(*config.Config)
+	}
+	return nil
 }
 
 // testResult is a connection test's answer and, N59, the collections that will not run on that server and why
@@ -631,17 +648,23 @@ type testResult struct {
 	listNote    string // why the list is missing or partial ("" = read)
 }
 
-// testConnectionList opens one connection (10 s in all), reads who answered, then on the same connection the engine's
-// detect and the collections that will not run there (the scheduler's rule with the defaults: a page instance has no
-// disabled: list or schedules; each engine's Applies on what the detect read). A detect cut off by the 10 s says so.
-func testConnectionList(ctx context.Context, engine, dsn, name string) testResult {
+// testConnectionList opens one connection (10 s in all, the secret's read inside it), reads who answered, then on the
+// same connection the engine's detect and the collections that will not run there - engines.NotRunning on cfg and in
+// as the scheduler builds them (review 11: the file's schedules: and disabled:, the aws: block's gates, a page
+// instance's PageDefaults; cfg nil = the defaults) and each engine's Applies on what the detect read. sec is the read
+// login's password_secret (B24e; nil = none), set on the parsed string. A detect cut off by the 10 s says so.
+func testConnectionList(ctx context.Context, engine, dsn string, sec *secrets.Ref, in config.Instance, cfg *config.Config) testResult {
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	in := config.Instance{Name: name, Engine: engine}
+	in.Engine = engine
 	switch engine {
 	case config.EngineSQLServer:
-		db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-admin-test"))
+		db, err := mssql.OpenRead(cctx, mssqlApp(dsn, "pgvigil-admin-test"), sec)
 		if err != nil {
+			var se *secrets.ReadError
+			if errors.As(err, &se) {
+				return testResult{detail: err.Error()}
+			}
 			return testResult{detail: "the connection string: " + err.Error()}
 		}
 		defer func() { _ = db.Close() }()
@@ -659,13 +682,20 @@ func testConnectionList(ctx context.Context, engine, dsn, name string) testResul
 		info, err := mssql.Detect(cctx, conn, "")
 		if err != nil {
 			t.listNote = listNoteFor(cctx, err)
-			t.notRun, t.collections = engines.NotRunning(nil, in, nil, nil)
+			t.notRun, t.collections = engines.NotRunning(cfg, in, nil, nil)
 			return t
 		}
-		t.notRun, t.collections = engines.NotRunning(nil, in, nil, &info)
+		t.notRun, t.collections = engines.NotRunning(cfg, in, nil, &info)
 		return t
 	case config.EnginePostgres:
-		conn, err := pgx.Connect(cctx, dsn)
+		pcfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			return testResult{detail: err.Error()}
+		}
+		if err := secrets.FillPG(cctx, pcfg, dsn, sec); err != nil {
+			return testResult{detail: err.Error()}
+		}
+		conn, err := pgx.ConnectConfig(cctx, pcfg)
 		if err != nil {
 			return testResult{detail: err.Error()}
 		}
@@ -678,10 +708,10 @@ func testConnectionList(ctx context.Context, engine, dsn, name string) testResul
 		info, err := platform.Detect(cctx, conn, "")
 		if err != nil {
 			t.listNote = listNoteFor(cctx, err)
-			t.notRun, t.collections = engines.NotRunning(nil, in, nil, nil)
+			t.notRun, t.collections = engines.NotRunning(cfg, in, nil, nil)
 			return t
 		}
-		t.notRun, t.collections = engines.NotRunning(nil, in, &info, nil)
+		t.notRun, t.collections = engines.NotRunning(cfg, in, &info, nil)
 		return t
 	}
 	return testResult{detail: "unknown engine " + engine}
@@ -1630,16 +1660,16 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	s.answer(w, ans, raw, nil)
 }
 
-// testConfigured tests a configuration-file instance by name with its own door (Q8, N59), and adds the collections
-// its configuration switches off (the scheduler's own intervals, Expected.Instances: 0 = off); ok false = no such
-// configured instance on this server
+// testConfigured tests a configuration-file instance by name with its own door (Q8, N59): its read login and its
+// password_secret, resolved here and never sent to the page, and the list on serve's loaded configuration and the
+// instance as the file has it (review 11); ok false = no such configured instance on this server
 func (s *Server) testConfigured(ctx context.Context, name string) (testResult, bool) {
 	ds := s.doorsNow()
 	if ds == nil {
 		return testResult{}, false
 	}
 	engine, dsn := "", ""
-	var sec *config.PasswordSecret
+	var sec *secrets.Ref
 	if d, ok := ds.MS[name]; ok && !d.Page {
 		engine, dsn, sec = config.EngineSQLServer, d.Monitor, d.Secret
 	} else if d, ok := ds.PG[name]; ok && !d.Page {
@@ -1650,68 +1680,14 @@ func (s *Server) testConfigured(ctx context.Context, name string) (testResult, b
 	if dsn == "" {
 		return testResult{detail: "instance " + name + ": its read login's dsn resolved to an empty string on this server"}, true
 	}
-	var t testResult
-	switch {
-	case sec != nil && engine == config.EnginePostgres:
-		full, err := secrets.PGWithSecret(ctx, dsn, sec.Ref, sec.Region, sec.Profile)
-		if err != nil {
-			return testResult{detail: err.Error()}, true
-		}
-		t = testConnectionList(ctx, engine, full, name)
-	case sec != nil:
-		t = testMSWithSecret(ctx, dsn, name, sec)
-	default:
-		t = testConnectionList(ctx, engine, dsn, name)
-	}
-	if t.ok {
-		listed := map[string]bool{}
-		for _, n := range t.notRun {
-			listed[n.Name] = true
-		}
-		for _, sp := range engines.Specs(engine) {
-			if iv, ok := s.expected.Instances[name][sp.Name]; ok && iv == 0 && !listed[sp.Name] {
-				t.notRun = append(t.notRun, engines.NotRun{Name: sp.Name, Why: "switched off in pgvigil.yaml (disabled: or schedules:)"})
+	cfg := s.schedConfig()
+	in := config.Instance{Name: name}
+	if cfg != nil {
+		for _, c := range cfg.Instances {
+			if c.Name == name {
+				in = c
 			}
 		}
 	}
-	return t, true
-}
-
-// testMSWithSecret is testConnectionList for a SQL Server login whose password is in AWS Secrets Manager
-func testMSWithSecret(ctx context.Context, dsn, name string, sec *config.PasswordSecret) testResult {
-	ref, err := secrets.ParseRef(sec.Ref, sec.Region, sec.Profile)
-	if err != nil {
-		return testResult{detail: err.Error()}
-	}
-	v, err := secrets.Default.Get(ctx, ref)
-	if err != nil {
-		return testResult{detail: err.Error()}
-	}
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	db, err := mssqlopen.OpenDialerCredentials(mssqlApp(dsn, "pgvigil-admin-test"), v.User, v.Password, nil)
-	if err != nil {
-		return testResult{detail: "the connection string: " + err.Error()}
-	}
-	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(1)
-	conn, err := db.Conn(cctx)
-	if err != nil {
-		return testResult{detail: err.Error()}
-	}
-	defer func() { _ = conn.Close() }()
-	var srv, ver, login string
-	if err := conn.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
-		return testResult{detail: err.Error()}
-	}
-	t := testResult{ok: true, detail: fmt.Sprintf("connected: %s, SQL Server %s, as %s", srv, ver, login)}
-	in := config.Instance{Name: name, Engine: config.EngineSQLServer}
-	info, err := mssql.Detect(cctx, conn, "")
-	if err != nil {
-		t.listNote = listNoteFor(cctx, err)
-		t.notRun, t.collections = engines.NotRunning(nil, in, nil, nil)
-		return t
-	}
-	t.notRun, t.collections = engines.NotRunning(nil, in, nil, &info)
-	return t
+	return testConnectionList(ctx, engine, dsn, sec, in, cfg), true
 }

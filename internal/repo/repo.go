@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 //go:embed sql/*.sql
@@ -383,15 +384,31 @@ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection str
 // with no row (one of pgvigil.yaml never reached) gets it with the configuration's engine, platform and tags, so it is
 // recorded from its first read as a page instance is (0122 makes that row at the add); an inactive one is left alone
 // (pgvigil.import_connect_failure; the join's w9e, finding 7).
-// LogSecretFailure records a run whose login's password could not be read from AWS Secrets Manager (task B24e): the
-// collection's error with the refusal's words on the instance (made first when it has no row yet), never a connect
-// failure - the server was not asked, so 'server unreachable' must not count it.
+func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_connect_failure($1, $2, $3, $4, $5, $6, $7, $8)`, name, collection, at, int(d.Milliseconds()), cause.Error(),
+		engine, platform, tags)
+	return err
+}
+
+// LogSecretFailure records a run whose login's password could not be read from AWS Secrets Manager, or whose secret
+// the connect's rule refused (task B24e): the collection's error on the instance (made first when it has no row
+// yet), never a connect failure - the server was not asked, so 'server unreachable' must not count it. The note is
+// 'secret: ' and the *secrets.ReadError's own words (review 5: never the connect's 'connect <name>:' wrapping, which
+// 0192's view would cut wrongly).
 func (r *Repo) LogSecretFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
 	if tags == nil {
 		tags = []string{}
 	}
 	if platform == "" {
 		platform = "auto"
+	}
+	note := cause.Error()
+	var se *secrets.ReadError
+	if errors.As(cause, &se) {
+		note = se.Error()
 	}
 	var id int
 	err := r.pool.QueryRow(ctx, `SELECT instance_id FROM pgvigil.instances WHERE name = $1`, name).Scan(&id)
@@ -400,16 +417,7 @@ func (r *Repo) LogSecretFailure(ctx context.Context, name, engine, platform stri
 			return err
 		}
 	}
-	return r.LogCollection(ctx, id, collection, at, d, "error", "secret: "+cause.Error())
-}
-
-func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
-	if tags == nil {
-		tags = []string{}
-	}
-	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_connect_failure($1, $2, $3, $4, $5, $6, $7, $8)`, name, collection, at, int(d.Milliseconds()), cause.Error(),
-		engine, platform, tags)
-	return err
+	return r.LogCollection(ctx, id, collection, at, d, "error", "secret: "+note)
 }
 
 func nullIfEmpty(s string) any {

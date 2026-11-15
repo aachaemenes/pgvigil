@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Options bound one run.
@@ -87,13 +89,17 @@ type Report struct {
 // note is the line every report carries.
 const note = "hypothetical indexes in the planner only (HypoPG); statements planned with EXPLAIN, not executed (functions the planner folds while planning do run, in a read-only session); no index was created"
 
-// Run connects to database (empty = the DSN's own) with dsn and runs the advisor.
-func Run(ctx context.Context, dsn, database string, o Options) (Report, error) {
+// Run connects to database (empty = the DSN's own) with dsn and runs the advisor; sec is the login's password_secret
+// (task B24e; nil = none), set on the parsed config.
+func Run(ctx context.Context, dsn string, sec *secrets.Ref, database string, o Options) (Report, error) {
 	o = o.withDefaults()
 	rep := Report{At: time.Now().UTC(), Suggestions: []Suggestion{}, Unoptimised: []json.RawMessage{}, Note: note}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return rep, errors.New("the monitoring dsn does not parse")
+	}
+	if err := secrets.FillPG(ctx, cfg, dsn, sec); err != nil {
+		return rep, err
 	}
 	if database != "" {
 		cfg.Database = database

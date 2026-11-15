@@ -231,6 +231,17 @@ func (d *deadlineDialer) note(err error) {
 	}
 }
 
+// again readies the dialer for a second connect (the secret's retry, B24e review 1): its own deadline when it keeps
+// one (the dsn sets no 'connection timeout'), the first connect's conns, network note and holds dropped
+func (d *deadlineDialer) again() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conns, d.netErr, d.heldSum = nil, nil, 0
+	if !d.until.IsZero() {
+		d.until = time.Now().Add(collect.DefaultConnectTimeout)
+	}
+}
+
 func (d *deadlineDialer) done() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -353,7 +364,7 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	// through mssqlopen as every SQL Server reader (CLOUDSQL C1: fedauth, Kerberos off Windows), with the dialer on
 	// the connector it chooses (the join of 201 DONE-2)
 	// a password from AWS Secrets Manager (B24e) is read before anything opens: its failure is not the server's
-	sec, err := readSecret(ctx, in, dsn)
+	sec, err := readSecret(ctx, in)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect %s: %w", in.Name, err)
 	}
@@ -368,19 +379,29 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	db.SetMaxOpenConns(1)
 	t0 := time.Now()
 	conn, err := db.Conn(ctx)
-	if db2, conn2, retried := sec.retry(ctx, err, withAppName(dsn), dl); retried {
+	// a refused login with a secret (18456): one Refresh, and another version's own connect (review 1: its own error,
+	// its own login and deadline; the first db closed, the second one nil when it failed - never a nil db closed)
+	if db2, conn2, retried, rerr := sec.retry(ctx, err, dsn, withAppName(dsn), dl, &t0); retried {
 		_ = db.Close()
-		db, conn, err = db2, conn2, nil
-		if conn2 == nil {
-			err = errors.New("the login was refused again with the secret's new version")
+		db, conn, err = db2, conn2, rerr
+	}
+	var se *secrets.ReadError
+	if errors.As(err, &se) {
+		// the retry's secret side (another version's login refused by the rule): not the server's failure
+		if db != nil {
+			_ = db.Close()
 		}
+		return nil, nil, fmt.Errorf("connect %s: %w", in.Name, err)
 	}
 	took := connectTook(time.Since(t0), dl.heldTotal()) // the slow-connect tier: the connect, its token fetch left out
 	err = collect.InstanceConnectTimed(in.Name, dl.withNetwork(ctx, err), took)
 	if err != nil {
-		_ = db.Close()
+		if db != nil {
+			_ = db.Close()
+		}
 		return nil, nil, fmt.Errorf("connect %s: %w", in.Name, err)
 	}
+	sec.accepted(ctx)
 	if _, err := conn.ExecContext(ctx, sessionSetup); err != nil {
 		_ = conn.Close()
 		_ = db.Close()
@@ -635,33 +656,80 @@ func partialNote(status, note string) string {
 type instanceSecret struct {
 	ref  *secrets.Ref
 	val  secrets.Value
-	user string
+	user string // the SQL login, by secrets.Login's rule on the dsn as written (msLogin)
 }
 
-// readSecret reads the instance's secret (none: the zero value); the dsn's own login, when it names one, must be the
-// secret's username
-func readSecret(ctx context.Context, in config.Instance, dsn string) (instanceSecret, error) {
-	ps := in.PasswordSecret
-	if ps == nil {
+// secretSource is the reader of the process (a test stands its own in)
+type secretSource interface {
+	Get(ctx context.Context, ref secrets.Ref) (secrets.Value, error)
+	Refresh(ctx context.Context, ref secrets.Ref, failed string) (secrets.Value, bool, error)
+	Accepted(ctx context.Context, ref secrets.Ref, version string)
+}
+
+var secretReader secretSource = secrets.Default
+
+// readSecret reads the instance's secret (none: the zero value) and its login
+func readSecret(ctx context.Context, in config.Instance) (instanceSecret, error) {
+	ref := in.SecretRef()
+	if ref == nil {
 		return instanceSecret{}, nil
 	}
-	ref, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile)
+	v, err := secretReader.Get(ctx, *ref)
 	if err != nil {
 		return instanceSecret{}, err
 	}
-	v, err := secrets.Default.Get(ctx, ref)
-	if err != nil {
+	s := instanceSecret{ref: ref}
+	if err := s.use(in.DSN(), v); err != nil {
 		return instanceSecret{}, err
-	}
-	s := instanceSecret{ref: &ref, val: v}
-	p, perr := msdsn.Parse(dsn)
-	switch {
-	case perr == nil && p.User != "" && v.User != "" && !strings.EqualFold(p.User, v.User):
-		return instanceSecret{}, fmt.Errorf("the dsn's login %q is not the secret's username %q", p.User, v.User)
-	case perr == nil && p.User == "":
-		s.user = v.User
 	}
 	return s, nil
+}
+
+// use takes v for the next open, with its login (a rotation may change the username: review 1)
+func (s *instanceSecret) use(dsn string, v secrets.Value) error {
+	user, err := msLogin(dsn, v)
+	if err != nil {
+		return secrets.Named(err, *s.ref)
+	}
+	s.val, s.user = v, user
+	return nil
+}
+
+// msLogin is the SQL login of a connect with the secret, one rule for the collector, the actions door and the
+// Connection Test (review 7): secrets.Login on the dsn's own login (SQL Server's names compare without case), and
+// never a DOMAIN\user login (go-mssqldb signs that in through Windows, and an empty one as the service account). A
+// string that does not parse is left to the open, which refuses it in its own words.
+func msLogin(dsn string, v secrets.Value) (string, error) {
+	dsnUser := ""
+	if p, err := msdsn.Parse(dsn); err == nil {
+		dsnUser = p.User
+	}
+	user, err := secrets.Login(dsnUser, v, true)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(user, `\`) {
+		return "", &secrets.ReadError{Code: "WindowsLogin", Message: "a DOMAIN\\user login signs in through Windows: a password from AWS Secrets Manager is a SQL login's", Refused: true}
+	}
+	return user, nil
+}
+
+// OpenRead opens a read login's string for a one-off connect (the actions door's check, the Connection Test): with
+// sec, the secret's login (msLogin's rule) and password set on the parsed string (task B24e), never in a string;
+// nil = mssqlopen.Open's.
+func OpenRead(ctx context.Context, dsn string, sec *secrets.Ref) (*sql.DB, error) {
+	if sec == nil {
+		return mssqlopen.Open(dsn)
+	}
+	v, err := secretReader.Get(ctx, *sec)
+	if err != nil {
+		return nil, err
+	}
+	user, err := msLogin(dsn, v)
+	if err != nil {
+		return nil, secrets.Named(err, *sec)
+	}
+	return mssqlopen.OpenDialerCredentials(dsn, user, v.Password, nil)
 }
 
 // open opens the string as mssqlopen would, with the secret's login and password set on its parsed config
@@ -672,26 +740,40 @@ func (s instanceSecret) open(dsn string, dl *deadlineDialer) (*sql.DB, error) {
 	return mssqlopen.OpenDialerCredentials(dsn, s.user, s.val.Password, dl)
 }
 
-// retry: after a refused login (18456) with a secret, one Refresh; a new version opens and connects once more
-func (s instanceSecret) retry(ctx context.Context, err error, dsn string, dl *deadlineDialer) (*sql.DB, *sql.Conn, bool) {
+// accepted tells the reader the version signed in (a held version is released)
+func (s instanceSecret) accepted(ctx context.Context) {
+	if s.ref != nil {
+		secretReader.Accepted(ctx, *s.ref, s.val.Version)
+	}
+}
+
+// retry: after a refused login (18456) with a secret, one Refresh; another version opens and connects once more with
+// its own login and, when the dsn sets no timeout, its own 10 s (t0 restarted: the retry's time is its own dial's).
+// retried false = the first connect's answer stands; true = the second connect's db and conn, or its own error with
+// db nil.
+func (s *instanceSecret) retry(ctx context.Context, err error, dsn, appDSN string, dl *deadlineDialer, t0 *time.Time) (*sql.DB, *sql.Conn, bool, error) {
 	var me mssqldb.Error
 	if s.ref == nil || err == nil || !errors.As(err, &me) || me.Number != 18456 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
-	nv, retry, rerr := secrets.Default.Refresh(ctx, *s.ref, s.val.Version)
+	nv, retry, rerr := secretReader.Refresh(ctx, *s.ref, s.val.Version)
 	if rerr != nil || !retry {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
-	s.val = nv
-	db, oerr := s.open(dsn, dl)
+	if uerr := s.use(dsn, nv); uerr != nil {
+		return nil, nil, true, uerr
+	}
+	dl.again()
+	db, oerr := s.open(appDSN, dl)
 	if oerr != nil {
-		return nil, nil, false
+		return nil, nil, true, oerr
 	}
 	db.SetMaxOpenConns(1)
+	*t0 = time.Now()
 	conn, cerr := db.Conn(ctx)
 	if cerr != nil {
 		_ = db.Close()
-		return nil, nil, true
+		return nil, nil, true, cerr
 	}
-	return db, conn, true
+	return db, conn, true, nil
 }

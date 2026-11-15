@@ -364,7 +364,7 @@ func TestPageOffWordsOnBothEngines(t *testing.T) {
 // the actions' superuser read never hands pgx an empty string (it would sign in from serve's own environment)
 func TestSuperusersRefuseAnEmptyDSN(t *testing.T) {
 	a := &Actions{suCache: map[string]suEntry{}}
-	if su, err := a.superusers(context.Background(), "x", " "); err == nil || su != nil || !strings.Contains(err.Error(), "empty string") {
+	if su, err := a.superusers(context.Background(), "x", " ", nil); err == nil || su != nil || !strings.Contains(err.Error(), "empty string") {
 		t.Errorf("an empty dsn: %v %v", su, err)
 	}
 }

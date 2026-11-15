@@ -384,12 +384,17 @@ const doorWait = 5 * time.Second
 // doorWake: serve's watcher's wake channel per server (InstancesAdminWrite signals it after a write)
 var doorWake sync.Map // *Server -> chan struct{}
 
+// schedCfg: serve's loaded configuration per server (WatchDoors keeps it): the Connection Test's list of what will
+// not run reads it as the scheduler does (B24e review 11)
+var schedCfg sync.Map // *Server -> *config.Config
+
 // WatchDoors runs serve's watcher: pgvigil.yaml's set at once, then a new set on each generation of Admin >
 // Instances (at once after this serve's own write, within every of another serve's), each stored whole. Serve
 // alone calls it (demo and mcp keep pgvigil.yaml's doors).
 func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.Config, every time.Duration) {
 	wake := make(chan struct{}, 1)
 	doorWake.Store(s.self(), wake)
+	schedCfg.Store(s.self(), cfg) // the Connection Test's list reads the loaded configuration (B24e review 11)
 	c := pageDoorsConfig{file: cfg.Instances, queryText: cfg.QueryText, reads: cfg.Doors.PageInstanceReads}
 	file := s.fileDoors()
 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread

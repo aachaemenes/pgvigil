@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // ExplainTimeout bounds the planning of an on-demand EXPLAIN.
@@ -23,14 +25,18 @@ const GenericNote = "the generic plan (PREPARE + plan_cache_mode = force_generic
 
 // Connect opens a short-lived connection for a plan: dsn with its database replaced by datname when given, a read-only
 // default, a statement timeout and a short lock timeout, the application name app. An empty dsn is refused: pgx would
-// fill it from serve's own environment and sign in as serve (as openMS refuses one for SQL Server).
-func Connect(ctx context.Context, dsn, datname, app string, timeout time.Duration) (*pgx.Conn, error) {
+// fill it from serve's own environment and sign in as serve (as openMS refuses one for SQL Server). sec is the login's
+// password_secret (task B24e; nil = none): its login and password set on the parsed config, never in a string.
+func Connect(ctx context.Context, dsn string, sec *secrets.Ref, datname, app string, timeout time.Duration) (*pgx.Conn, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("no login for this instance on this server: its dsn is empty")
 	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("the dsn does not parse")
+	}
+	if err := secrets.FillPG(ctx, cfg, dsn, sec); err != nil {
+		return nil, err
 	}
 	if datname != "" {
 		cfg.Database = datname
@@ -76,7 +82,7 @@ const SuperMemberCol = `EXISTS (SELECT 1 FROM pg_roles s WHERE s.rolsuper AND s.
 // check, when set, is asked inside the read-only transaction before anything is planned (serve passes its pgRefusal:
 // a login whose session user reaches past a read - a superuser, the server-file roles, pgvigil_auth, pgvigil_collector,
 // CREATE on a pgvigil schema - is refused; the planner folds STABLE functions, so a planned statement can call them).
-func Explain(ctx context.Context, dsn, datname, query string, check func(context.Context, pgx.Tx) (string, error)) (Row, error) {
+func Explain(ctx context.Context, dsn string, sec *secrets.Ref, datname, query string, check func(context.Context, pgx.Tx) (string, error)) (Row, error) {
 	query = strings.TrimSpace(query)
 	query = strings.TrimSpace(strings.TrimSuffix(query, ";"))
 	if len(query) > MaxStatement {
@@ -88,7 +94,7 @@ func Explain(ctx context.Context, dsn, datname, query string, check func(context
 	}
 	ctx, cancel := context.WithTimeout(ctx, ExplainTimeout+10*time.Second)
 	defer cancel()
-	conn, err := Connect(ctx, dsn, datname, "pgvigil-explain", ExplainTimeout)
+	conn, err := Connect(ctx, dsn, sec, datname, "pgvigil-explain", ExplainTimeout)
 	if err != nil {
 		return Row{}, fmt.Errorf("the monitoring login could not connect to %s: %w", orDefault(datname), err)
 	}

@@ -42,6 +42,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/sched"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -61,6 +62,7 @@ func run(args []string) int {
 		return code
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	secrets.Default.SetLog(log) // a password secret's read and a stale value served are logged (B24e review 10)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -300,6 +302,7 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	for _, w := range collect.CustomWarnings() {
 		log.Warn(w)
 	}
+	logSecretEndpoints(ctx, log, cfg)
 	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
 	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
 	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
@@ -350,4 +353,22 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 	}()
 	return sched.Run(ctx, log, r, cfg)
+}
+
+// logSecretEndpoints prints, at start, the endpoint each password_secret is read from as the SDK's chain resolved it
+// (a configured AWS_ENDPOINT_URL_SECRETS_MANAGER, a profile's use_fips_endpoint, the China partition): the host a
+// locked-down site opens (task B24e, the design's fold item 7; review 16)
+func logSecretEndpoints(ctx context.Context, log *slog.Logger, cfg *config.Config) {
+	for _, in := range cfg.Instances {
+		ref := in.SecretRef()
+		if ref == nil {
+			continue
+		}
+		ep, err := secrets.Default.Endpoint(ctx, *ref)
+		if err != nil {
+			log.Warn("password_secret: the endpoint could not be resolved", "instance", in.Name, "secret", ref.ID, "err", err)
+			continue
+		}
+		log.Info("password_secret", "instance", in.Name, "secret", ref.ID, "region", ref.Region, "endpoint", ep)
+	}
 }
