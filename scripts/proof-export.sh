@@ -1578,6 +1578,10 @@ if d.get('dbspace_i'): PAGES.append(('dbspace_i', 'DB-Space', re.sub(r'[^A-Za-z0
 else: print("not checked: dbspace_i: the demo has no SQL Server instance (its DB Space grid)")
 if d.get('dbspace_p'): PAGES.append(('dbspace_p', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_p']['instance'])))
 else: print("not checked: dbspace_p: the demo has no PostgreSQL instance (its DB Space grid)")
+def api_rows(part):   # a table part of the web API ({columns, rows}, web.go) as one dict per row
+    if isinstance(part, dict) and isinstance(part.get('columns'), list):
+        return [dict(zip(part['columns'], r)) for r in part.get('rows') or []]
+    return part if isinstance(part, list) else []
 for _k in ('dbspace_imb', 'dbspace_ptb'):   # (pickers) the DB Space pages exported in the unit and decimals picked
     if d.get(_k): PAGES.append((_k, 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d[_k]['instance'])))
 if openpyxl is None:
@@ -1852,7 +1856,7 @@ for key, tab, inst in PAGES:
         dpk_want = [f'allocated ({dpk_u})', f'used ({dpk_u})'] + ([f'data ({dpk_u})', f'log ({dpk_u})'] if key == 'dbspace_imb' else [])
         check(dpk_g['head'][1:1 + len(dpk_want)] == dpk_want and dpk_hdr[1:1 + len(dpk_want)] == dpk_want,
               f"{key}: the size headings carry the unit picked, {dpk_want}: page {dpk_g['head'][1:1 + len(dpk_want)]}, workbook {dpk_hdr[1:1 + len(dpk_want)]}")
-        dpk_db = {str(r.get('database')): r for r in ((d.get(dpk_api) or {}).get('databases') or [])}
+        dpk_db = {str(r.get('database')): r for r in api_rows((d.get(dpk_api) or {}).get('databases'))}
         dpk_seen, dpk_bad = 0, []
         for i, row in enumerate(dpk_g.get('cells') or []):
             nm = row[0]['t'] if row else ''
@@ -2094,7 +2098,7 @@ else:
         check(a_.get('unit') == 'MB' and a_.get('dp') == '2' and {'dbs-unit', 'dbs-dp'} <= set(a_.get('labels') or []), f"pickers: MB and 2 picked, each select with its label ({a_.get('unit')}, {a_.get('dp')}, labels {a_.get('labels')})")
         check(a_.get('focus') == 'dbs-unit', f"pickers: the focus stays on the Unit select after the grid is drawn again (on {a_.get('focus')!r})")
         # the API's own order is allocated, largest first: the click must have changed the first row, or a lost sort passes
-        api_ = [str(r.get('database')) for r in ((d.get('dbs_api_i') or {}).get('databases') or [])]
+        api_ = [str(r.get('database')) for r in api_rows((d.get('dbs_api_i') or {}).get('databases'))]
         check(bool(s_.get('first')) and a_.get('first') == s_.get('first') and any(h.startswith('allocated (MB)') for h in a_.get('head') or [])
               and (len(set(api_)) < 2 or s_.get('first') != api_[0]),
               f"pickers: the sort survives the unit - first row {s_.get('first')!r} before, {a_.get('first')!r} after (sorted by allocated, smallest first; the API's first {api_[:1]})")
@@ -2105,7 +2109,7 @@ else:
         check(bool(z_.get('note')), f"pickers: TB / 0 on the PostgreSQL page, its figures 0 while its bytes are not: one line under the grid says so ({(z_.get('note') or ['no such line'])[0][:120]})")
         bk = d.get('dbs_back') or {}
         check(bk.get('unit') == 'GB' and bk.get('dp') == '1' and bk.get('keys') == [], f"pickers: GB / 1 picked back removes the size keys (the default kept as no key: {bk.get('keys')})")
-        big = [r for r in ((d.get('dbs_api_p') or {}).get('databases') or []) if float(r.get('allocated_bytes') or 0) >= 1.1 * 1024 ** 3]
+        big = [r for r in api_rows((d.get('dbs_api_p') or {}).get('databases')) if float(r.get('allocated_bytes') or 0) >= 1.1 * 1024 ** 3]
         if big: print(f"the TB divisor: the dbspace_ptb row above holds TB / 3 against the API's bytes / 1024^4 on {len(big)} PostgreSQL database(s) of 1.1 GB or more")
         else: print("not checked: the TB divisor: no PostgreSQL database of 1.1 GB or more in the demo (TB divisor not proven)")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
