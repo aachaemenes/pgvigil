@@ -531,14 +531,16 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 sys.exit(0 if r.get("install_failed") or any(x["outcome"] == "failed" for x in r["runs"] if "(decline" not in x["tool"]) else 1)
 PY
-# the summary: the date, each kit pinned and newest (the fetched file's address and its sha256), then the lines (the
-# deny list ran over them in kitshape report), then 'checked:' - every entry of the newest pass and every port by name,
-# so a tool or a port the run skipped shows by its absence
+# the summary: the date, each kit pinned and newest (the fetched file's address and its sha256; a plant run marks the
+# newest as planted), then the lines (the deny list ran over them in kitshape report), then 'checked:' - every entry
+# of the newest pass by name (a tool the run skipped shows by its absence) and every port of the manifest ('same' when
+# the ports compare gave it no line)
 PORTS_M=""; PORTS_L=""
 [[ -f $WORK/lines-ports.json ]] && { PORTS_M=internal/community/kits/ports.json; PORTS_L=$WORK/lines-ports.json; }
-python3 - "$WORK/run-pinned.json" "$WORK/run-newest.json" "$WORK/lines.txt" "$rc" "$PORTS_M" "$PORTS_L" "frk=$FRK_FILE dd=$DD_FILE wia=$WIA_FILE" > "$OUT/report.txt" <<'PY'
-import datetime, json, sys
+python3 - "$WORK/run-pinned.json" "$WORK/run-newest.json" "$WORK/lines.txt" "$rc" "$PORTS_M" "$PORTS_L" "frk=$FRK_FILE dd=$DD_FILE wia=$WIA_FILE" > "$OUT/report.txt" <<'PY' || envfail "the summary could not be written"
+import datetime, json, os, sys
 p, n = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+plant = os.environ.get("KITWATCH_PLANT", "")
 manifest, plines, kfiles = (sys.argv[5:8] + ["", "", ""])[:3]
 files = dict(x.split("=", 1) for x in kfiles.split())
 print(f"KITWATCH {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d %H:%M} UTC on {n['engine']} - exit {sys.argv[4]}")
@@ -550,7 +552,7 @@ def kit(k):
     return f"{k['version']} ({k['version_date']}, {url}, sha256 {k['sha256']})"
 for a, b in zip(p["kits"], n["kits"]):
     same = "same file" if a["sha256"] == b["sha256"] else ("same version, file changed" if a["version"] == b["version"] else "NEWER")
-    print(f"  {names[a['kit']]}: pinned {kit(a)} / newest {kit(b)} - {same}")
+    print(f"  {names[a['kit']]}: pinned {kit(a)} / newest {kit(b)}{f' planted: {plant}' if plant else ''} - {same}")
 if n.get("install_failed"):
     print(f"  INSTALL FAILED (newest): {n['install_failed']}")
 print()
