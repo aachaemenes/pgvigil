@@ -76,10 +76,9 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/cfg.yaml"; CFG=$WORK/cfg.yaml
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { tail -5 "$WORK/migrate.out" >&2; fail "migrate"; }
 PGVIGIL_PASSWORD=$U1PW "$BIN" user add -config "$CFG" "$U1" >/dev/null 2>&1 || fail "user add"
-IMS=$(q "select s.instance_id from pgvigil.mssql_requests_summary s join pgvigil.instances i using (instance_id) where i.is_active
-         and exists (select 1 from pgvigil.mssql_waiting_tasks w where w.instance_id = s.instance_id) group by 1 order by 1 limit 1")
+IMS=$(q "select s.instance_id from pgvigil.mssql_requests_summary s join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver' group by 1 order by 1 limit 1")
 IPG=$(q "select s.instance_id from pgvigil.activity_summary s join pgvigil.instances i using (instance_id) where i.is_active and i.engine <> 'sqlserver' group by 1 order by 1 limit 1")
-[[ -n $IMS && -n $IPG ]] || fail "setup: the demo has no SQL Server instance with requests and waiting tasks ($IMS) or no PostgreSQL instance with activity ($IPG)"
+[[ -n $IMS && -n $IPG ]] || fail "setup: the demo has no SQL Server instance with requests ($IMS) or no PostgreSQL instance with activity ($IPG)"
 T=$(q "select date_trunc('second', now())")
 
 # the staged read T: each row from a template row of the same instance, its fields overridden (jsonb_populate_record)
@@ -112,16 +111,17 @@ SELECT (jsonb_populate_record(null::pgvigil.mssql_requests, to_jsonb(r) || o || 
             (jsonb_build_object('session_id', 905, 'request_id', 0, 'status', 'suspended', 'command', 'SELECT', 'wait_type', 'LCK_M_S', 'wait_ms', 5000,
                'elapsed_ms', 5000, 'start_time', :t::timestamptz - interval '5 seconds', 'blocking_session_id', 903, 'program_name', 'pgvigil',
                'login_name', 'pgvcol', 'is_own', true))) v(x)) o;
-INSERT INTO pgvigil.mssql_waiting_summary
-SELECT (jsonb_populate_record(null::pgvigil.mssql_waiting_summary, to_jsonb(s) || jsonb_build_object('snapshot_at', :t::timestamptz, 'server_utc', :t::timestamptz,
-        'tasks', 3, 'stored', 3, 'sessions', 3, 'threadpool', 0, 'longest_ms', 5000))).*
-  FROM (SELECT * FROM pgvigil.mssql_waiting_summary WHERE instance_id = $IMS ORDER BY snapshot_at DESC LIMIT 1) s;
-INSERT INTO pgvigil.mssql_waiting_tasks
-SELECT (jsonb_populate_record(null::pgvigil.mssql_waiting_tasks, to_jsonb(w) || x || jsonb_build_object('snapshot_at', :t::timestamptz))).*
-  FROM (SELECT * FROM pgvigil.mssql_waiting_tasks WHERE instance_id = $IMS ORDER BY snapshot_at DESC LIMIT 1) w,
-       (VALUES (jsonb_build_object('session_id', 902, 'exec_context_id', 0, 'wait_type', 'PAGEIOLATCH_SH', 'wait_ms', 20, 'blocking_session_id', null, 'is_own', true)),
-               (jsonb_build_object('session_id', 903, 'exec_context_id', 0, 'wait_type', 'WRITELOG', 'wait_ms', 3, 'blocking_session_id', null, 'is_own', null)),
-               (jsonb_build_object('session_id', 905, 'exec_context_id', 0, 'wait_type', 'LCK_M_S', 'wait_ms', 5000, 'blocking_session_id', 903, 'is_own', true))) v(x);
+-- the waiting read through its own import (the demo seeds none): the collector's payload shape, is_own on each task
+SELECT pgvigil.import_mssql_waiting_tasks($IMS, :t::timestamptz, jsonb_build_array(
+  jsonb_build_object('kind', 'summary', 'server_utc', :t::timestamptz, 'tasks', 3, 'stored', 3, 'sessions', 3, 'threadpool', 0,
+                     'threadpool_longest_ms', null, 'decode_note', '', 'read_ms', 5),
+  jsonb_build_object('kind', 'task', 'session_id', 902, 'exec_context_id', 0, 'wait_type', 'PAGEIOLATCH_SH', 'wait_ms', 20,
+                     'request_status', 'suspended', 'command', 'SELECT', 'statement', 'SELECT 1 /* pgvigil */', 'is_own', true),
+  jsonb_build_object('kind', 'task', 'session_id', 903, 'exec_context_id', 0, 'wait_type', 'WRITELOG', 'wait_ms', 3,
+                     'request_status', 'running', 'command', 'UPDATE', 'statement', 'UPDATE dbo.orders SET n = n + 1', 'is_own', null),
+  jsonb_build_object('kind', 'task', 'session_id', 905, 'exec_context_id', 0, 'wait_type', 'LCK_M_S', 'wait_ms', 5000,
+                     'blocking_session_id', 903, 'blocking_exec_context_id', 0, 'resource_description', 'keylock hobtid=1',
+                     'request_status', 'suspended', 'command', 'SELECT', 'statement', 'SELECT 2 /* pgvigil */', 'is_own', true)));
 -- PostgreSQL: the summary and the sample
 INSERT INTO pgvigil.activity_summary
 SELECT (jsonb_populate_record(null::pgvigil.activity_summary, to_jsonb(s) || jsonb_build_object('snapshot_at', :t::timestamptz, 'total', 5, 'active', 3, 'idle_in_txn', 0))).*
