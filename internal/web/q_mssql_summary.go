@@ -69,15 +69,22 @@ WITH inst AS (
                                                  WHEN setting ILIKE '%log backup%' OR (setting LIKE 'backups not judged%' AND detail ILIKE '%log backup%')
                                                       OR (setting = 'a backup went to NUL' AND detail LIKE '%: a log backup %') THEN 'log'
                                                  WHEN setting ILIKE '%differential%' OR (setting = 'a backup went to NUL' AND detail LIKE '%: a differential backup %') THEN 'diff'
-                                                 ELSE 'full' END END AS key
-    -- the five SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
+                                                 ELSE 'full' END
+                     -- task 301 (0140): a backup on the database's own volume by the type its name carries, two log
+                     -- destinations LOG's (the info 'a destination not seen before' never reaches a cell)
+                     WHEN 'mssql_backup_loc' THEN CASE WHEN setting ILIKE '%log backup%' THEN 'log' WHEN setting ILIKE '%differential%' THEN 'diff' ELSE 'full' END
+                     WHEN 'mssql_restore' THEN 'log' END AS key
+    -- the SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
     -- value): a filter on the big view's source still scans every PostgreSQL arm of it
     FROM (SELECT instance_id, severity, check_name AS setting, object AS value, detail, 'mssql_running' AS source FROM pgvigil.mssql_running_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_xe_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_sysevents_findings WHERE check_name = 'the ring buffer output was cut off'
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_hadr' FROM pgvigil.mssql_hadr_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_jobs' FROM pgvigil.mssql_jobs_findings
-          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings) u
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_backup_loc' FROM pgvigil.mssql_backup_loc_findings
+          -- task 304 (0147): the log chain broken is Backup LOG's
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_restore' FROM pgvigil.mssql_restore_findings) u
    WHERE severity IN ('critical', 'warning')
 ), started AS (
   SELECT m.instance_id, m.started_at FROM pgvigil.mssql_instance m JOIN inst USING (instance_id)

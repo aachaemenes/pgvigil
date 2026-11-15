@@ -52,6 +52,7 @@ import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
 import { mssqlDeadlocksView } from './mssql_deadlocks';
 import { hasAvailability, mssqlAvailability } from './mssql_hadr';
 import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
+import { mssqlRestore } from './mssql_restore';
 import { mssqlJobs } from './mssql_jobs';
 import { jobsPgView } from './jobs_pg';
 import { pgDeadlocksView } from './pg_deadlocks';
@@ -102,7 +103,7 @@ const mssqlPages: Record<string, Render> = {
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
-  mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,

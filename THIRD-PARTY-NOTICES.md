@@ -198,3 +198,28 @@ The waits collection reads pg_wait_sampling's and pgms_wait_sampling's views, th
 The thresholds of the SQL Server day-one checks (internal/mssql/checks.go, dboptions.go, agentalerts.go; each rule names its source beside it) were read from sp_PerfCheck (DarlingData, MIT), dbachecks (MIT), dbatools' Test-DbaMaxDop (MIT) and Glenn Berry's SQL Server Diagnostic Queries; no code of theirs is copied.
 
 The SQL Server running-queries collection calls sp_WhoIsActive (GPL-3.0) where a server's DBA installed it, with its documented parameters only; no line of it is in pgvigil and pgvigil does not ship it. The storage, version store, availability group, mirroring, log shipping and replication reads are written from Microsoft's documentation of the views and tables.
+
+## dbatools (task 304: the restore chain)
+
+pgvigil's restore chain (internal/mssql/restore_chain.go, internal/repo/sql/0147_restore_chain.sql) chooses its full and
+differential backups as dbatools v2.9.1's Get-DbaDbBackupHistory -Last does (public/Get-DbaDbBackupHistory.ps1: the sets
+ranked by last_lsn, a differential kept only when it follows its full) and differs from it on purpose where its docs say so
+(a copy-only full as a start set, logs chosen by LSN alone, a gap named). No code of dbatools is copied. dbatools is under
+the MIT License:
+
+MIT License
+
+Copyright (c) 2018 Chrissy LeMaire
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
+modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

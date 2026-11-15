@@ -140,9 +140,14 @@ SELECT b.database_name, b.state, b.recovery_model, b.ag_name, b.replicas_total, 
        CASE WHEN b.log_from = b.instance THEN s.log_bytes END AS log_bytes,
        CASE WHEN b.log_from = b.instance THEN s.log_duration_s END AS log_duration_s,
        CASE WHEN b.log_from = b.instance THEN s.log_device END AS log_device,
-       b.instance_id, b.instance, coalesce(` + sqlBackupNulRecent + `, false) AS nul_recent, ` + sqlBackupProblem + ` AS problem
+       b.instance_id, b.instance, coalesce(` + sqlBackupNulRecent + `, false) AS nul_recent, ` + sqlBackupProblem + ` AS problem,
+       -- task 301 (0140): where the newest set of each type went and DBA Dash's Detail flags of it
+       ld.full_to, ld.diff_to, ld.log_to, ld.full_to_copy_only, ld.full_to_snapshot, ld.full_damaged, ld.diff_damaged, ld.log_damaged, ld.full_checksum, ld.diff_checksum, ld.log_checksum,
+       ld.full_compressed, ld.diff_compressed, ld.log_compressed, ld.full_password, ld.diff_password, ld.log_password,
+       ld.full_encrypted, ld.diff_encrypted, ld.log_encrypted, ld.full_algorithm, ld.diff_algorithm, ld.log_algorithm
   FROM pgvigil.mssql_backup_judged b
   JOIN pgvigil.mssql_backup_state s ON s.instance_id = b.instance_id AND s.database_name = b.database_name
+  LEFT JOIN pgvigil.mssql_backup_loc_db ld ON ld.instance_id = b.instance_id AND ld.database_name = b.database_name
  WHERE ($1::int IS NULL OR b.instance_id = $1) AND ($2::boolean IS NOT TRUE OR ` + sqlBackupProblem + `)
  -- the fleet's grid: DBA Dash's Detail order, the full backup's status across every instance first
  ORDER BY CASE WHEN $1::int IS NULL THEN CASE b.full_status WHEN 'never' THEN 0 WHEN 'late' THEN 1 ELSE 2 END END,

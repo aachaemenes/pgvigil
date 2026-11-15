@@ -156,6 +156,12 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 177 D14 (0124): other processes holding the CPU, a transaction open for a long time, slow data file writes
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_cpu', at FROM pgvigil.mssql_cpu_findings
+    UNION ALL
+    -- task 301 (0140): a backup on the database's own volume, log backups to two destinations, a destination not seen before
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_backup_loc', at FROM pgvigil.mssql_backup_loc_findings
+    UNION ALL
+    -- task 304 (0147): the log chain is broken (never for a gap a replica's late read may fill)
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_restore_chain', at FROM pgvigil.mssql_restore_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
@@ -413,6 +419,11 @@ BEGIN
   DELETE FROM pgvigil.mssql_table_size WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- task 301 (0140): the backup destinations seen are kept 400 days at least (the info finding 'a backup destination
+  -- not seen before' needs the earlier ones; one row per database, type and root); 0140's other tables and 0147's are
+  -- current state and go with their instance (ON DELETE CASCADE)
+  DELETE FROM pgvigil.mssql_backup_roots_seen WHERE last_seen < now() - make_interval(days => greatest(p_days, 400));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- 0139 (FLEET STATS ROLLUP): the hours tables last, each by its own age in pgvigil.hours_retention (not p_days), so
   -- no runs table is locked after an hours parent; the months dropped join this run's partitions_dropped. The hours'

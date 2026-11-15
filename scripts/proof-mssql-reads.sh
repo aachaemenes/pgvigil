@@ -30,8 +30,8 @@
 # reached a SQL Server):
 #  M. the whole migration chain applies on PostgreSQL 13 (a fresh database of a postgres:13 container): migrate exits
 #     0, the newest schema version equals the one of the main repository, and 0084's five functions exist there.
-#  A. mssql_properties as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE): 35
-#     properties are stored, and each of 33 values equals sa's own read of its source, taken beside the collector's:
+#  A. mssql_properties as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE): 42
+#     properties are stored (7 of them task 301c's network rows, proof-mssql-properties-network.sh), and each of 33 values equals sa's own read of its source, taken beside the collector's:
 #     sys.dm_os_sys_info (logical CPUs, sockets, cores per socket, hyperthread ratio, NUMA nodes, soft NUMA,
 #     affinity, max workers, virtual machine, physical MB, memory model), sys.dm_os_schedulers (VISIBLE ONLINE,
 #     VISIBLE OFFLINE), SERVERPROPERTY (edition, version, level, collation, clustered, Always On, machine, server
@@ -142,13 +142,13 @@
 #     described types and 7 families with LCK_M_ first; after a wait sample of 6,000 ms (LCK_M_U) and 300 ms
 #     (WRITELOG) over one 60 s read and a schedulers row of 4 are put in by hand: 100 and 25 ms/sec for the first,
 #     5 and 1.25 for the second.
-#  P. the API on the server's rows: /api/mssql/properties holds the 35 properties and the changes (none on a shared
+#  P. the API on the server's rows: /api/mssql/properties holds the 42 properties and the changes (none on a shared
 #     sandbox, where no setting is changed); /api/mssql/procs lists the proof's procedure with executions 11 (7 + 4)
 #     and executions per minute = 11 x 60 / the covered seconds; db=<its database's id> keeps only that database's
 #     two procedures; db_id= and object= give the procedure's two reads. /api/mssql/indexlocks lists the clustered
 #     index with the stored sums; db= keeps that database's rows.
 #  S. (only with PGVIGIL_SHOTS) in a headless Chromium at 1600 wide, in the light and the dark theme, each page is
-#     found by its grid's column names, never by position: Properties shows 35 rows with the logical CPUs a number
+#     found by its grid's column names, never by position: Properties shows 42 rows with the logical CPUs a number
 #     and the power plan's cell 'not read' on a Linux host; Procedures shows the proof's procedure with 11
 #     executions under dbo, and its name opens it read by read (2 reads); Index locks shows PK_pv_lock on pv_lock
 #     with at least 1 row lock wait, 1 escalation attempt and 1 escalation; Waits shows the forced lock wait's type with both
@@ -401,7 +401,7 @@ fi
 NPROP=$(q "select count(*) from pgvigil.mssql_property where instance_id=$iid")
 echo "  $checked values checked (33 against sa's reads, the per cent, the power plan); $NPROP properties stored; max server memory, % of the machine: $(pv max_memory_pct)"
 [ "$checked" = 35 ] || [ "$HOSTP" != Linux ] || fail "A: $checked values checked, want 35 (33 against sa, the per cent, the power plan's note)"
-[ "$NPROP" = 35 ] || fail "A: $NPROP properties stored, want 35"
+[ "$NPROP" = 42 ] || fail "A: $NPROP properties stored, want 42 (35 + task 301c's seven network rows)"
 [ "$(q "select count(*) from pgvigil.mssql_property_change where instance_id=$iid")" = 0 ] || fail "A: the first read logged a change"
 # the three values that are shown and never logged move by themselves (tempdb may grow between two reads): their
 # 'since' is left out of the comparisons
@@ -756,7 +756,7 @@ fi
 echo "--- P. the API"
 W=$(win)
 curl -fs "$U/mssql/properties?instance=$iid" > "$WORK/props.json" || fail "P: /api/mssql/properties"
-[ "$(objs "$WORK/props.json" properties | jq 'length')" = 35 ] || fail "P: the properties part has $(objs "$WORK/props.json" properties | jq 'length') rows"
+[ "$(objs "$WORK/props.json" properties | jq 'length')" = 42 ] || fail "P: the properties part has $(objs "$WORK/props.json" properties | jq 'length') rows"
 [ "$(objs "$WORK/props.json" changes | jq 'length')" = "$(q "select count(*) from pgvigil.mssql_property_change where instance_id=$iid")" ] || fail "P: the changes part"
 [ "$(objs "$WORK/props.json" state | jq -r '.[0].collection')" = mssql_properties ] || fail "P: the state part"
 curl -fs "$U/mssql/procs?instance=$iid&$W" > "$WORK/procs.json" || fail "P: /api/mssql/procs"
@@ -845,7 +845,7 @@ for (const theme of ['light', 'dark']) {
   check(await go(`#/mssqlproperties?i=${a.iid}&w=6h`, 'property'), T + 'Properties rendered');
   const p = await pv(`const t = gridOf('property'); return { n: rowsOf(t).length, cpu: text(t, rowWith(t, 'property', 'Logical CPUs'), 'value'), plan: text(t, rowWith(t, 'property', 'Power plan'), 'value') };`);
   // on a Linux host the power plan is not read and the cell says so; elsewhere it names a plan
-  check(p.n === 35 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
+  check(p.n === 42 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
   await shot('properties', theme);
 
   check(await go(`#/mssqlprocs?i=${a.iid}&w=6h`, 'total duration (sec)'), T + 'Procedures rendered');

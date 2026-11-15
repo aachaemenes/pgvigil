@@ -399,6 +399,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/plans/suggest", s.PlanSuggest)
 	api.HandleFunc("GET /api/jobs/timeline", s.JobsTimeline)
 	api.HandleFunc("GET /api/mssql/backups", s.MSSQLBackups)
+	api.HandleFunc("GET /api/mssql/backup_files", s.MSSQLBackupFiles) // task 301: where the newest backups went
+	api.HandleFunc("GET /api/mssql/restore", s.MSSQLRestore)          // task 304: the restore chain
 	api.HandleFunc("POST /api/plans/explain", s.actions.Explain)
 	api.HandleFunc("POST /api/plans/analyze", s.actions.ExplainAnalyze)
 	api.HandleFunc("POST /api/plans/hypo", s.actions.HypoIndex)
