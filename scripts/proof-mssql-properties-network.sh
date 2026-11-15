@@ -67,7 +67,7 @@ CREATE USER pgvnet_deny FOR LOGIN pgvnet_deny; DENY EXECUTE ON master.dbo.xp_ins
 SQL
 }
 logins "$SQL"
-P22=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://'); P22B=$(docker port "$SQL" 1500/tcp | head -1 | sed 's/.*://')
+P22=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 psql "$PGVIGIL_REPO_DSN" -XAtqc "CREATE DATABASE $REPO_DB" >/dev/null; MADE_DB=1
 dsn() { printf 'sqlserver://%s:%s@127.0.0.1:%s?database=master&encrypt=true&TrustServerCertificate=true' "$1" "$2" "$3"; }
 export PGVIGIL_REPO_DSN_PROOF="$RDSN" MSSQL_M_DSN="$(dsn pgvnet_mon "$PM" "$P22")" MSSQL_D_DSN="$(dsn pgvnet_deny "$PD" "$P22")"
@@ -114,6 +114,8 @@ docker exec -u root "$SQL" /opt/mssql/bin/mssql-conf set network.tcpport 1500 >/
 docker exec -u root "$SQL" /opt/mssql/bin/mssql-conf set network.forceencryption 1 >/dev/null 2>&1
 docker restart "$SQL" >/dev/null
 up "$SQL" 1500 || fail "N2: SQL Server did not come back on 1500"
+# docker gives an ephemeral host port a new number at a restart (run 301c1): read the mapping after it
+P22B=$(docker port "$SQL" 1500/tcp | head -1 | sed 's/.*://')
 sleep 1; export MSSQL_M_DSN="$(dsn pgvnet_mon "$PM" "$P22B")"
 collect pgvnet-m || fail "N2: the read at the new port failed"
 [ "$(prop pgvnet-m tcp_port | cut -d'|' -f1)" = 1500 ] && [ "$(prop pgvnet-m force_encryption | cut -d'|' -f1)" = yes ] || fail "N2: tcp_port $(prop pgvnet-m tcp_port), force_encryption $(prop pgvnet-m force_encryption)"

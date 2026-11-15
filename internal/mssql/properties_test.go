@@ -38,8 +38,6 @@ func netOf(in netRowsInput) map[string]string {
 	return out
 }
 
-func i64(n int64) *int64 { return &n }
-
 func TestNetworkRows(t *testing.T) {
 	gate := propGate{read: true, registryView: true, instanceRegread: true, regread: true, login: "mon"}
 	win := func(rows ...collect.Row) netRowsInput {
