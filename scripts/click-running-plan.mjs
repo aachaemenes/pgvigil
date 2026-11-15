@@ -51,9 +51,9 @@ for (const ms of msIds.split(',').filter(Boolean)) {
       const h3 = d.querySelector('h3')?.textContent ?? ''; const ops = d.querySelectorAll('table tbody tr').length;
       const err = [...d.querySelectorAll('p.error')].map(e => e.textContent).join(' | ');
       const stmt = [...d.querySelectorAll('h4')].some(h => /^Statement 1/.test(h.textContent));
-      const status = document.querySelector('main .running-plans p[role="status"]')?.textContent ?? '';
+      const status = document.querySelector('main .running-plans > p[role="status"]')?.textContent ?? '';
       return { h3, ops, err, stmt, status }; })()`);
-    if (!drawn) console.log(`     #/mssql_running?i=${ms} Plan ${k + 1}: Open drew no viewer (${await ev(`document.querySelector('main .running-plans p[role="status"]')?.textContent ?? ''`)})`);
+    if (!drawn) console.log(`     #/mssql_running?i=${ms} Plan ${k + 1}: Open drew no viewer (${await ev(`document.querySelector('main .running-plans > p[role="status"]')?.textContent ?? ''`)})`);
   }
   if (!drawn) { fail(`#/mssql_running?i=${ms}: no Plan button of ${n} lands on a drawn plan`); continue; }
   const why = [];
