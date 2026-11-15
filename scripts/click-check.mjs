@@ -818,7 +818,8 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
 // folders offer no page that holds PostgreSQL alone (router.ts pageEngine, read from each page's SQL) and still offer
 // SQL Server options
 {
-  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'backups', 'roles', 'dms', 'custom', 'disks', 'storage', 'growth', 'indexes', 'jobs']);
+  // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines')
+  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'backups', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes', 'jobs']);
   await go('#/summary');
   const tops = await ev(`[...document.querySelectorAll('#tree .folder > .folder-head a')].map(a => new URLSearchParams((a.getAttribute('href') || '').split('?')[1] || '').get('tag')).filter(Boolean)`);
   const carriers = new Map();
