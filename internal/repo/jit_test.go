@@ -1,8 +1,10 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -149,49 +151,146 @@ func TestRepositorySessionsRunWithoutJIT(t *testing.T) {
 	}
 
 	// a login that does not own the database: no setting written, one warning that carries the statement; then the
-	// owner's run writes it back (the test's login is the scratch database's owner or a superuser)
+	// owner's run writes it back. The test's login is the scratch database's owner or a superuser; it is granted each
+	// probe role it makes (from PostgreSQL 16 a role's creator holds only ADMIN on it, and SET ROLE needs membership).
 	var db string
 	if err := plain.QueryRow(ctx, `SELECT current_database()`).Scan(&db); err != nil {
 		t.Fatal(err)
 	}
-	isOff := func() bool {
+	entry := func() string {
 		t.Helper()
-		var off bool
-		if err := plain.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase
-             WHERE d.datname = current_database() AND s.setrole = 0 AND 'jit=off' = ANY (s.setconfig))`).Scan(&off); err != nil {
+		var v *string
+		if err := plain.QueryRow(ctx, `SELECT (SELECT substr(x, 5) FROM pg_db_role_setting s, unnest(s.setconfig) x
+             WHERE s.setdatabase = d.oid AND s.setrole = 0 AND x LIKE 'jit=%' LIMIT 1) FROM pg_database d WHERE d.datname = current_database()`).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
-		return off
+		if v == nil {
+			return "<none>"
+		}
+		return *v
 	}
+	isOff := func() bool { t.Helper(); return entry() == "off" }
 	if !isOff() {
-		t.Fatalf("after Migrate the database %s holds no jit=off setting", db)
+		t.Fatalf("after Migrate the database %s holds jit = %s; want off", db, entry())
 	}
-	for _, s := range []string{`DROP ROLE IF EXISTS pgv_jit_probe`, `CREATE ROLE pgv_jit_probe NOLOGIN`, "ALTER DATABASE " + pgx.Identifier{db}.Sanitize() + " RESET jit"} {
-		if _, err := plain.Exec(ctx, s); err != nil {
-			t.Fatalf("%s: %v", s, err)
+	qdb := pgx.Identifier{db}.Sanitize()
+	exec := func(stmts ...string) {
+		t.Helper()
+		for _, x := range stmts {
+			if _, err := plain.Exec(ctx, x); err != nil {
+				t.Fatalf("%s: %v", x, err)
+			}
 		}
 	}
-	defer func() { _, _ = plain.Exec(context.WithoutCancel(ctx), `RESET ROLE; DROP ROLE IF EXISTS pgv_jit_probe`) }()
-	if _, err := plain.Exec(ctx, `SET ROLE pgv_jit_probe`); err != nil {
-		t.Fatal(err)
-	}
-	warn, err := repositoryJITOff(ctx, plain)
+	// whatever happens below, the store's later tests find jit off again (registered before the first RESET)
+	defer func() { _, _ = plain.Exec(context.WithoutCancel(ctx), `RESET ROLE; `+jitOffStatement(db)) }()
+	defer func() {
+		_, _ = plain.Exec(context.WithoutCancel(ctx), `RESET ROLE; DROP ROLE IF EXISTS pgv_jit_probe; DROP ROLE IF EXISTS pgv_jit_owner`)
+	}()
+	exec(`DROP ROLE IF EXISTS pgv_jit_probe`, `CREATE ROLE pgv_jit_probe NOLOGIN`, `GRANT pgv_jit_probe TO CURRENT_USER`, "ALTER DATABASE "+qdb+" RESET jit")
+	exec(`SET ROLE pgv_jit_probe`)
+	info, warn, err := repositoryJITOff(ctx, plain)
 	if err != nil {
 		t.Fatalf("a non-owner's run: %v", err)
 	}
-	if _, err := plain.Exec(ctx, `RESET ROLE`); err != nil {
-		t.Fatal(err)
+	exec(`RESET ROLE`)
+	if !strings.Contains(warn, jitOffStatement(db)) || info != "" {
+		t.Errorf("a non-owner's run: info %q, warn %q; want no info and the statement %s in the warning", info, warn, jitOffStatement(db))
 	}
-	if !strings.Contains(warn, jitOffStatement(db)) {
-		t.Errorf("a non-owner's run warns %q; want the statement %s in it", warn, jitOffStatement(db))
+	if e := entry(); e != "<none>" {
+		t.Errorf("a non-owner's run wrote jit = %s", e)
 	}
-	if isOff() {
-		t.Error("a non-owner's run wrote the jit=off setting")
-	}
-	if warn, err := repositoryJITOff(ctx, plain); err != nil || warn != "" {
-		t.Errorf("the owner's run: warn %q, err %v; want neither", warn, err)
+	if info, warn, err := repositoryJITOff(ctx, plain); err != nil || warn != "" || !strings.Contains(info, "jit set off") {
+		t.Errorf("the owner's run: info %q, warn %q, err %v; want the 'jit set off' info alone", info, warn, err)
 	}
 	if !isOff() {
 		t.Error("the owner's run did not write jit=off back")
+	}
+
+	// a database's own entry is the site's choice: on is kept and named in an info line, never rewritten; off in any
+	// spelling PostgreSQL takes is nothing to do - for the owner, and for a non-owner (no warning: it is off already)
+	exec("ALTER DATABASE " + qdb + " SET jit = on")
+	if info, warn, err := repositoryJITOff(ctx, plain); err != nil || warn != "" || !strings.Contains(info, "sets jit = on itself") {
+		t.Errorf("an entry jit = on, the owner's run: info %q, warn %q, err %v; want the 'sets jit = on itself' info alone", info, warn, err)
+	}
+	if e := entry(); e != "on" {
+		t.Errorf("an entry jit = on reads %s after the owner's run; want it kept", e)
+	}
+	for _, v := range []string{"OFF", "false", "0", "no", "of"} {
+		exec("ALTER DATABASE " + qdb + " SET jit = '" + v + "'") // a string constant (OF is a reserved word), stored as typed
+		if info, warn, err := repositoryJITOff(ctx, plain); err != nil || info != "" || warn != "" {
+			t.Errorf("an entry jit = %s, the owner's run: info %q, warn %q, err %v; want nothing", v, info, warn, err)
+		}
+		exec(`SET ROLE pgv_jit_probe`)
+		info, warn, err := repositoryJITOff(ctx, plain)
+		exec(`RESET ROLE`)
+		if err != nil || info != "" || warn != "" {
+			t.Errorf("an entry jit = %s, a non-owner's run: info %q, warn %q, err %v; want nothing", v, info, warn, err)
+		}
+		if e := entry(); e != v {
+			t.Errorf("an entry jit = %s reads %s after the runs; want it kept", v, e)
+		}
+	}
+
+	// an owner that is not a superuser (a member of the database's owner role, as a hosted provider's admin login is)
+	var owner string
+	if err := plain.QueryRow(ctx, `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	exec(`DROP ROLE IF EXISTS pgv_jit_owner`, `CREATE ROLE pgv_jit_owner NOLOGIN NOSUPERUSER IN ROLE `+pgx.Identifier{owner}.Sanitize(),
+		`GRANT pgv_jit_owner TO CURRENT_USER`, "ALTER DATABASE "+qdb+" RESET jit", `SET ROLE pgv_jit_owner`)
+	info, warn, err = repositoryJITOff(ctx, plain)
+	exec(`RESET ROLE`)
+	if err != nil || warn != "" || !strings.Contains(info, "jit set off") {
+		t.Errorf("an owner that is not a superuser (a member of %s): info %q, warn %q, err %v; want the 'jit set off' info alone", owner, info, warn, err)
+	}
+	if !isOff() {
+		t.Errorf("an owner that is not a superuser did not write jit=off (the entry reads %s)", entry())
+	}
+
+	// Migrate's own log: the write is one info line, the next migrate says nothing about jit
+	exec("ALTER DATABASE " + qdb + " RESET jit")
+	var buf bytes.Buffer
+	r2, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	r2.SetLog(slog.New(slog.NewTextHandler(&buf, nil)))
+	for n := 1; n <= 2; n++ {
+		buf.Reset()
+		if _, err := r2.Migrate(ctx); err != nil {
+			t.Fatalf("migrate %d: %v", n, err)
+		}
+		lines := []string{}
+		for _, l := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(strings.ToLower(l), "jit") {
+				lines = append(lines, l)
+			}
+		}
+		want := 0
+		if n == 1 {
+			want = 1
+		}
+		if len(lines) != want || (n == 1 && !(strings.Contains(lines[0], "level=INFO") && strings.Contains(lines[0], "jit set off"))) {
+			t.Errorf("migrate %d logged %d jit line(s) %q; want %d (the first an INFO 'jit set off')", n, len(lines), lines, want)
+		}
+	}
+	if !isOff() {
+		t.Error("Migrate did not write jit=off back")
+	}
+}
+
+// TestPgBool: a setting's boolean read as PostgreSQL's parse_bool reads it.
+func TestPgBool(t *testing.T) {
+	for in, want := range map[string][2]bool{
+		"on": {true, true}, "ON": {true, true}, " on ": {true, true}, "off": {false, true}, "OFF": {false, true}, "of": {false, true},
+		"true": {true, true}, "t": {true, true}, "TRU": {true, true}, "false": {false, true}, "f": {false, true}, "fa": {false, true},
+		"yes": {true, true}, "y": {true, true}, "no": {false, true}, "n": {false, true}, "1": {true, true}, "0": {false, true},
+		"o": {false, false}, "": {false, false}, "2": {false, false}, "onn": {false, false}, "offf": {false, false}, "nope": {false, false},
+	} {
+		if v, ok := pgBool(in); v != want[0] || ok != want[1] {
+			t.Errorf("pgBool(%q) = %v, %v; want %v, %v", in, v, ok, want[0], want[1])
+		}
 	}
 }

@@ -218,14 +218,19 @@ were: a disable written through another serve reaches it once its reads work aga
 
 ## The repository's own sessions run without jit
 
-Every `pgvigil migrate` (and so `install`, `install -upgrade` and `demo`) sets `jit = off` on the repository database
-(`ALTER DATABASE <the repository> SET jit = off`) when the setting is not there yet and its login owns that database or
-is a superuser. Every new session on that database then plans without jit: Grafana's login, psql, a BI tool and
-pgvigil's own processes. The reason: the findings view and the heavy functions cross the server's `jit_above_cost`
-even on a near-empty repository, and with jit on each such read spends its time compiling with LLVM (a 55 s read
-against 0.5 s without jit was measured on PostgreSQL 18). `pgvigil serve` already starts its sessions with `jit = off`,
-and the alert sender's functions carry their own `SET jit = off`. When the login does not own the database, migrate
-logs one WARN with the statement for the database's owner to run once. A login role's own setting
+Every `pgvigil migrate` (and so `install -upgrade` and `demo`) sets `jit = off` on the repository database
+(`ALTER DATABASE <the repository> SET jit = off`, logged as one INFO line) when the database has no jit setting of
+its own and its login owns that database or is a superuser. Every new session on that database then plans without
+jit: Grafana's login, psql, a BI tool and pgvigil's own processes. The reason: the findings view and the heavy
+functions cross the server's `jit_above_cost` even on a near-empty repository, and with jit on each such read spends
+its time compiling with LLVM (a 55 s read against 0.5 s without jit was measured on PostgreSQL 18). `pgvigil serve`
+already starts its sessions with `jit = off`, and the alert sender's functions carry their own `SET jit = off`. A jit
+setting the database already has is the site's own choice and is left alone: off in any spelling PostgreSQL takes is
+nothing to do, any other value is kept and named in an INFO line on each migrate. When the login does not own the
+database, migrate logs one WARN with the statement for the database's owner to run once (none where no session would
+compile anyway: the server's own jit off, or no LLVM module). A login role's own setting
 (`ALTER ROLE <login> SET jit = on`) or a session's startup parameter outranks the database's: that is how an
-application that shares the repository database keeps jit on for its own login. Connections to a monitored instance
-are unchanged: that server's jit is its owner's choice.
+application that shares the repository database keeps jit on for its own login. The setting reaches new sessions
+only: a connection already open keeps its jit until it reconnects, so restart Grafana (or reconnect its data source)
+and any pooler's server connections after the migrate. Connections to a monitored instance are unchanged: that
+server's jit is its owner's choice.

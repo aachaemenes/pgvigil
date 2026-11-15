@@ -94,10 +94,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 );`); err != nil {
 		return 0, fmt.Errorf("schema_version: %w", err)
 	}
-	if warn, err := repositoryJITOff(ctx, c.Conn()); err != nil {
+	if info, warn, err := repositoryJITOff(ctx, c.Conn()); err != nil {
 		return 0, fmt.Errorf("repository jit setting: %w", err)
-	} else if warn != "" {
-		r.logger().Warn(warn)
+	} else {
+		if info != "" {
+			r.logger().Info(info)
+		}
+		if warn != "" {
+			r.logger().Warn(warn)
+		}
 	}
 	names, err := migrationNames()
 	if err != nil {
@@ -159,34 +164,105 @@ func jitOffStatement(db string) string {
 // findings view (a union of many arms) and the heavy functions cross jit_above_cost even on a near-empty store, and
 // each read then spends its time compiling with LLVM (a 55 s read against 0.5 s without jit, PostgreSQL 18). Serve's
 // own pool already starts with jit off, and the sender's heavy functions carry SET jit = off; this covers the rest.
-// It runs only when the current role owns the database (or is a superuser), and only when the setting is not there
-// already; otherwise it returns the warning that prints the statement for the database's owner. A login role's own
-// setting or a session's startup parameter still wins over the database's (a site that wants jit on for a login sets
-// it there). PostgreSQL before 11 has no jit: nothing to do. A refused ALTER is a warning, never a failed migrate.
-func repositoryJITOff(ctx context.Context, c *pgx.Conn) (warn string, err error) {
+// A database-level jit entry already there is the site's own choice and is left alone: off in any spelling
+// PostgreSQL takes (off, false, no, 0, any case) is nothing to do; any other value is kept and named in an info line
+// with pgvigil's statement. With no entry it writes one when the current role owns the database (or is a
+// superuser) and says so in an info line; otherwise it returns the warning that prints the statement for the
+// database's owner - unless no session would compile here anyway (the server's own jit off, or no LLVM module). A
+// login role's own setting or a session's startup parameter still wins over the database's (a site that wants jit
+// on for a login sets it there). The setting reaches NEW sessions only: an open connection keeps its jit until it
+// reconnects. PostgreSQL before 11 has no jit: nothing to do. A refused ALTER is a warning, never a failed migrate.
+func repositoryJITOff(ctx context.Context, c *pgx.Conn) (info, warn string, err error) {
 	var db string
 	var version int
-	var mayAlter, alreadyOff bool
+	var mayAlter bool
+	var entry *string
 	if err := c.QueryRow(ctx, `SELECT d.datname,
        current_setting('server_version_num')::int,
        pg_has_role(current_user, d.datdba, 'USAGE') OR coalesce((SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = current_user), false),
-       EXISTS (SELECT 1 FROM pg_db_role_setting s
-                WHERE s.setdatabase = d.oid AND s.setrole = 0 AND 'jit=off' = ANY (s.setconfig))
+       (SELECT substr(x, 5) FROM pg_db_role_setting s, unnest(s.setconfig) x
+         WHERE s.setdatabase = d.oid AND s.setrole = 0 AND x LIKE 'jit=%' LIMIT 1)
   FROM pg_database d
- WHERE d.datname = current_database()`).Scan(&db, &version, &mayAlter, &alreadyOff); err != nil {
-		return "", err
+ WHERE d.datname = current_database()`).Scan(&db, &version, &mayAlter, &entry); err != nil {
+		return "", "", err
 	}
-	if version < 110000 || alreadyOff {
-		return "", nil
+	if version < 110000 {
+		return "", "", nil
 	}
 	stmt := jitOffStatement(db)
+	if entry != nil {
+		if on, ok := pgBool(*entry); ok && !on {
+			return "", "", nil
+		}
+		return fmt.Sprintf("the repository database %s sets jit = %s itself: migrate leaves a database's own setting alone; with jit on, its findings and other heavy reads compile with LLVM (seconds each) in every session that does not turn jit off. pgvigil's default is %s;", db, *entry, stmt), "", nil
+	}
 	if !mayAlter {
-		return fmt.Sprintf("the repository database %s runs its sessions with the server's jit setting: this login does not own it, so migrate cannot turn jit off there; the findings and other heavy reads of other logins (Grafana, psql) may spend seconds compiling each read. The database's owner runs once: %s;", db, stmt), nil
+		compiles, err := jitCompiles(ctx, c)
+		if err != nil {
+			return "", "", err
+		}
+		if !compiles {
+			return "", "", nil
+		}
+		return "", fmt.Sprintf("the repository database %s runs its sessions with the server's jit setting: this login does not own it, so migrate cannot turn jit off there; the findings and other heavy reads of other logins (Grafana, psql) may spend seconds compiling each read. The database's owner runs once: %s;", db, stmt), nil
 	}
 	if _, err := c.Exec(ctx, stmt); err != nil {
-		return fmt.Sprintf("the repository database %s: %s was refused (%v); the database's owner runs it once", db, stmt, err), nil
+		return "", fmt.Sprintf("the repository database %s: %s was refused (%v); the database's owner runs it once", db, stmt, err), nil
 	}
-	return "", nil
+	return fmt.Sprintf("the repository database %s: jit set off for its new sessions (%s); a connection already open keeps its setting until it reconnects", db, stmt), "", nil
+}
+
+// jitCompiles: whether a session that sets no jit of its own could compile with jit on this server - its LLVM module
+// loads (pg_jit_available() asked with jit on for the transaction alone: it answers true only while jit is on in the asking
+// session) and the server's own jit is on. The server's value is known only when this session's value comes from the
+// server (its source default, configuration file, command line, environment variable or override); a value from a
+// role, a database or a startup parameter hides it, and then the answer is yes (the warning is kept).
+func jitCompiles(ctx context.Context, c *pgx.Conn) (bool, error) {
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var source, val string
+	if err := tx.QueryRow(ctx, `SELECT source, reset_val FROM pg_settings WHERE name = 'jit'`).Scan(&source, &val); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('jit', 'on', true)`); err != nil { // SET LOCAL's effect, on the repository
+		return false, err
+	}
+	var available bool
+	if err := tx.QueryRow(ctx, `SELECT pg_jit_available()`).Scan(&available); err != nil {
+		return false, err
+	}
+	if !available {
+		return false, nil
+	}
+	switch source {
+	case "default", "configuration file", "command line", "environment variable", "override":
+		on, ok := pgBool(val)
+		return !ok || on, nil
+	}
+	return true, nil
+}
+
+// pgBool reads a setting's value as PostgreSQL's parse_bool does: on / off, true / false, yes / no, 1 / 0, the
+// unique prefixes of true, false, yes and no ("t", "fa", "n"), "of" for off, any case and surrounding space; ok is
+// false for anything else ("o" alone is ambiguous).
+func pgBool(v string) (val, ok bool) {
+	s := strings.ToLower(strings.TrimSpace(v))
+	switch {
+	case s == "":
+		return false, false
+	case s == "on", s == "1":
+		return true, true
+	case s == "0", len(s) >= 2 && strings.HasPrefix("off", s):
+		return false, true
+	case strings.HasPrefix("true", s), strings.HasPrefix("yes", s):
+		return true, true
+	case strings.HasPrefix("false", s), strings.HasPrefix("no", s):
+		return false, true
+	}
+	return false, false
 }
 
 // migrationNames is the embedded migration files in name order, the order Migrate applies them in.
