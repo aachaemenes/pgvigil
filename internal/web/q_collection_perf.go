@@ -29,7 +29,7 @@ const collPerfCap = 5000
 // ImportFailedCount); pgvigil has no retries, so its Partial is DBA Dash's 'Retried / Partial'.
 var sqlCollPerfRows = `
 WITH h AS (
-  SELECT h.hour AS at, h.instance_id, h.collection, 'Hour'::text AS period, NULL::text AS outcome,
+  SELECT h.hour AS at, h.instance_id, h.collection, 'Hour'::text AS period, NULL::text AS outcome, NULL::text AS stage,
          sum(h.runs)::bigint AS runs, sum(h.failed)::bigint AS failed, sum(h.partial)::bigint AS partial,
          round(sum(h.dur_ms_sum)::numeric / nullif(sum(h.ok + h.partial + h.failed), 0))::bigint AS duration_ms,
          max(h.dur_ms_max)::bigint AS max_duration_ms,
@@ -42,16 +42,17 @@ WITH h AS (
    GROUP BY h.hour, h.instance_id, h.collection
 ), r AS (
   SELECT l.snapshot_at, l.instance_id, l.collection, 'Run'::text,
-         -- DBA Dash's outcomes: a run that failed at its write into the repository is Import Failed (0198's stage; its
-         -- review #4)
-         CASE WHEN l.status = 'error' AND l.stage = 'import' THEN 'Import Failed' WHEN l.status = 'error' THEN 'Failed' ELSE 'Partial' END,
+         -- Failed or Partial; the stage in the Collector errors page's words (0198's collection_error_class). Not 'Import
+         -- Failed' by the log's stage: the log calls every repository-side failure 'import' (a cursor read, a thresholds
+         -- store), which the hour counts as plain failures - Import Failed is the hour's (the review of B6g part c #1)
+         CASE l.status WHEN 'error' THEN 'Failed' ELSE 'Partial' END, (pgvigil.collection_error_class(l.status, l.note, l.stage)).error_stage,
          1::bigint, (l.status = 'error')::int::bigint, (l.status = 'partial')::int::bigint,
          l.duration_ms::bigint, l.duration_ms::bigint, NULL::bigint, NULL::bigint, NULL::bigint
     FROM pgvigil.collection_log l
    WHERE l.status IN ('error', 'partial') AND l.collection <> 'job_stats_hourly'
      AND l.snapshot_at >= $1::timestamptz AND l.snapshot_at < $2::timestamptz AND ` + chScopeOf("l") + `
 )
-SELECT x.at, x.instance_id, i.name AS instance, i.engine, x.collection, x.period, x.outcome, x.runs, x.failed, x.partial,
+SELECT x.at, x.instance_id, i.name AS instance, i.engine, x.collection, x.period, x.outcome, x.stage, x.runs, x.failed, x.partial,
        x.duration_ms, x.max_duration_ms, x.cpu_ms, x.logical_reads, x.import_ms
   FROM (SELECT * FROM h UNION ALL SELECT * FROM r) x
   JOIN pgvigil.instances i ON i.instance_id = x.instance_id AND i.is_active
@@ -79,9 +80,10 @@ SELECT h.hour AS at, sum(h.ok)::bigint AS succeeded, sum(h.partial)::bigint AS p
 
 // sqlCollPerfMeta: how long the hourly rows are kept (hours_retention, 8 days by default, clamped to 1-30 as 0166's trim
 // clamps it) and the first hour still kept - the trim deletes every hour before now() - days, so the hour that holds
-// that instant is gone too: rounded UP (its review #2: rounded down it named an hour already deleted)
+// that instant is gone too: rounded UP (its review #2: rounded down it named an hour already deleted), in UTC hours as
+// the rows are (the review of B6g part c #2: a store whose zone is not a whole hour from UTC cut it half an hour off)
 var sqlCollPerfMeta = `
-SELECT r.days, date_trunc('hour', now() - make_interval(days => r.days) + interval '1 hour' - interval '1 microsecond') AS kept_from
+SELECT r.days, date_trunc('hour', (now() - make_interval(days => r.days)) AT TIME ZONE 'UTC' + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC' AS kept_from
   FROM (SELECT least(greatest(coalesce(max(h.days), 8), 1), 30) AS days FROM pgvigil.hours_retention h WHERE h.table_name = 'collection_health_hour') r`
 
 // CollectionPerf is GET /api/collectionperf: instance= or instances= (none = every instance), collection= (none =

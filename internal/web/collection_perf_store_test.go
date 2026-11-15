@@ -72,13 +72,14 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 	}
 	from, to := h.Add(-time.Hour), h.Add(2*time.Hour)
 	hm := func(d time.Duration) string { return h.Add(d).Format("15:04") }
+	scopeIDs := []int32{s1, p}
 	read := func(id int32, cap int, c string) string {
 		t.Helper()
 		rs, err := tx.Query(ctx, `SELECT concat_ws('|', CASE r.instance_id WHEN $7 THEN 's1' WHEN $8 THEN 'p' ELSE 'other' END,
 		           CASE WHEN r.collection = $9 THEN 'c' ELSE r.collection END, to_char(r.at AT TIME ZONE 'UTC', 'HH24:MI'), r.period,
 		           coalesce(r.outcome, '-'), r.runs, r.failed, r.partial, coalesce(r.duration_ms::text, '-'), coalesce(r.max_duration_ms::text, '-'),
 		           coalesce(r.cpu_ms::text, '-'), coalesce(r.logical_reads::text, '-'), coalesce(r.import_ms::text, '-'), r.engine)
-		      FROM (`+sqlCollPerfRows+"\n"+`) r`, from, to, id, []int32{s1, p}, c, cap, s1, p, coll)
+		      FROM (`+sqlCollPerfRows+"\n"+`) r`, from, to, id, scopeIDs, c, cap, s1, p, coll)
 		if err != nil {
 			t.Fatalf("the report's rows: %v", err)
 		}
@@ -157,8 +158,18 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 		t.Fatalf("the edge log rows: %v", err)
 	}
 	from, to = h.Add(-90*time.Minute), h.Add(2*time.Hour)
+	scopeIDs = []int32{s1, p, off} // the inactive instance IN the scope: is_active leaves it out (the review of B6g part c #3)
 	if got, want := read(0, 5000, coll), strings.Join(append(strings.Split(all, " ; "), "s1|c|"+hm(-2*time.Hour)+"|Hour|-|1|0|0|7|7|-|-|-|sqlserver"), " ; "); got != want {
 		t.Errorf("the edges (from h-90m, to h+2h) with an inactive instance:\n got %s\nwant %s", got, want)
+	}
+	// the charts over the three, the inactive one in scope: as before (its failed hour left out)
+	var charts3 string
+	if err := tx.QueryRow(ctx, `SELECT string_agg(concat_ws('|', to_char(c.at AT TIME ZONE 'UTC', 'HH24:MI'), c.succeeded, c.partial, c.failed), ' ; ' ORDER BY c.at)
+	      FROM (`+sqlCollPerfCharts+"\n"+`) c`, h.Add(-time.Hour), h.Add(2*time.Hour), 0, []int32{s1, p, off}, coll).Scan(&charts3); err != nil {
+		t.Fatalf("the charts over three: %v", err)
+	}
+	if want := hm(0) + "|13|1|1 ; " + hm(time.Hour) + "|2|0|0"; charts3 != want {
+		t.Errorf("the charts with an inactive instance in scope: %s, want %s", charts3, want)
 	}
 	var pcharts string
 	if err := tx.QueryRow(ctx, `SELECT string_agg(concat_ws('|', c.succeeded, coalesce(c.cpu_max_ms::text, '-')), ' ; ' ORDER BY c.at)
@@ -181,6 +192,10 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 			edge.Add(d), p, coll+"-edge"); err != nil {
 			t.Fatalf("the retention edge rows: %v", err)
 		}
+	}
+	// a store zone half an hour off UTC's (the review of B6g part c #2: the kept hour cut in the session's zone)
+	if _, err := tx.Exec(ctx, `SET LOCAL TimeZone = 'Asia/Kolkata'`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `SELECT pgvigil.import_collection_health('edge', '{}'::jsonb)`); err != nil {
 		t.Fatalf("the trim: %v", err)

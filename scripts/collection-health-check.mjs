@@ -220,7 +220,7 @@ const allRows = await api({});
     if (col === 'Failed') {
       const ce = await ev(`document.querySelector('main .ch-errors a[data-land="collectorerrors"]')?.getAttribute('href') ?? ''`);
       const r0 = route(ce), r1 = route(href);
-      say(r0.tab === 'collectorerrors' && r0.q.get('i') === String(byName('fx-chimport')?.instance_id ?? '') && r0.q.get('coll') === 'activity' && r0.q.get('view') === 'error'
+      say(r0.tab === 'collectorerrors' && r0.q.get('i') === String(byName('fx-chimport')?.instance_id ?? '') && r0.q.get('coll') === 'activity' && r0.q.get('view') === 'error' && r0.q.get('type') === 'Error'
         && !!r0.q.get('from') && Date.parse(r0.q.get('from')) === Date.parse(r1.q.get('from')) && Date.parse(r0.q.get('to')) === Date.parse(r1.q.get('to')), 'CH25 the error list links to Collector errors with its instance, collection and window', ce || 'no link');
     }
   }
@@ -299,9 +299,10 @@ const allRows = await api({});
   const post2 = body => iid == null ? null : evAwait(`fetch('/api/collectionhealth/thresholds', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
     body: JSON.stringify(${JSON.stringify(body)}) }).then(async r => r.status + ' ' + ((await r.json()).error ?? '(no error key)'))`);
   const q1 = await post2({ op: 'set', instance_id: Number(iid), collection: 'activity', min_runs: 0.999 });
+  const q1b = await post2({ op: 'set', instance_id: Number(iid), collection: 'activity', min_runs: 1.5 });   // a truncating handler would take it (part c #10)
   const q2 = await post2({ op: 'set', instance_id: Number(iid), collection: 'activity', crit_fail_pct: 12.345 });
-  say(/^409 refused: min_runs must be a whole number from 1 to 100000/.test(q1 ?? '') && /^409 refused: crit_fail_pct must be a percentage/.test(q2 ?? ''),
-    'CH21b 0.999 runs and 12.345 % refused as sent', `${String(q1).slice(0, 90)} | ${String(q2).slice(0, 90)}`);
+  say(/^409 refused: min_runs must be a whole number from 1 to 100000/.test(q1 ?? '') && /^409 refused: min_runs must be a whole number/.test(q1b ?? '') && /^409 refused: crit_fail_pct must be a percentage/.test(q2 ?? ''),
+    'CH21b 0.999 and 1.5 runs and 12.345 % refused as sent', `${String(q1).slice(0, 70)} | ${String(q1b).slice(0, 40)} | ${String(q2).slice(0, 70)}`);
   // CH26 (the fold review part a #2): the rule sentence over the grid in three cases - every row at DBA Dash's defaults;
   // one demo instance's page with its every-collection level set (every row listed holds one set); a row per collection
   // whose instances differ (each row's own: never 'every row listed holds (each instance its own ...)'). Cleaned after
@@ -310,12 +311,55 @@ const allRows = await api({});
   const w1 = iid == null ? null : await post2({ op: 'set', instance_id: Number(iid), min_runs: 7 });
   await open(`#/collectionhealth?i=${iid}&w=24h`);
   const s1 = await sentence();
-  await open('#/collectionhealth?w=24h&grain=collection');
+  // the third case on ONE collection (part c #4: at the root other collections' rows carried the defaults, so the old
+  // code passed too): activity per collection, iid's own level differing from the other instances'
+  const pg2 = await open('#/collectionhealth?w=24h&grain=collection&collection=activity');
   const s2 = await sentence();
+  const cell2 = (pg2?.rows ?? []).find(r => r['Collection']?.text === 'activity')?.['Thresholds']?.text ?? '';
   const w2 = iid == null ? null : await post2({ op: 'inherit', instance_id: Number(iid) });
-  say(/DBA Dash's defaults/.test(s0) && /every row listed holds \(in a row 1 \/ 3, failing 10 \/ 30 min, failed 10 \/ 50 % of 7 runs or more/.test(s1)
+  say(/\(DBA Dash's defaults\); N\/A when/.test(s0) && cell2 === 'each instance its own' && /every row listed holds \(in a row 1 \/ 3, failing 10 \/ 30 min, failed 10 \/ 50 % of 7 runs or more/.test(s1)
     && /each row's own thresholds/.test(s2) && !/every row listed holds \(each instance its own/.test(s2) && /^200/.test(w1 ?? '') && /^200/.test(w2 ?? ''),
     'CH26 the rule sentence: the defaults, one shared set, each row\'s own', `${s0.match(/Status[^;]*/)?.[0]?.slice(0, 60)} | ${s1.match(/Status by[^(]*\([^)]*\)/)?.[0] ?? s1.slice(0, 80)} | ${s2.match(/Status by each[^-]*/)?.[0] ?? s2.slice(0, 80)} (writes ${String(w1).slice(0, 20)} / ${String(w2).slice(0, 20)})`);
+}
+
+// CH28 (the review of B6g part c #11, the fold review part a #8): a thresholds read that fails - its request answered 500
+// through DevTools' Fetch domain - draws no number as if read: every value 'Inherited: not read', the level's line says
+// so, Save off
+{
+  let failTh = false;
+  ws.addEventListener('message', m => {
+    const d = JSON.parse(m.data);
+    if (d.method !== 'Fetch.requestPaused') return;
+    const id = d.params.requestId;
+    if (failTh && String(d.params.request?.url ?? '').includes('part=thresholds')) {
+      void cmd('Fetch.fulfillRequest', { requestId: id, responseCode: 500, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+        body: Buffer.from('{"error":"proof: the read failed"}').toString('base64') });
+    } else void cmd('Fetch.continueRequest', { requestId: id });
+  });
+  await cmd('Fetch.enable', { patterns: [{ urlPattern: '*part=thresholds*' }] });
+  failTh = true;
+  const p = await open('#/collectionhealth?w=24h');
+  const row = (p?.rows ?? []).find(r => (r['Instance']?.text ?? '').startsWith('demo-') && r['Collection']?.text === 'activity');
+  const inst = row?.['Instance']?.text ?? '';
+  const clicked = row ? await ev(`(() => {
+    const t = document.querySelector('main .ch-grid table'); if (!t) return false;
+    const heads = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim());
+    const ki = heads.indexOf('Instance'), kc = heads.indexOf('Collection'), kt = heads.indexOf('Thresholds');
+    const tr = [...t.querySelectorAll('tbody tr')].find(tr => tr.children[ki]?.textContent.trim() === ${JSON.stringify(inst)} && tr.children[kc]?.textContent.trim() === 'activity');
+    const b = tr?.children[kt]?.querySelector('button'); if (!b) return false; b.click(); return true; })()`) : false;
+  let d = null;
+  for (let k = 0; clicked && k < 60; k++) {
+    d = await ev(`(() => { const x = document.querySelector('dialog.act-dialog[open]'); if (!x) return null;
+      return { inh: [...x.querySelectorAll('tbody td span.meta')].map(s => s.textContent), level: x.querySelector('#ch-th-level')?.textContent ?? '',
+        off: x.querySelector('button[type=submit]')?.getAttribute('aria-disabled') ?? '' }; })()`);
+    if (d && d.inh.length === 8 && d.inh.every(x => x === 'Inherited: not read')) break;
+    await sleep(150);
+  }
+  failTh = false;
+  await cmd('Fetch.disable');
+  await ev(`[...document.querySelectorAll('dialog.act-dialog[open] button')].find(b => b.textContent === 'Close')?.click()`);
+  say(!!d && d.inh.length === 8 && d.inh.every(x => x === 'Inherited: not read') && /could not be read/.test(d.level) && d.off === 'true',
+    'CH28 a failed thresholds read shows no number as if read, Save off', d ? `${d.inh[0]} (x ${d.inh.length}) | ${d.level} | aria-disabled ${d.off}` : (row ? 'no dialog' : 'no demo activity row'));
 }
 
 // CH22-CH24 (B6g-3, N42, design G4): DBA Dash's Collection Performance report. CH22 every link of a row per collection
@@ -360,9 +404,12 @@ const allRows = await api({});
     say(!!rep && apiRows != null && rep.rows.length === apiRows, 'CH23 its rows are the API\'s', `${rep?.rows.length ?? 'no'} drawn, the API ${apiRows}`);
     const runs = (rep?.rows ?? []).filter(r => r['Period'] === 'Run'), hours = (rep?.rows ?? []).filter(r => r['Period'] === 'Hour');
     // the review of B6g-3 #4: a run that failed at its write is DBA Dash's Import Failed (fx-chimport's two, logged at 'import')
-    const oc = k => runs.filter(r => r['Outcome'] === k).length;
-    say(runs.length === 3 && oc('Failed') === 1 && oc('Import Failed') === 2 && runs.every(r => r['CPU (ms)'] === 'hourly only' && r['Import (ms)'] === 'hourly only') && hours.length >= 1 && hours.every(r => r['Import Lag (sec)'] === 'not read'),
-      'CH23 fx-chimport: its runs one by one (1 Failed, 2 Import Failed; hourly only), its hours', `${runs.length} Run row(s) [${runs.map(r => r['Outcome'] + ' / ' + r['CPU (ms)']).join('; ')}], ${hours.length} Hour row(s)`);
+    // the review of B6g part c #1: every failed run reads Failed, its Stage in the Collector errors page's words (fx-chimport:
+    // two logged at the write - Import - and one at the read - Collect); Import Failed is the hour's count
+    const st = runs.map(r => r['Stage']).sort().join(',');
+    say(runs.length === 3 && runs.every(r => r['Outcome'] === 'Failed' && r['CPU (ms)'] === 'hourly only' && r['Import (ms)'] === 'hourly only') && st === 'Collect,Import,Import'
+      && hours.length >= 1 && hours.every(r => r['Import Lag (sec)'] === 'not read'),
+      'CH23 fx-chimport: its runs one by one (Failed; stages Collect, Import, Import; hourly only), its hours', `${runs.length} Run row(s) [${runs.map(r => r['Outcome'] + ' / ' + r['Stage'] + ' / ' + r['CPU (ms)']).join('; ')}], ${hours.length} Hour row(s)`);
     // CH27 (the review of B6g-3 #1): a range change on the report keeps its collection - the address and the read
     // the range picker's 'earlier' step (rangepicker.ts: the first .range-step) moves the range through href()
     await ev(`(() => { const b = document.querySelector('.range .range-step'); if (b) b.click(); return !!b; })()`);

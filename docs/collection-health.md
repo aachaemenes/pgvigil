@@ -59,8 +59,8 @@ thresholds store among them - which Collection Health counts as plain failures.
 What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warnings, Retried, No Status, the import's
 own CPU and reads (and the Cost chart's Import CPU line), the highest logical reads of one run, the Import Lag chart (pgvigil writes into the repository
 inside the run that collected: no queue stands between the two, so there is no import lag), the insights card, and the
-Steps picker (pgvigil's collections have no steps). Runs and Max Duration are not links (DBA Dash's Collection
-Performance report is a later task), and the thresholds are DBA Dash's defaults until a threshold row sets them (below). The Status column
+Steps picker (pgvigil's collections have no steps). Collection, Runs, Avg and Max Duration, Avg and Total CPU and
+Avg Import open the Collection Performance report (below), and the thresholds are DBA Dash's defaults until a threshold row sets them (below). The Status column
 shows the word as well as the colour.
 
 A departure from DBA Dash: a collection written in parts (the schema collection's databases, the Extended Events and
@@ -80,8 +80,9 @@ UPDATE pgvigil.hours_retention SET days = 30, changed_at = now() WHERE table_nam
 or `pgvigil purge -hours collection_health_hour=30`. More than 30 is refused.
 
 The error list (Failed, Import Failed, Errors and Last Failure open it) links to the same errors on the Collector
-errors page - its types, stages, the service's own failures and Acknowledge Errors - with the list's instance,
-collection and window, a row per error (B6g-5; pgvigil keeps one error list, as DBA Dash's ErrorLog).
+errors page - its failed runs (type Error) by stage, a row per error, with the list's instance, collection and window
+(B6g-5; pgvigil keeps one error list, as DBA Dash's ErrorLog). Acknowledge Errors is on that page with no filter and a
+range of 24 hours or more ending now; it lists an inactive instance's errors too, which this list leaves out.
 
 ## Thresholds
 
@@ -113,9 +114,9 @@ range is the page's (the Summary's last 24 hours), as pgvigil has no Acknowledge
 
 ## Collection Performance
 
-DBA Dash's Collection Performance report, opened from the Collection Health grid: Collection, Runs, Avg Duration, Max
-Duration and Total CPU open it for the row's collection - on its instance for a row per collection per instance, over
-the page's scope for a row per collection - over the range the grid was read with (GET /api/collectionperf).
+DBA Dash's Collection Performance report, opened from the Collection Health grid: Collection, Runs, Avg and Max
+Duration, Avg and Total CPU and Avg Import open it for the row's collection - on its instance for a row per
+collection per instance, over the page's scope for a row per collection - over the range the grid was read with (GET /api/collectionperf).
 
 Its charts, two by two, are hourly: Duration (ms) - collecting and importing, average and highest; CPU (ms) - collecting
 (SQL Server's runs that read their session); Logical Reads; Runs by outcome. Its grid lists the newest first, 5,000 rows
@@ -126,7 +127,9 @@ at most (said when the range holds more):
   went well is counted in its hour), so the Run rows are never all the runs; a Run row's CPU, logical reads and import
   say 'hourly only'.
 
-Failed holds the failures at the write too (DBA Dash's Failed and Import Failed together); Partial is DBA Dash's
+Failed holds the failures at the write too (DBA Dash's Failed and Import Failed together; a Run row says Failed and its
+Stage in the Collector errors page's words - Import Failed is counted by the hour, as the log calls every
+repository-side failure Import); Partial is DBA Dash's
 'Retried / Partial' (pgvigil retries nothing). Import CPU, Import Logical Reads and Import Lag are not read: pgvigil
 writes into the repository inside the run that collected. The hourly rows are kept 8 days by default (30 at most,
 Data retention): a range that starts before them says where the report's hours start.

@@ -64,6 +64,7 @@ export async function collectionPerfView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'at', label: 'Date', fmt: fmtTime, title: 'When the run started - or the hour, for an Hour row' },
     { key: 'period', label: 'Period', title: 'Run: one run that failed or was partial (pgvigil keeps no ok run one by one).  Hour: every run of the hour, summed over the collectors that ran it.' },
     { key: 'outcome', label: 'Outcome', fmt: v => v == null ? '' : badge(String(v), v === 'Partial' ? 'warn' : 'crit') },
+    { key: 'stage', label: 'Stage', title: 'Where a kept run stopped, in the Collector errors page\'s words (Connect, Collect, Import, Other).  Import Failed is counted by the hour: the log calls every repository-side failure Import' },
     { key: 'runs', label: 'Runs', num: true, fmt: fmtNum },
     { key: 'failed', label: 'Failed', num: true, fmt: fmtNum, title: 'Failed runs, those that failed at the write into the repository too (DBA Dash\'s Failed and Import Failed together).' },
     { key: 'partial', label: 'Partial', num: true, fmt: fmtNum, title: 'Runs that ended partial (DBA Dash\'s Retried / Partial: pgvigil retries nothing).' },

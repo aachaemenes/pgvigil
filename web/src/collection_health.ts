@@ -347,7 +347,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
         + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
         + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads (and the Cost chart\'s Import CPU line), the highest logical reads of one run; '
-        + 'no Steps (pgvigil has no run steps). Collection, Runs, Avg and Max Duration and Total CPU open the Collection Performance report over this range; '
+        + 'no Steps (pgvigil has no run steps). Collection, Runs, Avg and Max Duration, Avg and Total CPU and Avg Import open the Collection Performance report over this range; '
         + 'the Status column shows the word as well as the colour.'),
       grid(rows, cols, on.length === 0 ? 'No status is picked: pick one or more to list the collections.' : 'No collection matches: show every status, or a wider range.'));
     sec.dataset.drawn = drawn;
@@ -355,17 +355,18 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
 
   async function drawErrors() {
     if (!errorsOf) return;
+    const wv0 = window_(ctx);   // the list's window, read once (the review of B6g part c #9)
     const qBox = el('input', { type: 'search', id: 'ch-q', placeholder: 'Text in the message', 'aria-label': 'Text the error message holds' });
     const list = el('div');
     const back = el('a', { href: href(ctx, { tab: 'collectionhealth' }) }, 'Back to every collection');
     const read = async () => {
       try {
         const sc = await scope();
-        const t = await get<Record<'errors', Table | null>>('collectionhealth', { ...sc.params, ...window_(ctx), part: 'errors', ...(onlyColl ? { collection: onlyColl } : {}), q: qBox.value });
+        const t = await get<Record<'errors', Table | null>>('collectionhealth', { ...sc.params, ...wv0, part: 'errors', ...(onlyColl ? { collection: onlyColl } : {}), q: qBox.value });
         const rs = rowsOf(t.errors);
         // the window as the API reads it, on the page's clock: the reach (31 days) counts back from the end or now,
         // whichever is earlier (web.go paramsReach; the review of B6.2, part b #11)
-        const wv = window_(ctx), end = Math.min(Date.parse(wv.to), Date.now()), fromMs = Math.max(Date.parse(wv.from), end - 31 * 86400000);
+        const wv = wv0, end = Math.min(Date.parse(wv.to), Date.now()), fromMs = Math.max(Date.parse(wv.from), end - 31 * 86400000);
         const cut = fromMs > Date.parse(wv.from);
         list.replaceChildren(el('p', { class: 'meta' }, `${fmtNum(rs.length)} error(s)${onlyColl ? ` of ${onlyColl}` : ''} logged ${fmtTime(new Date(fromMs).toISOString())} to ${fmtTime(wv.to)}${cut ? ' (the last 31 days of the range: the hourly rows are kept 30)' : ''}${rs.length >= 500 ? ' (the newest 500)' : ''}.`),
           grid(rs, [{ key: 'instance', label: 'Instance' }, { key: 'collection', label: 'Collection' }, { key: 'at', label: 'Time', fmt: fmtTime },
@@ -376,9 +377,11 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
     // B6g-5 (the lead's 10:2x B6G-5 (a): no second roll-up): the same errors on the Collector errors page - its types,
     // stages, the service's own failures and Acknowledge Errors (B24o's, DBA Dash's ErrorLog) - this list's scope,
     // collection and window, a row per error
-    const wv0 = window_(ctx), ceHref = href(ctx, { tab: 'collectorerrors', range: { from: wv0.from, to: wv0.to } });
-    const ce = el('a', { href: ceHref + (ceHref.includes('?') ? '&' : '?') + 'view=error' + (onlyColl ? '&coll=' + encodeURIComponent(onlyColl) : ''), 'data-land': 'collectorerrors',
-      title: 'Collector errors: these errors by type and stage, the service\'s own failures, and Acknowledge' }, 'The same errors on Collector errors');
+    // the list's window once, for the list and the link alike (the review of B6g part c #9); type=Error: the failed runs
+    // alone, as this list (#5: the page's view=error lists partial runs too)
+    const ceHref = href(ctx, { tab: 'collectorerrors', range: { from: wv0.from, to: wv0.to } });
+    const ce = el('a', { href: ceHref + (ceHref.includes('?') ? '&' : '?') + 'view=error&type=Error' + (onlyColl ? '&coll=' + encodeURIComponent(onlyColl) : ''), 'data-land': 'collectorerrors',
+      title: 'Collector errors: these errors by stage; Acknowledge Errors is there with no filter and a range of 24 hours or more ending now' }, 'These errors on Collector errors');
     errorsBox.replaceChildren(el('h3', {}, 'Errors'), el('div', { class: 'toolbar' }, back, ' ', ce, ' ', el('label', { for: 'ch-q' }, 'Message ', qBox)), list);
     await read();
   }
