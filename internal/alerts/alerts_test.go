@@ -489,3 +489,37 @@ func TestFileDrop(t *testing.T) {
 		t.Error("a missing directory: no error")
 	}
 }
+
+// task 403b (the lead 01:3x): a file carries the alert's own source; the envelope's constant is "sender": "pgvigil".
+// Red on 9a48c364: the envelope's own field "source" shadowed the alert's, so every file said "pgvigil".
+func TestFileDropSource(t *testing.T) {
+	dir := t.TempDir()
+	s, err := (&FileDrop{Dir: dir}).build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := crit
+	rule.FindingKey, rule.Source, rule.Setting = "fedcba9876543210", "alert rule", "cpu above 90 %"
+	if err := s.send(context.Background(), msg(crit, rule)); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 2 {
+		t.Fatalf("files %v, want one per alert", ents)
+	}
+	want := map[string]string{crit.FindingKey: "pgvigil host", rule.FindingKey: "alert rule"}
+	for _, e := range ents {
+		b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		var v map[string]any
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatalf("file %s: %v", b, err)
+		}
+		key, _ := v["finding_key"].(string)
+		if src, _ := v["source"].(string); src != want[key] {
+			t.Errorf("file %s: source %q, want the alert's own %q", e.Name(), src, want[key])
+		}
+		if v["sender"] != "pgvigil" || v["channel"] != "t" {
+			t.Errorf("file %s: sender %v channel %v, want pgvigil and t", e.Name(), v["sender"], v["channel"])
+		}
+	}
+}
