@@ -37,12 +37,14 @@ The families:
 | SQL Server | Scheduler | Batch requests, transactions, compilations and recompilations per second; runnable tasks, the work queue, pending IO, workers. |
 | SQL Server | Memory | Page life expectancy, memory grants pending and outstanding, total and target server memory, the buffer pool, the plan cache, stolen and available memory, physical memory used. |
 | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
+| both (CPU and logical reads: SQL Server) | Collection | Hidden until the toolbar's **Collection Metrics** is ticked (kept per browser; a link that names the family shows it). DBA Dash's collection counters from the hourly collection rows: each collection's average duration, CPU and logical reads per run (SQL Server's runs alone read their session), import duration and the failed per cent of its runs. One point an hour, stamped at the hour's end, so an hour still running has no point yet. One collection picked above the grid, or **the worst collection** - each hour's highest value over the instance's collections, per counter, which is what a rule with no collection named watches. Not read: DBA Dash's Import CPU, Import Logical Reads and Import Lag. A rule on the family takes a window of 60 minutes or more; a collection that runs less often than every 2 hours reads *no data* between its points. |
 
 A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
 reset gives no sample, never a dip. A metric the server's version does not have reads no samples.
 
 The tab keeps the Counters page's address: `?kind=` is the family (`db`, `server`, `io` and `sessions` still open
-theirs; none shows every family).
+theirs; none shows every family). `?mdb=` is the Database family's database, `?mcol=` the Collection family's
+collection; a range change keeps both.
 
 ## Thresholds are alert rules
 
@@ -73,10 +75,10 @@ sample, and says the bucket's length in the legend. The warning and critical val
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/metrics?instance=&from=&to=[&db=][&family=]` | `grid` (the rows above, with `max_status` ... `current_status` and the rule's columns; one family's rows with `family=`), `families`, `databases`, `engine`, and `writable` with its `reason`. `part=families` leaves the grid out. |
+| `GET /api/metrics?instance=&from=&to=[&db=][&family=]` | `grid` (the rows above, with `max_status` ... `current_status` and the rule's columns; one family's rows with `family=`), `families`, `databases`, `collections` (the instance's collections with an hourly row in the day before `to`: the Collection family's `db=`), `engine`, and `writable` with its `reason`. `part=families` leaves the grid out. |
 | `GET /api/metrics/series?instance=&metric=<family.metric>&from=&to=[&db=]` | `series` (`snapshot_at`, `value`, `max_value`, `min_value`, `samples`), `step_secs` (1 = every sample as stored) and `metric` (label, unit, the thresholds in force). |
 
-The grid, a row's chart and the rule's evaluation read the same function (`pgvigil.metric_points`, migration 0085),
+The grid, a row's chart and the rule's evaluation read the same function (`pgvigil.metric_points`, migration 0085; 0166 adds the Collection family),
 so the three agree. The page reads each family with its own request: over a long range one family that is slow or
 fails shows its error under its own heading, and the others still draw.
 

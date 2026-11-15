@@ -207,10 +207,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     if (v !== undefined && v !== '') q.set(name, String(v));
   };
   if (c.tab === 'counters') page('kind', 'kind');
-  // the Metrics page's database cut stays on its own links: a range change keeps the database in view
+  // the Metrics page's database and collection cuts stay on its own links: a range change keeps them in view (the
+  // collection's: the B6g-4 fold #9)
   if (keep && c.tab === 'counters') {
-    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('mdb');
-    if (v) q.set('mdb', v);
+    const u = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['mdb', 'mcol']) { const v = u.get(k); if (v) q.set(k, v); }
   }
   if (c.tab === 'logs') page('logKind', 'lk');
   if (c.tab === 'activity') { page('at', 'at'); page('minSecs', 'min'); page('st', 'st'); page('user', 'user'); page('db', 'db'); page('app', 'app'); }

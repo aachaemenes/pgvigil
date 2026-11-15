@@ -763,9 +763,13 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autova
 
 -- ===== B6g-4 (N30 / N31, design L12 / L56; the lead's 07:4x SERIES (a)): the Metrics family 'collection' =====
 -- The collection counters chartable and alertable, as DBA Dash's: per collection (the sub-series slot 'database' carries
--- the collection; the instance's series sums its collections), from the hour rows (one point an hour, stamped at the
--- hour's last run, every collector summed; fresh for 2 hours): duration, CPU and logical reads (SQL Server's runs that
--- read their session), import duration, and the failed per cent (its average the failure rate).
+-- the collection; the instance's series is the worst collection each hour - a rule with no collection named fires on
+-- any one: the B6g-4 fold, the lead's 14:5x (a) #6), from the hour rows (one point an hour, stamped at the hour's END so
+-- two points are exactly 60 minutes apart and an hourly collection's 60-minute rule never turns on a few ms of ticker
+-- jitter: #2; every collector summed; fresh for 2 hours - a collection run less often reads 'no data' between its
+-- points: #14): duration, CPU and logical reads (SQL Server's runs alone read their session, so those two are SQL
+-- Server's rows - no rule on them judges a PostgreSQL instance: #13), import duration, and the failed per cent.
+-- DBA Dash's Import CPU, Import Logical Reads and Import Lag are not read (the page says so).
 -- metric_catalog keeps 0085's rows and every row another file adds there: its live definition is read and this
 -- family's rows appended (a copy of 0085's list would drop the others'); a re-apply finds them and does nothing.
 DO $do$
@@ -777,8 +781,8 @@ UNION ALL
 SELECT x.family || '.' || x.metric, x.engine, x.family, x.family_label, x.family_sort, x.metric, x.label, x.unit, x.per_database, x.fresh_secs, x.sort
   FROM (VALUES
     ('any', 'collection', 'Collection', 95, 'duration_ms',   'collection duration',        'ms',    true, 7200, 1),
-    ('any', 'collection', 'Collection', 95, 'cpu_ms',        'collection CPU',             'ms',    true, 7200, 2),
-    ('any', 'collection', 'Collection', 95, 'logical_reads', 'collection logical reads',   'count', true, 7200, 3),
+    ('sqlserver', 'collection', 'Collection', 95, 'cpu_ms',        'collection CPU',           'ms',    true, 7200, 2),
+    ('sqlserver', 'collection', 'Collection', 95, 'logical_reads', 'collection logical reads', 'count', true, 7200, 3),
     ('any', 'collection', 'Collection', 95, 'failed_pct',    'collection failed',          'pct',   true, 7200, 4),
     ('any', 'collection', 'Collection', 95, 'import_ms',     'collection import duration', 'ms',    true, 7200, 5)
   ) AS x(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)$u$;
@@ -800,29 +804,39 @@ LANGUAGE plpgsql STABLE SET jit = off AS $$
 #variable_conflict use_column
 BEGIN
   IF p_family = 'collection' THEN
-    -- p_database: one collection's series; NULL = the instance's (its collections summed)
+    -- p_database: one collection's series; NULL = the instance's: each hour's worst collection, per metric (every
+    -- metric of the family is worse higher). Each point stamped at its hour's end: an open hour has no point yet.
     RETURN QUERY
     WITH h AS (
-      SELECT h.hour, max(greatest(h.last_ok_at, h.last_failure_at, h.last_partial_at)) AS last_run,
+      SELECT h.hour, h.collection,
              sum(h.dur_ms_sum) AS dur, sum(h.ok + h.partial + h.failed) AS ran, sum(h.failed) AS failed,
              sum(h.cpu_ms_sum) AS cpu, sum(h.cpu_runs) AS cpu_runs, sum(h.reads_sum) AS reads,
              sum(h.import_ms_sum) AS imp, sum(h.import_runs) AS imp_runs
         FROM pgvigil.collection_health_hour h
        WHERE h.instance_id = p_instance_id AND (p_database IS NULL OR h.collection = p_database)
-         AND h.hour > p_from - interval '1 hour' AND h.hour <= p_to
-       GROUP BY h.hour
-    ), s AS (
-      SELECT coalesce(h.last_run, h.hour + interval '1 hour' - interval '1 second') AS stamp, h.* FROM h
+         AND h.hour > p_from - interval '1 hour' AND h.hour <= p_to - interval '1 hour'
+       GROUP BY h.hour, h.collection
     )
-    SELECT s.stamp, v.metric, v.value
-      FROM s CROSS JOIN LATERAL (VALUES
-        ('duration_ms', (s.dur::numeric / nullif(s.ran, 0))::double precision),
-        ('cpu_ms', (s.cpu::numeric / nullif(s.cpu_runs, 0))::double precision),
-        ('logical_reads', (s.reads::numeric / nullif(s.cpu_runs, 0))::double precision),
-        ('import_ms', (s.imp::numeric / nullif(s.imp_runs, 0))::double precision),
-        ('failed_pct', (100.0 * s.failed / nullif(s.ran, 0))::double precision)) AS v(metric, value)
-     WHERE v.value IS NOT NULL AND s.stamp > p_from AND s.stamp <= p_to;
+    SELECT h.hour + interval '1 hour', v.metric, max(v.value)
+      FROM h CROSS JOIN LATERAL (VALUES
+        ('duration_ms', (h.dur::numeric / nullif(h.ran, 0))::double precision),
+        ('cpu_ms', (h.cpu::numeric / nullif(h.cpu_runs, 0))::double precision),
+        ('logical_reads', (h.reads::numeric / nullif(h.cpu_runs, 0))::double precision),
+        ('import_ms', (h.imp::numeric / nullif(h.imp_runs, 0))::double precision),
+        ('failed_pct', (100.0 * h.failed / nullif(h.ran, 0))::double precision)) AS v(metric, value)
+     WHERE v.value IS NOT NULL
+     GROUP BY h.hour, v.metric;
   ELSE
     RETURN QUERY SELECT x.at, x.metric, x.value FROM pgvigil.metric_points_0085(p_instance_id, p_family, p_from, p_to, p_lookback, p_database) x;
   END IF;
 END $$;
+
+-- The Collection family's 60-minute floor in the store too (the B6g-4 fold #8): RulePayload refuses a shorter window in
+-- words; a call of import_alert_rule past the API meets this check, which the function's own 'refused by the store'
+-- path turns into a refused row of alert_rule_log. NOT VALID: no stored row is judged (no release carried the family).
+DO $do$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'alert_rules_collection_window' AND conrelid = 'pgvigil.alert_rules'::regclass) THEN
+    ALTER TABLE pgvigil.alert_rules ADD CONSTRAINT alert_rules_collection_window
+      CHECK (metric NOT LIKE 'collection.%' OR for_minutes >= 60) NOT VALID;
+  END IF;
+END $do$;

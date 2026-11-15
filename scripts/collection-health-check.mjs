@@ -363,8 +363,9 @@ const allRows = await api({});
 }
 
 // CH29 / CH30 (B6g-4, N30 / N31, design G5): the Metrics page's Collection family - hidden until 'Collection Metrics' is
-// ticked (kept per browser), then its five counters from the hour rows; its picker lists the instance's collections and
-// a pick cuts the family's read by that collection (the address's mcol, apart from the Database family's mdb)
+// ticked (kept per browser, or for the page with storage off: CH31), then its counters from the hour rows (three on a
+// PostgreSQL instance); its picker lists the instance's collections, a pick cuts the family's read by that collection
+// (the address's mcol, apart from the Database family's mdb), 'the worst collection' takes it out, a range change keeps it
 {
   const pgi = insts.find(r => String(r.name ?? '').startsWith('demo-') && (r.engine ?? 'postgres') === 'postgres');
   const metricsAt = async hash => {
@@ -383,23 +384,56 @@ const allRows = await api({});
     say(!!before && !before.tabs.includes('Collection') && !before.ticked && !!after && after.tabs.includes('Collection') && after.stored === '1',
       'CH29 the Collection family hidden until Collection Metrics is ticked, the tick kept', `before [${before?.tabs?.join(', ')}] ticked ${before?.ticked} | after [${after?.tabs?.join(', ')}] stored ${after?.stored}`);
     const fam = await metricsAt(`#/counters?i=${pgi.instance_id}&w=24h&kind=collection`);
-    const grid = await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')][0]; if (!t) return null;
+    // the picker's own options (the B6g-4 fold #10: the options of every select in main were read)
+    const PICK = `document.querySelector('main select[aria-label="Collection: collection"]')`;
+    const gridOf = `(() => { const t = [...document.querySelectorAll('main table.grid')][0]; if (!t) return null;
       const heads = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim().toLowerCase());
-      return { rows: t.querySelectorAll('tbody tr').length, opts: [...document.querySelectorAll('main select')].flatMap(s => [...s.options].map(o => o.value)).filter(Boolean) }; })()`);
+      const ci = heads.indexOf('collection');
+      return { rows: t.querySelectorAll('tbody tr').length, heads,
+        cells: ci < 0 ? [] : [...t.querySelectorAll('tbody tr')].map(tr => tr.children[ci]?.textContent.trim()),
+        opts: [...(${PICK}?.options ?? [])].map(o => o.value).filter(Boolean) }; })()`;
+    const grid = await ev(gridOf);
     const pick = grid?.opts?.includes('activity') ? 'activity' : grid?.opts?.[0];
-    let cutOk = false, cutSaid = 'no collection to pick';
+    const choose = v => ev(`(() => { const s = ${PICK}; if (!s) return false; s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event('change')); return true; })()`);
+    let cutOk = false, cutSaid = 'no collection to pick', allOk = false, allSaid = 'no collection to pick', keepOk = false, keepSaid = 'no collection to pick';
     if (pick) {
-      await ev(`(() => { const s = [...document.querySelectorAll('main select')].find(x => [...x.options].some(o => o.value === ${JSON.stringify(pick)})); if (s) { s.value = ${JSON.stringify(pick)}; s.dispatchEvent(new Event('change')); } })()`);
-      await sleep(2500);
-      const hsh = await ev('location.hash');
-      const rows2 = await ev(`[...document.querySelectorAll('main table.grid tbody tr')].length`);
-      cutOk = route(hsh).q.get('mcol') === pick && !route(hsh).q.get('mdb') && rows2 > 0;
-      cutSaid = `${hsh.slice(0, 120)} | ${rows2} row(s)`;
+      await choose(pick); await sleep(2500);
+      const hsh = await ev('location.hash'); const g2 = await ev(gridOf);
+      // the read cut by the pick: the grid's collection column names it on every row (the fold #10: 'rows > 0' held for any read)
+      cutOk = route(hsh).q.get('mcol') === pick && !route(hsh).q.get('mdb') && (g2?.cells?.length ?? 0) > 0 && g2.cells.every(c => c === pick);
+      cutSaid = `${hsh.slice(0, 120)} | ${g2?.rows} row(s), collection column [${(g2?.cells ?? []).slice(0, 5).join(', ')}]`;
+      // CH30b (the fold #1): 'the worst collection' takes the pick out of the address and the read
+      await choose(''); await sleep(2500);
+      const ha = await ev('location.hash'); const g3 = await ev(gridOf); const selNow = await ev(`${PICK}?.value ?? null`);
+      allOk = !route(ha).q.get('mcol') && !!g3 && !g3.heads.includes('collection') && selNow === '';
+      allSaid = `${ha.slice(0, 120)} | heads [${(g3?.heads ?? []).join(', ')}] | picker '${selNow}'`;
+      // CH30c (the fold #9): a range change keeps the picked collection (the range picker's 'earlier' step, through href())
+      await choose(pick); await sleep(2500);
+      const hp = await ev('location.hash');
+      await ev(`(() => { const b = document.querySelector('.range .range-step'); if (b) b.click(); return !!b; })()`); await sleep(2500);
+      const hr = await ev('location.hash');
+      keepOk = route(hp).q.get('mcol') === pick && route(hr).q.get('mcol') === pick && hr !== hp;
+      keepSaid = `${hp.slice(0, 90)} -> ${hr.slice(0, 120)}`;
     }
-    say(!!fam && fam.heads.includes('Collection') && grid?.rows === 5 && (grid?.opts?.length ?? 0) >= 2, 'CH30 the Collection family: five counters, the instance\'s collections to pick', `${grid?.rows} row(s), ${grid?.opts?.length} collection(s): ${(grid?.opts ?? []).slice(0, 4).join(', ')}`);
+    // a PostgreSQL instance's family: three counters - CPU and logical reads are SQL Server's (the fold #13)
+    say(!!fam && fam.heads.includes('Collection') && grid?.rows === 3 && (grid?.opts?.length ?? 0) >= 2, 'CH30 the Collection family: three counters on PostgreSQL, the instance\'s collections to pick', `${grid?.rows} row(s), ${grid?.opts?.length} collection(s): ${(grid?.opts ?? []).slice(0, 4).join(', ')}`);
     say(cutOk, 'CH30 a picked collection cuts the family\'s read (mcol, never mdb)', cutSaid);
+    say(allOk, 'CH30b \'the worst collection\' takes the pick out', allSaid);
+    say(keepOk, 'CH30c a range change keeps the picked collection', keepSaid);
     await ev(`(() => { try { localStorage.removeItem('pgvigil.metricsCollection'); } catch {} })()`);
-  } else for (const r of ['CH29 the Collection family hidden until Collection Metrics is ticked, the tick kept', 'CH30 the Collection family: five counters, the instance\'s collections to pick', 'CH30 a picked collection cuts the family\'s read (mcol, never mdb)']) say(false, r, 'no demo PostgreSQL instance');
+    // CH31 (the fold #4, the review's BJ3): storage that throws (site data blocked: a script on every new document) -
+    // the tick still shows the family (it cleared itself on the re-render it dispatched, leaving no way in)
+    const sid = await cmd('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const t = () => { throw new DOMException('blocked', 'SecurityError'); };
+      Storage.prototype.getItem = t; Storage.prototype.setItem = t; Storage.prototype.removeItem = t; })()` });
+    const off0 = await metricsAt(`#/counters?i=${pgi.instance_id}&w=24h`);
+    await ev(`document.querySelector('#metrics-collection')?.click()`);
+    await sleep(2500);
+    const off1 = await ev(`(() => ({ tabs: [...document.querySelectorAll('main .subtabs a')].map(a => a.textContent.trim()), ticked: !!document.querySelector('#metrics-collection')?.checked }))()`);
+    await cmd('Page.removeScriptToEvaluateOnNewDocument', { identifier: sid.result?.identifier });
+    say(!!off0 && !off0.tabs.includes('Collection') && !off0.ticked && !!off1 && off1.tabs.includes('Collection') && off1.ticked,
+      'CH31 storage off: the tick still shows the Collection family', `before [${off0?.tabs?.join(', ')}] ticked ${off0?.ticked} | after [${off1?.tabs?.join(', ')}] ticked ${off1?.ticked}`);
+  } else for (const r of ['CH29 the Collection family hidden until Collection Metrics is ticked, the tick kept', 'CH30 the Collection family: three counters on PostgreSQL, the instance\'s collections to pick', 'CH30 a picked collection cuts the family\'s read (mcol, never mdb)',
+    'CH30b \'the worst collection\' takes the pick out', 'CH30c a range change keeps the picked collection', 'CH31 storage off: the tick still shows the Collection family']) say(false, r, 'no demo PostgreSQL instance');
 }
 
 // CH22-CH24 (B6g-3, N42, design G4): DBA Dash's Collection Performance report. CH22 every link of a row per collection

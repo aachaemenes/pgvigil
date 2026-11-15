@@ -15,6 +15,7 @@ import { Ctx, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, showMenu } from './ui';
 import { offBeside } from './ack';
+import { subNoun } from './metricfam';
 
 // note: the page's one visible sentence where rules cannot be written here - every off control of the page shares that
 // reason and points at it (the page that draws the sentence sets it); without one an off control says the reason beside itself
@@ -65,7 +66,7 @@ export function conditionWords(r: Row, unit: unknown = r.unit): string {
 // (warning), 100 (critical) for 5 min on every instance; or when ...' (the dialog's own words per rule)
 // overridden: a narrower rule takes the place of a wider one on what it covers; noChannel: no sender judges the rules
 export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = false): string {
-  const one = (r: Row) => `${name(r)} is ${conditionWords(r).trim()} on ${scopeWords(r.scope, r.tag ?? r.instance_name)}${r.database ? ` (database ${String(r.database)})` : ''}`;
+  const one = (r: Row) => `${name(r)} is ${conditionWords(r).trim()} on ${scopeWords(r.scope, r.tag ?? r.instance_name)}${r.database ? ` (${subNoun(String(r.metric ?? ''))} ${String(r.database)})` : ''}`;
   // a narrower rule on the same metric as a wider one (a tag or an instance rule beside a fleet rule, an instance rule beside a tag rule)
   const narrower = rules.some(n => n.scope !== 'fleet' && rules.some(w => w !== n && w.metric === n.metric && (w.scope === 'fleet' || (w.scope === 'tag' && n.scope === 'instance'))));
   return `pgvigil ${noChannel ? 'would alert (no alert channel is configured, so nothing is sent)' : 'will alert'} when ${rules.map(one).join('; or when ')}`
@@ -146,7 +147,8 @@ export async function ruleDialog(o: RuleDialog) {
   const fixedMetric = o.metric ?? undefined;
   const startMetric = String(r?.metric ?? fixedMetric ?? '');
   const metricSel = el('select', { required: '' });
-  const engines: [string, string][] = [['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server'], ['any', 'Host (both engines)']];
+  // 'any' is both engines' (the Host family and the Collection family's engine-free counters: the B6g-4 fold #7)
+  const engines: [string, string][] = [['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server'], ['any', 'Both engines']];
   for (const [eng, engName] of engines) {
     const fams = [...new Set(cat.filter(c => c.engine === eng).map(c => String(c.family_label)))];
     for (const fam of fams) {
@@ -196,9 +198,9 @@ export async function ruleDialog(o: RuleDialog) {
     instBox.hidden = scope.value !== 'instance';
     dbBox.hidden = !m?.per_database;
     // B6g-4 (N31): the Collection family's sub-series is a collection, and its points are hourly - a window of 60
-    // minutes or more (the server refuses less in words)
+    // minutes or more (the server refuses less in words); empty watches the worst collection each hour (the fold #6)
     const isColl = String(m?.key ?? '').startsWith('collection.');
-    dbBox.firstChild!.textContent = isColl ? 'Collection (empty = every collection summed) ' : 'Database (empty = the whole instance) ';
+    dbBox.firstChild!.textContent = isColl ? 'Collection (empty = the worst collection each hour) ' : 'Database (empty = the whole instance) ';
     mins.min = isColl ? '60' : '0';
     if (isColl && (mins.value.trim() === '' || Number(mins.value) < 60)) mins.value = '60';
   };
@@ -359,7 +361,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'metric', fmt: (v, r) => r.label == null ? `${String(v)} (no longer a metric)` : `${String(r.family_label)}: ${String(r.label)}` },
       { key: 'op', label: 'alert when', fmt: (_v, r) => conditionWords(r) },
       { key: 'scope', label: 'covers', fmt: (v, r) => scopeWords(v, r.tag ?? r.instance_name) },
-      { key: 'database', fmt: v => String(v ?? '') },
+      { key: 'database', label: 'database / collection', fmt: v => String(v ?? '') },
       { key: 'in_force', label: 'in force on', num: true, fmt: (v, r) => r.live && r.enabled ? `${fmtNum(v)} of ${fmtNum(r.covers)}` : '' },
       { key: 'firing', label: 'state', fmt: (v, r) => !r.live || !r.enabled ? ''
         : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
@@ -388,7 +390,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'state', fmt: (v, r) => stateBadge(v, r.held) },
     { key: 'instance' },
     { key: 'metric', fmt: (v, r) => r.label == null ? String(v) : `${String(r.family_label)}: ${String(r.label)}` },
-    { key: 'database', fmt: v => String(v ?? '') },
+    { key: 'database', label: 'database / collection', fmt: v => String(v ?? '') },
     { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => fmtMetric(v, r.unit) },
     { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
     { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' ? '' : fmtTime(v) },
@@ -457,7 +459,7 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
     { key: 'instance' },
     { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : '') },
     { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
-    { key: 'database', fmt: v => String(v ?? '') },
+    { key: 'database', label: 'database / collection', fmt: v => String(v ?? '') },
     { key: 'op', label: 'rule', fmt: (_v, r) => {
       const line = thresholdLine(r);
       if (r.source !== 'rule') return el('span', { title: 'read only: mssql_thresholds in the configuration file sets it (docs/sqlserver-hadr.md)' }, line);
