@@ -812,7 +812,7 @@ if want AF; then
   [[ "$r" == "true|false|ok"* && -z "$r2$r3" ]] && ok "AF hadr-sa (platform aurora, its WAL functions raise): in recovery, no receiver, the read ok ($r); no 'Aurora replica lag', no 'receiver down' on it" \
     || fail "AF hadr-sa: '$r' (expected true|false|ok), 'Aurora replica lag' '$r2', 'receiver down' '$r3' (expected none)"
   q "update pgvigil.instances set is_active = false where instance_id = $AFID" >/dev/null   # it is hadr-s: the later rows read hadr-s itself
-  pq "drop role pgva; drop schema aurora_fake cascade" >/dev/null
+  pq "drop schema aurora_fake cascade; drop role pgva" >/dev/null   # the schema first: its grants to pgva keep the role
   CFG=$OCFG
 fi
 
