@@ -46,16 +46,21 @@
 #  ('marked as text') and Instance Uptime 'opens a dialog or a menu'; on the PostgreSQL instance the properties
 #  'sessions', 'failing collections' and 'last activity sample' are links ('lands on #/activity...' /
 #  '#/collectiondates...'). Any FAIL row is read and its cause named, never argued away.
-#  REVISED 2026-11-15 12:5x PST, before run 5 (run 4's causes read from its fetched outputs; rebased onto main
-#  dfd53d27): the SQL Server instance's Findings grid has a link in every row (its check opens the finding's page,
-#  '#/alert?...k=<key>', a page outside the tab strip; the cells beside it plain 'a grid cell whose row has its link');
-#  % Max Size 'lands on #/dbfiles?i=<id>&w=1h&status=critical%2Cwarning' and its test name on Files over the scope with
-#  the same status; the SQL Server Summary's 'not read yet' names open their page's view (cv=build / databases / alerts /
-#  identity). The walk: a text in a box clipped to a pixel (a legend's Time row, a chip's hidden band word) is not
-#  clicked; the calendar's 'Days are UTC days ...' is a label; a text gone at its turn is clicked at its place in a
-#  fresh read, and only a place that is gone is a 'GONE' line, apart from FAIL. Expected: 'clicks: <n>; 0 FAIL; <g> GONE;
-#  <k> plain' at every scope, no DEAD line, no VOID line (GONE at most 2 % of a scope's clicks, each one printed and
-#  read); the guard below asks the fleet parts of a root / tag run and chip-label, cell-link, grid of an instance run.
+#  REVISED 2026-11-15 12:00 PST, before run 5 (run 4's causes read from its fetched outputs; rebased onto main
+#  dfd53d27), the review's fold of 12:2x in: the SQL Server instance's Findings grid has a link in every row (its
+#  check opens the finding's page, '#/alert?...k=<key>', a page outside the tab strip; the cells beside it plain 'a
+#  grid cell whose row has its link'); % Max Size 'lands on #/dbfiles?i=<id>&w=1h&status=critical%2Cwarning' and its
+#  test name on Files over the scope with the same status; the SQL Server Summary's 'not read yet' names open their
+#  page's view (cv=build / databases / alerts / identity). The walk: a text in a box clipped to a pixel (a legend's
+#  Time row, a chip's hidden band word) is not clicked; the calendar's 'Days are UTC days ...' is a label - an
+#  explanation is text: it does nothing on a click and the walk does not ask it to; a text gone at its turn is clicked
+#  at its place in a fresh read (a strip reason on its own instance line only, the strip's 'Show all <n>' and
+#  '+<n> more' pressed first; three reads 1.5 s apart), and only a place in none of them is a 'GONE' line, apart from
+#  FAIL; an instance's Summary counts as drawn by its header and its calendar and a page is clicked once its text
+#  stands still (run 4 waited 20 s a redraw there for a grid only the fleet has). Expected: 'clicks: <n>; 0 FAIL;
+#  <g> GONE; <k> plain' at every scope, no DEAD line, no VOID line (GONE at most 2 % of a scope's clicks, each one
+#  printed and read); the guard below asks the fleet parts of a root / tag run and chip-label, cell-link, grid of an
+#  instance run.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
