@@ -29,7 +29,8 @@ func TestCustomBatch(t *testing.T) {
 		}
 	}
 	if !strings.Contains(customRun, "SET XACT_ABORT ON;") || !strings.Contains(customRun, "BEGIN TRANSACTION;") ||
-		!strings.Contains(customRun, "EXEC sys.sp_executesql @pgvigil_check;") || !strings.Contains(customRun, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;") {
+		!strings.Contains(customRun, "EXEC sys.sp_executesql @pgvigil_check;") || !strings.Contains(customRun, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;") ||
+		!strings.Contains(customRun, "CURRENT_TRANSACTION_ID() <> @pgvigil_tx") || !strings.Contains(customRun, "THROW 50266") {
 		t.Errorf("the batch that holds a check: %s", customRun)
 	}
 }
@@ -57,6 +58,9 @@ func TestCustomErrText(t *testing.T) {
 		want string
 	}{
 		{mssqldb.Error{Number: 266, Message: "Transaction count after EXECUTE ..."}, plain, "the check ended the transaction it ran in"},
+		// the code review's B2: 'COMMIT; BEGIN TRAN' raises pgvigil's own 50266; a bare COMMIT 266 and then 50266 (the last on top)
+		{mssqldb.Error{Number: 50266, Message: "the check ended the transaction it ran in and went on in another"}, plain, "what it changed was not rolled back"},
+		{mssqldb.Error{Number: 50266, All: []mssqldb.Error{{Number: 266}, {Number: 50266}}}, plain, "a COMMIT or a ROLLBACK inside it"},
 		{mssqldb.Error{Number: 2812, Message: "Could not find stored procedure"}, proc, "procedure dbo.check does not exist, or the read login may not see it (Msg 2812)"},
 		{mssqldb.Error{Number: 229, Message: "The EXECUTE permission was denied"}, proc, "GRANT EXECUTE on it to the read login"},
 		{context.DeadlineExceeded, plain, "did not finish within 30 s"},
@@ -136,5 +140,23 @@ func TestCustomResultRow(t *testing.T) {
 	}
 	if _, ok := (customResult{Status: "error", Err: "x"}).row("a")["rows"]; ok {
 		t.Error("a run whose rows are not kept carries rows")
+	}
+}
+
+// the code review's S2 / S3: due only asks; mark records a run when it starts, so a check the fence or the run's
+// deadline kept from running is due again at the next run
+func TestCustomDueMark(t *testing.T) {
+	cc := &customCollector{last: map[string]time.Time{}}
+	c := collect.CustomCheck{Name: "a", Engine: config.EngineSQLServer, SQL: "SELECT 1", Every: config.Duration{Duration: 5 * time.Minute}}
+	now := time.Now()
+	if !cc.due("sql01", c, now) || !cc.due("sql01", c, now.Add(time.Minute)) {
+		t.Fatal("a check never run is due, and asking records nothing")
+	}
+	cc.mark("sql01", c, now)
+	if cc.due("sql01", c, now.Add(time.Minute)) {
+		t.Error("a check run a minute ago with a 5 minute cadence is due")
+	}
+	if !cc.due("sql01", c, now.Add(5*time.Minute)) || !cc.due("sql02", c, now.Add(time.Minute)) {
+		t.Error("a check is due after its cadence, and on another instance")
 	}
 }

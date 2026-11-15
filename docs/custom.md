@@ -116,33 +116,46 @@ custom:
   server (DBA Dash's custom collection), 1 to 3 parts of letters, digits, `_`, `$` and `#`, each part quoted by pgvigil;
   exactly one of the two. `database:` is for a `sql:` check (a procedure names its database in its own name).
 - **The rights are the fence.** SQL Server has no read-only transaction, and a transaction does not hold the DBA's own
-  T-SQL: a `COMMIT` in the text ends it, and a trace it makes outlives the rollback. So before any check the run reads
-  the read login's rights and refuses the whole collection on the instance, naming each right, when the login holds
-  one outside the documented [read login](sqlserver.md#the-login)'s on the server (`VIEW SERVER STATE`, `VIEW ANY
-  DEFINITION`, `CONNECT ANY DATABASE`, `ALTER TRACE`, and the rows SQL Server 2022 splits them into), may impersonate
-  another login, or holds a right that writes in ANY database it can open (a check's T-SQL reaches each of them with
-  `USE` or a three-part name): only `CONNECT`, `SELECT`, `EXECUTE`, `REFERENCES`, `SHOWPLAN` and the `VIEW` rights pass
-  there. A sysadmin, `CONTROL SERVER`, `ALTER ANY CONNECTION`, `bulkadmin` or `db_datawriter` anywhere is refused in
-  those words; a right a later SQL Server adds is refused by its name until pgvigil names it. Custom reports take the
+  T-SQL: a `COMMIT` in the text ends it, and a trace it makes outlives the rollback. So before a check runs (when one
+  is due) the run reads the read login's rights and refuses the whole collection on the instance, naming each right,
+  when the login holds one outside the documented [read login](sqlserver.md#the-login)'s on the server (`VIEW SERVER
+  STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`, `ALTER TRACE`, and the rows SQL Server 2022 splits them into),
+  may impersonate another login, or holds a grant on a login, an endpoint or an availability group but `CONNECT` and
+  `VIEW DEFINITION`; and in EVERY database it can open (a check's T-SQL reaches each of them with `USE` or a
+  three-part name), through its user or any role of it, when it holds a database-wide right but `CONNECT`, `SELECT`,
+  `REFERENCES`, `SHOWPLAN` and the `VIEW` rights - a database-wide `EXECUTE` too: a `sql:` check could run any
+  procedure there, and a `dbo` procedure writes `dbo`'s tables by ownership chaining -, a grant on a schema, an
+  object, a column or another principal but `SELECT`, `REFERENCES`, `VIEW DEFINITION`, `VIEW CHANGE TRACKING` and
+  `EXECUTE` on one procedure (`INSERT ON SCHEMA::dbo`, `UPDATE` on a table, `EXECUTE ON SCHEMA::dbo`), may impersonate
+  another user, or owns a schema that holds an object, or an object. A sysadmin, `CONTROL SERVER`, `ALTER ANY
+  CONNECTION`, `bulkadmin` or `db_datawriter` anywhere is refused in those words; a right a later SQL Server adds is
+  refused by its name until pgvigil names it. Custom reports take the
   same fence ([customreports.md](customreports.md)); community tools keep their own, which refuses a sysadmin alone,
   because they run named procedures pgvigil knows, some of which need rights outside a read-only list (sp_HumanEvents
   makes event sessions).
 - **How a check runs.** Each check on a connection of its own (closed after it, so a `SET`, `CONTEXT_INFO`,
   `SESSION_CONTEXT`, an applock or an `EXECUTE AS` it leaves reaches no other check), as `SET XACT_ABORT ON; BEGIN
-  TRANSACTION; EXEC sys.sp_executesql <the check>; ROLLBACK`, under the session's `READ UNCOMMITTED` (a check never
-  waits on the application, and may read rows not yet committed), at most 30 s each (and the run 10 minutes at most).
+  TRANSACTION; EXEC sys.sp_executesql <the check>; ROLLBACK`, under the collector's session settings (`READ
+  UNCOMMITTED`, a 2 s lock timeout, the deadlock's victim: a check never waits on the application, and may read rows
+  not yet committed), at most 30 s each (and the run 10 minutes at most: at its end the checks run so far are kept and
+  the rest run at the next run).
   Its result is its FIRST result set (a later one is counted in the run's note); its value column takes the integer
   types, `real`, `float`, `decimal`, `numeric`, `money` and `bit`; at most 100 rows, 50 columns and 1,000 characters a
   cell are kept, and the rows only under `query_text: full`, as on PostgreSQL. Unlike PostgreSQL, a batch may hold
-  more than one statement: the transaction and the fence above cover each of them.
-- **A check's error, in words.** A check that ends its own transaction (a `COMMIT` or `ROLLBACK` in it), one that
-  makes, starts, stops or closes a trace (`ALTER TRACE` is the read login's: pgvigil reads `sys.traces` before and
-  after each check and leaves the trace as it is - stopping it is the DBA's hand), a procedure that does not exist
+  more than one statement; the rollback undoes them only while the check stays in its transaction, and the rights
+  above are what keeps any of them from writing.
+- **A check's error, in words.** A check that ends its own transaction (a `COMMIT` or `ROLLBACK` in it: pgvigil
+  compares the transaction's id before and after, so `COMMIT; BEGIN TRAN` is caught too; what it changed before is
+  kept, which is why the rights are the fence), one that makes, starts, stops or closes a trace (`ALTER TRACE` is the
+  read login's: pgvigil reads `sys.traces` before and after each check - after one that failed or ran out of time too,
+  the trace then said with the check's own error - and leaves the trace as it is: stopping it is the DBA's hand), a procedure that does not exist
   (Msg 2812) or that the login may not run (Msg 229: `GRANT EXECUTE` on it to the read login), a write the login may
   not make, a value column that is no number, and a check past its 30 s are each that check's error, shown on its tab
   and raised as a finding.
 - **What the fence does not see.** A procedure's own body is the procedure's: a `dbo` procedure reading or writing
-  `dbo` tables needs only `EXECUTE` (ownership chaining), as in DBA Dash, so review it as the DBA's own code. A write
+  `dbo` tables needs only `EXECUTE` on it (ownership chaining), as in DBA Dash, so review it as the DBA's own code -
+  and a `sql:` check may EXEC any procedure the login holds `EXECUTE` on. A grant the login cannot see is not read
+  (a login without `VIEW ANY DEFINITION`: Azure SQL Database's contained user; not proven). A write
   through an EXISTING linked server whose login mapping holds rights on the remote server is the remote server's and
   is not undone by the local rollback: pgvigil cannot see the mapping.
 - **Not DBA Dash's storage.** DBA Dash puts a collection's rows in a table of the user's (`UserData.<name>`, made by a

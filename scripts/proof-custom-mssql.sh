@@ -13,7 +13,8 @@
 # the proof stops at its first collection when it does not.
 # What it makes, and removes on every exit path the shell can catch: its own SQL Server container (a throwaway sa
 # password made here, never printed), its own repository database pgvigil_st6_<n>; inside the container (gone with
-# it): eight logins, two databases, one table, two procedures, one trace (closed by the proof). A proof killed with
+# it): twelve logins (eleven an instance's, one the target of an impersonation), two databases, two tables, two
+# procedures, two traces (closed by the proof). A proof killed with
 # kill -9 leaves them: the container is pgv-st6-mssql-<n> and the database pgvigil_st6_<n>, both named first.
 #
 # Expected (written before the first run):
@@ -31,15 +32,21 @@
 #     NOT RUN on that version, said; added after run 1): the collection's row in collection_dates
 #     is an error naming the right, and NO custom_results row, for a sysadmin ('role sysadmin'), CONTROL SERVER,
 #     ALTER ANY CONNECTION, IMPERSONATE on sa ('IMPERSONATE on login sa'), bulkadmin ('ADMINISTER BULK OPERATIONS'),
-#     and the documented login with db_datawriter in pgvp_app ('in database pgvp_app DELETE, INSERT, UPDATE'). The documented login
-#     itself is V (it passes).
+#     and the documented login with db_datawriter in pgvp_app ('in database pgvp_app DELETE, INSERT, UPDATE'); added at
+#     the code review's fold (B1, B2): IMPERSONATE on a login whose name holds a dot ('IMPERSONATE on login
+#     pgv.dot_<n>'), INSERT on schema dbo of pgvp_app ('in database pgvp_app INSERT on schema dbo'), UPDATE on
+#     pgvp_app.dbo.target ('in database pgvp_app UPDATE on object dbo.target') and a database-wide EXECUTE in pgvp_app
+#     ('in database pgvp_app EXECUTE'). The documented login itself is V (it passes).
 #  C  a connection per check: c1_set sets CONTEXT_INFO, a SESSION_CONTEXT key and a Session applock; c2_read, run
 #     after it on the same instance in the same run, reads none of them (value 0).
 #  S  c1_set also SETs LOCK_TIMEOUT 5 and USEs pgvp_app: c2_read reads the frame's 2000 and master (value 0).
 #  W  w_insert (an INSERT into pgvp_app.dbo.target, which the login may not write): error, the server's own
 #     permission message; w_commit (COMMIT, then a SELECT): error 'the check ended the transaction it ran in';
+#     w_recommit (COMMIT; BEGIN TRAN; then a SELECT: @@TRANCOUNT as it was, no Msg 266; the fold's B2): the same error;
 #     w_trace (sp_trace_create): error 'made trace <id> (<path>)', and the trace is THERE afterwards (pgvigil left it;
-#     the proof closes it as sa); w_slow (WAITFOR 35 s): error 'did not finish within 30 s'.
+#     the proof closes it as sa); w_tracefail (sp_trace_create, then 1/0; the fold's S1): error 'made trace' with "the
+#     check's own error" and the divide by zero, its trace there too; w_slow (WAITFOR 35 s): error 'did not finish
+#     within 30 s'.
 #  X  x_rows (101 rows): row_count 101, 100 kept, note 'the first 100 of 101 rows kept'; x_cols (51 columns): note
 #     'the first 50 of 51 columns kept'; x_cell (a 2,000-character text): its kept cell exactly 1,000 characters (cut,
 #     no words added); x_dec (decimal 12.50) value 12.5; x_money (money 7.25) 7.25; x_bit (bit 1) 1;
@@ -116,17 +123,19 @@ echo "  $PV"
 
 # the logins: the documented read login, and one per fence row
 declare -A PWS
-LOGINS="mon sa ctl conn imp bulk dw"
+LOGINS="mon sa ctl conn imp bulk dw impd sch obj exe"
 for k in $LOGINS; do PWS[$k]=$(pw); done
 {
   for k in $LOGINS; do printf "CREATE LOGIN [pgv_%s_%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\n" "$k" "$SUF" "${PWS[$k]}"; done
   printf "GO\n"
   # every login but sa's starts as the documented read login
-  for k in mon ctl conn imp bulk dw; do
+  for k in mon ctl conn imp bulk dw impd sch obj exe; do
     printf "GRANT VIEW SERVER STATE TO [pgv_%s_%s]; GRANT VIEW ANY DEFINITION TO [pgv_%s_%s]; GRANT CONNECT ANY DATABASE TO [pgv_%s_%s]; GRANT ALTER TRACE TO [pgv_%s_%s];\n" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF"
     printf "USE msdb; CREATE USER [pgv_%s_%s] FOR LOGIN [pgv_%s_%s]; ALTER ROLE db_datareader ADD MEMBER [pgv_%s_%s];\nUSE master; CREATE USER [pgv_%s_%s] FOR LOGIN [pgv_%s_%s]; GRANT EXECUTE ON master.sys.xp_readerrorlog TO [pgv_%s_%s];\nGO\n" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF" "$k" "$SUF"
   done
   printf "ALTER SERVER ROLE sysadmin ADD MEMBER [pgv_sa_%s];\nGRANT CONTROL SERVER TO [pgv_ctl_%s];\nGRANT ALTER ANY CONNECTION TO [pgv_conn_%s];\nGRANT IMPERSONATE ON LOGIN::[sa] TO [pgv_imp_%s];\nGO\n" "$SUF" "$SUF" "$SUF" "$SUF"
+  # a login whose name holds a dot (HAS_PERMS_BY_NAME reads an unquoted one as two parts: the code review's B1)
+  printf "CREATE LOGIN [pgv.dot_%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\nGRANT IMPERSONATE ON LOGIN::[pgv.dot_%s] TO [pgv_impd_%s];\nGO\n" "$SUF" "$(pw)" "$SUF" "$SUF"
   # the databases: an application database with a table no login may write, and a utility database with the procedures
   cat <<SQL
 CREATE DATABASE pgvp_app;
@@ -136,6 +145,12 @@ USE pgvp_app;
 CREATE TABLE dbo.target (id int);
 CREATE USER [pgv_dw_$SUF] FOR LOGIN [pgv_dw_$SUF];
 ALTER ROLE db_datawriter ADD MEMBER [pgv_dw_$SUF];
+CREATE USER [pgv_sch_$SUF] FOR LOGIN [pgv_sch_$SUF];
+GRANT INSERT ON SCHEMA::dbo TO [pgv_sch_$SUF];
+CREATE USER [pgv_obj_$SUF] FOR LOGIN [pgv_obj_$SUF];
+GRANT UPDATE ON dbo.target TO [pgv_obj_$SUF];
+CREATE USER [pgv_exe_$SUF] FOR LOGIN [pgv_exe_$SUF];
+GRANT EXECUTE TO [pgv_exe_$SUF];
 GO
 USE pgvp_util;
 CREATE TABLE dbo.secret (k nvarchar(40));
@@ -178,6 +193,10 @@ instances:
   - {name: st6-imp-$SUF, engine: sqlserver, dsn: env:MS_IMP, tags: [st6:fence]}
   - {name: st6-bulk-$SUF, engine: sqlserver, dsn: env:MS_BULK, tags: [st6:fence]}
   - {name: st6-dw-$SUF, engine: sqlserver, dsn: env:MS_DW, tags: [st6:fence]}
+  - {name: st6-impd-$SUF, engine: sqlserver, dsn: env:MS_IMPD, tags: [st6:fence]}
+  - {name: st6-sch-$SUF, engine: sqlserver, dsn: env:MS_SCH, tags: [st6:fence]}
+  - {name: st6-obj-$SUF, engine: sqlserver, dsn: env:MS_OBJ, tags: [st6:fence]}
+  - {name: st6-exe-$SUF, engine: sqlserver, dsn: env:MS_EXE, tags: [st6:fence]}
 custom:
   - {name: pg_only, sql: SELECT 1 AS value}
   - {name: v_dbs, engine: sqlserver, sql: "SELECT COUNT(*) AS value FROM sys.databases", warning: 0, tags: [st6:mon, st6:fence]}
@@ -190,7 +209,9 @@ custom:
   - {name: c2_read, engine: sqlserver, tags: [st6:mon], sql: "SELECT CASE WHEN CONTEXT_INFO() IS NULL AND SESSION_CONTEXT(N'pgv') IS NULL AND APPLOCK_MODE('public', N'pgv_st6', 'Session') = 'NoLock' AND @@LOCK_TIMEOUT = 2000 AND DB_NAME() = N'master' THEN 0 ELSE 1 END AS value"}
   - {name: w_insert, engine: sqlserver, tags: [st6:mon], sql: "INSERT INTO pgvp_app.dbo.target VALUES (1); SELECT 1 AS value"}
   - {name: w_commit, engine: sqlserver, tags: [st6:mon], sql: "COMMIT; SELECT 1 AS value"}
+  - {name: w_recommit, engine: sqlserver, tags: [st6:mon], sql: "COMMIT; BEGIN TRANSACTION; SELECT 1 AS value"}
   - {name: w_trace, engine: sqlserver, tags: [st6:mon], sql: "DECLARE @id int; EXEC sp_trace_create @id OUTPUT, 0, N'/tmp/pgv_st6_$SUF'; SELECT @id AS value"}
+  - {name: w_tracefail, engine: sqlserver, tags: [st6:mon], sql: "DECLARE @id int; EXEC sp_trace_create @id OUTPUT, 0, N'/tmp/pgv_tf_$SUF'; SELECT 1 / 0 AS value"}
   - {name: w_slow, engine: sqlserver, tags: [st6:mon], sql: "WAITFOR DELAY '00:00:35'; SELECT 1 AS value"}
   - {name: x_rows, engine: sqlserver, rule: rows, tags: [st6:mon], sql: "SELECT TOP (101) o.object_id FROM sys.all_objects o ORDER BY o.object_id"}
   - {name: x_cols, engine: sqlserver, rule: rows, tags: [st6:mon], sql: "SELECT $COLS51"}
@@ -230,13 +251,19 @@ ok "C S: after a check that set CONTEXT_INFO, SESSION_CONTEXT, a session applock
 [[ $(res "$MON" w_insert "status") == error && $(res "$MON" w_insert "error") == *"INSERT permission was denied"* ]] || fail "W: w_insert $(res "$MON" w_insert "status || ' ' || coalesce(error, '')")"
 [[ $(sq "SELECT COUNT(*) FROM dbo.target" pgvp_app) == 0 ]] || fail "W: pgvp_app.dbo.target holds a row"
 [[ $(res "$MON" w_commit "status") == error && $(res "$MON" w_commit "error") == *"ended the transaction it ran in"* ]] || fail "W: w_commit $(res "$MON" w_commit "status || ' ' || coalesce(error, '')")"
+[[ $(res "$MON" w_recommit "status") == error && $(res "$MON" w_recommit "error") == *"ended the transaction it ran in"* ]] || fail "W: w_recommit (COMMIT; BEGIN TRAN) $(res "$MON" w_recommit "status || ' ' || coalesce(error, '')")"
 TR=$(res "$MON" w_trace "error")
 [[ $(res "$MON" w_trace "status") == error && $TR == *"made trace "*"pgv_st6_$SUF"* && $TR == *"pgvigil leaves it as it is"* ]] || fail "W: w_trace $(res "$MON" w_trace "status || ' ' || coalesce(error, '')")"
 TID=$(sq "SELECT id FROM sys.traces WHERE path LIKE N'%pgv_st6_$SUF%'")
 [[ -n $TID ]] || fail "W: the trace w_trace made is not there (pgvigil must leave it)"
 sq "EXEC sp_trace_setstatus $TID, 0; EXEC sp_trace_setstatus $TID, 2;" >/dev/null
+TF=$(res "$MON" w_tracefail "error")
+[[ $(res "$MON" w_tracefail "status") == error && $TF == *"made trace "*"pgv_tf_$SUF"* && $TF == *"the check's own error"* && $TF == *"Divide by zero"* ]] || fail "W: w_tracefail $(res "$MON" w_tracefail "status || ' ' || coalesce(error, '')")"
+TID2=$(sq "SELECT id FROM sys.traces WHERE path LIKE N'%pgv[_]tf[_]$SUF%'")
+[[ -n $TID2 ]] || fail "W: the trace w_tracefail made is not there (pgvigil must leave it)"
+sq "EXEC sp_trace_setstatus $TID2, 0; EXEC sp_trace_setstatus $TID2, 2;" >/dev/null
 [[ $(res "$MON" w_slow "status") == error && $(res "$MON" w_slow "error") == *"did not finish within 30 s"* ]] || fail "W: w_slow $(res "$MON" w_slow "status || ' ' || coalesce(error, '')")"
-ok "W: an INSERT the login may not make, a COMMIT inside the check, a trace (trace $TID left in place, closed here as sa) and a 35 s wait are each the check's error in words; pgvp_app.dbo.target holds no row"
+ok "W: an INSERT the login may not make, a COMMIT inside the check, a COMMIT; BEGIN TRAN, a trace (trace $TID left in place, closed here as sa), a trace made by a check that then failed (trace $TID2, said with its error) and a 35 s wait are each the check's error in words; pgvp_app.dbo.target holds no row"
 [[ $(res "$MON" x_rows "row_count || ' ' || jsonb_array_length(rows) || ' ' || note") == "101 100 the first 100 of 101 rows kept" ]] || fail "X: x_rows $(res "$MON" x_rows "row_count || ' ' || coalesce(note, '') || ' ' || coalesce(error, '')")"
 [[ $(res "$MON" x_cols "jsonb_array_length(columns)") == 50 && $(res "$MON" x_cols "note") == *"the first 50 of 51 columns kept"* ]] || fail "X: x_cols $(res "$MON" x_cols "coalesce(note, '') || ' ' || coalesce(error, '')")"
 CL=$(res "$MON" x_cell "length(rows->0->>0)")
@@ -249,7 +276,8 @@ ok "X: 101 rows -> 100 kept, 51 columns -> 50, a 2,000-character cell kept at $C
 ok "E: the PostgreSQL check pg_only is on no SQL Server instance"
 
 echo "--- F: the fence, one login at a time"
-for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" "imp|IMPERSONATE on login sa" "bulk|ADMINISTER BULK OPERATIONS" "dw|in database pgvp_app DELETE, INSERT, UPDATE"; do
+for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" "imp|IMPERSONATE on login sa" "bulk|ADMINISTER BULK OPERATIONS" "dw|in database pgvp_app DELETE, INSERT, UPDATE" \
+  "impd|IMPERSONATE on login pgv.dot_$SUF" "sch|in database pgvp_app INSERT on schema dbo" "obj|in database pgvp_app UPDATE on object dbo.target" "exe|in database pgvp_app EXECUTE"; do
   k=${pair%%|*}; want=${pair#*|}; inst=st6-$k-$SUF
   [[ $k == bulk && -z $BULK_OK ]] && continue
   collect "$inst"
@@ -257,7 +285,7 @@ for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" 
   [[ ${st%%|*} == error && $st == *"custom checks refused on this instance"*"$want"* ]] || fail "F: $k: $st; $(tail -2 "$OUT")"
   [[ $(q "select count(*) from pgvigil.custom_results r join pgvigil.instances i using (instance_id) where i.name = '$inst'") == 0 ]] || fail "F: $k: a check ran"
 done
-ok "F: refused by name, no check run: a sysadmin, CONTROL SERVER, ALTER ANY CONNECTION, IMPERSONATE on sa, bulkadmin, and db_datawriter in pgvp_app"
+ok "F: refused by name, no check run: a sysadmin, CONTROL SERVER, ALTER ANY CONNECTION, IMPERSONATE on sa, bulkadmin, db_datawriter in pgvp_app, IMPERSONATE on a dotted login, INSERT on a schema, UPDATE on a table and a database-wide EXECUTE"
 
 echo "--- R: the store and the page's read"
 [[ $(q "select count(*) from pgvigil.custom_report() where engine = 'sqlserver' and instance = '$MON'") -ge 20 ]] || fail "R: custom_report(): $(q "select count(*) from pgvigil.custom_report() where engine = 'sqlserver'") SQL Server rows"

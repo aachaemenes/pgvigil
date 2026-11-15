@@ -13,9 +13,11 @@ package mssql
 //     that writes in ANY database it can open (a check's own T-SQL reaches every one: USE, a three-part name);
 //   - each check runs on a CONNECTION OF ITS OWN, closed after it, so nothing a check leaves on its session reaches the
 //     next one; inside it: SET XACT_ABORT ON; BEGIN TRANSACTION; EXEC sys.sp_executesql @check; then a rollback;
-//   - after it the run reads sys.traces again: a trace the check made, started or stopped is the check's error
-//     (pgvigil never stops or closes one: that is the DBA's hand); a check that ended its transaction (Msg 266) is its
-//     error too.
+//   - after it the run reads sys.traces again, whatever the check's end (an error, its deadline): a trace the check
+//     made, started or stopped is the check's error (pgvigil never stops or closes one: that is the DBA's hand); a
+//     check that ended its transaction is its error too - Msg 266, or a transaction id other than the one it began in
+//     ('COMMIT; BEGIN TRAN' leaves @@TRANCOUNT as it was: pgvigil's own Msg 50266). What it wrote before is kept: the
+//     rights above are what keeps a check from writing, the ids only say that it ended its transaction.
 //
 // A check's result is its FIRST result set: the value of its value column (or its row count), at most
 // collect.CustomMaxRows rows kept (only under query_text full), each cell capped; a later result set is counted in its
@@ -37,8 +39,11 @@ import (
 )
 
 const (
-	// customCheckTimeout bounds one check: its connection, its rights read, its batch and its after-read
+	// customCheckTimeout bounds one check: its connection, its traces read, its batch (the fence is read once per run,
+	// on the frame's connection, under the run's own deadline)
 	customCheckTimeout = 30 * time.Second
+	// customAfterTimeout bounds the traces read after a check, on a deadline of its own (the check's may be spent)
+	customAfterTimeout = 10 * time.Second
 	// customMaxTimeout bounds a whole run however many checks are due
 	customMaxTimeout = 10 * time.Minute
 )
@@ -109,24 +114,36 @@ func (*customCollector) Run(context.Context, *sql.Conn, Info) ([]collect.Row, er
 	return nil, errors.New("mssql_custom runs per instance (the frame's InstanceCollector: scripts/proof-st6-wiring.patch)")
 }
 
-// due says whether a check runs at now on the instance, and records the run when it does.
+// due says whether a check runs at now on the instance; mark records its run (only when it starts: a check the run's
+// deadline or a refusal kept from running is due again at the next run).
 func (cc *customCollector) due(inst string, c collect.CustomCheck, now time.Time) bool {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	k := inst + "\x00" + c.Name
-	if t, ok := cc.last[k]; ok && now.Sub(t) < c.Cadence()-collect.CustomSlack && now.After(t) {
-		return false
-	}
-	cc.last[k] = now
-	return true
+	t, ok := cc.last[inst+"\x00"+c.Name]
+	return !ok || now.Sub(t) >= c.Cadence()-collect.CustomSlack || !now.After(t)
+}
+
+func (cc *customCollector) mark(inst string, c collect.CustomCheck, now time.Time) {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	cc.last[inst+"\x00"+c.Name] = now
 }
 
 // RunInstance runs the instance's due checks. The payload is the PostgreSQL collection's (import_custom's): one
 // state row (every check that applies to the instance, due or not, so the repository marks the others gone), one
-// check row per such check (its definition, its sql the batch as it runs), and one result row per check run now.
+// check row per such check (its definition, its sql the batch as it runs), and one result row per check run now. The
+// fence is read only when a check is due; at the run's deadline the rows gathered so far are returned (the checks not
+// started are due again at the next run).
 func (cc *customCollector) RunInstance(ctx context.Context, conn *sql.Conn, info Info, in config.Instance) ([]collect.Row, error) {
 	checks := collect.CustomFor(in)
-	if len(checks) > 0 {
+	now := time.Now()
+	var due []collect.CustomCheck
+	for _, c := range checks {
+		if cc.due(in.Name, c, now) {
+			due = append(due, c)
+		}
+	}
+	if len(due) > 0 {
 		why, err := mssqlread.Fence(ctx, conn)
 		if err != nil {
 			return nil, fmt.Errorf("custom: %w", err)
@@ -147,16 +164,16 @@ func (cc *customCollector) RunInstance(ctx context.Context, conn *sql.Conn, info
 			"compare": c.Compare, "warning": c.Warning, "critical": c.Critical, "targets": c.Targets(),
 		})
 	}
-	now := time.Now()
-	for _, c := range checks {
-		if !cc.due(in.Name, c, now) {
-			continue
+	for i, c := range due {
+		if ctx.Err() != nil {
+			// the frame stores the run as partial with these words (import_custom reads no such row)
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": "mssql_custom",
+				"message": fmt.Sprintf("the run's deadline came before %d of its %d due checks started: they run at the next run", len(due)-i, len(due))})
+			break
 		}
+		cc.mark(in.Name, c, now)
 		res := runCustomCheck(ctx, in, info, c)
 		rows = append(rows, res.row(c.Name))
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
 	}
 	return rows, nil
 }
@@ -173,10 +190,15 @@ func customBatch(c collect.CustomCheck) string {
 	return c.SQL
 }
 
-// customRun is the batch that holds a check: its own transaction, rolled back.
+// customRun is the batch that holds a check: its own transaction, rolled back. CURRENT_TRANSACTION_ID (SQL Server
+// 2016 and later, pgvigil's oldest) is read before and after: a check that ended the transaction and began another
+// leaves @@TRANCOUNT as it was and raises no Msg 266, so pgvigil raises its own (50266).
 const customRun = `SET XACT_ABORT ON;
 BEGIN TRANSACTION;
+DECLARE @pgvigil_tx bigint = CURRENT_TRANSACTION_ID();
 EXEC sys.sp_executesql @pgvigil_check;
+IF @@TRANCOUNT = 0 OR CURRENT_TRANSACTION_ID() <> @pgvigil_tx
+  THROW 50266, N'the check ended the transaction it ran in and went on in another', 1;
 IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;`
 
 // customResult is one run of one check (the PostgreSQL collection's result row).
@@ -207,64 +229,88 @@ func (r customResult) row(name string) collect.Row {
 	return out
 }
 
-// runCustomCheck runs one check on a connection of its own.
+// runCustomCheck runs one check on a connection of its own. Once the batch was sent the traces are read again on
+// every path (the check's error, its deadline): a trace a failed check made is said with its error.
 func runCustomCheck(ctx context.Context, in config.Instance, info Info, c collect.CustomCheck) (res customResult) {
 	start := time.Now()
 	defer func() { res.Took = time.Since(start) }()
 	cctx, cancel := context.WithTimeout(ctx, customCheckTimeout)
 	defer cancel()
-	fail := func(err error) customResult {
+	errText := func(err error) string {
 		// the check's own deadline, whatever error the driver made of its cancel
 		if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			err = context.DeadlineExceeded
 		}
-		return customResult{Status: "error", Err: collect.CapCustomText(collect.MaskCustomText(customErrText(err, c)), collect.CustomMaxError)}
+		return customErrText(err, c)
+	}
+	fail := func(text string) customResult {
+		return customResult{Status: "error", Err: collect.CapCustomText(collect.MaskCustomText(text), collect.CustomMaxError)}
 	}
 	db, conn, err := Connect(cctx, in)
 	if err != nil {
-		return fail(err)
+		return fail(errText(err))
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
 	azureDB := info.EngineEdition == 5
 	var login0 string
 	if err := conn.QueryRowContext(cctx, "SELECT SUSER_SNAME()").Scan(&login0); err != nil {
-		return fail(err)
+		return fail(errText(err))
 	}
 	before, traced, err := readTraces(cctx, conn, azureDB)
 	if err != nil {
-		return fail(err)
+		return fail(errText(err))
 	}
 	keep := in.QueryText == "" || in.QueryText == "full"
-	res, err = readCheck(cctx, conn, c, keep)
-	if err != nil {
-		return fail(err)
+	res, cerr := readCheck(cctx, conn, c, keep, in.QueryText)
+	checkErr := ""
+	if cerr != nil {
+		checkErr = errText(cerr)
 	}
 	if traced {
-		// a check that ran EXECUTE AS left its session as another principal (it cannot be reverted from outside): the
-		// traces are read again on a connection of the read login's own
-		tconn := conn
-		var login1 string
-		if err := conn.QueryRowContext(cctx, "SELECT CASE WHEN SUSER_SNAME() = ORIGINAL_LOGIN() THEN SUSER_SNAME() ELSE N'' END").Scan(&login1); err != nil || login1 != login0 {
-			db2, conn2, err := Connect(cctx, in)
-			if err != nil {
-				return fail(fmt.Errorf("the traces were not read after the check (its session was left as another principal, and a new connection failed): %w", err))
+		if changed, terr := tracesAfter(ctx, conn, in, azureDB, login0, before); terr != nil {
+			if checkErr != "" {
+				return fail(checkErr + "; and " + terr.Error())
 			}
-			defer func() { _ = conn2.Close(); _ = db2.Close() }()
-			tconn = conn2
+			return fail(terr.Error())
+		} else if changed != "" {
+			words := "the check " + changed + ": pgvigil leaves it as it is (stopping or closing it is the DBA's hand: sp_trace_setstatus); a custom check never changes a trace"
+			if checkErr != "" {
+				words += "; the check's own error: " + checkErr
+			}
+			return fail(words)
 		}
-		after, _, err := readTraces(cctx, tconn, azureDB)
-		if err != nil {
-			return fail(fmt.Errorf("the traces were not read after the check: %w", err))
-		}
-		if changed := traceChanges(before, after); changed != "" {
-			return fail(errors.New("the check " + changed + ": pgvigil leaves it as it is (stopping or closing it is the DBA's hand: sp_trace_setstatus); a custom check never changes a trace"))
-		}
+	}
+	if checkErr != "" {
+		return fail(checkErr)
 	}
 	return res
 }
 
+// tracesAfter reads the traces again after a check, on a deadline of its own, and says what the check changed. A
+// session the check left as another principal (EXECUTE AS cannot be reverted from outside), or one its deadline
+// broke, is not read from: a new connection of the read login's own is.
+func tracesAfter(ctx context.Context, conn *sql.Conn, in config.Instance, azureDB bool, login0 string, before map[int]string) (string, error) {
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), customAfterTimeout)
+	defer cancel()
+	tconn := conn
+	var login1 string
+	if err := conn.QueryRowContext(tctx, "SELECT CASE WHEN SUSER_SNAME() = ORIGINAL_LOGIN() THEN SUSER_SNAME() ELSE N'' END").Scan(&login1); err != nil || login1 != login0 {
+		db2, conn2, err := Connect(tctx, in)
+		if err != nil {
+			return "", fmt.Errorf("the traces were not read after the check (its session could not be read from, and a new connection failed): %w", err)
+		}
+		defer func() { _ = conn2.Close(); _ = db2.Close() }()
+		tconn = conn2
+	}
+	after, _, err := readTraces(tctx, tconn, azureDB)
+	if err != nil {
+		return "", fmt.Errorf("the traces were not read after the check: %w", err)
+	}
+	return traceChanges(before, after), nil
+}
+
 // readCheck runs the batch and reads its first result set.
-func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep bool) (customResult, error) {
+func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep bool, queryText string) (customResult, error) {
 	rows, err := conn.QueryContext(ctx, customRun, sql.Named("pgvigil_check", customBatch(c)))
 	if err != nil {
 		return customResult{}, err
@@ -348,7 +394,7 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 	var notes []string
 	switch {
 	case !keep:
-		notes = append(notes, "rows not kept: query_text is not full")
+		notes = append(notes, "rows not kept: query_text is "+queryText)
 	case n > collect.CustomMaxRows:
 		notes = append(notes, fmt.Sprintf("the first %d of %d rows kept", collect.CustomMaxRows, n))
 	}
@@ -404,11 +450,12 @@ func customCell(v any) any {
 // customErrText is a check's error in words: the server's own message, with what the number means for a check.
 func customErrText(err error, c collect.CustomCheck) string {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Sprintf("the check did not finish within %d s (its connection, its rights read and its batch): stopped", int(customCheckTimeout.Seconds()))
+		return fmt.Sprintf("the check did not finish within %d s (its connection, its traces read and its batch): stopped", int(customCheckTimeout.Seconds()))
+	}
+	if mssqlread.HasErrorNumber(err, 266, 50266) {
+		return "the check ended the transaction it ran in (a COMMIT or a ROLLBACK inside it): a custom check is read only, and what it changed was not rolled back - " + err.Error()
 	}
 	switch mssqlread.ErrorNumber(err) {
-	case 266:
-		return "the check ended the transaction it ran in (a COMMIT or a ROLLBACK inside it): a custom check is read only, and what it changed after that was not rolled back - " + err.Error()
 	case 2812:
 		if c.Procedure != "" {
 			return fmt.Sprintf("procedure %s does not exist, or the read login may not see it (Msg 2812): create it, and GRANT EXECUTE on it to the read login", c.Procedure)

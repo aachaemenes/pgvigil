@@ -44,10 +44,14 @@ const sqlCustomReport = `SELECT * FROM pgvigil.custom_report()`
 // another fence: internal/mssql/custom.go)
 const sqlCustomInstance = `SELECT engine FROM pgvigil.instances WHERE instance_id = $1`
 
+// sqlCustomFleet says whether the fleet holds a SQL Server instance: the report's empty words name the SQL Server form
+// only then
+const sqlCustomFleet = `SELECT EXISTS (SELECT 1 FROM pgvigil.instances WHERE engine = 'sqlserver' AND is_active) AS sqlserver`
+
 // Custom serves one instance's Custom tab, or the fleet's Custom report without instance.
 func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("instance") == "" {
-		s.multi(w, r, []part{{"report", sqlCustomReport, nil}})
+		s.multi(w, r, []part{{"report", sqlCustomReport, nil}, {"fleet", sqlCustomFleet, nil}})
 		return
 	}
 	id, from, to, err := params(r, true)

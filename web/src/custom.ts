@@ -78,9 +78,10 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
     tile('not run in 2 cadences', fmtNum(late), late ? 'warn' : 'ok')));
   sec.append(el('p', { class: 'meta' },
     (ms ? 'Each check is the DBA\'s own T-SQL from the configuration (its sql:, or the EXEC of its procedure:), run by the collector as the instance\'s read login, '
-      + 'each on a connection of its own, inside a transaction that is rolled back, 30 s at most. The collection runs only while that login holds no right beyond the '
-      + 'documented read login\'s (on the server, or a right that writes in any database it can open): the rights, not the transaction, keep a check from writing. '
-      + 'A check that ends its transaction, or makes, starts or stops a trace, is shown failed (pgvigil leaves the trace as it is). Its result is its first result set. '
+      + 'each on a connection of its own, inside a transaction that is rolled back, under READ UNCOMMITTED (it never waits on the application, and may read rows not yet committed), 30 s at most. '
+      + 'The collection runs only while that login holds no right beyond the documented read login\'s (on the server, or a right that writes in any database it can open: '
+      + 'a database-wide EXECUTE, a grant on a schema or an object, a schema it owns): the rights, not the transaction, keep a check from writing. '
+      + 'A check that ends its transaction (what it changed before is kept), or makes, starts or stops a trace, is shown failed (pgvigil leaves the trace as it is). Its result is its first result set. '
       : 'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
       + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. ')
     + 'A value check judges its value column (or the column named value, else the first) of the first row; a row-count check judges the rows returned. '
@@ -117,7 +118,9 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
 // customReportView: every check of the fleet with its latest run, the worst first (keep narrows it to a tag folder;
 // instLink makes the instance name a link to its Custom tab).
 export async function customReportView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
-  const d = await get<Record<'report', Table | null>>('custom');
+  const d = await get<Record<'report' | 'fleet', Table | null>>('custom');
+  // the SQL Server form is named only to a fleet that holds a SQL Server instance (the wording rule)
+  const fleetMs = rowsOf(d.fleet)[0]?.sqlserver === true;
   let rows = withRank(rowsOf(d.report));
   if (keep) rows = rows.filter(keep);
   const count = (s: string) => rows.filter(r => r.status === s).length;
@@ -137,5 +140,6 @@ export async function customReportView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },
       { key: 'platform' },
       ...checkCols.filter(c => !['duration_ms', 'description'].includes(c.key)),
-    ], 'No custom check runs in the fleet: the configuration has no custom: list, or it names no instance (a SQL Server check is written with engine: sqlserver).'));
+    ], 'No custom check runs in the fleet: the configuration has no custom: list, or it names no instance'
+      + (fleetMs ? ' (a SQL Server check is written with engine: sqlserver, or as a procedure:).' : '.')));
 }

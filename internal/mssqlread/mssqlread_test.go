@@ -86,16 +86,39 @@ func TestAllowlists(t *testing.T) {
 			t.Errorf("ServerAllowed lacks %s", p)
 		}
 	}
-	for _, p := range []string{"CONTROL SERVER", "ALTER ANY CONNECTION", "ALTER ANY AVAILABILITY GROUP", "ALTER ANY SERVER AUDIT", "ADMINISTER BULK OPERATIONS", "ALTER SERVER STATE", "IMPERSONATE ANY LOGIN", "role sysadmin", "IMPERSONATE on login sa"} {
+	for _, p := range []string{"CONTROL SERVER", "ALTER ANY CONNECTION", "ALTER ANY AVAILABILITY GROUP", "ALTER ANY SERVER AUDIT", "ADMINISTER BULK OPERATIONS", "ALTER SERVER STATE", "IMPERSONATE ANY LOGIN", "role sysadmin", "IMPERSONATE on login sa", "ALTER on login app", "CONTROL on endpoint Mirroring"} {
 		if ServerAllowed[p] {
 			t.Errorf("ServerAllowed takes %s", p)
 		}
 	}
-	for p, ok := range map[string]bool{"CONNECT": true, "SELECT": true, "EXECUTE": true, "SHOWPLAN": true, "REFERENCES": true, "VIEW DATABASE STATE": true, "VIEW DEFINITION": true,
-		"INSERT": false, "UPDATE": false, "DELETE": false, "ALTER": false, "CONTROL": false, "CREATE TABLE": false, "BACKUP DATABASE": false, "TAKE OWNERSHIP": false,
+	// the code review's B2: a database-wide EXECUTE and the securable rows the read words refuse
+	for p, ok := range map[string]bool{"CONNECT": true, "SELECT": true, "SHOWPLAN": true, "REFERENCES": true, "VIEW DATABASE STATE": true, "VIEW DEFINITION": true,
+		"EXECUTE": false, "INSERT on schema dbo": false, "UPDATE on object dbo.t": false, "EXECUTE on schema dbo": false, "owner of schema app": false,
+		"owner of object dbo.t": false, "RECEIVE on service_queue 5": false, "INSERT": false, "UPDATE": false, "DELETE": false, "ALTER": false, "CONTROL": false, "CREATE TABLE": false, "BACKUP DATABASE": false, "TAKE OWNERSHIP": false,
 		"KILL DATABASE CONNECTION": false, "IMPERSONATE on user dbo": false, "ALTER ANY SCHEMA": false, "VIEWER": false} {
 		if DatabaseAllowed(p) != ok {
 			t.Errorf("DatabaseAllowed(%q) = %v", p, !ok)
 		}
+	}
+}
+
+// TestFenceText: the code review's B1 (a dotted name read as two parts by HAS_PERMS_BY_NAME) and the every-database read
+// made from the one database text.
+func TestFenceText(t *testing.T) {
+	for name, q := range map[string]string{"server": sqlServerRights, "database": sqlDatabaseRights} {
+		if strings.Contains(q, "HAS_PERMS_BY_NAME(p.name") || !strings.Contains(q, "HAS_PERMS_BY_NAME(QUOTENAME(p.name)") {
+			t.Errorf("the %s read passes an unquoted name to HAS_PERMS_BY_NAME", name)
+		}
+	}
+	if !strings.Contains(sqlEveryDatabaseRights, strings.ReplaceAll(sqlDatabaseRights, "'", "''")) {
+		t.Error("the every-database read is not the one database read")
+	}
+	for _, w := range []string{"sys.user_token", "sys.database_permissions", "sys.schemas"} {
+		if !strings.Contains(sqlDatabaseRights, w) {
+			t.Errorf("the database read lacks %s", w)
+		}
+	}
+	if !strings.Contains(sqlServerRights, "sys.server_permissions") || !strings.Contains(sqlServerRights, "sys.login_token") {
+		t.Error("the server read lacks the server objects' grants")
 	}
 }

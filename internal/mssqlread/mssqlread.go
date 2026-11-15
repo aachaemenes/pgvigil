@@ -154,40 +154,72 @@ var ServerAllowed = map[string]bool{
 	"VIEW SERVER SECURITY STATE": true, "VIEW SERVER STATE": true,
 }
 
-// DatabaseAllowed says whether a row of sys.fn_my_permissions(NULL, 'DATABASE') is a right the DBA's own SQL may run
-// with in that database: CONNECT, SELECT, EXECUTE (a procedure's own body is the procedure's: docs/custom.md),
-// REFERENCES, SHOWPLAN and every VIEW right. Any other row - INSERT, UPDATE, DELETE, ALTER, CONTROL, a CREATE, BACKUP,
-// TAKE OWNERSHIP, IMPERSONATE (db_owner, db_ddladmin, db_datawriter, db_securityadmin, db_accessadmin and
-// db_backupoperator all answer with one) - refuses: a check that COMMITs the transaction it runs in would write.
+// DatabaseAllowed says whether a row of the database read (sqlDatabaseRights) is a right the DBA's own SQL may run
+// with in that database: the database-wide CONNECT, SELECT, REFERENCES, SHOWPLAN and every VIEW right. Any other row
+// refuses: a database-wide INSERT, UPDATE, DELETE, ALTER, CONTROL, a CREATE, BACKUP, TAKE OWNERSHIP (db_owner,
+// db_ddladmin, db_datawriter, db_securityadmin, db_accessadmin and db_backupoperator all answer with one); a
+// database-wide EXECUTE (a sql: check could run every procedure of the database, and a dbo procedure writes dbo's tables
+// by ownership chaining: a procedure: check needs EXECUTE on its own procedure only); and every row the read words
+// itself ('INSERT on schema dbo', 'owner of schema app', 'IMPERSONATE on user x'): a check that ends the transaction
+// it runs in would write.
 func DatabaseAllowed(perm string) bool {
 	switch perm {
-	case "CONNECT", "SELECT", "EXECUTE", "REFERENCES", "SHOWPLAN":
+	case "CONNECT", "SELECT", "REFERENCES", "SHOWPLAN":
 		return true
 	}
 	return strings.HasPrefix(perm, "VIEW ")
 }
 
 // sqlServerRights is every server right of the session's login that ServerRefusal judges: sysadmin, each row of
-// fn_my_permissions(NULL, 'SERVER') (effective: through server roles and the 2022 fixed roles too), and every other
-// login it may IMPERSONATE (a check could EXECUTE AS LOGIN = that one, as a PostgreSQL check can SET ROLE). Every
-// column in the database's collation: the catalog's names and a literal may differ (Msg 451 on the sandbox, 12:5x).
+// fn_my_permissions(NULL, 'SERVER') (effective: through server roles and the 2022 fixed roles too), every other login
+// it may IMPERSONATE (a check could EXECUTE AS LOGIN = that one, as a PostgreSQL check can SET ROLE; the name quoted:
+// HAS_PERMS_BY_NAME reads an unquoted 'CORP\sql.admin' as a two-part name and answers 0), and every grant on a server
+// object (a login, an endpoint, an availability group) to the login or a server role of its token, but CONNECT and
+// VIEW DEFINITION (public's CONNECT on the TSQL endpoints). Every column in the database's collation: the catalog's
+// names and a literal may differ (Msg 451 on the sandbox, 12:5x).
 const sqlServerRights = `SELECT CAST('role sysadmin' AS nvarchar(300)) COLLATE DATABASE_DEFAULT WHERE IS_SRVROLEMEMBER('sysadmin') = 1
 UNION ALL SELECT CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, 'SERVER')
 UNION ALL SELECT CAST(N'IMPERSONATE on login ' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.server_principals p
- WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> SUSER_ID() AND HAS_PERMS_BY_NAME(p.name, 'LOGIN', 'IMPERSONATE') = 1`
+ WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> SUSER_ID() AND HAS_PERMS_BY_NAME(QUOTENAME(p.name), 'LOGIN', 'IMPERSONATE') = 1
+UNION ALL SELECT CAST(sp.permission_name COLLATE DATABASE_DEFAULT + N' on ' + CASE sp.class
+   WHEN 101 THEN N'login ' + ISNULL(SUSER_NAME(sp.major_id) COLLATE DATABASE_DEFAULT, CAST(sp.major_id AS nvarchar(20)))
+   WHEN 105 THEN N'endpoint ' + ISNULL((SELECT e.name COLLATE DATABASE_DEFAULT FROM sys.endpoints e WHERE e.endpoint_id = sp.major_id), CAST(sp.major_id AS nvarchar(20)))
+   ELSE LOWER(sp.class_desc COLLATE DATABASE_DEFAULT) + N' ' + CAST(sp.major_id AS nvarchar(20)) END AS nvarchar(300)) COLLATE DATABASE_DEFAULT
+  FROM sys.server_permissions sp
+ WHERE sp.class <> 100 AND sp.state IN ('G', 'W') AND sp.grantee_principal_id IN (SELECT t.principal_id FROM sys.login_token t)
+   AND sp.permission_name NOT IN ('CONNECT', 'VIEW DEFINITION', 'IMPERSONATE')`
 
 // sqlDatabaseRights is the same in one database (run there by its own sp_executesql): each row of
-// fn_my_permissions(NULL, 'DATABASE'), and every other user the session may IMPERSONATE there.
+// fn_my_permissions(NULL, 'DATABASE'); every other user the session may IMPERSONATE there (the name quoted); every
+// grant on a securable of the database (an object or a column, a schema, a principal, a queue, a key ...) to the user
+// or a role of its token but SELECT, REFERENCES, VIEW DEFINITION, VIEW CHANGE TRACKING and an object's EXECUTE (a
+// procedure: check's own grant); and every schema it owns that holds an object, and every object it owns (an owner
+// writes what it owns: ALTER, INSERT, UPDATE, DELETE need no grant). A fixed role owns an empty schema of its name
+// (db_datareader's): an empty schema is no write without a database-wide CREATE, read above.
 const sqlDatabaseRights = `SELECT CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, 'DATABASE')
 UNION ALL SELECT CAST(N'IMPERSONATE on user ' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.database_principals p
- WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(p.name, 'USER', 'IMPERSONATE') = 1`
+ WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(QUOTENAME(p.name), 'USER', 'IMPERSONATE') = 1
+UNION ALL SELECT CAST(dp.permission_name COLLATE DATABASE_DEFAULT + N' on ' + CASE dp.class
+   WHEN 1 THEN N'object ' + ISNULL(OBJECT_SCHEMA_NAME(dp.major_id) COLLATE DATABASE_DEFAULT + N'.' + OBJECT_NAME(dp.major_id) COLLATE DATABASE_DEFAULT, CAST(dp.major_id AS nvarchar(20)))
+   WHEN 3 THEN N'schema ' + ISNULL(SCHEMA_NAME(dp.major_id) COLLATE DATABASE_DEFAULT, CAST(dp.major_id AS nvarchar(20)))
+   WHEN 4 THEN N'principal ' + ISNULL(USER_NAME(dp.major_id) COLLATE DATABASE_DEFAULT, CAST(dp.major_id AS nvarchar(20)))
+   ELSE LOWER(dp.class_desc COLLATE DATABASE_DEFAULT) + N' ' + CAST(dp.major_id AS nvarchar(20)) END AS nvarchar(300)) COLLATE DATABASE_DEFAULT
+  FROM sys.database_permissions dp
+ WHERE dp.class > 0 AND dp.state IN ('G', 'W') AND dp.grantee_principal_id IN (SELECT t.principal_id FROM sys.user_token t)
+   AND dp.permission_name NOT IN ('SELECT', 'REFERENCES', 'VIEW DEFINITION', 'VIEW CHANGE TRACKING', 'IMPERSONATE')
+   AND NOT (dp.class = 1 AND dp.permission_name = 'EXECUTE')
+UNION ALL SELECT CAST(N'owner of schema ' + s.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.schemas s
+ WHERE s.principal_id IN (SELECT t.principal_id FROM sys.user_token t) AND EXISTS (SELECT 1 FROM sys.objects o WHERE o.schema_id = s.schema_id)
+UNION ALL SELECT CAST(N'owner of object ' + SCHEMA_NAME(o.schema_id) + N'.' + o.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.objects o
+ WHERE o.principal_id IN (SELECT t.principal_id FROM sys.user_token t)`
 
 // sqlEveryDatabaseRights is sqlDatabaseRights in every database the session can open, in one batch the server loops
 // (a check's own T-SQL can reach any of them: USE, or a three-part name). A database it cannot open now (offline,
 // restoring, a secondary that refuses reads) answers one 'NOT READ: <the error>' row and is skipped: a check run as
 // the same login cannot open it either; when NO database answers its rights the fence fails (an error the loop
-// swallowed for each one must never read as "nothing to refuse").
-const sqlEveryDatabaseRights = `SET NOCOUNT ON;
+// swallowed for each one must never read as "nothing to refuse"). The read is sqlDatabaseRights itself, its quotes
+// doubled: one text for both reads.
+var sqlEveryDatabaseRights = `SET NOCOUNT ON;
 DECLARE @pgv_r TABLE (db sysname, p nvarchar(300));
 DECLARE @pgv_db sysname, @pgv_s nvarchar(max);
 DECLARE pgv_c CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1;
@@ -195,9 +227,9 @@ OPEN pgv_c;
 FETCH NEXT FROM pgv_c INTO @pgv_db;
 WHILE @@FETCH_STATUS = 0
 BEGIN
-  SET @pgv_s = N'USE ' + QUOTENAME(@pgv_db) + N'; SELECT DB_NAME() COLLATE DATABASE_DEFAULT, CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, ''DATABASE'')
-    UNION ALL SELECT DB_NAME() COLLATE DATABASE_DEFAULT, CAST(N''IMPERSONATE on user '' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.database_principals p
-     WHERE p.type IN (''S'', ''U'', ''G'', ''E'', ''X'', ''C'', ''K'') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(p.name, ''USER'', ''IMPERSONATE'') = 1;';
+  SET @pgv_s = N'USE ' + QUOTENAME(@pgv_db) + N'; SELECT DB_NAME() COLLATE DATABASE_DEFAULT, x.p FROM (
+` + strings.ReplaceAll(sqlDatabaseRights, "'", "''") + `
+) AS x (p);';
   BEGIN TRY
     INSERT @pgv_r EXEC (@pgv_s);
   END TRY
@@ -209,6 +241,9 @@ END
 CLOSE pgv_c;
 DEALLOCATE pgv_c;
 SELECT db, p FROM @pgv_r;`
+
+// readWords is what passes in a database, as a refusal says it.
+const readWords = "the database-wide CONNECT, SELECT, REFERENCES, SHOWPLAN and VIEW rights; SELECT, REFERENCES and VIEW DEFINITION on a schema or an object, EXECUTE on a procedure; no schema holding objects owned"
 
 // DatabasesRefusal reads the login's rights in every database it can open and says why the DBA's own SQL may not run
 // as it ("" = it may): each database where it holds a right outside DatabaseAllowed, with those rights.
@@ -260,7 +295,7 @@ func DatabasesRefusal(ctx context.Context, conn *sql.Conn) (string, error) {
 		sort.Strings(ps)
 		parts = append(parts, "in database "+db+" "+strings.Join(ps, ", "))
 	}
-	return "the read login holds " + strings.Join(parts, "; ") + ": the DBA's own SQL can reach every database the login opens (USE, a three-part name), so it runs only where the login can read and not write in each (CONNECT, SELECT, EXECUTE, REFERENCES, SHOWPLAN, VIEW ...)", nil
+	return "the read login holds " + strings.Join(parts, "; ") + ": the DBA's own SQL can reach every database the login opens (USE, a three-part name), so it runs only where the login can read and not write in each (" + readWords + ")", nil
 }
 
 // ServerRefusal reads the login's server rights and says why the DBA's own SQL may not run as it ("" = it may): every
@@ -335,7 +370,7 @@ func DatabaseRefusal(ctx context.Context, conn *sql.Conn, database string) (stri
 		return "", nil
 	}
 	sort.Strings(extra)
-	return "in " + where + " the read login holds " + strings.Join(extra, ", ") + ": the DBA's own SQL runs only where the login can read and not write (CONNECT, SELECT, EXECUTE, REFERENCES, SHOWPLAN, VIEW ...)", nil
+	return "in " + where + " the read login holds " + strings.Join(extra, ", ") + ": the DBA's own SQL runs only where the login can read and not write (" + readWords + ")", nil
 }
 
 // Fence is the one check before the DBA's own SQL runs as the read login on a SQL Server: the server rights
@@ -366,4 +401,25 @@ func ErrorNumber(err error) int32 {
 		return me.Number
 	}
 	return 0
+}
+
+// HasErrorNumber says whether the server raised any of nums among the errors inside err (the driver keeps every error
+// of a request, the last one on top: a Msg 266 and pgvigil's own 50266 after it come as one error).
+func HasErrorNumber(err error, nums ...int32) bool {
+	var me mssqldb.Error
+	if !asMSSQL(err, &me) {
+		return false
+	}
+	all := me.All
+	if len(all) == 0 {
+		all = []mssqldb.Error{me}
+	}
+	for _, e := range all {
+		for _, n := range nums {
+			if e.Number == n {
+				return true
+			}
+		}
+	}
+	return false
 }
