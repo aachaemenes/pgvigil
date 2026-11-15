@@ -240,9 +240,21 @@ import json, os, sys
 d = json.load(open(sys.argv[1])); tot = d['total']; by = d['by'] or []
 bad = []
 hand_total, hand_system = (int(x) for x in os.environ['HT'].split('='))
-mon = [b for b in by if b['dimension'] == 'login' and b['name'] == os.environ['MON']]
-mon_n = sum(b['sessions'] for b in mon)
-# P1b: the total is every session (the monitor login's own read session in it, the hand read's not)
+# the hand read's sessions per login (the monitor login left out: its read session exists only during the stored read)
+hl = {l: int(n) for l, n in (x.rsplit('=', 1) for x in os.environ['HL'].split('\n') if '=' in x)}
+lgn = [b for b in by if b['dimension'] == 'login']
+named_names = {b['name'] for b in lgn if not b['is_other']}
+# each named login (not the monitor) holds the hand read's sessions of that login
+for b in lgn:
+    if not b['is_other'] and b['name'] != os.environ['MON'] and b['sessions'] != hl.get(b['name'], 0):
+        bad.append(f"login {b['name']}: stored {b['sessions']} hand {hl.get(b['name'], 0)}")
+# the monitor's sessions at the read: its named row, or - when its one session ranks past the 50 largest (55 one-session
+# logins tie with it) - 'other' less the hand read's sessions of every unnamed login (first 2022 run: the monitor in 'other')
+mon = [b for b in lgn if not b['is_other'] and b['name'] == os.environ['MON']]
+oth = [b for b in lgn if b['is_other']]
+mon_n = mon[0]['sessions'] if mon else (oth[0]['sessions'] if oth else 0) - sum(n for l, n in hl.items() if l not in named_names)
+# P1b: the total is every session: the hand read's and the monitor login's own read session (pgvigil's own are IN this read)
+if mon_n < 1: bad.append(f"the monitor's own read session is not in the stored read ({mon_n}, {'named' if mon else 'in other'})")
 if tot['sessions'] - mon_n != hand_total: bad.append(f"total {tot['sessions']} - the monitor's {mon_n} != hand {hand_total}")
 if tot['background'] != hand_system: bad.append(f"background {tot['background']} != the hand read's system sessions {hand_system}")
 # A3: every dimension sums to the total (system sessions present, their NULL bucket kept)
