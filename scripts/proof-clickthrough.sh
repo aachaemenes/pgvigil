@@ -112,8 +112,9 @@ echo "== the click map on the same build (scripts/click-check.mjs)"
 # deleted before the page walk, so the walk's rows are not changed by it
 REPO_ALERT=""
 if [[ -z "${PGVIGIL_DEMO_URL:-}" ]]; then
-  [[ $(psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "select count(*) from pgvigil.instances where name = 'pgvigil'") == 0 ]] \
-    || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
+  NPG=$(psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "select count(*) from pgvigil.instances where name = 'pgvigil'") \
+    || fail "the demo's instances could not be read before the repository-wide alert"
+  [[ "$NPG" == 0 ]] || fail "the demo has an instance named pgvigil: the repository-wide alert row cannot be told apart"
   psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, source, setting, value, severity, first_sent_at, last_sent_at)
     values ('demo-spool', 'fx-repo-wide', NULL, 'pgvigil', 'pgvigil collector', 'collector or network', 'collector not seen (fixture)', 'critical', now() - interval '30 minutes', now() - interval '30 minutes')" >/dev/null \
     || fail "the repository-wide alert for the click map"
