@@ -145,6 +145,9 @@ await run('W2', async () => {
   const col = await hideCol('Performance summary', 3);
   const s = await saveAs('p1');
   S.p1 = s.id; S.p1col = col;
+  // the hide above went into this browser's own choices (no view was loaded): cleared, so the rows below see a viewer
+  // whose own layout shows the column - the view's layer alone hides it (the browser is shared by u1 and u2)
+  await P.ev(`Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.')).forEach(k => localStorage.removeItem(k)); 'ok'`);
   await pick(/^\{None\}/); const off = await hiddenCols('Performance summary');
   await pick(/^p1/); const on = await hiddenCols('Performance summary');
   check('W2', !!col && !!s.id && !off.includes(col) && on.includes(col), `hid '${col}', saved p1 (${s.id}); {None}: hidden ${JSON.stringify(off)}; p1: hidden ${JSON.stringify(on)}`);

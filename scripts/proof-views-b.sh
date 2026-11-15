@@ -19,7 +19,9 @@
 #     default); localStorage cleared, 'f1b' picked -> the focused grid (the effective value was saved). W1c a fresh
 #     load of #/summary -> f1 drawn. W1d {None} then a reload -> no default (view=none), the unfocused grid.
 #  W2 Performance Summary: u1 hides a column (the grid's menu 'Hide column <c>'), Save 'p1' -> {None}: the column back;
-#     'p1': hidden again. W2b a reload on p1's address keeps it hidden. W2c a tab away and the Performance Summary tab
+#     'p1': hidden again. [refined after green run 1, before green run 2: the hide went into the browser's own choices,
+#     which {None} rightly gives back; they are cleared after the save, so W2-W2d and W8 see a viewer whose own layout
+#     shows the column] W2b a reload on p1's address keeps it hidden. W2c a tab away and the Performance Summary tab
 #     link back: the layer dropped (the column shown; no default set). W2d u2 opens u1's #/perfsummary?view=<p1> ->
 #     the line 'view <id> is not yours to open: its address applied, its layouts not'. W2e 'p1' opened under a tag folder
 #     over another range -> the column hidden, no 'skipped' line.
