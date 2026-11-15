@@ -164,11 +164,14 @@ func TestReadinessCanceledNotKept(t *testing.T) {
 
 // TestOpenCopiesReadyzOption (B6f4 #3): Open copies the option the serve passes, the serve passes the config's
 // web.readyz_without_login, and nothing else in the package writes the field - TestProbes builds its Server by hand,
-// so a hard-wired 'true' in Open (/readyz open with the login on and the switch off) passed every row
+// so a hard-wired 'true' in Open (/readyz open with the login on and the switch off) passed every row. The review
+// B6f6 #3: the copy is Open's own top-level statement (one tab: a copy under a condition is not it), serve.go's line
+// passes the config's value alone, and the field and the option are written once in the package and the serve
+// command together, whatever their case (o.ReadyzWithoutLogin = true, cfg.Web.ReadyzWithoutLogin = true)
 func TestOpenCopiesReadyzOption(t *testing.T) {
 	for _, c := range []struct{ file, want, says string }{
-		{"web.go", `(?m)^\s*s\.readyzWithoutLogin\s*=\s*o\.ReadyzWithoutLogin\s*$`, "Open does not copy o.ReadyzWithoutLogin into s.readyzWithoutLogin"},
-		{"../../cmd/pgvigil/serve.go", `\bReadyzWithoutLogin:\s*cfg\.Web\.ReadyzWithoutLogin\b`, "serve does not pass cfg.Web.ReadyzWithoutLogin to web.Open"},
+		{"web.go", `(?m)^\ts\.readyzWithoutLogin = o\.ReadyzWithoutLogin$`, "Open does not copy o.ReadyzWithoutLogin into s.readyzWithoutLogin as its own statement"},
+		{"../../cmd/pgvigil/serve.go", `(?m)^\s*ReadyzWithoutLogin:\s*cfg\.Web\.ReadyzWithoutLogin,\s*(?://.*)?$`, "serve does not pass cfg.Web.ReadyzWithoutLogin alone to web.Open"},
 	} {
 		b, err := os.ReadFile(c.file)
 		if err != nil {
@@ -182,6 +185,11 @@ func TestOpenCopiesReadyzOption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cmd, err := filepath.Glob("../../cmd/pgvigil/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, cmd...)
 	writes := 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -191,9 +199,9 @@ func TestOpenCopiesReadyzOption(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		writes += len(regexp.MustCompile(`\breadyzWithoutLogin\s*=[^=]`).FindAllIndex(b, -1))
+		writes += len(regexp.MustCompile(`(?i)\breadyzWithoutLogin\s*=[^=]`).FindAllIndex(b, -1))
 	}
 	if writes != 1 {
-		t.Errorf("readyzWithoutLogin is written %d time(s) in the package, want 1 (Open's copy)", writes)
+		t.Errorf("readyzWithoutLogin / ReadyzWithoutLogin is written %d time(s) in internal/web and cmd/pgvigil, want 1 (Open's copy)", writes)
 	}
 }

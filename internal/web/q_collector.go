@@ -30,8 +30,8 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 // built every arm (B6.2 part c #5). 403b's K3 (an alert channel failing) is read here where its arm is joined: a
 // WIRING line at the join. K3 is alert_findings' arm through alert_channel_findings (never findings': its ck CTE
 // reads findings), so the guard walks the arms of both views and names K3 by its view (TestCollectorFindingsReadsItsArms;
-// TestCollectorFindingsK3AtTheJoin shows it red at the join until K3 and 'pushover quota low' are read here and named
-// in the claim CASE below). The claim ('why') is the collector parents' only.
+// TestCollectorFindingsK3AtTheJoin shows the walk finds both of 403b's views as own arms; TestCollectorFindingsReadsItsArms
+// is red at the join until they are read here and named in the claim CASE below). The claim ('why') is the collector parents' only.
 const sqlCollectorFindings = `
 WITH f AS (
   SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*

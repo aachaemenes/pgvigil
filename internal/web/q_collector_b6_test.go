@@ -31,7 +31,7 @@ func migrationTexts(t *testing.T) []string {
 // viewBody: the body of the last CREATE [OR REPLACE] VIEW pgvigil.<name> [(columns)] AS in srcs (apply order: the one
 // PostgreSQL keeps), to the next blank line after a ';'; "" when none defines it (a table, a function)
 func viewBody(srcs []string, name string) string {
-	head := regexp.MustCompile(`CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+pgvigil\.` + regexp.QuoteMeta(name) + `(?:\s*\([^)]*\))?\s+AS\b`)
+	head := regexp.MustCompile(`CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+pgvigil\.` + regexp.QuoteMeta(name) + `(?:\s*\([^)]*\))?(?:\s+WITH\s*\([^)]*\))?\s+AS\b`)
 	end := regexp.MustCompile(`;\s*\n\s*\n`)
 	body := ""
 	for _, s := range srcs {
@@ -49,17 +49,30 @@ func viewBody(srcs []string, name string) string {
 }
 
 var (
-	armFrom   = regexp.MustCompile(`FROM\s+pgvigil\.(\w+)(\s*\()?`)
-	ownSource = regexp.MustCompile(`'pgvigil (?:collector|repository)'(?:::text)?\s+AS\s+source\b`)
+	armFrom   = regexp.MustCompile(`(?:FROM|JOIN)\s+(?:LATERAL\s+)?pgvigil\.(\w+)(\s*\()?`)
 	anySource = regexp.MustCompile(`'[^']*'(?:::text)?\s+AS\s+source\b`)
+	// an own literal anywhere in a body (a source by name, by position in a column list, in a CASE), less those in a
+	// comparison or an IN list (a filter on the source, never a source) - the review B6f6 #2
+	ownLit = regexp.MustCompile(`'pgvigil (?:collector|repository)'`)
+	ownCmp = regexp.MustCompile(`(?:=|<>|!=)\s*'pgvigil (?:collector|repository)'`)
+	ownIn  = regexp.MustCompile(`(?i)\bIN\s*\([^)]*\)`)
 )
+
+// ownSourced: the body writes an own source ('pgvigil collector' / 'pgvigil repository') that is not a filter
+func ownSourced(body string) bool {
+	n := len(ownLit.FindAllStringIndex(body, -1)) - len(ownCmp.FindAllStringIndex(body, -1))
+	for _, in := range ownIn.FindAllString(body, -1) {
+		n -= len(ownLit.FindAllStringIndex(in, -1))
+	}
+	return n > 0
+}
 
 // ownArms (B6f4 #2): the arms of pgvigil.findings AND pgvigil.alert_findings (403b's K3 is alert_findings' arm, never
 // findings': its ck CTE reads findings) whose rows are pgvigil's own - the arm names 'pgvigil collector' or 'pgvigil
 // repository' AS source - followed one level into an arm that names no source of its own (a union of arms, as 403b's
 // alert_channel_findings); missing: those query reads no FROM of; fns: an arm that is a function (its rows cannot be
 // read here: the caller fails on it, never a skip)
-func ownArms(srcs []string, query string) (own, missing, fns []string) {
+func ownArms(srcs []string, query string) (own, missing, fns, inline []string) {
 	seen := map[string]bool{"findings": true, "alert_findings": true}
 	var walk func(body string, depth int)
 	walk = func(body string, depth int) {
@@ -70,16 +83,20 @@ func ownArms(srcs []string, query string) (own, missing, fns []string) {
 			}
 			seen[arm] = true
 			if m[2] != "" {
-				fns = append(fns, arm)
+				// a function the top views read is an arm (its source cannot be read here); one an arm joins LATERAL
+				// for its own rows (mssql_index_verdicts and its kin) is that arm's helper, never an arm
+				if depth == 0 {
+					fns = append(fns, arm)
+				}
 				continue
 			}
 			v := viewBody(srcs, arm)
 			switch {
 			case v == "":
 				// a table: no arm
-			case ownSource.MatchString(v):
+			case ownSourced(v):
 				own = append(own, arm)
-				if !regexp.MustCompile(`FROM\s+pgvigil\.` + arm + `\b`).MatchString(query) {
+				if !regexp.MustCompile(`(?:FROM|JOIN)\s+(?:LATERAL\s+)?pgvigil\.` + arm + `\b`).MatchString(query) {
 					missing = append(missing, arm)
 				}
 			case depth == 0 && !anySource.MatchString(v):
@@ -87,9 +104,15 @@ func ownArms(srcs []string, query string) (own, missing, fns []string) {
 			}
 		}
 	}
-	walk(viewBody(srcs, "findings"), 0)
-	walk(viewBody(srcs, "alert_findings"), 0)
-	return own, missing, fns
+	for _, top := range []string{"findings", "alert_findings"} {
+		body := viewBody(srcs, top)
+		// an own source written in the top view itself (an inline arm): the page cannot read it by an arm's name
+		if ownSourced(body) {
+			inline = append(inline, top)
+		}
+		walk(body, 0)
+	}
+	return own, missing, fns, inline
 }
 
 // TestCollectorFindingsReadsItsArms (B6.2 part c #5; B6f4 #2): the Collector page's findings read every arm of
@@ -105,7 +128,10 @@ func TestCollectorFindingsReadsItsArms(t *testing.T) {
 	if viewBody(srcs, "findings") == "" || viewBody(srcs, "alert_findings") == "" {
 		t.Fatal("no migration defines pgvigil.findings or pgvigil.alert_findings")
 	}
-	own, missing, fns := ownArms(srcs, sqlCollectorFindings)
+	own, missing, fns, inline := ownArms(srcs, sqlCollectorFindings)
+	for _, top := range inline {
+		t.Errorf("pgvigil.%s writes an own source ('pgvigil collector' / 'pgvigil repository') in an inline arm: give it its own view and read that view in sqlCollectorFindings", top)
+	}
 	for _, arm := range missing {
 		t.Errorf("the arm %s gives pgvigil's own findings, and sqlCollectorFindings does not read it", arm)
 	}
@@ -153,20 +179,25 @@ SELECT f.* FROM (SELECT x.* FROM pgvigil.findings x
 // low' on the page are the join's WIRING lines.
 func TestCollectorFindingsK3AtTheJoin(t *testing.T) {
 	srcs := append(migrationTexts(t), k3Join)
-	_, missing, _ := ownArms(srcs, sqlCollectorFindings)
+	// the walk alone (an empty query reads nothing): both of 403b's views are own arms - green before the join and
+	// after it, whatever the page reads (the review B6f6 #1: measured on the live page it turned red once wired)
+	own, missing, _, _ := ownArms(srcs, "")
 	for _, want := range []string{"alert_channel_failing", "alert_channel_quota_low"} {
-		found := false
-		for _, m := range missing {
-			found = found || m == want
+		inOwn, inMissing := false, false
+		for _, m := range own {
+			inOwn = inOwn || m == want
 		}
-		if !found {
-			t.Errorf("at the join the walk does not name %s as unread (missing %v)", want, missing)
+		for _, m := range missing {
+			inMissing = inMissing || m == want
+		}
+		if !inOwn || !inMissing {
+			t.Errorf("at the join the walk does not find %s as an own arm (own %v, unread by an empty query %v)", want, own, missing)
 		}
 	}
 	read := sqlCollectorFindings + `
 UNION ALL SELECT instance_id FROM pgvigil.alert_channel_failing
 UNION ALL SELECT instance_id FROM pgvigil.alert_channel_quota_low`
-	if _, m, _ := ownArms(srcs, read); len(m) != 0 {
+	if _, m, _, _ := ownArms(srcs, read); len(m) != 0 {
 		t.Errorf("a page that reads 403b's two views still misses %v", m)
 	}
 }
@@ -192,5 +223,44 @@ func TestCollectorMinutesLongest(t *testing.T) {
 	}
 	if !strings.Contains(call, "key: 'max_ms'") {
 		t.Errorf("the run duration chart draws no max_ms series: %s", call)
+	}
+}
+
+// ownShapes (the review B6f6 #2): four ways an arm gives pgvigil's own findings that a literal 'AS source' walk missed -
+// a view with a column list naming its source by position, a source built by a CASE, a view reached by a JOIN with a
+// WITH (...) option on its head, and an inline arm of pgvigil.findings itself
+const ownShapes = `CREATE OR REPLACE VIEW pgvigil.x_collist (instance_id, severity, setting, value, source, at) AS
+SELECT NULL::int, 'warning', 'x', 'v', 'pgvigil repository', now() FROM pgvigil.instances;
+
+CREATE OR REPLACE VIEW pgvigil.x_case AS
+SELECT NULL::int AS instance_id, CASE WHEN true THEN 'pgvigil collector' ELSE 'pgvigil repository' END AS source FROM pgvigil.instances;
+
+CREATE OR REPLACE VIEW pgvigil.x_joined WITH (security_barrier) AS
+SELECT NULL::int AS instance_id, 'pgvigil repository'::text AS source FROM pgvigil.instances;
+
+CREATE OR REPLACE VIEW pgvigil.findings AS
+SELECT * FROM pgvigil.x_collist
+UNION ALL SELECT * FROM pgvigil.x_case
+UNION ALL SELECT f.* FROM pgvigil.instances i JOIN pgvigil.x_joined f ON true
+UNION ALL SELECT NULL::int, 'warning', 'purge late', 'x', true, NULL, 'all', 'x', 'pgvigil repository', now() FROM pgvigil.purge_runs;
+
+`
+
+// TestCollectorFindingsOwnShapes (the review B6f6 #2): the walk names every own-source shape - by position, by a CASE,
+// through a JOIN to a view with options - and an inline own arm of pgvigil.findings, which the page cannot read by name
+func TestCollectorFindingsOwnShapes(t *testing.T) {
+	srcs := append(migrationTexts(t), ownShapes)
+	own, missing, _, inline := ownArms(srcs, "")
+	for _, want := range []string{"x_collist", "x_case", "x_joined"} {
+		found := false
+		for _, m := range missing {
+			found = found || m == want
+		}
+		if !found {
+			t.Errorf("the walk does not name %s as an own arm the page does not read (own %v, missing %v)", want, own, missing)
+		}
+	}
+	if len(inline) != 1 || inline[0] != "findings" {
+		t.Errorf("inline own arms %v, want [findings] (the 'purge late' arm written in pgvigil.findings itself)", inline)
 	}
 }
