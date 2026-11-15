@@ -108,12 +108,17 @@ SELECT /* pgvigil mssql_waiting_tasks: PerformanceMonitor's waiting-tasks read (
     statement = LEFT(SUBSTRING(st.text, er.statement_start_offset / 2 + 1,
         CASE WHEN er.statement_end_offset = -1 THEN 2147483647
              ELSE (er.statement_end_offset - er.statement_start_offset) / 2 + 1 END), 4000),
+    -- pgvigil's own session (B24 OWN, 0265): the program and the login together, decided on the server
+    is_own = CAST(CASE WHEN (es.program_name = PROGRAM_NAME() OR es.program_name LIKE N'pgvigil%') AND es.login_name = SUSER_SNAME()
+                        AND es.program_name NOT LIKE N'pgvigil-actions%' THEN 1 ELSE 0 END AS bit),
     server_utc = TODATETIMEOFFSET(SYSUTCDATETIME(), 0)
 FROM sys.dm_os_waiting_tasks AS wt
 LEFT JOIN sys.dm_exec_requests AS er
   ON er.session_id = wt.session_id
 LEFT JOIN sys.databases AS d
   ON d.database_id = er.database_id
+LEFT JOIN sys.dm_exec_sessions AS es
+  ON es.session_id = wt.session_id
 OUTER APPLY sys.dm_exec_sql_text(er.sql_handle) AS st
 WHERE wt.session_id >= 50
 AND   wt.session_id <> @@SPID
