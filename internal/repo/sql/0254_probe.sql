@@ -140,40 +140,54 @@ SELECT w.host AS collector_host, w.instance_id, i.name, w.n, round(w.ms::numeric
  WHERE w.n >= 3 AND w.newest >= now() - interval '8 minutes';
 
 -- collector_pings: per collector host and probed address, its probed minutes of the last 5 of the 20 (answered or not;
--- 'not probed' rows left out): rounds, answered, the answered average and longest in seconds; silent3 = none answered in
--- each of its 3 newest probed minutes, the oldest of them within 6 minutes (only probe_every_minute probes that often)
+-- 'not probed' rows left out) of the per-minute rounds only (probe_every_minute: the review of B24h-1 part b #7, the
+-- lead's 12:4x (a) - the default mode's probes after a failure feed the parent's words, never ping slow or silence):
+-- rounds, answered, the answered average and longest in seconds, the newest probed minute; silent3 = none answered in
+-- each of its 3 newest probed minutes, the oldest of them within 6 minutes
 CREATE OR REPLACE VIEW pgvigil.collector_pings AS
 WITH p AS (
   SELECT h.host AS collector_host, p.host, p.address, p.method, p.minute, p.sent, p.answered, p.ms_sum, p.ms_max,
          row_number() OVER (PARTITION BY h.host, p.address ORDER BY p.minute DESC) AS k
     FROM pgvigil.collector_probe p JOIN pgvigil.collector_heartbeat h USING (collector_id)
-   WHERE p.minute > now() - interval '20 minutes' AND p.answered IS NOT NULL AND h.retired_at IS NULL
+   WHERE p.minute > now() - interval '20 minutes' AND p.answered IS NOT NULL AND p.scheduled AND h.retired_at IS NULL
 )
 SELECT collector_host, host, address, max(method) AS method, count(*) AS rounds, sum(answered) AS answered,
        round(sum(ms_sum)::numeric / nullif(sum(answered), 0) / 1000, 3) AS avg_s, round(max(ms_max)::numeric / 1000, 3) AS max_s,
        count(*) FILTER (WHERE k <= 3) = 3 AND coalesce(bool_and(answered = 0) FILTER (WHERE k <= 3), false)
-         AND coalesce(min(minute) FILTER (WHERE k <= 3) >= now() - interval '6 minutes', false) AS silent3
+         AND coalesce(min(minute) FILTER (WHERE k <= 3) >= now() - interval '6 minutes', false) AS silent3,
+       max(minute) AS newest   -- the newest probed minute (last: a view's columns are only added at its end)
   FROM p WHERE k <= 5 GROUP BY collector_host, host, address;
 
 -- collector_probe_judged: each instance judged by its own thresholds - its round trip, and its host's ping (3 or more
--- answered probes of 5); 'not answering' = its host silent3 AND that address answered once (collector_probe_host): a
--- host that never answered (ICMP blocked: a cloud endpoint) or that stopped answering while connections open is words
--- on the page only, never a finding (B24h-b, the fold's #6a)
+-- answered probes of 5, the newest within 8 minutes: the review of B24h-1 part b #7c); 'not answering' = its host silent3
+-- AND that address answered once (collector_probe_host) AND no connection of the instance opened from that collector in
+-- the last 3 minutes (part b #12: an opened connection is an answer) - a host that never answered (ICMP blocked: a cloud
+-- endpoint) is words on the page only, never a finding (B24h-b, the fold's #6a). ONE pass (part b #4, the lead's 12:4x
+-- (a)): the pings read once and joined (a host reached at more than one address: the address with the most answers,
+-- then by name, speaks for it), never a lateral read of the windowed view per instance
 CREATE OR REPLACE VIEW pgvigil.collector_probe_judged AS
+WITH pgs AS MATERIALIZED (
+  SELECT DISTINCT ON (x.collector_host, x.host) x.* FROM pgvigil.collector_pings x ORDER BY x.collector_host, x.host, x.answered DESC, x.address
+), ans AS MATERIALIZED (
+  SELECT DISTINCT h.host AS collector_host, ph.address FROM pgvigil.collector_probe_host ph JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE ph.last_answered IS NOT NULL
+), op AS MATERIALIZED (
+  SELECT DISTINCT h.host AS collector_host, l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute >= now() - interval '3 minutes' AND l.opened > 0
+)
 SELECT ih.collector_host, ih.instance_id, i.name, ih.host,
        rt.avg_s AS rt_avg_s, rt.max_s AS rt_max_s, rt.warn AS rt_warn, coalesce(rt.slow, false) AS rt_slow,
        pg.method, pg.avg_s AS ping_avg_s, pg.max_s AS ping_max_s, th.warn AS ping_warn,
-       coalesce(pg.answered >= 3 AND pg.avg_s > th.warn, false) AS ping_slow,
-       coalesce(pg.silent3, false) AND EXISTS (SELECT 1 FROM pgvigil.collector_probe_host ph JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                                                WHERE h.host = ih.collector_host AND ph.address = pg.address AND ph.last_answered IS NOT NULL) AS not_answering
+       coalesce(pg.answered >= 3 AND pg.avg_s > th.warn AND pg.newest >= now() - interval '8 minutes', false) AS ping_slow,
+       coalesce(pg.silent3, false) AND an.address IS NOT NULL AND o.instance_id IS NULL AS not_answering
   FROM pgvigil.collector_instance_hosts ih
   JOIN pgvigil.instances i ON i.instance_id = ih.instance_id AND i.is_active
   LEFT JOIN pgvigil.collector_round_trips rt ON rt.collector_host = ih.collector_host AND rt.instance_id = ih.instance_id
-  -- a host reached at more than one address: the address with the most answers (then by name) speaks for it
-  LEFT JOIN LATERAL (SELECT * FROM pgvigil.collector_pings x WHERE x.collector_host = ih.collector_host AND x.host = ih.host
-                      ORDER BY x.answered DESC, x.address LIMIT 1) pg ON true
+  LEFT JOIN pgs pg ON pg.collector_host = ih.collector_host AND pg.host = ih.host
+  LEFT JOIN ans an ON an.collector_host = ih.collector_host AND an.address = pg.address
+  LEFT JOIN op o ON o.collector_host = ih.collector_host AND o.instance_id = ih.instance_id
   CROSS JOIN LATERAL pgvigil.pg_threshold(ih.instance_id, 'ping_time') th
- WHERE rt.instance_id IS NOT NULL OR EXISTS (SELECT 1 FROM pgvigil.collector_pings x WHERE x.collector_host = ih.collector_host AND x.host = ih.host);
+ WHERE rt.instance_id IS NOT NULL OR pg.host IS NOT NULL;
 
 -- collector_probe_fold: B24h's own fold over its two measures (the fold's #3, SLOW-CONNECT's form): per collector host,
 -- its probed hosts judged and those slow (an instance on it slow by its round trip or its host's ping); it FORMS at 3
@@ -209,34 +223,35 @@ SELECT DISTINCT j.host FROM pgvigil.collector_probe_judged j JOIN pgvigil.collec
 -- its host's ping and silence on the instance (held) and once for the host (source 'pgvigil repository', the host as
 -- its value: one alert a host, naming the instances over their own thresholds); the collector fold
 CREATE OR REPLACE VIEW pgvigil.collector_probe_findings AS
+WITH j AS MATERIALIZED (SELECT * FROM pgvigil.collector_probe_judged)   -- read once for every arm (the review of B24h-1 part b #4)
 SELECT j.instance_id, 'warning'::text AS severity, 'query round trip slow'::text AS setting, j.name AS value, true AS is_set,
        'a query round trip under ' || j.rt_warn || ' s'::text AS suggested, 'all'::text AS platforms,
        'query round trip (network and the server''s response) ' || j.rt_avg_s || ' s on average, ' || j.rt_max_s
          || ' s at most over its last 5 measured minutes, from ' || j.collector_host || '; warning over ' || j.rt_warn || ' s' AS detail,
        'pgvigil collector'::text AS source, now() AS at
-  FROM pgvigil.collector_probe_judged j WHERE j.rt_slow
+  FROM j WHERE j.rt_slow
 UNION ALL
 SELECT j.instance_id, 'warning', 'ping slow', j.host, true, 'its host answering under ' || j.ping_warn || ' s', 'all',
        'its host ' || j.host || ' answers in ' || j.ping_avg_s || ' s on average (' || j.method || '), ' || j.ping_max_s
          || ' s at most, from ' || j.collector_host || '; warning over ' || j.ping_warn || ' s', 'pgvigil collector', now()
-  FROM pgvigil.collector_probe_judged j WHERE j.ping_slow
+  FROM j WHERE j.ping_slow
 UNION ALL
 SELECT NULL::int, 'warning', 'ping slow', h.host, true, 'the host answering under each instance''s threshold', 'all',
        'host ' || h.host || ' answers in ' || h.avg_s || ' s on average, from ' || h.collector_host || '; over the threshold of: ' || h.who,
        'pgvigil repository', now()
   FROM (SELECT collector_host, host, max(ping_avg_s) AS avg_s, string_agg(name || ' (' || ping_warn || ' s)', ', ' ORDER BY name) AS who
-          FROM pgvigil.collector_probe_judged WHERE ping_slow GROUP BY collector_host, host) h
+          FROM j WHERE ping_slow GROUP BY collector_host, host) h
 UNION ALL
 SELECT j.instance_id, 'warning', 'host not answering ping', j.host, true, 'its host answering ping', 'all',
        'its host ' || j.host || ' answered none of the probes of its last 3 probed minutes from ' || j.collector_host
          || ' (it answered before)', 'pgvigil collector', now()
-  FROM pgvigil.collector_probe_judged j WHERE j.not_answering
+  FROM j WHERE j.not_answering
 UNION ALL
 SELECT NULL::int, 'warning', 'host not answering ping', h.host, true, 'the host answering ping', 'all',
        'host ' || h.host || ' answered none of the probes of its last 3 probed minutes from ' || h.collector_host || ' (it answered before); its instances: ' || h.who,
        'pgvigil repository', now()
   FROM (SELECT collector_host, host, string_agg(name, ', ' ORDER BY name) AS who
-          FROM pgvigil.collector_probe_judged WHERE not_answering GROUP BY collector_host, host) h
+          FROM j WHERE not_answering GROUP BY collector_host, host) h
 UNION ALL
 SELECT NULL::int, 'warning', 'network slow from this collector', f.collector_host, true, 'fewer than a quarter of its hosts slow', 'all',
        f.slow_hosts || ' of the ' || f.hosts || ' hosts this collector reads are slow (query round trip or ping): its own network or '
