@@ -38,7 +38,8 @@
 #  B. every count of the instance and collection views lists exactly the rows it counts (view=error with its filters);
 #     the service rows' count likewise (service=1). RED: no route.
 #  C. the service rows: a failed and a refused alert send, a failed test send (its note starts 'test send'), a failed
-#     and a refused report mail, a configured repository not read - and not the unconfigured one, not a sent alert; none
+#     report mail and a schedule's turn refused (not a Send now or a test refused when asked: its asker was told on the
+#     page), a configured repository not read - and not the unconfigured one, not a sent alert; none
 #     at instance=; the reads write nothing (acks, ack_log, collection_log, collection_dates unchanged). RED: no route.
 #  D. the acknowledgement: X's errors_24h 3 / failing 1 / detail 'c2: the last run failed'; acknowledged up to its newest
 #     log_id -> 0 / 0 / no such line, the error view's rows acked; an older-started run logged after it -> 1 / 1; a second
@@ -223,7 +224,9 @@ q "insert into pgvigil.alert_log (snapshot_at, channel, kind, destination, outco
      (now() - interval '7 minutes', 'ops', 'mail', 'ops@example.invalid', 'sent', NULL, '{k3}')" >/dev/null
 q "insert into pgvigil.report_mail_sends (kind, name, route, requested_by, requested_at, taken_at, done_at, channel, recipients, subject, outcome, error) values
      ('now', 'Daily summary', '#/summary', 'proof', now() - interval '6 minutes', now() - interval '6 minutes', now() - interval '359 seconds', 'ops', '{a@example.invalid}', 's', 'failed', 'smtp: 550 mailbox unavailable'),
-     ('now', 'Daily summary', '#/summary', 'proof', now() - interval '5 minutes', now() - interval '5 minutes', now() - interval '299 seconds', 'ops', '{a@example.invalid}', 's', 'refused', 'no STARTTLS')" >/dev/null
+     ('now', 'Asked now', '#/summary', 'proof', now() - interval '5 minutes', now() - interval '5 minutes', now() - interval '299 seconds', 'ops', '{a@example.invalid}', 's', 'refused', 'no STARTTLS'),
+     ('test', 'A test', '#/summary', 'proof', now() - interval '5 minutes', now() - interval '5 minutes', now() - interval '298 seconds', 'ops', '{a@example.invalid}', 's', 'refused', 'no STARTTLS'),
+     ('scheduled', 'Nightly', '#/summary', 'proof', now() - interval '5 minutes', now() - interval '5 minutes', now() - interval '297 seconds', 'ops', '{a@example.invalid}', 's', 'refused', 'the page is over 4 MB')" >/dev/null
 q "insert into pgvigil.dbadash_repositories (repository, is_configured, status, reason, read_at) values
      ('cerr-repo-1', true, 'not read', 'login failed for user', now() - interval '4 minutes'),
      ('cerr-repo-2', false, 'not read', 'removed from the config', now() - interval '4 minutes'),
@@ -232,6 +235,8 @@ W0=$(q "select (select count(*) from pgvigil.acks) || '/' || (select count(*) fr
 get "/api/collectorerrors?view=error&service=1&$W"
 check "$(py "sorted(r['collection'] for r in T('rows'))")" "['DBA Dash import', 'alerts', 'alerts', 'alerts', 'report mail', 'report mail']" \
   "C: failed and refused alert sends, a failed test send, two report mails, one configured repository not read"
+check "$(py "sorted(str(r['note']) for r in T('rows') if r['collection'] == 'report mail')")" "['report mail failed: Daily summary: smtp: 550 mailbox unavailable', 'report mail refused: Nightly: the page is over 4 MB']" \
+  "C: a report mail that failed, and a schedule's turn refused; a mail asked by hand or a test that was refused when asked is not listed"
 check "$(py "sum(1 for r in T('rows') if str(r['note']).startswith('test send'))")|$(py "all(r['instance'] == '(the service)' and r['instance_id'] is None and r['link'] for r in T('rows'))")|$(py "any('cerr-repo-2' in str(r['note']) for r in T('rows'))")" \
   "1|True|False" "C: the test send labelled, each row '(the service)' with its link, the unconfigured repository absent"
 get "/api/collectorerrors?view=error&instance=$PGI&$W"
