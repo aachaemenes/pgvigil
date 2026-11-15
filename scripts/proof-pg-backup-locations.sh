@@ -104,8 +104,14 @@ for c in "$C17" "$C13" "$C18" "$C15"; do
   su "$c" "ALTER SYSTEM SET archive_command = '/bin/true'" >/dev/null; su "$c" "SELECT pg_reload_conf()" >/dev/null
 done
 sleep 1
-for c in "$C17" "$C13" "$C18" "$C15"; do
-  [ "$(su "$c" "SHOW archive_command")" = /bin/true ] || fail "the store: $c's archive_command did not take ALTER SYSTEM"
+# ALTER SYSTEM's value is read where it was applied (pg_file_settings); SHOW is the effective value. PostgreSQL 16 and
+# later SHOW archive_command as '(disabled)' while archive_mode is off (xlog.c show_archive_command), so the off
+# container (18) wants '(disabled)' there, every other container the command itself
+for spec in "$C17 on" "$C13 on" "$C18 off" "$C15 on"; do
+  set -- $spec
+  F=$(su "$1" "SELECT setting FROM pg_file_settings WHERE name = 'archive_command' AND applied"); S=$(su "$1" "SHOW archive_command")
+  want=/bin/true; [ "$2" = off ] && want='(disabled)'
+  [ "$F" = /bin/true ] && [ "$S" = "$want" ] || fail "the store: $1's archive_command did not take ALTER SYSTEM (applied: [$F], SHOW: [$S], want [/bin/true] and [$want])"
 done
 port() { docker port "$1" 5432/tcp | head -1 | sed 's/.*://'; }
 psql "$PGVIGIL_REPO_DSN" -XAtqc "CREATE DATABASE $REPO_DB" >/dev/null; MADE_DB=1
