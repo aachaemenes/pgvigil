@@ -147,7 +147,7 @@ TRUST=; [[ "$SQLCMD" == *tools18* ]] && TRUST=-C
 # sq: T-SQL as sa (stdin; -I: QUOTED_IDENTIFIER ON); sqok: loud
 sq() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$1" | timeout "${3:-120}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 # sqbig: the same for one long value (a showplan): no column width cut (-y 0; sqlcmd takes neither -W nor -h with it)
-sqbig() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$1" | timeout 120 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -y 0 -l 60 -d master -i /dev/stdin'; }
+sqbig() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$1" | timeout 120 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -y 0 -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqok() { local out; out=$(sq "$2" "${3:-master}" 2>&1) || fail "$1: $out"; }
 pq() { psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 urlq() { URLQ_V="$1" python3 -c 'import os,urllib.parse as u; print(u.quote(os.environ["URLQ_V"], safe=""))'; }
@@ -516,7 +516,7 @@ done
 dcase() { local c=$1 opt=$2
   sqok "D: $c setting" "$opt" pgvqs2
   sqok "D: $c change" "UPDATE dbo.$c SET v = v + 1 WHERE id % 10 < 3;" pgvqs2
-  sqok "D: $c query" "SELECT COUNT(*) FROM dbo.$c WHERE v BETWEEN 100 AND 200 /* pgvd-$c */;" pgvqs2
+  sqok "D: $c query" "SELECT COUNT(*) /* pgvd-$c */ FROM dbo.$c WHERE v BETWEEN 100 AND 200;" pgvqs2
   sleep 1; }
 dcase d0 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS ON; ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS_ASYNC OFF;"
 dcase d1 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS OFF;"
@@ -525,10 +525,10 @@ dcase d3 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS ON; ALTER DATABASE pg
 sqok "D: the store flushed" "EXEC sys.sp_query_store_flush_db;" pgvqs2
 sqbig "SELECT 'PLAN|' + qt.query_sql_text + '|' + CAST(p.plan_id AS varchar(20)) + '|' + CAST(p.query_plan AS nvarchar(max))
   FROM sys.query_store_plan p JOIN sys.query_store_query q ON q.query_id = p.query_id JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
- WHERE qt.query_sql_text LIKE '%pgvd-d%' AND qt.query_sql_text NOT LIKE '%query_store%'" 2>&1 | sed 's/^/X/' > "$TMPD/d-hand.out" || true
+ WHERE qt.query_sql_text LIKE '%pgvd-d%' AND qt.query_sql_text NOT LIKE '%query_store%'" pgvqs2 2>&1 | sed 's/^/X/' > "$TMPD/d-hand.out" || true
 sed -i 's/^X//' "$TMPD/d-hand.out"
 col sqlfull mssql_indexes mssql_querystore; col sqlfull mssql_querystore
-python3 - "$TMPD" "$PGDSN" "$U" <<'PYEND' || fail "D: see above"
+DRC=0; python3 - "$TMPD" "$PGDSN" "$U" <<'PYEND' || DRC=$?
 import json, re, subprocess, sys, urllib.parse
 d, dsn, u = sys.argv[1:]
 def q(s): return [l.split('|') for l in subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.splitlines() if l]
@@ -541,9 +541,9 @@ for m in re.finditer(r"PLAN\|.*?pgvd-(d\d).*?\|(\d+)\|(<ShowPlanXML.*?</ShowPlan
     mc = re.search(r'ModificationCount="(\d+)"', st.group(0)).group(1) if st else None
     hand[c] = (plan_id, mc)
 if not hand:
-    print("NOT PROVEN D: no plan of the four queries read by hand from sys.query_store_plan: " + raw[:300].replace('\n', ' ')); sys.exit(0)
+    print("NOT PROVEN D: no plan of the four queries read by hand from sys.query_store_plan: " + raw[:300].replace('\n', ' ')); sys.exit(3)
 if all(v[1] is None for v in hand.values()):
-    print(f"NOT PROVEN D: the plans carry no OptimizerStatsUsage on this server ({hand})"); sys.exit(0)
+    print(f"NOT PROVEN D: the plans carry no OptimizerStatsUsage on this server ({hand})"); sys.exit(3)
 iid = q("SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlfull'")[0][0]
 want = {'d0': 'f', 'd1': 't', 'd2': 't', 'd3': 't'}
 for c, stale in want.items():
@@ -567,7 +567,9 @@ if not any(x['statistic'] == 'st_v' and x['stale_at_compile'] is True for x in r
 for x in bad: print('DIFF', x)
 sys.exit(1 if bad else 0)
 PYEND
-echo "ok   D: the statistics stored per plan equal the plans' own; stale at compile under AUTO_UPDATE off, ASYNC and NORECOMPUTE, not under synchronous updates; the finding and the API"
+[[ $DRC == 0 || $DRC == 3 ]] || fail "D: see above"
+if [[ $DRC == 3 ]]; then echo "NOT PROVEN D on $VER (above)"; else
+echo "ok   D: the statistics stored per plan equal the plans' own; stale at compile under AUTO_UPDATE off, ASYNC and NORECOMPUTE, not under synchronous updates; the finding and the API"; fi
 fi
 
 if part E; then
@@ -575,7 +577,7 @@ echo "== E. a forced plan's failures =="
 sqok "E: dbo.f" "CREATE TABLE dbo.f (id int NOT NULL PRIMARY KEY, k int NOT NULL, pad char(200) NOT NULL DEFAULT 'f');
   INSERT dbo.f (id, k) SELECT TOP (20000) n, n FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS n FROM sys.all_objects x CROSS JOIN sys.all_objects y) z;
   CREATE INDEX ix_f ON dbo.f (k) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE);" pgvqs2
-QF="SELECT id FROM dbo.f WITH (INDEX (ix_f)) WHERE k = 5 OPTION (RECOMPILE) /* pgve-forced */;"
+QF="SELECT id /* pgve-forced */ FROM dbo.f WHERE k = 5 OPTION (RECOMPILE);"
 sqok "E: the query" "$QF $QF $QF" pgvqs2
 sqok "E: flushed" "EXEC sys.sp_query_store_flush_db;" pgvqs2
 QP=$(sq "SELECT TOP (1) CAST(q.query_id AS varchar(20)) + '|' + CAST(p.plan_id AS varchar(20)) FROM sys.query_store_query q JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
@@ -584,7 +586,7 @@ QID=${QP%%|*}; PID=${QP##*|}; [[ -n "$QID" && -n "$PID" ]] || fail "E: the query
 sqok "E: forced" "EXEC sys.sp_query_store_force_plan @query_id = $QID, @plan_id = $PID;" pgvqs2
 sqok "E: ix_f dropped" "DROP INDEX ix_f ON dbo.f;" pgvqs2
 sleep 11   # the forced plan's last run is now more than 10 s before the query's next one
-fail_runs() { local i; for i in $(seq 1 "$1"); do sq "SELECT id FROM dbo.f WHERE k = 5 OPTION (RECOMPILE) /* pgve-forced */;" pgvqs2 >/dev/null 2>&1 || true; done; sq "EXEC sys.sp_query_store_flush_db;" pgvqs2 >/dev/null; }
+fail_runs() { local i; for i in $(seq 1 "$1"); do sq "$QF" pgvqs2 >/dev/null 2>&1 || true; done; sq "EXEC sys.sp_query_store_flush_db;" pgvqs2 >/dev/null; }
 fcount() { sq "SELECT CAST(force_failure_count AS varchar(20)) FROM sys.query_store_plan WHERE plan_id = $PID" pgvqs2; }
 judge() { pq "SELECT severity || '|' || detail FROM pgvigil.mssql_querystore_findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'sqlfull' AND f.check_name = 'a forced plan fails' AND f.object = 'pgvqs2: query $QID, plan $PID'"; }
 expect() { local got; got=$(judge); [[ "${got%%|*}" == "$2" && "$got" == *"$3"* ]] || fail "$1: want $2 with '$3', got '$got' (server count $(fcount))"; echo "ok   $1: $2 ($(fcount) failure(s) on the server)"; }
