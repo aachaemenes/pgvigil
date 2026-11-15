@@ -177,10 +177,10 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
 const pmDefaultCounters = ['Batch Requests/sec', 'SQL Compilations/sec', 'SQL Re-Compilations/sec', 'Query optimizations/sec', 'Network IO waits'];
 const maxCharted = 10;
 
-// what a series' figure is, by its kind (0152: the arithmetic follows the type SQL Server gives the counter)
 // a write's outcome across the page's redraw (adminCountersView)
 let carriedSaid = '';
 
+// what a series' figure is, by its kind (0152: the arithmetic follows the type SQL Server gives the counter)
 const kindWords: Record<string, string> = {
   rate: 'per second', count: 'change per read', fraction: '% of its base', average: 'average per event over the read',
   gauge: 'value as it stands', unpaired: 'as read (its base was not in the read)',
