@@ -44,10 +44,10 @@ index ad9f4acf..de3419bc 100644
  A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
 diff --git i/internal/mssql/builddocs_test.go w/internal/mssql/builddocs_test.go
 new file mode 100644
-index 00000000..a6a27b36
+index 00000000..ec8dd88c
 --- /dev/null
 +++ w/internal/mssql/builddocs_test.go
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,71 @@
 +package mssql
 +
 +import (
@@ -91,6 +91,24 @@ index 00000000..a6a27b36
 +	if d := BuildDocsOf("15.0.4470.1"); d["build_url"] != "https://support.microsoft.com/kb/5090407" {
 +		t.Errorf("BuildDocsOf(15.0.4470.1): %v", d)
 +	}
++	// what the instance row holds is the first line of @@VERSION, not the bare product version (box run 412proof1: no
++	// link on any real instance): the dotted build inside it is the one read
++	if d := BuildDocsOf("Microsoft SQL Server 2019 (RTM-CU32-GDR) (KB5090407) - 15.0.4470.1 (X64) "); d["build_url"] != "https://support.microsoft.com/kb/5090407" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 15.0.4470.1): %v", d)
++	}
++	if d := BuildDocsOf("Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) - 16.0.4325.4 (X64)"); d["build_url"] != buildListURL ||
++		!strings.Contains(d["build_url_words"].(string), "a build newer than the catalogue") || d["newest_build"] != "16.0.4255" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 16.0.4325.4): %v", d)
++	}
++	if d := BuildDocsOf("Microsoft SQL Azure (RTM) - 12.0.2000.8"); len(d) != 0 {
++		t.Errorf("BuildDocsOf(Azure SQL Database, a major the catalogue lacks): %v", d)
++	}
++	// a preview's name holds a dotted number of its own ('CTP2.1'): the build read is the three-part one after it, a
++	// row the catalogue lists with a product page only (a read of '2.1' would be major 2: no row, an empty map)
++	if d := BuildDocsOf("Microsoft SQL Server 2025 (CTP2.1) - 17.0.800.3 (X64)"); d["build_url"] != buildListURL ||
++		!strings.Contains(d["build_url_words"].(string), "no page of Preview CTP 2.1's own") || d["newest_build"] != "17.0.4055" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 17.0.800.3): %v", d)
++	}
 +	// every page of the catalogue is empty or Microsoft's, with no blank around it
 +	for major, rows := range builds {
 +		for _, r := range rows {
@@ -102,10 +120,18 @@ index 00000000..a6a27b36
 +	}
 +}
 diff --git i/internal/mssql/checks.go w/internal/mssql/checks.go
-index 678f6c5e..480c9d16 100644
+index 678f6c5e..48e10f96 100644
 --- i/internal/mssql/checks.go
 +++ w/internal/mssql/checks.go
-@@ -574,6 +574,7 @@ type buildRow struct {
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"fmt"
++	"regexp"
+ 	"sort"
+ 	"strconv"
+ 	"strings"
+@@ -574,6 +575,7 @@ type buildRow struct {
  	Release      time.Time
  	Mainstream   time.Time // the end of mainstream support of this build's branch
  	Extended     time.Time // the end of extended support
@@ -113,7 +139,7 @@ index 678f6c5e..480c9d16 100644
  }
  
  // BuildsAsOf is the version and date of the catalogue's source.
-@@ -596,7 +597,7 @@ func parseBuilds(text string) map[int][]buildRow {
+@@ -596,7 +598,7 @@ func parseBuilds(text string) map[int][]buildRow {
  	}
  	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
  		f := strings.Split(line, "|")
@@ -122,7 +148,7 @@ index 678f6c5e..480c9d16 100644
  			panic("build catalogue: " + line)
  		}
  		major, err1 := strconv.Atoi(f[0])
-@@ -604,7 +605,8 @@ func parseBuilds(text string) map[int][]buildRow {
+@@ -604,7 +606,8 @@ func parseBuilds(text string) map[int][]buildRow {
  		if err1 != nil || err2 != nil {
  			panic("build catalogue: " + line)
  		}
@@ -132,7 +158,7 @@ index 678f6c5e..480c9d16 100644
  		rows := out[major]
  		if n := len(rows); n > 0 && rows[n-1].Build == build {
  			if row.Release.Before(rows[n-1].Release) {
-@@ -620,6 +622,58 @@ func parseBuilds(text string) map[int][]buildRow {
+@@ -620,6 +623,64 @@ func parseBuilds(text string) map[int][]buildRow {
  	return out
  }
  
@@ -178,10 +204,16 @@ index 678f6c5e..480c9d16 100644
 +	return out
 +}
 +
-+// BuildDocsOf is BuildDocs over a product version as SERVERPROPERTY('ProductVersion') gives it ('16.0.4325.4'): an
-+// empty map for a version the catalogue cannot place (the API's part then reads one row of nulls).
++// buildInVersion finds the dotted build in a version text ('16.0.4325.4', with or without its fourth part).
++var buildInVersion = regexp.MustCompile(`\b\d+\.\d+\.\d+(?:\.\d+)?\b`)
++
++// BuildDocsOf is BuildDocs over the version an instance row holds: the first line of @@VERSION, which the collector
++// stores as server_version ('Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) - 16.0.4325.4 (X64)'), or a bare
++// product version as SERVERPROPERTY('ProductVersion') gives it ('16.0.4325.4'): the first dotted build in the text is
++// the one read (box run 412proof1: the whole line read as a product version gave major 0 and no link). An empty map
++// for a version the catalogue cannot place (the API's part then reads one row of nulls).
 +func BuildDocsOf(version string) map[string]any {
-+	major, _, build := parseVersion(version)
++	major, _, build := parseVersion(buildInVersion.FindString(version))
 +	if d := BuildDocs(major, build); d != nil {
 +		return d
 +	}
@@ -191,7 +223,7 @@ index 678f6c5e..480c9d16 100644
  // buildVerdict is an instance's build against the catalogue.
  type buildVerdict struct {
  	Known  bool   // the catalogue has the major and the platform's builds are the customer's to choose
-@@ -911,222 +965,223 @@ var configDefaultList = []struct {
+@@ -911,222 +972,223 @@ var configDefaultList = []struct {
  }
  
  // buildCatalogue: every build of SQL Server 2016 to 2025 with its release date and the support ends of its branch,
@@ -659,7 +691,7 @@ index 75f3d046..9153ec04 100644
      RAISE EXCEPTION 'metric_points: no metric family %', p_family USING ERRCODE = '22023';
    END IF;
 diff --git i/internal/web/q_mssql_checks.go w/internal/web/q_mssql_checks.go
-index c745cbc4..99065420 100644
+index c745cbc4..d9f8f42e 100644
 --- i/internal/web/q_mssql_checks.go
 +++ w/internal/web/q_mssql_checks.go
 @@ -2,9 +2,11 @@ package web
@@ -691,7 +723,7 @@ index c745cbc4..99065420 100644
  		writeErr(w, http.StatusBadRequest, err)
  		return
  	}
-+	// task 412: the version the instance last reported, for its build's links (no row: no links)
++	// task 412: the version the instance last reported (the first line of @@VERSION), for its build's links (no row: no links)
 +	var ver string
 +	if err := s.pool.QueryRow(r.Context(), `SELECT coalesce(server_version, '') FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&ver); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 +		writeErr(w, http.StatusInternalServerError, err)
