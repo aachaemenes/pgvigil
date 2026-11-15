@@ -187,7 +187,8 @@ type RightState struct {
 type RightsRead struct {
 	Login, Server, Platform string
 	Rights                  []RightState
-	Missing                 int
+	// Missing counts every missing right; MissingCore the needed ones among them.
+	Missing, MissingCore int
 }
 
 // rightsIdentitySQL: the login as the server names it, quoted both ways by the server itself, the server's name, and
@@ -266,6 +267,9 @@ func ReadRights(ctx context.Context, conn *sql.Conn, platform string) (RightsRea
 			st.State = "missing"
 			st.Grant = fill.Replace(r.Grant)
 			out.Missing++
+			if r.Core {
+				out.MissingCore++
+			}
 			if r.Key == "database_access" {
 				st.Databases = rightsNoAccess(ctx, conn)
 			}

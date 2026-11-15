@@ -1,5 +1,5 @@
 -- 0261: Admin > Instances' 'Check all' (the ServiceConfig takes, ST1): the last connection test of an instance that
--- lives in pgvigil.yaml.
+-- lives in pgvigil.yaml; and the audit row of a Rights read (ST2: import_admin_rights_read, below).
 --
 -- The page's own instances keep their last test on their row (admin_instances.tested_at / tested_ok / tested_detail,
 -- 0122). An instance of the file has no row there: its last test is kept here, by its name, so 'Check all' shows the
@@ -61,6 +61,27 @@ BEGIN
   PERFORM pgvigil.admin_log(v_user, v_cli, 'instance tested', v_name, 'done',
     CASE WHEN v_ok THEN 'connected' ELSE 'failed: ' || left(coalesce(p_payload->>'detail', ''), 500) END);
   RETURN jsonb_build_object('outcome', 'done', 'detail', 'tested ' || v_name);
+END $$;
+
+-- import_admin_rights_read (ST2): one audit row for a Rights read of an instance - serve connected to that server as
+-- its monitoring login on a user's click and read which rights it holds; nothing is stored but the audit row (the
+-- answer is the page's). Payload: ui_user, client, name, ok, detail (how many rights are missing, or why not read).
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_rights_read(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_user text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_name text := btrim(coalesce(p_payload->>'name', ''));
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_admin_rights_read: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  IF v_name = '' THEN
+    PERFORM pgvigil.admin_log(v_user, p_payload->>'client', 'instance rights', v_name, 'refused', 'no instance named');
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', 'no instance named');
+  END IF;
+  PERFORM pgvigil.admin_log(v_user, p_payload->>'client', 'instance rights', v_name, 'done',
+    CASE WHEN (p_payload->>'ok')::boolean THEN 'read: ' ELSE 'not read: ' END || left(coalesce(p_payload->>'detail', ''), 500));
+  RETURN jsonb_build_object('outcome', 'done', 'detail', 'rights read of ' || v_name);
 END $$;
 
 SELECT pgvigil.apply_roles();

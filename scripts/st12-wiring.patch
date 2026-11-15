@@ -1,5 +1,5 @@
 diff --git c/internal/web/q_instances_admin.go i/internal/web/q_instances_admin.go
-index 3665d14..fbf12ea 100644
+index 3665d14..ad84c66 100644
 --- c/internal/web/q_instances_admin.go
 +++ i/internal/web/q_instances_admin.go
 @@ -258,6 +258,11 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
@@ -14,9 +14,16 @@ index 3665d14..fbf12ea 100644
  	var gen int64
  	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
  		s.reply(w, r, nil, err)
-@@ -435,6 +440,10 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+@@ -434,7 +439,17 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+ 	ctx := r.Context()
  	op, name := str(in, "op"), str(in, "name")
  	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames()}
++	if op == "rights" {
++		// ST2: which of the rights pgvigil needs the instance's monitoring login holds, and the script of the
++		// missing ones, printed (q_instances_rights.go)
++		s.instanceRights(w, r, user, in)
++		return
++	}
  	if op == "test" {
 +		// ST1 (Check all): an instance of pgvigil.yaml is tested as the file's own dsn (q_instances_checks.go)
 +		if s.fileInstanceTest(w, r, user, in) {

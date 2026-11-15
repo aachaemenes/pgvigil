@@ -91,11 +91,14 @@ export function instanceChecks(deps: Deps) {
       deps.say(`Rights of ${name} not read: ${String(b.detail ?? '')}`, true);
       return;
     }
-    const rows = rowsOf(b.rights as Table | null), missing = Number(b.missing ?? 0), script = String(b.script ?? '');
+    const rows = rowsOf(b.rights as Table | null), missing = Number(b.missing ?? 0), needed = Number(b.missing_needed ?? 0), script = String(b.script ?? '');
+    const optional = missing - needed;
+    const count = (n: number, w: string) => `${n} ${w} right${n === 1 ? '' : 's'}`;
+    const lacks = [needed ? count(needed, 'needed') : '', optional ? count(optional, 'optional') : ''].filter(Boolean).join(' and ');
     const kids: (HTMLElement | string)[] = [
       el('h3', { id: 'admin-instance-rights-title' }, `Rights: ${name}`),
       el('p', { class: 'meta' }, `Read just now as the monitoring login ${String(b.login ?? '')} (${String(b.platform ?? '')}). `
-        + (missing ? `${missing} of the rights pgvigil needs ${missing === 1 ? 'is' : 'are'} missing; a collection that needs one is skipped and says so. `
+        + (missing ? `Missing: ${lacks}. A collection that needs a missing right is skipped and says so; an optional right is one feature's own. `
           : 'Nothing is missing. ')
         + 'pgvigil never grants anything: the script below is printed to copy and to run as an administrator of that server.'),
       grid(rows, rightCols, 'No right is listed for this platform.'),
@@ -113,7 +116,7 @@ export function instanceChecks(deps: Deps) {
     close.addEventListener('click', () => box.replaceChildren());
     kids.push(el('div', {}, close));
     box.replaceChildren(...kids);
-    deps.say(missing ? `${name}: ${missing} right${missing === 1 ? '' : 's'} missing; the script is below the tables.` : `${name}: nothing is missing.`, missing > 0);
+    deps.say(missing ? `${name}: ${lacks} missing; the script is below the tables.` : `${name}: nothing is missing.`, needed > 0);
     box.scrollIntoView({ block: 'nearest' });
   }
   const rightsButton = (name: string): HTMLElement => {
