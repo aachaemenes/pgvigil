@@ -234,7 +234,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       const t = document.createElementNS(ns, 'title'); t.textContent = `${String(r.table_ref ?? '')}: ${fmtNum(r.requests)} seeks + scans, impact ${String(r.avg_impact ?? '')} %`;
       c.append(t); svg.append(c);
     });
-    return el('figure', { class: 'chart' }, el('h4', {}, 'Impact against seeks and scans (the newest read)'), svg as unknown as HTMLElement);
+    return el('figure', { class: 'svg-figure' }, el('h4', {}, 'Impact against seeks and scans (the newest read)'), svg as unknown as HTMLElement);
   }
 
   function untrusted(dp: Depth): Node[] {
@@ -272,10 +272,18 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     histBox.replaceChildren(head,
       el('p', { class: 'meta' }, `${fmtNum(hd.rows)} rows, ${fmtNum(hd.rows_sampled)} sampled, ${fmtNum(hd.steps)} steps, updated ${fmtTime(hd.last_updated)}; `
         + `read now through the ${h.login ?? 'read'} login, never stored. The keys are the column's real values.`),
-      bars(steps),
-      grid(steps, [{ key: 'step', num: true }, { key: 'range_high_key', label: 'RANGE_HI_KEY' }, { key: 'key_type', label: 'type' },
-        { key: 'equal_rows', label: 'EQ_ROWS', num: true }, { key: 'range_rows', label: 'RANGE_ROWS', num: true },
-        { key: 'distinct_range_rows', label: 'DISTINCT_RANGE_ROWS', num: true }, { key: 'average_range_rows', label: 'AVG_RANGE_ROWS', num: true }]));
+      bars(steps), stepsTable(steps));
+  }
+
+  // the steps as a plain table, never a grid: a grid has Export Excel in its menu and the page's export takes every grid,
+  // and a histogram's keys are the column's real values (task 414's FOLD: never an export)
+  function stepsTable(steps: Row[]): HTMLElement {
+    const cols: [string, string, boolean][] = [['step', 'step', true], ['range_high_key', 'RANGE_HI_KEY', false], ['key_type', 'type', false],
+      ['equal_rows', 'EQ_ROWS', true], ['range_rows', 'RANGE_ROWS', true], ['distinct_range_rows', 'DISTINCT_RANGE_ROWS', true],
+      ['average_range_rows', 'AVG_RANGE_ROWS', true]];
+    return el('table', { class: 'steps', 'aria-label': 'The histogram\'s steps (not exported)' },
+      el('thead', {}, el('tr', {}, ...cols.map(([, l]) => el('th', { scope: 'col' }, l)))),
+      el('tbody', {}, ...steps.map(r => el('tr', {}, ...cols.map(([k, , num]) => el('td', num ? { class: 'num' } : {}, num ? fmtNum(r[k]) : String(r[k] ?? '')))))));
   }
 
   // the steps as bars: EQ_ROWS and RANGE_ROWS per step (the grid below is the twin)
@@ -297,11 +305,12 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
         r.append(t); svg.append(r);
       }
     });
-    return el('figure', { class: 'chart' }, el('p', { class: 'meta' }, 'Bars: RANGE_ROWS (left) and EQ_ROWS (right) of each step.'), svg as unknown as HTMLElement);
+    return el('figure', { class: 'svg-figure' }, el('p', { class: 'meta' }, 'Bars: RANGE_ROWS (left) and EQ_ROWS (right) of each step.'), svg as unknown as HTMLElement);
   }
 
   // ---- fragmentation, on demand: a job of serve's ----
   function fragmentation(dp: Depth, dbName: string): Node[] {
+    const drawn = seq; // a later draw ends this one's pollers (it starts its own for a running read)
     const sw = rowsOf(dp.switches)[0] ?? {};
     const off = String(sw.fragmentation_off ?? '');
     const reads = rowsOf(dp.fragmentation);
@@ -346,6 +355,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     async function follow(id: number) {
       let seen = false;
       for (let turn = 0; turn < 400; turn++) {
+        if (drawn !== seq) return;
         if (sec.isConnected) seen = true; else if (seen) return;
         let f: { read: Table | null; rows: Table | null };
         try { f = await get('mssql/indexes/fragmentation', { instance: ctx.instance, id }); } catch (e) { status.replaceChildren(errorBox(e)); return; }

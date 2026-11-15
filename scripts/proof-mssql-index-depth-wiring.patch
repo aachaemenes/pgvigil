@@ -91,9 +91,18 @@ index 7e7b0cc..e7a75c2 100644
  
  For each database the read stores:
 diff --git i/docs/sqlserver.md w/docs/sqlserver.md
-index 3ec1c5e..9902caa 100644
+index 3ec1c5e..5236b7a 100644
 --- i/docs/sqlserver.md
 +++ w/docs/sqlserver.md
+@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
+ 
+ ## Collections
+ 
+-Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
++Thirty-five collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+ 
+ | collection | every | reads | needs | Azure SQL Database | page |
+ | --- | --- | --- | --- | --- | --- |
 @@ -88,6 +88,7 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
  | `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
  | `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |

@@ -645,7 +645,12 @@ func OnDemandDatabase(ctx context.Context, conn *sql.Conn, database string, refu
 	if len(rows) == 0 {
 		return "", fmt.Errorf("the server has no database %s", database)
 	}
-	r := rows[0]
+	return onDemandDecision(rows[0], database, refuseSecondary)
+}
+
+// onDemandDecision is OnDemandDatabase's answer from the server's row (fragTargetSQL): the database's QUOTENAME, or why
+// it is not read.
+func onDemandDecision(r collect.Row, database string, refuseSecondary bool) (string, error) {
 	quoted, _ := r["quoted_name"].(string)
 	state, _ := r["database_state"].(string)
 	switch {

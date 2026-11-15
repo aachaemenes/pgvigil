@@ -60,7 +60,8 @@
 #        (no login of the statistics login counted);
 #     F4 ixread (the read login, no SELECT): the server's own words or the 'no step was readable' words (measured, printed);
 #        ixsa: refused (sysadmin);
-#     F5 the columnstore, XML and spatial indexes' rows: off with the reason (no histogram), nothing sent;
+#     F5 the columnstore, XML and spatial indexes' rows: state none with the index type's reason, no step (an index whose
+#        type keeps no statistic of its own is answered by its type, whether or not sys.stats lists it);
 #     F6 a GET: 405; a POST without X-Pgvigil: 403; a serve with -no-login: off, 'needs a signed-in user', nothing sent;
 #     F7 nothing written to the repository but the audit rows (row counts of every pgvigil table before and after).
 #     Red on f8e89d2: no route (POST /api/mssql/stats/histogram is not JSON with steps).
@@ -80,7 +81,8 @@
 #     G7 serve killed during a held read, serve again: the row reads 'stopped' (no beat for 60 s) and a new start is taken;
 #        the killed serve's session gone from the server;
 #     G8 no collection names it (pgvigil collect refuses 'mssql_fragmentation').
-#     NOT PROVEN: a secondary replica (no availability group in a container); the unit test covers the refusal.
+#     NOT PROVEN: a secondary replica (no availability group in a container); TestOnDemandDecision covers the refusal
+#     (and the cloud services' own databases), run by the box job's go test.
 #     Red on f8e89d2: no route.
 #  H. purge and rights: H1 purge(30) through the wiring's line: an aged usage partition dropped, an aged missing row and
 #     fragmentation read deleted, the rest kept; H2 pgvigil_reader may not EXECUTE mssql_index_depth_purge (NOT PROVEN
@@ -478,7 +480,7 @@ for st in "cs ncci_cs columnstore" "x px_x XML" "g sx_g spatial"; do
   set -- $st
   hist "$ION" "$1" "$2" "$TMPD/f5$1.json" >/dev/null
   echo "     F5 $2: $(cat "$TMPD/f5$1.json" | head -c 300)"
-  [[ "$(jget "$TMPD/f5$1.json" '(d["state"] in ("none","error")) and not d.get("steps")')" == True && "$(jget "$TMPD/f5$1.json" 'str(d.get("words"))')" == *"$3"* || "$(jget "$TMPD/f5$1.json" 'str(d.get("words"))')" == *"no statistic"* ]] || fail "F5: $2 $(cat "$TMPD/f5$1.json")"
+  [[ "$(jget "$TMPD/f5$1.json" 'd["state"] == "none" and not d.get("steps")')" == True && "$(jget "$TMPD/f5$1.json" 'str(d.get("words"))')" == *"$3"* ]] || fail "F5: $2 $(cat "$TMPD/f5$1.json")"
 done
 echo "ok   F5: the columnstore, XML and spatial indexes: no histogram, with the reason"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/stats/histogram")" == 405 ]] || fail "F6: a GET is not 405"
@@ -506,11 +508,21 @@ frag() { post mssql/indexes/fragmentation "{\"instance_id\":$1,\"database\":\"pg
 poll() { local s=; for _ in $(seq 1 "$2"); do api "mssql/indexes/fragmentation?instance=$ION&id=$1" "$TMPD/poll.json" >/dev/null
     s=$(jget "$TMPD/poll.json" 'dict(zip(d["read"]["columns"], d["read"]["rows"][0]))["state"]'); [[ "$s" != running ]] && break; sleep 1; done; echo "$s"; }
 readcol() { jget "$TMPD/poll.json" "dict(zip(d['read']['columns'], d['read']['rows'][0]))['$1']"; }
-hold() { # hold <table> <seconds> [sch-m]: a session holding the table, in the background
-  local stmt="BEGIN TRAN; SELECT TOP (1) id FROM dbo.$1 WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:00:$(printf %02d "$2")'; COMMIT;"
-  [[ "${3:-}" == schm ]] && stmt="BEGIN TRAN; ALTER TABLE dbo.$1 ADD zz int NULL; WAITFOR DELAY '00:00:$(printf %02d "$2")'; ROLLBACK;"
-  [[ "$2" -ge 60 ]] && stmt="${stmt/00:00:$(printf %02d "$2")/00:01:$(printf %02d $(( $2 - 60 )))}"
-  sq "$stmt" pgvix 200 >/dev/null 2>&1 & BG+=($!); }
+# sqh <host tag> <T-SQL>: sq with the session's host name set (-H), so a holder is found and ended by its tag
+sqh() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$2" | timeout 300 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa '"$TRUST"' -b -I -W -h -1 -H "$1" -l 60 -d pgvix -i /dev/stdin' "$0" "$1"; }
+hold() { # hold <table> [schm]: a session (host pgvhold_<table>) holding the table X (or Sch-M) for up to 4 minutes, in the background, confirmed granted
+  local stmt="BEGIN TRAN; SELECT TOP (1) id FROM dbo.$1 WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:04:00'; COMMIT;" mode=X
+  [[ "${2:-}" == schm ]] && stmt="BEGIN TRAN; ALTER TABLE dbo.$1 ADD zz int NULL; WAITFOR DELAY '00:04:00'; ROLLBACK;" mode=Sch-M
+  sqh "pgvhold_$1" "$stmt" >/dev/null 2>&1 & BG+=($!)
+  for _ in $(seq 1 40); do
+    [[ "$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT'
+      AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1') AND request_mode = '$mode' AND request_status = 'GRANT'")" -ge 1 ]] && return 0
+    sleep 0.25
+  done
+  fail "the hold on dbo.$1 ($mode) was not granted in 10 s"; }
+# release [table]: the holders ended (KILL rolls their transactions back), and their shells waited for
+release() { sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE host_name LIKE 'pgvhold_${1:-}%'; EXEC (@k);" >/dev/null 2>&1 || true
+  if [[ -z "${1:-}" ]]; then wait "${BG[@]}" 2>/dev/null || true; BG=(); fi; }
 jobreqs() { sq "SELECT COUNT(*) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.program_name = 'pgvigil-fragmentation'"; }
 jobsess() { sq "SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.program_name = 'pgvigil-fragmentation'"; }
 if part G; then
@@ -542,15 +554,27 @@ frag "$IDEF" LIMITED "$TMPD/g3.json" >/dev/null
 [[ "$(jget "$TMPD/g3.json" 'd["state"]+"|"+d["words"]')" == "off|"*"an admin turns it on"* && "$(pq "SELECT count(*) FROM pgvigil.mssql_fragmentation_read WHERE instance_id = $IDEF")" == 0 ]] || fail "G3: ixdef $(cat "$TMPD/g3.json")"
 echo "ok   G3: ixdef off ('an admin turns it on'), no row"
 # G4: three tables held in turn, each under 30 s: the read over 75 s, the POST answered at once
-hold f1 28; hold f2 56; hold f3 84; sleep 1
+hold f1; hold f2; hold f3
 t0=$(date +%s%N); frag "$ION" LIMITED "$TMPD/g4.json" >/dev/null; t1=$(date +%s%N); RID=$(jget "$TMPD/g4.json" 'd.get("read_id")')
 [[ "$(jget "$TMPD/g4.json" 'd["state"]')" == running && $(( (t1 - t0) / 1000000 )) -lt 5000 ]] || fail "G4: start $(cat "$TMPD/g4.json")"
-st=$(poll "$RID" 150); secs=$(readcol secs)
+# each holder is ended 26 s after the job's request is first seen waiting on it (under the read's 30 s lock timeout)
+declare -A SINCE=(); ORDER=
+for _ in $(seq 1 300); do
+  b=$(sq "SELECT TOP (1) h.host_name FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id
+    JOIN sys.dm_exec_sessions h ON h.session_id = r.blocking_session_id WHERE s.program_name = 'pgvigil-fragmentation' AND h.host_name LIKE 'pgvhold_%'" 2>/dev/null || true)
+  b=${b#pgvhold_}; now=$(date +%s)
+  if [[ -n "$b" && -z "${SINCE[$b]:-}" ]]; then SINCE[$b]=$now; ORDER="$ORDER $b"; fi
+  for tb in "${!SINCE[@]}"; do [[ "${SINCE[$tb]}" != done && $(( now - SINCE[$tb] )) -ge 26 ]] && { release "$tb"; SINCE[$tb]=done; }; done
+  [[ $(grep -o done <<<"${SINCE[*]:-}" | wc -l) == 3 ]] && break
+  st=$(poll "$RID" 1); [[ "$st" != running ]] && break
+  sleep 0.5
+done
+st=$(poll "$RID" 150); secs=$(readcol secs); release
+echo "     G4: the read waited on the holders in the order:$ORDER"
 [[ "$st" == done && "$secs" -gt 75 ]] || fail "G4: ended $st after $secs s: $(readcol note)"
 echo "ok   G4: the POST answered in $(( (t1 - t0) / 1000000 )) ms; the job ran $secs s (past serve's 75 s write timeout) and ended done"
-wait 2>/dev/null || true; BG=()
 # G5: one at a time; Cancel ends the job's own request on the server
-hold f1 40; sleep 1
+hold f1
 frag "$ION" LIMITED "$TMPD/g5a.json" >/dev/null; RID=$(jget "$TMPD/g5a.json" 'd.get("read_id")')
 frag "$ION" SAMPLED "$TMPD/g5b.json" >/dev/null
 [[ "$(jget "$TMPD/g5b.json" 'd["state"]+"|"+d["words"]')" == "refused|"*"one at a time"* ]] || fail "G5: the second start $(cat "$TMPD/g5b.json")"
@@ -560,16 +584,16 @@ gone=; for _ in $(seq 1 10); do [[ "$(jobreqs)" == 0 ]] && gone=1 && break; slee
 [[ -n "$gone" ]] || fail "G5: the job's request is still on the server 5 s after the Cancel"
 st=$(poll "$RID" 20); [[ "$st" == cancelled ]] || fail "G5: the row is $st"
 echo "ok   G5: a second start refused ('one at a time'); Cancel: the request gone from sys.dm_exec_requests within 5 s, the row cancelled"
-wait 2>/dev/null || true; BG=()
+release
 # G6: a held Sch-M lock: the read ends near 30 s, the rows before kept, where it stopped named
-hold f1 45 schm; sleep 2
+hold f1 schm
 frag "$ION" LIMITED "$TMPD/g6.json" >/dev/null; RID=$(jget "$TMPD/g6.json" 'd.get("read_id")')
 st=$(poll "$RID" 60); secs=$(readcol secs); note=$(readcol note); kept=$(readcol rows_kept)
 [[ "$st" == failed && "$secs" -ge 28 && "$secs" -le 42 && "$note" == *"index maintenance"* && "$note" == *"after "* && "$kept" -ge 1 ]] || fail "G6: $st after $secs s, $kept kept: $note"
 echo "ok   G6: the Sch-M lock ended the read after $secs s; $kept row(s) kept; the note: $note"
-wait 2>/dev/null || true; BG=()
+release
 # G7: serve killed during a held read; serve again: the row stopped after 60 s without a beat, a new start taken
-hold f1 50; sleep 1
+hold f1
 frag "$ION" LIMITED "$TMPD/g7.json" >/dev/null; RID=$(jget "$TMPD/g7.json" 'd.get("read_id")')
 sleep 3; kill -9 "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 serve_start g7
@@ -579,7 +603,7 @@ st0=$(poll "$RID" 1)
 sleep 62; st=$(poll "$RID" 1)
 echo "     G7: the row read $st0 when the session was gone, $st 62 s later"
 [[ "$st" == stopped ]] || fail "G7: the row read $st0 at once and $st after 62 s"
-wait 2>/dev/null || true; BG=()
+release
 frag "$ION" LIMITED "$TMPD/g7b.json" >/dev/null; R2ID=$(jget "$TMPD/g7b.json" 'd.get("read_id")')
 [[ "$(jget "$TMPD/g7b.json" 'd["state"]')" == running && "$(pq "SELECT state FROM pgvigil.mssql_fragmentation_read WHERE read_id = $RID")" == stopped ]] || fail "G7: the new start $(cat "$TMPD/g7b.json")"
 poll "$R2ID" 120 >/dev/null

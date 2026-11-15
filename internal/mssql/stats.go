@@ -288,7 +288,9 @@ func HistogramBuild(major, build, engineEdition int) (bool, string) {
 // what it is on. no_histogram names an index type that has none (XML, spatial, columnstore) or a leading column of a
 // type with none.
 const histogramStatSQL = `SELECT CAST(s.object_id AS bigint) AS object_id, CAST(s.stats_id AS int) AS stats_id, CAST(s.name AS nvarchar(128)) AS stats_name,
-  CAST(i.type_desc AS nvarchar(60)) AS index_type, CAST(TYPE_NAME(c.system_type_id) AS nvarchar(128)) AS lead_type,
+  CAST(i.type_desc AS nvarchar(60)) AS index_type,
+  -- a CLR type (geography, geometry, hierarchyid: system_type_id 240) is named by its user_type_id
+  CAST(CASE WHEN c.system_type_id = 240 THEN TYPE_NAME(c.user_type_id) ELSE TYPE_NAME(c.system_type_id) END AS nvarchar(128)) AS lead_type,
   CAST(c.name AS nvarchar(128)) AS lead_column, CAST(s.has_filter AS int) AS has_filter,
   CAST(sp.rows AS bigint) AS rows, CAST(sp.rows_sampled AS bigint) AS rows_sampled, CAST(sp.steps AS int) AS steps,
   TODATETIMEOFFSET(DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), sp.last_updated), 0) AS last_updated,
@@ -299,6 +301,10 @@ LEFT JOIN sys.stats_columns sc ON sc.object_id = s.object_id AND sc.stats_id = s
 LEFT JOIN sys.columns c ON c.object_id = sc.object_id AND c.column_id = sc.column_id
 OUTER APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
 WHERE s.object_id = OBJECT_ID(QUOTENAME(@schema) + N'.' + QUOTENAME(@table)) AND s.name = @stats`
+
+// histogramIndexSQL runs inside the database: an index by its table and name, for a name sys.stats does not list
+const histogramIndexSQL = `SELECT CAST(i.name AS nvarchar(128)) AS stats_name, CAST(i.type_desc AS nvarchar(60)) AS index_type
+FROM sys.indexes i WHERE i.object_id = OBJECT_ID(QUOTENAME(@schema) + N'.' + QUOTENAME(@table)) AND i.name = @stats`
 
 // histogramStepsSQL runs inside the database: the steps, each key as text by its base type (binary as 0x..., a date or
 // time in ISO 8601, a float in full, the rest as CONVERT writes it).
@@ -352,6 +358,16 @@ func ReadHistogram(ctx context.Context, conn *sql.Conn, quoted, schema, table, s
 		return h, err
 	}
 	if len(hd) == 0 {
+		// an index of that name whose type keeps no statistic of its own (XML, spatial) answers its type's reason
+		ix, err := qsRead(ctx, conn, quoted, histogramIndexSQL, "@schema sysname, @table sysname, @stats sysname",
+			sql.Named("schema", schema), sql.Named("table", table), sql.Named("stats", stats))
+		if err == nil && len(ix) > 0 {
+			it, _ := ix[0]["index_type"].(string)
+			if why := noHistogramIndex(it, ""); why != "" {
+				h.Header, h.Off = ix[0], why
+				return h, nil
+			}
+		}
 		return h, fmt.Errorf("no statistic %s on %s.%s that the read login can see", quoteName(stats), quoteName(schema), quoteName(table))
 	}
 	h.Header = hd[0]

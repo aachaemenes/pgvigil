@@ -87,6 +87,9 @@ const (
 	// fragBudget bounds one fragmentation read (a job: not tied to a request, so past serve's 75 s write timeout)
 	fragBudget = 10 * time.Minute
 	fragBeat   = 10 * time.Second
+	// fragBeatFails: beats that could not be written before the job ends its read (5 x 10 s, under the 60 s after which
+	// its row reads stopped and another read may start)
+	fragBeatFails = 5
 )
 
 // the words the page shows beside the button (task 414's FOLD F4, F6)
@@ -149,7 +152,8 @@ func (s *Server) fragOff(ds *doorSet, name string) string {
 // ---- GET /api/mssql/indexes/depth -------------------------------------------------------------------------------
 
 // the database filter: a database id of the index read, as the Indexes tab's selector names it
-const ixDepthDB = `($4::int IS NULL OR x.database_name = (SELECT b.database_name FROM pgvigil.mssql_index_db b WHERE b.instance_id = $1 AND b.database_id = $4))`
+// (IN: during a run after a rename, or an id reused, the read's table holds two names for one id until its last batch)
+const ixDepthDB = `($4::int IS NULL OR x.database_name IN (SELECT b.database_name FROM pgvigil.mssql_index_db b WHERE b.instance_id = $1 AND b.database_id = $4))`
 
 var sqlIxDepthUsage = `
 SELECT x.snapshot_at, sum(x.seeks_delta) AS seeks, sum(x.scans_delta) AS scans, sum(x.lookups_delta) AS lookups, sum(x.updates_delta) AS updates,
@@ -185,7 +189,7 @@ SELECT x.database_name AS database, x.kind, x.schema_name, x.table_name, x.const
        format('ALTER TABLE %s.%s WITH CHECK CHECK CONSTRAINT %s;', pgvigil.mssql_qname(coalesce(x.schema_name, 'dbo')), pgvigil.mssql_qname(x.table_name),
               pgvigil.mssql_qname(x.constraint_name)) AS script
   FROM pgvigil.mssql_untrusted_constraint x
- WHERE x.instance_id = $1 AND ($2::int IS NULL OR x.database_name = (SELECT b.database_name FROM pgvigil.mssql_constraint_db b WHERE b.instance_id = $1 AND b.database_id = $2))
+ WHERE x.instance_id = $1 AND ($2::int IS NULL OR x.database_name IN (SELECT b.database_name FROM pgvigil.mssql_constraint_db b WHERE b.instance_id = $1 AND b.database_id = $2))
  ORDER BY x.database_name, x.kind, x.table_name, x.constraint_name
  LIMIT 5000`
 
@@ -435,15 +439,17 @@ func (s *Server) MSSQLFragCost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ds := s.doorsNow()
-	if s.sessionUser(r) == "" && s.auth != nil {
+	// the switch and the doors first, as the start's (a server without the UI login answers off here, before any
+	// session is looked up): the cost is read only where the read itself may run
+	if why := s.fragOff(ds, name); why != "" {
+		s.reply(w, r, map[string]any{"state": "off", "words": why, "cost_words": fragCostWords}, nil)
+		return
+	}
+	if s.sessionUser(r) == "" {
 		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
 		return
 	}
-	dsn, _, no := ds.readLogin("sqlserver", name)
-	if no.Why != "" {
-		s.reply(w, r, map[string]any{"state": "off", "words": "off: " + no.Why, "cost_words": fragCostWords}, nil)
-		return
-	}
+	dsn, _, _ := ds.readLogin("sqlserver", name)
 	ctx, cancel := context.WithTimeout(r.Context(), histogramBudget)
 	defer cancel()
 	db, conn, refused, err := openMS(ctx, dsn, "pgvigil-fragcost")
@@ -584,10 +590,14 @@ func (s *Server) runFrag(ctx context.Context, job *fragJob, id int64, db *sql.DB
 	}()
 	t0 := time.Now()
 	var read atomic.Int64
+	// why the job ended its own read: its row was stopped (no beat for 60 s, then another start took the instance), or
+	// its beats could not be written for fragBeatFails beats (before 60 s: no second read starts beside this one)
+	var ended atomic.Value
 	done := make(chan struct{})
 	go func() {
 		t := time.NewTicker(fragBeat)
 		defer t.Stop()
+		fails := 0
 		for {
 			select {
 			case <-done:
@@ -596,6 +606,18 @@ func (s *Server) runFrag(ctx context.Context, job *fragJob, id int64, db *sql.DB
 				var state string
 				if err := s.fragCall("import_mssql_fragmentation_beat", map[string]any{"read_id": id, "objects_read": read.Load()}, &state); err != nil {
 					s.log.Warn("fragmentation read: the beat was not written", "read_id", id, "err", err)
+					if fails++; fails >= fragBeatFails {
+						ended.Store(fmt.Sprintf("its beat could not be written for %d s (the repository or the audit login did not answer), so the read was ended before another could start beside it", fails*int(fragBeat/time.Second)))
+						job.cancel()
+						return
+					}
+					continue
+				}
+				fails = 0
+				if state != "running" {
+					ended.Store("its row was marked " + state + " (no beat for 60 s), so the read was ended: one read at a time per instance")
+					job.cancel()
+					return
 				}
 			}
 		}
@@ -608,6 +630,8 @@ func (s *Server) runFrag(ctx context.Context, job *fragJob, id int64, db *sql.DB
 		if res.Read > len(res.Rows) {
 			note = fmt.Sprintf("%d of %d index and heap rows are under %d pages and are counted, not kept", res.Read-len(res.Rows), res.Read, mssql.FragMinPages)
 		}
+	case ended.Load() != nil:
+		state, note = "failed", ended.Load().(string)+"; the rows read before it are kept, "+res.Stopped
 	case job.cancelled.Load():
 		state, note = "cancelled", "cancelled by a user; the rows read before it are kept, "+res.Stopped
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
