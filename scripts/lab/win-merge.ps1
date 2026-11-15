@@ -28,7 +28,8 @@
 #           job login is given; the caller is sysadmin), and SQL Server setup gives that account no right on the
 #           instance's ReplData folder (Microsoft's service account page: the engine's account has Full control there,
 #           the Agent's does not). up grants the Agent's account Modify on that one folder (icacls, read back) for the
-#           snapshot and the first synchronization only, and removes the grant in its finally block (read back,
+#           snapshot and the first synchronization only (removed once merge has carried rows both ways: the agent has
+#           read its snapshot by then; part W then runs with no grant), and removes the grant in its finally block (read back,
 #           children included) on every exit path. Nothing else on the host is changed by up outside the two
 #           instances.
 #   status  read only: the publication, the subscription, the merge agent's job and newest session, the rows on
@@ -59,12 +60,13 @@
 #           'replication feature <inst>: absent - setup as SYSTEM (a few minutes)', '... setup /ACTION=Install as SYSTEM
 #           exit 0' (or 3010), '... read back: installed' (a few minutes each), the mirroring roles of pgvmirror printed after (a feature setup may restart an engine); the
 #           ISO 'dismounted' when this script mounted it; the folder's rights printed
-#           ('ReplData before: ...', when it exists); 'distributor: distribution made, working directory <the instance's
-#           ReplData>'; 'grant: NT Service\SQLAgent$PGVPRINCIPAL Modify on <ReplData> (read back)'; 'snapshot:
-#           succeeded' within 180 s; 'merge agent job <name>: started'; 'pgvmerge_sub: 100 rows, merge triggers in
-#           place' within 300 s; 'grant: removed (read back, children included)' (any inherited entry of the Agent
-#           below the folder said apart); 'both ways: 120 rows on each side' within 180 s; the status block; 'VERDICT
-#           UP', exit 0.
+#           ('ReplData before: ...', when it exists); 'folder: <ReplData> made' when it was absent (before the
+#           distributor: sp_adddistpublisher refuses a working directory that does not exist, Msg 21037);
+#           'distributor: distribution made, working directory <the instance's ReplData>'; 'grant:
+#           NT Service\SQLAgent$PGVPRINCIPAL Modify on <ReplData> (read back)'; 'snapshot: succeeded' within 180 s;
+#           'merge agent job <name>: started'; 'pgvmerge_sub: 100 rows, merge triggers in place' within 300 s; 'both
+#           ways: 120 rows on each side' within 180 s; 'grant: removed (read back, children included)' (any inherited
+#           entry of the Agent below the folder said apart); the status block; 'VERDICT UP', exit 0.
 #   status  the publication pgvm_merge (merge, 1 article), the push subscription to pgvmerge_sub, the merge job running
 #           and continuous, the newest session's runstatus, 120 / 120 rows, no grant; 'VERDICT UP'.
 #   down    'stopped: <job>' for a running lab job; 'dropped: subscription', 'cleanup: subscriber', 'dropped:
@@ -383,14 +385,14 @@ function Invoke-Up {
         }
         Invoke-LabSql $pubInst "EXEC sp_adddistributor @distributor = @@SERVERNAME, @password = @pw;" 'master' @{ pw = (New-LabPassword) } | Out-Null
         Invoke-LabSql $pubInst "EXEC sp_adddistributiondb @database = N'$distDb', @security_mode = 1;" | Out-Null
-        # the working directory named: with none, SQL Server stores its admin-share default \\<host>\C$\...\ReplData
-        # (dba-lab-win 2026-11-15 06:18), which the check below refuses (the grant is on the local folder; the agents
-        # run on this host for a push subscription)
+        # the folder first: sp_adddistpublisher refuses a working directory that does not exist (Msg 21037)
+        if (-not (Test-Path -LiteralPath $replData)) { New-Item -ItemType Directory -Path $replData -Force | Out-Null; Say "folder: $replData made (inside the instance's own folder)" }
+        # the working directory named: with none, SQL Server stores the admin-share form \\<host>\C$\...\ReplData,
+        # which the Agent's account cannot use and the check below refuses (the agents run on this host: push only)
         Invoke-LabSql $pubInst "EXEC sp_adddistpublisher @publisher = @@SERVERNAME, @distribution_db = N'$distDb', @security_mode = 1, @working_directory = @wd, @trusted = N'false', @thirdparty_flag = 0, @publisher_type = N'MSSQLSERVER';" 'master' @{ wd = $replData } | Out-Null
         $workDir = Get-LabValue $pubInst 'SELECT CAST(working_directory AS nvarchar(512)) FROM msdb.dbo.MSdistpublishers WHERE name = @@SERVERNAME'
         Say "distributor: $distDb made, working directory $workDir"
         if ($workDir.TrimEnd('\') -ne $replData.TrimEnd('\')) { throw "the working directory '$workDir' is not the instance's own ReplData '$replData'" }
-        if (-not (Test-Path -LiteralPath $replData)) { New-Item -ItemType Directory -Path $replData -Force | Out-Null; Say "folder: $replData made (inside the instance's own folder)" }
         $made = $true
         $null = & icacls.exe $replData /grant "${agentAccount}:(OI)(CI)M" /Q
         if ($LASTEXITCODE -ne 0) { throw "icacls could not grant $agentAccount on $replData (exit $LASTEXITCODE)" }
@@ -424,15 +426,17 @@ function Invoke-Up {
             throw "$subDb did not reach 100 rows with its merge triggers in 300 s ($(Get-RowCount $subInst $subDb) rows, $(Get-MergeTriggers) trigger(s))"
         }
         Say "${subDb}: 100 rows, merge triggers in place"
-        # the grant was for the snapshot and its first apply only: removed now (the finally stays the failure path's)
-        $made = $false
-        if (-not (Remove-Grant $replData)) { Say 'VERDICT NOT UP: the snapshot folder grant is still there'; exit 1 }
         Invoke-LabSql $pubInst "INSERT dbo.t_merge (id, v) SELECT 1000 + n, N'from the publisher' FROM (SELECT TOP (10) ROW_NUMBER() OVER (ORDER BY (SELECT 0)) AS n FROM sys.all_objects) x;" $pubDb | Out-Null
         Invoke-LabSql $subInst "INSERT dbo.t_merge (id, v) SELECT 2000 + n, N'from the subscriber' FROM (SELECT TOP (10) ROW_NUMBER() OVER (ORDER BY (SELECT 0)) AS n FROM sys.all_objects) x;" $subDb | Out-Null
         if (-not (Wait-Until 180 { (Get-RowCount $pubInst $pubDb) -eq 120 -and (Get-RowCount $subInst $subDb) -eq 120 })) {
             throw "merge did not carry the 20 new rows both ways in 180 s ($(Get-RowCount $pubInst $pubDb) / $(Get-RowCount $subInst $subDb))"
         }
         Say 'both ways: 120 rows on each side'
+        # the grant was for the snapshot and the first synchronization: removed once merge carried rows both ways (the
+        # agent has read the snapshot by then); part W reads the agent healthy with no grant (the finally stays the
+        # failure path's)
+        $made = $false
+        if (-not (Remove-Grant $replData)) { Say 'VERDICT NOT UP: the snapshot folder grant is still there'; exit 1 }
     } catch {
         Say "FAILED: $($_.Exception.Message)"
         Say 'VERDICT NOT UP (the objects made so far stay for reading; down removes them)'
