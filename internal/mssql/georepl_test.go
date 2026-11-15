@@ -44,8 +44,9 @@ func TestGeoReplSQL(t *testing.T) {
 			t.Errorf("the read lacks %s", col)
 		}
 	}
-	if !strings.Contains(georeplSQL, "FROM sys.dm_geo_replication_link_status") {
-		t.Error("the read is not sys.dm_geo_replication_link_status")
+	// one row even with no link: the view through a LEFT JOIN to a one-row read (the 'read' row's server and database)
+	if !strings.Contains(georeplSQL, "FROM (SELECT 1 AS one) r") || !strings.Contains(georeplSQL, "LEFT JOIN sys.dm_geo_replication_link_status l") {
+		t.Error("the read is not sys.dm_geo_replication_link_status LEFT JOINed to the one-row read")
 	}
 }
 
