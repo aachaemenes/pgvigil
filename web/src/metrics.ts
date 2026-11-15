@@ -350,7 +350,10 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
   });
   const saveNote = offControl(save, off);
   sec.append(el('h3', {}, 'Add or remove a counter'), list, clist,
-    el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, object, counter, cinst, action, kind, note, save, saveNote), said);
+    el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, object, counter, cinst, action, kind, note, save, saveNote),
+    // a kind is the whole series' (review part 2's 10): the store reads its past again under the new kind
+    el('p', { class: 'meta' }, 'Kind: empty takes the kind of the layer below (a default\'s, else the one SQL Server types). A kind belongs to the counter\'s whole series: a change reads its past again under the new kind - gauge to rate leaves no points before the change, rate to gauge shows the raw totals since the server started.'),
+    said);
 
   // Admin's live rows, each with its End
   const endCell = (_v: unknown, r: Row) => {

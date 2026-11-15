@@ -61,6 +61,23 @@
 #     read after has them.
 #  H. zero points: errors_offline_s is 0 at every instance read of the window (as many points as reads); errors_kill_s
 #     is not (D provokes three kill-connection errors; corrected after run 4, the body always read errors_offline_s).
+#  P. review part 2's rows, on a synthetic instance ctrsyn (tags env:synx, env:syny; no server: the counter import
+#     called with built payloads, the jobs import's writes made as 0094's import_mssql_jobs makes them):
+#     P1 (finding 1, G329) a job that ends between two counter reads and is read by the jobs read after them: the
+#        newest agent_jobs_failed point (at that jobs read) is 1, agent_jobs_started 1, agent_active_jobs 0; a job
+#        running at the next jobs read: agent_active_jobs 1 and agent_jobs_started 1 there (red today: the newest
+#        point is the counter read's, 0).
+#     P2 (finding 2, F15) reads at 10:00, 13:00, 17:00 and 17:01: no change and no rate at 13:00 nor at 17:00 (a stop
+#        right after a gap read), both at 17:01 (red today: 17:00 has a rate over four hours).
+#     P3 (finding 4) update_conflict_pct 0 with 1 snapshot update in 60 s (under 1/s, one conflict), 5 with 6
+#        conflicts in 120 updates (red today: 100).
+#     P4 (finding 3) two tag rows at one level: a removal (older) and an add (newer) - the counter is in the list;
+#        the removal written again (newer) - it is not (red today: the older row wins by the plan's order).
+#     P5 (finding 3) a fleet row, then one naming the same counter in lower case: the second answers 'row <n>
+#        replaced by row <m>' (red today: 'added', two live rows).
+#     P6 (finding 7) a fleet add of Databases / Log Growths with no kind: the list's kind is 'count', the default's
+#        (red today: empty). P7 (finding 8) Admin refuses SYS.DM_OS_SCHEDULERS / yield_count with a kind ('is a DMV
+#        column'; red today: done). Every row P makes is ended; ctrsyn is made inactive at the end.
 #  I. F1: mssql_cpu_newest's rg_active_requests NULL with 0124's own body (made in pg_temp from the file) after the
 #     counters left mssql_cpu, not NULL with the join's body.
 #  J. the API: GET /api/mssql/counteradmin (no instance: config, defaults, log, catalog; with the instance: layers,
@@ -541,6 +558,91 @@ ZK=$(pq "SELECT count(*) FILTER (WHERE value = 0) || '|' || count(*) FROM pgvigi
 [[ "$ZK" == "$NRD|$NRD" ]] || fail "H: errors_offline_s points [$ZK] for $NRD reads"
 ok "H: errors_offline_s is 0 at every one of the $NRD instance reads (the counter at raw 0, named in zero_series)"
 
+echo "== P. review part 2's rows on a synthetic instance =="
+SY=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('ctrsyn', 'sqlserver', '{env:synx,env:syny}', now(), now(), true, 'sqlserver') RETURNING instance_id" | head -1)
+[[ "$SY" =~ ^[0-9]+$ ]] || fail "P: the synthetic instance [$SY]"
+DAY=$(pq "SELECT to_char(date_trunc('day', now() AT TIME ZONE 'UTC') - interval '1 day', 'YYYY-MM-DD')")
+at() { echo "${DAY}T$1Z"; }
+# syn_ctr <hh:mm:ss> <ctr rows, a JSON array>: one instance read of ctrsyn, its server time and its snapshot the same
+syn_ctr() { pq "SELECT pgvigil.import_mssql_counters($SY, '$(at "$1")'::timestamptz,
+  '[{\"kind\":\"state\",\"server_utc\":\"$(at "$1")\",\"server_start\":\"2026-11-01T00:00:00Z\"}]'::jsonb || '$2'::jsonb)" >/dev/null; }
+br() { echo "[{\"kind\":\"ctr\",\"object\":\"SQL Statistics\",\"counter\":\"Batch Requests/sec\",\"instance\":\"_Total\",\"type\":272696576,\"ckind\":\"rate\",\"value\":$1}]"; }
+# syn_jobs <hh:mm:ss> <cursor> <running_since or ''> [<history_id> <run start hh:mm:ss> <status> <duration_s>]: a jobs
+# read as import_mssql_jobs (0094) leaves it - the run stored once, the cursor stamped with the read's time, mssql_jobs
+# replaced
+syn_jobs() {
+  local t; t=$(at "$1")
+  if [[ -n "${4:-}" ]]; then
+    pq "SELECT pgvigil.ensure_month_partition('mssql_job_runs', '$(at "$5")'::timestamptz)" >/dev/null
+    pq "INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, run_status, duration_s)
+        VALUES ($SY, '$(at "$5")', $4, 'J1', 'syn job', 0, $6, $7)" >/dev/null
+  fi
+  pq "INSERT INTO pgvigil.mssql_jobs_cursor (instance_id, last_history_id, mark, updated_at) VALUES ($SY, $2, 1, '$t')
+      ON CONFLICT (instance_id) DO UPDATE SET last_history_id = EXCLUDED.last_history_id, mark = EXCLUDED.mark, updated_at = EXCLUDED.updated_at" >/dev/null
+  pq "DELETE FROM pgvigil.mssql_jobs WHERE instance_id = $SY;
+      INSERT INTO pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, running_since)
+      VALUES ($SY, 'J1', '$t', 'syn job', $([[ -n "$3" ]] && echo "'$(at "$3")'" || echo NULL))" >/dev/null; }
+synpt() { pq "SELECT coalesce(to_char(at AT TIME ZONE 'UTC', 'HH24:MI:SS'), '') || '=' || coalesce(value::text, 'NULL')
+  FROM pgvigil.metric_points($SY, 'counters', '$(at 00:00:01)', '$(at 23:59:59)') WHERE metric = '$1' ORDER BY at DESC LIMIT 1"; }
+synrd() { pq "SELECT coalesce(s.dvalue::text, '') || '|' || coalesce(s.rate::text, '') FROM pgvigil.mssql_counter_series k
+  JOIN pgvigil.mssql_counter_sample s ON s.instance_id = k.instance_id AND s.series_id = k.series_id AND s.snapshot_at = '$(at "$1")'
+  WHERE k.instance_id = $SY AND k.object = '$2' AND k.counter = '$3'"; }
+# P2: the gap rule over two stops close together
+syn_ctr 10:00:00 "$(br 1000)"; syn_ctr 13:00:00 "$(br 2000)"; syn_ctr 17:00:00 "$(br 3000)"; syn_ctr 17:01:00 "$(br 3600)"
+G13=$(synrd 13:00:00 'SQL Statistics' 'Batch Requests/sec'); G17=$(synrd 17:00:00 'SQL Statistics' 'Batch Requests/sec'); G1701=$(synrd 17:01:00 'SQL Statistics' 'Batch Requests/sec')
+[[ "$G13" == "|" && "$G17" == "|" && "$G1701" == "600|10" ]] || fail "P2: change|rate at 13:00 [$G13], 17:00 [$G17] (want none: a stop right after a gap read), 17:01 [$G1701] (want 600|10)"
+ok "P2: F15 over two stops close together: no change or rate at 13:00 nor 17:00; 600 and 10/s at 17:01"
+# P1: the SQL Agent counts at the jobs reads
+syn_jobs 20:00:00 100 ''; syn_ctr 20:01:00 "$(br 4000)"
+syn_ctr 20:02:00 "$(br 4100)"
+syn_jobs 20:03:00 101 '' 101 20:01:10 0 20; syn_ctr 20:04:00 "$(br 4200)"
+F1=$(synpt agent_jobs_failed); S1=$(synpt agent_jobs_started); A1=$(synpt agent_active_jobs)
+[[ "$F1" == "20:03:00=1" && "$S1" == "20:03:00=1" && "$A1" == "20:03:00=0" ]] \
+  || fail "P1: after the jobs read that read a failed run: newest failed [$F1], started [$S1], running [$A1] (want 20:03:00=1, =1, =0)"
+syn_jobs 20:08:00 101 20:06:00; syn_ctr 20:09:00 "$(br 4300)"
+S2=$(synpt agent_jobs_started); A2=$(synpt agent_active_jobs); F2=$(synpt agent_jobs_failed)
+[[ "$S2" == "20:08:00=1" && "$A2" == "20:08:00=1" && "$F2" == "20:08:00=0" ]] \
+  || fail "P1: a job running at the next jobs read: started [$S2], running [$A2], failed [$F2] (want 20:08:00=1, =1, =0)"
+ok "P1: G329 at the jobs reads: a run that ended between two counter reads counts at the jobs read that read it (failed 1, started 1); a job running at the next jobs read counts there (running 1, started 1)"
+# P3: the update conflict ratio's floor
+uc() { echo "[{\"kind\":\"ctr\",\"object\":\"Transactions\",\"counter\":\"Update conflict ratio\",\"instance\":\"\",\"type\":1073874176,\"ckind\":\"average\",\"value\":$1,\"base\":$2}]"; }
+syn_ctr 21:00:00 "$(uc 0 0)"; syn_ctr 21:01:00 "$(uc 1 1)"; U1=$(synpt update_conflict_pct)
+syn_ctr 21:02:00 "$(uc 7 121)"; U2=$(synpt update_conflict_pct)
+[[ "$U1" == "21:01:00=0" && "$U2" == "21:02:00=5" ]] || fail "P3: update_conflict_pct [$U1] (one update in 60 s: want 0), [$U2] (6 of 120: want 5)"
+ok "P3: update_conflict_pct 0 under 1 snapshot update/s, 5 over it"
+# P4-P7: the list
+inlist() { pq "SELECT coalesce(string_agg(coalesce(e->>'kind', ''), ',') , 'absent') FROM jsonb_array_elements(pgvigil.mssql_counter_list($SY)) e
+  WHERE lower(e->>'object') = lower('$1') AND lower(e->>'counter') = lower('$2') AND e->>'inst' = ''"; }
+door() { pq "SELECT pgvigil.import_mssql_counter_config(now(), '$1'::jsonb)"; }
+endrows() { for c in $(pq "SELECT config_id FROM pgvigil.mssql_counter_config WHERE ended_at IS NULL AND created_by = 'proof-p'"); do
+  door "{\"op\":\"end\",\"ui_user\":\"proof-p\",\"config_id\":\"$c\"}" | grep -q '"done"' || fail "P: ending row $c"; done; }
+door '{"op":"add","ui_user":"proof-p","scope":"tag","tag":"env:synx","object":"Plan Cache","counter":"Cache Pages","action":"remove"}' | grep -q '"done"' || fail "P4: the env:synx removal"
+door '{"op":"add","ui_user":"proof-p","scope":"tag","tag":"env:syny","object":"Plan Cache","counter":"Cache Pages","action":"add"}' | grep -q '"done"' || fail "P4: the env:syny add"
+L1=$(inlist 'Plan Cache' 'Cache Pages')
+door '{"op":"add","ui_user":"proof-p","scope":"tag","tag":"env:synx","object":"Plan Cache","counter":"Cache Pages","action":"remove"}' | grep -q 'replaced' || fail "P4: the env:synx removal again"
+L2=$(inlist 'Plan Cache' 'Cache Pages')
+[[ "$L1" != absent && "$L2" == absent ]] || fail "P4: two tag rows at one level: after the newer add [$L1] (want in the list), after the newer removal [$L2] (want absent)"
+ok "P4: two tag rows of the instance at one level: the newer wins, each way"
+endrows
+R1=$(door '{"op":"add","ui_user":"proof-p","scope":"fleet","object":"SQL Statistics","counter":"Forced Parameterizations/sec","action":"add"}')
+R2=$(door '{"op":"add","ui_user":"proof-p","scope":"fleet","object":"sql statistics","counter":"forced parameterizations/sec","action":"add"}')
+NLIVE=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_config WHERE ended_at IS NULL AND lower(counter) = 'forced parameterizations/sec'")
+grep -q '"done"' <<<"$R1" && grep -q 'replaced by row' <<<"$R2" && [[ "$NLIVE" == 1 ]] || fail "P5: the same counter in lower case: [$R2], $NLIVE live row(s) (want 'replaced by row', 1)"
+ok "P5: a fleet row naming a live row's counter in another case replaces it (one live row)"
+endrows
+door '{"op":"add","ui_user":"proof-p","scope":"fleet","object":"Databases","counter":"Log Growths","action":"add"}' | grep -q '"done"' || fail "P6: the fleet add"
+K6=$(inlist 'Databases' 'Log Growths')
+[[ "$K6" == count ]] || fail "P6: an add with no kind over the default's count: the list's kind [$K6] (want count)"
+ok "P6: an add with no kind keeps the default's kind (count)"
+endrows
+R7=$(door '{"op":"add","ui_user":"proof-p","scope":"fleet","object":"SYS.DM_OS_SCHEDULERS","counter":"yield_count","action":"add","kind":"gauge"}')
+grep -q '"refused"' <<<"$R7" && grep -q 'is a DMV column' <<<"$R7" || { endrows; fail "P7: SYS.DM_OS_SCHEDULERS / yield_count with a kind: $R7"; }
+ok "P7: Admin refuses a kind on a DMV column named in upper case"
+endrows
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $SY" >/dev/null
+[[ $(pq "SELECT count(*) FROM pgvigil.mssql_counter_config WHERE ended_at IS NULL AND created_by = 'proof-p'") == 0 ]] || fail "P: a row of P left live"
+
 echo "== I. F1: the CPU page's workload groups =="
 col mssql_cpu mssql_counters
 python3 - internal/repo/sql/0124_darling_cpu.sql "$TMPD/old_cpu.sql" <<'PY'
@@ -805,4 +907,4 @@ for img in "${IMAGES[@]:1}"; do
 done
 
 echo "NOT PROVEN HERE: SQL Server 2016 (no Linux image: dba-lab-win's queue), Managed Instance, RDS, Cloud SQL, a Windows host; DB Offline Errors moving (no box can provoke it); two memory nodes (one Buffer Node in a container)"
-echo "PROOF OK: mssql counters (A B C D E F G H I J K N M L)"
+echo "PROOF OK: mssql counters (A B C D E F G H P I J K N M L)"
