@@ -1,3 +1,49 @@
+diff --git i/internal/mssql/checks.go w/internal/mssql/checks.go
+index 678f6c5..cbc25a1 100644
+--- i/internal/mssql/checks.go
++++ w/internal/mssql/checks.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"fmt"
++	"math"
+ 	"sort"
+ 	"strconv"
+ 	"strings"
+@@ -230,13 +231,13 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
+ 			return optionVerdict{Status: "none", Explain: "Azure SQL Managed Instance sets its own memory limit"}
+ 		case v == unlimitedMemoryMB:
+ 			return broken(sevWarning, "a limit under the machine's memory", "dbachecks MaxMemory",
+-				"max server memory is at its default (2147483647 MB): SQL Server sets itself no limit and can take the memory the operating system needs")
++				"max server memory is at its default (2147483647 MB): SQL Server sets itself no limit and can take the memory the operating system needs"+pmMemorySuggestion(m.PhysMB))
+ 		case m.PhysMB > 0 && v > m.PhysMB:
+ 			return broken(sevWarning, "a limit under the machine's memory", "sp_Blitz 50",
+ 				fmt.Sprintf("max server memory is %d MB, more than the machine's %d MB: the setting limits nothing", v, m.PhysMB))
+ 		case m.PhysMB > 0 && v*100 >= m.PhysMB*95:
+ 			return broken(sevWarning, "under 95 % of the machine's memory", "sp_PerfCheck 1002",
+-				fmt.Sprintf("max server memory is %d MB, %s %% of the machine's %d MB: 95 %% or more leaves the operating system too little", v, pctText(v, m.PhysMB), m.PhysMB))
++				fmt.Sprintf("max server memory is %d MB, %s %% of the machine's %d MB: 95 %% or more leaves the operating system too little", v, pctText(v, m.PhysMB), m.PhysMB)+pmMemorySuggestion(m.PhysMB))
+ 		case m.PhysMB == 0:
+ 			return met("a limit is set; not weighed against the machine's memory, which was not read")
+ 		}
+@@ -372,6 +373,17 @@ func advisedMaxDOP(m machineFacts) int64 {
+ 	return min64(max64(m.CPUs/m.NUMANodes, 1), 16)
+ }
+ 
++// pmMemorySuggestion: PerformanceMonitor 3.13.0's max server memory number (ConfigAuditGuidance.cs: the machine's
++// memory less the larger of 4,096 MB and 10 %, never more than half), the one 0156's mssql_memory_suggestion gives the
++// pages; "" when the machine's memory was not read.
++func pmMemorySuggestion(physMB int64) string {
++	if physMB <= 0 {
++		return ""
++	}
++	reserve := math.Min(math.Max(4096, float64(physMB)*0.10), float64(physMB)/2)
++	return fmt.Sprintf("; PerformanceMonitor's suggestion: about %d MB (leaving %.0f MB for the operating system)", int64(float64(physMB)-reserve), reserve)
++}
++
+ func min64(a, b int64) int64 {
+ 	if a < b {
+ 		return a
 diff --git i/internal/mssql/memory.go w/internal/mssql/memory.go
 index d80b603..cef85a2 100644
 --- i/internal/mssql/memory.go
@@ -200,3 +246,21 @@ index 40526c2..fb9c47a 100644
 +  CROSS JOIN LATERAL pgvigil.pg_poison_wait_findings(i.instance_id, now()) p
 + WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('warning', 'critical');
 +COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, replay lag, slot WAL, a volume under 5 GB free, an AG secondary behind, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
+diff --git i/scripts/proof-darling-cpu.sh w/scripts/proof-darling-cpu.sh
+index e00d70e..dd36b01 100755
+--- i/scripts/proof-darling-cpu.sh
++++ w/scripts/proof-darling-cpu.sh
+@@ -567,8 +567,11 @@ wr() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND d
+   fnd 'slow data file writes'; }
+ W1=$(wr 1000 100100); W2=$(wr 1000 100000); W3=$(wr 999 999000)
+ pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND database_name = 'pgvproof'" >/dev/null
+-[[ "$W1/$W2/$W3" == "1/0/0" ]] || fail "G: slow data file writes: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 1/0/0)"
+-echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes 100.1 ms over 1,000 writes raises, 100 ms or 999 writes none"
++# task 405 D1 (0156, PerformanceMonitor 3.13's Changed 2): a user database's data file is never judged on its write
++# latency (was: 100.1 ms over 1,000 writes raised); tempdb's data files are, at 10 / 30 ms over 250 writes
++# (proof-pm313-rules.sh R1)
++[[ "$W1/$W2/$W3" == "0/0/0" ]] || fail "G: slow data file writes on a user database: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 0/0/0: D1)"
++echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes on a user database never raised (task 405 D1)"
+ 
+ echo "== H. the API under pgvigil serve =="
+ (cd web && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "H: the web build"; }
