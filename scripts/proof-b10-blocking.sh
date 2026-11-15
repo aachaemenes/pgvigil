@@ -50,8 +50,8 @@
 #     same query_start (a 45 s gap, over two intervals): 2 waits; pid 102 waits 30 s once: 1; pgvigil.pg_block_waits
 #     gives 3, the day and the live part 3, and the hour arm fires (3 waits, the longest 60 s). RED: 2 (one per query).
 #     J2, sampled once a minute (snapshots at 0, 60, 61, 120, 180 s: the median gap 59 s): pid 104 in a Lock wait at 0 and
-#     120 s and not waiting at 60 s = 2 waits; pid 106 in a Lock wait at 0, 60 and 120 s = 1 wait; 3 in all. RED: 4
-#     (104 merged at 'two intervals'; 106 split three times by the 1 s near-duplicate as the smallest gap).
+#     120 s and not waiting at 60 s = 2 waits; pid 106 in a Lock wait at 0, 60 and 120 s = 1 wait; 3 in all. RED: 5 (the
+#     1 s near-duplicate as the smallest gap splits 106 into three; without it, 'two intervals' would merge 104's two).
 #  K. PostgreSQL deadlocks (log_events kind 'deadlock'): a pair of statements not seen in 30 days fires 'a deadlock
 #     between a new pair of statements' (warning) naming both; 5 deadlocks of a known pair in an hour fire 'deadlocks
 #     in the last hour' (warning); 2 of a known pair: neither. RED: no PostgreSQL deadlock finding.
