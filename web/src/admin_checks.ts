@@ -105,7 +105,8 @@ export function instanceChecks(deps: Deps) {
     ];
     if (script) {
       const pre = el('pre', { id: 'admin-instance-rights-script', tabindex: '0', 'aria-label': `The GRANT script for ${name}` }, script);
-      const copy = el('button', { type: 'button', 'aria-label': `Copy the GRANT script for ${name}` }, 'Copy the script');
+      // the visible words are the start of the label (WCAG 2.5.3, Label in Name: axe's label-content-name-mismatch, run st12s)
+      const copy = el('button', { type: 'button', 'aria-label': `Copy the GRANT script for ${name}` }, 'Copy the GRANT script');
       copy.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(script); deps.say(`The GRANT script for ${name} is on the clipboard (${script.split('\n').length} lines). Nothing was run.`); }
         catch { deps.say('The browser refused the clipboard: select the script and copy it by hand.', true); }

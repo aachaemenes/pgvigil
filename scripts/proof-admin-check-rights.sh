@@ -5,8 +5,9 @@
 # (scripts/st12-wiring.patch: applied to the run's own copy when the tree does not hold them).
 #
 # Expected (written before the first run):
-#  C1  Check all. pgvigil.yaml holds f-sql (SQL Server 2022, a login with every right), f-pg (PostgreSQL 16) and
-#      f-down (a port nothing listens on); the page holds p-up and p-off (added through the API; p-off disabled).
+#  C1  Check all. pgvigil.yaml holds seven instances: f-sql (SQL Server 2022, a login with every right), f-pg
+#      (PostgreSQL 16), f-down (a port nothing listens on) and the four of the Rights rows (f-bare, f-bare2, f-odd,
+#      f-pgmon: each connects); the page holds p-up and p-off (added through the API; p-off disabled).
 #      a  (the API, one test each) op 'test' of f-sql and f-pg answers ok true 'connected: ...'; of f-down ok false
 #         with the connect error, inside 10 seconds; each result is kept (the part 'checks': tested_ok true / true /
 #         false) and audited ('instance tested', done); no answer and no 'checks' row holds a password or a dsn.
@@ -15,8 +16,9 @@
 #      b  after one collection of f-sql and of f-pg: their 'checks' rows hold last_collected and an age of 0 to 120 s
 #         equal to the repository's own (within 5 s); f-down's hold none; a collection of f-pg that ended in an error
 #         (put into collection_dates by hand) shows failing_n 1 with its name and note.
-#      c  (the page, light) the button 'Check all' fills each row's 'last test' and ends 'Checked 4: 3 connected, 1
-#         failed; 1 disabled, not checked.'; p-off was not asked (its row keeps tested_at NULL, no audit row); after a
+#      c  (the page, light) the button 'Check all' fills each row's 'last test' and ends 'Checked 8: 7 connected, 1
+#         failed; 1 disabled, not checked.' (the seven of the file and p-up; the first run's expected said 4: it had
+#         counted three of the file's seven); p-off was not asked (its row keeps tested_at NULL, no audit row); after a
 #         reload both tables still show the results; 'last collected' reads '<n> second(s)|minute(s) ago' for f-sql.
 #  C2  the page's gate (this base has no reader / admin split): op 'test' and op 'rights' without the X-Pgvigil header
 #      answer 403, without a session 401; op 'rights' of a name that is neither the page's nor the file's answers ok
@@ -40,7 +42,7 @@
 #      ten Rights reads, are equal; f-down's Rights answers ok false with the connect error; every Rights click has
 #      its audit row ('instance rights').
 #  P   (the page, light and dark, signed in) the Rights link of f-bare2 (a second bare login, never granted) fills the
-#      box with the list and the script; 'Copy the script' is there; the page draws with no error box; axe-core 4.14.0
+#      box with the list and the script; 'Copy the GRANT script' is there; the page draws with no error box; axe-core 4.14.0
 #      (WCAG 2.1 A and AA) 0 violation nodes with the box open. Skipped (NOT PROVEN) without chromium and node.
 #  R6 is the build's own row (the catalogue tests, red first with a planted check): not rerun here.
 #
@@ -350,7 +352,7 @@ for (const theme of ['light', 'dark']) {
   r.rights = await clickLabel('Rights of f-bare2');
   r.box = await until(`!!document.querySelector('#admin-instance-rights-script')`, 30);
   r.script = await ev(`document.querySelector('#admin-instance-rights-script')?.textContent ?? ''`);
-  r.copy = await ev(`[...document.querySelectorAll('#admin-instance-rights button')].some(b => b.textContent.trim() === 'Copy the script')`);
+  r.copy = await ev(`[...document.querySelectorAll('#admin-instance-rights button')].some(b => b.textContent.trim() === 'Copy the GRANT script')`);
   r.listed = await ev(`document.querySelectorAll('#admin-instance-rights table tbody tr').length`);
   r.errors = await ev(`document.querySelectorAll('main .error:not([role=status])').length`);
   await cmd('Runtime.evaluate', { expression: axeSrc });
@@ -369,7 +371,7 @@ d = json.load(open(sys.argv[1])); bad = []
 if d.get("login") != 200: bad.append(f"the page's sign-in answered {d.get('login')}")
 l = d["light"]
 if not l.get("clicked") or not l.get("done"): bad.append(f"Check all: clicked {l.get('clicked')}, ended {l.get('done')}, the status {l.get('status')!r}")
-if l.get("status") != "Checked 4: 3 connected, 1 failed; 1 disabled, not checked.": bad.append(f"Check all's last line: {l.get('status')!r}")
+if l.get("status") != "Checked 8: 7 connected, 1 failed; 1 disabled, not checked.": bad.append(f"Check all's last line: {l.get('status')!r}")
 rows = l.get("rows") or {}
 for n, want in (("f-sql", "connected"), ("p-up", "connected"), ("f-down", "failed")):
     got = (rows.get(n) or {}).get("last test", "")
@@ -387,7 +389,7 @@ for theme in ("light", "dark"):
     if not r.get("rights") or not r.get("box"): bad.append(f"{theme}: the Rights link {r.get('rights')}, the box {r.get('box')}")
     s = r.get("script") or ""
     if f"GRANT VIEW SERVER STATE TO [{os.environ['BARE2']}];" not in s or "pgvigil did not run it and never does" not in s: bad.append(f"{theme}: the script in the box: {s[:200]!r}")
-    if not r.get("copy"): bad.append(f"{theme}: no 'Copy the script' button")
+    if not r.get("copy"): bad.append(f"{theme}: no 'Copy the GRANT script' button")
     if (r.get("listed") or 0) < 9: bad.append(f"{theme}: {r.get('listed')} rights listed, want 9 or more")
     n = sum(v["n"] for v in r.get("violations") or [])
     if n: bad.append(f"{theme}: {n} axe violation node(s): {r['violations']}")
