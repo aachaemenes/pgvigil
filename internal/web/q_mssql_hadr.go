@@ -677,6 +677,45 @@ SELECT k.key, k.label, k.unit, k.direction, k.warn_default, k.crit_default, k.le
                       WHERE t.ended_at IS NULL AND t.key = k.key AND t.level = 'root' LIMIT 1) r ON true
  WHERE k.key IN ('logship_restore_age', 'logship_restore_latency') ORDER BY k.key`
 
+// The Log Shipping page's panel below DBA Dash's two grids (task LSX, pgvigil's own): per instance in scope, log
+// shipping's own jobs as its configuration names them (with the jobs collection's last run where a read of the last
+// 15 minutes holds it), what its agents logged in the last 24 hours (the newest 20 per agent and database; a STANDBY
+// copy's read-only rows flagged), how often a restore job found nothing to apply in the last hour, and the log
+// backups taken outside log shipping. $1 / $2 the scope only.
+const sqlHADRLogShippingJobs = `
+WITH ` + hadrScope + `
+SELECT c.instance_id, sc.name AS instance, c.role, nullif(c.database_name, '') AS database_name, c.job_role, c.job_name, c.job_id,
+       c.job_exists, c.job_enabled, c.enabled_schedules, c.interval_min, c.recovery_model, c.restore_mode, c.backup_directory,
+       c.primary_server, c.primary_database, mj.last_outcome, mj.last_run_at, c.snapshot_at
+  FROM pgvigil.mssql_logship_config c
+  JOIN sc ON sc.instance_id = c.instance_id
+  LEFT JOIN pgvigil.mssql_jobs mj ON mj.instance_id = c.instance_id AND mj.job_id = c.job_id AND mj.snapshot_at > now() - interval '15 minutes'
+ ORDER BY sc.name, c.database_name, CASE c.role WHEN 'primary' THEN 1 WHEN 'secondary' THEN 2 ELSE 3 END,
+          CASE c.job_role WHEN 'backup' THEN 1 WHEN 'copy' THEN 2 WHEN 'restore' THEN 3 ELSE 4 END`
+
+const sqlHADRLogShippingMessages = `
+WITH ` + hadrScope + `
+SELECT e.instance_id, sc.name AS instance, nullif(e.database_name, '') AS database_name, e.agent, e.logged_at, e.session_id,
+       e.sequence_number, e.message, e.source, e.rows_24h, e.standby_noise, e.ord, e.snapshot_at
+  FROM pgvigil.mssql_logship_errors e
+  JOIN sc ON sc.instance_id = e.instance_id
+UNION ALL
+SELECT i.instance_id, sc.name, i.database_name, 'restore', i.last_at, NULL, NULL,
+       format('Could not find a log backup file that could be applied to secondary database (%s time%s in the last hour after its last restore)',
+              i.runs, CASE WHEN i.runs = 1 THEN '' ELSE 's' END),
+       'the restore job''s history', i.runs, false, 0, i.snapshot_at
+  FROM pgvigil.mssql_logship_idle i
+  JOIN sc ON sc.instance_id = i.instance_id
+ WHERE i.runs > 0
+ ORDER BY 2, 3, 5 DESC NULLS LAST, 4, 12`
+
+const sqlHADRLogShippingForeign = `
+WITH ` + hadrScope + `
+SELECT f.instance_id, sc.name AS instance, f.database_name, f.finished_at, f.started_at, f.file_name, f.device, f.backup_directory, f.snapshot_at
+  FROM pgvigil.mssql_logship_foreign_logs f
+  JOIN sc ON sc.instance_id = f.instance_id
+ ORDER BY sc.name, f.database_name, f.finished_at DESC`
+
 // hadrStatuses: the Log Shipping status filter's words (DBA Dash's Critical, Warning, N/A, OK; none = every box
 // cleared: no Detail row)
 var hadrStatuses = map[string]bool{"critical": true, "warning": true, "na": true, "ok": true, "none": true}
@@ -760,6 +799,9 @@ func (s *Server) MSSQLHADRFleet(w http.ResponseWriter, r *http.Request) {
 			{"summary", sqlHADRLogShippingSummary, scope},
 			{"detail", sqlHADRLogShippingDetail, append(append([]any{}, scope...), statuses)},
 			{"thresholds", sqlHADRLogShippingThresholds, nil},
+			{"jobs", sqlHADRLogShippingJobs, []any{id, ids}},
+			{"messages", sqlHADRLogShippingMessages, []any{id, ids}},
+			{"foreign", sqlHADRLogShippingForeign, []any{id, ids}},
 		})
 	default:
 		writeErr(w, http.StatusBadRequest, errors.New("page must be ag, mirroring or logshipping"))

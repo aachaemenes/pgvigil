@@ -221,8 +221,60 @@ FROM (SELECT bs.database_name, mf.physical_device_name AS file_name, p.backup_di
                      WHERE f.media_set_id = bs.media_set_id ORDER BY f.family_sequence_number) mf) x` + lsForeignWhere + `
 ORDER BY x.backup_finish_date DESC`
 
-// lsParts: the configuration and the foreign log backups, each its own part (a failure is a collector_error row of
-// its source, never the loss of the rest); the foreign read needs backupset and backupmediafamily too
+// lsErrorSQL: what log shipping's own agents (backup on a primary, copy and restore on a secondary) wrote into
+// msdb.dbo.log_shipping_monitor_error_detail in the last 24 hours (an index on log_time_utc bounds the read): the
+// newest 20 rows per agent and database (ord 1 = the newest) with how many rows that agent and database have in the
+// 24 hours. An error is a sequence of rows of one session (Microsoft: "Each error is logged as a sequence of
+// exceptions"): the agent's own line (sequence 0), then the engine's (source '.Net SqlClient Data Provider'). The
+// copy agent's rows name no database (Microsoft: "empty for copy"): they take the databases of its secondary id.
+// standby_noise marks, on a secondary restored WITH STANDBY (restore_mode 1), a row that says the database is
+// read-only: the repository shows such rows counted and never judges them.
+var lsErrorSQL = `WITH e AS (
+  SELECT e.agent_type, e.session_id, e.sequence_number, e.log_time_utc, e.message, e.source,
+         COALESCE(NULLIF(e.database_name, N''), CASE e.agent_type WHEN 0 THEN p.primary_database ELSE sd.secondary_database END) AS database_name,
+         sd.restore_mode
+    FROM msdb.dbo.log_shipping_monitor_error_detail e
+    LEFT JOIN msdb.dbo.log_shipping_primary_databases p ON e.agent_type = 0 AND p.primary_id = e.agent_id
+    LEFT JOIN msdb.dbo.log_shipping_secondary_databases sd ON e.agent_type IN (1, 2) AND sd.secondary_id = e.agent_id
+         AND (ISNULL(e.database_name, N'') = N'' OR sd.secondary_database = e.database_name)
+   WHERE e.log_time_utc >= DATEADD(hour, -24, GETUTCDATE())
+), r AS (
+  SELECT e.*, ROW_NUMBER() OVER (PARTITION BY e.agent_type, e.database_name ORDER BY e.log_time_utc DESC, e.session_id DESC, e.sequence_number DESC) AS ord,
+         COUNT(*) OVER (PARTITION BY e.agent_type, e.database_name) AS rows_24h
+    FROM e
+)
+SELECT 'lserror' AS kind, CASE r.agent_type WHEN 0 THEN 'backup' WHEN 1 THEN 'copy' ELSE 'restore' END AS agent,
+  CAST(ISNULL(r.database_name, N'') AS nvarchar(128)) AS database_name, CAST(r.ord AS int) AS ord, r.session_id, r.sequence_number,
+  ` + isUTCText("r.log_time_utc") + ` AS logged_utc,
+  CAST(LEFT(r.message, 2000) AS nvarchar(2000)) AS message, CAST(LEFT(r.source, 200) AS nvarchar(200)) AS source,
+  CAST(r.rows_24h AS int) AS rows_24h,
+  CAST(CASE WHEN r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%')
+            THEN 1 ELSE 0 END AS int) AS standby_noise
+FROM r
+WHERE r.ord <= 20
+ORDER BY r.agent_type, r.database_name, r.ord`
+
+// lsIdleSQL: per secondary database, how many times in the last hour the restore job ran AFTER its last restore and
+// found nothing to apply - its history line 'Could not find a log backup file that could be applied to secondary
+// database' (the pattern's '_' stands for the blank after 'backup'). The line is written by every idle run of a
+// healthy pair, so it means something only where restores are behind: then the copy job is where to look (Microsoft,
+// error 14421). The history table holds about eight rows per run of each agent: the read is bounded to one hour by
+// the index on log_time_utc and to this one line. This server's own monitor row (its secondary id) gives the last
+// restore; a secondary with no monitor row counts the whole hour.
+var lsIdleSQL = `SELECT 'lsidle' AS kind, CAST(h.database_name AS nvarchar(128)) AS database_name,
+  ` + isUTCText("MAX(h.log_time_utc)") + ` AS last_utc, COUNT(*) AS runs
+FROM msdb.dbo.log_shipping_monitor_history_detail h
+WHERE h.agent_type = 2 AND h.log_time_utc >= DATEADD(hour, -1, GETUTCDATE())
+  AND h.message LIKE N'Could not find a log backup_file that could be applied%'
+  AND h.database_name IS NOT NULL AND h.database_name <> N''
+  AND h.log_time_utc > ISNULL((SELECT MAX(m.last_restored_date_utc) FROM msdb.dbo.log_shipping_monitor_secondary m
+                                WHERE m.secondary_id = h.agent_id AND m.secondary_database = h.database_name), CONVERT(datetime, '19000101', 112))
+GROUP BY h.database_name
+ORDER BY h.database_name`
+
+// lsParts: the configuration, the foreign log backups, the agents' errors and the idle restore runs, each a part of
+// its own (a failure is a collector_error row of its source, never the loss of the rest; the repository's import
+// keeps a part's stored rows by these names)
 var lsParts = []struct {
 	source string
 	tables []string
@@ -231,6 +283,8 @@ var lsParts = []struct {
 	{"log shipping configuration", []string{"log_shipping_primary_databases", "log_shipping_secondary", "log_shipping_secondary_databases",
 		"log_shipping_monitor_alert", "sysjobs", "sysjobschedules", "sysschedules"}, lsConfigSQL},
 	{"log shipping foreign log backups", []string{"log_shipping_primary_databases", "backupset", "backupmediafamily"}, lsForeignSQL},
+	{"log shipping agent errors", []string{"log_shipping_monitor_error_detail", "log_shipping_primary_databases", "log_shipping_secondary_databases"}, lsErrorSQL},
+	{"log shipping idle restores", []string{"log_shipping_monitor_history_detail", "log_shipping_monitor_secondary"}, lsIdleSQL},
 }
 
 func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {

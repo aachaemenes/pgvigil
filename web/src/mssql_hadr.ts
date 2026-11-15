@@ -634,7 +634,13 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       } },
     ];
     const detCols: Col[] = [
-      { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database' }, { key: 'primary_server', label: 'Primary Instance' },
+      { key: 'instance', label: 'Instance' },
+      { key: 'database_name', label: 'Database', fmt: v => {   // pgvigil's own: a click narrows the panel below to this database
+        const b = el('button', { type: 'button', class: 'link', 'aria-label': `Show log shipping's jobs and messages for ${String(v ?? '')}` }, String(v ?? ''));
+        b.addEventListener('click', () => { dbPick.value = String(v ?? ''); drawPanel(); dbPick.focus(); });
+        return b;
+      } },
+      { key: 'primary_server', label: 'Primary Instance' },
       { key: 'status', label: 'Status', fmt: (v, r) => (statusWord[String(v)] ?? String(v ?? '')) + (r.is_missing === true ? ' (Missing)' : r.is_new_database === true ? ' (New Database)' : ''), cls: stCls },
       { key: 'excluded_by', label: 'Excluded By' },
       { key: 'last_log_restore_at', label: 'Restore Date', fmt: fmtTime }, { key: 'last_log_backup_start_at', label: 'Backup Start Date', fmt: fmtTime },
@@ -655,8 +661,67 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       // pgvigil's own, after DBA Dash's columns
       { key: 'checks', label: 'finding', wide: true },
     ];
+    panelRows = { jobs: rowsOf(d.jobs), messages: rowsOf(d.messages), foreign: rowsOf(d.foreign) };
+    const names = [...new Set([...panelRows.jobs, ...panelRows.messages, ...panelRows.foreign]
+      .map(r => r.database_name).filter(v => v != null && v !== '').map(String))].sort();
+    const keep = dbPick.value;
+    dbPick.replaceChildren(el('option', { value: '' }, 'every database'), ...names.map(n => el('option', { value: n }, n)));
+    dbPick.value = names.includes(keep) ? keep : '';
     body.replaceChildren(el('h3', {}, 'Summary'), grid(rowsOf(d.summary), sumCols, 'No log shipped database on these instances.'),
-      el('h3', {}, 'Detail'), grid(rowsOf(d.detail), detCols, `No database matches the filter (${statusText()}).`));
+      el('h3', {}, 'Detail'), grid(rowsOf(d.detail), detCols, `No database matches the filter (${statusText()}).`), panel);
+    drawPanel();
+  }
+  // ---- pgvigil's own panel below DBA Dash's grids (task LSX): what SQL Server's log shipping configuration and agents
+  // say - its jobs, the agents' messages, log backups taken outside it - on the primary, the secondary and the monitor
+  // alike (the Detail above lists restoring databases only)
+  let panelRows: { jobs: Row[]; messages: Row[]; foreign: Row[] } = { jobs: [], messages: [], foreign: [] };
+  const dbPick = el('select', { 'aria-label': 'Database' });
+  const panelBody = el('div');
+  const panel = el('section', { class: 'mssql-hadr-logship-config', 'aria-label': 'Log shipping configuration and agents' },
+    el('h3', {}, 'Log shipping\'s own jobs and agents'),
+    el('p', { class: 'meta' }, 'As SQL Server\'s log shipping configuration in msdb names them, where log shipping was set up with its procedures or the '
+      + 'wizard (a pair restored by hand has none). Database ', dbPick, ' (or click a database above).'), panelBody);
+  dbPick.addEventListener('change', () => drawPanel());
+  const yesNo = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
+  const outcome: Record<string, string> = { '0': 'failed', '1': 'succeeded', '3': 'cancelled', '5': 'unknown' };
+  function drawPanel() {
+    const pick = dbPick.value;
+    const mine = (r: Row) => !pick || String(r.database_name ?? '') === pick;
+    const jobCols: Col[] = [
+      { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database', fmt: v => v == null ? '(the monitor)' : String(v) },
+      { key: 'role', label: 'Role' }, { key: 'job_role', label: 'Job' }, { key: 'job_name', label: 'Job Name', fmt: (v, r) => v == null ? `missing (id ${String(r.job_id ?? '?')})` : String(v) },
+      { key: 'job_exists', label: 'Exists', fmt: yesNo, cls: v => v === false ? stCls('critical') : '' },
+      { key: 'job_enabled', label: 'Enabled', fmt: yesNo, cls: v => v === false ? stCls('critical') : '' },
+      { key: 'enabled_schedules', label: 'Schedules Running It', num: true, cls: (v, r) => r.job_exists === true && Number(v ?? 0) === 0 ? stCls('critical') : '' },
+      { key: 'interval_min', label: 'Every (min)', num: true },
+      { key: 'last_outcome', label: 'Last Outcome', fmt: v => v == null ? '' : outcome[String(v)] ?? String(v), cls: v => String(v) === '0' ? stCls('critical') : '' },
+      { key: 'last_run_at', label: 'Last Run', fmt: fmtTime },
+      { key: 'recovery_model', label: 'Recovery Model', cls: v => stCls(v === 'SIMPLE' ? 'critical' : v === 'BULK_LOGGED' ? 'warning' : '') },
+      { key: 'restore_mode', label: 'Restore Mode', fmt: v => v == null ? '' : Number(v) === 1 ? 'STANDBY' : 'NORECOVERY' },
+      { key: 'backup_directory', label: 'Backup Folder', wide: true },
+      { key: 'snapshot_at', label: 'Read', fmt: fmtTime },
+    ];
+    const msgs = panelRows.messages.filter(mine);
+    const noise = msgs.filter(r => r.standby_noise === true).length;
+    const msgCols: Col[] = [
+      { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database' }, { key: 'agent', label: 'Agent' },
+      { key: 'logged_at', label: 'Logged', fmt: fmtTime }, { key: 'message', label: 'Message', wide: true },
+      { key: 'source', label: 'Source' }, { key: 'rows_24h', label: 'Lines in 24 h', num: true },
+    ];
+    const forCols: Col[] = [
+      { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database' }, { key: 'finished_at', label: 'Finished', fmt: fmtTime },
+      { key: 'file_name', label: 'File', wide: true }, { key: 'device', label: 'Device' }, { key: 'backup_directory', label: 'Log Shipping Folder', wide: true },
+    ];
+    panelBody.replaceChildren(
+      el('h4', {}, 'Jobs'), grid(panelRows.jobs.filter(mine), jobCols, 'No log shipping configuration read on these instances.'),
+      el('h4', {}, 'The agents\' messages (24 hours)'),
+      el('p', { class: 'meta' }, 'The newest 20 lines per agent and database from msdb.dbo.log_shipping_monitor_error_detail, and the restore job\'s runs '
+        + 'that found nothing to apply. They raise no finding by themselves: the newest one is added to a database\'s finding when its log shipping is behind. '
+        + (noise > 0 ? `${noise} read-only line${noise === 1 ? '' : 's'} of a STANDBY copy left out (expected while readers use it).` : '')),
+      grid(msgs.filter(r => r.standby_noise !== true), msgCols, 'No agent logged an error in the 24 hours.'),
+      el('h4', {}, 'Log backups outside log shipping (24 hours)'),
+      el('p', { class: 'meta' }, 'Log backups of a log-shipped primary database that are not copy-only and are not log shipping\'s own: the secondaries never receive them.'),
+      grid(panelRows.foreign.filter(mine), forCols, 'None in the 24 hours.'));
   }
   let summaryRows: Row[] = [];
   // the toolbar's Configure: each key at the root, and at the instance where one instance is in scope

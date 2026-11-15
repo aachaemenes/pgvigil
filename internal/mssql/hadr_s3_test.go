@@ -20,6 +20,7 @@ func hadrS3Statements(info Info) map[string]string {
 		"mirroring":         mirroringSQL(true), "mirroring without counters": mirroringSQL(false), "mirroring endpoint": mirroringEndpointSQL,
 		"log restores": logRestoreSQL(true), "log restores without counters": logRestoreSQL(false), "log restore pairs": logRestorePairSQL,
 		"log shipping config": lsConfigSQL, "log shipping foreign logs": lsForeignSQL,
+		"log shipping agent errors": lsErrorSQL, "log shipping idle restores": lsIdleSQL,
 		"fci flag": fciFlagSQL, "fci nodes": fciNodesSQL,
 	}
 }
@@ -188,8 +189,30 @@ func TestLogShippingExtrasText(t *testing.T) {
 		}
 	}
 	// each part is its own read: a failure is a collector_error of its source, which the repository's import keys on
-	if len(lsParts) != 2 || lsParts[0].source != "log shipping configuration" || lsParts[1].source != "log shipping foreign log backups" {
-		t.Errorf("the parts' sources changed: %+v (0143's import keeps a part's stored rows by these names)", lsParts)
+	var sources []string
+	for _, part := range lsParts {
+		sources = append(sources, part.source)
+	}
+	if strings.Join(sources, " | ") != "log shipping configuration | log shipping foreign log backups | log shipping agent errors | log shipping idle restores" {
+		t.Errorf("the parts' sources changed: %q (0143's import keeps a part's stored rows by these names)", sources)
+	}
+	// the agents' errors: 24 hours by the indexed UTC time, the newest 20 per agent and database, the copy agent's rows
+	// (no database of their own) given the databases of its secondary id, a STANDBY copy's read-only rows marked
+	for _, want := range []string{"e.log_time_utc >= DATEADD(hour, -24, GETUTCDATE())", "WHERE r.ord <= 20",
+		"PARTITION BY e.agent_type, e.database_name ORDER BY e.log_time_utc DESC, e.session_id DESC, e.sequence_number DESC",
+		"sd.secondary_id = e.agent_id", "p.primary_id = e.agent_id", " AS logged_utc,", " AS rows_24h,",
+		"r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%')"} {
+		if !strings.Contains(lsErrorSQL, want) {
+			t.Errorf("the agents' errors read lacks %q", want)
+		}
+	}
+	// the idle runs: one hour by the indexed UTC time, the restore agent's one line, after this server's own last restore
+	for _, want := range []string{"h.agent_type = 2 AND h.log_time_utc >= DATEADD(hour, -1, GETUTCDATE())",
+		"h.message LIKE N'Could not find a log backup_file that could be applied%'",
+		"m.secondary_id = h.agent_id AND m.secondary_database = h.database_name", "GROUP BY h.database_name"} {
+		if !strings.Contains(lsIdleSQL, want) {
+			t.Errorf("the idle runs read lacks %q", want)
+		}
 	}
 }
 

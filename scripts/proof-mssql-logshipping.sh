@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of SQL Server log shipping read from restore history (task 384; migration 0143, internal/mssql/logshipping.go)
-# and of the log shipping extras (task LSX, parts I-N: the jobs, msdb's own alert, a log backup outside log shipping,
-# the primary's recovery model, log shipping removed):
+# and of the log shipping extras (task LSX, parts I-P: the jobs, msdb's own alert, a log backup outside log shipping,
+# the agents' own messages, the primary's recovery model, a restore with nothing to apply, log shipping removed):
 # a REAL pair of SQL Server 2022 containers sharing one Docker volume for the log backups, the primary on a clock
 # eight hours off UTC (backupset.time_zone), log restores applied by hand and by SQL Server's own log shipping jobs.
 #
@@ -48,7 +48,7 @@
 #  G. a missing copy: lsm dropped on the secondary; the next read stores lsm as kind 'pair' (no database) with its source
 #     and raises 'a log shipping copy is missing' (warning) for it; no 'restore' row of lsm is left.
 #  H. the primary's read: none of its ONLINE databases is a restore row (the primary is not judged as a secondary).
-#  The log shipping extras (task LSX, parts I-N), on F's pair lsw, the primary read too; skipped with F when msdb's procedures refuse:
+#  The log shipping extras (task LSX, parts I-P, run in the order I J K O L M P N), on F's pair lsw, the primary read too; skipped with F when msdb's procedures refuse:
 #  I. log shipping's jobs: with the three jobs disabled (F left them so) 'a log shipping job is disabled' critical for
 #     LSCopy_lsw and LSRestore_lsw on the secondary and for LSBackup_lsw on the primary, 'is disabled' in the detail;
 #     the restore job enabled again with no schedule (msdb's procedures make the jobs without one: sa's own count 0)
@@ -73,12 +73,25 @@
 #     folder carry its own file name. A plain log backup to another folder: 'a log backup outside log shipping broke
 #     the chain' critical on the primary naming that file, '1 log backup', the (new) log shipping folder and the job
 #     'not known' (this proof reads no job history); a second one: '2 log backups', the newest named.
+#  O. the agents' own messages (run after K): the secondary's copy job pointed at the moved folder
+#     (sp_change_log_shipping_secondary_primary), one log shipping backup taken: the copy and restore jobs (every minute
+#     since I) copy it and fail to restore it - K's foreign log backups broke the chain - and msdb's error table on the
+#     secondary gets the restore job's 'too recent to apply' rows (waited on, 180 s at most). With the age tiers at
+#     0.5 / 1 minute: lsw's 'log restores are behind' critical, its detail adding 'The newest error its restore job
+#     logged' with the engine's 'too recent to apply' words, and never the copy-job sentence (an error wins); the
+#     stored rows of lsw's restore agent at least 2, ord 1 the newest. The log shipping backup job disabled again and
+#     waited on before L.
 #  L. the primary's recovery model: BULK_LOGGED -> 'a log-shipped database is in BULK_LOGGED recovery' warning; SIMPLE
 #     -> 'a log-shipped database is in SIMPLE recovery' critical with Microsoft's sentence, the warning gone; FULL
 #     again -> neither.
 #  M. a job gone, on a second pair of its own (lsj, msdb's procedures again): its copy job deleted (sp_delete_job) while
 #     the configuration names it: 'a log shipping job is missing' critical naming the copy job's id. If SQL Server
 #     refuses the delete, M prints 'M NOT PROVEN' with its words.
+#  P. a restore job with nothing to apply (run after M, on lsj, whose copy job M deleted): lsj's backup job and
+#     restore job each run once; the restore job logs no error and its history says 'Could not find a log backup file
+#     that could be applied': one idle row of lsj stored (runs >= 1); msdb's restore threshold of lsj lowered from M's
+#     45 minutes to 1 and a minute waited (lsj's monitor row printed before the wait), then msdb's 'log shipping is
+#     behind its threshold' for lsj adds 'Its restore job ran ... the copy job is where to look (Microsoft, error 14421)'.
 #  N. log shipping removed: lsw's by msdb's sp_delete_log_shipping_* on both servers - the next reads store no
 #     configuration or foreign row of lsw, and no finding of the extras names lsw on either server; then lsj's on the
 #     primary, its last: the primary stores no database's configuration and keeps NO finding of the extras, the alert
@@ -329,7 +342,7 @@ IP=$(q "select instance_id from pgvigil.instances where name = '$NP'")   # the i
 [ "$(q "select count(*) from pgvigil.mssql_logrestore_state where instance_id = $IP and kind = 'restore'")" = 0 ] || fail "H: the primary has restore rows"
 ok "H: the primary stores no restore row"
 
-MOK=1; NOK=1
+MOK=1; NOK=1; POK=1
 if [ -n "$FOK" ]; then
   pfinding() { q "select string_agg(severity, ',' order by severity) from pgvigil.mssql_hadr_findings where instance_id = $IP and check_name = '$1' and object like '$2%'"; }
   detail() { q "select detail from pgvigil.mssql_hadr_findings where instance_id = $1 and check_name = '$2' and object like '$3%' limit 1"; }
@@ -396,10 +409,13 @@ EXEC msdb.dbo.sp_update_job @job_name = N'$2', @enabled = 1;" >/dev/null
   CH='a log backup outside log shipping broke the chain'
   # this part and L take log backups and change the recovery model themselves: log shipping's backup job, which runs
   # every minute since I, is disabled and waited on first (two log backups of one database at once refuse each other)
-  sp "EXEC msdb.dbo.sp_update_job @job_name = N'LSBackup_lsw', @enabled = 0;" >/dev/null
-  idle=; for _ in $(seq 1 60); do
-    [ "$(sp "SELECT COUNT(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'LSBackup_lsw' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL")" = 0 ] && { idle=1; break; }; sleep 2; done
-  [ -n "$idle" ] || fail "K: LSBackup_lsw still runs 120 s after it was disabled"
+  backupoff() {   # backupoff <part>: log shipping's backup job of lsw disabled and waited on until no run of it is live
+    sp "EXEC msdb.dbo.sp_update_job @job_name = N'LSBackup_lsw', @enabled = 0;" >/dev/null
+    local idle=; for _ in $(seq 1 60); do
+      [ "$(sp "SELECT COUNT(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'LSBackup_lsw' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL")" = 0 ] && { idle=1; break; }; sleep 2; done
+    [ -n "$idle" ] || fail "$1: LSBackup_lsw still runs 120 s after it was disabled"
+  }
+  backupoff K
   PGVIGIL_MSSQL_TEST_DSN="$MSSQL_PRI_DSN" go test -count=1 -run 'TestLogShippingForeignPathsLive' -v ./internal/mssql/ > "$OUT" 2>&1 || { cat "$OUT"; fail "K: TestLogShippingForeignPathsLive against the primary"; }
   grep -q -- '--- PASS: TestLogShippingForeignPathsLive' "$OUT" || { cat "$OUT"; fail "K: TestLogShippingForeignPathsLive did not run"; }
   docker exec -u 0 "$PRI" mkdir -p "$SHIP/other" "$SHIP/lswmoved"; docker exec -u 0 "$PRI" chown 10001:0 "$SHIP/other" "$SHIP/lswmoved"
@@ -431,6 +447,26 @@ EXEC msdb.dbo.sp_update_job @job_name = N'$2', @enabled = 1;" >/dev/null
   done
   [ "$(pfinding "$CH" 'primary / lsw')" = critical ] || fail "K: two files: '$(pfinding "$CH" 'primary / lsw')', want ONE critical"
   ok "K: the folder test PASS over its 24 paths on $PRI; copy-only and log shipping's own ($OWN) = none, also after its folder moved; a plain log backup elsewhere = critical naming it; two = one finding, the newest named"
+
+  echo "--- O. the agents' own messages: a restore after the broken chain"
+  ss "EXEC master.dbo.sp_change_log_shipping_secondary_primary @primary_server = N'$PRI', @primary_database = N'lsw', @backup_source_directory = N'$SHIP/lswmoved';" >/dev/null
+  sp "EXEC msdb.dbo.sp_update_job @job_name = N'LSBackup_lsw', @enabled = 1;" >/dev/null
+  jobrun sp LSBackup_lsw || fail "O: LSBackup_lsw did not end in 180 s"
+  backupoff O
+  TR="SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsw' AND agent_type = 2 AND message LIKE N'%too recent to apply%'"
+  seen=; for _ in $(seq 1 60); do [ "$(ss "$TR")" -ge 1 ] && { seen=1; break; }; sleep 3; done
+  [ -n "$seen" ] || fail "O: no 'too recent to apply' row of lsw's restore agent in 180 s (msdb's newest: $(ss "SELECT TOP (3) CONCAT(agent_type, ' ', LEFT(message, 120), ' | ') FROM msdb.dbo.log_shipping_monitor_error_detail ORDER BY log_time_utc DESC" | tr '\n' ' '))"
+  setthr logship_restore_age 0.5 1; setthr logship_restore_latency 60 120
+  collect "$NS"
+  er=$(q "select count(*) || '|' || coalesce(min(ord), 0) || '|' || coalesce(bool_or(message like '%too recent to apply%'), false) from pgvigil.mssql_logship_errors where instance_id = $IS and agent = 'restore' and database_name = 'lsw'")
+  IFS='|' read -r en eo et <<<"$er"
+  [ "$en" -ge 2 ] && [ "$eo" = 1 ] && [ "$et" = true ] || fail "O: lsw's stored restore-agent rows: $er (want at least 2, ord 1 the newest, a 'too recent' line among them)"
+  [ "$(finding 'log restores are behind' lsw)" = critical ] || fail "O: lsw's 'log restores are behind': '$(finding 'log restores are behind' lsw)', want critical"
+  d=$(detail "$IS" 'log restores are behind' 'lsw')
+  grep -q 'The newest error its restore job logged' <<<"$d" && grep -q 'too recent to apply' <<<"$d" || fail "O: the detail does not carry the restore agent's error: $d"
+  grep -q 'the copy job is where to look' <<<"$d" && fail "O: the detail blames the copy job on a broken chain: $d"
+  grep -q 'Could not find a log backup file' <<<"$d" && fail "O: the detail gives the agent's closing line, not the session's telling one: $d"
+  ok "O: the broken chain's 'too recent to apply' stored ($en rows of lsw's restore agent) and in lsw's critical 'log restores are behind', no copy-job sentence"
 
   echo "--- L. the primary's recovery model"
   RB='a log-shipped database is in BULK_LOGGED recovery'; RS='a log-shipped database is in SIMPLE recovery'
@@ -470,6 +506,29 @@ EXEC master.dbo.sp_add_log_shipping_secondary_database @secondary_database = N'l
     ok "M: lsj's copy job deleted = 'a log shipping job is missing' critical naming its id $CID"
   fi
 
+  echo "--- P. a restore job with nothing to apply"
+  if [ -z "$MOK" ]; then echo "  P NOT PROVEN: M could not delete lsj's copy job"; POK=; else
+    jobrun sp LSBackup_lsj || fail "P: LSBackup_lsj did not end in 180 s"
+    jobrun ss LSRestore_lsj || fail "P: LSRestore_lsj did not end in 180 s"
+    [ "$(ss "SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj'")" = 0 ] || echo "  P: lsj's restore agent logged an error too: $(ss "SELECT TOP (2) LEFT(message, 160) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj' ORDER BY log_time_utc DESC" | tr '\n' ' ')"
+    # M configured lsj with msdb's restore threshold at 45 minutes, which nothing in this proof outlasts: lowered to 1
+    # minute, then a minute passes with no restore (lsj's jobs have no schedule), so msdb's own measure says behind
+    ss "EXEC master.dbo.sp_change_log_shipping_secondary_database @secondary_database = N'lsj', @restore_threshold = 1;" >/dev/null || fail "P: lsj's restore threshold could not be set to 1 minute"
+    LSJMON="SELECT CONCAT('restore_threshold ', restore_threshold, ', last_restored_date_utc ', ISNULL(CONVERT(varchar(30), last_restored_date_utc, 126), 'NULL'), ', last_copied_date_utc ', ISNULL(CONVERT(varchar(30), last_copied_date_utc, 126), 'NULL'), ', now utc ', CONVERT(varchar(30), GETUTCDATE(), 126)) FROM msdb.dbo.log_shipping_monitor_secondary WHERE secondary_database = N'lsj'"
+    echo "  lsj's monitor row before the wait: $(ss "$LSJMON")"
+    sleep 65
+    collect "$NS"
+    [ "$(q "select coalesce(max(runs), 0) from pgvigil.mssql_logship_idle where instance_id = $IS and database_name = 'lsj'")" -ge 1 ] || fail "P: no idle row of lsj stored"
+    d=$(detail "$IS" 'log shipping is behind its threshold' 'secondary / lsj')
+    [ -n "$d" ] || fail "P: no 'log shipping is behind its threshold' for lsj (msdb: $(ss "$LSJMON"); stored: $(q "select threshold_minutes || ' | ' || coalesce(last_restored_at::text, 'NULL') || ' | ' || snapshot_at from pgvigil.mssql_logshipping_state where instance_id = $IS and role = 'secondary' and database_name = 'lsj'"))"
+    if ss "SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj'" | grep -qx 0; then
+      grep -q 'Its restore job ran' <<<"$d" && grep -q 'the copy job is where to look (Microsoft, error 14421)' <<<"$d" || fail "P: the detail does not name the idle restore runs: $d"
+      ok "P: lsj's restore job ran with nothing to apply: stored as idle, and msdb's 'behind' finding points at the copy job"
+    else
+      ok "P: lsj's restore job ran with nothing to apply (stored as idle); its agent also logged an error, which the detail carries instead: $(grep -o 'The newest error[^.]*' <<<"$d" | head -1)"
+    fi
+  fi
+
   echo "--- N. log shipping removed"
   EXTRAS="'a log shipping job is missing', 'a log shipping job is disabled', 'a log backup outside log shipping broke the chain', 'a log-shipped database is in SIMPLE recovery', 'a log-shipped database is in BULK_LOGGED recovery', 'the log shipping alert is off', 'a log shipping alert threshold is under three times its job interval'"
   msdbstate() { echo "  $2 [$1]: configured databases $($1 "SELECT (SELECT COUNT(*) FROM msdb.dbo.log_shipping_primary_databases) + (SELECT COUNT(*) FROM msdb.dbo.log_shipping_secondary_databases)"), alert rows $($1 "SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_alert"), alert rows whose job exists $($1 "SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_alert a JOIN msdb.dbo.sysjobs j ON j.job_id = a.alert_job_id"), jobs named LS% $($1 "SELECT COUNT(*) FROM msdb.dbo.sysjobs WHERE name LIKE N'LS%'")"; }
@@ -499,8 +558,9 @@ EXEC master.dbo.sp_add_log_shipping_secondary_database @secondary_database = N'l
 fi
 PROVEN="A-D, G, H"
 if [ -n "$FOK" ]; then
-  PROVEN="$PROVEN, F, I-L"
+  PROVEN="$PROVEN, F, I-L, O"
   [ -n "$MOK" ] && PROVEN="$PROVEN, M" || PROVEN="$PROVEN; M NOT PROVEN"
+  [ -n "$POK" ] && PROVEN="$PROVEN, P" || PROVEN="$PROVEN; P NOT PROVEN"
   [ -n "$NOK" ] && PROVEN="$PROVEN, N" || PROVEN="$PROVEN; N NOT PROVEN"
-else PROVEN="$PROVEN; F and I-N NOT PROVEN"; fi
+else PROVEN="$PROVEN; F and I-P NOT PROVEN"; fi
 echo "PROOF OK ($PROVEN)"

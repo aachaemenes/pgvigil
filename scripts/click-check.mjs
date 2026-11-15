@@ -735,6 +735,28 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
   record({ scope: `instance ${pg.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'postgres', link: `#/backups?i=${pg.instance_id}`, landed: pgStrip.join(' ').slice(0, 200),
     verdict: pgBad.length ? `FAIL a PostgreSQL instance's strip offers ${pgBad.join(', ')}` : 'ok (none of the three SQL Server pages)' });
 }
+// task LSX: the Log Shipping Detail's Database button narrows pgvigil's own panel below DBA Dash's grids (the jobs, the
+// agents' messages, the log backups outside log shipping) to that database: the panel's Database box takes the name and
+// the panel draws its three grids with no error box. A demo with no log shipping Detail row cannot show it: said so.
+{
+  await go('#/mssqllogshipping');
+  const pick = await ev(`(() => { const b = [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '')); return b ? b.textContent : null; })()`);
+  if (pick == null) {
+    record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: '#/mssqllogshipping', landed: 'no Detail row with a Database button',
+      verdict: 'not proven: no log shipping Detail row in this data' });
+  } else {
+    await ev(`(() => { [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '') && x.textContent === ${JSON.stringify(pick)})?.click(); })()`);
+    await sleep(300); await settled();
+    const st = await ev(`(() => { const p = document.querySelector('main .mssql-hadr-logship-config'); if (!p) return null;
+      return { value: p.querySelector('select')?.value ?? null, grids: p.querySelectorAll('h4').length, err: p.querySelectorAll('.error').length }; })()`);
+    record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: `#/mssqllogshipping Database ${pick}`,
+      landed: st ? `Database box ${st.value}; ${st.grids} grids; ${st.err} error boxes` : 'no panel',
+      verdict: !st ? 'FAIL the page has no log shipping panel'
+        : st.value !== pick ? `FAIL the Database box reads ${st.value}, want ${pick}`
+        : st.grids !== 3 || st.err ? `FAIL ${st.grids} grids (want 3), ${st.err} error boxes`
+        : 'ok (pgvigil\'s own: the panel narrowed to the clicked database)' });
+  }
+}
 
 // an instance whose drives' Files pages listed no file at all has proven nothing
 for (const s of storageScopes.slice(2)) if (!filesSeen.get(s.name)) record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: 'every drive', landed: 'no file listed on any drive', verdict: 'FAIL no drive of the instance lists a file' });

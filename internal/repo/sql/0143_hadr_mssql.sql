@@ -501,10 +501,42 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_logship_foreign_logs (
   PRIMARY KEY (instance_id, database_name, finished_at, file_name)
 );
 
+-- What log shipping's own agents wrote into msdb.dbo.log_shipping_monitor_error_detail (current rows: the newest 20
+-- per agent and database of the last 24 hours, replaced by each read of the part; ord 1 = the newest). A row of a
+-- STANDBY copy that says the database is read-only is standby_noise: shown counted, never judged.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_logship_errors (
+  instance_id      int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  agent            text NOT NULL CHECK (agent IN ('backup', 'copy', 'restore')),
+  database_name    text NOT NULL,          -- '' for a copy agent's row whose secondary id names no database here
+  ord              int NOT NULL,
+  snapshot_at      timestamptz NOT NULL,
+  session_id       int,
+  sequence_number  int,
+  logged_at        timestamptz,
+  message          text,
+  source           text,                   -- 'Microsoft.SqlServer.Management.LogShipping' (the agent) or the engine's provider
+  rows_24h         int,                    -- that agent's rows for that database in the 24 hours
+  standby_noise    boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (instance_id, agent, database_name, ord)
+);
+
+-- Per secondary database, how often in the last hour its restore job ran after its last restore and found no log
+-- backup it could apply (current rows, replaced by each read of the part).
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_logship_idle (
+  instance_id    int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  database_name  text NOT NULL,
+  snapshot_at    timestamptz NOT NULL,
+  last_at        timestamptz,
+  runs           int,
+  PRIMARY KEY (instance_id, database_name)
+);
+
 -- payload: 0066's 'primary' and 'secondary' rows (msdb's monitor tables), 'restore' and 'pair' rows (restore history),
--- 'lsconfig' rows (the configuration's jobs) and 'lsforeign' rows (log backups outside log shipping). The last two
--- are parts of their own: a read that could not read one hands a collector_error whose source names it ('log
--- shipping configuration', 'log shipping foreign log backups'), and that part's stored rows are kept as they are -
+-- 'lsconfig' rows (the configuration's jobs), 'lsforeign' rows (log backups outside log shipping), 'lserror' rows (the
+-- agents' own errors) and 'lsidle' rows (restore runs that found nothing to apply). The last four are parts of their
+-- own: a read that could not read one hands a collector_error whose source names it ('log shipping configuration',
+-- 'log shipping foreign log backups', 'log shipping agent errors', 'log shipping idle restores'), and that part's
+-- stored rows are kept as they are -
 -- every finding on them stops 15 minutes after their read, so a failed part never clears a finding by itself and
 -- never keeps one alive either.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_logshipping(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -513,7 +545,7 @@ DECLARE v_rows jsonb := pgvigil.mssql_rows(p_payload);
 BEGIN
   IF NOT pgvigil.mssql_hadr_read(p_instance_id, 'mssql_logshipping', p_snapshot_at,
            (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r
-             WHERE r->>'kind' IN ('primary', 'secondary', 'restore', 'pair', 'lsconfig', 'lsforeign'))) THEN
+             WHERE r->>'kind' IN ('primary', 'secondary', 'restore', 'pair', 'lsconfig', 'lsforeign', 'lserror', 'lsidle'))) THEN
     RETURN;
   END IF;
   DELETE FROM pgvigil.mssql_logshipping_state WHERE instance_id = p_instance_id;
@@ -568,6 +600,26 @@ BEGIN
            (r->>'started_utc')::timestamptz, r->>'device', r->>'backup_directory'
       FROM jsonb_array_elements(v_rows) r
      WHERE r->>'kind' = 'lsforeign' AND r->>'database_name' IS NOT NULL AND r->>'finished_utc' IS NOT NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r
+                  WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'log shipping agent errors') THEN
+    DELETE FROM pgvigil.mssql_logship_errors WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.mssql_logship_errors (instance_id, agent, database_name, ord, snapshot_at, session_id, sequence_number,
+        logged_at, message, source, rows_24h, standby_noise)
+    SELECT DISTINCT ON (r->>'agent', coalesce(r->>'database_name', ''), (r->>'ord')::int)
+           p_instance_id, r->>'agent', coalesce(r->>'database_name', ''), (r->>'ord')::int, p_snapshot_at, (r->>'session_id')::int,
+           (r->>'sequence_number')::int, (r->>'logged_utc')::timestamptz, r->>'message', r->>'source', (r->>'rows_24h')::int,
+           coalesce((r->>'standby_noise')::int = 1, false)
+      FROM jsonb_array_elements(v_rows) r
+     WHERE r->>'kind' = 'lserror' AND r->>'agent' IN ('backup', 'copy', 'restore') AND r->>'ord' IS NOT NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r
+                  WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'log shipping idle restores') THEN
+    DELETE FROM pgvigil.mssql_logship_idle WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.mssql_logship_idle (instance_id, database_name, snapshot_at, last_at, runs)
+    SELECT DISTINCT ON (r->>'database_name') p_instance_id, r->>'database_name', p_snapshot_at, (r->>'last_utc')::timestamptz, (r->>'runs')::int
+      FROM jsonb_array_elements(v_rows) r
+     WHERE r->>'kind' = 'lsidle' AND r->>'database_name' IS NOT NULL;
   END IF;
 
   PERFORM pgvigil.ensure_month_partition('mssql_logrestore_sample', p_snapshot_at);
@@ -661,6 +713,52 @@ $v$;
   END IF;
 END $$;
 
+-- mssql_logship_agent_note: what log shipping's own agents said about a database, for the detail of a finding that
+-- its log shipping is behind (the lead's D4: no finding of its own - an agent's messages raise no alert by
+-- themselves). The newest error its agents logged in the 24 hours read (a primary: the backup agent; a secondary: the
+-- restore agent first, then the copy agent), with how many lines that agent wrote; a STANDBY copy's read-only rows
+-- never. An error is a session's sequence of rows (Microsoft: "Each error is logged as a sequence of exceptions"), and
+-- its newest row is not the telling one: a broken chain's restore session writes the agent's 'The file ... is too
+-- recent to apply' (sequence 0), the engine's 'The log in this backup set begins at LSN ..., which is too recent to
+-- apply' (sequence 1), then, milliseconds later, the agent's closing 'Could not find a log backup file that could be
+-- applied' (sequence 0) - the words of an idle run (a real SQL Server 2022 CU27 pair). So the note takes the newest
+-- session (its agent and session id; the restore agent's at a tie), and in it the row of the highest sequence (the
+-- innermost exception, the engine's explanation), the earliest of those at a tie (a session of the agent's own lines
+-- only: its first line, never the closing one). With no such error, a restore job that ran in the last hour after
+-- its last restore and found nothing to apply: the copy job is where to look (Microsoft's page for error 14421).
+-- Empty when the agents said nothing.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_logship_agent_note(p_instance_id int, p_role text, p_database text)
+RETURNS text LANGUAGE sql STABLE AS $fn$
+WITH cand AS (
+  SELECT e.agent, e.session_id, e.sequence_number, e.logged_at, e.ord, e.message, e.rows_24h
+    FROM pgvigil.mssql_logship_errors e
+   WHERE e.instance_id = p_instance_id AND lower(e.database_name) = lower(p_database) AND NOT e.standby_noise
+     AND e.snapshot_at > now() - interval '15 minutes'
+     AND e.agent = ANY (CASE p_role WHEN 'primary' THEN ARRAY['backup'] ELSE ARRAY['restore', 'copy'] END)
+), sess AS (
+  SELECT c.agent, c.session_id
+    FROM cand c
+   ORDER BY c.logged_at DESC NULLS LAST, (c.agent = 'restore') DESC, c.ord
+   LIMIT 1
+), err AS (
+  SELECT format(' The newest error its %s job logged (%s): %s%s', e.agent, to_char(e.logged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
+                CASE WHEN length(e.message) > 300 THEN left(e.message, 297) || '...' ELSE e.message END,
+                CASE WHEN e.rows_24h > 1 THEN format(' (%s error lines of that job in 24 hours).', e.rows_24h) ELSE '' END) AS note
+    FROM cand e
+    JOIN sess s ON s.agent = e.agent AND s.session_id IS NOT DISTINCT FROM e.session_id
+   ORDER BY e.sequence_number DESC NULLS LAST, e.logged_at NULLS LAST, e.ord DESC
+   LIMIT 1
+), idle AS (
+  SELECT format(' Its restore job ran %s time%s in the last hour after its last restore and found no log backup it could apply ("Could not find a log backup file that could be applied to secondary database"): the copy job is where to look (Microsoft, error 14421).',
+                i.runs, CASE WHEN i.runs = 1 THEN '' ELSE 's' END) AS note
+    FROM pgvigil.mssql_logship_idle i
+   WHERE p_role = 'secondary' AND i.instance_id = p_instance_id AND lower(i.database_name) = lower(p_database)
+     AND i.runs > 0 AND i.snapshot_at > now() - interval '15 minutes'
+   LIMIT 1
+)
+SELECT coalesce((SELECT note FROM err), (SELECT note FROM idle), '')
+$fn$;
+
 -- ONE judge of log shipping (task 383, the lead's D6): every log shipping check's finding, each with the database it
 -- is about and its role (msdb's primary rows are 'primary', the monitor's alert job 'monitor' with no database), then
 -- one status row for every restoring database read from restore history that no critical or warning finding carries:
@@ -723,7 +821,7 @@ SELECT s.instance_id, s.database_name, s.role, 'warning'::text AS severity, 'log
                 coalesce(to_char(s.last_restored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
                 coalesce(round(extract(epoch FROM s.snapshot_at - s.last_restored_at) / 60)::text, '?'), s.threshold_minutes,
                 coalesce(to_char(s.last_copied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'))
-       END AS detail
+       END || pgvigil.mssql_logship_agent_note(s.instance_id, s.role, s.database_name) AS detail
   FROM pgvigil.mssql_logshipping_state s
  WHERE s.snapshot_at > now() - interval '15 minutes' AND s.threshold_minutes > 0
    AND coalesce(s.snapshot_at - CASE s.role WHEN 'primary' THEN s.last_backup_at ELSE s.last_restored_at END, interval '1000 years')
@@ -737,6 +835,7 @@ SELECT x.instance_id, x.database_name, 'secondary', x.sev, 'log restores are beh
               to_char(x.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), round(x.age_min::numeric),
               coalesce(round(x.latency_min::numeric)::text, '?'), coalesce(x.age_warn::text, '-'), coalesce(x.lat_warn::text, '-'),
               coalesce(x.age_crit::text, '-'), coalesce(x.lat_crit::text, '-'), coalesce(x.last_file, '?'))
+       || pgvigil.mssql_logship_agent_note(x.instance_id, 'secondary', x.database_name)
   FROM (SELECT lr.*, CASE WHEN lr.age_min > lr.age_crit OR lr.latency_min > lr.lat_crit THEN 'critical'
                           WHEN (NOT lr.msdb_judged AND lr.age_min > lr.age_warn) OR lr.latency_min > lr.lat_warn THEN 'warning' END AS sev   -- msdb judges no latency
           FROM lr) x

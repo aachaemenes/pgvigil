@@ -881,3 +881,270 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 	pGot2, _ := findings(P)
 	same("P findings after that read", pGot2, []string{"the log shipping alert is off | info | primary / lsx_alertoff"})
 }
+
+// TestLogShipMessagesOnAStore (task LSX, cut 2: G1): what log shipping's own agents said reaches a finding only as
+// part of the detail of a finding that its log shipping is behind (the lead's D4), and the Log Shipping page's panel
+// lists it. Expected (written before the first run):
+//
+//	S2 (a secondary; restore-history rows, the defaults 1440 / 2880): lsx_e_chain critical 'log restores are behind'
+//	  (50 h) whose detail adds 'The newest error its restore job logged (...): The log in this backup set begins at
+//	  LSN ..., which is too recent to apply to the database. ...' and '(6 error lines of that job in 24 hours).' -
+//	  the engine's line (the newest row, sequence 1) - and NOT the idle sentence although its restore job also ran
+//	  idle (an error wins: a broken chain is no copy-job fault); lsx_e_idle critical, no error, its restore job idle
+//	  4 times: 'Its restore job ran 4 times in the last hour ... the copy job is where to look (Microsoft, error
+//	  14421).'; lsx_e_standby critical with only a STANDBY copy's read-only rows: neither note; lsx_e_ok (restored
+//	  10 minutes ago) with an error row of its own: NO finding (an agent's message raises nothing by itself);
+//	  lsx_e_msdb warning 'log shipping is behind its threshold' (msdb's 45 minutes, 90 behind) whose detail names
+//	  'its copy job logged'.
+//	P2 (a primary): lsx_e_pri warning 'log shipping is behind its threshold' (60 minutes, 200 behind) whose detail
+//	  names 'its backup job logged' and cuts its 400-character message at 297 characters and '...'.
+//	  (lsx_e_chain's newest session is a real broken chain's: the agent's closing 'Could not find ...' line is the
+//	  newest by milliseconds; the note gives the session's highest sequence, the engine's 'too recent' line.)
+//	  lsx_e_file critical, its one session the agent's own lines only (sequence 0 each, no engine line stored): the
+//	  note gives the session's FIRST line 'The file ... is too recent to apply', never the closing 'Could not find
+//	  ...' one written 7 ms after it, and '(2 error lines of that job in 24 hours).'.
+//	THE PAGE at S2: the messages part holds the 8 rows of lsx_e_chain, lsx_e_file, lsx_e_ok and lsx_e_msdb that are
+//	  no noise plus 2 idle rows (lsx_e_chain's and lsx_e_idle's) and the 2 noise rows flagged standby_noise; the jobs
+//	  part the 2 configuration rows; the foreign part none.
+//	A later read of S2 whose two message parts failed keeps both tables' rows and the notes; a later clean read with
+//	  none of them clears both.
+func TestLogShipMessagesOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := fmt.Sprint(time.Now().UnixNano() % 1000000000)
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%v\n%s", err, sql)
+		}
+	}
+	ids := map[string]int{}
+	defer func() {
+		var all []int
+		for _, id := range ids {
+			all = append(all, id)
+		}
+		for _, tb := range []string{"mssql_logrestore_sample", "collection_dates"} {
+			if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.`+tb+` WHERE instance_id = ANY ($1)`, all); err != nil {
+				t.Error(err)
+			}
+		}
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, all); err != nil {
+			t.Error(err)
+		}
+	}()
+	for _, k := range []string{"S2", "P2"} {
+		var id int
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+			"lsxe"+strings.ToLower(k)+"-"+sfx).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids[k] = id
+		exec(`INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status) VALUES ($1, 'mssql_logshipping', now(), 'ok')
+		      ON CONFLICT (instance_id, collection) DO UPDATE SET snapshot_at = excluded.snapshot_at, status = excluded.status`, id)
+	}
+	S2, P2 := ids["S2"], ids["P2"]
+	now := time.Now().UTC().Truncate(time.Second)
+	z := func(m int) string { return now.Add(-time.Duration(m) * time.Minute).Format("2006-01-02T15:04:05Z") }
+	imp := func(id int, at time.Time, rows []map[string]any) {
+		t.Helper()
+		b, err := json.Marshal(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(`SELECT pgvigil.import_mssql_logshipping($1, $2, $3::jsonb)`, id, at, string(b))
+	}
+	pri := "PRI-" + sfx
+	restoreRow := func(db string, agoMin int) map[string]any {
+		return map[string]any{"kind": "restore", "database_name": db, "database_state": "RESTORING", "is_in_standby": 0,
+			"recovery_model": "FULL", "created_utc": now.Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05Z"), "is_mirrored": 0,
+			"in_availability_group": 0, "last_log_restore_utc": z(agoMin), "last_log_backup_start_utc": z(agoMin + 2), "source_server": pri,
+			"source_database": db, "last_file": db + ".trn", "last_restore_utc": z(agoMin), "last_restore_type": "L"}
+	}
+	errRow := func(agent, db string, ord, session, seq, agoMin int, msg, source string, rows24 int, noise int) map[string]any {
+		return map[string]any{"kind": "lserror", "agent": agent, "database_name": db, "ord": ord, "session_id": session, "sequence_number": seq,
+			"logged_utc": z(agoMin), "message": msg, "source": source, "rows_24h": rows24, "standby_noise": noise}
+	}
+	const agentSrc, engineSrc = "Microsoft.SqlServer.Management.LogShipping", ".Net SqlClient Data Provider"
+	chainEngine := "The log in this backup set begins at LSN 42000000064800001, which is too recent to apply to the database. An earlier log backup that includes LSN 42000000054400001 can be restored.  RESTORE LOG is terminating abnormally."
+	long := strings.Repeat("abcdefghij", 39) + "TAIL-WORDS" // 400 characters, its last ten never shown
+	// a real broken chain's session (proof part O, 14-cut2-proof.log): the agent's closing 'Could not find ...' line is
+	// written milliseconds AFTER the engine's 'too recent' line, so by time it is the newest row (ord 1); the note must
+	// still give the engine's line (the session's highest sequence), never the closing one, which reads like an idle run
+	at := func(d time.Duration) string { return now.Add(-time.Minute + d).Format("2006-01-02T15:04:05.000Z") }
+	closing := errRow("restore", "lsx_e_chain", 1, 7, 0, 1, "Could not find a log backup file that could be applied to secondary database 'lsx_e_chain'.", agentSrc, 6, 0)
+	closing["logged_utc"] = at(7 * time.Millisecond)
+	engineLine := errRow("restore", "lsx_e_chain", 2, 7, 1, 1, chainEngine, engineSrc, 6, 0)
+	engineLine["logged_utc"] = at(3 * time.Millisecond)
+	fileLine := errRow("restore", "lsx_e_chain", 3, 7, 0, 1, "The file '/ship/lsx_e_chain_20261115194430.trn' is too recent to apply to the secondary database 'lsx_e_chain'.", agentSrc, 6, 0)
+	fileLine["logged_utc"] = at(0)
+	older := errRow("restore", "lsx_e_chain", 4, 6, 1, 20, "an older session's engine line, never the one shown", engineSrc, 6, 0)
+	// a session of the agent's own lines only (no engine line stored): at a tie of sequences the first line is the
+	// telling one, the closing line (the newest) never
+	fileClosing := errRow("restore", "lsx_e_file", 1, 8, 0, 1, "Could not find a log backup file that could be applied to secondary database 'lsx_e_file'.", agentSrc, 2, 0)
+	fileClosing["logged_utc"] = at(7 * time.Millisecond)
+	fileFirst := errRow("restore", "lsx_e_file", 2, 8, 0, 1, "The file '/ship/lsx_e_file_20261115194430.trn' is too recent to apply to the secondary database 'lsx_e_file'.", agentSrc, 2, 0)
+	fileFirst["logged_utc"] = at(0)
+	msgRows := []map[string]any{
+		closing, engineLine, fileLine, older, fileClosing, fileFirst,
+		errRow("restore", "lsx_e_ok", 1, 3, 1, 30, "Exclusive access could not be obtained because the database is in use.  RESTORE LOG is terminating abnormally.", engineSrc, 1, 0),
+		errRow("copy", "lsx_e_msdb", 1, 9, 0, 5, "The copy operation failed: the backup share cannot be reached.", agentSrc, 1, 0),
+		errRow("restore", "lsx_e_standby", 1, 4, 1, 2, "Failed to update database 'lsx_e_standby' because the database is read-only.", engineSrc, 2, 1),
+		errRow("restore", "lsx_e_standby", 2, 4, 0, 2, "The database is in read-only mode.", agentSrc, 2, 1),
+		{"kind": "lsidle", "database_name": "lsx_e_chain", "last_utc": z(1), "runs": 3},
+		{"kind": "lsidle", "database_name": "lsx_e_idle", "last_utc": z(2), "runs": 4},
+		{"kind": "lsidle", "database_name": "lsx_e_ok", "last_utc": z(3), "runs": 0},
+	}
+	sRows := []map[string]any{
+		restoreRow("lsx_e_chain", 3000), restoreRow("lsx_e_idle", 3000), restoreRow("lsx_e_standby", 3000), restoreRow("lsx_e_ok", 10),
+		restoreRow("lsx_e_file", 3000),
+		{"kind": "secondary", "secondary_server": "", "database_name": "lsx_e_msdb", "primary_server": pri, "primary_database": "lsx_e_msdb",
+			"threshold_minutes": 45, "alert_enabled": 1, "last_copied_utc": z(95), "last_restored_utc": z(90), "last_restored_latency_min": 2},
+		{"kind": "lsconfig", "role": "secondary", "database_name": "lsx_e_chain", "primary_server": pri, "primary_database": "lsx_e_chain", "restore_mode": 0,
+			"job_role": "copy", "job_id": "C-chain", "job_name": "LSCopy_chain", "job_exists": 1, "job_enabled": 1, "enabled_schedules": 1, "interval_min": 15.0},
+		{"kind": "lsconfig", "role": "secondary", "database_name": "lsx_e_chain", "primary_server": pri, "primary_database": "lsx_e_chain", "restore_mode": 0,
+			"job_role": "restore", "job_id": "R-chain", "job_name": "LSRestore_chain", "job_exists": 1, "job_enabled": 1, "enabled_schedules": 1, "interval_min": 15.0},
+	}
+	imp(S2, now, append(append([]map[string]any{}, sRows...), msgRows...))
+	imp(P2, now, []map[string]any{
+		{"kind": "primary", "primary_server": pri, "database_name": "lsx_e_pri", "threshold_minutes": 60, "alert_enabled": 1,
+			"last_backup_file": "lsx_e_pri.trn", "last_backup_utc": z(200)},
+		errRow("backup", "lsx_e_pri", 1, 2, 0, 4, long, agentSrc, 1, 0),
+	})
+
+	type fnd struct{ sev, detail string }
+	findings := func(id int) map[string]fnd {
+		t.Helper()
+		out := map[string]fnd{}
+		rows, err := pool.Query(ctx, `SELECT check_name, severity, object, detail FROM pgvigil.mssql_hadr_findings
+		                               WHERE instance_id = $1 AND check_name IN ('log restores are behind', 'log shipping is behind its threshold')`, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c, sv, o, d string
+			if err := rows.Scan(&c, &sv, &o, &d); err != nil {
+				t.Fatal(err)
+			}
+			db := o
+			for _, cut := range []string{" (from ", " on "} {
+				if i := strings.Index(db, cut); i >= 0 {
+					db = db[:i]
+				}
+			}
+			db = strings.TrimPrefix(strings.TrimPrefix(db, "secondary / "), "primary / ")
+			out[db] = fnd{sv, d}
+		}
+		return out
+	}
+	has := func(what, text string, parts ...string) {
+		t.Helper()
+		for _, p := range parts {
+			if !strings.Contains(text, p) {
+				t.Errorf("%s: the detail lacks %q: %q", what, p, text)
+			}
+		}
+	}
+	hasNot := func(what, text string, parts ...string) {
+		t.Helper()
+		for _, p := range parts {
+			if strings.Contains(text, p) {
+				t.Errorf("%s: the detail holds %q: %q", what, p, text)
+			}
+		}
+	}
+	check := func(when string) {
+		t.Helper()
+		f := findings(S2)
+		got := map[string]string{}
+		for k, v := range f {
+			got[k] = v.sev
+		}
+		if fmt.Sprint(got) != fmt.Sprint(map[string]string{"lsx_e_chain": "critical", "lsx_e_file": "critical", "lsx_e_idle": "critical", "lsx_e_standby": "critical", "lsx_e_msdb": "warning"}) {
+			t.Errorf("%s: S2's behind findings = %v (lsx_e_ok, with an error of its own, must have none)", when, got)
+		}
+		has(when+" lsx_e_chain", f["lsx_e_chain"].detail, "The newest error its restore job logged (", "which is too recent to apply to the database", "(6 error lines of that job in 24 hours).")
+		hasNot(when+" lsx_e_chain", f["lsx_e_chain"].detail, "the copy job is where to look", "Could not find a log backup file", "an older session")
+		has(when+" lsx_e_file", f["lsx_e_file"].detail, "The newest error its restore job logged (", "The file '/ship/lsx_e_file_20261115194430.trn' is too recent to apply", "(2 error lines of that job in 24 hours).")
+		hasNot(when+" lsx_e_file", f["lsx_e_file"].detail, "Could not find a log backup file", "the copy job is where to look")
+		has(when+" lsx_e_idle", f["lsx_e_idle"].detail, "Its restore job ran 4 times in the last hour after its last restore", "the copy job is where to look (Microsoft, error 14421).")
+		hasNot(when+" lsx_e_standby", f["lsx_e_standby"].detail, "The newest error", "read-only", "Its restore job ran")
+		has(when+" lsx_e_msdb", f["lsx_e_msdb"].detail, "The newest error its copy job logged (", "the backup share cannot be reached")
+	}
+	check("the first read")
+	p := findings(P2)
+	if p["lsx_e_pri"].sev != "warning" {
+		t.Errorf("P2's lsx_e_pri = %q, want warning", p["lsx_e_pri"].sev)
+	}
+	has("lsx_e_pri", p["lsx_e_pri"].detail, "The newest error its backup job logged (", long[:297]+"...")
+	hasNot("lsx_e_pri", p["lsx_e_pri"].detail, "TAIL-WORDS")
+
+	// the page's panel parts at S2
+	srv := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rec := httptest.NewRecorder()
+	srv.MSSQLHADRFleet(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/mssql/hadr/fleet?page=logshipping&instance=%d", S2), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the page at S2: %d %s", rec.Code, rec.Body.String())
+	}
+	page := map[string]*table{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	col := func(tb *table, name string) int {
+		for i, c := range tb.Columns {
+			if c == name {
+				return i
+			}
+		}
+		t.Fatalf("no column %s in %v", name, tb.Columns)
+		return -1
+	}
+	count := func(part string) int {
+		if page[part] == nil {
+			return -1
+		}
+		return len(page[part].Rows)
+	}
+	noise, idle := 0, 0
+	if m := page["messages"]; m != nil {
+		for _, r := range m.Rows {
+			if r[col(m, "standby_noise")] == true {
+				noise++
+			}
+			if fmt.Sprint(r[col(m, "source")]) == "the restore job's history" {
+				idle++
+			}
+		}
+	}
+	if got := fmt.Sprintf("messages %d (noise %d, idle %d), jobs %d, foreign %d", count("messages"), noise, idle, count("jobs"), count("foreign")); got != "messages 12 (noise 2, idle 2), jobs 2, foreign 0" {
+		t.Errorf("the page's panel at S2: %s, want messages 12 (noise 2, idle 2), jobs 2, foreign 0", got)
+	}
+
+	// a read whose two message parts failed keeps their rows; a clean read without them clears both
+	imp(S2, now.Add(time.Second), append(append([]map[string]any{}, sRows...),
+		map[string]any{"kind": "collector_error", "source": "log shipping agent errors", "message": "SELECT permission denied"},
+		map[string]any{"kind": "collector_error", "source": "log shipping idle restores", "message": "SELECT permission denied"}))
+	check("after a read whose message parts failed")
+	imp(S2, now.Add(2*time.Second), sRows)
+	var errLeft, idleLeft int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.mssql_logship_errors WHERE instance_id = $1),
+	        (SELECT count(*) FROM pgvigil.mssql_logship_idle WHERE instance_id = $1)`, S2).Scan(&errLeft, &idleLeft); err != nil {
+		t.Fatal(err)
+	}
+	if errLeft != 0 || idleLeft != 0 {
+		t.Errorf("S2 after a clean read with no message rows: %d / %d rows left, want 0 / 0", errLeft, idleLeft)
+	}
+	f := findings(S2)
+	hasNot("lsx_e_chain after the clean read", f["lsx_e_chain"].detail, "The newest error", "Its restore job ran")
+	hasNot("lsx_e_file after the clean read", f["lsx_e_file"].detail, "The newest error")
+}
