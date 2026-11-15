@@ -50,6 +50,7 @@ cleanup() {
 trap cleanup EXIT
 for t in docker psql curl python3 ss go; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 for f in frk-install-all.sql darlingdata.sql sp_WhoIsActive.sql; do [[ -r "$CDIR/$f" ]] || fail "$CDIR/$f is missing"; done
+[[ -r "$ROOT/scripts/lib/kitsetup.sh" ]] || fail "scripts/lib/kitsetup.sh is missing"
 freeport() {
   local p
   for _ in $(seq 1 50); do
@@ -77,100 +78,21 @@ if [[ -n "${PGVIGIL_BIN:-}" ]]; then BIN=$(realpath "$PGVIGIL_BIN"); else
   BIN=$WORK/pgvigil; CGO_ENABLED=0 go build -o "$BIN" ./cmd/pgvigil || fail "go build"
 fi
 
-# ---- SQL Server 2022 ----------------------------------------------------------------------------------------------
+# ---- SQL Server 2022 (the state both this capture and kitwatch.sh run the tools against: scripts/lib/kitsetup.sh) -
 echo "--- SQL Server: the container (host name testsql01)"
-MSSQL_SA_PASSWORD=$(pw Sa); export MSSQL_SA_PASSWORD; export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
-APW=$(pw Ap); RPW=$(pw Rd)
-MPORT=$(freeport); ADDR=127.0.0.1:$MPORT
-MADE_CT=1
-docker run -d --name "$CT" --hostname testsql01 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_PID=Developer \
-  -p "127.0.0.1:$MPORT:1433" "${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}" >/dev/null || fail "docker run"
-CID=$(docker inspect -f '{{.Id}}' "$CT")
-sq() {   # sq <sql> [database] [login] [password]
-  local o
-  o=$(docker exec -e SQLCMDPASSWORD="${4:-$MSSQL_SA_PASSWORD}" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' \
-      -U "${3:-sa}" -d "${2:-master}" -Q "SET NOCOUNT ON; $1" 2>&1) || { printf 'sqlcmd failed: %s\n' "$o" >&2; return 1; }
-  [ -z "$o" ] || printf '%s\n' "$o"
-}
-sqf() {   # a script file as sa in master
-  local o
-  o=$(docker exec -i -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -d master -i /dev/stdin < "$1" 2>&1) \
-    || { printf 'sqlcmd failed on %s: %s\n' "$1" "$(printf '%s' "$o" | tail -5)" >&2; return 1; }
-}
-sqbg() {   # sqbg <login> <database> <sql>: a session in the background (its pid kept), output dropped
-  docker exec -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -I -U "$1" -d "$2" -Q "SET NOCOUNT ON; $3" >/dev/null 2>&1 &
-  HOLD+=($!)
-}
-for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
-sq "SELECT 1" >/dev/null 2>&1 || fail "the SQL Server does not answer"
-MSV=$(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40))")
-[[ $MSV == 16.* ]] || fail "the image is not SQL Server 2022 (ProductVersion $MSV)"
-MS_SERVER="SQL Server 2022 $MSV"
+. "$ROOT/scripts/lib/kitsetup.sh"
+ks_container
 echo "ok   $MS_SERVER"
-for f in frk-install-all.sql darlingdata.sql sp_WhoIsActive.sql; do sqf "$CDIR/$f" || fail "$f did not install"; done
-echo "ok   the kits installed in master"
-
-sq "CREATE DATABASE Sales;
-    ALTER DATABASE Sales SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60);" >/dev/null
-sq "CREATE TABLE dbo.Customer (customer_id int IDENTITY PRIMARY KEY, name nvarchar(100) NOT NULL, region varchar(20) NOT NULL, created datetime2 NOT NULL DEFAULT sysutcdatetime());
-    CREATE TABLE dbo.Orders (order_id int IDENTITY PRIMARY KEY, customer_id int NOT NULL REFERENCES dbo.Customer, ordered datetime2 NOT NULL, total decimal(12,2) NOT NULL, status varchar(20) NOT NULL);
-    CREATE TABLE dbo.Stock (stock_id int IDENTITY PRIMARY KEY, sku varchar(20) NOT NULL, qty int NOT NULL);
-    CREATE TABLE dbo.OrderLine (line_id int IDENTITY PRIMARY KEY, order_id int NOT NULL REFERENCES dbo.Orders, stock_id int NOT NULL REFERENCES dbo.Stock, qty int NOT NULL, amount decimal(12,2) NOT NULL);
-    CREATE TABLE dbo.AuditLog (log_id bigint IDENTITY PRIMARY KEY, logged datetime2 NOT NULL, what nvarchar(200) NOT NULL);
-    WITH n AS (SELECT TOP (2000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
-    INSERT dbo.Customer (name, region) SELECT CONCAT(N'Customer ', i), CHOOSE(1 + i % 4, 'west', 'east', 'north', 'south') FROM n;
-    INSERT dbo.Stock (sku, qty) SELECT TOP (500) CONCAT('SKU-', ROW_NUMBER() OVER (ORDER BY (SELECT NULL))), 100 FROM sys.all_objects a CROSS JOIN sys.all_objects b;
-    WITH n AS (SELECT TOP (50000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b)
-    INSERT dbo.Orders (customer_id, ordered, total, status) SELECT 1 + ABS(CHECKSUM(NEWID())) % 2000, DATEADD(minute, -(ABS(CHECKSUM(NEWID())) % 100000), sysutcdatetime()), ABS(CHECKSUM(NEWID())) % 100000 / 100.0, CHOOSE(1 + i % 3, 'open', 'shipped', 'closed') FROM n;
-    INSERT dbo.OrderLine (order_id, stock_id, qty, amount) SELECT TOP (150000) 1 + ABS(CHECKSUM(NEWID())) % 50000, 1 + ABS(CHECKSUM(NEWID())) % 500, 1 + ABS(CHECKSUM(NEWID())) % 5, ABS(CHECKSUM(NEWID())) % 10000 / 100.0 FROM sys.all_objects a CROSS JOIN sys.all_objects b;
-    INSERT dbo.AuditLog (logged, what) SELECT TOP (20000) DATEADD(minute, -(ABS(CHECKSUM(NEWID())) % 200000), sysutcdatetime()), N'order changed' FROM sys.all_objects a CROSS JOIN sys.all_objects b;
-    CREATE INDEX IX_Orders_customer ON dbo.Orders (customer_id);
-    CREATE INDEX IX_Orders_customer_2 ON dbo.Orders (customer_id);
-    CREATE INDEX IX_Orders_customer_ordered ON dbo.Orders (customer_id, ordered);
-    CREATE INDEX IX_AuditLog_what ON dbo.AuditLog (what);" Sales >/dev/null
-sq "EXEC (N'CREATE PROCEDURE dbo.usp_SearchOrders @text nvarchar(50), @top int AS
-      SELECT TOP (@top) o.order_id, c.name, o.total FROM dbo.Orders o JOIN dbo.Customer c ON c.customer_id = o.customer_id
-       WHERE c.name LIKE N''%'' + @text + N''%'' ORDER BY o.ordered DESC');" Sales >/dev/null
-for l in orders_app stock_job; do
-  sq "CREATE LOGIN $l WITH PASSWORD = '$APW', CHECK_POLICY = OFF;" >/dev/null
-  sq "CREATE USER $l FOR LOGIN $l; ALTER ROLE db_datareader ADD MEMBER $l; ALTER ROLE db_datawriter ADD MEMBER $l; GRANT EXECUTE TO $l;" Sales >/dev/null
-done
-# pgvigil's read login as docs/sqlserver.md and docs/customreports.md describe it: the server's read rights, a user in
-# master with EXECUTE on the kits and on xp_readerrorlog, msdb's reader, a reader in Sales
-sq "CREATE LOGIN pgvigil_read WITH PASSWORD = '$RPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE TO pgvigil_read;" >/dev/null
-sq "CREATE USER pgvigil_read FOR LOGIN pgvigil_read; GRANT EXECUTE ON sys.xp_readerrorlog TO pgvigil_read;
-    DECLARE @s nvarchar(max) = N''; SELECT @s += N'GRANT EXECUTE ON dbo.' + QUOTENAME(name) + N' TO pgvigil_read; ' FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1; EXEC (@s);" >/dev/null
-sq "CREATE USER pgvigil_read FOR LOGIN pgvigil_read; ALTER ROLE db_datareader ADD MEMBER pgvigil_read;" msdb >/dev/null
-sq "CREATE USER pgvigil_read FOR LOGIN pgvigil_read; ALTER ROLE db_datareader ADD MEMBER pgvigil_read;" Sales >/dev/null
-# the blocked process report at 5 s and the session a DBA's script makes (sp_HumanEvents' keeper session); deadlocks into
-# the error log too (trace flag 1222), as many servers run
-sq "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'blocked process threshold (s)', 5; RECONFIGURE; DBCC TRACEON (1222, -1) WITH NO_INFOMSGS;" >/dev/null
-sq "EXEC dbo.sp_HumanEvents @event_type = N'blocking', @keep_alive = 1;" >/dev/null 2>&1 || true
-[[ $(sq "SELECT COUNT(*) FROM sys.dm_xe_sessions WHERE name = N'keeper_HumanEvents_blocking'") == 1 ]] || fail "sp_HumanEvents made no running keeper_HumanEvents_blocking session"
+ks_install "$CDIR/frk-install-all.sql" $KS_PROCS_FRK || fail "frk-install-all.sql $KS_WHY"
+ks_install "$CDIR/darlingdata.sql" $KS_PROCS_DARLING || fail "darlingdata.sql $KS_WHY"
+ks_install "$CDIR/sp_WhoIsActive.sql" $KS_PROCS_WIA || fail "sp_WhoIsActive.sql $KS_WHY"
+echo "ok   the kits installed in master, every procedure there"
+ks_sales; ks_grant_kits
+ks_keeper || fail "$KS_WHY"
 echo "ok   Sales, the logins, Query Store, the threshold 5 s, keeper_HumanEvents_blocking running"
 
 echo "--- SQL Server: a deadlock, the workload, the error log"
-# the workload first, alone (with -b, and its last line the passes it made: all 200 or the capture stops), then the
-# deadlock: run beside it, the workload's own scan queued behind the deadlock's row and it was the victim
-WL=$(docker exec -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -h -1 -W -U orders_app -d Sales -Q "SET NOCOUNT ON;
-  DECLARE @i int = 0; WHILE @i < 200 BEGIN
-    EXEC dbo.usp_SearchOrders @text = N'1', @top = 100;
-    SELECT c.region, COUNT(*) AS orders, SUM(o.total) AS total FROM dbo.Orders o JOIN dbo.Customer c ON c.customer_id = o.customer_id WHERE o.ordered >= DATEADD(day, -30, sysutcdatetime()) GROUP BY c.region;
-    SELECT TOP (50) ol.order_id, SUM(ol.amount) AS amount FROM dbo.OrderLine ol WHERE ol.stock_id = 1 + @i % 500 GROUP BY ol.order_id ORDER BY 2 DESC;
-    UPDATE dbo.Orders SET status = 'shipped' WHERE order_id = 1 + (@i * 7) % 50000;
-    INSERT dbo.AuditLog (logged, what) VALUES (sysutcdatetime(), N'order changed');
-    SET @i += 1;
-  END;
-  SELECT CONCAT('workload passes ', @i);" 2>&1 | tail -3) || fail "the workload: $WL"
-grep -q '^workload passes 200$' <<<"$WL" || fail "the workload did not make its 200 passes: $(printf '%s' "$WL" | tail -3)"
-sqbg orders_app Sales "BEGIN TRAN; UPDATE dbo.Stock SET qty = qty - 1 WHERE stock_id = 1; WAITFOR DELAY '00:00:03'; UPDATE dbo.OrderLine SET qty = qty WHERE line_id = 1; COMMIT;"
-sqbg stock_job Sales "BEGIN TRAN; UPDATE dbo.OrderLine SET qty = qty WHERE line_id = 1; WAITFOR DELAY '00:00:03'; UPDATE dbo.Stock SET qty = qty + 1 WHERE stock_id = 1; COMMIT;"
-sq "RAISERROR (N'Sales: the nightly stock job failed: 3 orders were not shipped', 16, 1) WITH LOG; RAISERROR (N'Sales: a backup of Sales_archive has not run for 8 days', 10, 1) WITH LOG;" >/dev/null 2>&1 || true
-sq "EXEC sys.sp_query_store_flush_db;" Sales >/dev/null
-for _ in $(seq 1 90); do
-  [[ $(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'xml_deadlock_report'") -ge 1 ]] && break; sleep 2
-done
-[[ $(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'xml_deadlock_report'") -ge 1 ]] || fail "system_health holds no deadlock after 180 s"
+ks_workload || fail "$KS_WHY"
 echo "ok   a deadlock in system_health, the workload ran, Query Store flushed"
 
 # ---- PostgreSQL: a cluster of its own ------------------------------------------------------------------------------
@@ -286,18 +208,7 @@ capt() {
   fi
   code=$(post "{\"instance_id\":$inst,\"tool\":\"$tool\",\"database\":\"$db\",\"params\":$params,\"timeout_secs\":60}" "$RAW/$tool.run.json" community/run)
   [[ $code == 200 ]] || fail "$tool: the run answered $code: $(head -c 300 "$RAW/$tool.run.json")"
-  MARK=${MARK:-} NOKIT=${NOKIT:-} python3 - "$RAW/$tool.run.json" "$tool" <<'PY' || fail "$tool: the run did not end done with rows of its subject"
-import json, os, re, sys
-r = json.load(open(sys.argv[1]))['runs'][0]
-rows = sum(len(s['rows']) for s in r['sets'])
-text = json.dumps(r['sets'])
-mark, nokit = os.environ['MARK'], os.environ['NOKIT']
-miss = [m for m in mark.split('|') if m and m not in text]
-kit = re.findall(r'#BlitzResults|#Recompile|#partdb|#BlitzWho|WhoIsActive|@VersionCheckMode|#ErrorLog|#deadlock_data', text) if nokit else []
-print(f"capt {sys.argv[2]}: {r['outcome']}, {len(r['sets'])} sets, {rows} rows" + (f"; holds '{mark}'" if mark and not miss else '')
-      + (f"; MISSING {miss}" if miss else '') + (f"; KIT CODE {sorted(set(kit))}" if kit else '') + ((': ' + r.get('error', '')[:200]) if r['outcome'] != 'done' else ''))
-sys.exit(0 if r['outcome'] == 'done' and rows > 0 and not miss and not kit else 1)
-PY
+  ks_mark "$RAW/$tool.run.json" "$tool" "${MARK:-}" "${NOKIT:-}" || fail "$tool: the run did not end done with rows of its subject"
 }
 
 FRK='"kit":"First Responder Kit","version":"8.34","version_date":"2026-07-02","help":true'
@@ -307,35 +218,24 @@ ms() {   # ms <tool> <database> <params json> <kit fields> (MARK / NOKIT from th
   capt "$1" "$MSID" "$2" "$3"
   TOOLS_META+=("{\"tool\":\"$1\",\"engine\":\"sqlserver\",\"database\":\"${2:-master}\",\"params\":$3,$4}")
 }
+kitmeta() { case $1 in sp_Blitz*) echo "$FRK" ;; sp_WhoIsActive) echo "$WIA" ;; *) dar "$1" ;; esac; }
+ms_phase() {   # the tools of one phase of KS_SQL_RUNS, in its order
+  local row tool ph mark nokit params
+  for row in "${KS_SQL_RUNS[@]}"; do
+    IFS='~' read -r tool ph mark nokit params <<<"$row"
+    [[ $ph == "$1" ]] || continue
+    MARK=$mark NOKIT=$nokit ms "$tool" "" "$params" "$(kitmeta "$tool")"
+  done
+}
 echo "--- SQL Server: the plan cache and Query Store of Sales, before any kit ran there (their rows are statements)"
-MARK='usp_SearchOrders' NOKIT=1 ms sp_BlitzCache "" '{"@DatabaseName":"Sales"}' "$FRK"
-MARK='Orders' NOKIT=1 ms sp_QuickieStore "" '{"@database_name":"Sales"}' "$(dar sp_QuickieStore)"
+ms_phase before
 echo "--- SQL Server: the chain held (a sleeping head with an open transaction, two sessions waiting on it)"
-mkfifo "$WORK/head.in"
-docker exec -i -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -I -U stock_job -d Sales < "$WORK/head.in" >/dev/null 2>&1 & HOLD+=($!)
-exec 7>"$WORK/head.in"
-printf 'BEGIN TRAN; UPDATE dbo.Stock SET qty = qty WHERE stock_id = 2;\nGO\n' >&7
-sleep 2
-sqbg orders_app Sales "UPDATE dbo.Stock SET qty = qty - 1 WHERE stock_id = 2;"
-sqbg orders_app Sales "SELECT qty FROM dbo.Stock WITH (UPDLOCK) WHERE stock_id = 2;"
-for _ in $(seq 1 30); do [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id > 0") -ge 2 ]] && break; sleep 1; done
-[[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id > 0") -ge 2 ]] || fail "the chain did not form"
-sleep 20   # blocked process reports at 5, 10, 15 and 20 s into the keeper session
+ks_chain_hold || fail "$KS_WHY"
 echo "ok   the chain is held"
-MARK='LCK_M_|stock_job' NOKIT=1 ms sp_WhoIsActive "" '{"@find_block_leaders":"1"}' "$WIA"
-MARK='stock_job' NOKIT=1 ms sp_BlitzWho "" '{}' "$FRK"
-MARK='Stock' NOKIT=1 ms sp_HumanEventsBlockViewer "" '{}' "$(dar sp_HumanEventsBlockViewer)"
-NOKIT=1 ms sp_PressureDetector "" '{}' "$(dar sp_PressureDetector)"
-NOKIT=1 ms sp_BlitzFirst "" '{}' "$FRK"
-exec 7>&-
-sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE login_name IN (N'orders_app', N'stock_job'); EXEC (@k);" >/dev/null 2>&1 || true
+ms_phase chain
+ks_chain_release
 echo "ok   the chain released"
-MARK='Sales' ms sp_Blitz "" '{"@CheckServerInfo":"1"}' "$FRK"
-MARK='Unindexed Foreign Keys' ms sp_BlitzIndex "" '{"@DatabaseName":"Sales","@Mode":"4"}' "$FRK"
-MARK='dbo.Stock|orders_app' NOKIT=1 ms sp_BlitzLock "" '{}' "$FRK"
-MARK='deadlock' NOKIT=1 ms sp_HealthParser "" '{}' "$(dar sp_HealthParser)"
-MARK='was killed by' ms sp_LogHunter "" '{}' "$(dar sp_LogHunter)"
-MARK='IX_Orders_customer_2' ms sp_IndexCleanup "" '{"@database_name":"Sales"}' "$(dar sp_IndexCleanup)"
+ms_phase after
 
 echo "--- PostgreSQL: an idle in transaction head, two sessions waiting on it, a prepared transaction"
 mkfifo "$WORK/pghead.in"
