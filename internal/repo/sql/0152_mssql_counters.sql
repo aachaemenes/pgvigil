@@ -75,9 +75,10 @@ ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_failed int;
 ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_succeeded int;
 
 -- the import's delete, the newest read and every window read go by instance and read time; the series last
--- (the proof's part M measured on SQL Server 2022 with two databases: 312 rows stored per instance read and 30 per
--- database read, about 458,400 rows and 46 MB a day per instance with this index - pg_column_size plus 40 bytes a
--- row, an estimate of the heap and index together)
+-- (an idle SQL Server 2022 with two databases stored 312 rows per instance read and 30 per database read - its raw-0
+-- rows go to zero_series - about 458,400 rows a day at one instance read a minute; a busy server stores every row it
+-- reads, and the database read grows with the databases: the proof's part M prints the measured bytes per row and a
+-- per-database and a busy-server day; review part 4, finding 10)
 CREATE INDEX IF NOT EXISTS mssql_counter_sample_read_idx ON pgvigil.mssql_counter_sample (instance_id, snapshot_at, series_id);
 
 -- 0124's series rows get their kind from their type (a 65792 count since the start gets 'count' at its next read)

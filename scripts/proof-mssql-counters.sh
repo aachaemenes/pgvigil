@@ -3,14 +3,16 @@
 # agree pgvigil lacks - mssql_counters, mssql_counters_db and mssql_counter_catalog (internal/mssql/counters.go), 0152,
 # GET / POST /api/mssql/counteradmin, the Metrics page's counters section and Admin > Counters - against hand reads of
 # sys.dm_os_performance_counters on the same server.
-# Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, curl, python3, node, chromium, ss, and:
+# Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, curl, python3, node, npm, chromium, ss, and:
 #   ADMIN_DSN          a superuser connection to a PostgreSQL sandbox in keyword form (default 'host=127.0.0.1 port=5432
-#                      user=postgres dbname=postgres'); the proof makes its own repository database and drops it.
+#                      user=postgres dbname=postgres'), with no password in it (PGPASSWORD or .pgpass: it reaches psql's
+#                      argv); the proof makes its own repository database and drops it.
 #   PGVIGIL_IMAGES     the SQL Server images, the first the full run, the others the version run (default
 #                      '2022-latest 2019-latest').
 #   PGVIGIL_SHOTS      where the page shots go (default: a folder of the run, removed with it).
-#   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the lead's files) to this copy when the
-#                      tree lacks the counters' runner hook; 0 = the tree as it is.
+#   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the lead's files) to the run's own copy
+#                      of the tree (under its folder) when it lacks the counters' runner hook; 0 = the copy as it is. The
+#                      web bundle and the binary are built in that copy; the tree the proof runs from is never changed.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment. Only the
 # collection a step names runs (pgvigil collect -once): no other mssql_* collection reads the server meanwhile.
@@ -18,31 +20,45 @@
 # Expected (written before the first run; red on f8e89d2 at A: 'unknown collection mssql_counters'):
 #  A. the first image's container, a database pgvctr (log 1 MB, growth 1 MB, full recovery with one full backup taken,
 #     so the log grows and stays), snapshot isolation allowed; a monitor login with VIEW SERVER STATE; migrate ok;
-#     mssql_counters, mssql_counters_db and mssql_counter_catalog each run; the list = every default.
+#     mssql_counters, mssql_counters_db and mssql_counter_catalog each run; the list = every default (the same
+#     object, counter and instance rows, not only as many).
 #  B. a hand read right before and right after one mssql_counters read: every stored raw value of a rate, count or
 #     average series (and an average's base) lies between the two hand reads (before <= stored <= after: they only
 #     grow); the gauges and fractions outside [min, max] of the two hand reads are counted and listed, not judged.
+#     From review part 4 (finding 1): an average's or a fraction's base is checked against the hand reads of ITS base
+#     row, named by the proof's own rule (the PERF_LARGE_RAW_BASE row, type 1073939712, next after the counter within
+#     its object and instance in the DMV's order - not counters.go's names): an average's stored base between them, a
+#     fraction's listed when outside; a stored series in neither hand read, or an average or fraction with no base row
+#     so found, fails B. The same bracket on one mssql_counters_db read (finding 2).
 #  C. from two stored reads: every rate = (value - value before) / the reads' interval by the server's clock (3
 #     places), every count's change = value - value before, every average = change in value / change in base, every
-#     fraction = 100 * value / base, as mssql_counter_newest and metric_points return them.
+#     fraction = 100 * value / base, as mssql_counter_newest and metric_points return them. Between the two reads 20
+#     runs of a procedure that recompiles and 20 distinct batches (review part 4, finding 11): compilations at 1/s or
+#     more and recompiles_per_100_compiles above 0, equal to 100 x its two rates (a wrong formula no longer hides
+#     under the floor).
 #  D. provoked between two reads with nothing else connected, each change read from the store minus pgvigil's own
 #     logins (one per collector read):
-#     Logins/sec and Logouts/sec + 40 each; SQL Errors User Errors + 12 (RAISERROR 16), Info Errors + 7 (RAISERROR 10)
-#     - read and printed whatever they are, Kill Connection Errors + 3 (RAISERROR 20 WITH LOG, three connections, in a
+#     Logins/sec and Logouts/sec + 40 each; Batch Requests/sec + 200 (200 batches) over the collector's own count per
+#     read (the least of three quiet pairs; review part 4, finding 2), more than 20 over it printed as background;
+#     SQL Errors User Errors + 12 (RAISERROR 16), Info Errors + 7 (RAISERROR 10) and two more per login in the window
+#     (5701 / 5703: runs proof4-proof6 read + 13) - read and printed, not judged, Kill Connection Errors + 3 (RAISERROR 20 WITH LOG, three connections, in a
 #     phase of their own: run 3 read User Errors + 15 with them in the same phase) read and printed with that phase's
 #     User Errors; DB Offline Errors: not provable on a box (Microsoft: a severe error that takes the database
 #     offline), read at 0 in zero_series; pgvctr Write Transactions/sec + 500 or more (500 one-row commits), Log Flush
 #     Waits/sec more than 0; Log Growths of pgvctr 1 or more, then a flat read with its row stored at a change of 0 and
 #     log_growths 0 in metric_points (F2's case 1); Lock Timeouts (timeout > 0)/sec + 6 (LOCK_TIMEOUT 200 behind a held
-#     lock) and unmoved by 6 more at LOCK_TIMEOUT 0, the plain Lock Timeouts/sec + 12 or more; the average lock wait
-#     between 150 and 600 ms; Update conflict ratio's value + 4 (four 3960 conflicts) over a base change of 4 or more;
+#     lock, its X lock seen in sys.dm_tran_locks before each phase) and unmoved by 6 more at LOCK_TIMEOUT 0 while it
+#     still holds, those six on the plain Lock Timeouts/sec (+ 6 or more there, + 12 or more in all); the average lock wait
+#     between 150 and 600 ms; Update conflict ratio's value + 4 (four 3960 conflicts, each UPDATE sent once the snapshot
+#     transaction is seen in its WAITFOR) over a base change of 4 or more;
 #     Auto-Param Attempts/sec + 20 or more (20 literal queries), Forced Parameterizations/sec + 20 or more under
 #     PARAMETERIZATION FORCED; Page compression attempts/sec more than 0 (a PAGE-compressed insert); Cursor
 #     Requests/sec + 5 or more; Deprecated Features Usage of '::' function calling syntax + 3; Batch Resp Statistics
-#     Elapsed Time:Requests + 5 or more in the 100-200 ms bucket and + 3 or more in the 1-2 s bucket (and the histogram
+#     Elapsed Time:Requests + 5 or more in the 100-200 ms bucket (125 ms waits) and + 3 or more in the 1-2 s bucket (and the histogram
 #     function says the same); Resource Pool Stats CPU usage % (default) read under a CPU loop above 0 and at most 100,
 #     equal to 100 * value / base of its stored pair; Misguided plan executions/sec read and printed (a plan guide whose
-#     index was dropped) - NOT PROVEN live if it does not move.
+#     index was dropped: the guide's creation and the drop checked, not swallowed) - NOT PROVEN live if it does not
+#     move (review part 4's probe on the proof box: it stayed at 0).
 #  E. the list: a pgvigil.yaml instance line adds General Statistics / Logical Connections (read at the next read) and
 #     removes Deprecated Features / Usage (not read); an Admin fleet row adding Usage back loses to the instance's yaml
 #     line (narrowest scope); an Admin instance row adding it wins over the yaml line at the same scope (read again);
@@ -55,13 +71,16 @@
 #     Deprecated Features / Usage (a feature the server lists) takes that feature out of the next read (no stored row,
 #     not in zero_series) while another feature of the same counter is still read; the list's every-instance line
 #     names it in 'except'.
-#  F. the gap rule: Pages Allocated/sec removed for two reads and added back: its first read back has no change and no
+#  F. the gap rule: Pages Allocated/sec removed for two reads and added back: the two reads without it hold no row and
+#     do not name it in zero_series; its first read back has a stored row (not a zero_series 0) with no change and no
 #     rate; the read after has both. F15 (a gap in time, review part 1 S3): a read 125 s after the one before (over twice
 #     the 60 s default) has no change and no rate on any series; the read 3 s after it has them.
-#  G. a restart (docker restart): the first read after it has no rate, no change and no average on any series; the
+#  G. a restart (docker restart): the first read after it has no rate, no change and no average on any series, by the
+#     restart rule (that read's after_gap false, so F15's gap rule did not make it so; review part 4, finding 14); the
 #     read after has them.
 #  H. zero points: errors_offline_s is 0 at every instance read of the window (as many points as reads); errors_kill_s
-#     is not (D provokes three kill-connection errors; corrected after run 4, the body always read errors_offline_s).
+#     is not: at D's severe-phase read its point is above 0 and equal to that read's stored rate (review part 4,
+#     finding 3: a zero_series 0 winning over a sample row would chart it as 0).
 #  P. review part 2's rows, on a synthetic instance ctrsyn (tags env:synx, env:syny; no server: the counter import
 #     called with built payloads, the jobs import's writes made as 0094's import_mssql_jobs makes them):
 #     P1 (finding 1, G329) a job that ends between two counter reads and is read by the jobs read after them: the
@@ -79,7 +98,9 @@
 #        replaced by row <m>' (red today: 'added', two live rows).
 #     P6 (finding 7) a fleet add of Databases / Log Growths with no kind: the list's kind is 'count', the default's
 #        (red today: empty). P7 (finding 8) Admin refuses SYS.DM_OS_SCHEDULERS / yield_count with a kind ('is a DMV
-#        column'; red today: done). Every row P makes is ended; ctrsyn is made inactive at the end.
+#        column'; red today: done). P8 (review part 4, finding 11; F9) an average over one 5-minute step spanning two
+#        reads with unequal base changes (60 / 120, then 6 / 600): mssql_counter_series_between gives 66 / 720 = 0.0917,
+#        not the mean of the two figures (0.255). Every row P makes is ended; ctrsyn is made inactive at the end.
 #  I. F1: mssql_cpu_newest's rg_active_requests NULL with 0124's own body (made in pg_temp from the file) after the
 #     counters left mssql_cpu, not NULL with the join's body.
 #  J. the API: GET /api/mssql/counteradmin (no instance: config, defaults, log, catalog; with the instance: layers,
@@ -106,8 +127,11 @@
 #     failed to create a worker' (listed only when a step has a value), the clerks grid's 'what it is' with Buffer Pool.
 #  L. the version run on each further image: A's setup, B's bracket and C's arithmetic, D's logins, errors and log
 #     growth, the list = every default.
-#  M. the measured size: rows per read of each scope and the sample rows stored per read, and bytes per day per instance
-#     at one read a minute and one per 5 minutes.
+#  M. the measured size (review part 4, finding 10): rows per read of each scope, the sample rows stored per read and
+#     their share of the rows read, the box's database count; the bytes measured as pg_total_relation_size of
+#     mssql_counter_sample before and after the run's reads (not pg_column_size); a day at one instance read a minute and
+#     one database read per 5 minutes stated per instance as measured, per database, and for a busy server (every row
+#     read stored); printed, not judged.
 # NOT PROVEN HERE: SQL Server 2016 (no Linux image: dba-lab-win's queue), Managed Instance, RDS, Cloud SQL, a Windows
 #   host; DB Offline Errors moving; two memory nodes (one Buffer Node in a container); Misguided plan executions moving
 #   if D says so.
@@ -124,7 +148,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SQL=; SRVPID=; SRV2PID=; CHRPID=; BG=()
+TMPD=$(mktemp -d); SQL=; SRVPID=; SRV2PID=; CHRPID=
 SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
 SA_PW=$(pw); MON_PW=$(pw); UIPW=$(pw)
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\nMSSQL_PID=Developer\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
@@ -132,18 +156,21 @@ cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$SRV2PID" ]] && kill "$SRV2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill -- "-$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; fi
-  for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true; done
   docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f -v >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
-for t in docker go psql curl python3 node chromium setsid ss; do command -v "$t" >/dev/null || fail "needs $t"; done
+for t in docker go psql curl python3 node npm chromium setsid ss; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
-if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q 'ListCollector' internal/mssql/mssql.go; then
-  git apply scripts/proof-mssql-counters-wiring.patch 2>/dev/null || patch -p1 --forward < scripts/proof-mssql-counters-wiring.patch >/dev/null \
-    || fail "the wiring patch"
-  echo "wiring applied to this copy (config.go, mssql.go, repo.go, cpu.go, activity.go, 0190, web.go, router.ts, main.ts; D6: q_perfsummary.go, perfsummary.ts, q_mssql_perf.go, mssql_perf.ts)"
+# the run's own copy of the tree (review part 4, findings 7 and 8): the wiring applied there, the web bundle and the binary
+# built there; the tree the proof runs from is never changed
+GSRC=$TMPD/src; mkdir -p "$GSRC"
+tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git --exclude=./.sqltb -cf - . | tar -C "$GSRC" -xf -
+if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q 'ListCollector' "$GSRC/internal/mssql/mssql.go"; then
+  (cd "$GSRC" && { git apply scripts/proof-mssql-counters-wiring.patch 2>"$TMPD/apply.err" || patch -p1 --forward < scripts/proof-mssql-counters-wiring.patch >>"$TMPD/apply.err" 2>&1; }) \
+    || fail "the wiring patch: $(cat "$TMPD/apply.err")"
+  echo "wiring applied to the run's copy (config.go, mssql.go, repo.go, cpu.go, activity.go, 0190, web.go, router.ts, main.ts; D6: q_perfsummary.go, perfsummary.ts, q_mssql_perf.go, mssql_perf.ts)"
 fi
 freeport() { local lo=$1 hi=$2 p used
   used=$(ss -Htan) || fail "ss -Htan failed: the ports in use cannot be read"
@@ -206,7 +233,8 @@ config() {
     if [[ -n "${1:-}" ]]; then printf '%s\n' "$1"; fi; } > "$CFG"
 }
 
-go build -o "$TMPD/pgvigil" ./cmd/pgvigil
+(cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "the web build"; }
+(cd "$GSRC" && go build -o "$TMPD/pgvigil" ./cmd/pgvigil) || fail "the build"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
 PGDSN="${ADMIN_DSN/dbname=postgres/dbname=$PGDB}"; [[ "$PGDSN" == *"dbname=$PGDB"* ]] || PGDSN="$PGDSN dbname=$PGDB"
 
@@ -217,37 +245,57 @@ config
 col mssql_instance mssql_counters mssql_counters_db mssql_counter_catalog
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ctrbox'")
 NDEF=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_defaults"); NL=$(pq "SELECT jsonb_array_length(pgvigil.import_mssql_counter_list($SB, '[]'))")
-[[ "$NDEF" == "$NL" ]] || fail "A: the list holds $NL, the defaults $NDEF"
+# the same rows both ways, not only as many (review part 4, finding 16)
+LX=$(pq "SELECT count(*) FROM ((SELECT object, counter, inst FROM pgvigil.mssql_counter_defaults
+    EXCEPT SELECT e->>'object', e->>'counter', e->>'inst' FROM jsonb_array_elements(pgvigil.import_mssql_counter_list($SB, '[]')) e)
+  UNION ALL (SELECT e->>'object', e->>'counter', e->>'inst' FROM jsonb_array_elements(pgvigil.import_mssql_counter_list($SB, '[]')) e
+    EXCEPT SELECT object, counter, inst FROM pgvigil.mssql_counter_defaults)) d")
+[[ "$NDEF" == "$NL" && "$LX" == 0 ]] || fail "A: the list holds $NL, the defaults $NDEF, $LX rows in one and not the other"
 ok "A: SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))"), migrate, the three collections, the list = every default ($NL)"
+# M's measure (review part 4, finding 10): the sample table's bytes and rows here, against the end of the run's reads
+M_BYTES0=$(pq "SELECT pg_total_relation_size('pgvigil.mssql_counter_sample')"); M_ROWS0=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_sample")
 
-# bracket: a hand read before and after one mssql_counters read; the stored raw values of that read between them
+# bracket <tag> [scope] [least]: a hand read before and after one read of the scope (instance: mssql_counters; database:
+# mssql_counters_db); the stored raw values of that read between them, and an average's or fraction's base against the
+# hand reads of its base row, named by the proof's own rule: the PERF_LARGE_RAW_BASE row (type 1073939712) next after the
+# counter within its object and instance in the DMV's order (review part 4, finding 1: not counters.go's names)
 bracket() {
-  local tag=$1
-  sleep 2; hand "$TMPD/h0"; col mssql_counters; hand "$TMPD/h1"
+  local tag=$1 sc=${2:-instance} least=${3:-300} cl=mssql_counters
+  [[ "$sc" == database ]] && cl=mssql_counters_db
+  sleep 2; hand "$TMPD/h0"; col "$cl"; hand "$TMPD/h1"
   pq "SELECT k.object || '|' || k.counter || '|' || k.inst || '|' || k.kind || '|' || coalesce(s.value, 0) || '|' || coalesce(s.base::text, '')
         FROM pgvigil.mssql_counter_series k
-        JOIN (SELECT * FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1) r ON true
+        JOIN (SELECT * FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = '$sc' ORDER BY snapshot_at DESC LIMIT 1) r ON true
         LEFT JOIN pgvigil.mssql_counter_sample s ON s.instance_id = $SB AND s.series_id = k.series_id AND s.snapshot_at = r.snapshot_at
-       WHERE k.instance_id = $SB AND pgvigil.mssql_counter_scope(k.object) = 'instance' AND k.object NOT LIKE 'sys.dm_os_%'
+       WHERE k.instance_id = $SB AND pgvigil.mssql_counter_scope(k.object) = '$sc' AND k.object NOT LIKE 'sys.dm_os_%'
          AND (s.series_id IS NOT NULL OR k.series_id = ANY (r.zero_series))" > "$TMPD/stored"
-  python3 - "$TMPD/h0" "$TMPD/h1" "$TMPD/stored" "$tag" <<'PY'
+  python3 - "$TMPD/h0" "$TMPD/h1" "$TMPD/stored" "$tag" "$least" <<'PY'
 import sys
+BASE = 1073939712                      # PERF_LARGE_RAW_BASE
 def load(p):
-    d = {}
+    d, seq = {}, {}
     for l in open(p):
         f = l.rstrip('\n').split('|')
-        if len(f) == 5 and f[3].lstrip('-').isdigit():
+        if len(f) == 5 and f[3].lstrip('-').isdigit() and f[4].isdigit():
             d[(f[0], f[1], f[2])] = int(f[3])
-    return d
-h0, h1 = load(sys.argv[1]), load(sys.argv[2])
-base_of = {}
-for (o, c, i), v in h0.items():
-    base_of[(o.lower(), c.lower(), i)] = None
-cum_bad, moved, n, nb = [], [], 0, 0
+            seq.setdefault((f[0], f[2]), []).append((f[1], int(f[4])))
+    return d, seq
+(h0, seq0), (h1, _) = load(sys.argv[1]), load(sys.argv[2])
+def base_of(o, c, i):
+    rows = seq0.get((o, i), [])
+    for k, (name, _) in enumerate(rows):
+        if name == c:
+            return rows[k + 1][0] if k + 1 < len(rows) and rows[k + 1][1] == BASE else None
+    return None
+cum_bad, moved, gone, came, unpaired, base_bad, base_moved, n, nb = [], [], [], [], [], [], [], 0, 0
 for l in open(sys.argv[3]):
     o, c, i, k, v, b = l.rstrip('\n').split('|')
     v = int(v); key = (o, c, i)
+    if key not in h0 and key not in h1:
+        gone.append(f'{o}/{c}/{i}')
+        continue
     if key not in h0 or key not in h1:
+        came.append(f'{o}/{c}/{i}')
         continue
     n += 1
     lo, hi = h0[key], h1[key]
@@ -256,22 +304,40 @@ for l in open(sys.argv[3]):
             cum_bad.append(f'{o}/{c}/{i} {lo} <= {v} <= {hi}')
     elif not (min(lo, hi) <= v <= max(lo, hi)):
         moved.append(f'{o}/{c}/{i} {lo} {v} {hi}')
-    if b and k == 'average':
-        # the base's own hand reads: the base row's name is not kept, so the bracket is on the stored base against its counter's base name rule
+    if b != '' and k in ('average', 'fraction'):
+        bn = base_of(o, c, i)
+        bk = (o, bn, i) if bn else None
+        if not bk or bk not in h0 or bk not in h1:
+            unpaired.append(f'{o}/{c}/{i}: no base row next after it')
+            continue
         nb += 1
-print(f'{sys.argv[4]}: {n} stored series bracketed; cumulative outside: {len(cum_bad)}; gauges / fractions outside their two hand reads: {len(moved)}')
-for x in moved[:15]: print('   moved: ' + x)
-for x in cum_bad[:15]: print('   FAIL ' + x)
-sys.exit(1 if cum_bad or n < 300 else 0)
+        blo, bhi, bv = h0[bk], h1[bk], int(b)
+        if k == 'average' and not (blo <= bv <= bhi):
+            base_bad.append(f'{o}/{c}/{i} base {bn}: {blo} <= {bv} <= {bhi}')
+        elif k == 'fraction' and not (min(blo, bhi) <= bv <= max(blo, bhi)):
+            base_moved.append(f'{o}/{c}/{i} base {bn}: {blo} {bv} {bhi}')
+print(f'{sys.argv[4]}: {n} stored series bracketed, {nb} bases; cumulative outside: {len(cum_bad)}; averages\' bases outside: {len(base_bad)}; '
+      f'gauges / fractions outside their two hand reads: {len(moved)}, fractions\' bases: {len(base_moved)}; in one hand read only: {len(came)}')
+for x in moved[:10] + base_moved[:5]: print('   moved: ' + x)
+for x in came[:5]: print('   in one hand read only: ' + x)
+for x in cum_bad[:15] + base_bad[:15] + gone[:10] + unpaired[:10]: print('   FAIL ' + x)
+sys.exit(1 if cum_bad or base_bad or gone or unpaired or n < int(sys.argv[5]) else 0)
 PY
 }
 
 echo "== B. the bracket =="
-bracket "B" || fail "B: a stored cumulative value outside its hand reads (or under 300 series)"
-ok "B: every stored rate, count and average between the hand read before and after"
+bracket "B" || fail "B: a stored cumulative value or base outside its hand reads, a series in neither, a base not found (or under 300 series)"
+bracket "B db" database 20 || fail "B: the database read: a stored cumulative value or base outside its hand reads, a series in neither, a base not found (or under 20 series)"
+ok "B: every stored rate, count and average, and every average's base by the proof's own pairing, between the hand read before and after, on an instance read and a database read"
 
 echo "== C. the arithmetic from the stored pairs =="
-sleep 3; col mssql_counters
+# between C's two reads: 20 runs of a procedure whose temp table changes shape each run (a recompile each) and 20
+# distinct batches, so compilations run at 1/s or more and the recompile ratio is judged, not floored (review part 4,
+# finding 11)
+sqok "C: the recompiling procedure" "CREATE OR ALTER PROCEDURE dbo.pgv_rc AS BEGIN CREATE TABLE #r (a int); INSERT #r VALUES (1); ALTER TABLE #r ADD b int; SELECT a, b FROM #r; END" pgvctr
+sleep 2; col mssql_counters
+sq "$(for i in $(seq 1 20); do echo "EXEC dbo.pgv_rc;"; echo GO; echo "SELECT v FROM dbo.t WHERE id = $((i * 13)) AND pad <> 'c$i';"; echo GO; done)" pgvctr >/dev/null
+col mssql_counters
 # arith <label>: C's arithmetic on the newest two instance reads of $SB (C here, L on each further image)
 arith() {
 python3 - "$PGDSN" "$SB" "$1" <<'PY' || return 1
@@ -323,6 +389,11 @@ sys.exit(1 if bad else 0)
 PY
 }
 arith C || fail "C: a figure differs from its recomputation (arith $?: 1 a stored figure, 2 a ratio metric)"
+CPS=$(field "$(stored 'SQL Statistics' 'SQL Compilations/sec' '_Total')" 5)
+RCP=$(pq "SELECT value FROM pgvigil.metric_points($SB, 'counters', now() - interval '1 minute', now()) WHERE metric = 'recompiles_per_100_compiles' ORDER BY at DESC LIMIT 1")
+echo "   C's window: compilations ${CPS:-none}/s, recompiles_per_100_compiles ${RCP:-none}"
+python3 -c "import sys; sys.exit(0 if float('${CPS:-0}') >= 1 and float('${RCP:-0}') > 0 else 1)" \
+  || fail "C: compilations ${CPS:-none}/s, recompiles_per_100_compiles ${RCP:-none} (want 1/s or more and a ratio above 0: judged, not floored)"
 ok "C: every rate, change, average, fraction and gauge equals its recomputation from the stored raw pairs; the ratios equal their rates"
 
 echo "== D. the provoked counters =="
@@ -333,6 +404,16 @@ DL=$(chg 'General Statistics' 'Logins/sec' '_Total'); DO=$(chg 'General Statisti
 # the collector's own login of this read is counted (+1); its logout of the read before happened after that read
 [[ "$DL" == 41 && "$DO" == 41 ]] || fail "D: logins +$DL logouts +$DO (want 41 each: 40 and the collector's own)"
 ok "D: Logins/sec and Logouts/sec + 40 each beside the collector's own (+41 stored)"
+# Batch Requests/sec over the collector's own (review part 4, finding 2): its own batches per read, the least of three
+# quiet pairs, then 200 batches between two reads
+OWNB=; for _ in 1 2 3; do col mssql_counters; sleep 1; col mssql_counters; c=$(chg 'SQL Statistics' 'Batch Requests/sec' '_Total')
+  [[ "$c" =~ ^[0-9]+$ ]] || fail "D: Batch Requests over a quiet pair [$c]"; [[ -z "$OWNB" || "$c" -lt "$OWNB" ]] && OWNB=$c; done
+col mssql_counters; sq "$(for _ in $(seq 1 200); do echo 'SELECT 1;'; echo GO; done)" >/dev/null; col mssql_counters
+BRQ=$(chg 'SQL Statistics' 'Batch Requests/sec' '_Total')
+echo "   batch requests: +$BRQ over 200 batches; the collector's own $OWNB per read (the least of three quiet pairs)"
+[[ "$BRQ" =~ ^[0-9]+$ && "$BRQ" -ge $((200 + OWNB)) ]] || fail "D: Batch Requests +$BRQ (want 200 and the collector's own $OWNB at least)"
+(( BRQ > 200 + OWNB + 20 )) && echo "NOT PROVEN exact: Batch Requests +$BRQ is $((BRQ - 200 - OWNB)) over 200 and the collector's own (background batches such as SQLServerCEIP's)"
+ok "D: Batch Requests/sec +$BRQ: 200 provoked and the collector's own $OWNB (+$((BRQ - 200 - OWNB)) beside them)"
 
 sq "$(printf "RAISERROR('pgvigil proof user error', 16, 1);\n%.0s" $(seq 1 12))" >/dev/null 2>&1 || true
 sq "$(printf "RAISERROR('pgvigil proof info message', 10, 1);\n%.0s" $(seq 1 7))" >/dev/null 2>&1 || true
@@ -341,6 +422,7 @@ EU=$(chg 'SQL Errors' 'Errors/sec' 'User Errors'); EI=$(chg 'SQL Errors' 'Errors
 # the severe errors in a phase of their own: in one phase with the 12 above, User Errors read +15 (sqltb-s1-proof3)
 for _ in 1 2 3; do sq "RAISERROR('pgvigil proof severe error', 20, 1) WITH LOG;" >/dev/null 2>&1 || true; done
 col mssql_counters
+EKAT=$(pq "SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")   # H reads errors_kill_s here
 EK=$(chg 'SQL Errors' 'Errors/sec' 'Kill Connection Errors'); EUK=$(chg 'SQL Errors' 'Errors/sec' 'User Errors')
 EO=$(stored 'SQL Errors' 'Errors/sec' 'DB Offline Errors'); ET=$(chg 'SQL Errors' 'Errors/sec' '_Total')
 echo "   errors: user +$EU, info +$EI (12 at severity 16, 7 at 10); then kill connection +$EK, user +$EUK, total +$ET (3 at severity 20 WITH LOG); DB Offline Errors stored as [$EO]"
@@ -367,26 +449,35 @@ LGP=$(pq "SELECT value FROM pgvigil.metric_points($SB, 'counters', now() - inter
 [[ "$FV" -ge 1 && "$FC" == 0 && "$INROW" == 1 && "$LGP" == 0 ]] || fail "D: the flat read [$FLAT] row $INROW log_growths [$LGP] (want a row at a change of 0 and the point 0)"
 ok "D: pgvctr Write Transactions +$WT, Log Flush Waits +$LF (wait time +$LW ms), Log Growths +$LG; the flat read after it keeps its row at a change of 0 and log_growths is 0 (F2 case 1)"
 
+# held: the holder's X key lock on pgvctr, granted (review part 4, findings 4 and 5: seen, not a fixed sleep)
+held() { sq "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id = DB_ID('pgvctr') AND resource_type = 'KEY' AND request_mode = 'X' AND request_status = 'GRANT'" | tr -d '[:space:]'; }
+waitheld() { local h=; for _ in $(seq 1 50); do h=$(held); [[ "$h" =~ ^[0-9]+$ && "$h" -ge 1 ]] && return 0; sleep 0.2; done; fail "D: $1: no granted X key lock in sys.dm_tran_locks"; }
 col mssql_counters
-( printf 'BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITFOR DELAY '"'"'00:00:25'"'"'; ROLLBACK;\n' | docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -d pgvctr -i /dev/stdin' >/dev/null 2>&1 & ) ; sleep 2
+( printf 'BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1; WAITFOR DELAY '"'"'00:00:25'"'"'; ROLLBACK;\n' | docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -d pgvctr -i /dev/stdin' >/dev/null 2>&1 & ) ; waitheld "the lock holder"
 for _ in $(seq 1 6); do sq "SET LOCK_TIMEOUT 200; SELECT v FROM dbo.t WHERE id = 1;" pgvctr >/dev/null 2>&1 || true; done
 col mssql_counters
 TG=$(chg 'Locks' 'Lock Timeouts (timeout > 0)/sec' '_Total'); TP=$(chg 'Locks' 'Lock Timeouts/sec' '_Total')
 AW=$(pq "SELECT round(value::numeric, 1) FROM pgvigil.metric_points($SB, 'counters', now() - interval '20 seconds', now()) WHERE metric = 'avg_lock_wait_ms' ORDER BY at DESC LIMIT 1")
+waitheld "the holder before the LOCK_TIMEOUT 0 phase"
 for _ in $(seq 1 6); do sq "SET LOCK_TIMEOUT 0; SELECT v FROM dbo.t WHERE id = 1;" pgvctr >/dev/null 2>&1 || true; done
 col mssql_counters
 TG2=$(chg 'Locks' 'Lock Timeouts (timeout > 0)/sec' '_Total'); TP2=$(chg 'Locks' 'Lock Timeouts/sec' '_Total')
 echo "   lock timeouts: (timeout > 0) +$TG then +$TG2; all +$TP then +$TP2; average lock wait $AW ms"
-[[ "$TG" == 6 && "$TG2" == 0 && "$((TP + TP2))" -ge 12 ]] || fail "D: lock timeouts (timeout > 0) +$TG / +$TG2, all +$TP / +$TP2"
+[[ "$TG" == 6 && "$TG2" == 0 && "$TP2" -ge 6 && "$((TP + TP2))" -ge 12 ]] || fail "D: lock timeouts (timeout > 0) +$TG / +$TG2, all +$TP / +$TP2 (want 6 / 0, the second six on the plain counter: 6 or more)"
 python3 -c "import sys; sys.exit(0 if 150 <= float('${AW:-0}') <= 600 else 1)" || fail "D: the average lock wait $AW ms (want 150-600)"
 ok "D: Lock Timeouts (timeout > 0) +6 at 200 ms and +0 at LOCK_TIMEOUT 0; all lock timeouts +$((TP + TP2)); the average lock wait $AW ms"
 sleep 25
 
+# snapw: the snapshot transaction in its WAITFOR (isolation level 5), its SELECT done (review part 4, finding 5)
+snapw() { sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE database_id = DB_ID('pgvctr') AND wait_type = 'WAITFOR' AND transaction_isolation_level = 5" | tr -d '[:space:]'; }
 col mssql_counters
 for _ in 1 2 3 4; do
   ( printf 'SET TRANSACTION ISOLATION LEVEL SNAPSHOT; BEGIN TRAN; SELECT v FROM dbo.t WHERE id = 2; WAITFOR DELAY '"'"'00:00:02'"'"'; UPDATE dbo.t SET v = v + 1 WHERE id = 2; COMMIT;\n' \
       | docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -d pgvctr -i /dev/stdin' >/dev/null 2>&1 & )
-  sleep 0.7; sq "UPDATE dbo.t SET v = v + 1 WHERE id = 2;" pgvctr >/dev/null; sleep 2
+  w=; for _ in $(seq 1 50); do w=$(snapw); [[ "$w" =~ ^[0-9]+$ && "$w" -ge 1 ]] && break; sleep 0.1; done
+  [[ "$w" =~ ^[0-9]+$ && "$w" -ge 1 ]] || fail "D: the snapshot transaction never reached its WAITFOR"
+  sq "UPDATE dbo.t SET v = v + 1 WHERE id = 2;" pgvctr >/dev/null
+  for _ in $(seq 1 50); do [[ "$(snapw)" == 0 ]] && break; sleep 0.1; done
 done
 sleep 1; col mssql_counters
 UC=$(stored 'Transactions' 'Update conflict ratio' '_Total')
@@ -410,7 +501,7 @@ sq "CREATE TABLE dbo.pc (id int NOT NULL, pad char(500) NOT NULL) WITH (DATA_COM
   INSERT dbo.pc WITH (TABLOCK) SELECT TOP (30000) ROW_NUMBER() OVER (ORDER BY (SELECT 1)), REPLICATE('p', 500) FROM sys.all_objects a CROSS JOIN sys.all_objects b;" pgvctr >/dev/null
 sq "$(for i in 1 2 3 4 5; do echo "DECLARE c$i CURSOR LOCAL FOR SELECT TOP (3) id FROM dbo.t; OPEN c$i; FETCH NEXT FROM c$i; CLOSE c$i; DEALLOCATE c$i;"; done)" pgvctr >/dev/null
 sq "SELECT COUNT(*) FROM ::fn_helpcollations(); SELECT COUNT(*) FROM ::fn_helpcollations(); SELECT COUNT(*) FROM ::fn_helpcollations();" >/dev/null
-sq "$(for _ in 1 2 3 4 5; do echo "WAITFOR DELAY '00:00:00.150';"; echo GO; done; for _ in 1 2 3; do echo "WAITFOR DELAY '00:00:01.200';"; echo GO; done)" >/dev/null
+sq "$(for _ in 1 2 3 4 5; do echo "WAITFOR DELAY '00:00:00.125';"; echo GO; done; for _ in 1 2 3; do echo "WAITFOR DELAY '00:00:01.200';"; echo GO; done)" >/dev/null
 col mssql_counters
 PC=$(chg 'Access Methods' 'Page compression attempts/sec' '_Total'); CR=$(chg 'Cursor Manager by Type' 'Cursor Requests/sec' '_Total')
 DF=$(pq "SELECT s.dvalue FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_sample s ON s.series_id = k.series_id
@@ -437,10 +528,13 @@ PY
 ok "D: Resource Pool Stats CPU usage % read under a CPU loop: $CF % = 100 * value / base"
 sleep 18
 
-sq "CREATE INDEX ix_v ON dbo.t (v); " pgvctr >/dev/null
-sq "EXEC sp_create_plan_guide @name = N'pgv_ctr_guide', @stmt = N'SELECT id FROM dbo.t WHERE v > 100000;', @type = N'SQL', @module_or_batch = NULL, @params = NULL, @hints = N'OPTION (TABLE HINT (dbo.t, INDEX (ix_v)))';" pgvctr >/dev/null 2>&1 || true
+# the guide's setup checked, not swallowed (review part 4, finding 13)
+sqok "D: the index the plan guide names" "CREATE INDEX ix_v ON dbo.t (v);" pgvctr
+sqok "D: the plan guide" "EXEC sp_create_plan_guide @name = N'pgv_ctr_guide', @stmt = N'SELECT id FROM dbo.t WHERE v > 100000;', @type = N'SQL', @module_or_batch = NULL, @params = NULL, @hints = N'OPTION (TABLE HINT (dbo.t, INDEX (ix_v)))';" pgvctr
 col mssql_counters
-sq "DROP INDEX ix_v ON dbo.t;" pgvctr >/dev/null 2>&1 || true
+sqok "D: the guide's index dropped" "DROP INDEX ix_v ON dbo.t;" pgvctr
+PGD=$(sq "SELECT CAST((SELECT COUNT(*) FROM sys.plan_guides WHERE name = N'pgv_ctr_guide') AS varchar(5)) + '|' + CAST((SELECT COUNT(*) FROM sys.indexes WHERE name = N'ix_v' AND object_id = OBJECT_ID(N'dbo.t')) AS varchar(5))" pgvctr | tr -d '[:space:]')
+[[ "$PGD" == "1|0" ]] || fail "D: the plan guide and its index [$PGD] (want the guide 1, the index 0)"
 for _ in 1 2 3; do printf 'SELECT id FROM dbo.t WHERE v > 100000;\nGO\n' | timeout 60 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -d pgvctr -i /dev/stdin' >/dev/null 2>&1 || true
   sq "DBCC FREEPROCCACHE WITH NO_INFOMSGS;" >/dev/null 2>&1 || true; done
 col mssql_counters
@@ -529,14 +623,22 @@ ok "E: a yaml line removing one feature of Deprecated Features / Usage ($DFX) ta
 ok "E: an Admin fleet row loses to the instance's yaml line, an Admin instance row wins over it; a tag row removes, an instance row adds back; Admin and yaml refuse removing Logins/sec"
 
 echo "== F. the gap rule =="
+# heldout: Pages Allocated/sec at the scope's newest read - its stored rows (0 or 1) and
+# whether zero_series names it (review part 4, finding 15: a zero_series 0 is not a value)
+heldout() { pq "SELECT count(s.series_id) || '|' || coalesce(bool_or(k.series_id = ANY (coalesce(r.zero_series, '{}'))), false)::text
+  FROM pgvigil.mssql_counter_series k
+  JOIN LATERAL (SELECT * FROM pgvigil.mssql_counter_read c WHERE c.instance_id = k.instance_id AND c.scope = 'instance' ORDER BY c.snapshot_at DESC LIMIT 1) r ON true
+  LEFT JOIN pgvigil.mssql_counter_sample s ON s.instance_id = k.instance_id AND s.series_id = k.series_id AND s.snapshot_at = r.snapshot_at
+  WHERE k.instance_id = $SB AND k.object = 'Access Methods' AND k.counter = 'Pages Allocated/sec' AND k.inst = '_Total'"; }
 door '{"op":"add","ui_user":"proof-f","scope":"instance","instance_name":"ctrbox","object":"Access Methods","counter":"Pages Allocated/sec","action":"remove"}' >/dev/null
-col mssql_counters; sleep 2; col mssql_counters
+col mssql_counters; GO1=$(heldout); sleep 2; col mssql_counters; GO2=$(heldout)
+[[ "$GO1" == "0|false" && "$GO2" == "0|false" ]] || fail "F: the two reads without it [$GO1] [$GO2] (want no row and not in zero_series: 0|false)"
 GID=$(pq "SELECT config_id FROM pgvigil.mssql_counter_config WHERE ended_at IS NULL AND counter = 'Pages Allocated/sec'")
 door "{\"op\":\"end\",\"ui_user\":\"proof-f\",\"config_id\":\"$GID\"}" | grep -q '"done"' || fail "F: end"
-sleep 2; col mssql_counters; G1=$(stored 'Access Methods' 'Pages Allocated/sec' '_Total')
+sleep 2; col mssql_counters; G1=$(stored 'Access Methods' 'Pages Allocated/sec' '_Total'); GB=$(heldout)
 sleep 2; col mssql_counters; G2=$(stored 'Access Methods' 'Pages Allocated/sec' '_Total')
-[[ -n "$(field "$G1" 1)" && -z "$(field "$G1" 3)" && -z "$(field "$G1" 5)" && -n "$(field "$G2" 3)" && -n "$(field "$G2" 5)" ]] || fail "F: back from the gap [$G1] then [$G2]"
-ok "F: Pages Allocated/sec back after a gap: no change and no rate at its first read back [$G1], both at the next [$G2]"
+[[ "$GB" == "1|false" && -n "$(field "$G1" 1)" && -z "$(field "$G1" 3)" && -z "$(field "$G1" 5)" && -n "$(field "$G2" 3)" && -n "$(field "$G2" 5)" ]] || fail "F: back from the gap [$G1] ($GB) then [$G2]"
+ok "F: Pages Allocated/sec gone for two reads (no row, not in zero_series), back after them: a stored row with no change and no rate at its first read back [$G1], both at the next [$G2]"
 withrate() { pq "SELECT count(*) FILTER (WHERE s.rate IS NOT NULL OR s.dvalue IS NOT NULL) || '|' || count(*) FROM pgvigil.mssql_counter_sample s
   WHERE s.instance_id = $SB AND s.snapshot_at = (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance')"; }
 sleep 125; col mssql_counters; T1=$(withrate); sleep 3; col mssql_counters; T2=$(withrate)
@@ -549,11 +651,13 @@ for _ in $(seq 1 150); do r=$(sq "SELECT CASE WHEN DATABASEPROPERTYEX('pgvctr', 
 [[ "$r" == 1 ]] || fail "G: pgvctr not online 300 s after the restart"
 mondsn
 col mssql_counters
+GAPG=$(pq "SELECT coalesce(after_gap::text, 'null') FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")
 NR=$(pq "SELECT count(*) FILTER (WHERE s.rate IS NOT NULL OR s.dvalue IS NOT NULL), count(*) FROM pgvigil.mssql_counter_sample s
   WHERE s.instance_id = $SB AND s.snapshot_at = (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance')")
 sleep 3; col mssql_counters
 NR2=$(pq "SELECT count(*) FILTER (WHERE s.rate IS NOT NULL OR s.dvalue IS NOT NULL) FROM pgvigil.mssql_counter_sample s
   WHERE s.instance_id = $SB AND s.snapshot_at = (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance')")
+[[ "$GAPG" == false ]] || fail "G: the first read after the restart has after_gap [$GAPG]: F15's gap rule, not the restart rule, would empty it (review part 4, finding 14)"
 [[ "$(field "$NR" 1)" == 0 && "$NR2" -gt 0 ]] || fail "G: after the restart [$NR] changes, then $NR2"
 ok "G: the first read after a restart has no rate or change on any of its $(field "$NR" 2) rows; the read after has $NR2"
 
@@ -561,7 +665,14 @@ echo "== H. zero points =="
 NRD=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' AND snapshot_at > now() - interval '30 minutes'")
 ZK=$(pq "SELECT count(*) FILTER (WHERE value = 0) || '|' || count(*) FROM pgvigil.metric_points($SB, 'counters', now() - interval '30 minutes', now()) WHERE metric = 'errors_offline_s'")
 [[ "$ZK" == "$NRD|$NRD" ]] || fail "H: errors_offline_s points [$ZK] for $NRD reads"
-ok "H: errors_offline_s is 0 at every one of the $NRD instance reads (the counter at raw 0, named in zero_series)"
+# errors_kill_s at D's severe-phase read (review part 4, finding 3): above 0 there, equal to that read's stored rate
+KR=$(pq "SELECT s.rate FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_sample s ON s.instance_id = k.instance_id AND s.series_id = k.series_id
+  WHERE k.instance_id = $SB AND k.object = 'SQL Errors' AND k.counter = 'Errors/sec' AND k.inst = 'Kill Connection Errors' AND s.snapshot_at = '$EKAT'")
+KP=$(pq "SELECT value FROM pgvigil.metric_points($SB, 'counters', '$EKAT'::timestamptz - interval '1 second', '$EKAT') WHERE metric = 'errors_kill_s'")
+echo "   errors_kill_s at D's severe read: point [$KP], the stored rate [$KR]"
+python3 -c "import sys; p, r = '$KP', '$KR'; sys.exit(0 if p and r and float(p) > 0 and abs(float(p) - float(r)) < 1e-6 else 1)" \
+  || fail "H: errors_kill_s at D's severe read [$KP] (want above 0 and equal to the stored rate [$KR])"
+ok "H: errors_offline_s is 0 at every one of the $NRD instance reads (the counter at raw 0, named in zero_series); errors_kill_s $KP at D's severe read, its stored rate"
 
 echo "== P. review part 2's rows on a synthetic instance =="
 SY=$(pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
@@ -616,6 +727,13 @@ syn_ctr 21:00:00 "$(uc 0 0)"; syn_ctr 21:01:00 "$(uc 1 1)"; U1=$(synpt update_co
 syn_ctr 21:02:00 "$(uc 7 121)"; U2=$(synpt update_conflict_pct)
 [[ "$U1" == "21:01:00=0" && "$U2" == "21:02:00=5" ]] || fail "P3: update_conflict_pct [$U1] (one update in 60 s: want 0), [$U2] (6 of 120: want 5)"
 ok "P3: update_conflict_pct 0 under 1 snapshot update/s, 5 over it"
+# P8 (review part 4, finding 11; F9): an average over a step that spans two reads with unequal base changes is the
+# summed change over the summed base change, never the mean of the reads' figures
+syn_ctr 22:00:00 "$(uc 100 1000)"; syn_ctr 22:01:00 "$(uc 160 1120)"; syn_ctr 22:02:00 "$(uc 166 1720)"
+UCS=$(pq "SELECT series_id FROM pgvigil.mssql_counter_series WHERE instance_id = $SY AND object = 'Transactions' AND counter = 'Update conflict ratio'")
+P8=$(pq "SELECT round(value::numeric, 4) FROM pgvigil.mssql_counter_series_between($SY, '$(at 21:59:59)', '$(at 22:04:59)', 300, ARRAY[$UCS])")
+[[ "$P8" == 0.0917 ]] || fail "P8: the 5-minute step over 60 / 120 and 6 / 600 [$P8] (want 66 / 720 = 0.0917, not the mean of 0.5 and 0.01)"
+ok "P8: an average over a step of two reads is the summed change over the summed base change (0.0917, not 0.255)"
 # P4-P7: the list
 inlist() { pq "SELECT coalesce(string_agg(coalesce(e->>'kind', ''), ',') , 'absent') FROM jsonb_array_elements(pgvigil.mssql_counter_list($SY)) e
   WHERE lower(e->>'object') = lower('$1') AND lower(e->>'counter') = lower('$2') AND e->>'inst' = ''"; }
@@ -671,11 +789,15 @@ serve() { local p; for _ in 1 2 3; do p=$(freeport 29000 32499)
     "$TMPD/pgvigil" serve -config "$CFG" -listen "127.0.0.1:$p" "$@" > "$TMPD/serve-$p.log" 2>&1 & local pid=$!
     for _ in $(seq 1 60); do grep -q "url=http://127.0.0.1:$p/" "$TMPD/serve-$p.log" 2>/dev/null && { echo "$pid $p"; return 0; }; kill -0 $pid 2>/dev/null || break; sleep 0.5; done
     kill $pid 2>/dev/null || true; done; fail "J: serve never answered: $(tail -3 "$TMPD"/serve-*.log)"; }
-read -r SRVPID SPORT <<<"$(serve)"; read -r SRV2PID SPORT2 <<<"$(serve -no-login)"
+# serve's own fail runs in a subshell: an empty answer is caught here (review part 4, finding 16)
+read -r SRVPID SPORT <<<"$(serve)"; [[ "$SPORT" =~ ^[0-9]+$ ]] || fail "J: serve did not start"
+read -r SRV2PID SPORT2 <<<"$(serve -no-login)"; [[ "$SPORT2" =~ ^[0-9]+$ ]] || fail "J: serve -no-login did not start"
 U=http://127.0.0.1:$SPORT; U2=http://127.0.0.1:$SPORT2; JAR=$TMPD/jar
 code() { curl -s -m 20 -o "$TMPD/body" -w '%{http_code}' "$@"; }
 [[ $(code -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/mssql/counteradmin") == 401 ]] || fail "J: a POST without a session: $(cat "$TMPD/body")"
-curl -s -m 20 -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$U/api/login" > /dev/null
+# the password from a file, never curl's argv (review part 4, finding 9)
+printf '{"username":"%s","password":"%s"}' "$UIUSER" "$UIPW" > "$TMPD/login.json"
+[[ $(code -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login") == 200 ]] || fail "J: the UI login: $(cat "$TMPD/body")"
 [[ $(code -b "$JAR" -X POST -d '{}' "$U/api/mssql/counteradmin") == 403 ]] || fail "J: a POST without the header"
 for q in "" "?instance=$SB"; do
   [[ $(code -b "$JAR" "$U/api/mssql/counteradmin$q") == 200 ]] || fail "J: GET$q: $(cat "$TMPD/body")"
@@ -730,7 +852,7 @@ const api = async (q, part) => { const d = await (await fetch(`${base}/api/${q}`
 for (const theme of ['light', 'dark']) {
   await cmd('Page.navigate', { url: `${base}/#/counters?i=${sb}&w=1h` }); await until(`!!document.querySelector('main')`);
   await ev(`localStorage.setItem('pgvigil.theme', '${theme}')`); await cmd('Page.reload'); await sleep(500);
-  await until(`[...document.querySelectorAll('main h3')].some(h => h.textContent.startsWith('Listed but not read'))`);
+  check(`counters ${theme}`, (await until(`[...document.querySelectorAll('main h3')].some(h => h.textContent.startsWith('Listed but not read'))`)) !== null, "the 'Listed but not read' section");
   const nowRows = await api(`mssql/counters?instance=${sb}&part=now`, 'now');
   const g = await ev(gridRows('Performance counters'));
   check(`counters ${theme}`, g === nowRows && nowRows > 300, `grid ${g} rows, the API's now part ${nowRows}`);
@@ -741,7 +863,7 @@ for (const theme of ['light', 'dark']) {
   check(`counters ${theme}`, !(await ev(`!!document.querySelector('main .error, main .errorbox, main [role=alert].error')`)), 'no error box');
   if (shots) { const s = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); (await import('node:fs')).writeFileSync(`${shots}/counters-${theme}.png`, Buffer.from(s.result.data, 'base64')); }
   await cmd('Page.navigate', { url: `${base}/#/admin_counters?w=1h` });
-  await until(`[...document.querySelectorAll('main h3')].some(h => h.textContent.trim() === 'Log')`);
+  check(`admin ${theme}`, (await until(`[...document.querySelectorAll('main h3')].some(h => h.textContent.trim() === 'Log')`)) !== null, "Admin > Counters' 'Log'");
   const cfg = await api('mssql/counteradmin?part=config', 'config'), def = await api('mssql/counteradmin?part=defaults', 'defaults');
   check(`admin ${theme}`, await ev(gridRows('Rows made here')) === cfg, `Rows made here ${await ev(gridRows('Rows made here'))}, the API ${cfg}`);
   check(`admin ${theme}`, await ev(gridRows('The defaults')) === def, `The defaults ${await ev(gridRows('The defaults'))}, the API ${def}`);
@@ -873,17 +995,31 @@ ok "N: compiles_per_100 on the Performance summary = SQL Server's own counters r
 
 echo "== M. the size =="
 pq "SELECT scope, round(avg(rows_read)), count(*) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB GROUP BY 1 ORDER BY 1" | sed 's/^/   reads: /'
-python3 - "$PGDSN" "$SB" <<'PY'
+M_BYTES1=$(pq "SELECT pg_total_relation_size('pgvigil.mssql_counter_sample')"); M_ROWS1=$(pq "SELECT count(*) FROM pgvigil.mssql_counter_sample")
+M_DBS=$(sq "SELECT CAST(COUNT(*) AS varchar(10)) FROM sys.databases" | tr -d '[:space:]')
+python3 - "$PGDSN" "$SB" "$M_BYTES0" "$M_BYTES1" "$M_ROWS0" "$M_ROWS1" "$M_DBS" <<'PY'
 import subprocess, sys
 q = lambda s: subprocess.run(['psql', sys.argv[1], '-XAtq', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
 sb = sys.argv[2]
-per = {}
+b0, b1, r0, r1, dbs = (int(x) for x in sys.argv[3:8])
+per, read, nread = {}, {}, {}
 for sc in ('instance', 'database'):
     per[sc] = float(q(f"""SELECT coalesce(avg(n), 0) FROM (SELECT count(*) n FROM pgvigil.mssql_counter_sample s JOIN pgvigil.mssql_counter_read r ON r.instance_id = s.instance_id AND r.snapshot_at = s.snapshot_at
        WHERE s.instance_id = {sb} AND r.scope = '{sc}' GROUP BY s.snapshot_at) x"""))
-row = float(q(f"SELECT avg(pg_column_size(s.*)) + 40 FROM pgvigil.mssql_counter_sample s WHERE s.instance_id = {sb}"))  # + the index entry's share
-day = (per['instance'] * 1440 + per['database'] * 288)
-print(f"   sample rows stored per read: instance {per['instance']:.0f}, database {per['database']:.0f}; about {day:,.0f} rows and {day * row / 1048576:.0f} MB a day per instance at about {row:.0f} bytes a row with its index entry")
+    read[sc] = float(q(f"SELECT coalesce(avg(rows_read), 0) FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = '{sc}'"))
+# the bytes the run's rows took, measured (table, its indexes and its toast), over the rows it stored
+row = (b1 - b0) / (r1 - r0) if r1 > r0 and b1 > b0 else 0
+day = lambda i, d: i * 1440 + d * 288                 # one instance read a minute, one database read per 5 minutes
+mb = lambda n: n * row / 1048576
+pdb = per['database'] / max(1, dbs)                    # the database read stores each database's rows
+print(f"   {dbs} databases on the box; rows read per read: instance {read['instance']:.0f}, database {read['database']:.0f}; "
+      f"stored: instance {per['instance']:.0f} ({100 * per['instance'] / max(1, read['instance']):.0f} %: raw 0 goes to zero_series), "
+      f"database {per['database']:.0f} ({100 * per['database'] / max(1, read['database']):.0f} %, about {pdb:.0f} per database)")
+print(f"   measured: {b1 - b0:,} bytes for {r1 - r0:,} rows ({row:.0f} bytes a row with its indexes)")
+print(f"   a day, this instance as read: {day(per['instance'], per['database']):,.0f} rows, {mb(day(per['instance'], per['database'])):.0f} MB; "
+      f"each further database: {pdb * 288:,.0f} rows, {mb(pdb * 288):.1f} MB; "
+      f"a busy server storing every row it reads: {day(read['instance'], read['database']):,.0f} rows, {mb(day(read['instance'], read['database'])):.0f} MB "
+      f"(its database read grows with its databases: at 300 databases about {mb(day(read['instance'], 0) + read['database'] / max(1, dbs) * 300 * 288):,.0f} MB)")
 PY
 
 # the version run starts from the defaults: the Admin rows the proof left live are ended first (E's fleet row and its
@@ -917,5 +1053,5 @@ for img in "${IMAGES[@]:1}"; do
   ok "L: $img ($(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))")): the list = every default, the bracket, C's arithmetic, Logins/sec +40 and the collector's own, User Errors +12, pgvctr Log Growths +$LG"
 done
 
-echo "NOT PROVEN HERE: SQL Server 2016 (no Linux image: dba-lab-win's queue), Managed Instance, RDS, Cloud SQL, a Windows host; DB Offline Errors moving (no box can provoke it); two memory nodes (one Buffer Node in a container)"
+echo "NOT PROVEN HERE: SQL Server 2016 (no Linux image: dba-lab-win's queue), Managed Instance, RDS, Cloud SQL, a Windows host; DB Offline Errors moving (not provoked here); two memory nodes (one Buffer Node in a container)"
 echo "PROOF OK: mssql counters (A B C D E F G H P I J K N M L)"
