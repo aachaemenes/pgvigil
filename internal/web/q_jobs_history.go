@@ -35,13 +35,15 @@ import (
 //   &step=<n> (SQL Server; n > 0) cuts runs, counts and series to that step's own rows (a run's failed_step is then
 //            filled only where that step failed); engine=pg with step is 400
 //   without scheduler and job, read only by name (?part=cards, ?part=top; B9-12, PBI#11), the instance's jobs over the
-//   range from 0139's hours (step 0; an hour counts when it started in the range; failed holds the cancels and aborts,
-//   0149's rule):
-//   cards    failed or cancelled, succeeded and every run of the range; retries attempted (SQL Server: the step retry
-//            rows msdb recorded in the range; pg_cron and pgAgent do not retry a run); building while the instance's
-//            hours of the range are not built yet (job_stats_7day's rule, for the range)
+//   range from 0139's hours (step 0; EVERY hour the range touches counts whole, from the UTC hour of from to the end of
+//   the hour of to, so a range of 10:15-10:45 reads the 10:00 hour; failed holds the cancels and aborts, 0149's rule):
+//   cards    hours_from / hours_to (the whole hours read); failed or cancelled, succeeded and every run of those hours;
+//            retries attempted (SQL Server: the step rows msdb recorded as a retry, run_status 2, in the same hours - the
+//            job's Stats grid's 'retry' rule; pg_cron and pgAgent do not retry a run); building while the instance's
+//            hours are not built yet (job_stats_7day's rule, for those hours), every count then NULL, never 0
 //   top      the five longest (the longest run), most frequent (runs) and most failed (failed, a cancel a failure)
-//            jobs, one row each with list = longest | frequent | failed, the job's name, runs, failed and longest
+//            jobs of the same hours, one row each with list = longest | frequent | failed, the job's name (a dropped
+//            job's newest name in its versions, never its id where a name was ever read), runs, failed and longest
 
 // pgOutcome is a pg_cron or pgAgent run's status as one of succeeded, failed, cancelled, running.
 const pgOutcome = `CASE WHEN r.status = 'succeeded' THEN 'succeeded'
@@ -253,33 +255,44 @@ SELECT v.valid_from, v.version_no, v.dropped, v.job_name, v.changes, v.definitio
  ORDER BY v.valid_from DESC
  LIMIT 200`
 
-// JobsHistory serves the Jobs grid of one instance of either engine and, with ?scheduler=&job=, the job's runs,
-// their counts and the changes to its definition.
-// sqlJobHoursBuilding: the instance's hours of the range $2..$3 are not built yet - its first build not done while
-// it has runs, or a dirty range over the range (0139's job_stats_7day says it the same way for its 7 days).
-const sqlJobHoursBuilding = `(NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_first_build f WHERE f.instance_id = $1)
-        AND (EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs r WHERE r.instance_id = $1)
-             OR EXISTS (SELECT 1 FROM pgvigil.job_runs r WHERE r.instance_id = $1)))
-       OR EXISTS (SELECT 1 FROM pgvigil.job_stats_dirty d WHERE d.instance_id = $1 AND d.to_at > $2 AND d.from_at < $3)`
+// sqlJobHours: the whole UTC hours the range $2..$3 touches (0139's buckets; job_stats_rebuild rounds the same way):
+// f = the hour of $2, t = the end of the hour of $3 ($3 itself when it is a whole hour).
+const sqlJobHours = `w AS (SELECT date_trunc('hour', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS f,
+              CASE WHEN date_trunc('hour', $3::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = $3::timestamptz THEN $3::timestamptz
+                   ELSE (date_trunc('hour', $3::timestamptz AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC' END AS t)`
 
-// sqlJobCards: B9-12's tiles ($4 = SQL Server).
-const sqlJobCards = `SELECT coalesce(sum(h.failed), 0) AS failed, coalesce(sum(h.succeeded), 0) AS succeeded, coalesce(sum(h.runs), 0) AS runs,
-       CASE WHEN $4::bool THEN (SELECT count(*) FROM pgvigil.mssql_job_runs r WHERE r.instance_id = $1 AND r.step_id > 0
-                                   AND r.run_status = 2 AND r.snapshot_at >= $2 AND r.snapshot_at < $3) END AS retries,
-       (` + sqlJobHoursBuilding + `) AS building
-  FROM pgvigil.job_stats_hourly h
- WHERE h.instance_id = $1 AND h.step_id = 0 AND h.snapshot_at >= $2 AND h.snapshot_at < $3 AND (h.scheduler = 'sqlagent') = $4::bool`
+// sqlJobCards: B9-12's tiles ($4 = SQL Server). building: the instance's hours of w not built yet - its first build not
+// done while it has runs, or a dirty range over w (0139's job_stats_7day says it the same way for its 7 days).
+const sqlJobCards = `WITH ` + sqlJobHours + `,
+b AS (SELECT (NOT EXISTS (SELECT 1 FROM pgvigil.job_stats_first_build f WHERE f.instance_id = $1)
+              AND (EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs r WHERE r.instance_id = $1)
+                   OR EXISTS (SELECT 1 FROM pgvigil.job_runs r WHERE r.instance_id = $1)))
+             OR EXISTS (SELECT 1 FROM pgvigil.job_stats_dirty d, w WHERE d.instance_id = $1 AND d.to_at > w.f AND d.from_at < w.t) AS building),
+h AS (SELECT sum(h.failed) AS failed, sum(h.succeeded) AS succeeded, sum(h.runs) AS runs
+        FROM pgvigil.job_stats_hourly h, w
+       WHERE h.instance_id = $1 AND h.step_id = 0 AND h.snapshot_at >= w.f AND h.snapshot_at < w.t AND (h.scheduler = 'sqlagent') = $4::bool)
+SELECT w.f AS hours_from, w.t AS hours_to,
+       CASE WHEN NOT b.building THEN coalesce(h.failed, 0) END AS failed, CASE WHEN NOT b.building THEN coalesce(h.succeeded, 0) END AS succeeded,
+       CASE WHEN NOT b.building THEN coalesce(h.runs, 0) END AS runs,
+       CASE WHEN $4::bool AND NOT b.building THEN (SELECT count(*) FROM pgvigil.mssql_job_runs r WHERE r.instance_id = $1 AND r.step_id > 0
+                                                     AND r.run_status = 2 AND r.snapshot_at >= w.f AND r.snapshot_at < w.t) END AS retries,
+       b.building
+  FROM w, b, h`
 
-// sqlJobTop: B9-12's top 5 lists ($4 = SQL Server).
-const sqlJobTop = `WITH j AS (
+// sqlJobTop: B9-12's top 5 lists ($4 = SQL Server) over the same whole hours.
+const sqlJobTop = `WITH ` + sqlJobHours + `,
+j AS (
   SELECT h.scheduler, h.job_id, sum(h.runs) AS runs, sum(h.failed) AS failed, max(h.max_secs) AS max_secs
-    FROM pgvigil.job_stats_hourly h
-   WHERE h.instance_id = $1 AND h.step_id = 0 AND h.snapshot_at >= $2 AND h.snapshot_at < $3 AND (h.scheduler = 'sqlagent') = $4::bool
+    FROM pgvigil.job_stats_hourly h, w
+   WHERE h.instance_id = $1 AND h.step_id = 0 AND h.snapshot_at >= w.f AND h.snapshot_at < w.t AND (h.scheduler = 'sqlagent') = $4::bool
    GROUP BY h.scheduler, h.job_id
 ), n AS (
   SELECT j.*, coalesce((SELECT m.name FROM pgvigil.mssql_jobs m WHERE j.scheduler = 'sqlagent' AND m.instance_id = $1 AND m.job_id = j.job_id),
                        (SELECT g.job_name FROM pgvigil.jobs g WHERE j.scheduler <> 'sqlagent' AND g.instance_id = $1
-                           AND g.scheduler = j.scheduler AND g.job_id::text = j.job_id), j.job_id) AS job_name
+                           AND g.scheduler = j.scheduler AND g.job_id::text = j.job_id),
+                       (SELECT v.job_name FROM pgvigil.job_versions v WHERE v.instance_id = $1 AND v.scheduler = j.scheduler
+                           AND v.job_id = j.job_id AND v.job_name IS NOT NULL ORDER BY v.valid_from DESC LIMIT 1),
+                       j.job_id) AS job_name
     FROM j
 )
 (SELECT 'longest' AS list, scheduler, job_id, job_name, runs, failed, max_secs FROM n WHERE max_secs IS NOT NULL ORDER BY max_secs DESC, job_name LIMIT 5)
@@ -288,6 +301,8 @@ UNION ALL
 UNION ALL
 (SELECT 'failed', scheduler, job_id, job_name, runs, failed, max_secs FROM n WHERE failed > 0 ORDER BY failed DESC, job_name LIMIT 5)`
 
+// JobsHistory serves the Jobs grid of one instance of either engine and, with ?scheduler=&job=, the job's runs,
+// their counts and the changes to its definition.
 func (s *Server) JobsHistory(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {

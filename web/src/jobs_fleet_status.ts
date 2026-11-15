@@ -211,7 +211,10 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     pickSel.addEventListener('change', draw);
     // B9-11: the counts per instance, each a link that sets Show and the instance (the over-50 % count waits for the
     // stats part, as its column does)
-    const rateCells: [number, HTMLElement][] = [];
+    // the over-50 % cell is built by its own fmt from the state at hand (a sort or a filter draws it again and gets the
+    // link too); fillRates redraws the cells already on the page when the stats answer, and _rate50 carries the count
+    // for the sort (null until read, or while every job of the instance is being built)
+    let rateCells: [number, HTMLElement][] = [];
     const rateWords = (id: number) => {
       if (statsWhy) return `not read: ${statsWhy}`;
       if (!stats) return 'reading...';
@@ -241,22 +244,26 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       { key: 'lastok', label: 'last run succeeded', num: true, fmt: countCell('lastok', 'jobs whose last run succeeded') },
       { key: 'running', label: 'running now', num: true, fmt: countCell('running', 'jobs running now') },
       { key: '_rate50', label: 'failure rate over 50 % (7 days)', num: true, fmt: (_v, r) => {
-        const id = Number(r.instance_id), cell = el('span', {}, rateWords(id));
+        const id = Number(r.instance_id), cell = el('span', {}, rateCell(id));
         rateCells.push([id, cell]);
         return cell;
       } },
     ], 'No job on the instances in view.');
+    function rateCell(id: number): Node {
+      const words = rateWords(id);
+      const n = stats && !statsWhy ? rows.filter(r => Number(r.instance_id) === id && r._rate != null && Number(r._rate) > 0.5).length : 0;
+      if (!(n > 0)) return document.createTextNode(words);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
+      b.addEventListener('click', () => goTo(id, 'failrate'));
+      return b;
+    }
     const fillRates = () => {
-      for (const [id, cell] of rateCells) {
-        if (!cell.isConnected) continue;
-        const n = stats && !statsWhy ? rows.filter(r => Number(r.instance_id) === id && r._rate != null && Number(r._rate) > 0.5).length : 0;
-        const words = rateWords(id);
-        if (n > 0) {
-          const b = el('button', { type: 'button', class: 'link', 'aria-label': `jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
-          b.addEventListener('click', () => goTo(id, 'failrate'));
-          cell.replaceChildren(b);
-        } else cell.textContent = words;
+      for (const p of perInst) {
+        const id = Number(p.instance_id), rs = rows.filter(r => Number(r.instance_id) === id);
+        p._rate50 = !stats || statsWhy || rs.every(r => r._stats_building) ? null : rs.filter(r => r._rate != null && Number(r._rate) > 0.5).length;
       }
+      rateCells = rateCells.filter(([, cell]) => cell.isConnected);
+      for (const [id, cell] of rateCells) cell.replaceChildren(rateCell(id));
     };
     sec.append(el('h3', {}, 'Jobs by instance'),
       el('p', { class: 'meta' }, 'Per instance in view: the jobs whose last run failed or was cancelled (a cancel counts as a failure, as in DBA Dash), whose last run succeeded, '

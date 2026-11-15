@@ -67,19 +67,30 @@
 #   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
 #   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
 #                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
-#   (B9b, expected written 2026-11-14 22:5x PST before any run; red on rel-b9's base 00e7b96, which has none of it)
-#   J8 cards     on that tab (sql01): 'Runs, <range>' above the grid with the tiles 'failed or cancelled', 'succeeded',
-#                'retries attempted' whose numbers equal /api/jobs/history?part=cards (parity) and the HAND COUNT from
-#                job_stats_hourly (sql01, step 0, the hours that started in the tab's range); 'Longest 5', 'Most frequent
-#                5', 'Most failed 5' each a grid
-#   J5 counts    #/jobs: 'Jobs by instance' above 'Job status', one row per instance with a job; sql01's 'last run
-#                succeeded' a button (both seeded jobs succeeded last); its click sets Show 'Last run succeeded' and the
-#                instance (the line says 'on demo-onprem-sql01'), every row then sql01's, the seeded SQL Agent job there
+#   (B9b, expected written 2026-11-14 22:5x PST before any run, amended 2026-11-15 02:xx PST by the build review's fold;
+#   red on rel-b9's base 00e7b96, which has none of it). The S1 seed adds for B9b: the SQL Agent seeded job runs now
+#   (its mssql_jobs row's running_since 5 minutes ago), and on erp01 the pg_cron job RJ 'fleet-proof-two-of-three-failed'
+#   (failed 200 and 180 minutes ago, succeeded 170 minutes ago) and NJ 'fleet-proof-no-run' (no run at all).
+#   J8 cards     sql01's tab on a FIXED range of whole hours (to = an hour before the current hour, from 23 hours before;
+#                no import lands in it while the row reads): 'Runs, <range> (the whole hours ...)' above the grid with
+#                the tiles 'failed or cancelled' (1 or more: the seeded failure), 'succeeded', 'retries attempted' whose
+#                numbers equal /api/jobs/history?part=cards (parity) over the range the page sent (data-from / data-to)
+#                and the HAND COUNT from the RAW runs (mssql_job_runs: step 0 failed (0, 3) and succeeded (1), step rows
+#                with run_status 2, every whole UTC hour the range touches); 'Longest 5', 'Most frequent 5', 'Most failed
+#                5' each a grid
+#   J8p cards    the same on erp01's PostgreSQL Jobs tab: failed (1 or more) and succeeded equal the API and the raw
+#                job_runs with an end by hand; 'retries attempted' reads 'none', the API's retries NULL
+#   J5 counts    #/jobs: 'Jobs by instance' above 'Job status', one row per instance with a job (its row count = the
+#                status part's distinct instances); sql01's 'last run succeeded' a button (both seeded jobs succeeded
+#                last); its click sets Show 'Last run succeeded' and the instance (the line says 'on demo-onprem-sql01'),
+#                every row then sql01's, the seeded SQL Agent job there
 #   J6 rate      4 s after the grid the 'failure rate 7 days' column holds no '0' for a rate not read: every cell a
-#                percent or 'no finished run' or 'being built'; both seeded jobs '50 %' (one failure, one success in the
-#                hours); Show 'Failure rate over 50 % (7 days)' lists exactly JRATE jobs (the HAND COUNT from the hours,
-#                present jobs of active instances, failed over finished > 0.5)
-#   J7 running   Show 'Running now' lists exactly the status part's rows with running_since (parity with the API)
+#                percent or 'no finished run' or 'being built'; the seeded SJ and PJ '50 %' (one failure, one success),
+#                RJ '66.7 %', NJ 'no finished run'; Show 'Failure rate over 50 % (7 days)' lists exactly JRATE jobs (the
+#                HAND COUNT from the hours, present jobs of active instances, failed over finished > 0.5; 1 or more:
+#                RJ), RJ among them, SJ not
+#   J7 running   Show 'Running now' lists exactly the status part's rows with running_since (parity with the API), 1 or
+#                more, the seeded SQL Agent job among them
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -215,18 +226,24 @@ INSTS=$(Q "select count(*) || '|' || count(*) filter (where engine = 'sqlserver'
 echo "== S1 / J1: the job judge"; b0=$bad
 ERP=$(Q "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
 SJ='fleet proof failed then succeeded'; PJ='fleet-proof-failed-then-succeeded'
-Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabled, category, last_outcome, last_run_at)
-   values ($S1, 'FLEETPROOF-0001', now(), '$SJ', true, 'proof', 1, now() - interval '60 minutes');
+RJ='fleet-proof-two-of-three-failed'; NJ='fleet-proof-no-run'   # B9b J6: a rate over 50 %, a job with no run
+Q "insert into pgvigil.mssql_jobs (instance_id, job_id, snapshot_at, name, enabled, category, last_outcome, last_run_at, running_since)
+   values ($S1, 'FLEETPROOF-0001', now(), '$SJ', true, 'proof', 1, now() - interval '60 minutes', now() - interval '5 minutes');
    insert into pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_status, duration_s)
    values ($S1, now() - interval '120 minutes', 990000001, 'FLEETPROOF-0001', '$SJ', 0, '(Job outcome)', 0, 5),
           ($S1, now() - interval '120 minutes' + interval '1 second', 990000000, 'FLEETPROOF-0001', '$SJ', 1, 'one', 0, 4),
           ($S1, now() - interval '60 minutes', 990000003, 'FLEETPROOF-0001', '$SJ', 0, '(Job outcome)', 1, 5),
           ($S1, now() - interval '60 minutes' + interval '1 second', 990000002, 'FLEETPROOF-0001', '$SJ', 1, 'one', 1, 4);
    insert into pgvigil.jobs (instance_id, scheduler, job_id, snapshot_at, job_name, schedule, command, active, first_seen, is_present)
-   values ($ERP, 'pg_cron', 990001, now(), '$PJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true);
+   values ($ERP, 'pg_cron', 990001, now(), '$PJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true),
+          ($ERP, 'pg_cron', 990002, now(), '$RJ', '0 * * * *', 'SELECT 1', true, now() - interval '3 days', true),
+          ($ERP, 'pg_cron', 990003, now(), '$NJ', '0 3 * * *', 'SELECT 1', true, now() - interval '3 days', true);
    insert into pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, start_time, end_time, duration_secs, snapshot_at)
    values ($ERP, 'pg_cron', 990001, 990001, 'failed', now() - interval '120 minutes', now() - interval '119 minutes', 60, now()),
-          ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now())" >/dev/null
+          ($ERP, 'pg_cron', 990001, 990002, 'succeeded', now() - interval '60 minutes', now() - interval '59 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990002, 990003, 'failed', now() - interval '200 minutes', now() - interval '199 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990002, 990004, 'failed', now() - interval '180 minutes', now() - interval '179 minutes', 60, now()),
+          ($ERP, 'pg_cron', 990002, 990005, 'succeeded', now() - interval '170 minutes', now() - interval '169 minutes', 60, now())" >/dev/null
 # the demo's live mssql_jobs import (every 5 minutes) would replace sql01's jobs and drop the seeded one: its stored read
 # an hour ahead makes mssql_hadr_read refuse the import as older
 [[ "$(Q "update pgvigil.mssql_hadr_reads set snapshot_at = now() + interval '1 hour' where instance_id = $S1 and collection = 'mssql_jobs' returning 1")" == 1 ]] \
@@ -362,7 +379,7 @@ CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 set +e
-FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) FM_JRATE=$JRATE FM_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
+FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) FM_JRATE=$JRATE FM_RJ="$RJ" FM_NJ="$NJ" FM_ERP=$ERP FM_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}; set -e
 if [[ $rc -ne 0 ]]; then
   last=$(tail -n 1 "$WORK/check.txt" 2>/dev/null || true)

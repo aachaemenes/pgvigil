@@ -285,20 +285,25 @@ export function thresholdsDialog(instance: number, jobName: string, th: Threshol
   dlg.showModal();
 }
 
-// jobCards (B9-12; SQLWATCH PBI#11): the instance's runs over the page's range from 0139's hourly statistics (the hours
-// that started in the range) - tiles failed or cancelled (a cancel counts as a failure, 0149's rule), succeeded and
-// retries attempted (SQL Server's step retries; pg_cron and pgAgent do not retry a run), and the five longest, most
-// frequent and most failed jobs; 'being built' while the instance's hours of the range are not built yet. Data:
-// /api/jobs/history?part=cards and ?part=top.
+// jobCards (B9-12; SQLWATCH PBI#11): the instance's runs over the page's range from 0139's hourly statistics (every
+// whole hour the range touches, named in the heading) - tiles failed or cancelled (a cancel counts as a failure, 0149's
+// rule), succeeded and retries attempted (SQL Server's step retry rows; pg_cron and pgAgent do not retry a run), and the
+// five longest, most frequent and most failed jobs; 'being built' while the instance's hours are not built yet. Data:
+// /api/jobs/history?part=cards and ?part=top. The reply is written whatever the page's state: the page is attached only
+// after its view function ends (main.ts), and the PostgreSQL tab reads more after jobsPanel, so a guard on isConnected
+// would drop it; an old page's element is thrown away with the page. The range sent is kept on the section (data-from /
+// data-to) for a reader that checks the tiles against the API.
 async function jobCards(into: HTMLElement, ctx: Ctx, engine: 'pg' | 'mssql', w: { from: string; to: string }): Promise<void> {
-  const head = () => el('h3', {}, `Runs, ${rangeLabel(ctx)}`);
+  let hours = '';
+  const head = () => el('h3', {}, `Runs, ${rangeLabel(ctx)}${hours}`);
+  into.dataset.from = w.from; into.dataset.to = w.to;
   into.replaceChildren(head(), el('p', { class: 'meta' }, 'Reading the hourly statistics...'));
   try {
     const q = { engine, instance: ctx.instance, ...w };
     const [c, t] = await Promise.all([get<Record<'cards', Table | null>>('jobs/history', { ...q, part: 'cards' }),
       get<Record<'top', Table | null>>('jobs/history', { ...q, part: 'top' })]);
-    if (!into.isConnected) return;
     const k = rowsOf(c.cards)[0] ?? {};
+    if (k.hours_from != null) hours = ` (the whole hours ${fmtTime(k.hours_from)} to ${new Date(String(k.hours_to)).getTime() > Date.now() ? 'now' : fmtTime(k.hours_to)})`;
     if (k.building === true) {
       into.replaceChildren(head(), el('p', { class: 'meta' }, 'Being built: the hourly statistics of this instance\'s runs in the range are not built yet (after an upgrade, an import or a late read); they fill in by themselves.'));
       return;
@@ -311,13 +316,13 @@ async function jobCards(into: HTMLElement, ctx: Ctx, engine: 'pg' | 'mssql', w: 
         tile('failed or cancelled', fmtNum(k.failed ?? 0), Number(k.failed) > 0 ? 'crit' : ''),
         tile('succeeded', fmtNum(k.succeeded ?? 0)),
         tile('retries attempted', engine === 'mssql' ? fmtNum(k.retries ?? 0) : 'none')),
-      el('p', { class: 'meta' }, `${fmtNum(k.runs ?? 0)} run(s) in the hours that started in the range, from the hourly statistics; a cancelled run counts as a failure, as in DBA Dash. `
-        + (engine === 'mssql' ? 'Retries are the step retries msdb recorded in the range.' : 'pg_cron and pgAgent do not retry a run.')),
+      el('p', { class: 'meta' }, `${fmtNum(k.runs ?? 0)} run(s) in every whole hour the range touches, from the hourly statistics; a cancelled run counts as a failure, as in DBA Dash. `
+        + (engine === 'mssql' ? 'Retries are the step rows msdb recorded as a retry in those hours.' : 'pg_cron and pgAgent do not retry a run.')),
       el('div', { class: 'job-top' },
         list('longest', 'Longest 5', { key: 'max_secs', label: 'longest run', num: true, fmt: v => v == null ? '' : fmtSecs(v) }),
         list('frequent', 'Most frequent 5', { key: 'runs', num: true }),
         list('failed', 'Most failed 5', { key: 'failed', label: 'failed or cancelled', num: true })));
-  } catch (e) { if (into.isConnected) into.replaceChildren(head(), errorBox(e)); }
+  } catch (e) { into.replaceChildren(head(), errorBox(e)); }
 }
 
 // jobsPanel: the one-line-per-job grid and, under it, the picked job's History and Changes. extra = the engine's own
