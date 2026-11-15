@@ -42,7 +42,9 @@ func (f *fakeSM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.delay > 0 {
 		time.Sleep(f.delay)
 	}
-	var in struct{ SecretId string }
+	var in struct {
+		SecretID string `json:"SecretId"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -60,13 +62,13 @@ func (f *fakeSM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	v, ok := f.values[in.SecretId]
+	v, ok := f.values[in.SecretID]
 	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"__type":"ResourceNotFoundException","message":"no such secret"}`))
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"Name": in.SecretId, "SecretString": v[0], "VersionId": v[1], "VersionStages": []string{"AWSCURRENT"}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"Name": in.SecretID, "SecretString": v[0], "VersionId": v[1], "VersionStages": []string{"AWSCURRENT"}})
 }
 
 func (f *fakeSM) set(id, value, version string) {
