@@ -553,3 +553,24 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.reply(w, r, out, nil)
 }
+
+// ---- the plans of one statement's hashes (SQLWATCH COL#27) ----------------------------------------------------------
+//   GET /api/mssql/plansources?instance=N&db=D&qh=0x..&ph=0x..   the Query Store plan, the running query's kept plan and
+//        the plan cache's entries of a statement, for a slow or long-wait event's Plan button  -> Server.MSSQLPlanSources
+
+// MSSQLPlanSources is GET /api/mssql/plansources.
+func (s *Server) MSSQLPlanSources(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	q := r.URL.Query()
+	db, qh, ph := q.Get("db"), q.Get("qh"), q.Get("ph")
+	if db == "" || len(db) > 128 || !planHashForm.MatchString(qh) || !planHashForm.MatchString(ph) {
+		writeErr(w, http.StatusBadRequest, errors.New("db, qh and ph must be a database name, a query hash and a plan hash"))
+		return
+	}
+	up := func(h string) string { return "0x" + strings.ToUpper(h[2:]) }
+	s.multi(w, r, []part{{"sources", `SELECT * FROM pgvigil.mssql_plan_sources($1, $2, $3, $4)`, []any{id, db, up(qh), up(ph)}}})
+}

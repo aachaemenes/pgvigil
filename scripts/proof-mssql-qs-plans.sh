@@ -57,6 +57,9 @@
 #     C6 the switch, under 'pgvigil run' for 150 s with the wiring applied: rpon and rppage (added on Admin > Instances
 #        through POST /api/admin/instances) each store the 80 s blocked statement's plan and have an ok
 #        mssql_running_plans run; rpoff has no mssql_running_plans run at all and no row.
+#     C7 SQLWATCH COL#27, a slow or long-wait event's plan by its hashes: GET /api/mssql/plansources for the duration
+#        case (pgvqs, its query hash and plan hash) lists its running capture (has_plan) and its plan cache entry after a
+#        plan cache read, and the running capture's plan reads as ShowPlanXML; a plan hash no plan has lists none.
 #     Red on f8e89d2: no such collection (collect -once refuses mssql_running_plans).
 #  D. the statistics a plan was compiled with (PerformanceMonitor 3.13 Added 1, F10, P5), database pgvqs2 with Query Store
 #     on: four tables of 20,000 rows, each with a statistic on v made WITH FULLSCAN, 30 % of rows changed, then one query
@@ -463,8 +466,17 @@ else:
     if r.returncode != 0: bad.append(f"C4 extract.py rc {r.returncode}: {r.stderr[:300]}")
 code, b = api('mssql/runningplans/plan', instance=iid['rpnone'], qh=dur.get('qh'), ph=dur.get('ph'), start=dur.get('start'), end=dur.get('end'))
 if code != 200 or b.get('state') != 'none' or 'query_text' not in b.get('words', ''): bad.append(f"C4 rpnone plan: HTTP {code} {str(b)[:200]}")
+# C7: the duration case's plans by its hashes (the plan cache was read in A; read it again so the entry is there)
+subprocess.run([f"{d}/pgvigil", 'collect', '-config', f"{d}/m.yaml", '-instance', 'rpon', '-once', 'mssql_plancache'], capture_output=True)
+code, b = api('mssql/plansources', instance=iid['rpon'], db='pgvqs', qh=dur.get('qh'), ph=dur.get('ph'))
+srcs = [dict(zip(b['sources']['columns'], r)) for r in b.get('sources', {}).get('rows', [])] if code == 200 else []
+kinds = {x['source'] for x in srcs}
+if code != 200 or 'running' not in kinds or not any(x['source'] == 'running' and x['has_plan'] for x in srcs): bad.append(f"C7 plansources: HTTP {code} {srcs}")
+if 'plan cache' not in kinds: print(f"C7 note: no plan cache entry for the duration case (the statement left the cache before the read): {sorted(kinds)}")
+code, b = api('mssql/plansources', instance=iid['rpon'], db='pgvqs', qh=dur.get('qh'), ph='0x1234')
+if code != 200 or b.get('sources', {}).get('rows'): bad.append(f"C7 a plan hash with no plan: HTTP {code} {str(b)[:200]}")
 for x in bad: print('DIFF', x)
-print(f"C1-C4: cases {sorted(cases)}; rpon rows {len(rows)}")
+print(f"C1-C4, C7: cases {sorted(cases)}; rpon rows {len(rows)}; plan sources of the duration case {sorted(kinds)}")
 sys.exit(1 if bad else 0)
 PYEND
 echo "ok   C1-C4: one row per threshold case with its plan, none below the thresholds or for a zero plan hash, rpnone kept no plan, the API's list and plan"

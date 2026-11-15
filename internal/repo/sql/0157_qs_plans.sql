@@ -418,3 +418,30 @@ ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_action_check CHECK (
   OR (engine = 'sqlserver' AND action IN ('kill', 'job_start', 'job_stop', 'plan_evict')));
 ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_pid_check;
 ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_pid_check CHECK (pid IS NOT NULL OR action IN ('explain_analyze', 'hypo_index', 'job_start', 'job_stop', 'plan_evict'));
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- the plans pgvigil holds or can read for one statement's hashes (SQLWATCH COL#27: a slow or long-wait event's plan),
+-- by instance, database, query hash and plan hash (the event's own, as xe_shred.go's hashHex writes them): a Query
+-- Store plan with its XML, a running query's kept plan, and the plan cache's entries read on demand by handle
+-- ---------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION pgvigil.mssql_plan_sources(p_instance int, p_database text, p_query_hash text, p_plan_hash text)
+RETURNS TABLE (source text, database text, plan_id bigint, plan_handle text, stmt_start int, stmt_end int, has_plan boolean, seen_at timestamptz)
+LANGUAGE sql STABLE AS $$
+  SELECT 'Query Store', p.database_name, p.plan_id, NULL::text, NULL::int, NULL::int, p.xml_state = 'stored', p.last_execution
+    FROM pgvigil.mssql_qs_plan p
+   WHERE p.instance_id = p_instance AND p.database_name = p_database AND p.query_hash = p_query_hash AND p.plan_hash = p_plan_hash
+  UNION ALL
+  SELECT 'running', r.database_name, NULL, r.plan_handle, r.stmt_start, r.stmt_end, r.plan_xml IS NOT NULL, r.last_seen
+    FROM pgvigil.mssql_running_plan r
+   WHERE r.instance_id = p_instance AND r.query_hash = p_query_hash AND r.plan_hash = p_plan_hash
+     AND (r.database_name IS NULL OR r.database_name = p_database)
+  UNION ALL
+  SELECT 'plan cache', d.database_name, NULL, l.plan_handle, l.stmt_start, l.stmt_end, true, s.snapshot_at
+    FROM pgvigil.mssql_pc_last l
+    JOIN pgvigil.mssql_pc_handles h ON h.instance_id = l.instance_id AND h.plan_handle = l.plan_handle AND h.stmt_start = l.stmt_start
+                                   AND h.stmt_end = l.stmt_end AND h.creation_time = l.creation_time
+    LEFT JOIN pgvigil.mssql_pc_database d ON d.instance_id = l.instance_id AND d.database_id = l.database_id
+    LEFT JOIN pgvigil.mssql_pc_state s ON s.instance_id = l.instance_id
+   WHERE l.instance_id = p_instance AND l.query_key = p_query_hash AND h.plan_hash = p_plan_hash
+     AND (d.database_name IS NULL OR d.database_name = p_database)
+$$;

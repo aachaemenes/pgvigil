@@ -398,3 +398,66 @@ async function evictDialog(ctx: Ctx, handle: string, back: HTMLElement, after: (
   body.replaceChildren(...kids);
   confirm.focus();
 }
+
+// ---- the plan of a slow or long-wait event (SQLWATCH COL#27) --------------------------------------------------------
+
+// planSourcesCol: a 'plan' column for a grid whose rows carry database_name, query_hash and query_plan_hash (the Slow
+// queries events, the running requests): its Plan button lists the plans pgvigil holds or can read for those hashes
+// (a Query Store plan, a running query's kept plan, the plan cache's entries read on demand) in box, each with its
+// .sqlplan and Open. The pages place box under their grid.
+export function planSourcesCol(ctx: Ctx, box: HTMLElement): Col {
+  return {
+    key: '_plan', label: 'plan', fmt: (_, r) => {
+      const qh = String(r.query_hash ?? ''), ph = String(r.query_plan_hash ?? ''), db = String(r.database_name ?? '');
+      if (!/^0x[0-9A-F]{1,16}$/i.test(qh) || !/^0x[0-9A-F]{1,16}$/i.test(ph) || /^0x0+$/i.test(ph) || !db) return el('span', { class: 'meta' }, 'no plan hash');
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `Plans of query hash ${qh}, plan hash ${ph}` }, 'Plan');
+      b.addEventListener('click', () => { void planSources(ctx, db, qh, ph, box); });
+      return b;
+    },
+  };
+}
+
+async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HTMLElement) {
+  const title = `Plans of query hash ${qh}, plan hash ${ph} in ${db}`;
+  box.replaceChildren(el('h4', { tabindex: '-1' }, title), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
+  let d: { sources: Table | null };
+  try {
+    d = await get('mssql/plansources', { instance: ctx.instance, db, qh, ph });
+  } catch (e) {
+    box.replaceChildren(el('h4', {}, title), errorBox(e));
+    return;
+  }
+  const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const show = async (b: HTMLElement, r: Row, open: boolean) => {
+    status.textContent = 'Reading the plan ...';
+    try {
+      let p: PlanReply;
+      if (r.source === 'Query Store') {
+        const res = await fetch(`/api/mssql/querystore/plan.sqlplan?${new URLSearchParams({ instance: String(ctx.instance), db, plan: String(r.plan_id) })}`, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`the Query Store plan: ${res.status} ${res.statusText}`);
+        p = { state: 'ok', words: 'the plan the Query Store keeps', plan: await res.text(), file: `plan-${db}-qs-${String(r.plan_id)}.sqlplan` };
+      } else if (r.source === 'running') {
+        p = await get<PlanReply>('mssql/runningplans/plan', { instance: ctx.instance, qh, ph, start: Number(r.stmt_start), end: Number(r.stmt_end) });
+      } else {
+        p = await get<PlanReply>('mssql/plancache/plan', { instance: ctx.instance, handle: String(r.plan_handle), start: Number(r.stmt_start), end: Number(r.stmt_end), hash: ph });
+      }
+      status.textContent = planWords(p);
+      if (p.plan && p.file) { if (open) openText(p.file, p.plan, b, 'sqlplan'); else saveFile(p.file, p.plan); }
+    } catch (e) {
+      status.textContent = e instanceof Error ? e.message : String(e);
+    }
+  };
+  const btn = (label: string, r: Row, open: boolean) => {
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: the ${String(r.source)} plan` }, label);
+    b.addEventListener('click', () => { void show(b, r, open); });
+    return b;
+  };
+  box.replaceChildren(el('h4', { tabindex: '-1' }, title),
+    el('p', { class: 'meta' }, 'The plans pgvigil holds or can read for this statement and plan hash: the Query Store\'s, the one kept while it ran, and the plan cache\'s entries (read from the server when asked, under the query_text policy "full").'),
+    grid(rowsOf(d.sources), [
+      { key: 'source' }, { key: 'database' }, { key: 'plan_id', label: 'Query Store plan', num: true }, { key: 'seen_at', label: 'last seen', fmt: fmtTime },
+      { key: 'get', label: 'plan', fmt: (_, r) => r.has_plan ? el('span', {}, btn('Download .sqlplan', r, false), ' ', btn('Open', r, true)) : el('span', { class: 'meta' }, 'no plan kept') },
+    ], 'pgvigil holds no plan of these hashes: the Query Store did not keep it, no running read met the thresholds, and the plan cache no longer holds it.'),
+    status);
+  (box.firstElementChild as HTMLElement).focus();
+}

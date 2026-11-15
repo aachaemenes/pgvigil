@@ -138,10 +138,10 @@ index 0000000..867d24a
 +	return v, nil
 +}
 diff --git i/internal/web/web.go w/internal/web/web.go
-index 6b3933a..997502a 100644
+index 6b3933a..88bd142 100644
 --- i/internal/web/web.go
 +++ w/internal/web/web.go
-@@ -344,6 +344,14 @@ func (s *Server) Handler() http.Handler {
+@@ -344,6 +344,15 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
  	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
  	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
@@ -153,6 +153,7 @@ index 6b3933a..997502a 100644
 +	api.HandleFunc("GET /api/mssql/forcefail", s.MSSQLForceFail)
 +	api.HandleFunc("GET /api/mssql/everywhere", s.MSSQLEverywhere)
 +	api.HandleFunc("GET /api/mssql/search", s.MSSQLSearch)
++	api.HandleFunc("GET /api/mssql/plansources", s.MSSQLPlanSources)
  	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
  	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
  	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
@@ -239,3 +240,62 @@ index 0a0c61d..4f6201d 100644
 +    openText(stats ? 'pasted messages' : /<deadlock[\s>]/.test(head) ? 'pasted deadlock graph' : 'pasted query plan', t, document.activeElement as HTMLElement | null, stats ? 'statsio' : undefined);
    });
  }
+diff --git i/web/src/mssql_running.ts w/web/src/mssql_running.ts
+index 807fcc3..c4595aa 100644
+--- i/web/src/mssql_running.ts
++++ w/web/src/mssql_running.ts
+@@ -21,6 +21,7 @@ import { foldedGrid } from './running';
+ import { firstChars, sqlCell, whatIsThis } from './sqlview';
+ import { mssqlBlockingTrend } from './blocking_history';
+ import { mssqlKillCol } from './mssql_actions';
++import { planSourcesCol } from './mssql_plancache';
+ import { timeStrip } from './timestrip';
+ 
+ interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null }
+@@ -227,12 +228,15 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
+     all.delete('wait');
+     box.append(el('p', { class: 'meta wait-only' }, `Only requests waiting on ${wait}. `, el('a', { href: `#/mssql_running?${all}` }, 'Show all active queries')));
+   }
++  // task 406 (SQLWATCH COL#27): each request's plan by its hashes, listed under the grid
++  const planBox = el('div', { class: 'running-plans' });
++  const withPlan = [...cols, planSourcesCol({ instance } as Ctx, planBox)];
+   box.append(foldedGrid({
+-    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
++    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...withPlan, killNow] : withPlan, empty: 'Nothing ran and no transaction was open at this snapshot.',
+     blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
+     age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
+     groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
+-  }));
++  }), planBox);
+   return box;
+ }
+ 
+diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
+index 87040eb..0db1f2f 100644
+--- i/web/src/mssql_xe.ts
++++ w/web/src/mssql_xe.ts
+@@ -10,6 +10,7 @@ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+ import { stripGrid } from './timestrip';
++import { planSourcesCol } from './mssql_plancache';
+ 
+ type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'block_findings' | 'block_rollup' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
+ type XE = Record<XEParts, Table | null>;
+@@ -303,13 +304,15 @@ const attentionCols: Col[] = [
+ ];
+ 
+ async function openShape(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
++  const planBox = el('div', { class: 'xe-plans' });
+   try {
+     const t = await get<Table>('mssql/xe/slow', { instance: ctx.instance, ...window_(ctx), shape: text(row.shape_key) });
+     panel.show(
+       el('pre', { class: 'sql', tabindex: '0' }, text(row.shape) || '(no statement text is stored for these events)'),
+       el('p', { class: 'meta' }, 'The slowest 500 completions of this shape in the window. A completion\'s query hash and plan hash are those of the '
+         + 'longest statement it ran (SQL Server gives the completion itself none); they match Query Store and sys.dm_exec_query_stats.'),
+-      grid(rowsOf(t), eventCols, 'No completion of this shape in this window.'),
++      grid(rowsOf(t), [...eventCols, planSourcesCol(ctx, planBox)], 'No completion of this shape in this window.'),
++      planBox,   // task 406 (SQLWATCH COL#27): a completion's plan by its hashes
+     );
+   } catch (e) {
+     panel.show(errorBox(e));
