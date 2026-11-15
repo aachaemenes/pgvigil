@@ -307,6 +307,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
 var knownKeys = map[string]bool{
 	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+	"password_secret": true, "ref": true,
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
