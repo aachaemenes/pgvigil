@@ -517,7 +517,7 @@ sqh() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$2" | timeout 300 docker exec -i --e
 hold() { # hold <table> [schm]: a session (host pgvhold_<table>) holding the table X (or Sch-M) for up to 4 minutes, in the background, confirmed granted
   local stmt="BEGIN TRAN; SELECT TOP (1) id FROM dbo.$1 WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:04:00'; COMMIT;" mode=X
   [[ "${2:-}" == schm ]] && stmt="BEGIN TRAN; ALTER TABLE dbo.$1 ADD zz int NULL; WAITFOR DELAY '00:04:00'; ROLLBACK;" mode=Sch-M
-  sqh "pgvhold_$1" "$stmt" >"$TMPD/hold-$1.out" 2>&1 & BG+=($!)
+  { t0h=$(date +%s); sqh "pgvhold_$1" "$stmt"; echo "[the holder's exit $? after $(( $(date +%s) - t0h )) s]"; } >"$TMPD/hold-$1.out" 2>&1 & BG+=($!)
   for _ in $(seq 1 120); do
     [[ "$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT'
       AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1') AND request_mode = '$mode' AND request_status = 'GRANT'")" -ge 1 ]] && return 0
@@ -597,7 +597,10 @@ st=$(poll "$RID" 20); [[ "$st" == cancelled ]] || fail "G5: the row is $st"
 echo "ok   G5: a second start refused ('one at a time'); Cancel: the request gone from sys.dm_exec_requests within 5 s, the row cancelled"
 release
 # G6: a held Sch-M lock: the read ends near 30 s, the rows before kept, where it stopped named
-out=$(sqh pgvtry "BEGIN TRAN; ALTER TABLE dbo.f1 ADD zz int NULL; WAITFOR DELAY '00:00:01'; ROLLBACK;" 2>&1); echo "     G6: the Sch-M statement alone (1 s): exit $?, output '$out'"
+t0h=$(date +%s); out=$(sqh pgvtry "BEGIN TRAN; ALTER TABLE dbo.f1 ADD zz int NULL; WAITFOR DELAY '00:00:05'; ROLLBACK;" 2>&1); echo "     G6: the Sch-M statement alone in the foreground (5 s): exit $?, $(( $(date +%s) - t0h )) s, output '$out'"
+{ sqh pgvtry2 "BEGIN TRAN; TRUNCATE TABLE dbo.f2; WAITFOR DELAY '00:00:20'; ROLLBACK;"; echo "[exit $?]"; } >"$TMPD/try2.out" 2>&1 &
+sleep 4; echo "     G6: TRUNCATE in the background, 4 s in: $(sq "SELECT CONCAT(request_mode, ' ', request_status) FROM sys.dm_tran_locks WHERE resource_type = 'OBJECT' AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.f2')" | tr '\n' ' ')"
+wait $! 2>/dev/null; echo "     G6: TRUNCATE's holder printed: $(cat "$TMPD/try2.out")"
 hold f1 schm
 frag "$ION" LIMITED "$TMPD/g6.json" >/dev/null; RID=$(jget "$TMPD/g6.json" 'd.get("read_id")')
 st=$(poll "$RID" 60); secs=$(readcol secs); note=$(readcol note); kept=$(readcol rows_kept)
