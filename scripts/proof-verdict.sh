@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of the verdict card (the instance Summary's plain-words card: Allen 06:40, NexaPG's 'Easy mode' idea, no code or
+# Proof of the verdict card (the instance Summary's plain-words card: NexaPG's 'Easy mode' idea, no code or
 # text taken): a demo fleet is seeded into a throwaway database and served on loopback, four fixture instances the
 # demo's minute tick never touches are added (fx-unread: never read; fx-stale: one collection 4 hours old, another just
 # now; fx-acked: the same, its Snapshot Age acknowledged; fx-offline: its newest read 40 minutes old), and a headless

@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Owner-routed alerts (task 310, migration 0136; Allen 2026-11-14 06:40): an application's contact receives the
+// Owner-routed alerts (task 310, migration 0136): an application's contact receives the
 // alerts of its application's instances through a route, chosen on Admin > Applications - a configured smtp channel
 // (its relay and secrets stay in the configuration file) and a minimum severity. Each pass reads the live routes
 // through the store's one door (pgvigil.alert_contact_routes, the sender's or the owner's session only) and makes one

@@ -642,7 +642,7 @@ RETURNS text LANGUAGE sql STABLE AS $$
    LIMIT 1
 $$;
 
--- ---- owner-routed alerts (Allen 2026-11-14 06:40: an application's contacts receive its instances' alerts) ----------
+-- ---- owner-routed alerts (an application's contacts receive its instances' alerts) ----------------------------------
 -- A route sends one contact the alerts of its application's instances through a CONFIGURED smtp channel (its relay and
 -- secrets stay in the configuration file): the alerter makes one derived channel per live route, 'contact-<route_id>',
 -- a copy of the base's built channel with to: the contact's address and scope the application's tag; the base's

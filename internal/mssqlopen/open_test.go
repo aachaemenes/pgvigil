@@ -479,7 +479,7 @@ func TestGMSARefusal(t *testing.T) {
 		{"a SQL login", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, `sqlserver://mon:pw@sql01:1433`, ""},
 		{"a Windows account with its password (NTLM)", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, `sqlserver://CORP%5Cmon:pw@sql01:1433`, ""},
 		{"krb5 named (a keytab names its account)", `CORP\pgv$`, "windows", `NT SERVICE\pgvigil`, own + "&authenticator=krb5", ""},
-		{"off Windows", `CORP\pgv$`, "linux", "aachaemenes", own, ""},
+		{"off Windows", `CORP\pgv$`, "linux", "pgvigil", own, ""},
 	} {
 		RequireGMSA(c.gmsa)
 		runAs := c.runAs

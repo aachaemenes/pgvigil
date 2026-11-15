@@ -1,4 +1,4 @@
-// The verdict card (Allen 11-14: a plain-language verdict per instance; the idea from NexaPG's 'Easy mode', no code or
+// The verdict card (a plain-language verdict per instance; the idea from NexaPG's 'Easy mode', no code or
 // text taken): one sentence and the reasons named, on the instance's Summary under its header. It is a READING of the
 // header's own band (instheader.ts instBand: the Summary's checks, acknowledgements left out, Offline first) and of
 // the header's freshness - never a second judgement: no new check, no new threshold. Four states: OK, Warning,

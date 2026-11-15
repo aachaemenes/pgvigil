@@ -593,7 +593,7 @@ SELECT T.TagName, T.TagValue FROM dbo.InstanceIDsTags IT JOIN dbo.Tags T ON T.Ta
 var (
 	importRunFuncs = []string{"pgvigil.import_dbadash_instance(jsonb)", "pgvigil.import_dbadash_cpu(int, jsonb, jsonb)",
 		"pgvigil.import_dbadash_volumes(int, jsonb, jsonb)", "pgvigil.import_dbadash_dbsize(int, jsonb, jsonb)",
-		"pgvigil.import_dbadash_jobruns(int, jsonb, jsonb)"}
+		"pgvigil.import_dbadash_jobruns(int, jsonb, jsonb)", "pgvigil.import_job_stats_defer(int)", "pgvigil.import_job_stats_build(int)"}
 	importReadFuncs = []string{"pgvigil.dbadash_import_target(jsonb)", "pgvigil.dbadash_import_stored(int, text, timestamptz, timestamptz)"}
 )
 

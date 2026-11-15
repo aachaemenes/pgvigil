@@ -117,7 +117,7 @@ func TestMoveAddWindows(t *testing.T) {
 	}{
 		{"serve as the service's virtual account", "windows", `CORP\pgv$`, `NT SERVICE\pgvigil`, `runs as "NT SERVICE\\pgvigil", not as the gMSA`},
 		{"serve as LocalSystem", "windows", `CORP\pgv$`, `NT AUTHORITY\SYSTEM`, "not as the gMSA"},
-		{"serve as a DBA's own account", "windows", `CORP\pgv$`, `CORP\allen`, "not as the gMSA"},
+		{"serve as a DBA's own account", "windows", `CORP\pgv$`, `CORP\dbauser`, "not as the gMSA"},
 		{"serve as the gmsa, another case", "windows", `CORP\pgv$`, `corp\PGV$`, ""},
 		{"the machine account named as the gmsa", "windows", `CORP\PGVHOST$`, "", "this host's machine account"},
 		{"the machine account, lower case", "windows", `CORP\pgvhost$`, "", "this host's machine account"},
