@@ -49,14 +49,18 @@
 #     Through `pgvigil mcp` (the reader login): tools/list names alert_history; tools/call {instance A, hours 2160}: 2
 #     alerts (not the 100-day-old one) and a findings_history list; {hours 2161}: an error result naming 1..2160;
 #     {from, to 91 days apart}: an error naming 90 days.
-#  L. (PGVIGIL_PROOF_PART=L only, on the laptop, the lead's 22:0x rules: F3 (a)) one Send test through the changed
-#     webhook sender to the lab's real Slack incoming webhook. PGVIGIL_BIN is a binary cross-built on the lab box and
-#     fetched (no build here), PGVIGIL_ADMIN_DSN the lab box's PostgreSQL through a tunnel, PGV_LIVE_SLACK the webhook
-#     URL put in the environment by the runner, which reads it from its secrets file (never a command line, a file or
-#     a log). MemAvailable at least 4 GB is read first. The channel's quiet hours cover the day (a test is sent inside
-#     them, a finding is not) and its checks: list names no check, so nothing but the test reaches Slack. Expected:
-#     slack-live's alert_log holds one row, outcome 'test'; no 'sent', 'failed' or 'refused' row. The message reads
-#     'a test message on channel slack-live ... nothing is wrong'.
+#  L. (PGVIGIL_PROOF_PART=L only, on the laptop, the lead's 22:0x rules: F3 (a)) one Send test each through the changed
+#     senders to the lab's REAL destinations this run has a secret for: slack-live (the lab's Slack incoming webhook,
+#     PGV_LIVE_SLACK), po-live (Pushover's Messages API, PGV_LIVE_PO_TOKEN and PGV_LIVE_PO_USER) and az-live (the Azure
+#     lab's Logs Ingestion endpoint, PGV_LIVE_AZ_SECRET with the rule's and the app's ids in PGV_LIVE_AZ_ENDPOINT, _DCR,
+#     _STREAM, _TENANT and _CLIENT, which are not secrets). PGVIGIL_BIN is a binary cross-built on the lab box and
+#     fetched (no build here), PGVIGIL_ADMIN_DSN the lab box's PostgreSQL through a tunnel; the runner reads the
+#     secrets from its secrets file into the environment (never a command line, a file or a log). MemAvailable at least
+#     4 GB is read first. Each channel's quiet hours cover the day (a test is sent inside them, a finding is not) and its
+#     checks: list names no check, so nothing but the test reaches a destination. Expected, per live channel: its
+#     alert_log holds one row, outcome 'test'; nothing else is sent. Slack's message and Pushover's notification read 'a
+#     test message on channel <name> ... nothing is wrong'; the Azure row (Event 'test') is read back from the workspace
+#     by the runner, not here.
 #  O. (B24k) Pushover through real passes against a loopback stub of api.pushover.net's documented answers (NOT PROVEN
 #     LIVE: no Pushover account). A channel po (floor critical, the seeded instance) and a rule finding (critical) per row:
 #     - O1 the stub answers 200, status 1, 500 of 10,000 messages left: po's attempt 'sent'; the post carries the
@@ -205,30 +209,50 @@ testreq() {
 # test are skipped.
 newest() { q "select outcome || '|' || coalesce(error, '') from pgvigil.alert_log where channel = '$1' and n_firing + n_repeat + n_resolved = 0 order by snapshot_at desc limit 1"; }
 
-# ---- L: the real Slack incoming webhook (laptop only) -----------------------------------------------------------------
+# ---- L: the real destinations (laptop only): the Slack incoming webhook, Pushover, Azure Monitor Logs -------------------
 if [[ $PART == L ]]; then
   : "${PGVIGIL_BIN:?a binary cross-built on the lab box and fetched}"
-  [[ -n ${PGV_LIVE_SLACK:-} ]] || fail "PGV_LIVE_SLACK is not set (the runner reads it from its secrets file)"
+  # the live channels this run has a secret for (the runner puts them in the environment from its secrets file)
+  live=()
+  [[ -n ${PGV_LIVE_SLACK:-} ]] && live+=(slack-live)
+  [[ -n ${PGV_LIVE_PO_TOKEN:-} && -n ${PGV_LIVE_PO_USER:-} ]] && live+=(po-live)
+  [[ -n ${PGV_LIVE_AZ_SECRET:-} ]] && live+=(az-live)
+  (( ${#live[@]} > 0 )) || fail "no live channel: the runner sets PGV_LIVE_SLACK, PGV_LIVE_PO_TOKEN with PGV_LIVE_PO_USER, or PGV_LIVE_AZ_SECRET"
+  if [[ " ${live[*]} " == *" az-live "* ]]; then
+    for v in PGV_LIVE_AZ_ENDPOINT PGV_LIVE_AZ_DCR PGV_LIVE_AZ_STREAM PGV_LIVE_AZ_TENANT PGV_LIVE_AZ_CLIENT; do
+      [[ -n ${!v:-} ]] || fail "$v is not set (az-live needs the rule's endpoint, id and stream and the app's tenant and client id)"
+    done
+  fi
   avail=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
   (( avail >= 4 )) || fail "MemAvailable ${avail} GB: under the 4 GB the lead's rule needs"
   for t in psql; do command -v $t >/dev/null || fail "$t is not on this machine"; done
   BIN=$PGVIGIL_BIN
   CFG=$WORK/cfg-live.yaml
-  cat > "$CFG" <<EOF
-repository:
-  dsn: env:PGVIGIL_REPO_DSN
-alerts_dsn: env:PGV_PROOF_ALERTS_DSN
-alerts:
-  - {name: slack-live, kind: webhook, min_severity: critical, quiet_hours: "00:00-23:59", timezone: UTC, checks: [proof-none-$SUF], webhook: {url: env:PGV_LIVE_SLACK, format: slack}}
-EOF
+  # each channel's quiet hours cover the day (a test is sent inside them, a finding is not) and its checks: list names
+  # no check, so nothing but the test reaches the destination
+  live_quiet="min_severity: critical, quiet_hours: \"00:00-23:59\", timezone: UTC, checks: [proof-none-$SUF]"
+  {
+    printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\nalerts_dsn: env:PGV_PROOF_ALERTS_DSN\nalerts:\n'
+    for c in "${live[@]}"; do
+      case $c in
+        slack-live) echo "  - {name: slack-live, kind: webhook, $live_quiet, webhook: {url: env:PGV_LIVE_SLACK, format: slack}}" ;;
+        po-live) echo "  - {name: po-live, kind: pushover, $live_quiet, pushover: {token: env:PGV_LIVE_PO_TOKEN, user: env:PGV_LIVE_PO_USER}}" ;;
+        az-live) echo "  - {name: az-live, kind: azuremonitor, $live_quiet, azuremonitor: {endpoint: \"$PGV_LIVE_AZ_ENDPOINT\", dcr_id: $PGV_LIVE_AZ_DCR, stream: $PGV_LIVE_AZ_STREAM, tenant: $PGV_LIVE_AZ_TENANT, client_id: $PGV_LIVE_AZ_CLIENT, client_secret: env:PGV_LIVE_AZ_SECRET, cloud: public}}" ;;
+      esac
+    done
+  } > "$CFG"
   newrepo
   pass L0
-  [[ $(q "select count(*) from pgvigil.alert_log where channel = 'slack-live'") == 0 ]] || fail "L: pass 0 posted to Slack"
-  testreq slack-live 1
-  pass L1
-  got=$(q "select string_agg(outcome, ',' order by snapshot_at) from pgvigil.alert_log where channel = 'slack-live'")
-  [[ $got == test ]] || fail "L: slack-live's attempts: '$got' (wanted one 'test'): $(newest slack-live | cut -d'|' -f2 | cut -c1-300)"
-  ok "L: one Send test through the changed webhook sender, answered by Slack's incoming webhook; nothing else posted"
+  [[ $(q "select count(*) from pgvigil.alert_log") == 0 ]] || fail "L: pass 0 sent something: $(q "select string_agg(channel || ':' || outcome, ' ') from pgvigil.alert_log")"
+  # one Send test per channel, one at a time (a test waits for the pass that answers it)
+  for c in "${live[@]}"; do
+    testreq "$c" 1
+    pass "L-$c"
+    got=$(q "select string_agg(outcome, ',' order by snapshot_at) from pgvigil.alert_log where channel = '$c'")
+    [[ $got == test ]] || fail "L: $c's attempts: '$got' (wanted one 'test'): $(newest "$c" | cut -d'|' -f2 | cut -c1-300)"
+    ok "L: $c: one Send test through the changed sender, answered by the real destination; nothing else sent"
+  done
+  echo "L: test sent at $(q "select to_char(max(snapshot_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from pgvigil.alert_log")"
   exit 0
 fi
 
