@@ -74,7 +74,12 @@ SQL1=$(q "select instance_id from pgvigil.instances where name = 'demo-onprem-sq
 [[ -n "$SQL1" ]] || fail "the demo's sql01 is missing"
 
 echo "== F the fixture"
-q "insert into pgvigil.instances (name, platform, engine) values ('fx-pm-ms', 'onprem', 'sqlserver'), ('fx-pm-off', 'onprem', 'postgres')" >/dev/null
+# each as a collected instance has it - a server version and a last_seen (fx-pm-ms now, fx-pm-off two hours back, as its
+# 'last collected 2h ago'): /api/instances gives a row with no server version no last_seen, and the Summary then calls
+# it 'not read yet (added ...)' beside its name (fleet.ts notReadYet), which an instance with samples is not
+q "insert into pgvigil.instances (name, platform, engine, server_version, last_seen) values
+   ('fx-pm-ms', 'onprem', 'sqlserver', 'Microsoft SQL Server 2022 (RTM-CU16) - 16.0.4165.4 (X64)', now()),
+   ('fx-pm-off', 'onprem', 'postgres', '16.15', now() - interval '2 hours')" >/dev/null
 MS=$(q "select instance_id from pgvigil.instances where name = 'fx-pm-ms'"); OFF=$(q "select instance_id from pgvigil.instances where name = 'fx-pm-off'")
 q "insert into pgvigil.collection_dates (instance_id, collection, snapshot_at, duration_ms, status, note) values
    ($MS, 'mssql_xe', now(), 10, 'ok', null), ($MS, 'mssql_fx1', now(), 10, 'ok', null),
@@ -233,7 +238,8 @@ if (await go('#/summary', `!!document.querySelector('main .summary-instances tab
   const b2 = await blockSum();
   const shown = Number((counts.match(/(\d+) blocking \(recent\)/) ?? [])[1]);
   check('the counts line', new RegExp(`(^|\\D)${offN} offline`).test(counts) && (shown === b1 || shown === b2), `${counts} (blocking summed over the live part: ${b1} before, ${b2} after)`);
-  const row = name => ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(name)});
+  // a row by its Instance cell's link (the name itself: a status beside it - 'not read yet (added ...)' - never hides the row)
+  const row = name => ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => (t.querySelector('td a')?.textContent ?? t.querySelector('td')?.textContent ?? '').trim() === ${JSON.stringify(name)});
     if (!tr) return null; const ths = [...tr.closest('table').querySelectorAll('thead th')].map(t => t.textContent.replace(/[▾▴]/g, '').trim());
     return Object.fromEntries([...tr.children].map((td, i) => [ths[i], { text: td.querySelector('[data-text]')?.getAttribute('data-text') ?? td.textContent.trim(), cls: td.className, title: td.querySelector('[title]')?.getAttribute('title') ?? '', html: td.innerHTML.slice(0, 300), all: td.textContent.trim() }])); })()`);
   const m = await row('fx-pm-ms');
