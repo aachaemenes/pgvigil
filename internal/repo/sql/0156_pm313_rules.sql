@@ -19,9 +19,10 @@
 --   mssql_cpu_findings               Changed 2: 0124's view, 'slow data file writes' on tempdb's data files only at 10 / 30
 --   mssql_perf_findings              ms over 250 writes; 0074's view, 'slow log writes' at 10 / 30 ms over 250 writes;
 --                                    the open alerts on user data files closed as 'rule retired' (D1).
+--   mssql_runnable_queue             Changed 13: the reading with its fallback window of the newest 3 reads.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
--- AlertEngine.cs L1045-1404.
+-- AlertEngine.cs L1045-1404, RunnableQueueEvaluator.cs L55-125.
 -- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
 -- upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
 
@@ -864,3 +865,36 @@ INSERT INTO pgvigil.alert_log (snapshot_at, instance_id, channel, n_resolved, ou
 SELECT now(), r.instance_id, r.channel, count(*), 'cleared',
        'rule retired (task 405, D1): a user data file''s write latency is no longer judged; no recovery is sent', array_agg(r.finding_key)
   FROM r GROUP BY r.channel, r.instance_id;
+
+-- ---- Runnable Queue (Changed 13) ------------------------------------------------------------------------------------
+
+-- mssql_runnable_queue: PerformanceMonitor 3.13.0's Runnable Queue reading (RunnableQueueEvaluator.cs L55-125) at p_at:
+-- runnable tasks per scheduler averaged over the reads of the last 5 minutes when they are 3 or more; else over the
+-- newest 3 reads when all 3 fall within the fallback window (10 minutes, or 4 times the reads' median spacing over the
+-- last hour when that is longer: a collector running late under load, or one set to read every 5 minutes, is still
+-- judged); else no row (no evaluation: the alert neither fires nor clears). darling_alert_findings' runnable arm reads
+-- it (WIRING: 0118's view is not this task's file); the warning stays a warning and paging at critical only waits on
+-- task 403's digest (the lead's D3 b); PerformanceMonitor's 30-minute stale resolve is not built (the lead's F3).
+CREATE OR REPLACE FUNCTION pgvigil.mssql_runnable_queue(p_instance_id int, p_at timestamptz)
+RETURNS TABLE (per_sched numeric, reads bigint, first_at timestamptz, at timestamptz, schedulers int, window_text text)
+LANGUAGE sql STABLE AS $$
+  WITH r AS (SELECT s.snapshot_at, s.runnable_tasks::numeric / s.schedulers AS ps, s.schedulers
+               FROM pgvigil.mssql_sched_sample s
+              WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_at - interval '60 minutes' AND s.snapshot_at <= p_at
+                AND s.schedulers > 0 AND s.runnable_tasks IS NOT NULL),
+  g AS (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x.gap) AS cadence_s
+          FROM (SELECT extract(epoch FROM r.snapshot_at - lag(r.snapshot_at) OVER (ORDER BY r.snapshot_at)) AS gap FROM r) x
+         WHERE x.gap IS NOT NULL),
+  w AS (SELECT r.* FROM r WHERE r.snapshot_at >= p_at - interval '5 minutes'),
+  f AS (SELECT r.* FROM r ORDER BY r.snapshot_at DESC LIMIT 3),
+  fw AS (SELECT greatest(600, 4 * coalesce(g.cadence_s, 60)) AS secs FROM g)
+  SELECT avg(w.ps), count(*), min(w.snapshot_at), max(w.snapshot_at), (array_agg(w.schedulers ORDER BY w.snapshot_at DESC))[1],
+         format('the %s reads of the last 5 minutes', count(*))
+    FROM w HAVING count(*) >= 3
+  UNION ALL
+  SELECT avg(f.ps), count(*), min(f.snapshot_at), max(f.snapshot_at), (array_agg(f.schedulers ORDER BY f.snapshot_at DESC))[1],
+         format('the newest 3 reads (fewer than 3 in the last 5 minutes; the 3 within %s minutes)', round((SELECT fw.secs FROM fw) / 60))
+    FROM f
+   WHERE (SELECT count(*) FROM w) < 3
+  HAVING count(*) = 3 AND min(f.snapshot_at) >= p_at - make_interval(secs => coalesce((SELECT fw.secs FROM fw), 600))
+$$;

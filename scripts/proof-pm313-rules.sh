@@ -61,6 +61,12 @@
 #     f8e89d2: under 20 ms). The retirement: an open alert of 'slow data file writes' on the user file and one on tempdb;
 #     0156 run again: the user file's closed with no recovery and a 'cleared' alert_log row 'rule retired', tempdb's open;
 #     a third run adds no row. NOT PROVEN live: the box's disk cannot be slowed to an exact latency.
+#  R3. Runnable Queue's reading (Changed 13, D3 b): on built scheduler reads of three instances, judged at a fixed time
+#     T: five reads a minute apart in the last 5 minutes at 10 per scheduler read 10 over 'the 5 reads of the last 5
+#     minutes'; reads 9, 7 and 6 minutes before T (none in 5 minutes) read their average over 'the newest 3 reads'
+#     (within 10 minutes); reads 11, 9 and 7 minutes before read nothing (no evaluation); reads every 5 minutes, the
+#     newest 5.5 minutes before T, read the newest 3 (the window 4 x 5 minutes = 20). The arm of darling_alert_findings
+#     that reads it is WIRING (proven with the wiring patch). Red on f8e89d2: no mssql_runnable_queue.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -318,4 +324,25 @@ RL2=$(pq "SELECT count(*) FROM pgvigil.alert_log WHERE outcome = 'cleared' AND e
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $IO" >/dev/null
 ok "R1: the open alert on a user data file closed as 'rule retired' with no recovery, tempdb's kept; a re-run adds nothing"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1)"
+echo "== R3. Runnable Queue's reading (Changed 13) =="
+TQ=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '2 hours', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+pq "SELECT pgvigil.ensure_month_partition('mssql_sched_sample', '$TQ'::timestamptz - interval '1 hour')" >/dev/null
+rq() { pq "INSERT INTO pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         VALUES ('$1', 'sqlserver', '{}', now(), now(), false, 'sqlserver') RETURNING instance_id" | head -1; }
+# sch <instance> <seconds before TQ> <runnable tasks> (4 schedulers)
+sch() { pq "INSERT INTO pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers, runnable_tasks)
+  VALUES ($1, '$TQ'::timestamptz - make_interval(secs => $2), 4, $3)" >/dev/null; }
+rqv() { pq "SELECT coalesce(round(per_sched, 2)::text || '|' || reads || '|' || window_text, 'none') FROM pgvigil.mssql_runnable_queue($1, '$TQ'::timestamptz)"; }
+Q1=$(rq rqsyn1); for t in 0 60 120 180 240; do sch "$Q1" $t 40; done
+Q2=$(rq rqsyn2); sch "$Q2" 540 40; sch "$Q2" 420 32; sch "$Q2" 360 48
+Q3=$(rq rqsyn3); sch "$Q3" 660 40; sch "$Q3" 540 40; sch "$Q3" 420 40
+Q4=$(rq rqsyn4); for t in 1530 1230 930 630 330; do sch "$Q4" $t 36; done
+V1=$(rqv "$Q1"); V2=$(rqv "$Q2"); V3=$(rqv "$Q3"); V4=$(rqv "$Q4")
+for x in "$V1" "$V2" "$V3" "$V4"; do echo "   $x"; done
+[[ "$V1" == "10.00|5|the 5 reads of the last 5 minutes" ]] || fail "R3: five reads in 5 minutes [$V1]"
+[[ "$V2" == "10.00|3|the newest 3 reads (fewer than 3 in the last 5 minutes; the 3 within 10 minutes)" ]] || fail "R3: a late collector [$V2]"
+[[ "$V3" == none ]] || fail "R3: three reads, the oldest 11 minutes back [$V3] (want no evaluation)"
+[[ "$V4" == "9.00|3|the newest 3 reads (fewer than 3 in the last 5 minutes; the 3 within 20 minutes)" ]] || fail "R3: reads every 5 minutes [$V4]"
+ok "R3: the 5-minute average, the newest-3 fallback (10 minutes, 20 at a 5-minute spacing), no evaluation past it"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3)"
