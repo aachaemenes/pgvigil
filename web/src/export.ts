@@ -722,33 +722,6 @@ export async function exportChart(title: string, cols: string[], rows: (string |
   return oneFile(m, { name: title || 'Chart', cols, rows: rows.map(r => r.map(cell)) });
 }
 
-// tell: a word in the grid's own count line for a moment (ui.ts grid: the 'n of m rows' line above it)
-function tell(g: Element, what: string) {
-  const count = g.closest('.grid-box')?.querySelector('.filter-count');
-  if (!count) return;
-  const before = count.textContent;
-  count.textContent = what;
-  window.setTimeout(() => { if (count.textContent === what) count.textContent = before; }, 2500);
-}
-
-// the grid's menu (ui.ts sends 'pgvigil:gridmenu' with its items): Export Excel after the copies, where DBA Dash's grid
-// menu has it (Copy, then Export Excel)
-let menuOn = false;
-function installGridExport() {
-  if (menuOn || typeof document === 'undefined') return;
-  menuOn = true;
-  document.addEventListener('pgvigil:gridmenu', e => {
-    const d = (e as CustomEvent<{ table?: HTMLTableElement; items?: [string, () => void][] }>).detail;
-    if (!d?.table || !Array.isArray(d.items)) return;
-    const t = d.table;
-    let at = 0;
-    d.items.forEach((it, i) => { if (/^Copy\b/.test(it[0])) at = i + 1; });
-    d.items.splice(at, 0, ['Export Excel', () => {
-      void exportGrid(t).then(n => tell(t, 'Exported ' + n), (x: unknown) => tell(t, 'Export failed: ' + (x instanceof Error ? x.message : String(x))));
-    }]);
-  });
-}
-
 // summaryExport: the fleet Summary's Export to Excel drop-down (DBA Dash's Summary toolbar): Export Summary (the
 // instance grid) or Export Test Summary (the grid of tests), each a workbook of that grid alone
 function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLElement): HTMLElement {
@@ -773,7 +746,6 @@ function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLEleme
 // start with the bar: they answer the grids' own menu and touch nothing until asked.
 export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => document.getElementById('main')): HTMLElement {
   installGridTools();
-  installGridExport();   // after the tools: its line goes after their copies
   const note = el('span', { class: 'meta', role: 'status' });
   const run = async (b: HTMLButtonElement, kind: 'xlsx' | 'csv') => {
     b.disabled = true; note.textContent = '';
