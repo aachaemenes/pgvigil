@@ -8,7 +8,8 @@
 # Needs: docker, go, psql, pg_dump, and
 #   ADMIN_DSN    a superuser connection to a PostgreSQL in KEYWORD form, no dbname given beyond postgres (default
 #                'host=127.0.0.1 port=5432 user=postgres dbname=postgres'); the proof makes its own repository
-#                database there and drops it.
+#                database there and drops it. It rides psql's command line: no password in it (PGPASSWORD or
+#                ~/.pgpass carries one).
 #   MSSQL_IMAGE  the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
 #   PG_IMAGE     the monitored PostgreSQL's image (default postgres:16; its contrib holds pgcrypto)
 #   PGVIGIL_BIN  a built pgvigil (default: built here from this tree into the proof's temp folder)
@@ -34,6 +35,14 @@
 #     proof's red run, where it hid the whole statement of the first draft). Expected: its row is stored with no
 #     statement and S2 is not in the dump - the server's own redaction, written down so a change of it shows.
 #  A6. the same server read as an instance under query_text normalized and one under none: neither stores S1-S4.
+#  A7 (the 415 review's fold, written before its first run): the stored statement holds each masked form - '-P <masked>',
+#     '-P<masked>' (the doubled-quote form) and 'SQLCMDPASSWORD = <masked>' - so a cut text cannot pass A1-A4 by itself.
+#  X (the fold): Extended Events. Before part A the proof sets 'blocked process threshold (s)' to 5 on its container
+#     and runs `pgvigil mssql-xe -print` there; part A's two waiting UPDATEs then raise blocked process reports, which
+#     hold each blocked session's input buffer. `collect -once mssql_xe` stores them: X1 at least one report of the
+#     -P session is stored and its report holds '<masked>'; the dump checks of A1-A4 then cover the reports too. A
+#     report of the passphrase session is written down as the server gives it (the server withheld its text in the
+#     requests sample).
 #  B. PostgreSQL, query_text full: one session runs SELECT pg_sleep(...) with pgp_sym_encrypt(..., '<P1>'),
 #     pgp_sym_decrypt(..., $k$<P2>$k$), encrypt(..., E'<P3>', 'aes'), crypt('<P4>', gen_salt('bf')) and a literal
 #     holding '-----BEGIN PGP PRIVATE KEY BLOCK-----' + <P5> + a body longer than track_activity_query_size, so the
@@ -81,6 +90,8 @@ docker run -d --name "$PGC" --env-file "$TMPD/pg.env" -p 127.0.0.1::5432 "$IMG_P
 SQLPORT=$(docker port "$SQL" 1433 | head -1 | sed 's/.*://'); PGPORT=$(docker port "$PGC" 5432 | head -1 | sed 's/.*://')
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 sq() { docker exec -e SQLCMDPASSWORD "$SQL" $SQLCMD -S localhost -U sa -C -b -W -h -1 -Q "SET NOCOUNT ON; $1"; }
+# a statement that carries a password goes in through stdin, never on a command line another user can list
+sqs() { docker exec -i -e SQLCMDPASSWORD "$SQL" $SQLCMD -S localhost -U sa -C -b -W -h -1 -i /dev/stdin; }
 for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
 sq "SELECT 1" >/dev/null 2>&1 || die "SQL Server did not answer"
 for _ in $(seq 1 60); do PGPASSWORD=$PGPW psql -h 127.0.0.1 -p "$PGPORT" -U postgres -XAtq -c "select 1" >/dev/null 2>&1 && break; sleep 1; done
@@ -88,7 +99,7 @@ pgq() { PGPASSWORD=$PGPW psql -h 127.0.0.1 -p "$PGPORT" -U postgres -XAtq -v ON_
 pgq "select 1" >/dev/null || die "PostgreSQL did not answer"
 pgq "create extension if not exists pgcrypto" >/dev/null || die "pgcrypto"
 
-sq "CREATE LOGIN pgv_mask_mon WITH PASSWORD = '$MONPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO pgv_mask_mon; GRANT VIEW ANY DEFINITION TO pgv_mask_mon;" || die "the monitoring login"
+printf "CREATE LOGIN pgv_mask_mon WITH PASSWORD = '%s', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO pgv_mask_mon; GRANT VIEW ANY DEFINITION TO pgv_mask_mon;" "$MONPW" | sqs >/dev/null || die "the monitoring login"
 psql "$ADMIN_DSN" -XAtq -c "create database $REPO_DB" || die "the repository database"; MADE_DB=1
 export PGVIGIL_REPO_DSN="$ADMIN_DSN dbname=$REPO_DB"
 export MSSQL_MON_DSN="sqlserver://pgv_mask_mon:$MONPW@127.0.0.1:$SQLPORT?database=master&encrypt=true&TrustServerCertificate=true"
@@ -117,6 +128,10 @@ dump() { pg_dump -d "$PGVIGIL_REPO_DSN" --data-only > "$TMPD/dump.sql" 2>/dev/nu
 hits() { grep -c -- "$1" "$TMPD/dump.sql"; }
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 
+echo "--- X0. Extended Events: the blocked process threshold and pgvigil's sessions"
+sq "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || die "the blocked process threshold"
+"$BIN" mssql-xe -print -install-id mask > "$TMPD/xe.sql" || die "mssql-xe -print"
+sqs < "$TMPD/xe.sql" > "$TMPD/xe.out" 2>&1 || die "the XE script: $(tail -3 "$TMPD/xe.out")"
 echo "--- A. SQL Server: two waiting requests carry four credentials"
 # a holder takes a row lock and waits; the two statements that carry the credentials update the same row and wait
 # behind it, so each stays a running request with its text for as long as the holder waits (a statement that
@@ -138,9 +153,12 @@ SID=$(sq "SELECT TOP (1) session_id FROM sys.dm_exec_sessions WHERE host_name = 
 SID2=$(sq "SELECT TOP (1) session_id FROM sys.dm_exec_sessions WHERE host_name = 'pgvmaskp$SUF'")
 [ -n "$SID" ] && [ -n "$SID2" ] || die "the SQL Server sessions did not start: $(cat "$TMPD/h.out" "$TMPD/a.out" "$TMPD/a2.out")"
 [ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE session_id IN ($SID, $SID2) AND blocking_session_id > 0")" = 2 ] || die "the two statements are not waiting behind the holder: $(cat "$TMPD/h.out" "$TMPD/a.out" "$TMPD/a2.out")"
+# the blocked process monitor reports every 5 s: two rounds before the read
+sleep 12
 for inst in mask-sql-full mask-sql-norm mask-sql-none; do
   "$BIN" collect -config "$CFG" -once mssql_requests -instance "$inst" > "$TMPD/c-$inst.out" 2>&1 || bad "A: collect -once mssql_requests on $inst: $(tail -3 "$TMPD/c-$inst.out")"
 done
+"$BIN" collect -config "$CFG" -once mssql_xe -instance mask-sql-full > "$TMPD/c-xe.out" 2>&1 || bad "X: collect -once mssql_xe: $(tail -3 "$TMPD/c-xe.out")"
 dump
 for k in 1 3 4; do eval "s=\$S$k"; n=$(hits "$s"); [ "$n" = 0 ] && pass "A$k: secret $k not in the repository" || bad "A$k: secret $k is stored $n time(s) in the repository"; done
 A2ROWS=$(q "select count(*) || '|' || count(statement) from pgvigil.mssql_requests_v where instance_id = (select instance_id from pgvigil.instances where name = 'mask-sql-full') and session_id = $SID2")
@@ -159,6 +177,13 @@ else
 fi
 N_NORM=$(q "select count(distinct r.instance_id) from pgvigil.mssql_requests_v r join pgvigil.instances i using (instance_id) where i.name in ('mask-sql-norm', 'mask-sql-none') and r.session_id = $SID")
 [ "$N_NORM" = 2 ] && pass "A6: normalized and none stored the same request, and the dump holds none of the four" || bad "A6: the request is stored for $N_NORM of the normalized / none instances (want 2)"
+STORED=$(q "select statement from pgvigil.mssql_requests_v where instance_id = $FULL_ID and session_id = $SID and statement is not null limit 1")
+case "$STORED" in *"-P <masked> -Q"*"-P<masked> -Q"*"SQLCMDPASSWORD = <masked>"*) pass "A7: the stored statement holds the three masked forms" ;;
+  *) bad "A7: the stored statement: $STORED" ;; esac
+NREP=$(q "select count(*) || '|' || count(*) filter (where report like '%<masked>%') from pgvigil.mssql_blocked_reports where instance_id = $FULL_ID and report like '%sqlcmd%'")
+case "$NREP" in 0\|*) bad "X1: no blocked process report of the -P session stored ($(tail -2 "$TMPD/c-xe.out"))" ;;
+  *) [ "${NREP%%|*}" = "${NREP##*|}" ] && pass "X1: the -P session's blocked process reports are stored, masked ($NREP)" || bad "X1: reports|masked = $NREP" ;; esac
+echo "  the passphrase session's report as stored: $(q "select coalesce(left(substring(report from 'ENCRYPTBYPASSPHRASE.{0,40}'), 60), '(no report holds the call)') from pgvigil.mssql_blocked_reports where instance_id = $FULL_ID and report like '%ENCRYPTBYPASSPHRASE%' limit 1")"
 sq "KILL $SID; KILL $SID2;" >/dev/null 2>&1
 
 echo "--- B. PostgreSQL: a running session carries five credentials"

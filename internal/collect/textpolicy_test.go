@@ -239,6 +239,9 @@ func TestMaskCredentials(t *testing.T) {
 			"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='<masked>'"},
 		{"tsql parameter", "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = N'Tq3secret'", "Tq3secret",
 			"EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = '<masked>'"},
+		{"positional linked login", "EXEC sp_addlinkedsrvlogin 'srv', 'false', NULL, 'u', 'Ps7secret'", "Ps7secret",
+			"EXEC sp_addlinkedsrvlogin '<masked>', '<masked>', NULL, '<masked>', '<masked>'"},
+		{"tsql named parameter", "EXEC dbo.p @user = N'x', @password = N'Tq5secret'", "Tq5secret", "EXEC dbo.p @user = N'x', @password = '<masked>'"},
 		{"tsql hashed", "CREATE LOGIN app WITH PASSWORD = 0x0200AB12CD34EF HASHED", "0x0200AB12CD34EF",
 			"CREATE LOGIN app WITH PASSWORD = '<masked>' HASHED"},
 		// finding 10: a statement cut by the text cap inside the literal keeps nothing of the secret
@@ -292,6 +295,44 @@ func TestMaskCredentials(t *testing.T) {
 		{"plain", "SELECT a, b FROM t WHERE k = 'value' AND n = 3", "", "SELECT a, b FROM t WHERE k = 'value' AND n = 3"},
 		{"loginproperty", "SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins", "",
 			"SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins"},
+		// the 415 review, finding 3: a value in T-SQL's doubled quotes inside a literal is one value
+		{"doubled SQLCMDPASSWORD", "EXEC xp_cmdshell 'set SQLCMDPASSWORD=''od3 secret'' && sqlcmd -S .'", "od3",
+			"EXEC xp_cmdshell 'set SQLCMDPASSWORD=''<masked>'' && sqlcmd -S .'"},
+		{"doubled PWD", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''od1;secret'';', 'SELECT 1')", "od1",
+			"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''<masked>'';', 'SELECT 1')"},
+		{"doubled provstr", "EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''od2 secret'''", "od2",
+			"EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''<masked>'''"},
+		{"doubled libpq", "select dblink('host=h password=''dq15secret'' dbname=d', 'select 1')", "dq15secret",
+			"select dblink('host=h password=''<masked>'' dbname=d', 'select 1')"},
+		{"doubled -Password", `EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password ''od5secret'' -Query x"'`, "od5secret",
+			`EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password <masked> -Query x"'`},
+		// finding 4: the quote that closes the enclosing literal never starts a value
+		{"closing quote 1", "UPDATE t SET kind = 'password' WHERE id = 5", "", "UPDATE t SET kind = 'password' WHERE id = 5"},
+		{"closing quote 2", "SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'", "",
+			"SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'"},
+		{"closing quote 3", "SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3", "",
+			"SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3"},
+		{"closing quote 4", "select dblink_connect('host=h password=') , 'abc'", "", "select dblink_connect('host=h password=') , 'abc'"},
+		// finding 5: a named argument, a plan's parameter values
+		{"named argument", "SELECT app.set_password(p_user => 'u', p_password => 'na1secret')", "na1secret",
+			"SELECT app.set_password(p_user => 'u', p_password => '<masked>')"},
+		{"plan parameters", `<ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="N'Plan1secret'" ParameterRuntimeValue="N'Plan2secret'" />`, "Plan",
+			`<ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="'<masked>'" ParameterRuntimeValue="'<masked>'" />`},
+		// finding 6: no false positives on arithmetic, -Path or a cast
+		{"arithmetic", "SELECT Total -Paid AS due FROM inv", "", "SELECT Total -Paid AS due FROM inv"},
+		{"powershell -Path", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`, "", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`},
+		{"cast", "SELECT password::text, name FROM t", "", "SELECT password::text, name FROM t"},
+		// finding 7: the certificate and key functions, KEY_SOURCE / IDENTITY_VALUE, positional procedure calls
+		{"decryptbycert", "SELECT DECRYPTBYCERT(CERT_ID('c'), ct, N'Cp1secret') FROM t", "Cp1secret",
+			"SELECT DECRYPTBYCERT(CERT_ID('<masked>'), ct, '<masked>') FROM t"},
+		{"open key", "OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = 'Cp2secret'", "Cp2secret", "OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = '<masked>'"},
+		{"key source", "CREATE SYMMETRIC KEY k WITH KEY_SOURCE = 'Cp3secret', IDENTITY_VALUE = 'Cp4secret', ALGORITHM = AES_256", "secret",
+			"CREATE SYMMETRIC KEY k WITH KEY_SOURCE = '<masked>', IDENTITY_VALUE = '<masked>', ALGORITHM = AES_256"},
+		{"sp_addlogin", "EXEC sp_addlogin 'appuser', 'Cp5secret'\nSELECT 'kept'", "Cp5secret", "EXEC sp_addlogin '<masked>', '<masked>'\nSELECT 'kept'"},
+		{"sp_password", "EXEC sp_password NULL, 'Cp6secret', 'u'", "Cp6secret", "EXEC sp_password NULL, '<masked>', '<masked>'"},
+		{"multi-byte", "SELECT N'Grüße', ENCRYPTBYPASSPHRASE('Mb1secrét', N'ünïcode')", "Mb1", "SELECT N'Grüße', ENCRYPTBYPASSPHRASE('<masked>', '<masked>')"},
+		{"dynamic sql", "EXEC (N'SELECT ENCRYPTBYPASSPHRASE(''Dy1secret'', x) FROM t; ALTER LOGIN a WITH PASSWORD = ''Dy2secret''')", "Dy",
+			"EXEC (N'SELECT ENCRYPTBYPASSPHRASE(''<masked>'', x) FROM t; ALTER LOGIN a WITH PASSWORD = ''<masked>''')"},
 	}
 	for _, c := range cases {
 		got := MaskCredentials(c.in)
@@ -318,9 +359,15 @@ func TestApplyTextPolicyMasksUnderEveryMode(t *testing.T) {
 			{"kind": "slow", "statement": "exec p @password = N'Rw5secret'", "shape": "p"},
 			{"kind": "collector_error", "message": "login failed: password=Rw6secret"},
 			{"kind": "plan_xml", "kind_of": "plan", "statement": "<StmtSimple StatementText=\"SELECT ENCRYPTBYPASSPHRASE('Rw7secret', x)\"/>"},
+			// the 415 review, finding 1: a deadlock graph and a blocked process report hold the input buffers
+			{"kind": "deadlock", "graph": "<deadlock><process-list><process id=\"p1\" spid=\"55\"><inputbuf>EXEC xp_cmdshell 'sqlcmd -S . -U app -P Rw8secret -Q x'</inputbuf></process></process-list></deadlock>"},
+			{"kind": "blocked", "report": "<blocked-process-report><blocked-process><process spid=\"60\"><inputbuf>SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=Rw9secret;', 'SELECT 1')</inputbuf></process></blocked-process></blocked-process-report>"},
+			// finding 2: a plan's text and every string of its JSON form
+			{"kind": "plan", "query": "select pgp_sym_decrypt(data, 'RwAsecret') from t", "plan_text": "Seq Scan on t\n  Filter: (pgp_sym_decrypt(data, 'RwBsecret'::text) IS NOT NULL)",
+				"plan": map[string]any{"Plan": map[string]any{"Node Type": "Seq Scan", "Filter": "(pgp_sym_decrypt(data, 'RwCsecret'::text) IS NOT NULL)", "Plans": []any{map[string]any{"Output": []any{"crypt('RwDsecret', x)"}}}}}},
 		}
 	}
-	secrets := []string{"Rw1secret", "Rw2secret", "Rw3secret", "Rw4secret", "Rw5secret", "Rw6secret", "Rw7secret"}
+	secrets := []string{"Rw1secret", "Rw2secret", "Rw3secret", "Rw4secret", "Rw5secret", "Rw6secret", "Rw7secret", "Rw8secret", "Rw9secret", "RwAsecret", "RwBsecret", "RwCsecret", "RwDsecret"}
 	for _, mode := range []string{"", "full", "normalized", "none"} {
 		rows := mk()
 		applyTextPolicy(rows, mode)
@@ -338,5 +385,22 @@ func TestApplyTextPolicyMasksUnderEveryMode(t *testing.T) {
 	applyTextPolicy(rows, "full")
 	if rows[0]["statement"] != "SELECT 1 WHERE N'sqlcmd -S . -P <masked>' <> name" || rows[1]["query_hash"] != int64(5) {
 		t.Errorf("full: the rest of the text or the server's hash changed: %v | %v", rows[0]["statement"], rows[1]["query_hash"])
+	}
+}
+
+// the 415 review, finding 8: the mask is linear in the text - a 1 MB text with 16,000 password literals well under a
+// second (it was 3.8 s when every match recounted the runes before it)
+func TestMaskCredentialsCost(t *testing.T) {
+	var b strings.Builder
+	for b.Len() < 1<<20 {
+		b.WriteString("ALTER LOGIN a WITH PASSWORD = 'Cs9secret'; SELECT N'ünïcode', x FROM t; ")
+	}
+	start := time.Now()
+	out := MaskCredentials(b.String())
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("1 MB took %v", d)
+	}
+	if strings.Contains(out, "Cs9secret") {
+		t.Error("a secret survived")
 	}
 }
