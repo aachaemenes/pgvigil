@@ -123,7 +123,8 @@ func (s *Server) ReportMail(w http.ResponseWriter, r *http.Request) {
 	if browser == "" {
 		noBrowser = "no Chromium-family browser on this server (PGVIGIL_BROWSER names one): a schedule's turn cannot be rendered; Send now works from any browser"
 	}
-	out["door"] = map[string]any{"writable": why == "", "reason": why, "user": s.reportMailUser(r), "browser": browser != "", "browser_reason": noBrowser,
+	// can: the session's role (B24f): Send now and a schedule's test need operator, a schedule's change admin
+	out["door"] = map[string]any{"writable": why == "", "reason": why, "can": s.roleCan(r), "user": s.reportMailUser(r), "browser": browser != "", "browser_reason": noBrowser,
 		"max_html": reportmail.MaxHTML, "max_xlsx": reportmail.MaxXLSX, "max_recipients": reportmail.MaxRecipients, "min_gap_secs": int(reportmail.MinGap.Seconds())}
 	ctx := r.Context()
 	if part == "send" {

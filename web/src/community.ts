@@ -14,6 +14,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, tabsFor } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+import { needControl } from './needs';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 
 // a need: what the tool lacks here before it can run and the way to get it (hard = the tool is off without it);
@@ -281,7 +282,8 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
   }
   if (p.left_out.length) sec.append(el('p', { class: 'meta' }, 'Left out (pgvigil never writes through a procedure, and OUTPUT parameters are not shown): ' + p.left_out.join(', ')));
   const timeout = el('input', { type: 'text', value: '60', size: '3', inputmode: 'numeric', 'aria-label': 'Timeout in seconds (1 to 60)' }) as HTMLInputElement;
-  const run = el('button', { type: 'button' }, 'Run ' + t.name);
+  // the role (B24f): a tool's run needs operator - the form above reads (@help: every role)
+  const run = needControl(el('button', { type: 'button' }, 'Run ' + t.name), 'community/run');
   fields.append(el('label', {}, 'Timeout (s) ', timeout), run);
   sec.append(fields);
   const status = el('p', { class: 'meta', role: 'status' }), res = el('div', {});
@@ -315,6 +317,7 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
   const why = el('p', { class: 'meta demo-why' }, demoWhy);
   const run = el('button', { type: 'button' }, 'Run ' + t.name);
   offControl(run, demoWhy, why);
+  needControl(run, 'community/run');
   if (!t.sample) {
     const none = (t.needs ?? []).find(n => n.state === 'note')?.what ?? 'no stored sample for this tool';
     sec.append(el('p', { class: 'meta', role: 'note' }, none.charAt(0).toUpperCase() + none.slice(1) + '.'));
@@ -383,7 +386,8 @@ function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
     } catch (e) { status.textContent = ''; list.replaceChildren(errorBox(e)); }
   });
   const runButton = (q: GlennQuery) => {
-    const b = el('button', { type: 'button', class: 'link' }, q.name);
+    // the role (B24f): a run needs operator (the file's text is run as the read login)
+    const b = needControl(el('button', { type: 'button', class: 'link' }, q.name), 'community/run');
     b.addEventListener('click', async () => {
       const busy = el('p', { class: 'meta' }, `Running query ${q.n} (${q.name})...`);
       res.replaceChildren(busy);

@@ -17,6 +17,7 @@ import type { Ctx } from './router';
 import { window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
 import { offBeside } from './ack';
+import { needControl } from './needs';
 
 interface Buttons { explain: boolean; explain_reason?: string; analyze: boolean; analyze_reason?: string }
 interface PlansList { buttons: Buttons; shape: string | null; plans: Table | null }
@@ -118,6 +119,8 @@ function explainForm(ctx: Ctx, b: Buttons, stmt: string, db: string): HTMLElemen
     if (typed == null) return;
     void go('plans/analyze', { reason: reason.value, confirm: typed })();
   });
+  // the role (B24f): EXPLAIN and EXPLAIN ANALYZE need operator - after the instance's own reasons above
+  needControl(btnExplain, 'plans/explain'); needControl(btnAnalyze, 'plans/analyze');
   box.append(el('h3', {}, 'EXPLAIN'), text, el('div', { class: 'row' }, dbIn, ' ', btnExplain, ' ', reason, ' ', btnAnalyze));
   if (explainOff) box.append(explainOff);
   if (analyzeOff && analyzeOff !== explainOff) box.append(analyzeOff);
@@ -237,6 +240,7 @@ export async function suggestBox(o: { instance: number; plan?: number; queryid?:
     const btn = el('button', { type: 'button' }, 'Check with the planner (hypopg)') as HTMLButtonElement;
     if (hypoOff) offBeside(btn, d.hypo_reason || 'the planner check is off', hypoOff);
     else btn.title = 'Plans the statement before and with a hypothetical index (hypopg on the monitored server); nothing is created or run; audited';
+    needControl(btn, 'plans/hypo');   // the role (B24f): the planner check needs operator
     btn.addEventListener('click', async () => {
       if (btn.disabled) return;
       btn.disabled = true;   // one check per click: each is a planner call on the server and an audit row

@@ -9,6 +9,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { Section, exportSection } from './export';
 import { Col, el, fmtTime, grid } from './ui';
+import { markNeed } from './needs';
 
 interface Item { id: string; kind: string; line: number; level?: string; instance?: string; database?: string; application?: string; outcome: string; words: string }
 interface Answer {
@@ -75,7 +76,8 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
   const fileIn = el('input', { type: 'file', name: 'file', accept: '.csv,.json,.xlsx,text/csv,application/json', id: 'app-import-file' }) as HTMLInputElement;
   // the pattern compiles under the v flag the browser uses (an unescaped - in a class is an error there: review C, 5)
   const srcIn = el('input', { type: 'text', name: 'source', value: 'file', maxlength: '40', pattern: '[a-z0-9_.\\-]{1,40}', id: 'app-import-source' }) as HTMLInputElement;
-  const previewBtn = el('button', { type: 'submit' }, 'Preview the import');
+  // the import's route needs admin (B24f): the page's read-only sentence carries the role's words below it (whyNot)
+  const previewBtn = markNeed(el('button', { type: 'submit' }, 'Preview the import'), 'admin/applications/import');
   const form = el('form', { 'aria-label': 'Import a file' },
     el('label', { for: 'app-import-file' }, 'A file (CSV, JSON or .xlsx, 5 MB at most) '), fileIn, ' ',
     el('label', { for: 'app-import-source' }, 'its source name (every field it sets says import:<name>) '), srcIn, ' ',
@@ -109,7 +111,7 @@ export function appFileSection(opts: { whyNot: () => string; changed: () => Prom
       grid(items as unknown as Row[], itemCols, applied ? 'Nothing else to say.' : 'Nothing to change: the file says what the repository holds.'),
     ];
     if (!applied && pending) {
-      const apply = el('button', { type: 'button' }, conflicts.length ? 'Apply the import (ticked conflicts taken, the rest kept)' : 'Apply the import');
+      const apply = markNeed(el('button', { type: 'button' }, conflicts.length ? 'Apply the import (ticked conflicts taken, the rest kept)' : 'Apply the import'), 'admin/applications/import');
       apply.addEventListener('click', () => void doApply([...ticks.entries()].filter(([, on]) => on).map(([id]) => id)));
       if (opts.whyNot()) { apply.setAttribute('aria-disabled', 'true'); apply.title = opts.whyNot(); }
       parts.push(el('div', { class: 'actions' }, apply));

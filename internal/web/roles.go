@@ -141,6 +141,29 @@ func (s *Server) roleOK(w http.ResponseWriter, r *http.Request, n need, what str
 	return true
 }
 
+// roleErr is a role refusal a handler raises from its own body read, where its caller writes the reply (alertDoor's
+// build): 403 with the role's words, as roleOK writes it
+type roleErr struct{ words string }
+
+func (e roleErr) Error() string { return e.words }
+
+// needErr is roleOK for such a handler: nil when the request's user holds need n, else the refusal - the same
+// 'role refused' log line, no audit row. With the login off or on a demo serve roles do not apply.
+func (s *Server) needErr(r *http.Request, n need, what string) error {
+	if n == needAnyone || s.auth == nil || s.demo != nil {
+		return nil
+	}
+	wh, ok := whoOf(r)
+	if !ok {
+		wh = s.sessionWho(r)
+	}
+	if wh.err != nil || roleRank(wh.role) < n {
+		s.log.Info("role refused", "user", wh.user, "role", wh.role, "need", needWord[n], "what", what, "route", r.Method+" "+r.URL.Path)
+		return roleErr{roleWords(what, n, wh)}
+	}
+	return nil
+}
+
 // post registers a write with its need: the X-Pgvigil header first (every POST, login and logout too: a POST
 // without it writes nothing), then the role, then the route's own gates (no login, no door, the demo) in its
 // handler. Every POST of web.go goes through here (roles_test.go).

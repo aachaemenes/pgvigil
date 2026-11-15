@@ -171,6 +171,7 @@ func (s *Server) alertRulesDoor(r *http.Request, out map[string]any) {
 	if why != "" {
 		out["reason"] = why
 	}
+	out["can"] = s.roleCan(r) // the session's role (B24f): alert rules need admin
 	out["user"] = ""
 	if s.auth != nil {
 		out["user"] = s.sessionUser(r)

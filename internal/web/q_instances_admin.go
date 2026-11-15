@@ -228,7 +228,8 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		}
 		file.Rows = append(file.Rows, []any{in.Name, in.Engine, plat, strings.Join(in.Tags, " "), "from the file"})
 	}
-	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff()}
+	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff(),
+		"can": s.roleCan(r)} // can: the session's role (B24f): every write of this page needs admin
 	parts := []struct{ k, q string }{
 		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, a.options, array_to_string(a.tags, ' ') AS tags,
 		        a.disabled, a.running_plans, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
