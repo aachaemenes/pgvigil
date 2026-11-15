@@ -204,3 +204,109 @@ func dnsNameMatchesSAN(san, host string) bool {
 	}
 	return strings.EqualFold(p[2:], h[dot+1:])
 }
+
+// ---- the key-access grant's pure rules (`pgvigil cert -grant-key-access`; PerformanceMonitor's DarlingTlsKeyAccess) ----
+
+// keyReadMask is FILE_GENERIC_READ, the Read entry certlm.msc's Manage Private Keys and icacls (R) write.
+const keyReadMask uint32 = 0x120089
+
+const (
+	genericAll  uint32 = 0x10000000
+	genericRead uint32 = 0x80000000
+)
+
+// isBroadPrincipal: a SID that names many accounts (Everyone, Users, Authenticated Users, the logon kinds, ALL
+// SERVICES, Domain Users / Guests / Computers ...): never granted, whatever the operator typed.
+func isBroadPrincipal(sid string) bool {
+	switch sid {
+	case "S-1-1-0", "S-1-5-32-545", "S-1-5-11", "S-1-5-4", "S-1-5-2", "S-1-5-7", "S-1-5-32-546", "S-1-5-6", "S-1-5-3",
+		"S-1-5-13", "S-1-5-14", "S-1-5-15", "S-1-5-113", "S-1-5-80-0", "S-1-5-32-547", "S-1-5-32-554", "S-1-5-32-555",
+		"S-1-5-32-568", "S-1-5-32-580":
+		return true
+	}
+	if strings.HasPrefix(sid, "S-1-2-") || strings.HasPrefix(sid, "S-1-15-2-") {
+		return true
+	}
+	return strings.HasPrefix(sid, "S-1-5-21-") && (strings.HasSuffix(sid, "-513") || strings.HasSuffix(sid, "-514") || strings.HasSuffix(sid, "-515"))
+}
+
+// isServiceIdentity: LocalSystem, LocalService, NetworkService, the local Administrators group, a per-service
+// virtual account (NT SERVICE\name, S-1-5-80-x but not ALL SERVICES) and an IIS application pool identity: Windows
+// reports some as groups, but each names one service.
+func isServiceIdentity(sid string) bool {
+	switch sid {
+	case "S-1-5-18", "S-1-5-19", "S-1-5-20", "S-1-5-32-544":
+		return true
+	}
+	return (strings.HasPrefix(sid, "S-1-5-80-") && sid != "S-1-5-80-0") || strings.HasPrefix(sid, "S-1-5-82-")
+}
+
+// SID_NAME_USE values (LookupAccountSid).
+const (
+	sidUser           uint32 = 1
+	sidGroup          uint32 = 2
+	sidAlias          uint32 = 4
+	sidWellKnownGroup uint32 = 5
+	sidComputer       uint32 = 9
+)
+
+// refuseByKind is why a SID that names use may not be granted ("" = it may): one account only.
+func refuseByKind(sid string, use uint32) string {
+	if isServiceIdentity(sid) || use == sidUser {
+		return ""
+	}
+	switch use {
+	case sidGroup, sidAlias, sidWellKnownGroup:
+		return "is a group"
+	case sidComputer:
+		return "is a computer"
+	}
+	return fmt.Sprintf("is not a user or service account (kind %d)", use)
+}
+
+// normalizeMask maps an entry's generic bits to the file rights they mean.
+func normalizeMask(m uint32) uint32 {
+	if m&genericAll != 0 {
+		return 0xFFFFFFFF
+	}
+	if m&genericRead != 0 {
+		return m | keyReadMask
+	}
+	return m
+}
+
+// aceView is one entry of a key's access list as the plan reads it.
+type aceView struct {
+	allow, deny bool
+	inheritOnly bool
+	sid         string
+	mask        uint32
+}
+
+// planGrant is what a grant does to a key's access list for account: "already" (its own entries cover Read, or the
+// list is NULL: everyone reads), "deny" (an explicit Deny on it overlaps Read: a Deny wins over any Allow, nothing is
+// changed), or "add" (one Read entry).
+func planGrant(aces []aceView, nullDACL bool, account string) string {
+	if nullDACL {
+		return "already"
+	}
+	var allowed, denied uint32
+	for _, a := range aces {
+		if a.inheritOnly || a.sid != account {
+			continue
+		}
+		switch {
+		case a.allow:
+			allowed |= normalizeMask(a.mask)
+		case a.deny:
+			denied |= normalizeMask(a.mask)
+		}
+	}
+	switch {
+	case denied&keyReadMask != 0:
+		return "deny"
+	case allowed&keyReadMask == keyReadMask:
+		return "already"
+	}
+	return "add"
+}

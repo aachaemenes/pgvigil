@@ -154,3 +154,52 @@ func TestSelectBySubject(t *testing.T) {
 		t.Errorf("a name in the common name only: %v", err)
 	}
 }
+
+func TestGrantRules(t *testing.T) {
+	for _, s := range []string{"S-1-1-0", "S-1-5-32-545", "S-1-5-11", "S-1-5-80-0", "S-1-2-0", "S-1-15-2-1", "S-1-5-21-1-2-3-513", "S-1-5-21-1-2-3-515"} {
+		if !isBroadPrincipal(s) {
+			t.Errorf("%s: not broad", s)
+		}
+	}
+	for _, s := range []string{"S-1-5-21-1-2-3-1001", "S-1-5-18", "S-1-5-80-1-2-3-4-5"} {
+		if isBroadPrincipal(s) {
+			t.Errorf("%s: broad", s)
+		}
+	}
+	for _, c := range []struct {
+		sid  string
+		use  uint32
+		want string
+	}{
+		{"S-1-5-21-1-2-3-1001", sidUser, ""},
+		{"S-1-5-80-1-2-3-4-5", sidWellKnownGroup, ""}, // NT SERVICE\name
+		{"S-1-5-20", sidWellKnownGroup, ""},
+		{"S-1-5-21-1-2-3-1105", sidGroup, "is a group"},
+		{"S-1-5-32-551", sidAlias, "is a group"},
+		{"S-1-5-21-1-2-3-1106", sidComputer, "is a computer"},
+		{"S-1-5-21-1-2-3-1107", 6, "is not a user or service account (kind 6)"},
+	} {
+		if got := refuseByKind(c.sid, c.use); got != c.want {
+			t.Errorf("%s kind %d: %q, want %q", c.sid, c.use, got, c.want)
+		}
+	}
+	u := "S-1-5-21-1-2-3-1001"
+	for name, c := range map[string]struct {
+		aces []aceView
+		null bool
+		want string
+	}{
+		"no entry":           {[]aceView{{allow: true, sid: "S-1-5-18", mask: genericAll}}, false, "add"},
+		"read already":       {[]aceView{{allow: true, sid: u, mask: keyReadMask}}, false, "already"},
+		"generic read":       {[]aceView{{allow: true, sid: u, mask: genericRead}}, false, "already"},
+		"generic all":        {[]aceView{{allow: true, sid: u, mask: genericAll}}, false, "already"},
+		"a partial read":     {[]aceView{{allow: true, sid: u, mask: 0x1}}, false, "add"},
+		"a deny of read":     {[]aceView{{deny: true, sid: u, mask: 0x1}, {allow: true, sid: u, mask: keyReadMask}}, false, "deny"},
+		"an inherit-only":    {[]aceView{{allow: true, sid: u, mask: keyReadMask, inheritOnly: true}}, false, "add"},
+		"a NULL access list": {nil, true, "already"},
+	} {
+		if got := planGrant(c.aces, c.null, u); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+	}
+}
