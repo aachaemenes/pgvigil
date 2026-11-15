@@ -199,6 +199,32 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 	return SchemaCurrentWith(ctx, r.pool)
 }
 
+// sqlSchemaMissingRead: schema_missing's own body over schema_version, for a login that reads the tables (serve's
+// pgvigil_reader has SELECT on schema_version but no EXECUTE on schema_missing: apply_roles gives that to the collector)
+const sqlSchemaMissingRead = `SELECT coalesce(array_agg(u.n ORDER BY u.n), '{}'::text[])
+  FROM unnest($1::text[]) AS u(n)
+ WHERE NOT EXISTS (SELECT 1 FROM pgvigil.schema_version v WHERE v.version = u.n)`
+
+// SchemaCurrentRead is SchemaCurrentWith for a login that reads the tables and may not call the collector's
+// functions: serve's UI login (B6.2 part c #1: /readyz on the UI pool). The same answer: current, or the first
+// embedded name the store lacks.
+func SchemaCurrentRead(ctx context.Context, q RowQuerier) (bool, string, error) {
+	names, err := migrationNames()
+	if err != nil {
+		return false, "", err
+	}
+	var missing []string
+	if err := q.QueryRow(ctx, sqlSchemaMissingRead, names).Scan(&missing); err != nil {
+		latest := ""
+		if len(names) > 0 {
+			latest = names[len(names)-1]
+		}
+		return false, latest, fmt.Errorf("schema check (pgvigil.schema_version): %w", err)
+	}
+	ok, name := schemaState(names, missing)
+	return ok, name, nil
+}
+
 // RowQuerier is what SchemaCurrentWith reads through: a pool, a connection or a transaction
 type RowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

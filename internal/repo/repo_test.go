@@ -2,11 +2,14 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestSchemaStateSkipsALowerNumber: a store that applied 0110 before a lower-numbered file (0095) arrived is behind,
@@ -79,6 +82,76 @@ func TestSchemaMissingIsTheCollectorsDoor(t *testing.T) {
 	}
 	if strings.Contains(owner[1], "'schema_missing'") {
 		t.Errorf("schema_missing is on the owner-only list: %s", owner[1])
+	}
+}
+
+// TestSchemaReadIsTheReadersDoor (B6.2 part c #1): serve's check (SchemaCurrentRead) calls no pgvigil function - the
+// reader has EXECUTE on none of the collector's - and reads schema_version, which the newest apply_roles() lets the
+// reader SELECT (every table of the schema but ui_*)
+func TestSchemaReadIsTheReadersDoor(t *testing.T) {
+	if f := regexp.MustCompile(`pgvigil\.\w+\s*\(`).FindString(sqlSchemaMissingRead); f != "" {
+		t.Errorf("serve's schema read calls %s): the reader's login may not", f)
+	}
+	if !strings.Contains(sqlSchemaMissingRead, "pgvigil.schema_version") {
+		t.Errorf("serve's schema read does not read pgvigil.schema_version")
+	}
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := ""
+	for _, n := range names {
+		if b, err := migrations.ReadFile("sql/" + n); err == nil && strings.Contains(string(b), "FUNCTION pgvigil.apply_roles()") {
+			body = string(b)
+		}
+	}
+	if !regexp.MustCompile(`(?s)IF t\.relname LIKE 'ui\\_%' THEN\s*EXECUTE format\('REVOKE ALL ON %s FROM pgvigil_reader', t\.rel\);\s*ELSE\s*EXECUTE format\('GRANT SELECT ON %s TO pgvigil_reader', t\.rel\);`).MatchString(body) {
+		t.Errorf("the newest apply_roles() no longer gives the reader SELECT on every table but ui_* in the shape this test reads")
+	}
+}
+
+// TestSchemaCurrentReadAsTheReader (B6.2 part c #1, a box row): on a migrated store, as pgvigil_reader (SET LOCAL ROLE
+// in a transaction rolled back), SchemaCurrentWith fails 42501 (the collector's schema_missing) and SchemaCurrentRead
+// reads current, named by the newest file. Needs an owner's DSN of a scratch repository that may SET ROLE
+// pgvigil_reader: PGVIGIL_REPO_TEST_DSN (skipped without it).
+func TestSchemaCurrentReadAsTheReader(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	r, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := names[len(names)-1]
+	as := func(f func(q RowQuerier) (bool, string, error)) (bool, string, error) {
+		tx, err := r.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `SET LOCAL ROLE pgvigil_reader`); err != nil {
+			t.Fatalf("SET LOCAL ROLE pgvigil_reader (the DSN's login must be able to): %v", err)
+		}
+		return f(tx)
+	}
+	_, _, err = as(func(q RowQuerier) (bool, string, error) { return SchemaCurrentWith(ctx, q) })
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Errorf("as the reader, SchemaCurrentWith: err %v, want 42501 (the collector's door: the case the reader's read is for)", err)
+	}
+	if ok, name, err := as(func(q RowQuerier) (bool, string, error) { return SchemaCurrentRead(ctx, q) }); err != nil || !ok || name != latest {
+		t.Errorf("as the reader, SchemaCurrentRead = %v, %q, %v; want true, %s", ok, name, err, latest)
 	}
 }
 

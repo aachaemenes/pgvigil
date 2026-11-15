@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestProbes (B6.4, PM Added 27; the pass's X5, the lead's 23:4x B6.4-d): /livez answers 'ok' whatever the login and
@@ -41,7 +44,7 @@ func TestProbes(t *testing.T) {
 		{"login on, switch on", true, true, ready(true, "", nil), 200, 200, "ok", "login required"},
 	} {
 		calls = 0
-		s := &Server{log: lg, readyCheck: c.check, readyzOpen: !c.login || c.open}
+		s := &Server{log: lg, readyCheck: c.check, readyzWithoutLogin: c.open} // Open's own fields: readyz() decides
 		if c.login {
 			s.auth = &authState{}
 		}
@@ -64,5 +67,94 @@ func TestProbes(t *testing.T) {
 				t.Errorf("%s: /api/instances without a session %d %q, want 401", c.name, code, body)
 			}
 		}
+	}
+}
+
+// readerQuerier answers as serve's login (pgvigil_ui IN ROLE pgvigil_reader) does on a store: no EXECUTE on the
+// collector's functions (42501: apply_roles gives schema_missing and schema_latest to pgvigil_collector only), SELECT
+// on schema_version; drop = the binary's newest file is not applied
+type readerQuerier struct {
+	drop    bool
+	dropped string
+}
+
+type fakeRow struct {
+	missing []string
+	err     error
+}
+
+func (r fakeRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*(dest[0].(*[]string)) = r.missing
+	return nil
+}
+
+func (q *readerQuerier) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	switch {
+	case strings.Contains(sql, "pgvigil.schema_missing(") || strings.Contains(sql, "pgvigil.schema_latest("):
+		return fakeRow{err: &pgconn.PgError{Code: "42501", Message: "permission denied for function schema_missing"}}
+	case strings.Contains(sql, "pgvigil.schema_version") && len(args) == 1:
+		names, _ := args[0].([]string)
+		if q.drop && len(names) > 0 {
+			q.dropped = names[len(names)-1]
+			return fakeRow{missing: []string{q.dropped}}
+		}
+		return fakeRow{missing: []string{}}
+	}
+	return fakeRow{err: errors.New("a read the reader's login was not expected to make: " + sql)}
+}
+
+// TestReadyzOnTheReadersLogin (B6.2 part c #1): /readyz's own check (readyCheckOn, as Open wires it) on serve's login
+// answers ready on a current store and 'behind (needs <file>)' with a file missing - never 'does not answer', which a
+// call of the collector's schema_missing gives on that login (42501)
+func TestReadyzOnTheReadersLogin(t *testing.T) {
+	lg := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, drop := range []bool{false, true} {
+		q := &readerQuerier{drop: drop}
+		s := &Server{log: lg, readyCheck: readyCheckOn(q)}
+		ok, why := s.readiness(context.Background())
+		switch {
+		case !drop && (!ok || why != ""):
+			t.Errorf("current store on the reader's login: ready %v %q, want ready", ok, why)
+		case drop && (ok || q.dropped == "" || why != "the repository's schema is behind this binary (needs "+q.dropped+")"):
+			t.Errorf("a file missing on the reader's login: ready %v %q, want behind (needs %s)", ok, why, q.dropped)
+		}
+	}
+}
+
+// TestReadinessOutlivesTheProber (B6.2 part c #2): a prober that hangs up before the check ends (Kubernetes' 1 s
+// timeout) does not cancel the check: its answer is the repository's, and that is what the next 5 s are told
+func TestReadinessOutlivesTheProber(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil)), readyCheck: func(ctx context.Context) (bool, string, error) {
+		if err := ctx.Err(); err != nil { // the check still running when its context ends
+			return false, "", err
+		}
+		return true, "", nil
+	}}
+	gone, hangUp := context.WithCancel(context.Background())
+	hangUp()
+	if ok, why := s.readiness(gone); !ok {
+		t.Errorf("a prober gone before the check: ready %v %q, want ready (the repository answers)", ok, why)
+	}
+}
+
+// TestReadinessCanceledNotKept (B6.2 part c #2): a check that ends Canceled answers not ready but is not kept: the next
+// probe checks again
+func TestReadinessCanceledNotKept(t *testing.T) {
+	calls := 0
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil)), readyCheck: func(context.Context) (bool, string, error) {
+		calls++
+		if calls == 1 {
+			return false, "", context.Canceled
+		}
+		return true, "", nil
+	}}
+	if ok, _ := s.readiness(context.Background()); ok {
+		t.Errorf("a Canceled check answered ready")
+	}
+	if ok, why := s.readiness(context.Background()); !ok || calls != 2 {
+		t.Errorf("after a Canceled check: ready %v %q in %d check(s), want ready in 2 (the Canceled answer not kept)", ok, why, calls)
 	}
 }

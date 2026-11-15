@@ -2,9 +2,12 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
 // The probes (B6.4, PM Added 27; the B6 pass's X5; the lead's 23:4x B6.4-d): /livez - this process answers, nothing
@@ -24,12 +27,18 @@ type readyCache struct {
 	why string
 }
 
+// readyCheckOn: /readyz's check on serve's own pool (Open). Serve's login is the reader's: the check reads
+// schema_version itself (repo.SchemaCurrentRead), never the collector's schema_missing (B6.2 part c #1)
+func readyCheckOn(q repo.RowQuerier) func(context.Context) (bool, string, error) {
+	return func(ctx context.Context) (bool, string, error) { return repo.SchemaCurrentRead(ctx, q) }
+}
+
 func (s *Server) livez(w http.ResponseWriter, _ *http.Request) {
 	probeReply(w, http.StatusOK, "ok")
 }
 
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
-	if !s.readyzOpen {
+	if s.auth != nil && !s.readyzWithoutLogin { // the login on and web.readyz_without_login not set
 		probeReply(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -58,10 +67,16 @@ func (s *Server) readiness(ctx context.Context) (bool, string) {
 	case s.readyCheck == nil:
 		c.ok, c.why = false, "no readiness check is set"
 	default:
-		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		// the check's own 3 s, not the prober's: a prober that hangs up first (Kubernetes' 1 s) does not cut the check
+		// whose answer the next 5 s are told (B6.2 part c #2)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		ok, needs, err := s.readyCheck(cctx)
 		cancel()
 		switch {
+		case errors.Is(err, context.Canceled):
+			// not the repository's answer: not ready now, not kept
+			s.log.Warn("readyz: the check was cancelled", "err", err)
+			return false, "the repository does not answer"
 		case err != nil:
 			// the error's text stays in the log: it can name the login and the repository's address
 			s.log.Warn("readyz: the repository did not answer", "err", err)

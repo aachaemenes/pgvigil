@@ -24,7 +24,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/logparse"
-	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
 //go:embed dist
@@ -42,11 +41,11 @@ type Server struct {
 	hosts map[string]bool
 	// auth is the UI login; nil = off (a loopback listen that asked for it).
 	auth *authState
-	// readyCheck and readyzOpen: /readyz's check (B6.4: the repository answers, its schema current) and whether
-	// /readyz answers without a session (the login off, or web.readyz_without_login); probes.go
-	readyCheck func(context.Context) (bool, string, error)
-	readyzOpen bool
-	ready      *readyCache // shared by renderCopy's copies (a pointer: the copy never copies its lock)
+	// readyCheck and readyzWithoutLogin: /readyz's check (B6.4: the repository answers, its schema current) and
+	// web.readyz_without_login; /readyz answers without a session while auth is nil or that is set (probes.go)
+	readyCheck         func(context.Context) (bool, string, error)
+	readyzWithoutLogin bool
+	ready              *readyCache // shared by renderCopy's copies (a pointer: the copy never copies its lock)
 	// tls says the listener is TLS: HSTS is sent and the session cookie is Secure.
 	tls bool
 	// actions is the cancel / terminate door (actions.go); never nil after Open.
@@ -200,8 +199,8 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		}
 	}
 	// B6.4: /readyz's check - the repository answers on this pool and its schema is current (run's own check)
-	s.readyCheck = func(ctx context.Context) (bool, string, error) { return repo.SchemaCurrentWith(ctx, s.pool) }
-	s.readyzOpen = s.auth == nil || o.ReadyzWithoutLogin
+	s.readyCheck = readyCheckOn(s.pool)
+	s.readyzWithoutLogin = o.ReadyzWithoutLogin
 	return s, nil
 }
 

@@ -222,10 +222,12 @@ were: a disable written through another serve reaches it once its reads work aga
 their words:
 
 - `GET /livez` - `200 ok` while the process answers. It reads nothing.
-- `GET /readyz` - `200 ok` while the repository answers and its schema is current (the check `pgvigil run` makes at its
-  start), else `503 not ready: <why>` (`the repository does not answer`, or `the repository's schema is behind this
-  binary (needs <migration>)`). The answer is kept 5 seconds: a burst of probes runs one check. The repository's own
-  error stays in the log (it can name the login and the address).
+- `GET /readyz` - `200 ok` while the repository answers and its schema is current (the answer `pgvigil run` checks at
+  its start, read from `pgvigil.schema_version` on serve's own login), else `503 not ready: <why>` (`the repository
+  does not answer`, or `the repository's schema is behind this binary (needs <migration>)`). The answer is kept 5
+  seconds: a burst of probes runs one check. The check has its own 3 seconds: a probe that gives up sooner does not cut
+  it, and what the next probes are told is the repository's answer. The repository's own error stays in the log (it
+  can name the login and the address).
 
 `/readyz` is open while the UI login is off. With the login on it answers `404` unless the configuration opens it:
 
