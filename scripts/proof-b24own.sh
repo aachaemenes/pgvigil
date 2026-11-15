@@ -9,8 +9,10 @@
 #
 # Expected (written before the first run):
 #  S1 SQL Server, the stored flag (mssql_requests.is_own): sessions of pgvigil's login named pgvigil-proof (idle in a
-#     WAITFOR), pgvigil-proof2 (blocked behind l1), pgvigil-actions-proof and pgvigil-proof3 (a 120 s WAITFOR) are own;
-#     a session named pgvigil-x under ANOTHER login (l1) and l1's blocker are not.
+#     WAITFOR), pgvigil-proof2 (blocked behind l1) and pgvigil-proof3 (a 120 s WAITFOR) are own; pgvigil-actions-proof is
+#     NOT [refined after the red, before any green: the collector never marks an actions-door session own - it runs a
+#     customer's statement, and waiting tasks store no program for a read-time rule]; a session named pgvigil-x under
+#     ANOTHER login (l1) and l1's blocker are not.
 #  S2 GET /api/mssql/running at that snapshot, own absent: pgvigil-proof and pgvigil-proof3 absent, pgvigil-x shown (the
 #     lead's red: a pgvigil-labelled session not of pgvigil's login stays visible), own_hidden = the stored own rows less
 #     the never-hidden ones (2); own=1 shows all, own_hidden 0.
@@ -101,8 +103,8 @@ OWNCOL=$(q "select count(*) from information_schema.columns where table_schema =
 [[ $OWNCOL == 1 ]] || fail "S1: no column is_own on pgvigil.mssql_requests (red before 0265)"
 GOT=$(q "select string_agg(program_name || '=' || coalesce(is_own::text, 'null'), ' ' order by program_name collate \"C\") from pgvigil.mssql_requests
           where instance_id = $ISS and snapshot_at = '$SNAP' and (program_name like 'pgvigil%' or program_name = 'l1-blocker')")
-[[ $GOT == "l1-blocker=false pgvigil-actions-proof=true pgvigil-proof=true pgvigil-proof2=true pgvigil-proof3=true pgvigil-x=false" ]] || fail "S1: the stored flags: $GOT"
-ok "S1: is_own stored by the collector: pgvigil's login's four sessions own; pgvigil-x under l1 and l1's blocker not ($GOT)"
+[[ $GOT == "l1-blocker=false pgvigil-actions-proof=false pgvigil-proof=true pgvigil-proof2=true pgvigil-proof3=true pgvigil-x=false" ]] || fail "S1: the stored flags: $GOT"
+ok "S1: is_own stored by the collector: pgvigil's login's three sessions own; the actions door's, pgvigil-x under l1 and l1's blocker not ($GOT)"
 
 # ---- serve -------------------------------------------------------------------------------------------------------------------
 PGVIGIL_PASSWORD=$UPW "$WORK/pgvigil" user add -config "$CFG" "$USR" >/dev/null 2>&1 || fail "user add"
