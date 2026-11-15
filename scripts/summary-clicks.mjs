@@ -111,8 +111,17 @@ const reset = async (hash, load = false) => {
   await sleep(250); await drawn(); await ev('window.scrollTo(0, 0)');
 };
 
+// the demo writes samples while the walk runs, so a number in a text can move between the read and the click: a
+// text is found again by its SHAPE (each number any number), and an instance page's text by its words where its
+// place moved (a reason added or gone above it)
+const HELP = String.raw`
+  const esc = s => s.replace(/[.*+?^{}$()|[\]\\]/g, '\\$&');
+  const shape = s => esc(s).replace(/[0-9]+(?:[.,][0-9]+)*/g, '[0-9][0-9.,]*');
+  const normT = s => s.replace(/\s+/g, ' ').trim();
+  const sameShape = (a, b) => new RegExp('^' + shape(b) + '$').test(a);
+`;
 // the page's parts as in-page code: the two grids, the strip, the counts line
-const PARTS = `
+const PARTS = HELP + `
   const upperT = () => document.querySelector('main .grid-wrap.tests table.grid');
   const lowerT = () => document.querySelector('main .summary-instances table.grid');
   const heads = t => t ? [...t.querySelectorAll('thead tr:first-child > th')] : [];
@@ -130,7 +139,12 @@ const PARTS = `
     if (d.part === 'instcell') return rowByInst(lowerT(), d.row)?.children[d.col];
     if (d.part === 'strip') return stripRow(d.row);
     if (d.part === 'counts') return document.querySelector('main p.counts');
-    if (d.part === 'inst') { let e = document.querySelector('main'); for (const i of d.path) { e = e?.children[i]; } return e ?? null; }
+    if (d.part === 'inst') {
+      const m = document.querySelector('main'); let e = m; for (const i of d.path) { e = e?.children[i]; }
+      const holds = x => !!x && [...x.childNodes].some(n => n.nodeType === 3 && sameShape(normT(n.textContent), d.text));
+      if (holds(e)) return e;
+      return [...(m?.querySelectorAll('*') ?? [])].find(holds) ?? null;
+    }
     return null;
   };
   // the text range a person clicks: the target's own text, or (strip, counts) the words d.text inside it
@@ -143,6 +157,8 @@ const PARTS = `
     // the first text node that holds the words' start; the range runs to the words' end or the node's end
     const head = words.slice(0, Math.min(words.length, 12));
     for (const x of nodes) { const i = x.textContent.indexOf(head); if (i >= 0) { r.setStart(x, i); r.setEnd(x, Math.min(x.textContent.length, i + words.length)); return r; } }
+    const re = new RegExp(shape(head));
+    for (const x of nodes) { const mm = re.exec(x.textContent); if (mm) { r.setStart(x, mm.index); r.setEnd(x, Math.min(x.textContent.length, mm.index + words.length)); return r; } }
     return null;
   };
 `;
@@ -159,6 +175,8 @@ const enumerate = full => ev(`(() => { ${PARTS}
     for (const e of m.querySelectorAll('*')) {
       if (e.closest('select, option, input, textarea, script, style, svg, [hidden]')) continue;
       const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
+      // drawn off the page (a screen reader's words: position absolute, left -10000px): nobody clicks it
+      if (r.right <= 0 || r.left >= document.documentElement.scrollWidth) continue;
       const base = e.closest('h1, h2, h3, h4, h5, h6') ? 'heading' : e.closest('table.props th, dt') ? 'label' : e.closest('table.props td, dd') ? 'value'
         : e.closest('a, button') ? 'control' : e.closest('[data-nolink]') ? 'nolink' : 'text';
       for (const n of e.childNodes) {
