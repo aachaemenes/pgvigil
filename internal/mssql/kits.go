@@ -28,14 +28,18 @@ func (kitsCollector) DefaultInterval() time.Duration { return 24 * time.Hour }
 func (kitsCollector) Applies(Info) (bool, string)    { return true, "" }
 
 // kitVersionsSQL reads the procedures in the database it runs in (the connection's, or master's through
-// master.sys.sp_executesql): the name, modify_date, whether the definition is readable and the three snippets
+// master.sys.sp_executesql): the name, modify_date, whether the definition is readable and the three snippets. The
+// search is case-insensitive whatever the database's collation (DarlingData writes '@version', FRK '@Version'; on a
+// case-sensitive or binary collation a plain PATINDEX misses one of them) and takes the assignment with or without
+// spaces around its '=' (a parameter's declaration, '@version varchar(30) = NULL', has a type there, not a quote)
 var kitVersionsSQL = `SELECT DB_NAME() AS database_name, o.name AS procedure_name, CONVERT(varchar(33), o.modify_date, 126) AS modify_date,
        CASE WHEN d.def IS NULL THEN 0 ELSE 1 END AS readable,
-       SUBSTRING(d.def, NULLIF(PATINDEX(N'%@Version =%', d.def), 0), 120) AS v1,
-       SUBSTRING(d.def, NULLIF(PATINDEX(N'%@version[_]date =%', d.def), 0), 40) AS v2,
+       SUBSTRING(d.def, COALESCE(NULLIF(PATINDEX(N'%@version = ''%', d.def), 0), NULLIF(PATINDEX(N'%@version=''%', d.def), 0),
+                                 NULLIF(PATINDEX(N'%@version =''%', d.def), 0), NULLIF(PATINDEX(N'%@version= ''%', d.def), 0)), 120) AS v1,
+       SUBSTRING(d.def, COALESCE(NULLIF(PATINDEX(N'%@version[_]date =%', d.def), 0), NULLIF(PATINDEX(N'%@version[_]date=%', d.def), 0)), 40) AS v2,
        SUBSTRING(d.def, NULLIF(PATINDEX(N'%Who Is Active? v%', d.def), 0), 40) AS v3
   FROM sys.procedures o
-  CROSS APPLY (SELECT OBJECT_DEFINITION(o.object_id) AS def) d
+  CROSS APPLY (SELECT OBJECT_DEFINITION(o.object_id) COLLATE Latin1_General_CI_AS AS def) d
  WHERE o.schema_id = 1 AND o.name IN (` + kitNames() + `)`
 
 func kitNames() string {
