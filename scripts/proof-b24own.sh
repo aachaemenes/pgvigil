@@ -178,7 +178,8 @@ pgbg pgvigil-proof2 "$PGCOL" "select * from hold"
 for _ in $(seq 1 30); do [[ $(psql "$PGVIGIL_ADMIN_DSN dbname=$TGT" -XAtq -c "select count(*) from pg_stat_activity where application_name in ('pgvigil-x', 'pgvigil-proof', 'pgvigil-proof2')") == 3 ]] && break; sleep 0.5; done
 col pg activity
 GOTP=$(q "select string_agg(application_name || '=' || coalesce(is_own::text, 'null'), ' ' order by application_name collate \"C\") from pgvigil.activity_sample
-           where instance_id = $IPG and snapshot_at = (select max(snapshot_at) from pgvigil.activity_sample where instance_id = $IPG) and application_name like 'pgvigil-%'")
+           where instance_id = $IPG and snapshot_at = (select max(snapshot_at) from pgvigil.activity_sample where instance_id = $IPG)
+             and application_name in ('pgvigil-proof', 'pgvigil-proof2', 'pgvigil-x')")
 [[ $GOTP == "pgvigil-proof=true pgvigil-proof2=true pgvigil-x=false" ]] || fail "P1: the stored flags: $GOTP"
 ok "P1: is_own stored: the collector's login's backends own, pgvigil-x under another login not"
 get "/api/activity?instance=$IPG" >/dev/null; PA=$(progs sessions)
