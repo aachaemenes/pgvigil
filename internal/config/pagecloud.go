@@ -57,6 +57,12 @@ func PageCloudOn() bool {
 	return d != nil && d.PageCloudBlocks
 }
 
+// PageAWSProfileListed says whether pgvigil.yaml's doors.page_aws_profiles lists the profile (the lead's Q5).
+func PageAWSProfileListed(profile string) bool {
+	d := pageCloudDoor.Load()
+	return d != nil && slices.Contains(d.PageAWSProfiles, profile)
+}
+
 // PageCloudBlocksOff is the refusal while the switch is off.
 const PageCloudBlocksOff = "off on this install: doors.page_cloud_blocks in pgvigil.yaml lets an instance of Admin > Instances carry an aws: or azure: block (its reads run under this host's own cloud identity)"
 

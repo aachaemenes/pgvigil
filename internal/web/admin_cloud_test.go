@@ -131,3 +131,48 @@ func TestInstanceCloudWriteOnAStore(t *testing.T) {
 		t.Error("the clear left the block")
 	}
 }
+
+// B24p task 6 (fold 8): an approved proposal's block from its own identity - aws for a PostgreSQL proposal of an AWS
+// source (region and DB instance from its key, the cluster from its tag), none for SQL Server; azure for an azuresqldb
+// proposal (subscription and resource group from its tags, the server from its key, the source's cloud); the source's
+// profile copied only while the switch is on AND doors.page_aws_profiles lists it (Q5). Recorded proposals' shapes
+// (discover/aws.go, discover/azure.go). The blocks pass the store's shape (config.PageCloudShape).
+func TestProposalCloud(t *testing.T) {
+	dir := t.TempDir()
+	awsSet, azSet := filepath.Join(dir, "aws.json"), filepath.Join(dir, "az.json")
+	_ = os.WriteFile(awsSet, []byte(`{"kind":"aws","profile":"prod-read","regions":["us-east-2"]}`), 0o600)
+	_ = os.WriteFile(azSet, []byte(`{"kind":"azure","cloud":"usgov"}`), 0o600)
+	awsSrc, azSrc := &sourceRow{Kind: "aws", Ref: "file:" + awsSet}, &sourceRow{Kind: "azure", Ref: "file:" + azSet}
+	tags := []string{"account:123456789012", "cloud:aws", "cluster:dba-lab-pg", "region:us-east-2", "role:writer"}
+	defer config.SetPageCloud(config.Doors{})
+	config.SetPageCloud(config.Doors{})
+	a, z, note := proposalCloud(awsSrc, "aws:123456789012:us-east-2:instance:dba-lab-pg-1", config.EnginePostgres, "aurora", tags)
+	if a == nil || z != nil || a.Region != "us-east-2" || a.DBInstance != "dba-lab-pg-1" || a.Cluster != "dba-lab-pg" || a.Profile != "" || !strings.Contains(note, "page_cloud_blocks") {
+		t.Fatalf("an Aurora member, the switch off: %+v %+v %q", a, z, note)
+	}
+	if why := config.PageCloudShape(config.PageInstance{Engine: config.EnginePostgres, AWS: a}); why != "" {
+		t.Errorf("the approve's aws block fails the store's shape: %s", why)
+	}
+	config.SetPageCloud(config.Doors{PageCloudBlocks: true})
+	if a, _, note := proposalCloud(awsSrc, "aws:123456789012:us-east-2:instance:dba-lab-pg-1", config.EnginePostgres, "aurora", tags); a.Profile != "" || !strings.Contains(note, "page_aws_profiles") {
+		t.Errorf("the switch on, the profile unlisted: %+v %q", a, note)
+	}
+	config.SetPageCloud(config.Doors{PageCloudBlocks: true, PageAWSProfiles: []string{"prod-read"}})
+	if a, _, note := proposalCloud(awsSrc, "aws:123456789012:us-east-2:instance:dba-lab-pg-1", config.EnginePostgres, "aurora", tags); a.Profile != "prod-read" || note != "" {
+		t.Errorf("the switch on, the profile listed: %+v %q", a, note)
+	}
+	if a, z, _ := proposalCloud(awsSrc, "aws:123456789012:us-east-2:instance:ms1", config.EngineSQLServer, "rds", tags); a != nil || z != nil {
+		t.Errorf("an RDS SQL Server proposal got a block: %+v %+v (aws: on SQL Server waits for 390b)", a, z)
+	}
+	ztags := []string{"cloud:azure", "region:usgovvirginia", "resource-group:rg-sql", "subscription:0b1f6471-1bf0-4dda-aec3-111122223333"}
+	a, z, _ = proposalCloud(azSrc, "azure:0b1f6471-1bf0-4dda-aec3-111122223333:sql:srv1/app", config.EngineSQLServer, "azuresqldb", ztags)
+	if a != nil || z == nil || z.Subscription != "0b1f6471-1bf0-4dda-aec3-111122223333" || z.ResourceGroup != "rg-sql" || z.Server != "srv1" || z.Cloud != "usgov" {
+		t.Fatalf("an Azure SQL Database: %+v %+v", a, z)
+	}
+	if why := config.PageCloudShape(config.PageInstance{Engine: config.EngineSQLServer, Platform: "azuresqldb", Azure: z}); why != "" {
+		t.Errorf("the approve's azure block fails the store's shape: %s", why)
+	}
+	if a, z, _ := proposalCloud(azSrc, "azure:0b1f6471-1bf0-4dda-aec3-111122223333:sql:srv1/app", config.EngineSQLServer, "azuresqlmi", ztags); a != nil || z != nil {
+		t.Errorf("a proposal that is not azuresqldb got a block: %+v %+v", a, z)
+	}
+}

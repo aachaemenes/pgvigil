@@ -343,6 +343,11 @@ func cloudPart(in map[string]any) (*config.PageAWS, *config.PageAzure, bool, err
 // 9): a cloud refusal rolls the add or edit back and keeps its own audit row; the first call's refusal is committed
 // as it is (its audit row with it)
 func (s *Server) writeWithCloud(ctx context.Context, pay, cloud map[string]any) (importAnswer, json.RawMessage, error) {
+	return s.writeImportsWith(ctx, "import_admin_instance", pay, cloud)
+}
+
+// writeImportsWith runs fn (import_admin_instance or import_admin_decision) and the cloud set in one transaction
+func (s *Server) writeImportsWith(ctx context.Context, fn string, pay, cloud map[string]any) (importAnswer, json.RawMessage, error) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 	tx, err := s.actions.audit.Begin(wctx)
@@ -362,7 +367,7 @@ func (s *Server) writeWithCloud(ctx context.Context, pay, cloud map[string]any) 
 		}
 		return a, out, nil
 	}
-	ans, raw, err := call("import_admin_instance", pay)
+	ans, raw, err := call(fn, pay)
 	if err != nil {
 		return ans, raw, err
 	}
@@ -1727,12 +1732,14 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	op, id := str(in, "op"), str(in, "proposal_id")
 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "proposal_id": id, "file_names": a.fileNames()}
 	var restore func()
+	var cloudPay map[string]any // B24p task 6: the approved instance's cloud block, from the proposal's own identity
 	if op == "approve" || op == "test" {
 		var src, server, engine, host string
 		var port *int
-		var db, login *string
-		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
-			Scan(&src, &server, &engine, &host, &port, &db, &login)
+		var db, login, platform *string
+		var ptags []string
+		err := s.pool.QueryRow(ctx, `SELECT source, server, engine, host, port, dbname, login, platform, tags FROM pgvigil.admin_proposals WHERE proposal_id::text = $1`, id).
+			Scan(&src, &server, &engine, &host, &port, &db, &login, &platform, &ptags)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeErr(w, http.StatusConflict, fmt.Errorf("no proposal %s", id))
 			return
@@ -1806,6 +1813,12 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 			s.reply(w, r, map[string]any{"ok": okc, "detail": detail}, nil)
 			return
 		}
+		if aws, az, note := proposalCloud(sr, server, engine, orZero(platform), ptags); aws != nil || az != nil {
+			cloudPay = map[string]any{"op": "set", "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames(), "aws": aws, "azure": az}
+			if note != "" {
+				s.log.Info("admin proposal: the source's profile is not copied", "proposal", id, "why", note)
+			}
+		}
 		for _, k := range []string{"confirm_master", "confirm_autopause", "confirm_duplicate"} {
 			if v, ok := in[k].(bool); ok && v {
 				pay[k] = true
@@ -1823,7 +1836,16 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 			restore = func() { _ = config.RemoveSecret(a.secretDir(), ref) } // this attempt's own file only
 		}
 	}
-	ans, raw, err := s.callImport(ctx, "import_admin_decision", pay)
+	var ans importAnswer
+	var raw json.RawMessage
+	var err error
+	if cloudPay != nil {
+		// the decision and the block in ONE transaction on the audit login (B24p's fold 8): never an approved
+		// proposal with its block lost
+		ans, raw, err = s.writeImportsWith(ctx, "import_admin_decision", pay, cloudPay)
+	} else {
+		ans, raw, err = s.callImport(ctx, "import_admin_decision", pay)
+	}
 	if err != nil {
 		if restore != nil {
 			restore()
@@ -1868,4 +1890,61 @@ func (s *Server) testConfigured(ctx context.Context, name string) (testResult, b
 		}
 	}
 	return testConnectionList(ctx, engine, dsn, sec, in, cfg), true
+}
+
+// proposalCloud is an approved proposal's cloud block from its own identity (B24p task 6, fold 8): aws only for a
+// PostgreSQL proposal of an AWS source - its region and DB instance from the proposal's server key
+// (aws:<account>:<region>:instance:<id>), its cluster from its cluster: tag (an Aurora member reads the cluster's log
+// group); azure only for an azuresqldb proposal of an Azure source - the subscription and resource group from its tags,
+// the logical server from its key (azure:<sub>:sql:<server>/<db>), the source's cloud. The source's AWS profile is
+// copied only while doors.page_cloud_blocks is on AND doors.page_aws_profiles lists it (the lead's Q5); note says why
+// it was not. The block's target is the proposal's own host (the provider's endpoint), so the name match holds.
+func proposalCloud(sr *sourceRow, server, engine, platform string, tags []string) (*config.PageAWS, *config.PageAzure, string) {
+	tag := func(k string) string {
+		for _, t := range tags {
+			if v, ok := strings.CutPrefix(t, k+":"); ok {
+				return v
+			}
+		}
+		return ""
+	}
+	settings := func() cloudSettings {
+		var cs cloudSettings
+		if v, err := resolveRef(sr.Ref); err == nil {
+			_ = json.Unmarshal([]byte(v), &cs)
+		}
+		return cs
+	}
+	switch {
+	case sr.Kind == "aws" && engine == config.EnginePostgres && strings.HasPrefix(server, "aws:"):
+		p := strings.SplitN(server, ":", 5)
+		if len(p) != 5 || p[3] != "instance" {
+			return nil, nil, ""
+		}
+		a := &config.PageAWS{Region: p[2], DBInstance: p[4], Cluster: tag("cluster")}
+		note := ""
+		if prof := settings().Profile; prof != "" {
+			switch {
+			case !config.PageCloudOn():
+				note = "the source's profile " + prof + " is not copied: " + config.PageCloudBlocksOff
+			case !config.PageAWSProfileListed(prof):
+				note = "the source's profile " + prof + " is not copied: doors.page_aws_profiles in pgvigil.yaml does not list it"
+			default:
+				a.Profile = prof
+			}
+		}
+		return a, nil, note
+	case sr.Kind == "azure" && engine == config.EngineSQLServer && platform == "azuresqldb" && strings.HasPrefix(server, "azure:"):
+		_, rest, ok := strings.Cut(server, ":sql:")
+		srv, _, _ := strings.Cut(rest, "/")
+		if !ok || srv == "" || tag("subscription") == "" || tag("resource-group") == "" {
+			return nil, nil, ""
+		}
+		cloud := settings().Cloud
+		if cloud == "public" {
+			cloud = ""
+		}
+		return nil, &config.PageAzure{Subscription: tag("subscription"), ResourceGroup: tag("resource-group"), Server: srv, Cloud: cloud}, ""
+	}
+	return nil, nil, ""
 }
