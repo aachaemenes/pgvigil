@@ -18,7 +18,8 @@ import (
 //   level 2: the panel's aggregate across the group (sum, avg, min, max, count, p95; a ratio takes avg, min, max).
 // Shapes: over_time (one series per group), top_over_time (the top N groups by their aggregate over the window, the
 // rest folded into '(other)' computed from the same level-1 values, so it is right for every aggregate), ranked (one
-// value per group over the window) and single (one value). Group-by: none, instance, tag (the value of one tag key; an
+// value per group over the window) and single (one value); ranked and single roll each instance up over the whole
+// window (level 1 with the window as its one bucket). Group-by: none, instance, tag (the value of one tag key; an
 // instance with two values of it counts in both, so a sum by tag is refused), database (the PostgreSQL database family
 // on one instance). Buckets: minute, hour, day (UTC days, said so) or auto (about 600 points).
 
@@ -308,6 +309,15 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 		roll = "sum(p.value)"
 	}
 	bucket := "to_timestamp(floor(extract(epoch FROM p.at) / $5) * $5)"
+	window := p.Shape == "single" || p.Shape == "ranked"
+	if window {
+		// one roll-up per instance (and database) over the whole window - a gauge's window average, an interval count's
+		// window total - before the aggregate across the group: per-bucket cells would weigh an instance by the buckets
+		// it has rows in (a 5-minute instance misses a partial hour) and a sum would add a gauge's hours together
+		bucket = "to_timestamp(floor(extract(epoch FROM $3::timestamptz) / $5) * $5)"
+		c.BucketSecs = int(to.Sub(from).Seconds())
+		c.UTCDays = false
+	}
 	var src, key string
 	hasWhere := false
 	switch {
@@ -384,7 +394,7 @@ func compilePanel(p PanelSpec, m catalogMetric, sc ComposeScope, from, to time.T
 	c.Read = fmt.Sprintf("pgvigil.metric_points(each instance%s, '%s', %s, %s): %s per instance%s per %s, then %s across the %s",
 		map[bool]string{true: " and each database", false: ""}[key == "d.datname"], m.Family,
 		from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339), map[bool]string{true: "summed", false: "averaged"}[roll == "sum(p.value)"],
-		map[bool]string{true: " and database", false: ""}[key == "d.datname"], bucketWords(c.BucketSecs), p.Aggregate,
+		map[bool]string{true: " and database", false: ""}[key == "d.datname"], map[bool]string{true: "the window", false: bucketWords(c.BucketSecs)}[window], p.Aggregate,
 		map[string]string{"none": "scope", "instance": "instances", "tag": p.TagKey + " values", "database": "databases"}[p.GroupBy])
 	return c, nil
 }

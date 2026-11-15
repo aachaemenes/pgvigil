@@ -156,6 +156,9 @@ func TestCompilePanel(t *testing.T) {
 		t.Error("a tag scope with no tag was compiled")
 	}
 	c, _ = compilePanel(PanelSpec{Aggregate: "avg", Shape: "single"}, composeRatio, ComposeScope{}, from, now, "app", now)
+	if !strings.Contains(c.SQL, "extract(epoch FROM $3::timestamptz) / $5") || c.BucketSecs != int(now.Sub(from).Seconds()) || c.UTCDays {
+		t.Errorf("a single value is one roll-up per instance over the window: bucket %d s\n%s", c.BucketSecs, c.SQL)
+	}
 	if !strings.Contains(c.SQL, "interval '15 minutes', $7) p") || c.Args[6] != "app" {
 		t.Errorf("the $database variable: %v\n%s", c.Args, c.SQL)
 	}

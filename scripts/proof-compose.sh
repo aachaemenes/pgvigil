@@ -21,7 +21,8 @@
 #  C6 database.deadlocks (a count per interval), over time, sum, hour: each full hour = 120 (A 60 one-minute counts of
 #     1, B 12 five-minute counts of 5 - summed per instance, then across), equal to a hand read of dbstats' differences.
 #  C7 a single value, avg of sessions.total = 20; the reply's read names metric_points and 'averaged per instance per
-#     hour'; bucket_secs 3600; utc_days false (a day bucket: true).
+#     the window'; bucket_secs = the window's seconds (refined after green2: a single value is one roll-up over the window,
+#     not a bucket); an over-time panel of day buckets says utc_days true.
 #  C8 database.deadlocks grouped by database on A alone: one series 'appdb' (60 a full hour); filtered is_not appdb: no row.
 #  R1 refused 400 in words: a ratio summed (database.cache_hit_pct), a sum by tag, an unknown metric, a top of 9 over
 #     time, a window of 2d.
@@ -164,9 +165,9 @@ ok "C6: a count per interval summed per instance, then across (120 a full hour),
 c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"single","bucket":"hour"}'); expect "$c" 200 "C7"
 python3 -c "
 import json,sys; d=json.load(open('$WORK/out.json')); r=d['rows']; v=dict(zip(r['columns'], r['rows'][0]))
-ok = abs(v['value']-20)<1e-9 and 'metric_points' in d['read'] and 'averaged per instance per hour' in d['read'] and d['bucket_secs']==3600 and d['utc_days'] is False
+ok = abs(v['value']-20)<1e-9 and 'metric_points' in d['read'] and 'averaged per instance per the window' in d['read'] and d['bucket_secs']==3*3600 and d['utc_days'] is False
 sys.exit(0 if ok else 1)" || fail "C7: $(head -c 400 "$WORK/out.json")"
-c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"single","bucket":"day"}'); expect "$c" 200 "C7 day"
+c=$(run '{"metric":"sessions.total","aggregate":"avg","shape":"over_time","bucket":"day"}'); expect "$c" 200 "C7 day"
 [[ $(python3 -c "import json; print(json.load(open('$WORK/out.json'))['utc_days'])") == True ]] || fail "C7: a day bucket not said UTC"
 ok "C7: a single value 20; the read named ($(python3 -c "import json; print(json.load(open('$WORK/out.json'))['read'][:90])")); a day bucket said UTC"
 c=$(run '{"metric":"database.deadlocks","aggregate":"sum","shape":"over_time","bucket":"hour","group_by":"database"}' "{\"kind\":\"instances\",\"instances\":[$IA]}"); expect "$c" 200 "C8"
