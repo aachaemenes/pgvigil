@@ -199,14 +199,18 @@ SELECT a.kind AS hold_kind, s.ack_id AS hold_id, 'ack' AS hold_source, s.channel
        s.instance_name, s.severity, s.source, s.setting, s.value, NULL::text AS detail, s.first_at, s.last_at, s.passes
   FROM pgvigil.ack_suppressed s JOIN pgvigil.acks a USING (ack_id)
 UNION ALL
-SELECT h.hold_kind, h.hold_id, CASE WHEN h.hold_kind = 'flapping' THEN 'rule' ELSE 'window' END, h.channel, h.finding_key,
+SELECT h.hold_kind, h.hold_id, CASE h.hold_kind WHEN 'flapping' THEN 'rule' WHEN 'attached' THEN 'anchor' ELSE 'window' END, h.channel, h.finding_key,
        h.instance_id, h.instance_name, h.severity, h.source, h.setting, h.value, h.detail, h.first_at, h.last_at, h.passes
   FROM pgvigil.alert_held h;
 
 DO $$
 BEGIN
   IF to_regtype('pgvigil.alert_hold_t') IS NULL THEN
-    CREATE TYPE pgvigil.alert_hold_t AS (kind text, hold_id bigint, via text);   -- via: 'ack' | 'window' | 'carry' | 'rule'
+    CREATE TYPE pgvigil.alert_hold_t AS (kind text, hold_id bigint, via text);   -- via: 'ack' | 'window' | 'carry' | 'rule' | 'anchor'
+  END IF;
+  -- task 403b K4: the anchor an 'attached' hold sits under (its finding key; hold_id holds its first send in microseconds)
+  IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'pgvigil.alert_hold_t'::regclass AND attname = 'anchor' AND NOT attisdropped) THEN
+    ALTER TYPE pgvigil.alert_hold_t ADD ATTRIBUTE anchor text;
   END IF;
 END $$;
 
@@ -234,7 +238,7 @@ BEGIN
 
   WITH h AS MATERIALIZED (
     SELECT x.channel, x.finding_key, x.instance_id, x.instance, x.severity, x.source, x.setting, x.value, x.detail,
-           (x.hold).kind AS kind, (x.hold).hold_id AS hold_id, (x.hold).via AS via
+           (x.hold).kind AS kind, (x.hold).hold_id AS hold_id, (x.hold).via AS via, (x.hold).anchor AS anchor
       FROM (SELECT DISTINCT ON (c.name, f.finding_key) c.name AS channel, f.finding_key, f.instance_id, f.instance,
                    f.severity, f.source, f.setting, f.value, f.detail,
                    pgvigil.alert_hold(p_at, c.name, f.instance, f.tags, f.finding_key, f.source, f.setting, f.value,
@@ -256,9 +260,11 @@ BEGIN
       severity = EXCLUDED.severity, value = EXCLUDED.value
   )
   INSERT INTO pgvigil.alert_held AS y (hold_kind, hold_id, channel, finding_key, instance_id, instance_name, severity,
-                                       source, setting, value, detail, first_at, last_at, passes)
+                                       source, setting, value, detail, first_at, last_at, passes, anchor_key,
+                                       anchor_first_sent_at)
   SELECT h.kind, h.hold_id, h.channel, h.finding_key, h.instance_id, h.instance, h.severity, h.source, h.setting,
-         h.value, h.detail, p_at, p_at, 1
+         h.value, h.detail, p_at, p_at, 1, h.anchor,
+         CASE WHEN h.kind = 'attached' THEN timestamptz 'epoch' + h.hold_id * interval '1 microsecond' END
     FROM h WHERE h.via <> 'ack'
   ON CONFLICT (hold_kind, hold_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at,
     passes = y.passes + 1, severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail,
@@ -433,12 +439,13 @@ CREATE OR REPLACE FUNCTION pgvigil.digest_items(p_channel text, p_since timestam
 RETURNS TABLE (instance text, check_name text, alerts bigint, first_at timestamptz, last_at timestamptz, severity text,
                detail text)
 LANGUAGE sql STABLE AS $$
-  SELECT coalesce(h.instance_name, 'pgvigil'), coalesce(h.source, '') || coalesce(': ' || h.setting, ''),
+  SELECT coalesce(h.instance_name, 'pgvigil'), coalesce(h.source, '') || coalesce(': ' || h.setting, '')
+           || CASE WHEN h.hold_kind = 'attached' THEN ' (attached under a standing alert)' ELSE '' END,
          count(DISTINCT h.finding_key), min(h.first_at), max(h.last_at),
          (array_agg(h.severity ORDER BY pgvigil.severity_rank(h.severity) DESC))[1],
          (array_agg(h.detail ORDER BY h.last_at DESC))[1]
     FROM pgvigil.alert_held h
-   WHERE h.hold_kind = 'digest' AND h.channel = p_channel AND h.last_at > p_since AND h.last_at <= p_until
+   WHERE h.hold_kind IN ('digest', 'attached') AND h.channel = p_channel AND h.last_at > p_since AND h.last_at <= p_until
    GROUP BY 1, 2
    ORDER BY max(pgvigil.severity_rank(h.severity)) DESC, 1, 2
 $$;
@@ -943,6 +950,87 @@ SELECT s.instance_id, s.state AS severity,
   JOIN pgvigil.metric_catalog c ON c.key = s.metric
  WHERE s.state IN ('warning', 'critical');
 
+-- ---- task 403b K4 (Changed 24): attachment under a standing CPU, blocking or deadlock alert ----------------------
+-- A new finding on an instance whose CPU, blocking or deadlock alert stands on a channel is held there as 'attached'
+-- (any channel kind: no new message, page or incident while the anchor stands), shown under the anchor (the Slack
+-- bot: one reply in the anchor's thread; the others: the anchor's recovery message lists it; a channel's digest), and
+-- released when the anchor resolves or stops counting: it then fires as itself, its line saying what it was attached
+-- to. A critical and an escalation are never held; an anchor is never attached itself.
+ALTER TABLE pgvigil.alert_held ADD COLUMN IF NOT EXISTS anchor_key text;              -- 'attached': the anchor's finding key
+ALTER TABLE pgvigil.alert_held ADD COLUMN IF NOT EXISTS anchor_first_sent_at timestamptz;   -- and its occurrence
+ALTER TABLE pgvigil.alert_held ADD COLUMN IF NOT EXISTS noticed_at timestamptz;       -- the Slack bot's reply in its thread
+ALTER TABLE pgvigil.alert_held DROP CONSTRAINT IF EXISTS alert_held_hold_kind_check;
+ALTER TABLE pgvigil.alert_held ADD CONSTRAINT alert_held_hold_kind_check
+  CHECK (hold_kind IN ('blackout', 'mute', 'digest', 'flapping', 'attached'));
+CREATE INDEX IF NOT EXISTS alert_held_anchor_idx ON pgvigil.alert_held (channel, anchor_key) WHERE hold_kind = 'attached';
+
+-- alert_anchor_checks: what makes a finding an anchor, seeded (the pass's finding 6): a rule finding by its rule's
+-- metric, any other finding by its exact source and check name. Words are never matched: 'an implicit transaction
+-- blocking', 'other processes use the CPU' and 'host CPU in IO wait' are not anchors.
+CREATE TABLE IF NOT EXISTS pgvigil.alert_anchor_checks (
+  match   text NOT NULL CHECK (match IN ('metric', 'check')),
+  source  text NOT NULL DEFAULT '',   -- match 'check': the finding's source, exactly ('' for a metric)
+  name    text NOT NULL,              -- match 'metric': the rule's metric_catalog key; 'check': the check's name, exactly
+  kind    text NOT NULL CHECK (kind IN ('cpu', 'blocking', 'deadlock')),
+  PRIMARY KEY (match, source, name)
+);
+INSERT INTO pgvigil.alert_anchor_checks (match, source, name, kind) VALUES
+  ('metric', '', 'sql_pct', 'cpu'), ('metric', '', 'total_pct', 'cpu'), ('metric', '', 'cpu_pct', 'cpu'),
+  ('metric', '', 'blocked', 'blocking'), ('metric', '', 'heads', 'blocking'), ('metric', '', 'waiting_lock', 'blocking'),
+  ('metric', '', 'deadlocks', 'deadlock'),
+  ('check', 'mssql_running', 'a blocking chain', 'blocking'),
+  ('check', 'mssql_xe', 'deadlocks in the last hour', 'deadlock')
+ON CONFLICT (match, source, name) DO NOTHING;
+GRANT SELECT ON pgvigil.alert_anchor_checks TO pgvigil_alerter, pgvigil_reader;
+
+-- alert_anchor_kind: cpu | blocking | deadlock when the finding is an anchor, else NULL
+CREATE OR REPLACE FUNCTION pgvigil.alert_anchor_kind(p_finding_key text, p_source text, p_setting text)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT coalesce(
+    (SELECT a.kind FROM pgvigil.alert_anchor_checks a
+      WHERE a.match = 'check' AND p_source IS DISTINCT FROM 'alert rule' AND a.source = p_source AND a.name = p_setting),
+    (SELECT a.kind FROM pgvigil.alert_rule_findings y
+       JOIN pgvigil.alert_rules r ON r.rule_id = y.rule_id
+       JOIN pgvigil.alert_anchor_checks a ON a.match = 'metric' AND a.name = r.metric
+      WHERE p_source = 'alert rule' AND pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) = p_finding_key
+      LIMIT 1))
+$$;
+
+-- alert_anchor: the anchor one alert on one channel attaches to at p_at, or none - an alert open on the channel on the
+-- same instance, of an anchor kind, that counts: no hold on it this pass (alert_mark logged none at p_at), not a
+-- flapping rule's. The alert attaches when it is not critical, not an anchor itself, and either is attached under that
+-- very occurrence already, or was never sent on the channel while the anchor's first send is at most 60 minutes old.
+CREATE OR REPLACE FUNCTION pgvigil.alert_anchor(p_at timestamptz, p_channel text, p_instance text, p_finding_key text,
+                                                p_source text, p_setting text, p_severity text)
+RETURNS TABLE (anchor_key text, anchor_first timestamptz) LANGUAGE sql STABLE AS $$
+  SELECT s.finding_key, s.first_sent_at
+    FROM pgvigil.alert_state s
+   WHERE p_severity IS DISTINCT FROM 'critical'
+     AND s.channel = p_channel AND s.cleared_at IS NULL AND s.instance_name = p_instance AND s.finding_key <> p_finding_key
+     AND pgvigil.alert_anchor_kind(p_finding_key, p_source, p_setting) IS NULL
+     AND pgvigil.alert_anchor_kind(s.finding_key, s.source, s.setting) IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_held_all h WHERE h.channel = p_channel AND h.finding_key = s.finding_key AND h.last_at >= p_at)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_rule_findings y
+                      WHERE s.source = 'alert rule' AND y.flapping_since IS NOT NULL
+                        AND pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) = s.finding_key)
+     AND (EXISTS (SELECT 1 FROM pgvigil.alert_held d
+                   WHERE d.hold_kind = 'attached' AND d.channel = p_channel AND d.finding_key = p_finding_key
+                     AND d.anchor_key = s.finding_key AND d.anchor_first_sent_at = s.first_sent_at)
+          OR (s.first_sent_at >= p_at - interval '60 minutes'
+              AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state st
+                               WHERE st.channel = p_channel AND st.finding_key = p_finding_key AND st.cleared_at IS NULL)))
+   ORDER BY s.first_sent_at DESC, s.finding_key
+   LIMIT 1
+$$;
+
+-- alert_attached_noticed: the Slack bot posted these attached alerts' replies in their anchor's thread
+CREATE OR REPLACE FUNCTION pgvigil.alert_attached_noticed(p_at timestamptz, p_channel text, p_keys text[])
+RETURNS void LANGUAGE sql AS $$
+  UPDATE pgvigil.alert_held SET noticed_at = p_at
+   WHERE hold_kind = 'attached' AND channel = p_channel AND finding_key = ANY (p_keys) AND noticed_at IS NULL
+$$;
+GRANT EXECUTE ON FUNCTION pgvigil.alert_attached_noticed(timestamptz, text, text[]) TO pgvigil_alerter;
+
 -- alert_hold: the first hold of one alert on one channel at p_at, by precedence, or NULL - called by alert_mark and,
 -- through the wiring line, alert_due. An ack blackout, silence or mute is 0073's (ack_rule_matches; a paused rule holds
 -- nothing); a window holds inside its span, a digest window only up to its ceiling; the digest carry-over (this
@@ -956,23 +1044,23 @@ CREATE OR REPLACE FUNCTION pgvigil.alert_hold(p_at timestamptz, p_channel text, 
                                               p_severity text, p_clear_after_secs int DEFAULT 600,
                                               p_digest boolean DEFAULT false)
 RETURNS pgvigil.alert_hold_t LANGUAGE sql STABLE AS $$
-  SELECT ROW(h.kind, h.id, h.via)::pgvigil.alert_hold_t
+  SELECT ROW(h.kind, h.id, h.via, h.anchor)::pgvigil.alert_hold_t
     FROM (
       SELECT CASE a.kind WHEN 'blackout' THEN 1 ELSE 2 END AS rank, 1 AS sub,
-             CASE a.kind WHEN 'blackout' THEN 'blackout' ELSE 'mute' END AS kind, a.ack_id AS id, 'ack' AS via
+             CASE a.kind WHEN 'blackout' THEN 'blackout' ELSE 'mute' END AS kind, a.ack_id AS id, 'ack' AS via, NULL::text AS anchor
         FROM pgvigil.acks a
        WHERE a.kind IN ('mute', 'silence', 'blackout') AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, p_at)
          AND a.paused_at IS NULL
          AND pgvigil.ack_rule_matches(a, p_instance, p_tags, p_finding_key, p_source, p_setting, p_value)
       UNION ALL
-      SELECT CASE w.action WHEN 'blackout' THEN 1 WHEN 'mute' THEN 2 ELSE 3 END, 2, w.action, w.window_id, 'window'
+      SELECT CASE w.action WHEN 'blackout' THEN 1 WHEN 'mute' THEN 2 ELSE 3 END, 2, w.action, w.window_id, 'window', NULL
         FROM pgvigil.alert_windows w
        WHERE w.ended_at IS NULL AND pgvigil.alert_window_live(w, p_at)
          AND pgvigil.alert_window_matches(w, p_instance, p_tags, p_source)
          AND (w.action <> 'digest'
               OR (p_digest AND pgvigil.severity_rank(p_severity) <= pgvigil.severity_rank(w.severity_ceiling)))
       UNION ALL
-      SELECT 3, 3, 'digest', d.hold_id, 'carry'
+      SELECT 3, 3, 'digest', d.hold_id, 'carry', NULL
         FROM pgvigil.alert_held d
         JOIN pgvigil.alert_windows w ON w.window_id = d.hold_id
        WHERE p_digest AND d.hold_kind = 'digest' AND d.channel = p_channel AND d.finding_key = p_finding_key
@@ -982,7 +1070,7 @@ RETURNS pgvigil.alert_hold_t LANGUAGE sql STABLE AS $$
          AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_state st
                           WHERE st.channel = p_channel AND st.finding_key = p_finding_key AND st.cleared_at IS NULL)
       UNION ALL
-      SELECT 4, 1, 'flapping', y.rule_id, 'rule'
+      SELECT 4, 1, 'flapping', y.rule_id, 'rule', NULL
         FROM pgvigil.alert_rule_findings y
        WHERE p_source = 'alert rule' AND y.flapping_since IS NOT NULL
          AND pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) = p_finding_key
@@ -990,6 +1078,9 @@ RETURNS pgvigil.alert_hold_t LANGUAGE sql STABLE AS $$
                       WHERE st.channel = p_channel AND st.finding_key = p_finding_key
                         AND st.last_sent_at >= y.flapping_since
                         AND pgvigil.severity_rank(st.severity) >= pgvigil.severity_rank(p_severity))
+      UNION ALL   -- task 403b K4: attached under an anchor standing on this channel (below every other hold)
+      SELECT 5, 1, 'attached', (extract(epoch FROM an.anchor_first) * 1000000)::bigint, 'anchor', an.anchor_key
+        FROM pgvigil.alert_anchor(p_at, p_channel, p_instance, p_finding_key, p_source, p_setting, p_severity) an
     ) h
    ORDER BY h.rank, h.sub, h.id
    LIMIT 1
