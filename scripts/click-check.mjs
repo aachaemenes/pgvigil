@@ -310,9 +310,9 @@ for (const sc of scopes) {
       if (rwWant && !verdict.startsWith('FAIL')) {
         // the landing holds the check's Server card row at the top of the view, with the focus (the jump follows the header)
         let at = null;
-        for (let i = 0; i < 40 && !(at = await ev(`(() => { const r = document.querySelector('main [data-row="${rwWant}"]'); if (!r || document.activeElement !== r) return null; const b = r.getBoundingClientRect(); return { top: Math.round(b.top), vh: innerHeight, addr: location.hash }; })()`)); i++) await sleep(250);
+        for (let i = 0; i < 40 && !(at = await ev(`(() => { const r = document.querySelector('main [data-row="${rwWant}"]'); if (!r || document.activeElement !== r) return null; const b = r.getBoundingClientRect(); return { top: Math.round(b.top), bars: Math.round(document.querySelector('#tabs')?.getBoundingClientRect().bottom ?? 0), vh: innerHeight, addr: location.hash }; })()`)); i++) await sleep(250);
         if (!at) verdict = `FAIL the landing's Server card row '${rwWant}' never took the focus`;
-        else if (at.top < 0 || at.top > at.vh / 3) verdict = `FAIL the row '${rwWant}' is not at the top of the view (${at.top} px of ${at.vh})`;
+        else if (at.top < at.bars || at.top > at.vh / 3) verdict = `FAIL the row '${rwWant}' is not at the top of the view below the header and tabs (${at.top} px; the bars end at ${at.bars}, the view ${at.vh})`;
         else if (paramsOf(at.addr).get('row')) verdict = `FAIL the address keeps row= after the jump (${at.addr})`;
         else landed += `, the Server card row '${rwWant}' at ${at.top} px, focused`;
       }
@@ -422,7 +422,7 @@ else {
   const pos = sh.ih.map(h => ddOrder.indexOf(h)), dd = pos.filter(x => x >= 0), firstOwn = pos.findIndex(x => x < 0);
   const inOrder = sh.ih[0] === 'Instance' && dd.every((x, i) => i === 0 || x > dd[i - 1]) && (firstOwn < 0 || pos.slice(firstOwn).every(x => x < 0));
   shape('instance grid columns', sh.ih.slice(0, 26).join(' | '), inOrder, inOrder ? `Instance, ${dd.length - 1} of DBA Dash's columns in its order, then pgvigil's` : 'not in DBA Dash\'s order');
-  shape('status text cells', sh.plainLinks.length ? sh.plainLinks.join(', ') : 'every one with a text is a link', !sh.plainLinks.length, sh.plainLinks.length ? 'a status text that answers no click (Allen 11-14 18:25)' : 'Memory Dump, Crash restarts, Is Agent Running and DB Mail: a link wherever they hold a text');
+  shape('status text cells', sh.plainLinks.length ? sh.plainLinks.join(', ') : 'every one with a text is a link', !sh.plainLinks.length, sh.plainLinks.length ? 'a status text that answers no click' : 'Memory Dump, Crash restarts, Is Agent Running and DB Mail: a link wherever they hold a text');
   for (const [inst, want] of Object.entries(expectText)) for (const [col, text] of Object.entries(want)) {
     const got = sh.cells[inst] && sh.cells[inst][col];
     const good = !!got && (text.endsWith('*') ? got.text.startsWith(text.slice(0, -1)) : got.text === text);
@@ -545,7 +545,7 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(250);
     const dot = await ev(`(() => { const d = document.querySelector('#crumb .band-dot'); return d ? d.getAttribute('aria-label') : null; })()`);
     pm(`${eng} ${inst.name}`, 'breadcrumb dot', eng, String(dot), ['OK', 'Warning', 'Critical', 'Offline'].includes(dot), 'the band dot before the name in the breadcrumb, named by its word');
-    // the own-page status texts (the lead 14:2x, 2A): a SQL Server Summary's Memory dumps / DB Mail reason - in the
+    // the own-page status texts: a SQL Server Summary's Memory dumps / DB Mail reason - in the
     // header, the verdict card and the Not OK line - is a link that jumps to its Server card row, the address unchanged
     if (eng === 'sqlserver') for (const [where, sel] of [['header reason', 'main .inst-reason [data-group="KEY"]'], ['verdict reason', 'main .verdict-reasons li[data-group="KEY"]'], ['Not OK name', 'main p.counts [data-group="KEY"]']]) for (const key of ['dumps', 'dbmail']) {
       const q = sel.replace('KEY', key);
@@ -555,10 +555,10 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
         window.scrollTo(0, 0); a.click();
         for (let i = 0; i < 20 && document.activeElement?.getAttribute('data-row') !== ${JSON.stringify(key)}; i++) await new Promise(r => setTimeout(r, 150));
         const r = document.querySelector('main [data-row="${key}"]'), b = r?.getBoundingClientRect();
-        return { link: true, text: a.textContent.trim().slice(0, 50), focused: document.activeElement === r && !!r, top: b ? Math.round(b.top) : null, vh: innerHeight, addr: location.hash }; })()`, true);
+        return { link: true, text: a.textContent.trim().slice(0, 50), focused: document.activeElement === r && !!r, top: b ? Math.round(b.top) : null, bars: Math.round(document.querySelector('#tabs')?.getBoundingClientRect().bottom ?? 0), vh: innerHeight, addr: location.hash }; })()`, true);
       if (!got) { pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, 'not on this page', true, `not seen: ${key} is not a reason of ${inst.name} now`); continue; }
-      const good = got.link && got.focused && got.top != null && got.top >= 0 && got.top <= got.vh / 3 && got.addr === was;
-      pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, got.link ? `'${got.text}': focus ${got.focused}, the row at ${got.top} px of ${got.vh}, the address ${got.addr === was ? 'unchanged' : 'now ' + got.addr}` : `'${got.text}' is text`, good,
+      const good = got.link && got.focused && got.top != null && got.top >= got.bars && got.top <= got.vh / 3 && got.addr === was;
+      pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, got.link ? `'${got.text}': focus ${got.focused}, the row at ${got.top} px (the bars end at ${got.bars}) of ${got.vh}, the address ${got.addr === was ? 'unchanged' : 'now ' + got.addr}` : `'${got.text}' is text`, good,
         "a status text whose page is this one jumps to its Server card row: at the top of the view, focused, the address unchanged");
       await ev('window.scrollTo(0, 0)');
     }

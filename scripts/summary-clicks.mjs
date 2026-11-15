@@ -296,7 +296,9 @@ const locate = d => ev(`(() => { ${PARTS}
   if (hit && !(e === hit || e.contains(hit) || hit.contains(e))) return { why: 'another element is over its text: ' + hit.tagName.toLowerCase() + (typeof hit.className === 'string' && hit.className ? '.' + hit.className.split(' ')[0] : '') };
   // the twin rule: a text of a check (data-group, on a fleet page with its instance's data-inst) beside which a link
   // of the same check is on the page - the text is dead where its twin answers
-  const grp = e.closest('[data-group]') ?? e.querySelector('[data-group]'), gk = grp ? grp.getAttribute('data-group') : '', gi = grp?.closest('[data-inst]')?.getAttribute('data-inst') ?? '';
+  // the check of the point clicked (a label holding a check's name is not that check); a fleet grid cell is the td
+  // itself, whose link or text inside carries it
+  const grp = (hit ?? e).closest('[data-group]') ?? (d.part === 'instcell' ? e.querySelector('[data-group]') : null), gk = grp ? grp.getAttribute('data-group') : '', gi = grp?.closest('[data-inst]')?.getAttribute('data-inst') ?? '';
   const live = x => x.matches('a[href], button:not(:disabled)') || !!x.querySelector('a[href], button:not(:disabled)');
   const twin = !!gk && [...document.querySelectorAll('main [data-group]')].some(o => o !== grp && !o.contains(e) && !e.contains(o)
     && o.getAttribute('data-group') === gk && (o.closest('[data-inst]')?.getAttribute('data-inst') ?? '') === gi && live(o)) ? gk : '';
@@ -410,19 +412,26 @@ const clickLive = async (scope, t) => {
 // after a hang: a new tab, the scope loaded again
 const recover = async hash => { await freshTab(); await reset(hash, true); };
 // the planted self-test of the twin and status rules (once, on the first scope's page): three texts planted at the top
-// of the page, each marked as text (data-nolink) - a twin of a planted link of its own group, a text in the critical
-// band's colour (a badge), plain words - and clicked as any target. Wanted: 'FAIL dead twin', 'FAIL dead status text',
-// 'plain'. A walk without the rules calls all three plain, and the self-test fails the walk
+// of the page, each marked as text (data-nolink) and clicked as any target: a twin of a planted link of its own group
+// (wanted 'FAIL dead twin'), a badge in the critical band and a text in the warning colour ('FAIL dead status text'),
+// plain words, a text whose check's link is on another instance's line, a label holding a check's link ('plain'). A
+// walk without the rules calls them all plain, and the self-test fails the walk
 let selfTested = false;
 const selfTest = async (scope) => {
   selfTested = true;
   await ev(`(() => { const m = document.querySelector('main'); const p = document.createElement('p'); p.setAttribute('data-walkplant', '1');
-    p.innerHTML = '<span data-group="walkplant" data-nolink="this page">planted twin</span> <a data-group="walkplant" href="#/findings">planted link</a> <span class="badge crit" data-nolink="this page">planted critical</span> <span data-nolink="this page">planted words</span>';
+    p.innerHTML = '<span data-group="walkplant" data-nolink="this page">planted twin</span> <a data-group="walkplant" href="#/findings">planted link</a> <span class="badge crit" data-nolink="this page">planted critical</span> <span data-nolink="this page">planted words</span>'
+      + ' <span data-nolink="this page" style="color: var(--warn)">planted warning colour</span>'
+      + ' <span data-inst="1"><span data-group="walkplant3" data-nolink="this page">planted other instance</span></span> <span data-inst="2"><a data-group="walkplant3" href="#/findings">planted link 3</a></span>'
+      + ' <span data-nolink="this page">planted label: <a data-group="walkplant2" href="#/findings">planted link 2</a></span> <a data-group="walkplant2" href="#/findings">planted link 2b</a>';
     m.prepend(p); window.scrollTo(0, 0); return true; })()`);
-  const want = [['planted twin', 0, 'FAIL dead twin'], ['planted critical', 2, 'FAIL dead status text'], ['planted words', 3, 'plain']];
+  // wanted: the twin and the two status texts (a badge's tint, a text in the warning colour) dead; plain words, a text
+  // whose same check's link is on another instance's line, and a label holding a check's link plain
+  const want = [['planted twin', [0, 0], 'FAIL dead twin'], ['planted critical', [0, 2], 'FAIL dead status text'], ['planted words', [0, 3], 'plain'],
+    ['planted warning colour', [0, 4], 'FAIL dead status text'], ['planted other instance', [0, 5, 0], 'plain'], ['planted label:', [0, 7], 'plain']];
   const got = []; let right = 0;
-  for (const [text, i, w] of want) {
-    const o = await clickOne(scope, { part: 'inst', path: [0, i], nth: 0, label: 'self-test', text, kind: 'nolink' });
+  for (const [text, path, w] of want) {
+    const o = await clickOne(scope, { part: 'inst', path, nth: 0, label: 'self-test', text, kind: 'nolink' });
     got.push(`${text} -> ${o.r.verdict.slice(0, 48)}`);
     if (o.r.verdict.startsWith(w)) right++;
   }
