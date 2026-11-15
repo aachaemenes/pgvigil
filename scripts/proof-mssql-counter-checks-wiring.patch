@@ -1,8 +1,8 @@
 diff --git i/docs/alerts.md w/docs/alerts.md
-index bbc51aa..b246e8d 100644
+index bbc51aa..2ed61ac 100644
 --- i/docs/alerts.md
 +++ w/docs/alerts.md
-@@ -247,6 +247,16 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
+@@ -247,6 +247,18 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
    stores. A level is reached when the newest sample is beyond its value **and** the unbroken run of samples beyond
    it spans the rule's minutes, measured from the run's first sample to its newest: a single late sample never fires
    a rule by the clock alone. Until then the rule is *pending*. With 0 minutes the first sample beyond the value fires.
@@ -12,14 +12,16 @@ index bbc51aa..b246e8d 100644
 +  with the words "too few batch requests/s to judge (3.2/s, the floor 5/s)": never OK, never a warning, and no
 +  finding. A rule that was firing and goes under the floor resolves with its normal *resolved* message after the
 +  destination's clear delay; one that was not firing changes nothing. A read under the floor also breaks the run of
-+  samples beyond the value, so a rule that flaps across the floor resolves and fires again: two messages for each
-+  flap, the new firing only after its minutes of judged samples. A bursty server that crosses the floor every few
++  samples beyond the value. A rule that flaps across the floor resolves and fires again (one *resolved* and one
++  *firing* message) only when it stays under the floor or judged below its value longer than the destination's clear
++  delay; a dip shorter than the clear delay keeps the alert open and sends nothing. The new firing comes only after
++  its minutes of judged samples. A bursty server that crosses the floor every few
 +  minutes may never hold a run long enough to fire: on such a server give the rule fewer minutes (0 to 3), so a
 +  short run beyond the value is enough.
  - **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
    15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
    no fresh sample came: the collector may be down, or the instance. When the samples come back still beyond the
-@@ -409,7 +419,7 @@ tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and ex
+@@ -409,7 +421,7 @@ tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and ex
  | `pgvigil.metric_catalog` | Every metric a rule may name (`family.metric`): engine, label, unit, whether it has a per-database series, how old its newest sample may be. |
  | `pgvigil.alert_rules` | The rules; an edit ends a row and writes its successor (`replaces`), so the table is its own history. |
  | `pgvigil.alert_rule_log` | Every attempt from the UI, done or refused: who, from where, what. Not purged, like the acknowledge log. |
@@ -28,6 +30,23 @@ index bbc51aa..b246e8d 100644
  | `pgvigil.alert_rule_fired` | Per rule: when it last began to fire, on which instance, how often. |
  | `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
  | `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |
+diff --git i/docs/metrics.md w/docs/metrics.md
+index 1026fd6..b05dcbd 100644
+--- i/docs/metrics.md
++++ w/docs/metrics.md
+@@ -12,10 +12,10 @@ One row per counter, over the time range picked in the header:
+ |---|---|
+ | counter | The counter's name; its key (`sessions.idle_in_txn`) and unit are in the cell's title. |
+ | max, min, avg | The highest, lowest and average sample of the range. |
+-| current | The newest sample of the range; *last sample* says when it was taken. |
++| current | The newest sample of the range; *last sample* says when it was taken. A ratio under its floor (too few batch requests or full scans a second to judge) has no value: the cell reads *N/A* in grey with the words, the input's rate and the floor. |
+ | samples | How many samples the range holds. 0 = nothing was collected in the range (the figures are empty). |
+ | warning, critical | The thresholds in force for the row, with their direction (`above 80 %`). |
+-| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, or *not judged yet*. |
++| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, *N/A (too few to judge)*, or *not judged yet*. |
+ | threshold | *New threshold* where none is in force; *Edit* for the rule in force; *Override here* to give this instance its own rule over a wider one. |
+ | chart | Draws the row over the range, with its thresholds as flat lines. *Chart every row* draws the family. |
+ 
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
 index 2ea6318..9556f05 100644
 --- i/internal/repo/sql/0190_join_release2.sql
@@ -255,7 +274,7 @@ index 08bfdca..fee8172 100644
      SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
             (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
 diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
-index 751c72e..e86a456 100644
+index 751c72e..7a1201b 100644
 --- i/web/src/alert_rules.ts
 +++ w/web/src/alert_rules.ts
 @@ -76,7 +76,8 @@ export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string =>
@@ -286,17 +305,26 @@ index 751c72e..e86a456 100644
 -    { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
 -    { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' ? '' : fmtTime(v) },
 +    // task 402: an 'na' row carries its floor's input (in the floor's unit a second) and the floor
-+    { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => r.state === 'na' ? (v == null ? '' : `${fmtNum(v)} ${String(r.floor_unit ?? '')}/s`) : fmtMetric(v, r.unit) },
++    { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => r.state === 'na' ? (v == null ? '' : `${fmtNum(Math.floor(100 * Number(v)) / 100)} ${String(r.floor_unit ?? '')}/s`) : fmtMetric(v, r.unit) },
 +    { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : r.state === 'na' ? `the floor ${fmtNum(v)}/s` : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
 +    { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' || r.state === 'na' ? '' : fmtTime(v) },
      { key: 'sample_at', label: 'sample', fmt: fmtTime },
      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(r.scope, r.target)})` },
      { key: 'since', label: 'in this state since', fmt: fmtTime },
 diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
-index 038cb29..7269c00 100644
+index 038cb29..efcfb65 100644
 --- i/web/src/perfsummary.ts
 +++ w/web/src/perfsummary.ts
-@@ -108,8 +108,10 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+@@ -77,7 +77,7 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
+     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
+     el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
+-    el('li', {}, 'compilations per 100 batches: a muted 0 under 1 batch request a second (not a ratio)'),
++    el('li', {}, 'compilations per 100 batches: N/A under 5 batch requests a second over the range (too few to judge)'),
+     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
+     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only')));
+   sec.append(th);
+@@ -108,8 +108,11 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
      { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
      { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
      { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
@@ -304,7 +332,8 @@ index 038cb29..7269c00 100644
 -        : Number(r.batch_s) < 1 ? muted('0', 'under 1 batch request a second: 0, not a ratio')
 +      // task 402: under the floor (the SQL's flag, on the unrounded rate) N/A in words, before 'no value'
 +      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter')
-+        : r.compiles_under_floor === true ? (w => muted(w, w))(`N/A: too few batch requests/s over the range to judge (${fmtNum(r.batch_s)}/s, the floor ${fmtNum(r.compiles_floor)}/s)`)
++        // the rate shown is rounded to 2 places and the flag reads it unrounded: a rate that rounds up to the floor says 'under'
++        : r.compiles_under_floor === true ? (w => muted(w, w))(`N/A: too few batch requests/s over the range to judge (${Number(r.batch_s) < Number(r.compiles_floor) ? `${fmtNum(r.batch_s)}/s, ` : 'under '}the floor ${fmtNum(r.compiles_floor)}/s)`)
 +        : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
          : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
      { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
