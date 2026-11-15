@@ -517,13 +517,19 @@ sqh() { printf 'SET NOCOUNT ON;\nGO\n%s\n' "$2" | timeout 300 docker exec -i --e
 hold() { # hold <table> [schm]: a session (host pgvhold_<table>) holding the table X (or Sch-M) for up to 4 minutes, in the background, confirmed granted
   local stmt="BEGIN TRAN; SELECT TOP (1) id FROM dbo.$1 WITH (TABLOCKX, HOLDLOCK); WAITFOR DELAY '00:04:00'; COMMIT;" mode=X
   [[ "${2:-}" == schm ]] && stmt="BEGIN TRAN; ALTER TABLE dbo.$1 ADD zz int NULL; WAITFOR DELAY '00:04:00'; ROLLBACK;" mode=Sch-M
-  sqh "pgvhold_$1" "$stmt" >/dev/null 2>&1 & BG+=($!)
-  for _ in $(seq 1 40); do
+  sqh "pgvhold_$1" "$stmt" >"$TMPD/hold-$1.out" 2>&1 & BG+=($!)
+  for _ in $(seq 1 120); do
     [[ "$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT'
       AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1') AND request_mode = '$mode' AND request_status = 'GRANT'")" -ge 1 ]] && return 0
     sleep 0.25
   done
-  fail "the hold on dbo.$1 ($mode) was not granted in 10 s"; }
+  echo "     the holder printed: $(head -c 600 "$TMPD/hold-$1.out")"
+  sq "SELECT CONCAT('     session ', s.session_id, ' host ', s.host_name, ' program ', s.program_name, ' status ', s.status, ' request ', r.command, ' wait ', r.wait_type,
+      ' blocked by ', r.blocking_session_id, ' resource ', r.wait_resource) FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id
+    WHERE s.host_name LIKE 'pgvhold_%' OR s.program_name LIKE 'pgvigil%' OR r.blocking_session_id > 0" || true
+  sq "SELECT CONCAT('     lock ', request_session_id, ' ', resource_type, ' ', request_mode, ' ', request_status) FROM sys.dm_tran_locks
+    WHERE resource_database_id = DB_ID('pgvix') AND resource_type = 'OBJECT' AND resource_associated_entity_id = OBJECT_ID('pgvix.dbo.$1')" || true
+  fail "the hold on dbo.$1 ($mode) was not granted in 30 s"; }
 # release [table]: the holders ended (KILL rolls their transactions back), and their shells waited for
 release() { sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE host_name LIKE 'pgvhold_${1:-}%'; EXEC (@k);" >/dev/null 2>&1 || true
   if [[ -z "${1:-}" ]]; then wait "${BG[@]}" 2>/dev/null || true; BG=(); fi; }
