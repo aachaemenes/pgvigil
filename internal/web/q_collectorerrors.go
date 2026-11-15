@@ -104,7 +104,7 @@ const sqlCollectorErrorsSuggest = `
 
 const sqlCollectorErrorsByInstance = sqlCollectorErrorsBase + `, ` + sqlCollectorErrorsSuggest + `
 SELECT f.instance_id, f.instance, count(DISTINCT f.collection)::int AS collections,` + sqlCollectorErrorsCounts + `,
-       min(sg.text) AS suggestion, min(sg.help) AS help, min(m.mark) AS mark,
+       min(sg.text) AS suggestion, min(sg.help) AS help, min(m.mark) AS mark, max(f.log_id) AS max_log_id,
        CASE WHEN min(m.mark) IS NOT NULL THEN count(*) FILTER (WHERE NOT f.acked)::int END AS new_since_mark
   FROM f
   LEFT JOIN sg ON sg.instance_id = f.instance_id

@@ -139,7 +139,9 @@ export async function findingsView(instance?: number, keep?: (r: Row) => boolean
   const cols: Col[] = [
     { key: 'severity', fmt: sevBadge },
     ...(instance ? [] : [{ key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') } as Col, { key: 'platform' } as Col]),
-    { key: 'setting' },
+    // the error log's severity finding opens the SQL Server errors page of its instance (its numbers, Learn links, noise)
+    { key: 'setting', fmt: (v, r) => String(v ?? '').startsWith('error log: errors of severity 17') && r.instance_id != null
+      ? el('a', { href: `#/mssqlerrors?i=${Number(r.instance_id)}&w=24h` }, String(v)) : String(v ?? '') },
     { key: 'value', fmt: (v, r) => r.is_set ? String(v ?? '') : String(v ?? '') + ' (default)' },
     { key: 'suggested' },
     { key: 'detail', wide: true },
