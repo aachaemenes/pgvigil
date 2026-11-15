@@ -156,12 +156,13 @@ get "/api/mssql/running?instance=$ISS&at=$SNAPU" >/dev/null; P4=$(progs rows)
 [[ " $P4 " == *" pgvigil-proof "* ]] || fail "S4: a row with is_own NULL hidden: $P4"
 ok "S4: a row stored before 0265 (is_own NULL) shown"
 # S5: waiting tasks
-c=$(get "/api/waiting?instance=$ISS&part=tasks&at=$SNAPU"); [[ $c == 200 ]] || fail "S5: HTTP $c"
-python3 -c "import json,sys; d=json.load(open('$WORK/out.json')); t=d['tasks']; rows=[dict(zip(t['columns'], r)) for r in (t['rows'] or [])]; sys.exit(0 if any(r.get('wait_type','').startswith('LCK') for r in rows) else 1)" || fail "S5: the blocked own task hidden"
+# the waiting tasks' own read (collected just after the requests' read: its own time)
 WS=$(q "select max(snapshot_at) from pgvigil.mssql_waiting_tasks where instance_id = $ISS")
+WSU=$(q "select to_char('$WS'::timestamptz at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")
+c=$(get "/api/waiting?instance=$ISS&part=tasks&at=$WSU"); [[ $c == 200 ]] || fail "S5: HTTP $c"
+python3 -c "import json,sys; d=json.load(open('$WORK/out.json')); t=d['tasks']; rows=[dict(zip(t['columns'], r)) for r in (t['rows'] or [])]; sys.exit(0 if any(r.get('wait_type','').startswith('LCK') for r in rows) else 1)" || fail "S5: the blocked own task hidden"
 q "insert into pgvigil.mssql_waiting_tasks (instance_id, snapshot_at, session_id, exec_context_id, wait_type, wait_ms, is_own)
    values ($ISS, '$WS', 9999, 0, 'PAGEIOLATCH_SH', 1000, true)" >/dev/null || fail "S5: the staged own task"
-WSU=$(q "select to_char('$WS'::timestamptz at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")
 get "/api/waiting?instance=$ISS&part=tasks&at=$WSU" >/dev/null
 python3 -c "import json,sys; d=json.load(open('$WORK/out.json')); t=d['tasks']; sys.exit(0 if all(r[t['columns'].index('session_id')] != 9999 for r in (t['rows'] or [])) else 1)" || fail "S5: the staged own task shown by default"
 get "/api/waiting?instance=$ISS&part=tasks&at=$WSU&own=1" >/dev/null
