@@ -23,6 +23,11 @@
 -- file_names refusal; one admin_audit row with the old and the new blocks; the inventory generation moves. Its answer
 -- is import_admin_instance's ({outcome, detail, generation}).
 --
+-- import_admin_cloud_refused(p_at, payload {ui_user, client, name, detail}): the refusal's audit row when serve rolled
+-- the add, edit or approve back for its block (the transaction's own row went with it); serve's audit login is the
+-- collector's role, so it is an import_ function (SECURITY DEFINER through apply_roles). A set on the page keeps the
+-- stored aws profile while the region stays (the page's fieldset carries none).
+--
 -- admin_inventory() gains the row's host (the name match) and both blocks: DROP and CREATE, SECURITY DEFINER and both
 -- GRANTs, as 0157 did.
 -- ---------------------------------------------------------------------------------------------------------------
@@ -91,7 +96,8 @@ BEGIN
     IF coalesce(p_azure->>'subscription', '') !~ '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' THEN
       RETURN format('azure.subscription %s is not a subscription id', coalesce(p_azure->>'subscription', '(none)'));
     END IF;
-    IF coalesce(p_azure->>'resource_group', '') !~ '^[-\w.()]{1,90}$' OR p_azure->>'resource_group' ~ '\.$' THEN
+    -- ASCII, as Go's class: \w would follow the repository's collation (the review's finding 11)
+    IF coalesce(p_azure->>'resource_group', '') !~ '^[-A-Za-z0-9_.()]{1,90}$' OR p_azure->>'resource_group' ~ '\.$' THEN
       RETURN format('azure.resource_group %s is not a resource group name (1-90 letters, digits, . ( ) _ -, no trailing dot)', coalesce(p_azure->>'resource_group', '(none)'));
     END IF;
     IF coalesce(p_azure->>'server', '') !~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' THEN
@@ -137,6 +143,12 @@ BEGIN
   ELSIF v_op = 'set' THEN
     v_why := pgvigil.admin_cloud_shape(v_have.engine, v_have.platform, v_aws, v_azure);
   END IF;
+  -- an edit from the page carries no profile (its Cloud fieldset has none): a stored profile (a discovered instance's
+  -- source profile, Q5) is kept while the region stays; a region change drops it (the review's finding 9)
+  IF v_why IS NULL AND v_op = 'set' AND jsonb_typeof(v_aws) = 'object' AND NOT v_aws ? 'profile'
+     AND coalesce(v_old.aws->>'profile', '') <> '' AND v_old.aws->>'region' = v_aws->>'region' THEN
+    v_aws := v_aws || jsonb_build_object('profile', v_old.aws->>'profile');
+  END IF;
   IF v_why IS NOT NULL THEN
     PERFORM pgvigil.admin_log(v_user, v_cli, 'instance cloud', v_name, 'refused', v_why);
     RETURN jsonb_build_object('outcome', 'refused', 'detail', v_why);
@@ -154,6 +166,21 @@ BEGIN
   v_gen := pgvigil.admin_bump();
   PERFORM pgvigil.admin_log(v_user, v_cli, 'instance cloud', v_name, 'done', format('was: %s; now: %s', v_was, v_now));
   RETURN jsonb_build_object('outcome', 'done', 'detail', format('the cloud blocks of %s: %s', v_name, v_now), 'generation', v_gen);
+END $$;
+
+-- a refusal's audit row after its transaction was rolled back (the review's finding 4): serve's audit login is IN ROLE
+-- pgvigil_collector, which may neither run admin_log nor insert into admin_audit; an import_ function is SECURITY
+-- DEFINER with the collector's EXECUTE (apply_roles). It writes the one row its payload names and nothing else.
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_cloud_refused(p_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_user text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+BEGIN
+  IF v_user IS NULL OR coalesce(p_payload->>'detail', '') = '' THEN
+    RAISE EXCEPTION 'import_admin_cloud_refused: no ui_user or no detail' USING ERRCODE = '22023';
+  END IF;
+  INSERT INTO pgvigil.admin_audit (at, ui_user, client, op, target, outcome, detail)
+  VALUES (coalesce(p_at, now()), v_user, left(p_payload->>'client', 100), 'instance cloud', left(p_payload->>'name', 200), 'refused', left(p_payload->>'detail', 2000));
 END $$;
 
 DROP FUNCTION IF EXISTS pgvigil.admin_inventory();

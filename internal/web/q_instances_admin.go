@@ -339,6 +339,20 @@ func cloudPart(in map[string]any) (*config.PageAWS, *config.PageAzure, bool, err
 	return c.AWS, c.Azure, true, nil
 }
 
+// approveWrite runs the decision and the proposal's block in ONE transaction on the audit login (B24p's fold 8:
+// never an approved proposal with its block lost); a block the store refuses is audited and the proposal approved
+// WITHOUT it (the review's finding 10: 'a proposal without them gets none', never the whole approve refused) - note
+// says so, "" when the block was written.
+func (s *Server) approveWrite(ctx context.Context, pay, cloudPay map[string]any) (importAnswer, json.RawMessage, string, error) {
+	ans, raw, err := s.writeImportsWith(ctx, "import_admin_decision", pay, cloudPay)
+	if err != nil || !ans.cloudRefused {
+		return ans, raw, "", err
+	}
+	note := "approved without its cloud block: " + strings.TrimPrefix(ans.Detail, "the instance was not written: its cloud blocks were refused: ")
+	ans, raw, err = s.callImport(ctx, "import_admin_decision", pay)
+	return ans, raw, note, err
+}
+
 // writeWithCloud runs the instance's import and its cloud set in ONE transaction on the audit login (B24p's fold
 // 9): a cloud refusal rolls the add or edit back and keeps its own audit row; the first call's refusal is committed
 // as it is (its audit row with it)
@@ -381,8 +395,14 @@ func (s *Server) writeImportsWith(ctx context.Context, fn string, pay, cloud map
 	if cans.Outcome != "done" {
 		_ = tx.Rollback(wctx)
 		why := "the instance was not written: its cloud blocks were refused: " + cans.Detail
-		_, _ = s.actions.audit.Exec(wctx, `SELECT pgvigil.admin_log($1, $2, 'instance cloud', $3, 'refused', $4)`, cloud["ui_user"], cloud["client"], cloud["name"], why)
+		// the refusal's own audit row went with the rollback: written again on its own, through the import_ door the
+		// audit login (IN ROLE pgvigil_collector) may call (the review's finding 4: admin_log is not its)
+		b, _ := json.Marshal(map[string]any{"ui_user": cloud["ui_user"], "client": cloud["client"], "name": cloud["name"], "detail": why})
+		if _, err := s.actions.audit.Exec(wctx, `SELECT pgvigil.import_admin_cloud_refused($1, $2::jsonb)`, time.Now(), string(b)); err != nil {
+			s.log.Warn("admin instances: the cloud refusal was not audited", "instance", cloud["name"], "err", err)
+		}
 		cans.Detail = why
+		cans.cloudRefused = true
 		return cans, craw, nil
 	}
 	return ans, raw, tx.Commit(wctx)
@@ -486,6 +506,8 @@ func tagsOf(in map[string]any) []string {
 type importAnswer struct {
 	Outcome string `json:"outcome"`
 	Detail  string `json:"detail"`
+	// cloudRefused: writeImportsWith rolled the write back because the store refused its cloud blocks (B24p)
+	cloudRefused bool
 }
 
 // callImport runs one import_admin_* function on the audit login and answers its outcome.
@@ -1839,10 +1861,12 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 	var ans importAnswer
 	var raw json.RawMessage
 	var err error
+	cloudNote := ""
 	if cloudPay != nil {
-		// the decision and the block in ONE transaction on the audit login (B24p's fold 8): never an approved
-		// proposal with its block lost
-		ans, raw, err = s.writeImportsWith(ctx, "import_admin_decision", pay, cloudPay)
+		ans, raw, cloudNote, err = s.approveWrite(ctx, pay, cloudPay)
+		if cloudNote != "" {
+			s.log.Warn("admin proposal: approved without its cloud block", "proposal", id, "why", cloudNote)
+		}
 	} else {
 		ans, raw, err = s.callImport(ctx, "import_admin_decision", pay)
 	}
@@ -1857,7 +1881,11 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		restore()
 	}
 	s.log.Info("admin proposal", "op", op, "proposal", id, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
-	s.answer(w, ans, raw, nil)
+	var extra map[string]any
+	if cloudNote != "" && ans.Outcome == "done" {
+		extra = map[string]any{"detail": ans.Detail + " - " + cloudNote, "cloud_note": cloudNote} // the page's words carry it
+	}
+	s.answer(w, ans, raw, extra)
 }
 
 // testConfigured tests a configuration-file instance by name with its own door (Q8, N59): its read login and its

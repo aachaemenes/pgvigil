@@ -41,7 +41,7 @@ const asObj = <T>(v: unknown): T | null => (v && typeof v === 'object' ? v as T 
 function cloudCell(r: Row, note: string | undefined): HTMLElement | string {
   const a = asObj<CloudAWS>(r.aws), z = asObj<CloudAzure>(r.azure);
   const parts: string[] = [];
-  if (a) parts.push(`AWS: ${a.db_instance || a.cluster || ''} in ${a.region || ''}`);
+  if (a) parts.push(`AWS: ${a.db_instance || a.cluster || ''} in ${a.region || ''}${a.profile ? ` (profile ${a.profile})` : ''}`);
   if (z) parts.push(`Azure: ${z.server || ''}`);
   if (!parts.length) return '';
   return note ? el('span', {}, parts.join('; '), ' ', badge(`not used: ${note}`, 'warn')) : parts.join('; ');
@@ -193,9 +193,12 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     const cloudInputs = [awsRegion, awsDB, awsCluster, azSub, azGroup, azServer, azCloud] as (HTMLInputElement | HTMLSelectElement)[];
     const clearCloud = el('button', { type: 'button', hidden: '' }, 'Clear the cloud blocks');
     const cloudNote = el('p', { id: 'admin-cloud-note', class: 'muted' },
-      cb.on ? 'The block\'s target must be this instance\'s own host: an RDS endpoint of the DB instance or cluster, or <server>.database.windows.net. Its reads run under the collector host\'s own cloud identity.'
+      cb.on ? 'The block\'s target must be this instance\'s own host: an RDS endpoint of the DB instance (or of the cluster, for its writer or reader endpoint), or <server>.database.windows.net. Its reads run under the collector host\'s own cloud identity, which checks an AWS block against the endpoint AWS gives for it before its first read.'
         : `Off: ${cb.off_words}`);
-    const cloudBox = el('details', { class: 'admin-cloud' }, el('summary', {}, 'Cloud (the aws: or azure: block)'), cloudNote,
+    // an approved instance's block may carry its discovery source's profile (the page never types one): kept on an edit
+    // while the region stays (the store's rule), said here
+    const profileNote = el('p', { class: 'muted', hidden: '' });
+    const cloudBox = el('details', { class: 'admin-cloud' }, el('summary', {}, 'Cloud (the aws: or azure: block)'), cloudNote, profileNote,
       el('div', {}, field('AWS region', awsRegion), field('RDS DB instance', awsDB), field('Aurora cluster', awsCluster)),
       el('div', {}, field('Azure subscription', azSub), field('Resource group', azGroup), field('Logical server', azServer), field('Azure cloud', azCloud)),
       el('div', {}, clearCloud));
@@ -219,7 +222,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     engine.addEventListener('change', () => { auth.replaceChildren(...authOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); platform.replaceChildren(...platOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); });
     const values = () => ({ engine: engine.value, name: name.value.trim(), host: host.value.trim(), port: port.value.trim(), dbname: dbname.value.trim(), auth: auth.value,
       platform: platform.value, login: login.value.trim(), password: password.value, options: options.value.trim(), tags: tags.value.trim() });
-    const reset = () => { editing = ''; f.reset(); legend.textContent = 'Add an instance'; submit.textContent = 'Add'; cancel.hidden = true; name.disabled = false; engine.disabled = false; clearCloud.hidden = true; cloudWas = cloudNow(); };
+    const reset = () => { editing = ''; f.reset(); legend.textContent = 'Add an instance'; submit.textContent = 'Add'; cancel.hidden = true; name.disabled = false; engine.disabled = false; clearCloud.hidden = true; profileNote.hidden = true; cloudWas = cloudNow(); };
     cancel.addEventListener('click', reset);
     test.addEventListener('click', async () => {
       say('Connecting…');
@@ -250,6 +253,8 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       awsRegion.value = a?.region ?? ''; awsDB.value = a?.db_instance ?? ''; awsCluster.value = a?.cluster ?? '';
       azSub.value = z?.subscription ?? ''; azGroup.value = z?.resource_group ?? ''; azServer.value = z?.server ?? ''; azCloud.value = z?.cloud ?? '';
       cloudWas = cloudNow(); clearCloud.hidden = !(a || z); if (a || z) cloudBox.setAttribute('open', '');
+      profileNote.textContent = a?.profile ? `This block reads with the AWS profile ${a.profile} (its discovery source's): a save in the same region keeps it; another region, or Clear, removes it.` : '';
+      profileNote.hidden = !a?.profile;
       name.focus();
       say(`Editing ${editing}: a change of the host, port, database, login or authentication asks for the password again.`);
     };

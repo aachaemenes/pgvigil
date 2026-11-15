@@ -6,10 +6,16 @@ package config
 // signed-in user (pagedoor.go: its door reaches only what its user typed). So, the lead's Q4 = (a) under Allen's Q15:
 //
 //   - pgvigil.yaml's doors.page_cloud_blocks, off by default, lets a page block be used at all;
-//   - a block's target must be the instance's own host BY NAME before its first read: an RDS endpoint
-//     <db_instance or cluster>[.cluster-[ro-]]<x>.<region>.rds.amazonaws.com[.cn], an Azure SQL logical server
-//     <server>.database.windows.net (.usgovcloudapi.net, .chinacloudapi.cn); a CNAME, a private DNS name or an
-//     address refuses the block with both names (pgvigil.yaml's block stays the door there);
+//   - a block's target must be the instance's own host BY NAME at the merge: an RDS instance endpoint
+//     <db_instance>.<x>.<region>.rds.amazonaws.com or a cluster's writer / reader endpoint
+//     <cluster>.cluster-[ro-]<x>.<region>.rds.amazonaws.com (China: .amazonaws.com.cn, either order of the region
+//     and 'rds'), an Azure SQL logical server <server>.database.windows.net (.usgovcloudapi.net, .chinacloudapi.cn);
+//     a custom endpoint, a CNAME, a private DNS name or an address refuses the block with both names (pgvigil.yaml's
+//     block stays the door there);
+//   - and an aws: block, which names a resource of the collector host's own account, is checked again by the
+//     collector against the provider's answer before its first read (collect.pageAWSVerdict, the review's finding 1:
+//     an RDS name is unique only inside one account): the host must be that instance's Endpoint.Address or that
+//     cluster's endpoint, and a block naming both must name an instance of the cluster;
 //   - a block's AWS profile only when doors.page_aws_profiles lists it (Q5: a discovered instance's source profile).
 //
 // A refused block is DROPPED with its reason (logged by the collector, shown on the page); the instance keeps
@@ -71,10 +77,14 @@ var (
 	rdsID       = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,62}$`)
 	awsProfile  = regexp.MustCompile(`^[A-Za-z0-9_.+@-]{1,64}$`)
 	azureSub    = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
-	azureGroup  = regexp.MustCompile(`^[-\pL\pN_.()]{1,90}$`)
+	azureGroup  = regexp.MustCompile(`^[-A-Za-z0-9_.()]{1,90}$`) // the store's class (0193), ASCII whatever its collation
 	azureServer = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	azureSuffix = map[string]string{"": ".database.windows.net", "public": ".database.windows.net", "usgov": ".database.usgovcloudapi.net", "china": ".database.chinacloudapi.cn"}
-	rdsEndpoint = regexp.MustCompile(`^([a-z][a-z0-9-]*)\.(cluster-(?:ro-|custom-)?)?[a-z0-9]+\.([a-z0-9-]+)\.rds\.amazonaws\.com(\.cn)?$`)
+	// an instance's or a cluster's endpoint: <id>.[cluster-[ro-]]<x>.<region>.rds.amazonaws.com, the China partition's
+	// .amazonaws.com.cn in either order (<region>.rds. or rds.<region>.: AWS China's RDS pages show no instance
+	// example; the provider's own Endpoint.Address decides at the collector); a custom endpoint is not matched (its
+	// first label is the endpoint's own name, not its cluster's)
+	rdsEndpoint = regexp.MustCompile(`^([a-z][a-z0-9-]*)\.(cluster-(?:ro-)?)?[a-z0-9]+\.(?:([a-z0-9-]+)\.rds\.amazonaws\.com|([a-z0-9-]+)\.rds\.amazonaws\.com\.cn|rds\.([a-z0-9-]+)\.amazonaws\.com\.cn)$`)
 )
 
 // identifierOK: an RDS DB instance or cluster identifier (a letter, then letters, digits and single hyphens, no
@@ -113,7 +123,7 @@ func PageCloudShape(p PageInstance) string {
 			return fmt.Sprintf("azure.resource_group %s is not a resource group name (1-90 letters, digits, . ( ) _ -, no trailing dot)", orNone(a.ResourceGroup))
 		case !azureServer.MatchString(a.Server):
 			return fmt.Sprintf("azure.server %s is not a logical server's name (1-63 lower-case letters, digits and hyphens)", orNone(a.Server))
-		case !validAzureCloud(a.Cloud) || (a.Cloud != "" && a.Cloud != strings.ToLower(a.Cloud)):
+		case !validAzureCloud(a.Cloud) || a.Cloud != strings.ToLower(strings.TrimSpace(a.Cloud)):
 			return fmt.Sprintf("azure.cloud is public, usgov or china, not %s", a.Cloud)
 		}
 	}
@@ -171,16 +181,25 @@ func rdsHostMatch(host string, a *PageAWS) string {
 	if net.ParseIP(host) != nil || m == nil {
 		return fmt.Sprintf("the aws: block names %s, but the instance's host %s is not an RDS endpoint (%s): an alias or an address cannot be matched, pgvigil.yaml's block is the door there", strings.Join(names, " / "), orNone(host), want)
 	}
-	id, isCluster, region, cn := m[1], m[2] != "", m[3], m[4] != ""
+	id, isCluster, region, cn := m[1], m[2] != "", m[3], m[3] == ""
+	if cn {
+		region = m[4] + m[5]
+	}
 	ok := region == a.Region && cn == strings.HasPrefix(a.Region, "cn-")
+	// an instance endpoint names its DB instance, a cluster endpoint its cluster; the block's other name is the
+	// provider's to confirm (the collector's check), never the first label's (the review's finding 2)
 	switch {
 	case isCluster:
 		ok = ok && a.Cluster != "" && strings.EqualFold(id, a.Cluster)
 	default:
-		ok = ok && ((a.DBInstance != "" && strings.EqualFold(id, a.DBInstance)) || (a.Cluster != "" && strings.EqualFold(id, a.Cluster)))
+		ok = ok && a.DBInstance != "" && strings.EqualFold(id, a.DBInstance)
 	}
 	if !ok {
-		return fmt.Sprintf("the aws: block names %s in %s, but the instance's host is %s", strings.Join(names, " / "), a.Region, host)
+		kind := "an instance endpoint names its db_instance"
+		if isCluster {
+			kind = "a cluster endpoint names its cluster"
+		}
+		return fmt.Sprintf("the aws: block names %s in %s, but the instance's host is %s (%s)", strings.Join(names, " / "), a.Region, host, kind)
 	}
 	return ""
 }
@@ -195,6 +214,7 @@ func pageCloud(p PageInstance, in *Instance) string {
 		c := *in
 		if a := p.AWS; a != nil {
 			c.AWS = &AWS{Region: a.Region, Profile: a.Profile, Cluster: a.Cluster, DBInstance: a.DBInstance}
+			c.PageAWSHost = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p.Host), "."))
 		}
 		if a := p.Azure; a != nil {
 			c.Azure = &Azure{Subscription: a.Subscription, ResourceGroup: a.ResourceGroup, Server: a.Server, Cloud: a.Cloud}

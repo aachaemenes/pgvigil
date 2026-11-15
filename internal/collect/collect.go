@@ -194,6 +194,18 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return Result{Err: err, Duration: time.Since(start)}
 	}
+	// a page instance's aws: block (B24p): checked against the provider's own answer for this host before its first
+	// read (pagecloud.go); refused = the instance collects without it, and a collection that needs it says why
+	if in.AWS != nil && in.PageAWSHost != "" {
+		if why := pageAWSVerdict(ctx, log, in, time.Now()); why != "" {
+			in.AWS = nil
+			if skip, _ := Gated(c, in); skip {
+				why = "the page's aws: block is not used: " + why
+				_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+				return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+			}
+		}
+	}
 	if ok, why := c.Applies(info); !ok {
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
 		return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}

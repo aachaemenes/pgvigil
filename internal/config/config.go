@@ -97,6 +97,11 @@ type Instance struct {
 	// PageDefaults are an instance's intervals that Admin > Instances gives it (task 406: its running plans
 	// switch); never read from the file. Interval reads them after the file's schedules:, its own and the global.
 	PageDefaults map[string]Duration `yaml:"-"`
+	// PageAWSHost is the page row's host when the instance's aws: block came from Admin > Instances (task B24p); never
+	// read from the file. The collector checks such a block against the provider's own answer for that host before its
+	// first read (collect.pageAWSVerdict): the block names a resource in the collector host's account, the host was
+	// typed by a page user.
+	PageAWSHost string `yaml:"-"`
 	// Disabled lists collections that never run on this instance.
 	Disabled []string `yaml:"disabled"`
 	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
