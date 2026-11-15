@@ -51,7 +51,7 @@
 #                       the collector's query (darling_waiting.go, PerformanceMonitor's WHERE clause) before and after
 #     SKIP - status skipped, the note names Azure SQL Database, the run prints "skipped:", and the collection's own
 #       tables hold no row for the instance: mssql_services, mssql_ag, mssql_mirroring, mssql_logshipping,
-#       mssql_replication, mssql_jobs, mssql_backups, mssql_storage, mssql_versionstore, mssql_cpu, mssql_memory,
+#       mssql_replication, mssql_jobs, mssql_backups, mssql_storage [B2a: moved to the RUN rows below], mssql_versionstore, mssql_cpu, mssql_memory,
 #       mssql_fileio, mssql_tempdb, mssql_properties, mssql_procstats, mssql_indexlocks, mssql_querystore.
 #       [Added after the join of wave 1 (rel-join-w1, 11 collections more; written before their first run here): mssql_audit,
 #        mssql_checks, mssql_defaulttrace, mssql_errorlog, mssql_identity, mssql_indexes, mssql_plancache,
@@ -72,18 +72,23 @@
 #                       volume row; the 'max size' finding present only when the setup login's PRIMARY data files'
 #                       allocated / max size is over 80 %
 #       mssql_azuredb_governance  one current row whose 54 compared columns (pgvigil.mssql_azuredb_gov_compared)
-#                       equal the setup login's read of sys.dm_user_db_resource_governance; edition and service
-#                       objective equal to DATABASEPROPERTYEX; one history row, eleven Properties rows, no change
-#                       row; a second read minutes later opens no history row
-#       mssql_azuredb_resources  a 32 s CPU loop of the setup login (the burst), a first read, a second read from
+#                       equal the setup login's read of sys.dm_user_db_resource_governance [review b2a-d 7: all 54
+#                       present]; edition and service objective equal to DATABASEPROPERTYEX; one history row, eleven
+#                       Properties rows, no change row [review b2a-d 8: a DTU limit on a DTU edition (Basic,
+#                       Standard, Premium), else a vCore limit]; a second read minutes later opens no history row
+#       mssql_azuredb_resources  [review b2a-d 6: first the view holds 3 minutes or more, up to 5 minutes' wait]
+#                       a 32 s CPU loop of the setup login (the burst), a first read [that stores a minute: else
+#                       FAIL, the cursor not exercised], a second read from
 #                       the cursor once the burst's minutes are complete: no minute missing between the two reads'
 #                       newest minutes and no gap row; every stored minute whose 15-second rows are all still in
 #                       the view equals the setup login's read of them (the averages within 0.00006, the maxima,
-#                       DBA Dash's DTU %, the sample count and the four bucket lists exact; only the two oldest
-#                       stored minutes may have lost rows in the view since; a stored minute with fewer samples
-#                       than the view's rows is a FAIL); a minute of the burst holds max CPU >= 50 and over its
-#                       average (on a DTU tier max DTU % >= 50 too); with the cursor set three hours back a third
-#                       read is ok and stores one gap row from that minute's end
+#                       DBA Dash's DTU %, the sample count and the four bucket lists exact; [review b2a-d 1:] only a
+#                       stored minute at or before the view's oldest minute at the hand read may have lost rows in
+#                       the view since (the trim line moves on while the proof waits); a stored minute with fewer
+#                       samples than the view's rows is a FAIL); a minute of the burst holds max CPU >= 50 and over
+#                       its average (on a DTU tier max DTU % >= 50 too [review b2a-d 9: a DTU tier = dtu_limit > 0
+#                       in the burst's minutes]); with the cursor set three hours back a third read is ok and stores
+#                       one gap row from that minute's end
 #       the missing rights, as a contained user of the proof holding CONNECT only (made before part D's first read,
 #                       dropped at the end): mssql_azuredb_resources skipped 'the login lacks VIEW DATABASE STATE:
 #                       the database's resource use is not readable', mssql_azuredb_governance skipped with its
@@ -112,7 +117,11 @@
 #     Server Services, SQL Login Password Age, Table Size) each say mssql_reports is skipped here (web/src/main.ts's
 #     mssqlTabRuns holds the six since 43c3fbb, F14; reports.ts has no text naming Azure SQL Database, so the check
 #     catches a lost mssqlTabRuns entry)] [B2a, the click rows: the root page Azure Summary links the database to
-#     #/mssqlazure?i=<its id>, and that tab names the tier (the service objective)].
+#     #/mssqlazure?i=<its id>, and that tab names the tier (the service objective)] [review b2a-d 4, written before
+#     its first run: over the window from 4 hours back, GET /api/mssql/azuredb gives the instance the stored minutes'
+#     sample sum and at least one gap, GET /api/azuredb/summary the same sample sum for it; the Azure tab over 6 hours
+#     names the gap ('gap(s) in this window'); the Properties tab shows the eleven Azure SQL Database rows by their
+#     labels and still says 'mssql_properties is skipped'].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
 #     same read after every collector run.
@@ -418,7 +427,7 @@ select (pgvigil.mssql_azuredb_gov_compared(g.gov) = pgvigil.mssql_azuredb_gov_co
        (select count(*) from jsonb_object_keys(pgvigil.mssql_azuredb_gov_compared(g.gov))) || '|' || coalesce(g.edition, '') || '|' || coalesce(g.service_objective, '') || '|' ||
        (select count(*) from pgvigil.mssql_azuredb_governance_history h where h.instance_id = g.instance_id) || '|' ||
        (select count(*) from pgvigil.mssql_property p where p.instance_id = g.instance_id and p.grp = 'Azure SQL Database') || '|' ||
-       (select count(*) from pgvigil.mssql_property_change c where c.instance_id = g.instance_id) || '|' || coalesce(g.dtu_limit::text, 'NULL') || '|' || coalesce(g.usage_mb::text, 'NULL')
+       (select count(*) from pgvigil.mssql_property_change c where c.instance_id = g.instance_id) || '|' || coalesce(g.dtu_limit::text, 'NULL') || '|' || coalesce(g.usage_mb::text, 'NULL') || '|' || coalesce(g.cpu_limit::text, 'NULL')
   from pgvigil.mssql_azuredb_governance g where g.instance_id = :id
 SQL
 }
@@ -438,16 +447,26 @@ else
   sq "SELECT (SELECT * FROM sys.dm_user_db_resource_governance WHERE database_id = DB_ID() FOR JSON PATH, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER)" > "$WORK/gov-hand.json"
   IFS='|' read -r HED HSO <<<"$(sq "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Edition') AS nvarchar(128)) + '|' + CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128))")"
   GOV1=$(gov_state "$GOVID")
-  IFS='|' read -r GEQ GKEYS GED GSO GHIST GPROPS GCHG GDTU GUSE1 <<<"$GOV1"
-  if [ "$GEQ" = true ] && [ "$GED" = "$HED" ] && [ "$GSO" = "$HSO" ] && [ "$GHIST" = 1 ] && [ "$GPROPS" = 11 ] && [ "$GCHG" = 0 ] && { [ -z "$LOWTIER" ] || [[ $GDTU =~ ^[1-9][0-9]*$ ]]; }; then GOVOK=1
-  else VERDICT[mssql_azuredb_governance]="FAIL"; bad "B: mssql_azuredb_governance as $GOVN stored '$GOV1' (compared columns equal | their count | edition | service objective | history rows | Properties rows | changes | dtu_limit | usage MB); want 'true|n|$HED|$HSO|1|11|0|${LOWTIER:+a DTU limit}|...'"; fi
+  IFS='|' read -r GEQ GKEYS GED GSO GHIST GPROPS GCHG GDTU GUSE1 GCPU <<<"$GOV1"
+  # the tier's own limit: DTUs on a DTU edition, vCores on the others (Microsoft: dtu_limit is NULL for vCore)
+  case "$GED" in Basic|Standard|Premium) LIMOK=$([[ $GDTU =~ ^[1-9][0-9]*$ ]] && echo 1); WLIM="a DTU limit" ;; *) LIMOK=$([[ $GCPU =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$GCPU" != 0 ] && echo 1); WLIM="a vCore limit" ;; esac
+  if [ "$GEQ" = true ] && [ "$GKEYS" = 54 ] && [ "$GED" = "$HED" ] && [ "$GSO" = "$HSO" ] && [ "$GHIST" = 1 ] && [ "$GPROPS" = 11 ] && [ "$GCHG" = 0 ] && [ -n "$LIMOK" ]; then GOVOK=1
+  else VERDICT[mssql_azuredb_governance]="FAIL"; bad "B: mssql_azuredb_governance as $GOVN stored '$GOV1' (compared columns equal | their count | edition | service objective | history rows | Properties rows | changes | dtu_limit | usage MB | cpu_limit); want 'true|54|$HED|$HSO|1|11|0|...' with $WLIM"; fi
 fi
 # mssql_azuredb_resources: the burst, a first read, a read from the cursor, the hand read, the forced gap
 N1BAD=(); N1SAY=
+# [review b2a-d 6] a database just woken holds under 3 minutes in the view: the first read would store none
+for _ in $(seq 1 20); do
+  HELD=$(sq "SELECT ISNULL(DATEDIFF(second, MIN(end_time), SYSUTCDATETIME()), 0) FROM sys.dm_db_resource_stats")
+  [[ $HELD =~ ^[0-9]+$ ]] && [ "$HELD" -ge 180 ] && break
+  sleep 15
+done
+echo "  mssql_azuredb_resources: the view holds ${HELD:-?} s of rows"
 sq "DECLARE @t datetime2 = SYSUTCDATETIME(), @i bigint = 0; WHILE DATEDIFF(second, @t, SYSUTCDATETIME()) < 32 SET @i += 1; SELECT 1" >/dev/null
 B1=$(sq "SELECT CONVERT(varchar(19), SYSUTCDATETIME(), 126)")   # the burst's end, the server's UTC
 if run_ok mssql_azuredb_resources; then
   NEW1=$(q "select coalesce(to_char(newest_minute at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS+00'), '') from pgvigil.mssql_azuredb_read where instance_id=$iid")
+  [ -n "$NEW1" ] || N1BAD+=("the first read stored no minute: the read from the cursor was not exercised")
   # the burst's rows end by its end + 15 s: their minutes are complete (the collector's 30 s) 155 s after its end's minute began
   WAITS=$(sq "SELECT DATEDIFF(second, SYSUTCDATETIME(), DATEADD(second, 155, DATEADD(minute, DATEDIFF(minute, 0, CONVERT(datetime, '$B1', 126)), 0)))")
   if [[ $WAITS =~ ^[0-9]+$ ]] && [ "$WAITS" -gt 0 ]; then echo "  mssql_azuredb_resources: waiting $WAITS s for the burst's minutes to be complete"; sleep "$WAITS"; fi
@@ -489,11 +508,11 @@ for line in open(sys.argv[2]):
     for k, x in zip(("b_dtu", "b_cpu", "b_data", "b_log"), p[12:16]): g[k] = [int(v) for v in x.split(",")]
     stored.append((p[0], int(p[1]), g))
 errs, equal, trimmed = [], 0, 0
-for i, (minute, samples, g) in enumerate(stored):
+for minute, samples, g in stored:
     rows = hand.get(minute, [])
     if len(rows) < samples:  # the view dropped rows of this minute since the collector's read
         trimmed += 1
-        if i > 1: errs.append(f"{minute}: {samples} samples stored, {len(rows)} rows in the view, and it is not one of the two oldest stored minutes")
+        if not hand or minute > min(hand): errs.append(f"{minute}: {samples} samples stored, {len(rows)} rows in the view, and it is after the view's oldest minute ({min(hand) if hand else 'none'})")
         continue
     if len(rows) > samples:
         errs.append(f"{minute}: stored short - {samples} samples, the view holds {len(rows)} rows"); continue
@@ -510,24 +529,24 @@ if equal == 0: errs.append("no stored minute could be compared")
 if errs: print("; ".join(errs[:8])); sys.exit(1)
 PY
     ); then N1SAY=$OUT; else N1BAD+=("the minutes against the view: $(tr '\n' ' ' <<<"$OUT")"); fi
-    IFS='|' read -r BMAX BHOT BDTU <<<"$(q "select coalesce(max(max_cpu_percent)::text, 'none') || '|' || count(*) filter (where max_cpu_percent >= 50 and max_cpu_percent > avg_cpu_percent) || '|' || coalesce(max(max_dtu_percent)::text, 'none') from pgvigil.mssql_azuredb_minute where instance_id=$iid and snapshot_at >= date_trunc('minute', '$B1+00'::timestamptz) - interval '2 minutes' and snapshot_at <= date_trunc('minute', '$B1+00'::timestamptz) + interval '1 minute'")"
+    IFS='|' read -r BMAX BHOT BDTU BDLIM <<<"$(q "select coalesce(max(max_cpu_percent)::text, 'none') || '|' || count(*) filter (where max_cpu_percent >= 50 and max_cpu_percent > avg_cpu_percent) || '|' || coalesce(max(max_dtu_percent)::text, 'none') || '|' || coalesce(max(dtu_limit), 0) from pgvigil.mssql_azuredb_minute where instance_id=$iid and snapshot_at >= date_trunc('minute', '$B1+00'::timestamptz) - interval '2 minutes' and snapshot_at <= date_trunc('minute', '$B1+00'::timestamptz) + interval '1 minute'")"
     [ "${BHOT:-0}" -ge 1 ] || N1BAD+=("the burst ending $B1 UTC: no minute around it with max CPU >= 50 and over its average (the largest max CPU there: $BMAX)")
-    if [ -n "$LOWTIER" ] && [ "$SO" != ElasticPool ]; then python3 -c 'import sys; sys.exit(0 if sys.argv[1] != "none" and float(sys.argv[1]) >= 50 else 1)' "$BDTU" || N1BAD+=("the burst on $SO: max DTU % $BDTU, want >= 50"); fi
+    if [ "${BDLIM:-0}" -gt 0 ]; then python3 -c 'import sys; sys.exit(0 if sys.argv[1] != "none" and float(sys.argv[1]) >= 50 else 1)' "$BDTU" || N1BAD+=("the burst on $SO: max DTU % $BDTU, want >= 50"); fi
     # the forced gap: the cursor three hours back, older than anything the view holds
     GF=$(q "update pgvigil.mssql_azuredb_read set newest_minute = newest_minute - interval '3 hours' where instance_id=$iid returning to_char((newest_minute + interval '1 minute') at time zone 'UTC', 'YYYY-MM-DD HH24:MI')" | head -1)
     if run_ok mssql_azuredb_resources; then
-      GAP=$(q "select count(*) || '|' || coalesce(to_char(min(gap_from) at time zone 'UTC', 'YYYY-MM-DD HH24:MI'), '') || '|' || (select (newest_minute >= '$NEW2')::text from pgvigil.mssql_azuredb_read where instance_id=$iid) from pgvigil.mssql_azuredb_gap where instance_id=$iid")
+      GAP=$(q "select count(*) || '|' || coalesce(to_char(min(gap_from) at time zone 'UTC', 'YYYY-MM-DD HH24:MI'), '') || '|' || (select coalesce((newest_minute >= nullif('$NEW2', '')::timestamptz)::text, 'no newest minute') from pgvigil.mssql_azuredb_read where instance_id=$iid) from pgvigil.mssql_azuredb_gap where instance_id=$iid")
       [ "$GAP" = "1|$GF|true" ] || N1BAD+=("the forced gap: gap rows | the gap's start | the cursor back at the newest minute = '$GAP', want '1|$GF|true'")
     else N1BAD+=("the read after the forced gap was not ok"); fi
   else N1BAD+=("the read from the cursor was not ok"); fi
-  if [ ${#N1BAD[@]} -eq 0 ]; then VERDICT[mssql_azuredb_resources]="PASS ($N1SAY; no minute missing from the cursor ($CN in a row); the burst's largest max CPU $BMAX${LOWTIER:+, max DTU % $BDTU}; the forced gap stored from $GF UTC)"
+  if [ ${#N1BAD[@]} -eq 0 ]; then VERDICT[mssql_azuredb_resources]="PASS ($N1SAY; no minute missing from the cursor ($CN in a row); the burst's largest max CPU $BMAX$([ "${BDLIM:-0}" -gt 0 ] && echo ", max DTU % $BDTU"); the forced gap stored from $GF UTC)"
   else VERDICT[mssql_azuredb_resources]="FAIL"; for e in "${N1BAD[@]}"; do bad "B: mssql_azuredb_resources: $e"; done; fi
 fi
 # mssql_azuredb_governance again, minutes later: no new history row and no change row
 if [ -n "$GOVOK" ]; then
   run_as "$GOVN" mssql_azuredb_governance
-  GOV2=$(gov_state "$GOVID"); IFS='|' read -r _ _ _ _ GHIST2 _ GCHG2 _ GUSE2 <<<"$GOV2"
-  if [ "$GHIST2" = 1 ] && [ "$GCHG2" = 0 ]; then VERDICT[mssql_azuredb_governance]="PASS (as $GOVN: $GKEYS compared column(s) equal to the setup login's read, $GED / $GSO, dtu_limit $GDTU, 11 Properties rows; one history row after a second read, no change row; usage $GUSE1 then $GUSE2 MB$LOWSKIP)"
+  GOV2=$(gov_state "$GOVID"); IFS='|' read -r _ _ _ _ GHIST2 _ GCHG2 _ GUSE2 _ <<<"$GOV2"
+  if [ "$GHIST2" = 1 ] && [ "$GCHG2" = 0 ]; then VERDICT[mssql_azuredb_governance]="PASS (as $GOVN: $GKEYS compared column(s) equal to the setup login's read, $GED / $GSO, dtu_limit $GDTU, cpu_limit $GCPU, 11 Properties rows; one history row after a second read, no change row; usage $GUSE1 then $GUSE2 MB$LOWSKIP)"
   else VERDICT[mssql_azuredb_governance]="FAIL"; bad "B: mssql_azuredb_governance: a second read left '$GOV2' (want one history row and no change row)"; fi
 fi
 # the missing rights: the proof's CONNECT-only user
@@ -631,6 +650,25 @@ else
     if grep -qE "href=\"#/mssqlazure\?i=$iid(&amp;|\")" "$WORK/r-azuresummary.html"; then CLICK+=("Azure Summary -> #/mssqlazure?i=$iid"); else bad "C: the Azure Summary page has no link to the instance's Azure tab (#/mssqlazure?i=$iid)"; fi
     if grep -qF "$SO" <<<"$(text < "$WORK/p-mssqlazure.html")"; then CLICK+=("the Azure tab names the tier $SO"); else bad "C: the Azure tab does not name the tier $SO"; fi
     [ ${#CLICK[@]} -eq 2 ] && echo "  clicks: ${CLICK[0]}; ${CLICK[1]}"
+    # [review b2a-d 4] what B2a's pages show: the window from 4 hours back holds the stored minutes and the forced gap
+    AF=$(date -u -d '-4 hours' +%Y-%m-%dT%H:%M:%SZ); AT=$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ); SHOWS=()
+    WSUM=$(q "select coalesce(sum(samples), 0) from pgvigil.mssql_azuredb_minute where instance_id=$iid and snapshot_at >= '$AF' and snapshot_at < '$AT'")
+    curl -fs "http://127.0.0.1:$PORT/api/mssql/azuredb?instance=$iid&from=$AF&to=$AT" > "$WORK/az.json" || true
+    curl -fs "http://127.0.0.1:$PORT/api/azuredb/summary?from=$AF&to=$AT" > "$WORK/azsum.json" || true
+    TSAM=$(jq -r '(.summary.columns | index("samples")) as $c | (.summary.rows[0][$c] // "none") | tostring' "$WORK/az.json" 2>/dev/null || true)
+    TGAPS=$(jq -r '.gaps.rows | length' "$WORK/az.json" 2>/dev/null || true)
+    FSAM=$(jq -r --argjson i "$iid" '.databases as $t | ($t.columns | index("instance_id")) as $ci | ($t.columns | index("samples")) as $cs
+      | ([$t.rows[] | select(.[$ci] == $i) | .[$cs]][0] // "none") | tostring' "$WORK/azsum.json" 2>/dev/null || true)
+    if [ "$TSAM" = "$WSUM" ] && [ "${TGAPS:-0}" -ge 1 ] && [ "$FSAM" = "$WSUM" ]; then SHOWS+=("the Azure tab's API and the Azure Summary: $WSUM samples, $TGAPS gap(s)")
+    else bad "C: B2a's API over $AF..$AT: the Azure tab's samples '$TSAM', gaps '$TGAPS', the Azure Summary's samples '$FSAM'; want $WSUM, at least 1, $WSUM"; fi
+    timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/mssqlazure?i=$iid&w=6h" > "$WORK/p-mssqlazure-6h.html" 2>/dev/null || true
+    if grep -qF 'gap(s) in this window' <<<"$(text < "$WORK/p-mssqlazure-6h.html")"; then SHOWS+=("the Azure tab over 6 hours names the gap"); else bad "C: the Azure tab over 6 hours does not name the forced gap"; fi
+    T=$(text < "$WORK/p-mssqlproperties.html"); PMISS=()
+    for l in 'Edition' 'Service objective' 'Service level objective (with hardware)' 'Elastic pool' 'DTU limit' 'vCore limit' 'Max size (MB)' 'Max sessions' 'Max worker threads' 'Max log rate (MB/s)' 'MAXDOP (user workload group)'; do
+      grep -qF "$l" <<<"$T" || PMISS+=("$l"); done
+    if [ ${#PMISS[@]} -eq 0 ] && grep -qF 'mssql_properties is skipped' <<<"$T"; then SHOWS+=("the Properties tab: the eleven Azure SQL Database rows and mssql_properties' skip line")
+    else bad "C: the Properties tab: missing row label(s) [${PMISS[*]}] or no 'mssql_properties is skipped' line"; fi
+    [ ${#SHOWS[@]} -eq 3 ] && echo "  B2a's pages: ${SHOWS[0]}; ${SHOWS[1]}; ${SHOWS[2]}"
   else bad "C: chromium is not on this machine: the pages were not rendered"; fi
 fi
 

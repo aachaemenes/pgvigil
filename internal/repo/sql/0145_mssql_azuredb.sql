@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_azuredb_governance_history (
   gov                jsonb NOT NULL,       -- the view's row without user_data_directory_space_usage_mb
   PRIMARY KEY (instance_id, valid_from)
 );
+-- one open tier a database (the import's lock is the rule; this is its backstop)
+CREATE UNIQUE INDEX IF NOT EXISTS mssql_azuredb_governance_history_open ON pgvigil.mssql_azuredb_governance_history (instance_id)
+  WHERE valid_to = 'infinity';
 
 -- the 54 columns DBA Dash's AzureDBResourceGovernance_Upd compares (L73-126 at 4.25.0)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_azuredb_gov_compared(p_gov jsonb)
@@ -191,10 +194,14 @@ DECLARE
   v_since  timestamptz;
   v_props  jsonb;
   p        jsonb;
+  v_pool   text;
+  v_from   text;
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_mssql_azuredb_governance: instance % is not a SQL Server instance', p_instance_id;
   END IF;
+  -- one import a database at a time (the service's hourly run and a 'collect -once' may meet), as 0084's imports
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_azuredb_governance'), p_instance_id);
   SELECT x INTO r FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p_payload) = 'array' THEN p_payload ELSE '[]'::jsonb END) x
    WHERE x->>'kind' = 'governance' LIMIT 1;
   IF r IS NULL THEN
@@ -203,21 +210,34 @@ BEGIN
   v_gov := r->'gov';
   v_hist := v_gov - 'user_data_directory_space_usage_mb';
   SELECT * INTO v_old FROM pgvigil.mssql_azuredb_governance WHERE instance_id = p_instance_id;
+  -- an older read imported late never replaces the current tier (0066's rule)
+  IF v_old.instance_id IS NOT NULL AND v_old.snapshot_at > p_snapshot_at THEN
+    RETURN;
+  END IF;
   v_since := v_old.since;
+  -- a pooled database whose pool name was not read this time (the service objectives view refused, no tag) keeps the
+  -- name it had: an unread value is no change (0084's rule)
+  v_pool := r->>'pool';
+  v_from := r->>'pool_from';
+  IF v_pool IS NULL AND r->>'service_objective' = 'ElasticPool' AND v_old.service_objective = 'ElasticPool' THEN
+    v_pool := v_old.pool;
+    v_from := v_old.pool_from;
+  END IF;
   IF v_old.instance_id IS NULL
      OR pgvigil.mssql_azuredb_gov_compared(v_gov) IS DISTINCT FROM pgvigil.mssql_azuredb_gov_compared(v_old.gov)
-     OR (r->>'edition', r->>'service_objective', r->>'pool') IS DISTINCT FROM (v_old.edition, v_old.service_objective, v_old.pool) THEN
+     OR (r->>'edition', r->>'service_objective') IS DISTINCT FROM (v_old.edition, v_old.service_objective)
+     OR (v_pool IS NOT NULL AND v_old.pool IS NOT NULL AND v_pool <> v_old.pool) THEN
     UPDATE pgvigil.mssql_azuredb_governance_history SET valid_to = p_snapshot_at
      WHERE instance_id = p_instance_id AND valid_to = 'infinity';
     INSERT INTO pgvigil.mssql_azuredb_governance_history (instance_id, valid_from, edition, service_objective, pool, slo_name, dtu_limit, cpu_limit, gov)
-    VALUES (p_instance_id, p_snapshot_at, r->>'edition', r->>'service_objective', r->>'pool', v_gov->>'slo_name',
+    VALUES (p_instance_id, p_snapshot_at, r->>'edition', r->>'service_objective', v_pool, v_gov->>'slo_name',
             round((v_gov->>'dtu_limit')::numeric)::int, (v_gov->>'cpu_limit')::numeric, v_hist)
     ON CONFLICT (instance_id, valid_from) DO NOTHING;
     v_since := p_snapshot_at;
   END IF;
   INSERT INTO pgvigil.mssql_azuredb_governance (instance_id, snapshot_at, since, edition, service_objective, pool, pool_from, pool_note,
          max_size_bytes, slo_name, dtu_limit, cpu_limit, usage_mb, gov)
-  VALUES (p_instance_id, p_snapshot_at, v_since, r->>'edition', r->>'service_objective', r->>'pool', r->>'pool_from', r->>'pool_note',
+  VALUES (p_instance_id, p_snapshot_at, v_since, r->>'edition', r->>'service_objective', v_pool, v_from, r->>'pool_note',
           round((r->>'max_size_bytes')::numeric)::bigint, v_gov->>'slo_name', round((v_gov->>'dtu_limit')::numeric)::int,
           (v_gov->>'cpu_limit')::numeric, round((v_gov->>'user_data_directory_space_usage_mb')::numeric)::bigint, v_gov)
   ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, since = EXCLUDED.since, edition = EXCLUDED.edition,
@@ -225,35 +245,41 @@ BEGIN
     max_size_bytes = EXCLUDED.max_size_bytes, slo_name = EXCLUDED.slo_name, dtu_limit = EXCLUDED.dtu_limit, cpu_limit = EXCLUDED.cpu_limit,
     usage_mb = EXCLUDED.usage_mb, gov = EXCLUDED.gov;
 
-  -- the Properties rows: {name, label, value, ord, tracked}; a NULL value shows the note
+  -- the Properties rows: {name, label, value, ord, tracked, src}; a NULL value shows the note, else where it was not
+  -- read: 'db' DATABASEPROPERTYEX, 'view' sys.dm_user_db_resource_governance
   v_props := jsonb_build_array(
-    jsonb_build_object('name', 'azure_edition', 'label', 'Edition', 'value', r->>'edition', 'ord', 900, 'tracked', false),
-    jsonb_build_object('name', 'azure_service_objective', 'label', 'Service objective', 'value', r->>'service_objective', 'ord', 901, 'tracked', true),
+    jsonb_build_object('name', 'azure_edition', 'label', 'Edition', 'value', r->>'edition', 'ord', 900, 'tracked', false, 'src', 'db'),
+    jsonb_build_object('name', 'azure_service_objective', 'label', 'Service objective', 'value', r->>'service_objective', 'ord', 901, 'tracked', true, 'src', 'db'),
     jsonb_build_object('name', 'azure_slo_name', 'label', 'Service level objective (with hardware)', 'value', v_gov->>'slo_name', 'ord', 902, 'tracked', false),
     jsonb_build_object('name', 'azure_elastic_pool', 'label', 'Elastic pool', 'value',
-      CASE WHEN r->>'service_objective' = 'ElasticPool' THEN r->>'pool' ELSE 'none' END, 'note', r->>'pool_note', 'ord', 903, 'tracked', true),
+      CASE WHEN r->>'service_objective' = 'ElasticPool' THEN v_pool ELSE 'none' END, 'note', r->>'pool_note', 'ord', 903, 'tracked', true),
     jsonb_build_object('name', 'azure_dtu_limit', 'label', 'DTU limit', 'value', coalesce(v_gov->>'dtu_limit', 'none (vCore)'), 'ord', 904, 'tracked', true),
     jsonb_build_object('name', 'azure_cpu_limit', 'label', 'vCore limit', 'value', coalesce(v_gov->>'cpu_limit', 'none (DTU)'), 'ord', 905, 'tracked', true),
-    jsonb_build_object('name', 'azure_max_size_mb', 'label', 'Max size (MB)', 'value', (round((r->>'max_size_bytes')::numeric / 1048576))::text, 'ord', 906, 'tracked', false),
+    jsonb_build_object('name', 'azure_max_size_mb', 'label', 'Max size (MB)', 'value', (round((r->>'max_size_bytes')::numeric / 1048576))::text, 'ord', 906, 'tracked', false, 'src', 'db'),
     jsonb_build_object('name', 'azure_max_sessions', 'label', 'Max sessions', 'value', v_gov->>'max_sessions', 'ord', 907, 'tracked', false),
     jsonb_build_object('name', 'azure_max_workers', 'label', 'Max worker threads', 'value', v_gov->>'primary_group_max_workers', 'ord', 908, 'tracked', false),
     jsonb_build_object('name', 'azure_max_log_rate', 'label', 'Max log rate (MB/s)', 'value',
       to_char((v_gov->>'primary_max_log_rate')::numeric / 1048576, 'FM999999990.00'), 'ord', 909, 'tracked', false),
     jsonb_build_object('name', 'azure_max_dop', 'label', 'MAXDOP (user workload group)', 'value', v_gov->>'max_dop', 'ord', 910, 'tracked', false));
+  -- 0084's rule: a change row only between two read values; an unread value keeps the stored one and its read time
   FOR p IN SELECT * FROM jsonb_array_elements(v_props) LOOP
-    IF (p->>'tracked')::boolean AND EXISTS (SELECT 1 FROM pgvigil.mssql_property mp WHERE mp.instance_id = p_instance_id AND mp.name = p->>'name'
-                                              AND mp.value IS DISTINCT FROM p->>'value') THEN
+    IF (p->>'tracked')::boolean AND p->>'value' IS NOT NULL
+       AND EXISTS (SELECT 1 FROM pgvigil.mssql_property mp WHERE mp.instance_id = p_instance_id AND mp.name = p->>'name'
+                      AND mp.value IS NOT NULL AND mp.value IS DISTINCT FROM p->>'value') THEN
       INSERT INTO pgvigil.mssql_property_change (instance_id, name, label, old_value, new_value, changed_at)
       SELECT p_instance_id, p->>'name', p->>'label', mp.value, p->>'value', p_snapshot_at
         FROM pgvigil.mssql_property mp WHERE mp.instance_id = p_instance_id AND mp.name = p->>'name';
     END IF;
-    INSERT INTO pgvigil.mssql_property (instance_id, name, grp, label, value, note, ord, snapshot_at, since, seen_at)
+    INSERT INTO pgvigil.mssql_property AS mp (instance_id, name, grp, label, value, note, ord, snapshot_at, since, seen_at)
     VALUES (p_instance_id, p->>'name', 'Azure SQL Database', p->>'label', p->>'value',
-            CASE WHEN p->>'value' IS NULL THEN coalesce(p->>'note', 'not in the view''s row') ELSE p->>'note' END,
+            CASE WHEN p->>'value' IS NULL THEN coalesce(p->>'note', CASE p->>'src' WHEN 'db' THEN 'not read: DATABASEPROPERTYEX gave none'
+                                                                    ELSE 'not in the view''s row' END) ELSE p->>'note' END,
             (p->>'ord')::int, p_snapshot_at, p_snapshot_at, p_snapshot_at)
     ON CONFLICT (instance_id, name) DO UPDATE SET grp = EXCLUDED.grp, label = EXCLUDED.label, note = EXCLUDED.note, ord = EXCLUDED.ord,
-      since = CASE WHEN pgvigil.mssql_property.value IS DISTINCT FROM EXCLUDED.value THEN EXCLUDED.since ELSE pgvigil.mssql_property.since END,
-      value = EXCLUDED.value, snapshot_at = EXCLUDED.snapshot_at, seen_at = EXCLUDED.seen_at;
+      seen_at = EXCLUDED.seen_at,
+      value = coalesce(EXCLUDED.value, mp.value),
+      snapshot_at = CASE WHEN EXCLUDED.value IS NULL THEN mp.snapshot_at ELSE EXCLUDED.snapshot_at END,
+      since = CASE WHEN EXCLUDED.value IS NULL OR mp.value IS NOT DISTINCT FROM EXCLUDED.value THEN mp.since ELSE EXCLUDED.since END;
   END LOOP;
 END $$;
 
