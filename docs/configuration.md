@@ -215,3 +215,30 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 `door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
+
+## The Parquet export (export:)
+
+Absent = off. [parquet-export.md](parquet-export.md) is the whole page; these are the keys.
+
+```yaml
+export:
+  name: prod-repo                 # required: the folder under the destination and part of every file name
+                                  #   (lower case, a letter first, no '__', at most 31 characters)
+  dsn: env:PGVIGIL_EXPORT_DSN     # required: the export's login, IN ROLE pgvigil_exporter (or pgvigil_reader) alone;
+                                  #   env:NAME or file:/path - a connection string written here is refused
+  state_dir: /var/lib/pgvigil/export   # required: the lock and the files being built
+  destination:                    # required: one of
+    type: folder                  #   folder:     path
+    path: /srv/pgvigil-export     #   s3:         bucket, prefix, region, endpoint (an S3-compatible store), profile
+                                  #   azure_blob: container, prefix, and connection_string: env:NAME | sas_url: env:NAME
+                                  #               | account_url (the default credential)
+  settle_minutes: 20              # a window is first exported this long after it ends
+  final_after_hours: 24           # it is exported again, as final, once it is this old
+  max_window_age_hours: 48        # how far back a run looks; an older hour with no manifest is named as aged out
+  max_windows_per_run: 12
+  snapshot_max_bytes: 256MB       # a whole-table export (a state or dimension table) over it is left out and named
+  statement_timeout: 120s         # of the reading session
+  carry: []                       # text (statement, plan and log text), audit (action logs, audit trails, logins,
+                                  #   roles and grants): each OFF unless named
+  tables: { exclude: [] }         # more tables left out by name; what the map leaves out cannot be put back in
+```

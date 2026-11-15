@@ -2,7 +2,7 @@
 # Proof of the service units' hardening (government readiness, task 50): systemd's own security analysis
 # of the two units in deploy/, offline (no unit is installed or started here; proof-install.sh runs the
 # collector unit for real on a systemd container). Needs systemd-analyze 250 or newer (--offline).
-# Expected: deploy/pgvigil.service and deploy/pgvigil-purge.service each score an overall exposure of
+# Expected: deploy/pgvigil.service, deploy/pgvigil-purge.service and deploy/pgvigil-export.service each score an overall exposure of
 # 1.5 or under ("OK" on systemd's scale, where the unhardened unit scored 7.7 "EXPOSED"); the unit the
 # installer renders is byte-identical to deploy/pgvigil.service (TestUnitMatchesDeployFile); every
 # directive the hardening relies on is present in both units; the controls that are deliberately left
@@ -24,7 +24,7 @@ NEEDED=(NoNewPrivileges=yes ProtectSystem=strict ProtectHome=yes PrivateTmp=yes 
   CapabilityBoundingSet= AmbientCapabilities= SystemCallArchitectures=native SystemCallFilter=@system-service "SystemCallFilter=~@privileged")
 ALLOWED_OPEN='^(SystemCallFilter=~@resources|RootDirectory=/RootImage=|RestrictAddressFamilies=~AF_UNIX|RestrictAddressFamilies=~AF_\(INET\|INET6\)|PrivateNetwork=|PrivateUsers=|DeviceAllow=|IPAddressDeny=)$'
 
-for unit in deploy/pgvigil.service deploy/pgvigil-purge.service; do
+for unit in deploy/pgvigil.service deploy/pgvigil-purge.service deploy/pgvigil-export.service; do
   echo "== $unit"
   for d in "${NEEDED[@]}"; do grep -qxF -- "$d" "$unit" || fail "$unit lacks the line $d"; done
   out=$(systemd-analyze security --offline=true --no-pager "$unit" 2>&1) || fail "systemd-analyze security failed on $unit: $out"
@@ -42,4 +42,4 @@ done
 
 echo "== the installer's rendered unit equals deploy/pgvigil.service"
 go test ./cmd/pgvigil/ -run 'TestUnitMatchesDeployFile' -count=1 >/dev/null || fail "the rendered unit drifted from deploy/pgvigil.service"
-echo "OK: both units at or under exposure $MAX, every hardening line present, the rendered unit matches"
+echo "OK: the three units at or under exposure $MAX, every hardening line present, the rendered unit matches"

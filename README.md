@@ -229,6 +229,17 @@ Three ways to schedule it:
 - pg_cron on the repository server (RDS and Aurora have it; `cron.database_name` is a parameter-group setting, `postgres` by default, so when the repository is another database schedule with `cron.schedule_in_database`, pg_cron 1.4+), as the owner so the job runs as the owner: `SELECT cron.schedule('pgvigil-purge', '15 3 * * *', $$SELECT pgvigil.purge(30)$$);`. On RDS and Aurora the owner needs `GRANT USAGE ON SCHEMA cron TO <owner>` from an `rds_superuser` member first. Not proven here: no proof schedules the purge through pg_cron.
 - Windows: a daily scheduled task running `pgvigil.exe purge -config C:\ProgramData\pgvigil\pgvigil-purge.yaml -days 30`, where that config is a copy whose `repository.dsn` is a `file:` holding the owner's DSN, readable by the task's account alone (the installed config points at the collector's DSN file). Not proven here yet: Windows end to end is task 144, not built.
 
+## Parquet export (optional)
+
+`pgvigil export` writes the repository to Parquet files - one set and one manifest per clock hour - into a folder, an S3 bucket (or an S3-compatible store) or an Azure Blob container, for a lake or a warehouse outside pgvigil. It is off until the configuration has an `export:` section; it only reads the repository, as a login of its own that must be unable to write; statement, plan and log text and the audit tables leave only where `carry:` names them. Your scheduler runs it hourly (`deploy/pgvigil-export.service` and `deploy/pgvigil-export.timer`). The file contract, the kinds of table, the types and the rights each destination needs: [docs/parquet-export.md](docs/parquet-export.md).
+
+```
+pgvigil export -config pgvigil.yaml -check        # the login, the map of tables, the destination
+pgvigil export -config pgvigil.yaml -plan         # the windows a run would take; nothing is written
+pgvigil export -config pgvigil.yaml               # every due window, oldest first
+pgvigil export -config pgvigil.yaml -status       # the newest window, the hours missing
+```
+
 ## Sizing
 
 Estimates, not measurements of this build. Every figure below is scaled from one run of `scripts/proof-scale.sh` part B on 2026-11-09, on an earlier build (its raw output is not in this repository): one collector polled 1,000 instance entries naming one idle PostgreSQL 18 target with one database for six minutes, with pg_stat_io read every minute (the default before it became its own collection), and the repository's growth over that window was scaled to a day (the window's bytes over its runs per instance, times 1,440 minutes; the one five-minute statement delta times 288). The 5-minute row and the row without pg_stat_io are derived from that run (its pg_stat_io share divided by five, or left out). Collections added since that build are not in them, and a busy server stores more statement deltas (capped at the top 500 by time plus the top 200 by calls per snapshot) and more activity rows, so these are a floor, not a forecast; part B prints a rerun's own growth over its window (`poll_repo_growth_bytes`):
