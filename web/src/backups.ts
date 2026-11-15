@@ -124,7 +124,7 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'platform' },
       { key: 'worst', label: 'findings', fmt: (v, r) => v == null ? '' : badge(`${fmtNum(r.findings)} ${String(v)}`, v === 'critical' ? 'crit' : 'warn') },
       { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; }, cls: (_v, r) => archiverState(r)[1] ? '' : 'status none' },
-      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] || 'status none'},
+      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] || 'status none' },
       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
       { key: 'failed_count', label: 'failed', num: true },
       { key: 'retention_days', label: 'retention', num: true, fmt: retTxt, cls: v => v == null ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },

@@ -118,7 +118,7 @@ const shipCols: Col[] = [
   { key: 'last_backup_at', label: 'last backup', fmt: fmtTime }, { key: 'last_copied_at', label: 'last copy', fmt: fmtTime },
   { key: 'last_restored_at', label: 'last restore', fmt: fmtTime },
   // an empty cell is never filled: a secondary with no restore yet says so in words
-  { key: 'age_minutes', label: 'age at the read (min)', num: true, fmt: (v, r) => v == null ? (late(v, r) ? 'none read' : '') : fmtNum(v), cls: (v, r) => late(v, r) ? 'warn' : v == null ? '' : r.threshold_minutes != null && Number(r.threshold_minutes) > 0 ? 'status ok' : 'status none'},
+  { key: 'age_minutes', label: 'age at the read (min)', num: true, fmt: (v, r) => v == null ? (late(v, r) ? 'none read' : '') : fmtNum(v), cls: (v, r) => late(v, r) ? 'warn' : v == null ? '' : r.threshold_minutes != null && Number(r.threshold_minutes) > 0 ? 'status ok' : 'status none' },
   { key: 'threshold_minutes', label: 'threshold (min)', num: true },
   { key: 'alert_enabled', label: 'alert', fmt: yes },
   { key: 'last_restored_file', label: 'last file', wide: true, fmt: (v, r) => String(v ?? r.last_backup_file ?? r.last_copied_file ?? '') },
@@ -132,7 +132,7 @@ const pubCols: Col[] = [
 const subCols: Col[] = [
   { key: 'publication' }, { key: 'publisher_db', label: 'from' },
   { key: 'subscriber', fmt: (v, r) => `${String(v ?? '')}.${String(r.subscriber_db ?? '')}` },
-  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok')},
+  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok') },
   { key: 'undistributed', label: 'undistributed commands', num: true },
   { key: 'est_catchup_s', label: 'est. to deliver', num: true, fmt: fmtSecs },
   { key: 'latency_ms', label: 'latency (ms)', num: true }, { key: 'last_run_at', label: 'last report', fmt: fmtTime },
@@ -140,7 +140,7 @@ const subCols: Col[] = [
 ];
 const agentCols: Col[] = [
   { key: 'agent_type', label: 'agent' }, { key: 'agent_name', label: 'name' }, { key: 'publisher_db', label: 'database' },
-  { key: 'publication' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok')},
+  { key: 'publication' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok') },
   { key: 'last_run_at', label: 'last report', fmt: fmtTime }, { key: 'status_text', label: 'message', wide: true },
 ];
 

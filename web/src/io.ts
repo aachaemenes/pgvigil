@@ -212,7 +212,7 @@ const slruCols: Col[] = [
   { key: 'family', label: 'cache' }, { key: 'name', label: 'as the server names it' },
   { key: 'blks_hit', label: 'hits', num: true, fmt: fmtNum },
   { key: 'blks_read', label: 'read from disk', num: true, fmt: fmtNum,
-    cls: (v, r) => v == null || v === '' ? '' : !['subtransaction', 'multixact_member', 'multixact_offset'].includes(String(r.family)) ? 'status none' : Number(v) > 0 ? 'warn' : 'status ok'},
+    cls: (v, r) => v == null || v === '' ? '' : !['subtransaction', 'multixact_member', 'multixact_offset'].includes(String(r.family)) ? 'status none' : Number(v) > 0 ? 'warn' : 'status ok' },
   { key: 'hit_pct', label: 'hit', num: true, fmt: v => v == null ? '' : pctFmt(Number(v)) },
   { key: 'blks_written', label: 'written', num: true, fmt: fmtNum }, { key: 'blks_zeroed', label: 'zeroed', num: true, fmt: fmtNum },
   { key: 'flushes', num: true, fmt: fmtNum }, { key: 'truncates', num: true, fmt: fmtNum },

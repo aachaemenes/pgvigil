@@ -80,7 +80,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       grid(missing, [
         { key: 'database' }, { key: 'table_ref', label: 'table' }, { key: 'equality_columns', label: 'equality' }, { key: 'inequality_columns', label: 'inequality' },
         { key: 'included_columns', label: 'included' }, { key: 'user_seeks', label: 'seeks', num: true }, { key: 'user_scans', label: 'scans', num: true },
-        { key: 'avg_impact', label: 'impact %', num: true }, { key: 'benefit_per_day', label: 'benefit / day', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 100000 ? 'warn' : 'status ok'},
+        { key: 'avg_impact', label: 'impact %', num: true }, { key: 'benefit_per_day', label: 'benefit / day', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 100000 ? 'warn' : 'status ok' },
         { key: 'last_request', label: 'last asked', fmt: fmtTime }], 'No missing-index request.'));
     out.push(el('h3', {}, 'Statistics'), grid(rowsOf(d.statsdbs), [
       { key: 'database' }, { key: 'statistics', num: true }, { key: 'statistics_with_props', label: 'with properties', num: true },

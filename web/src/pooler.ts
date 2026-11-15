@@ -25,7 +25,7 @@ const yes = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
 const poolCols: Col[] = [
   { key: 'database' }, { key: 'user' },
   { key: 'cl_active', label: 'clients active', num: true },
-  { key: 'cl_waiting', label: 'clients waiting', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok'},
+  { key: 'cl_waiting', label: 'clients waiting', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok' },
   { key: 'sv_active', label: 'servers active', num: true },
   { key: 'sv_idle', label: 'servers idle', num: true },
   { key: 'sv_used', label: 'servers used', num: true },
@@ -139,7 +139,7 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
         { key: 'head_application', label: 'head application' },
         { key: 'head_via_pooler', label: 'head through the pooler', fmt: (v, r) => v === true ? `yes: serves ${String(r.head_client_application ?? 'a client')}` : v === false ? 'no (a direct session)' : '' },
         { key: 'servers_behind', label: 'pooler servers blocked behind it', num: true },
-        { key: 'clients_waiting', label: 'clients waiting in those pools', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok'},
+        { key: 'clients_waiting', label: 'clients waiting in those pools', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok' },
         { key: 'longest_wait_us', label: 'longest client wait', num: true, fmt: waitUs },
         { key: 'pools', fmt: pids },
         { key: 'head_query', label: 'head\'s last statement', fmt: (v, r) => sqlCell(v, { heading: `pid ${String(r.head_pid)}: last statement` }) },

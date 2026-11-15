@@ -220,7 +220,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[
     grid(alerts, [
       { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true },
       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
-      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => v == null || v === '' ? '' : r.enabled !== true ? 'status none' : Number(v) === 0 && r.has_job !== true ? 'status warn' : 'status ok'},
+      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => v == null || v === '' ? '' : r.enabled !== true ? 'status none' : Number(v) === 0 && r.has_job !== true ? 'status warn' : 'status ok' },
       { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },
       { key: 'has_job', label: 'starts a job', fmt: yn }, { key: 'include_event_description', label: 'error text in the message', fmt: yn },
       { key: 'occurrence_count', label: 'raised', num: true }, { key: 'last_occurrence_at', label: 'last raised', fmt: fmtTime },

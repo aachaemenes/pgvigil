@@ -458,8 +458,8 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
     { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
     { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes', cls: (v, r) => !r.has_baseline || v ? '' : 'status ok' },
     { key: 'forced', fmt: v => v ? badge('forced', 'ok') : '' },
-    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok'},
-    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok'},
+    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok' },
+    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok' },
     { key: 'object_name', label: 'object' },
   ];
   const baseWords = base === 'prev' ? 'the range of equal length before it' : base === 'day' ? 'the same range 24 hours earlier'
@@ -503,7 +503,7 @@ function forcedView(ctx: Ctx, d: QS): HTMLElement[] {
     { key: 'object_name', label: 'object' },
     { key: 'query', label: 'statement', fmt: stmt },
     { key: 'forcing_type', label: 'plan forcing', fmt: v => text(v).toLowerCase() },
-    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'status warn' : 'status ok'},
+    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'status warn' : 'status ok' },
     { key: 'force_failure_reason', label: 'last force failure' },
     { key: 'plan_count', label: 'plans of the query', num: true },
     { key: 'plan_last_execution', label: 'last execution (plan)', fmt: fmtTime },

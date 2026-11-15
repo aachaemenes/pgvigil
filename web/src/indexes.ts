@@ -166,7 +166,7 @@ const bloatCols: Col[] = [
   { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes },
   { key: 'est_bytes', label: 'its rows need', num: true, fmt: fmtBytes },
   { key: 'bloat_bytes', label: 'bloat', num: true, fmt: fmtBytes },
-  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 50 ? 'warn' : 'status ok'},
+  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 50 ? 'warn' : 'status ok' },
   { key: 'fillfactor', num: true }, { key: 'tuples', label: 'rows', num: true, fmt: fmtNum },
   { key: 'est_note', label: 'not estimated', wide: true },
   { key: 'reindex_sql', label: 'rebuild (run it yourself)', wide: true },
@@ -178,7 +178,7 @@ const seqCols: Col[] = [
   { key: 'last_value', label: 'last value', num: true, fmt: fmtNum },
   { key: 'max_value', label: 'its maximum', num: true, fmt: fmtNum },
   { key: 'col_table', label: 'feeds', fmt: (v, r) => v == null ? '' : `${String(v)}.${String(r.col_name ?? '')} (${String(r.col_type ?? '')})` },
-  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : 'status ok'},
+  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : 'status ok' },
   { key: 'readable', label: 'readable', fmt: v => v === false ? badge('no: the login may not read it', 'warn') : '' },
   { key: 'blks_read', label: 'blocks read', num: true, fmt: fmtNum }, { key: 'blks_hit', label: 'blocks hit', num: true, fmt: fmtNum },
 ];
