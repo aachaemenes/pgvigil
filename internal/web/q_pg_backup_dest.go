@@ -1,7 +1,7 @@
 package web
 
 // Where a PostgreSQL server's base backups and WAL go (task 302; migration 0148). The lead's WIRING (scripts/inv-302-
-// wiring.patch) adds the routes in Handler and the write door's route to demodoor.go's lists:
+// wiring.patch) adds the routes in Handler (no demodoor.go hunk: the demo door refuses the write, and the GET says so):
 //	GET  /api/pg/backup_dest         s.PgBackupDest       one instance: base backups to, WAL to, restore from (read beside
 //	                                                      entered), every destination with its source, the tool reads, the findings
 //	GET  /api/pg/backup_dest/fleet   s.PgBackupDestFleet  every instance's 'base backups to' and 'WAL to'
@@ -18,9 +18,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
-// doorPgBackupDest is the entry's write route (demodoor.go's scope lists take it in the WIRING patch).
+// doorPgBackupDest is the entry's write route; the demo door does not carry it (its allow list's default: refused), and
+// the GET's 'door' part says so to the page.
 const doorPgBackupDest doorRoute = "pg/backup_dest"
 
 const sqlPgBackupDestinations = `
@@ -62,15 +67,35 @@ func (s *Server) PgBackupDest(w http.ResponseWriter, r *http.Request) {
 		{"settings", sqlPgBackupDestSettings, []any{id}},
 		{"findings", sqlPgBackupDestFindings, []any{id}},
 		{"history", sqlPgBackupDestHistory, []any{id}},
+		// the write's off words where the route refuses it whatever the seat says: a demo serve carries no entry (its
+		// door names the routes it takes, and this is not one), so the page never offers a live Edit the route answers 403
+		{"door", `SELECT $1::text AS off`, []any{s.backupDestDoorOff()}},
 	})
 }
 
+// backupDestDoorOff is why an entry cannot be written on this server whatever the seat says ("" = the seat decides).
+func (s *Server) backupDestDoorOff() string {
+	if s.demo != nil {
+		return "a destination is not entered through the demo: it needs pgvigil serve with a signed-in user"
+	}
+	return ""
+}
+
+// sqlPgBackupDestFleet: EVERY active PostgreSQL instance (an rsync, cp, wal-g or basic_archive server and one with
+// archive_mode off are exactly the ones no tool row names: F9), its read 'base backups to' and 'WAL to' (or the
+// platform's line, or 'not known'), a person's entries apart from them (never as if read: F10), and base_not_read -
+// 162's tool row kept off by the read_tools opt-in, so the Summary's Backup FULL cell is grey, never green (F1).
 const sqlPgBackupDestFleet = `
-SELECT d.instance_id, i.name AS instance, max(coalesce(d.read_text, d.platform_line, d.entered_text, d.not_known)) FILTER (WHERE d.role = 'base') AS base_to,
-       max(coalesce(d.read_text, d.platform_line, d.entered_text, d.not_known)) FILTER (WHERE d.role = 'wal') AS wal_to,
-       bool_or(d.entered_text IS NOT NULL AND d.read_text IS NULL) AS entered_only, bool_or(d.secret_seen) AS secret_seen
-  FROM pgvigil.pg_backup_destinations d JOIN pgvigil.instances i ON i.instance_id = d.instance_id
- GROUP BY d.instance_id, i.name ORDER BY i.name`
+SELECT i.instance_id, i.name AS instance,
+       max(coalesce(d.read_text, d.platform_line, d.not_known)) FILTER (WHERE d.role = 'base') AS base_to,
+       max(coalesce(d.read_text, d.platform_line, d.not_known)) FILTER (WHERE d.role = 'wal') AS wal_to,
+       max(d.entered_text) FILTER (WHERE d.role = 'base') AS base_entered, max(d.entered_text) FILTER (WHERE d.role = 'wal') AS wal_entered,
+       coalesce(bool_or(d.secret_seen), false) AS secret_seen,
+       EXISTS (SELECT 1 FROM pgvigil.pg_backup_tools t WHERE t.instance_id = i.instance_id AND t.is_present AND t.state = 'not_read') AS base_not_read
+  FROM pgvigil.instances i
+  LEFT JOIN pgvigil.pg_backup_destinations d ON d.instance_id = i.instance_id
+ WHERE i.is_active AND i.engine = 'postgres'
+ GROUP BY i.instance_id, i.name ORDER BY i.name`
 
 // PgBackupDestFleet is every PostgreSQL instance's 'base backups to' and 'WAL to' (the fleet Backups section).
 func (s *Server) PgBackupDestFleet(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +125,15 @@ func (s *Server) PgBackupDestWrite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("body: an instance_id, a role and a text: %v", err))
 		return
 	}
+	// F19: the first gate is the collector's own secret rule over every word (an option or a NAME=VALUE whose name is a
+	// credential's, a URL's user:password@ or signature, user:password@host, sshpass -p, curl -u user:password, a
+	// secret-shaped word with a value after it); 0148's function is the second
+	if collect.EntryHoldsSecret(in.Text + " " + in.Note) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "refused", "detail": "an entry never holds a credential: name where the backups go, not how to reach it"})
+		return
+	}
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
 	pool, ok := seat.poolFor(wctx, w, writeScope{Route: doorPgBackupDest, InstanceID: in.InstanceID, OneInstance: true})
@@ -111,14 +145,16 @@ func (s *Server) PgBackupDestWrite(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err != nil {
-		// the function's own words (RAISE EXCEPTION): never the text that was refused
-		msg := err.Error()
-		if i := strings.Index(msg, "ERROR: "); i >= 0 {
-			msg = msg[i+len("ERROR: "):]
+		// the function's own words (RAISE EXCEPTION, SQLSTATE P0001) are a refusal (409): never the text that was
+		// refused; any other failure (the pool, a timeout) is the server's (500), in words that hold no entry text
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != "P0001" {
+			s.log.Warn("pg backup destination: the write failed", "instance", in.InstanceID, "role", in.Role, "user", seat.user, "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "failed", "detail": "the entry could not be written (the server's log has the error)"})
+			return
 		}
-		if i := strings.Index(msg, " (SQLSTATE"); i >= 0 {
-			msg = msg[:i]
-		}
+		msg := pe.Message
 		s.log.Info("pg backup destination: refused", "instance", in.InstanceID, "role", in.Role, "user", seat.user, "why", msg)
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "refused", "detail": msg})

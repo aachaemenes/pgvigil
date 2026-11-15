@@ -42,8 +42,10 @@ import (
 //   - A backslash is a literal character (Windows paths: `copy "%p" "C:\server\archivedir\%f"` - the documented
 //     example as the server holds it); it escapes nothing.
 //   - Outside quotes, '&&', '||', ';', '|' and a lone '&' end a segment; each segment is read alone and is a row of
-//     its own (seq 1, 2, ...). '<', '>', '>>' and '>&' outside quotes are words of their own: a redirect's target is
-//     the word after it (`2>&1` is the words '2', '>&', '1').
+//     its own (seq 1, 2, ...). '<', '>', '>>' and '>&' outside quotes are words of their own, with the file
+//     descriptor written right before them (no blank between) as part of the word: a redirect's target is the word
+//     after it (`2>&1` is the words '2>&', '1'; `2>/dev/null` is '2>', '/dev/null'). Only a redirect with no
+//     descriptor or descriptor 1 is the program's output (redirectIsStdout).
 //   - A segment's leading wrappers are peeled, in any order, before its program is named: `timeout [-s SIG] [-k D] N`,
 //     `nice [-n N]`, `ionice [-c N] [-n N]`, `sudo [-u USER] [-E]`, `flock [-w N] [-x|-s|-n] FILE`, `exec`,
 //     `env [-i] [NAME=VALUE ...]`, and leading NAME=VALUE assignments (a shell's own). An assignment is kept only when
@@ -115,8 +117,15 @@ func lexCommand(cmd string) (segs [][]lexWord, why string) {
 			}
 			endSeg()
 		case '<', '>':
+			// a descriptor right before the operator ('2>') belongs to it, never a word of its own
+			fd := ""
+			if inWord && !tainted && reFD.MatchString(w.String()) {
+				fd = w.String()
+				w.Reset()
+				inWord = false
+			}
 			endWord()
-			op := string(c)
+			op := fd + string(c)
 			if c == '>' && i+1 < len(cmd) && (cmd[i+1] == '>' || cmd[i+1] == '&') {
 				op += string(cmd[i+1])
 				i++
@@ -135,6 +144,33 @@ func lexCommand(cmd string) (segs [][]lexWord, why string) {
 	}
 	endSeg()
 	return segs, ""
+}
+
+// scanSecrets says whether any word is an option or a NAME=VALUE assignment whose name is a credential's.
+func scanSecrets(ws []lexWord) bool {
+	for _, w := range ws {
+		if name, _, _ := optSplit(w.text); name != "" && secretName(name) {
+			return true
+		}
+		if name, _, ok := strings.Cut(w.text, "="); ok && reEnvName.MatchString(name) && secretName(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// reFD is a file descriptor's number before a redirect operator.
+var reFD = regexp.MustCompile(`^[0-9]{1,2}$`)
+
+// isRedirect says whether a word is a redirect operator (with its descriptor, if one was written).
+func isRedirect(w lexWord) bool {
+	t := strings.TrimLeft(w.text, "0123456789")
+	return !w.tainted && (t == "<" || t == ">" || t == ">>" || t == ">&")
+}
+
+// redirectIsStdout says whether a redirect operator sends the program's output (no descriptor, or 1) to a file.
+func redirectIsStdout(w lexWord) bool {
+	return w.text == ">" || w.text == ">>" || w.text == "1>" || w.text == "1>>"
 }
 
 // backupDest is one destination a command, a library or a tool's configuration names. Every kept field passed a plain
@@ -164,7 +200,8 @@ var (
 	reSecretWord = regexp.MustCompile(`(?:^|-)(?:password|passwd|pwd|pass|passphrase|secret|token|sas|credentials?)(?:$|-)`)
 	secretNames  = map[string]bool{"account-key": true, "s3-key": true, "azure-key": true, "gcs-key": true, "access-key": true,
 		"libsodium-key": true, "pgp-key": true, "connection-string": true, "storage-key": true, "walg-libsodium-key": true, "walg-pgp-key": true,
-		"azure-storage-key": true, "azure-storage-access-key": true}
+		"azure-storage-key": true, "azure-storage-access-key": true,
+		"s3-sse-customer-key": true} // pgBackRest's repoN-s3-sse-customer-key (barman's own sse-customer-key is the one exception)
 	reRepoN      = regexp.MustCompile(`^(?:pgbackrest-)?repo[0-9]+-`)
 	reDestScheme = regexp.MustCompile(`^[a-z][a-z0-9+.-]{0,15}$`)
 	reEnvName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -178,12 +215,20 @@ func secretName(name string) bool {
 	n := strings.ToLower(strings.TrimLeft(name, "-"))
 	n = strings.ReplaceAll(n, "_", "-")
 	n = reRepoN.ReplaceAllString(n, "")
-	for _, never := range []string{"-key-id", "-key-type", "-key-name", "-key-file", "-token-file", "-password-file", "-pass-file"} {
-		if strings.HasSuffix(n, never) {
+	// pgBackRest's un-indexed names (repo-s3-key, repo-cipher-pass: deprecated aliases of repo1's, still read)
+	n = strings.TrimPrefix(n, "repo-")
+	// the never-flag list: the whole name or its last words (a key's id, type, name or file; a password file is the
+	// remedy the finding recommends; barman-cloud's --credential names a kind: azure-cli, managed-identity, default;
+	// an ssh *Authentication option is yes / no; the cloud SDKs' credential FILE variables hold a path)
+	for _, never := range []string{"-key-id", "-key-type", "-key-name", "-key-file", "-token-file", "-password-file", "-pass-file", "-passwd-file",
+		"-credentials-file", "-credential-file"} {
+		if strings.HasSuffix(n, never) || n == never[1:] {
 			return false
 		}
 	}
-	if strings.Contains(n, "keychecking") || strings.HasPrefix(n, "pubkey") || n == "sse-customer-key" {
+	switch {
+	case strings.Contains(n, "keychecking"), strings.HasPrefix(n, "pubkey"), strings.HasSuffix(n, "authentication"),
+		n == "sse-customer-key", n == "credential", n == "azure-credential", n == "google-application-credentials":
 		return false
 	}
 	// password, passwd and secret are never benign inside a name (PGPASSWORD, dbpassword); token, pass, key only as words
@@ -394,7 +439,7 @@ func positional(ws []lexWord, valueOpts map[string]bool, d *backupDest) []lexWor
 			}
 			continue
 		}
-		if w.text == "<" || w.text == ">" || w.text == ">>" || w.text == ">&" {
+		if isRedirect(w) { // a redirect and its target are never a positional word
 			i++
 			continue
 		}
@@ -433,7 +478,9 @@ func parseDestCommand(cmd, source, role string) []backupDest {
 			continue
 		}
 		s := peelSegment(raw)
-		d.secretSeen = s.secret
+		// every word of every segment passes the option / assignment rule, whatever the program (a script's
+		// --password=x, `export PGPASSWORD=x`); the shapes below add what only they know
+		d.secretSeen = s.secret || scanSecrets(s.words)
 		if len(s.words) == 0 {
 			if s.secret {
 				d.detail = "not known: only settings and a credential"
@@ -453,6 +500,14 @@ func parseDestCommand(cmd, source, role string) []backupDest {
 			continue
 		}
 		switch {
+		case name == "exit" && len(args) == 1 && args[0].text == "$?":
+			continue // `...; exit $?` hands on the archiving program's own result: no row of its own
+		case name == "exit" && len(args) > 0 && args[0].text != "0":
+			// exit N fails the archiver: it retries, and the WAL waits (the opposite of discarding it)
+			d.detail = "not known: exit with a failure code - the archiver retries and the WAL waits"
+			if !args[0].tainted && reDestPort.MatchString(args[0].text) {
+				d.detail = "not known: exit " + args[0].text + " fails the archiver - it retries and the WAL waits"
+			}
 		case name == "true" || name == ":" || name == "exit" || name == "/bin/true":
 			d.tool, d.kind, d.detail = "none", "discard", "WAL is discarded: the command archives nothing ("+name+")"
 		case name == "pgbackrest":
@@ -486,6 +541,19 @@ func parseDestCommand(cmd, source, role string) []backupDest {
 			}
 		}
 		out = append(out, d)
+	}
+	// a discard is the command's verdict only when it is its only row: `cp ... || true` and `...; exit 0` archive
+	// through the other segment, and the true / exit is the shell's own ending
+	var kept []backupDest
+	for _, d := range out {
+		if d.kind != "discard" || d.tool != "none" {
+			kept = append(kept, d)
+		}
+	}
+	if len(kept) > 0 {
+		out = kept
+	} else if len(out) > 1 {
+		out = out[:1]
 	}
 	for i := range out {
 		out[i].seq = i + 1
@@ -619,7 +687,7 @@ func destBarmanWAL(d *backupDest, args []lexWord) {
 // the host; --sse-customer-key is a file:// URI at 3.20.1 (any other value is taken for a secret).
 func destBarmanCloud(d *backupDest, args []lexWord) {
 	d.tool = "barman-cloud"
-	endpoint := ""
+	endpoint, endpointUnread := "", false
 	var pos []lexWord
 	for i := 0; i < len(args); i++ {
 		name, val, hasVal := optSplit(args[i].text)
@@ -643,10 +711,18 @@ func destBarmanCloud(d *backupDest, args []lexWord) {
 		case secretName(name):
 			d.secretSeen = true
 		case name == "--endpoint-url":
-			if _, h, _, _, ok := destURL(val); ok {
+			_, h, _, secret, ok := destURL(val)
+			d.secretSeen = d.secretSeen || secret
+			if ok && !args[i].tainted { // args[i] is the word that held the value (the option's own, or the next)
 				endpoint = h
+			} else {
+				endpointUnread = true
 			}
 		}
+	}
+	if endpointUnread {
+		d.detail = "not known: the endpoint"
+		return
 	}
 	if len(pos) < 2 || pos[1].tainted || !reToolName.MatchString(pos[1].text) || !destFromURLWord(d, pos[0]) {
 		d.kind, d.host, d.container, d.path = "", "", "", ""
@@ -723,13 +799,17 @@ func destObjectCLI(d *backupDest, name string, args []lexWord) {
 			if o == "" {
 				continue
 			}
-			if !hasVal && i+1 < len(args) {
+			// the secret rule sees every option word before anything decides what it takes (a flag never swallows
+			// `--account-key`), and a word that starts with '-' is an option, never a value
+			if secretName(o) {
+				d.secretSeen = true
+			}
+			if !hasVal && i+1 < len(args) && !strings.HasPrefix(args[i+1].text, "-") {
 				val = args[i+1].text
 				i++
 			}
 			switch {
 			case secretName(o):
-				d.secretSeen = true
 			case o == "--account-name":
 				acct = lexWord{text: val, tainted: args[i].tainted}
 			case o == "--container-name" || o == "-c":
@@ -740,23 +820,29 @@ func destObjectCLI(d *backupDest, name string, args []lexWord) {
 			d.detail = "not known: az's account and container"
 			return
 		}
-		d.kind, d.host, d.container = "azure", acct.text+".blob.core.windows.net", cont.text
+		// the account, never a host name: a sovereign cloud's blob endpoint is not core.windows.net
+		d.kind, d.container, d.detail = "azure", cont.text, "account "+acct.text
 		return
 	}
 	valueOpts := map[string]bool{"--endpoint-url": true, "--profile": true, "--region": true, "-u": true, "--user": true, "-T": true, "--upload-file": true,
 		"--config": true, "--storage-class": true, "--sse": true, "--acl": true}
-	endpoint := ""
+	endpoint, endpointUnread := "", false
 	for i := 0; i < len(args); i++ {
 		o, val, hasVal := optSplit(args[i].text)
 		if (o == "-u" || o == "--user") && i+1 < len(args) && strings.Contains(args[i+1].text, ":") {
 			d.secretSeen = true // curl -u user:password
 		}
 		if o == "--endpoint-url" {
+			w := lexWord{text: val}
 			if !hasVal && i+1 < len(args) {
-				val = args[i+1].text
+				w = args[i+1]
 			}
-			if _, h, _, _, ok := destURL(val); ok {
+			_, h, _, secret, ok := destURL(w.text)
+			d.secretSeen = d.secretSeen || secret
+			if ok && !w.tainted {
 				endpoint = h
+			} else {
+				endpointUnread = true
 			}
 		}
 	}
@@ -803,6 +889,11 @@ func destObjectCLI(d *backupDest, name string, args []lexWord) {
 		if !destFromURLWord(d, last) {
 			d.kind, d.host, d.container, d.path = "", "", "", ""
 			d.detail = "not known: " + name + "'s destination"
+			return
+		}
+		if endpointUnread { // a bucket on an endpoint pgvigil cannot read is not Amazon's bucket of that name (F12)
+			d.kind, d.host, d.container, d.path = "", "", "", ""
+			d.detail = "not known: the endpoint"
 			return
 		}
 		if endpoint != "" {
@@ -880,10 +971,13 @@ func destRemoteCopy(d *backupDest, name string, args []lexWord) {
 }
 
 // destLocalCopy: cp, copy, install, mv, dd of=, cat or a compressor with a redirect: the directory of the word that
-// holds the file (%f), the redirect's target first.
+// holds the file (%f). cp, copy, install and mv write to their last argument: a redirect there is their own messages
+// (`cp %p /arch/%f 2>/dev/null`, `>> /var/log/arch.log`), never the WAL. A compressor, cat or dd writes the WAL to its
+// output: only a redirect of the output (no descriptor or 1) is the target, the one whose target holds %f first.
 func destLocalCopy(d *backupDest, name string, raw []lexWord, args []lexWord, ph string) {
 	d.tool, d.kind = "copy", "posix"
-	if name != "cp" && name != "copy" && name != "install" && name != "mv" {
+	plainCopy := name == "cp" || name == "copy" || name == "install" || name == "mv"
+	if !plainCopy {
 		d.detail = "compressed with " + name
 		if name == "dd" || name == "cat" {
 			d.detail = ""
@@ -891,7 +985,7 @@ func destLocalCopy(d *backupDest, name string, raw []lexWord, args []lexWord, ph
 	}
 	var target lexWord
 	for i, w := range raw {
-		if (w.text == ">" || w.text == ">>") && i+1 < len(raw) {
+		if !plainCopy && redirectIsStdout(w) && i+1 < len(raw) && (target.text == "" || !holdsFile(target, ph)) {
 			target = raw[i+1]
 		}
 		if name == "dd" && strings.HasPrefix(w.text, "of=") {
@@ -980,7 +1074,8 @@ SELECT pg_is_in_recovery() AS is_replica, current_setting('archive_mode') AS arc
        current_setting('archive_command') AS archive_command,
        coalesce(current_setting('archive_library', true), '') AS archive_library,
        coalesce(current_setting('restore_command', true), '') AS restore_command,
-       coalesce(current_setting('basic_archive.archive_directory', true), '') AS basic_archive_dir`
+       coalesce(current_setting('basic_archive.archive_directory', true), '') AS basic_archive_dir,
+       current_setting('server_version_num')::int AS server_version_num`
 
 func (backupDestCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, inst config.Instance, _ CursorFunc) ([]Row, error) {
 	rows, err := conn.Query(ctx, backupDestSettingsSQL)
@@ -993,12 +1088,13 @@ func (backupDestCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ pl
 	}
 	str := func(k string) string { v, _ := set[0][k].(string); return v }
 	isReplica, _ := set[0]["is_replica"].(bool)
+	ver, _ := set[0]["server_version_num"].(int32)
 	st := destSettings{archiveMode: str("archive_mode"), archiveCmd: str("archive_command"), archiveLib: str("archive_library"),
-		restoreCmd: str("restore_command"), basicDir: str("basic_archive_dir"), isReplica: isReplica}
+		restoreCmd: str("restore_command"), basicDir: str("basic_archive_dir"), isReplica: isReplica, versionNum: int(ver)}
 	out := destRows(st)
 	readOn := backupReadTools(inst)
 	for _, t := range destTools(st) {
-		out = append(out, readDestTool(t, readOn)...)
+		out = append(out, readDestTool(ctx, t, readOn)...)
 	}
 	return out, nil
 }
@@ -1007,6 +1103,19 @@ func (backupDestCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ pl
 type destSettings struct {
 	archiveMode, archiveCmd, archiveLib, restoreCmd, basicDir string
 	isReplica                                                 bool
+	versionNum                                                int // server_version_num (0: not read, a test's settings)
+}
+
+// bothArchivers: archive_command and archive_library both set on PostgreSQL 16 or later, where the archiver refuses
+// to run (pgarch.c: ERROR 'both archive_command and archive_library set') and archives nothing; on 15 the library wins.
+func (st destSettings) bothArchivers() bool {
+	cmd := strings.TrimSpace(st.archiveCmd)
+	return st.versionNum >= 160000 && strings.TrimSpace(st.archiveLib) != "" && cmd != "" && cmd != "(disabled)"
+}
+
+// commandArchives: archive_command is the server's archiver (archive_mode on or always, no archive_library, F7).
+func (st destSettings) commandArchives() bool {
+	return st.archiveMode != "off" && strings.TrimSpace(st.archiveLib) == ""
 }
 
 // destOf parses the settings into destinations: F7 - a non-empty archive_library is the archiver on every version;
@@ -1017,6 +1126,9 @@ func destOf(st destSettings) []backupDest {
 	switch {
 	case st.archiveMode == "off":
 		out = append(out, backupDest{role: "wal", seq: 1, source: "archive_mode", tool: "none", detail: "WAL is not archived (archive_mode off)"})
+	case st.bothArchivers():
+		out = append(out, backupDest{role: "wal", seq: 1, source: "archive_library", tool: "none",
+			detail: "WAL is not archived: both archive_command and archive_library are set, and PostgreSQL 16 and later refuse to archive (the WAL waits in pg_wal)"})
 	case strings.TrimSpace(st.archiveLib) != "":
 		out = append(out, parseDestLibrary(st.archiveLib, st.basicDir)...)
 	default:
@@ -1033,6 +1145,10 @@ func destOf(st destSettings) []backupDest {
 			b.role, b.detail = "base", strings.TrimSpace(d.detail+" (base backups go where its WAL goes)")
 			if d.detail == "" {
 				b.detail = "base backups go where its WAL goes"
+			}
+			if d.tool == "barman" && strings.HasSuffix(d.path, "/incoming") {
+				// barman's rsync archiving: the WAL lands in incoming, the base backups never do
+				b.path, b.detail = "", strings.TrimSuffix(d.detail, " (rsync into its incoming directory)")+": its base backups are in its backup directory on that host (not in the command)"
 			}
 			out = append(out, b)
 		}
@@ -1062,19 +1178,46 @@ func destRows(st destSettings) []Row {
 }
 
 // destTool is a tool whose own configuration names its storage: a pgBackRest stanza (with the options inline in the
-// server's command, which win for that server) or a barman server.
+// server's command, which win for that server) or a barman server - with the setting that named it (F3: a stanza a
+// leftover archive_command names is not the archiver's when archive_mode is off or archive_library is set).
 type destTool struct {
 	tool, name string
-	inline     map[string]string // pgBackRest's inline where-options, by their name without dashes
-	config     string            // a --config the server's command names
+	inline     map[string]map[string]string // pgBackRest's inline where-options by role (wal | restore), names without dashes
+	config     string                       // a --config the server's command names (named in the read, never read: F15)
+	wal        bool                         // archive_command named it and archive_command is the archiver
+	restore    bool                         // restore_command named it
 }
 
-// destTools: the tools the server's commands name whose configuration read_tools may read.
+// destTools: the tools the server's commands name whose configuration read_tools may read; archive_command's only when
+// it is the server's archiver (commandArchives).
 func destTools(st destSettings) []destTool {
 	var out []destTool
-	seen := map[string]bool{}
-	for _, c := range []string{st.archiveCmd, st.restoreCmd} {
-		segs, why := lexCommand(c)
+	idx := map[string]int{}
+	add := func(t destTool, role string) {
+		k := t.tool + "|" + t.name
+		i, ok := idx[k]
+		if !ok {
+			i = len(out)
+			idx[k] = i
+			out = append(out, destTool{tool: t.tool, name: t.name, inline: map[string]map[string]string{}})
+		}
+		if role == "wal" {
+			out[i].wal = true
+		} else {
+			out[i].restore = true
+		}
+		if t.inline != nil {
+			out[i].inline[role] = t.inline[role]
+		}
+		if out[i].config == "" {
+			out[i].config = t.config
+		}
+	}
+	for _, c := range []struct{ cmd, role string }{{st.archiveCmd, "wal"}, {st.restoreCmd, "restore"}} {
+		if c.role == "wal" && !st.commandArchives() {
+			continue
+		}
+		segs, why := lexCommand(c.cmd)
 		if why != "" {
 			continue
 		}
@@ -1083,9 +1226,9 @@ func destTools(st destSettings) []destTool {
 			if len(s.words) == 0 {
 				continue
 			}
-			switch path.Base(s.words[0].text) {
+			switch prog := path.Base(s.words[0].text); prog {
 			case "pgbackrest":
-				t := destTool{tool: "pgbackrest", inline: map[string]string{}}
+				t := destTool{tool: "pgbackrest", inline: map[string]map[string]string{c.role: {}}}
 				for i := 1; i < len(s.words); i++ {
 					w := s.words[i]
 					name, val, has := optSplit(w.text)
@@ -1103,19 +1246,24 @@ func destTools(st destSettings) []destTool {
 					case n == "config":
 						t.config = destPathOf(val)
 					case pgbrWhere[reRepoN.ReplaceAllString(n, "")] && reRepoN.MatchString(n):
-						t.inline[n] = val
+						t.inline[c.role][n] = val
 					}
 				}
-				if t.name != "" && !seen["pgbackrest|"+t.name] {
-					seen["pgbackrest|"+t.name] = true
-					out = append(out, t)
+				if t.name != "" {
+					add(t, c.role)
 				}
 			case "barman-wal-archive", "barman-wal-restore":
 				var d backupDest
 				destBarmanWAL(&d, s.words[1:])
-				if srv := strings.TrimPrefix(d.detail, "barman server "); srv != d.detail && !seen["barman|"+srv] {
-					seen["barman|"+srv] = true
-					out = append(out, destTool{tool: "barman", name: srv})
+				if srv := strings.TrimPrefix(d.detail, "barman server "); srv != d.detail {
+					add(destTool{tool: "barman", name: srv}, c.role)
+				}
+			case "rsync", "scp":
+				// barman's rsync archiving into <barman_home>/<server>/incoming names the server too (F11: one rule)
+				var d backupDest
+				destRemoteCopy(&d, prog, s.words[1:])
+				if srv, _, ok := strings.Cut(strings.TrimPrefix(d.detail, "barman server "), " "); ok && d.tool == "barman" {
+					add(destTool{tool: "barman", name: srv}, c.role)
 				}
 			}
 		}
@@ -1140,21 +1288,39 @@ var (
 	pgbrEnviron = os.Environ
 )
 
+// pgbrDeprecated are pgBackRest's un-indexed option names, still read as repo1's (pgBackRest release/2.60.0
+// build/config.yaml, each option's 'deprecate:' list), by the where-option they stand for.
+var pgbrDeprecated = map[string]string{"repo-type": "type", "repo-path": "path", "repo-cipher-type": "cipher-type", "retention-full": "retention-full",
+	"retention-diff": "retention-diff", "retention-archive": "retention-archive", "retention-archive-type": "retention-archive-type",
+	"backup-host": "host", "repo-s3-host": "storage-host", "repo-s3-bucket": "s3-bucket", "repo-s3-endpoint": "s3-endpoint", "repo-s3-region": "s3-region"}
+
+// pgbrKey is the repoN- name an option line or variable stands for, and whether it is a deprecated (un-indexed) name;
+// "" when it is no where-option (its value is then never read).
+func pgbrKey(name string) (key string, deprecated bool) {
+	if reRepoN.MatchString(name) && pgbrWhere[reRepoN.ReplaceAllString(name, "")] {
+		return name, false
+	}
+	if w, ok := pgbrDeprecated[name]; ok {
+		return "repo1-" + w, true
+	}
+	return "", false
+}
+
 // pgbrConfig reads the where-options of a stanza's repositories as the collector host's pgBackRest would for the command
-// cmd (archive-push for the WAL, backup for the base backups), F8: [stanza:cmd] over [stanza] over [global:cmd] over
-// [global]; --config (or PGBACKREST_CONFIG) loads that file alone (no include directory), else the default file and
-// the include directory; PGBACKREST_REPOn_* in the environment win over the files; the server's inline options win over
-// all. Returns the options by name (repo1-path ...), where each came from, and the fixed words of a failure.
-func pgbrConfig(stanza, cmd, serverConfig string, inline map[string]string) (opts map[string]string, from map[string]string, why string) {
+// cmd (archive-push for the WAL, backup for the base backups, archive-get for the restore), F8: [stanza:cmd] over
+// [stanza] over [global:cmd] over [global], an indexed name over its deprecated un-indexed one in the same section;
+// PGBACKREST_CONFIG loads that file alone (no include directory), else the default file and the include directory;
+// PGBACKREST_REPOn_* (and the deprecated PGBACKREST_REPO_* names) in the environment win over the files; the server's
+// inline options win over all. The server's own --config path is a file on the server and is never read here (F15).
+// Returns the options by name (repo1-path ...), where each came from, whether the stanza is known at all (a [stanza]
+// section, or any repository option read: F18), and the fixed words of a failure.
+func pgbrConfig(stanza, cmd string, inline map[string]string) (opts map[string]string, from map[string]string, known bool, why string) {
 	opts, from = map[string]string{}, map[string]string{}
 	rank := map[string]int{}
 	var files []string
-	switch {
-	case serverConfig != "":
-		files = []string{serverConfig}
-	case pgbrGetenv("PGBACKREST_CONFIG") != "":
-		files = []string{pgbrGetenv("PGBACKREST_CONFIG")}
-	default:
+	if p := pgbrGetenv("PGBACKREST_CONFIG"); p != "" {
+		files = []string{p}
+	} else {
 		f := pgbrFiles.file
 		if p := pgbrGetenv("PGBACKREST_CONFIG_PATH"); p != "" {
 			f = filepath.Join(p, "pgbackrest.conf")
@@ -1174,7 +1340,7 @@ func pgbrConfig(stanza, cmd, serverConfig string, inline map[string]string) (opt
 		}
 	}
 	sections := map[string]int{"global": 1, "global:" + cmd: 2, stanza: 3, stanza + ":" + cmd: 4}
-	readAny := false
+	readAny, stanzaSeen := false, false
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -1189,44 +1355,57 @@ func pgbrConfig(stanza, cmd, serverConfig string, inline map[string]string) (opt
 			}
 			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 				sec = strings.TrimSpace(line[1 : len(line)-1])
+				if sec == stanza || strings.HasPrefix(sec, stanza+":") {
+					stanzaSeen = true
+				}
 				continue
 			}
 			eq := strings.IndexByte(line, '=')
 			if eq < 0 {
 				continue
 			}
-			key := strings.TrimSpace(line[:eq])
 			r, ok := sections[sec]
-			if !ok || !reRepoN.MatchString(key) || !pgbrWhere[reRepoN.ReplaceAllString(key, "")] {
+			key, dep := pgbrKey(strings.TrimSpace(line[:eq]))
+			if !ok || key == "" {
 				continue // the value of an option not on the list is never read
+			}
+			r = 2 * r // an indexed name outranks its deprecated alias in the same section
+			if dep {
+				r--
 			}
 			if r >= rank[key] {
 				rank[key], opts[key], from[key] = r, strings.TrimSpace(line[eq+1:]), f
 			}
 		}
 	}
+	env := map[string]string{}
 	for _, kv := range pgbrEnviron() {
 		k, v, _ := strings.Cut(kv, "=")
-		if !strings.HasPrefix(k, "PGBACKREST_REPO") {
+		if !strings.HasPrefix(k, "PGBACKREST_") {
 			continue
 		}
-		key := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(k, "PGBACKREST_"), "_", "-"))
-		if reRepoN.MatchString(key) && pgbrWhere[reRepoN.ReplaceAllString(key, "")] {
-			opts[key], from[key] = v, "environment"
+		key, dep := pgbrKey(strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(k, "PGBACKREST_"), "_", "-")))
+		if key == "" || (dep && env[key] == "indexed") {
+			continue
+		}
+		opts[key], from[key] = v, "environment"
+		if !dep {
+			env[key] = "indexed"
 		}
 	}
 	for k, v := range inline {
 		opts[k], from[k] = v, "the server's command"
 	}
 	if !readAny && len(opts) == 0 {
-		return opts, from, "file not readable"
+		return opts, from, false, "file not readable"
 	}
-	return opts, from, ""
+	return opts, from, stanzaSeen || len(opts) > 0, ""
 }
 
 // readDestTool reads one tool's configuration on the collector's host (read_tools on): a {kind:'read'} row with its
-// state and fixed words, and the destinations it names (source 'pgbackrest configuration' or 'barman').
-func readDestTool(t destTool, readOn bool) []Row {
+// state and fixed words, and the destinations it names (source 'pgbackrest configuration' or 'barman') for the roles
+// whose setting named the tool (F3): wal and base for the archiver's, restore for restore_command's.
+func readDestTool(ctx context.Context, t destTool, readOn bool) []Row {
 	rd := Row{"kind": "read", "tool": t.tool, "name": t.name}
 	if !readOn {
 		rd["state"], rd["message"] = "off", backupNotRead
@@ -1234,11 +1413,23 @@ func readDestTool(t destTool, readOn bool) []Row {
 	}
 	switch t.tool {
 	case "pgbackrest":
+		type pass struct{ cmd, role, inline string }
+		var passes []pass
+		if t.wal {
+			passes = append(passes, pass{"archive-push", "wal", "wal"}, pass{"backup", "base", "wal"})
+		}
+		if t.restore {
+			passes = append(passes, pass{"archive-get", "restore", "restore"})
+		}
 		var out []Row
-		for _, c := range []struct{ cmd, role string }{{"archive-push", "wal"}, {"backup", "base"}} {
-			opts, from, why := pgbrConfig(t.name, c.cmd, t.config, t.inline)
+		for _, c := range passes {
+			opts, from, known, why := pgbrConfig(t.name, c.cmd, t.inline[c.inline])
 			if why != "" {
 				rd["state"], rd["message"] = "error", why
+				return []Row{rd}
+			}
+			if !known { // F18: no [stanza] section and no repository option anywhere: no default is shown for it
+				rd["state"], rd["message"] = "ok", "stanza "+t.name+" is not in the collector host's configuration"
 				return []Row{rd}
 			}
 			for _, d := range pgbrDests(t.name, c.role, opts, from) {
@@ -1246,6 +1437,9 @@ func readDestTool(t destTool, readOn bool) []Row {
 			}
 		}
 		rd["state"] = "ok"
+		if t.config != "" { // F15: the server's --config names a file on the server; the collector reads its own
+			rd["message"] = "the server's command names --config " + t.config + ": the collector host's own configuration was read"
+		}
 		return append([]Row{rd}, out...)
 	case "barman":
 		bin, err := lookTool("barman")
@@ -1253,7 +1447,7 @@ func readDestTool(t destTool, readOn bool) []Row {
 			rd["state"], rd["message"] = "no_binary", "barman is not on the collector host's PATH"
 			return []Row{rd}
 		}
-		raw, err := runTool(context.Background(), bin, "-f", "json", "show-servers", "--", t.name)
+		raw, err := runTool(ctx, bin, "-f", "json", "show-servers", "--", t.name)
 		if err != nil {
 			rd["state"], rd["message"] = "error", "barman show-servers: "+err.Error()
 			return []Row{rd}
@@ -1266,7 +1460,14 @@ func readDestTool(t destTool, readOn bool) []Row {
 		rd["state"] = "ok"
 		out := []Row{rd}
 		for _, d := range ds {
-			out = append(out, destRow(d))
+			if t.wal {
+				out = append(out, destRow(d))
+			}
+			if t.restore && d.role == "wal" { // restore_command fetches the WAL from the server's WAL directory
+				r := d
+				r.role = "restore"
+				out = append(out, destRow(r))
+			}
 		}
 		return out
 	}
@@ -1414,4 +1615,49 @@ func barmanDests(raw []byte, server string) ([]backupDest, string) {
 		out = append(out, d)
 	}
 	return out, ""
+}
+
+// EntryHoldsSecret says whether a destination a person enters (with its note) holds a credential, by the collector's
+// own rule (F19 of 302's review): an option or a NAME=VALUE whose name is a credential's, a URL's user:password@ or
+// signature, [user:password@]host, sshpass -p, curl -u user:password, or a credential-shaped word with a value after
+// it ('--password hunter2', 'PGPASSWORD hunter2'). A place name that merely holds such letters ('kansas:/srv') is none.
+func EntryHoldsSecret(text string) bool {
+	// URLs and [user:password@]host word by word on blanks first: an entry is prose, and a URL's '&' is no shell's
+	for _, f := range strings.Fields(text) {
+		f = strings.Trim(f, `"'()<>,;`)
+		if strings.Contains(f, "://") {
+			if _, _, _, secret, _ := destURL(f); secret {
+				return true
+			}
+		} else if at := strings.IndexByte(f, '@'); at > 0 && strings.Contains(f[:at], ":") {
+			return true // user:password@host
+		}
+	}
+	segs, why := lexCommand(text)
+	if why != "" { // an unclosed quote or a newline: read it word by word on blanks
+		var ws []lexWord
+		for _, f := range strings.Fields(text) {
+			ws = append(ws, lexWord{text: f})
+		}
+		segs = [][]lexWord{ws}
+	}
+	for _, ws := range segs {
+		if peelSegment(ws).secret || scanSecrets(ws) {
+			return true
+		}
+		for i, w := range ws {
+			t := w.text
+			next := i+1 < len(ws)
+			if next && (t == "-u" || t == "--user") && strings.Contains(ws[i+1].text, ":") {
+				return true // curl -u user:password
+			}
+			// an option (--password hunter2) or a variable's name in capitals (PGPASSWORD hunter2) with a value after
+			// it; a plain word of a note ('the token service') is prose, never a credential's name
+			shaped := strings.HasPrefix(t, "-") || (reEnvName.MatchString(t) && t == strings.ToUpper(t))
+			if next && shaped && !strings.Contains(t, "=") && secretName(t) && !strings.HasPrefix(ws[i+1].text, "-") {
+				return true
+			}
+		}
+	}
+	return false
 }

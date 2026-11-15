@@ -7,7 +7,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { AckData, offBeside, seatWhy } from './ack';
 import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
 
-type Parts = 'destinations' | 'dests' | 'reads' | 'settings' | 'findings' | 'history';
+type Parts = 'destinations' | 'dests' | 'reads' | 'settings' | 'findings' | 'history' | 'door';
 
 const readWord: Record<string, string> = { off: 'not read: the tool read is off for this instance', ok: 'read', no_binary: 'no binary on the collector host', error: 'error' };
 
@@ -20,7 +20,8 @@ function roleLine(r: Row): Node {
   if (r.entered_text) {
     out.append(el('br', {}), el('span', { class: 'meta' }, `entered by ${String(r.entered_by)} on ${fmtTime(r.entered_at)}: `), String(r.entered_text),
       r.entered_note ? el('span', { class: 'meta' }, ` (${String(r.entered_note)})`) : '',
-      r.entered_beside_read === true ? el('span', { class: 'meta' }, ' - beside the value read, which it does not replace') : '');
+      r.entered_beside_read === true ? el('span', { class: 'meta' }, ' - beside the value read, which it does not replace') : '',
+      r.read_changed_since_entry === true ? el('span', { class: 'meta' }, ' ', badge('the read changed after this entry', 'warn')) : '');
   }
   return out;
 }
@@ -79,7 +80,9 @@ export async function pgBackupDestSection(instanceId: number, name: string, ad: 
   try {
     const d = await get<Record<Parts, Table | null>>('pg/backup_dest', { instance: instanceId });
     const roles = rowsOf(d.destinations), reads = rowsOf(d.reads), set = rowsOf(d.settings)[0];
-    const why = seatWhy(ad, 'backup destinations', instanceId, name) ?? '';
+    // the server's own off words first (a demo serve carries no entry whatever the seat says), then the seat's
+    const doorOff = String(rowsOf(d.door)[0]?.off ?? '');
+    const why = doorOff || (seatWhy(ad, 'backup destinations', instanceId, name) ?? '');
     const note = why ? el('p', { class: 'meta' }, `Destinations are read only here: ${why}`) : null;
     sec.append(el('p', { class: 'meta' }, 'Read from the server\'s archive_command, archive_library and restore_command (no command text is kept), and from the backup tool\'s own '
       + 'configuration on the collector\'s host when the instance has backups: read_tools: true in pgvigil.yaml. A destination a person enters is shown beside the one read.'));
@@ -113,6 +116,11 @@ export async function pgBackupDestFleet(): Promise<Map<number, Row>> {
   return new Map(rowsOf(d.fleet).map(r => [Number(r.instance_id), r]));
 }
 
+// the read value, and a person's entry apart from it (never as if read)
+const withEntry = (entered: string) => (v: unknown, r: Row) => {
+  const e = r[entered];
+  return e ? `${String(v ?? '')} (entered: ${String(e)})` : String(v ?? '');
+};
 export const pgBackupDestFleetCols: Col[] = [
-  { key: 'base_to', label: 'base backups to', wide: true }, { key: 'wal_to', label: 'WAL to', wide: true },
+  { key: 'base_to', label: 'base backups to', wide: true, fmt: withEntry('base_entered') }, { key: 'wal_to', label: 'WAL to', wide: true, fmt: withEntry('wal_entered') },
 ];

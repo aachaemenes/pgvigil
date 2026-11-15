@@ -35,7 +35,10 @@ func TestBackupDestLexer(t *testing.T) {
 		{"test ! -f /mnt/server/archivedir/%f && cp %p /mnt/server/archivedir/%f", "test ! -f /mnt/server/archivedir/%f ; cp %p /mnt/server/archivedir/%f", ""},
 		{`copy "%p" "C:\server\archivedir\%f"`, `copy %p C:\server\archivedir\%f`, ""},
 		{"gzip < %p > /mnt/server/archivedir/%f.gz", "gzip < %p > /mnt/server/archivedir/%f.gz", ""},
-		{"cp %p /a/%f 2>&1 >> /var/log/x", "cp %p /a/%f 2 >& 1 >> /var/log/x", ""},
+		{"cp %p /a/%f 2>&1 >> /var/log/x", "cp %p /a/%f 2>& 1 >> /var/log/x", ""},
+		{"cp %p /a/%f 2>/dev/null", "cp %p /a/%f 2> /dev/null", ""},
+		{"cp %p /a/%f 2 >x", "cp %p /a/%f 2 > x", ""},
+		{"cp %p /a/file2>x", "cp %p /a/file2 > x", ""},
 		{"a || b | c ; d & e", "a ; b ; c ; d ; e", ""},
 		{`azcopy copy %p 'https://acct.blob.core.windows.net/wal/%f?sv=1&sig=X'`, "azcopy copy %p https://acct.blob.core.windows.net/wal/%f?sv=1&sig=X", ""},
 		{"cp %p $DEST/%f", "cp %p $DEST/%f!", ""},
@@ -99,7 +102,9 @@ func TestBackupDestShapes(t *testing.T) {
 		// 5 object stores
 		{"aws s3", "timeout 300 aws s3 cp %p s3://wal-b/pg/%f --endpoint-url https://minio.lab", "wal", "aws|s3|minio.lab|wal-b|/pg||endpoint minio.lab"},
 		{"gsutil", "gsutil -q cp %p gs://wal-b/pg/%f", "wal", "gsutil|gcs||wal-b|/pg||"},
-		{"az", "az storage blob upload --account-name acct --container-name wal --name %f --file %p --account-key K", "wal", "az|azure|acct.blob.core.windows.net|wal||||SECRET"},
+		{"az", "az storage blob upload --account-name acct --container-name wal --name %f --file %p --account-key K", "wal", "az|azure||wal|||account acct|SECRET"},
+		{"az a flag before the key", "az storage blob upload --overwrite --account-key K --account-name acct --container-name wal --file %p --name %f", "wal",
+			"az|azure||wal|||account acct|SECRET"},
 		{"azcopy sas", `azcopy copy %p 'https://acct.blob.core.windows.net/wal/%f?sv=2020&sig=X'`, "wal", "azcopy|azure|acct.blob.core.windows.net||/wal|||SECRET"},
 		{"https user:pw", "curl -T %p https://user:pw@files.lab/wal/%f", "wal", "curl|https|files.lab||/wal|||SECRET"},
 		{"rclone", "rclone copyto %p offsite:pg/wal/%f", "wal", "rclone|rclone-remote||offsite|/pg/wal||the remote offsite is defined in the server's rclone configuration"},
@@ -107,6 +112,10 @@ func TestBackupDestShapes(t *testing.T) {
 		{"mc", "mc cp %p lab/wal-b/pg/%f", "wal", "mc|mc-alias||lab|/wal-b/pg||the alias lab is defined in the server's mc configuration"},
 		{"s3 hostile", "aws s3 cp %p s3://wal-b/`hostname`/%f", "wal", "||||||not known: a command substitution"},
 		{"s3 a variable", "aws s3 cp %p s3://wal-b/$HOST/%f", "wal", "aws||||||not known: aws's destination"},
+		{"s3 stderr", "aws s3 cp %p s3://wal-b/pg/%f 2>/dev/null", "wal", "aws|s3||wal-b|/pg||"},
+		{"s3 an endpoint not read", "aws s3 cp %p s3://wal-b/pg/%f --endpoint-url https://$EP", "wal", "aws||||||not known: the endpoint"},
+		{"s3 an endpoint with a key", "aws s3 cp %p s3://wal-b/pg/%f --endpoint-url https://AK:SK@minio.lab", "wal", "aws|s3|minio.lab|wal-b|/pg||endpoint minio.lab|SECRET"},
+		{"s3 a credentials file", "AWS_SHARED_CREDENTIALS_FILE=/etc/aws/c aws s3 cp %p s3://wal-b/pg/%f", "wal", "aws|s3||wal-b|/pg||"},
 		// 6 rsync / scp
 		{"rsync", "PGPASSWORD=hunter2 rsync -a -e 'ssh -o StrictHostKeyChecking=no' %p backup@host1:/wal/%f", "wal", "rsync|host|host1||/wal|||SECRET"},
 		{"rsync to barman", "rsync -a %p barman@backup1:/var/lib/barman/pg/incoming/%f", "wal", "barman|host|backup1||/var/lib/barman/pg/incoming||barman server pg (rsync into its incoming directory)"},
@@ -114,6 +123,14 @@ func TestBackupDestShapes(t *testing.T) {
 		{"scp", "scp -i /var/lib/postgresql/.ssh/id -P 2222 %p wal@host2:/srv/wal/%f", "wal", "scp|host|host2||/srv/wal||"},
 		{"sshpass", "sshpass -p hunter2 scp %p wal@host2:/srv/wal/%f", "wal", "scp|host|host2||/srv/wal|||SECRET"},
 		{"rsync hostile", "rsync -a %p host1:$DIR/%f", "wal", "rsync||||||not known: rsync's destination"},
+		{"rsync stderr", "rsync -a %p host1:/wal/%f 2>/dev/null", "wal", "rsync|host|host1||/wal||"},
+		{"rsync a password file", "rsync --password-file=/var/lib/postgresql/.rsync.pass %p host1::wal/pg/%f", "wal", "rsync|rsync-module|host1|wal|/pg||"},
+		{"scp no password", "scp -o PasswordAuthentication=no %p wal@host2:/srv/wal/%f", "wal", "scp|host|host2||/srv/wal||"},
+		{"barman-cloud a credential kind", "barman-cloud-wal-archive --cloud-provider azure-blob-storage --credential managed-identity https://acct.blob.core.windows.net/wal main %p", "wal",
+			"barman-cloud|azure|acct.blob.core.windows.net||/wal||barman server main"},
+		{"barman-cloud an endpoint not read", "barman-cloud-wal-archive --endpoint-url https://$EP s3://wal-b/pg main %p", "wal", "barman-cloud||||||not known: the endpoint"},
+		{"pgbackrest an sse key", "pgbackrest --stanza=demo --repo1-s3-sse-customer-key=K archive-push %p", "wal",
+			"pgbackrest||||||stanza demo: the repository is in pgBackRest's configuration (read with read_tools on)|SECRET"},
 		// 7 a local copy
 		{"the documented copy", "test ! -f /mnt/server/archivedir/%f && cp %p /mnt/server/archivedir/%f", "wal", "copy|posix|||/mnt/server/archivedir||"},
 		{"gzip", "gzip < %p > /mnt/server/archivedir/%f.gz", "wal", "copy|posix|||/mnt/server/archivedir||compressed with gzip"},
@@ -124,8 +141,18 @@ func TestBackupDestShapes(t *testing.T) {
 		{"true", "/bin/true", "wal", "none|discard|||||WAL is discarded: the command archives nothing (true)"},
 		{"copy hostile", "cp %p $(cat /etc/dest)/%f", "wal", "||||||not known: a command substitution"},
 		{"copy a variable", "cp %p $DEST/%f", "wal", "copy||||||not known: cp's target"},
+		{"cp stderr", "cp %p /arch/%f 2>/dev/null", "wal", "copy|posix|||/arch||"},
+		{"cp a log", "cp %p /arch/%f >> /var/log/arch.log 2>&1", "wal", "copy|posix|||/arch||"},
+		{"gzip stderr", "gzip -c %p > /arch/%f.gz 2>/dev/null", "wal", "copy|posix|||/arch||compressed with gzip"},
+		{"cp or true", "cp %p /arch/%f || true", "wal", "copy|posix|||/arch||"},
+		{"pgbackrest then exit", "pgbackrest --stanza=demo archive-push %p; exit $?", "wal",
+			"pgbackrest||||||stanza demo: the repository is in pgBackRest's configuration (read with read_tools on)"},
+		{"exit 0", "exit 0", "wal", "none|discard|||||WAL is discarded: the command archives nothing (exit)"},
+		{"exit 1", "exit 1", "wal", "||||||not known: exit 1 fails the archiver - it retries and the WAL waits"},
 		// 9 a script, and what no shape reads
 		{"script", "/usr/local/bin/archive.sh %p %f", "wal", "script||||||a script (archive.sh): the destination is inside it - not known"},
+		{"script a password", "/usr/local/bin/archive.sh --password=x %p %f", "wal", "script||||||a script (archive.sh): the destination is inside it - not known|SECRET"},
+		{"export a password", "export PGPASSWORD=x && rsync -a %p host1:/wal/%f", "wal", "||||||not known: export is no command pgvigil reads|SECRET ;; rsync|host|host1||/wal||"},
 		{"unknown", "frob %p", "wal", "||||||not known: frob is no command pgvigil reads"},
 		{"newline", "cp %p /a/%f\nrm -rf /", "wal", "||||||not known: a newline in the command"},
 		// 10 nothing
@@ -178,6 +205,13 @@ func TestBackupDestRows(t *testing.T) {
 		{"a restore_command on a primary", destSettings{archiveMode: "on", archiveCmd: "cp %p /a/%f", restoreCmd: "cp /a/%f %p"},
 			"wal 1 archive_command copy <nil> ;; restore 1 restore_command copy (set, not in use: this server is a primary)"},
 		{"an empty archive_command", destSettings{archiveMode: "on"}, "wal 1 archive_command none WAL is not archived (archive_command is empty)"},
+		{"both set on 15: the library wins", destSettings{archiveMode: "on", archiveCmd: "cp %p /a/%f", archiveLib: "basic_archive", basicDir: "/arch", versionNum: 150004},
+			"wal 1 archive_library basic_archive <nil>"},
+		{"both set on 16 and later: nothing is archived", destSettings{archiveMode: "on", archiveCmd: "cp %p /a/%f", archiveLib: "basic_archive", basicDir: "/arch", versionNum: 170002},
+			"wal 1 archive_library none WAL is not archived: both archive_command and archive_library are set, and PostgreSQL 16 and later refuse to archive (the WAL waits in pg_wal)"},
+		{"barman's incoming: no base path", destSettings{archiveMode: "on", archiveCmd: "rsync -a %p barman@backup1:/var/lib/barman/pg/incoming/%f"},
+			"wal 1 archive_command barman barman server pg (rsync into its incoming directory) ;; " +
+				"base 1 archive_command barman barman server pg: its base backups are in its backup directory on that host (not in the command)"},
 	} {
 		if got := show(destRows(c.st)); got != c.want {
 			t.Errorf("%s:\n  got  %q\n  want %q", c.name, got, c.want)
@@ -221,23 +255,23 @@ func TestPgbrConfig(t *testing.T) {
 		sort.Strings(ks)
 		return strings.Join(ks, " ")
 	}
-	opts, _, why := pgbrConfig("demo", "archive-push", "", nil)
-	if why != "" || join(opts) != "repo1-path=/global-push repo1-s3-bucket=demob repo1-type=s3 repo2-path=/second" {
+	opts, _, known, why := pgbrConfig("demo", "archive-push", nil)
+	if why != "" || !known || join(opts) != "repo1-path=/global-push repo1-s3-bucket=demob repo1-type=s3 repo2-path=/second" {
 		t.Errorf("archive-push: %s | %s", join(opts), why)
 	}
-	opts, _, _ = pgbrConfig("demo", "backup", "", nil)
+	opts, _, _, _ = pgbrConfig("demo", "backup", nil)
 	if opts["repo1-path"] != "/demo-backup" {
 		t.Errorf("backup: %s", join(opts))
 	}
 	env["PGBACKREST_REPO1_PATH"], env["PGBACKREST_REPO1_S3_KEY_SECRET"] = "/from-env", "hunter4"
-	opts, from, _ := pgbrConfig("demo", "archive-push", "", map[string]string{"repo1-s3-bucket": "inline"})
+	opts, from, _, _ := pgbrConfig("demo", "archive-push", map[string]string{"repo1-s3-bucket": "inline"})
 	if opts["repo1-path"] != "/from-env" || from["repo1-path"] != "environment" || opts["repo1-s3-bucket"] != "inline" || from["repo1-s3-bucket"] != "the server's command" {
 		t.Errorf("environment and inline: %s", join(opts))
 	}
 	alone := write(filepath.Join(dir, "alone.conf"), "[global]\nrepo1-path=/alone\n")
 	delete(env, "PGBACKREST_REPO1_PATH")
 	env["PGBACKREST_CONFIG"] = alone
-	opts, _, _ = pgbrConfig("demo", "archive-push", "", nil)
+	opts, _, _, _ = pgbrConfig("demo", "archive-push", nil)
 	if opts["repo1-path"] != "/alone" || opts["repo2-path"] != "" {
 		t.Errorf("PGBACKREST_CONFIG alone (no include directory): %s", join(opts))
 	}
@@ -247,7 +281,7 @@ func TestPgbrConfig(t *testing.T) {
 			t.Errorf("a secret was read: %s", join(o))
 		}
 	}
-	opts, _, _ = pgbrConfig("demo", "archive-push", "", nil)
+	opts, _, _, _ = pgbrConfig("demo", "archive-push", nil)
 	if strings.Contains(join(opts), "hunter") {
 		t.Errorf("a secret was read: %s", join(opts))
 	}
@@ -260,8 +294,108 @@ func TestPgbrConfig(t *testing.T) {
 		!strings.Contains(ds[0].detail, "repository host backup1") {
 		t.Errorf("a repository host: %+v", ds)
 	}
-	if _, _, why := pgbrConfig("demo", "archive-push", filepath.Join(dir, "missing.conf"), nil); why != "file not readable" {
+	env["PGBACKREST_CONFIG"] = filepath.Join(dir, "missing.conf")
+	if _, _, _, why := pgbrConfig("demo", "archive-push", nil); why != "file not readable" {
 		t.Errorf("a missing file: %q", why)
+	}
+	// F4: the deprecated un-indexed names are repo1's, below an indexed name in the same section, above [global]'s
+	// from a stanza's section; PGBACKREST_REPO_PATH likewise; repo-s3-key is a credential's name (never read)
+	env["PGBACKREST_CONFIG"] = write(filepath.Join(dir, "old.conf"), "[global]\nrepo-type=s3\nrepo-s3-bucket=b\nrepo-path=/pg\nrepo-s3-key=hunter5\n"+
+		"retention-full=3\n[demo]\nrepo-s3-bucket=demo-b\n[mixed]\nrepo-path=/old\nrepo1-path=/new\n")
+	opts, _, known, _ = pgbrConfig("demo", "archive-push", nil)
+	if !known || join(opts) != "repo1-path=/pg repo1-retention-full=3 repo1-s3-bucket=demo-b repo1-type=s3" {
+		t.Errorf("the deprecated names: %s", join(opts))
+	}
+	if opts, _, _, _ := pgbrConfig("mixed", "archive-push", nil); opts["repo1-path"] != "/new" {
+		t.Errorf("an indexed name over its deprecated one: %s", join(opts))
+	}
+	env["PGBACKREST_REPO_PATH"] = "/env-old"
+	if opts, from, _, _ := pgbrConfig("demo", "archive-push", nil); opts["repo1-path"] != "/env-old" || from["repo1-path"] != "environment" {
+		t.Errorf("PGBACKREST_REPO_PATH: %s", join(opts))
+	}
+	env["PGBACKREST_REPO1_PATH"] = "/env-new"
+	if opts, _, _, _ := pgbrConfig("demo", "archive-push", nil); opts["repo1-path"] != "/env-new" {
+		t.Errorf("PGBACKREST_REPO1_PATH over PGBACKREST_REPO_PATH: %s", join(opts))
+	}
+	delete(env, "PGBACKREST_REPO_PATH")
+	delete(env, "PGBACKREST_REPO1_PATH")
+	// F18: a stanza the configuration never names and no repository option anywhere is not known (no default shown)
+	env["PGBACKREST_CONFIG"] = write(filepath.Join(dir, "other.conf"), "[global]\nlog-level-console=info\n[other]\npg1-path=/x\n")
+	if _, _, known, why := pgbrConfig("demo", "archive-push", nil); known || why != "" {
+		t.Errorf("a stanza not in the configuration: known %v, why %q", known, why)
+	}
+	env["PGBACKREST_CONFIG"] = write(filepath.Join(dir, "named.conf"), "[global]\nlog-level-console=info\n[demo]\npg1-path=/x\n")
+	if _, _, known, _ := pgbrConfig("demo", "archive-push", nil); !known {
+		t.Errorf("a [demo] section with no repository option: not known")
+	}
+	// a line pgBackRest would not take (no '=') and an option off the list: neither value is read
+	env["PGBACKREST_CONFIG"] = write(filepath.Join(dir, "broken.conf"), "[global]\nrepo1-cipher-pass hunter6\ngarbage=hunter7\nrepo1-path=/b\n")
+	if opts, _, _, _ := pgbrConfig("demo", "archive-push", nil); join(opts) != "repo1-path=/b" {
+		t.Errorf("a broken line and an unlisted option: %s", join(opts))
+	}
+	delete(env, "PGBACKREST_CONFIG")
+}
+
+// F3: the tool configuration rows follow the archiver: a stanza a leftover archive_command names is read only while
+// archive_command archives; restore_command's stanza gives restore rows only.
+func TestBackupDestToolsFollowTheArchiver(t *testing.T) {
+	show := func(ts []destTool) string {
+		var out []string
+		for _, x := range ts {
+			out = append(out, fmt.Sprintf("%s %s wal=%v restore=%v", x.tool, x.name, x.wal, x.restore))
+		}
+		return strings.Join(out, " ;; ")
+	}
+	pb := "pgbackrest --stanza=demo archive-push %p"
+	for _, c := range []struct {
+		name string
+		st   destSettings
+		want string
+	}{
+		{"archive_mode off", destSettings{archiveMode: "off", archiveCmd: pb}, ""},
+		{"a library set", destSettings{archiveMode: "on", archiveCmd: pb, archiveLib: "basic_archive"}, ""},
+		{"the archiver", destSettings{archiveMode: "on", archiveCmd: pb}, "pgbackrest demo wal=true restore=false"},
+		{"restore only", destSettings{archiveMode: "on", archiveCmd: "cp %p /a/%f", restoreCmd: "pgbackrest --stanza=demo archive-get %f %p"},
+			"pgbackrest demo wal=false restore=true"},
+		{"both", destSettings{archiveMode: "on", archiveCmd: pb, restoreCmd: "pgbackrest --stanza=demo archive-get %f %p"}, "pgbackrest demo wal=true restore=true"},
+		{"barman's incoming", destSettings{archiveMode: "on", archiveCmd: "rsync -a %p barman@backup1:/var/lib/barman/pg/incoming/%f"}, "barman pg wal=true restore=false"},
+	} {
+		if got := show(destTools(c.st)); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "p.conf")
+	if err := os.WriteFile(conf, []byte("[demo]\nrepo1-path=/r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pgbrGetenv = func(k string) string {
+		if k == "PGBACKREST_CONFIG" {
+			return conf
+		}
+		return ""
+	}
+	pgbrEnviron = func() []string { return nil }
+	defer func() { pgbrGetenv, pgbrEnviron = os.Getenv, os.Environ }()
+	rows := readDestTool(context.Background(), destTool{tool: "pgbackrest", name: "demo", restore: true}, true)
+	if len(rows) != 2 || rows[0]["state"] != "ok" || rows[1]["role"] != "restore" || rows[1]["path"] != "/r" {
+		t.Errorf("a restore-only stanza: %v", rows)
+	}
+	rows = readDestTool(context.Background(), destTool{tool: "pgbackrest", name: "nope", wal: true}, true)
+	if len(rows) != 1 || rows[0]["message"] != "stanza nope is not in the collector host's configuration" {
+		t.Errorf("a stanza not in the configuration: %v", rows)
+	}
+}
+
+// F10, F11: the never-flag list matches a whole name too; a credential kind and a file path are not credentials.
+func TestSecretNameNeverList(t *testing.T) {
+	for name, want := range map[string]bool{"--password-file": false, "password-file": false, "AWS_SHARED_CREDENTIALS_FILE": false, "GOOGLE_APPLICATION_CREDENTIALS": false,
+		"--credential": false, "--azure-credential": false, "PasswordAuthentication": false, "sse-customer-key": false,
+		"--repo1-s3-sse-customer-key": true, "PGBACKREST_REPO1_S3_SSE_CUSTOMER_KEY": true, "repo-s3-key": true, "repo-cipher-pass": true, "--password": true,
+		"PGPASSWORD": true, "--account-key": true, "--aws-secret-access-key": true} {
+		if got := secretName(name); got != want {
+			t.Errorf("secretName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 
@@ -282,10 +416,10 @@ func TestBackupDestToolReads(t *testing.T) {
 		rows[0]["state"] != "not_read" || rows[0]["message"] != backupNotRead || ran != 0 {
 		t.Errorf("backup_tools off: %v (ran %d)", rows, ran)
 	}
-	if rows := readDestTool(destTool{tool: "barman", name: "pg"}, false); len(rows) != 1 || rows[0]["state"] != "off" || ran != 0 {
+	if rows := readDestTool(context.Background(), destTool{tool: "barman", name: "pg", wal: true}, false); len(rows) != 1 || rows[0]["state"] != "off" || ran != 0 {
 		t.Errorf("backup_dest off: %v (ran %d)", rows, ran)
 	}
-	rows := readDestTool(destTool{tool: "barman", name: "pg"}, true)
+	rows := readDestTool(context.Background(), destTool{tool: "barman", name: "pg", wal: true}, true)
 	all := fmt.Sprint(rows)
 	if len(rows) != 3 || rows[0]["state"] != "ok" || strings.Contains(all, "hunter2") || strings.Contains(all, "ssh") || strings.Contains(all, "x.sh") ||
 		rows[1]["role"] != "base" || rows[1]["dest_kind"] != "s3" || rows[1]["container"] != "bk" || rows[1]["path"] != "/pg/base" ||
@@ -308,5 +442,17 @@ func TestRunToolWords(t *testing.T) {
 	_, err = runTool(context.Background(), sh, "-c", "echo hunter2 >&2; exit 3")
 	if err == nil || err.Error() != "exit code 3" {
 		t.Errorf("runTool's error: %v", err)
+	}
+}
+
+// F19: an entry is checked with the collector's own secret rule before 0148's function sees it.
+func TestEntryHoldsSecret(t *testing.T) {
+	for text, want := range map[string]bool{"pwd=hunter2": true, "--password hunter2": true, "sshpass -p hunter2 scp x h:/y": true, "curl -u bob:hunter2 https://h/x": true,
+		"backup:hunter2@host1:/srv": true, "PGPASSWORD hunter2": true, "https://u:p@h/x": true, "https://acct.blob.core.windows.net/wal?sv=1&sig=X": true,
+		"kansas:/srv": false, "backup1:/srv/backups (nightly rsync)": false, "s3://wal-b/pg": false, "rotated by the token service": false,
+		"barman@backup1:/var/lib/barman": false, `an "unclosed quote with --password x`: true} {
+		if got := EntryHoldsSecret(text); got != want {
+			t.Errorf("EntryHoldsSecret(%q) = %v, want %v", text, got, want)
+		}
 	}
 }

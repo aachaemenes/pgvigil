@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.pg_backup_dest_entered (
   entered_by   text NOT NULL,
   entered_at   timestamptz NOT NULL DEFAULT now(),
   ended_at     timestamptz,        -- NULL = the entry in force; a later entry or a clear ends it
-  ended_by     text
+  ended_by     text,
+  read_at_entry text               -- what the read named for the role when the entry was made (F10: a read that changed after it is marked)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS pg_backup_dest_entered_now ON pgvigil.pg_backup_dest_entered (instance_id, role) WHERE ended_at IS NULL;
 
@@ -122,7 +123,7 @@ read AS (
          bool_or(d.secret_seen) AS secret_seen, max(d.snapshot_at) AS read_at,
          bool_or(d.tool = 'pgbackrest' AND EXISTS (
            SELECT 1 FROM pgvigil.pg_backup_tools t
-            WHERE t.instance_id = d.instance_id AND t.tool = 'pgbackrest' AND t.is_present AND t.state = 'ok' AND d.detail LIKE 'stanza ' || t.name || '%'
+            WHERE t.instance_id = d.instance_id AND t.tool = 'pgbackrest' AND t.is_present AND t.state = 'ok' AND split_part(split_part(d.detail, ';', 1), ':', 1) = 'stanza ' || t.name
               AND t.system_id IS NOT NULL
               AND t.system_id = (SELECT w.system_identifier FROM pgvigil.wal_state_sample w WHERE w.instance_id = d.instance_id ORDER BY w.snapshot_at DESC LIMIT 1))) AS confirmed
     FROM pgvigil.pg_backup_dest d
@@ -141,7 +142,8 @@ SELECT i.instance_id, r.role, r.label, r.ord,
        rd.read_text, rd.read_at, coalesce(rd.secret_seen, false) AS secret_seen, coalesce(rd.confirmed, false) AS confirmed,
        CASE WHEN rd.read_text IS NULL AND i.platform NOT IN ('rds', 'aurora', 'azure', 'cloudsql', 'alloydb') THEN 'not known' END AS not_known,
        e.dest_text AS entered_text, e.note AS entered_note, e.entered_by, e.entered_at,
-       (e.dest_text IS NOT NULL AND rd.read_text IS NOT NULL) AS entered_beside_read
+       (e.dest_text IS NOT NULL AND rd.read_text IS NOT NULL) AS entered_beside_read,
+       (e.dest_text IS NOT NULL AND e.read_at_entry IS DISTINCT FROM rd.read_text) AS read_changed_since_entry
   FROM pgvigil.instances i
  CROSS JOIN roles r
   LEFT JOIN read rd ON rd.instance_id = i.instance_id AND rd.role = r.role
@@ -159,6 +161,9 @@ BEGIN
   IF p_role NOT IN ('wal', 'base', 'restore') THEN
     RAISE EXCEPTION 'the role is base, wal or restore';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pgvigil.instances WHERE instance_id = p_instance_id AND engine = 'postgres') THEN
+    RAISE EXCEPTION 'not a PostgreSQL instance';
+  END IF;
   IF p_by IS NULL OR btrim(p_by) = '' THEN
     RAISE EXCEPTION 'an entry names who made it';
   END IF;
@@ -169,7 +174,9 @@ BEGIN
   IF p_text ~ '[[:cntrl:]]' OR coalesce(p_note, '') ~ '[[:cntrl:]]' THEN
     RAISE EXCEPTION 'no control characters';
   END IF;
-  IF p_text || ' ' || coalesce(p_note, '') ~* '://[^/@[:space:]]*:[^/@[:space:]]*@|[?&](sig|signature|x-amz-signature|x-amz-credential|sv|se|sp)=|(password|passwd|secret|token|sas|access[_-]?key|account[_-]?key)[[:space:]]*[=:]' THEN
+  -- the second gate (the API checks every word with the collector's secret rule first); 'sas', 'pwd' and the key names
+  -- as whole words only ('kansas:/srv' is a place)
+  IF p_text || ' ' || coalesce(p_note, '') ~* '://[^/@[:space:]]*:[^/@[:space:]]*@|[?&](sig|signature|x-amz-signature|x-amz-credential|sv|se|sp)=|(password|passwd|secret|token)[[:space:]]*[=:]|\m(sas|pwd|access[_-]?key|account[_-]?key)[[:space:]]*[=:]' THEN
     RAISE EXCEPTION 'an entry never holds a credential: name where the backups go, not how to reach it';
   END IF;
   UPDATE pgvigil.pg_backup_dest_entered SET ended_at = now(), ended_by = p_by
@@ -177,8 +184,10 @@ BEGIN
   IF p_text = '' THEN
     RETURN NULL;
   END IF;
-  INSERT INTO pgvigil.pg_backup_dest_entered (instance_id, role, dest_text, note, entered_by)
-  VALUES (p_instance_id, p_role, p_text, p_note, p_by) RETURNING entry_id INTO v_id;
+  INSERT INTO pgvigil.pg_backup_dest_entered (instance_id, role, dest_text, note, entered_by, read_at_entry)
+  VALUES (p_instance_id, p_role, p_text, p_note, p_by,
+          (SELECT v.read_text FROM pgvigil.pg_backup_destinations v WHERE v.instance_id = p_instance_id AND v.role = p_role))
+  RETURNING entry_id INTO v_id;
   RETURN v_id;
 END $$;
 

@@ -8,6 +8,6 @@
     -- base backups not read (info: the Summary's Backup FULL cell maps 'base backups not read' to grey, never green)
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'backup_dest', at FROM pgvigil.pg_backup_dest_findings
 
--- (2) purge(): the entered destinations' history past the retention (the entry in force is never purged); every other
--- 0148 table is current state, replaced whole at each read, and goes with its instance (ON DELETE CASCADE):
-  DELETE FROM pgvigil.pg_backup_dest_entered WHERE ended_at IS NOT NULL AND ended_at < now() - make_interval(days => p_days);
+-- (2) purge(): NO line. Every 0148 table but one is current state, replaced whole at each read, and goes with its
+-- instance (ON DELETE CASCADE); pg_backup_dest_entered is a person's entries with their history (F10: history kept), so
+-- its ended rows are kept as 0190 keeps pg_thresholds whole (302's review, finding 21).

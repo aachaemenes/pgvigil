@@ -104,7 +104,7 @@ func TestBackupDestOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE ended_at IS NULL) FROM pgvigil.pg_backup_dest_entered WHERE instance_id = $1`, a).Scan(&hist, &open); err != nil || hist != 2 || open != 1 {
 		t.Errorf("the history: %d rows, %d in force (%v)", hist, open, err)
 	}
-	for _, bad := range []string{"https://user:hunter2@files/x", "https://acct.blob.core.windows.net/c?sv=1&sig=abc", "password=hunter2 on the share", "a\x01b", strings.Repeat("x", 501)} {
+	for _, bad := range []string{"https://user:hunter2@files/x", "https://acct.blob.core.windows.net/c?sv=1&sig=abc", "password=hunter2 on the share", "pwd=hunter2", "a\x01b", strings.Repeat("x", 501)} {
 		if err := entry("wal", bad, ""); err == nil {
 			t.Errorf("the entry %q was taken", bad)
 		}
@@ -114,6 +114,33 @@ func TestBackupDestOnAStore(t *testing.T) {
 	}
 	if _, _, e, _ := view(a, "base"); e != "" {
 		t.Errorf("an empty entry did not end the one in force: %q", e)
+	}
+	// a place whose name holds a secret word's letters is a place (302's review 19: 'kansas:/srv')
+	if err := entry("restore", "kansas:/srv/wal", ""); err != nil {
+		t.Errorf("'kansas:/srv/wal' was refused: %v", err)
+	}
+	// a SQL Server instance takes no PostgreSQL destination (302's review 22)
+	var ms int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')`, fmt.Sprintf("bd-ms-%d", tag)).Scan(&ms); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_backup_dest_entry($1, 'wal', 'backup1:/srv', NULL, 'tester')`, ms); err == nil || !strings.Contains(err.Error(), "not a PostgreSQL instance") {
+		t.Errorf("an entry on a SQL Server instance: %v", err)
+	}
+	// F10 (302's review 20): the entry keeps what the read named when it was made; a read that changes after it is marked
+	if err := entry("base", "backup1:/srv/pg3", ""); err != nil {
+		t.Fatal(err)
+	}
+	changed := func() bool {
+		t.Helper()
+		var c bool
+		if err := pool.QueryRow(ctx, `SELECT read_changed_since_entry FROM pgvigil.pg_backup_destinations WHERE instance_id = $1 AND role = 'base'`, a).Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if changed() {
+		t.Errorf("the read is marked changed right after the entry")
 	}
 	// a read without its settings row changes nothing; the next read replaces the destinations whole
 	imp("import_backup_dest", a, []map[string]any{dest("archive_command", "wal", 1, "copy", "posix", "", "/x", "", false)})
@@ -126,6 +153,9 @@ func TestBackupDestOnAStore(t *testing.T) {
 	}
 	if _, k, _, _ := view(a, "base"); k != "not known" {
 		t.Errorf("base backups with nothing read: %q", k)
+	}
+	if !changed() {
+		t.Errorf("the read changed after the entry (its base row went) and is not marked")
 	}
 	if f := findings(a); f != "warning:WAL is discarded:archive_command" {
 		t.Errorf("a's findings after the discard: %q", f)
