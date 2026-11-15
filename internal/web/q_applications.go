@@ -212,13 +212,23 @@ func (s *Server) ApplicationOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "application": app, "databases": dbs}, nil)
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "contacts_off": s.contactsOff(), "application": app, "databases": dbs}, nil)
+}
+
+// contactsOff is why an application's contacts are not read here ("" = they are): they are personal data, read with
+// the UI login on only. The one application's reply carries it, so the page's 'Show contacts' is off with these words
+// before a click, and the contacts' GET refuses with the same words.
+func (s *Server) contactsOff() string {
+	if s.auth == nil {
+		return "contacts hidden: the login is off (they are personal data)"
+	}
+	return ""
 }
 
 // ApplicationContacts is GET /api/applications/{id}/contacts: the contacts and their alert routes, with the UI login on only.
 func (s *Server) ApplicationContacts(w http.ResponseWriter, r *http.Request) {
-	if s.auth == nil {
-		writeErr(w, http.StatusForbidden, errors.New("contacts hidden: the login is off (they are personal data)"))
+	if off := s.contactsOff(); off != "" {
+		writeErr(w, http.StatusForbidden, errors.New(off))
 		return
 	}
 	id := appID(r)

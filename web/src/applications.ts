@@ -26,7 +26,7 @@ function offRead(c: Element, why: string): void {
 }
 
 interface ListData { can_edit: boolean; why_not: string; applications: Table | null; audit: Table | null; file_tags?: Table | null }
-interface OneData { can_edit: boolean; why_not: string; application: Table | null; databases: Table | null }
+interface OneData { can_edit: boolean; why_not: string; contacts_off?: string; application: Table | null; databases: Table | null }
 interface UnData { can_edit: boolean; why_not: string; unassigned: Table | null; marked: Table | null }
 interface Source { source?: string; set_at?: string; set_by?: string }
 
@@ -259,7 +259,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       renameForm(id, name, version),
       removeForm(id, name, version, dbs.filter(r => r.own).length),
       el('h4', {}, 'Contacts'),
-      await contactsPart(id, name),
+      await contactsPart(id, name, str(d.contacts_off)),
       el('h4', {}, 'Servers and databases'),
       el('p', { class: 'meta' }, 'Own: assigned here. Inherited: a database of a server this application is set on, with no application of its own. A database dropped on its server keeps its assignment, shown absent since its last read; one renamed on its server (the same id) is offered under its new name.'),
       dbGrid,
@@ -317,13 +317,15 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
     return f;
   }
 
-  // contacts: read only when asked; the add / edit form beside them
-  async function contactsPart(id: number, name: string): Promise<HTMLElement> {
+  // contacts: read only when asked; the add / edit form beside them. off: the server's words when it reads no contacts
+  // here (the UI login is off): 'Show contacts' is then off with them, never a click that is refused
+  async function contactsPart(id: number, name: string, off: string): Promise<HTMLElement> {
     const box = el('div', { class: 'app-contacts' });
-    if (contactsOf !== id) {
+    if (contactsOf !== id || off) {
       const show = el('button', { type: 'button', 'aria-label': `Show contacts of ${name}` }, 'Show contacts');
       show.addEventListener('click', () => { contactsOf = id; void redraw(); });
-      box.append(el('p', { class: 'meta' }, 'Contacts are personal data: they are read only when you ask, so an export of this page carries them only while they are shown; this page is never mailed. '), show);
+      const why = offControl(show, off || null);
+      box.append(el('p', { class: 'meta' }, 'Contacts are personal data: they are read only when you ask, so an export of this page carries them only while they are shown; this page is never mailed. '), show, ' ', why);
       return box;
     }
     let rows: Row[], routes: Row[], channels: Row[];
