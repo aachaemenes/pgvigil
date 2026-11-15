@@ -119,7 +119,8 @@ func TestBackupLocationsOnAStore(t *testing.T) {
 		r := map[string]any{"kind": "set", "database_name": dbn, "backup_type": typ, "is_copy_only": map[bool]int{false: 0, true: 1}[copyOnly],
 			"backup_set_id": id, "backup_set_uuid": fmt.Sprintf("00000000-0000-0000-0000-%012d", id), "finish_utc": at(finish), "start_utc": at(finish - time.Minute),
 			"size_bytes": 1000, "compressed_bytes": 400, "has_checksums": 1, "is_damaged": 0, "is_password_protected": 0, "key_algorithm": "NO_Encryption",
-			"family_count": 1, "mirror_count": 1, "software_name": "Microsoft SQL Server", "user_name": "sa", "checkpoint_lsn": fmt.Sprintf("%d000000001", id)}
+			"family_count": 1, "mirror_count": 1, "software_name": "Microsoft SQL Server", "user_name": "sa", "checkpoint_lsn": fmt.Sprintf("%d000000001", id),
+			"is_snapshot": 0} // the collector always sends is_snapshot (backupset's bit); a stub without it stores NULL
 		for k, v := range extra {
 			r[k] = v
 		}
