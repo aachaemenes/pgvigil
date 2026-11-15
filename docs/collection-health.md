@@ -33,20 +33,23 @@ a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in 
   once over the instances shown, with how many instances list it (**Instances**, a link to its rows per instance; an N/A row counts) and how many
   failed at their last run (**Failing Instances**), and the worst status of its instances but N/A.
 - **Status**: Critical, Warning, N/A, OK - each can be turned off.
-- **Failed** opens the errors of the hours it counts (from the hour that holds the start to the end of the hour that
-  holds the end, up to now); **Errors** opens the errors of the range; **Last Failure** opens the list
+- **Failed** and **Import Failed** open the errors of the hours they count (from the hour that holds the start to the
+  end of the hour that holds the end, up to now), both kinds in one list, as DBA Dash's two links do; **Errors** opens
+  the errors of the range; **Last Failure** opens the list
   around the last failure (from the last success while the collection fails now, else from 10 minutes before the
   failure, to an hour after it). The list has a text filter on the message.
-- The charts: **Runs** per bucket by outcome (Failed, Partial, Succeeded) and **Time spent collecting**.
+- The charts: **Runs** per bucket by outcome (Failed, Partial, Succeeded; Failed holds the import failures, as DBA
+  Dash's does) and **Time spent collecting** - collecting (the whole runs), its CPU where it was read (SQL Server) and
+  importing (the writes alone).
 
 A collection whose runs take longer than its interval is also a finding, *collection runs long*, on the Collector page
 and the Summary, and it can be sent: [alerts.md](alerts.md#pgvigils-own-health).
 
-**Failed** counts the runs that failed at the read on the monitored server; **Import Failed** the runs that read and
-then failed at their write into the repository. Failed % is over both, as the status rule counts them. **Avg Import**
-and **Max Import** are the time of the writes into the repository alone, over the runs that wrote; Avg Duration and Max
-Duration are the whole run and include them. **Total CPU**, **Avg CPU**, **Max CPU**, **Logical Reads** and **Avg
-Logical Reads** are the run's own session's on SQL Server (`cpu_time` and `logical_reads` of `sys.dm_exec_sessions`,
+**Failed** counts the runs that failed but for those under **Import Failed**, the runs whose write of collected rows
+into the repository failed. Failed % is over both, as the status rule counts them. **Avg Import** and **Max Import** are
+the time of the writes into the repository alone, over the runs that wrote into it or tried to (a failed write too);
+Avg Duration and Max Duration are the whole run and include them. **Avg CPU**, **Max CPU**, **Total CPU**, **Avg Logical
+Reads** and **Total Logical Reads** (DBA Dash's order and words) are the run's own session's on SQL Server (`cpu_time` and `logical_reads` of `sys.dm_exec_sessions`,
 read at the run's end, over the runs that read them); a PostgreSQL row says *not read by pgvigil*. A run cut by its own
 timeout is not read: the SQL Server driver drops the connection of a statement that hit its deadline, so the CPU columns
 leave such runs out. **Import Failed** is DBA Dash's: the runs whose write of collected rows failed. The collector's
@@ -54,7 +57,7 @@ error log calls a wider set of failures stage *Import* - any failure on the repo
 thresholds store among them - which Collection Health counts as plain failures.
 
 What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warnings, Retried, No Status, the import's
-own CPU and reads, the highest logical reads of one run, the Import Lag chart (pgvigil writes into the repository
+own CPU and reads (and the Cost chart's Import CPU line), the highest logical reads of one run, the Import Lag chart (pgvigil writes into the repository
 inside the run that collected: no queue stands between the two, so there is no import lag), the insights card, and the
 Steps picker (pgvigil's collections have no steps). Runs and Max Duration are not links (DBA Dash's Collection
 Performance report is a later task), and the thresholds are DBA Dash's defaults, not yet settable. The Status column

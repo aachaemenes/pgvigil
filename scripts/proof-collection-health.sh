@@ -87,6 +87,17 @@ q "select pgvigil.import_collection_health('proof', jsonb_build_object('health',
      'hour', $HOURZ, 'runs', 1, 'ok', 0, 'partial', 0, 'error', 1, 'skipped', 0,
      'rows', 0, 'dur_ms_sum', 10, 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60))))" >/dev/null
 
+# fx-chimport (the review of B6g-1 part b #2): an hour of 3 failed runs, 2 of them at the write of collected rows
+# (import_failed 2), and their 3 errors logged: Failed reads 1 and Import Failed 2, each a link to the same list of 3
+q "insert into pgvigil.instances (name, platform, engine) values ('fx-chimport', 'onprem', 'postgres')" >/dev/null
+logrun fx-chimport '20 min' error "'proof: read failed'"
+logrun fx-chimport '10 min' error "'proof: import failed 1'"
+logrun fx-chimport '0 min' error "'proof: import failed 2'"
+q "select pgvigil.import_collection_health('proof', jsonb_build_object('health', jsonb_build_array(jsonb_build_object('instance', 'fx-chimport', 'collection', 'activity',
+     'hour', date_trunc('hour', '$CH_NOW'::timestamp) at time zone 'UTC', 'runs', 3, 'ok', 0, 'partial', 0, 'error', 3, 'skipped', 0,
+     'rows', 0, 'dur_ms_sum', 30, 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60,
+     'import_failed', 2, 'import_runs', 2, 'import_ms_sum', 8, 'import_ms_max', 5))))" >/dev/null
+
 echo "== a headless Chromium on CDP $CDP"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
 CHR=$!

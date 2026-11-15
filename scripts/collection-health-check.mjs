@@ -83,8 +83,8 @@ const drawnAs = async want => { for (let i = 0; i < 100; i++) { if (await ev(`do
 const setShow = v => ev(`(() => { const s = document.querySelector('main #ch-show'); if (!s) return false; s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
 
 const COLS = ['Instance', 'Collection', 'Status', 'Status Reason', 'Runs', 'Succeeded %', 'Failed %', 'Failed % 24hrs', 'Succeeded', 'Partial', 'Failed', 'Import Failed',
-  'Failures In A Row', 'Last Run', 'Last Success', 'Last Failure', 'Avg Duration (ms)', 'Max Duration (ms)', 'Avg Import (ms)', 'Max Import (ms)',
-  'Total CPU (ms)', 'Avg CPU (ms)', 'Max CPU (ms)', 'Logical Reads', 'Avg Logical Reads', 'Rows', 'Errors', 'Thresholds'];
+  'Failures In A Row', 'Last Run', 'Last Success', 'Last Failure', 'Avg Duration (ms)', 'Max Duration (ms)',
+  'Avg CPU (ms)', 'Max CPU (ms)', 'Total CPU (ms)', 'Avg Logical Reads', 'Total Logical Reads', 'Avg Import (ms)', 'Max Import (ms)', 'Rows', 'Errors', 'Thresholds'];
 const BYCOLL = ['Collection', 'Status', 'Instances', 'Failing Instances', ...COLS.slice(4)];
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const LAG = 'pgvigil writes into the repository inside the run that collected: no queue stands between the two, so there is no import lag (Avg Import is the write\'s own time)';
@@ -132,6 +132,15 @@ const allRows = await api({});
     await setStatus(null); await setShow('collection'); await drawnAs('critical,warning,na,ok|collection');
     const heads = await ev(`[...document.querySelectorAll('main .ch-grid table thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim())`);
     say(eq(heads, BYCOLL), 'CH6 Row per collection columns', heads.join(' | '));
+    // CH16 (the review of B6g-1 part b #1): a PostgreSQL collection's row per collection says 'not read by pgvigil' in
+    // its five cost cells, as its rows per instance do (collection names never cross engines)
+    const rc = await ev(`(() => { const t = document.querySelector('main .ch-grid table'); const hs = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim());
+      return [...t.querySelectorAll('tbody tr')].map(tr => Object.fromEntries(hs.map((h, i) => [h, tr.children[i]?.textContent.trim() ?? '']))); })()`);
+    const costCols = ['Total CPU (ms)', 'Avg CPU (ms)', 'Max CPU (ms)', 'Avg Logical Reads', 'Total Logical Reads'];
+    const pgc = (rc ?? []).filter(r => !String(r['Collection']).startsWith('mssql_') && Number(String(r['Runs']).replace(/[^0-9]/g, '')) > 0);
+    const pgcBad = pgc.filter(r => !costCols.every(k => r[k] === 'not read by pgvigil'));
+    say(pgc.length > 0 && pgcBad.length === 0, 'CH16 a PostgreSQL collection per collection: the five cost cells say not read by pgvigil',
+      `${pgc.length} collection(s), ${pgcBad.length} otherwise${pgcBad.length ? ': ' + pgcBad.slice(0, 3).map(r => r['Collection'] + ' [' + costCols.map(k => r[k]).join(' | ') + ']').join('; ') : ''}`);
   } else for (const r of ['Status Critical alone', 'Status Warning alone', 'Status N/A alone', 'Status OK alone', 'Row per collection columns']) say(false, 'CH6 ' + r, 'no tab');
 }
 
@@ -162,7 +171,7 @@ const allRows = await api({});
 {
   const p = await open('#/collectionhealth?w=24h');
   const num = c => { const t = (c?.text ?? '').replace(/[^0-9.]/g, ''); return t === '' ? NaN : Number(t); };
-  const cost = ['Total CPU (ms)', 'Avg CPU (ms)', 'Max CPU (ms)', 'Logical Reads', 'Avg Logical Reads'];
+  const cost = ['Avg CPU (ms)', 'Max CPU (ms)', 'Total CPU (ms)', 'Avg Logical Reads', 'Total Logical Reads'];
   const ran = (p?.rows ?? []).filter(r => num(r['Runs']) > 0);
   const ms = ran.filter(r => r['Collection'].text.startsWith('mssql_')), pg = ran.filter(r => !r['Collection'].text.startsWith('mssql_'));
   const msBad = ms.filter(r => !cost.every(k => num(r[k]) > 0));
@@ -176,8 +185,25 @@ const allRows = await api({});
   const noImp = wrote.filter(r => !(num(r['Avg Import (ms)']) > 0 && num(r['Max Import (ms)']) > 0 && num(r['Max Import (ms)']) <= num(r['Max Duration (ms)'])));   // the longest import is inside the longest run (an average over failed runs too may be under it)
   say(wrote.length > 0 && noImp.length === 0, 'CH16 a demo row with a success has an import time, inside its longest run',
     `${wrote.length} demo row(s) with a success, ${noImp.length} without${noImp.length ? ': ' + noImp.slice(0, 3).map(r => r['Instance'].text + ' ' + r['Collection'].text + ' [' + r['Avg Import (ms)']?.text + ' avg, max ' + r['Max Import (ms)']?.text + ' of ' + r['Max Duration (ms)']?.text + ']').join('; ') : ''}`);
-  const impFailed = ran.filter(r => num(r['Import Failed']) !== 0);
-  say(ran.length > 0 && impFailed.length === 0, 'CH16 Import Failed is 0 on the demo', `${ran.length} row(s) with a run, ${impFailed.length} with an import failure`);
+  const impFailed = ran.filter(r => num(r['Import Failed']) !== 0 && !r['Instance'].text.startsWith('fx-'));   // fx-chimport's are the proof's own (CH17)
+  say(ran.length > 0 && impFailed.length === 0, 'CH16 Import Failed is 0 on the demo', `${ran.length} row(s) with a run, ${impFailed.length} demo row(s) with an import failure`);
+}
+
+// CH17 (the review of B6g-1 part b #2): fx-chimport - 3 failed runs, 2 of them at the write of collected rows. Failed
+// reads 1 and Import Failed 2, and EACH links to the same list of its hours' errors, both kinds in it (DBA Dash links
+// both counts to its errors: CollectionHealthView.cs L208-209)
+{
+  const p = await open('#/collectionhealth?w=24h');
+  const row = (p?.rows ?? []).find(r => r['Instance']?.text === 'fx-chimport' && r['Collection']?.text === 'activity');
+  say(!!row && row['Failed'].text === '1' && row['Import Failed'].text === '2', 'CH17 fx-chimport Failed 1, Import Failed 2',
+    row ? `Failed ${row['Failed'].text}, Import Failed ${row['Import Failed'].text}` : 'not in the grid');
+  for (const [col, land] of [['Failed', 'failed'], ['Import Failed', 'importfailed']]) {
+    const href = row?.[col]?.links?.[land];
+    if (!href) { say(false, `CH17 ${col} -> the error list`, 'no link'); continue; }
+    await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: U + href }); await sleep(2000);
+    const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
+    say(listed === 3, `CH17 ${col} -> the error list`, `${listed} listed, the fixture's 3 errors (${href})`);
+  }
 }
 
 // CH7 the landings

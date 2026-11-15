@@ -103,23 +103,26 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       // Failed opens the window it counts (the hours from the one holding the range's start to the end of the one holding
       // its end: rate_from .. rate_to); Errors keeps the range (the review of B6.2, part b #1)
       { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'failed', { from: String(r.rate_from), to: String(r.rate_to) }) : fmtNum(v),
-        title: 'Runs that failed at the read on the monitored server.  A run that read and then failed at its write into the repository is under Import Failed; Failed % is over both, and the link lists the errors of both.' },
-      // B6g-1 (N27): DBA Dash's Import Failed, its own count
-      { key: 'import_failed', label: 'Import Failed', num: true, fmt: fmtNum,
-        title: 'Runs whose read succeeded and whose write into the repository failed.  A collection written in parts whose part was refused while the run went on is Partial, not here.' },
+        title: 'Runs that failed, but for those under Import Failed.  Failed % is over both, and the link lists the errors of both kinds.' },
+      // B6g-1 (N27): DBA Dash's Import Failed, its own count, a link to the same list as Failed's (as DBA Dash links both)
+      { key: 'import_failed', label: 'Import Failed', num: true,
+        fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'importfailed', { from: String(r.rate_from), to: String(r.rate_to) }) : fmtNum(v),
+        title: 'Runs whose write of collected rows into the repository failed.  A collection written in parts whose part was refused while the run went on is Partial, not here.  The link lists the errors of both kinds, as Failed\'s.' },
       { key: 'failures_in_a_row', label: 'Failures In A Row', num: true, fmt: fmtNum },
       { key: 'last_run_at', label: 'Last Run', fmt: fmtTime },
       { key: 'last_success', label: 'Last Success', fmt: fmtTime },
       { key: 'last_failure', label: 'Last Failure', fmt: (v, r) => v == null ? '' : errorsLink(r, v, 'lastfailure', { from: String(r.errors_from), to: String(r.errors_to) }) },
       { key: 'avg_duration_ms', label: 'Avg Duration (ms)', num: true, fmt: fmtNum },
       { key: 'max_duration_ms', label: 'Max Duration (ms)', num: true, fmt: fmtNum },
-      // B6g-1 (N27): the write into the repository alone, over the runs that attempted one (the durations hold it too)
-      { key: 'avg_import_ms', label: 'Avg Import (ms)', num: true, fmt: fmtNum, title: 'The time of the writes into the repository alone, over the runs that wrote.  Avg Duration includes it.' },
-      { key: 'max_import_ms', label: 'Max Import (ms)', num: true, fmt: fmtNum },
-      // B6g-1 (N25 / N26): the run's own session's cost, read at the run's end on SQL Server; a PostgreSQL row says so
-      ...([['total_cpu_ms', 'Total CPU (ms)'], ['avg_cpu_ms', 'Avg CPU (ms)'], ['max_cpu_ms', 'Max CPU (ms)'], ['logical_reads', 'Logical Reads'], ['avg_logical_reads', 'Avg Logical Reads']] as const)
+      // B6g-1 (N25 / N26): the run's own session's cost, read at the run's end on SQL Server; a PostgreSQL row says so.
+      // DBA Dash's order and words after Max Duration (CollectionHealthView.cs: Avg CPU, Max CPU, Total CPU, Avg Logical
+      // Reads, Total Logical Reads, Avg Import, Max Import; the review of B6g-1 part b #5)
+      ...([['avg_cpu_ms', 'Avg CPU (ms)'], ['max_cpu_ms', 'Max CPU (ms)'], ['total_cpu_ms', 'Total CPU (ms)'], ['avg_logical_reads', 'Avg Logical Reads'], ['logical_reads', 'Total Logical Reads']] as const)
         .map(([key, label]): Col => ({ key, label, num: true, fmt: (v, r) => costWords(v, r.engine) ?? fmtNum(v),
           title: 'Of the run\'s own session on SQL Server (cpu_time, logical_reads of sys.dm_exec_sessions), read at the run\'s end, over the runs that read it.  A run cut by its own timeout is not read: the driver drops its connection.' })),
+      // B6g-1 (N27): the write into the repository alone, over the runs that wrote or tried to (the durations hold it too)
+      { key: 'avg_import_ms', label: 'Avg Import (ms)', num: true, fmt: fmtNum, title: 'The time of the writes into the repository alone, over the runs that wrote into it or tried to (a failed write too).  Avg Duration includes it.' },
+      { key: 'max_import_ms', label: 'Max Import (ms)', num: true, fmt: fmtNum },
       { key: 'rows', label: 'Rows', num: true, fmt: fmtNum },
       { key: 'errors', label: 'Errors', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'errors') : fmtNum(v) },
       { key: 'thresholds', label: 'Thresholds' },
@@ -134,7 +137,10 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       const f = Number(r.failed ?? 0), p = Number(r.partial ?? 0), s = Number(r.succeeded ?? 0);
       return { snapshot_at: r.at, failed: f, fp: f + p, all: f + p + s };
     });
-    const cost = rowsOf(parts.cost).map(r => ({ snapshot_at: r.at, collecting_s: Number(r.collecting_s ?? 0) }));
+    // the Cost chart's three lines (DBA Dash's but its Import CPU): collecting, its CPU where read (SQL Server; a gap
+    // where none was), importing
+    const cost = rowsOf(parts.cost).map(r => ({ snapshot_at: r.at, collecting_s: Number(r.collecting_s ?? 0),
+      cpu_s: r.cpu_s == null ? null : Number(r.cpu_s), importing_s: Number(r.importing_s ?? 0) }));
     // the charts are hourly (the rows are): a range of under two whole hours has one bucket at most, said in each
     // chart's place rather than a chart's 'needs two reads' (the review of B6.2, part b #8)
     // the whole hours up to now: a range ending in the future has no hourly row past now (chhealth.ts, B6f3 #9)
@@ -145,7 +151,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       // all) and uPlot's bars of running totals draw the tallest over the others (the review of B6.2, part b #14)
       wholeHours < 2 ? hourly('Runs') : lineChart('Runs', runs, [{ key: 'failed', label: 'Failed', color: '--crit' }, { key: 'fp', label: 'Partial', color: '--warn' }, { key: 'all', label: 'Succeeded', color: '--ok' }],
         v => v.toLocaleString(), { stacked: true, marks: false }),
-      wholeHours < 2 ? hourly('Time spent collecting (sec)') : lineChart('Time spent collecting (sec)', cost, [{ key: 'collecting_s', label: 'collecting' }], v => v.toLocaleString(), { marks: false, unit: 's' }),
+      wholeHours < 2 ? hourly('Time spent collecting (sec)') : lineChart('Time spent collecting (sec)', cost, [{ key: 'collecting_s', label: 'collecting' }, { key: 'cpu_s', label: 'collecting CPU' }, { key: 'importing_s', label: 'importing' }], v => v.toLocaleString(), { marks: false, unit: 's' }),
       el('div', { class: 'chart' }, el('h3', {}, 'Import Lag'), el('p', { class: 'meta' }, importLagWords)));
     body.replaceChildren(
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `
@@ -154,7 +160,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
         + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
         + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
-        + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads, the highest logical reads of one run; '
+        + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads (and the Cost chart\'s Import CPU line), the highest logical reads of one run; '
         + 'no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
         + 'the Status column shows the word as well as the colour.'),
       grid(rows, cols, on.length === 0 ? 'No status is picked: pick one or more to list the collections.' : 'No collection matches: show every status, or a wider range.'));

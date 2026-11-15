@@ -110,11 +110,14 @@ var sqlCHCollection = `WITH x AS (` + sqlCHRows + `), r AS (
          sum(x.import_failed)::int AS import_failed, sum(x.import_runs)::int AS import_runs, sum(x.import_sum) AS import_sum,
          max(x.import_max) AS import_max, sum(x.cpu_runs)::int AS cpu_runs, sum(x.cpu_sum) AS cpu_sum, max(x.cpu_max) AS cpu_max,
          sum(x.reads_sum) AS reads_sum,
-         min(x.errors_from) AS errors_from, max(x.errors_to) AS errors_to
+         min(x.errors_from) AS errors_from, max(x.errors_to) AS errors_to,
+         -- the engine where every instance of the row shares one (collection names never cross engines): its cost cells'
+         -- words read it - a PostgreSQL collection's 'not read by pgvigil' (the review of B6g-1 part b #1)
+         CASE WHEN min(x.engine) = max(x.engine) THEN min(x.engine) END AS engine
     FROM x
    GROUP BY x.collection
 )
-SELECT r.collection, r.status, r.instances, r.failing_instances,` + chCols + `
+SELECT r.collection, r.status, r.engine, r.instances, r.failing_instances,` + chCols + `
   FROM r
  WHERE $6::text[] IS NULL OR r.status = ANY ($6)
  ORDER BY CASE r.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 WHEN 'n/a' THEN 3 WHEN 'ok' THEN 4 END, failed_pct DESC NULLS LAST, r.collection   -- DBA Dash's: Status, FailedPct DESC, Name`
@@ -127,11 +130,15 @@ SELECT to_timestamp(floor(extract(epoch FROM h.hour) / $6::int) * $6::int) AS at
  WHERE h.hour >= ` + chHourFrom + ` AND h.hour < $2::timestamptz AND ` + chScopeOf("h") + `
  GROUP BY 1 ORDER BY 1`
 
-// sqlCHCost: the Cost chart - the time spent collecting per bucket, in seconds (pgvigil has no import step: the page
-// says so where DBA Dash shows its import time and lag)
+// sqlCHCost: the Cost chart - per bucket, in seconds: the time spent collecting (the whole runs), the collect's CPU of
+// the runs that read their own session (SQL Server; NULL in a bucket with none) and the time spent importing (the
+// writes alone, inside the collecting time). DBA Dash's chart also draws the import's own CPU: pgvigil does not read it
+// (the page says so); there is no import lag (the write is inside the run)
 var sqlCHCost = `
 SELECT to_timestamp(floor(extract(epoch FROM h.hour) / $6::int) * $6::int) AS at,   -- the epoch floored: PostgreSQL 13 has no binning function (0054, 0076)
-       round(sum(h.dur_ms_sum) / 1000.0, 1) AS collecting_s
+       round(sum(h.dur_ms_sum) / 1000.0, 1) AS collecting_s,
+       round(sum(h.cpu_ms_sum) FILTER (WHERE h.cpu_runs > 0) / 1000.0, 1) AS cpu_s,
+       round(sum(h.import_ms_sum) / 1000.0, 1) AS importing_s
   FROM pgvigil.collection_health_hour h
  WHERE h.hour >= ` + chHourFrom + ` AND h.hour < $2::timestamptz AND ` + chScopeOf("h") + `
  GROUP BY 1 ORDER BY 1`
