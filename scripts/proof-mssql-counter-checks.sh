@@ -738,7 +738,9 @@ ok "T5: through import_mssql_xe a cut read is not done, a done read keeps its co
 
 # T6 (the lead's 11-15 F1 FLOOR EDGE (1)): has_text through import_mssql_xe - four attentions at 500 us on a built instance
 XS6=$(xinst chkxs6); [[ "$XS6" =~ ^[0-9]+$ ]] || fail "T6: the built instance [$XS6]"
-xa() { echo "{\"kind\":\"attention\",\"event_at\":\"$(pq "SELECT to_char(('$XT'::timestamptz - interval '61 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'")\",\"event_key\":\"$1\",\"session_id\":60,\"request_id\":0,\"interrupt_us\":500,\"program_name\":\"proof-app\"$2}"; }
+XE6=$(pq "SELECT to_char(('$XT'::timestamptz - interval '61 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+[[ "$XE6" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "T6: the event time [$XE6]"
+xa() { echo "{\"kind\":\"attention\",\"event_at\":\"$XE6\",\"event_key\":\"$1\",\"session_id\":60,\"request_id\":0,\"interrupt_us\":500,\"program_name\":\"proof-app\"$2}"; }
 pq "SELECT pgvigil.import_mssql_xe($XS6, '$XT'::timestamptz - interval '1 minute', '[$(xa t6a ',"statement":null,"has_text":true'), $(xa t6b ',"statement":null,"has_text":false'), $(xa t6c ',"statement":"WAITFOR DELAY 1"'), $(xa t6d '')]'::jsonb)" >/dev/null \
   || fail "T6: the import"
 P6=$(pq "SELECT coalesce(string_agg(coalesce(left(has_text::text, 1), '-') || ':' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text), 'counts'), '|' ORDER BY event_key), 'none')
