@@ -1,3 +1,39 @@
+diff --git i/docs/sqlserver.md w/docs/sqlserver.md
+index 3ec1c5e4..cf32428f 100644
+--- i/docs/sqlserver.md
++++ w/docs/sqlserver.md
+@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
+ 
+ ## Collections
+ 
+-Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
++Thirty-five collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+ 
+ | collection | every | reads | needs | Azure SQL Database | page |
+ | --- | --- | --- | --- | --- | --- |
+@@ -65,6 +65,7 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
+ | `mssql_traceflags` | 1 hour | the trace flags on globally (`DBCC TRACESTATUS(-1)`) and their history | any login | not run | [jobs and configuration history](jobs.md) |
+ | `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
+ | `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
++| `mssql_sessions` | 1 min | sessions and requests by user / system (the server's `is_user_process` over every session) and status, the waiting tasks of user sessions (benign waits left out); pgvigil's own sessions counted apart | VIEW SERVER STATE | not run | the Connections page's Sessions and requests |
+ | `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |
+ | `mssql_waiting_tasks` | 1 min | every task of every waiting request (`sys.dm_os_waiting_tasks` with `sys.dm_exec_requests`, PerformanceMonitor's read), its resource decoded to database, object and index, and the THREADPOOL waiters | VIEW SERVER STATE | runs (VIEW DATABASE STATE; not proven there) | the Waiting tasks tab |
+ | `mssql_xe` | 1 min | the Extended Events sessions a DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, cancelled requests, availability group events | VIEW SERVER STATE | runs (database-scoped sessions) | [Extended Events](sqlserver-xe.md) |
+diff --git i/docs/upgrade.md w/docs/upgrade.md
+index e803d2cf..ee613a74 100644
+--- i/docs/upgrade.md
++++ w/docs/upgrade.md
+@@ -37,6 +37,10 @@ what happens in the other order, and what the project's own proof showed (`scrip
+   that may `CREATE` in a `pgvigil` schema, and, in the repository's own database, a member of its owner or of
+   `pg_read_all_data` - the grant `pgvigil roles` prints for `pgvigil_explain`, so EXPLAIN ANALYZE of a statement in the
+   repository database itself is refused with that login; every other database is unchanged.
++- **The SQL Server Connections page counts every session.** Its totals counted the sessions over 50 (PerformanceMonitor's
++  rule); from this version they count every session, background being the system sessions (the server's
++  `is_user_process` flag, one rule on the whole page), so on the same server the total and background read higher
++  after the upgrade. Reads stored before it keep their numbers.
+ - **Nothing else.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no migration
+   changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and after.
+ 
 diff --git i/internal/mssql/activity.go w/internal/mssql/activity.go
 index dc8b2fe2..4e978a14 100644
 --- i/internal/mssql/activity.go
@@ -145,3 +181,60 @@ index 142e4d1d..fda9e5be 100644
  }
  
  // sp_PressureDetector's CPU details: only the columns the server has, in its order; none = no statement.
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 40526c28..1906883e 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -187,7 +187,7 @@ BEGIN
+                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
+                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+-                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute')
++                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_session_count', 'mssql_session_by')
+        AND c.relname ~ '_[0-9]{6}$'
+        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
+      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6b3933a2..fafa55d0 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -326,6 +326,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+ 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
++	api.HandleFunc("GET /api/mssql/sessions", s.MSSQLSessions) // task 413 (q_mssql_sessions.go)
+ 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
+ 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
+ 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
+diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
+index 823b6dd0..e20fced3 100644
+--- i/web/src/mssql_perf.ts
++++ w/web/src/mssql_perf.ts
+@@ -4,6 +4,7 @@
+ // mssql_tempdb hourly). Every chart shares the range's time axis.
+ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
++import { mssqlSessionsPart } from './mssql_sessions';
+ import { Ctx, href, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+ 
+@@ -602,8 +603,9 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
+   const s = rowsOf(d.summary)[0], series = rowsOf(d.series);
+   const sec = el('section', {}, el('h2', {}, `Connections (${rangeLabel(ctx)})`));
+   if (!s) { sec.append(empty('sessions', 'mssql_activity', 'every 5 minutes')); return sec; }
+-  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count the sessions over 50; the groups count the user sessions over 50 '
+-    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions and Sessions by Application). Waiting for memory: the requests '
++  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count every session, background being the system sessions '
++    + '(the server\'s is_user_process flag, the one rule of this page; PerformanceMonitor counts the sessions over 50); the groups count the user sessions '
++    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions by Application). Waiting for memory: the requests '
+     + 'whose wait type names memory at the requests read nearest the sessions read.'));
+   sec.append(el('h3', {}, `Sessions (${fmtTime(s.snapshot_at)})`), el('div', { class: 'tiles' },
+     tile('connections', fmtNum(s.sessions)), tile('running', fmtNum(s.running)), tile('sleeping', fmtNum(s.sleeping)),
+@@ -626,6 +628,7 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(el('h3', {}, 'Sessions by application'), grid(rowsOf(d.applications), cols('application'), 'No user session with a program name at the newest read.'));
+   sec.append(el('h3', {}, 'Sessions by host'), grid(rowsOf(d.hosts), cols('host'), 'No user session with a host name at the newest read.'));
+   sec.append(el('h3', {}, 'Sessions by database'), grid(rowsOf(d.databases), cols('database'), 'No user session at the newest read.'));
++  sec.append(await mssqlSessionsPart(ctx)); // task 413
+   sec.append(el('p', { class: 'meta' }, 'The sessions running now: ', el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), '.'));
+   return sec;
+ }
