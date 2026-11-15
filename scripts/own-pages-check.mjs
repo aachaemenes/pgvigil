@@ -6,7 +6,8 @@
 //   node scripts/own-pages-check.mjs <cdp port> <base url/>
 // The page contract (the design's O1-O3, FOLD O5-O8): the switch is input[type=checkbox][data-own-switch] in a label
 // reading "Show pgvigil's own sessions (n hidden)"; a shown own row holds span.own-mark 'pgvigil'; a figure counted from
-// the server's summary says "includes n of pgvigil's own"; a read from before the flag says, in p.own-note, "this read
+// the server's summary says "include n of pgvigil's own" (or 'includes'); each id cell of a read that hides is own.ts
+// withMark's span[data-own-id="<id>"]; a read from before the flag says, in p.own-note, "this read
 // is from before pgvigil marked its own sessions: nothing in it is hidden"; the wait-types grid says "pgvigil's own tasks
 // are left out unless the switch is on".
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...', and exits 1 when one failed.
@@ -35,9 +36,19 @@ const ready = `!!document.querySelector('main section, main table.grid, main .em
 const settle = async () => { for (let i = 0; i < 60; i++) { await sleep(250); if (await ev(ready)) break; } await sleep(1500); };
 const go = async h => { await send('Page.navigate', { url: 'about:blank' }); await sleep(150); await send('Page.navigate', { url: base + h }); await settle(); };
 const keys = async () => Object.fromEntries(new URLSearchParams((await ev('location.hash')).split('?')[1] ?? ''));
-const ids = list => ev(`(() => { const want = ${JSON.stringify(list.map(String))}; const cells = [...document.querySelectorAll('main table.grid tbody td')];
-  return Object.fromEntries(want.map(w => { const td = cells.find(c => c.textContent.trim() === w || c.textContent.trim().startsWith(w + ' '));
-    return [w, td ? (td.closest('tr').querySelector('.own-mark')?.textContent.trim() || 'listed') : 'absent']; })); })()`);
+// ids: each id's row among the id cells of the reads that hide (own.ts withMark: span[data-own-id] in the session / pid
+// column) - 'pgvigil' (marked), 'listed' or 'absent'; an absent id that another cell of a main grid holds (a blocker
+// column, another grid of the page) says where: 'absent (also in <heading> / <column>)'
+const ids = list => ev(`(() => { const want = ${JSON.stringify(list.map(String))};
+  const idCells = [...document.querySelectorAll('main table.grid tbody td [data-own-id]')];
+  const heading = t => { let h = null; for (const x of document.querySelectorAll('main h2, main h3')) if (x.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) h = x; return h ? h.textContent.replace(/\\s+/g, ' ').trim().slice(0, 40) : '?'; };
+  return Object.fromEntries(want.map(w => {
+    const c = idCells.find(x => x.dataset.ownId === w);
+    if (c) return [w, c.closest('tr').querySelector('.own-mark')?.textContent.trim() || 'listed'];
+    const other = [...document.querySelectorAll('main table.grid tbody td')].find(td => td.textContent.trim() === w || td.textContent.trim().startsWith(w + ' '));
+    if (!other) return [w, 'absent'];
+    const t = other.closest('table'), th = t.querySelectorAll('thead th')[other.cellIndex];
+    return [w, 'absent (also in ' + heading(t) + ' / ' + (th ? th.textContent.trim() : '?') + ')']; })); })()`);
 const sw = () => ev(`(() => { const i = document.querySelector('input[type=checkbox][data-own-switch]'); return i ? { on: i.checked, label: i.closest('label')?.textContent.replace(/\\s+/g, ' ').trim() } : null; })()`);
 const text = () => ev(`document.querySelector('main')?.textContent.replace(/\\s+/g, ' ') ?? ''`);
 const tick = async () => { await ev(`document.querySelector('input[type=checkbox][data-own-switch]').click(); 'ok'`); await settle(); };
@@ -54,7 +65,7 @@ await run('O1', async () => {
   await go(`#/activity?i=${E.OP_PG}`); if (await noSwitch('O1')) return;
   const r = await ids([70001, 70002, 70003, 70004, 70005]), s = await sw(), t = await text();
   const def = r['70001'] === 'absent' && r['70002'] === 'absent' && r['70003'] === 'listed' && r['70004'] === 'listed' && r['70005'] === 'pgvigil';
-  check('O1', def && !s.on && /\(2 hidden\)/.test(s.label) && t.includes("includes 3 of pgvigil's own"), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'includes 3' ${t.includes("includes 3 of pgvigil's own")}`);
+  check('O1', def && !s.on && /\(2 hidden\)/.test(s.label) && /includes? 3 of pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'include(s) 3' ${/includes? 3 of pgvigil's own/.test(t)}`);
   await tick();
   const k = await keys(), r2 = await ids([70001, 70002]);
   check('O1 switch', k.own === '1' && r2['70001'] === 'pgvigil' && r2['70002'] === 'pgvigil', `ticked: own=${k.own}, ${JSON.stringify(r2)}`);
@@ -69,7 +80,7 @@ await run('O2', async () => {
   await go(`#/mssql_running?i=${E.OP_MS}`); if (await noSwitch('O2')) return;
   const r = await ids([901, 902, 903, 904, 905]), s = await sw(), t = await text();
   const def = r['901'] === 'absent' && r['902'] === 'absent' && r['903'] === 'listed' && r['904'] === 'listed' && r['905'] === 'pgvigil';
-  check('O2', def && /\(2 hidden\)/.test(s.label) && t.includes("includes 3 of pgvigil's own"), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'includes 3' ${t.includes("includes 3 of pgvigil's own")}`);
+  check('O2', def && /\(2 hidden\)/.test(s.label) && /includes? 3 of pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'include(s) 3' ${/includes? 3 of pgvigil's own/.test(t)}`);
   await tick();
   reqs.length = 0;
   await clickText('Earlier');

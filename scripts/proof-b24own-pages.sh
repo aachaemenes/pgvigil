@@ -30,8 +30,10 @@
 #     and its 'Running queries' link carries own=1.
 #  O4 GET /api/running/fleet: the SQL Server instance's longest statement is 903's, the PostgreSQL instance's 70003's -
 #     not the own 40 s statements a page would hide.
-#  O9 the read before T (a demo read, stored before 0265 was applied here) says 'this read is from before pgvigil marked
-#     its own sessions: nothing in it is hidden'; read T does not.
+#  O9 the read before T (a demo read; the staging sets 0265's applied_at to T - 1 s, an upgrade just before read T) says
+#     'this read is from before pgvigil marked its own sessions: nothing in it is hidden'; read T does not.
+#  O10 (added after green run 1: 70001 hidden but not counted) own_shown_pg for an idle backend with no transaction answers
+#     false and own_shown_mssql for an open transaction of unknown age true - never NULL. Red before rel-b24own d9eeffa0.
 #  Red on rel-viewsb's base (the server halves, no page wiring): O1, O2, O2b-O2d FAIL 'no own switch'; O3 FAIL (no own=1
 #  on its reads); O4 FAIL (the pick is 902 / 70002); O9 FAIL (no since in the reply).
 set -uo pipefail
@@ -144,9 +146,20 @@ SELECT (jsonb_populate_record(null::pgvigil.activity_sample, to_jsonb(a) || json
                (jsonb_build_object('pid', 70005, 'application_name', 'pgvigil', 'usename', 'pgvcol', 'state', 'active', 'wait_event_type', 'Lock', 'wait_event', 'transactionid',
                  'blocking_pids', '{70003}'::int[], 'query_start', :t::timestamptz - interval '5 seconds', 'state_change', :t::timestamptz - interval '5 seconds',
                  'xact_start', :t::timestamptz - interval '5 seconds', 'is_own', true))) v(x);
+-- O9's upgrade: 0265 applied one second before read T (the demo applies it when its seed starts and stamps its reads up
+-- to the seed's end, so without this no read is from before it)
+UPDATE pgvigil.schema_version SET applied_at = :t::timestamptz - interval '1 second' WHERE version LIKE '0265\_%';
 COMMIT;
 SQL
-ok "setup: the demo fleet in $REPO; read $T staged on SQL Server instance $IMS and PostgreSQL instance $IPG"
+[[ $(q "select max(snapshot_at) < '$T'::timestamptz - interval '1 second' from pgvigil.activity_summary where instance_id = $IPG and snapshot_at < '$T'") == t ]] \
+  || fail "setup: PostgreSQL instance $IPG has no read older than 0265's staged applied_at ($T - 1 s)"
+ok "setup: the demo fleet in $REPO; read $T staged on SQL Server instance $IMS and PostgreSQL instance $IPG; 0265 applied at T - 1 s"
+# O10: the never-hidden tests answer true or false, never NULL (a NULL hide left a row out of the grid and out of the count)
+O10=$(q "select coalesce(pgvigil.own_shown_pg('Client', false, 'idle', now(), now(), null, now())::text, 'NULL') || ' ' ||
+               coalesce(pgvigil.own_shown_mssql(51, 0, null, false, null, null, 1, null, 0, 0, null, now())::text, 'NULL')" 2>&1)
+O10OK=0; [[ $O10 == 'false true' ]] && O10OK=1
+(( O10OK )) && ok "O10: own_shown_pg (idle, no transaction) false; own_shown_mssql (an open transaction of unknown age) true" \
+  || echo "FAIL O10: own_shown_pg / own_shown_mssql answered '$O10', want 'false true'"
 
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
 "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 &
@@ -173,5 +186,5 @@ for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 OP_U=$U1 OP_PW=$U1PW OP_MS=$IMS OP_PG=$IPG OP_SHOTS=${PGVIGIL_OWN_SHOTS:-} node "$SRC/scripts/own-pages-check.mjs" "$CDP" "$U/" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}
-(( rc == 0 && O4 )) || fail "own-pages-check: $(grep -c '^FAIL' "$WORK/check.txt") case(s) failed; O4 $( ((O4)) && echo ok || echo failed)"
+(( rc == 0 && O4 && O10OK )) || fail "own-pages-check: $(grep -c '^FAIL' "$WORK/check.txt") case(s) failed; O4 $( ((O4)) && echo ok || echo failed); O10 $( ((O10OK)) && echo ok || echo failed)"
 echo "PASS: proof-b24own-pages"

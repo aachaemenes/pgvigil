@@ -149,6 +149,8 @@ await run('W2', async () => {
   // the hide above went into this browser's own choices (no view was loaded): cleared, so the rows below see a viewer
   // whose own layout shows the column - the view's layer alone hides it (the browser is shared by u1 and u2)
   await P.ev(`Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.')).forEach(k => localStorage.removeItem(k)); 'ok'`);
+  // and a reload: gridtools keeps the page load's own choices in memory too (mem answers for a key storage lacks)
+  await P.send('Page.reload'); for (let i = 0; i < 60; i++) { await sleep(250); if (await P.ev(ready)) break; } await sleep(1200);
   await pick(/^\{None\}/); const off = await hiddenCols('Performance summary');
   await pick(/^p1/); const on = await hiddenCols('Performance summary');
   check('W2', !!col && !!s.id && !off.includes(col) && on.includes(col), `hid '${col}', saved p1 (${s.id}); {None}: hidden ${JSON.stringify(off)}; p1: hidden ${JSON.stringify(on)}`);

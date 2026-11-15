@@ -18,10 +18,11 @@ const why = "pgvigil's own session: shown because it blocks or is blocked, runs 
 export function ownMark(r: Record<string, unknown>): HTMLElement | null {
   return r.is_own === true ? el('span', { class: 'badge own-mark', title: why }, 'pgvigil') : null;
 }
-// withMark: an id cell with the mark after it
+// withMark: an id cell with the mark after it; data-own-id names the row's session (a page's checks find a session's
+// row by it, never by a blocker column that holds the same number)
 export const withMark = (text: string | HTMLElement, r: Record<string, unknown>): HTMLElement => {
   const m = ownMark(r);
-  return el('span', {}, text, ...(m ? [' ', m] : []));
+  return el('span', { 'data-own-id': String(r.session_id ?? r.pid ?? '') }, text, ...(m ? [' ', m] : []));
 };
 
 // ownBar: the switch with '(n hidden)', the words for the figures counted from the server's summary ('includes n of
