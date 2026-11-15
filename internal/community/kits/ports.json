@@ -1,0 +1,46 @@
+[
+  {
+    "name": "pmIgnoredWaits",
+    "go_file": "internal/mssql/darling_waiting.go",
+    "repo": "erikdarlingdata/PerformanceMonitor",
+    "path": "PerformanceMonitor.Collectors/IgnoredWaitDefaults.cs",
+    "follows": "3.12.0 (65bdb5f946f7)",
+    "begin": "public static IReadOnlySet<string> All",
+    "end": "};",
+    "sha256": "",
+    "item_re": "\"([A-Z0-9_]+)\""
+  },
+  {
+    "name": "benignWaits",
+    "go_file": "internal/mssql/waits.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "Install-All-Scripts.sql",
+    "follows": "8.34 (20260702), sp_BlitzFirst's wait categories marked Ignorable",
+    "begin": "INSERT INTO ##WaitCategories(WaitType, WaitCategory, Ignorable)",
+    "end": ");",
+    "sha256": "",
+    "item_re": "\\('([A-Z0-9_]+)'\\s*,\\s*'[^']*'\\s*,\\s*1\\)"
+  },
+  {
+    "name": "errorLogMatches (canaries)",
+    "go_file": "internal/mssql/errorlog.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_LogHunter 3.11 (20261101)",
+    "begin": "/*insert some canary values for things that we should always hit",
+    "end": ") AS x (search_string)",
+    "sha256": "",
+    "item_re": "\\(N'N''([^']+)'''\\)"
+  },
+  {
+    "name": "errorLogMatches (search strings)",
+    "go_file": "internal/mssql/errorlog.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_LogHunter 3.11 (20261101)",
+    "begin": "/*these are the search strings we currently care about*/",
+    "end": ") AS v (search_string)",
+    "sha256": "",
+    "item_re": "\\('((?:[^']|'')+)'\\)"
+  }
+]
