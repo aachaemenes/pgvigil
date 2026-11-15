@@ -2,43 +2,30 @@
 -- join (0300_join_release3.sql) re-creates each object below WHOLE with these lines in it. Not a migration: never applied
 -- by `pgvigil migrate` (scripts/ is not embedded).
 
--- 1. pgvigil.findings (0190's view): one more arm
+-- 1. pgvigil.findings (0190's view): one more arm (scripts/b24h-join-draft-base.sql stands it in at alert_findings, the
+--    view alert_due reads findings through)
 --    UNION ALL SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_probe_findings
 
 -- 2. pgvigil.collector_shared_cause (0121): the three settings join 'pgvigil collector''s list (201's parent holds them)
 --    p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect',
 --                                                     'query round trip slow', 'ping slow', 'host not answering ping')
 
--- 3. alert_due (0190): the hold terms beside slow-connect's - an instance's probe finding held while
---    pgvigil.collector_probe_held names it; a host's row held while pgvigil.collector_probe_held_hosts names the host
---    AND NOT (sc.source = 'pgvigil collector' AND sc.setting IN ('query round trip slow', 'ping slow', 'host not answering ping')
---             AND EXISTS (SELECT 1 FROM pgvigil.collector_probe_held h WHERE h.instance_id = sc.instance_id AND h.setting = sc.setting))
---    AND NOT (sc.source = 'pgvigil repository' AND sc.setting IN ('ping slow', 'host not answering ping')
---             AND sc.value IN (SELECT host FROM probe_held_hosts))
---    with the two sets read once each as alert_due's slow_held is (the B24h-1 review part b #4):
---      probe_held AS MATERIALIZED (SELECT * FROM pgvigil.collector_probe_held),
---      probe_held_hosts AS MATERIALIZED (SELECT * FROM pgvigil.collector_probe_held_hosts)
---    (and 'collector_probe_held h' above reads probe_held). The host rows under 'collector or network' (part b #2: the
---    parent's hold reads instance ids, a host row has none):
---    AND NOT (sc.source = 'pgvigil repository' AND sc.setting IN ('ping slow', 'host not answering ping')
---             AND sc.value IN (SELECT j.host FROM pgvigil.collector_probe_judged j JOIN held ON held.instance_id = j.instance_id))
---    B24h's fold held while its collector's parent stands (part b #2) and while SLOW-CONNECT's host fold stands for the
---    same collector - one alert, not three (part b #8, the lead's 12:4x (a)) - and its members under SLOW-CONNECT's fold:
---    AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'network slow from this collector'
---             AND (EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = sc.value)
---                  OR EXISTS (SELECT 1 FROM pgvigil.collector_slow_folds f WHERE f.kind = 'host' AND f.host = sc.value)))
---    AND NOT (sc.source = 'pgvigil collector' AND sc.setting IN ('query round trip slow', 'ping slow', 'host not answering ping')
---             AND EXISTS (SELECT 1 FROM pgvigil.collector_probe_judged j JOIN pgvigil.collector_slow_folds f ON f.kind = 'host' AND f.host = j.collector_host
---                          WHERE j.instance_id = sc.instance_id))
---    the forming wait (part b #5): a NEW probe finding of an instance whose collector's fold may be forming waits, as a
---    new 'slow connect' does (0190 L536-537; a CTE probe_forming AS MATERIALIZED (SELECT instance_id FROM
---    pgvigil.collector_probe_forming) beside slow_forming):
---    AND NOT (m.source = 'pgvigil collector' AND m.setting IN ('query round trip slow', 'ping slow')
---             AND EXISTS (SELECT 1 FROM probe_forming WHERE probe_forming.instance_id = m.instance_id))
---    and in alert_due's resolve arm, as 'slow connects' is guarded (0190 L563-564): the fold is not resolved while its
---    collector's parent stands (part b #2: its round trips leave the judged set 8 minutes into an outage)
---    AND NOT (s.source = 'pgvigil repository' AND s.setting = 'network slow from this collector'
---             AND EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = s.value))
+-- 3. alert_due (0190): the terms marked 'B24h line 3' in scripts/b24h-join-draft-alertdue.sql - that file is 0190's
+--    alert_due (L476-574 at df95d278) with them in, proven by TestProbeAlertDueDraftOnAStore on the drafts (the review of
+--    the fold #5: BJb4 / BJb5 / BJf3 / BJf4) and timed by BJf2; the join diffs it against 0190 and writes the terms into
+--    0300's alert_due. In short:
+--    - CTEs read once a pass (the review of the fold #1: none inside the per-row filter reads a view of its own):
+--      probe_judged, probe_held, probe_held_hosts, probe_parent_hosts (the judged hosts of instances under 'held'),
+--      probe_under_slow (judged from a collector whose slow-connect host fold stands: slow_folds, kind 'host', value =
+--      the collector host), probe_forming, probe_forming_hosts;
+--    - m: an instance's probe finding held while probe_held names it or it is under slow-connect's host fold; a host's
+--      row ('ping slow', 'host not answering ping') while probe_held_hosts or probe_parent_hosts names the host; B24h's
+--      fold while its collector's parent (collector_parent) or slow-connect's host fold stands (part b #2 / #8);
+--    - a NEW 'query round trip slow' waits while probe_forming names its instance, a NEW host 'ping slow' row while
+--      probe_forming_hosts names its host (part b #5, the review of the fold #4; a staggered crossing is sent first, as
+--      slow-connect's is);
+--    - the resolve arm: B24h's fold, and a host's rows of a collector whose parent stands, are not 'resolved' (part b #2,
+--      the review of the fold #3).
 
 -- 4. import_pg_threshold (0190): a SQL Server instance's own level takes B24h's keys too
 --    AND (i.engine = 'postgres' OR (v_key IN ('uptime', 'connect_time', 'round_trip_time', 'ping_time') AND v_level = 'instance'))
