@@ -1,8 +1,9 @@
 # Alerts out
 
 pgvigil sends its findings to the channels your configuration names: an SMTP relay, a webhook (Microsoft Teams, Slack,
-Discord, Google Chat or a generic JSON body), PagerDuty (its Events API v2), Opsgenie (its Alert API v2) and a file drop
-(one JSON file per alert, for a site with no way out). **Nothing is sent unless a channel is configured.** With no `alerts:` list pgvigil sends nothing, and the Alerts tab and the send log say so.
+Discord, Google Chat or a generic JSON body), PagerDuty (its Events API v2), Opsgenie (its Alert API v2), Pushover, Zabbix
+(its sender protocol or its API), Azure Monitor Logs (the Logs Ingestion API) and a file drop (one JSON file per alert,
+for a site with no way out). **Nothing is sent unless a channel is configured.** With no `alerts:` list pgvigil sends nothing, and the Alerts tab and the send log say so.
 
 The collector sends. It runs a pass every minute inside `pgvigil run`, and `pgvigil alerts -config pgvigil.yaml` runs
 one pass by hand. Each pass reads the repository's findings, works out what each channel owes, sends it and records
@@ -388,6 +389,59 @@ check a mute rule names). For example, backups go to one team and blocking to an
   scheme and host are shown.
 - **The air-gapped site** uses the file drop. pgvigil writes into a directory and the site's own tooling picks the
   files up.
+- **Pushover** (`kind: pushover`, `pushover: {token: env:PO_TOKEN, user: env:PO_USER, device: phone1}`) sends each
+  alert as one notification through Pushover's Messages API: the title is the subject, the message the alert's line,
+  the link the alert's page; priority 1 for critical (shown and sounded in quiet hours), 0 for warning, -1 for info,
+  a recovery and a test. Priority 2 (repeated until acknowledged) is not offered: the channel's own `repeat` does
+  that. The application token and the user or group key come through `env:` or `file:` and never show. Pushover's
+  answers decide what follows: a 200 with status 1 is sent; a 429 (the month's messages used up) holds the channel -
+  nothing is posted - until the reset Pushover names; another 4xx (a key wrong, a device unknown) holds it until its
+  configuration changes or a Send test goes through. The Alerts page marks a held channel. Under 10 % of the month's
+  messages left, the repository raises *pushover quota low* on every channel. Proven against a stub of Pushover's
+  documented answers only: no Pushover account was made.
+- **Zabbix** (`kind: zabbix`) sends each message's alerts as values of one item of one Zabbix host: a trapper item
+  of type text, key `pgvigil.alert` by default, its *Allowed hosts* naming the machine that sends. Each value is the
+  alert as a JSON object (event, severity, instance, source, setting, value, detail, url, finding_key, line).
+  - `mode: sender` (the default): Zabbix's sender protocol to the server or a proxy, port 10051.
+    `zabbix: {server: zabbix.example.org, host: pgvigil, tls_ca: /etc/pgvigil/zbx-ca.pem, tls_cert: /etc/pgvigil/zbx.crt, tls_key: /etc/pgvigil/zbx.key}`.
+    The send counts only when Zabbix processed every value. A value it did not process comes back as a count, and the
+    log line names the causes to look for (the item missing, not a trapper item or disabled, the host not monitored,
+    the sender not in *Allowed hosts*); the Zabbix server's own log has the reason. To a server off loopback the
+    connection is TLS with certificates: the host's certificate and key (the host's encryption set to accept a
+    certificate), the server's name checked, and optionally `tls_server_issuer` / `tls_server_subject`, compared
+    exactly as Go writes a name (`CN=zabbix,O=Example`). Go has no PSK: a site on PSK uses `mode: api`. Plain text
+    goes to a loopback server only, or with `allow_plain: true` (an admin's opt-in, logged at start and shown in the
+    destination).
+  - `mode: api`: the HTTP API's `history.push` (Zabbix 7.0), `zabbix: {mode: api, url: https://zabbix.example.org/zabbix, token: env:ZBX_TOKEN, host: pgvigil}`,
+    the token sent in `Authorization: Bearer`, over https (plain only to loopback or with `allow_plain`). A value
+    Zabbix refuses comes back with its own words.
+  - A site that wants a webhook instead points the `webhook` kind (`format: json`) at an HTTP agent item with trapping
+    enabled.
+- **Azure Monitor Logs** (`kind: azuremonitor`) writes each alert as a row of a Log Analytics custom table through
+  the Logs Ingestion API; never the HTTP Data Collector API (a workspace key), whose support Microsoft ended on
+  2026-09-14.
+  `azuremonitor: {endpoint: https://<the DCR's logs ingestion endpoint>, dcr_id: dcr-..., stream: Custom-PgvigilAlerts, tenant: <tenant id>, client_id: <app id>, client_secret: env:AZ_SECRET, cloud: public}`
+  (`cloud`: public, usgov or china: the sign-in host is login.microsoftonline.com, login.microsoftonline.us or
+  login.partner.microsoftonline.cn, the audience monitor.azure.com, .us or .cn). The token (client credentials) is
+  kept until five minutes before it expires and fetched again once after a 401. A call carries under 1 MB, more rows
+  go in several calls, and a detail is cut at 60,000 bytes (the service truncates a field over 64 KB). A 400 shows
+  Azure's message. The site makes, once: an app registration with a secret, the table, and a data collection rule
+  whose input stream takes the columns below, with the role *Monitoring Metrics Publisher* on the rule for the app.
+  Proven against a stub of the documented answers only: no Log Analytics workspace was made.
+
+  The table `PgvigilAlerts_CL` and the stream `Custom-PgvigilAlerts` take these columns, the only ones pgvigil sends
+  (the shape of Microsoft's samples; compare with the JSON view of your rule):
+
+  ```json
+  {"streamDeclarations": {"Custom-PgvigilAlerts": {"columns": [
+     {"name": "TimeGenerated", "type": "datetime"}, {"name": "Event", "type": "string"},
+     {"name": "Severity", "type": "string"}, {"name": "Instance", "type": "string"},
+     {"name": "Source", "type": "string"}, {"name": "Check", "type": "string"},
+     {"name": "Value", "type": "string"}, {"name": "Detail", "type": "string"},
+     {"name": "Link", "type": "string"}, {"name": "FindingKey", "type": "string"}]}},
+   "dataFlows": [{"streams": ["Custom-PgvigilAlerts"], "destinations": ["<your workspace destination>"],
+                  "transformKql": "source", "outputStream": "Custom-PgvigilAlerts_CL"}]}
+  ```
 
 ## Alerts to an application's contacts
 
@@ -533,6 +587,7 @@ through `pgvigil.alert_test_record`; its login needs nothing new (0093 grants `p
 | `pgvigil.alert_rule_state` | Keyed by kind too; gains the last 12 results, `flapping_since` and the baseline judged against. |
 | `pgvigil.alert_rule_baseline` | The hour's baseline per baseline rule, instance and series. |
 | `pgvigil.alert_rule_overrides` | Per live rule, the rule of its kind in force instead of it, and on how many instances. |
+| `pgvigil.alert_channel_quota` | A destination's monthly quota from its newest answer (Pushover's); `alert_channel_quota_low` is the finding *pushover quota low* under 10 % left, and `alert_channel_findings` is both channel findings, the view `alert_findings` reads. |
 | `pgvigil.alert_channel_failing` | Each configured channel whose last three send attempts failed: the repository-wide finding *alert channel failing* (a view over `alert_log`, read through `alert_findings`; the index `alert_log_channel_at_idx` serves it). |
 
 Writes from the UI go through `pgvigil.import_alert_window` and `pgvigil.import_alert_rule` (the actions door's audit

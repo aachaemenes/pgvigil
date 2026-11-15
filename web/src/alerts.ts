@@ -33,6 +33,18 @@ const outcomeBadge = (v: unknown) =>
 
 const list = (v: unknown): string => Array.isArray(v) && v.length ? v.join(', ') : '';
 
+// heldNote (task B24k): a channel its destination's last answer holds - Pushover's 429 until its reset, another 4xx
+// until the configuration changes or a Send test goes through. The sender writes the hold at the head of the
+// attempt's error ('held until <time>: ...', 'held until the configuration changes (<hash>): ...'); nothing is sent to
+// the channel while it stands.
+export function heldNote(lastError: unknown): HTMLElement | '' {
+  const e = String(lastError ?? '');
+  const t = /^held until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ): /.exec(e);
+  if (t) return Date.parse(t[1]) > Date.now() ? badge(`held until ${fmtTime(t[1])}`, 'warn') : '';
+  if (/^held until the configuration changes \([0-9a-f]{12}\): /.test(e)) return badge('held: change its configuration, or Send test', 'warn');
+  return '';
+}
+
 // scopeText: what a channel covers, in words
 export function scopeText(r: Row): string {
   const inst = list(r.instances), tags = list(r.tags);
@@ -78,7 +90,7 @@ const channelCols = (ad: AckData, redraw: () => void): Col[] => [
   { key: 'open_alerts', label: 'open alerts', num: true, fmt: v => fmtNum(v) },
   { key: 'last_sent_at', label: 'last sent', fmt: fmtTime },
   { key: 'last_attempt_at', label: 'last attempt', fmt: fmtTime },
-  { key: 'last_outcome', label: 'outcome', fmt: outcomeBadge },
+  { key: 'last_outcome', label: 'outcome', fmt: (v, r) => { const h = heldNote(r.last_error); return h ? el('span', {}, outcomeBadge(v), ' ', h) : outcomeBadge(v); } },
   { key: 'last_error', label: 'error', wide: true },
   { key: 'max_per_hour', label: 'send cap', fmt: (_v, r) => capText(r) },
   { key: 'templates', fmt: v => v ? String(v) : 'built in' },
