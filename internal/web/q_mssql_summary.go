@@ -54,9 +54,13 @@ WITH inst AS (
   SELECT instance_id, key, read_at, err,
          -- Elastic Pool Storage where mssql_pool never ran is n/a, not 'not yet': most servers are in no pool, and a
          -- store from before mssql_pool holds no run of it; Custom Checks too where mssql_custom never ran (the file has
-         -- no SQL Server check: the collection connects to no instance for it, ST6), or where no present check reaches
-         -- the instance - DBA Dash's N/A, never an OK of nothing
-         CASE WHEN key = 'custom' AND NOT EXISTS (SELECT 1 FROM pgvigil.custom_checks cc WHERE cc.instance_id = runs.instance_id AND cc.is_present) THEN 'n/a'
+         -- no SQL Server check: the collection connects to no instance for it, ST6), or where no check has been listed
+         -- for the instance within two of its cadences (none of the file reaches it, or the file's last SQL Server
+         -- check was taken out: custom_findings' own rule) - DBA Dash's N/A, never an OK of nothing; a last run that
+         -- failed (a fence refusal, a connection) is 'failed' with its reason, never n/a (the code review's S2, N5)
+         CASE WHEN key = 'custom' AND failed = 0 AND NOT EXISTS (
+                SELECT 1 FROM pgvigil.custom_checks cc WHERE cc.instance_id = runs.instance_id AND cc.is_present
+                   AND cc.snapshot_at >= now() - make_interval(secs => greatest(2 * cc.every_secs, 300))) THEN 'n/a'
               WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key IN ('elasticpool', 'custom') THEN 'n/a' ELSE 'never' END AS state
     FROM runs
 ), f AS (

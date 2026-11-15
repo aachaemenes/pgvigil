@@ -8,7 +8,8 @@
 --                        gone with its check (the purge of custom_checks, an instance's removal)
 --   import_mssql_custom  0262's, and then each status check that ran replaces its set
 --   custom_findings      the same columns; the threshold arm leaves status checks out, and a fourth arm raises one
---                        finding per current row at Status 1 (critical) or 2 (warning)
+--                        finding per current row at Status 1 (critical) or 2 (warning), its value the status word and
+--                        its Info in the detail
 -- A run's custom_results row keeps its status (the worst row), its value (the rows at warning or critical: the chart)
 -- and its row count: the history of a status check is its runs (DBA Dash's per-row history is not kept).
 
@@ -42,11 +43,16 @@ BEGIN
    USING pgvigil.custom_checks c
    WHERE s.instance_id = p_instance_id AND c.instance_id = s.instance_id AND c.check_name = s.check_name AND c.rule <> 'status';
 
-  -- the status checks that ran now (their result is not an error), and whose stored set is not newer than this run
+  -- the status checks that ran now (their result is not an error) with no newer good run stored: a run older than the
+  -- check's newest result that is not an error changes nothing, whether that newer run kept rows or none (a one-off
+  -- collect beside the daemon; the code review's S1)
   SELECT coalesce(array_agg(DISTINCT r->>'check_name'), '{}') INTO v_ran
     FROM jsonb_array_elements(p_payload) r
     JOIN pgvigil.custom_checks c ON c.instance_id = p_instance_id AND c.check_name = r->>'check_name' AND c.rule = 'status'
    WHERE r->>'kind' = 'result' AND r->>'status' IS DISTINCT FROM 'error'
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.custom_results x
+                      WHERE x.instance_id = p_instance_id AND x.check_name = r->>'check_name' AND x.snapshot_at > p_snapshot_at
+                        AND x.status <> 'error')
      AND NOT EXISTS (SELECT 1 FROM pgvigil.custom_status_rows x
                       WHERE x.instance_id = p_instance_id AND x.check_name = r->>'check_name' AND x.snapshot_at > p_snapshot_at);
   IF cardinality(v_ran) = 0 THEN
@@ -110,10 +116,11 @@ SELECT s.instance_id, 'warning', 'custom check ' || s.check_name, '(not run)', t
  WHERE s.overdue
 UNION ALL
 -- a status check's current rows at Status 1 or 2 (a failed run keeps the last set, as DBA Dash's: its error stands
--- beside them)
+-- beside them). The value is the status word and the Info is in the detail only: the value is part of an alert's key,
+-- so a row's changing Info (or query_text switched to or from full) never makes a new alert (the code review's N4)
 SELECT s.instance_id, CASE r.status WHEN 1 THEN 'critical' ELSE 'warning' END,
        'custom check ' || s.check_name || ': ' || r.test || ' (' || r.context || ')',
-       coalesce(left(r.info, 200), CASE r.status WHEN 1 THEN 'Status 1' ELSE 'Status 2' END), true,
+       CASE r.status WHEN 1 THEN 'Status 1' ELSE 'Status 2' END, true,
        'Status 4 (OK)', 'all',
        format('the custom check %s reports %s for the test %s in the context %s%s%s', s.check_name,
               CASE r.status WHEN 1 THEN 'Status 1 (critical)' ELSE 'Status 2 (warning)' END, r.test, r.context,

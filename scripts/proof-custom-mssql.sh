@@ -56,13 +56,17 @@
 #  D  (ST6b) DBA Dash's custom check: pgvp_util.dbo.DBADash_CustomCheck (owned by dbo, EXECUTE granted, reading
 #     dbo.pgv_cc_rows: backup/db1 Status 1 with its Info, backup/db2 2, jobs/agent 4, na/x 3) as rule: status on the
 #     documented login: the run critical, value 2, row_count 4; custom_status_rows the four rows with db1's Info; two
-#     findings - critical 'custom check d_dbadash: backup (db1)' = its Info, warning '... backup (db2)' = 'Status 2' -
+#     findings - critical 'custom check d_dbadash: backup (db1)' = 'Status 1' (its Info in the detail), warning '...
+#     backup (db2)' = 'Status 2' (the code review's N4: the value is the status word) -
 #     and none from the threshold arm; the bad shapes each an error in words (no Status column: 'no column Status';
 #     Status 7: 'Status 7 is not 1 to 4'; a pair twice: 'Test "t" and Context "c" come twice'). On st6-dd (the same
 #     login, query_text: none): its rows without Info and db1's finding = 'Status 1'; after the table loses its Status 1
-#     and 2 rows, the next run ok, value 0, its set two rows (jobs, na), its findings none. The Summary (GET
-#     /api/mssql/summary, in R): the Custom Checks cell of st6-mon critical 1 with db1's finding first, state ok; of
-#     st6-sa (refused, no check stored) n/a.
+#     and 2 rows, the next run ok, value 0, its set two rows (jobs, na), its findings none; then (the code review's S4)
+#     the procedure made to fail (1/0): the run an error, its set unchanged (jobs, na), the error finding there; and
+#     d_big (1,001 rows, the last one Status 1; the code review's B1): critical, 1 of 1001, 1,000 rows kept with db1001
+#     among them, its one critical finding. The Summary (GET /api/mssql/summary, in R): the Custom Checks cell of
+#     st6-mon critical 1 with db1's finding first, state ok; of st6-sa (refused, no check stored) 'failed' with the
+#     refusal in its reason (the code review's S2: never n/a).
 #  R  the store: custom_report() lists the SQL Server checks with engine sqlserver; custom_findings holds v_dbs's
 #     warning and the W checks' errors with the SQL Server words ('a T-SQL batch or procedure that runs as the read
 #     login, in a transaction rolled back'); GET /api/custom?instance=<id> on a serve -no-login answers the checks and
@@ -242,6 +246,7 @@ custom:
   - {name: d_nostatus, engine: sqlserver, rule: status, tags: [st6:mon], sql: "SELECT N't' AS Test, N'c' AS Context, N'i' AS Info"}
   - {name: d_seven, engine: sqlserver, rule: status, tags: [st6:mon], sql: "SELECT N't' AS Test, N'c' AS Context, 7 AS Status, N'i' AS Info"}
   - {name: d_twice, engine: sqlserver, rule: status, tags: [st6:mon], sql: "SELECT N't' AS Test, N'c' AS Context, 4 AS Status UNION ALL SELECT N't', N'c', 2"}
+  - {name: d_big, engine: sqlserver, rule: status, tags: [st6:dd], sql: "WITH n AS (SELECT TOP (1001) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_objects a CROSS JOIN sys.all_objects b) SELECT N'db' + CAST(i AS nvarchar(10)) AS Test, N'c' AS Context, CASE WHEN i = 1001 THEN 1 ELSE 4 END AS Status FROM n ORDER BY i"}
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
 [[ $(q "select count(*) from pgvigil.schema_version where version = '0262_mssql_custom.sql'") == 1 ]] || fail "0262 is not applied"
@@ -303,11 +308,13 @@ cfind() { q "select coalesce(string_agg(severity || '|' || setting || '|' || val
 GOTR=$(srows "$MON" d_dbadash)
 [[ $GOTR == "backup/db1/1=the last full backup is 9 days old backup/db2/2 jobs/agent/4=ok na/x/3" ]] || fail "D: d_dbadash's rows: $GOTR"
 GOTF=$(cfind "$MON" d_dbadash)
-[[ $GOTF == "critical|custom check d_dbadash: backup (db1)|the last full backup is 9 days old ; warning|custom check d_dbadash: backup (db2)|Status 2" ]] || fail "D: d_dbadash's findings: $GOTF"
+[[ $GOTF == "critical|custom check d_dbadash: backup (db1)|Status 1 ; warning|custom check d_dbadash: backup (db2)|Status 2" ]] || fail "D: d_dbadash's findings: $GOTF"
+[[ $(q "select detail from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$MON' and f.setting = 'custom check d_dbadash: backup (db1)'") == *"Status 1 (critical) for the test backup in the context db1: the last full backup is 9 days old"* ]] \
+  || fail "D: db1's finding's detail: $(q "select detail from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$MON' and f.setting like 'custom check d_dbadash%'")"
 [[ $(res "$MON" d_nostatus "error") == *"no column Status"* ]] || fail "D: d_nostatus $(res "$MON" d_nostatus "status || ' ' || coalesce(error, '')")"
 [[ $(res "$MON" d_seven "error") == *"Status 7 is not 1 to 4"* ]] || fail "D: d_seven $(res "$MON" d_seven "status || ' ' || coalesce(error, '')")"
 [[ $(res "$MON" d_twice "error") == *'Test "t" and Context "c" come twice'* ]] || fail "D: d_twice $(res "$MON" d_twice "status || ' ' || coalesce(error, '')")"
-ok "D: DBA Dash's procedure as rule status: critical, 2 of 4 rows at warning or critical, the four rows kept with db1's Info, two findings in its words and none from the threshold arm; no Status column, Status 7 and a pair twice refused in words"
+ok "D: DBA Dash's procedure as rule status: critical, 2 of 4 rows at warning or critical, the four rows kept with db1's Info, two findings ('Status 1' / 'Status 2', the Info in the detail) and none from the threshold arm; no Status column, Status 7 and a pair twice refused in words"
 DD=st6-dd-$SUF
 collect "$DD"
 [[ $(srows "$DD" d_dbadash) == "backup/db1/1 backup/db2/2 jobs/agent/4 na/x/3" && $(cfind "$DD" d_dbadash) == "critical|custom check d_dbadash: backup (db1)|Status 1 ; warning|custom check d_dbadash: backup (db2)|Status 2" ]] \
@@ -316,7 +323,15 @@ sq "DELETE dbo.pgv_cc_rows WHERE Status IN (1, 2);" pgvp_util >/dev/null
 collect "$DD"
 [[ $(res "$DD" d_dbadash "status || ' ' || value || ' ' || row_count") == "ok 0 2" && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" && $(cfind "$DD" d_dbadash) == "-" ]] \
   || fail "D: the second run on $DD: $(res "$DD" d_dbadash "status || ' ' || coalesce(value::text, '') || ' ' || coalesce(row_count::text, '') || ' ' || coalesce(error, '')"), rows $(srows "$DD" d_dbadash), findings $(cfind "$DD" d_dbadash)"
-ok "D: under query_text none the rows keep no Info (db1's finding says 'Status 1'); the next run's set replaced the stored one (ok, 0 of 2), its findings gone"
+[[ $(res "$DD" d_big "status || ' ' || value || ' ' || row_count") == "critical 1 1001" && $(q "select count(*) || '|' || count(*) filter (where test = 'db1001' and status = 1) from pgvigil.custom_status_rows r join pgvigil.instances i using (instance_id) where i.name = '$DD' and r.check_name = 'd_big'") == "1000|1" \
+   && $(cfind "$DD" d_big) == "critical|custom check d_big: db1001 (c)|Status 1" && $(res "$DD" d_big "note") == *"1000 of 1001 status rows kept: every row at critical or warning first"* ]] \
+  || fail "D: d_big (1,001 rows, the last critical): $(res "$DD" d_big "status || ' ' || coalesce(value::text, '') || ' ' || coalesce(row_count::text, '') || ' ' || coalesce(note, '') || ' ' || coalesce(error, '')"), findings $(cfind "$DD" d_big)"
+sq "ALTER PROCEDURE dbo.DBADash_CustomCheck AS SELECT 1 / 0 AS Test;" pgvp_util >/dev/null
+collect "$DD"
+[[ $(res "$DD" d_dbadash "status") == error && $(res "$DD" d_dbadash "error") == *"Divide by zero"* && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" \
+   && $(q "select count(*) from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$DD' and f.setting = 'custom check d_dbadash' and f.value = '(error)'") == 1 ]] \
+  || fail "D: a failing procedure on $DD: $(res "$DD" d_dbadash "status || ' ' || coalesce(error, '')"), rows $(srows "$DD" d_dbadash)"
+ok "D: under query_text none the rows keep no Info (db1's finding says 'Status 1'); the next run's set replaced the stored one (ok, 0 of 2), its findings gone; 1,001 rows with the last critical: 1,000 kept with it, its finding raised; a failing procedure: its error, the set kept"
 
 echo "--- F: the fence, one login at a time"
 for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" "imp|IMPERSONATE on login sa" "bulk|ADMINISTER BULK OPERATIONS" "dw|in database pgvp_app DELETE, INSERT, UPDATE" \
@@ -361,10 +376,10 @@ rows = [dict(zip(d['columns'], r)) for r in d['rows']] if isinstance(d, dict) an
 cell = {str(r['instance_id']): r for r in rows if r['key'] == 'custom'}
 m, s = cell.get(sys.argv[2]), cell.get(sys.argv[3])
 assert m and m['state'] == 'ok' and m['critical'] == 1 and (m['detail'] or [''])[0].startswith('custom check d_dbadash: backup (db1)'), m
-assert s and s['state'] == 'n/a' and s['critical'] == 0 and s['warning'] == 0, s
-print('  the Summary: st6-mon Custom Checks critical 1 (' + m['detail'][0] + '), warning', m['warning'], '; st6-sa n/a')
+assert s and s['state'] == 'failed' and 'custom checks refused on this instance' in (s.get('err') or ''), s
+print('  the Summary: st6-mon Custom Checks critical 1 (' + m['detail'][0] + '), warning', m['warning'], '; st6-sa failed:', (s.get('err') or '')[:90])
 PY
-ok "R: custom_report() lists the SQL Server checks with engine sqlserver; custom_findings holds v_dbs's warning and the errors in the SQL Server words; GET /api/custom answers the checks and the engine; the Summary's Custom Checks cell of a SQL Server row counts its custom findings (n/a with no check)"
+ok "R: custom_report() lists the SQL Server checks with engine sqlserver; custom_findings holds v_dbs's warning and the errors in the SQL Server words; GET /api/custom answers the checks and the engine; the Summary's Custom Checks cell of a SQL Server row counts its custom findings (a refused instance: failed, with the refusal)"
 
 echo "--- L: the two fences of the DBA's own SQL (go test, live)"
 if command -v go >/dev/null; then

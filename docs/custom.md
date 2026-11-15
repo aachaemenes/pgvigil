@@ -176,13 +176,17 @@ custom:
   exists), with no `warning`, `critical`, `compare` or `value` (each refused in words), behind the same fence; a
   `sql:` batch that returns the four columns is a status check too. Each row is judged by its own Status: one
   finding per row at 1 (critical) or 2 (warning), named `custom check <name>: <Test> (<Context>)`, its value the
-  row's Info; the run's status is the worst row, its value the rows at warning or critical (the chart), its row count
+  status word (`Status 1`, `Status 2`: an alert's key, which a row's changing Info never moves), the row's Info in its
+  detail; the run's status is the worst row, its value the rows at warning or critical (the chart), its row count
   the rows. The rows the last run returned are kept as the check's current set (one per Test and Context, at most
-  1,000; `Info` only under `query_text: full`, cut at 1,000 characters), replaced by each run and kept by a failed
+  1,000, the worst first - every critical row, then every warning row, then the rest, so a row that raises a finding
+  is never cut while an OK row is kept; `Info` only under `query_text: full`, cut at 1,000 characters), replaced by each run and kept by a failed
   one, as DBA Dash keeps its `CustomChecks` table; DBA Dash's per-row history is not kept (the runs are). A Status
   NULL or outside 1 to 4, a `Test` or `Context` NULL or over 128 characters, or one pair twice is the check's error.
   The Summary's Custom Checks column reads, for a SQL Server instance, its custom findings (these rows, a threshold
-  crossed, a check failed or late) and says n/a where no check reaches the instance, as DBA Dash's N/A.
+  crossed, a check failed or late); it says n/a where no check has been listed for the instance within two of its
+  cadences (none of the file reaches it), as DBA Dash's N/A, and read failed with the reason where the collection's
+  last run failed (a fence refusal, a connection).
 - **Not DBA Dash's storage.** DBA Dash puts a collection's rows in a table of the user's (`UserData.<name>`, made by a
   script the user runs in its repository, with its own retention); pgvigil keeps each run's value, row count and at
   most 100 rows in its own store, with the purge, as PostgreSQL's checks.

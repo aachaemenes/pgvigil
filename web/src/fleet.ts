@@ -247,7 +247,7 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
           out[g.key] = { level: crit ? 2 : 1, n: crit || warn, detail: why ? [...detail, why] : detail,
             text: m.value != null ? `${String(m.value)} ${word}${late}` : late ? `${crit || warn} ${word}${late}` : undefined };
           out[g.key].since = m.since; out[g.key].value = m.value == null ? undefined : String(m.value);
-        } else if (state === 'n/a') out[g.key] = none('n/a', g.key === 'custom' ? 'no custom check runs on this instance: the configuration\'s custom: list names none for it'
+        } else if (state === 'n/a') out[g.key] = none('n/a', g.key === 'custom' ? 'no custom check is listed for this instance within two of its cadences: the configuration\'s custom: list names none for it, or the collection has not visited it since (Snapshot Age says which)'
           : 'the collections of this group do not run on this kind of server');
         else if (state === 'failed') out[g.key] = none('read failed', why);
         else if (state === 'stale') out[g.key] = none('stale', why);

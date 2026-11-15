@@ -356,8 +356,9 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 	status := c.Rule == "status"
 	var six [4]int
 	var sNote string
-	var sRows []statusRow
+	var sKeep statusKeeper
 	var sCount statusCounts
+	var sErr error // the first bad row: said only once the batch is drained (a later Msg 266 / 50266 comes first)
 	types := make([]string, len(cts))
 	for i, ct := range cts {
 		types[i] = ct.DatabaseTypeName()
@@ -384,14 +385,15 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 		if err := rows.Scan(ptrs...); err != nil {
 			return customResult{}, err
 		}
-		if status {
+		if status && sErr == nil {
 			sr, err := statusRowOf(vals, types, six, keep)
-			if err != nil {
-				return customResult{}, fmt.Errorf("row %d: %w", n+1, err)
+			if err == nil {
+				err = sKeep.add(sr)
 			}
-			sCount.add(sr.Status)
-			if len(sRows) < statusMaxRows {
-				sRows = append(sRows, sr)
+			if err != nil {
+				sErr = fmt.Errorf("row %d: %w", n+1, err)
+			} else {
+				sCount.add(sr.Status)
 			}
 		}
 		if n == 0 && vi >= 0 {
@@ -442,23 +444,25 @@ func readCheck(ctx context.Context, conn *sql.Conn, c collect.CustomCheck, keep 
 		notes = append(notes, fmt.Sprintf("the first of %d result sets read", more+1))
 	}
 	if status {
-		if err := statusDuplicate(sRows); err != nil {
-			return customResult{}, err
+		if sErr != nil {
+			return customResult{}, sErr
+		}
+		// a status check's notes are its own (its rows are the status grid, not the 100-row grid)
+		var sNotes []string
+		if !keep {
+			sNotes = append(sNotes, "Info not kept: query_text is "+queryText)
 		}
 		st, v, jn := sCount.judge()
-		for _, w := range []string{sNote, jn} {
+		for _, w := range []string{sNote, jn, sKeep.note(n)} {
 			if w != "" {
-				notes = append(notes, w)
+				sNotes = append(sNotes, w)
 			}
 		}
-		if n > statusMaxRows {
-			notes = append(notes, fmt.Sprintf("the first %d of %d status rows kept", statusMaxRows, n))
+		if more > 0 {
+			sNotes = append(sNotes, fmt.Sprintf("the first of %d result sets read", more+1))
 		}
-		res.Note = strings.Join(notes, "; ")
-		res.Value, res.Status, res.StatusRows = &v, st, sRows
-		if res.StatusRows == nil {
-			res.StatusRows = []statusRow{}
-		}
+		res.Note = strings.Join(sNotes, "; ")
+		res.Value, res.Status, res.StatusRows = &v, st, sKeep.kept()
 		return res, nil
 	}
 	if c.Rule == "rows" {
@@ -739,18 +743,78 @@ func statusJudge(rows []statusRow) (string, float64, string) {
 
 // statusDuplicate refuses a (Test, Context) pair that comes twice: DBA Dash keeps one row per pair (its key).
 func statusDuplicate(rows []statusRow) error {
-	seen := make(map[string]bool, len(rows))
+	var k statusKeeper
 	for _, r := range rows {
-		k := r.Test + "\x00" + r.Context
-		if seen[k] {
-			return fmt.Errorf("Test %q and Context %q come twice: DBA Dash's custom check keeps one row per Test and Context", r.Test, r.Context)
+		if err := k.add(r); err != nil {
+			return err
 		}
-		seen[k] = true
 	}
 	return nil
 }
 
-// statusPayload is a status check's rows as the payload's status_row rows (import_mssql_custom, 0263).
+// statusKeeper keeps a status check's rows within statusMaxRows, the worst first - every Status 1 row, then every
+// Status 2 row, then the rest - so a row that raises a finding is never cut while an N/A or OK row is kept (the code
+// review's B1); every pair of every row read is checked for a duplicate. At most 3 x statusMaxRows rows are held.
+type statusKeeper struct {
+	crit, warn, rest []statusRow
+	seen             map[string]bool
+	failing          int // rows at Status 1 or 2 read
+}
+
+func (k *statusKeeper) add(r statusRow) error {
+	if k.seen == nil {
+		k.seen = map[string]bool{}
+	}
+	key := r.Test + "\x00" + r.Context
+	if k.seen[key] {
+		return fmt.Errorf("Test %q and Context %q come twice: DBA Dash's custom check keeps one row per Test and Context", r.Test, r.Context)
+	}
+	k.seen[key] = true
+	switch {
+	case r.Status == 1:
+		k.failing++
+		if len(k.crit) < statusMaxRows {
+			k.crit = append(k.crit, r)
+		}
+	case r.Status == 2:
+		k.failing++
+		if len(k.warn) < statusMaxRows {
+			k.warn = append(k.warn, r)
+		}
+	case len(k.rest) < statusMaxRows:
+		k.rest = append(k.rest, r)
+	}
+	return nil
+}
+
+// kept is the rows kept: the critical, then the warning, then the others, statusMaxRows at most (never nil).
+func (k *statusKeeper) kept() []statusRow {
+	out := make([]statusRow, 0, statusMaxRows)
+	for _, b := range [][]statusRow{k.crit, k.warn, k.rest} {
+		room := statusMaxRows - len(out)
+		if room <= 0 {
+			break
+		}
+		if room > len(b) {
+			room = len(b)
+		}
+		out = append(out, b[:room]...)
+	}
+	return out
+}
+
+// note says what was not kept of n rows read ("" = every row kept).
+func (k *statusKeeper) note(n int) string {
+	switch {
+	case n <= statusMaxRows:
+		return ""
+	case k.failing > statusMaxRows:
+		return fmt.Sprintf("%d of %d status rows kept: the first %d of the %d at critical or warning (critical first) - the rest raise no finding", statusMaxRows, n, statusMaxRows, k.failing)
+	}
+	return fmt.Sprintf("%d of %d status rows kept: every row at critical or warning first", statusMaxRows, n)
+}
+
+// statusPayload is a status check's rows as the payload's status_row rows (import_mssql_custom, 0269).
 func statusPayload(check string, rows []statusRow) []collect.Row {
 	out := make([]collect.Row, 0, len(rows))
 	for _, r := range rows {
