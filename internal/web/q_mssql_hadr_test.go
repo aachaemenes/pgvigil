@@ -477,26 +477,43 @@ func TestHADRFleetProof(t *testing.T) {
 // (pgvigil.import_mssql_logshipping: 'lsconfig' and 'lsforeign' rows beside msdb's monitor rows). Expected (written
 // before the first run):
 //
-//	P (a primary), 9 findings: lsx_simple critical 'a log-shipped database is in SIMPLE recovery' (Microsoft's
-//	  sentence in the detail); lsx_bulk warning '... in BULK_LOGGED recovery'; lsx_alertoff info 'the log shipping
-//	  alert is off'; lsx_tight info 'a log shipping alert threshold is under three times its job interval'
-//	  (threshold 30, the backup job every 15 minutes; Microsoft's 14420 words); lsx_nojob critical 'a log shipping
-//	  job is missing' naming the job's id; lsx_disabled and lsx_nosched (enabled, no enabled schedule) critical 'a
-//	  log shipping job is disabled'; lsx_foreign critical 'a log backup outside log shipping broke the chain' - ONE
-//	  finding for its two files, naming the newest, '2 log backups', and 'probably the job DatabaseBackup -
-//	  USER_DATABASES - LOG' (its run spans that backup's start; the log shipping backup job's own run does too and
-//	  is never named); lsx_foreign2 (a backup to NUL, no run at its time) critical with 'not known'. Nothing for
-//	  lsx_ok (threshold 60 = 4 x 15) or lsx_hours (a schedule with no interval: not judged).
+//	P (a primary), 11 findings: lsx_simple critical 'a log-shipped database is in SIMPLE recovery' (Microsoft's
+//	  sentence in the detail); lsx_bulk warning '... in BULK_LOGGED recovery' (Microsoft's two sentences of that
+//	  model); 'the log shipping alert is off' info ONCE for lsx_alertoff and lsx_alertoff2 ('primary: 2 databases',
+//	  both named, the first one's words); lsx_tight info 'a log shipping alert threshold is under three times its job
+//	  interval' (threshold 30, the backup job every 15 minutes; Microsoft's 14420 words); lsx_nojob critical 'a log
+//	  shipping job is missing' naming the job's id; lsx_disabled and lsx_nosched (enabled, no enabled schedule)
+//	  critical 'a log shipping job is disabled'; four critical 'a log backup outside log shipping broke the chain':
+//	  lsx_foreign - ONE finding for its two files, naming the newest, '2 log backups', 'stays for 24 hours', and
+//	  'probably the job DatabaseBackup - USER_DATABASES - LOG: its run covers that backup' (never the job that ended
+//	  before the backup did, never log shipping's own backup job whose run covers it too); lsx_foreign2 (a backup to
+//	  NUL, no run at its time) 'not known (no job run'; lsx_foreign3 (a virtual device, a run covering it) 'not
+//	  known: it went to a virtual device'; lsx_foreign4 (two runs covering it) 'probably one of the jobs Job A; Job
+//	  B: their runs cover that backup'. Nothing for lsx_ok (threshold 60 = 4 x 15) or lsx_hours (no interval).
 //	S (a secondary), 5 findings: lsx_s_restoreoff critical 'a log shipping job is disabled' naming
-//	  LSRestore_PRI_lsx_s_restoreoff with 'Its last run succeeded' (mssql_jobs); lsx_s_copygone critical 'a log
-//	  shipping job is missing' (the copy job's id); the monitor's alert job LSAlert_SEC disabled = warning;
+//	  LSRestore_PRI_lsx_s_restoreoff with 'Its last run succeeded' (mssql_jobs, read now); lsx_s_copygone critical 'a
+//	  log shipping job is missing' (the copy job's id); the monitor's alert job LSAlert_SEC disabled = warning;
 //	  lsx_s_alertoff info; lsx_s_tight info (restore threshold 2, the restore job every minute; 14421's words).
 //	  The judge keeps lsx_s_alertoff's own row (an info finding never turns a database's Status to N/A): one info
-//	  row and one judged-OK row; lsx_s_restoreoff has its critical row and no OK row.
-//	T (read 20 minutes ago: a disabled job, SIMPLE, the alert off, a foreign backup): no finding.
+//	  row and one judged-OK row; lsx_s_restoreoff has its critical row and no OK row. THE PAGE (page=logshipping at
+//	  S): lsx_s_restoreoff Status critical with the job check as its finding; lsx_s_alertoff Status ok with 'the log
+//	  shipping alert is off' as its finding; the Summary critical 1, Log Shipped DBs 2.
+//	T (read 20 minutes ago: a disabled job, SIMPLE, the alert off, a threshold under three intervals, a foreign
+//	  backup): no finding.
+//	R (a role change done Microsoft's way): lsx_r_swapped - its backup job disabled while the same server holds the
+//	  database as a secondary with copy and restore enabled and scheduled: NO finding; lsx_r_half - the backup job
+//	  disabled and the other role's restore job disabled too: both critical; lsx_r_gone - the backup job MISSING
+//	  with the other role sound: 'missing' stays critical. 3 findings.
+//	M (a secondary that is also the monitor: its table lists lsx_m on this server, threshold 100, and on another
+//	  server, threshold 45; its own restore job runs every 60 minutes): with no mssql_instance row neither is judged
+//	  (two rows share the name and none can be told as this server's); with one naming this server: one info, for
+//	  this server's row (100 under 180) - never the other server's 45 against this server's job.
+//	U (read 20 minutes ago with a disabled job; read now with the configuration part failed and the alert off): the
+//	  kept configuration row is too old to judge: only the alert's info.
 //	A later read of S whose configuration part failed (a collector_error with source 'log shipping
-//	  configuration') keeps S's 11 configuration rows and its 5 findings; a later clean read of P with no
-//	  configuration or foreign rows clears both tables for P: only lsx_alertoff's info is left (msdb's monitor row).
+//	  configuration') keeps S's 11 configuration rows and its 5 findings; a later read of P whose foreign part failed
+//	  keeps its 5 foreign rows and four chain findings; a later clean read of P with no configuration or foreign
+//	  rows clears both tables for P: only lsx_alertoff's info is left (msdb's monitor row; one database: its own object).
 func TestLogShipExtrasOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -531,7 +548,7 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	for _, k := range []string{"P", "S", "T"} {
+	for _, k := range []string{"P", "S", "T", "R", "M", "U"} {
 		var id int
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
 			"lsx"+strings.ToLower(k)+"-"+sfx).Scan(&id); err != nil {
@@ -539,7 +556,7 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 		}
 		ids[k] = id
 	}
-	P, S, T := ids["P"], ids["S"], ids["T"]
+	P, S, T, R, M, U := ids["P"], ids["S"], ids["T"], ids["R"], ids["M"], ids["U"]
 	now := time.Now().UTC().Truncate(time.Second)
 	z := func(m int) string { return now.Add(-time.Duration(m) * time.Minute).Format("2006-01-02T15:04:05Z") }
 	imp := func(id int, at time.Time, rows []map[string]any) {
@@ -571,6 +588,7 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 		monPrimary("lsx_simple", 60, 1), cfgPrimary("lsx_simple", "SIMPLE", 1, 1, 1, 15.0),
 		monPrimary("lsx_bulk", 60, 1), cfgPrimary("lsx_bulk", "BULK_LOGGED", 1, 1, 1, 15.0),
 		monPrimary("lsx_alertoff", 60, 0), cfgPrimary("lsx_alertoff", "FULL", 1, 1, 1, 15.0),
+		monPrimary("lsx_alertoff2", 60, 0), cfgPrimary("lsx_alertoff2", "FULL", 1, 1, 1, 15.0),
 		monPrimary("lsx_tight", 30, 1), cfgPrimary("lsx_tight", "FULL", 1, 1, 1, 15.0),
 		monPrimary("lsx_nojob", 60, 1), cfgPrimary("lsx_nojob", "FULL", 0, nil, 0, nil),
 		monPrimary("lsx_disabled", 60, 1), cfgPrimary("lsx_disabled", "FULL", 1, 0, 1, 15.0),
@@ -584,14 +602,29 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 			"started_utc": z(31), "finished_utc": z(30), "backup_directory": `C:\LS\lsx_foreign`},
 		{"kind": "lsforeign", "database_name": "lsx_foreign2", "file_name": "NUL", "device": "disk",
 			"started_utc": z(200), "finished_utc": z(200), "backup_directory": `C:\LS\lsx_foreign2`},
+		monPrimary("lsx_foreign3", 60, 1), cfgPrimary("lsx_foreign3", "FULL", 1, 1, 1, 15.0),
+		{"kind": "lsforeign", "database_name": "lsx_foreign3", "file_name": "{6F9619FF-8B86-D011-B42D-00C04FC964FF}", "device": "virtual device",
+			"started_utc": z(91), "finished_utc": z(90), "backup_directory": `C:\LS\lsx_foreign3`},
+		monPrimary("lsx_foreign4", 60, 1), cfgPrimary("lsx_foreign4", "FULL", 1, 1, 1, 15.0),
+		{"kind": "lsforeign", "database_name": "lsx_foreign4", "file_name": `D:\Backup\lsx_foreign4.trn`, "device": "disk",
+			"started_utc": z(61), "finished_utc": z(60), "backup_directory": `C:\LS\lsx_foreign4`},
 	}
 	imp(P, now, pRows)
-	runAt := now.Add(-31*time.Minute - 20*time.Second)
-	exec(`SELECT pgvigil.ensure_month_partition('mssql_job_runs', $1)`, runAt)
-	run := `INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, run_status, duration_s)
-	        VALUES ($1, $2, $3, $4, $5, 0, 1, 60)`
-	exec(run, P, runAt, 1, "JOB-OLA", "DatabaseBackup - USER_DATABASES - LOG")
-	exec(run, P, runAt, 2, "JOB-lsx_foreign", "LSBackup_lsx_foreign") // log shipping's own job: never the one named
+	// job runs (step 0: the run's start and its length). A run is named only when it covers the backup from its start
+	// to its finish: lsx_foreign's newest backup ran from 31:00 to 30:00 ago
+	exec(`SELECT pgvigil.ensure_month_partition('mssql_job_runs', $1)`, now.Add(-2*time.Hour))
+	exec(`SELECT pgvigil.ensure_month_partition('mssql_job_runs', $1)`, now)
+	run := func(startAgo time.Duration, secs int, hist int, jobID, name string) {
+		t.Helper()
+		exec(`INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, run_status, duration_s)
+		      VALUES ($1, $2, $3, $4, $5, 0, 1, $6)`, P, now.Add(-startAgo), hist, jobID, name, secs)
+	}
+	run(31*time.Minute+20*time.Second, 90, 1, "JOB-OLA", "DatabaseBackup - USER_DATABASES - LOG") // 31:20 to 29:50 ago: covers it
+	run(31*time.Minute+20*time.Second, 90, 2, "JOB-lsx_foreign", "LSBackup_lsx_foreign")          // log shipping's own job: never named
+	run(31*time.Minute+5*time.Second, 10, 3, "JOB-SHORT", "Short job")                            // ended 55 s before the backup did
+	run(91*time.Minute+20*time.Second, 90, 4, "JOB-V", "Tool wrapper job")                        // covers lsx_foreign3's: a virtual device, no guess
+	run(61*time.Minute+20*time.Second, 90, 5, "JOB-A", "Job A")                                   // two runs cover lsx_foreign4's
+	run(61*time.Minute+10*time.Second, 90, 6, "JOB-B", "Job B")
 
 	// ---- S: the secondary (and the monitor's alert job)
 	monSecondary := func(db string, threshold, alert int) map[string]any {
@@ -631,7 +664,8 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 	      VALUES ($1, 'R-lsx_s_restoreoff', now(), 'LSRestore_PRI_lsx_s_restoreoff', false, 1, $2)`, S, now.Add(-90*time.Minute))
 
 	// ---- T: the same faults, read 20 minutes ago
-	imp(T, now.Add(-20*time.Minute), []map[string]any{monPrimary("lsx_old", 60, 0), cfgPrimary("lsx_old", "SIMPLE", 1, 0, 1, 15.0),
+	imp(T, now.Add(-20*time.Minute), []map[string]any{monPrimary("lsx_old", 30, 0), cfgPrimary("lsx_old", "SIMPLE", 1, 0, 1, 15.0),
+		monPrimary("lsx_old2", 30, 1), cfgPrimary("lsx_old2", "FULL", 1, 1, 1, 15.0), // enabled and scheduled: only freshness keeps its threshold unjudged
 		{"kind": "lsforeign", "database_name": "lsx_old", "file_name": `D:\x.trn`, "device": "disk", "started_utc": z(40), "finished_utc": z(40)}})
 
 	extras := []string{"a log shipping job is missing", "a log shipping job is disabled", "a log backup outside log shipping broke the chain",
@@ -677,24 +711,35 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 	same("P findings", pGot, []string{
 		"a log-shipped database is in SIMPLE recovery | critical | primary / lsx_simple",
 		"a log-shipped database is in BULK_LOGGED recovery | warning | primary / lsx_bulk",
-		"the log shipping alert is off | info | primary / lsx_alertoff",
+		"the log shipping alert is off | info | primary: 2 databases",
 		"a log shipping alert threshold is under three times its job interval | info | primary / lsx_tight",
 		"a log shipping job is missing | critical | primary / lsx_nojob / backup job JOB-lsx_nojob",
 		"a log shipping job is disabled | critical | primary / lsx_disabled / LSBackup_lsx_disabled",
 		"a log shipping job is disabled | critical | primary / lsx_nosched / LSBackup_lsx_nosched",
 		"a log backup outside log shipping broke the chain | critical | primary / lsx_foreign",
 		"a log backup outside log shipping broke the chain | critical | primary / lsx_foreign2",
+		"a log backup outside log shipping broke the chain | critical | primary / lsx_foreign3",
+		"a log backup outside log shipping broke the chain | critical | primary / lsx_foreign4",
 	})
+	has("the alert off, two databases", pDet["primary: 2 databases"], "2 primary databases (lsx_alertoff, lsx_alertoff2)", "The first: primary database lsx_alertoff:")
+	has("lsx_bulk", pDet["primary / lsx_bulk"], "Point-in-time recovery isn't supported", "Log backups might be large")
 	has("lsx_simple", pDet["primary / lsx_simple"], "switching the database to simple recovery will cause log shipping to stop functioning")
 	has("lsx_tight", pDet["primary / lsx_tight"], "30 minutes", "every 15 minutes", "at least three times the frequency of the backup job")
 	has("lsx_nosched", pDet["primary / lsx_nosched / LSBackup_lsx_nosched"], "has no enabled schedule")
 	has("lsx_disabled", pDet["primary / lsx_disabled / LSBackup_lsx_disabled"], "is disabled")
 	has("lsx_foreign", pDet["primary / lsx_foreign"], `D:\Backup\lsx_foreign_2.trn`, "2 log backups", `C:\LS\lsx_foreign`,
-		"probably the job DatabaseBackup - USER_DATABASES - LOG")
-	if strings.Contains(pDet["primary / lsx_foreign"], "LSBackup_lsx_foreign") {
-		t.Errorf("lsx_foreign names log shipping's own backup job: %q", pDet["primary / lsx_foreign"])
+		"probably the job DatabaseBackup - USER_DATABASES - LOG: its run covers that backup", "this finding stays for 24 hours")
+	for _, never := range []string{"LSBackup_lsx_foreign", "Short job"} {
+		if strings.Contains(pDet["primary / lsx_foreign"], never) {
+			t.Errorf("lsx_foreign names %q (log shipping's own job, or a run that ended before the backup did): %q", never, pDet["primary / lsx_foreign"])
+		}
 	}
-	has("lsx_foreign2", pDet["primary / lsx_foreign2"], "NUL", "1 log backup ", "is not known")
+	has("lsx_foreign2", pDet["primary / lsx_foreign2"], "NUL", "1 log backup ", "is not known (no job run")
+	has("lsx_foreign3", pDet["primary / lsx_foreign3"], "is not known: it went to a virtual device")
+	if strings.Contains(pDet["primary / lsx_foreign3"], "Tool wrapper job") {
+		t.Errorf("lsx_foreign3 guesses a job for a virtual device: %q", pDet["primary / lsx_foreign3"])
+	}
+	has("lsx_foreign4", pDet["primary / lsx_foreign4"], "probably one of the jobs Job A; Job B: their runs cover that backup")
 
 	sWant := []string{
 		"a log shipping job is disabled | critical | secondary / lsx_s_restoreoff / LSRestore_PRI_lsx_s_restoreoff",
@@ -720,8 +765,80 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 		t.Errorf("the judge's rows for lsx_s_alertoff (info, OK) and lsx_s_restoreoff (critical, OK) = %d %d %d %d, want 1 1 1 0", info, okRow, crit, okRow2)
 	}
 
+	// the page reads the same judge: a secondary's job finding is its database's Status, an info finding only its text
+	srv := &Server{pool: pool, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rec := httptest.NewRecorder()
+	srv.MSSQLHADRFleet(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/mssql/hadr/fleet?page=logshipping&instance=%d", S), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the page at S: %d %s", rec.Code, rec.Body.String())
+	}
+	page := map[string]*table{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	cell := func(tb *table, row []any, col string) string {
+		for i, c := range tb.Columns {
+			if c == col {
+				return fmt.Sprint(row[i])
+			}
+		}
+		return "no column " + col
+	}
+	pageRows := map[string]string{}
+	if page["detail"] != nil {
+		for _, r := range page["detail"].Rows {
+			pageRows[cell(page["detail"], r, "database_name")] = cell(page["detail"], r, "status") + " | " + cell(page["detail"], r, "checks")
+		}
+	}
+	if fmt.Sprint(pageRows) != fmt.Sprint(map[string]string{"lsx_s_restoreoff": "critical | a log shipping job is disabled",
+		"lsx_s_alertoff": "ok | the log shipping alert is off"}) {
+		t.Errorf("the page's detail at S = %v", pageRows)
+	}
+	if page["summary"] == nil || len(page["summary"].Rows) != 1 {
+		t.Fatalf("the page's summary at S = %v", page["summary"])
+	}
+	if got := cell(page["summary"], page["summary"].Rows[0], "status") + " " + cell(page["summary"], page["summary"].Rows[0], "critical_count") + " " +
+		cell(page["summary"], page["summary"].Rows[0], "log_shipped_dbs"); got != "critical 1 2" {
+		t.Errorf("the page's summary at S (status, critical, log shipped) = %q, want \"critical 1 2\"", got)
+	}
+
 	tGot, _ := findings(T)
 	same("T findings (read 20 minutes ago)", tGot, nil)
+
+	// ---- R: a role change done Microsoft's way leaves the original direction's jobs disabled on purpose
+	imp(R, now, []map[string]any{
+		cfgPrimary("lsx_r_swapped", "FULL", 1, 0, 1, 15.0), cfgSecondary("lsx_r_swapped", "copy", 1, 1, 15.0), cfgSecondary("lsx_r_swapped", "restore", 1, 1, 15.0),
+		cfgPrimary("lsx_r_half", "FULL", 1, 0, 1, 15.0), cfgSecondary("lsx_r_half", "copy", 1, 1, 15.0), cfgSecondary("lsx_r_half", "restore", 1, 0, 15.0),
+		cfgPrimary("lsx_r_gone", "FULL", 0, nil, 0, nil), cfgSecondary("lsx_r_gone", "copy", 1, 1, 15.0), cfgSecondary("lsx_r_gone", "restore", 1, 1, 15.0),
+	})
+	rGot, _ := findings(R)
+	same("R findings (a role change)", rGot, []string{
+		"a log shipping job is disabled | critical | primary / lsx_r_half / LSBackup_lsx_r_half",
+		"a log shipping job is disabled | critical | secondary / lsx_r_half / LSRestore_PRI_lsx_r_half",
+		"a log shipping job is missing | critical | primary / lsx_r_gone / backup job JOB-lsx_r_gone",
+	})
+
+	// ---- M: a secondary that is also the monitor: its table lists another server's row of the same database
+	mon, oth := "MON-"+sfx, "OTH-"+sfx
+	monRow := func(server string, threshold int) map[string]any {
+		return map[string]any{"kind": "secondary", "secondary_server": server, "database_name": "lsx_m", "primary_server": pri,
+			"primary_database": "lsx_m", "threshold_minutes": threshold, "alert_enabled": 1, "last_restored_utc": z(2), "last_copied_utc": z(3)}
+	}
+	imp(M, now, []map[string]any{monRow(mon, 100), monRow(oth, 45),
+		cfgSecondary("lsx_m", "copy", 1, 1, 60.0), cfgSecondary("lsx_m", "restore", 1, 1, 60.0)})
+	mGot, _ := findings(M)
+	same("M findings with no server name to tell the rows apart", mGot, nil)
+	exec(`INSERT INTO pgvigil.mssql_instance (instance_id, snapshot_at, server_name) VALUES ($1, now(), $2)`, M, strings.ToLower(mon))
+	mGot, mDet := findings(M)
+	same("M findings", mGot, []string{"a log shipping alert threshold is under three times its job interval | info | secondary / lsx_m on " + mon})
+	has("lsx_m", mDet["secondary / lsx_m on "+mon], "100 minutes", "every 60 minutes")
+
+	// ---- U: rows kept from a read whose part failed are judged only while they are fresh
+	imp(U, now.Add(-20*time.Minute), []map[string]any{monPrimary("lsx_u", 60, 0), cfgPrimary("lsx_u", "FULL", 1, 0, 1, 15.0)})
+	imp(U, now, []map[string]any{monPrimary("lsx_u", 60, 0),
+		{"kind": "collector_error", "source": "log shipping configuration", "message": "SELECT permission denied"}})
+	uGot, _ := findings(U)
+	same("U findings (a kept configuration row 20 minutes old)", uGot, []string{"the log shipping alert is off | info | primary / lsx_u"})
 
 	// a later read of S whose configuration part failed keeps the stored rows; a clean read of P without them clears
 	imp(S, now.Add(time.Second), append(append([]map[string]any{}, sMon...),
@@ -735,7 +852,24 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 	}
 	sGot2, _ := findings(S)
 	same("S findings after a read whose configuration part failed", sGot2, sWant)
-	imp(P, now.Add(time.Second), []map[string]any{monPrimary("lsx_alertoff", 60, 0), monPrimary("lsx_tight", 30, 1)})
+	var withoutForeign []map[string]any
+	for _, r := range pRows {
+		if r["kind"] != "lsforeign" {
+			withoutForeign = append(withoutForeign, r)
+		}
+	}
+	imp(P, now.Add(time.Second), append(withoutForeign,
+		map[string]any{"kind": "collector_error", "source": "log shipping foreign log backups", "message": "SELECT permission denied"}))
+	var keptForeign, chain int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.mssql_logship_foreign_logs WHERE instance_id = $1),
+	        (SELECT count(*) FROM pgvigil.mssql_hadr_findings WHERE instance_id = $1 AND check_name = 'a log backup outside log shipping broke the chain')`,
+		P).Scan(&keptForeign, &chain); err != nil {
+		t.Fatal(err)
+	}
+	if keptForeign != 5 || chain != 4 {
+		t.Errorf("P after a read whose foreign part failed: %d foreign rows and %d chain findings, want 5 kept and 4", keptForeign, chain)
+	}
+	imp(P, now.Add(2*time.Second), []map[string]any{monPrimary("lsx_alertoff", 60, 0), monPrimary("lsx_tight", 30, 1)})
 	var cfgLeft, foreignLeft int
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.mssql_logship_config WHERE instance_id = $1),
 	        (SELECT count(*) FROM pgvigil.mssql_logship_foreign_logs WHERE instance_id = $1)`, P).Scan(&cfgLeft, &foreignLeft); err != nil {

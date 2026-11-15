@@ -482,8 +482,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_logship_config (
   job_name           text,
   job_exists         boolean,
   job_enabled        boolean,
-  enabled_schedules  int,
-  interval_min       numeric,                -- its shortest enabled schedule; NULL = no schedule that repeats by minutes or hours
+  enabled_schedules  int,                    -- schedules that still run it: enabled, repeating, not past their end date
+  interval_min       numeric,                -- of the schedules that still run it, the shortest; NULL = none repeats by seconds, minutes or hours
   PRIMARY KEY (instance_id, role, database_name, job_role)
 );
 
@@ -661,14 +661,18 @@ $v$;
   END IF;
 END $$;
 
--- ONE judge of log shipping (task 383, the lead's D6): the four log shipping checks' findings, each with the database it
--- is about and its role (msdb's primary rows are 'primary'), then one status row for every restoring database read
--- from restore history that has no finding of its own: na_reason NULL = judged by the restore-history check and OK,
--- else why it is not judged. pgvigil.mssql_hadr_findings takes its log shipping arms from here (severity NOT NULL)
--- and the Log Shipping page its Status, so a database's Status and its findings come from one judge. Two cases the
--- page cannot show as the findings do: a server whose restore history was not read (the msdb arm still judges it;
--- the page has no restore row for it), and two restoring databases whose names differ only in case on a
--- case-sensitive server (a finding is matched to its row by lower(database_name)).
+-- ONE judge of log shipping (task 383, the lead's D6): every log shipping check's finding, each with the database it
+-- is about and its role (msdb's primary rows are 'primary', the monitor's alert job 'monitor' with no database), then
+-- one status row for every restoring database read from restore history that no critical or warning finding carries:
+-- na_reason NULL = judged by the restore-history check and OK, else why it is not judged.
+-- pgvigil.mssql_hadr_findings takes its log shipping arms from here (severity NOT NULL) and the Log Shipping page its
+-- Status, so the Status of a database on the page and its findings come from one judge. The page lists RESTORING
+-- databases only (role 'secondary' rows that have a restore-history row), so these findings are on the Findings tab
+-- and on no page row: everything of a primary (its backup job, a log backup outside log shipping, its recovery model,
+-- its alert), the monitor's alert job, and a secondary configuration whose database is not restoring on that server;
+-- also a server whose restore history was not read (the msdb arm still judges it), and one of two restoring
+-- databases whose names differ only in case on a case-sensitive server (a finding is matched to its row by
+-- lower(database_name)). An info finding never changes a Status: it shows in the row's 'finding' text only.
 -- The thresholds are read only for the rows that are judged (lr), not for every restoring database.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_logship_judged()
 RETURNS TABLE (instance_id int, database_name text, role text, severity text, check_name text, object text,
@@ -768,8 +772,13 @@ SELECT s.instance_id, s.database_name, 'secondary', 'warning', 'a log shipping c
    AND coalesce(s.log_restores, 0) >= 2 AND s.last_with_recovery IS FALSE   -- a stream, not a restore test or a cut-over
 -- log shipping's own jobs, as its configuration names them (backup on the primary, copy and restore on the secondary,
 -- the monitor's alert job): missing = SQL Server Agent no longer has the job; disabled = the job is disabled or has
--- no enabled schedule. Backup, copy and restore stop log shipping (critical); the alert job stops only its alert
--- (warning). The last run is mssql_jobs' (the jobs collection), where it holds the job.
+-- no schedule that still runs it. Backup, copy and restore stop log shipping (critical); the alert job stops only its
+-- alert (warning). The last run is mssql_jobs' (the jobs collection), where a read of the last 15 minutes holds the job.
+-- A role change done Microsoft's way ("Change roles between primary and secondary log shipping servers": the backup
+-- job of the original primary and the copy and restore jobs of the original secondary are disabled, the reverse
+-- configuration added) leaves the original direction's jobs disabled on purpose: a disabled job (never a missing
+-- one) is no finding while this server holds the same database's configuration in the other role with every job of
+-- it there, enabled and scheduled - log shipping runs the other way, and that direction is judged by its own rows.
 UNION ALL
 SELECT c.instance_id, c.database_name, c.role, CASE WHEN c.job_role = 'alert' THEN 'warning' ELSE 'critical' END,
        CASE WHEN c.job_exists IS FALSE THEN 'a log shipping job is missing' ELSE 'a log shipping job is disabled' END,
@@ -780,7 +789,7 @@ SELECT c.instance_id, c.database_name, c.role, CASE WHEN c.job_role = 'alert' TH
               CASE WHEN c.database_name <> '' THEN format(' of the %s database %s', c.role, c.database_name) ELSE ' of log shipping''s monitor' END,
               CASE WHEN c.job_exists IS FALSE THEN 'no longer exists in SQL Server Agent while the log shipping configuration still names it'
                    WHEN c.job_enabled IS FALSE THEN 'is disabled'
-                   ELSE 'has no enabled schedule' END,
+                   ELSE 'has no enabled schedule that still runs it' END,
               CASE c.job_role WHEN 'backup' THEN 'no log backup is taken for log shipping, and its secondaries fall behind'
                               WHEN 'copy' THEN 'no log backup reaches this secondary, and it falls behind'
                               WHEN 'restore' THEN 'no log backup is restored, and this copy falls behind'
@@ -791,50 +800,67 @@ SELECT c.instance_id, c.database_name, c.role, CASE WHEN c.job_role = 'alert' TH
                                to_char(mj.last_run_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')) END)
   FROM pgvigil.mssql_logship_config c
   LEFT JOIN pgvigil.mssql_jobs mj ON mj.instance_id = c.instance_id AND mj.job_id = c.job_id
- WHERE c.snapshot_at > now() - interval '15 minutes' AND c.job_id IS NOT NULL
+                                 AND mj.snapshot_at > now() - interval '15 minutes'
+ WHERE c.snapshot_at > now() - interval '15 minutes' AND c.job_id IS NOT NULL AND c.job_exists IS NOT NULL
    AND (c.job_exists IS FALSE OR c.job_enabled IS FALSE OR coalesce(c.enabled_schedules, 0) = 0)
--- a log backup of a log-shipped primary database that log shipping did not take (not copy-only, outside its folders):
--- the secondaries never receive it, so nothing after it can be restored there. One finding per database for the 24
--- hours read: how many, since when, the newest file. The job named is a guess and said as one: a job of this server,
--- other than log shipping's own, whose run (mssql_job_runs, step 0) spans the newest backup's start.
+   AND NOT (c.job_exists AND c.role IN ('primary', 'secondary')
+            AND EXISTS (SELECT 1 FROM pgvigil.mssql_logship_config o
+                         WHERE o.instance_id = c.instance_id AND o.database_name = c.database_name
+                           AND o.role = CASE c.role WHEN 'primary' THEN 'secondary' ELSE 'primary' END
+                           AND o.snapshot_at > now() - interval '15 minutes')
+            AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_logship_config o
+                             WHERE o.instance_id = c.instance_id AND o.database_name = c.database_name
+                               AND o.role = CASE c.role WHEN 'primary' THEN 'secondary' ELSE 'primary' END
+                               AND o.snapshot_at > now() - interval '15 minutes'
+                               AND NOT (o.job_exists IS TRUE AND o.job_enabled IS TRUE AND coalesce(o.enabled_schedules, 0) > 0)))
+-- a log backup of a log-shipped primary database that log shipping did not take (not copy-only, not its own by
+-- folder or by name): the secondaries never receive it, so nothing after it can be restored there. One finding per
+-- database for the 24 hours read: how many, since when, the newest file (two with one finish time: the later name).
+-- It stays for those 24 hours whatever is done about it (the read cannot see a file restored by hand). The job named
+-- is a guess and said as one: a job of this server, other than log shipping's own, whose run (mssql_job_runs, step
+-- 0) covers the newest backup from its start to its finish; several such runs are all named; a backup to a virtual
+-- device is a backup tool's and no job is guessed.
 UNION ALL
 SELECT g.instance_id, g.database_name, 'primary', 'critical', 'a log backup outside log shipping broke the chain',
        'primary / ' || g.database_name, g.snapshot_at,
-       format('database %s is a log shipping primary, and %s %s not copy-only %s written outside its log shipping folder %s in the last 24 hours (the first at %s); the newest, at %s, went to %s. The secondaries never receive such a backup, so their restores stop before it until that file is restored there by hand or the copy is re-initialised. %s',
+       format('database %s is a log shipping primary, and %s %s not copy-only %s written outside its log shipping folder %s in the last 24 hours (the first at %s); the newest, at %s, went to %s. The secondaries never receive such a backup, so their restores stop before it until that file is restored there by hand or the copy is re-initialised; this finding stays for 24 hours after the backup either way. %s',
               g.database_name, g.n, CASE WHEN g.n = 1 THEN 'log backup that is' ELSE 'log backups that are' END,
               CASE WHEN g.n = 1 THEN 'was' ELSE 'were' END, coalesce(g.backup_directory, '?'),
               to_char(g.first_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), to_char(g.finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
               coalesce(nullif(g.file_name, ''), 'a ' || coalesce(g.device, 'backup') || ' device'),
-              CASE WHEN jr.jobs IS NOT NULL THEN format('It was probably the job %s: its run spans that backup''s start.', jr.jobs)
-                   ELSE 'The job that took it is not known (no job run read from this server spans its start).' END)
+              CASE WHEN g.device = 'virtual device' THEN 'The job that took it is not known: it went to a virtual device, a backup tool''s own, not a file a job names.'
+                   WHEN jr.n = 1 THEN format('It was probably the job %s: its run covers that backup.', jr.jobs)
+                   WHEN jr.n > 1 THEN format('It was probably one of the jobs %s: their runs cover that backup.', jr.jobs)
+                   ELSE 'The job that took it is not known (no job run read from this server covers it).' END)
   FROM (SELECT DISTINCT ON (fl.instance_id, fl.database_name) fl.*, count(*) OVER w AS n, min(fl.finished_at) OVER w AS first_at
           FROM pgvigil.mssql_logship_foreign_logs fl
          WHERE fl.snapshot_at > now() - interval '15 minutes'
         WINDOW w AS (PARTITION BY fl.instance_id, fl.database_name)
-         ORDER BY fl.instance_id, fl.database_name, fl.finished_at DESC) g
-  LEFT JOIN LATERAL (SELECT string_agg(DISTINCT r.job_name, ', ') AS jobs
+         ORDER BY fl.instance_id, fl.database_name, fl.finished_at DESC, fl.file_name DESC) g
+  LEFT JOIN LATERAL (SELECT string_agg(DISTINCT r.job_name, '; ') AS jobs, count(DISTINCT r.job_name) AS n
                        FROM pgvigil.mssql_job_runs r
                       WHERE r.instance_id = g.instance_id AND r.step_id = 0 AND r.job_name IS NOT NULL
                         AND r.snapshot_at BETWEEN g.started_at - interval '1 day' AND g.started_at + interval '5 seconds'
-                        AND r.snapshot_at + make_interval(secs => (coalesce(r.duration_s, 0) + 5)::float8) >= g.started_at
+                        AND r.snapshot_at + make_interval(secs => (coalesce(r.duration_s, 0) + 5)::float8) >= g.finished_at
                         AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_logship_config c
                                          WHERE c.instance_id = r.instance_id AND c.job_id = r.job_id)) jr ON true
 -- a log shipping primary that left FULL recovery: SIMPLE stops log shipping (Microsoft's Configure Log Shipping page,
--- quoted); BULK_LOGGED works, with the two limits of a log backup that holds a bulk-logged change
+-- quoted); BULK_LOGGED works, with the limits Microsoft's Recovery Models page gives that model (quoted)
 UNION ALL
 SELECT c.instance_id, c.database_name, 'primary', CASE c.recovery_model WHEN 'SIMPLE' THEN 'critical' ELSE 'warning' END,
        'a log-shipped database is in ' || c.recovery_model || ' recovery', 'primary / ' || c.database_name, c.snapshot_at,
        CASE c.recovery_model WHEN 'SIMPLE' THEN
-         format('database %s is a log shipping primary and its recovery model is SIMPLE: no log backup can be taken, so log shipping has stopped (Microsoft: "The primary database must use the full or bulk-logged recovery model; switching the database to simple recovery will cause log shipping to stop functioning"). Back in FULL, its secondaries need a new full or differential backup restored before log restores can go on.', c.database_name)
+         format('database %s is a log shipping primary and its recovery model is SIMPLE: no log backup can be taken, so log shipping has stopped (Microsoft: "The primary database must use the full or bulk-logged recovery model; switching the database to simple recovery will cause log shipping to stop functioning"). Back in FULL the log chain starts again only with a data backup (Microsoft: "Immediately after switching to the full recovery model or bulk-logged recovery model, take a full or differential database backup to start the log chain"), and the secondaries need that backup restored before their log restores go on.', c.database_name)
        ELSE
-         format('database %s is a log shipping primary in BULK_LOGGED recovery: log shipping works, but a log backup that holds a bulk-logged change also reads the data files (it fails when they are damaged) and cannot be restored to a point in time inside it.', c.database_name)
+         format('database %s is a log shipping primary in BULK_LOGGED recovery: log shipping works, with that model''s limits (Microsoft''s Recovery Models page: "Can recover to the end of any backup. Point-in-time recovery isn''t supported." and "Log backups might be large because the minimally logged operations are captured in the log backup" - a large file for log shipping to copy and restore).', c.database_name)
        END
   FROM pgvigil.mssql_logship_config c
  WHERE c.snapshot_at > now() - interval '15 minutes' AND c.role = 'primary' AND c.job_role = 'backup'
    AND c.recovery_model IN ('SIMPLE', 'BULK_LOGGED')
 -- msdb's own alert (Microsoft's errors 14420 and 14421) turned off for a configured database, or its threshold under
 -- three times the interval of the job it watches (Microsoft's words on both error pages): info - the checks above
--- judge the database either way
+-- judge the database either way. Here one row per database (the page's 'finding' column); mssql_hadr_findings
+-- raises one finding per instance, role and check for them.
 UNION ALL
 SELECT s.instance_id, s.database_name, s.role, 'info', 'the log shipping alert is off',
        s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END, s.snapshot_at,
@@ -844,6 +870,10 @@ SELECT s.instance_id, s.database_name, s.role, 'info', 'the log shipping alert i
               CASE s.role WHEN 'primary' THEN 'no log backup is taken' ELSE 'no log backup is restored' END, coalesce(s.threshold_minutes::text, '?'))
   FROM pgvigil.mssql_logshipping_state s
  WHERE s.snapshot_at > now() - interval '15 minutes' AND s.alert_enabled IS FALSE
+-- the threshold against the job's interval. A monitor's table lists every server's row of a database, and the job
+-- stored here is this server's: it is compared with this server's row only - the one row of that role and name
+-- here, or, where several servers' rows share the name, the one that names this server (mssql_instance.server_name);
+-- with no such match the pair is not judged. Names are matched as msdb wrote them (both come from this server's msdb).
 UNION ALL
 SELECT s.instance_id, s.database_name, s.role, 'info', 'a log shipping alert threshold is under three times its job interval',
        s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END, s.snapshot_at,
@@ -853,11 +883,17 @@ SELECT s.instance_id, s.database_name, s.role, 'info', 'a log shipping alert thr
               CASE WHEN c.interval_min = 1 THEN 'minute' ELSE 'minutes' END,
               CASE s.role WHEN 'primary' THEN '14420' ELSE '14421' END, c.job_role)
   FROM pgvigil.mssql_logshipping_state s
-  JOIN pgvigil.mssql_logship_config c ON c.instance_id = s.instance_id AND c.role = s.role AND lower(c.database_name) = lower(s.database_name)
+  JOIN pgvigil.mssql_logship_config c ON c.instance_id = s.instance_id AND c.role = s.role AND c.database_name = s.database_name
                                      AND c.job_role = CASE s.role WHEN 'primary' THEN 'backup' ELSE 'restore' END
  WHERE s.snapshot_at > now() - interval '15 minutes' AND c.snapshot_at > now() - interval '15 minutes'
    AND s.threshold_minutes > 0 AND c.interval_min > 0 AND c.job_exists AND c.job_enabled
    AND s.threshold_minutes < 3 * c.interval_min
+   AND ((SELECT count(*) FROM pgvigil.mssql_logshipping_state s2
+          WHERE s2.instance_id = s.instance_id AND s2.role = s.role AND s2.database_name = s.database_name
+            AND s2.snapshot_at > now() - interval '15 minutes') = 1
+        OR EXISTS (SELECT 1 FROM pgvigil.mssql_instance mi
+                    WHERE mi.instance_id = s.instance_id
+                      AND lower(mi.server_name) = lower(CASE s.role WHEN 'primary' THEN s.primary_server ELSE s.secondary_server END)))
 )
 SELECT f.instance_id, f.database_name, f.role, f.severity, f.check_name, f.object, f.at, f.detail, NULL::text FROM f
 UNION ALL
@@ -874,6 +910,8 @@ $fn$;
 CREATE OR REPLACE VIEW pgvigil.mssql_hadr_findings AS
 WITH judged AS (
   SELECT i.instance_id FROM pgvigil.instances i WHERE i.engine = 'sqlserver' AND i.platform IS DISTINCT FROM 'rdssqlserver'
+), lsj AS (   -- the log shipping judge's findings, read once for the two arms below
+  SELECT * FROM pgvigil.mssql_logship_judged() j WHERE j.severity IS NOT NULL
 ), rep AS (
   SELECT a.* FROM pgvigil.mssql_ag_state a JOIN judged j USING (instance_id) WHERE a.snapshot_at > now() - interval '5 minutes'
 ), dbs AS (
@@ -1124,11 +1162,26 @@ SELECT DISTINCT ON (m.instance_id) m.instance_id, 'critical', 'the mirroring end
   FROM mir m WHERE m.endpoint->>'endpoint_state' IS NOT NULL AND m.endpoint->>'endpoint_state' <> 'STARTED'
    AND NOT EXISTS (SELECT 1 FROM rep r WHERE r.instance_id = m.instance_id AND r.is_local     -- one endpoint: the group's arm says it
                      AND r.endpoint->>'endpoint_state' IS NOT NULL)
--- log shipping: msdb's monitor (0066's arm), restore history, restoring for days, a missing copy - one judge, the
--- function pgvigil.mssql_logship_judged() above (the Log Shipping page reads the same rows)
+-- log shipping: msdb's monitor (0066's arm), restore history, restoring for days, a missing copy, its jobs, a log
+-- backup outside it, the primary's recovery model, msdb's own alert - one judge, the function
+-- pgvigil.mssql_logship_judged() above (the Log Shipping page reads the same rows)
 UNION ALL
 SELECT j.instance_id, j.severity, j.check_name, j.object, j.at, j.detail
-  FROM pgvigil.mssql_logship_judged() j WHERE j.severity IS NOT NULL
+  FROM lsj j WHERE j.severity IN ('critical', 'warning')
+-- its info findings (the alert off, a threshold under three job intervals): ONE per instance, role and check - a
+-- server with 200 log-shipped databases and the alert off raises one finding, not 200 (the page still shows each
+-- database's own); a single database keeps its own object and words
+UNION ALL
+SELECT x.instance_id, 'info', x.check_name,
+       CASE WHEN x.n = 1 THEN x.object ELSE x.role || ': ' || x.n || ' databases' END, x.at,
+       CASE WHEN x.n = 1 THEN x.detail
+            ELSE format('%s %s databases (%s%s). The first: %s', x.n, x.role, x.names, CASE WHEN x.n > 5 THEN ', ...' ELSE '' END, x.detail) END
+  FROM (SELECT j.instance_id, j.role, j.check_name, count(*) AS n, max(j.at) AS at,
+               (array_agg(j.object ORDER BY j.database_name, j.object))[1] AS object,
+               (array_agg(j.detail ORDER BY j.database_name, j.object))[1] AS detail,
+               array_to_string((array_agg(j.database_name ORDER BY j.database_name, j.object))[1:5], ', ') AS names
+          FROM lsj j WHERE j.severity = 'info'
+         GROUP BY j.instance_id, j.role, j.check_name) x
 -- the failover cluster instance (behind the clustered flag: an instance that is not one has no node row)
 UNION ALL
 SELECT c.instance_id, 'critical', 'the failover cluster instance moved to another node', c.new_node, c.at,
