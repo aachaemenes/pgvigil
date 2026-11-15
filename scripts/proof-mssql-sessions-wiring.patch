@@ -1,3 +1,24 @@
+diff --git i/README.md w/README.md
+index d3fce249..0be0f548 100644
+--- i/README.md
++++ w/README.md
+@@ -185,7 +185,7 @@ The frontend is TypeScript under `web/`, built into `internal/web/dist/` (commit
+ 
+ A site that runs DBA Dash for SQL Server sees DBA Dash's instances and its Summary statuses beside the PostgreSQL fleet, read from the DBA Dash repository with a read-only login (SELECT on four tables, no procedure; [docs/dbadash.md](docs/dbadash.md)): a `dbadash:` list in the configuration names each repository, the collector reads it every 5 minutes, the tree gains a folder per repository with a node per SQL Server instance and the DBADash tab shows the statuses in DBA Dash's own words with a change history. Through this door pgvigil collects nothing from SQL Server: DBA Dash is that product there, and a repository that is unreachable or refuses the login shows as not read with the reason.
+ 
+-SQL Server is an engine of its own: an instance says `engine: sqlserver`, a least-privilege login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, a user in msdb with db_datareader; never sysadmin) runs thirty-two read-only collections, nothing of one engine runs on the other, and a SQL Server instance has its own tabs (Summary, Performance, Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Findings; under HA/DR Availability and Backups; under Performance Metrics, CPU, Memory, File IO, Query Store, Procedures and Index locks; under Storage Storage, Database files, Row versions and TempDB; under Jobs Jobs and the Jobs timeline; under Configuration Configuration, Properties and the Actions log). A collection the server's kind or the login's rights do not allow is skipped with the reason. The login, the configuration and what is not there yet: [docs/sqlserver.md](docs/sqlserver.md).
++SQL Server is an engine of its own: an instance says `engine: sqlserver`, a least-privilege login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, a user in msdb with db_datareader; never sysadmin) runs thirty-five read-only collections, nothing of one engine runs on the other, and a SQL Server instance has its own tabs (Summary, Performance, Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Findings; under HA/DR Availability and Backups; under Performance Metrics, CPU, Memory, File IO, Query Store, Procedures and Index locks; under Storage Storage, Database files, Row versions and TempDB; under Jobs Jobs and the Jobs timeline; under Configuration Configuration, Properties and the Actions log). A collection the server's kind or the login's rights do not allow is skipped with the reason. The login, the configuration and what is not there yet: [docs/sqlserver.md](docs/sqlserver.md).
+ 
+ | Collection | Cadence | Source | Page |
+ |---|---|---|---|
+@@ -193,6 +193,7 @@ SQL Server is an engine of its own: an instance says `engine: sqlserver`, a leas
+ | mssql_traceflags | hourly | DBCC TRACESTATUS(-1), with the history of each flag | [jobs](docs/jobs.md) |
+ | mssql_services | 5 min | sys.dm_server_services, Agent's sessions, Database Mail's queue, sys.dm_server_memory_dumps | [sqlserver](docs/sqlserver.md) |
+ | mssql_requests | 1 min | sessions, requests and blocking chains from the DMVs, or sp_WhoIsActive where a DBA installed it | [running](docs/sqlserver-running.md) |
++| mssql_sessions | 1 min | sessions and requests by user / system (the server's is_user_process over every session) and status, the waiting tasks of user sessions; the Connections page's groups by login, status, interface, client address and isolation come from mssql_activity's 5-minute read | [sqlserver](docs/sqlserver.md) |
+ | mssql_waits | 1 min | sys.dm_os_wait_stats (Azure SQL Database: sys.dm_db_wait_stats, not proven: task 165) as the difference between two reads | [running](docs/sqlserver-running.md) |
+ | mssql_xe | 1 min | Extended Events sessions the DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, attentions, AlwaysOn_health | [xe](docs/sqlserver-xe.md) |
+ | mssql_ag, mssql_mirroring | 1 min | availability groups, database mirroring (not proven on a real mirrored database: the sandbox has none) | [hadr](docs/sqlserver-hadr.md) |
 diff --git i/docs/sqlserver.md w/docs/sqlserver.md
 index 3ec1c5e4..cf32428f 100644
 --- i/docs/sqlserver.md

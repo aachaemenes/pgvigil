@@ -8,7 +8,8 @@ import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
 import { Col, el, fmtNum, fmtTime, grid, tile } from './ui';
 
-type Parts = 'counts' | 'reads' | 'login' | 'status' | 'interface' | 'address' | 'isolation' | 'top' | 'activity' | 'policy';
+type Parts = 'counts' | 'reads' | 'login' | 'status' | 'interface' | 'address' | 'isolation' | 'activity' | 'policy';
+type TopParts = 'top' | 'top_window' | 'policy';
 
 const ACTIVE_TRAN_OFF = 'Active transactions: off until the Databases counters collector (mssql_counters_db) is part of this build; '
   + 'it reads Databases / Active Transactions per database, the one series this chart draws.';
@@ -25,17 +26,23 @@ const sum = (r: Row, keys: string[]) => keys.reduce((a, k) => a + Number(r[k] ??
 export async function mssqlSessionsPart(ctx: Ctx): Promise<HTMLElement> {
   const box = el('section', { class: 'mssql-sessions', 'aria-label': 'Sessions and requests' }, el('h3', {}, 'Sessions and requests'));
   const body = el('div', {}, el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
-  box.append(body);
+  // the top requests are their own request: a slow top over a long window costs only this list
+  const topBox = el('div', {}, el('h4', {}, 'Top requests over the window'), el('p', { class: 'meta', role: 'status' }, 'Reading ...'));
+  box.append(body, topBox);
   let at: string | undefined;
   let n = 5;
+  // a draw's answer is shown only while it is the newest of its part: a pick made during a load wins over the older answer
+  let drawSeq = 0, topSeq = 0;
   const draw = async () => {
+    const seq = ++drawSeq;
     let d: Record<Parts, Table | null>;
     try {
-      d = await get('mssql/sessions', { instance: ctx.instance, ...window_(ctx), at, n });
+      d = await get('mssql/sessions', { instance: ctx.instance, ...window_(ctx), at });
     } catch (e) {
-      body.replaceChildren(el('p', { class: 'error' }, e instanceof Error ? e.message : String(e)));
+      if (seq === drawSeq) body.replaceChildren(el('p', { class: 'error' }, e instanceof Error ? e.message : String(e)));
       return;
     }
+    if (seq !== drawSeq) return;
     const counts = rowsOf(d.counts), last = counts[counts.length - 1];
     const kids: (Node | string)[] = [el('p', { class: 'meta' }, 'User and system sessions are told apart by the server\'s own flag (is_user_process) over every session, '
       + 'on this whole page. The counts are read every minute (mssql_sessions), pgvigil\'s own sessions left out; the groups every 5 minutes, every session.')];
@@ -77,14 +84,27 @@ export async function mssqlSessionsPart(ctx: Ctx): Promise<HTMLElement> {
       ];
       for (const [k, title, first] of dims) kids.push(el('h4', {}, title), grid(rowsOf(d[k as Parts]), cols(first), 'No sessions at this read.'));
     } else kids.push(el('p', { class: 'empty' }, 'No 5-minute group read in this window (mssql_activity).'));
-    // the top requests over the window
+    body.replaceChildren(...kids);
+  };
+  const drawTop = async () => {
+    const seq = ++topSeq;
+    let d: Record<TopParts, Table | null>;
+    try {
+      d = await get('mssql/sessions', { instance: ctx.instance, ...window_(ctx), n, part: 'top' });
+    } catch (e) {
+      if (seq === topSeq) topBox.replaceChildren(el('h4', {}, 'Top requests over the window'), el('p', { class: 'error' }, e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    if (seq !== topSeq) return;
     const policy = String(rowsOf(d.policy)[0]?.query_text ?? '');
+    const tw = rowsOf(d.top_window)[0];
     const nPick = el('select', { 'aria-label': 'How many top requests per measure' }, ...[5, 10, 25].map(k => el('option', { value: String(k) }, String(k)))) as HTMLSelectElement;
     nPick.value = String(n);
-    nPick.addEventListener('change', () => { n = Number(nPick.value); void draw(); });
-    kids.push(el('h4', {}, 'Top requests over the window'), el('p', { class: 'meta' }, 'From the per-minute running-queries snapshot, which keeps user requests and sessions with an open transaction only: '
+    nPick.addEventListener('change', () => { n = Number(nPick.value); void drawTop(); });
+    const kids: (Node | string)[] = [el('h4', {}, 'Top requests over the window'), el('p', { class: 'meta' }, 'From the per-minute running-queries snapshot, which keeps user requests and sessions with an open transaction only: '
       + 'each request at its largest figure. ', el('label', {}, 'Show ', nPick, ' per measure.'),
-      policy === 'none' ? ' Statements are not shown: this instance\'s query_text policy is "none".' : ''));
+      policy === 'none' ? ' Statements are not shown: this instance\'s query_text policy is "none".' : '')];
+    if (tw?.cut === true) kids.push(el('p', { class: 'meta' }, `The top requests read at most seven days: ${fmtTime(tw.from_at)} to ${fmtTime(tw.to_at)}.`));
     const top = rowsOf(d.top);
     for (const [k, label, fmt] of measures) {
       kids.push(el('h5', {}, `By ${label}`), grid(top.filter(r => r.measure === k), [
@@ -93,8 +113,8 @@ export async function mssqlSessionsPart(ctx: Ctx): Promise<HTMLElement> {
         { key: 'start_time', label: 'started', fmt: fmtTime }, { key: 'statement', wide: true },
       ], `No request with ${label} in this window.`));
     }
-    body.replaceChildren(...kids);
+    topBox.replaceChildren(...kids);
   };
-  await draw();
+  await Promise.all([draw(), drawTop()]);
   return box;
 }

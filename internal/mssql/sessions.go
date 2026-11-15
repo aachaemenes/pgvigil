@@ -32,39 +32,49 @@ func (sessionsCollector) Applies(in Info) (bool, string) {
 	return activityCollector{}.Applies(in)
 }
 
-// sessionsCountsSQL: the one counts row. A session is pgvigil's own when its program name is the reading connection's
-// or starts with 'pgvigil'.
+// sessionsCountsSQL: the one counts row, from ONE read of sys.dm_exec_sessions joined to one grouped read of
+// sys.dm_exec_requests (each session's requests by status), so every figure of the row is of the same moment (review
+// 413a finding 8: a scalar subquery per figure read the sessions once per figure). A session is pgvigil's own when its
+// program name is the reading connection's or starts with 'pgvigil'; a request whose session has no row is not counted.
 const sessionsCountsSQL = `WITH s AS (
-  SELECT s.session_id, CAST(s.is_user_process AS int) AS u, s.status,
+  SELECT CAST(s.is_user_process AS int) AS u, s.status,
          CASE WHEN ISNULL(s.program_name, N'') <> N'' AND (s.program_name = ISNULL(PROGRAM_NAME(), N'') OR s.program_name LIKE N'pgvigil%')
-              THEN 1 ELSE 0 END AS own
-    FROM sys.dm_exec_sessions s),
-r AS (
-  SELECT q.status, s.u FROM sys.dm_exec_requests q JOIN s ON s.session_id = q.session_id WHERE s.own = 0)
+              THEN 1 ELSE 0 END AS own,
+         ISNULL(q.q_running, 0) AS q_running, ISNULL(q.q_runnable, 0) AS q_runnable, ISNULL(q.q_suspended, 0) AS q_suspended, ISNULL(q.q_sleeping, 0) AS q_sleeping, ISNULL(q.q_background, 0) AS q_background, ISNULL(q.q_other, 0) AS q_other
+    FROM sys.dm_exec_sessions s
+    LEFT JOIN (SELECT r.session_id,
+                      SUM(CASE WHEN r.status = N'running' THEN 1 ELSE 0 END) AS q_running,
+                      SUM(CASE WHEN r.status = N'runnable' THEN 1 ELSE 0 END) AS q_runnable,
+                      SUM(CASE WHEN r.status = N'suspended' THEN 1 ELSE 0 END) AS q_suspended,
+                      SUM(CASE WHEN r.status = N'sleeping' THEN 1 ELSE 0 END) AS q_sleeping,
+                      SUM(CASE WHEN r.status = N'background' THEN 1 ELSE 0 END) AS q_background,
+                      SUM(CASE WHEN r.status NOT IN (N'running', N'runnable', N'suspended', N'sleeping', N'background') THEN 1 ELSE 0 END) AS q_other
+                 FROM sys.dm_exec_requests r GROUP BY r.session_id) q ON q.session_id = s.session_id)
 SELECT 'counts' AS kind,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 1 AND status = N'running') AS user_running,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 1 AND status = N'sleeping') AS user_sleeping,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 1 AND status = N'dormant') AS user_dormant,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 1 AND status = N'preconnect') AS user_preconnect,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 1 AND status NOT IN (N'running', N'sleeping', N'dormant', N'preconnect')) AS user_other,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 0 AND status = N'running') AS system_running,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 0 AND status = N'sleeping') AS system_sleeping,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 0 AND status = N'dormant') AS system_dormant,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 0 AND status = N'preconnect') AS system_preconnect,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 0 AND u = 0 AND status NOT IN (N'running', N'sleeping', N'dormant', N'preconnect')) AS system_other,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 1 AND status = N'running') AS req_user_running,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 1 AND status = N'runnable') AS req_user_runnable,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 1 AND status = N'suspended') AS req_user_suspended,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 1 AND status = N'sleeping') AS req_user_sleeping,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 1 AND status = N'background') AS req_user_background,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 1 AND status NOT IN (N'running', N'runnable', N'suspended', N'sleeping', N'background')) AS req_user_other,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 0 AND status = N'running') AS req_system_running,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 0 AND status = N'runnable') AS req_system_runnable,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 0 AND status = N'suspended') AS req_system_suspended,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 0 AND status = N'sleeping') AS req_system_sleeping,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 0 AND status = N'background') AS req_system_background,
-  (SELECT CAST(COUNT(*) AS int) FROM r WHERE u = 0 AND status NOT IN (N'running', N'runnable', N'suspended', N'sleeping', N'background')) AS req_system_other,
-  (SELECT CAST(COUNT(*) AS int) FROM s WHERE own = 1) AS own_sessions`
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 AND status = N'running' THEN 1 ELSE 0 END) AS int) AS user_running,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 AND status = N'sleeping' THEN 1 ELSE 0 END) AS int) AS user_sleeping,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 AND status = N'dormant' THEN 1 ELSE 0 END) AS int) AS user_dormant,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 AND status = N'preconnect' THEN 1 ELSE 0 END) AS int) AS user_preconnect,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 AND status NOT IN (N'running', N'sleeping', N'dormant', N'preconnect') THEN 1 ELSE 0 END) AS int) AS user_other,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 AND status = N'running' THEN 1 ELSE 0 END) AS int) AS system_running,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 AND status = N'sleeping' THEN 1 ELSE 0 END) AS int) AS system_sleeping,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 AND status = N'dormant' THEN 1 ELSE 0 END) AS int) AS system_dormant,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 AND status = N'preconnect' THEN 1 ELSE 0 END) AS int) AS system_preconnect,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 AND status NOT IN (N'running', N'sleeping', N'dormant', N'preconnect') THEN 1 ELSE 0 END) AS int) AS system_other,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 THEN q_running ELSE 0 END) AS int) AS req_user_running,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 THEN q_runnable ELSE 0 END) AS int) AS req_user_runnable,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 THEN q_suspended ELSE 0 END) AS int) AS req_user_suspended,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 THEN q_sleeping ELSE 0 END) AS int) AS req_user_sleeping,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 THEN q_background ELSE 0 END) AS int) AS req_user_background,
+  CAST(SUM(CASE WHEN own = 0 AND u = 1 THEN q_other ELSE 0 END) AS int) AS req_user_other,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_running ELSE 0 END) AS int) AS req_system_running,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_runnable ELSE 0 END) AS int) AS req_system_runnable,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_suspended ELSE 0 END) AS int) AS req_system_suspended,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_sleeping ELSE 0 END) AS int) AS req_system_sleeping,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_background ELSE 0 END) AS int) AS req_system_background,
+  CAST(SUM(CASE WHEN own = 0 AND u = 0 THEN q_other ELSE 0 END) AS int) AS req_system_other,
+  CAST(SUM(own) AS int) AS own_sessions
+FROM s`
 
 // sessionsWaitsSQL: the waiting tasks of user sessions (not pgvigil's own) per wait type, with the longest wait; the
 // benign waits are taken out in Go (sessionsWaiting), from the same list the waits page uses.

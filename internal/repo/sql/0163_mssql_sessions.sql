@@ -20,7 +20,8 @@
 -- import_mssql_activity is 0124's, renamed import_mssql_activity_0124 and called unchanged by a new one, which then writes
 -- the 'session_by' rows of the same payload (no change to 0124's file; a payload without them stores what it stored).
 -- For the join: 0190's purge() adds mssql_session_count and mssql_session_by to the monthly partition parents (the
--- WIRING patch); apply_roles() needs no line (no function here deletes).
+-- WIRING patch); apply_roles() needs no line: the imports are import_% (the collector's door by name, SECURITY DEFINER), the
+-- page's reads go to the reader by default, and none of them is owner-only.
 SET LOCAL lock_timeout = '20s';
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_session_count (
@@ -148,12 +149,7 @@ LANGUAGE sql STABLE AS $$
   WITH r AS (
     SELECT q.session_id, q.request_id, q.start_time, min(q.snapshot_at) AS first_seen, max(q.snapshot_at) AS last_seen,
            max(q.cpu_ms) AS cpu_ms, max(q.logical_reads) AS logical_reads, max(q.tempdb_alloc_kb) AS tempdb_alloc_kb,
-           max(q.granted_memory_kb) AS granted_memory_kb, max(q.elapsed_ms) AS elapsed_ms,
-           (array_agg(q.login_name ORDER BY q.snapshot_at DESC))[1] AS login_name,
-           (array_agg(q.program_name ORDER BY q.snapshot_at DESC))[1] AS program_name,
-           (array_agg(q.host_name ORDER BY q.snapshot_at DESC))[1] AS host_name,
-           (array_agg(q.database_name ORDER BY q.snapshot_at DESC))[1] AS database_name,
-           (array_agg(q.text_id ORDER BY q.snapshot_at DESC) FILTER (WHERE q.text_id IS NOT NULL))[1] AS text_id
+           max(q.granted_memory_kb) AS granted_memory_kb, max(q.elapsed_ms) AS elapsed_ms
       FROM pgvigil.mssql_requests q
      WHERE q.instance_id = p_instance_id AND q.snapshot_at > p_from AND q.snapshot_at <= p_to
        AND q.request_id IS NOT NULL AND q.start_time IS NOT NULL
@@ -163,8 +159,21 @@ LANGUAGE sql STABLE AS $$
       FROM r CROSS JOIN LATERAL (VALUES ('cpu_ms', r.cpu_ms), ('logical_reads', r.logical_reads), ('tempdb_alloc_kb', r.tempdb_alloc_kb),
                                         ('granted_memory_kb', r.granted_memory_kb), ('elapsed_ms', r.elapsed_ms)) x(measure, value)
      WHERE x.value > 0)
-  SELECT m.measure, m.rk::int, m.value, m.session_id, m.request_id, m.start_time, m.first_seen, m.last_seen, m.login_name,
-         m.program_name, m.host_name, m.database_name, m.text_id
-    FROM m WHERE m.rk <= greatest(1, least(p_n, 25))
+  -- only the ranked requests are looked up (at most 5 x 25): the login, program, host and database of the request's newest
+  -- row (its last_seen) and its newest statement text within its own lifetime; each lookup an (instance_id, snapshot_at)
+  -- index range of the request's day partitions (review 413a finding 2: no sorted array_agg per request of the window)
+  SELECT m.measure, m.rk::int, m.value, m.session_id, m.request_id, m.start_time, m.first_seen, m.last_seen, d.login_name,
+         d.program_name, d.host_name, d.database_name, tx.text_id
+    FROM m
+    LEFT JOIN LATERAL (SELECT q.login_name, q.program_name, q.host_name, q.database_name FROM pgvigil.mssql_requests q
+                        WHERE q.instance_id = p_instance_id AND q.snapshot_at = m.last_seen AND q.session_id = m.session_id
+                          AND q.request_id = m.request_id AND q.start_time = m.start_time
+                        LIMIT 1) d ON true
+    LEFT JOIN LATERAL (SELECT q.text_id FROM pgvigil.mssql_requests q
+                        WHERE q.instance_id = p_instance_id AND q.snapshot_at >= m.first_seen AND q.snapshot_at <= m.last_seen
+                          AND q.session_id = m.session_id AND q.request_id = m.request_id AND q.start_time = m.start_time
+                          AND q.text_id IS NOT NULL
+                        ORDER BY q.snapshot_at DESC LIMIT 1) tx ON true
+   WHERE m.rk <= greatest(1, least(p_n, 25))
    ORDER BY m.measure, m.rk
 $$;

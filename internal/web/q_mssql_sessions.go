@@ -14,11 +14,16 @@ import (
 //          reads       the 5-minute group reads of the window, newest first (the 'at' picker) <- mssql_session_by_reads
 //          login, status, interface, address, isolation
 //                      each dimension at the read 'at' (else the newest of the window), the 'other' row last
-//          top         the top requests over the window per measure (CPU, logical reads, tempdb, memory grant,
-//                      duration) from mssql_requests, n each (5 by default; 10 or 25), the statement only under the
-//                      instance's query_text policy 'full' or 'normalized' (as stored), none under 'none'
 //          activity    every session's summed CPU / reads / writes at each group read (OVW#34; A2: summed in 413's own read)
 //          policy      the instance's query_text policy now
+//   GET /api/mssql/sessions?instance=N[&from=&to=][&n=5|10|25]&part=top   its own request (the page asks it apart, so a
+//        slow top over a long window loses only the top list: multi answers a whole reply with one part's error):
+//          top         the top requests per measure (CPU, logical reads, tempdb, memory grant, duration) from
+//                      mssql_requests over the newest historyMaxWindow (7 days) of the window, n each (5 by default; 10
+//                      or 25), the statement only under the instance's query_text policy 'full' or 'normalized' (as
+//                      stored), none under 'none'
+//          top_window  the window the top read and whether a longer one was cut to its newest 7 days
+//          policy      as above
 //        One user / system rule on every part: sys.dm_exec_sessions.is_user_process over all sessions (the lead 11-15).
 //                                                                                          -> Server.MSSQLSessions
 
@@ -64,6 +69,16 @@ func (s *Server) MSSQLSessions(w http.ResponseWriter, r *http.Request) {
 	// returned, whatever an earlier policy stored
 	policy := s.doorsNow().planPolicy(name)
 	showText := policy != "none"
+	pol := part{"policy", `SELECT $1::text AS query_text`, []any{policy}}
+	if q.Get("part") == "top" {
+		tfrom, tend, cut := topWindow(from, to)
+		s.multi(w, r, []part{
+			{"top", sqlMSSQLSessionsTop, []any{id, tfrom, to, n, showText}},
+			{"top_window", `SELECT $1::timestamptz AS from_at, $2::timestamptz AS to_at, $3::boolean AS cut`, []any{tfrom, tend, cut}},
+			pol,
+		})
+		return
+	}
 	dim := func(d string) part {
 		return part{d, `SELECT * FROM pgvigil.mssql_session_by_at($1, $2, $3, $4, $5)`, []any{id, from, to, d, at}}
 	}
@@ -71,14 +86,26 @@ func (s *Server) MSSQLSessions(w http.ResponseWriter, r *http.Request) {
 		{"counts", `SELECT * FROM pgvigil.mssql_session_counts_between($1, $2, $3)`, []any{id, from, to}},
 		{"reads", `SELECT * FROM pgvigil.mssql_session_by_reads($1, $2, $3)`, []any{id, from, to}},
 		dim("login"), dim("status"), dim("interface"), dim("address"), dim("isolation"),
-		{"top", sqlMSSQLSessionsTop, []any{id, from, to, n, showText}},
 		// OVW#34 (A2): the session CPU / reads / writes of EVERY session at each group read, the status rows summed
 		// (413's own read; activity's program groups count only user sessions with a program name)
 		{"activity", `SELECT snapshot_at, sum(cpu_ms) AS cpu_ms, sum(reads) AS reads, sum(writes) AS writes
   FROM pgvigil.mssql_session_by WHERE instance_id = $1 AND dimension = 'status' AND snapshot_at > $2 AND snapshot_at <= $3
  GROUP BY snapshot_at ORDER BY snapshot_at`, []any{id, from, to}},
-		{"policy", `SELECT $1::text AS query_text`, []any{policy}},
+		pol,
 	})
+}
+
+// topWindow is the top's reach: the newest historyMaxWindow of the window, counted back from its end or now, whichever is
+// earlier (paramsReach's rule); cut says a longer window was cut.
+func topWindow(from, to time.Time) (time.Time, time.Time, bool) {
+	end := to
+	if now := time.Now(); end.After(now) {
+		end = now
+	}
+	if end.Sub(from) > historyMaxWindow {
+		return end.Add(-historyMaxWindow), end, true
+	}
+	return from, end, false
 }
 
 var (

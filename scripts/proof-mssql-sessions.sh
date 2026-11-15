@@ -31,31 +31,39 @@
 #     + protocol_type of the physical connection: parent_connection_id IS NULL inside the LEFT JOIN's ON), by client
 #     address, by isolation level: each dimension's rows sum to the total session count with system sessions present
 #     (a system session has no connection: it falls in the NULL bucket, kept and named 'no connection'); a session over
-#     MARS counted once; the 'other' row by GROUPING() (P6).
+#     MARS counted once; the 'other' row by the set's own is_other flag, GROUPING() naming the set (P6).
 #  P2 requests by status: a held set - a request blocked on dbo.hold (suspended, LCK_M_*), a WAITFOR DELAY (suspended,
 #     WAITFOR), a CPU loop (running or runnable), a sleeping session with an open transaction - read by mssql_sessions:
 #     the stored counts of running + runnable, suspended, sleeping and background equal a hand read of
 #     sys.dm_exec_requests taken before and after the collector's read in the same minute (both hand reads equal, or
 #     the cycle is retried, at most 5 cycles).
 #  P4 waiting tasks: the blocked request counted in waiting tasks with its wait; the WAITFOR (a benign wait of
-#     waits.go benignWaits) not counted; the longest wait at least the blocked request's hand-read wait_duration_ms.
+#     waits.go benignWaits) not counted; the longest wait at least the blocked request's hand-read wait_duration_ms (read
+#     before the collector; a cycle whose two hand reads list other wait types or counts is retried) [review 413a #7].
 #  P5 top-N over a range [refined before the first run: one request cannot top every list, so two known requests]: R1
 #     (l3) a 150 s loop scanning dbo.t (CPU, logical reads, duration) and R2 (l2) a sort of 3,000,000+ rows with
 #     MAX_GRANT_PERCENT that spills to tempdb (a 50 MB+ grant) [mechanism refined from box diag 413-p5diag before P5's
 #     first graded run: MIN_GRANT_PERCENT on 'TOP (1) ... ORDER BY' made a TopN sort, tempdb 0; R2 now a full sort in a
-#     100 s loop started after R1 and ended before it], both captured by mssql_requests over their minutes; the sessions
+#     loop started after R1, its last iteration begun by 60 s, and its end before R1's checked by their last reads (review
+#     413a #4)], both captured by mssql_requests over their minutes; the sessions
 #     earlier parts hold are ended before P5 starts: GET
 #     /api/mssql/sessions over the range lists R1 at rank 1 of CPU, logical reads and duration and R2 at rank 1 of tempdb
 #     and grant (their sessions and logins),
 #     the statement under the query_text policy (full: the text; none: no text, the policy's words); the reply says the
-#     snapshot keeps user requests and sessions with an open transaction only.
+#     snapshot keeps user requests and sessions with an open transaction only. The top is its own request (?part=top:
+#     a slow top costs only its list) whose top_window is not cut for a window of minutes.
+#  P5b [review 413a #3] the door on stored text: ss moves from full to none (serve restarted): R1's text stays stored
+#     (mssql_statement_text), the reply returns R1's row with no statement and no full_chars.
+#  MEASURE P5 [review 413a #2]: a week of mssql_requests filled (30 requests every 30 s, about 600,000 rows); the top asked
+#     for 30 days answers 200 three times inside serve's statement timeout, its top_window cut to the newest 7 days.
 #  P6 'other': 55 logins each holding one session: the login dimension holds 50 named rows and one 'other' row whose
-#     sessions are the other 5 (+ any login past them), 'other' made by GROUPING() (a login named 'other' stays a named
-#     row of its own).
+#     sessions are the other 5 (+ any login past them), 'other' made by the set's own is_other flag (a login named 'other' stays a named
+#     row of its own). Exactly the 50 the hand read ranks first (count, then name), with the monitor login's one read
+#     session added, are named, and 'other' holds the rest of the hand read's sessions [review 413a #1, #6].
 #  P7 the page: proof-a11y 0 nodes and proof-wording OK on the Connections page with the wiring (the walks job); the
 #     active-transactions chart off with its reason ('needs the Databases counters collector, mssql_counters_db') while
 #     401 is not joined; every new control works or is off with its reason.
-#  A6 the read's time: 5,000 sessions held open (from the box's own client pool), the groups read and the per-minute
+#  A6 the read's time: 5,000 sessions held open (from the box's own client pool; fewer than 5,000 held FAILs the row), the groups read and the per-minute
 #     read each timed 3 times: printed as MEASURE lines with the rows and bytes each read stores; a read over 5 s FAILs
 #     the row (the collector budget's share).
 #  Red on f8e89d2 (before 413): collect refuses mssql_sessions (unknown collection); no route /api/mssql/sessions;
@@ -132,7 +140,14 @@ export PGV_S_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?databas
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "A: migrate"; }
 # memstat <label>: the container's memory against its limit, its cgroup memory events and SQL Server's own view of memory
 memstat() { echo "     MEM $1: $(docker stats --no-stream --format '{{.MemUsage}}' "$SQL" 2>/dev/null); $(docker exec "$SQL" sh -c 'cat /sys/fs/cgroup/memory.events 2>/dev/null | tr "\n" " "' 2>/dev/null); $(sq "SELECT CONCAT('physical_kb ', i.physical_memory_kb, ' committed_kb ', i.committed_kb, ' target_kb ', i.committed_target_kb) FROM sys.dm_os_sys_info i" master 30 2>/dev/null)"; }
-col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; memstat "at the failed collect" >&2; fail "collect $i $c"; }; done; }
+# sample_on / sample_off (A6 only: its own session would move P1's and P6's counts): the monitor login's requests every 2 s
+# while a collect runs - statement, status, wait, CPU, elapsed, the grant asked and given - printed when the collect fails
+SAMPLER=
+sample_on() { : >"$TMPD/sample.out"; ( while :; do sq "SELECT CONCAT(CONVERT(varchar(12), SYSDATETIME(), 114), ' s', r.session_id, ' ', r.status, ' ', ISNULL(r.wait_type, '-'), ' ', r.wait_time, 'ms cpu ', r.cpu_time, ' el ', r.total_elapsed_time, ' grant_kb ', r.granted_query_memory * 8, ' asked_kb ', ISNULL(g.requested_memory_kb, 0), ' ideal_kb ', ISNULL(g.ideal_memory_kb, 0), ' | ', LEFT(REPLACE(REPLACE(SUBSTRING(t.text, r.statement_start_offset / 2 + 1, 400), CHAR(10), ' '), CHAR(13), ' '), 110))
+  FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+  LEFT JOIN sys.dm_exec_query_memory_grants g ON g.session_id = r.session_id AND g.request_id = r.request_id WHERE s.login_name = '$MON'" master 10 2>/dev/null >>"$TMPD/sample.out"; sleep 2; done ) & SAMPLER=$!; }
+sample_off() { [[ -n "$SAMPLER" ]] && { kill "$SAMPLER" 2>/dev/null; wait "$SAMPLER" 2>/dev/null; }; SAMPLER=; }
+col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; sample_off; [[ -s "$TMPD/sample.out" ]] && sed 's/^/     SAMPLE /' "$TMPD/sample.out" >&2; memstat "at the failed collect" >&2; fail "collect $i $c"; }; done; }
 col ss mssql_instance; col ssnone mssql_instance
 ISS=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ss'"); INONE=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ssnone'")
 echo "ok   A: SQL Server $VER, pgvss, $(echo $LOGINS | wc -w) logins, instances ss $ISS / ssnone $INONE, SQL memory cap ${PGVIGIL_SQL_MEM_MB:-4096} MB"
@@ -190,7 +205,7 @@ for cycle in 1 2 3 4 5; do
   h1="$(sq "$HAND_S"; sq "$HAND_R")"; w1=$(sq "$HAND_W")
   col ss mssql_sessions
   h2="$(sq "$HAND_S"; sq "$HAND_R")"; w2=$(sq "$HAND_W")
-  if [[ "$h1" != "$h2" ]]; then echo "     cycle $cycle: the hand reads differ around the collector's read: retried"; continue; fi
+  if [[ "$h1" != "$h2" || "$(cut -d= -f1,2 <<<"$w1" | sort)" != "$(cut -d= -f1,2 <<<"$w2" | sort)" ]]; then echo "     cycle $cycle: the hand reads differ around the collector's read: retried"; continue; fi
   pq "SELECT row_to_json(c) FROM pgvigil.mssql_session_count c WHERE instance_id = $ISS ORDER BY snapshot_at DESC LIMIT 1" > "$TMPD/count.json"
   if HAND="$h1" W="$w1" BENIGN="$BENIGN" python3 - "$TMPD/count.json" <<'PY'
 import json, os, sys
@@ -212,7 +227,9 @@ waits = [l.split('=') for l in os.environ['W'].split() if l.count('=') == 2]
 tasks = sum(int(n) for w, n, _ in waits if w not in benign)
 longest = max([int(m) for w, _, m in waits if w not in benign] or [0])
 if int(row['waiting_tasks'] or 0) != tasks: bad.append(f"waiting_tasks stored {row['waiting_tasks']} hand {tasks} ({waits})")
-if longest and int(row['waiting_longest_ms'] or 0) < longest // 2: bad.append(f"waiting_longest_ms stored {row['waiting_longest_ms']} hand {longest}")
+# the blocked request's lock wait, read before the collector's read: a wait only grows, so the stored longest is at least it
+lock_ms = max([int(m) for w, _, m in waits if w.startswith('LCK_M_')] or [0])
+if int(row['waiting_longest_ms'] or 0) < lock_ms: bad.append(f"waiting_longest_ms stored {row['waiting_longest_ms']} < the blocked request's lock wait {lock_ms} (hand, before the read)")
 if not any(w.startswith('LCK_M_') for w, _, _ in waits): bad.append(f"no lock wait in the hand read {waits}")
 if not any(w == 'WAITFOR' for w, _, _ in waits): bad.append(f"no WAITFOR in the hand read {waits}")
 if int(row['own_sessions'] or 0) < 1: bad.append(f"own_sessions {row['own_sessions']}")
@@ -276,6 +293,14 @@ lg = [b for b in by if b['dimension'] == 'login']
 named, other = [b for b in lg if not b['is_other']], [b for b in lg if b['is_other']]
 if len(named) != 50 or len(other) != 1: bad.append(f"login: {len(named)} named rows and {len(other)} other rows")
 if not any(b['name'] == 'other' and not b['is_other'] for b in named): bad.append("the login named 'other' is not a named row")
+# the exact 50: the hand read's logins plus the monitor's one read session (mssql.go: SetMaxOpenConns(1)), ranked as the read
+# ranks them (count descending, then the name; every name here is lower-case ASCII, so the server's order is this one)
+exp = dict(hl); exp[os.environ['MON']] = exp.get(os.environ['MON'], 0) + 1
+order = sorted(exp, key=lambda l: (-exp[l], l))
+want_named, want_other = set(order[:50]), sum(exp[l] for l in order[50:])
+if named_names != want_named: bad.append(f"named logins differ: stored only {sorted(named_names - want_named)}, hand only {sorted(want_named - named_names)}")
+if other and other[0]['sessions'] != want_other: bad.append(f"other holds {other[0]['sessions']}, the hand read's past the 50 largest {want_other}")
+if mon_n != 1: bad.append(f"the monitor's sessions at the read {mon_n}, want its one connection")
 hand = sorted(((-int(n), l) for l, n in (x.rsplit('=', 1) for x in os.environ['HL'].split('\n') if '=' in x)))
 if other and other[0]['sessions'] < 5: bad.append(f"other holds {other[0]['sessions']} sessions, want 5+")
 print(f"     P1b total {tot['sessions']} (the monitor's {mon_n}), background {tot['background']}; logins named {len(named)} + other {other[0]['sessions'] if other else None}; the hand read's distinct logins {len(hand)}")
@@ -292,27 +317,31 @@ echo "== P5. the top requests over a range =="
 PGVIGIL_PASSWORD="$UPW" "$TMPD/pgvigil" user add -config "$TMPD/m.yaml" "$USR" >/dev/null 2>&1 || fail "P5: user add"
 WPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); U="http://127.0.0.1:$WPORT"
 printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
-"$TMPD/pgvigil" serve -config "$TMPD/m.yaml" -listen "127.0.0.1:$WPORT" >"$TMPD/serve.out" 2>&1 & SRVPID=$!
-for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
-kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.out" >&2; fail "P5: serve exited"; }
-[[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "P5: the API login"
+serve_up() {
+  "$TMPD/pgvigil" serve -config "$TMPD/m.yaml" -listen "127.0.0.1:$WPORT" >"$TMPD/serve.out" 2>&1 & SRVPID=$!
+  for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
+  kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.out" >&2; fail "P5: serve exited"; }
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "P5: the API login"
+}
+serve_up
 # the parts before leave sessions held (P1's 400 s loop, its 8-minute WAITFOR): they would compete for rank 1, so they end first
 unhold
 T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # R1 (l3): 150 s scanning dbo.t at MAXDOP 1 (a core's CPU, about 500,000 reads a second: p5diag T3).
-# R2 (l2), started after R1 and ended 50 s before it, so R1 keeps rank 1 of CPU and duration: a loop of 100 s over a FULL
+# R2 (l2), started after R1, its loop's last iteration begun by 60 s (an iteration about 30-45 s), so it ends well before R1's
+# 150 s and R1 keeps rank 1 of CPU and duration (checked below by their last_seen): a loop over a FULL
 # sort of 3,000,000 rows (about 1.3 GB) under MAX_GRANT_PERCENT = 20 (a grant of about 150 MB, under the sort, so it spills).
 # Not 'TOP (1) ... ORDER BY': that is a TopN sort that keeps one row and never spills (p5diag T4a: 74 MB grant, tempdb 0).
 hold l3 300 "DECLARE @t datetime2 = SYSDATETIME(), @n bigint; WHILE DATEDIFF(second, @t, SYSDATETIME()) < 150 SELECT @n = COUNT_BIG(*) FROM dbo.t WHERE c % 7 = 3 OPTION (MAXDOP 1);"
 R1S=$(heldreq l3) || fail "P5: R1 (l3) never ran its request (above)"
-hold l2 300 "DECLARE @t datetime2 = SYSDATETIME(), @n bigint; WHILE DATEDIFF(second, @t, SYSDATETIME()) < 100 SELECT @n = MAX(z.rn) FROM (SELECT ROW_NUMBER() OVER (ORDER BY a.pad, b.id DESC, a.c) AS rn FROM dbo.t a CROSS JOIN (SELECT TOP (30) id FROM dbo.t) b) z OPTION (MAXDOP 1, MAX_GRANT_PERCENT = 20);"
+hold l2 300 "DECLARE @t datetime2 = SYSDATETIME(), @n bigint; WHILE DATEDIFF(second, @t, SYSDATETIME()) < 60 SELECT @n = MAX(z.rn) FROM (SELECT ROW_NUMBER() OVER (ORDER BY a.pad, b.id DESC, a.c) AS rn FROM dbo.t a CROSS JOIN (SELECT TOP (30) id FROM dbo.t) b) z OPTION (MAXDOP 1, MAX_GRANT_PERCENT = 20);"
 R2S=$(heldreq l2) || fail "P5: R2 (l2) never ran its request (above)"
 echo "     R1 session $R1S, R2 session $R2S"
 # mssql_requests every 20 s while they run (their figures grow; the top takes each request's largest)
 for _ in $(seq 1 7); do col ss mssql_requests; col ssnone mssql_requests; sleep 20; done
 T1=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
 for i in "$ISS" "$INONE"; do
-  code=$(curl -s -o "$TMPD/top-$i.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/sessions?instance=$i&from=$T0&to=$T1&n=5")
+  code=$(curl -s -o "$TMPD/top-$i.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/sessions?instance=$i&from=$T0&to=$T1&n=5&part=top")
   [[ "$code" == 200 ]] || { head -c 300 "$TMPD/top-$i.json" >&2; fail "P5: GET /api/mssql/sessions instance $i: HTTP $code (red on f8e89d2: no route)"; }
 done
 R1S="$R1S" R2S="$R2S" python3 - "$TMPD/top-$ISS.json" "$TMPD/top-$INONE.json" <<'PY' || fail "P5: see above"
@@ -333,27 +362,85 @@ if g and g[0]['value'] < 51200: bad.append(f"R2's grant {g[0]['value']} KB, want
 t = [r for r in rows if r['measure'] == 'tempdb_alloc_kb' and r['rank'] == 1]
 if not t or t[0]['value'] <= 0: bad.append(f"R2 allocated no tempdb: {t}")
 if pol['query_text'] != 'full' or not any(r['statement'] for r in rows if r['measure'] == 'cpu_ms' and r['rank'] == 1): bad.append(f"ss (full): no statement on R1's row ({pol})")
+# R2 ended before R1 (the rank rows above rest on it): their last reads
+r1 = next((r for r in rows if r['measure'] == 'cpu_ms' and r['rank'] == 1), None); r2 = next((r for r in rows if r['measure'] == 'tempdb_alloc_kb' and r['rank'] == 1), None)
+if r1 and r2:
+    print(f"     R1 last read {r1['last_seen']}, R2 last read {r2['last_seen']}")
+    if not r2['last_seen'] < r1['last_seen']: bad.append("R2 was still running at R1's last read")
+tw = [dict(zip(json.load(open(sys.argv[1]))['top_window']['columns'], r)) for r in json.load(open(sys.argv[1]))['top_window']['rows']][0]
+if tw['cut'] is not False: bad.append(f"a window of a few minutes was cut: {tw}")
 rows2, pol2 = top(sys.argv[2])
 if pol2['query_text'] != 'none' or any(r['statement'] for r in rows2): bad.append(f"ssnone (none): a statement returned ({pol2})")
 if bad: print('DIFF', '; '.join(bad)); sys.exit(1)
 PY
+echo "ok   P5: R1 at rank 1 of CPU, logical reads and duration, R2 at rank 1 of tempdb and grant (50 MB+), R2 ended first; the statement under 'full', none under 'none'"
+# P5b the door on stored text: ss's policy goes from full to none; its stored text stays, the reply carries none of it
+TXT=$(pq "SELECT count(*) FROM pgvigil.mssql_requests q JOIN pgvigil.mssql_statement_text st ON st.text_id = q.text_id WHERE q.instance_id = $ISS AND q.session_id = $R1S AND q.snapshot_at > '$T0' AND st.statement IS NOT NULL")
+[[ "$TXT" -ge 1 ]] || fail "P5b: R1's text is not stored under 'full' (the row could not fail)"
+kill "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=
+sed -i '/- name: ss$/,/query_text:/ s/query_text: full/query_text: none/' "$TMPD/m.yaml"
+[[ "$(grep -c 'query_text: full' "$TMPD/m.yaml")" == 0 ]] || fail "P5b: ss's policy not changed in the config"
+serve_up
+code=$(curl -s -o "$TMPD/top-none.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/sessions?instance=$ISS&from=$T0&to=$T1&n=5&part=top")
+[[ "$code" == 200 ]] || { head -c 300 "$TMPD/top-none.json" >&2; fail "P5b: HTTP $code"; }
+python3 - "$TMPD/top-none.json" "$R1S" <<'PY' || fail "P5b: see above"
+import json, sys
+d = json.load(open(sys.argv[1])); rows = [dict(zip(d['top']['columns'], r)) for r in (d['top']['rows'] or [])]
+pol = dict(zip(d['policy']['columns'], d['policy']['rows'][0]))
+bad = []
+if pol['query_text'] != 'none': bad.append(f"policy {pol}")
+if not any(str(r['session_id']) == sys.argv[2] for r in rows): bad.append("R1 is not in the top any more")
+if any(r['statement'] or r['full_chars'] for r in rows): bad.append("a statement returned under 'none'")
+if bad: print('DIFF', '; '.join(bad)); sys.exit(1)
+PY
+echo "ok   P5b: ss moved to 'none': R1's stored text kept ($TXT rows), no statement in the reply"
+# MEASURE P5: the top over a filled 7-day window (a busy instance's week: 30 requests every 30 s, about 600,000 rows) asked
+# for 30 days: the reply cuts to the newest 7 and answers inside serve's statement timeout
+pq "DO \$\$ BEGIN FOR d IN 0..8 LOOP PERFORM pgvigil.mssql_ensure_day_partition('mssql_requests', now() - make_interval(days => d)); END LOOP; END \$\$" >/dev/null
+t0=$(date +%s%N)
+pq "INSERT INTO pgvigil.mssql_requests (instance_id, snapshot_at, session_id, request_id, start_time, cpu_ms, logical_reads, tempdb_alloc_kb, granted_memory_kb, elapsed_ms, login_name, program_name, host_name, database_name)
+    SELECT $ISS, s.at, 1000 + k, 0, date_trunc('minute', s.at), (k * 7919 + extract(epoch FROM s.at)::bigint) % 100000, k * 1000, k, k * 10, 30000,
+           'fill' || k, 'fill', 'fillhost', 'pgvss'
+      FROM generate_series(now() - interval '8 days', now() - interval '10 minutes', interval '30 seconds') s(at) CROSS JOIN generate_series(1, 30) k" >/dev/null
+FILLN=$(pq "SELECT count(*) FROM pgvigil.mssql_requests WHERE instance_id = $ISS AND session_id >= 1000")
+echo "MEASURE P5: the fill: $FILLN rows in $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+F30=$(date -u -d '-30 days' +%Y-%m-%dT%H:%M:%SZ); TNOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for k in 1 2 3; do
+  t0=$(date +%s%N)
+  code=$(curl -s -o "$TMPD/top-fill.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/sessions?instance=$ISS&from=$F30&to=$TNOW&n=25&part=top")
+  ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+  echo "MEASURE P5: GET part=top over 30 days asked (7 read, $FILLN rows filled), n=25, run $k: HTTP $code in $ms ms"
+  [[ "$code" == 200 ]] || { head -c 300 "$TMPD/top-fill.json" >&2; fail "P5: the top over a filled week: HTTP $code"; }
+done
+python3 - "$TMPD/top-fill.json" <<'PY' || fail "P5: the top over a filled week (above)"
+import json, sys
+d = json.load(open(sys.argv[1])); tw = dict(zip(d['top_window']['columns'], d['top_window']['rows'][0]))
+rows = d['top']['rows'] or []
+if tw['cut'] is not True or len(rows) < 100: print('DIFF', tw, len(rows)); sys.exit(1)
+print(f"     the top window {tw['from_at']} to {tw['to_at']} (cut), {len(rows)} rows")
+PY
 memstat "after P5"
-echo "ok   P5: R1 at rank 1 of CPU, logical reads and duration, R2 at rank 1 of tempdb and grant (50 MB+); the statement under 'full', none under 'none'"
+echo "ok   P5 MEASURE: the top over a filled week answers 200, cut to 7 days"
 fi
 
 if part A6; then
 echo "== A6. the reads' time at about 5,000 sessions =="
 export PGV_HOLD_DSN="sqlserver://l1:$(urlq "$LP_PW")@127.0.0.1:$PORT_SQL?database=pgvss&encrypt=true&TrustServerCertificate=true&connection+timeout=60"
-go run ./scripts/proof-sessions-hold 5000 900 >"$TMPD/hold5k.out" 2>"$TMPD/hold5k.err" & BG+=($!)
+go build -o "$TMPD/hold5k" ./scripts/proof-sessions-hold || fail "A6: build the holder"
+setsid "$TMPD/hold5k" 5000 900 >"$TMPD/hold5k.out" 2>"$TMPD/hold5k.err" & BG+=($!)
 for _ in $(seq 1 300); do grep -q '^held' "$TMPD/hold5k.out" 2>/dev/null && break; sleep 1; done
 grep -q '^held' "$TMPD/hold5k.out" || { cat "$TMPD/hold5k.err" >&2; fail "A6: the 5,000 sessions never opened"; }
+HELD=$(sed -n 's/^held //p' "$TMPD/hold5k.out")
+[[ "$HELD" == 5000 ]] || { head -5 "$TMPD/hold5k.err" >&2; fail "A6: $HELD of 5000 sessions held"; }
 N=$(sq "SELECT COUNT(*) FROM sys.dm_exec_sessions")
+(( N >= 5000 )) || fail "A6: the server lists $N sessions, under 5000"
 memstat "A6, $N sessions held"
 echo "     $(cat "$TMPD/hold5k.out"); the server lists $N sessions"
 A6FAIL=0
 for c in mssql_sessions mssql_activity; do
   for k in 1 2 3; do
-    t0=$(date +%s%N); col ss "$c"; t1=$(date +%s%N); ms=$(( (t1 - t0) / 1000000 ))
+    sample_on; t0=$(date +%s%N); col ss "$c"; t1=$(date +%s%N); ms=$(( (t1 - t0) / 1000000 )); sample_off
+    (( ms <= 5000 )) || sed 's/^/     SAMPLE /' "$TMPD/sample.out"
     echo "MEASURE A6: $c at $N sessions, run $k: ${ms} ms (the whole collect -once: connect, read, import)"
     (( ms <= 5000 )) || A6FAIL=1
   done
