@@ -52,5 +52,20 @@ func TestNotRunning(t *testing.T) {
 	if !found {
 		t.Error("an RDS instance without an aws: block: no line names it")
 	}
+	// rel-b24p's merge (B24e's WIRING line with 390a): an Azure SQL Database with no azure: block lists the failover
+	// groups' read with its Configured reason, detected or not (RunOnce asks Applies, then Configured)
+	az := &mssql.Info{Kind: mssql.KindAzureDB, ViewDatabaseState: true, Major: 12, VersionNum: 120000, EngineEdition: 5}
+	for _, det := range []*mssql.Info{az, nil} {
+		aout, _ := NotRunning(&config.Config{}, config.Instance{Name: "z", Engine: config.EngineSQLServer}, nil, det)
+		got := ""
+		for _, n := range aout {
+			if n.Name == "mssql_failover_groups" {
+				got = n.Why
+			}
+		}
+		if !strings.Contains(got, "no azure: block") {
+			t.Errorf("an Azure SQL Database without an azure: block (detected %v): mssql_failover_groups %q, want its Configured reason", det != nil, got)
+		}
+	}
 	_ = time.Second
 }
