@@ -1,5 +1,5 @@
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 2ea6318..c795e7f 100644
+index 2ea6318..91ca7b3 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
 @@ -1021,3 +1021,49 @@ LANGUAGE sql STABLE AS $$
@@ -17,6 +17,8 @@ index 2ea6318..c795e7f 100644
 +-- copies on / off from the rule it replaces and the seed is made off, so a chain was ever on exactly when one of its
 +-- rules has a done 'enable' in alert_rule_log (never purged). A rule a user switched on and later off is that user's
 +-- own off rule and colours nothing, nor does an edit of it; the seed itself colours on or off (the owner line).
++-- the walk's read of the switches: a done 'enable' by rule
++CREATE INDEX IF NOT EXISTS alert_rule_log_enable_idx ON pgvigil.alert_rule_log (rule_id) WHERE op = 'enable' AND outcome = 'done';
 +CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_database text DEFAULT NULL)
 +RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
 +               rule_scope text, rule_target text, rule_database text)
@@ -50,8 +52,6 @@ index 2ea6318..c795e7f 100644
 +              AND NOT EXISTS (SELECT 1 FROM ch JOIN pgvigil.alert_rule_log l ON l.rule_id = ch.rule_id
 +                               WHERE l.op = 'enable' AND l.outcome = 'done')))
 +$$;
-+-- the walk's read of the switches: a done 'enable' by rule
-+CREATE INDEX IF NOT EXISTS alert_rule_log_enable_idx ON pgvigil.alert_rule_log (rule_id) WHERE op = 'enable' AND outcome = 'done';
 diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
 index 62f936b..83f386d 100644
 --- i/internal/web/q_metrics.go
