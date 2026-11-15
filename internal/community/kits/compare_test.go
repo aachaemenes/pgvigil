@@ -101,6 +101,43 @@ func TestCompareSets(t *testing.T) {
 	}
 }
 
+// A section without rows: sp_HealthParser returns a one-column 'finding' set in place of a section's columns when
+// system_health holds nothing for it, sp_PressureDetector 'THREADPOOL' in place of its threadpool_waits set (PR #7's
+// kitwatch runs 43712193033 and 43712984127: the same kits, sp_HealthParser's set 1 one column in the first, eight in
+// the second). At its place in the order it is the same set with no rows: one INFO line, never BREAK or DRIFT.
+func TestCompareNoRowsSet(t *testing.T) {
+	full := Set{Columns: []Column{col("finding", "text", "VARCHAR", false), col("event_time", "time", "DATETIME2", true),
+		col("wait_type", "text", "NVARCHAR", true), col("duration_ms", "number", "BIGINT", true)}}
+	ph := Set{Columns: []Column{col("finding", "text", "VARCHAR", false)}}
+	b := Set{Columns: []Column{col("database_name", "text", "NVARCHAR", true), col("size_mb", "number", "DECIMAL", true)}}
+	c := Set{Columns: []Column{col("check_id", "number", "INT", false), col("hours", "number", "DECIMAL", true)}}
+	only := func(ls []Line, kind string) bool { return len(ls) == 1 && ls[0].Kind == kind && ls[0].Class == Info }
+	if ls := Compare(run(full, b, c), run(ph, b, c)); !only(ls, "no rows") || Verdict(ls) != 0 || !strings.Contains(ls[0].What, "event_time") {
+		t.Errorf("the baseline's set 1 without rows in this run: %+v, want one INFO 'no rows' naming the columns not compared", ls)
+	}
+	if ls := Compare(run(ph, b, c), run(full, b, c)); !only(ls, "no rows") || Verdict(ls) != 0 {
+		t.Errorf("set 1 without rows in the baseline, with rows now: %+v, want one INFO 'no rows'", ls)
+	}
+	tp := Set{Columns: []Column{col("session_id", "number", "SMALLINT", true), col("wait_duration_ms", "number", "BIGINT", true),
+		col("threadpool_waits", "text", "NVARCHAR", true)}}
+	tpNone := Set{Columns: []Column{col("THREADPOOL", "text", "NVARCHAR", false)}}
+	if ls := Compare(run(b, tp, c), run(b, tpNone, c)); !only(ls, "no rows") {
+		t.Errorf("sp_PressureDetector's THREADPOOL set without rows: %+v, want one INFO 'no rows'", ls)
+	}
+	x := Set{Columns: []Column{col("alpha", "text", "NVARCHAR", true), col("beta", "text", "NVARCHAR", true), col("gamma", "text", "NVARCHAR", true)}}
+	other := Set{Columns: []Column{col("delta", "text", "NVARCHAR", true)}}
+	if ls := Compare(run(x), run(other)); len(linesOf(ls, "set removed")) != 1 || len(linesOf(ls, "set added")) != 1 || len(linesOf(ls, "no rows")) != 0 {
+		t.Errorf("a one-column set the other set does not name: %+v, want BREAK 'set removed' + DRIFT 'set added'", ls)
+	}
+	if ls := Compare(run(full, ph), run(ph)); len(linesOf(ls, "set removed")) != 1 || Verdict(ls) != 1 {
+		t.Errorf("a set gone next to a set without rows: %+v, want still one BREAK 'set removed'", ls)
+	}
+	two := Set{Columns: []Column{col("finding", "text", "VARCHAR", false), col("detail", "text", "NVARCHAR", true)}}
+	if ls := Compare(run(two), run(ph)); len(linesOf(ls, "no rows")) != 0 || len(ls) == 0 {
+		t.Errorf("a two-column set losing a column: %+v, want its column line, not 'no rows'", ls)
+	}
+}
+
 // The outcome, the form and the help (F3): a run that stops being 'done' is BREAK, a timeout its own line; a new
 // parameter the page's write filter does not take out is BREAK; a parameter the filter takes out is DRIFT; a drop
 // in the count of described form parameters is BREAK.
