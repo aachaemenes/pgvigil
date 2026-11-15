@@ -8,7 +8,10 @@
 #   ADMIN_DSN    a superuser connection to a PostgreSQL in KEYWORD form (default 'host=127.0.0.1 port=5432 user=postgres
 #                dbname=postgres'); the proof makes its own repository database there and drops it.
 #   MSSQL_IMAGE  the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
-#   PGVIGIL_PARTS  the parts to run (default MABCDE; a version pass runs MA only)
+#   PGVIGIL_PARTS  the parts to run (default MABCDES; a version pass runs MA only); S needs node, npm, chromium, curl
+#                  and python3, and the wiring (the routes and the tab)
+#   PGVIGIL_VERSION_PASS 1 = a read pass on another version (MSSQL_IMAGE 2017 / 2019, PGVIGIL_PARTS=MA): the parts
+#                  read and the hand counts are judged (A0 A1 A2 A5), the verdict and finding lists (A3 A4) printed
 #   PGVIGIL_WIRING 1 (default) applies scripts/proof-mssql-security-wiring.patch (the join's lines in mssql.go, repo.go,
 #                  web.go, router.ts, main.ts and 0190) to this copy first: the runner then asks the repository which
 #                  parts to read; 0 runs without it (every part the login has the right for is read)
@@ -52,6 +55,17 @@
 #     re-owned to sec_owner: no owner_allow hit. Refused, each with its log row: rule:nope, cert_warn_days 'abc',
 #     pwd_crit_days 30 (over the warning's 20). rule:proxy_public on at the fleet makes the parts function ask for proxies.
 #     A replaced row is ended and its successor names it (replaces). D's fleet rows are ended at its end.
+#  V (408 piece 2, written before its first run): PGVIGIL_VERSION_PASS=1 on SQL Server 2017 and 2019 (CU images):
+#     M passes; A0 the parts as wired (auth, databases, logins read; proxies, registry, server_perms off); A1 the logins
+#     and A2 secdb's objects equal sa's hand count; A5 the parts function as on 2022; A3 and A4 printed.
+#  S (408 piece 2, written before its first run). Two serves of the proof's repository on loopback, one with the UI
+#     login (a user the proof adds) and one with -no-login. S1 GET with the session: writable true. S2 POST add
+#     rule:clr_not_safe on at the fleet: 200, the rule on and set at the fleet. S3 POST end of that row: 200, back to
+#     off at the default. S4 cert_warn_days 'abc': 409 naming 'days are a whole number'. S5 a POST without a session
+#     401, with one but without the X-Pgvigil header 403. S6 the -no-login serve: GET 200, writable false, its reason
+#     naming -no-login; a POST 403. S7 / S8 the tab in a headless Chromium, light and dark: rendered (the Rules heading),
+#     no error box, the 35 rules listed, 0 axe-core 4.14.0 violation nodes (WCAG 2.1 A / AA), every off control with a
+#     visible reason; under -no-login every switch is off, signed in at least the 26 judged rules' switches are live.
 #  E. imported rows (what a Linux container cannot show: P5 / P8 of the probe, NTLM, the Windows registry): an instance
 #     sec-imported (not Linux, machine HOSTX) with SQL logins expiring in 15, 5, 0, -1 and NULL days (CHECK_EXPIRATION
 #     on), the collector signed in with NTLM over TCP from 10.0.0.9, AuditLevel 0, HideInstance 0, a Windows group login
@@ -59,7 +73,7 @@
 #     'has expired' (0), none for -1 and NULL; auth_scheme info. Off rules hit: login_audit_failed, login_audit_all,
 #     hide_instance, local_windows_group, proxy_public.
 set -u
-PARTS=${PGVIGIL_PARTS:-MABCDE}
+PARTS=${PGVIGIL_PARTS:-MABCDES}
 has() { case "$PARTS" in *"$1"*) return 0 ;; esac; return 1; }
 SUF=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
@@ -70,9 +84,10 @@ pass() { echo "PASS $*"; }
 bad() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 die() { echo "FAIL (setup) $*"; exit 1; }
 want() { if [ "$2" = "$3" ]; then pass "$1"; else bad "$1: got [$2], want [$3]"; fi; }
-MADE_DB=
+MADE_DB=; SRV=; SRV2=; CHR=
 cleanup() {
   rc=$?
+  for p in $SRV $SRV2 $CHR; do kill "$p" 2>/dev/null; done
   docker rm -f "$SQL" >/dev/null 2>&1
   if [ -n "$MADE_DB" ]; then psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped"; fi
   rm -rf "$TMPD"
@@ -86,6 +101,12 @@ if [ "${PGVIGIL_WIRING:-1}" = 1 ] && ! grep -q 'mssql/security' internal/web/web
 fi
 grep -q 'mssql/security' internal/web/web.go && WIRED=1
 echo "wiring: $WIRED"
+if has S; then
+  [ "$WIRED" = 1 ] || die "S needs the wiring (the routes and the tab)"
+  for t in chromium node npm curl python3; do command -v $t >/dev/null || die "S: $t is not on this machine"; done
+  # the bundle with the Security tab, before the build: the web UI is embedded in the binary
+  (cd web && npm ci --no-audit --no-fund >/dev/null 2>&1 && npx esbuild src/main.ts --bundle --minify --format=esm --target=es2020 --outfile=../internal/web/dist/app.js >/dev/null 2>&1) || die "S: the web bundle"
+fi
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil || die "go build"
 BIN=$TMPD/pgvigil
 pw() { printf 'Ps9%s' "$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
@@ -166,10 +187,15 @@ if has A; then
     "$(q "select count(*) filter (where object_kind = 'user') || '|' || count(*) filter (where object_kind = 'certificate') || '|' || count(*) filter (where object_kind = 'asym_key') || '|' || count(*) filter (where object_kind = 'sym_key') || '|' || count(*) filter (where object_kind = 'guest_connect') from pgvigil.mssql_security_db_objects where instance_id = $SA and database_name = 'secdb'")" "$HAND"
   if [ "$WIRED" = 1 ]; then GATED="login_audit_failed=not read login_audit_all=not read proxy_public=not read"; PSP="public_server_perm=not read"
   else GATED="login_audit_failed=ok login_audit_all=hit:1 proxy_public=ok"; PSP="public_server_perm=hit:1"; fi
+  if [ "${PGVIGIL_VERSION_PASS:-0}" = 1 ]; then
+    echo "  A3 (printed, a version pass): $(verdicts "$SA")"
+    echo "  A4 (printed, a version pass): $(findings "$SA")"
+  else
   want "A3: the verdicts" "$(verdicts "$SA")" \
     "owner_allow=hit:1 owner_deny=ok cert_expired=hit:1 cert_expiring=hit:1 orphaned_user=hit:1 clr_not_safe=ok guest_connect=hit:1 asym_key_size=hit:1 sym_key_algorithm=hit:1 contained_sql_auth=hit:1 auth_scheme=ok sa_exists=hit:1 sa_enabled=hit:1 windows_login_disabled=ok windows_group_disabled=ok builtin_admin=hit:1 local_windows_group=n/a $GATED hide_instance=n/a check_policy_off=hit:1 sysadmin_expiration_off=hit:2 sysadmin_must_change=hit:1 $PSP password_expiry=ok ad_user_found=not enabled ad_password_expired=not enabled ad_locked=not enabled ad_enabled=not enabled ad_group_found=not enabled engine_service_admin=not enabled agent_service_admin=not enabled fulltext_service_admin=not enabled spn=not enabled"
   want "A4: the findings" "$(findings "$SA")" \
     "a certificate expires soon/warning; a certificate has expired/critical; a login named sa exists/info; an orphaned database user/warning; database owner not in the allow-list/warning"
+  fi
   want "A5: the parts the rules in force need" "$(q "select pgvigil.import_mssql_security_parts($SA)::text")" \
     '{"parts": {"auth": true, "logins": true, "proxies": false, "registry": false, "databases": true, "server_perms": false}}'
   if [ "$WIRED" = 1 ]; then
@@ -249,6 +275,94 @@ if has E; then
   want "E2: the expired one says so" "$(q "select detail from pgvigil.mssql_security_hits where instance_id = $IMP and object = 'exp0'")" "the password of the SQL login exp0 has expired"
   want "E3: the off rules see the rest" "$(q "select string_agg(rule_key, ' ' order by sort) from pgvigil.mssql_security_rule_state where instance_id = $IMP and verdict = 'hit' and not is_on")" \
     "local_windows_group login_audit_failed login_audit_all proxy_public hide_instance"
+fi
+
+if has S; then
+  echo "--- S. the Security tab: the write door, the render, axe in both themes"
+  SA=$(iid sec-sa)
+  UIUSER=secproof; UIPW=$(pw)
+  PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || die "S: user add"
+  freeport() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+  P1=$(freeport); P2=$(freeport); U="http://127.0.0.1:$P1"; U2="http://127.0.0.1:$P2"
+  "$BIN" serve -config "$CFG" -listen "127.0.0.1:$P1" > "$TMPD/serve.log" 2>&1 & SRV=$!
+  "$BIN" serve -config "$CFG" -listen "127.0.0.1:$P2" -no-login > "$TMPD/serve2.log" 2>&1 & SRV2=$!
+  for url in "$U" "$U2"; do for _ in $(seq 1 60); do curl -sf -o /dev/null "$url/" && break; sleep 0.5; done; done
+  JAR=$TMPD/jar; code() { curl -s -o "$TMPD/body" -w '%{http_code}' "$@"; }
+  # the UI password goes in a file curl reads, never on the command line
+  umask 077; printf '{"username": "%s", "password": "%s"}' "$UIUSER" "$UIPW" > "$TMPD/login.json"; umask 022
+  curl -s -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d @"$TMPD/login.json" "$U/api/login" > /dev/null
+  COOKIE=$(awk '$6 == "pgvigil_session" {print $7}' "$JAR")
+  [ -n "$COOKIE" ] || die "S: no session cookie"
+  post() { code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "$2" "$1/api/mssql/security/config"; }
+  want "S1: the GET with a session is writable" "$(code -b "$JAR" "$U/api/mssql/security?instance=$SA&part=rules")|$(grep -o '"writable":true' "$TMPD/body")" '200|"writable":true'
+  want "S2: Turn on through the door (fleet)" "$(post "$U" '{"op":"add","scope":"fleet","key":"rule:clr_not_safe","value":"on"}')|$(q "select is_on || '/' || set_at from pgvigil.mssql_security_rule_state where instance_id = $SA and rule_key = 'clr_not_safe'")" "200|true/fleet"
+  CID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["config_id"])' "$TMPD/body")
+  want "S3: Clear through the door" "$(post "$U" "{\"op\":\"end\",\"config_id\":$CID}")|$(q "select is_on || '/' || set_at from pgvigil.mssql_security_rule_state where instance_id = $SA and rule_key = 'clr_not_safe'")" "200|false/default"
+  want "S4: a refusal is 409 with its reason" "$(post "$U" '{"op":"add","scope":"fleet","key":"cert_warn_days","value":"abc"}')|$(grep -c 'days are a whole number' "$TMPD/body")" "409|1"
+  want "S5: no session 401, no header 403" "$(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{}' "$U/api/mssql/security/config") $(code -b "$JAR" -H 'Content-Type: application/json' -d '{}' "$U/api/mssql/security/config")" "401 403"
+  want "S6: -no-login: read-only with its reason, a write 403" "$(code "$U2/api/mssql/security?instance=$SA&part=rules")|$(grep -o '"writable":false' "$TMPD/body")|$(grep -c 'no-login' "$TMPD/body")|$(post "$U2" '{"op":"add","scope":"fleet","key":"rule:clr_not_safe","value":"on"}')" '200|"writable":false|1|403'
+  # the page in a headless Chromium, both themes, with axe-core 4.14.0 (WCAG 2.1 A / AA) and the off-control rule
+  (cd "$TMPD" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || die "S: npm install axe-core"
+  CDP=$(freeport)
+  chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu about:blank > "$TMPD/chrome.log" 2>&1 & CHR=$!
+  for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  cat > "$TMPD/sec-page.mjs" <<'EOF'
+const [port, base, axePath, inst, cookie] = process.argv.slice(2);
+const fs = await import('node:fs');
+const axeSrc = fs.readFileSync(axePath, 'utf8');
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+if (cookie) await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: base });
+const out = [];
+for (const theme of ['light', 'dark']) {
+  await cmd('Page.navigate', { url: base }); await sleep(800);
+  await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+  await cmd('Page.navigate', { url: base + '#/mssqlsecurity?i=' + inst });
+  let rendered = false;
+  for (let i = 0; i < 80 && !rendered; i++) { await sleep(250); rendered = await ev(`[...document.querySelectorAll('main h3')].some(h => h.textContent === 'Rules')`); }
+  await sleep(500);
+  const page = await ev(`(() => {
+    const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+    const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea')].filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+    const said = x => { const t = x.textContent.trim(); return t.length > 0 && !/:\\s*\\.?$/.test(t); };
+    const bad = ctl.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && said(x); }));
+    const live = [...document.querySelectorAll('main button')].filter(b => /^Turn (on|off)$/.test(b.textContent) && b.getAttribute('aria-disabled') !== 'true').length;
+    const rules = [...document.querySelectorAll('main tr')].filter(tr => /Turn (on|off)|needs the site-profile D5 door/.test(tr.textContent)).length;
+    return { off: ctl.length, offBad: bad.length, live, rules, error: !!document.querySelector('main .error') };
+  })()`);
+  await ev(axeSrc + '; "axe loaded"');
+  const res = await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => JSON.stringify(r.violations.map(v => ({ id: v.id, nodes: v.nodes.length, first: v.nodes[0]?.html.slice(0, 120) }))))`, true);
+  const v = JSON.parse(res);
+  out.push({ theme, rendered, ...page, violationNodes: v.reduce((a, x) => a + x.nodes, 0), violations: v });
+}
+console.log(JSON.stringify(out));
+ws.close();
+EOF
+  page() { node "$TMPD/sec-page.mjs" "$CDP" "$1/" "$TMPD/node_modules/axe-core/axe.min.js" "$SA" "${2:-}" 2> "$TMPD/node.err" || echo "[]"; }
+  grade() { python3 -c 'import json,sys
+r = json.loads(sys.argv[1]); mode = sys.argv[2]
+print(" ".join("%s:rendered=%s,error=%s,rules=%s,offBad=%s,%s,nodes=%s" % (x["theme"], x["rendered"], x["error"], x["rules"], x["offBad"],
+  ("live=%s" % ("yes" if x["live"] >= 26 else x["live"])) if mode == "login" else ("off=%s" % ("yes" if x["off"] > 0 and x["live"] == 0 else x["off"])), x["violationNodes"]) for x in r))' "$1" "$2"; }
+  NOLOGIN=$(page "$U2"); LOGIN=$(page "$U" "$COOKIE")
+  want "S7: -no-login - the tab renders, every switch off with its reason, 0 axe nodes" "$(grade "$NOLOGIN" nologin)" \
+    "light:rendered=True,error=False,rules=35,offBad=0,off=yes,nodes=0 dark:rendered=True,error=False,rules=35,offBad=0,off=yes,nodes=0"
+  want "S8: signed in - the tab renders, the switches live, 0 axe nodes" "$(grade "$LOGIN" login)" \
+    "light:rendered=True,error=False,rules=35,offBad=0,live=yes,nodes=0 dark:rendered=True,error=False,rules=35,offBad=0,live=yes,nodes=0"
+  echo "$NOLOGIN" | python3 -c 'import json,sys; [print("  axe %s: %s" % (x["theme"], v)) for x in json.load(sys.stdin) for v in x["violations"]]' 2>/dev/null
+  [ -s "$TMPD/node.err" ] && echo "  node: $(tail -3 "$TMPD/node.err")"
 fi
 
 if [ "$FAILS" = 0 ]; then echo "PROOF OK: proof-mssql-security ($PARTS)"; exit 0; fi

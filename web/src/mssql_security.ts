@@ -173,6 +173,8 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
     const state = rowsOf(d.state).find(r => r.collection === 'mssql_security');
     const read = rowsOf(d.read), rules = rowsOf(d.rules), findings = rowsOf(d.findings), context = rowsOf(d.context)[0];
     const why = d.writable ? '' : text(d.reason) || 'the settings cannot be edited on this server';
+    // one visible sentence names why every switch and Save is off; each off control is described by it
+    const offNote = el('p', { id: 'sec-off-note', class: 'meta off-reason' }, `Editing is off here: ${why}.`);
 
     out.push(el('p', { class: 'meta' },
       'dbachecks\' security checks and SQLMonitor\'s password-expiry notice, read every hour (mssql_security). ',
@@ -209,16 +211,15 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
       if (r.verdict === 'not enabled') return el('span', { class: 'meta' }, text(r.departure));
       const box = el('span', {});
       const turn = el('button', { type: 'button', class: 'link' }, r.is_on === true ? 'Turn off' : 'Turn on');
-      if (why) offControl(turn, why, undefined);
+      if (why) offControl(turn, why, offNote);
       else turn.addEventListener('click', () => send({ op: 'add', ...target(), key: 'rule:' + text(r.rule_key), value: r.is_on === true ? 'off' : 'on' }, editNote));
       box.append(turn);
       if (r.config_id != null && r.set_at !== 'default') {
         const clear = el('button', { type: 'button', class: 'link' }, `Clear ${whereSet(r)}'s setting`);
-        if (why) offControl(clear, why, undefined);
+        if (why) offControl(clear, why, offNote);
         else clear.addEventListener('click', () => send({ op: 'end', config_id: Number(r.config_id) }, editNote));
         box.append(' ', clear);
       }
-      if (why) box.append(' ', el('span', { class: 'off-reason' }, why));
       return box;
     };
     const ruleCols: Col[] = [
@@ -233,7 +234,7 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
     out.push(el('h3', {}, 'Rules'),
       el('p', { class: 'meta' }, 'A rule that is off still shows what it would find. ', el('abbr', { title: 'pgvigil departs from the source here: hover the star' }, '*'),
         ' marks a departure from the source tool (hover it). A rule that is off at every scope stops the read of its part.'),
-      el('p', { class: 'meta' }, chooser), editNote, grid(rules, ruleCols));
+      el('p', { class: 'meta' }, chooser), ...(why ? [offNote] : []), editNote, grid(rules, ruleCols));
 
     // the settings: day thresholds, the owner lists, the expected scheme
     const settings = rowsOf(d.settings).filter(s => s.value_kind !== 'rule');
@@ -246,14 +247,20 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
           placeholder: r.value_kind === 'list' ? 'login, login, ...' : r.value_kind === 'days' ? 'days' : 'KERBEROS or NTLM' });
         const save = el('button', { type: 'button', class: 'link' }, 'Save');
         const box = el('span', {}, input, ' ', save);
-        if (why) { offControl(save, why, undefined); offControl(input, why, undefined); box.append(' ', el('span', { class: 'off-reason' }, why)); return box; }
+        if (why) {
+          // a text box that is off takes no typing: disabled, and described by the same sentence
+          offControl(save, why, offNote);
+          input.disabled = true;
+          input.setAttribute('aria-describedby', 'sec-off-note');
+          return box;
+        }
         save.addEventListener('click', () => {
           const raw = input.value.trim();
           const value = r.value_kind === 'list' ? JSON.stringify(raw ? raw.split(',').map(x => x.trim()).filter(Boolean) : []) : raw;
           send({ op: 'add', ...target(), key: text(r.key), value }, editNote);
         });
         if (r.config_id != null && r.set_at !== 'default') {
-          const clear = el('button', { type: 'button', class: 'link' }, 'Clear');
+          const clear = el('button', { type: 'button', class: 'link' }, `Clear ${whereSet(r)}'s setting`);
           clear.addEventListener('click', () => send({ op: 'end', config_id: Number(r.config_id) }, editNote));
           box.append(' ', clear);
         }
