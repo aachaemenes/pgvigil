@@ -388,8 +388,9 @@ q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F
 at = q(f"SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")
 # rate is stored real: read it as float8 so Python gets the very value SQL divides (psql prints a real by its shortest
 # text, 112.827, against SQL's 112.82700347...: box run 401proof13 read 136.73499899 against 136.73500137; 0152's points
-# are double precision too: the floors' part B, 2)
-rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate)::float8, 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
+# are double precision too: the floors' part B, 2); the row AT this read only, as pt below (a second read under 1 s
+# before this one would hand max() another read's rate, and with the floors a ratio on the wrong side of one)
+rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate)::float8, 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}' AND v.snapshot_at = '{at}'::timestamptz") or 0)
 # the point AT this read (a 1 s window can hold a second read under 1 s before this one: box run 401proof12 read
 # '136.73...\n16.00...' for one metric; metric_points is (from, to]); a point with no value reads NULL (a floored ratio
 # under its floor: not judged); no point at all reads ''
@@ -921,11 +922,24 @@ echo "== N. D6: the Performance summary, the CPU page's scheduler trend, the Mem
 # two steps ('a chart needs two': run proof8 read two reads in one step), so R1 lands in the minute after R0; every read
 # of R0-R2 takes mssql_counters too (failed_to_create_worker is its series); R3, mssql_cpu alone in a later minute, makes
 # a step with no counter read (its failed_to_create_worker NULL); R4, 30 s of nothing after R3, is the floor's window
-# (under 1 batch a second: compilations per 100 batches 0; with 402's FL5 under 5: no ratio). Each wait to a minute is
-# kept busy at about six batches a second (the summary's floor: 1 batch/s, 5 with FL5). Batch Requests/sec and SQL Compilations/sec are read by hand right after R0's
-# mssql_cpu read (mssql_cpu runs last in R0) and right before R2's (first in R2): the summary over (R0, R2] is 100 x
-# their change, the reads around the hand reads adding at most 10 batches and 10 compilations to either side.
-busymin() { local w=$(( 62 - 10#$(date -u +%S) )); sq "$(for _ in $(seq 1 $((w * 6))); do echo "WAITFOR DELAY '00:00:00.150';"; echo GO; done)" >/dev/null; }
+# (under 1 batch a second: compilations per 100 batches 0; with 402's FL5 under 5: no ratio). Batch Requests/sec and
+# SQL Compilations/sec are read by hand right after R0's mssql_cpu read (mssql_cpu runs last in R0) and right before
+# R2's (first in R2): the summary over (R0, R2] is 100 x their change, the reads around the hand reads adding at most
+# 10 batches and 10 compilations to either side.
+# busymin, the wait into the next minute, kept busy: the summary judges the ratio only at its floor or more (1 batch a
+# second, 5 with FL5) over the WHOLE window (R0, R2], and that window also holds nine collector runs and a 2 s sleep
+# with next to no batch - one session of 0.15 s waits read 3.04, 2.96 and 3.28 batches a second there (box runs
+# 401proof15-17), under FL5's 5. So four sessions side by side, each max(w, 20) x 30 batches: 2,400 batches or more,
+# 8 a second even over a window of 300 s. A batch waits 0.03 s until the wait's own end and not at all after it, so a
+# slow box cannot stretch the wait; a wait whose batches end early sleeps to its second (the next read must land in
+# the next minute).
+busymin() { local w=$(( 62 - 10#$(date -u +%S) )) n t0 end endz body p pids=()
+  t0=$(date +%s); n=$(( (w > 20 ? w : 20) * 30 )); end=$(( t0 + w )); endz=$(date -u -d "@$end" +%Y-%m-%dT%H:%M:%S)
+  body=$(for _ in $(seq 1 $n); do echo "IF SYSUTCDATETIME() < '$endz' WAITFOR DELAY '00:00:00.030';"; echo GO; done)
+  for p in 1 2 3 4; do sq "$body" master 300 >/dev/null & pids+=($!); done
+  for p in "${pids[@]}"; do wait "$p" || fail "N: a session of the busy wait to the minute failed"; done
+  echo "   the busy wait: 4 sessions x $n batches in $(( $(date +%s) - t0 )) s (the wait to its second: $w s)"
+  while (( $(date +%s) < end )); do sleep 0.2; done; }
 handbc() { sq "SELECT CAST(SUM(CASE WHEN RTRIM(counter_name) = N'Batch Requests/sec' THEN cntr_value END) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN RTRIM(counter_name) = N'SQL Compilations/sec' THEN cntr_value END) AS varchar(20))
   FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE N'%:SQL Statistics' AND RTRIM(counter_name) IN (N'Batch Requests/sec', N'SQL Compilations/sec')"; }
 [[ 10#$(date -u +%S) -gt 40 ]] && sleep $(( 61 - 10#$(date -u +%S) ))
@@ -973,10 +987,16 @@ if fl.get('batch_s') is not None and float(fl['batch_s']) < floor:
     elif fl.get('compiles_per_100') is None or float(fl['compiles_per_100']) != 0: bad.append(f"under the floor compiles_per_100 {fl.get('compiles_per_100')}, want 0")
 else:
     print(f"NOT PROVEN live: the floor (the idle window read {fl.get('batch_s')} batches/s: the server was not idle)")
-# the hour the page shows: the cell the page check compares
+# the hour the page shows: the cell the page check compares. With FL5 an hour under the floor holds no ratio and the
+# page's cell says so in words ('NA' tells the page check to expect them); no ratio for any other reason stays a red
 ps = one('perfsummary')
-print(f"   perfsummary over the hour: compiles_per_100 {ps.get('compiles_per_100')}")
-open(f'{d}/n-expect-cell', 'w').write('' if ps.get('compiles_per_100') is None else str(ps['compiles_per_100']))
+print(f"   perfsummary over the hour: batch_s {ps.get('batch_s')}, compiles_per_100 {ps.get('compiles_per_100')}, under the floor {ps.get('compiles_under_floor')}")
+cell = '' if ps.get('compiles_per_100') is None else str(ps['compiles_per_100'])
+if fl5 and ps.get('compiles_under_floor') is True:
+    if ps.get('compiles_per_100') is not None or ps.get('compiles_floor') != 5:
+        bad.append(f"the hour under FL5's floor: compiles_per_100 {ps.get('compiles_per_100')} (want none), floor {ps.get('compiles_floor')} (want 5)")
+    cell = 'NA'
+open(f'{d}/n-expect-cell', 'w').write(cell)
 # the scheduler trend: a value exactly in a step that holds an instance counter read; two steps with a value; R3's step NULL
 sr = rows('mssql_cpu', 'sched')
 reads = q(f"SELECT string_agg(floor(extract(epoch FROM snapshot_at) / 60)::bigint::text, ',') FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' AND snapshot_at > '{nf}' AND snapshot_at <= '{nt}'")
@@ -1021,7 +1041,10 @@ const cell = await until(`(() => { for (const t of document.querySelectorAll('ma
   const tr = [...t.querySelectorAll('tbody tr')].find(r => r.textContent.includes('ctrbox')); if (!tr) return null;
   return tr.children[i]?.textContent.trim() ?? null; } return null; })()`);
 const near = (a, b) => a !== '' && b !== '' && Math.abs(parseFloat(String(a).replace(/[^0-9.\-]/g, '')) - parseFloat(b)) <= 0.051;
-check(`N page: the Performance summary's 'compilations per 100 batches' cell for ctrbox reads ${cell} (the API ${cellWant})`, cell != null && near(cell, cellWant));
+// an hour under FL5's floor (the API's compiles_under_floor, 'NA' here): the cell says so in words with the floor,
+// never a number
+const cellOk = cell != null && (cellWant === 'NA' ? cell.startsWith('N/A: too few batch requests/s') && cell.includes('the floor 5/s') : near(cell, cellWant));
+check(`N page: the Performance summary's 'compilations per 100 batches' cell for ctrbox reads ${cell} (the API ${cellWant === 'NA' ? 'no ratio: the hour is under the floor' : cellWant})`, cellOk);
 await cmd('Page.navigate', { url: `${base}/#/mssqlcpu?i=${sb}&w=1h` });
 check("N page: the CPU page's scheduler trend names 'schedulers that failed to create a worker'", !!await until(`document.querySelector('main')?.innerText.includes('schedulers that failed to create a worker')`));
 await cmd('Page.navigate', { url: `${base}/#/mssqlmemory?i=${sb}&w=1h` });
