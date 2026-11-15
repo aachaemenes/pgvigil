@@ -45,7 +45,7 @@ for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-240}"); do grep -q 'pgvigil demo servin
 grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in ${PGVIGIL_DEMO_WAIT_S:-240} s"; }
 q() { psql "$DSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 
-echo "== the fixtures: fx-chcrit, fx-chrate, fx-chskip (PostgreSQL, no tag)"
+echo "== the fixtures: fx-chcrit, fx-chrate, fx-chskip, fx-chhour (PostgreSQL, no tag)"
 q "insert into pgvigil.instances (name, platform, engine) values ('fx-chcrit', 'onprem', 'postgres'), ('fx-chrate', 'onprem', 'postgres'), ('fx-chskip', 'onprem', 'postgres')" >/dev/null
 q "select pgvigil.log_collection(i.instance_id, 'activity', now() - r.ago, 10, r.st, r.note)
      from pgvigil.instances i
@@ -57,6 +57,16 @@ q "select pgvigil.import_collection_health('proof', jsonb_build_object('health',
      'hour', date_trunc('hour', now() at time zone 'UTC') at time zone 'UTC', 'runs', x.ok + x.err, 'ok', x.ok, 'partial', 0, 'error', x.err, 'skipped', x.skip,
      'rows', 1, 'dur_ms_sum', 10 * (x.ok + x.err), 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60))))
      from (values ('fx-chcrit', 1, 3, 0), ('fx-chrate', 5, 5, 0), ('fx-chskip', 0, 0, 5)) x(name, ok, err, skip)" >/dev/null
+
+# fx-chhour (the review of B6.2, part b #1): one failure logged 10 minutes into the previous UTC hour, its hourly row;
+# a range that starts 20 minutes into that hour counts it in Failed (the hours from the one holding the start), and the
+# list Failed opens must hold it
+q "insert into pgvigil.instances (name, platform, engine) values ('fx-chhour', 'onprem', 'postgres')" >/dev/null
+q "select pgvigil.log_collection(i.instance_id, 'activity', (date_trunc('hour', now() at time zone 'UTC') - interval '50 min') at time zone 'UTC', 10, 'error', 'proof: failed in the first partial hour')
+     from pgvigil.instances i where i.name = 'fx-chhour'" >/dev/null
+q "select pgvigil.import_collection_health('proof', jsonb_build_object('health', jsonb_build_array(jsonb_build_object('instance', 'fx-chhour', 'collection', 'activity',
+     'hour', (date_trunc('hour', now() at time zone 'UTC') - interval '1 hour') at time zone 'UTC', 'runs', 1, 'ok', 0, 'partial', 0, 'error', 1, 'skipped', 0,
+     'rows', 0, 'dur_ms_sum', 10, 'dur_ms_max', 10, 'over_half', 0, 'over_interval', 0, 'interval_s', 60))))" >/dev/null
 
 echo "== a headless Chromium on CDP $CDP"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &

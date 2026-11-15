@@ -105,6 +105,7 @@ Each tab is served from pgvigil's store where the import fills the tables its pa
 | Jobs | screen `dbo.AgentJobsReport_Get` with Start / Stop through a collected instance, then the SQL Agent alerts `dbo.Alerts_Get` | the same |
 | Database files | screen `dbo.DBFilesReport_Get` | the same |
 | Configuration | screen `dbo.Configuration_Get` | the same |
+| Collection Health | screen `dbo.CollectionHealth_Get` (DBA Dash 4.25.0 and later; 4.24.1: 'not read: ... it came with DBA Dash 4.25.0'; a 4.25.0 read login without its GRANT: 'not read: this login has no EXECUTE ...') | the same |
 | Properties | the instance's facts as the repository records them (the stored read) | the same |
 | CPU | pgvigil's CPU page over the CPU minutes the import copied (`mssql_cpu_sample`) | not read: the import copies them |
 | Storage | the newest size of each database the import copied (pgvigil's store, `mssql_database_size`), then screen `dbo.DrivesReport_Get` (pgvigil's own Storage page lists the databases of its own file read, which an imported server has not; the import's volume samples wait for the server to be collected) | screen `dbo.DrivesReport_Get` |
@@ -129,6 +130,7 @@ The screens of the table above. Each is ONE call of the DBA Dash procedure that 
 | DB Space | `dbo.DBFilesReport_Get` | |
 | Configuration | `dbo.Configuration_Get` | |
 | SQL Agent Alerts | `dbo.Alerts_Get` | |
+| Collection Health | `dbo.CollectionHealth_Get` | the time range; DBA Dash 4.25.0 and later |
 
 Every one is a `dbo.*_Get` procedure that writes nothing (each was read in DBA Dash 4.24.1's source: no write to a permanent table, no `_Upd` procedure called). The procedures are the contract, and they change between DBA Dash releases: the screens are proven on DBA Dash 4.24.1 and 4.25.0 (`scripts/proof-dbadash-door.sh`, `PGVIGIL_DBADASH_VERSION` naming the release, on a repository that release's own service built: each screen's grids equal the same procedure's output read by a second, independent SQL Server client). An older repository (for example DBA Dash 4.19) is read the same way and is not proven: the tables, columns and the nine procedures' parameter lists the door and the import use were checked in DBA Dash 4.19.0's source only (`dbo.Instances.CollectionsPausedUntil` and the Summary's Service Broker columns are not there and are not read). A repository of another version is still read and every screen says "not proven on source version <version>"; a procedure whose parameters changed answers with SQL Server's own message on the page.
 

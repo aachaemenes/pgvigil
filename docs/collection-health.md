@@ -30,7 +30,7 @@ a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in 
 ## The page
 
 - **Show**: *Row per collection per instance* (the default at every level) or *Row per collection* - each collection
-  once over the instances shown, with how many it ran on (**Instances**, a link to its rows per instance) and how many
+  once over the instances shown, with how many instances list it (**Instances**, a link to its rows per instance; an N/A row counts) and how many
   failed at their last run (**Failing Instances**), and the worst status of its instances but N/A.
 - **Status**: Critical, Warning, N/A, OK - each can be turned off.
 - **Failed** and **Errors** open the list of the errors logged for the row over the range; **Last Failure** opens it

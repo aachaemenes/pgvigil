@@ -8,7 +8,10 @@
 // the number clicked), Last Failure on the list over the API's errors_from .. errors_to, an Instance name on its own
 // tab, and the grid's statuses = the API's (one judgement); the charts Runs and Cost drawn, Import Lag's place in words. The fixtures (proof-collection-health.sh): fx-chcrit
 // (3 failures in a row, 40 minutes since its success: critical), fx-chrate (5 of 10 failed, the last failed:
-// critical by rate), fx-chskip (skipped only: N/A).
+// critical by rate), fx-chskip (skipped only: N/A), fx-chhour (one failure 10 minutes into the previous UTC hour: the
+// Failed link's counted window). The review of B6.2, part b added: each status alone = the API's count, every row drawn,
+// the tag and instance levels by their rows, Last Failure by the run's own times and opened, Instances opened, the
+// words and pickers of #8 - #11, and a FAIL per named row on a red run.
 // usage: node scripts/collection-health-check.mjs <cdp port> <base url ending in />
 const [port, U] = process.argv.slice(2);
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -87,7 +90,8 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
   ['instance fx-chcrit', `#/collectionhealth?i=${crit?.instance_id}&w=24h`, COLS.slice(1)]]) {
   const p = await open(hash);
   say(!!p, 'CH6 ' + lvl, p ? 'the tab drew' : 'no Collection Health tab (no h2 or no grid)');
-  if (!p) continue;
+  // no tab: each named row FAILs on its own, so a red run shows every row red (the review of B6.2, part b #3f)
+  if (!p) { for (const r of ['columns', 'Show', 'Status filter', 'charts', 'rows']) say(false, `CH6 ${lvl} ${r}`, 'no tab'); continue; }
   say(eq(p.heads, want), 'CH6 ' + lvl + ' columns', p.heads.join(' | '));
   say(eq(p.show?.labels, ['Row per collection per instance', 'Row per collection']) && p.show?.value === 'instance', 'CH6 ' + lvl + ' Show', JSON.stringify(p.show));
   say(eq(p.status.map(s => s.v).sort(), ['critical', 'na', 'ok', 'warning']) && p.status.every(s => s.on), 'CH6 ' + lvl + ' Status filter', JSON.stringify(p.status));
@@ -95,8 +99,20 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
   const charts = await ev(`(() => { const sec = [...document.querySelectorAll('main section')].find(s => s.querySelector('h2')?.textContent.trim() === 'Collection Health');
     return { titles: [...(sec?.querySelectorAll('.chart-title, figcaption, h3') ?? [])].map(e => e.textContent.trim()), lag: (sec?.textContent ?? '').includes(${JSON.stringify(LAG)}) }; })()`);
   say(charts.titles.some(t => /^Runs/.test(t)) && charts.titles.some(t => /Time spent collecting/.test(t)) && charts.lag, 'CH6 ' + lvl + ' charts', JSON.stringify(charts));
+  // the level's rows (the review of B6.2, part b #3c): at the tag every row's instance carries it; at fx-chcrit the rows
+  // are the API's for that instance, status for status
+  if (lvl.startsWith('tag ')) {
+    const tagged = new Set(insts.filter(r => (r.tags ?? []).includes(tag)).map(r => r.name));
+    const out = p.rows.filter(x => !tagged.has(x.Instance?.text));
+    say(p.rows.length > 0 && out.length === 0, `CH6 ${lvl} rows`, `${p.rows.length} row(s), ${out.length} of an instance without the tag${out.length ? ': ' + out.slice(0, 3).map(x => x.Instance?.text).join(', ') : ''}`);
+  } else if (lvl.startsWith('instance ')) {
+    const a = await api({ instance: String(crit?.instance_id) }) ?? [];
+    const got = p.rows.map(x => `${x.Collection.text}|${x.Status.text}`).sort(), want = a.map(x => `${x.collection}|${word[x.status] ?? x.status}`).sort();
+    say(a.length > 0 && eq(got, want), `CH6 ${lvl} rows`, `page ${got.join(', ')} | API ${want.join(', ')}`);
+  } else say(p.rows.length > 0, `CH6 ${lvl} rows`, `${p.rows.length} row(s)`);
 }
 // the Status filter and the Show picker at the root
+const allRows = await api({});
 {
   const p0 = await open('#/collectionhealth?w=24h');
   if (p0) {
@@ -104,12 +120,35 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
       await setStatus(v); await drawnAs(`${v}|instance`);
       const p = await ev(`document.querySelectorAll('main .ch-grid table tbody tr').length`);
       const st = await ev(`(() => { const t = document.querySelector('main .ch-grid table'); if (!t) return []; const hs = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()); const k = hs.indexOf('Status'); return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.textContent.trim()); })()`);
-      say(st.every(s => s === w) && (v !== 'critical' || st.length > 0), `CH6 Status ${w} alone`, `${p} row(s): ${[...new Set(st)].join(', ') || 'none'}`);
+      // as many rows as the API holds of that status, above 0 (the demo has each; the review of B6.2, part b #3a: an
+      // error box or a page that sends a word the API refuses drew no grid and passed)
+      const want = (allRows ?? []).filter(x => (x.status === 'n/a' ? 'na' : x.status) === v).length;
+      say(st.every(s => s === w) && st.length > 0 && st.length === Math.min(want, 200), `CH6 Status ${w} alone`, `${p} row(s): ${[...new Set(st)].join(', ') || 'none'}; the API ${want}`);
     }
     await setStatus(null); await setShow('collection'); await drawnAs('critical,warning,na,ok|collection');
     const heads = await ev(`[...document.querySelectorAll('main .ch-grid table thead th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim())`);
     say(eq(heads, BYCOLL), 'CH6 Row per collection columns', heads.join(' | '));
-  } else say(false, 'CH6 Status / Show', 'no tab');
+  } else for (const r of ['Status Critical alone', 'Status Warning alone', 'Status N/A alone', 'Status OK alone', 'Row per collection columns']) say(false, 'CH6 ' + r, 'no tab');
+}
+
+// the page's own words and pickers (the review of B6.2, part b #8 - #11)
+{
+  // #9 no status ticked: the grid says so, the charts still drawn
+  const p0 = await open('#/collectionhealth?w=24h');
+  if (p0) {
+    await ev(`(() => { for (const i of document.querySelectorAll('main input[name=ch-status]')) { i.checked = false; i.dispatchEvent(new Event('change', { bubbles: true })); } return true; })()`);
+    await drawnAs('|instance');
+    const t = await ev(`(() => { const sec = [...document.querySelectorAll('main section')].find(s => s.querySelector('h2')?.textContent.trim() === 'Collection Health');
+      return { empty: (sec?.textContent ?? '').includes('No status is picked'), canvases: sec?.querySelectorAll('.chart canvas, .chart svg, .u-wrap').length ?? 0, note: (sec?.textContent ?? '').includes('from the last success to the latest failure') }; })()`);
+    say(t.empty && t.canvases > 0, 'CH6 no status ticked: the charts still drawn', JSON.stringify(t));
+    // #10 the status rule in the docs' words
+    say(t.note, 'CH6 the status rule in docs/collection-health.md\'s words', String(t.note));
+  } else for (const r of ['no status ticked: the charts still drawn', 'the status rule in docs/collection-health.md\'s words']) say(false, 'CH6 ' + r, 'no tab');
+  // #8 a range of one whole hour: the charts' place says they are hourly
+  const h0 = Math.floor(Date.now() / 3600e3) * 3600e3;
+  const p1 = await open(`#/collectionhealth?from=${encodeURIComponent(new Date(h0 - 3600e3).toISOString())}&to=${encodeURIComponent(new Date(h0).toISOString())}`);
+  const hourly = p1 ? await ev(`(document.querySelector('main')?.textContent ?? '').split('The charts are hourly').length - 1`) : 0;
+  say(hourly === 2, 'CH6 one whole hour: the charts said hourly', `${hourly} chart place(s) say so`);
 }
 
 // CH7 the landings
@@ -133,7 +172,8 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
   if (p && rows) {
     const A = new Map(rows.map(x => [`${insts.find(i => String(i.instance_id) === String(x.instance_id))?.name}|${x.collection}`, word[x.status] ?? x.status]));
     const bad = p.rows.filter(x => A.get(`${x.Instance.text}|${x.Collection.text}`) !== x.Status.text);
-    say(bad.length === 0 && p.rows.length > 0, 'CH7 grid = API statuses', `${p.rows.length} row(s), ${bad.length} differ${bad.length ? ': ' + bad.slice(0, 3).map(x => `${x.Instance.text}/${x.Collection.text} ${x.Status.text}`).join(', ') : ''}`);
+    // every row drawn (up to a grid's page), each with the API's status (the review of B6.2, part b #3b)
+    say(bad.length === 0 && p.rows.length > 0 && p.rows.length === Math.min(rows.length, 200), 'CH7 grid = API statuses', `${p.rows.length} row(s) of the API's ${rows.length}, ${bad.length} differ${bad.length ? ': ' + bad.slice(0, 3).map(x => `${x.Instance.text}/${x.Collection.text} ${x.Status.text}`).join(', ') : ''}`);
   } else say(false, 'CH7 grid = API statuses', 'no grid or no API');
   if (row) {
     const inst = route(row.Instance.links.instance);
@@ -145,16 +185,48 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
       const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
       say(listed === n && n > 0, `CH7 ${col} -> the error list`, `${n} clicked, ${listed} listed (${href})`);
     }
-    const lf = route(row['Last Failure'].links.lastfailure);
-    const ef = mine[0]?.errors_from, et = mine[0]?.errors_to;
-    say(lf.tab === 'collectionhealth' && !!ef && Date.parse(lf.q.get('from')) === Date.parse(ef) && Date.parse(lf.q.get('to')) === Date.parse(et), 'CH7 Last Failure window',
-      `${row['Last Failure'].links.lastfailure ?? 'no link'} vs API ${ef} .. ${et}`);
+    // Last Failure (the review of B6.2, part b #3d): the window by the rule over the run's own times - from its last
+    // success (fx-chcrit: ok, then 3 failures), to its last failure + 1 hour - and its landing lists the 3 failures
+    const lfh = row['Last Failure'].links.lastfailure, lf = route(lfh);
+    const okAt = mine[0]?.last_success, failAt = mine[0]?.last_failure;
+    const wantTo = failAt ? Date.parse(failAt) + 3600e3 : NaN;
+    say(lf.tab === 'collectionhealth' && !!okAt && Date.parse(lf.q.get('from')) === Date.parse(okAt) && Date.parse(lf.q.get('to')) === wantTo, 'CH7 Last Failure window',
+      `${lfh ?? 'no link'} vs the last success ${okAt} .. the last failure + 1 h`);
+    if (lfh) {
+      await cmd('Page.navigate', { url: U + lfh }); await sleep(2000);
+      const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
+      say(listed === 3, 'CH7 Last Failure -> the error list', `${listed} listed, the fixture's 3 failures`);
+    } else say(false, 'CH7 Last Failure -> the error list', 'no link');
   } else for (const c of ['Instance name', 'Failed', 'Errors', 'Last Failure window']) say(false, 'CH7 ' + c, 'no fx-chcrit row');
   // Instances (Row per collection) -> the per-instance rows of that collection
   const p2 = await open('#/collectionhealth?w=24h&grain=collection');
   const r2 = p2?.rows.find(x => x.Collection?.text === 'activity');
   const ih = route(r2?.Instances?.links?.instances);
   say(ih.tab === 'collectionhealth' && ih.q.get('grain') === 'instance' && ih.q.get('collection') === 'activity', 'CH7 Instances', r2?.Instances?.links?.instances ?? 'no link');
+  // opened (the review of B6.2, part b #3e): every row of activity, as many as the API's per-instance activity rows
+  if (r2?.Instances?.links?.instances) {
+    const p3 = await open(r2.Instances.links.instances);
+    const want = (rows ?? []).filter(x => x.collection === 'activity').length;
+    say(!!p3 && p3.rows.length > 0 && p3.rows.every(x => x.Collection?.text === 'activity') && p3.rows.length === Math.min(want, 200), 'CH7 Instances -> the rows',
+      `${p3?.rows.length ?? 0} row(s), the API's ${want}`);
+  } else say(false, 'CH7 Instances -> the rows', 'no link');
+  // Failed opens the window it counts (the review of B6.2, part b #1; fixture fx-chhour): a range that starts 20 minutes
+  // into the hour of its one failure counts it, and the list Failed opens holds it
+  const hr = byName('fx-chhour');
+  if (hr) {
+    const h0 = Math.floor(Date.now() / 3600e3) * 3600e3;
+    const p4 = await open(`#/collectionhealth?i=${hr.instance_id}&from=${encodeURIComponent(new Date(h0 - 40 * 60e3).toISOString())}&to=${encodeURIComponent(new Date().toISOString())}`);
+    const r4 = p4?.rows.find(x => x.Collection?.text === 'activity');
+    const fh = r4?.Failed?.links?.failed;
+    if (fh) {
+      await cmd('Page.navigate', { url: U + fh }); await sleep(2000);
+      const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
+      say(r4.Failed.text === '1' && listed === 1, 'CH7 Failed -> the counted window (fx-chhour)', `Failed ${r4.Failed.text}, ${listed} listed (${fh})`);
+    } else say(false, 'CH7 Failed -> the counted window (fx-chhour)', r4 ? `Failed ${r4.Failed?.text}: no link` : 'no fx-chhour row');
+    // #11 the error list's window on the page's clock, no raw UTC
+    const cap = await ev(`document.querySelector('main .ch-errors')?.parentElement?.querySelector('p.meta')?.textContent ?? document.querySelector('main p.meta')?.textContent ?? ''`);
+    say(!/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(cap), 'CH7 the error list\'s window on the page\'s clock', cap.slice(0, 160));
+  } else for (const r of ['Failed -> the counted window (fx-chhour)', 'the error list\'s window on the page\'s clock']) say(false, 'CH7 ' + r, 'no fx-chhour instance');
   // the rate and the skip fixtures as the API judges them
   const one = n => rows?.find(x => String(x.instance_id) === String(byName(n)?.instance_id) && x.collection === 'activity');
   say(one('fx-chrate')?.status === 'critical' && /% failed/.test(one('fx-chrate')?.status_reason ?? ''), 'CH7 API fx-chrate', JSON.stringify(one('fx-chrate') ?? null).slice(0, 160));
