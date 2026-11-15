@@ -2,8 +2,8 @@
 # Lab RP (task 390b): an Amazon RDS for PostgreSQL source and one read replica for the provider replica proof
 # scripts/proof-cloud-replicas.sh, made and removed from the machine that holds the AWS CLI sign-in.
 #
-#   scripts/lab/aws-rds-replica.sh up                  the source (and its security group, the replica's parameter group, the state file)
-#   scripts/lab/aws-rds-replica.sh replica             the read replica of the source (its own parameter group)
+#   scripts/lab/aws-rds-replica.sh up                  the source (and its security group, the lab's parameter group, the state file)
+#   scripts/lab/aws-rds-replica.sh replica             the read replica of the source (it takes the source's parameter group)
 #   scripts/lab/aws-rds-replica.sh allow <ip> [<ip>]   the security group admits 5432 from these addresses only
 #   scripts/lab/aws-rds-replica.sh logins              (where 5432 reaches) the collector's login on the source (pg_monitor)
 #   scripts/lab/aws-rds-replica.sh reboot              reboot the replica (R-E)
@@ -22,8 +22,11 @@
 # design fold 10: a long read on the replica holds replay for as long as it runs, so the proof's lag fault is
 # deterministic); the source: db.t4g.micro, the default PostgreSQL version, 20 GB gp3, single AZ, publicly accessible
 # through the group only, automated backups for 1 day (RDS makes no read replica of an instance without them), no
-# Performance Insights, no enhanced monitoring, deletion protection off; the replica: db.t4g.micro, the same group, the
-# parameter group above. About USD 0.016 an hour each plus gp3 (the design's price line, USD 0.08 for the lab's hours);
+# Performance Insights, no enhanced monitoring, deletion protection off, the parameter group above (both settings act
+# on a standby only); the replica: db.t4g.micro, the same security group, and the source's parameter group - RDS takes
+# no parameter group at a PostgreSQL read replica's create ('A parameter group can't be specified during Read Replica
+# creation for the following DB engine: postgres') and gives a same-Region replica its source's; 'replica' reads the
+# group and the setting back. About USD 0.016 an hour each plus gp3 (the design's price line, USD 0.08 for the lab's hours);
 # the AWS lab's rules: one lab at a time, down the same day, stop and ask over USD 5.
 # The master and the collector's passwords are made here from /dev/urandom, written only to the mode-600 state file
 # <dir>/aws-rds-replica.env and handed to the AWS CLI in a mode-600 request file removed right after the call, to psql
@@ -98,7 +101,7 @@ EOF
   [[ $FAM == postgres* ]] || fail "the default PostgreSQL version's parameter group family was not read ($FAM)"
   setstate PG_FAMILY "$FAM"
   aw rds create-db-parameter-group --db-parameter-group-name "$PG_GROUP" --db-parameter-group-family "$FAM" \
-    --description "pgvigil proof $PGVIGIL_LAB_PROOF: replay held by a long read (max_standby_streaming_delay -1)" \
+    --description "pgvigil proof $PGVIGIL_LAB_PROOF: the source's group, taken by its replica - replay held by a long read (max_standby_streaming_delay -1)" \
     --tags "Key=pgvigil-proof,Value=$PGVIGIL_LAB_PROOF" --query 'DBParameterGroup.DBParameterGroupName' --output text | sed 's/^/made: parameter group /'
   aw rds modify-db-parameter-group --db-parameter-group-name "$PG_GROUP" --parameters \
     "ParameterName=max_standby_streaming_delay,ParameterValue=-1,ApplyMethod=immediate" \
@@ -110,7 +113,7 @@ import json, sys
 json.dump({
   "DBInstanceIdentifier": "$SRC_ID", "DBInstanceClass": "$CLASS", "Engine": "postgres",
   "AllocatedStorage": 20, "StorageType": "gp3", "MasterUsername": "$ADMIN_USER", "MasterUserPassword": "$ADMIN_PW",
-  "VpcSecurityGroupIds": ["$SGID"], "PubliclyAccessible": True, "MultiAZ": False,
+  "VpcSecurityGroupIds": ["$SGID"], "PubliclyAccessible": True, "MultiAZ": False, "DBParameterGroupName": "$PG_GROUP",
   "BackupRetentionPeriod": 1, "AutoMinorVersionUpgrade": False, "DeletionProtection": False,
   "CopyTagsToSnapshot": False, "EnablePerformanceInsights": False, "MonitoringInterval": 0,
   "Tags": [{"Key": "pgvigil-proof", "Value": "$PGVIGIL_LAB_PROOF"}],
@@ -120,7 +123,7 @@ PY
     if aw rds describe-db-instances --db-instance-identifier "$SRC_ID" >/dev/null 2>&1; then echo "the instance $SRC_ID exists despite the error: run down" >&2; exit 3; fi
     echo "the create was refused: run down to remove the security group and the parameter group" >&2; exit 3
   fi
-  echo "made: DB instance $SRC_ID (postgres, $CLASS, 20 GB gp3, backups 1 day); waiting until it is available (10-20 min)"
+  echo "made: DB instance $SRC_ID (postgres, $CLASS, 20 GB gp3, backups 1 day, parameter group $PG_GROUP); waiting until it is available (10-20 min)"
   aw rds wait db-instance-available --db-instance-identifier "$SRC_ID" || aw rds wait db-instance-available --db-instance-identifier "$SRC_ID"
   setstate SRC_HOST "$(aw rds describe-db-instances --db-instance-identifier "$SRC_ID" --query 'DBInstances[0].Endpoint.Address' --output text)"
   load; echo "up: the source $SRC_HOST:5432; next: allow <the reading machine's address>, logins, then (R-B) replica"
@@ -134,16 +137,22 @@ import json, sys
 json.dump({
   "DBInstanceIdentifier": "$REP_ID", "SourceDBInstanceIdentifier": "$SRC_ID", "DBInstanceClass": "$CLASS",
   "StorageType": "gp3", "VpcSecurityGroupIds": ["$SG"], "PubliclyAccessible": True, "MultiAZ": False,
-  "DBParameterGroupName": "$PG_GROUP", "AutoMinorVersionUpgrade": False, "DeletionProtection": False,
+  "AutoMinorVersionUpgrade": False, "DeletionProtection": False,
   "EnablePerformanceInsights": False, "MonitoringInterval": 0,
   "Tags": [{"Key": "pgvigil-proof", "Value": "$PGVIGIL_LAB_PROOF"}],
 }, open(sys.argv[1], "w"))
 PY
   create "$REQ" create-db-instance-read-replica || exit 3
-  echo "made: read replica $REP_ID of $SRC_ID ($CLASS, $PG_GROUP); waiting until it is available"
+  echo "made: read replica $REP_ID of $SRC_ID ($CLASS; no parameter group named: RDS gives it the source's); waiting until it is available"
   aw rds wait db-instance-available --db-instance-identifier "$REP_ID" || aw rds wait db-instance-available --db-instance-identifier "$REP_ID"
   setstate REP_HOST "$(aw rds describe-db-instances --db-instance-identifier "$REP_ID" --query 'DBInstances[0].Endpoint.Address' --output text)"
-  load; echo "replica: $REP_HOST:5432 (the source's logins replicate to it)"
+  load
+  # the replica's group as RDS reports it, and the setting the proof's hold rests on as the replica itself answers it
+  # (where 5432 reaches from here: after 'allow'); a replica on another group could not hold replay
+  G=$(aw rds describe-db-instances --db-instance-identifier "$REP_ID" --query 'DBInstances[0].DBParameterGroups[0].[DBParameterGroupName,ParameterApplyStatus]' --output text | tr '\t' ' ')
+  [ "${G%% *}" = "$PG_GROUP" ] || fail "the replica's parameter group is '$G', not the source's $PG_GROUP: the proof's hold would not hold (down removes it)"
+  V=$(PGPASSWORD="$ADMIN_PW" psql "host=$REP_HOST port=5432 user=$ADMIN_USER dbname=postgres sslmode=require connect_timeout=20" -XAtqc 'show max_standby_streaming_delay' 2>/dev/null || echo 'not read')
+  echo "replica: $REP_HOST:5432 (the source's logins replicate to it); parameter group $G; max_standby_streaming_delay on it: $V"
   ;;
 allow)
   need_aws; load; shift
@@ -214,7 +223,14 @@ down)
   LEFT_SG=$(aw ec2 describe-security-groups --filters "Name=tag:pgvigil-proof,Values=$PGVIGIL_LAB_PROOF" --query 'length(SecurityGroups)' --output text)
   if [ -n "$SG" ]; then LEFT_SG=$((LEFT_SG + $(aw ec2 describe-security-groups --filters "Name=group-id,Values=$SG" --query 'length(SecurityGroups)' --output text))); fi
   LEFT_BK=$(aw rds describe-db-instance-automated-backups --query "length(DBInstanceAutomatedBackups[?DBInstanceIdentifier=='$SRC_ID' || DBInstanceIdentifier=='$REP_ID'])" --output text)
-  LEFT_SN=$(aw rds describe-db-snapshots --query "length(DBSnapshots[?DBInstanceIdentifier=='$SRC_ID' || DBInstanceIdentifier=='$REP_ID'])" --output text)
+  # an automated snapshot goes with its instance's automated backups a little after the delete's waiter returns (seen
+  # once: still listed 'available' 20 s after it): it is read for up to 5 minutes before it counts as left
+  LEFT_SN=
+  for _ in $(seq 1 30); do
+    LEFT_SN=$(aw rds describe-db-snapshots --query "length(DBSnapshots[?DBInstanceIdentifier=='$SRC_ID' || DBInstanceIdentifier=='$REP_ID'])" --output text)
+    [ "$LEFT_SN" = 0 ] && break
+    sleep 10
+  done
   LEFT_TAG=$(aw resourcegroupstaggingapi get-resources --tag-filters "Key=pgvigil-proof,Values=$PGVIGIL_LAB_PROOF" --query 'ResourceTagMappingList[].ResourceARN' --output text)
   echo "read back: instances $LEFT_DB, parameter groups $LEFT_PG, security groups $LEFT_SG, automated backups $LEFT_BK, snapshots $LEFT_SN; tagged resources listed: ${LEFT_TAG:-none}"
   [ "$LEFT_DB|$LEFT_PG|$LEFT_SG|$LEFT_BK|$LEFT_SN" = "0|0|0|0|0" ] || fail "something is left (above): the state file $STATE stays"
