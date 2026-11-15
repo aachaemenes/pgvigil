@@ -155,13 +155,13 @@ func replPublicationsSQL(db string) string  { return replPublicationsFor(db, fal
 func replSubscriptionsSQL(db string) string { return replSubscriptionsFor(db, false) }
 func replAgentsSQL(db string) string        { return replAgentsFor(db, false) }
 
-// replMergeTablesSQL asks whether a distribution database has the four merge tables the merge arm reads (merge = 1):
-// the subscriptions statement carries its merge arm only then, so a database without them still reads its
-// transactional subscriptions
+// replMergeTablesSQL asks whether a distribution database has the four merge tables the merge arm reads (has_merge =
+// 1): the subscriptions statement carries its merge arm only then, so a database without them still reads its
+// transactional subscriptions. (Never the alias 'merge': MERGE is a T-SQL keyword, Msg 156.)
 func replMergeTablesSQL(db string) string {
 	n := func(t string) string { return `OBJECT_ID(` + literal(quoteName(db)+".dbo."+t) + `)` }
 	return `SELECT CASE WHEN ` + n("MSmerge_agents") + ` IS NULL OR ` + n("MSmerge_sessions") + ` IS NULL OR ` + n("MSmerge_history") +
-		` IS NULL OR ` + n("MSmerge_subscriptions") + ` IS NULL THEN 0 ELSE 1 END AS merge`
+		` IS NULL OR ` + n("MSmerge_subscriptions") + ` IS NULL THEN 0 ELSE 1 END AS has_merge`
 }
 
 func replPublicationsFor(db string, mapped bool) string {
@@ -377,12 +377,18 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 			rows = append(rows, replNoAccess(name))
 			continue
 		}
+		// a failed probe is said (a source that keeps no rows: the import keeps a kind's last rows only for
+		// '<database>.dbo.<table>' or '<database>' alone) and the merge arm stays on: where the merge tables really are
+		// missing, the subscriptions read then fails under its own source and its last rows are kept
 		hasMerge := true
-		if m, err := QueryRows(ctx, conn, replMergeTablesSQL(name)); err == nil && len(m) == 1 {
-			v, _ := m[0]["merge"].(int64)
+		if m, err := QueryRows(ctx, conn, replMergeTablesSQL(name)); err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": name + " (merge tables check)", "message": err.Error()})
+		} else if len(m) == 1 {
+			v, _ := m[0]["has_merge"].(int64)
 			hasMerge = v == 1
-		} else if ctx.Err() != nil {
-			return nil, ctx.Err()
 		}
 		mapped := false
 		if m, err := QueryRows(ctx, conn, replServersSQL(name)); err != nil {
