@@ -110,7 +110,8 @@
 //                     EMPTY: a filter leaving no row turns every Copy item off with 'No data to copy'
 //   G-file            Export Excel and each Export file form share one file name stem (oneFile's); CSV the header then n
 //                     rows; JSON n objects; Markdown n+2 lines; HTML meta utf-8, a style block with the fills, td classes,
-//                     no inline style; PostgreSQL SQL: a BOM, SET standard_conforming_strings = on first, DROP TABLE IF
+//                     no inline style; PostgreSQL SQL: no BOM (psql reads none), SET standard_conforming_strings = on first,
+//                     SET client_encoding = 'UTF8', DROP TABLE IF
 //                     EXISTS pg_temp.pgvigil_grid, one CREATE TEMP TABLE, INSERT INTO pg_temp.pgvigil_grid, n value rows,
 //                     no N''; SQL Server: a BOM, IF OBJECT_ID('tempdb..#pgvigil_grid') ... DROP, [sessions], every string N''
 //   G-hidden          platform hidden: in no copy and no file
@@ -771,9 +772,9 @@ await guard('G-file', async () => {
   const r = {
     named, csv: csv.length === n + 1 && JSON.stringify(csv[0]) === JSON.stringify(hs), json: Array.isArray(js) && js.length === n && JSON.stringify(Object.keys(js[0] ?? {})) === JSON.stringify(hs),
     markdown: md.length === n + 2, html: /<meta charset="utf-8">/i.test(html) && /<style[\s\S]*background[\s\S]*<\/style>/i.test(html) && /<td class="[^"]+"/.test(html) && !/<td[^>]*style=/i.test(html),
-    sqlPg: bom(f['SQL (INSERT) for PostgreSQL']) && /^SET standard_conforming_strings = on;$/i.test(firstStmt(pg)) && /DROP TABLE IF EXISTS pg_temp\.pgvigil_grid;/.test(pg)
+    sqlPg: !!f['SQL (INSERT) for PostgreSQL'] && !bom(f['SQL (INSERT) for PostgreSQL']) && /^SET standard_conforming_strings = on;$/i.test(firstStmt(pg)) && /SET client_encoding = 'UTF8';/.test(pg) && /DROP TABLE IF EXISTS pg_temp\.pgvigil_grid;/.test(pg)
       && (pg.match(/CREATE TEMP(ORARY)? TABLE/gi) ?? []).length === 1 && /INSERT INTO pg_temp\.pgvigil_grid/.test(pg) && tuples(pg) === n && !/\bN'/.test(pg),
-    sqlMs: bom(f['SQL (INSERT) for SQL Server']) && /IF OBJECT_ID\('tempdb\.\.#pgvigil_grid'\) IS NOT NULL DROP TABLE #pgvigil_grid/.test(ms) && /\[sessions\]/.test(ms) && /N'/.test(ms) && !/[(,]\s*'/.test(ms) && tuples(ms) === n,
+    sqlMs: bom(f['SQL (INSERT) for SQL Server']) && /IF OBJECT_ID\('tempdb\.\.#pgvigil_grid'\) IS NOT NULL DROP TABLE #pgvigil_grid/.test(ms) && /\[sessions\]/.test(ms) && /N'/.test(ms) && !ms.split('\n').filter(l => /^\s*,?\s*\(/.test(l)).some(l => /[(,]\s*'/.test(l)) && tuples(ms) === n,
   };
   check('G-file', Object.values(r).every(Boolean), Object.entries(r).map(([k, v]) => `${k} ${v ? 'ok' : 'NO'}`).join(', ')
     + `; Excel ${xl?.name ?? 'none'}; files: ${Object.entries(f).map(([k, v]) => `${k} ${v ? v.name + ' ' + v.buf.length + ' B' : 'none'}`).join(' | ')}; ${n} rows; csv ${csv.length} rows, md ${md.length} lines, pg tuples ${tuples(pg)}, ms tuples ${tuples(ms)}`);
