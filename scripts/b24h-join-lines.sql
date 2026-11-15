@@ -59,6 +59,9 @@
 
 -- 8. import_pg_threshold (0190): the two B24h keys in seconds to three places and settable empty (the B24h-1 review
 --    part b #3: 0.025 and 0.005 were refused; off could not be set)
---    the value's shape: CASE WHEN v_k.unit = 'seconds' THEN '^[0-9]{1,7}(\.[0-9]{1,3})?$' ELSE '^[0-9]{1,7}(\.[0-9]{1,2})?$' END
+--    the value's shape, set in the loop's DECLARE (never a CASE inside the IF's condition: PL/pgSQL ends an IF's
+--    condition at its first THEN - rel-b6g vis-b6g0166):
+--      DECLARE v text := ...; v_re text := CASE WHEN v_k.unit = 'seconds' THEN '^[0-9]{1,7}(\.[0-9]{1,3})?$' ELSE '^[0-9]{1,7}(\.[0-9]{1,2})?$' END;
+--      ... IF v IS NOT NULL AND v !~ v_re THEN
 --    both values null allowed: v_key NOT IN ('uptime', 'crash', 'round_trip_time', 'ping_time') at L826
 --    the no-PostgreSQL-instance words (L802) name the two keys among those a SQL Server instance takes
