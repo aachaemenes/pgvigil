@@ -67,10 +67,16 @@
 #     weeks back and 6 in the last finished hour, its hours written ONLY by the door called in time order (one call a
 #     day: 24 hours a call, then 16 past the last hour): 'blocking at 3x this hour''s usual' fires off its floor - '6
 #     waits in the hour from ..., 6.0 times its usual of 1.0', not 'no usual yet'. RED: no import_block_hourly.
-#  N. two callers in the same minute: one holds the door 3 s, the other calls 1 s in: the second returns 0, the
-#     first writes the instance's hours, each hour one row. RED: no import_block_hourly.
-#  (Not here: that `pgvigil run` calls the door at 16 past - sched's TestNextBlockHourly holds the time, a run over
-#  the hour's 16th minute would show the call.)
+#  N. two callers in the same minute, both a login IN ROLE pgvigil_collector (the door's reason: run's own login):
+#     one holds the door 3 s, the other calls 1 s in: the second returns 0, the first writes the instance's hours,
+#     each hour one row. RED: no import_block_hourly.
+#  O. a capped call (p_limit 2), 3 hours later: each call but the last writes 2, the last fewer; the first call's
+#     hours are the oldest (no later call writes an hour before them); an uncapped call after them writes 0, each
+#     instance-hour one row. RED: no import_block_hourly.
+#  P. the next call's wait, repo.NextBlockHourly's own SQL read from internal/repo/blockhourly.go: under TimeZone UTC
+#     it lands at 16 past a UTC hour, under Asia/Kathmandu (+5:45) at 16 past the local hour (31 past UTC), within the
+#     hour. RED: no such SQL.
+#  (Not here: that `pgvigil run` calls the door - a run over the 16th minute would show the call.)
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 MIMG=${PGVIGIL_B10_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}; PIMG=${PGVIGIL_B10_PG_IMAGE:-postgres:18}
@@ -86,7 +92,7 @@ cleanup() {
   rc=$?; set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" >/dev/null 2>&1
   docker rm -f "$MCT" "$PCT" >/dev/null 2>&1 || echo "CLEANUP: containers $MCT / $PCT not removed" >&2
-  rm -f "$CFG" "$OUT" "$DDL" "$OUT.head" "$OUT.serve" "${LF:-}"
+  rm -f "$CFG" "$OUT" "$DDL" "$OUT.head" "$OUT.serve" "$OUT.n1" "${LF:-}"
   exit $rc
 }
 trap cleanup EXIT
@@ -375,12 +381,38 @@ else check "no import_block_hourly" "yes" "M: the rollup's hourly door"; fi
 echo "--- N. two callers in the same minute"
 if fn import_block_hourly; then
   NI=$(syn n postgres); q "update pgvigil.instances set first_seen = now() - interval '5 hours' where instance_id = $NI" >/dev/null
+  q "CREATE ROLE b10_collector LOGIN IN ROLE pgvigil_collector" >/dev/null; CDSN="${PGVIGIL_REPO_DSN/user=postgres/user=b10_collector}"
   AT=$(q "select now()")
-  ( psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN" -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" -c "select pg_sleep(3)" -c "COMMIT" > "$OUT.n1" 2>&1 ) & NP=$!
-  sleep 1; N2=$(q "select pgvigil.import_block_hourly('$AT'::timestamptz)"); wait $NP; N1=$(head -1 "$OUT.n1")
+  ( psql "$CDSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN" -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" -c "select pg_sleep(3)" -c "COMMIT" > "$OUT.n1" 2>&1 ) & NP=$!
+  sleep 1; N2=$(psql "$CDSN" -XAt -v ON_ERROR_STOP=1 -c "select pgvigil.import_block_hourly('$AT'::timestamptz)" 2>&1 || true); wait $NP || true; N1=$(head -1 "$OUT.n1")
   NE=$(q "select count(*) from pgvigil.instances i, generate_series(date_trunc('hour', i.first_seen), date_trunc('hour', '$AT'::timestamptz - interval '15 minutes') - interval '1 hour', interval '1 hour') g where i.instance_id = $NI")
   check "$N2|$(q "select count(*) || '/' || count(distinct hour) from pgvigil.mssql_block_hourly where instance_id = $NI")|$([ "${N1:-0}" -ge "$NE" ] 2>/dev/null && echo first-wrote || echo "first $N1")" "0|$NE/$NE|first-wrote" "N: the second caller returns 0, the first writes the $NE hours, each once"
 else check "no import_block_hourly" "yes" "N: two callers in the same minute"; fi
+
+echo "--- O. a capped call: the oldest hours first, repeated while it returns its cap"
+if fn import_block_hourly; then
+  # the rows before O (b10_o0) and the first call's own (b10_o1): the proof's own tables in public, gone with the container
+  OT=$(q "select '$AT'::timestamptz + interval '3 hours'"); q "create table b10_o0 as select instance_id, hour from pgvigil.mssql_block_hourly" >/dev/null
+  OB=$(q "select count(*) from pgvigil.mssql_block_hourly"); ON=()
+  for k in $(seq 1 300); do
+    n=$(q "select pgvigil.import_block_hourly('$OT'::timestamptz, 2)"); ON+=("$n")
+    [ "$k" = 1 ] && q "create table b10_o1 as select instance_id, hour from pgvigil.mssql_block_hourly except select instance_id, hour from b10_o0" >/dev/null
+    [ "$n" -lt 2 ] && break
+  done
+  OSUM=0; for n in "${ON[@]}"; do OSUM=$((OSUM + n)); done; OLAST=${ON[${#ON[@]}-1]}
+  OFULL=$(for n in "${ON[@]:0:${#ON[@]}-1}"; do [ "$n" = 2 ] || echo x; done | grep -c x || true)
+  OOLD=$(q "select count(*) from (select instance_id, hour from pgvigil.mssql_block_hourly except select instance_id, hour from b10_o0 except select instance_id, hour from b10_o1) x where x.hour < (select max(hour) from b10_o1)")
+  check "$OFULL|$([ "$OLAST" -lt 2 ] && echo under)|$(( $(q "select count(*) from pgvigil.mssql_block_hourly") - OB ))|$OOLD|$(q "select pgvigil.import_block_hourly('$OT'::timestamptz)")|$(q "select count(*) - count(distinct (instance_id, hour)) from pgvigil.mssql_block_hourly")" \
+    "0|under|$OSUM|0|0|0" "O: ${#ON[@]} capped calls of 2 wrote $OSUM, the first the oldest, nothing left, each hour once"
+else check "no import_block_hourly" "yes" "O: a capped call"; fi
+
+echo "--- P. the next call's wait in the repository's own zone (repo.NextBlockHourly's SQL)"
+NX=$(sed -n 's/.*QueryRow(ctx, `\(SELECT extract(epoch FROM date_trunc[^`]*\)`).*/\1/p' "$(dirname "$0")/../internal/repo/blockhourly.go" 2>/dev/null)
+if [ -n "$NX" ]; then
+  pz() { psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "set timezone = '$1'" -c "select to_char(now() + make_interval(secs => w) + interval '30 seconds', 'MI') || '|' || to_char((now() + make_interval(secs => w) + interval '30 seconds') at time zone 'UTC', 'MI') || '|' || (w > 0 and w <= 3600) from ($NX) x(w)"; }
+  check "$(pz UTC)" "16|16|true" "P: under UTC the next call is at 16 past the hour, within the hour"
+  check "$(pz Asia/Kathmandu)" "16|31|true" "P: under +5:45 at 16 past the local hour (31 past UTC), within the hour"
+else check "no NextBlockHourly SQL" "found" "P: the next call's wait"; fi
 
 echo
 [ "$bad" = 0 ] && echo "proof-b10-blocking: every row ok" || { echo "proof-b10-blocking: $bad row(s) FAIL"; exit 1; }
