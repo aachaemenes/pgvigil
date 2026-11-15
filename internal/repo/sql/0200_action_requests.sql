@@ -429,6 +429,16 @@ RETURNS void LANGUAGE sql AS $$
   UPDATE pgvigil.cq_workers SET beat_at = NULL, stopped_at = clock_timestamp() WHERE collector_id = p_collector_id
 $$;
 
+-- import_cq_page_held: whether the page lease (0122's admin_page_holder) is held by a holder whose name starts with
+-- p_prefix ('<host>:<pid>:', the scheduler's own lease in this process) and was renewed within the lease's 45 s: the
+-- worker holds the page's instances exactly while its own process's scheduler does
+CREATE OR REPLACE FUNCTION pgvigil.import_cq_page_held(p_prefix text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT coalesce(p_prefix, '') <> '' AND EXISTS (
+    SELECT 1 FROM pgvigil.admin_page_holder h
+     WHERE left(h.holder, length(p_prefix)) = p_prefix AND h.beat > now() - interval '45 seconds')
+$$;
+
 -- import_cq_doors: the worker's doors replaced whole [{instance, kind, name?, open, why?}]
 CREATE OR REPLACE FUNCTION pgvigil.import_cq_doors(p_collector_id text, p_doors jsonb)
 RETURNS int LANGUAGE plpgsql AS $$

@@ -317,6 +317,15 @@ func TestActionRequestsOnAStore(t *testing.T) {
 	}
 	refused(ask("collect_now", i1, "dave", `{"collection": "*"}`), "was asked in the last 30 seconds")
 
+	// the page lease as the worker reads it: a holder of another process is not this one's
+	var held bool
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_cq_page_held($1)`, fmt.Sprintf("cq-nohost-%d:1:", sfx)).Scan(&held); err != nil || held {
+		t.Fatalf("import_cq_page_held of a host that holds nothing: %v %v", held, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_cq_page_held('')`).Scan(&held); err != nil || held {
+		t.Fatalf("import_cq_page_held of an empty prefix: %v %v", held, err)
+	}
+
 	// a clean stop ends the lease at once
 	exec(`SELECT pgvigil.import_cq_stop($1)`, w1)
 	exec(`SELECT pgvigil.import_cq_stop($1)`, w2)
