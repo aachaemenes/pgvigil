@@ -90,7 +90,8 @@ func dialTCP(ctx context.Context, addr string) error {
 
 // noteRemote: the instance's connection opened to addr (its RemoteAddr), reached by the dial host. An opened
 // connection is a TCP answer (the review of B24h-1 part a #1): the address is answered from now on (so a host that goes
-// down is probed every minute after a failure, never throttled as one that never answered), and the beat carries it
+// down is probed every minute after a failure, never throttled as one that never answered), and the beat carries it -
+// for the TCP method only (the review of the fold #8: an endpoint that never answers ICMP echo is no ping answer)
 func (p *prober) noteRemote(instance, host, addr string) {
 	if addr == "" {
 		return
@@ -100,8 +101,8 @@ func (p *prober) noteRemote(instance, host, addr string) {
 	p.addrOf[instance], p.hostOf[addr] = addr, host
 	if p.method == "tcp" {
 		p.answered[addr] = true
+		p.opened[addr] = beatOpened{Host: host, Address: addr, At: time.Now().UTC()}
 	}
-	p.opened[addr] = beatOpened{Host: host, Address: addr, At: time.Now().UTC()}
 }
 
 // takeOpened hands the opened addresses since the last beat to the beat, sorted by address

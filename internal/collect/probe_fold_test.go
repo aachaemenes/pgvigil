@@ -2,7 +2,8 @@ package collect
 
 import (
 	"context"
-	"errors"
+	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,10 +48,14 @@ func TestProbeOnlyAfterNoAnswer(t *testing.T) {
 		err  error
 		want bool
 	}{
-		"a deadline (no answer)":           {context.DeadlineExceeded, true},
-		"the instance's own connect":       {&connectError{err: errors.New("dial tcp 10.1.2.3:5432: connect: connection refused")}, true},
-		"42501 on an opened connection":    {&pgconn.PgError{Code: "42501", Message: "permission denied for table x"}, false},
-		"a SQL Server error the host sent": {sqlNumbered(229), false},
+		"a deadline (no answer)": {context.DeadlineExceeded, true},
+		// the review of the fold #2: a refused dial is a *net.OpError (a net.Error), as pgconn and net.Dialer return it
+		"the instance's own connect, refused": {&connectError{err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}, true},
+		"42501 on an opened connection":       {&pgconn.PgError{Code: "42501", Message: "permission denied for table x"}, false},
+		"a SQL Server error the host sent":    {sqlNumbered(229), false},
+		// the review of the fold #2: a login the server refused at the connect is an answer - no probe every minute
+		"28P01 at the connect": {&connectError{err: &pgconn.PgError{Code: "28P01", Message: "password authentication failed"}}, false},
+		"18456 at the connect": {&connectError{err: sqlNumbered(18456)}, false},
 	} {
 		h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}, probe: newProber("tcp", false)}
 		h.targets = map[string]string{"i1": "postgres:db1:5432"}
@@ -59,6 +64,19 @@ func TestProbeOnlyAfterNoAnswer(t *testing.T) {
 		if got := h.probe.due["10.1.2.3:5432"]; got != c.want {
 			t.Errorf("%s: due %v, want %v", name, got, c.want)
 		}
+	}
+}
+
+// the review of the fold #8: an opened connection is an answer of the TCP method only - an icmp prober records no opened
+// address (B24h-2's ICMP: an endpoint that never answers echo would read answered from its connections)
+func TestProbeOpenedTCPOnly(t *testing.T) {
+	p := newProber("icmp", false)
+	p.noteRemote("i1", "db1", "10.1.2.3:5432")
+	if n := len(p.takeOpened()); n != 0 {
+		t.Errorf("an icmp prober's opened connection: %d opened, want 0", n)
+	}
+	if p.addrOf["i1"] != "10.1.2.3:5432" {
+		t.Errorf("an icmp prober still keeps the instance's address: %q", p.addrOf["i1"])
 	}
 }
 
