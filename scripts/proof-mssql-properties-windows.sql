@@ -12,7 +12,9 @@
 -- Every result is printed as one line 'N5|<part>|...|~' (the '|~' ends the line: a wrapped or cut line is seen). The
 -- N5| lines are the fixture of TestNetRowsOnWindowsFixture (internal/mssql/testdata/properties-windows.txt). They hold
 -- no login, host or instance name and no address: an IpAddress value and a listener's address are printed as their
--- kind (ipv4, ipv6, loopback). Lines 'N5x|...' are for the reader of the run only and never go into the fixture.
+-- kind (ipv4, ipv6, loopback, any), and a registry value's data is printed only for the values the rows are built
+-- from (any other - a certificate's thumbprint, an SPN - is named, its data '<not printed>'). Lines 'N5x|...' are for
+-- the reader of the run only and never go into the fixture.
 --
 -- Nothing is changed: SELECTs, xp_instance_regread, xp_regread, xp_instance_regenumvalues, xp_regenumvalues,
 -- xp_instance_regenumkeys and xp_readerrorlog, and #temp tables of this session that hold what they answered. Each read
@@ -58,7 +60,10 @@ BEGIN TRY
 FROM sys.dm_server_registry WHERE registry_key LIKE N''%SuperSocketNetLib%''';
   SELECT CAST(N'N5|view|' + ISNULL(registry_key, N'<NULL>') + N'|' + ISNULL(value_name, N'<NULL>') + N'|'
          + CASE WHEN value_data IS NULL THEN N'<NULL>'
-                WHEN value_name <> N'IpAddress' THEN value_data
+                WHEN value_name IN (N'ForceEncryption', N'ForceStrictEncryption', N'ForceStrict', N'ListenOnAllIPs', N'Enabled', N'TcpPort',
+                                    N'TcpDynamicPorts') THEN value_data
+                WHEN value_name <> N'IpAddress' OR value_name IS NULL THEN N'<not printed>'
+                WHEN value_data = N'' THEN N''
                 WHEN value_data IN (N'127.0.0.1', N'::1') THEN N'loopback'
                 WHEN value_data LIKE N'%:%' THEN N'ipv6' ELSE N'ipv4' END + N'|~' AS nvarchar(900)) AS line
     FROM #n5_view ORDER BY id;
@@ -127,7 +132,6 @@ BEGIN
     SELECT CAST(N'N5|sa-enum-rc|' + @n5_label + N'|' + ISNULL(CAST(@n5_rc AS nvarchar(12)), N'<NULL>') + N'|~' AS nvarchar(400)) AS line;
   END TRY
   BEGIN CATCH
-    DELETE FROM #n5_enum WHERE k IS NULL;
     SELECT CAST(N'N5|sa-enum|ERROR|' + @n5_label + N'|' + CAST(ERROR_NUMBER() AS nvarchar(12)) + N'|' + ERROR_MESSAGE() + N'|~' AS nvarchar(900)) AS line;
   END CATCH
   SET @n5_ord += 1;
@@ -159,7 +163,8 @@ END TRY BEGIN CATCH SELECT CAST(N'N5|sa-keys|ERROR|' + CAST(ERROR_NUMBER() AS nv
 GO
 -- ---- 7. what SQL Server itself reports: its listeners, and the transports of the sessions connected now
 BEGIN TRY
-  SELECT CAST(N'N5|sa-listener|' + CASE WHEN ip_address IN (N'127.0.0.1', N'::1') THEN N'loopback' WHEN is_ipv4 = 1 THEN N'ipv4' ELSE N'ipv6' END
+  SELECT CAST(N'N5|sa-listener|' + CASE WHEN ip_address IN (N'127.0.0.1', N'::1') THEN N'loopback' WHEN ip_address IN (N'::', N'0.0.0.0') THEN N'any'
+                                        WHEN is_ipv4 = 1 THEN N'ipv4' ELSE N'ipv6' END
          + N'|' + CAST(port AS nvarchar(12)) + N'|' + CAST(type_desc AS nvarchar(60)) + N'|' + CAST(state_desc AS nvarchar(60)) + N'|~' AS nvarchar(400)) AS line
     FROM sys.dm_tcp_listener_states ORDER BY listener_id;
   SELECT CAST(N'N5|sa-listener-rows|' + CAST(COUNT(*) AS nvarchar(12)) + N'|~' AS nvarchar(400)) AS line FROM sys.dm_tcp_listener_states;
