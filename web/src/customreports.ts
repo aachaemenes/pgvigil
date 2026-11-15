@@ -11,6 +11,7 @@
 import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
+import { fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 
 export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean }
@@ -202,6 +203,10 @@ function go(q: Record<string, string>) {
   location.hash = '#/customreports' + (out.toString() ? '?' + out : '');
 }
 
+// tagQ: the tag folder a fleet page was opened under, kept on the page's own links (TAGALL); '' at the root and on an
+// instance's page
+const tagQ = (ctx: Ctx) => ctx.tag && !ctx.instance ? 'tag=' + encodeURIComponent(ctx.tag) : '';
+
 interface Inst { id: number; name: string; engine: string; tags: string[] }
 async function instances(): Promise<Inst[]> {
   const t = await get<Table>('instances');
@@ -248,7 +253,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<{ state: State; folders: Table | null; reports: Table | null; log: Table | null }>('customreports');
   const reports = rowsOf(d.reports).map(defOf);
   const folders = folderTree(rowsOf(d.folders).map(r => String(r.folder)));
-  const sec = el('section', {}, el('h2', {}, 'Custom reports'));
+  const sec = el('section', {}, el('h2', {}, 'Custom reports' + (tagQ(ctx) ? ` - ${tagWords(ctx.tag!)}` : '')));
   const msg = el('p', { class: 'meta', role: 'status' });
   const newBtn = el('button', { type: 'button' }, 'New report'), folderBtn = el('button', { type: 'button' }, 'New folder');
   // off: every writing control says why beside it (one line under the toolbar, their description)
@@ -267,10 +272,13 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
     + 'A report on the repository reads pgvigil\'s own tables; a PostgreSQL or SQL Server report runs read-only on a chosen instance or on a tag\'s instances, '
     + 'under its timeout and a 2 s lock timeout, and every run is audited (the log below).'));
   if (ctx.instance) sec.append(el('p', { class: 'meta' }, 'Opened from an instance: a report run from here goes to that instance (a repository report: about it).'));
+  // under a tag folder: the reports are the repository's; a run from here goes to the folder's instances (reportPage)
+  const wide = fleetWideNote(ctx, 'The reports, their folders and the activity log are one list');
+  if (wide) sec.append(wide);
 
   const byFolder = (f: string) => reports.filter(r => r.folder === f);
   const reportCols: Col[] = [
-    { key: 'name', label: 'report', fmt: (v, r) => el('a', { href: `#/customreports?report=${String(r.report_id)}${ctx.instance ? '&i=' + ctx.instance : ''}` }, String(v)) },
+    { key: 'name', label: 'report', fmt: (v, r) => el('a', { href: `#/customreports?report=${String(r.report_id)}${ctx.instance ? '&i=' + ctx.instance : ''}${tagQ(ctx) ? '&' + tagQ(ctx) : ''}` }, String(v)) },
     { key: 'engine', label: 'runs on', fmt: v => engineName[String(v)] ?? String(v) },
     { key: 'kind', fmt: v => v === 'procedure' ? 'procedure' : 'SQL' },
     { key: 'description', wide: true },
@@ -361,14 +369,19 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   if (!rows.length) return el('p', { class: 'empty' }, `No report ${id}.`);
   const def = defOf(rows[0]);
   const sec = el('section', {}, el('h2', {}, def.name));
-  const crumbs = el('p', { class: 'meta' }, el('a', { href: '#/customreports' + (ctx.instance ? '?i=' + ctx.instance : '') }, 'Custom reports'),
+  const crumbs = el('p', { class: 'meta' }, el('a', { href: '#/customreports' + (ctx.instance ? '?i=' + ctx.instance : tagQ(ctx) ? '?' + tagQ(ctx) : '') }, 'Custom reports'),
     def.folder ? ' / ' + def.folder.split('/').join(' / ') : '', ` - runs on ${engineName[def.engine] ?? def.engine}, version ${def.version}`);
   sec.append(crumbs);
   if (def.description) sec.append(el('p', {}, def.description));
 
-  // the target: the store runs about one instance, a tag's or every active one; an instance report on one instance or a tag's
-  const mine = insts.filter(i => def.engine === 'store' || i.engine === def.engine);
-  const tags = [...new Set(mine.flatMap(i => i.tags))].sort();
+  // the target: the store runs about one instance, a tag's or every active one; an instance report on one instance or a tag's.
+  // Under a tag folder (TAGALL) the instance picker lists the folder's instances and the tag picker its tag alone, the
+  // target that tag: a run never reaches past the folder unless 'every active instance' is picked. The folders of no tag
+  // ('untagged', '<key>:') are no tag a run can name: their target is one of their instances.
+  const folderTag = tagQ(ctx) ? ctx.tag : undefined;
+  const runTag = writtenTag(folderTag);
+  const mine = insts.filter(i => (def.engine === 'store' || i.engine === def.engine) && (!folderTag || inTagScope(folderTag, { tags: i.tags })));
+  const tags = folderTag ? (runTag && mine.length ? [runTag] : []) : [...new Set(mine.flatMap(i => i.tags))].sort();
   const target = el('select', { 'aria-label': 'Run on' }) as HTMLSelectElement;
   if (def.engine === 'store') target.append(el('option', { value: 'fleet' }, 'every active instance'));
   target.append(el('option', { value: 'instance' }, 'one instance'));
@@ -384,7 +397,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   if (gone) instSel.append(el('option', { value: String(want) }, `instance ${want} (not active here)`));
   if (want && (gone || mine.some(i => i.id === want))) { instSel.value = String(want); target.value = 'instance'; }
   else if (q.get('tag') && tags.includes(q.get('tag')!)) { tagSel.value = q.get('tag')!; target.value = 'tag'; }
-  else if (def.engine !== 'store') target.value = 'instance';
+  else if (def.engine !== 'store' || (folderTag && mine.length)) target.value = 'instance';
   const instBox = el('label', {}, 'Instance ', instSel), tagBox = el('label', {}, 'Tag ', tagSel);
   const showTarget = () => { instBox.hidden = target.value !== 'instance'; tagBox.hidden = target.value !== 'tag'; };
   target.addEventListener('change', showTarget); showTarget();
@@ -395,16 +408,18 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   const noInst = def.engine !== 'store' && !mine.length && !gone;
   const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
     : def.engine === 'store' && d.state.store ? d.state.store
-    : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.` : '';
+    : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance${folderTag ? ` in the folder ${tagWords(folderTag)}` : ''} to run it on.` : '';
   // 'said': report mail carries this paragraph's words (reportmail.ts notesOf) - a run that is not made says why
   const runOff = el('p', { class: 'meta off-reason said' }, runWhy);
   if (runWhy) offControl(runBtn, runWhy, runOff);
-  const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}` }, 'Edit this report');
+  const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}${tagQ(ctx) ? '&' + tagQ(ctx) : ''}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
   sec.append(form);
+  if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from the folder ${tagWords(folderTag)}: a run from here goes to its instances`
+    + (runTag ? '.' : ', one at a time (the folder is no tag a run can name).')));
   if (runWhy) sec.append(runOff);
-  if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, 'No active instance: a run reads none.'));
+  if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, folderTag ? `No active instance in the folder ${tagWords(folderTag)}.` : 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});
   sec.append(status, out);
@@ -484,7 +499,7 @@ function rowsEditor<T>(title: string, headers: string[], items: T[], make: (x: P
   return { box: el('div', {}, el('h3', {}, title), el('div', { class: 'grid-wrap', tabindex: '0' }, table), add), read: () => readers.map(r => r()) };
 }
 
-async function editorPage(_ctx: Ctx, id: number, folder = ''): Promise<HTMLElement> {
+async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElement> {
   const list = await get<{ state: State; folders: Table | null; reports: Table | null }>('customreports');
   let def: ReportDef = { name: '', description: '', folder, engine: 'store', kind: 'sql', body: '', params: [], columns: [], rules: [], timeout_secs: 30, max_rows: 5000 };
   if (id) {
@@ -551,7 +566,7 @@ async function editorPage(_ctx: Ctx, id: number, folder = ''): Promise<HTMLEleme
       go({ report: String(r.report_id ?? id) });
     } catch (e) { msg.textContent = 'Not saved: ' + (e instanceof Error ? e.message : String(e)); }
   });
-  const cancel = el('a', { href: id ? `#/customreports?report=${id}` : '#/customreports' }, 'Cancel');
+  const cancel = el('a', { href: (id ? `#/customreports?report=${id}` : '#/customreports') + (tagQ(ctx) ? (id ? '&' : '?') + tagQ(ctx) : '') }, 'Cancel');
   sec.append(el('div', { class: 'toolbar' }, save, cancel), msg);
   return sec;
 }
