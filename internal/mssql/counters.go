@@ -388,7 +388,8 @@ func matchSpec(list []CounterSpec, object, counter, inst string) (CounterSpec, b
 		if !strings.EqualFold(s.Object, object) || !strings.EqualFold(s.Counter, counter) {
 			continue
 		}
-		if s.Instance != "" && s.Instance == inst {
+		// a line for one instance; '_Total' (as the pages show a row without an instance name) is the empty name
+		if s.Instance != "" && (s.Instance == inst || (inst == "" && strings.EqualFold(s.Instance, "_Total"))) {
 			return s, true
 		}
 		if s.Instance == "" && every == nil {

@@ -161,9 +161,12 @@ func TestCountersInUseMatchMigration(t *testing.T) {
 	}
 	s := string(b)
 	i := strings.Index(s, "UPDATE pgvigil.mssql_counter_defaults d SET used_by")
-	j := strings.Index(s[i:], ") AS u(object, counter, why)")
-	if i < 0 || j < 0 {
+	if i < 0 {
 		t.Fatal("0152's used_by block not found")
+	}
+	j := strings.Index(s[i:], ") AS u(object, counter, why)")
+	if j < 0 {
+		t.Fatal("0152's used_by block has no end")
 	}
 	re := regexp.MustCompile(`\('((?:[^']|'')*)', '((?:[^']|'')*)', '((?:[^']|'')*)'\)`)
 	sqlUse := map[[2]string]string{}
@@ -186,5 +189,17 @@ func TestCountersInUseMatchMigration(t *testing.T) {
 	}
 	if CounterInUse("Deprecated Features", "Usage") != "" {
 		t.Error("a counter nothing reads is in use")
+	}
+}
+
+// A list line for '_Total' reads the row SQL Server gives with no instance name (the pages show it as _Total); a line
+// for another instance does not (review part 1, S8).
+func TestMatchSpecTotal(t *testing.T) {
+	list := []CounterSpec{{Object: "Memory Manager", Counter: "Memory Grants Outstanding", Instance: "_Total", Scope: "instance", Kind: "gauge"}}
+	if s, ok := matchSpec(list, "Memory Manager", "Memory Grants Outstanding", ""); !ok || s.Kind != "gauge" {
+		t.Fatalf("a '_Total' line did not read the row with no instance name: %v %v", s, ok)
+	}
+	if _, ok := matchSpec(list, "Memory Manager", "Memory Grants Outstanding", "default"); ok {
+		t.Fatal("a '_Total' line read the instance 'default'")
 	}
 }

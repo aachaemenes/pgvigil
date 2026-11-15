@@ -233,9 +233,10 @@ UPDATE pgvigil.mssql_counter_defaults d SET used_by = u.why
   ) AS u(object, counter, why)
  WHERE d.object = u.object AND d.counter = u.counter;
 
--- the objects read by mssql_counters_db (a database or a database's replica is the instance)
+-- the objects read by mssql_counters_db (a database or a database's replica is the instance); any case, as the
+-- collector matches names (a yaml line 'databases' is the Databases object)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_scope(p_object text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN p_object IN ('Databases', 'Database Replica') THEN 'database' ELSE 'instance' END
+  SELECT CASE WHEN lower(p_object) IN ('databases', 'database replica') THEN 'database' ELSE 'instance' END
 $$;
 
 -- ---- Admin's rows -------------------------------------------------------------------------------------------------
