@@ -530,11 +530,12 @@ judge() {
   return 1
 }
 # C's hook (402 review part B, finding 4): with the instance rule on, metric_rule gives exactly that rule and the grid row
-# carries it, its name without '(off', critical
+# carries it, its name without '(off', critical. The judge's rule has no name, and metric_rule gives an in-force rule's
+# name as stored (NULL here, as 0085 did): read as '' so one NULL never blanks the row (box run 402full1 read 'no row')
 C_GRID=
 c_grid() { C_GRID=$(pq "SELECT (SELECT count(*) FROM pgvigil.metric_rule($SB, 'counters.logins_s')) || '|'
     || coalesce((SELECT string_agg(r.rule_id::text, ',') FROM pgvigil.metric_rule($SB, 'counters.logins_s') r), '') || '|'
-    || coalesce((SELECT g.rule_id || '|' || (g.rule_name LIKE '%(off%') || '|' || coalesce(pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical), 'none')
+    || coalesce((SELECT coalesce(g.rule_id::text, 'none') || '|' || (coalesce(g.rule_name, '') LIKE '%(off%') || '|' || coalesce(pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical), 'none')
          FROM pgvigil.metric_grid($SB, now() - interval '10 minutes', now(), interval '15 minutes', NULL, 'counters') g WHERE g.key = 'counters.logins_s'), 'no row')") \
     || fail "C: the grid read"
   C_GRID="$1=$C_GRID"; }
