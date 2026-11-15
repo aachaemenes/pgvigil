@@ -58,13 +58,16 @@
 #  E. not provokable on a box, the rule's path only: free_list_stalls_s, lazy_writes_s, buffer_cache_hit_pct,
 #     ple_per_4gb, errors_offline_s - an instance rule with a threshold the newest point crosses fires (the point
 #     printed); NOT PROVEN live at the seeded threshold.
-#  D with the floors (FL6, the lead's 19:4x / 19:5x; red on fd7b9bb at G, on 3e745fa at G1): each floored check's load
-#     reads at its floor or more (5 Batch Requests/s; 1 Full Scan/s), else it fails as too
-#     small; its clear leg reads ok, or 'na' with no finding and the floors' words naming the input under its floor - a
-#     hard clear either way, no NOT PROVEN for it (the CEIP windows read 'na').
+#  D with the floors (FL6, the lead's 19:4x / 19:5x; red on fd7b9bb at GC, on 3e745fa in D at compiles_per_100_batches:
+#     0085's eval counts its NULL newest point as beyond, critical with a finding after the quiet reads - the floors'
+#     review part B, finding 4): each floored check's load reads at its floor or more (5 Batch Requests/s; 1 Full
+#     Scan/s), else it fails as too small; its clear leg reads ok, or 'na' with no finding and metric_floors' input
+#     under its floor (the proof's own floored() line; the product's page words are NOT PROVEN, as G says) - a hard
+#     clear either way, no NOT PROVEN for it; a clear read over its floor that still holds takes up to two more quiet
+#     pairs, each printed, and stays hard (finding 6).
 #  G. the floors: G0 at every instance read of the run each floored metric's point has no value exactly when an input
 #     of the same read is under its floor (0152's metric_floors), both sides seen; G1 an instance rule
-#     on compiles_per_100_batches at the seed's thresholds, a read 20 s after the one before with nothing of the proof
+#     on compiles_per_100_batches at the seed's thresholds, a read 60 s after the one before with nothing of the proof
 #     running: the point has no value, batch_requests_s under 5, state 'na', no finding, the state's value the
 #     batch_requests_s point and its threshold 5; G2 the same on full_scans_per_search (value and threshold those of
 #     an input under its floor); G3 the transitions through the alert sender ('pgvigil alerts', a file drop, clear
@@ -74,16 +77,19 @@
 #     na -> critical as from ok), na after a quiet read (no resolved file yet: 0059 waits for an ok collection), and
 #     after one more read and pass ONE resolved file, and no more after another (critical -> na resolved with its
 #     normal notification). From the floors' pass (20261114-212721-reviewer): GC alert_rule_state holds ONE check on
-#     state and it names 'na' (red on fd7b9bb: no 'na'); G1 / G2 run without metric_floors, their quiet read 60 s
-#     after the one before and gated on the raw counters (Batch Requests/sec under 5, Full Scans/sec under 1), so on
-#     fd7b9bb they are red for the right reason (a point of 0 and 'ok', not a missing view); G4 the run break: a rule
-#     warning above 0 for 3 minutes, three quiet reads 60 s apart (na) then a load: 'pending', no file (red on
-#     3e745fa: the na points counted beyond, a 3-minute run, warning at once); G5 warning: a rule warning above 0 with
+#     state and it names 'na' (red on fd7b9bb: no 'na'; a run on fd7b9bb stops there, before G0-G2); G1 / G2 read
+#     their quiet read 60 s after the one before and gated on the raw counters, unrounded (Batch Requests/sec under 5,
+#     Full Scans/sec under 1); every quiet read of G that reads 5 batch requests a second or more (or a full scan, in
+#     G2) takes up to two more reads 60 s apart, each printed (finding 6); G4 the run break: a rule warning above 0
+#     for 3 minutes, three quiet reads 60 s apart (na) then a load straight after the third (so the point before the
+#     load is the quiet read's no-value one): 'pending', no file - red only on this build with FL3's change 1
+#     reverted (G_FROM=G4 starts there; on 3e745fa the run stops in D, finding 4); G5 warning: a rule warning above 0 with
 #     no critical, a quiet read (na, no file), a load (warning, ONE firing file), a quiet read (na), one more read and
-#     pass (ONE resolved); G6 a flap held by the clear delay (a destination with clear_after 300): critical 0 for 0
+#     pass (ONE resolved); G6 a flap held by the clear delay (a destination with clear_after 5m; '300' with no unit was
+#     refused by the configuration: finding 1): critical 0 for 0
 #     minutes, a load (one firing), a quiet read (na), a load within 300 s (critical): one firing and no resolved -
 #     one open alert (a rule of 0 minutes; with more minutes a flap resolves and fires again, docs/alerts.md).
-#     G_FROM=G3 starts G at G3 (G0-G2 skipped; such a run ends PARTIAL). G1 also reads FL4 through the API: the grid's
+#     G_FROM=G3, G4, G5 or G6 starts G there (GC, G0-G2 and the parts before it skipped; such a run ends PARTIAL). G1 also reads FL4 through the API: the grid's
 #     compilations row has no current value, floor 5, unit 'batch requests', input counters.batch_requests_s; its
 #     state row 'na' with the unit 'batch requests' (red without 402's patch: no such columns). NOT PROVEN here: the
 #     pages' N/A words as drawn (metrics.ts, alert_rules.ts) and FL5's summary flag (no row reads them yet).
@@ -372,7 +378,7 @@ PY
 # D_FROM=<metric>: a diagnostic run starts D at that check (the checks before it skipped); such a run ends 'PARTIAL', never
 # 'PROOF OK'
 D_FROM=${D_FROM:-}; D_REACHED=0
-# the floors (FL6): HAVE_FLOORS when 0152 holds metric_floors (fd7b9bb does not: D runs as before, G is red)
+# the floors (FL6): HAVE_FLOORS when 0152 holds metric_floors (fd7b9bb does not: D runs as before, G is red at GC)
 HAVE_FLOORS=$(pq "SELECT to_regclass('pgvigil.metric_floors') IS NOT NULL")
 # floored <metric>: each floor of the metric with its input's point at the metric's newest read ('' = no floor)
 floored() { [[ "$HAVE_FLOORS" == t ]] || return 0
@@ -436,14 +442,16 @@ judge() {
   # the clear leg: two quiet reads; while named background holds a movable metric, three more quiet pairs (finding 2)
   sleep 2; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"
   for try in 0 1 2 3; do
-    if (( try > 0 )); then echo "   $m held at $st2 ($v2) with named background: quiet pair $try of 3 more"; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"; fi
+    if (( try > 0 )); then echo "   $m held at $st2 ($v2)$([[ -n "$fl2" ]] && echo " over its floor ($fl2)" || echo ' with named background'): quiet pair $try more"; diag_on; col "$c"; sleep "$QUIET"; col "$c"; diag_read "$scope"; fi
     run || fail "$m: alert_rules_run"
     st2=$(state "$m") || fail "$m: the state read"; f2=$(findings "$m") || fail "$m: the findings read"
     v2=$(point "$m") || fail "$m: the point read"; fl2=$(floored "$m") || fail "$m: the floors read"
     [[ "$st2" == ok && "$f2" == 0 ]] && { CLEARED=1; break; }
     # FL3: under a floor the check is not judged ('na', no finding): a hard clear, the window's background named above
     [[ -n "$fl2" && "$st2" == na && "$f2" == 0 && "$fl2" == *"under it"* ]] && { CLEARED=1; break; }
-    [[ "$MOVABLE" == *" $m "* && -z "$fl2" && -n "$DIAG_OTHER" ]] || break
+    # a floored check held over its floor gets up to two more quiet pairs and stays hard (the floors' part B, finding 6)
+    if [[ -n "$fl2" ]]; then [[ "$fl2" != *"under it"* ]] && (( try < 2 )) || break
+    else [[ "$MOVABLE" == *" $m "* && -n "$DIAG_OTHER" ]] || break; fi
   done
   [[ -n "${4:-}" ]] && echo "   $m's inputs after the quiet reads: $($4)"
   [[ -n "$fl2" ]] && echo "   $m's floors after the quiet reads: $fl2"
@@ -560,11 +568,16 @@ ok "E: free list stalls, lazy writes, hit ratio, page life expectancy per 4 GB, 
 
 echo "== G. the floors: not judged under a floor (FL6) =="
 G_FROM=${G_FROM:-}
+case "$G_FROM" in ''|G3|G4|G5|G6) ;; *) fail "G_FROM=$G_FROM (want G3, G4, G5 or G6)" ;; esac
+# gpart <G3|G4|G5|G6>: true when the run judges that part (all of G, or from G_FROM on)
+gpart() { [[ -z "$G_FROM" || "${1#G}" -ge "${G_FROM#G}" ]]; }
 # GC: one CHECK on alert_rule_state.state, naming 'na' (a DROP CONSTRAINT IF EXISTS of a wrong name passes silently)
+if [[ -z "$G_FROM" ]]; then
 GC=$(pq "SELECT count(*) || '|' || coalesce(bool_and(pg_get_constraintdef(oid) LIKE '%''na''%'), false) FROM pg_constraint
   WHERE conrelid = 'pgvigil.alert_rule_state'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%state%'")
 [[ "$GC" == "1|t" ]] || fail "GC: alert_rule_state's checks on state [$GC] (want one, naming 'na')"
 ok "GC: one check on alert_rule_state.state, 'na' in it"
+fi
 # instance rule helpers: on <metric> <warning> <critical> -> rule_id; off <rule_id>
 on() { rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"counters.$1\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"chkbox\",\"warning\":$2,\"critical\":$3,\"for_minutes\":0}" \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")'; }
@@ -572,9 +585,18 @@ off() { rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$1\"}" >/de
 vt() { pq "SELECT coalesce(pgvigil.metric_num(value), 'NULL') || '|' || coalesce(pgvigil.metric_num(threshold), 'NULL') FROM pgvigil.alert_rule_state
   WHERE instance_id = $SB AND metric = 'counters.$1' AND database = ''"; }
 newest() { pq "SELECT coalesce(pgvigil.metric_num(value), 'NULL') FROM pgvigil.metric_points($SB, 'counters', now() - interval '10 minutes', now()) WHERE metric = '$1' ORDER BY at DESC LIMIT 1"; }
-quiet() { sleep 60; col mssql_counters; }
-# the raw rate of a counter at the newest instance read (no metric of 0152 needed: G1 / G2 are red on fd7b9bb too)
-raw() { rates "$1" "'$2'" | awk '{print $NF}'; }
+# quiet: a read 60 s after the one before; while it reads 5 batch requests a second or more (QUIET_FS=1: or a full scan
+# a second), up to two more reads 60 s apart, each printed (a CEIP burst over one window: finding 6)
+QUIET_FS=0
+quiet() { local n b f; sleep 60; col mssql_counters
+  for n in 1 2; do b=$(raw 'SQL Statistics' 'Batch Requests/sec'); f=$(raw 'Access Methods' 'Full Scans/sec')
+    python3 -c "import sys; b, f = (float(x or 99) for x in sys.argv[1:3]); sys.exit(0 if b >= 5 or (sys.argv[3] == '1' and f >= 1) else 1)" "$b" "$f" "$QUIET_FS" || return 0
+    echo "   the quiet read is over a floor (batch requests ${b:-none}/s, full scans ${f:-none}/s): one more read 60 s later ($n of 2)"
+    sleep 60; col mssql_counters; done; }
+# raw <object> <counter>: the counter's rate at the newest instance read, unrounded (rates() rounds to 2 places: a rate
+# in [4.995, 5) printed 5.00 and failed G1's gate though 0152 read it under the floor; finding 8); '' = no rate
+raw() { pq "SELECT max(v.rate)::double precision FROM pgvigil.mssql_counter_values($SB, (SELECT max(snapshot_at) FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance') - interval '1 second', now(), 'instance') v
+  WHERE v.object = '$1' AND v.counter = '$2' AND v.inst = '_Total'"; }
 if [[ -z "$G_FROM" ]]; then
 # G0: 0152's no-value points against 0152's floors over every instance read of the run
 [[ "$HAVE_FLOORS" == t ]] || fail "G0: no pgvigil.metric_floors (FL1 not in this tree)"
@@ -589,6 +611,7 @@ G0=$(pq "WITH p AS (SELECT x.at, x.metric, x.value FROM pgvigil.metric_points($S
 ok "G0: at each of $(cut -d'|' -f2 <<<"$G0") floored points the value is missing exactly when an input of the same read is under its floor ($(cut -d'|' -f3 <<<"$G0") under)"
 # G1, G2: one quiet read under each floor
 for m in compiles_per_100_batches full_scans_per_search; do
+  QUIET_FS=$([[ "$m" == full_scans_per_search ]] && echo 1 || echo 0)
   s=$(SEEDOF "$m"); rid=$(on "$m" "$(cut -d'|' -f4 <<<"$s")" "$(cut -d'|' -f5 <<<"$s")"); [[ -n "$rid" ]] || fail "G: the instance rule on $m was refused"
   col mssql_counters; quiet; run
   st=$(state "$m"); f=$(findings "$m"); fl=$(floored "$m"); p=$(newest "$m"); got=$(vt "$m")
@@ -618,13 +641,14 @@ sys.exit(0 if got == ((None, 5, 'batch requests', 'counters.batch_requests_s'), 
 PY2
   fi
 done
+QUIET_FS=0
 ok "G1, G2: under a floor compiles_per_100_batches and full_scans_per_search read 'na' with no finding; the state carries the input's value and the floor"
-else echo "   G0-G2 skipped (G_FROM=$G_FROM)"; fi
+else echo "   GC, G0-G2 skipped (G_FROM=$G_FROM)"; fi
 # G3: the transitions through the sender
 mkdir -p "$TMPD/drop"; CFGA=$TMPD/ma.yaml; cp "$CFG" "$CFGA"
 printf 'alerts:\n  - {name: drop, kind: file, min_severity: warning, clear_after: 0, instances: [chkbox], file: {dir: %s}}\n' "$TMPD/drop" >> "$CFGA"
-pass() { "$TMPD/pgvigil" alerts -config "$CFGA" > "$TMPD/pass.$1.out" 2>&1 || fail "G3: the sender's pass $1: $(tail -3 "$TMPD/pass.$1.out")"
-  ! grep -q 'alert rules not judged' "$TMPD/pass.$1.out" || fail "G3: pass $1: $(cat "$TMPD/pass.$1.out")"; }
+pass() { "$TMPD/pgvigil" alerts -config "$CFGA" > "$TMPD/pass.$1.out" 2>&1 || fail "G: the sender's pass $1: $(tail -3 "$TMPD/pass.$1.out")"
+  ! grep -q 'alert rules not judged' "$TMPD/pass.$1.out" || fail "G: pass $1: $(cat "$TMPD/pass.$1.out")"; }
 files() { python3 -c 'import glob, json, sys
 print(sum(1 for f in glob.glob(sys.argv[1] + "/*.json") if json.load(open(f)).get("event") == sys.argv[2]
           and "compilations per 100 batch requests" in json.load(open(f)).get("setting", "")))' "$TMPD/drop" "$1"; }
@@ -633,8 +657,9 @@ loadread() { col mssql_counters; p_compiles; sleep 2; col mssql_counters; }
 M=compiles_per_100_batches
 step() { # step <label> <want state> <want files>
   local st; st=$(state "$M"); echo "   $1: $st, point $(newest "$M"), batch requests $(newest batch_requests_s)/s; drop: $(sent)"
-  [[ "$st" == "$2" && "$(sent)" == "$3" ]] || fail "G3: $1: state $st (want $2), drop [$(sent)] (want [$3])"; }
+  [[ "$st" == "$2" && "$(sent)" == "$3" ]] || fail "G: $1: state $st (want $2), drop [$(sent)] (want [$3])"; }
 NONE="firing 0 resolved 0 escalated 0 repeat 0"
+if gpart G3; then
 rid=$(on "$M" null 1000000); [[ -n "$rid" ]] || fail "G3: the never-firing rule was refused"
 loadread; pass a1; step "a never-firing rule after a load" ok "$NONE"
 quiet; pass a2; step "after a quiet read (ok -> na)" na "$NONE"
@@ -648,15 +673,20 @@ quiet; pass b4; step "after one more read and pass" na "firing 1 resolved 1 esca
 quiet; pass b5; step "after another" na "firing 1 resolved 1 escalated 0 repeat 0"
 off "$rid"
 ok "G3: ok -> na and na -> ok send nothing; na -> critical sends one firing; critical -> na sends one resolved (after the read 0059 waits for), and nothing more"
+fi
 # G4: the run break (FL3's change 1)
+if gpart G4; then
 r3=$(rule "{\"op\":\"add\",\"ui_user\":\"proof402\",\"metric\":\"counters.$M\",\"op_dir\":\"above\",\"scope\":\"instance\",\"instance_name\":\"chkbox\",\"warning\":0,\"critical\":null,\"for_minutes\":3}" \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rule_id"] if d["outcome"] == "done" else "")'); [[ -n "$r3" ]] || fail "G4: the 3-minute rule was refused"
 rm -f "$TMPD"/drop/*.json
 quiet; quiet; quiet; pass g4a; step "a 3-minute rule after three quiet reads" na "$NONE"
-loadread; pass g4b; step "after one load (the run starts at the load: pending)" pending "$NONE"
+# the load straight after the third quiet read: the point before it is that read's no-value one (finding 9)
+p_compiles; sleep 2; col mssql_counters; pass g4b; step "after one load (the run starts at the load: pending)" pending "$NONE"
 off "$r3"
 ok "G4: a read under the floor breaks the run: three quiet minutes and one load read 'pending', no file"
+fi
 # G5: warning -> na -> warning, then resolved
+if gpart G5; then
 rm -f "$TMPD"/drop/*.json
 rid=$(on "$M" 0 null); [[ -n "$rid" ]] || fail "G5: the warning rule was refused"
 quiet; pass g5a; step "a warning-only rule after a quiet read" na "$NONE"
@@ -665,15 +695,22 @@ quiet; pass g5c; step "after a quiet read (warning -> na)" na "firing 1 resolved
 quiet; pass g5d; step "after one more read and pass" na "firing 1 resolved 1 escalated 0 repeat 0"
 off "$rid"
 ok "G5: na -> warning sends one firing; warning -> na one resolved"
-# G6: a flap inside the clear delay stays one open alert (a destination with clear_after 300)
+fi
+# G6: a flap inside the clear delay stays one open alert (a destination with clear_after 5m: a duration needs its unit,
+# '300' was refused by the configuration - finding 1)
+if gpart G6; then
 CFGA0=$CFGA; CFGA=$TMPD/mb.yaml; cp "$CFG" "$CFGA"; rm -f "$TMPD"/drop/*.json
-printf 'alerts:\n  - {name: drop, kind: file, min_severity: warning, clear_after: 300, instances: [chkbox], file: {dir: %s}}\n' "$TMPD/drop" >> "$CFGA"
+printf 'alerts:\n  - {name: drop, kind: file, min_severity: warning, clear_after: 5m, instances: [chkbox], file: {dir: %s}}\n' "$TMPD/drop" >> "$CFGA"
 rid=$(on "$M" null 0); [[ -n "$rid" ]] || fail "G6: the firing rule was refused"
 loadread; pass g6a; step "a firing rule after a load" critical "firing 1 resolved 0 escalated 0 repeat 0"
 quiet; pass g6b; step "after a quiet read (na, inside the clear delay)" na "firing 1 resolved 0 escalated 0 repeat 0"
-loadread; pass g6c; step "after a load within 300 s (critical again)" critical "firing 1 resolved 0 escalated 0 repeat 0"
+# a second quiet read and pass: with clear_after 0 this pass resolves (G3's b4); held by the 5 minutes, it does not
+# (finding 3: without it the row could not fail on the delay)
+quiet; pass g6b2; step "after a second quiet read (na, still inside the 5-minute clear delay)" na "firing 1 resolved 0 escalated 0 repeat 0"
+loadread; pass g6c; step "after a load within the 5 minutes (critical again)" critical "firing 1 resolved 0 escalated 0 repeat 0"
 off "$rid"; CFGA=$CFGA0
-ok "G6: a flap across the floor inside the clear delay stays one open alert (one firing, no resolved)"
+ok "G6: a flap across the floor inside the clear delay stays one open alert (one firing, no resolved, through two passes that would resolve without the delay)"
+fi
 
 echo "== F. the seeded rows at the end =="
 pq "SELECT metric || '|' || rule_id || '|' || op || '|' || coalesce(warning::text, '') || '|' || coalesce(critical::text, '') || '|' || for_minutes || '|' || enabled || '|' || scope
