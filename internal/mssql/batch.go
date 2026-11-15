@@ -108,6 +108,9 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	}
 	n, batches := 0, 0
 	status, note := "ok", ""
+	// every batch's write is timed (B6g-1, N27); the run is 'import failed' only when it ENDED as an error at the
+	// repository's side (stage 'import') - a batch refused while the run went on leaves it 'partial', as its log row says
+	var imp collect.Result
 	opt := BatchOptions{QueryText: in.QueryText, AuditText: in.AuditText, Deadline: start.Add(limit - batchMargin)}
 	if dl, ok := sctx.Deadline(); ok && dl.Add(-batchMargin).Before(opt.Deadline) {
 		opt.Deadline = dl.Add(-batchMargin)
@@ -130,7 +133,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 		collect.ApplyTextPolicy(rows, in.QueryText)
 		rctx, cancel := repoCtx()
 		defer cancel()
-		if err := st.Import(rctx, instanceID, name, start, rows); err != nil {
+		if err := imp.TimedImport(func() error { return st.Import(rctx, instanceID, name, start, rows) }); err != nil {
 			repoFailed("import: " + err.Error())
 			return err
 		}
@@ -151,11 +154,16 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	if err := bc.RunBatches(sctx, conn, info, opt, cursor, emit); err != nil {
 		err = timeoutNote(sctx, limit, err)
 		logRun("error", err.Error())
-		return collect.Result{Rows: n, Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		out := collect.Result{Rows: n, Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Import: imp.Import, Imported: imp.Imported}
+		if stage == "import" {
+			out.Outcome = collect.OutcomeImportFailed
+		}
+		return out
 	}
 	d := time.Since(start)
 	note = collect.LeadNote(repoErr, note)
 	logRun(status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "batches", batches, "ms", d.Milliseconds())
-	return collect.Result{Rows: n, Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status)}
+	return collect.Result{Rows: n, Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status),
+		Import: imp.Import, Imported: imp.Imported}
 }

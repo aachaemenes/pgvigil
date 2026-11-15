@@ -504,6 +504,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return collect.Result{Err: cerr, Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
+	// B6g-1 (N25 / N26): the run's own cost, read at its end on the run's one connection. Registered after the close
+	// above, so it runs before it; every return below carries it - a failed read, a skip, a timeout, a failed import
+	defer func() { res.CPUMs, res.Reads = sessionCost(ctx, conn) }()
 
 	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {
@@ -544,7 +547,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	tcancel()
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
-		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Outcome: collect.OutcomeImportFailed}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
 	var rows []collect.Row
@@ -569,20 +572,25 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	if err != nil {
 		err = timeoutNote(sctx, limit, err)
+		out := collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 		if cursorFailed {
+			// the run ended at the repository's side (stage 'import'): 'import failed' for the hour's counts too
 			logStage(instanceID, "error", err.Error(), "import")
+			out.Outcome = collect.OutcomeImportFailed
 		} else {
 			logRun(instanceID, "error", err.Error())
 		}
-		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return out
 	}
 	collect.ApplyTextPolicy(rows, in.QueryText)
+	var imp collect.Result // the run's import time (B6g-1, N27: the Import call alone, apart from the read)
 	ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
-	err = r.Import(ictx, instanceID, name, start, rows)
+	err = imp.TimedImport(func() error { return r.Import(ictx, instanceID, name, start, rows) })
 	icancel()
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
-		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start),
+			Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 	}
 	// task 406: a collector that must learn its rows were stored (mssql_running_plans marks the plans it sent)
 	if as, ok := c.(AfterStorer); ok {
@@ -598,7 +606,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	logRun(instanceID, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
-	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status)}
+	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status),
+		Import: imp.Import, Imported: imp.Imported}
+}
+
+// sessionCostSQL: the session's own running totals. A session always sees its own row of sys.dm_exec_sessions: the
+// read needs nothing beyond the login.
+const sessionCostSQL = `SELECT cpu_time, logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID`
+
+// sessionCostTimeout bounds the end read (DBA Dash's own timeout for its usage read)
+const sessionCostTimeout = 10 * time.Second
+
+// sessionCost reads the run's own cost at its end: cpu_time in ms and logical_reads of the run's session. A run holds
+// ONE connection from its connect to its close (Connect: one *sql.Conn of a pool of one), so the session's totals are
+// the run's. The read is made on a context the run's deadline and a shutdown do not cut - a run that ended by its
+// timeout is the one whose cost matters - within sessionCostTimeout. nil, nil = not read (the connection is gone, a
+// NULL, no row): never a zero that would read as 'no CPU'.
+func sessionCost(ctx context.Context, conn *sql.Conn) (cpuMs, reads *int64) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCostTimeout)
+	defer cancel()
+	var c, l sql.NullInt64
+	if err := conn.QueryRowContext(cctx, sessionCostSQL).Scan(&c, &l); err != nil || !c.Valid || !l.Valid {
+		return nil, nil
+	}
+	return &c.Int64, &l.Int64
 }
 
 // timeoutNote says so when an error is the run's own deadline: the driver's text for it names no cause.

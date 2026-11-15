@@ -652,12 +652,21 @@ func TestRunBatched(t *testing.T) {
 	if res.Err == nil || res.Rows != 10 || st.cursors["src"].LastSeq != 10 || st.status != "error" || !strings.Contains(st.note, "the repository is away") || st.stage != "import" {
 		t.Fatalf("a failed batch: %+v, cursor %d, status %s (%s), stage %q", res, st.cursors["src"].LastSeq, st.status, st.note, st.stage)
 	}
+	// B6g-1 (N27): the run ENDED as an error at an import - 'import failed' for the hour's counts, its writes timed
+	if res.Outcome != collect.OutcomeImportFailed || !res.Imported {
+		t.Errorf("a failed batch: outcome %q, imported %v - want 'import failed' with its imports timed", res.Outcome, res.Imported)
+	}
 	// a reader that swallows a failed batch's import (a collector_error row, the run goes on, as xe's fail() does): the
 	// run is partial and its stage still 'import' (0198)
 	sw := &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
 	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true})
 	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || !strings.HasPrefix(sw.note, "import: the repository is away") {
 		t.Fatalf("a swallowed failed batch: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
+	}
+	// B6g-1 (the lead 11-15 10:3x, (a)): a batch refused while the run WENT ON leaves the run partial for the hour as
+	// its log row says - one outcome for the rate and the streak; never 'import failed' (the stage is on the error log)
+	if res.Outcome != collect.OutcomePartial || !res.Imported {
+		t.Errorf("a swallowed failed batch: outcome %q, imported %v - want 'partial' with its imports timed", res.Outcome, res.Imported)
 	}
 	// a read that failed before the swallowed import (its collector_error row first in the tail): the note still leads
 	// with the import's error, so the note and the stage tell of the same failure

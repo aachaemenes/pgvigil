@@ -49,6 +49,12 @@ collections have no steps). Runs and Max Duration are not links (DBA Dash's Coll
 task), and the thresholds are DBA Dash's defaults, not yet settable. The Status column shows the word as well as the
 colour.
 
+A departure from DBA Dash: a collection written in parts (the schema collection's databases, the Extended Events and
+audit readers' batches) whose part the repository refused while the run went on is counted **partial**, not import
+failed. DBA Dash counts any failed import as Import Failed; pgvigil counts a run by how it ended, so its failure rate
+and its failures in a row judge the same outcome. The refused part is on the collector's error log as a Warning at
+stage Import.
+
 ## Retention
 
 The hourly totals are kept 8 days by default, up to 30:
