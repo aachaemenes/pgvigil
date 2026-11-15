@@ -92,21 +92,26 @@ type VerifyJob struct {
 	Statement string
 }
 
-// verifySetSQL reads one set by its uuid (the read login: db_datareader in msdb, or guest).
+// verifySetSQL reads one set by its uuid (the read login: db_datareader in msdb, or guest): the first backupset row of
+// the uuid (verifyOneSetSQL) - a RESTORE on the server the set came from may write a second row of the same uuid into
+// msdb, and its families would be listed twice.
 var verifySetSQL = `SELECT CAST(bs.database_name AS nvarchar(128)), CASE bs.type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' WHEN 'L' THEN 'log' ELSE bs.type END,
   ` + backupUTC("bs.backup_finish_date") + `, CAST(bs.position AS int), CAST(bs.has_backup_checksums AS int), CAST(bs.backup_size AS bigint),
   CAST(bs.is_password_protected AS int), CAST(ISNULL(ms.is_encrypted, 0) AS int) | CASE WHEN bs.key_algorithm IS NULL OR bs.key_algorithm = N'NO_Encryption' THEN 0 ELSE 1 END,
   CAST(ISNULL(ms.is_password_protected, 0) AS int)
 FROM msdb.dbo.backupset bs
 LEFT JOIN msdb.dbo.backupmediaset ms ON ms.media_set_id = bs.media_set_id
-WHERE bs.backup_set_uuid = CAST(@p1 AS uniqueidentifier)`
+WHERE ` + verifyOneSetSQL
 
 // verifyFamiliesSQL: the set's media families of mirror 0 in order (a striped set names every family).
-const verifyFamiliesSQL = `SELECT CAST(f.device_type AS int), CAST(f.physical_device_name AS nvarchar(260))
+var verifyFamiliesSQL = `SELECT CAST(f.device_type AS int), CAST(f.physical_device_name AS nvarchar(260))
 FROM msdb.dbo.backupset bs
 JOIN msdb.dbo.backupmediafamily f ON f.media_set_id = bs.media_set_id AND f.mirror = 0
-WHERE bs.backup_set_uuid = CAST(@p1 AS uniqueidentifier)
+WHERE ` + verifyOneSetSQL + `
 ORDER BY f.family_sequence_number`
+
+// verifyOneSetSQL picks the first backupset row of the uuid @p1.
+const verifyOneSetSQL = `bs.backup_set_id = (SELECT MIN(x.backup_set_id) FROM msdb.dbo.backupset x WHERE x.backup_set_uuid = CAST(@p1 AS uniqueidentifier))`
 
 // verifyActorSQL: what the actions login holds beside actorSQL's sysadmin / CONTROL SERVER.
 const verifyActorSQL = `SELECT CAST(ISNULL(IS_SRVROLEMEMBER('dbcreator'), 0) AS int),
@@ -158,7 +163,7 @@ func verifyArgs(paths []string, position int) []any {
 	for i, p := range paths {
 		args = append(args, sql.Named("d"+strconv.Itoa(i+1), p))
 	}
-	return append(args, sql.Named("f", position))
+	return append(args, sql.Named("f", int32(position))) // int, as the probes declared @f (a Go int goes as bigint)
 }
 
 // readVerifySet reads one set by its uuid; errNoTarget when msdb has no such set.
@@ -212,8 +217,12 @@ func (s VerifySet) notOffered() string {
 	return ""
 }
 
-// sameSet says whether the set read now is the one shown: the same files in order, position, checksums and size.
+// sameSet says whether the set read now is the one shown: the same database, type and finish, the same files in order,
+// position, checksums and size (the typed confirmation is checked against the shown database, so it must be the set's).
 func sameSet(now, shown VerifySet) bool {
+	if now.Database != shown.Database || now.Type != shown.Type || now.FinishUTC != shown.FinishUTC {
+		return false
+	}
 	if now.Position != shown.Position || now.HasChecksums != shown.HasChecksums || now.SizeBytes != shown.SizeBytes || len(now.Paths) != len(shown.Paths) {
 		return false
 	}
@@ -369,6 +378,13 @@ func headerGUID(ctx context.Context, act *sql.Conn, s VerifySet) (string, error)
 	}
 	switch v := (*vals[at].(*any)).(type) {
 	case []byte:
+		// the driver hands SQL Server's wire order (the first three groups little-endian) by default, RFC order when the
+		// DSN sets 'guid conversion=true': the reading of the bytes that names the set's uuid is it
+		if len(v) == 16 {
+			if rfc := fmt.Sprintf("%X-%X-%X-%X-%X", v[0:4], v[4:6], v[6:8], v[8:10], v[10:16]); strings.EqualFold(rfc, s.UUID) {
+				return rfc, nil
+			}
+		}
 		var u mssqldb.UniqueIdentifier
 		if err := u.Scan(v); err != nil {
 			return "", err
@@ -391,9 +407,23 @@ func VerifyRun(ctx context.Context, d Door, job VerifyJob) VerifyResult {
 		return res
 	}
 	defer func() { _ = act.Close(); _ = adb.Close() }()
-	notices, errs := runWithMessages(ctx, act, job.Statement, verifyArgs(job.Set.Paths, job.Set.Position)...)
+	var spid int64
+	if err := act.QueryRowContext(ctx, `SELECT CAST(@@SPID AS bigint)`).Scan(&spid); err != nil {
+		res.Outcome, res.Detail = OutcomeFailed, "the actions login's session could not be read: "+serverMessage(err)+"; nothing was sent"
+		return res
+	}
+	wctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	watched := make(chan struct{})
+	go func() { defer close(watched); watchVerify(wctx, cancel, d.Monitor, spid) }()
+	notices, errs := runWithMessages(wctx, act, job.Statement, verifyArgs(job.Set.Paths, job.Set.Position)...)
+	lost := errors.Is(context.Cause(wctx), errVerifyLost)
+	cancel(nil)
+	<-watched
 	res.ServerMessage = strings.Join(append(append([]string{}, errs...), notices...), " | ")
 	switch {
+	case lost:
+		res.Outcome, res.Detail = OutcomeFailed, "the verify's connection to the server was lost: its session no longer runs the RESTORE (the server restarted, failed over or ended the session)"
 	case ctx.Err() != nil:
 		res.Outcome, res.Detail = OutcomeFailed, "the verify did not end before its limit: "+ctx.Err().Error()
 	case len(errs) > 0:
@@ -402,6 +432,57 @@ func VerifyRun(ctx context.Context, d Door, job VerifyJob) VerifyResult {
 		res.Outcome, res.Detail = OutcomeDone, "the verify ended without an error"
 	}
 	return res
+}
+
+// errVerifyLost is the watcher's cause: the actions session no longer runs the verify.
+var errVerifyLost = errors.New("the verify's session no longer runs the RESTORE")
+
+// verifyWatchEvery is how often watchVerify looks; two looks in a row that miss end the wait.
+var verifyWatchEvery = time.Minute
+
+// verifyWatchSQL (the read login): whether it may see other sessions' requests (VIEW SERVER STATE), and whether the
+// actions session @p1 still runs a RESTORE.
+const verifyWatchSQL = `SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE'), 0) AS int),
+  (SELECT COUNT(*) FROM sys.dm_exec_requests r WHERE r.session_id = @p1 AND r.command LIKE N'RESTORE%')`
+
+// watchVerify ends a verify whose connection was lost (go-mssqldb hands a broken read to its token channel only, so the
+// message reader would wait until verify_timeout): every verifyWatchEvery the read login looks for the actions
+// session's RESTORE; two looks in a row that miss it (or cannot connect) cancel with errVerifyLost. A read login
+// without VIEW SERVER STATE sees no other session's request: nothing is watched then, and the limit is verify_timeout
+// (docs/sqlserver-actions.md).
+func watchVerify(ctx context.Context, cancel context.CancelCauseFunc, monitor string, spid int64) {
+	misses := 0
+	t := time.NewTicker(verifyWatchEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		var vss, running int64
+		lctx, lcancel := context.WithTimeout(ctx, 20*time.Second)
+		mdb, mon, err := openAction(lctx, monitor, "pgvigil-actions-check")
+		if err == nil {
+			err = mon.QueryRowContext(lctx, verifyWatchSQL, spid).Scan(&vss, &running)
+			_ = mon.Close()
+			_ = mdb.Close()
+		}
+		lcancel()
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err == nil && vss != 1:
+			return
+		case err == nil && running > 0:
+			misses = 0
+			continue
+		}
+		if misses++; misses >= 2 {
+			cancel(errVerifyLost)
+			return
+		}
+	}
 }
 
 // runWithMessages runs one statement through go-mssqldb's message reader and returns the server's notices and errors
@@ -430,6 +511,9 @@ func runWithMessages(ctx context.Context, c *sql.Conn, query string, args ...any
 		if ctx.Err() != nil {
 			break
 		}
+	}
+	if err := rows.Err(); err != nil && ctx.Err() == nil {
+		errs = append(errs, serverMessage(err))
 	}
 	return notices, errs
 }

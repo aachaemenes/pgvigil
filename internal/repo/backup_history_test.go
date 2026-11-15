@@ -142,7 +142,7 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	if got := one(`SELECT min(backup_set_id)::text || '-' || max(backup_set_id)::text FROM pgvigil.mssql_backup_history WHERE instance_id = $1 AND backup_type = 'D' AND NOT is_copy_only`, a); got != "3-12" {
 		t.Errorf("H1 the fulls kept: %s, want 3-12", got)
 	}
-	if got := one(`SELECT path || '|' || device_kind || '|' || last_lsn || '|' || finish_at::text FROM pgvigil.mssql_backup_history WHERE instance_id = $1 AND backup_set_id = 12`, a); got != fmt.Sprintf("/var/opt/mssql/data/hdb_full_12.bak|disk|1200000009|%s", now.Add(-time.Hour).Format("2006-01-02 15:04:05+00")) {
+	if got := one(`SELECT path || '|' || device_kind || '|' || last_lsn || '|' || `+utcText("finish_at")+` FROM pgvigil.mssql_backup_history WHERE instance_id = $1 AND backup_set_id = 12`, a); got != fmt.Sprintf("/var/opt/mssql/data/hdb_full_12.bak|disk|1200000009|%s", now.Add(-time.Hour).Format("2006-01-02 15:04:05")) {
 		t.Errorf("H1 set 12: %s", got)
 	}
 
@@ -151,6 +151,17 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the store is shared: the function this test replaces is put back after it (on the joined tree 0300's holds
+	// other branches' arms, 0145's azdb_since among them, that the file's 0140-plus-arm text does not)
+	var before string
+	if err := pool.QueryRow(ctx, `SELECT pg_get_functiondef('pgvigil.mssql_hadr_cursor(int, text)'::regprocedure)`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), before); err != nil {
+			t.Errorf("mssql_hadr_cursor not put back: %v", err)
+		}
+	})
 	exec(string(joined))
 	for src, want := range map[string]string{"backup_history": "112", "backup_history_mark": "7", "restore_history": "0", "restore_history_mark": "0", "backup_sets": "<nil>"} {
 		if got := one(`SELECT pgvigil.mssql_hadr_cursor($1, $2)::text`, a, src); got != want {
@@ -174,7 +185,7 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	}
 	// a database created anew under its old name loses the sets stored for the old one - those that finished more than
 	// 0066's hour of slack before its creation; the five within the hour (full 12, the diff, the copy-only full, logs
-	// 112 and 113) stay by that rule (run 301ba)
+	// 112 and 113) stay by that rule
 	history(a, bkRows{db("hdb", -30*time.Minute), db("other", -30*24*time.Hour), db("back", -40*24*time.Hour),
 		read(0, "read"), cursor("backup_history", 113, 8), cursor("restore_history", 0, 0)})
 	if got := one(`SELECT string_agg(backup_set_id::text, ',' ORDER BY backup_set_id) FROM pgvigil.mssql_backup_history WHERE instance_id = $1 AND database_name = 'hdb'`, a); got != "12,50,51,112,113" {
@@ -199,7 +210,7 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 			t.Errorf("H2 restores %s: %s, want %s", c.where, got, c.want)
 		}
 	}
-	if got := one(`SELECT restore_at::text || '|' || source_backup_set_uuid::text || '|' || source_path FROM pgvigil.mssql_restore_history WHERE instance_id = $1 AND restore_history_id = 31`, b); got != fmt.Sprintf("%s|00000000-0000-0000-0001-000000000005|/var/opt/mssql/data/hdb_full.bak", now.Add(-5*time.Minute).Format("2006-01-02 15:04:05+00")) {
+	if got := one(`SELECT `+utcText("restore_at")+` || '|' || source_backup_set_uuid::text || '|' || source_path FROM pgvigil.mssql_restore_history WHERE instance_id = $1 AND restore_history_id = 31`, b); got != fmt.Sprintf("%s|00000000-0000-0000-0001-000000000005|/var/opt/mssql/data/hdb_full.bak", now.Add(-5*time.Minute).Format("2006-01-02 15:04:05")) {
 		t.Errorf("H2 restore 31: %s", got)
 	}
 	if got := one(`SELECT pgvigil.mssql_hadr_cursor($1, 'restore_history')::text || '|' || pgvigil.mssql_hadr_cursor($1, 'restore_history_mark')::text`, b); got != "31|99" {
@@ -221,9 +232,12 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	dbc := func(n, model, state string, lsn any) map[string]any {
 		return map[string]any{"kind": "database", "database_name": n, "recovery_model": model, "lsn_state": state, "last_log_backup_lsn": lsn}
 	}
-	file := func(n, typ, path, state, detail string) map[string]any {
-		return map[string]any{"kind": "file", "database_name": n, "backup_type": typ, "backup_set_uuid": "00000000-0000-0000-0002-000000000001",
+	fileOf := func(n, typ, uuid, path, state, detail string) map[string]any {
+		return map[string]any{"kind": "file", "database_name": n, "backup_type": typ, "backup_set_uuid": uuid,
 			"path": path, "state": state, "detail": detail}
+	}
+	file := func(n, typ, path, state, detail string) map[string]any {
+		return fileOf(n, typ, "00000000-0000-0000-0002-000000000001", path, state, detail)
 	}
 	checks := func(id int, rows bkRows) {
 		t.Helper()
@@ -279,6 +293,54 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 		t.Errorf("the default path: %s", got)
 	}
 
+	// ---- F6: a group's file finding only on the judged set (the group's newest of its type that is not copy-only, 0140):
+	// replica p2's own msdb names its full of a month ago (its file deleted by the cleanup); the group's newest full ran
+	// on s2 yesterday. p2's check: no finding, its cell names s2; s2's own judged full gone: the finding.
+	p2, s2 := inst("p2"), inst("s2")
+	g := fmt.Sprintf("%08x-0000-0000-0000-000000000301", tag)
+	agdb := db("agdb", -60*24*time.Hour)
+	agdb["ag_group_id"], agdb["ag_name"] = g, "ag301b"
+	locSet := func(id int64, finish time.Duration) bkRows {
+		return bkRows{{"kind": "set", "database_name": "agdb", "backup_type": "full", "is_copy_only": 0, "backup_set_id": id,
+			"backup_set_uuid": fmt.Sprintf("00000000-0000-0000-0003-%012d", id), "finish_utc": at(finish), "start_utc": at(finish - time.Minute),
+			"size_bytes": 1000, "compressed_bytes": 400, "has_checksums": 1, "is_damaged": 0, "is_password_protected": 0,
+			"key_algorithm": "NO_Encryption", "family_count": 1, "mirror_count": 1, "software_name": "Microsoft SQL Server",
+			"user_name": "sa", "checkpoint_lsn": fmt.Sprintf("%d000000001", id), "is_snapshot": 0},
+			{"kind": "file", "backup_set_id": id, "family": 1, "mirror": 0, "device_kind": "disk", "path": fmt.Sprintf("/bk/agdb_%d.bak", id)}}
+	}
+	for _, r := range []struct {
+		id   int
+		sets bkRows
+	}{{p2, locSet(701, -30*24*time.Hour)}, {s2, locSet(711, -24*time.Hour)}} {
+		exec(`SELECT pgvigil.import_mssql_backups($1, $2, $3::jsonb)`, r.id, now, bkRows{agdb}.json(t))
+		exec(`SELECT pgvigil.import_mssql_backup_files($1, $2, $3::jsonb)`, r.id, now, append(bkRows{agdb}, r.sets...).json(t))
+	}
+	checks(p2, bkRows{dbc("agdb", "FULL", "read", "42000000031200001"),
+		fileOf("agdb", "full", "00000000-0000-0000-0003-000000000701", "/bk/agdb_701.bak", "gone", "the file is gone"),
+		{"kind": "files_read", "state": "read"}})
+	checks(s2, bkRows{dbc("agdb", "FULL", "read", "42000000031200001"),
+		fileOf("agdb", "full", "00000000-0000-0000-0003-000000000711", "/bk/agdb_711.bak", "gone", "the file is gone"),
+		{"kind": "files_read", "state": "read"}})
+	for _, c3 := range []struct {
+		id      int
+		q, want string
+	}{
+		{p2, `SELECT count(*)::text FROM pgvigil.mssql_backup_check_findings WHERE instance_id = $1 AND check_name = 'backup file missing'`, "0"},
+		{p2, `SELECT file_full FROM pgvigil.mssql_backup_check_cells WHERE instance_id = $1 AND database_name = 'agdb'`, "not judged: a newer full backup ran on " + name("s2")},
+		{s2, `SELECT count(*)::text FROM pgvigil.mssql_backup_check_findings WHERE instance_id = $1 AND check_name = 'backup file missing'`, "1"},
+		{s2, `SELECT file_full FROM pgvigil.mssql_backup_check_cells WHERE instance_id = $1 AND database_name = 'agdb'`, "the file is gone"},
+	} {
+		if got := one(c3.q, c3.id); got != c3.want {
+			t.Errorf("F6 group (%d) %s:\n got %s\nwant %s", c3.id, c3.q, got, c3.want)
+		}
+	}
+	// a read older than the stored one (a one-off collect imported late) changes nothing (0066's mssql_hadr_read)
+	exec(`SELECT pgvigil.import_mssql_backup_checks($1, $2, $3::jsonb)`, s2, now.Add(-time.Hour), bkRows{dbc("agdb", "FULL", "read", nil),
+		{"kind": "files_read", "state": "not read: the file check is off"}}.json(t))
+	if got := one(`SELECT file_full FROM pgvigil.mssql_backup_check_cells WHERE instance_id = $1 AND database_name = 'agdb'`, s2); got != "the file is gone" {
+		t.Errorf("a late older read replaced the checks: %s", got)
+	}
+
 	// ---- F1: actions_log takes verify_backup (no pid) with its three new outcomes beside 0157's actions
 	for _, o := range []string{"started", "done", "failed", "refused", "cut by shutdown", "ended unknown"} {
 		exec(`SELECT pgvigil.import_mssql_actions_log($1, $2, $3::jsonb)`, c, now, fmt.Sprintf(`[{"instance_name": %q, "ui_user": "proof", "action": "verify_backup",
@@ -327,6 +389,19 @@ func TestJoinedCursor301bIs0140PlusArm(t *testing.T) {
 	if want := fn(string(b), "0140"); strings.Replace(got, arm, "", 1) != want {
 		t.Fatalf("the joined cursor is not 0140's plus 301b's arm:\n%s\n--- 0140:\n%s", got, want)
 	}
+	// the store test and the proof run the whole file: past its leading comment lines it holds the function alone
+	var body []string
+	lead := true
+	for _, l := range strings.Split(strings.TrimSpace(string(j)), "\n") {
+		if lead && (strings.HasPrefix(l, "--") || strings.TrimSpace(l) == "") {
+			continue
+		}
+		lead = false
+		body = append(body, l)
+	}
+	if whole := strings.Join(body, "\n"); whole != got+"\n$$;" {
+		t.Fatalf("scripts/inv-301b-joined-cursor.sql holds more than the function past its comment lines:\n%s", whole)
+	}
 	lines, err := os.ReadFile("../../scripts/inv-301b-join-lines.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -344,4 +419,9 @@ func TestJoinedCursor301bIs0140PlusArm(t *testing.T) {
 	if strings.Contains(string(m), "FUNCTION pgvigil.mssql_hadr_cursor") || strings.Contains(string(m), "VIEW pgvigil.findings") {
 		t.Error("0191 replaces a joined object")
 	}
+}
+
+// utcText renders a timestamptz column as UTC text whatever the store's TimeZone ('2026-11-15 06:00:00').
+func utcText(col string) string {
+	return "to_char(" + col + " AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
 }

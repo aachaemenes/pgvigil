@@ -5,7 +5,9 @@ package web
 // 'started' and runs RESTORE VERIFYONLY detached from the request (a verify outlives the request's 30 seconds), its end
 // audited when it returns - 'cut by shutdown' when serve stops under it (StopVerifies); at serve's start a 'started'
 // row older than verify_timeout with no end gets 'ended unknown: serve stopped' (SweepVerifies). One verify per
-// instance: a session-level advisory lock on the repository, held for the run. The checks are internal/mssql
+// instance: a session-level advisory lock on the repository, held for the run on a connection of its own (never one of
+// the UI pool's: a verify may run for hours). A session lock does not hold through a pooler in transaction mode
+// (docs/sqlserver-actions.md). The checks are internal/mssql
 // (verify_backup.go); the routes, the action's place in the allow list and serve's two hooks are the WIRING patch's
 // (scripts/inv-301b-wiring.patch).
 
@@ -20,18 +22,34 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 )
 
 // verifyLockClass is the advisory lock's first key (the second is the instance_id): one verify per instance.
 const verifyLockClass = 30117
 
-// verifyRuns is a server's detached verifies: serve's context for them, its cancel and the runs in flight.
+// verifyRuns is a server's detached verifies: serve's context for them, its cancel and the runs in flight. closing
+// (under mu, set by StopVerifies) refuses a new verify while serve stops; a run is added to wg under mu.
 type verifyRuns struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	timeout time.Duration
+	mu      sync.Mutex
+	closing bool
+}
+
+// begin adds one run unless serve is stopping.
+func (v *verifyRuns) begin() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closing {
+		return false
+	}
+	v.wg.Add(1)
+	return true
 }
 
 var verifyState sync.Map // *Server -> *verifyRuns
@@ -56,6 +74,9 @@ func (s *Server) SetVerifyTimeout(d time.Duration) {
 // StopVerifies cancels every running verify and waits for their end rows, at most limit (serve's shutdown).
 func (s *Server) StopVerifies(limit time.Duration) {
 	v := s.verifies()
+	v.mu.Lock()
+	v.closing = true
+	v.mu.Unlock()
 	v.cancel()
 	done := make(chan struct{})
 	go func() { v.wg.Wait(); close(done) }()
@@ -66,8 +87,10 @@ func (s *Server) StopVerifies(limit time.Duration) {
 	}
 }
 
-// sqlVerifySweep writes 'ended unknown' for each 'started' verify older than the timeout with no later row of the same
-// set on the instance (serve stopped under it without writing its end).
+// sqlVerifySweep writes 'ended unknown' for each 'started' verify older than the timeout with no end of its own (serve
+// stopped under it without writing its end): an end is a later row of the same set on the instance with an end's
+// outcome (a 'refused' second click is none) and no other 'started' row of the instance between them (one verify per
+// instance at a time). A row whose instance was removed since (instance_id NULL) is left alone: it cannot be imported.
 const sqlVerifySweep = `
 SELECT pgvigil.import_mssql_actions_log(a.instance_id, now(), jsonb_build_array(jsonb_build_object(
          'instance_name', a.instance_name, 'ui_user', a.ui_user, 'client', a.client, 'action', 'verify_backup',
@@ -76,9 +99,14 @@ SELECT pgvigil.import_mssql_actions_log(a.instance_id, now(), jsonb_build_array(
          'statement', a.statement)))
   FROM pgvigil.actions_log a
  WHERE a.engine = 'sqlserver' AND a.action = 'verify_backup' AND a.outcome = 'started' AND a.at < now() - make_interval(secs => $1)
+   AND a.instance_id IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log e
                     WHERE e.instance_id = a.instance_id AND e.action = 'verify_backup' AND e.target_id = a.target_id
-                      AND e.at >= a.at AND e.action_id <> a.action_id AND e.outcome <> 'started')`
+                      AND e.at >= a.at AND e.action_id <> a.action_id
+                      AND e.outcome IN ('done', 'failed', 'cut by shutdown', 'ended unknown')
+                      AND NOT EXISTS (SELECT 1 FROM pgvigil.actions_log o
+                                       WHERE o.instance_id = a.instance_id AND o.action = 'verify_backup' AND o.outcome = 'started'
+                                         AND o.action_id <> a.action_id AND o.at > a.at AND o.at <= e.at))`
 
 // SweepVerifies is serve's start: the verifies a stopped serve left without an end row.
 func (s *Server) SweepVerifies(ctx context.Context) error {
@@ -199,55 +227,68 @@ func (s *Server) MSSQLVerifyRun(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	}
-	if strings.TrimSpace(in.Confirm) == "" || strings.TrimSpace(in.Confirm) != in.Shown.Database {
-		res := mssql.VerifyResult{Outcome: mssql.OutcomeRefused, Detail: "the typed confirmation is not the database's name", Set: in.Shown}
+	// every way out writes its audit row first; a row that cannot be written turns the reply into a 500 (the door's rule)
+	refuse := func(code int, res mssql.VerifyResult) {
 		if audit(ctx, res) != nil {
-			writeErr(w, http.StatusInternalServerError, errors.New("refused; the audit row could not be written"))
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("%s; the audit row could not be written", res.Outcome))
 			return
 		}
-		reply(http.StatusConflict, res)
+		reply(code, res)
+	}
+	if strings.TrimSpace(in.Confirm) == "" || strings.TrimSpace(in.Confirm) != in.Shown.Database {
+		refuse(http.StatusConflict, mssql.VerifyResult{Outcome: mssql.OutcomeRefused, Detail: "the typed confirmation is not the database's name", Set: in.Shown})
 		return
 	}
-	// one verify per instance: a session-level advisory lock, held by its own repository connection for the run
-	lockConn, err := s.pool.Acquire(ctx)
+	// one verify per instance: a session-level advisory lock, held for the run on a repository connection of its own
+	// (outside the UI pool, which a verify of hours would starve)
+	lockConn, err := pgx.ConnectConfig(ctx, s.pool.Config().ConnConfig.Copy())
 	if err != nil {
-		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("the repository cannot hold the verify's lock (%v): nothing was sent", err))
+		refuse(http.StatusServiceUnavailable, mssql.VerifyResult{Outcome: mssql.OutcomeRefused, Set: in.Shown,
+			Detail: "the repository could not open the verify's lock connection: nothing was sent"})
 		return
 	}
 	var locked bool
 	if err := lockConn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, $2)`, verifyLockClass, in.InstanceID).Scan(&locked); err != nil || !locked {
-		lockConn.Release()
+		_ = lockConn.Close(context.Background())
 		res := mssql.VerifyResult{Outcome: mssql.OutcomeRefused, Detail: "a verify of this pgvigil is running on " + name + ": one at a time", Set: in.Shown}
 		if err != nil {
-			res.Detail = fmt.Sprintf("the verify's lock could not be taken: %v", err)
+			res.Detail = "the verify's lock could not be taken: nothing was sent"
 		}
-		_ = audit(ctx, res)
-		reply(http.StatusConflict, res)
+		refuse(http.StatusConflict, res)
 		return
 	}
+	// closing the connection ends the session, and the lock with it, whatever the unlock answers
 	unlock := func() {
-		_, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1, $2)`, verifyLockClass, in.InstanceID)
-		lockConn.Release()
+		uctx, ucancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ucancel()
+		_, _ = lockConn.Exec(uctx, `SELECT pg_advisory_unlock($1, $2)`, verifyLockClass, in.InstanceID)
+		_ = lockConn.Close(uctx)
 	}
 	job, res := mssql.VerifyPrepare(ctx, m.doors[name], req)
 	if res.Outcome != mssql.OutcomeStarted {
 		unlock()
-		_ = audit(ctx, res)
 		code := http.StatusConflict
 		if res.Outcome == mssql.OutcomeFailed {
 			code = http.StatusBadGateway
 		}
-		reply(code, res)
+		refuse(code, res)
+		return
+	}
+	// a run is counted before its 'started' is written: StopVerifies refuses one once serve stops, and waits for the rest
+	v := s.verifies()
+	if !v.begin() {
+		unlock()
+		refuse(http.StatusServiceUnavailable, mssql.VerifyResult{Outcome: mssql.OutcomeRefused, Detail: "serve is stopping: nothing was sent",
+			Statement: res.Statement, Set: res.Set})
 		return
 	}
 	// 'started' before the goroutine: a verify whose start cannot be written is not made
 	if err := audit(ctx, res); err != nil {
 		unlock()
+		v.wg.Done()
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("the verify's start could not be written (%v): nothing was sent", err))
 		return
 	}
-	v := s.verifies()
-	v.wg.Add(1)
 	door := m.doors[name]
 	go func() {
 		defer v.wg.Done()

@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // backupHistoryCollector is mssql_backup_history (task 301b): per database, type (full / diff / log) and copy-only the
@@ -255,12 +258,16 @@ func cursorFrom(ctx context.Context, conn *sql.Conn, cursor SeqCursorFunc, sourc
 }
 
 // backupCheckDBsSQL: every database with what decides whether its recovery status is read (sys.databases reads no
-// database: probe 301bP2), and whether it is a secondary replica's copy here (availability groups only where HADR is on).
-func backupCheckDBsSQL(withGroups bool) string {
+// database: probe 301bP2), and whether it is a secondary replica's copy here (is_secondary 1; availability groups only
+// where HADR is on); without VIEW SERVER STATE a group member's role is not read (is_secondary 2: backupGroupsRead).
+func backupCheckDBsSQL(groups int) string {
 	secondary := "CAST(0 AS int)"
-	if withGroups {
+	switch groups {
+	case groupsDMV:
 		secondary = `CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs
                                      WHERE rs.database_id = d.database_id AND rs.is_local = 1 AND rs.is_primary_replica = 0) THEN 1 ELSE 0 END AS int)`
+	case groupsMember:
+		secondary = "CAST(CASE WHEN d.replica_id IS NULL THEN 0 ELSE 2 END AS int)"
 	}
 	return `SELECT d.database_id, CAST(d.name AS nvarchar(128)) AS database_name, CAST(d.state_desc AS nvarchar(60)) AS state,
   CAST(d.recovery_model_desc AS nvarchar(60)) AS recovery_model, CAST(d.is_auto_close_on AS int) AS is_auto_close_on,
@@ -293,7 +300,7 @@ FROM sys.dm_os_file_exists(@p1) x`
 // (Database#7) only where the instance opts in.
 func (backupChecksCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	autoClose, files := backupCheckOptions(info)
-	dbs, err := QueryRows(ctx, conn, backupCheckDBsSQL(info.HADREnabled))
+	dbs, err := QueryRows(ctx, conn, backupCheckDBsSQL(backupGroupsRead(info)))
 	if err != nil {
 		return nil, err
 	}
@@ -308,37 +315,134 @@ func (backupChecksCollector) Run(ctx context.Context, conn *sql.Conn, info Info)
 	for _, r := range rows {
 		delete(r, "database_id")
 	}
+	pool := backupFileDB(info)
 	fileState := "not read: the file check is off"
-	if pool := backupFileDB(info); files && pool != nil {
+	switch {
+	case files && pool != nil:
 		var fileRows []collect.Row
 		fileRows, fileState = backupFileRows(ctx, conn, info, pool)
 		rows = append(rows, fileRows...)
+	case files:
+		fileState = "not judged: no connection for the file check"
 	}
 	rows = append(rows, collect.Row{"kind": "files_read", "state": fileState})
-	rows = append(rows, backupPathRow(ctx, conn, info))
+	rows = append(rows, backupPathRow(ctx, conn, info, pool))
 	return rows, nil
 }
 
-// backupFileDB is the instance's pool for the file check's own short-lived connections (F3: a share that does not
-// answer holds only its own connection, never the collection's). nil, the default, leaves the file check off; the
-// WIRING patch sets it from Info.
+// backupGroupsRead says how a database's availability group role is read: groupsNone where HADR is off, groupsDMV
+// with VIEW SERVER STATE (sys.dm_hadr_database_replica_states needs it, as indexes.go's gate), else groupsMember -
+// sys.databases' replica_id only, and a group member's cell 'not judged' (its role is not readable).
+func backupGroupsRead(info Info) int {
+	switch {
+	case !info.HADREnabled:
+		return groupsNone
+	case info.ViewServerState:
+		return groupsDMV
+	}
+	return groupsMember
+}
+
+const (
+	groupsNone = iota
+	groupsDMV
+	groupsMember
+)
+
+// backupFileDB is the file check's own pool (F3: a share that does not answer holds only its own connection, never
+// the collection's): openBackupFilePool's, never RunOnce's, which Connect caps at the collection's one connection (run
+// 301bp4). nil, the default, leaves the file check off; the WIRING patch sets it from Info.
 var backupFileDB = func(Info) *sql.DB { return nil }
 
 const (
-	// backupRootTimeout caps one root's existence call on its own connection; backupFilesBudget the read's file calls.
+	// backupRootTimeout caps one root's existence call on its own connection; backupRootsBudget all the roots of one
+	// read (a dead NAS with a share per database is many roots); backupFilesBudget the read's file calls.
 	backupRootTimeout = 15 * time.Second
+	backupRootsBudget = 30 * time.Second
 	backupFilesBudget = 60 * time.Second
+	// backupFilePoolConns: a root's connection the server has not let go of (a cancel it does not answer inside an SMB
+	// call) leaves room for the next root and for the files' connection.
+	backupFilePoolConns = 3
 )
 
-// backupFileSetsSQL: per database and type the newest set of this server's own backups that is not copy-only, every
-// family of mirror 0 with its device type; a differential only when its base is the newest full (F6).
+// openBackupFilePool opens the file check's own pool on the instance's DSN, as Connect opens the collection's, with
+// backupFileDialer: no idle connection is kept (each Conn is a fresh short-lived one, F3) and each connection ends at
+// the deadline its caller put on the context (backupFileUntil). Its connections run no sessionSetup: they only call
+// sys.dm_os_file_exists, which takes no lock. The caller closes it.
+func openBackupFilePool(in config.Instance) (*sql.DB, error) {
+	dsn := in.DSN()
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("the dsn resolved to an empty string")
+	}
+	db, err := mssqlopen.OpenDialer(withAppName(dsn), backupFileDialer{keepAlive: 30 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxIdleConns(0)
+	db.SetMaxOpenConns(backupFilePoolConns)
+	return db, nil
+}
+
+// backupFileUntilKey carries the hard end of a file check connection on the context its Conn is asked with (the
+// driver wraps the dial's context in its own 15-second dial timeout, so the dial's deadline is not the caller's).
+type backupFileUntilKey struct{}
+
+// backupFileConn takes a fresh connection from the file check's pool that ends at until, whatever the driver or the
+// server does: its socket's deadline.
+func backupFileConn(ctx context.Context, pool *sql.DB, until time.Time) (*sql.Conn, error) {
+	return pool.Conn(context.WithValue(ctx, backupFileUntilKey{}, until))
+}
+
+// backupFileDialer dials the file check's connections. A connection's socket deadline is the end its Conn was asked
+// with (backupFileConn), and a deadline the driver sets later is held to it: a share that never answers cannot hold
+// the connection past its cap, even where the server does not answer the driver's cancel.
+type backupFileDialer struct{ keepAlive time.Duration }
+
+func (d backupFileDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	until, ok := ctx.Value(backupFileUntilKey{}).(time.Time)
+	if !ok {
+		until = time.Now().Add(backupRootTimeout)
+	}
+	c, err := (&net.Dialer{KeepAlive: d.keepAlive, Deadline: until}).DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.SetDeadline(until); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return &cappedConn{Conn: c, until: until}, nil
+}
+
+// cappedConn is a connection whose deadlines never go past until.
+type cappedConn struct {
+	net.Conn
+	until time.Time
+}
+
+func (c *cappedConn) held(t time.Time) time.Time {
+	if t.IsZero() || t.After(c.until) {
+		return c.until
+	}
+	return t
+}
+func (c *cappedConn) SetDeadline(t time.Time) error      { return c.Conn.SetDeadline(c.held(t)) }
+func (c *cappedConn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(c.held(t)) }
+func (c *cappedConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(c.held(t)) }
+
+// backupFileSetsSQL: per database and type the newest set of this server's own backups that is not copy-only and was
+// kept somewhere (301's backupSinkExpr, as the sets and the history: a BACKUP LOG to NUL is not the newest log),
+// every family of mirror 0 with its device type; a differential only when its base is the newest full (F6).
 var backupFileSetsSQL = `WITH b AS (
   SELECT bs.backup_set_id, bs.database_name, bs.type, CAST(bs.backup_set_uuid AS varchar(36)) AS uuid,
          CAST(bs.differential_base_guid AS varchar(36)) AS base_uuid,
          ROW_NUMBER() OVER (PARTITION BY bs.database_name, bs.type ORDER BY ` + backupFinishUTCExpr + ` DESC, bs.backup_set_id DESC) AS rn
     FROM msdb.dbo.backupset bs
+   OUTER APPLY (SELECT TOP (1) f.device_type, f.physical_device_name FROM msdb.dbo.backupmediafamily f
+                 WHERE f.media_set_id = bs.media_set_id ORDER BY f.family_sequence_number, f.mirror) mf
    WHERE bs.type IN ('D', 'I', 'L') AND bs.is_copy_only = 0 AND bs.backup_finish_date IS NOT NULL
      AND bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))
+     AND ` + backupSinkExpr + ` = 'backup'
 ), n AS (SELECT * FROM b WHERE b.rn = 1)
 SELECT CAST(n.database_name AS nvarchar(128)) AS database_name, CASE n.type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' ELSE 'log' END AS backup_type,
   n.uuid AS backup_set_uuid, CAST(f.family_sequence_number AS int) AS family, CAST(f.device_type AS int) AS device_type,
@@ -357,9 +461,8 @@ type backupFileSet struct {
 }
 
 // backupFileRows checks the newest sets' files (Database#7) and says how the check went: each distinct root once on
-// its own short-lived connection (backupRootTimeout), then the files under the roots that answered on one fresh
-// connection within backupFilesBudget. A root that does not answer makes its files 'not judged'; an answered missing
-// file is 'gone', a missing directory 'folder gone' (F5).
+// its own short-lived connection (backupRootTimeout each, backupRootsBudget for all), then the files under the roots
+// that answered on one fresh connection within backupFilesBudget (backupFileStates decides the states).
 func backupFileRows(ctx context.Context, conn *sql.Conn, info Info, pool *sql.DB) ([]collect.Row, string) {
 	switch {
 	case info.Major < 14:
@@ -372,25 +475,64 @@ func backupFileRows(ctx context.Context, conn *sql.Conn, info Info, pool *sql.DB
 		return nil, "not judged: the backup history could not be read"
 	}
 	sets := backupFileSetsOf(fams)
-	answered := map[string]bool{}
+	roots := map[string]string{} // root -> "" answered, else why its files are not judged
+	rootsEnd := time.Now().Add(backupRootsBudget)
 	for _, s := range sets {
 		if !s.disk {
 			continue
 		}
 		for _, p := range s.paths {
 			root := backupPathRoot(p)
-			if _, seen := answered[root]; !seen {
-				answered[root] = backupRootAnswers(ctx, pool, root)
+			if _, seen := roots[root]; seen {
+				continue
+			}
+			switch {
+			case ctx.Err() != nil:
+				roots[root] = "not judged: the read's time ran out before " + root + " was asked"
+			case time.Until(rootsEnd) <= 0:
+				roots[root] = fmt.Sprintf("not judged: %s not asked (the roots' %d-second budget ran out)", root, int(backupRootsBudget.Seconds()))
+			case !backupRootAnswers(ctx, pool, root, rootsEnd):
+				roots[root] = "not judged: " + root + " did not answer"
+			default:
+				roots[root] = ""
 			}
 		}
 	}
-	bctx, cancel := context.WithTimeout(ctx, backupFilesBudget)
+	filesEnd := time.Now().Add(backupFilesBudget)
+	bctx, cancel := context.WithDeadline(ctx, filesEnd)
 	defer cancel()
-	fc, err := pool.Conn(bctx)
-	if err != nil {
-		return nil, "not judged: no connection for the file check"
+	var exists backupExister
+	fc, err := backupFileConn(bctx, pool, filesEnd)
+	if err == nil {
+		defer func() { _ = fc.Close() }()
+		exists = func(p string) (int64, int64, error) {
+			var ex, isDir, parent sql.NullInt64
+			err := fc.QueryRowContext(bctx, backupExistsSQL, p).Scan(&ex, &isDir, &parent)
+			if err != nil && bctx.Err() != nil {
+				return 0, 0, errBackupBudget
+			}
+			if err == nil && (!ex.Valid || !parent.Valid) {
+				err = errors.New("no answer") // a NULL is never read as 'folder gone'
+			}
+			return ex.Int64, parent.Int64, err
+		}
 	}
-	defer func() { _ = fc.Close() }()
+	return backupFileStates(sets, roots, exists), "read"
+}
+
+// backupExister answers sys.dm_os_file_exists for one path: file_exists and parent_directory_exists, or
+// errBackupBudget once the files' budget ran out, or another error (refused). nil: no connection for the file check.
+type backupExister func(path string) (exists, parent int64, err error)
+
+var errBackupBudget = errors.New("the files' budget ran out")
+
+// backupFileStates is the file check's states (F3, F5): an answered missing file is 'gone', its missing directory
+// 'folder gone'; a root that did not answer (roots[root] != ""), a refusal or the budget's end is 'not judged'. Every
+// family of a striped set whose root answered is asked, and the set takes its worst family's state and path (folder
+// gone, then gone, then not judged, then present): an answered missing stripe is the finding even when another
+// stripe's root did not answer. A set that is not a disk set is 'not checked: not a disk path'.
+func backupFileStates(sets []*backupFileSet, roots map[string]string, exists backupExister) []collect.Row {
+	rank := map[string]int{"present": 0, "not judged": 1, "gone": 2, "folder gone": 3}
 	var rows []collect.Row
 	for _, s := range sets {
 		r := collect.Row{"kind": "file", "database_name": s.db, "backup_type": s.typ, "backup_set_uuid": s.uuid}
@@ -403,33 +545,37 @@ func backupFileRows(ctx context.Context, conn *sql.Conn, info Info, pool *sql.DB
 			continue
 		}
 		state, detail := "present", ""
+		worst := func(st, why, p string) {
+			if rank[st] > rank[state] {
+				state, detail, r["path"] = st, why, p
+			}
+		}
 		for _, p := range s.paths {
-			if root := backupPathRoot(p); !answered[root] {
-				state, detail, r["path"] = "not judged", "not judged: "+root+" did not answer", p
-				break
-			}
-			var exists, isDir, parent sql.NullInt64
-			if err := fc.QueryRowContext(bctx, backupExistsSQL, p).Scan(&exists, &isDir, &parent); err != nil {
-				state, detail, r["path"] = "not judged", "not judged: the existence check was refused", p
-				if bctx.Err() != nil {
-					detail = fmt.Sprintf("not judged: the read's %d-second budget ran out", int(backupFilesBudget.Seconds()))
-				}
-				break
-			}
-			if exists.Int64 == 1 {
+			if why := roots[backupPathRoot(p)]; why != "" {
+				worst("not judged", why, p)
 				continue
 			}
-			if parent.Int64 == 1 {
-				state, detail, r["path"] = "gone", "the file is gone", p
-			} else {
-				state, detail, r["path"] = "folder gone", "the folder "+backupDirOf(p)+" is gone", p
+			if exists == nil {
+				worst("not judged", "not judged: no connection for the file check", p)
+				continue
 			}
-			break
+			ex, parent, err := exists(p)
+			switch {
+			case errors.Is(err, errBackupBudget):
+				worst("not judged", fmt.Sprintf("not judged: the read's %d-second budget ran out", int(backupFilesBudget.Seconds())), p)
+			case err != nil:
+				worst("not judged", "not judged: the existence check was refused", p)
+			case ex == 1:
+			case parent == 1:
+				worst("gone", "the file is gone", p)
+			default:
+				worst("folder gone", "the folder "+backupDirOf(p)+" is gone", p)
+			}
 		}
 		r["state"], r["detail"] = state, detail
 		rows = append(rows, r)
 	}
-	return rows, "read"
+	return rows
 }
 
 // backupFileSetsOf groups the family rows by database and type, in their order; a set is a disk set when every family
@@ -457,12 +603,16 @@ func backupFileSetsOf(fams []collect.Row) []*backupFileSet {
 	return sets
 }
 
-// backupRootAnswers: whether a root answers sys.dm_os_file_exists on its own connection within backupRootTimeout (an
-// answer of any value counts: a root that is not there makes its files 'folder gone').
-func backupRootAnswers(ctx context.Context, pool *sql.DB, root string) bool {
-	rctx, cancel := context.WithTimeout(ctx, backupRootTimeout)
+// backupRootAnswers: whether a root answers sys.dm_os_file_exists on its own connection within backupRootTimeout and
+// before the roots' end (an answer of any value counts: a root that is not there makes its files 'folder gone').
+func backupRootAnswers(ctx context.Context, pool *sql.DB, root string, rootsEnd time.Time) bool {
+	until := time.Now().Add(backupRootTimeout)
+	if rootsEnd.Before(until) {
+		until = rootsEnd
+	}
+	rctx, cancel := context.WithDeadline(ctx, until)
 	defer cancel()
-	c, err := pool.Conn(rctx)
+	c, err := backupFileConn(rctx, pool, until)
 	if err != nil {
 		return false
 	}
@@ -518,6 +668,8 @@ func backupCheckDBRows(dbs []collect.Row, autoClose bool) ([]collect.Row, []stri
 			r["lsn_state"] = "not judged: a standby database (restoring logs)"
 		case intOf(d["is_secondary"]) == 1:
 			r["lsn_state"] = "not judged: a secondary replica"
+		case intOf(d["is_secondary"]) == 2:
+			r["lsn_state"] = "not judged: availability group role not readable (VIEW SERVER STATE)"
 		case intOf(d["is_auto_close_on"]) == 1 && !autoClose:
 			r["lsn_state"] = "not read: AUTO_CLOSE (reading would open it)"
 		default:
@@ -551,9 +703,11 @@ func applyRecovery(rows, rec []collect.Row) {
 }
 
 // backupPathRow: the default backup path and its state. 2019 and later SERVERPROPERTY; 2017 the registry behind 301c's
-// gate; 2016 and Azure SQL Managed Instance / RDS words of their own. A call that fails or does not answer in
-// backupPathTimeout is 'not judged' with fixed words (the server's text is never stored).
-func backupPathRow(ctx context.Context, conn *sql.Conn, info Info) collect.Row {
+// gate; 2016 and the managed platforms words of their own. A call that fails or does not answer in backupPathTimeout
+// is 'not judged' with fixed words (the server's text is never stored). Where the file check is on (pool), the
+// existence call runs on a connection of the file check's own pool that ends at the cap (F11 takes F3's handling);
+// where it is off, on the collection's connection with the cap as a cancel only (said in docs/backups-sqlserver.md).
+func backupPathRow(ctx context.Context, conn *sql.Conn, info Info, pool *sql.DB) collect.Row {
 	row := collect.Row{"kind": "default_path"}
 	notJudged := func(why string) collect.Row {
 		row["state"], row["detail"] = "not judged", "not judged: "+why
@@ -564,11 +718,27 @@ func backupPathRow(ctx context.Context, conn *sql.Conn, info Info) collect.Row {
 		return notJudged(why)
 	}
 	row["path"] = path
-	cctx, cancel := context.WithTimeout(ctx, backupPathTimeout)
+	if ctx.Err() != nil {
+		return notJudged("the read's time ran out before the path was asked")
+	}
+	until := time.Now().Add(backupPathTimeout)
+	cctx, cancel := context.WithDeadline(ctx, until)
 	defer cancel()
+	ask := conn.QueryRowContext
+	if pool != nil {
+		pc, err := backupFileConn(cctx, pool, until)
+		if err != nil {
+			return notJudged("no connection for the existence check")
+		}
+		defer func() { _ = pc.Close() }()
+		ask = pc.QueryRowContext
+	}
 	var exists, isDir, parent sql.NullInt64
-	if err := conn.QueryRowContext(cctx, backupExistsSQL, path).Scan(&exists, &isDir, &parent); err != nil {
-		if cctx.Err() != nil {
+	if err := ask(cctx, backupExistsSQL, path).Scan(&exists, &isDir, &parent); err != nil {
+		switch {
+		case ctx.Err() != nil:
+			return notJudged("the read's time ran out before the path answered")
+		case cctx.Err() != nil:
 			return notJudged(fmt.Sprintf("the path did not answer in %d seconds", int(backupPathTimeout.Seconds())))
 		}
 		return notJudged("the existence check was refused")
@@ -585,9 +755,17 @@ func backupPathRow(ctx context.Context, conn *sql.Conn, info Info) collect.Row {
 // from SQL Server 2019, the registry's BackupDirectory on 2017 once gate says xp_instance_regread may be called. why
 // is the reason there is no path, in fixed words (the server's text is never kept); both callers put their own prefix
 // before it (mssql_backup_checks 'not judged: ', the Properties row 'not read: ').
+//
+// A managed platform (Azure SQL Managed Instance, Amazon RDS, Cloud SQL) is never read (F11: the service keeps the
+// backups, and nobody there can act on a path the service account does not see; the registry is never read there).
 func defaultBackupPath(ctx context.Context, conn *sql.Conn, info Info, gate func() propGate) (path, why string) {
-	if info.Kind == KindAzureMI {
+	switch info.Kind {
+	case KindAzureMI:
 		return "", "Azure SQL Managed Instance keeps its backups itself"
+	case KindRDS:
+		return "", "Amazon RDS for SQL Server keeps its backups itself"
+	case KindCloudSQL:
+		return "", "Cloud SQL for SQL Server keeps its backups itself"
 	}
 	if info.Major < 14 {
 		return "", "SQL Server 2017 and later"

@@ -243,12 +243,10 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 		}
 		return gate
 	})
-	switch {
-	case bpWhy == "":
+	// a managed platform is never read: defaultBackupPath says so before any read (F11)
+	if bpWhy == "" {
 		p.add("default_backup_path", "Backups", "Default backup path", 800, bp, "")
-	case managed && info.Kind != KindAzureMI && info.Major == 14:
-		p.add("default_backup_path", "Backups", "Default backup path", 800, nil, "not read: the registry is not read on a managed service")
-	default:
+	} else {
 		p.add("default_backup_path", "Backups", "Default backup path", 800, nil, "not read: "+bpWhy)
 	}
 

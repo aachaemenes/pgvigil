@@ -142,7 +142,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_path_check (
 -- (an hour of slack); a database created anew under an old name loses the sets stored for the old one; a database the
 -- server no longer lists loses its sets. A cursor read (from_set_id > 0) that lists a database the last read did not
 -- sends the cursor to 0, so the next read is one whole pass (301's F7). The restores are written only when the read had
--- the right ('no right': the state says so and the stored restores stay). N = 10, M = 20 (the lead's E2).
+-- the right ('no right': the state says so and the stored restores stay). N = 10, M = 20 (the lead's E2). Its first
+-- statement is 0066's mssql_hadr_read (the engine, the instance's lock for the collection, and a read older than the
+-- stored one - a one-off collect imported late - changes nothing).
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_backup_history(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -150,8 +152,9 @@ DECLARE
   v_restore_read text;
   v_again        boolean;
 BEGIN
-  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
-    RAISE EXCEPTION 'import_mssql_backup_history: instance % is not a SQL Server instance', p_instance_id;
+  IF NOT pgvigil.mssql_hadr_read(p_instance_id, 'mssql_backup_history', p_snapshot_at,
+                                 (SELECT count(*)::int FROM jsonb_array_elements(pgvigil.mssql_rows(p_payload)) r WHERE r->>'kind' = 'database')) THEN
+    RETURN;
   END IF;
   SELECT coalesce((r->>'from_set_id')::bigint, 0), coalesce(r->>'restore_read', 'read') INTO v_from, v_restore_read
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'read' LIMIT 1;
@@ -262,14 +265,15 @@ END $$;
 
 -- import_mssql_backup_checks: each read replaces the instance's database and file rows, and its path row. A file row
 -- is kept only when the file check ran ('files_read' state 'read'); off ('not read: the file check is off') or refused,
--- every file cell carries that state.
+-- every file cell carries that state. Its first statement is 0066's mssql_hadr_read (as import_mssql_backup_history).
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_backup_checks(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_files text;
 BEGIN
-  IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
-    RAISE EXCEPTION 'import_mssql_backup_checks: instance % is not a SQL Server instance', p_instance_id;
+  IF NOT pgvigil.mssql_hadr_read(p_instance_id, 'mssql_backup_checks', p_snapshot_at,
+                                 (SELECT count(*)::int FROM jsonb_array_elements(pgvigil.mssql_rows(p_payload)) r WHERE r->>'kind' = 'database')) THEN
+    RETURN;
   END IF;
   SELECT coalesce(r->>'state', 'not read') INTO v_files FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'files_read' LIMIT 1;
   v_files := coalesce(v_files, 'not read');
@@ -303,30 +307,55 @@ BEGIN
          read_at = excluded.read_at;
 END $$;
 
+-- mssql_backup_file_newer: the judged set of a file row's database and type when it is another set (F6: Database#7
+-- judges only 0140's judged set - the group's newest of its type that is not copy-only over the monitored replicas -
+-- and each replica checks its own msdb's newest): a row of mssql_backup_locations, NULL when the judged set is the
+-- file row's own or 0140 holds no set of that database and type (its read has not run: the check stands alone).
+CREATE OR REPLACE FUNCTION pgvigil.mssql_backup_file_newer(p_instance_id int, p_database text, p_type text, p_uuid uuid)
+RETURNS TABLE (from_instance_id int, from_instance text) LANGUAGE sql STABLE AS $$
+  SELECT l.from_instance_id, l.from_instance FROM pgvigil.mssql_backup_locations l
+   WHERE l.instance_id = p_instance_id AND l.database_name = p_database AND l.backup_type = p_type AND l.judged
+     AND lower(l.backup_set_uuid) IS DISTINCT FROM p_uuid::text   -- 0140 keeps the uuid as SQL Server's text
+   LIMIT 1
+$$;
+
+-- mssql_backup_file_cell: the words of one database's newest <type> file cell: the file check's own state, or 'not
+-- judged' when the judged set is another (mssql_backup_file_newer): 'a newer <type> backup ran on <replica>', or on
+-- this instance 'the backup read and the file check saw different newest sets' (the next reads agree).
+CREATE OR REPLACE FUNCTION pgvigil.mssql_backup_file_cell(p_instance_id int, p_database text, p_type text)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT CASE WHEN n.from_instance_id IS NULL THEN CASE f.state WHEN 'present' THEN 'present' ELSE f.detail END
+              WHEN n.from_instance_id <> f.instance_id
+                THEN 'not judged: a newer ' || CASE p_type WHEN 'full' THEN 'full' WHEN 'diff' THEN 'differential' ELSE 'log' END
+                     || ' backup ran on ' || n.from_instance
+              ELSE 'not judged: the backup read and the file check saw different newest sets' END
+    FROM pgvigil.mssql_backup_file_checks f
+    LEFT JOIN LATERAL pgvigil.mssql_backup_file_newer(f.instance_id, f.database_name, f.backup_type, f.backup_set_uuid) n ON true
+   WHERE f.instance_id = p_instance_id AND f.database_name = p_database AND f.backup_type = p_type
+$$;
+
 -- mssql_backup_check_cells: per database of the last read, the pseudo-simple cell and the newest full / diff / log
 -- backup's file cell, in words. Pseudo-simple (dbachecks' PseudoSimple; probe 301bP1): FULL or BULK_LOGGED with
 -- last_log_backup_lsn NULL - before the first full, and after SIMPLE -> FULL until a full or a differential; a restored
 -- database is never pseudo-simple, a RESTORING one reads NULL and is not judged (mssql_backup_judged's state rule).
--- master, model, msdb and tempdb are never judged; a database mssql_backup_judged leaves out says its reason.
+-- master, model, msdb and tempdb are never judged; a database mssql_backup_judged leaves out says its reason (before
+-- its recovery model). The file cells: mssql_backup_file_cell.
 CREATE OR REPLACE VIEW pgvigil.mssql_backup_check_cells AS
 SELECT dc.instance_id, dc.database_name, dc.recovery_model, dc.read_at,
        CASE WHEN dc.database_name IN ('master', 'model', 'msdb', 'tempdb') THEN 'not judged: ' || dc.database_name
             WHEN dc.lsn_state <> 'read' THEN dc.lsn_state
-            WHEN dc.recovery_model IS NULL OR dc.recovery_model NOT IN ('FULL', 'BULK_LOGGED') THEN 'no (' || coalesce(dc.recovery_model, 'unknown') || ')'
             WHEN j.database_name IS NULL THEN 'not judged: not in the backup read'
             WHEN j.not_judged IS NOT NULL THEN 'not judged: ' || j.not_judged
+            WHEN dc.recovery_model IS NULL OR dc.recovery_model NOT IN ('FULL', 'BULK_LOGGED') THEN 'no (' || coalesce(dc.recovery_model, 'unknown') || ')'
             WHEN dc.last_log_backup_lsn IS NULL
               THEN 'yes: ' || dc.recovery_model || ', but no log backup can be taken: no full or differential backup since the log chain began'
             ELSE 'no' END AS pseudo_simple,
        CASE WHEN p.files_state IS DISTINCT FROM 'read' THEN coalesce(p.files_state, 'not read')
-            ELSE (SELECT CASE f.state WHEN 'present' THEN 'present' ELSE f.detail END FROM pgvigil.mssql_backup_file_checks f
-                   WHERE f.instance_id = dc.instance_id AND f.database_name = dc.database_name AND f.backup_type = 'full') END AS file_full,
+            ELSE pgvigil.mssql_backup_file_cell(dc.instance_id, dc.database_name, 'full') END AS file_full,
        CASE WHEN p.files_state IS DISTINCT FROM 'read' THEN coalesce(p.files_state, 'not read')
-            ELSE (SELECT CASE f.state WHEN 'present' THEN 'present' ELSE f.detail END FROM pgvigil.mssql_backup_file_checks f
-                   WHERE f.instance_id = dc.instance_id AND f.database_name = dc.database_name AND f.backup_type = 'diff') END AS file_diff,
+            ELSE pgvigil.mssql_backup_file_cell(dc.instance_id, dc.database_name, 'diff') END AS file_diff,
        CASE WHEN p.files_state IS DISTINCT FROM 'read' THEN coalesce(p.files_state, 'not read')
-            ELSE (SELECT CASE f.state WHEN 'present' THEN 'present' ELSE f.detail END FROM pgvigil.mssql_backup_file_checks f
-                   WHERE f.instance_id = dc.instance_id AND f.database_name = dc.database_name AND f.backup_type = 'log') END AS file_log,
+            ELSE pgvigil.mssql_backup_file_cell(dc.instance_id, dc.database_name, 'log') END AS file_log,
        j.not_judged, j.replicas_unseen
   FROM pgvigil.mssql_backup_db_checks dc
   LEFT JOIN pgvigil.mssql_backup_path_check p ON p.instance_id = dc.instance_id
@@ -344,7 +373,8 @@ SELECT p.instance_id, p.path AS default_backup_path,
 
 -- mssql_backup_check_findings: the three findings (warning each, the lead's E5). A file is judged only for a database
 -- mssql_backup_judged judges (no not-judged reason), 'info' when a replica of its availability group is not monitored
--- (0140's rule); an answered 'gone' is the finding, a timeout or a refusal is 'not judged' and none (F5).
+-- (0140's rule); an answered 'gone' is the finding, a timeout or a refusal is 'not judged' and none (F5); a set that
+-- is not 0140's judged set (a newer one ran on another replica) raises none (F6: mssql_backup_file_newer).
 CREATE OR REPLACE VIEW pgvigil.mssql_backup_check_findings AS
 SELECT f.instance_id, CASE WHEN j.replicas_unseen THEN 'info' ELSE 'warning' END AS severity, 'backup file missing'::text AS check_name,
        f.database_name || ' (' || f.backup_type || ')' AS object,
@@ -356,6 +386,7 @@ SELECT f.instance_id, CASE WHEN j.replicas_unseen THEN 'info' ELSE 'warning' END
   JOIN pgvigil.mssql_backup_path_check p ON p.instance_id = f.instance_id AND p.files_state = 'read'
   JOIN pgvigil.mssql_backup_judged j ON j.instance_id = f.instance_id AND j.database_name = f.database_name AND j.not_judged IS NULL
  WHERE f.state IN ('gone', 'folder gone')
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_backup_file_newer(f.instance_id, f.database_name, f.backup_type, f.backup_set_uuid))
 UNION ALL
 SELECT c.instance_id, 'warning', 'pseudo-simple recovery', c.database_name, substr(c.pseudo_simple, 6), c.read_at
   FROM pgvigil.mssql_backup_check_cells c
