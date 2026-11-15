@@ -13,12 +13,12 @@
 # container failed, 2 = no DSN.
 #
 # Expected (the red run, on main 1aba474 with this file and menu-check.mjs copied in - written before it, after the
-# lead's fold of the design pass): the build green; the container answers; case G's six rows ok (G grid menu, its Export
-# Excel, G selection, G filter, G text column, G export: main holds task 172's flat menu); G-chart ok (the chart's menu
-# is unchanged by design); every other GM row FAIL - G-menu, G-header, G-copy, G-copy JSON values, G-copy empty, G-file,
-# G-hidden, G-order, G-rownum, G-transpose, G-filters, G-filters quoting, G-in, G-bars, G-keys (Tab lands on the grid's
-# scroll box), G-grouped, G-empty0, G-dialog, G-sql (no SQL file), G-stmt, G-plain, G-mssql, G-big, G-themes (no menu
-# background) - each '(no .tm-menu)' or the item absent; 'FAIL: 24 case(s)', rc 1.
+# lead's fold of the design pass; case G of task 172 retired into G-select): the build green; the container answers;
+# G-chart ok (the chart's menu is unchanged by design); every other GM row FAIL - G-menu, G-select, G-header, G-copy,
+# G-copy JSON values, G-copy empty, G-file, G-hidden, G-order, G-rownum, G-transpose, G-filters, G-filters quoting,
+# G-in, G-bars, G-keys (Tab lands on the grid's scroll box), G-grouped, G-empty0, G-dialog, G-sql (no SQL file),
+# G-stmt, G-plain, G-mssql, G-big, G-themes (no menu background) - each '(no .tm-menu)' or the item absent;
+# 'FAIL: 25 case(s)', rc 1.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 [[ -n "${PGVIGIL_ADMIN_DSN:-}" ]] || { echo "FAIL: PGVIGIL_ADMIN_DSN is not set"; exit 2; }

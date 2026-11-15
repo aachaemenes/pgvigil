@@ -64,14 +64,7 @@
 //   D  drives         under onprem-sql01's Storage folder one node per volume of /api/mssql/storage (total > 0), each with
 //                     a bar whose width is its used share (within 0.2 %) in the colour of its free share (ok / warn under
 //                     20 % / crit under 10 %), its visible words '... free (n %)', its title '... free of ...' (run 3)
-//   G  grid menu      Instances' first non-empty sessions cell: one 'Export Excel' line before them, then 'Select row|Select
-//                     column|Filter by value: <v>|Exclude value (contains)|Select all|Rows: <n> | Cols: <m>|[sessions] Sum: <s> | Avg:
-//                     <a> | Min | Max' after the grid's own items, over the non-empty cells summed by hand (run 3: empty
-//                     cells are no numbers); Select column -> n cells, the tools' line says so, the menu then 'Selected
-//                     Cells: n (<numbers> numeric) | Sum: <s> ...'; Select row -> the m cells of one row; Filter by value
-//                     (a number column: '=') -> exactly the rows showing v; Exclude value -> the rows not holding v; Clear
-//                     filters -> n rows each time; Export Excel -> an .xlsx (PK, a worksheet) downloaded; (run 4) a version
-//                     cell ('17.10', a text column): no Sum line, the menu ends with 'Rows: ...'
+//   G  grid menu      (task 172's flat menu) retired by task GM: its rows are now G-select, G-menu, G-filters and G-file
 //   T  tools          the bar's Tools: 'Open Deadlock Graph | *.xdl|Open Query Plan | *.sqlplan|Open Grid or Data Set |
 //                     *.json;*.csv;*.gz', the button aria-expanded true; the picker given dl.xdl -> 'Deadlock graph: dl.xdl',
 //                     an svg, 2 sessions with 'Session 55' the victim, 2 locked resources; a right-click in its grid opens the
@@ -101,6 +94,8 @@
 //                     Selected rows | Grid, Select > Row | Column | All, Data bar > Behind value | Under value | Traffic
 //                     light (higher is worse) | (higher is better) | Remove, All filters > = <> > < >= <= (a text column:
 //                     Like | Not like first); Clear filters off with the visible words 'no filter is set'
+//   G-select          Select > Column: n cells, the tools' line says so, the menu's last line 'Selected Cells: n (k
+//                     numeric) | Sum: ...'; Select > Row: the row's shown cells; a version cell: no Sum line, 'Rows: ...' last
 //   G-header          sessions' header: the grid-level items, Hide column / Freeze up to / Group by sessions, Data bar,
 //                     its Sum line last; its Copy holds Grid, Column, Selected, As Markdown, As JSON (no Cell, no Row)
 //   G-copy            through a stubbed clipboard: Cell; Row ends with the row tab-separated; Column = the shown column;
@@ -531,66 +526,6 @@ await guard('W pg words', async () => {
   check('W pg words', !!line && hit.length === 0, `demo-cloudsql-analytics01's Summary says '${line.slice(0, 200)}'; SQL Server-only names in it: ${hit.join(', ') || 'none'}; judged on an all-OK instance (where the line lists the cells without a read): ${!/^Not OK/.test(line)}`);
 });
 
-// ---- G: the grid cell menu ----
-await guard('G grid menu', async () => {
-  await go('#/instances');
-  const col = `[...document.querySelectorAll('main table.grid thead tr:first-child th')].findIndex(h => h.textContent === 'sessions')`;
-  const g = await ev(`(async () => {
-    const t = document.querySelector('main table.grid'); const ths = [...t.querySelectorAll('thead tr:first-child th')];
-    const j = ${col}; const trs = [...t.querySelectorAll(':scope > tbody > tr')];
-    const texts = trs.map(tr => tr.children[j].textContent.trim()), vals = texts.filter(x => x !== '').map(x => Number(x.replace(/[^0-9.-]/g, '')));
-    const sum = vals.reduce((a, b) => a + b, 0), f = n => (Math.round(n * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const want = '[sessions] Sum: ' + f(sum) + ' | Avg: ' + f(sum / vals.length) + ' | Min: ' + f(Math.min(...vals)) + ' | Max: ' + f(Math.max(...vals));
-    const td = trs.find(tr => tr.children[j].textContent.trim() !== '').children[j]; const r = td.getBoundingClientRect();
-    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-    const items = [...document.querySelectorAll('.menu button')].map(b => b.textContent);
-    const v = td.textContent.trim();
-    return { items, want, n: trs.length, cols: ths.filter(h => !h.hasAttribute('data-gt-hidden')).length, v, sum: f(sum), nums: vals.length,
-      eq: texts.filter(x => x === v).length, holds: texts.filter(x => x.includes(v)).length };
-  })()`);
-  await shot('grid-cell-menu-light');
-  const tail = g.items.slice(g.items.indexOf('Select row'));
-  const wantTail = ['Select row', 'Select column', `Filter by value: ${g.v}`, 'Exclude value (contains)', 'Select all', `Rows: ${g.n} | Cols: ${g.cols}`, g.want];
-  check('G grid menu', JSON.stringify(tail) === JSON.stringify(wantTail), tail.join(' / ') + (JSON.stringify(tail) === JSON.stringify(wantTail) ? '' : ' (want ' + wantTail.join(' / ') + ')'));
-  // the grid's Export Excel (export.ts): one line, before these, after the copies
-  const xl = g.items.filter(x => x.startsWith('Export Excel'));
-  check('G grid menu Export Excel', xl.length === 1 && xl[0] === 'Export Excel' && g.items.indexOf('Export Excel') < g.items.indexOf('Select row'), JSON.stringify(xl));
-  await clickItem('Select column'); await sleep(300);
-  const sel = await ev(`(() => { const t = document.querySelector('main table.grid'); const td = t.querySelector('tbody td.gt-sel'); const r = td.getBoundingClientRect();
-    const n = t.querySelectorAll('tbody td.gt-sel').length; const line = t.closest('.grid-box').querySelector('.gt-stats')?.textContent ?? '';
-    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-    const items = [...document.querySelectorAll('.menu button')].map(b => b.textContent); return { n, line, last: items[items.length - 1] }; })()`);
-  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
-  // Select row: the row's cells of the columns shown
-  await rightClick(`document.querySelector('main table.grid tbody tr:nth-child(2) td:nth-child(2)')`);
-  await clickItem('Select row'); await sleep(300);
-  const rowSel = await ev(`({ n: document.querySelectorAll('main table.grid tbody td.gt-sel').length, rows: new Set([...document.querySelectorAll('main table.grid tbody td.gt-sel')].map(td => td.parentElement)).size })`);
-  check('G selection', sel.n === g.n && /selected/.test(sel.line) && sel.last.startsWith(`Selected Cells: ${g.n} (${g.nums} numeric) | Sum: ${g.sum} |`) && rowSel.n === g.cols && rowSel.rows === 1,
-    `column: ${sel.n} cells; '${sel.line}'; '${sel.last}'; row: ${rowSel.n} cells in ${rowSel.rows} row for ${g.cols} columns`);
-  const firstNum = `[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.children[${col}]).find(td => td.textContent.trim() === ${JSON.stringify(g.v)})`;
-  const shownRows = `(() => { const t = document.querySelector('main table.grid'); return [...t.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[${col}].textContent.trim()); })()`;
-  await rightClick(firstNum); await clickItem('Filter by value'); await sleep(500);
-  const fv = await ev(shownRows);
-  await rightClick(firstNum); await clickItem('Clear filters'); await sleep(500);
-  const back1 = (await ev(shownRows)).length;
-  await rightClick(firstNum); await clickItem('Exclude value'); await sleep(500);
-  const ex = await ev(shownRows);
-  await rightClick(`document.querySelector('main table.grid tbody td')`); await clickItem('Clear filters'); await sleep(500);
-  const back2 = (await ev(shownRows)).length;
-  check('G filter', fv.length === g.eq && fv.every(x => x === g.v) && back1 === g.n && ex.length === g.n - g.holds && ex.every(x => !x.includes(g.v)) && back2 === g.n,
-    `filter by '${g.v}': ${fv.length} rows (${g.eq} equal by hand); exclude: ${ex.length} (${g.n - g.holds} by hand); cleared: ${back1}, ${back2} of ${g.n}`);
-  for (const f of fs.readdirSync(dl)) fs.rmSync(path.join(dl, f));
-  await rightClick(`document.querySelector('main table.grid tbody td')`);
-  await clickItem('Export Excel'); let x = '';
-  for (let k = 0; k < 40 && !x; k++) { await sleep(250); x = fs.readdirSync(dl).find(f => f.endsWith('.xlsx')) ?? ''; }
-  const buf = x ? fs.readFileSync(path.join(dl, x)) : Buffer.alloc(0);
-  // a text column whose values look like numbers (the version, '17.10'): no Sum line
-  await rightClick(`[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.children[[...document.querySelectorAll('main table.grid thead tr:first-child th')].findIndex(h => h.textContent.startsWith('version'))]).find(td => /^\\d+\\.\\d+$/.test(td.textContent.trim()))`);
-  const verLast = await ev(`(() => { const b = [...document.querySelectorAll('.menu button')].map(x => x.textContent); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return b[b.length - 1] ?? ''; })()`);
-  check('G text column', /^Rows: /.test(verLast), `the last item on a version cell: '${verLast}'`);
-  check('G export', buf.length > 0 && buf.subarray(0, 2).toString() === 'PK' && buf.includes(Buffer.from('xl/worksheets/sheet')), `${x || 'no .xlsx'} ${buf.length} bytes`);
-});
-
 // ---- GM: the grid menu at DBA Dash's level (task GM, its design as the pass's fold left it) - one case per item, each
 // able to fail on a tree without it (the flat menu answers no '.tm-menu'). The grids: Instances' (#/instances; number
 // column 'sessions', text 'platform', unique 'name'), a dropped JSON file's viewer grid (a modal dialog: the hostile
@@ -694,6 +629,22 @@ await guard('G-menu', async () => {
   check('G-menu', ordered && fv > at[7] && xv > fv && xv < at[8] && subsOk && clear?.off === 'no filter is set'
     && new RegExp(`^Rows: ${n} \\| Cols: ${cols}$`).test(tail[0] ?? '') && /^\[sessions\] Sum: /.test(tail[1] ?? '') && bad.length === 0,
     `first level: ${top.join(' / ') || '(no .tm-menu)'}; order of ${wantTop.join(', ')}: ${at.join(',')}; Filter / Exclude at ${fv} / ${xv}; Clear filters ${clear ? (clear.off ?? 'ON') : 'absent'}; last two '${tail.join("' / '")}'; submenus off: ${bad.join('; ') || 'none'}`);
+});
+
+await guard('G-select', async () => {
+  // Select > Column: every drawn cell, the tools' line says so, the menu's last line the selection's statistics; Select >
+  // Row: the row's shown cells; a version cell (text that looks like a number): no Sum line, the menu ends 'Rows: ...'
+  await gFresh();
+  const ses = await gCol('sessions'), n = ses.length, cols = (await gHeads()).length, nums = ses.filter(x => gNum(x) !== null).length;
+  await gmOpen(gCell('sessions')); const c = await gmPick('Select', 'Column'); await sleep(300);
+  const sel = await ev(`({ n: ${GT}.querySelectorAll('tbody td.gt-sel').length, line: ${GT}.closest('.grid-box')?.querySelector('.gt-stats')?.textContent ?? '' })`);
+  const L = await gmOpen(gCell('sessions')), last = (L[0] ?? []).map(x => x.label).pop() ?? ''; await gmClose(); await gClearSel();
+  await gmOpen(`${gRows}[1].children[1]`); const r = await gmPick('Select', 'Row'); await sleep(300);
+  const row = await ev(`({ n: ${GT}.querySelectorAll('tbody td.gt-sel').length, rows: new Set([...${GT}.querySelectorAll('tbody td.gt-sel')].map(td => td.parentElement)).size })`);
+  await gClearSel();
+  const V = await gmOpen(`${gRows}.map(tr => tr.children[${gIx('version')}]).find(td => /^\\d+\\.\\d+$/.test(td.textContent.trim()))`), vlast = (V[0] ?? []).map(x => x.label).pop() ?? ''; await gmClose();
+  check('G-select', c && sel.n === n && /selected/.test(sel.line) && last.startsWith(`Selected Cells: ${n} (${nums} numeric) | Sum: `) && r && row.n === cols && row.rows === 1 && /^Rows: /.test(vlast),
+    `Select > Column ${c}: ${sel.n} cells of ${n}, '${sel.line}', the menu's last '${last}'; Select > Row ${r}: ${row.n} cells in ${row.rows} row (${cols} columns); a version cell's last line '${vlast}'`);
 });
 
 await guard('G-header', async () => {
