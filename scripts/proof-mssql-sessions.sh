@@ -38,7 +38,10 @@
 #     waits.go benignWaits) not counted; the longest wait at least the blocked request's hand-read wait_duration_ms.
 #  P5 top-N over a range [refined before the first run: one request cannot top every list, so two known requests]: R1
 #     (l3) a 150 s loop scanning dbo.t (CPU, logical reads, duration) and R2 (l2) a sort of 3,000,000+ rows with
-#     MIN_GRANT_PERCENT that spills to tempdb (a 50 MB+ grant), both captured by mssql_requests over their minutes: GET
+#     MAX_GRANT_PERCENT that spills to tempdb (a 50 MB+ grant) [mechanism refined from box diag 413-p5diag before P5's
+#     first graded run: MIN_GRANT_PERCENT on 'TOP (1) ... ORDER BY' made a TopN sort, tempdb 0; R2 now a full sort in a
+#     100 s loop started after R1 and ended before it], both captured by mssql_requests over their minutes; the sessions
+#     earlier parts hold are ended before P5 starts: GET
 #     /api/mssql/sessions over the range lists R1 at rank 1 of CPU, logical reads and duration and R2 at rank 1 of tempdb
 #     and grant (their sessions and logins),
 #     the statement under the query_text policy (full: the text; none: no text, the policy's words); the reply says the
@@ -72,7 +75,7 @@ SA_PW=$(pw); MON_PW=$(pw); LP_PW=$(pw); UPW=$(pw)
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\nLP_PW=%s\n' "$SA_PW" "$SA_PW" "$LP_PW" > "$TMPD/sa.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
-  for p in "${BG[@]}"; do kill "$p" 2>/dev/null || true; done
+  for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true; done
   docker rm -f -v "$SQL" >/dev/null 2>&1 || { docker inspect "$SQL" >/dev/null 2>&1 && echo "CLEANUP: container $SQL not removed" >&2; }
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   rm -rf "$TMPD"
@@ -128,8 +131,25 @@ col ss mssql_instance; col ssnone mssql_instance
 ISS=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ss'"); INONE=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'ssnone'")
 echo "ok   A: SQL Server $VER, pgvss, $(echo $LOGINS | wc -w) logins, instances ss $ISS / ssnone $INONE"
 
-# hold <login> <seconds> <T-SQL>: one session of <login> in pgvss that runs the batch, then stays connected (sleeping)
-hold() { docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c "(printf '%s\nGO\n' \"\$0\"; sleep $2) | SQLCMDPASSWORD=\$LP_PW $SQLCMD -S localhost -U $1 $TRUST -d pgvss -b -h -1 -i /dev/stdin" "$3" >"$TMPD/hold-$1-$RANDOM.out" 2>&1 & BG+=($!); }
+# hold <login> <seconds> <T-SQL>: one session of <login> in pgvss (host name pgvss-<login>) that runs the batch at once, then
+# stays connected (sleeping) for <seconds>. sqlcmd reads its stdin with no -i: given '-i /dev/stdin' it reads the input to its
+# end before running a batch, so a held pipe never ran (box diag 413-p5diag T1: the session sleeping, no request at 5 s).
+cat > "$TMPD/hold.sh" <<'HOLD'
+{ printf 'SET NOCOUNT ON;\nGO\n%s\nGO\n' "$4"; sleep "$3"; } | docker exec -i --env-file "$2" "$1" bash -c 'SQLCMDPASSWORD=$LP_PW exec '"$5"' -S localhost -U "$0" '"$6"' -d pgvss -b -h -1 -H "pgvss-$0" -l 60' "$7"
+HOLD
+hold() { setsid bash "$TMPD/hold.sh" "$SQL" "$TMPD/sa.env" "$2" "$3" "$SQLCMD" "$TRUST" "$1" >"$TMPD/hold-$1-$RANDOM.out" 2>&1 & BG+=($!); }
+# unhold: every held session ends (its process group, then a KILL of each pgvss-* session left), so a part starts clean
+unhold() { for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true; done; BG=()
+  sq "DECLARE @s nvarchar(max) = N''; SELECT @s += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE host_name LIKE 'pgvss-%' AND session_id <> @@SPID; EXEC (@s);" >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do [[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE host_name LIKE 'pgvss-%'" 2>/dev/null)" == 0 ]] && return 0; sleep 1; done
+  fail "unhold: pgvss-* sessions still open after 30 s"; }
+# heldreq <login>: the session id of <login>'s running request (host pgvss-<login>), waited up to 30 s; else every pgvss-*
+# session's request line and the hold outputs are printed and the run fails
+heldreq() { local v=; for _ in $(seq 1 60); do v=$(sq "SELECT TOP (1) r.session_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = 'pgvss-$1'" 2>/dev/null || true); [[ -n "$v" ]] && { echo "$v"; return 0; }; sleep 0.5; done
+  sq "SELECT CONCAT(s.session_id, '|', s.login_name, '|', s.host_name, '|', s.status, '|', ISNULL(r.command, '-'), '|', ISNULL(r.status, '-'), '|', ISNULL(r.wait_type, '-'))
+    FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id WHERE s.host_name LIKE 'pgvss-%' OR s.login_name = '$1'" >&2 || true
+  for f in "$TMPD"/hold-"$1"-*.out; do [[ -e "$f" ]] && echo "  --- $(basename "$f"): $(head -c 300 "$f" | tr '\n' ' ')" >&2; done
+  return 1; }
 # the hand reads: every session but the hand read's own (@@SPID) and pgvigil's (its program name)
 HAND_S="SELECT CONCAT(CASE WHEN is_user_process = 1 THEN 'user_' ELSE 'system_' END,
   CASE WHEN status IN ('running', 'sleeping', 'dormant', 'preconnect') THEN status ELSE 'other' END, '=', COUNT(*))
@@ -257,14 +277,18 @@ printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
 for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
 kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.out" >&2; fail "P5: serve exited"; }
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "P5: the API login"
+# the parts before leave sessions held (P1's 400 s loop, its 8-minute WAITFOR): they would compete for rank 1, so they end first
+unhold
 T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# R1 (l3): 150 s scanning dbo.t (CPU, logical reads, duration); R2 (l2): a sort of 5,000,000 rows with a 10 % minimum grant
+# R1 (l3): 150 s scanning dbo.t at MAXDOP 1 (a core's CPU, about 500,000 reads a second: p5diag T3).
+# R2 (l2), started after R1 and ended 50 s before it, so R1 keeps rank 1 of CPU and duration: a loop of 100 s over a FULL
+# sort of 3,000,000 rows (about 1.3 GB) under MAX_GRANT_PERCENT = 20 (a grant of about 150 MB, under the sort, so it spills).
+# Not 'TOP (1) ... ORDER BY': that is a TopN sort that keeps one row and never spills (p5diag T4a: 74 MB grant, tempdb 0).
 hold l3 300 "DECLARE @t datetime2 = SYSDATETIME(), @n bigint; WHILE DATEDIFF(second, @t, SYSDATETIME()) < 150 SELECT @n = COUNT_BIG(*) FROM dbo.t WHERE c % 7 = 3 OPTION (MAXDOP 1);"
-hold l2 300 "SELECT TOP (1) a.id FROM dbo.t a CROSS JOIN (SELECT TOP (50) id FROM dbo.t) b ORDER BY a.pad, b.id DESC, a.c OPTION (MAXDOP 1, MIN_GRANT_PERCENT = 10);"
-sleep 5
-R1S=$(sq "SELECT TOP (1) r.session_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.login_name = 'l3' AND r.command = 'SELECT' ORDER BY r.cpu_time DESC")
-R2S=$(sq "SELECT TOP (1) r.session_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.login_name = 'l2' AND r.command = 'SELECT' ORDER BY r.granted_query_memory DESC")
-[[ -n "$R1S" && -n "$R2S" ]] || fail "P5: R1 ($R1S) or R2 ($R2S) is not running"
+R1S=$(heldreq l3) || fail "P5: R1 (l3) never ran its request (above)"
+hold l2 300 "DECLARE @t datetime2 = SYSDATETIME(), @n bigint; WHILE DATEDIFF(second, @t, SYSDATETIME()) < 100 SELECT @n = MAX(z.rn) FROM (SELECT ROW_NUMBER() OVER (ORDER BY a.pad, b.id DESC, a.c) AS rn FROM dbo.t a CROSS JOIN (SELECT TOP (30) id FROM dbo.t) b) z OPTION (MAXDOP 1, MAX_GRANT_PERCENT = 20);"
+R2S=$(heldreq l2) || fail "P5: R2 (l2) never ran its request (above)"
+echo "     R1 session $R1S, R2 session $R2S"
 # mssql_requests every 20 s while they run (their figures grow; the top takes each request's largest)
 for _ in $(seq 1 7); do col ss mssql_requests; col ssnone mssql_requests; sleep 20; done
 T1=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
