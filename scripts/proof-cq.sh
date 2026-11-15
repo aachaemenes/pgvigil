@@ -121,7 +121,7 @@ if [[ -n "$CDIR" && -r "$CDIR/sp_WhoIsActive.sql" ]]; then
   export MS_R="sqlserver://cq_reader:$RPW@127.0.0.1:$MP?database=master&encrypt=true&TrustServerCertificate=true"
   MS=1
   ok "SQL Server 2022 in $MCT, sp_WhoIsActive and the First Responder Kit installed, cq_reader"
-else NOTPROVEN+=("the SQL Server rows of N (its leg), P1, P5, P6, P8 (sp_WhoIsActive.sql not given in PGVIGIL_COMMUNITY_DIR)"); fi
+else NOTPROVEN+=("the SQL Server rows of N (its leg), P1, P6, P8 (sp_WhoIsActive.sql not given in PGVIGIL_COMMUNITY_DIR)"); fi
 
 # ---- the collectors (this host) and the two serves ----------------------------------------------------------------
 inst() { printf '  - name: cq-pg\n    dsn: env:%s\n' "$1"; [[ -n "$MS" ]] && printf '  - name: cq-ms\n    engine: sqlserver\n    dsn: env:%s\n' "$2"; return 0; }
@@ -171,7 +171,17 @@ GW=$(docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$NET")
 PGPORT=$(python3 -c "import re,sys; m=re.search(r'port=(\d+)', sys.argv[1]); print(m.group(1) if m else 5432)" "$PGVIGIL_ADMIN_DSN")
 reach() { docker exec "$SCT" timeout 4 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
 reach "$RCT" 5432 || fail "N: serve's container cannot reach the repository"
-reach "$GW" "$PGPORT" && fail "N: serve's container reaches the PostgreSQL target on $GW:$PGPORT"
+# the PostgreSQL leg means something only when the target answers on an address a container could reach: a probe
+# container on the default bridge must reach it first (review 20261115-124313 #4: a target on loopback only refuses
+# every container, isolated or not)
+BGW=$(docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' bridge 2>/dev/null)
+if [[ -n "$BGW" ]] && docker run --rm postgres:18 timeout 4 bash -c "</dev/tcp/$BGW/$PGPORT" >/dev/null 2>&1; then
+  reach "$GW" "$PGPORT" && fail "N: serve's container reaches the PostgreSQL target on $GW:$PGPORT"
+  NPG="the PostgreSQL target refused from inside it, reached from bridge at $BGW"
+else
+  NOTPROVEN+=("N's PostgreSQL leg: no container reaches the target at all (a probe on bridge does not reach ${BGW:-its gateway}:$PGPORT), so serve's refusal proves nothing")
+  NPG="the PostgreSQL leg NOT PROVEN (below)"
+fi
 if [[ -n "$MS" ]]; then
   MIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$MCT" | awk '{print $1}')
   [[ -n "$MIP" ]] || fail "N: no address for the SQL Server container $MCT"
@@ -180,7 +190,7 @@ if [[ -n "$MS" ]]; then
   reach "$MIP" 1433 && fail "N: serve's container reaches the SQL Server container"
 fi
 docker logs "$SCT" 2>&1 | grep -q 'connects to no monitored server' || fail "N: serve's log does not say queue mode"
-ok "N: serve's container reaches the repository only (the PostgreSQL target refused from inside it${MS:+; the SQL Server at $MIP refused from inside it, reached from $MNET}); serve says queue mode"
+ok "N: serve's container reaches the repository only ($NPG${MS:+; the SQL Server at $MIP refused from inside it, reached from $MNET}); serve says queue mode"
 
 # ---- P1 through serve's API ------------------------------------------------------------------------------------------
 waitreq() {   # waitreq <id> [jar]: GET until the request ended; prints its state
@@ -219,8 +229,8 @@ assert q and d and q[0]['columns'] == d[0]['columns'], (q[:1], d[:1])
 PY
   IDS="$IDS,$ID3,$ID4,$ID5"; NIDS=5
 fi
-read -r n nid <<<"$(rq "select count(*), count(instance_id) from pgvigil.custom_report_log where payload->>'via' = 'queue' and (payload->>'request_id')::bigint in ($IDS)" | tr '|' ' ')"
-[[ $n == "$NIDS" && $nid == "$NIDS" ]] || fail "P1: $n audit row(s) with via queue for requests $IDS, $nid with the instance's id (want $NIDS each)"
+read -r n nid nreq <<<"$(rq "select count(*), count(instance_id), count(distinct payload->>'request_id') from pgvigil.custom_report_log where payload->>'via' = 'queue' and (payload->>'request_id')::bigint in ($IDS)" | tr '|' ' ')"
+[[ $n == "$NIDS" && $nid == "$NIDS" && $nreq == "$NIDS" ]] || fail "P1: $n audit row(s) with via queue for requests $IDS, $nid with the instance's id, $nreq distinct requests (want $NIDS each)"
 ok "P1: $NIDS community runs through serve's container, each done with its sets and its audit row (via queue, the instance's id); pg_settings_changed equal to the direct run, sp_WhoIsActive's columns equal"
 
 # ---- P8, P13 ---------------------------------------------------------------------------------------------------------
@@ -233,12 +243,14 @@ fi
 out=$(rq "select pgvigil.import_action_request('{\"kind\": \"drop_database\", \"instance\": \"cq-pg\", \"ui_user\": \"x\", \"args\": {}}'::jsonb)->>'detail'")
 [[ $out == "the queue knows no kind drop_database" ]] || fail "P8: a forged kind: $out"
 GRAF="host=127.0.0.1 port=$RP user=cq_graf password=$PW dbname=pgvigil"
-out=$(psql "$GRAF" -XAtqc "select count(*) from pgvigil.ui_action_data" 2>&1 || true)
-[[ $out == *"permission denied"* ]] || fail "P13: the reader read ui_action_data: $out"
-out=$(psql "$GRAF" -XAtqc "select pgvigil.ui_action_result($ID1, '$UIUSER')" 2>&1 || true)
-[[ $out == *"permission denied"* ]] || fail "P13: the reader called ui_action_result: $out"
+# by SQLSTATE, never the message's words (review #13); the control: the same login reads action_requests (0200's header)
+out=$(psql "$GRAF" -XAtq -v VERBOSITY=sqlstate -c "select count(*) from pgvigil.action_requests" 2>&1) || fail "P13: the reader's control - it cannot read action_requests: $out"
+out=$(psql "$GRAF" -XAtq -v VERBOSITY=sqlstate -c "select count(*) from pgvigil.ui_action_data" 2>&1 || true)
+[[ $out == *42501* ]] || fail "P13: the reader read ui_action_data: $out"
+out=$(psql "$GRAF" -XAtq -v VERBOSITY=sqlstate -c "select pgvigil.ui_action_result($ID1, '$UIUSER')" 2>&1 || true)
+[[ $out == *42501* ]] || fail "P13: the reader called ui_action_result: $out"
 [[ $(getc "requests/$ID1" "$JAR2") == 403 ]] && grep -q 'this run was asked by another user' "$WORK/body" || fail "P13: the second user's GET: $(cat "$WORK/body")"
-ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result, the second user 403"
+ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403"
 
 # ---- P2: latency ----------------------------------------------------------------------------------------------------
 : > "$WORK/lat"
@@ -255,8 +267,8 @@ out = subprocess.run(['psql', sys.argv[2], '-XAtc', f"select request_id, extract
 db = {int(a): (float(b), float(c)) for a, b, c in (l.split('|') for l in out.split())}
 assert len(db) == 20, f"{len(db)} rows of 20"
 claim = statistics.median(db[int(i)][0] for i, _ in rows); answer = statistics.median(float(t) - db[int(i)][1] for i, t in rows)
+assert claim < 1 and answer < 1, f"the claim {claim:.3f} s, the answer {answer:.3f} s (medians)"
 print(f"ok   P2: 20 asks: the claim {claim:.3f} s after the insert, the GET answered {answer:.3f} s after the end (medians)")
-assert claim < 1 and answer < 1
 PY
 
 # ---- P6: cancel -----------------------------------------------------------------------------------------------------
@@ -285,11 +297,17 @@ else ok "P6: a waiting cancel at once (the running cancel needs SQL Server)"; fi
 if [[ -n "$MS" ]]; then
   id=$(ask community/run "{\"instance_id\":$MSID,\"tool\":\"sp_WhoIsActive\",\"params\":{\"delta_interval\":\"45\"},\"timeout_secs\":60}"); isid "$id"
   [[ $(waitreq "$id") == done ]] || fail "P5: a healthy 45 s run: $(rq "select state, outcome from pgvigil.action_requests where request_id = $id")"
-  for _ in $(seq 1 70); do [[ $(rq "select extract(epoch from now() - max(beat_at))::int >= 50 from pgvigil.collector_heartbeat where stopped_at is null") == t ]] && break; sleep 1; done
-  age=$(rq "select extract(epoch from now() - max(beat_at))::int from pgvigil.collector_heartbeat where stopped_at is null")
-  [[ $age =~ ^[0-9]+$ && $age -ge 50 ]] || fail "P5: the minute heartbeat never reached 50 s old (age '$age')"
-  id=$(ask community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}"); isid "$id"
-  [[ $(waitreq "$id") == done ]] || fail "P5: the ask with the heartbeat ${age} s old: $(cat "$WORK/body")"
+  # the age is read AT the ask (asked_at against the newest beat), never before it: a beat landing between the two
+  # reads would leave the row's words true and the ask fresh (review #6); a beat after the ask = that try again
+  age=""
+  for try in 1 2 3; do
+    for _ in $(seq 1 70); do [[ $(rq "select extract(epoch from now() - max(beat_at))::int >= 50 from pgvigil.collector_heartbeat where stopped_at is null") == t ]] && break; sleep 1; done
+    id=$(ask community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}"); isid "$id"
+    age=$(rq "select extract(epoch from r.asked_at - h.b)::int from pgvigil.action_requests r, (select max(beat_at) b from pgvigil.collector_heartbeat where stopped_at is null) h where r.request_id = $id")
+    [[ $(waitreq "$id") == done ]] || fail "P5: the ask with the heartbeat ${age} s old: $(cat "$WORK/body")"
+    [[ $age =~ ^[0-9]+$ && $age -ge 50 ]] && break
+  done
+  [[ $age =~ ^[0-9]+$ && $age -ge 50 ]] || fail "P5: no ask in 3 tries met a heartbeat 50 s old at its asked_at (last '$age')"
   id=$(ask community/run "{\"instance_id\":$MSID,\"tool\":\"sp_WhoIsActive\",\"params\":{\"delta_interval\":\"50\"},\"timeout_secs\":60}"); isid "$id"
   for _ in $(seq 1 40); do [[ $(rq "select state from pgvigil.action_requests where request_id = $id") == running ]] && break; sleep 0.5; done
   holder=$(rq "select taken_by from pgvigil.action_requests where request_id = $id and state = 'running'")
@@ -300,10 +318,13 @@ if [[ -n "$MS" ]]; then
   [[ $(js "d['state']") == lost ]] || fail "P5: a SIGKILLed collector's run is not lost: $(cat "$WORK/body")"
   late=$(rq "select round(extract(epoch from done_at) - $renew)::int from pgvigil.action_requests where request_id = $id")
   [[ $late =~ ^-?[0-9]+$ && $late -le 35 ]] || fail "P5: lost '$late' s after its last renewal (want 30 + 5 for the sweep)"
-  RUN2=$(startrun "$WORK/col.yaml" "$WORK/run2.log"); sleep 20
+  RUN2=$(startrun "$WORK/col.yaml" "$WORK/run2.log")
+  live=0; for _ in $(seq 1 60); do live=$(rq "select count(*) from pgvigil.cq_workers where beat_at > now() - interval '45 seconds' and collector_id <> '$holder' and 'cq-ms' = any(instances)"); [[ $live -ge 1 ]] && break; sleep 1; done
+  [[ $live -ge 1 ]] || fail "P5: the next collector holds no live lease on cq-ms: $(tail -5 "$WORK/run2.log")"
+  sleep 20
   [[ $(rq "select state || '/' || taken_by from pgvigil.action_requests where request_id = $id") == "lost/$holder" ]] || fail "P5: the lost request changed: $(rq "select state, taken_by from pgvigil.action_requests where request_id = $id")"
   [[ $(rq "select count(*) from pgvigil.custom_report_log where payload->>'request_id' = '$id'") == 0 ]] || fail "P5: the lost request has an audit row: someone finished it"
-  ok "P5: a healthy 45 s run done (never lost); an ask with the minute heartbeat ${age} s old accepted and done; a SIGKILLed collector's run lost ${late} s after its last renewal, still lost and unfinished (no audit row) after the next collector ran 20 s"
+  ok "P5: a healthy 45 s run done (never lost); an ask with the minute heartbeat ${age} s old accepted and done; a SIGKILLed collector's run lost ${late} s after its last renewal, still lost and unfinished (no audit row) after the next collector held cq-ms for 20 s"
   RUN1=$RUN2; RUN2=""
 else NOTPROVEN+=("P5 (a run long enough to kill under needs sp_WhoIsActive)"); fi
 
@@ -311,7 +332,7 @@ else NOTPROVEN+=("P5 (a run long enough to kill under needs sp_WhoIsActive)"); f
 { printf 'repository:\n  dsn: env:CQ_COL\ncq:\n  enabled: true\n  workers: 4\ninstances:\n'; printf '  - name: cq-pg\n    dsn: env:TGT_MON\n'; } > "$WORK/col2.yaml"
 RUN2=$(startrun "$WORK/col2.yaml" "$WORK/run2.log")
 live=0
-for _ in $(seq 1 30); do live=$(rq "select count(*) from pgvigil.cq_workers where beat_at > now() - interval '45 seconds' and 'cq-pg' = any(instances)"); [[ $live -ge 2 ]] && break; sleep 1; done
+for _ in $(seq 1 30); do live=$(rq "select count(*) from pgvigil.cq_workers where beat_at > now() - interval '45 seconds' and collector_id <> '${holder:-}' and 'cq-pg' = any(instances)"); [[ $live -ge 2 ]] && break; sleep 1; done
 [[ $live -ge 2 ]] || fail "P9: $live live lease(s) on cq-pg, want 2: $(tail -5 "$WORK/run2.log")"
 : > "$WORK/p9"
 for round in $(seq 1 20); do
@@ -324,7 +345,8 @@ read -r done_n holders <<<"$(rq "select count(*) filter (where state = 'done'), 
 read -r arows aids <<<"$(rq "select count(*), count(distinct payload->>'request_id') from pgvigil.custom_report_log where (payload->>'request_id')::bigint in ($P9)" | tr '|' ' ')"
 [[ $done_n == 200 && $arows == 200 && $aids == 200 && $holders == 2 ]] || fail "P9: done $done_n, audit rows $arows, distinct ids $aids (want 200 each), taken by $holders collector(s) (want 2)"
 ok "P9: two collectors (2 live leases), 200 asks: 200 done, 200 audit rows of 200 distinct requests, taken by both"
-kill "$RUN2" 2>/dev/null; RUN2=""
+kill "$RUN2" 2>/dev/null; for _ in $(seq 1 30); do kill -0 "$RUN2" 2>/dev/null || break; sleep 1; done
+kill -0 "$RUN2" 2>/dev/null && fail "P9: its second collector did not stop on TERM in 30 s"; RUN2=""
 
 # ---- P3: through pgbouncer in transaction mode ----------------------------------------------------------------------
 if command -v pgbouncer >/dev/null; then
@@ -332,22 +354,34 @@ if command -v pgbouncer >/dev/null; then
   printf '[databases]\npgvigil = host=127.0.0.1 port=%s dbname=pgvigil\n[pgbouncer]\nlisten_addr = 127.0.0.1\nlisten_port = %s\nauth_type = trust\nauth_file = %s/users.txt\npool_mode = transaction\nmax_client_conn = 200\ndefault_pool_size = 20\nignore_startup_parameters = extra_float_digits,application_name\nunix_socket_dir =\n' "$RP" "$BP" "$WORK" > "$WORK/pgb.ini"
   printf '"cq_col" "%s"\n' "$PW" > "$WORK/users.txt"
   pgbouncer "$WORK/pgb.ini" > "$WORK/pgb.log" 2>&1 & BOUNCER=$!
-  sleep 1; kill "$RUN1" 2>/dev/null; sleep 2
+  # PgBouncer listening first (the shim may pull its image), then the direct collector stopped and seen gone, then the
+  # pooled collector's own live lease (review #1); its asks must be taken by it alone (review #2)
+  for _ in $(seq 1 180); do (exec 3<>"/dev/tcp/127.0.0.1/$BP") 2>/dev/null && break; kill -0 "$BOUNCER" 2>/dev/null || fail "P3: pgbouncer ended: $(tail -3 "$WORK/pgb.log")"; sleep 1; done
+  (exec 3<>"/dev/tcp/127.0.0.1/$BP") 2>/dev/null || fail "P3: nothing listens on 127.0.0.1:$BP after 180 s: $(tail -3 "$WORK/pgb.log")"
+  OLDW=$(rq "select coalesce(string_agg(quote_literal(collector_id), ','), quote_literal('')) from pgvigil.cq_workers")
+  kill "$RUN1" 2>/dev/null; for _ in $(seq 1 30); do kill -0 "$RUN1" 2>/dev/null || break; sleep 1; done
+  kill -0 "$RUN1" 2>/dev/null && fail "P3: the direct collector did not stop on TERM in 30 s"
   export CQ_COL_PGB="host=127.0.0.1 port=$BP user=cq_col password=$PW dbname=pgvigil"
   sed 's/env:CQ_COL$/env:CQ_COL_PGB/' "$WORK/col.yaml" > "$WORK/col-pgb.yaml"
-  RUN1=$(startrun "$WORK/col-pgb.yaml" "$WORK/run-pgb.log"); sleep 20
-  worst=0
+  RUN1=$(startrun "$WORK/col-pgb.yaml" "$WORK/run-pgb.log")
+  live=0; for _ in $(seq 1 60); do live=$(rq "select count(*) from pgvigil.cq_workers where beat_at > now() - interval '45 seconds' and collector_id not in ($OLDW) and 'cq-pg' = any(instances)"); [[ $live -ge 1 ]] && break; sleep 1; done
+  [[ $live -ge 1 ]] || fail "P3: the collector behind pgbouncer holds no live lease: $(tail -5 "$WORK/run-pgb.log")"
+  worst=0; P3IDS=""
   for k in $(seq 1 10); do
     id=$(ask community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}"); isid "$id"
     [[ $(waitreq "$id") == done ]] || fail "P3: ask $k behind pgbouncer: $(cat "$WORK/body"); $(tail -3 "$WORK/run-pgb.log")"
+    P3IDS="${P3IDS:+$P3IDS,}$id"
     w=$(rq "select ceil(extract(epoch from taken_at - asked_at))::int from pgvigil.action_requests where request_id = $id")
     [[ $w =~ ^[0-9]+$ ]] || fail "P3: ask $k has no claim time: '$w'"
     [[ $w -gt $worst ]] && worst=$w
   done
   [[ $worst -le 6 ]] || fail "P3: a claim behind pgbouncer took $worst s (want the 5 s poll)"
+  read -r p3n p3by <<<"$(rq "select count(*) filter (where taken_by not in ($OLDW)), count(distinct taken_by) from pgvigil.action_requests where request_id in ($P3IDS)" | tr '|' ' ')"
+  [[ $p3n == 10 && $p3by == 1 ]] || fail "P3: $p3n of the 10 asks taken by a collector that started behind pgbouncer, $p3by taker(s) (want 10 by 1)"
   s=""
-  if [[ -n "$MS" ]]; then s=$(cancel_running pgbouncer); [[ $s =~ ^[0-9]+$ && $s -le 10 ]] || fail "P3: a running cancel behind pgbouncer took '$s' s"; fi
-  ok "P3: behind pgbouncer (transaction mode) 10 asks done, each claimed within $worst s${MS:+; a running cancel ended in ${s} s}"
+  if [[ -n "$MS" ]]; then s=$(cancel_running pgbouncer); [[ $s =~ ^[0-9]+$ && $s -le 10 ]] || fail "P3: a running cancel behind pgbouncer took '$s' s"
+  else NOTPROVEN+=("P3's running cancel behind pgbouncer (it needs SQL Server's sp_WhoIsActive)"); fi
+  ok "P3: behind pgbouncer (transaction mode) 10 asks done, each claimed within $worst s by the pooled collector alone${MS:+; a running cancel ended in ${s} s}"
 else NOTPROVEN+=("P3: pgbouncer is not on this machine"); fi
 
 for np in "${NOTPROVEN[@]}"; do echo "NOT PROVEN: $np"; done
