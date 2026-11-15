@@ -163,7 +163,6 @@ install:
 ```yaml
 doors:
   page_instance_reads: on   # Community tools and custom reports on the instances of Admin > Instances
-  prometheus_metrics: on    # GET /metrics for Prometheus (docs/prometheus.md; its metrics: block)
 ```
 
 The switch is in the file only, never on the page; while it is off a page instance's tools and reports say 'off on
@@ -172,11 +171,6 @@ added in Admin > Instances' - unless its row has a refusal of its own (disabled,
 own identity, an option the door does not open), which the switch would not lift: those words come first. (A later
 release lists the switch on a Site settings page, one switch per door in one place, where this file's 'off' still
 wins.)
-
-`doors.prometheus_metrics` turns on `GET /metrics` (docs/prometheus.md): every active instance's newest figures in the
-Prometheus text format, read with a signed-in session or `metrics.token` (`file:/path` or `env:NAME`, 32 bytes at
-least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
-`metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
 
 With it on, a page instance's door is its stored read login alone, and it opens only for a credential typed into
 the form, never for one that signs in as `pgvigil serve` itself:
@@ -221,3 +215,17 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 `door_generation`, the repository's inventory generation its door set was read from. `pgvigil serve` keeps every open
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
+
+### Prometheus endpoint
+
+```yaml
+doors:
+  prometheus_metrics: on    # GET /metrics for Prometheus (docs/prometheus.md)
+metrics:
+  token: file:/etc/pgvigil/metrics.token
+```
+
+`doors.prometheus_metrics` turns on `GET /metrics` (docs/prometheus.md): every active instance's newest figures in the
+Prometheus text format, read with a signed-in session or `metrics.token` (`file:/path` or `env:NAME`, 32 bytes at
+least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
+`metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.

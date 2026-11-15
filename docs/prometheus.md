@@ -32,10 +32,12 @@ A request needs a signed-in session (the UI login's cookie) or `Authorization: B
   refuses to start when the token resolves to nothing or to under 32 bytes, and when the door is on under `-no-login`
   without a token. With the UI login on and no token, only a signed-in browser can read `/metrics` (serve says so at
   start).
-- A token file is read again when it changes; the old token is still accepted for 60 seconds, so a rotation costs no
-  failed scrape. Write the new file, then change Prometheus' `credentials_file`.
+- A token file is read again when its content changes (checked at most once a second); the old token is still
+  accepted for 60 seconds after the change. Write the new file, then change Prometheus' `credentials_file` within 60
+  seconds: no scrape is refused.
 - The compare runs on SHA-256 digests in constant time. A token in the URL is refused (400). Five refused tokens from
-  one address in a minute refuse that address for the rest of the minute (429). A request without credentials logs one
+  one address in a minute refuse that address's wrong tokens for the rest of the minute (429); the right token still
+  passes, so another sender on a shared address (NAT, a proxy) cannot keep Prometheus out. A request without credentials logs one
   WARN per address per minute. Every refusal counts in `pgvigil_metrics_refused_total`.
 - A non-loopback listen is TLS only (`pgvigil serve -tls-cert -tls-key`, as for the page).
 
@@ -57,11 +59,13 @@ scrape_configs:
 
 ## The body
 
-- Gauges only, no explicit timestamps: the newest collected value of each metric, in base units. A value older than
+- Gauges, plus one counter (`pgvigil_metrics_refused_total`), no explicit timestamps: the newest collected value of each metric, in base units. A value older than
   its freshness (10 minutes; IO 30 minutes; host 15 minutes) is left out, so an alert on a missing series fires;
-  `pgvigil_sample_timestamp_seconds{server, family}` gives the newest sample's Unix time of each family within the last
-  day, fresh or stale (alert on `time() - pgvigil_sample_timestamp_seconds > 900`).
-- Labels: `server` (pgvigil's instance name) and `engine` on every series; `database` on the per-database series.
+  `pgvigil_sample_timestamp_seconds{server, family}` gives the newest sample's Unix time of each family, fresh or stale,
+  however old (alert on `time() - pgvigil_sample_timestamp_seconds > 900`: an instance silent for days keeps firing).
+- Labels: `server` (pgvigil's instance name) on every instance series; `engine` on the figures and on
+  `pgvigil_instance_info`; `family`, `severity` and `database` on their own series; the endpoint's own four series have
+  none.
 - The names: 62, one per metric of the Metrics page (internal/web/metrics_prom.go `promNames`, frozen by a test):
   a percent becomes a `_ratio` (/ 100), milliseconds `_seconds`, MB `_bytes` (x 1048576), a count per collection
   interval (deadlocks, checkpoints, requested checkpoints) `_per_second`. For example `pgvigil_sessions`,
@@ -87,7 +91,10 @@ The body is rendered in the background, one render at a time, from one set-based
 previous one while a render runs, and never a body older than twice `cache_seconds`: with nothing that fresh, a scrape
 waits for the render up to its `X-Prometheus-Scrape-Timeout-Seconds` and gets 503 when it fails or does not end
 (Prometheus then records `up` = 0). The reply is gzip when Prometheus asks for it (it does by default). At 1,000
-instances expect about 42,400 series by default and about 82,400 with `databases: on` and the default cut.
+instances expect about 42,400 series by default; `databases: on` adds 10 series per exported database, up to
+`max_databases` per PostgreSQL instance (about 82,400 at 1,000 instances with five databases each; the upper bound is
+10 x `max_databases` per PostgreSQL instance, 500 at the default cut). A rate's lookback is each instance's own (3 x its
+longest dbstats, serverstats or iostats interval, 15 minutes at least), as on the Metrics page.
 
 ## Not proven
 

@@ -30,15 +30,24 @@
 #   P8 scale     PROM_SCALE instances: the cold render under 10 s (pgvigil_metrics_render_seconds), the series and
 #                the body's bytes printed, 8 concurrent scrapes after expiry share ONE render (one
 #                pgvigil_metrics_last_render_timestamp_seconds value)
-#   P10 rotate   the token file rewritten while Prometheus scrapes every 5 s, credentials_file changed 3 s later:
-#                min_over_time(up[1m]) == 1 a minute later (no refused scrape)
+#   P10 rotate   the token file rewritten while Prometheus scrapes every 5 s, the OLD token read 200 right after the
+#                rewrite, credentials_file changed 3 s later: min_over_time(up[90s]) == 1 a minute later (the window
+#                holds the scrapes that sent the old token: no refused scrape)
+# Amended 2026-11-15 04:5x PST by the build review's fold, before any run: P2 greps each refusal's own words; P4 waits
+# for a render after the odd server's insert (P6's way); P5 reads psql's CSV (a name with a line feed) and leaves the
+# odd server out of its four-value check; P6 checks the instance was there before; P8 needs 20 x PROM_SCALE series
+# at least, every one of the 8 scrapes a body, and says NOT PROVEN when the seeded data is not fresh (and that
+# 50 databases per instance is not seeded); the address is the first IPv4, the role name random, the 'last byte'
+# token always differs; the release's tarball checked against its own sha256sums.txt (a corrupted download caught,
+# a replaced release not: no checksum from another source is at hand), the box's architecture read.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
 WORK=$(mktemp -d /tmp/pgv-prom-XXXXXX)
-DB=pgv_prom_$RANDOM; DB8=pgv_prom8_$RANDOM
+SFX=$RANDOM; DB=pgv_prom_$SFX; DB8=pgv_prom8_$SFX
 PORT=$((20000 + RANDOM % 10000)); PORT2=$((PORT + 1)); PORT3=$((PORT + 2)); PPORT=$((PORT + 3))
 PROMV=3.5.0
+case "$(uname -m)" in x86_64) PARCH=amd64 ;; aarch64|arm64) PARCH=arm64 ;; *) PARCH=unknown ;; esac
 bad=0; UNWIRE=0; PIDS=()
 no() { echo "FAIL $*"; bad=$((bad + 1)); }
 ok() { echo "ok   $*"; }
@@ -49,7 +58,7 @@ cleanup() {
   wait 2>/dev/null
   [[ $UNWIRE == 1 ]] && { git apply -R b24d-wiring.patch || { echo "FAIL the wiring patch was not taken back"; rc=1; }; }
   for d in $DB $DB8; do timeout 300 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1; done
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists pgv_prom_ui" >/dev/null 2>&1
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists pgv_prom_ui_$SFX" >/dev/null 2>&1
   rm -rf "$WORK"
   exit $rc
 }
@@ -63,19 +72,19 @@ BIN=$WORK/pgvigil
 
 echo "== Prometheus $PROMV (pinned; its sha256sums.txt checked)"
 U=https://github.com/prometheus/prometheus/releases/download/v$PROMV
-(cd "$WORK" && curl -fsSLO "$U/prometheus-$PROMV.linux-amd64.tar.gz" && curl -fsSLO "$U/sha256sums.txt" \
-  && grep " prometheus-$PROMV.linux-amd64.tar.gz\$" sha256sums.txt | sha256sum -c - >/dev/null && tar xzf "prometheus-$PROMV.linux-amd64.tar.gz") \
+(cd "$WORK" && curl -fsSLO "$U/prometheus-$PROMV.linux-$PARCH.tar.gz" && curl -fsSLO "$U/sha256sums.txt" \
+  && grep " prometheus-$PROMV.linux-$PARCH.tar.gz\$" sha256sums.txt | sha256sum -c - >/dev/null && tar xzf "prometheus-$PROMV.linux-$PARCH.tar.gz") \
   || fail "Prometheus $PROMV download or checksum"
-PROM=$WORK/prometheus-$PROMV.linux-amd64
+PROM=$WORK/prometheus-$PROMV.linux-$PARCH
 
 echo "== seed the demo (1 day) into $DB"
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null || fail "create database"
 "$BIN" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -days 1 > "$WORK/demo.log" 2>&1 || { tail -5 "$WORK/demo.log"; fail "the demo seed"; }
 Q() { psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 PW=$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
-psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists pgv_prom_ui" -c "create role pgv_prom_ui login password '$PW' in role pgvigil_reader, pgvigil_auth" >/dev/null || fail "the serve login"
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists pgv_prom_ui_$SFX" -c "create role pgv_prom_ui_$SFX login password '$PW' in role pgvigil_reader, pgvigil_auth" >/dev/null || fail "the serve login"
 HOSTPART=$(sed -nE 's/.*host=([^ ]+).*/\1/p' <<< "$PGVIGIL_ADMIN_DSN"); PORTPART=$(sed -nE 's/.*port=([0-9]+).*/\1/p' <<< "$PGVIGIL_ADMIN_DSN")
-export UI_DSN="host=${HOSTPART:-127.0.0.1} port=${PORTPART:-5432} user=pgv_prom_ui password=$PW dbname=$DB sslmode=disable"
+export UI_DSN="host=${HOSTPART:-127.0.0.1} port=${PORTPART:-5432} user=pgv_prom_ui_$SFX password=$PW dbname=$DB sslmode=disable"
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 TOK=$(head -c 30 /dev/urandom | base64 | tr -dc 'A-Za-z0-9'); TOK=${TOK}abcdefghij0123456789; TOK=${TOK:0:40}
 printf '%s\n' "$TOK" > "$WORK/token"; chmod 600 "$WORK/token"
@@ -102,10 +111,10 @@ cfg "$WORK/p2a.yaml" on
 if kill -0 $p 2>/dev/null; then kill $p; no "P2: -no-login without a token started"; else grep -q 'metrics.token' "$WORK/p2a.log" || no "P2: -no-login without a token: $(tail -1 "$WORK/p2a.log")"; fi
 cfg "$WORK/p2b.yaml" on "  token: file:$WORK/short"$'\n'
 "$BIN" serve -config "$WORK/p2b.yaml" -dsn env:UI_DSN -listen "127.0.0.1:$PORT" > "$WORK/p2b.log" 2>&1 & p=$!; sleep 4
-if kill -0 $p 2>/dev/null; then kill $p; no "P2: a 10-byte token started"; else grep -q '32' "$WORK/p2b.log" || no "P2: the short token: $(tail -1 "$WORK/p2b.log")"; fi
+if kill -0 $p 2>/dev/null; then kill $p; no "P2: a 10-byte token started"; else grep -q 'it needs 32' "$WORK/p2b.log" || no "P2: the short token: $(tail -1 "$WORK/p2b.log")"; fi
 cfg "$WORK/p2c.yaml" on "  token: env:PGV_PROM_UNSET_$RANDOM"$'\n'
 "$BIN" serve -config "$WORK/p2c.yaml" -dsn env:UI_DSN -listen "127.0.0.1:$PORT" > "$WORK/p2c.log" 2>&1 & p=$!; sleep 4
-if kill -0 $p 2>/dev/null; then kill $p; no "P2: an unset env token started"; fi
+if kill -0 $p 2>/dev/null; then kill $p; no "P2: an unset env token started"; else grep -q 'metrics.token' "$WORK/p2c.log" || no "P2: the unset env token: $(tail -1 "$WORK/p2c.log")"; fi
 wait 2>/dev/null
 [[ $bad -eq $b0 ]] && ok "P2 start: refused without a token under -no-login, at 10 bytes, on an unset env:NAME"
 
@@ -121,7 +130,8 @@ echo "== P3 the gate"; b0=$bad
 h() { echo "Authorization: Bearer $1"; }
 [[ $(code "$B/metrics") == 401 ]] && curl -s -D - -o /dev/null "$B/metrics" | grep -qi '^www-authenticate: Bearer' || no "P3: no credentials"
 [[ $(code -H "$(h "$(printf 'x%.0s' $(seq 40))")" "$B/metrics") == 401 ]] || no "P3: a wrong token"
-[[ $(code -H "$(h "${TOK:0:39}Z")" "$B/metrics") == 401 ]] || no "P3: the last byte differs"
+LASTB=Z; [[ ${TOK:39:1} == Z ]] && LASTB=Y
+[[ $(code -H "$(h "${TOK:0:39}$LASTB")" "$B/metrics") == 401 ]] || no "P3: the last byte differs"
 [[ $(code -H "Authorization: Bearer " "$B/metrics") == 401 ]] || no "P3: 'Bearer ' empty"
 [[ $(code "$B/metrics?token=$TOK") == 400 ]] || no "P3: a token in the URL"
 [[ $(code -H "$(h "$TOK")" "$B/metrics") == 200 ]] || no "P3: the token: $(head -c 200 "$WORK/body")"
@@ -143,8 +153,9 @@ SELECT pgvigil.ensure_instance(E'proof"odd\\\\name\nline', 'onprem', '17.0', 170
 INSERT INTO pgvigil.activity_summary (instance_id, snapshot_at, total, active, max_connections)
 SELECT instance_id, now(), 4, 1, 100 FROM pgvigil.instances WHERE name = E'proof"odd\\\\name\nline';
 SQL
-sleep 6
-curl -s -H "$(h "$TOK")" -D "$WORK/hdr" -o "$WORK/m.txt" "$B/metrics"
+# the body of the last 5 s is served and one 5-10 s old too (a render starts behind it): wait for a body with the odd
+# server, at most 30 s
+for _ in $(seq 1 15); do sleep 2; curl -s -H "$(h "$TOK")" -D "$WORK/hdr" -o "$WORK/m.txt" "$B/metrics"; grep -q 'proof' "$WORK/m.txt" && break; done
 curl -s -H "$(h "$TOK")" -H 'Accept-Encoding: gzip' -D "$WORK/hdrz" -o "$WORK/m.gz" "$B/metrics"
 grep -qi '^content-type: text/plain; version=0.0.4; charset=utf-8' "$WORK/hdr" || no "P4: plain Content-Type $(grep -i content-type "$WORK/hdr")"
 grep -qi '^content-type: text/plain; version=0.0.4; charset=utf-8' "$WORK/hdrz" && grep -qi '^content-encoding: gzip' "$WORK/hdrz" || no "P4: gzip headers"
@@ -191,15 +202,18 @@ body = {}
 for ln in open(sys.argv[1]):
     if ln.startswith('#') or not ln.strip(): continue
     k, v = ln.rsplit(' ', 1); body[k] = float(v)
-rows = subprocess.run(['psql', sys.argv[2], '-XAtq', '-F', '\t', '-c', """
+import csv, io
+rows = subprocess.run(['psql', sys.argv[2], '-Xq', '--csv', '-t', '-c', """
   SELECT i.name, i.engine, n.family || '.' || n.metric, n.value FROM pgvigil.metrics_newest() n JOIN pgvigil.instances i USING (instance_id)
-   WHERE n.database IS NULL AND n.family || '.' || n.metric IN ('sessions.total', 'requests.blocked', 'memory.total_mb', 'cpu.sql_pct')"""],
-   capture_output=True, text=True, check=True).stdout.splitlines()
+   WHERE n.database IS NULL AND i.name NOT LIKE 'proof%' AND n.family || '.' || n.metric IN ('sessions.total', 'requests.blocked', 'memory.total_mb', 'cpu.sql_pct')"""],
+   capture_output=True, text=True, check=True).stdout
+rows = list(csv.reader(io.StringIO(rows)))
 name = {'sessions.total': ('pgvigil_sessions', 1), 'requests.blocked': ('pgvigil_requests_blocked', 1),
         'memory.total_mb': ('pgvigil_memory_total_bytes', 1048576), 'cpu.sql_pct': ('pgvigil_cpu_sql_ratio', 0.01)}
 bad, n = [], 0
 for r in rows:
-    srv, eng, key, val = r.split('\t')
+    if len(r) != 4: continue
+    srv, eng, key, val = r
     if '"' in srv or '\\' in srv: continue
     m, f = name[key]
     k = '%s{server="%s",engine="%s"}' % (m, srv, eng)
@@ -212,6 +226,7 @@ PY
 
 echo "== P6 stale"; b0=$bad
 SI=$(Q "SELECT i.name FROM pgvigil.instances i WHERE i.is_active AND i.engine = 'postgres' AND i.name LIKE 'demo-%' ORDER BY i.name LIMIT 1")
+grep -q "^pgvigil_sessions{server=\"$SI\"," "$WORK/m5.txt" || no "P6: $SI had no pgvigil_sessions before the delete (nothing to see go)"
 Q "DELETE FROM pgvigil.activity_summary a USING pgvigil.instances i WHERE i.instance_id = a.instance_id AND i.name = '$SI' AND a.snapshot_at > now() - interval '15 minutes'" >/dev/null
 sleep 11; curl -s -H "$(h "$TOK")" -o /dev/null "$B/metrics"; sleep 3
 curl -s -H "$(h "$TOK")" -o "$WORK/m6.txt" "$B/metrics"
@@ -222,7 +237,7 @@ grep -q "^pgvigil_sessions{server=\"$SI\"," "$WORK/m6.txt" && no "P6: $SI's stal
 kill $MAIN; wait $MAIN 2>/dev/null
 
 echo "== P7 Prometheus scrapes a TLS listen; P10 rotation"; b0=$bad
-IP=$(hostname -I | awk '{print $1}'); [[ -n "$IP" ]] || fail "no non-loopback address"
+IP=$(hostname -I | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'); [[ -n "$IP" ]] || fail "no non-loopback address"
 "$BIN" cert -hosts "$IP" -out "$WORK" >/dev/null 2>&1 || fail "pgvigil cert"
 start "$WORK/tls.log" "https://$IP:$PORT2" -config "$WORK/on.yaml" -dsn env:UI_DSN -listen "$IP:$PORT2" -tls-cert "$WORK/pgvigil.crt" -tls-key "$WORK/pgvigil.key" || fail "the TLS serve: $(tail -3 "$WORK/tls.log")"
 TLS=$SPID
@@ -248,12 +263,14 @@ sleep 20
 [[ $(pq "pgvigil_instance_info{server=\"$GONE\"}") == "0 " ]] || no "P7: $GONE still scraped after it was set inactive"
 # P10: the server's token file first, Prometheus' credentials_file 3 s later
 NEWTOK=$(head -c 40 /dev/urandom | base64 | tr -dc 'A-Za-z0-9'); NEWTOK=${NEWTOK}0123456789abcdefghijklmnopqrstuvwxyz; NEWTOK=${NEWTOK:0:44}
-printf '%s\n' "$NEWTOK" > "$WORK/token"; touch -d '+2 seconds' "$WORK/token"; sleep 3; printf '%s' "$NEWTOK" > "$WORK/prom.token"
+printf '%s\n' "$NEWTOK" > "$WORK/token"; sleep 1.2
+[[ $(code -H "$(h "$TOK")" "https://$IP:$PORT2/metrics") == 200 ]] || no "P10: the old token refused right after the rewrite"
+sleep 2; printf '%s' "$NEWTOK" > "$WORK/prom.token"
 sleep 60
-MIN=$(pq 'min_over_time(up{job="pgvigil"}[1m])')
-[[ ${MIN#* } == 1 ]] || no "P10: min_over_time(up[1m]) '$MIN' after the rotation"
+MIN=$(pq 'min_over_time(up{job="pgvigil"}[90s])')
+[[ ${MIN#* } == 1 ]] || no "P10: min_over_time(up[90s]) '$MIN' after the rotation"
 [[ $(code -H "$(h "$NEWTOK")" "https://$IP:$PORT2/metrics") == 200 ]] || no "P10: the new token"
-[[ $bad -eq $b0 ]] && ok "P7 scrape: Prometheus $PROMV over TLS at $IP:$PORT2, up 1, $NA instance_info series, gzip, $GONE gone when set inactive; P10 rotate: min_over_time(up[1m]) 1, the new token 200"
+[[ $bad -eq $b0 ]] && ok "P7 scrape: Prometheus $PROMV over TLS at $IP:$PORT2, up 1, $NA instance_info series, gzip, $GONE gone when set inactive; P10 rotate: the old token 200 after the rewrite, min_over_time(up[90s]) 1, the new token 200"
 kill $TLS 2>/dev/null
 
 echo "== P8 scale"; b0=$bad
@@ -261,23 +278,28 @@ if [[ ${PROM_SCALE:-1000} -gt 0 ]]; then
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB8" >/dev/null || fail "create $DB8"
   t0=$(date +%s); "$BIN" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB8" -days 1 -instances "${PROM_SCALE:-1000}" -workers 16 > "$WORK/demo8.log" 2>&1 || { tail -3 "$WORK/demo8.log"; fail "the scale seed"; }
   echo "seeded ${PROM_SCALE:-1000} instances in $(( $(date +%s) - t0 )) s"
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "grant connect on database $DB8 to pgv_prom_ui" >/dev/null 2>&1
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "grant connect on database $DB8 to pgv_prom_ui_$SFX" >/dev/null 2>&1
   export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB8"; export UI_DSN="${UI_DSN/dbname=$DB/dbname=$DB8}"
   printf '%s\n' "$TOK" > "$WORK/token"
   "$BIN" migrate -config "$WORK/on.yaml" >/dev/null 2>&1
   start "$WORK/s8.log" "http://127.0.0.1:$PORT" -config "$WORK/on.yaml" -dsn env:UI_DSN -listen "127.0.0.1:$PORT" || fail "the scale serve: $(tail -3 "$WORK/s8.log")"
   S8=$SPID
+  AGE=$(psql "$PGVIGIL_ADMIN_DSN dbname=$DB8" -XAtq -c "select coalesce(extract(epoch from now() - max(snapshot_at))::int, 99999) from pgvigil.activity_summary")
+  [[ ${AGE:-99999} -le 600 ]] || echo "NOT PROVEN P8: the seeded data's newest read is ${AGE} s old (the seed ran past its catch-up): the render had nothing fresh to read"
   t1=$(date +%s.%N); curl -s -H "$(h "$TOK")" -H 'X-Prometheus-Scrape-Timeout-Seconds: 60' -o "$WORK/m8.txt" "$B/metrics"; t2=$(date +%s.%N)
   RS=$(awk '/^pgvigil_metrics_render_seconds /{print $2}' "$WORK/m8.txt"); SER=$(awk '/^pgvigil_metrics_series /{print $2}' "$WORK/m8.txt")
   python3 -I -c "import sys; sys.exit(0 if float('${RS:-99}') < 10 else 1)" || no "P8: the cold render took ${RS:-?} s (want under 10)"
+  [[ ${AGE:-99999} -gt 600 || ${SER%.*} -ge $(( 20 * ${PROM_SCALE:-1000} )) ]] 2>/dev/null || no "P8: $SER series for ${PROM_SCALE:-1000} instances (want 20 per instance at least)"
   sleep 11
   for i in $(seq 1 8); do curl -s -H "$(h "$TOK")" -H 'X-Prometheus-Scrape-Timeout-Seconds: 60' -o "$WORK/c$i.txt" "$B/metrics" & done; wait
   NR=$(cat "$WORK"/c*.txt | awk '/^pgvigil_metrics_last_render_timestamp_seconds /{print $2}' | sort -u | wc -l)
+  NB=$(grep -l '^pgvigil_metrics_last_render_timestamp_seconds ' "$WORK"/c*.txt | wc -l)
+  [[ $NB == 8 ]] || no "P8: $NB of the 8 concurrent scrapes got a body"
   [[ $NR == 1 ]] || no "P8: 8 concurrent scrapes saw $NR render(s)"
   [[ $bad -eq $b0 ]] && ok "P8 scale: ${PROM_SCALE:-1000} instances, the cold render $RS s (the first reply $(python3 -I -c "print(round($t2 - $t1, 2))") s), $SER series, $(wc -c < "$WORK/m8.txt") bytes, 8 concurrent scrapes after expiry: $NR render"
   kill $S8 2>/dev/null
 else echo "NOT PROVEN P8: PROM_SCALE=0"; fi
 
-echo "NOT PROVEN: SQL Server's figures on a live instance (the demo's SQL Server rows are generated); Prometheus 2.x; remote_write"
+echo "NOT PROVEN: SQL Server's figures on a live instance (the demo's SQL Server rows are generated); Prometheus 2.x; remote_write; 50 databases per instance with metrics.databases on (P8 seeds the demo's few)"
 echo "proof-prometheus: $bad failed row(s)"
 [[ $bad -eq 0 ]]
