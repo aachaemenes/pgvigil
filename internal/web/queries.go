@@ -202,8 +202,8 @@ SELECT check_name, object, value, unit, state, snapshot_at
  WHERE instance_id = $1
  ORDER BY check_name, object`
 
-// sqlReplSeries is the lag of every lag-bearing object over the window, and each database's recovery-conflict
-// cancellations on a standby (kind 'conflict', the rise), through pgvigil.replication_series (0150): the samples
+// sqlReplSeries is the lag of every lag-bearing object over the window, through pgvigil.replication_series (0150;
+// its 'conflicts' metric waits for the page's own chart and part, so it never shares this cap): the samples
 // while the window is 2 days or less and the stored samples reach its start, else the hourly rollup for the whole
 // window (its first point may hold up to 59 minutes before the window; 'building' says the hours are not built
 // yet and the samples stand in). The max per $4-second bucket (the handler picks about 600 buckets per window;
@@ -212,8 +212,6 @@ SELECT check_name, object, value, unit, state, snapshot_at
 const sqlReplSeries = `
 SELECT * FROM (
   SELECT s.* FROM pgvigil.replication_series($1, $2, $3, $4, 'lag') s
-  UNION ALL
-  SELECT c.* FROM pgvigil.replication_series($1, $2, $3, $4, 'conflicts') c
    ORDER BY 1 DESC
    LIMIT 20000) x
  ORDER BY snapshot_at, kind, key`

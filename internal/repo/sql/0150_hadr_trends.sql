@@ -28,7 +28,9 @@
 --                      less under the budget (pgvigil.replication_heal_ms, 2000 ms), each chunk's cost estimated before
 --                      it from the chunk before
 --   the first build    none in this file (no migration writes a stored row): 'pgvigil purge' builds each instance
---                      (replication_hourly_pending, replication_hourly_heal_one), one instance per transaction, newest
+--                      (replication_hourly_pending; replication_hourly_months in its own transaction first - a partition
+--                      made inside the build would lock the table for every other instance's rollup until the build
+--                      commits; then replication_hourly_heal_one), one instance per transaction, newest
 --                      hours first, in chunks sized by a row estimate; the imports go on meanwhile (the lock is tried,
 --                      never waited for). Until an instance is built its series reads the samples
 --   a failure          never fails the import: the trigger catches any error, merges the hours into the 'mark' range
@@ -298,6 +300,23 @@ RETURNS SETOF int LANGUAGE sql STABLE AS $$
    ORDER BY 1
 $$;
 
+-- replication_hourly_months: the month partitions of replication_hourly an instance's stored samples need, made - for
+-- 'pgvigil purge' to call in its OWN transaction before replication_hourly_heal_one: making a partition locks the whole
+-- table (ACCESS EXCLUSIVE), and inside a build's long transaction that lock would hold every other instance's rollup;
+-- returns the partitions made
+CREATE OR REPLACE FUNCTION pgvigil.replication_hourly_months(p_instance_id int)
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE v_m timestamp; v_n int := 0;
+BEGIN
+  FOR v_m IN SELECT DISTINCT date_trunc('month', s.snapshot_at AT TIME ZONE 'UTC') FROM pgvigil.replication_sample s WHERE s.instance_id = p_instance_id LOOP
+    IF to_regclass('pgvigil.replication_hourly_' || to_char(v_m, 'YYYYMM')) IS NULL THEN
+      PERFORM pgvigil.ensure_month_partition('replication_hourly', v_m AT TIME ZONE 'UTC');
+      v_n := v_n + 1;
+    END IF;
+  END LOOP;
+  RETURN v_n;
+END $$;
+
 -- replication_hourly_heal_one: one instance built or healed whole under its lock (no budget), for 'pgvigil purge' -
 -- one call, one transaction; the instance's imports meanwhile mark their hours and go on. Returns the hour rows written.
 CREATE OR REPLACE FUNCTION pgvigil.replication_hourly_heal_one(p_instance_id int)
@@ -314,14 +333,20 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_from timestamptz := date_trunc('hour', p_lo AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
   v_to   timestamptz := (date_trunc('hour', p_hi AT TIME ZONE 'UTC') + interval '2 hours') AT TIME ZONE 'UTC';   -- and the hour after
+  v_lt   text := current_setting('lock_timeout');
 BEGIN
+  -- every lock the rollup waits for is waited 1 s at most (a month's partition made while a heal holds the table, a row
+  -- a heal writes): past it the hours are marked and the import commits - it never waits out the repository timeout
+  PERFORM set_config('lock_timeout', '1s', true);
   IF v_to - v_from > interval '1 day' THEN   -- a wide write (a delete of an instance's history): purge's heal rebuilds it
     PERFORM pgvigil.replication_hourly_mark(p_instance_id, v_from, v_to, 'a write over more than a day of samples');
+    PERFORM set_config('lock_timeout', v_lt, true);
     RETURN;
   END IF;
   BEGIN
     IF NOT pg_try_advisory_xact_lock(hashtext('pgvigil.replication_hourly'), p_instance_id) THEN
       PERFORM pgvigil.replication_hourly_mark(p_instance_id, v_from, v_to, 'the instance''s hours were being built or healed');
+      PERFORM set_config('lock_timeout', v_lt, true);
       RETURN;
     END IF;
     PERFORM pgvigil.replication_hours(p_instance_id, v_from, v_to);
@@ -333,6 +358,7 @@ BEGIN
       RAISE WARNING 'replication_hourly: the rollup of instance % failed and could not be recorded: %', p_instance_id, SQLERRM;
     END;
   END;
+  PERFORM set_config('lock_timeout', v_lt, true);
 END $$;
 
 -- the triggers' body (INSERT and DELETE: the transition table is 'n' in both): per instance in the statement's rows, in
@@ -350,7 +376,7 @@ END $$;
 -- replication_hourly_purge: the months of replication_hourly wholly older than its hours_retention row (730 days when
 -- absent) dropped; returns their names (purge()'s last block adds them to the run's partitions_dropped). The builds and
 -- heals are the purge command's, one instance per transaction (replication_hourly_pending, replication_hourly_heal_one).
--- It also makes next month's partition ahead and keeps every partition at fillfactor 90: the current hour's rows are
+-- It also makes next month's partitions (the hours' and the samples') ahead and keeps every hours partition at fillfactor 90: the current hour's rows are
 -- rewritten every minute and an update stays HOT only with room on its page (measured at fillfactor 100 after a 30-day
 -- build: 2 of 242 updates HOT). Here, not in the trigger: setting it needs the table's owner (purge), not the collector.
 CREATE OR REPLACE FUNCTION pgvigil.replication_hourly_purge()
@@ -360,6 +386,9 @@ BEGIN
   SELECT r.days INTO v_days FROM pgvigil.hours_retention r WHERE r.table_name = 'replication_hourly';
   v_days := coalesce(v_days, 730);
   PERFORM pgvigil.ensure_month_partition('replication_hourly', (date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC');
+  -- and replication_sample's: the first import of a month would make it, and a build reading the samples for minutes
+  -- would hold that import - and every import queued behind its lock
+  PERFORM pgvigil.ensure_month_partition('replication_sample', (date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC');
   FOR v_part IN
     SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
      WHERE i.inhparent = 'pgvigil.replication_hourly'::regclass AND NOT coalesce('fillfactor=90' = ANY (c.reloptions), false)
