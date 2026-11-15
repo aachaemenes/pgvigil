@@ -266,7 +266,77 @@ def helpers(text):
     return found
 
 
+COL = re.compile(r"\{\s*key:\s*'([^']+)'")          # a Col literal, on one line or over several
+CLS_STATUS = re.compile(r"'(?:status )?(?:ok|warn|crit)'")
+HELPER = re.compile(r"(?m)^[ \t]*(?:export\s+)?(?:const\s+(\w{3,})\s*=\s*(?:\([^)]*\)|\w+)\s*(?::\s*[\w |]+)?\s*=>\s*|function\s+(\w{3,})\s*\()")
+
+
+def all_helpers(text):
+    """name -> body of every function-shaped helper in the file (a cls may be one, or a call of one)"""
+    found = {}
+    for m in HELPER.finditer(text):
+        name, k = m.group(1) or m.group(2), m.end()
+        if m.group(2):
+            b = text.index('{', k)
+            found[name] = text[k:close_of(text, b, '{')]
+        elif text[k:k + 1] == '{':
+            found[name] = text[k:close_of(text, k, '{')]
+        else:
+            found[name] = text[k:expr_end(text, k)]
+    return found
+
+
+def cls_text(body, hs):
+    """a Col's cls as written, with the body of the file's helper it names or calls"""
+    i = body.find('cls:')
+    if i < 0:
+        return None
+    k = i + 4
+    while body[k:k + 1] in (' ', '\n'):
+        k += 1
+    t = body[k:expr_end(body, k)]
+    m = re.match(r'(\w+)\s*(?:\(|$)', t)
+    if m and m.group(1) in hs:
+        t += hs[m.group(1)]
+    return t
+
+
+def wide(src):
+    """the status columns the badge scan does not see (X18 calls a column a status column by any OK, warning or
+    critical fill): (a) a cls that colours some rows (warn / crit / ok, bare or 'status ...') and returns '' on
+    others; (b) a column whose only status is an OK badge. Each is a candidate: an '' branch may be an empty value
+    only - read one by one"""
+    n = 0
+    for path in sorted(glob.glob(f'{src}/*.ts')):
+        name = path.split('/')[-1]
+        if '.test.' in name:
+            continue
+        text = open(path, encoding='utf-8').read()
+        hs, ha = helpers(text), all_helpers(text)
+        okh = {h: b for h, b in ha.items() if 'badge(' in b and re.search(r"'ok'", b)}
+        for m in COL.finditer(text):
+            body = text[m.start():close_of(text, m.start(), '{')]
+            key, line = m.group(1), text.count('\n', 0, m.start()) + 1
+            used = [h for h in hs if re.search(r'fmt:\s*(?:(?:\([^)]*\)|\w+)\s*=>\s*)?' + h + r'\b', body)]
+            if ('badge(' in body and STATUS.search(body)) or used:
+                continue   # the badge scan's own
+            ct = cls_text(body, ha)
+            if ct is not None:
+                if CLS_STATUS.search(ct) and "''" in ct:
+                    print(f"WIDE a {name}:{line} '{key}': its cls colours some rows and returns '' on others")
+                    n += 1
+                continue
+            oku = [h for h in okh if re.search(r'\b' + h + r'\b', body)]
+            if ('badge(' in body and "'ok'" in ' '.join(badges(body))) or oku:
+                print(f"WIDE b {name}:{line} '{key}': an OK badge on some rows, no cls")
+                n += 1
+    print(f'{n} candidate status columns beyond the badge scan')
+    return 1 if n else 0
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--wide':
+        return wide(sys.argv[2].rstrip('/'))
     if len(sys.argv) != 2:
         print(__doc__)
         return 2
@@ -278,7 +348,7 @@ def main():
             continue
         text = open(path, encoding='utf-8').read()
         hs = helpers(text)
-        for m in re.finditer(r"\{ key: '([^']+)'", text):
+        for m in COL.finditer(text):
             body = text[m.start():close_of(text, m.start(), '{')]
             key = m.group(1)
             used = [h for h in hs if re.search(r'fmt:\s*(?:(?:\([^)]*\)|\w+)\s*=>\s*)?' + h + r'\b', body)]
