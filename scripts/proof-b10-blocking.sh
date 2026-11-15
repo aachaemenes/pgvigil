@@ -138,7 +138,8 @@ finding() { q "select coalesce(string_agg(severity || '|' || detail, ' / '), '')
 has() { [ -n "$(q "select 1 from $(fsrc) f where instance_id = $1 and setting = '$2' limit 1")" ] && echo yes || echo no; }
 waits() { if fn "$1"; then q "select count(*) from pgvigil.$1($2, now() - interval '1 hour', now())"; else echo "no $1"; fi; }
 "$BIN" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login > "$OUT.serve" 2>&1 & SRVPID=$!
-for i in $(seq 1 30); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 1; done
+for i in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 1; done
+curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" || { tail -20 "$OUT.serve" >&2; fail "pgvigil serve did not answer on 127.0.0.1:$PORT within 60 s (its log above)"; }
 # the day's and the live part's blocking / deadlocks for an instance, from the routes the pages read: the calendar
 # needs instance= and gives a table of days (columns + rows, no instance_id): the key summed over the month's days (the
 # proof's rows lie within the last half hour: a run in the first half hour of a UTC month would read too few); the
@@ -299,10 +300,10 @@ echo "--- J. PostgreSQL waits split at a gap"
 J=$(syn j postgres)
 q "select pgvigil.ensure_month_partition('activity_sample', now());
    insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
-   select $J, t0 + make_interval(secs => s), 101, t0 - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'transactionid', t0 - interval '5 seconds', '{100}'
+   select $J, t0 + make_interval(secs => s), 101, t0 - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'transactionid', t0 - interval '5 seconds', '{100}'::int[]
      from (select date_trunc('minute', now()) - interval '20 minutes' t0) x, unnest(array[0, 15, 30, 45, 60, 105, 120, 135]) s
    union all
-   select $J, t0 + make_interval(secs => s), 102, t0 - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'tuple', t0 + interval '300 seconds', '{100}'
+   select $J, t0 + make_interval(secs => s), 102, t0 - interval '1 hour', 'b10', 'app', 'active', 'Lock', 'tuple', t0 + interval '300 seconds', '{100}'::int[]
      from (select date_trunc('minute', now()) - interval '20 minutes' t0) x, unnest(array[300, 315, 330]) s" >/dev/null
 check "$(waits pg_block_waits "$J")" 3 "J: 101 two waits (a 45 s gap), 102 one"
 check "$(api healthcal "$J" blocking)|$(api ack "$J" blocking)" "3|3" "J: the day and the live part read 3"
@@ -362,10 +363,10 @@ if fn import_block_hourly; then
   q "update pgvigil.instances set first_seen = '$HM'::timestamptz - interval '29 days' where instance_id = $M" >/dev/null
   for w in 4 3 2 1 0; do q "select pgvigil.ensure_month_partition('activity_sample', '$HM'::timestamptz - make_interval(weeks => $w))" >/dev/null; done
   q "insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
-     select $M, '$HM'::timestamptz - make_interval(weeks => w) + interval '10 minutes', 200 + w, '$HM'::timestamptz - interval '40 days', 'b10', 'app', 'active', 'Lock', 'transactionid', '$HM'::timestamptz - make_interval(weeks => w), '{100}'
+     select $M, '$HM'::timestamptz - make_interval(weeks => w) + interval '10 minutes', 200 + w, '$HM'::timestamptz - interval '40 days', 'b10', 'app', 'active', 'Lock', 'transactionid', '$HM'::timestamptz - make_interval(weeks => w), '{100}'::int[]
        from generate_series(1, 4) w
      union all
-     select $M, '$HM'::timestamptz + interval '10 minutes', 300 + k, '$HM'::timestamptz - interval '40 days', 'b10', 'app', 'active', 'Lock', 'transactionid', '$HM'::timestamptz + make_interval(secs => k), '{100}'
+     select $M, '$HM'::timestamptz + interval '10 minutes', 300 + k, '$HM'::timestamptz - interval '40 days', 'b10', 'app', 'active', 'Lock', 'transactionid', '$HM'::timestamptz + make_interval(secs => k), '{100}'::int[]
        from generate_series(1, 6) k" >/dev/null
   q "DO \$m\$ DECLARE a timestamptz; BEGIN
        FOR a IN SELECT g FROM generate_series('$HM'::timestamptz - interval '28 days', '$HM'::timestamptz, interval '1 day') g ORDER BY g LOOP

@@ -78,9 +78,10 @@ q "with snaps(at, n) as (values (date_trunc('minute', now()) - interval '50 minu
             select $S, s.at, h.head, 0, 'sleeping', null, 0, 0, h.head, true, 'l' || h.k, 'p' || h.k, 'b10' from snaps s, heads h returning 1)
    select (select count(*) from i1), (select count(*) from i2), (select count(*) from i3)" >/dev/null
 "$BIN" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login > "$OUT.serve" 2>&1 & SRVPID=$!
-for i in $(seq 1 30); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 1; done
+for i in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 1; done
+curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" || { tail -20 "$OUT.serve" >&2; fail "pgvigil serve did not answer on 127.0.0.1:$PORT within 60 s (its log above)"; }
 FROM=$(q "select to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"); TO=$(q "select to_char(now() at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
-part() { curl -s -o "$OUT.$1" -w '%{http_code}' --get "http://127.0.0.1:$PORT/api/blocking/history" --data-urlencode "instance=$S" --data-urlencode "from=$FROM" --data-urlencode "to=$TO" --data-urlencode "part=$1"; }
+part() { curl -s -o "$OUT.$1" -w '%{http_code}' --get "http://127.0.0.1:$PORT/api/blocking/history" --data-urlencode "instance=$S" --data-urlencode "from=$FROM" --data-urlencode "to=$TO" --data-urlencode "part=$1" || true; }   # no answer = '000', a check's FAIL, not the proof's end
 py() { python3 -I -c "$1" "${@:2}"; }
 # a part's rows as a list of dicts (a Table: cols + rows, or a list), from the saved reply
 ROWS='
