@@ -683,7 +683,10 @@ $$;
 -- ---- the metrics family 'counters' ----------------------------------------------------------------------------------
 
 -- mssql_counter_metrics: the metrics of the family in metric_catalog's columns (the join file adds them to the
--- catalogue). A ratio's label says its floor: under it the point is 0 (an idle server's own reads are not a ratio).
+-- catalogue). The per-batch ratios and full scans per search have floors (the lead's 19:4x, 0153's metric_floors):
+-- under one the ratio is not judged - its point has no value - and the rates it is judged by are metrics of their own
+-- (batch_requests_s, full_scans_s, index_searches_s), so the page can say why. The other ratios' labels say their
+-- floor: under it the point is 0 (an idle server's own reads are not a ratio).
 CREATE OR REPLACE VIEW pgvigil.mssql_counter_metrics AS
 SELECT v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.unit, v.per_database, v.fresh_secs, v.sort
   FROM (VALUES
@@ -696,43 +699,49 @@ SELECT v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.u
     ('sqlserver', 'counters', 'Counters', 50, 'errors_offline_s',           'DB offline errors/sec',                           'per_s', false,  600,  7),
     ('sqlserver', 'counters', 'Counters', 50, 'errors_info_s',              'info errors/sec',                                 'per_s', false,  600,  8),
     ('sqlserver', 'counters', 'Counters', 50, 'errors_total_s',             'errors/sec (all)',                                'per_s', false,  600,  9),
-    ('sqlserver', 'counters', 'Counters', 50, 'compiles_per_100_batches',   'compilations per 100 batch requests (0 under 1 batch/s)', 'pct', false, 600, 10),
-    ('sqlserver', 'counters', 'Counters', 50, 'recompiles_per_100_compiles','re-compilations per 100 compilations (0 under 1 compilation/s)', 'pct', false, 600, 11),
-    ('sqlserver', 'counters', 'Counters', 50, 'page_splits_per_100_batches','page splits per 100 batch requests (0 under 1 batch/s)', 'count', false, 600, 12),
-    ('sqlserver', 'counters', 'Counters', 50, 'page_lookups_per_batch',     'page lookups per batch request (0 under 1 batch/s)', 'count', false, 600, 13),
-    ('sqlserver', 'counters', 'Counters', 50, 'full_scans_per_search',      'full scans per index search (0 under 10 searches/s)', 'count', false, 600, 14),
-    ('sqlserver', 'counters', 'Counters', 50, 'readahead_pct',              'read-ahead pages per 100 page reads (0 under 1 read/s)', 'pct', false, 600, 15),
-    ('sqlserver', 'counters', 'Counters', 50, 'page_reads_s',               'page reads/sec (volume)',                         'per_s', false,  600, 16),
-    ('sqlserver', 'counters', 'Counters', 50, 'page_writes_s',              'page writes/sec (volume)',                        'per_s', false,  600, 17),
-    ('sqlserver', 'counters', 'Counters', 50, 'lazy_writes_s',              'lazy writes/sec',                                 'per_s', false,  600, 18),
-    ('sqlserver', 'counters', 'Counters', 50, 'free_list_stalls_s',         'free list stalls/sec',                            'per_s', false,  600, 19),
-    ('sqlserver', 'counters', 'Counters', 50, 'lock_requests_s',            'lock requests/sec (volume)',                      'per_s', false,  600, 20),
-    ('sqlserver', 'counters', 'Counters', 50, 'lock_waits_s',               'lock waits/sec',                                  'per_s', false,  600, 21),
-    ('sqlserver', 'counters', 'Counters', 50, 'lock_timeouts_gt0_s',        'lock timeouts (timeout > 0)/sec',                 'per_s', false,  600, 22),
-    ('sqlserver', 'counters', 'Counters', 50, 'avg_lock_wait_ms',           'average lock wait (0 with no wait in the read)',  'ms',    false,  600, 23),
-    ('sqlserver', 'counters', 'Counters', 50, 'latch_waits_s',              'latch waits/sec',                                 'per_s', false,  600, 24),
-    ('sqlserver', 'counters', 'Counters', 50, 'avg_latch_wait_ms',          'average latch wait (0 with no wait in the read)', 'ms',    false,  600, 25),
-    ('sqlserver', 'counters', 'Counters', 50, 'buffer_cache_hit_pct',       'buffer cache hit ratio',                          'pct',   false,  600, 26),
-    ('sqlserver', 'counters', 'Counters', 50, 'ple_per_4gb',                'page life expectancy per 4 GB of buffer pool (the lowest memory node)', 'secs', false, 600, 27),
-    ('sqlserver', 'counters', 'Counters', 50, 'misguided_plans_s',          'misguided plan executions/sec',                   'per_s', false,  600, 28),
-    ('sqlserver', 'counters', 'Counters', 50, 'update_conflict_pct',        'snapshot update conflicts per 100 snapshot updates', 'pct', false,  600, 29),
-    ('sqlserver', 'counters', 'Counters', 50, 'memory_commit_pct',          'memory in use of the commit limit',               'pct',   false,  600, 30),
-    ('sqlserver', 'counters', 'Counters', 50, 'failed_to_create_worker',    'schedulers that failed to create a worker',       'count', false,  600, 31),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_active_jobs',          'SQL Agent jobs running',                          'count', false,  900, 32),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_started',         'SQL Agent jobs started per read',                 'count', false,  900, 33),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_failed',          'SQL Agent jobs failed or cancelled per read',     'count', false,  900, 34),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_succeeded',       'SQL Agent jobs succeeded per read',               'count', false,  900, 35),
-    ('sqlserver', 'counters', 'Counters', 50, 'write_transactions_s',       'write transactions/sec',                          'per_s', true,  1800, 36),
-    ('sqlserver', 'counters', 'Counters', 50, 'log_flush_waits_s',          'log flush waits/sec',                             'per_s', true,  1800, 37),
-    ('sqlserver', 'counters', 'Counters', 50, 'log_flush_wait_ms_s',        'log flush wait time per second',                  'ms',    true,  1800, 38),
-    ('sqlserver', 'counters', 'Counters', 50, 'percent_log_used',           'log used',                                        'pct',   true,  1800, 39),
-    ('sqlserver', 'counters', 'Counters', 50, 'active_transactions',        'active transactions',                             'count', true,  1800, 40),
-    ('sqlserver', 'counters', 'Counters', 50, 'log_growths',                'log growths per read',                            'count', true,  1800, 41)
+    ('sqlserver', 'counters', 'Counters', 50, 'batch_requests_s',           'batch requests/sec',                              'per_s', false,  600, 10),
+    ('sqlserver', 'counters', 'Counters', 50, 'full_scans_s',               'full scans/sec',                                  'per_s', false,  600, 11),
+    ('sqlserver', 'counters', 'Counters', 50, 'index_searches_s',           'index searches/sec',                              'per_s', false,  600, 12),
+    ('sqlserver', 'counters', 'Counters', 50, 'compiles_per_100_batches',   'compilations per 100 batch requests',             'pct',   false,  600, 13),
+    ('sqlserver', 'counters', 'Counters', 50, 'recompiles_per_100_compiles','re-compilations per 100 compilations (0 under 1 compilation/s)', 'pct', false, 600, 14),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_splits_per_100_batches','page splits per 100 batch requests',               'count', false,  600, 15),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_lookups_per_batch',     'page lookups per batch request',                  'count', false,  600, 16),
+    ('sqlserver', 'counters', 'Counters', 50, 'full_scans_per_search',      'full scans per index search',                     'count', false,  600, 17),
+    ('sqlserver', 'counters', 'Counters', 50, 'readahead_pct',              'read-ahead pages per 100 page reads (0 under 1 read/s)', 'pct', false, 600, 18),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_reads_s',               'page reads/sec (volume)',                         'per_s', false,  600, 19),
+    ('sqlserver', 'counters', 'Counters', 50, 'page_writes_s',              'page writes/sec (volume)',                        'per_s', false,  600, 20),
+    ('sqlserver', 'counters', 'Counters', 50, 'lazy_writes_s',              'lazy writes/sec',                                 'per_s', false,  600, 21),
+    ('sqlserver', 'counters', 'Counters', 50, 'free_list_stalls_s',         'free list stalls/sec',                            'per_s', false,  600, 22),
+    ('sqlserver', 'counters', 'Counters', 50, 'lock_requests_s',            'lock requests/sec (volume)',                      'per_s', false,  600, 23),
+    ('sqlserver', 'counters', 'Counters', 50, 'lock_waits_s',               'lock waits/sec',                                  'per_s', false,  600, 24),
+    ('sqlserver', 'counters', 'Counters', 50, 'lock_timeouts_gt0_s',        'lock timeouts (timeout > 0)/sec',                 'per_s', false,  600, 25),
+    ('sqlserver', 'counters', 'Counters', 50, 'avg_lock_wait_ms',           'average lock wait (0 with no wait in the read)',  'ms',    false,  600, 26),
+    ('sqlserver', 'counters', 'Counters', 50, 'latch_waits_s',              'latch waits/sec',                                 'per_s', false,  600, 27),
+    ('sqlserver', 'counters', 'Counters', 50, 'avg_latch_wait_ms',          'average latch wait (0 with no wait in the read)', 'ms',    false,  600, 28),
+    ('sqlserver', 'counters', 'Counters', 50, 'buffer_cache_hit_pct',       'buffer cache hit ratio',                          'pct',   false,  600, 29),
+    ('sqlserver', 'counters', 'Counters', 50, 'ple_per_4gb',                'page life expectancy per 4 GB of buffer pool (the lowest memory node)', 'secs', false, 600, 30),
+    ('sqlserver', 'counters', 'Counters', 50, 'misguided_plans_s',          'misguided plan executions/sec',                   'per_s', false,  600, 31),
+    ('sqlserver', 'counters', 'Counters', 50, 'update_conflict_pct',        'snapshot update conflicts per 100 snapshot updates', 'pct', false,  600, 32),
+    ('sqlserver', 'counters', 'Counters', 50, 'memory_commit_pct',          'memory in use of the commit limit',               'pct',   false,  600, 33),
+    ('sqlserver', 'counters', 'Counters', 50, 'failed_to_create_worker',    'schedulers that failed to create a worker',       'count', false,  600, 34),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_active_jobs',          'SQL Agent jobs running',                          'count', false,  900, 35),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_started',         'SQL Agent jobs started per read',                 'count', false,  900, 36),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_failed',          'SQL Agent jobs failed or cancelled per read',     'count', false,  900, 37),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_succeeded',       'SQL Agent jobs succeeded per read',               'count', false,  900, 38),
+    ('sqlserver', 'counters', 'Counters', 50, 'write_transactions_s',       'write transactions/sec',                          'per_s', true,  1800, 39),
+    ('sqlserver', 'counters', 'Counters', 50, 'log_flush_waits_s',          'log flush waits/sec',                             'per_s', true,  1800, 40),
+    ('sqlserver', 'counters', 'Counters', 50, 'log_flush_wait_ms_s',        'log flush wait time per second',                  'ms',    true,  1800, 41),
+    ('sqlserver', 'counters', 'Counters', 50, 'percent_log_used',           'log used',                                        'pct',   true,  1800, 42),
+    ('sqlserver', 'counters', 'Counters', 50, 'active_transactions',        'active transactions',                             'count', true,  1800, 43),
+    ('sqlserver', 'counters', 'Counters', 50, 'log_growths',                'log growths per read',                            'count', true,  1800, 44)
   ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort);
 
 -- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
 -- names one database's series of the per-database metrics; NULL = the server's _Total. A rate read at raw 0 is 0 (the
--- read's zero_series); an average with no event in the read is 0; a ratio under its floor is 0.
+-- read's zero_series); an average with no event in the read is 0. A floored ratio (0153's metric_floors: under 5
+-- Batch Requests/s; full scans per search under 1 Full Scan/s or 10 Index Searches/s) gives a point with NO value
+-- (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0 (the lead's 19:4x); no
+-- rate read = no point. The other ratios under their floor are 0.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_points(p_instance_id int, p_from timestamptz, p_to timestamptz,
                                                          p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
 RETURNS TABLE (at timestamptz, metric text, value double precision)
@@ -824,11 +833,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
       ('errors_user_s', i.err_user::double precision), ('errors_kill_s', i.err_kill::double precision),
       ('errors_offline_s', i.err_offline::double precision), ('errors_info_s', i.err_info::double precision),
       ('errors_total_s', i.err_total::double precision),
-      ('compiles_per_100_batches', CASE WHEN i.batch IS NULL OR i.compiles IS NULL THEN NULL WHEN i.batch < 1 THEN 0 ELSE 100.0 * i.compiles / i.batch END),
+      ('batch_requests_s', i.batch::double precision), ('full_scans_s', i.full_scans::double precision),
+      ('index_searches_s', i.searches::double precision),
       ('recompiles_per_100_compiles', CASE WHEN i.compiles IS NULL OR i.recompiles IS NULL THEN NULL WHEN i.compiles < 1 THEN 0 ELSE 100.0 * i.recompiles / i.compiles END),
-      ('page_splits_per_100_batches', CASE WHEN i.batch IS NULL OR i.splits IS NULL THEN NULL WHEN i.batch < 1 THEN 0 ELSE 100.0 * i.splits / i.batch END),
-      ('page_lookups_per_batch', CASE WHEN i.batch IS NULL OR i.lookups IS NULL THEN NULL WHEN i.batch < 1 THEN 0 ELSE i.lookups / i.batch END),
-      ('full_scans_per_search', CASE WHEN i.searches IS NULL OR i.full_scans IS NULL THEN NULL WHEN i.searches < 10 THEN 0 ELSE i.full_scans / i.searches END),
       ('readahead_pct', CASE WHEN i.preads IS NULL OR i.readahead IS NULL THEN NULL WHEN i.preads < 1 THEN 0 ELSE 100.0 * i.readahead / i.preads END),
       ('page_reads_s', i.preads::double precision), ('page_writes_s', i.pwrites::double precision),
       ('lazy_writes_s', i.lazy::double precision), ('free_list_stalls_s', i.stalls::double precision),
@@ -843,6 +850,15 @@ LANGUAGE sql STABLE SET jit = off AS $$
       ('memory_commit_pct', 100.0 * i.in_use_kb / nullif(i.in_use_kb + i.commit_kb, 0)),
       ('failed_to_create_worker', i.failed_worker::double precision)) AS x(metric, value)
    WHERE x.value IS NOT NULL
+  UNION ALL
+  -- the floored ratios: under a floor (the same numbers as 0153's metric_floors) a point with no value, kept
+  SELECT i.snapshot_at, x.metric, CASE WHEN x.under THEN NULL ELSE (x.scale * x.num / x.den)::double precision END
+    FROM i CROSS JOIN LATERAL (VALUES
+      ('compiles_per_100_batches', i.compiles, i.batch, 100.0, i.batch < 5),
+      ('page_splits_per_100_batches', i.splits, i.batch, 100.0, i.batch < 5),
+      ('page_lookups_per_batch', i.lookups, i.batch, 1.0, i.batch < 5),
+      ('full_scans_per_search', i.full_scans, i.searches, 1.0, i.full_scans < 1 OR i.searches < 10)) AS x(metric, num, den, scale, under)
+   WHERE x.num IS NOT NULL AND x.den IS NOT NULL
   UNION ALL
   SELECT nn.snapshot_at, 'ple_per_4gb', nn.ple4::double precision FROM nn WHERE nn.ple4 IS NOT NULL
   UNION ALL
