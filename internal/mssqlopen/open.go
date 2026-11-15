@@ -70,6 +70,35 @@ func OpenDialer(dsn string, d mssql.Dialer) (*sql.DB, error) {
 	return sql.OpenDB(mc), nil
 }
 
+// OpenDialerCredentials is OpenDialer for a string whose login and password come from elsewhere (task B24e: AWS
+// Secrets Manager): the string is parsed, the user (when set) and the password put on the parsed config, and the
+// same sign-in decisions made on it; the secret never enters a string. A string with fedauth= is refused (an Entra
+// sign-in takes no SQL password).
+func OpenDialerCredentials(dsn, user, password string, d mssql.Dialer) (*sql.DB, error) {
+	cfg, err := msdsn.Parse(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.Parameters["fedauth"]) != "" {
+		return nil, errors.New("a password from AWS Secrets Manager is a SQL login's: not with fedauth=")
+	}
+	if user != "" {
+		cfg.User = user
+	}
+	cfg.Password = password
+	h, _ := d.(Holder)
+	c, err := connectorConfig(cfg, h, true)
+	if err != nil {
+		return nil, err
+	}
+	mc, ok := c.(*mssql.Connector)
+	if !ok {
+		return nil, fmt.Errorf("mssqlopen: a %T takes no dialer", c)
+	}
+	mc.Dialer = d
+	return sql.OpenDB(mc), nil
+}
+
 // Holder is a dialer whose connect deadline can be paused: the token provider holds it while it fetches an Entra token
 // in the middle of the login, so the time the identity provider takes is not counted as the server's (the collector's
 // deadline dialer; join review 2). Hold returns the release, which restores the time that was left.
@@ -149,6 +178,13 @@ func connector(dsn string, h Holder) (driver.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
+	return connectorConfig(cfg, h, false)
+}
+
+// connectorConfig is connector's decisions on a parsed string; own = the config was changed after the parse (a
+// password from AWS Secrets Manager, task B24e), so the driver's own connector is made from the config, never from a
+// string that would carry the secret
+func connectorConfig(cfg msdsn.Config, h Holder, own bool) (driver.Connector, error) {
 	if why := gmsaRefusal(cfg, runtime.GOOS); why != "" {
 		return nil, errors.New(why)
 	}
@@ -160,6 +196,9 @@ func connector(dsn string, h Holder) (driver.Connector, error) {
 			// is NTLM, which without DOMAIN\user falls back to a SQL login with an empty user name and always
 			// fails; Kerberos is what auth windows means off Windows now.
 			cfg.Parameters["authenticator"] = "krb5"
+			return mssql.NewConnectorConfig(cfg), nil
+		}
+		if own {
 			return mssql.NewConnectorConfig(cfg), nil
 		}
 		return nil, nil
