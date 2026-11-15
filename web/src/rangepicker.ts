@@ -247,7 +247,8 @@ export function monthChoices(now: Date, fixed: (a: Date, b: Date) => Range): Cho
 }
 // dayMonth: one of the two as a select under its own label naming the display zone; the current range selected when it
 // is one of them; its Show button goes to the pick (WCAG 3.2.2, technique H84: arrowing through a closed select fires
-// 'change' on each option in Chrome and Firefox, so a pick never navigates by itself)
+// 'change' on each option in Chrome and Firefox, so a pick never navigates by itself). Show is off with its reason
+// while nothing is picked ('pick a day first'), and a pick turns it on: a control works or says why it does not.
 function dayMonth(name: 'Date' | 'Month', choices: Choice[], isCur: (r: Range) => boolean): HTMLElement {
   const words = name === 'Date' ? `a whole day in ${zoneName()}` : `a whole month in ${zoneName()}`;
   const sel = el('select', { class: 'range-daymonth', 'aria-label': `${name}: ${words}` }) as HTMLSelectElement;
@@ -255,8 +256,12 @@ function dayMonth(name: 'Date' | 'Month', choices: Choice[], isCur: (r: Range) =
   choices.forEach((c, i) => { const o = el('option', { value: String(i) }, c.text); if (isCur(c.range)) o.selected = true; sel.append(o); });
   const show = el('button', { type: 'button', class: 'range-daymonth-go', 'aria-label': `Show the ${name === 'Date' ? 'day' : 'month'} picked` }, 'Show');
   show.addEventListener('click', () => { const c = choices[Number(sel.value)]; if (sel.value !== '' && c) go(c.range); });
+  const why = el('span', { class: 'off-reason' });
+  const state = () => { const r = sel.value === '' ? `pick a ${name === 'Date' ? 'day' : 'month'} first` : ''; offControl(show, r || null, why); why.textContent = r; };
+  sel.addEventListener('change', state);
+  state();
   return el('span', { class: 'range-daymonth-row' },
-    el('label', { class: 'range-daymonth-label' }, `${name} `, sel, el('span', { class: 'meta' }, ` ${words}`)), ' ', show);
+    el('label', { class: 'range-daymonth-label' }, `${name} `, sel, el('span', { class: 'meta' }, ` ${words}`)), ' ', show, ' ', why);
 }
 
 function build(): HTMLElement {
