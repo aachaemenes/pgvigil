@@ -62,6 +62,18 @@
 # 'not seen' (17 listed, 1 not seen); Pick series All / None, Columns...'s two buttons and SQL Server's Later / Latest
 # still 'disabled' with their words (the walk opens the panels on a default grid, every series shown, the newest
 # snapshot read); no new NOTHING or reads row; 'click-through: OK (...)', rc 0
+# Expected (the GM run, rel-gridmenu: the grid menu .tm-menu, its 30 must rows, the walker's per-item count - written
+# before it): tsc rc 0; the grader's self-test 14 of 14; the walker's two fixtures pass (no exit 2); the expected file 48
+# rows (43 must); the click map's own verdict line (about f2's 522 links, 0 FAIL); 182 pages listed, every page settled;
+# the FAIL rows listed as f2's (the re-reads 12 to 15, the deadlock Graph 1, Admin's Servers 1, the alert page's 'at the
+# firing' 1; Activity's Latest 'reads' 0 or 1); 43 must rows clicked - f2's 13 and the grid menu's 30, each by its kind
+# (Copy's four 'copies', Export Excel and the six Export file forms 'download' or 'status', Transpose's two 'dialog', the
+# off items 'disabled' with their words); no NOTHING, 'off without words' or 'not reached' row under a right-click (CTX)
+# path. Differences from f2 said here, not graded: a file or a copy now outranks a status line and a redraw (a menu item
+# closes its menu: a redraw that proved nothing), so 'download' and 'copies' rise and 'redraws' / 'status' fall by as many;
+# the grid menu's clicks no longer take a page's cap, so 'over the cap' falls on the capped pages (any FAIL among the
+# controls that frees is NEW and graded as found); the walk about 10-15 min longer a driver (GM's items GRID_MAX a
+# driver); 'click-through: OK (...)', rc 0
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""
