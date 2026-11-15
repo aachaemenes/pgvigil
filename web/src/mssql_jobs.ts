@@ -388,7 +388,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
     { key: 'schedule', fmt: oneLine },
     // the value cells carry the outcome's level, so the screen and the export show one colour
-    { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null || r.dropped_at ? '' : outcomeCls(r.last_outcome) },
+    { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.dropped_at ? 'status none' : outcomeCls(r.last_outcome) || 'status none' },
     { key: 'last_duration_s', label: 'took', num: true, fmt: dur },
     { key: 'last_outcome', label: 'outcome', cls: (v, r) => r.dropped_at ? '' : outcomeCls(v),
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
@@ -430,8 +430,8 @@ const failedCols: Col[] = [
 const stepCols: Col[] = [
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' }, { key: 'subsystem' },
   { key: 'database_name', label: 'database' },
-  { key: 'last_outcome', label: 'last outcome', cls: v => v === 0 ? 'status crit' : v === 1 ? 'status ok' : '', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
-  { key: 'last_run_utc', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.last_outcome === 0 ? 'status crit' : r.last_outcome === 1 ? 'status ok' : '' },
+  { key: 'last_outcome', label: 'last outcome', cls: v => v === 0 ? 'status crit' : v === 1 ? 'status ok' : v == null ? '' : 'status none', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
+  { key: 'last_run_utc', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.last_outcome === 0 ? 'status crit' : r.last_outcome === 1 ? 'status ok' : 'status none' },
   { key: 'last_duration_s', label: 'took', num: true, fmt: fmtSecs },
   { key: 'on_success', label: 'on success' }, { key: 'on_fail', label: 'on failure' },
   { key: 'command', fmt: oneLine },

@@ -311,9 +311,10 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
     // (X15) a status cell that writes its status word after its figure ('463.71 warning', '92 % critical'; the screen keeps
     // the word for a reader who cannot tell the colours apart): the grid sheet writes the figure, its status the fill (an
-    // activity mark ' *' goes with the word); the CSV, which has no fill, keeps the page's words
+    // activity mark ' *' goes with the word, or alone on a cell with no word: '0 *'); the CSV, which has no fill, keeps
+    // the page's words
     if (c.status && typeof c.v === 'string' && raw !== undefined) {
-      const fig = /^(.*?)(?: \*)? (?:ok|warning|critical)$/.exec(t);
+      const fig = /^(.*?)(?: \*(?: (?:ok|warning|critical))?| (?:ok|warning|critical))$/.exec(t);
       if (fig) { const n = typed(raw, fig[1]); if (typeof n.v === 'number') c.bare = { ...n, text: fig[1] }; }
     }
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
