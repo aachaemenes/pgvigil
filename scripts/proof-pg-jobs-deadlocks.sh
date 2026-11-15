@@ -577,10 +577,11 @@ PY
   [ "$(sq "select jobenabled from pgagent.pga_job where jobid = $EJ")" = f ] || fail "K: the failed update changed the job"
   sq "grant select on pgagent.pga_exception to pgv161act" >/dev/null
   want "$(tog enable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 200 "jobenabled set to true" "pgAgent Enable"
-  [ "$(sq "select jobenabled || ' ' || (jobnextrun is not null) from pgagent.pga_job where jobid = $EJ")" = "t t" ] || fail "K: the job after the Enable: $(sq "select jobenabled, jobnextrun from pgagent.pga_job where jobid = $EJ")"
+  # a boolean || text reads true / false (as C's row does), never psql's t / f
+  [ "$(sq "select jobenabled || ' ' || (jobnextrun is not null) from pgagent.pga_job where jobid = $EJ")" = "true true" ] || fail "K: the job after the Enable: $(sq "select jobenabled, jobnextrun from pgagent.pga_job where jobid = $EJ")"
   want "$(tog enable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 409 "already enabled" "pgAgent Enable again"
   want "$(tog disable "$I" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 200 "jobenabled set to false" "pgAgent Disable"
-  [ "$(sq "select jobenabled || ' ' || (jobnextrun is null) from pgagent.pga_job where jobid = $EJ")" = "f t" ] || fail "K: the job after the Disable"
+  [ "$(sq "select jobenabled || ' ' || (jobnextrun is null) from pgagent.pga_job where jobid = $EJ")" = "false true" ] || fail "K: the job after the Disable: $(sq "select jobenabled, jobnextrun from pgagent.pga_job where jobid = $EJ")"
   want "$(tog disable "$IOFF" '"scheduler":"pgagent"' "$EJ" pgv_b9c_sched)" 409 "does not name job_disable" "pgAgent Disable on the second instance"
   KR=$(q "select string_agg(n || ':' || action || ':' || outcome || '=' || c, ' ' order by n, action, outcome) from (select case instance_id when $I then 'door' else 'off' end n, action, outcome, count(*) c
           from pgvigil.actions_log where instance_id in ($I, $IOFF) and action in ('job_enable', 'job_disable') group by 1, 2, 3) x")
