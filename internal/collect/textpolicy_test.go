@@ -313,11 +313,9 @@ func TestMaskCredentials(t *testing.T) {
 		{"closing quote 3", "SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3", "",
 			"SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3"},
 		{"closing quote 4", "select dblink_connect('host=h password=') , 'abc'", "", "select dblink_connect('host=h password=') , 'abc'"},
-		// finding 5: a named argument, a plan's parameter values
+		// finding 5: a named argument (a plan's parameter values are MaskXML's: TestMaskXML)
 		{"named argument", "SELECT app.set_password(p_user => 'u', p_password => 'na1secret')", "na1secret",
 			"SELECT app.set_password(p_user => 'u', p_password => '<masked>')"},
-		{"plan parameters", `<ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="N'Plan1secret'" ParameterRuntimeValue="N'Plan2secret'" />`, "Plan",
-			`<ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="'<masked>'" ParameterRuntimeValue="'<masked>'" />`},
 		// finding 6: no false positives on arithmetic, -Path or a cast
 		{"arithmetic", "SELECT Total -Paid AS due FROM inv", "", "SELECT Total -Paid AS due FROM inv"},
 		{"powershell -Path", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`, "", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`},
@@ -345,6 +343,54 @@ func TestMaskCredentials(t *testing.T) {
 		if again := MaskCredentials(got); again != got {
 			t.Errorf("%s: a second pass changed the text: %q -> %q", c.name, got, again)
 		}
+	}
+}
+
+// TestMaskXML: the credential mask of an XML document (a showplan, a deadlock graph, a blocked process report) masks
+// each attribute value and text node and writes <masked> escaped, so the document stays XML (the join of 406's plans
+// with 415's mask: the text mask wrote a raw <masked> there); CDATA and comments are masked as raw text; a document with
+// no credential keeps its bytes; a second pass changes nothing; the stored row takes MaskXML for an XML value only.
+func TestMaskXML(t *testing.T) {
+	cases := []struct{ name, in, secret, want string }{
+		{"plan parameters", `<ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="N'Plan1secret'" ParameterRuntimeValue="N&apos;Plan2secret&apos;" />`, "Plan",
+			`<ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="&apos;&lt;masked&gt;&apos;" ParameterRuntimeValue="&apos;&lt;masked&gt;&apos;" />`},
+		{"another parameter kept", `<ColumnReference Column="@user" ParameterCompiledValue="N&apos;Plan3keep&apos;" />`, "",
+			`<ColumnReference Column="@user" ParameterCompiledValue="N&apos;Plan3keep&apos;" />`},
+		{"attribute", `<StmtSimple StatementText="ALTER LOGIN a WITH PASSWORD = &apos;Ax1secret&apos;&#xA;GO" StatementId="1" />`, "Ax1secret",
+			`<StmtSimple StatementText="ALTER LOGIN a WITH PASSWORD = &apos;&lt;masked&gt;&apos;&#xA;GO" StatementId="1" />`},
+		{"an already masked pair", `<StmtSimple StatementText="UPDATE u SET PasswordHash = &lt;masked&gt; WHERE id = @id" />`, "",
+			`<StmtSimple StatementText="UPDATE u SET PasswordHash = &lt;masked&gt; WHERE id = @id" />`},
+		{"text node", "<inputbuf>\nEXEC xp_cmdshell &apos;sqlcmd -S . -P Tx1secret -Q x&apos;   </inputbuf>", "Tx1secret",
+			"<inputbuf>\nEXEC xp_cmdshell 'sqlcmd -S . -P &lt;masked&gt; -Q x'   </inputbuf>"},
+		{"cdata", "<x><![CDATA[Server=s;PWD=Cd1secret;]]><!-- password=Cm1secret --></x>", "1secret",
+			"<x><![CDATA[Server=s;PWD=<masked>;]]><!-- password=<masked> --></x>"},
+		{"no credential", "<?xml version=\"1.0\"?>\n<deadlock><process id=\"p1\" note='a &amp; b'><inputbuf>SELECT N&apos;x&apos; &lt; 2</inputbuf></process></deadlock>", "",
+			"<?xml version=\"1.0\"?>\n<deadlock><process id=\"p1\" note='a &amp; b'><inputbuf>SELECT N&apos;x&apos; &lt; 2</inputbuf></process></deadlock>"},
+		{"cut inside a tag", `<a><StmtSimple StatementText="ALTER LOGIN a WITH PASSWORD = &apos;Ct1secr`, "Ct1secr", ""},
+	}
+	for _, c := range cases {
+		got := MaskXML(c.in)
+		if c.secret != "" && strings.Contains(got, c.secret) {
+			t.Errorf("%s: the secret %q is still there: %q", c.name, c.secret, got)
+		}
+		if c.want != "" && got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+		if again := MaskXML(got); again != got {
+			t.Errorf("%s: a second pass changed the text: %q -> %q", c.name, got, again)
+		}
+	}
+	// the row: an XML value takes MaskXML, a statement MaskCredentials (its <masked> raw), PostgreSQL's <IDLE> stays
+	rows := []Row{{"graph": "<deadlock><inputbuf>PWD=Rg1secret;</inputbuf></deadlock>", "statement": "ALTER LOGIN a WITH PASSWORD = 'Rs1secret'", "query": "<IDLE>"}}
+	ApplyTextPolicy(rows, "full")
+	if g := rows[0]["graph"]; g != "<deadlock><inputbuf>PWD=&lt;masked&gt;;</inputbuf></deadlock>" {
+		t.Errorf("graph: %q", g)
+	}
+	if st := rows[0]["statement"]; st != "ALTER LOGIN a WITH PASSWORD = '<masked>'" {
+		t.Errorf("statement: %q", st)
+	}
+	if q := rows[0]["query"]; q != "<IDLE>" {
+		t.Errorf("query: %q", q)
 	}
 }
 

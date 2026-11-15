@@ -8,7 +8,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"html"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1107,64 +1106,16 @@ func (livePlansCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 	return append(out, r), nil
 }
 
-// MaskPlanXML masks the password forms of collect.MaskJobText (PASSWORD = '...', SECRET = '...', @...pwd = N'...', a
-// connection string's Pwd=, sqlcmd's -P, net use) in a showplan. A showplan's text is in its attribute values
-// (StatementText, ParameterCompiledValue, ParameterRuntimeValue, ScalarString, ConstValue): each value is decoded (SQL
-// Server writes a literal's quotes as &apos; and &quot;), masked, and written back escaped only when the mask changed
-// it, so the document stays XML and every value the mask leaves alone keeps its bytes. Every plan this package sends or
-// a page returns goes through it, the query_text policy 'full' included ("credentials masked on the way out, always").
-// A value only the parameter's name marks (ParameterCompiledValue of @pwd) is not seen: that is the policy's job.
+// MaskPlanXML masks the credential forms of collect.MaskCredentials (PASSWORD = '...', SECRET = '...', @...pwd = N'...', a
+// connection string's Pwd=, sqlcmd's -P, net use) in a showplan, and a password-named @ parameter's compiled and
+// runtime values: collect.MaskXML, the same mask the query_text policy runs over a stored plan. A showplan's text is in
+// its attribute values (StatementText, ParameterCompiledValue, ParameterRuntimeValue, ScalarString, ConstValue): each
+// value is decoded (SQL Server writes a literal's quotes as &apos; and &quot;), masked, and written back escaped only
+// when the mask changed it, so the document stays XML and every value the mask leaves alone keeps its bytes. Every plan
+// this package sends or a page returns goes through it, the query_text policy 'full' included ("credentials masked on
+// the way out, always").
 func MaskPlanXML(x string) string {
-	if x == "" {
-		return x
-	}
-	return planAttrRE.ReplaceAllStringFunc(x, func(m string) string {
-		g := planAttrRE.FindStringSubmatch(m)
-		head, raw, q := g[1], g[2], g[3]
-		if raw == "" {
-			head, raw, q = g[4], g[5], g[6]
-		}
-		if raw == "" {
-			return m
-		}
-		val := html.UnescapeString(raw)
-		masked := collect.MaskJobText(val)
-		if masked == val {
-			return m
-		}
-		return head + planAttrEscape(masked) + q
-	})
-}
-
-// planAttrRE is one attribute and its value, in double quotes or single quotes (a value holds no raw delimiter).
-var planAttrRE = regexp.MustCompile(`(\s[A-Za-z_][\w.:-]*\s*=\s*")([^"<]*)(")|(\s[A-Za-z_][\w.:-]*\s*=\s*')([^'<]*)(')`)
-
-// planAttrEscape writes a value for an attribute: the five entities and the line ends as SQL Server writes them.
-func planAttrEscape(v string) string {
-	var b strings.Builder
-	for _, r := range v {
-		switch r {
-		case '&':
-			b.WriteString("&amp;")
-		case '<':
-			b.WriteString("&lt;")
-		case '>':
-			b.WriteString("&gt;")
-		case '"':
-			b.WriteString("&quot;")
-		case '\'':
-			b.WriteString("&apos;")
-		case '\r':
-			b.WriteString("&#xD;")
-		case '\n':
-			b.WriteString("&#xA;")
-		case '\t':
-			b.WriteString("&#x9;")
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return collect.MaskXML(x)
 }
 
 // ---- the statistics a plan was compiled with (task 406, PerformanceMonitor 3.13's Added 1) -------------------------

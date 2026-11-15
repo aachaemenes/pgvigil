@@ -3,6 +3,7 @@ package collect
 import (
 	"github.com/aachaemenes/pgvigil/internal/logparse"
 	"hash/fnv"
+	"html"
 	"regexp"
 	"sort"
 	"strings"
@@ -43,8 +44,11 @@ var credentialKeys = []string{"query", "statement", "detail", "shape", "message"
 //     (a connection string, libpq's keywords, SQLCMDPASSWORD with or without spaces, a named argument p_password =>);
 //   - the password of a URI's user:password@;
 //   - a command line's -P inside a sqlcmd, bcp, osql or isql command (the value bare, quoted or in T-SQL's doubled
-//     quotes), -Password, -pw and -pwd; ConvertTo-SecureString's string; net use's password; dtexec's /DE and /Decrypt;
-//   - a SQL Server plan's compiled and runtime value of a password-named @ parameter.
+//     quotes), -Password, -pw and -pwd; ConvertTo-SecureString's string; net use's password; dtexec's /DE and /Decrypt.
+//
+// An XML document (a SQL Server showplan, an Extended Events deadlock graph or blocked process report) is masked by
+// MaskXML, value by value, so it stays XML; it also masks a plan's compiled and runtime value of a password-named @
+// parameter.
 //
 // Inside a literal (dynamic SQL, an xp_cmdshell command, a connection string) a value in T-SQL's doubled quotes
 // (two single quotes on each side of it) is one value, and the quote that closes the enclosing literal never starts one: the mask knows the text's
@@ -76,7 +80,6 @@ func MaskCredentials(s string) string {
 		return s
 	}
 	s = maskKeyBlockRE.ReplaceAllString(s, masked)
-	s = maskPlanParmRE.ReplaceAllStringFunc(s, func(m string) string { return maskPlanValRE.ReplaceAllString(m, "${1}'"+masked+"'${2}") })
 	s = maskCalls(s)
 	s = maskKeywordValues(s)
 	s = maskPairs(s)
@@ -85,6 +88,182 @@ func MaskCredentials(s string) string {
 	s = maskSecureRE2.ReplaceAllString(s, "${1}"+masked)
 	s = maskNetUseRE2.ReplaceAllString(s, "${1}"+masked)
 	return maskDtsRE2.ReplaceAllString(s, "${1}"+masked)
+}
+
+// MaskXML is the credential mask of an XML document: a SQL Server showplan, an Extended Events deadlock graph or a
+// blocked process report. MaskCredentials over the document's text would write a raw <masked> into an attribute value
+// or a text node, and the stored document would no longer be XML (the Plan cache's .sqlplan, the deadlock graph and the
+// blocked process report pages parse it). Each attribute value and each text node is decoded, masked as MaskCredentials
+// masks a text, and written back escaped only when the mask changed it (<masked> as &lt;masked&gt;), so the document
+// stays XML and every value the mask leaves alone keeps its bytes. A CDATA section and a comment hold raw text and are
+// masked as they stand; a processing instruction is kept. A showplan's ColumnReference of a password-named @ parameter
+// has its compiled and runtime values masked. A tag the text ends inside (a cut document, no longer XML) is masked as
+// a text. Idempotent, as MaskCredentials is.
+func MaskXML(s string) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		lt := strings.IndexByte(s[i:], '<')
+		if lt < 0 {
+			b.WriteString(maskXMLText(s[i:]))
+			break
+		}
+		b.WriteString(maskXMLText(s[i : i+lt]))
+		i += lt
+		rest := s[i:]
+		open, closing, raw := "", "", false
+		switch {
+		case strings.HasPrefix(rest, "<!--"):
+			open, closing, raw = "<!--", "-->", true
+		case strings.HasPrefix(rest, "<![CDATA["):
+			open, closing, raw = "<![CDATA[", "]]>", true
+		case strings.HasPrefix(rest, "<?"):
+			open, closing = "<?", "?>"
+		}
+		end := -1
+		if open != "" {
+			if e := strings.Index(rest[len(open):], closing); e >= 0 {
+				end = len(open) + e + len(closing)
+			}
+		} else {
+			end = xmlTagEnd(rest)
+		}
+		if end < 0 {
+			b.WriteString(maskXMLCut(rest))
+			break
+		}
+		switch {
+		case raw:
+			b.WriteString(open + MaskCredentials(rest[len(open):end-len(closing)]) + closing)
+		case open != "":
+			b.WriteString(rest[:end])
+		default:
+			b.WriteString(maskXMLTag(rest[:end]))
+		}
+		i += end
+	}
+	return b.String()
+}
+
+// xmlTagEnd is the length of the tag s begins with (s[0] is '<'), its quoted values skipped; -1 when s ends inside it.
+func xmlTagEnd(s string) int {
+	var q byte
+	for j := 1; j < len(s); j++ {
+		switch c := s[j]; {
+		case q != 0:
+			if c == q {
+				q = 0
+			}
+		case c == '"' || c == '\'':
+			q = c
+		case c == '>':
+			return j + 1
+		}
+	}
+	return -1
+}
+
+// xmlAttrRE is one attribute and its value, in double or in single quotes.
+var xmlAttrRE = regexp.MustCompile(`(\s[A-Za-z_][\w.:-]*\s*=\s*")([^"]*)(")|(\s[A-Za-z_][\w.:-]*\s*=\s*')([^']*)(')`)
+
+// maskXMLTag masks each attribute value of one tag, then a password-named plan parameter's values.
+func maskXMLTag(tag string) string {
+	tag = xmlAttrRE.ReplaceAllStringFunc(tag, func(m string) string {
+		g := xmlAttrRE.FindStringSubmatch(m)
+		head, val, q := g[1], g[2], g[3]
+		if head == "" {
+			head, val, q = g[4], g[5], g[6]
+		}
+		if val == "" {
+			return m
+		}
+		dec := html.UnescapeString(val)
+		if mv := MaskCredentials(dec); mv != dec {
+			return head + xmlAttrEscape(mv) + q
+		}
+		return m
+	})
+	if maskPlanParmRE.MatchString(tag) {
+		tag = maskPlanValRE.ReplaceAllString(tag, "${1}"+xmlAttrEscape("'"+masked+"'")+"${2}")
+	}
+	return tag
+}
+
+// maskXMLText masks one text node: decoded, masked, escaped again when the mask changed it.
+func maskXMLText(t string) string {
+	if strings.TrimSpace(t) == "" {
+		return t
+	}
+	dec := html.UnescapeString(t)
+	if mv := MaskCredentials(dec); mv != dec {
+		return xmlTextEscape(mv)
+	}
+	return t
+}
+
+// maskXMLCut masks the rest of a document cut inside a tag: decoded first, so a literal SQL Server wrote as &apos;
+// is one, and written raw (the document is no longer XML).
+func maskXMLCut(t string) string {
+	dec := html.UnescapeString(t)
+	if mv := MaskCredentials(dec); mv != dec {
+		return mv
+	}
+	return t
+}
+
+// xmlAttrEscape writes a value for an attribute: the five entities and the line ends as SQL Server writes them.
+func xmlAttrEscape(v string) string {
+	var b strings.Builder
+	for _, r := range v {
+		switch r {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '"':
+			b.WriteString("&quot;")
+		case '\'':
+			b.WriteString("&apos;")
+		case '\r':
+			b.WriteString("&#xD;")
+		case '\n':
+			b.WriteString("&#xA;")
+		case '\t':
+			b.WriteString("&#x9;")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// xmlTextEscape writes a text node's value: &, < and >.
+func xmlTextEscape(v string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(v)
+}
+
+// looksXML: s begins (after white space) with a tag, a declaration or a comment. A statement or a message of either
+// engine does not; PostgreSQL's placeholders (<IDLE>, <insufficient privilege>) read as one tag with nothing to mask.
+func looksXML(s string) bool {
+	t := strings.TrimLeft(s, " \t\r\n")
+	if len(t) < 2 || t[0] != '<' {
+		return false
+	}
+	c := t[1]
+	return c == '?' || c == '!' || c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+}
+
+// maskStored is the credential mask of one stored value: MaskXML for an XML document, MaskCredentials otherwise.
+func maskStored(s string) string {
+	if looksXML(s) {
+		return MaskXML(s)
+	}
+	return MaskCredentials(s)
 }
 
 // litSpan is one string literal of a text, by byte offsets: start (its prefix letter or its opening quote), end (after
@@ -521,7 +700,7 @@ func maskRowCredentials(r Row) {
 		switch v := r[k].(type) {
 		case string:
 			if v != "" {
-				if m := MaskCredentials(v); m != v {
+				if m := maskStored(v); m != v {
 					r[k] = m
 				}
 			}
@@ -535,7 +714,7 @@ func maskRowCredentials(r Row) {
 func maskAny(v any) any {
 	switch x := v.(type) {
 	case string:
-		return MaskCredentials(x)
+		return maskStored(x)
 	case map[string]any:
 		for k, e := range x {
 			x[k] = maskAny(e)
