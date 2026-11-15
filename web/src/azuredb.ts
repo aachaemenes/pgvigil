@@ -6,6 +6,7 @@
 // samples (DBA Dash's average over the view's rows); a maximum is the largest 15-second figure.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { folderWords, tagWords } from './fleet';
 import { Ctx, href, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid } from './ui';
 
@@ -100,13 +101,16 @@ export async function azureSummaryView(ctx: Ctx): Promise<HTMLElement> {
   // the read lists every Azure SQL Database of the scope (read or not): none = the scope holds none, so no grid of
   // Azure's columns and no word of them, the scope said instead (j15b's wording walk: 'elastic pool' under a
   // PostgreSQL tag)
+  // under a tag folder (TAGALL) the read is the folder's: the heading names it, as Performance summary's does
+  const head = 'Azure Summary' + (ctx.tag ? ` - ${tagWords(ctx.tag)}` : '');
   if (!rows.length) {
-    return el('section', {}, el('h2', {}, 'Azure Summary'), el('p', { class: 'empty' }, ctx.tag
-      ? `The tag ${ctx.tag} holds no Azure SQL Database: this summary has nothing to show for it.`
+    const where = ctx.tag ? folderWords(ctx.tag) : '';
+    return el('section', {}, el('h2', {}, head), el('p', { class: 'empty' }, ctx.tag
+      ? `${where.charAt(0).toUpperCase()}${where.slice(1)} holds no Azure SQL Database: this summary has nothing to show for it.`
       : 'pgvigil reads no Azure SQL Database: this summary has nothing to show.'));
   }
-  const sec = el('section', {}, el('h2', {}, 'Azure Summary'),
-    el('p', { class: 'meta' }, 'Every Azure SQL Database pgvigil reads, over the window: its resource use as a share of its limit (each average weighs ' +
+  const sec = el('section', {}, el('h2', {}, head),
+    el('p', { class: 'meta' }, `Every Azure SQL Database ${ctx.tag ? `of ${folderWords(ctx.tag)} ` : ''}pgvigil reads, over the window: its resource use as a share of its limit (each average weighs ` +
       'the minutes by their 15-second samples; a maximum is the largest sample), the share of samples at 70 % and over, and its PRIMARY data files ' +
       'against their max size (DBA Dash\'s % Max Size: warning over 80 %, critical over 90 %; stale when the files were read over 3 hours ago). ' +
       'Sorted as DBA Dash sorts it, the most unused DTUs first. Not as DBA Dash: the four histograms show as the share of samples at 70 % and over ' +

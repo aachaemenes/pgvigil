@@ -123,10 +123,10 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
         'which thresholds, acknowledgements and alert rules may be scoped by. Until the viewer / operator / admin roles exist, any signed-in user may change applications.'),
       // under a tag folder (TAGALL) the databases are the folder's; the applications and their log are every folder's
       // a tag folder lists the applications its servers carry (each server an application is on carries application:<name>);
-      // the change log stays one list
+      // the change log stays one list, and so do the inventory and its import (one file of every server and database)
       tag ? el('p', { class: 'meta' }, `In view: ${tagWords(tag)} - the applications on its servers (${listApps.length} of ${apps.length}) and the databases of its servers.`
         + (apps.length > listApps.length ? ` Not listed here: ${apps.length - listApps.length} application(s) of other servers (All instances lists them).` : '')) : '',
-      fleetWideNote(ctx, 'The change log of the applications is one list') ?? '',
+      fleetWideNote(ctx, 'The inventory, its import and the change log of the applications are one list') ?? '',
       whyNot ? el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${whyNot}.`) : '',
       status,
       // decision E5: an application: tag from pgvigil.yaml (or an older override) is not taken - named, never dropped silently
