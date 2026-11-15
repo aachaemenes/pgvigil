@@ -20,8 +20,9 @@ import (
 type Destination interface {
 	// Upload stores a finished local file under key, replacing what was there.
 	Upload(ctx context.Context, key, local string) error
-	// Put stores a small object (a manifest, a marker).
-	Put(ctx context.Context, key string, body []byte) error
+	// Put stores a small object (a manifest, a marker). onlyNew: refuse with errExists when the key is already there
+	// (a manifest is written once; a second writer is another run on the same destination).
+	Put(ctx context.Context, key string, body []byte, onlyNew bool) error
 	// Get reads a small object; errAbsent when there is none.
 	Get(ctx context.Context, key string) ([]byte, error)
 	// Delete removes an object; one that is not there is no error.
@@ -32,7 +33,10 @@ type Destination interface {
 	String() string
 }
 
-var errAbsent = errors.New("no such object")
+var (
+	errAbsent = errors.New("no such object")
+	errExists = errors.New("the object is already there")
+)
 
 // folder is a destination on a file system. Every object is written beside its place as <name>.tmp and renamed.
 type folder struct{ root string }
@@ -53,8 +57,23 @@ func (d *folder) Upload(_ context.Context, key, local string) error {
 	return d.write(key, in)
 }
 
-func (d *folder) Put(_ context.Context, key string, body []byte) error {
-	return d.write(key, strings.NewReader(string(body)))
+func (d *folder) Put(_ context.Context, key string, body []byte, onlyNew bool) error {
+	if !onlyNew {
+		return d.write(key, strings.NewReader(string(body)))
+	}
+	// written beside its place under a name of its own, then linked into place: a link fails when the name exists
+	side := key + ".new"
+	if err := d.write(side, strings.NewReader(string(body))); err != nil {
+		return err
+	}
+	defer os.Remove(d.path(side))
+	if err := os.Link(d.path(side), d.path(key)); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errExists
+		}
+		return err
+	}
+	return nil
 }
 
 func (d *folder) write(key string, r io.Reader) error {
@@ -117,7 +136,7 @@ func (d *folder) List(_ context.Context, prefix string) ([]string, error) {
 			}
 			return err
 		}
-		if e.IsDir() || strings.HasSuffix(p, ".tmp") {
+		if e.IsDir() || strings.HasSuffix(p, ".tmp") || strings.HasSuffix(p, ".new") {
 			return nil
 		}
 		rel, err := filepath.Rel(d.root, p)
@@ -140,7 +159,7 @@ func CheckDestination(ctx context.Context, d Destination) error {
 		return err
 	}
 	key := "_check_" + hex.EncodeToString(b)
-	if err := d.Put(ctx, key, []byte("pgvigil export -check\n")); err != nil {
+	if err := d.Put(ctx, key, []byte("pgvigil export -check\n"), false); err != nil {
 		return fmt.Errorf("the destination (%s) cannot be written: %w", d, err)
 	}
 	if err := d.Delete(ctx, key); err != nil {

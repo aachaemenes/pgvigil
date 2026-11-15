@@ -685,9 +685,9 @@ def row_J():
     check(rg[0] == 0 and g5 and g5.get('gap') is True and g5.get('tables') == [] and r2[0] == 0, f'J: -gap writes gap manifests and the next run exits 0 (rc {rg[0]}, {r2[0]}: {rg[2].strip()[:120]})')
     w5 = Wk(5); cb = cfg('jbig'); rb = window(cb, w5); mb = man('jbig', w5); fs = files(mb, 'host_sample')
     counts = [pq.ParquetFile(f'{root("jbig")}/{p}').metadata for p in fs]
-    check(rb[0] == 0 and len(fs) == 2 and fs[1].endswith('__p2.parquet') and '__p' not in fs[0] and [m.num_rows for m in counts] == [1000000, 1]
+    check(rb[0] == 0 and len(fs) == 2 and fs[1].endswith('__p2.parquet') and not re.search(r'__p\d+\.parquet$', fs[0]) and [m.num_rows for m in counts] == [1000000, 1]
           and counts[0].num_row_groups == 20 and max(counts[0].row_group(i).num_rows for i in range(20)) == 50000 and entry(mb, 'host_sample')['row_count'] == 1000001,
-          f'J: 1,000,001 rows come out as two files of 1,000,000 and 1 rows in row groups of at most 50,000 (rc {rb[0]}, {fs}, {[m.num_rows for m in counts]})')
+          f'J: 1,000,001 rows come out as two files of 1,000,000 and 1 rows in row groups of at most 50,000 (rc {rb[0]}, {fs}, {[m.num_rows for m in counts]}, {[m.num_row_groups for m in counts]} row groups)')
     before = tree(f'{W}/dest-jbig'); ro = window(cb, Wk(2), '-out', f'{W}/out-j')
     check(ro[0] == 0 and os.path.isfile(f'{W}/out-j/{NAME}/_manifests/{mname(Wk(2))}') and tree(f'{W}/dest-jbig') == before, f'J: -out writes the window to another folder and leaves the destination as it was (rc {ro[0]}: {ro[2].strip()[:120]})')
 

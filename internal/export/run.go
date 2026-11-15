@@ -397,12 +397,15 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 	if err != nil {
 		return false, err
 	}
-	if err := c.Dest.Put(ctx, mkey, body); err != nil {
+	if err := c.Dest.Put(ctx, mkey, body, true); err != nil {
+		if errors.Is(err, errExists) {
+			return false, fmt.Errorf("window %s: its manifest was written by another run while this one worked: two exports of one repository to one destination are not supported", isoUTC(w.From))
+		}
 		fmt.Fprintf(c.Err, "pgvigil export: window %s: its files are written and its manifest is not (%s): %v\n", isoUTC(w.From), c.Dest, err)
 		return false, nil
 	}
 	if final && mark == "" {
-		if err := c.Dest.Put(ctx, finalKey(c.Name, w), []byte(isoUTC(time.Now())+"\n")); err != nil {
+		if err := c.Dest.Put(ctx, finalKey(c.Name, w), []byte(isoUTC(time.Now())+"\n"), false); err != nil {
 			fmt.Fprintf(c.Err, "pgvigil export: window %s: its final manifest is written and its marker is not: %v\n", isoUTC(w.From), err)
 			return false, nil
 		}
@@ -672,7 +675,7 @@ func Gap(ctx context.Context, c Config, from, to time.Time) error {
 		if err != nil {
 			return err
 		}
-		if err := c.Dest.Put(ctx, manifestKey(c.Name, w, ""), body); err != nil {
+		if err := c.Dest.Put(ctx, manifestKey(c.Name, w, ""), body, true); err != nil {
 			return fmt.Errorf("the gap manifest of %s: %w", isoUTC(w.From), err)
 		}
 		n++

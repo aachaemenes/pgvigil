@@ -140,11 +140,14 @@ func exportHours(from, to string) (time.Time, time.Time, error) {
 }
 
 // exportDestination opens the configured destination.
-func exportDestination(_ context.Context, e *config.Export) (export.Destination, error) {
+func exportDestination(ctx context.Context, e *config.Export) (export.Destination, error) {
 	d := e.Destination
 	switch d.Type {
-	case "folder":
-		return export.NewFolder(filepath.Join(d.Path, e.Name)), nil
+	case "s3":
+		return export.NewS3(ctx, export.S3Options{Bucket: d.Bucket, Prefix: d.Prefix, Region: d.Region, Endpoint: d.Endpoint, Profile: d.Profile, Name: e.Name})
+	case "azure_blob":
+		return export.NewAzureBlob(export.BlobOptions{AccountURL: d.AccountURL, Container: d.Container, Prefix: d.Prefix,
+			ConnectionString: d.ConnectionString(), SASURL: d.SASURL(), Name: e.Name})
 	}
-	return nil, fmt.Errorf("export.destination.type %s is not in this build", d.Type)
+	return export.NewFolder(filepath.Join(d.Path, e.Name)), nil
 }
