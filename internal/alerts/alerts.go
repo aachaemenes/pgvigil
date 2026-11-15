@@ -968,8 +968,17 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	if err := rows.Err(); err != nil {
 		return res, nil, err
 	}
+	var anchors bool // task 403b K4 (0154): attachment is on this repository
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('pgvigil.alert_anchor_checks') IS NOT NULL`).Scan(&anchors); err != nil {
+		return res, nil, err
+	}
 	for _, name := range order {
 		c := byName[name]
+		if anchors {
+			if err := attachedLines(ctx, conn, c.Name, owed[name], now); err != nil {
+				return res, outcome, err
+			}
+		}
 		var send, cleared []Alert
 		for _, a := range owed[name] {
 			if a.failingChannel() == c.Name {
@@ -1006,6 +1015,9 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 		if th, ok := c.sender.(threader); ok {
 			chErr, err := c.sendThreaded(ctx, conn, th, send, now, &res)
+			if err == nil && chErr == nil && anchors {
+				chErr, err = c.attachedNotices(ctx, conn, th, now, &res)
+			}
 			if err != nil {
 				return res, outcome, err
 			}
@@ -1061,6 +1073,126 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		}
 	}
 	return res, outcome, nil
+}
+
+// attachedLines (task 403b K4) writes attachment into the owed alerts' details before their lines are made: a firing
+// alert that was attached under an anchor until now says what it was attached to and why it fires now; an anchor's
+// recovery lists what was attached under that occurrence while it stood.
+func attachedLines(ctx context.Context, conn *pgxpool.Conn, channel string, owed []Alert, now time.Time) error {
+	var firing, resolved []string
+	for _, a := range owed {
+		switch a.Event {
+		case "firing":
+			firing = append(firing, a.FindingKey)
+		case "resolved":
+			resolved = append(resolved, a.FindingKey)
+		}
+	}
+	if len(firing) == 0 && len(resolved) == 0 {
+		return nil
+	}
+	rows, err := conn.Query(ctx, `SELECT d.finding_key, d.anchor_key, d.anchor_first_sent_at, coalesce(d.instance_name, ''),
+	       coalesce(d.setting, ''), d.last_at, coalesce(st.instance_name, ''), coalesce(st.setting, ''), st.cleared_at
+	  FROM pgvigil.alert_held d
+	  LEFT JOIN pgvigil.alert_state st
+	    ON st.channel = d.channel AND st.finding_key = d.anchor_key AND st.first_sent_at = d.anchor_first_sent_at
+	 WHERE d.hold_kind = 'attached' AND d.channel = $1 AND (d.finding_key = ANY ($2) OR d.anchor_key = ANY ($3))
+	 ORDER BY d.last_at DESC`, channel, firing, resolved)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	released := map[string]string{} // a firing key: why it fires now
+	under := map[string][]string{}  // an anchor occurrence: what stood under it
+	for rows.Next() {
+		var key, anchor, inst, set, aInst, aSet string
+		var anchorFirst, last time.Time
+		var cleared *time.Time
+		if err := rows.Scan(&key, &anchor, &anchorFirst, &inst, &set, &last, &aInst, &aSet, &cleared); err != nil {
+			return err
+		}
+		if _, seen := released[key]; !seen && last.After(now.Add(-15*time.Minute)) {
+			why := "which no longer anchors it"
+			if cleared != nil {
+				why = "which resolved " + cleared.UTC().Format("15:04") + " UTC"
+			}
+			released[key] = fmt.Sprintf("was attached to %s on %s, %s", aSet, aInst, why)
+		}
+		k := threadKey(anchor, anchorFirst)
+		under[k] = append(under[k], set+" on "+inst)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range owed {
+		a := &owed[i]
+		switch {
+		case a.Event == "firing" && released[a.FindingKey] != "":
+			a.Detail = strings.TrimPrefix(a.Detail+"; "+released[a.FindingKey], "; ")
+		case a.Event == "resolved" && a.FirstSentAt != nil && len(under[threadKey(a.FindingKey, *a.FirstSentAt)]) > 0:
+			list := under[threadKey(a.FindingKey, *a.FirstSentAt)]
+			more := ""
+			if len(list) > 5 {
+				list, more = list[:5], fmt.Sprintf(" and %d more", len(list)-5)
+			}
+			a.Detail = strings.TrimPrefix(a.Detail+"; attached while it stood: "+strings.Join(list, ", ")+more, "; ")
+		}
+	}
+	return nil
+}
+
+// attachedNotices (task 403b K4) posts, on a Slack bot channel, one reply in the anchor's thread per alert attached
+// under it that was not shown yet (at most slackReplies a pass), and marks each shown (0154's alert_attached_noticed).
+// An anchor whose thread is not known shows nothing here: its recovery lists them.
+func (c *Channel) attachedNotices(ctx context.Context, conn *pgxpool.Conn, th threader, now time.Time, res *Result) (error, error) {
+	rows, err := conn.Query(ctx, `SELECT d.finding_key, d.instance_id, coalesce(d.instance_name, ''), coalesce(d.severity, 'warning'),
+	       coalesce(d.source, ''), coalesce(d.setting, ''), coalesce(d.value, ''), coalesce(d.detail, ''), t.ts
+	  FROM pgvigil.alert_held d
+	  JOIN pgvigil.alert_threads t
+	    ON t.channel = d.channel AND t.finding_key = d.anchor_key AND t.first_sent_at = d.anchor_first_sent_at AND t.slack_channel = $2
+	 WHERE d.hold_kind = 'attached' AND d.channel = $1 AND d.noticed_at IS NULL AND d.last_at >= $3
+	 ORDER BY d.first_at LIMIT $4`, c.Name, th.slackChannel(), now.Add(-15*time.Minute), slackReplies)
+	if err != nil {
+		return nil, err
+	}
+	type notice struct {
+		a  Alert
+		ts string
+	}
+	var ns []notice
+	for rows.Next() {
+		var n notice
+		if err := rows.Scan(&n.a.FindingKey, &n.a.InstanceID, &n.a.Instance, &n.a.Severity, &n.a.Source, &n.a.Setting, &n.a.Value, &n.a.Detail, &n.ts); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		n.a.Event = "attached"
+		ns = append(ns, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var done []string
+	var sendErr error
+	for _, n := range ns {
+		m := Message{Channel: c.Name, SentAt: now.UTC(), Alerts: []Alert{n.a}, Subject: "pgvigil: attached under this alert (no page while it stands)"}
+		sctx, cancel := context.WithTimeout(ctx, sendTimeout)
+		err := th.reply(sctx, m, n.ts, false)
+		cancel()
+		if err != nil {
+			sendErr = err
+			res.Errors = append(res.Errors, c.Name+": an attached alert's reply: "+err.Error())
+			break
+		}
+		done = append(done, n.a.FindingKey)
+	}
+	if len(done) > 0 {
+		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pgvigil.alert_attached_noticed($1, $2, $3)`, now, c.Name, done); err != nil {
+			return sendErr, err
+		}
+	}
+	return sendErr, nil
 }
 
 // threadKey names one occurrence's thread: its finding key and its first send.
