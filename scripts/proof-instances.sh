@@ -930,4 +930,52 @@ for n in z.namelist():
 sys.exit(bad)
 PY
 echo "ok   G2: after L2, M and N no password (the read-only login's and the door's too) in the repository's tables, serve's three logs, the run's log, the API's last answer or M's report zip ($(python3 -c 'import sys, zipfile; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))' "$TMPD/rep.zip") files)"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login and with the audit login off, no error box; a page instance never read says so until its first read; the NOT PROVEN lines above stand; the page door: off on a fresh install, on with doors.page_instance_reads, serve's own identity refused, EXPLAIN / the advisor / actions off, at once on this serve, report mail as the owner, sp_start_job refused)"
+# P (task B24p): the aws: and azure: blocks of page instances. Off by default: serve (this file's doors: none) refuses a
+# Cloud part in the switch's words and writes nothing. Then the collector of B is stopped (H graded it already) and
+# one is started on collector.yaml + doors.page_cloud_blocks: on; two page instances whose hosts are the providers'
+# own names (nothing answers there: the rows prove the wiring, not the cloud) get their blocks through the store's
+# function: pg-cloud (PostgreSQL, rds, aws) and ms-cloud (SQL Server, azuresqldb, azure) - their io and
+# mssql_failover_groups rows appear (Configured true: a loop, an error in the SDK's own words, never no row); pg-alias
+# (a host that is not an RDS endpoint) keeps collecting without its block, the collector's log naming both names; the
+# clear stops pg-cloud's io (no newer row).
+echo "== P. B24p: cloud blocks on page instances =="
+CLOUDH="db1.c9akciq32.us-east-2.rds.amazonaws.com"
+cbody() { python3 -c 'import json, sys
+d = {"op": "add", "name": sys.argv[1], "engine": sys.argv[2], "platform": sys.argv[3], "host": sys.argv[4], "port": sys.argv[5], "dbname": sys.argv[6],
+     "auth": sys.argv[7], "login": "pgv_cloud", "password": "Pv9cloud-proof!"}
+if len(sys.argv) > 8: d["cloud"] = json.loads(sys.argv[8])
+print(json.dumps(d))' "$@"; }
+code=$(api POST admin/instances "$(cbody pg-cloud postgres rds "$CLOUDH" 5432 postgres password '{"aws":{"region":"us-east-2","db_instance":"db1"}}')")
+[[ "$code" == 409 && "$(cat "$TMPD/ans.json")" == *page_cloud_blocks* && "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-cloud'")" == 0 ]] \
+  || fail "P: a Cloud part with the switch off: $code $(head -c 300 "$TMPD/ans.json") (want 409 in the switch's words, nothing written)"
+for a in "pg-cloud postgres rds $CLOUDH 5432 postgres password" "ms-cloud sqlserver azuresqldb srv1.database.windows.net 1433 app sql" \
+         "pg-alias postgres rds billing-db.corp.example 5432 postgres password"; do
+  # shellcheck disable=SC2086
+  code=$(api POST admin/instances "$(cbody $a)"); [[ "$code" == 200 ]] || fail "P: add ${a%% *}: $code $(head -c 300 "$TMPD/ans.json")"
+done
+kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true
+grep -q '^doors:' "$CFGD/collector.yaml" && fail "P: collector.yaml has a doors: key already"
+{ cat "$CFGD/collector.yaml"; printf 'doors:\n  page_cloud_blocks: on\n'; } > "$CFGD/collector-cloud.yaml"
+"$TMPD/pgvigil" run -config "$CFGD/collector-cloud.yaml" >"$TMPD/run-cloud.log" 2>&1 & RUNPID=$!
+GP=$(gen)
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"pg-cloud\",\"aws\":{\"region\":\"us-east-2\",\"db_instance\":\"db1\"},\"azure\":null}')->>'outcome'" | grep -qx done || fail "P: set pg-cloud's block"
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"ms-cloud\",\"aws\":null,\"azure\":{\"subscription\":\"0b1f6471-1bf0-4dda-aec3-111122223333\",\"resource_group\":\"rg-proof\",\"server\":\"srv1\"}}')->>'outcome'" | grep -qx done || fail "P: set ms-cloud's block"
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"set\",\"ui_user\":\"proof\",\"name\":\"pg-alias\",\"aws\":{\"region\":\"us-east-2\",\"db_instance\":\"db1\"},\"azure\":null}')->>'outcome'" | grep -qx done || fail "P: set pg-alias's block"
+[[ "$(gen)" -gt "$GP" ]] || fail "P: the blocks did not move the generation"
+row() { pq "SELECT coalesce((SELECT d.status || '|' || coalesce(d.note, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.collection = '$2'), 'none')"; }
+waitrow() { local v=none; for _ in $(seq 1 "$3"); do v=$(row "$1" "$2"); [[ "$v" != none ]] && { echo "$v"; return 0; }; sleep 2; done; echo "$v"; return 1; }
+IO=$(waitrow pg-cloud io 200) || { tail -30 "$TMPD/run-cloud.log" >&2; fail "P: pg-cloud's io has no row in 400 s (its block did not open a loop): $IO"; }
+FG=$(waitrow ms-cloud mssql_failover_groups 200) || { tail -30 "$TMPD/run-cloud.log" >&2; fail "P: ms-cloud's mssql_failover_groups has no row in 400 s: $FG"; }
+[[ "$IO" != *"skipped: no aws"* && "$FG" != *"skipped: no azure"* ]] || fail "P: a block set but its collection skipped: io '$IO', failover groups '$FG'"
+grep -q "cloud block is not used.*pg-alias.*billing-db.corp.example" "$TMPD/run-cloud.log" || fail "P: the collector did not log pg-alias's refused block with its host"
+grep -q "cloud block is not used.*pg-cloud\|cloud block is not used.*ms-cloud" "$TMPD/run-cloud.log" && fail "P: a block whose host matches was not used"
+[[ "$(row pg-alias io)" == none ]] || fail "P: pg-alias's io ran with a refused block: $(row pg-alias io)"
+echo "P: pg-cloud io '${IO:0:160}'; ms-cloud failover groups '${FG:0:160}'"
+pq "SELECT pgvigil.import_admin_instance_cloud(now(), '{\"op\":\"clear\",\"ui_user\":\"proof\",\"name\":\"pg-cloud\"}')->>'outcome'" | grep -qx done || fail "P: clear pg-cloud's block"
+T0=$(pq "SELECT coalesce(max(d.snapshot_at)::text, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-cloud' AND d.collection = 'io'")
+sleep 40
+T1=$(pq "SELECT coalesce(max(d.snapshot_at)::text, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-cloud' AND d.collection = 'io'")
+[[ "$T0" == "$T1" ]] || fail "P: pg-cloud's io ran after its block was cleared ($T0 -> $T1)"
+kill -0 "$RUNPID" 2>/dev/null || fail "P: the cloud collector stopped"
+echo "ok   P: B24p - a Cloud part refused in doors.page_cloud_blocks' words on serve with the switch off (nothing written); with the switch on in the collector, pg-cloud's aws: block and ms-cloud's azure: block opened io and mssql_failover_groups (rows, no skip); pg-alias's block (host not an RDS endpoint) dropped with both names in the log, the instance kept; the clear stopped pg-cloud's io"
+echo "proof-instances: OK (B24p's page cloud blocks (P); the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login and with the audit login off, no error box; a page instance never read says so until its first read; the NOT PROVEN lines above stand; the page door: off on a fresh install, on with doors.page_instance_reads, serve's own identity refused, EXPLAIN / the advisor / actions off, at once on this serve, report mail as the owner, sp_start_job refused)"
