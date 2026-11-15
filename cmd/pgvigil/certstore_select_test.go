@@ -41,6 +41,11 @@ func TestNormalizeThumbprint(t *testing.T) {
 	if got := normalizeThumbprint("‎3a 7f c1\tb2‏"); got != "3A7FC1B2" {
 		t.Fatalf("normalizeThumbprint %q", got)
 	}
+	// B24n review 8: every Unicode space goes, as PerformanceMonitor's char.IsWhiteSpace (em, narrow no-break and
+	// ideographic spaces, vertical tab, form feed, no-break space)
+	if got := normalizeThumbprint("3a\u20037f\u202fc1\u3000b2\v0d\f9e\u00a01f"); got != "3A7FC1B20D9E1F" {
+		t.Fatalf("normalizeThumbprint with Unicode spaces %q", got)
+	}
 }
 
 func TestParseStoreName(t *testing.T) {

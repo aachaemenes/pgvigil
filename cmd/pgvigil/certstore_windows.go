@@ -47,6 +47,10 @@ var (
 	procNCryptSetProp = modncrypt.NewProc("NCryptSetProperty")
 	modcrypt32        = windows.NewLazySystemDLL("crypt32.dll")
 	procCertGetProp   = modcrypt32.NewProc("CertGetCertificateContextProperty")
+	modadvapi32       = windows.NewLazySystemDLL("advapi32.dll")
+	procInitAcl       = modadvapi32.NewProc("InitializeAcl")
+	procAddAce        = modadvapi32.NewProc("AddAce")
+	procAddAllowedEx  = modadvapi32.NewProc("AddAccessAllowedAceEx")
 )
 
 const (
@@ -58,7 +62,11 @@ const (
 	certNCryptKeyProp   = 78 // CERT_NCRYPT_KEY_HANDLE_PROP_ID
 	nteNotSupported     = 0x80090029
 	nteSilentContext    = 0x80090022
+	ncryptPersistFlag   = 0x80000000 // NCRYPT_PERSIST_FLAG: the property is stored with the key, not on the handle only
+	inheritedAce        = 0x10       // INHERITED_ACE
 )
+
+// An NCrypt call returns a 32-bit SECURITY_STATUS: every check reads uint32(r), never the whole register.
 
 // reselectKnob turns PGVIGIL_TLS_RESELECT on in a proof build only (-ldflags "-X main.reselectKnob=on").
 var reselectKnob = ""
@@ -73,11 +81,50 @@ func reselectEvery() time.Duration {
 	return time.Hour
 }
 
+// whoAmI names the account this thread acts as: the impersonated user's token when the thread has one (os/user's
+// Current reads the process token, and caches it), else the process's.
 func whoAmI() string {
+	tok := windows.GetCurrentProcessToken()
+	var th windows.Token
+	if windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, true, &th) == nil {
+		defer func() { _ = th.Close() }()
+		tok = th
+	}
+	if tu, err := tok.GetTokenUser(); err == nil {
+		if acct, dom, _, err := tu.User.Sid.LookupAccount(""); err == nil {
+			return dom + `\` + acct
+		}
+		return tu.User.Sid.String()
+	}
 	if u, err := user.Current(); err == nil {
 		return u.Username
 	}
 	return "this account"
+}
+
+// cryptKeyProvInfo is CRYPT_KEY_PROV_INFO (wincrypt.h), the certificate's CERT_KEY_PROV_INFO_PROP_ID.
+type cryptKeyProvInfo struct {
+	Container *uint16
+	Provider  *uint16
+	ProvType  uint32 // 0: a CNG key storage provider; else a CryptoAPI provider type
+	Flags     uint32
+	NParams   uint32
+	Params    uintptr
+	KeySpec   uint32
+}
+
+// legacyProvider says whether the certificate's key sits in a CryptoAPI (CSP) provider, and its name.
+func legacyProvider(ctx *windows.CertContext) (bool, string) {
+	var n uint32
+	if r, _, _ := procCertGetProp.Call(uintptr(unsafe.Pointer(ctx)), certKeyProvInfoProp, 0, uintptr(unsafe.Pointer(&n))); r == 0 || n < uint32(unsafe.Sizeof(cryptKeyProvInfo{})) {
+		return false, ""
+	}
+	buf := make([]uint64, (n+7)/8) // 8-aligned: the struct holds pointers
+	if r, _, _ := procCertGetProp.Call(uintptr(unsafe.Pointer(ctx)), certKeyProvInfoProp, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n))); r == 0 {
+		return false, ""
+	}
+	pi := (*cryptKeyProvInfo)(unsafe.Pointer(&buf[0]))
+	return pi.ProvType != 0, windows.UTF16PtrToString(pi.Provider)
 }
 
 func utf16z(s string) *uint16 {
@@ -142,14 +189,26 @@ type servedCert struct {
 	ctx        *windows.CertContext
 	key        windows.Handle
 	freeKey    bool
+	signer     *ncryptSigner // nil until the key is probed
 }
 
+// close frees the key under its signer's lock (a handshake signing at shutdown finishes first; a later one is refused,
+// never a freed handle) and then the context.
 func (s *servedCert) close() {
-	if s.freeKey && s.key != 0 {
+	if s.signer != nil {
+		s.signer.mu.Lock()
+		if s.freeKey && s.signer.key != 0 {
+			_, _, _ = procNCryptFree.Call(uintptr(s.signer.key))
+		}
+		s.signer.key = 0
+		s.signer.mu.Unlock()
+	} else if s.freeKey && s.key != 0 {
 		_, _, _ = procNCryptFree.Call(uintptr(s.key))
 	}
+	s.key = 0
 	if s.ctx != nil {
 		_ = windows.CertFreeCertificateContext(s.ctx)
+		s.ctx = nil
 	}
 }
 
@@ -251,13 +310,16 @@ func (s *ncryptSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.key == 0 {
+		return nil, errors.New("the Windows store's key is closed: serve is stopping")
+	}
 	var n uint32
-	if r, _, _ := procNCryptSign.Call(uintptr(s.key), uintptr(pad), uintptr(unsafe.Pointer(&digest[0])), uintptr(len(digest)), 0, 0, uintptr(unsafe.Pointer(&n)), flags); r != 0 {
-		return nil, fmt.Errorf("NCryptSignHash (size): %w", syscall.Errno(r))
+	if r, _, _ := procNCryptSign.Call(uintptr(s.key), uintptr(pad), uintptr(unsafe.Pointer(&digest[0])), uintptr(len(digest)), 0, 0, uintptr(unsafe.Pointer(&n)), flags); uint32(r) != 0 {
+		return nil, fmt.Errorf("NCryptSignHash (size): %w", syscall.Errno(uint32(r)))
 	}
 	sig := make([]byte, n)
-	if r, _, _ := procNCryptSign.Call(uintptr(s.key), uintptr(pad), uintptr(unsafe.Pointer(&digest[0])), uintptr(len(digest)), uintptr(unsafe.Pointer(&sig[0])), uintptr(n), uintptr(unsafe.Pointer(&n)), flags); r != 0 {
-		return nil, fmt.Errorf("NCryptSignHash: %w", syscall.Errno(r))
+	if r, _, _ := procNCryptSign.Call(uintptr(s.key), uintptr(pad), uintptr(unsafe.Pointer(&digest[0])), uintptr(len(digest)), uintptr(unsafe.Pointer(&sig[0])), uintptr(n), uintptr(unsafe.Pointer(&n)), flags); uint32(r) != 0 {
+		return nil, fmt.Errorf("NCryptSignHash: %w", syscall.Errno(uint32(r)))
 	}
 	sig = sig[:n]
 	if _, ok := s.pub.(*ecdsa.PublicKey); ok {
@@ -279,13 +341,18 @@ func openServed(location, name string, c storeCert) (*servedCert, error) {
 	var spec uint32
 	var free bool
 	if err := windows.CryptAcquireCertificatePrivateKey(ctx, windows.CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG|windows.CRYPT_ACQUIRE_SILENT_FLAG, nil, &key, &spec, &free); err != nil {
-		_ = windows.CertFreeCertificateContext(ctx)
 		why := err.Error()
 		if errors.Is(err, syscall.Errno(nteSilentContext)) {
 			why = "the key would ask a person (a password or a smart card): serve cannot answer it"
 		}
-		return nil, fmt.Errorf("the private key of certificate %s does not open for %s: %s. Give that account Read on the key: pgvigil cert -grant-key-access %s -account %s (elevated), or certlm.msc > the certificate > All Tasks > Manage Private Keys. A key from a legacy CryptoAPI provider is not served: re-enrol from a template whose provider is a key storage provider",
-			c.thumbprint, whoAmI(), why, c.thumbprint, whoAmI())
+		legacy := ""
+		if yes, prov := legacyProvider(ctx); yes {
+			legacy = fmt.Sprintf(" Its key sits in the legacy CryptoAPI provider %q, which serve does not use: re-enrol from a template whose provider is a key storage provider.", prov)
+		}
+		_ = windows.CertFreeCertificateContext(ctx)
+		me := whoAmI()
+		return nil, fmt.Errorf("the private key of certificate %s does not open for %s: %s. Give that account Read on the key: pgvigil cert -grant-key-access %s -account \"%s\" (elevated), or certlm.msc > the certificate > All Tasks > Manage Private Keys.%s",
+			c.thumbprint, me, why, c.thumbprint, me, legacy)
 	}
 	sc := &servedCert{thumbprint: c.thumbprint, ctx: ctx, key: key, freeKey: free}
 	if spec != windows.CERT_NCRYPT_KEY_SPEC {
@@ -293,6 +360,7 @@ func openServed(location, name string, c storeCert) (*servedCert, error) {
 		return nil, fmt.Errorf("the private key of certificate %s is not a CNG key: re-enrol from a template whose provider is a key storage provider", c.thumbprint)
 	}
 	signer := &ncryptSigner{key: key, pub: c.cert.PublicKey}
+	sc.signer = signer
 	if err := probeSigner(signer); err != nil {
 		sc.close()
 		return nil, fmt.Errorf("certificate %s: %w", c.thumbprint, err)
@@ -311,13 +379,19 @@ func probeSigner(s *ncryptSigner) error {
 	case *rsa.PublicKey:
 		opts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
 		sig, err := s.Sign(nil, d[:], opts)
-		if err != nil || rsa.VerifyPSS(pub, crypto.SHA256, d[:], sig, opts) != nil {
+		if err != nil {
 			return fmt.Errorf("%s (%v)", bad, err)
+		}
+		if rsa.VerifyPSS(pub, crypto.SHA256, d[:], sig, opts) != nil {
+			return errors.New(bad)
 		}
 	case *ecdsa.PublicKey:
 		sig, err := s.Sign(nil, d[:], crypto.SHA256)
-		if err != nil || !ecdsa.VerifyASN1(pub, d[:], sig) {
-			return fmt.Errorf("the key does not sign an ECDSA SHA-256 digest that verifies (%v)", err)
+		if err != nil {
+			return fmt.Errorf("the key does not sign an ECDSA SHA-256 digest (%v)", err)
+		}
+		if !ecdsa.VerifyASN1(pub, d[:], sig) {
+			return errors.New("the key's ECDSA SHA-256 signature does not verify")
 		}
 	default:
 		return errors.New("the certificate's key is neither RSA nor ECDSA")
@@ -327,34 +401,57 @@ func probeSigner(s *ncryptSigner) error {
 
 // pick selects and opens: a thumbprint's one certificate, or a subject's first whose key opens.
 func pick(location, name, thumbprint, subject string, now time.Time) (*servedCert, error) {
+	sc, _, err := pickNotes(location, name, thumbprint, subject, now)
+	return sc, err
+}
+
+// pickNotes is pick and what serve logs as a warning with it (PerformanceMonitor's fallback and unreadable notes):
+// a newer certificate whose key does not open for this account while an older one is served (a renewal's new key not
+// granted: served only until the older one expires), and the store's certificates that could not be read.
+func pickNotes(location, name, thumbprint, subject string, now time.Time) (*servedCert, []string, error) {
 	where := location + `\` + name
 	cands, err := readStore(location, name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if thumbprint != "" {
 		c, err := selectByThumbprint(cands, thumbprint, where, "-tls-thumbprint")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := lifetimeError(c, now, "-tls-thumbprint "+c.thumbprint); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return openServed(location, name, c)
+		sc, err := openServed(location, name, c)
+		return sc, nil, err
 	}
 	ordered, err := selectBySubject(cands, subject, now, where, "-tls-subject")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var notes []string
+	unreadable := 0
+	for _, c := range cands {
+		if c.cert == nil {
+			unreadable++
+		}
+	}
+	if unreadable > 0 {
+		notes = append(notes, fmt.Sprintf("%d certificate(s) in the %s store could not be read and were skipped", unreadable, where))
 	}
 	var whys []string
 	for _, c := range ordered {
 		sc, err := openServed(location, name, c)
 		if err == nil {
-			return sc, nil
+			if len(whys) > 0 {
+				notes = append(notes, fmt.Sprintf("a newer certificate's private key does not open for %s, so the older certificate %s is served until it expires on %s: %s",
+					whoAmI(), sc.thumbprint, sc.tls.Leaf.NotAfter.UTC().Format(time.RFC3339), strings.Join(whys, "; ")))
+			}
+			return sc, notes, nil
 		}
 		whys = append(whys, err.Error())
 	}
-	return nil, fmt.Errorf("-tls-subject %q: no qualifying certificate's key opens: %s", subject, strings.Join(whys, "; "))
+	return nil, notes, fmt.Errorf("-tls-subject %q: no qualifying certificate's key opens: %s", subject, strings.Join(whys, "; "))
 }
 
 // storeServerTLS is the GetCertificate of a server certificate from the Windows store. Subject mode re-selects on a
@@ -368,7 +465,7 @@ func storeServerTLS(ctx context.Context, log *slog.Logger, store, thumbprint, su
 	if (thumbprint == "") == (subject == "") {
 		return nil, errors.New("name one certificate: -tls-thumbprint or -tls-subject")
 	}
-	first, err := pick(location, name, thumbprint, subject, time.Now())
+	first, notes, err := pickNotes(location, name, thumbprint, subject, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -376,6 +473,9 @@ func storeServerTLS(ctx context.Context, log *slog.Logger, store, thumbprint, su
 	cur.Store(first)
 	log.Info("serve's certificate from the Windows store", "store", location+`\`+name, "thumbprint", first.thumbprint,
 		"subject", first.tls.Leaf.Subject.String(), "not_after", first.tls.Leaf.NotAfter.UTC().Format(time.RFC3339), "chain", len(first.tls.Certificate))
+	for _, n := range notes {
+		log.Warn("serve's certificate: "+n, "served", first.thumbprint)
+	}
 	var mu sync.Mutex
 	all := []*servedCert{first}
 	go func() {
@@ -398,12 +498,27 @@ func storeServerTLS(ctx context.Context, log *slog.Logger, store, thumbprint, su
 					return
 				case <-t.C:
 				}
-				next, err := pick(location, name, "", subject, time.Now())
+				now := time.Now()
+				next, notes, err := pickNotes(location, name, "", subject, now)
+				served := cur.Load()
 				if err != nil {
-					log.Error("serve's certificate: no newer certificate qualifies; the one served stays", "subject", subject, "err", err)
+					if !now.Before(served.tls.Leaf.NotAfter) {
+						// the certificate served has expired and nothing newer opens: every client is sent an expired
+						// certificate until a newer one's key is granted (the next re-select serves it then)
+						log.Error("serve's certificate EXPIRED and is still served: no newer certificate qualifies or its key does not open for this account; grant the newer one's key and the next re-select serves it",
+							"served", served.thumbprint, "expired", served.tls.Leaf.NotAfter.UTC().Format(time.RFC3339), "subject", subject, "err", err)
+					} else {
+						log.Error("serve's certificate: no newer certificate qualifies; the one served stays", "subject", subject, "err", err)
+					}
+					for _, n := range notes {
+						log.Warn("serve's certificate: "+n, "served", served.thumbprint)
+					}
 					continue
 				}
-				if next.thumbprint == cur.Load().thumbprint {
+				for _, n := range notes {
+					log.Warn("serve's certificate: "+n, "served", next.thumbprint)
+				}
+				if next.thumbprint == served.thumbprint {
 					next.close()
 					continue
 				}
@@ -428,22 +543,106 @@ func storeServerTLS(ctx context.Context, log *slog.Logger, store, thumbprint, su
 func ncryptGetSD(key windows.Handle) ([]byte, error) {
 	prop := utf16z("Security Descr")
 	var n uint32
-	if r, _, _ := procNCryptGetProp.Call(uintptr(key), uintptr(unsafe.Pointer(prop)), 0, 0, uintptr(unsafe.Pointer(&n)), windows.DACL_SECURITY_INFORMATION); r != 0 {
-		return nil, syscall.Errno(r)
+	if r, _, _ := procNCryptGetProp.Call(uintptr(key), uintptr(unsafe.Pointer(prop)), 0, 0, uintptr(unsafe.Pointer(&n)), windows.DACL_SECURITY_INFORMATION); uint32(r) != 0 {
+		return nil, syscall.Errno(uint32(r))
 	}
 	b := make([]byte, n)
-	if r, _, _ := procNCryptGetProp.Call(uintptr(key), uintptr(unsafe.Pointer(prop)), uintptr(unsafe.Pointer(&b[0])), uintptr(n), uintptr(unsafe.Pointer(&n)), windows.DACL_SECURITY_INFORMATION); r != 0 {
-		return nil, syscall.Errno(r)
+	if r, _, _ := procNCryptGetProp.Call(uintptr(key), uintptr(unsafe.Pointer(prop)), uintptr(unsafe.Pointer(&b[0])), uintptr(n), uintptr(unsafe.Pointer(&n)), windows.DACL_SECURITY_INFORMATION); uint32(r) != 0 {
+		return nil, syscall.Errno(uint32(r))
 	}
 	return b[:n], nil
 }
 
+// ncryptSetSD writes the key's access list with NCRYPT_PERSIST_FLAG, as PerformanceMonitor does ("a write adds
+// Persist so the descriptor is stored with the key"): without it a provider may keep it on the handle only.
 func ncryptSetSD(key windows.Handle, sd []byte) error {
 	prop := utf16z("Security Descr")
-	if r, _, _ := procNCryptSetProp.Call(uintptr(key), uintptr(unsafe.Pointer(prop)), uintptr(unsafe.Pointer(&sd[0])), uintptr(len(sd)), windows.DACL_SECURITY_INFORMATION); r != 0 {
-		return syscall.Errno(r)
+	if r, _, _ := procNCryptSetProp.Call(uintptr(key), uintptr(unsafe.Pointer(prop)), uintptr(unsafe.Pointer(&sd[0])), uintptr(len(sd)), ncryptPersistFlag|windows.DACL_SECURITY_INFORMATION); uint32(r) != 0 {
+		return syscall.Errno(uint32(r))
 	}
 	return nil
+}
+
+// aclHeader is ACL's layout (winnt.h) with its revision and size readable (x/sys keeps them unexported).
+type aclHeader struct {
+	Revision byte
+	Sbz1     byte
+	Size     uint16
+	Count    uint16
+	Sbz2     uint16
+}
+
+// withReadAce is the DACL with one Allow (Read) entry for sid inserted before its first inherited entry, every other
+// entry kept as it was and in its order (PerformanceMonitor's DarlingTlsKeyAccess does the same on the raw descriptor):
+// a rebuilt list would re-order a non-canonical one.
+func withReadAce(old *windows.ACL, sid *windows.SID) (*windows.ACL, error) {
+	hdr := (*aclHeader)(unsafe.Pointer(old))
+	rev := uint32(hdr.Revision)
+	if rev < 2 {
+		rev = 2 // ACL_REVISION
+	}
+	size := uint32(hdr.Size) + uint32(unsafe.Sizeof(windows.ACCESS_ALLOWED_ACE{})) - 4 + windows.GetLengthSid(sid)
+	buf := make([]uint32, (size+3)/4) // DWORD-aligned
+	acl := (*windows.ACL)(unsafe.Pointer(&buf[0]))
+	if r, _, e := procInitAcl.Call(uintptr(unsafe.Pointer(acl)), uintptr(size), uintptr(rev)); r == 0 {
+		return nil, fmt.Errorf("InitializeAcl: %w", e)
+	}
+	n := uint32(old.AceCount)
+	at := n
+	for i := uint32(0); i < n; i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(old, i, &ace); err != nil {
+			return nil, err
+		}
+		if ace.Header.AceFlags&inheritedAce != 0 {
+			at = i
+			break
+		}
+	}
+	add := func(i uint32) error {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(old, i, &ace); err != nil {
+			return err
+		}
+		if r, _, e := procAddAce.Call(uintptr(unsafe.Pointer(acl)), uintptr(rev), 0xFFFFFFFF, uintptr(unsafe.Pointer(ace)), uintptr(ace.Header.AceSize)); r == 0 {
+			return fmt.Errorf("AddAce: %w", e)
+		}
+		return nil
+	}
+	for i := uint32(0); i < at; i++ {
+		if err := add(i); err != nil {
+			return nil, err
+		}
+	}
+	if r, _, e := procAddAllowedEx.Call(uintptr(unsafe.Pointer(acl)), uintptr(rev), 0, uintptr(keyReadMask), uintptr(unsafe.Pointer(sid))); r == 0 {
+		return nil, fmt.Errorf("AddAccessAllowedAceEx: %w", e)
+	}
+	for i := at; i < n; i++ {
+		if err := add(i); err != nil {
+			return nil, err
+		}
+	}
+	return acl, nil
+}
+
+// readBackSD reads the key's access list through a new context and a new key handle: what the provider stored, not
+// what the writing handle remembers.
+func readBackSD(location, name, thumbprint string) ([]byte, error) {
+	ctx, err := findContext(location, name, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = windows.CertFreeCertificateContext(ctx) }()
+	var key windows.Handle
+	var spec uint32
+	var free bool
+	if err := windows.CryptAcquireCertificatePrivateKey(ctx, windows.CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG|windows.CRYPT_ACQUIRE_SILENT_FLAG, nil, &key, &spec, &free); err != nil {
+		return nil, err
+	}
+	if free {
+		defer func() { _, _, _ = procNCryptFree.Call(uintptr(key)) }()
+	}
+	return ncryptGetSD(key)
 }
 
 // aclView reads a self-relative descriptor's DACL for planGrant.
@@ -555,9 +754,11 @@ func grantKeyAccess(store, thumbprint, account string, out, errw io.Writer) erro
 		return fmt.Errorf("%s (%s) has an explicit Deny entry on the private key of certificate %s that covers Read, and a Deny wins over any Allow: remove it (certlm.msc > the certificate > All Tasks > Manage Private Keys) and run this again. Nothing was changed", account, ss, c.thumbprint)
 	}
 	_, _ = fmt.Fprintf(out, "The key's access list now (the undo: set it back to this in certlm.msc > Manage Private Keys, or remove %s's Read entry): %s\n", account, sd.String())
-	dacl, _, _ := sd.DACL()
-	nacl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{AccessPermissions: windows.ACCESS_MASK(keyReadMask), AccessMode: windows.GRANT_ACCESS,
-		Inheritance: windows.NO_INHERITANCE, Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeValue: windows.TrusteeValueFromSID(sid)}}}, dacl)
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return fmt.Errorf("the key's access list does not read: %w (nothing was changed)", err)
+	}
+	nacl, err := withReadAce(dacl, sid)
 	if err != nil {
 		return fmt.Errorf("the new access list: %w (nothing was changed)", err)
 	}
@@ -568,6 +769,13 @@ func grantKeyAccess(store, thumbprint, account string, out, errw io.Writer) erro
 	if err := abs.SetDACL(nacl, true, false); err != nil {
 		return err
 	}
+	// the old descriptor's DACL flags kept: protected (no inheritance from the parent) and auto-inherited
+	const keep = windows.SE_DACL_PROTECTED | windows.SE_DACL_AUTO_INHERITED
+	if ctl, _, err := sd.Control(); err == nil {
+		if err := abs.SetControl(keep, ctl&keep); err != nil {
+			return fmt.Errorf("the new access list's flags: %w (nothing was changed)", err)
+		}
+	}
 	rel, err := abs.ToSelfRelative()
 	if err != nil {
 		return err
@@ -575,9 +783,9 @@ func grantKeyAccess(store, thumbprint, account string, out, errw io.Writer) erro
 	if err := ncryptSetSD(key, bytes.Clone(unsafe.Slice((*byte)(unsafe.Pointer(rel)), rel.Length()))); err != nil {
 		return fmt.Errorf("the key's access list was not written: %w", err)
 	}
-	back, err := ncryptGetSD(key)
+	back, err := readBackSD(location, name, c.thumbprint)
 	if err != nil {
-		return fmt.Errorf("granted, but the access list does not read back: %w", err)
+		return fmt.Errorf("granted, but the access list does not read back through a new handle: %w", err)
 	}
 	sd2, aces2, null2, err := aclView(back)
 	if err != nil || planGrant(aces2, null2, ss) != "already" {

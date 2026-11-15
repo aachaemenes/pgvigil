@@ -1,5 +1,5 @@
 diff --git i/cmd/pgvigil/cert.go w/cmd/pgvigil/cert.go
-index 647c5fde..2ba8bd7d 100644
+index 647c5fde..6030264b 100644
 --- i/cmd/pgvigil/cert.go
 +++ w/cmd/pgvigil/cert.go
 @@ -22,6 +22,7 @@ import (
@@ -10,7 +10,7 @@ index 647c5fde..2ba8bd7d 100644
  //
  // ECDSA P-256, the hosts as subject alternative names (default: this machine's name, localhost,
  // 127.0.0.1). A browser warns about a self-signed certificate; a certificate from the organisation's
-@@ -31,9 +32,15 @@ func runCert(args []string) error {
+@@ -31,9 +32,19 @@ func runCert(args []string) error {
  	hosts := fs.String("hosts", "", "comma-separated DNS names and IP addresses the certificate is for (default: hostname, localhost, 127.0.0.1)")
  	out := fs.String("out", ".", "directory for pgvigil.crt and pgvigil.key")
  	days := fs.Int("days", 730, "validity in days")
@@ -20,6 +20,10 @@ index 647c5fde..2ba8bd7d 100644
  	if err := fs.Parse(args); err != nil {
  		return err
  	}
++	if fs.NArg() > 0 {
++		// an account name with a space, unquoted, leaves a word behind: refused, never a grant to the wrong account
++		return fmt.Errorf("unexpected argument %q: quote a value that holds a space (-account \"NT SERVICE\\pgvigil\")", fs.Arg(0))
++	}
 +	if *grant != "" {
 +		return grantKeyAccess(*store, *grant, *account, os.Stdout, os.Stderr)
 +	}

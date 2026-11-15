@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // storeCert is one certificate of a store as the selection sees it.
@@ -43,16 +44,16 @@ func newStoreCert(der []byte, hasKey bool, ref any) storeCert {
 	return storeCert{cert: c, thumbprint: strings.ToUpper(hex.EncodeToString(sum[:])), hasKey: hasKey, ref: ref}
 }
 
-// normalizeThumbprint drops whitespace and the left-to-right and right-to-left marks, and folds the case.
+// normalizeThumbprint drops every white space character (unicode.IsSpace, as PerformanceMonitor's char.IsWhiteSpace:
+// a thumbprint copied from certlm.msc or a mail may carry a no-break or an em space) and the left-to-right and
+// right-to-left marks (certlm.msc's copy carries one), and folds the case.
 func normalizeThumbprint(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		switch {
-		case r == '‎' || r == '‏':
-		case r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == ' ':
-		default:
-			b.WriteRune(r)
+		if unicode.IsSpace(r) || r == '\u200e' || r == '\u200f' {
+			continue
 		}
+		b.WriteRune(r)
 	}
 	return strings.ToUpper(b.String())
 }

@@ -26,7 +26,9 @@
 #  P3  CNG ECDSA P-256 and P-384: 4 sign lines ok each (SHA-1 / 256 / 384 / 512 digests); handshakes TLS 1.2 and 1.3
 #      ok for each
 #  P4  a legacy CryptoAPI key (Microsoft RSA SChannel Cryptographic Provider) is written down either way: served (both
-#      handshakes ok) or refused with a sentence that says 'key storage provider' and holds no 'winapi error #'
+#      handshakes ok) or refused with the provider sentence ('legacy CryptoAPI provider', said only when the key's
+#      CERT_KEY_PROV_INFO names a CryptoAPI provider type, or 'is not a CNG key'), holding no 'winapi error #', and its
+#      reason (CNG's own words) printed and not an access refusal (this run is elevated)
 #  P5  the local user pgvtlsproof (in Users only) and a P1-shaped certificate:
 #      a  as the user (a process started with its password): serve refused 'does not open for <COMPUTER>\pgvtlsproof'
 #         and 'pgvigil cert -grant-key-access <thumbprint>'; the grant run as the user refused 'run it from an
@@ -37,13 +39,19 @@
 #      SID, and the key file's own ACL holds one Allow entry with Read for it; a second grant 'Already granted'; then b
 #      opens the key, and a: the test server as the user completes both handshakes and serve as the user logs the
 #      store line and stops at the repository ping
-#      (a that cannot start over this door is one FAIL with its reason; b carries the key's access check then)
+#      c  as the user, -tls-subject of the P5 name with a renewal added (same name, a later NotBefore, its key NOT
+#         granted): serve serves the P5 certificate and warns 'a newer certificate's private key does not open for
+#         <COMPUTER>\pgvtlsproof, so the older certificate <P5> is served'; after the renewal's grant, serve serves the
+#         renewal with no such warning (B24n review 1)
+#      (a and c that cannot start over this door are one SKIP each with the reason, never a FAIL: b carries the key's
+#      access check then, and the last line says how many were skipped)
 #  P6  an expired pin: serve refused 'expired at <date> (valid from <date>): renew it'; a thumbprint no certificate has:
 #      'matches no certificate in the LocalMachine\My store'; -tls-subject of the expired one: 'none can be served
 #      (expired: 1'
 #  X   every certificate made removed with its key, each key file gone; the stores, Crypto\Keys and
 #      Crypto\RSA\MachineKeys hold the names they held at P0; the user, its profile and -Work gone (read back)
-#  The last line: 'proof-certstore-windows: OK' (exit 0) or 'proof-certstore-windows: FAIL (<n>)' (exit 1).
+#  The last line: 'proof-certstore-windows: OK' (exit 0), 'proof-certstore-windows: OK (not run over this door: <n>)'
+#  (exit 0; P5a / P5c could not start a process as the user) or 'proof-certstore-windows: FAIL (<n>)' (exit 1).
 # P7 (the flags refused off Windows) is not this script's: go test ./cmd/pgvigil/ -run TestStoreWindowsOnly on Linux.
 param(
     [Parameter(Mandatory)][string]$Exe,
@@ -54,6 +62,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:failed = 0
 function Fail([string]$msg) { Write-Host "FAIL $msg"; $script:failed++ }
+$script:doorSkips = 0
+function Skip-Door([string]$msg) { Write-Host "SKIP $msg"; $script:doorSkips++ }
 function Ok([string]$msg) { Write-Host "ok   $msg" }
 function Note([string]$msg) { Write-Host "note $msg" }
 $wanted = @($Parts -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -312,8 +322,10 @@ try {
             $res = Invoke-Test 'TestCertstoreProofServe' @{ PGVIGIL_CS_SERVE = '1'; PGVIGIL_CS_THUMB = $legacy.Thumbprint; PGVIGIL_CS_ROOT = $cer; PGVIGIL_CS_NAME = "$Tag-p4.proof.local" }
             $refusal = @($res.Text -split "`r?`n" | Where-Object { $_ -match '^CS refused: ' } | Select-Object -First 1)
             if ($refusal.Count -gt 0) {
-                if ($refusal[0] -match 'key storage provider' -and $refusal[0] -notmatch 'winapi error #') { Ok "P4 a legacy CryptoAPI key is REFUSED with its sentence: $($refusal[0].Substring(12))" }
-                else { Fail "P4 refused without the sentence: $($refusal[0])" }
+                $why = if ($refusal[0] -match 'does not open for [^:]+: (.+?)\. Give that account') { $Matches[1] } else { '' }
+                if ($refusal[0] -notmatch 'legacy CryptoAPI provider|is not a CNG key' -or $refusal[0] -match 'winapi error #') { Fail "P4 refused without the provider sentence: $($refusal[0])" }
+                elseif ($why -match 'denied|0x80090010') { Fail "P4 refused for access, not for its provider (this run is elevated): $why" }
+                else { Ok "P4 a legacy CryptoAPI key is REFUSED; CNG said: $(if ($why) { $why } else { '(not a CNG key)' })" }
             } else {
                 Test-Result 'P4 served' $res 2
                 Note 'P4 a legacy CryptoAPI key is SERVED: CNG opened it and it signs as TLS 1.3 needs'
@@ -345,8 +357,8 @@ try {
             $asUserEnv = @{ PGVIGIL_CS_ASUSER = $UserName; PGVIGIL_CS_ASPASS = $script:userPlain; PGVIGIL_CS_THUMB = $thumb }
             # a: a process as the user (CreateProcessWithLogonW); a door that refuses it is one FAIL, b goes on
             $runAs = $true
-            try { $serveAs = Invoke-Serve @('-tls-thumbprint', $thumb) -AsUser } catch { $runAs = $false; Fail "P5a a process as $UserName did not start over this door: $($_.Exception.Message)" }
-            if ($runAs -and $serveAs.Exit -eq -1073741502) { $runAs = $false; Fail 'P5a a process as the user did not initialise (0xC0000142: the session gives it no window station)' }
+            try { $serveAs = Invoke-Serve @('-tls-thumbprint', $thumb) -AsUser } catch { $runAs = $false; Skip-Door "P5a a process as $UserName did not start over this door: $($_.Exception.Message)" }
+            if ($runAs -and $serveAs.Exit -eq -1073741502) { $runAs = $false; Skip-Door 'P5a a process as the user did not initialise (0xC0000142: the session gives it no window station)' }
             if ($runAs) {
                 Test-Serve 'P5a serve as the user' $serveAs @("does not open for $asWho", "pgvigil cert -grant-key-access $thumb")
                 Test-Serve 'P5a grant as the user' (Invoke-Exe -FilePath $ExeBin -ArgList @('cert', '-grant-key-access', $thumb, '-account', ".\$UserName") -AsUser) @('run it from an elevated prompt')
@@ -374,7 +386,17 @@ try {
             if ($runAs) {
                 Test-Result 'P5a the test server as the user' (Invoke-Test 'TestCertstoreProofServe' @{ PGVIGIL_CS_SERVE = '1'; PGVIGIL_CS_THUMB = $thumb; PGVIGIL_CS_ROOT = $cer; PGVIGIL_CS_NAME = "$Tag-p5.proof.local" } -AsUser) 2
                 Test-Serve 'P5a serve as the user after the grant' (Invoke-Serve @('-tls-thumbprint', $thumb) -AsUser) @("$storeLine.*thumbprint=$thumb", 'repository ping')
-            }
+                # c: a renewal whose key the user cannot open is warned about, the older one served; then granted, served
+                $renewal = New-ProofCert 'P5c renewal' (With $RsaKsp @{ DnsName = "$Tag-p5.proof.local"; NotBefore = (Get-Date).AddSeconds(-2) })
+                if ($renewal.NotBefore -le $p5.NotBefore) { Fail "P5c the renewal's NotBefore $($renewal.NotBefore) is not after P5's $($p5.NotBefore)" }
+                $warnLine = "newer certificate's private key does not open for $asWho, so the older certificate $thumb is served"
+                $p5cHeld = Invoke-Serve @('-tls-subject', "$Tag-p5.proof.local") -AsUser
+                Test-Serve 'P5c serve as the user, the renewal not granted' $p5cHeld @("$storeLine.*thumbprint=$thumb", $warnLine, 'repository ping')
+                Test-Line 'P5c grant the renewal' (Invoke-Exe -FilePath $ExeBin -ArgList @('cert', '-grant-key-access', $renewal.Thumbprint, '-account', ".\$UserName")).Text '^Granted: '
+                $p5cServed = Invoke-Serve @('-tls-subject', "$Tag-p5.proof.local") -AsUser
+                Test-Serve 'P5c serve as the user, the renewal granted' $p5cServed @("$storeLine.*thumbprint=$($renewal.Thumbprint)", 'repository ping')
+                if ($p5cServed.Text -match 'newer certificate.s private key does not open') { Fail 'P5c the warning stays after the renewal was granted' } else { Ok 'P5c no warning once the renewal is granted' }
+            } else { Skip-Door 'P5c (a process as the user did not start over this door)' }
         } catch { Fail "P5 $($_.Exception.Message)" }
     }
 
@@ -405,6 +427,9 @@ try {
     if ($script:userSid -and @(Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='$script:userSid'").Count -gt 0) { Fail "X a profile of $script:userSid is left" }
     if (Test-Path -LiteralPath $Work) { Fail "X $Work is left" } else { Ok "X $Work gone" }
 }
-if ($script:failed -eq 0) { Write-Host 'proof-certstore-windows: OK'; exit 0 }
+if ($script:failed -eq 0) {
+    if ($script:doorSkips -gt 0) { Write-Host "proof-certstore-windows: OK (not run over this door: $script:doorSkips)"; exit 0 }
+    Write-Host 'proof-certstore-windows: OK'; exit 0
+}
 Write-Host "proof-certstore-windows: FAIL ($script:failed)"
 exit 1

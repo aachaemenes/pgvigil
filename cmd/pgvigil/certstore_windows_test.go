@@ -343,7 +343,7 @@ func TestCertstoreProofAsUser(t *testing.T) {
 	case expect == "opens" && err == nil:
 		csLine(t, fmt.Sprintf("asuser %s %s opens leaf=%s", account, who, sc.thumbprint), nil)
 	case expect == "refused" && err != nil && strings.Contains(err.Error(), "does not open for") && strings.Contains(err.Error(), "-grant-key-access "+normalizeThumbprint(thumb)):
-		fmt.Printf("CS asuser refusal: %v\n", err)
+		fmt.Printf("CS asuser refusal (thread token %s): %v\n", who, err) // whoAmI reads the thread token: the user named
 		csLine(t, fmt.Sprintf("asuser %s %s refused", account, who), nil)
 	default:
 		csLine(t, fmt.Sprintf("asuser %s %s expected %s", account, who, expect), fmt.Errorf("got %v", err))
