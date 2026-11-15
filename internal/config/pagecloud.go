@@ -51,6 +51,12 @@ func SetPageCloud(d Doors) {
 	pageCloudDoor.Store(&d)
 }
 
+// PageCloudOn says whether this install's pgvigil.yaml lets page instances carry cloud blocks.
+func PageCloudOn() bool {
+	d := pageCloudDoor.Load()
+	return d != nil && d.PageCloudBlocks
+}
+
 // PageCloudBlocksOff is the refusal while the switch is off.
 const PageCloudBlocksOff = "off on this install: doors.page_cloud_blocks in pgvigil.yaml lets an instance of Admin > Instances carry an aws: or azure: block (its reads run under this host's own cloud identity)"
 

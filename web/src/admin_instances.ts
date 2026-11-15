@@ -28,6 +28,23 @@ function offRead(c: Element, why: string): void {
 interface AdminData {
   file: Table | null; page: Table | null; sources: Table | null; proposals: Table | null; audit: Table | null;
   generation: number; secret_dir: string; dbadash: string[]; writable: boolean; why_not: string;
+  // B24p: whether this install uses page instances' cloud blocks (doors.page_cloud_blocks), its words when off, and
+  // each row whose block the collector will not use, with why
+  cloud_blocks?: { on: boolean; off_words: string; notes: Record<string, string> };
+}
+
+// B24p: a row's cloud blocks as the store keeps them (0193)
+interface CloudAWS { region?: string; cluster?: string; db_instance?: string; profile?: string }
+interface CloudAzure { subscription?: string; resource_group?: string; server?: string; cloud?: string }
+const asObj = <T>(v: unknown): T | null => (v && typeof v === 'object' ? v as T : typeof v === 'string' && v.startsWith('{') ? JSON.parse(v) as T : null);
+// the row's cell: 'AWS: <id> in <region>' / 'Azure: <server>' and, when the collector will not use it, why
+function cloudCell(r: Row, note: string | undefined): HTMLElement | string {
+  const a = asObj<CloudAWS>(r.aws), z = asObj<CloudAzure>(r.azure);
+  const parts: string[] = [];
+  if (a) parts.push(`AWS: ${a.db_instance || a.cluster || ''} in ${a.region || ''}`);
+  if (z) parts.push(`Azure: ${z.server || ''}`);
+  if (!parts.length) return '';
+  return note ? el('span', {}, parts.join('; '), ' ', badge(`not used: ${note}`, 'warn')) : parts.join('; ');
 }
 
 // send POSTs and answers the server's outcome: a refusal (409) carries its reason, which the status line shows
@@ -79,11 +96,13 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       ...(b.list_note ? [el('p', { class: 'meta' }, String(b.list_note))] : []), rows.length ? list : el('p', { class: 'meta' }, 'Every collection runs here.')));
   };
 
+  let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
     const page = rowsOf(d.page), file = rowsOf(d.file), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
     whyNot = d.writable ? '' : String(d.why_not ?? '');
+    cloudNotes = d.cloud_blocks?.notes ?? {};
     root.replaceChildren(
       el('h2', {}, 'Instances'),
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
@@ -164,12 +183,43 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     const auth = select('auth', authOpts('postgres')), platform = select('platform', platOpts('postgres'));
     const login = input('login'), password = el('input', { name: 'password', type: 'password', autocomplete: 'new-password' });
     const options = input('options', { placeholder: 'e.g. TrustServerCertificate=true or sslmode=require' }), tags = input('tags', { placeholder: 'env:prod team:billing' });
+    // B24p: the Cloud fieldset (collapsed): sent only when it changed, cleared only by its own control; no profile on
+    // the page (a page block reads with the collector host's default chain); off with the switch's words when the
+    // install keeps page blocks off
+    const cb = d.cloud_blocks ?? { on: false, off_words: '', notes: {} };
+    const awsRegion = input('aws_region', { placeholder: 'us-east-2', size: '12' }), awsDB = input('aws_db_instance'), awsCluster = input('aws_cluster');
+    const azSub = input('azure_subscription', { size: '38' }), azGroup = input('azure_resource_group'), azServer = input('azure_server');
+    const azCloud = select('azure_cloud', [['', 'public'], ['usgov', 'US Government'], ['china', 'China']]);
+    const cloudInputs = [awsRegion, awsDB, awsCluster, azSub, azGroup, azServer, azCloud] as (HTMLInputElement | HTMLSelectElement)[];
+    const clearCloud = el('button', { type: 'button', hidden: '' }, 'Clear the cloud blocks');
+    const cloudNote = el('p', { id: 'admin-cloud-note', class: 'muted' },
+      cb.on ? 'The block\'s target must be this instance\'s own host: an RDS endpoint of the DB instance or cluster, or <server>.database.windows.net. Its reads run under the collector host\'s own cloud identity.'
+        : `Off: ${cb.off_words}`);
+    const cloudBox = el('details', { class: 'admin-cloud' }, el('summary', {}, 'Cloud (the aws: or azure: block)'), cloudNote,
+      el('div', {}, field('AWS region', awsRegion), field('RDS DB instance', awsDB), field('Aurora cluster', awsCluster)),
+      el('div', {}, field('Azure subscription', azSub), field('Resource group', azGroup), field('Logical server', azServer), field('Azure cloud', azCloud)),
+      el('div', {}, clearCloud));
+    for (const c of cloudInputs) { c.setAttribute('aria-describedby', 'admin-cloud-note'); if (!cb.on) c.disabled = true; }
+    const cloudNow = () => cloudInputs.map(c => c.value.trim()).join('\x1f');
+    let cloudWas = cloudNow();
+    const cloudValue = (): Record<string, unknown> | null => {
+      const aws = awsRegion.value.trim() || awsDB.value.trim() || awsCluster.value.trim()
+        ? { region: awsRegion.value.trim(), ...(awsDB.value.trim() ? { db_instance: awsDB.value.trim() } : {}), ...(awsCluster.value.trim() ? { cluster: awsCluster.value.trim() } : {}) } : null;
+      const azure = azSub.value.trim() || azGroup.value.trim() || azServer.value.trim()
+        ? { subscription: azSub.value.trim(), resource_group: azGroup.value.trim(), server: azServer.value.trim(), ...(azCloud.value ? { cloud: azCloud.value } : {}) } : null;
+      return aws || azure ? { aws, azure } : null;
+    };
+    clearCloud.addEventListener('click', async () => {
+      if (!editing) return;
+      const n = editing;
+      if (await act('admin/instances', { op: 'cloud_clear', name: n }, `${n}: its cloud blocks are removed (the collector stops their reads within 15 seconds).`)) reset();
+    });
     const legend = el('legend', {}, 'Add an instance');
     const submit = el('button', { type: 'submit' }, 'Add'), test = el('button', { type: 'button' }, 'Test the connection'), cancel = el('button', { type: 'button', hidden: '' }, 'Cancel the edit');
     engine.addEventListener('change', () => { auth.replaceChildren(...authOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); platform.replaceChildren(...platOpts(engine.value).map(([v, t]) => el('option', { value: v }, t))); });
     const values = () => ({ engine: engine.value, name: name.value.trim(), host: host.value.trim(), port: port.value.trim(), dbname: dbname.value.trim(), auth: auth.value,
       platform: platform.value, login: login.value.trim(), password: password.value, options: options.value.trim(), tags: tags.value.trim() });
-    const reset = () => { editing = ''; f.reset(); legend.textContent = 'Add an instance'; submit.textContent = 'Add'; cancel.hidden = true; name.disabled = false; engine.disabled = false; };
+    const reset = () => { editing = ''; f.reset(); legend.textContent = 'Add an instance'; submit.textContent = 'Add'; cancel.hidden = true; name.disabled = false; engine.disabled = false; clearCloud.hidden = true; cloudWas = cloudNow(); };
     cancel.addEventListener('click', reset);
     test.addEventListener('click', async () => {
       say('Connecting…');
@@ -181,7 +231,13 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     f.addEventListener('submit', async ev => {
       ev.preventDefault();
       const v = values();
-      const ok = await act('admin/instances', { op: editing ? 'edit' : 'add', ...v, name: editing || v.name }, editing ? `Saved ${editing}.` : `Added ${v.name}: the collector starts on it within 15 seconds.`);
+      const data: Record<string, unknown> = { op: editing ? 'edit' : 'add', ...v, name: editing || v.name };
+      if (cloudNow() !== cloudWas) {
+        const c = cloudValue();
+        if (!c) { say('The Cloud fieldset is empty: its blocks are removed only through "Clear the cloud blocks".', true); return; }
+        data.cloud = c; // the add or edit and its blocks in one call, one transaction (refused together)
+      }
+      const ok = await act('admin/instances', data, editing ? `Saved ${editing}.` : `Added ${v.name}: the collector starts on it within 15 seconds.`);
       if (ok) reset();
     });
     (f as HTMLFormElement & { fill?: (r: Row) => void }).fill = (r: Row) => {
@@ -189,13 +245,19 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       engine.value = String(r.engine); engine.dispatchEvent(new Event('change')); engine.disabled = true;
       name.value = editing; name.disabled = true; host.value = String(r.host ?? ''); port.value = r.port == null ? '' : String(r.port);
       dbname.value = String(r.dbname ?? ''); auth.value = String(r.auth); platform.value = String(r.platform ?? 'auto'); login.value = String(r.login ?? '');
-      password.value = ''; options.value = String(r.options ?? ''); tags.value = String(r.tags ?? ''); name.focus();
+      password.value = ''; options.value = String(r.options ?? ''); tags.value = String(r.tags ?? '');
+      const a = asObj<CloudAWS>(r.aws), z = asObj<CloudAzure>(r.azure);
+      awsRegion.value = a?.region ?? ''; awsDB.value = a?.db_instance ?? ''; awsCluster.value = a?.cluster ?? '';
+      azSub.value = z?.subscription ?? ''; azGroup.value = z?.resource_group ?? ''; azServer.value = z?.server ?? ''; azCloud.value = z?.cloud ?? '';
+      cloudWas = cloudNow(); clearCloud.hidden = !(a || z); if (a || z) cloudBox.setAttribute('open', '');
+      name.focus();
       say(`Editing ${editing}: a change of the host, port, database, login or authentication asks for the password again.`);
     };
     formRef = f as HTMLFormElement & { fill?: (r: Row) => void };
     f.append(el('fieldset', {}, legend,
       el('div', {}, field('Engine', engine), field('Name', name), field('Host', host), field('Port', port), field('Database', dbname), field('Platform', platform)),
       el('div', {}, field('Authentication', auth), field('Login', login), field('Password', password), field('Driver options', options), field('Tags (space-separated)', tags)),
+      cloudBox,
       el('div', {}, submit, ' ', test, ' ', cancel)));
     if (!d.writable) for (const c of f.querySelectorAll('input, select, button, textarea')) offRead(c, d.why_not);
     return f;
@@ -234,6 +296,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       });
       return lock(el('label', {}, cb, ' each minute'));
     } },
+    { key: 'aws', label: 'cloud', fmt: (_v, r) => cloudCell(r, cloudNotes[String(r.name)]) },
     { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
     { key: 'last_collected', label: 'last collected', fmt: fmtTime },
     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },

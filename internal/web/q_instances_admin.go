@@ -21,6 +21,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -239,8 +240,11 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		        a.tested_at, a.tested_ok, a.tested_detail, i.instance_id, i.last_seen,
 		        (SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id AND c.status = 'ok') AS last_collected,
 		        -- task 205's design pass: an approved server its source no longer lists
-		        g.source AS gone_source, g.gone_at AS gone_since
+		        g.source AS gone_source, g.gone_at AS gone_since,
+		        -- B24p: the row's cloud blocks (the Cloud fieldset prefilled from them)
+		        c.aws, c.azure
 		   FROM pgvigil.admin_instances a LEFT JOIN pgvigil.instances i ON i.name = a.name
+		   LEFT JOIN pgvigil.admin_instance_cloud c ON c.name = a.name
 		   LEFT JOIN LATERAL (SELECT p.source, p.gone_at FROM pgvigil.admin_proposals p
 		                       WHERE p.instance_name = a.name AND p.state = 'approved' AND p.gone ORDER BY p.gone_at DESC LIMIT 1) g ON true
 		  ORDER BY a.name`},
@@ -268,7 +272,115 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["generation"] = gen
+	// B24p: whether page blocks are used on this install, and why a row's block is not (the collector's own rule)
+	notes, err := s.cloudNotes(ctx)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("cloud: %w", err))
+		return
+	}
+	out["cloud_blocks"] = map[string]any{"on": config.PageCloudOn(),
+		"off_words": config.PageCloudBlocksOff, "notes": notes}
 	s.reply(w, r, out, nil)
+}
+
+// cloudNotes: each page row whose cloud block the collector will not use, and why (config.PageCloudRefusal)
+func (s *Server) cloudNotes(ctx context.Context) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT a.name, a.engine, a.platform, a.host, c.aws, c.azure
+	                                  FROM pgvigil.admin_instance_cloud c JOIN pgvigil.admin_instances a ON a.name = c.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	notes := map[string]string{}
+	for rows.Next() {
+		var p config.PageInstance
+		var aws, azure []byte
+		if err := rows.Scan(&p.Name, &p.Engine, &p.Platform, &p.Host, &aws, &azure); err != nil {
+			return nil, err
+		}
+		if len(aws) > 0 {
+			p.AWS = &config.PageAWS{}
+			_ = json.Unmarshal(aws, p.AWS)
+		}
+		if len(azure) > 0 {
+			p.Azure = &config.PageAzure{}
+			_ = json.Unmarshal(azure, p.Azure)
+		}
+		if why := config.PageCloudRefusal(p); why != "" {
+			notes[p.Name] = why
+		}
+	}
+	return notes, rows.Err()
+}
+
+// cloudPart is the request's optional Cloud fieldset {aws, azure} (sent only when it changed; nil = not sent): the
+// page's keys only, no profile (Q4 = (a): a page block reads with the collector host's default chain)
+func cloudPart(in map[string]any) (*config.PageAWS, *config.PageAzure, bool, error) {
+	v, ok := in["cloud"]
+	if !ok || v == nil {
+		return nil, nil, false, nil
+	}
+	b, _ := json.Marshal(v)
+	var c struct {
+		AWS   *config.PageAWS   `json:"aws"`
+		Azure *config.PageAzure `json:"azure"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return nil, nil, true, fmt.Errorf("the cloud part is {aws: {region, cluster, db_instance}, azure: {subscription, resource_group, server, cloud}}: %v", err)
+	}
+	switch {
+	case c.AWS == nil && c.Azure == nil:
+		return nil, nil, true, errors.New("an empty Cloud fieldset clears nothing: its Clear control removes the blocks")
+	case c.AWS != nil && c.AWS.Profile != "":
+		return nil, nil, true, errors.New("a page block takes no AWS profile: it reads with the collector host's default chain (a profile only from a discovery source pgvigil.yaml lists)")
+	}
+	return c.AWS, c.Azure, true, nil
+}
+
+// writeWithCloud runs the instance's import and its cloud set in ONE transaction on the audit login (B24p's fold
+// 9): a cloud refusal rolls the add or edit back and keeps its own audit row; the first call's refusal is committed
+// as it is (its audit row with it)
+func (s *Server) writeWithCloud(ctx context.Context, pay, cloud map[string]any) (importAnswer, json.RawMessage, error) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	tx, err := s.actions.audit.Begin(wctx)
+	if err != nil {
+		return importAnswer{}, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	call := func(fn string, p map[string]any) (importAnswer, json.RawMessage, error) {
+		b, _ := json.Marshal(p)
+		var out []byte
+		if err := tx.QueryRow(wctx, fmt.Sprintf(`SELECT pgvigil.%s($1, $2::jsonb)::text`, fn), time.Now(), string(b)).Scan(&out); err != nil {
+			return importAnswer{}, nil, err
+		}
+		var a importAnswer
+		if err := json.Unmarshal(out, &a); err != nil {
+			return importAnswer{}, nil, fmt.Errorf("%s answered %q", fn, out)
+		}
+		return a, out, nil
+	}
+	ans, raw, err := call("import_admin_instance", pay)
+	if err != nil {
+		return ans, raw, err
+	}
+	if ans.Outcome != "done" {
+		return ans, raw, tx.Commit(wctx)
+	}
+	cans, craw, err := call("import_admin_instance_cloud", cloud)
+	if err != nil {
+		return cans, craw, err
+	}
+	if cans.Outcome != "done" {
+		_ = tx.Rollback(wctx)
+		why := "the instance was not written: its cloud blocks were refused: " + cans.Detail
+		_, _ = s.actions.audit.Exec(wctx, `SELECT pgvigil.admin_log($1, $2, 'instance cloud', $3, 'refused', $4)`, cloud["ui_user"], cloud["client"], cloud["name"], why)
+		cans.Detail = why
+		return cans, craw, nil
+	}
+	return ans, raw, tx.Commit(wctx)
 }
 
 func keys(m map[string]string) []string {
@@ -409,15 +521,27 @@ type pageRow struct {
 	Port                              *int
 	DBName, Login, Options            *string
 	Tags                              []string
-	RunningPlans                      bool // the running plans box (task 406): the Test's list reads it as the scheduler does
+	RunningPlans                      bool              // the running plans box (task 406): the Test's list reads it as the scheduler does
+	AWS                               *config.PageAWS   // B24p: the row's cloud blocks (0193), for the Test's list
+	Azure                             *config.PageAzure // the azure: block of the same row
 }
 
 func (s *Server) pageInstance(ctx context.Context, name string) (*pageRow, error) {
 	var p pageRow
-	err := s.pool.QueryRow(ctx, `SELECT engine, platform, dsn_ref, auth, host, port, dbname, login, options, tags, running_plans FROM pgvigil.admin_instances WHERE name = $1`, name).
-		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags, &p.RunningPlans)
+	var aws, azure []byte
+	err := s.pool.QueryRow(ctx, `SELECT a.engine, a.platform, a.dsn_ref, a.auth, a.host, a.port, a.dbname, a.login, a.options, a.tags, a.running_plans, c.aws, c.azure
+	                               FROM pgvigil.admin_instances a LEFT JOIN pgvigil.admin_instance_cloud c ON c.name = a.name WHERE a.name = $1`, name).
+		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags, &p.RunningPlans, &aws, &azure)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
+	}
+	if len(aws) > 0 {
+		p.AWS = &config.PageAWS{}
+		_ = json.Unmarshal(aws, p.AWS)
+	}
+	if len(azure) > 0 {
+		p.Azure = &config.PageAzure{}
+		_ = json.Unmarshal(azure, p.Azure)
 	}
 	return &p, err
 }
@@ -435,12 +559,30 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.instancesWrite(w, r, user, in)
+}
+
+// instancesWrite is InstancesAdminWrite past its checks of the request and the session (a store test calls it)
+func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user string, in map[string]any) {
 	a := s.instAdmin()
 	ctx := r.Context()
 	op, name := str(in, "op"), str(in, "name")
 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames()}
 	if op == "test" {
 		s.instanceTest(w, r, user, in)
+		return
+	}
+	// B24p: the Cloud fieldset's own Clear (an empty fieldset never clears); allowed with the switch off too
+	if op == "cloud_clear" {
+		pay["op"] = "clear"
+		ans, raw, err := s.callImport(ctx, "import_admin_instance_cloud", pay)
+		if err != nil {
+			s.log.Error("admin instance: not written", "user", user, "op", op, "name", name, "err", err)
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
+			return
+		}
+		s.log.Info("admin instance", "op", op, "name", name, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
+		s.answer(w, ans, raw, nil)
 		return
 	}
 	// task 406: the running plans box of a SQL Server instance added here (0157: off for every instance until ticked)
@@ -472,6 +614,34 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var written, previous string // this attempt's credential file; the one the row named before (removed once replaced)
+	// B24p: the Cloud fieldset beside an add or edit, checked before anything is written (the switch, the shape, the
+	// name match against the host the form gives: the collector's own rule, config.PageCloudRefusal)
+	cAWS, cAzure, cloudSent, cerr := cloudPart(in)
+	if cerr != nil {
+		writeErr(w, http.StatusBadRequest, cerr)
+		return
+	}
+	if cloudSent && op != "add" && op != "edit" {
+		writeErr(w, http.StatusBadRequest, errors.New("the cloud part rides on an add or an edit"))
+		return
+	}
+	var cloudPay map[string]any
+	if cloudSent {
+		engine, platform := str(in, "engine"), str(in, "platform")
+		if op == "edit" && have != nil {
+			engine = have.Engine
+		}
+		if platform == "" {
+			platform = "auto"
+		}
+		p := config.PageInstance{Name: name, Engine: engine, Platform: platform, Host: str(in, "host"), AWS: cAWS, Azure: cAzure}
+		if why := config.PageCloudRefusal(p); why != "" {
+			s.log.Info("admin instance: cloud refused", "op", op, "name", name, "user", user, "why", why)
+			writeErr(w, http.StatusConflict, errors.New(why))
+			return
+		}
+		cloudPay = map[string]any{"op": "set", "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames(), "aws": cAWS, "azure": cAzure}
+	}
 	switch op {
 	case "add", "edit":
 		port := 0
@@ -524,10 +694,16 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 			previous = have.Ref
 		}
 	default:
-		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans or test"))
+		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, cloud_clear or test"))
 		return
 	}
-	ans, raw, err := s.callImport(ctx, "import_admin_instance", pay)
+	var ans importAnswer
+	var raw json.RawMessage
+	if cloudPay != nil {
+		ans, raw, err = s.writeWithCloud(ctx, pay, cloudPay)
+	} else {
+		ans, raw, err = s.callImport(ctx, "import_admin_instance", pay)
+	}
 	switch {
 	case err != nil || ans.Outcome != "done":
 		// this attempt's own file only: a concurrent write of the same name owns another
@@ -606,7 +782,9 @@ func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user strin
 	// schedules:) and, for a stored page instance, the row as the inventory makes it (Merge: its PageDefaults)
 	tin := config.Instance{Name: name, Engine: engine}
 	if stored {
-		if all, _ := config.Merge(nil, []config.PageInstance{{Name: name, Engine: have.Engine, Platform: have.Platform, DSNRef: have.Ref, RunningPlans: have.RunningPlans}}, ""); len(all) == 1 {
+		// B24p's fold 11: with the row's cloud blocks and host, so an instance with its aws: block lists no 'no aws' line
+		if all, _ := config.Merge(nil, []config.PageInstance{{Name: name, Engine: have.Engine, Platform: have.Platform, DSNRef: have.Ref, RunningPlans: have.RunningPlans,
+			Host: have.Host, AWS: have.AWS, Azure: have.Azure}}, ""); len(all) == 1 {
 			tin = all[0]
 		}
 	}
