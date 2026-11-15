@@ -31,10 +31,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/cq"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
@@ -348,6 +350,22 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	go func() {
 		if err := reportmail.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
 			log.Warn("report mail loop stopped", "err", err)
+		}
+	}()
+	// task CQ: the request worker (cq.enabled; off = it returns at once): the actions and community runs serve wrote into
+	// the repository for the instances this collector holds; its stop (each run ended, the lease ended) is waited for
+	cqDone := make(chan struct{})
+	go func() {
+		defer close(cqDone)
+		if err := cq.Run(ctx, log, cfg, r); err != nil {
+			log.Warn("request queue stopped", "err", err)
+		}
+	}()
+	defer func() {
+		select {
+		case <-cqDone:
+		case <-time.After(15 * time.Second):
+			log.Warn("request queue: its stop did not finish in 15 s")
 		}
 	}()
 	return sched.Run(ctx, log, r, cfg)
