@@ -324,9 +324,13 @@ ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const settled = async () => { for (let i = 0; i < 150; i++) { const ok = await ev(`(() => { const m = document.querySelector('main'); if (!m) return false; const e = m.querySelector('p.empty'); return !(e && /^(Loading|Opening)/.test(e.textContent)) && !!m.querySelector('h2'); })()`); if (ok) { await sleep(3000); return true; } await sleep(200); } return false; };
-const open = async hash => { await cmd('Page.navigate', { url: U + hash }); await cmd('Page.reload', {}); await sleep(300); return settled(); };
-await cmd('Page.navigate', { url: U + '#/instances' }); await settled();
+// settled(hash): the document is the target route's - its hash, loaded - and its main has an h2 and no Loading line
+const settled = async hash => { for (let i = 0; i < 150; i++) { const ok = await ev(`(() => { if (location.hash !== ${JSON.stringify(hash)} || document.readyState !== 'complete') return false; const m = document.querySelector('main'); if (!m) return false; const e = m.querySelector('p.empty'); return !(e && /^(Loading|Opening)/.test(e.textContent)) && !!m.querySelector('h2'); })()`); if (ok) { await sleep(3000); return true; } await sleep(200); } return false; };
+// open(hash): through about:blank, so no main of the page before survives (404green1d: a same-document hash change and
+// a reload let the reads see the previous route's charts and marks, and a click land on the previous instance)
+const blank = async () => { await cmd('Page.navigate', { url: 'about:blank' }); for (let i = 0; i < 50; i++) { if ((await ev('location.href')) === 'about:blank') return; await sleep(100); } throw new Error('about:blank never loaded'); };
+const open = async hash => { await blank(); await cmd('Page.navigate', { url: U + hash }); await sleep(300); return settled(hash); };
+await open('#/instances');
 for (const theme of ['light', 'dark']) {
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
