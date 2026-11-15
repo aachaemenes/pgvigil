@@ -133,6 +133,16 @@ SELECT 'aurora_replica' AS kind, server_id, session_id, durable_lsn::text AS dur
        log_buffer_sequence_number, oldest_read_view_lsn::text AS oldest_read_view_lsn, last_update_timestamp
   FROM aurora_replica_status()`
 
+// auroraStandbySQL is the 'standby' row of an Aurora reader: Aurora feeds its readers from its storage, not by WAL
+// replay, and rejects the WAL position and replay functions standbySQL calls (a real reader, proof-pg-aurora.sh's Q7
+// run: no standby state stored, so 0141's reader exclusion never applied); the row says only that the server is in
+// recovery - no receiver, positions, conninfo or restore_command (NULL: no 'receiver down', no 'replay paused').
+const auroraStandbySQL = `
+SELECT 'standby' AS kind, false AS has_receiver, NULL::boolean AS conninfo_set, NULL::boolean AS restore_set,
+       NULL::text AS primary_slot_name, NULL::bigint AS min_apply_delay_ms, NULL::text AS receive_lsn, NULL::text AS replay_lsn,
+       NULL::numeric AS replay_lag_bytes, NULL::timestamptz AS last_replay_at, NULL::boolean AS replay_paused
+ WHERE pg_is_in_recovery()`
+
 func (replicationCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
 	out := []Row{}
 	var failed []string
@@ -153,10 +163,14 @@ func (replicationCollector) Run(ctx context.Context, conn *pgx.Conn, info platfo
 	}
 
 	read("senders", sendersSQL)
-	if info.IsReplica {
-		read("receiver", receiverSQL)
+	if info.Kind == platform.Aurora {
+		read("standby", auroraStandbySQL) // an Aurora reader has no WAL receiver: aurora_replica_status judges it
+	} else {
+		if info.IsReplica {
+			read("receiver", receiverSQL)
+		}
+		read("standby", standbySQL)
 	}
-	read("standby", standbySQL)
 	read("sync", syncSQL)
 	// the slots and their decoding statistics (slots.go)
 	for _, q := range slotQueries(ctx, conn, info) {

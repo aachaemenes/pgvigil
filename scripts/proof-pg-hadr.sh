@@ -752,7 +752,7 @@ if want AF; then
   CFG=$WORK/pgvigil-af.yaml
   "$BIN" collect -config "$CFG" -once instance -instance hadr-sa >>"$WORK/collect.out" 2>&1 || fail "AF instance read of hadr-sa: $(tail -1 "$WORK/collect.out")"
   AFID=$(q "select instance_id from pgvigil.instances where name = 'hadr-sa'")
-  r=$(psql "host=127.0.0.1 port=$SP user=pgva password=$MPW sslmode=disable dbname=postgres" -XAtq -c "select pg_last_wal_replay_lsn()" 2>&1 | tail -1)
+  r=$(psql "host=127.0.0.1 port=$SP user=pgva password=$MPW sslmode=disable dbname=postgres" -XAtq -c "select pg_last_wal_replay_lsn()" 2>&1 | grep -m1 ERROR)   # the ERROR line (psql's last is CONTEXT)
   [[ "$r" == *"stand-in Aurora reader"* ]] && ok "AF the stand-in raises through hadr-sa's login: $r" || fail "AF the stand-in does not raise: '$r'"
   q "select pgvigil.import_pg_threshold(now(), '{\"op\":\"set\",\"key\":\"standby_replay_lag\",\"level\":\"instance\",\"instance_id\":$AFID,\"warn\":0,\"crit\":300,\"ui_user\":\"proof\"}'::jsonb)" >/dev/null
   read_ hadr-sa 2
