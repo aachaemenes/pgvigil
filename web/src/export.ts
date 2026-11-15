@@ -972,7 +972,9 @@ export function csv(s: Section): string {
       if (c.kind === 'pct') return String(Math.round(c.v * 1e12) / 1e10);   // the percent figure (the cell holds the share): 12.5, not 0.125; ten decimals kept
       return String(c.v);
     }
-    return /^[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
+    // a cell that starts with = + - @ TAB CR, or with 's before one, gets one more ' (as the server's inventory CSV and
+    // its import's undo: task 312, review P M-6 - "'=x" written as it is read back as =x)
+    return /^'*[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
   };
   const q = (v: string) => /[",\r\n]|^\s|\s$/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   // a stored sample's file starts with its mark, a line of its own above the header; a list cut to its part's reach
@@ -1089,6 +1091,12 @@ async function oneFile(m: Meta, sec: Section): Promise<string> {
   const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within], [!!sec.own])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
   save(new Blob([z], { type: XLSX }), name);
   return name;
+}
+
+// exportSection: a workbook of one section a caller built (its sheet, then 'About'), as exportGrid writes one grid's:
+// the applications inventory writes its raw rows as text cells (task 312)
+export async function exportSection(sec: Section, ctx: Ctx = parse()): Promise<string> {
+  return oneFile(await metaOf(ctx), sec);
 }
 
 // exportGrid: one grid's workbook (a grid's menu: Export Excel; the Summary's Export to Excel items), read as the bar's
