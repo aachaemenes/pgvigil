@@ -38,6 +38,9 @@ a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in 
   failure, to an hour after it). The list has a text filter on the message.
 - The charts: **Runs** per bucket by outcome (Failed, Partial, Succeeded) and **Time spent collecting**.
 
+A collection whose runs take longer than its interval is also a finding, *collection runs long*, on the Collector page
+and the Summary, and it can be sent: [alerts.md](alerts.md#pgvigils-own-health).
+
 What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warnings, Retried, Import Failed, No
 Status, CPU and Logical Reads per collection, the import columns and the Import Lag chart (pgvigil writes each
 collection in its own run: there is no import step to lag), the insights card, and the Steps picker (pgvigil's

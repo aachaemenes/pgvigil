@@ -288,29 +288,49 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'alert sender idle
    AND EXISTS (SELECT 1 FROM pgvigil.collector_live);
 
 -- 'repository autovacuum behind' (PM Added 12; source 'pgvigil repository', warning): a table of the pgvigil schema
--- (each partition judged alone, named with its parent) whose dead tuples are over autovacuum's own trigger -
--- autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor x reltuples, each the table's reloption where set -
--- and at least 10,000, with no vacuum (auto or manual) for 24 hours.
+-- (each partition judged alone, named with its parent), or its TOAST table (autovacuum judges one on its own; purge's
+-- deletes leave a text-heavy table's dead chunks there; B6.2 part c #9), whose dead tuples are over autovacuum's own
+-- trigger and at least 10,000, with no vacuum (auto or manual) for 24 hours. The trigger is autovacuum's:
+-- autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor x reltuples, capped from PostgreSQL 18 by
+-- autovacuum_vacuum_max_threshold (-1: no cap; no such setting before 18), each from the reloptions autovacuum reads
+-- (the table's; a TOAST table's own when it has any, else its table's - autovacuum.c do_autovacuum), else the server's.
 CREATE OR REPLACE VIEW pgvigil.repository_autovacuum_findings AS
-WITH t AS (
-  SELECT s.relid, s.relname, s.n_dead_tup, s.n_live_tup, greatest(s.last_autovacuum, s.last_vacuum) AS last_vac,
-         greatest(c.reltuples, 0) AS reltuples,
-         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o WHERE o LIKE 'autovacuum\_vacuum\_threshold=%'),
-                  current_setting('autovacuum_vacuum_threshold')::float8) AS thr,
-         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o WHERE o LIKE 'autovacuum\_vacuum\_scale\_factor=%'),
-                  current_setting('autovacuum_vacuum_scale_factor')::float8) AS sf,
-         (SELECT p.relname FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhparent WHERE i.inhrelid = s.relid LIMIT 1) AS parent
+WITH r AS (
+  SELECT s.relid AS main_relid, s.relname, s.n_dead_tup, s.n_live_tup, greatest(s.last_autovacuum, s.last_vacuum) AS last_vac,
+         greatest(c.reltuples, 0) AS reltuples, c.reloptions AS opts
     FROM pg_stat_user_tables s
     JOIN pg_class c ON c.oid = s.relid
    WHERE s.schemaname = 'pgvigil'
+  UNION ALL
+  SELECT s.relid, s.relname || ' (TOAST)', ts.n_dead_tup, ts.n_live_tup, greatest(ts.last_autovacuum, ts.last_vacuum),
+         greatest(tc.reltuples, 0), coalesce(tc.reloptions, c.reloptions)
+    FROM pg_stat_user_tables s
+    JOIN pg_class c ON c.oid = s.relid
+    JOIN pg_class tc ON tc.oid = c.reltoastrelid
+    JOIN pg_stat_all_tables ts ON ts.relid = c.reltoastrelid
+   WHERE s.schemaname = 'pgvigil'
+), t AS (
+  SELECT r.*,
+         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(r.opts) o WHERE o LIKE 'autovacuum\_vacuum\_threshold=%'),
+                  current_setting('autovacuum_vacuum_threshold')::float8) AS thr,
+         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(r.opts) o WHERE o LIKE 'autovacuum\_vacuum\_scale\_factor=%'),
+                  current_setting('autovacuum_vacuum_scale_factor')::float8) AS sf,
+         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(r.opts) o WHERE o LIKE 'autovacuum\_vacuum\_max\_threshold=%'),
+                  nullif(current_setting('autovacuum_vacuum_max_threshold', true), '')::float8) AS maxthr,
+         (SELECT p.relname FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhparent WHERE i.inhrelid = r.main_relid LIMIT 1) AS parent
+    FROM r
+), v AS (
+  SELECT t.*, greatest(10000, CASE WHEN t.maxthr >= 0 THEN least(t.thr + t.sf * t.reltuples, t.maxthr)
+                                   ELSE t.thr + t.sf * t.reltuples END) AS trigger_at
+    FROM t
 )
 SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autovacuum behind'::text AS setting,
-       coalesce(t.parent || ' / ', '') || t.relname AS value, NULL::boolean AS is_set,
+       coalesce(v.parent || ' / ', '') || v.relname AS value, NULL::boolean AS is_set,
        'the repository''s autovacuum settings (autovacuum_max_workers, the table''s reloptions), or a VACUUM of the table'::text AS suggested,
        'all'::text AS platforms,
-       format('%s dead tuple(s), %s live; autovacuum''s own trigger is %s; last vacuumed %s', t.n_dead_tup, t.n_live_tup,
-              round(greatest(10000, t.thr + t.sf * t.reltuples)), coalesce(to_char(t.last_vac AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', 'never')) AS detail,
+       format('%s dead tuple(s), %s live; autovacuum''s own trigger is %s; last vacuumed %s', v.n_dead_tup, v.n_live_tup,
+              round(v.trigger_at), coalesce(to_char(v.last_vac AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', 'never')) AS detail,
        'pgvigil repository'::text AS source, now() AS at
-  FROM t
- WHERE t.n_dead_tup > greatest(10000, t.thr + t.sf * t.reltuples)
-   AND (t.last_vac IS NULL OR t.last_vac < now() - interval '24 hours');
+  FROM v
+ WHERE v.n_dead_tup > v.trigger_at
+   AND (v.last_vac IS NULL OR v.last_vac < now() - interval '24 hours');

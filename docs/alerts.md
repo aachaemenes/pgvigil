@@ -134,7 +134,9 @@ severity floor, scoped channels too), instead of one per instance:
   matches: mute the alert itself, or by check (`collector or network`).
 
 Only the alerts a shared cause explains wait under it: *authentication failing*, *collection failing*, *server
-unreachable*, and the findings judged by their age on data the cut stops refreshing (*job run over twice its
+unreachable*, *collection runs long* (a cut or a host down slows the runs it does not fail; a host that is slow while
+its runs succeed forms no parent, so each instance's collections then alert on their own), and the findings judged by
+their age on data the cut stops refreshing (*job run over twice its
 average*, *job schedule missed*, *a job runs far longer than its average*, *amcheck older than N d*, *unused index*).
 Every other finding comes from the last good read and is sent as it is: a disk filling up before the cut may be its
 cause.
@@ -242,6 +244,33 @@ then repeats at the interval: a site's minute collections spread over the whole 
 cost about 0.8 of a CPU, every connect under 10 ms at the 95th percentile on that rig) instead of all firing in the first
 10 seconds, which would queue them behind the collector's CPU and read as slow connects everywhere. An hourly or daily
 collection still runs within 5 minutes of a start.
+
+## pgvigil's own health
+
+Three findings watch pgvigil itself. Each shows on the Collector page and the Summary like any finding.
+
+**collection runs long** (warning or critical, source `pgvigil collector`, per instance and collection): over the
+current and the previous UTC hour, with 5 or more runs, more than 5 % of the collection's runs took longer than half of
+its interval (warning), or more than 5 % took longer than the whole interval (critical: its 95th percentile is past the
+interval). The interval is the shortest one the collection's runs were scheduled at. It is sent like any finding and is
+held under a collector's parent (above). The Collector page's *Run duration per minute* chart draws each minute's 95th
+percentile and its longest run: one collection running long moves no 95th percentile among a minute's many runs.
+
+**alert sender idle** (warning, source `pgvigil repository`, no instance): alert channels are configured (a contact's
+route is not one) and no alert rule has been judged for more than 180 s while a collector beats - the same line as the
+Alert rules page's. It is shown and never sent: an idle sender cannot send its own news. The sender runs inside
+`pgvigil run`; when alerts are turned off on purpose (the run's `alerts:` list removed), it no longer runs and the
+channels it last recorded stay configured, so the finding would stand: once the run has restarted without alerts, run
+`UPDATE pgvigil.alert_channels SET is_configured = false;` as the repository owner. After a run crashes, the finding can
+show for up to about a minute (a run counts as beating for 3 minutes after its last beat) before *collector not seen*
+replaces it.
+
+**repository autovacuum behind** (warning, source `pgvigil repository`): a table of the `pgvigil` schema (a partition
+alone, named with its parent), or its TOAST table, whose dead tuples are past autovacuum's own trigger and at least
+10,000, with no vacuum, automatic or manual, for 24 hours. The trigger is autovacuum's: `autovacuum_vacuum_threshold` +
+`autovacuum_vacuum_scale_factor` x the table's row estimate, capped from PostgreSQL 18 by
+`autovacuum_vacuum_max_threshold` (-1: no cap), each from the table's storage parameters where set (a TOAST table's own
+when it has any, else its table's), else the server's settings.
 
 ## The address of an alert, templates, the send cap, Send test
 

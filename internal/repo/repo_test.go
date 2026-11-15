@@ -394,3 +394,35 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 		t.Fatalf("after the repair: SchemaCurrent = %v, %q, %v; want true, %s", ok, name, err, latest)
 	}
 }
+
+// TestRepositoryAutovacuumTrigger (B6.2 part c #9): 'repository autovacuum behind' judges each table's TOAST table too
+// (pg_stat_user_tables leaves pg_toast out; autovacuum judges a TOAST table on its own, with its own reloptions when it
+// has any, else its table's) and caps autovacuum's trigger as PostgreSQL 18 does (autovacuum_vacuum_max_threshold,
+// the table's reloption where set; -1 no cap; no such setting before 18)
+func TestRepositoryAutovacuumTrigger(t *testing.T) {
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := ""
+	for _, n := range names {
+		b, err := migrations.ReadFile("sql/" + n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i := strings.Index(string(b), "VIEW pgvigil.repository_autovacuum_findings AS"); i >= 0 {
+			body = string(b)[i:]
+			if j := strings.Index(body, ";\n\n"); j > 0 {
+				body = body[:j]
+			}
+		}
+	}
+	if body == "" {
+		t.Fatal("no migration defines pgvigil.repository_autovacuum_findings")
+	}
+	for _, want := range []string{"pg_stat_all_tables", "reltoastrelid", "current_setting('autovacuum_vacuum_max_threshold', true)", "autovacuum\\_vacuum\\_max\\_threshold=", "least("} {
+		if !strings.Contains(body, want) {
+			t.Errorf("repository_autovacuum_findings lacks %q", want)
+		}
+	}
+}
