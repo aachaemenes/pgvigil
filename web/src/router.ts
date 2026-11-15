@@ -102,6 +102,8 @@ export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
   pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
   tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
   storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
+  // the Imported servers page (Doors) holds SQL Server instances alone (dbadash.ts): a PostgreSQL-only folder has no Doors folder
+  dbadash: 'sqlserver',
 };
 // tagPages: a group's pages under a tag folder whose instances are of the engines given ('sqlserver', 'postgres')
 export function tagPages(g: TabGroup, engines: Set<string>): string[] {

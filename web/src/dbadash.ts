@@ -21,6 +21,7 @@ import { mssqlJobCol, mssqlKillCol } from './mssql_actions';
 import { offBeside } from './ack';
 import { Ctx, href, mssqlInstanceGroups, mssqlInstanceTabs, window_ } from './router';
 import { hashParam } from './dbinfo';
+import { fleetWideNote, tagScopeIds, tagWords } from './fleet';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtTime, grid, props, tile } from './ui';
 
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null; imported?: Table | null }
@@ -141,9 +142,9 @@ const legacyDp: Record<string, string> = { '': 'summary', running: 'mssql_runnin
 // repository instance's own page (#/dbadash?dr=&di=)
 interface Mode { repo: string; id: number; instance?: number; native?: Record<string, Render> }
 
-// dbadashHref: the repository pages' link (the time range kept; no instance or tag scope)
+// dbadashHref: the repository pages' link (the time range kept, and a tag folder's tag: TAGALL; no instance scope)
 export function dbadashHref(ctx: Ctx, repo?: string, id?: unknown, page?: string, snapshot?: string): string {
-  const base = href(ctx, { tab: 'dbadash', instance: undefined, tag: undefined });
+  const base = href(ctx, { tab: 'dbadash', instance: undefined });
   const q = new URLSearchParams(base.split('?')[1] ?? '');
   for (const k of ['dr', 'di', 'dp', 'ds']) q.delete(k);
   if (repo) q.set('dr', repo);
@@ -203,9 +204,14 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
   // one repository's page reads its own parts: the column headers follow that repository's DBA Dash version (0138)
   const d = repo ? await get<DBADashData>('dbadash', { repo }) : await dbadashData(true);
   const repos = rowsOf(d.repositories).filter(r => !repo || r.repository === repo);
-  const rows = rowsOf(d.fleet).filter(r => !repo || r.repository === repo)
+  const rowsAll = rowsOf(d.fleet).filter(r => !repo || r.repository === repo)
     .sort((a, b) => Number(b.level ?? 0) - Number(a.level ?? 0) || String(a.display_name).localeCompare(String(b.display_name)));
-  const sec = el('section', {}, el('h2', {}, repo ? `Imported: ${repo}` : 'Imported servers'));
+  // under a tag folder (TAGALL): the servers pgvigil holds as one of the folder's instances; a server not yet one of
+  // pgvigil's instances carries no tag, so it and the repositories are listed in every folder
+  const ids = await tagScopeIds(ctx);
+  const inFolder = (r: Row) => { const pv = pgvigilOf(d, String(r.repository), Number(r.instance_id)); return !ids || !pv || ids.has(pv.instanceId); };
+  const rows = rowsAll.filter(inFolder);
+  const sec = el('section', {}, el('h2', {}, (repo ? `Imported: ${repo}` : 'Imported servers') + (ids ? ` - ${tagWords(ctx.tag!)}` : '')));
   if (repos.length === 0) {
     sec.append(el('p', { class: 'empty' }, repo
       ? `No repository named ${repo} in the configuration.`
@@ -218,7 +224,10 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('p', { class: 'meta', 'data-source-line': '' }, 'Source: DBA Dash repositories (the dbadash: list of pgvigil.yaml), read every 5 minutes with a read-only login; their statuses below, their history copied by pgvigil import dbadash, their screens read live.'),
     // task 206: the way off, server by server (Admin > Instances: migrate.ts); the source line above stays the one place
     // the source product is named
-    el('p', { class: 'meta' }, el('a', { href: '#/admin_instances' }, 'Move these servers to pgvigil'), ' (Admin > Instances): one at a time, each keeping its history.'),
+    el('p', { class: 'meta' }, el('a', { href: '#/admin_instances' + (ids ? '?' + new URLSearchParams({ tag: ctx.tag! }).toString() : '') }, 'Move these servers to pgvigil'), ' (Admin > Instances): one at a time, each keeping its history.'),
+    ...(ids ? [el('p', { class: 'meta' }, `In view: ${tagWords(ctx.tag!)} - the servers pgvigil holds as one of its ${ids.size} instance(s), and every server not yet one of pgvigil's instances (no tag is read for one).`
+      + (rowsAll.length > rows.length ? ` Not listed here: ${rowsAll.length - rows.length} server(s) of other instances (All instances lists them).` : ''))] : []),
+    fleetWideNote(ctx, 'The repositories and their servers not yet in pgvigil are one list') ?? '',
     el('div', { class: 'tiles' }, tile('SQL Server instances', String(rows.length)), tile('Critical instances', String(n[2]), n[2] ? 'crit' : 'ok'),
       tile('Warning instances', String(n[1]), n[1] ? 'warn' : 'ok'), tile('Repositories not read', String(repos.filter(r => r.status !== 'ok').length),
         repos.some(r => r.status !== 'ok') ? 'warn' : 'ok')),
@@ -533,6 +542,8 @@ export function dbadashFolders(ctx: Ctx, redraw: () => void, filter = ''): HTMLE
   }
   if (!cache?.d) return cache?.err && !cache.login ? [el('p', { class: 'error', role: 'status' }, 'Imported servers: could not load: ' + cache.err)] : [];
   const d = cache.d;
+  // the tree's Imported folders are the root's: their links carry no tag (dbadashHref keeps the page's)
+  ctx = { ...ctx, tag: undefined };
   const repos = rowsOf(d.repositories), fleet = rowsOf(d.fleet);
   const curRepo = ctx.tab === 'dbadash' ? hashParam('dr') : undefined, curId = ctx.tab === 'dbadash' ? hashParam('di') : undefined;
   const out: HTMLElement[] = [];
