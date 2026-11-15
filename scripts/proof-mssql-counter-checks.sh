@@ -584,6 +584,7 @@ for l in open(sys.argv[1]):
     if f[0] == 'r': reads.append(float(f[1]))
     else: rows.append((float(f[1]), f[2]))
 runs = sorted(reads, reverse=True)
+runs = [r for r in runs if r >= runs[0] - 3600] if runs else runs   # ReadLookbackMinutes 60
 if len(runs) < 2: print('none'); sys.exit(0)
 oldest = 0
 for k in range(len(runs) - 1):            # AttentionEvaluator.OldestTaken

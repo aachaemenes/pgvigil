@@ -22,6 +22,91 @@ index 1026fd6..299d256 100644
  | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
  
  A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
+diff --git i/internal/mssql/xe.go w/internal/mssql/xe.go
+index 7015820..241e2fa 100644
+--- i/internal/mssql/xe.go
++++ w/internal/mssql/xe.go
+@@ -754,7 +754,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+ 		return items[i].seq < items[j].seq
+ 	})
+ 	wanted := nameSet(events)
+-	state["new_events"] = len(items)
++	// new_events (and scanned_events) go into the state after the batches below: a read whose batch failed to import
++	// has none, so it is no done read (0153's mssql_attention_reads) and the cursor takes its events again next run
++	var newEvents any = len(items)
++	var scanned any
+ 	if c.source != "product" {
+ 		var n int64
+ 		for _, it := range items {
+@@ -762,7 +765,7 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+ 				n++
+ 			}
+ 		}
+-		state["new_events"], state["scanned_events"] = n, int64(len(items))
++		newEvents, scanned = n, int64(len(items))
+ 	}
+ 	var notes []string
+ 	if cur.Found && !oldest.IsZero() && oldest.After(cur.LastEventAt) {
+@@ -786,6 +789,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+ 			return fmt.Errorf("import a batch of %s: %w", source, err)
+ 		}
+ 	}
++	state["new_events"] = newEvents
++	if scanned != nil {
++		state["scanned_events"] = scanned
++	}
+ 	state["unknown_events"] = unknown
+ 	if old > 0 {
+ 		notes = append(notes, fmt.Sprintf("%d event(s) older than %d days were not stored", old, int(xeMaxAge.Hours()/24)))
+diff --git i/internal/mssql/xe_ring_test.go w/internal/mssql/xe_ring_test.go
+index a294803..ebed8c2 100644
+--- i/internal/mssql/xe_ring_test.go
++++ w/internal/mssql/xe_ring_test.go
+@@ -110,3 +110,44 @@ func TestRingRowsSysHealth(t *testing.T) {
+ 		t.Fatalf("no wrap note: %v", side)
+ 	}
+ }
++
++// TestRingRowsFailedBatchNotDone (B24 Fixed 1, its build review part A, finding 1): a ring read whose batch import
++// fails leaves no new_events (nor scanned_events) in its state, so 0153's mssql_attention_reads never marks that read
++// done and the cursor takes its events again next run; before, new_events was set ahead of the batches.
++func TestRingRowsFailedBatchNotDone(t *testing.T) {
++	cutAt := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
++	head := `<RingBufferTarget truncated="0" processingTime="0" totalEventsProcessed="900" eventCount="4" droppedCount="0" memoryUsed="4096">`
++	ring, err := parseRing(head + fixtureSystemClean + fixtureResourceWarning + fixBatch + fixtureBroker + `</RingBufferTarget>`)
++	if err != nil {
++		t.Fatal(err)
++	}
++	was := xeBatchEvents
++	xeBatchEvents = 1 // one event per batch: three batches past the cursor
++	defer func() { xeBatchEvents = was }()
++	for _, c := range []xeContext{{source: "system_health", session: "system_health"}, {source: "product", session: "pgvigil_attention"}} {
++		calls := 0
++		r := &xeRun{ctx: context.Background(), info: Info{Kind: KindAzureMI}, now: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC),
++			opt:    BatchOptions{Deadline: time.Now().Add(time.Hour)},
++			cursor: func(context.Context, string) (Cursor, error) { return Cursor{Found: true, LastEventAt: cutAt}, nil },
++			emit: func([]collect.Row) error {
++				calls++
++				if calls == 2 {
++					return context.Canceled // the store refused the second batch
++				}
++				return nil
++			}}
++		state := collect.Row{}
++		if err := r.ringRows(sysHealthSource, ring, 0, sysEventList(), c, state); err == nil {
++			t.Fatalf("%s: the failed batch gave no error", c.source)
++		}
++		if v, ok := state["new_events"]; ok {
++			t.Fatalf("%s: a read whose second batch failed carries new_events %v: it would count as a done read", c.source, v)
++		}
++		if v, ok := state["scanned_events"]; ok {
++			t.Fatalf("%s: a read whose second batch failed carries scanned_events %v", c.source, v)
++		}
++		if calls != 2 {
++			t.Fatalf("%s: %d batch imports, want 2 (the read stops at the failed one)", c.source, calls)
++		}
++	}
++}
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
 index 2ea6318..1083df5 100644
 --- i/internal/repo/sql/0190_join_release2.sql
