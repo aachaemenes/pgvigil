@@ -16,8 +16,8 @@ is set up on a monitored server.
   heal). A row written before migration 0198 has no stage of its own: it is read from its note ('connect: ' is Connect,
   'rollup ' is Other, anything else Collect). There is no WMI stage: pgvigil reads nothing through WMI.
 - **(the service)**: the service's own failures where pgvigil already stores them - an alert send that failed or was
-  refused (the Alerts page's log; a test send is labelled as one), a report mail that failed or was refused (Report
-  mail), a configured DBA Dash repository that was not read at its last attempt (Imported servers). They show at the
+  refused (the Alerts page's log; a test send is labelled as one), a report mail that failed, or a schedule's turn that was refused (Report
+  mail; a Send now or a test refused when it was asked told its asker on the page and is not listed), a configured DBA Dash repository that was not read at its last attempt (Imported servers). They show at the
   root and in a tag folder, never on one instance, each with a link to the page where it is handled.
 - **Not here**: what only the service's own log holds (journalctl, or the Windows event log for the service), and a run
   that failed before its instance was recognised (the platform not detected, the instance row not made).

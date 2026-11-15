@@ -9,8 +9,9 @@ import (
 // The collector's error log (DBA Dash's Checks > DBA Dash ErrorLog: dbo.CollectionErrorLog_Get over
 // dbo.CollectionErrorLogSearch): every run that did not end well, kept in collection_log (0001, its stage 0198), and the
 // service's own failures where they are already stored - an alert send that failed or was refused (alert_log), a report
-// mail that failed or was refused (report_mail_sends), a DBA Dash repository not read (dbadash_repositories, its last
-// attempt only, a configured one). Those are '(the service)' rows: shown at the root and in a folder, never at one
+// mail that failed, or a schedule's turn that was refused (report_mail_sends: a Send now or a test refused when asked
+// told its asker on the page, so it is no error of the service), a DBA Dash repository not read
+// (dbadash_repositories, its last attempt only, a configured one). Those are '(the service)' rows: shown at the root and in a folder, never at one
 // instance (DBA Dash's '(No instance)'), each with a link to the page where it is handled. One row set feeds every view,
 // so a count always lists the rows it counts. Types: Error, Warning (a run that finished carrying a collector_error
 // row), Skipped (hidden unless asked); pgvigil never retries a run, so there is no Retry. Stages: Connect, Collect,
@@ -55,7 +56,7 @@ WITH scope AS (
   SELECT NULL, coalesce(m.done_at, m.requested_at), NULL, '(the service)', NULL, 'report mail', 'Error', 'Other',
          'report mail ' || m.outcome || ': ' || m.name || coalesce(': ' || m.error, ''), false, '#/reportmail'
     FROM pgvigil.report_mail_sends m
-   WHERE $3::int IS NULL AND m.outcome IN ('failed', 'refused')
+   WHERE $3::int IS NULL AND (m.outcome = 'failed' OR (m.outcome = 'refused' AND m.kind = 'scheduled'))
      AND coalesce(m.done_at, m.requested_at) >= $1 AND coalesce(m.done_at, m.requested_at) < $2
   UNION ALL
   SELECT NULL, d.read_at, NULL, '(the service)', NULL, 'DBA Dash import', 'Error', 'Other',
