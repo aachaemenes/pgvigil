@@ -444,6 +444,16 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   let focus = (hk.get('focus') ?? readSetting('pgvigil.summaryFocus')) === '1';
   let showTests = (hk.get('tests') ?? readSetting('pgvigil.summaryShowTests')) !== '0';
   let maxPct = (() => { const v = Number(hk.get('tmax') ?? readSetting('pgvigil.summaryTestsMaxPct')); return maxHeights.includes(v) ? v : 70; })();
+  // a hand-typed value the page reads otherwise (focus=2, tmax=999) goes back into the address once, as read: the
+  // address, a saved view and '(changed)' then agree (review L4)
+  {
+    const typed: Record<string, string> = {};
+    if (hk.has('focus') && !['0', '1'].includes(hk.get('focus')!)) typed.focus = focus ? '1' : '0';
+    if (hk.has('tests') && !['0', '1'].includes(hk.get('tests')!)) typed.tests = showTests ? '1' : '0';
+    if (hk.has('tmax') && hk.get('tmax') !== String(maxPct)) typed.tmax = String(maxPct);
+    if (hk.has('sort') && hk.get('sort') !== sortBy) typed.sort = sortBy;
+    if (Object.keys(typed).length) noteAddress(typed);
+  }
   const bad = (r: Row, key: string) => { const b = bucketOf(r, key); return b === 'warn' || b === 'crit'; };
   // its own scroll, as DBA Dash's upper pane, at most Test Summary Max Height % of the window: the instance grid below
   // stays on the first screen

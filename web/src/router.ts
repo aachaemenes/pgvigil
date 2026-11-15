@@ -47,7 +47,9 @@ export const hashKeys = (): URLSearchParams => new URLSearchParams(location.hash
 let noted: ((h: string) => void) | null = null;
 export function onAddressNoted(f: (h: string) => void) { noted = f; }
 export function noteAddress(keys: Record<string, string | undefined>) {
-  const [path] = location.hash.split('?');
+  // an address with no hash (the server's own '/', the landing after a login) is the page parse() reads there: the keys
+  // go into its hash, never into the query string before it (review B2)
+  const [path] = (location.hash || '#/' + parse().tab).split('?');
   const q = hashKeys();
   for (const [k, v] of Object.entries(keys)) { if (v === undefined || v === '') q.delete(k); else q.set(k, v); }
   const h = `${path}?${q}`;

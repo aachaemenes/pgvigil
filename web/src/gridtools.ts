@@ -97,15 +97,19 @@ export function setLayer(ls: Layout[] | null) {
 }
 // layerState: a view's layer is on; it was changed since it was set; the layouts it names whose grid has not been drawn
 export function layerState(): { on: boolean; edited: boolean; missing: string[] } {
-  return { on: layer !== null, edited: layerEdited, missing: layer ? [...layer.keys()].filter(n => !layerSeen.has(n)) : [] };
+  // missing: only a layout that holds something (an empty one asks nothing of the page)
+  return { on: layer !== null, edited: layerEdited, missing: layer ? [...layer.entries()].filter(([n, p]) => !layerSeen.has(n) && (p.hidden.length || p.frozen || p.bars.length)).map(([n]) => n) : [] };
 }
-// layoutsOf: every grid of the page as a view keeps it (what the layer or the browser draws it with now)
+// layoutsOf: the grids of the page as a view keeps them (what the layer or the browser draws them with now): a grid the
+// page names (data-grid-name) always, any other only when something is hidden, frozen or barred on it - a heading that
+// changes by itself (a 'since <time>', an open drill's 'Events: ...') is never kept for nothing (review M1)
 export function layoutsOf(root: ParentNode = document): Layout[] {
   const out = new Map<string, Layout>();
   for (const t of root.querySelectorAll<HTMLTableElement>('main table.grid')) {
     const n = gridName(t);
     if (!n || out.has(n)) continue;
     const p = load(t);
+    if (!t.dataset.gridName && !p.hidden.length && !p.frozen && !p.bars.length) continue;
     out.set(n, { grid: n, columns: names(t), hidden: p.hidden, frozen: p.frozen, bars: p.bars });
   }
   return [...out.values()];

@@ -461,7 +461,8 @@ async function render(force = false) {
   // tab, instance or tag before it, or the first render) with no view= and none of its keys, the user's default view is
   // written into the address and read again here, so the page draws once, as the view says
   try {
-    if (await resolveView(ctx, `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}` !== shownPath)) { ctx = parse(); shownPage = location.hash; }
+    // gen === generation: a render the reader left while its view reads were out writes nothing (review B1)
+    if (await resolveView(ctx, `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}` !== shownPath, () => gen === generation)) { ctx = parse(); shownPage = location.hash; }
   } catch { /* the view store failed: the page draws from its address alone */ }
   if (gen !== generation) return;
 

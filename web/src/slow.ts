@@ -19,7 +19,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, hashKeys, href, noteAddress, rangeLabel, window_ } from './router';
 import { viewControl } from './views';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
-import { sqlCell, whatIsThis } from './sqlview';
+import { firstChars, sqlCell, whatIsThis } from './sqlview';
 import { trendCol } from './stmt_trend';
 import { lineChart } from './chart';
 import { zoneName } from './tz';
@@ -38,8 +38,9 @@ export const thresholds: [number, string][] = [
 const defaultMs = 1000;
 
 // thresholdOf is the threshold the router carries in the hash (ms=), kept across a range change on this tab.
+// Only those pages carry it (router.ts viewPageKeys): the SQL Server Slow page reads its default (review L5).
 export function thresholdOf(ctx: Ctx): number {
-  return ctx.ms ?? defaultMs;
+  return ctx.tab === 'slowqueries' ? ctx.ms ?? defaultMs : defaultMs;
 }
 
 const msTxt = (v: unknown) => {
@@ -251,11 +252,27 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
   let group = slowGroupBy.some(g => g[0] === hk.get('g')) ? hk.get('g')! : fleet ? 'instance' : 'database';
   let db = hk.get('gdb') ?? '', top: number | 'all' = topOf(hk.get('top')), events_ = hk.get('ev') === 'all' ? 'all' : 'calls';
   let fit = hk.get('fit') === '1';
-  const fitWords = 'Auto Size Columns: long text on one line, the grid scrolling sideways';
+  // a hand-typed value the panel reads otherwise (top=37 reads 50, fit=2 reads off) goes back into the address once, as
+  // read: the address, a saved view and '(changed)' then agree (review L4)
+  {
+    const typed: Record<string, string> = {};
+    if (hk.has('g') && hk.get('g') !== group) typed.g = group;
+    if (hk.has('top') && hk.get('top') !== String(top)) typed.top = String(top);
+    if (hk.has('ev') && hk.get('ev') !== events_) typed.ev = events_;
+    if (hk.has('fit') && !['0', '1'].includes(hk.get('fit')!)) typed.fit = fit ? '1' : '0';
+    if (Object.keys(typed).length) noteAddress(typed);
+  }
+  // Auto Size Columns (D26; the lead's C: the one-line toggle, fit=1, said in words): this panel's grids alone - the
+  // Group-by grid and the events below it - show each statement on one line up to 400 characters (what the server keeps
+  // of an example), the grid scrolling sideways, its title the same 400; off: the first 80 characters (review M4, L6)
+  const fitWords = 'Auto Size Columns: statements on one line, up to 400 characters (the grid scrolls sideways); off: their first 80 characters';
   const applyFit = () => {
-    box.closest('section')?.classList.toggle('fit-cols', fit);
-    // the whole text of a one-line cell in its title (its first 400 characters: what the server keeps of an example)
-    for (const td of box.querySelectorAll<HTMLElement>('table.grid td.wide')) { if (fit) td.title = (td.textContent ?? '').slice(0, 400); else td.removeAttribute('title'); }
+    box.classList.toggle('fit-cols', fit);
+    for (const b of box.querySelectorAll<HTMLElement>('table.grid button.sqlcell')) {
+      const full = b.dataset.full ?? '', td = b.closest('td');
+      b.textContent = firstChars(full, fit ? 400 : 80);
+      if (td) { if (fit) td.title = firstChars(full, 400); else td.removeAttribute('title'); }
+    }
   };
   const vc = viewControl(ctx, {
     read: () => ({ ...(ctx.tab === 'slowqueries' ? { ms: String(thresholdOf(ctx)) } : {}), g: group, gdb: db, top: String(top), ev: events_, fit: fit ? '1' : '0' }),
@@ -309,6 +326,8 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
       // under a tag folder the cell counts the fleet; the list keeps the folder's instances
       const note = o.keep ? ` (${counted} in the fleet; ${fmtNum(shown.length)} of this folder's instances listed)` : ` (${counted})`;
       drill.replaceChildren(el('h4', {}, `Events: ${what}${note}`), grid(shown, cols, 'No event of this folder\'s instances in this cell.'));
+      applyFit();
+      window.dispatchEvent(new CustomEvent('pgvigil:drawn'));
     } catch (e) {
       if (seq === drillSeq) drill.replaceChildren(errorBox(e));
     }
@@ -335,7 +354,8 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
       const d = await get<Record<'groups' | 'totals' | 'dbs', Table | null>>('slow/groups', { ...base(), top: ask });
       if (seq !== drawSeq) return;
       let rows = rowsOf(d.groups);
-      const cut = top === 'all' && rows.length >= ALL_CAP;
+      // ALL stopped at the cap only when the window holds more groups than came back (exactly 5,000 is no cut: review L1)
+      const cut = top === 'all' && Number(rowsOf(d.totals)[0]?.groups ?? 0) > rows.length;
       const lim = top === 'all' ? ALL_CAP : top;
       // under a tag folder an instance group is kept when it is one of the folder's (other groups mix instances)
       if (o.keep && group === 'instance') rows = rows.filter(o.keep).slice(0, lim);
@@ -444,6 +464,7 @@ export function slowLatencyPanel(ctx: Ctx): HTMLElement {
           [{ key: 'p90_ms', label: 'p90' }, { key: 'p95_ms', label: 'p95' }, { key: 'p99_ms', label: 'p99' }], v => msTxt(v))),
         grid(hours, pctCols, 'No logged statement in this window.'),
         el('h4', {}, 'Duration histogram'), durationHistogram(rowsOf(d.histogram)));
+      window.dispatchEvent(new CustomEvent('pgvigil:drawn'));   // its grids drew after the page's: the View control counts again (review M1)
     } catch (e) {
       body.replaceChildren(errorBox(e));
     }

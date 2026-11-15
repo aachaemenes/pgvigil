@@ -1,16 +1,16 @@
 diff --git a/docs/menus.md b/docs/menus.md
-index 38434c30..e0ad755b 100644
+index 38434c30..475fa17f 100644
 --- a/docs/menus.md
 +++ b/docs/menus.md
-@@ -96,6 +96,49 @@ column, Freeze, Group by, Data bars, Columns...):
+@@ -96,6 +96,53 @@ column, Freeze, Group by, Data bars, Columns...):
    the drawn page too; an empty cell is no number), in the column's own unit (bytes, durations, percentages as the screen writes them). With a selection of two cells or more:
    `Selected Cells: n (k numeric) | Sum: ... | Avg: ... | Min: ... | Max: ...`. A click on either line copies it.
  
 +## Saved views (the View button)
 +
 +The Summary, the Performance summary and the three Slow queries pages (the fleet's, an instance's and a SQL Server
-+instance's) carry DBA Dash's View drop-down: a button `View: <name>` first in the page's toolbar (`View: None` when no
-+view is loaded, `(changed)` after it while the page differs from the loaded view). A view is a named state of one page:
++instance's) carry DBA Dash's View drop-down: a button `View: <name>` in the page's toolbar (`View: None` when no
++view is loaded, `(changed)` after it while the page's picks or its grids' layouts differ from the loaded view's). A view is a named state of one page:
 +
 +- the page's own picks, as the page has them when it is saved (every one, not only those in the address):
 +
@@ -33,8 +33,9 @@ index 38434c30..e0ad755b 100644
 +(`docs/configuration.md`); a personal view only by its owner. **Save as...** asks for a name, who sees it (Only me, or
 +Everyone), whether it loads by default on this page, a folder, and whether to keep the time range.
 +
-+- **Loading**: a view lives in the page's address (`view=<id>` beside the page's picks), so a reload, Back and Forward
-+  and a link sent to someone bring it back. Entering one of these pages with none of its picks in the address loads
++- **Loading**: a view lives in the page's address (`view=<id>` beside the page's picks, which Save as and opening a
++  view write there), so a reload, Back and Forward and a link sent to someone bring it back; a pick the link carries
++  wins over the view's. Entering one of these pages with none of its picks in the address loads
 +  the user's own default for the page, else the shared default, once; a default's saved time range applies only when
 +  the view is picked from the menu or its link is opened, so entering the page keeps the range you were on. A page's
 +  default resets its picks each time the page is entered; `{None}` (`view=none`) keeps them.
@@ -45,9 +46,12 @@ index 38434c30..e0ad755b 100644
 +  skipped (...)').
 +- **Another's view**: a link to someone's personal view opens its picks (they are in the address) but not its layouts
 +  ('view N is not yours to open: its address applied, its layouts not'); a view of another page is not applied.
++- **Save** writes the page as it is now: its picks, its grids' layouts and, for a view that keeps the time range, the
++  range on screen. **Rename** keeps the stored range.
 +- **Two people at once**: saving a view someone changed since you loaded it is refused with the reason and a
-+  **Load the stored one** link; nothing is overwritten.
-+- The Daily checks mail's render takes no view: no default is loaded and `view=` is ignored.
++  **Load the stored one** link; nothing is overwritten. A name already taken is refused in words.
++- A report mail's render (the Daily checks mail, Send now, a schedule) takes no view: no default is loaded and
++  `view=` is ignored.
 +
  ## Tools (the bar)
  
@@ -70,10 +74,10 @@ index d7dca0f7..2255dd20 100644
 +switch: nothing in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden
 +from an alert.
 diff --git a/docs/slow-queries.md b/docs/slow-queries.md
-index a9770c68..982a5de2 100644
+index a9770c68..059940bf 100644
 --- a/docs/slow-queries.md
 +++ b/docs/slow-queries.md
-@@ -23,12 +23,20 @@ counts every event of the filter.
+@@ -23,12 +23,22 @@ counts every event of the filter.
    hour carries its UTC offset, so the hour a clock goes back is two rows) and Engine. A value that is an empty
    string (a SQL Server client that sends no application name) is its own row, `(empty)`, apart from `(none)`. DBA Dash's Time - Custom is the page's own range.
  - **Database**: the databases with slow events in the range, each with its count; one picked cuts the grid to it.
@@ -81,21 +85,23 @@ index a9770c68..982a5de2 100644
 +- **Top**: 10, 20, 50, 100, 500 or 1000 groups, or ALL, the most events first (Time - Hour and Time - Day in time
 +  order). ALL reads at most 5,000 groups and says so when it stopped there. Under a tag folder the fleet's groups are
 +  read (at least 500, or ALL) and the folder's kept, as the folder's line says.
++- **Threshold** rides the address as `ms` on the fleet's and an instance's Slow queries page; the SQL Server Slow
++  page's Group by reads at the 1 s default.
  - **Events**: `calls` (the default) counts SQL Server's rpc and batch completions only; `calls and their statements`
    adds the statement events (`sql_statement_completed`, `sp_statement_completed`). With the capture's statement
    events on, one slow procedure call is stored as the call and as its slow statements, so counting both would count
    its time twice.
  - The page's **Threshold** (100 ms to 1 min, or all logged) applies to the grid too.
-+- **Auto Size Columns** (an item of the View button): the long text (the statement, Text's grouping) on one line, the
-+  grid scrolling sideways; the cell's title holds its first 400 characters, what the server keeps of an example.
-+  Off: wrapped.
++- **Auto Size Columns** (an item of the View button): in the Group By grid and the events under it, each statement on
++  one line up to its first 400 characters (what the server keeps of an example), the grid scrolling sideways, the
++  cell's title the same 400; off: the first 80 characters. A click on a statement still opens it whole.
 +- Group By, Database, Top, Events and Auto Size Columns ride the page's address (`g`, `gdb`, `top`, `ev`, `fit`), so
 +  a link, a reload and a saved view keep them; the View button saves and loads them with the grid's layout
 +  (`docs/menus.md`, *Saved views*).
  
  Every count is a button: it lists the events of that cell below the grid, the longest first (at most 500, with the
  cell's full count): instance, database, event type, object, time, duration, CPU, reads, writes, rows, user,
-@@ -89,7 +97,7 @@ started earlier is not drawn. At most 5,000 runs are drawn (the newest); the pag
+@@ -89,7 +99,7 @@ started earlier is not drawn. At most 5,000 runs are drawn (the newest); the pag
  
  | Route | Parameters | Parts |
  |---|---|---|
