@@ -252,7 +252,24 @@ UPDATE pgvigil.mssql_counter_defaults d SET used_by = u.why
     ('Databases', 'Active Transactions', 'the counters metric active transactions and the storage pages'),
     ('sys.dm_os_process_memory', 'physical_memory_in_use_kb', 'the counters metric memory in use of the commit limit'),
     ('sys.dm_os_process_memory', 'available_commit_limit_kb', 'the counters metric memory in use of the commit limit'),
-    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker and the CPU page''s scheduler trend')
+    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker and the CPU page''s scheduler trend'),
+    ('Batch Resp Statistics', 'Batches >=000000ms & <000001ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000001ms & <000002ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000002ms & <000005ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000005ms & <000010ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000010ms & <000020ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000020ms & <000050ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000050ms & <000100ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000100ms & <000200ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000200ms & <000500ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000500ms & <001000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=001000ms & <002000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=002000ms & <005000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=005000ms & <010000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=010000ms & <020000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=020000ms & <050000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=050000ms & <100000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=100000ms', 'the Metrics page''s batch response histogram')
   ) AS u(object, counter, why)
  WHERE d.object = u.object AND d.counter = u.counter;
 
@@ -449,14 +466,27 @@ $$;
 -- kind of the highest level below it that names one (a default's 'count' stays a count). A removal of
 -- one instance of a counter (a feature of Deprecated Features / Usage) names that instance in its every-instance line's
 -- except list, so the line that reads the others leaves it out.
+-- mssql_counter_layers_won: every layer's word with whether it wins, by the list's own rule (mssql_counter_list reads
+-- it, and so does the Admin page's 'in force': review part 3's finding 2): the highest level, then the newest Admin row
+-- (config_id), then a removal, then the kind; a removal of a counter in use never wins (blocked: the defaults keep it).
+CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_layers_won(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
+RETURNS TABLE (object text, counter text, inst text, action text, kind text, level int, source text, config_id bigint, used_by text,
+               wins boolean, blocked boolean)
+LANGUAGE sql STABLE AS $$
+  WITH l AS (SELECT x.*, (x.action = 'remove' AND EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d
+                            WHERE d.used_by IS NOT NULL AND lower(d.object) = lower(x.object) AND lower(d.counter) = lower(x.counter))) AS blocked
+               FROM pgvigil.mssql_counter_layers(p_instance_id, p_yaml) x)
+  SELECT l.object, l.counter, l.inst, l.action, l.kind, l.level, l.source, l.config_id, l.used_by,
+         NOT l.blocked AND row_number() OVER (PARTITION BY lower(l.object), lower(l.counter), l.inst, l.blocked
+                                              ORDER BY l.level DESC, l.config_id DESC NULLS LAST, l.action = 'remove' DESC, l.kind) = 1,
+         l.blocked
+    FROM l
+$$;
+
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_list(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
   WITH l AS (SELECT * FROM pgvigil.mssql_counter_layers(p_instance_id, p_yaml)),
-  inuse AS (SELECT lower(d.object) AS o, lower(d.counter) AS c FROM pgvigil.mssql_counter_defaults d WHERE d.used_by IS NOT NULL),
-  w AS (SELECT DISTINCT ON (lower(l.object), lower(l.counter), l.inst) l.*
-          FROM l
-         WHERE NOT (l.action = 'remove' AND (lower(l.object), lower(l.counter)) IN (SELECT o, c FROM inuse))
-         ORDER BY lower(l.object), lower(l.counter), l.inst, l.level DESC, l.config_id DESC NULLS LAST, l.action = 'remove' DESC, l.kind),
+  w AS (SELECT * FROM pgvigil.mssql_counter_layers_won(p_instance_id, p_yaml) WHERE wins),
   x AS (SELECT lower(w.object) AS o, lower(w.counter) AS c, jsonb_agg(w.inst ORDER BY w.inst) AS insts
           FROM w WHERE w.action = 'remove' AND w.inst <> '' GROUP BY 1, 2)
   SELECT coalesce(jsonb_agg(jsonb_build_object('object', w.object, 'counter', w.counter, 'inst', w.inst,

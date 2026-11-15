@@ -47,7 +47,8 @@
 #     removes Deprecated Features / Usage (not read); an Admin fleet row adding Usage back loses to the instance's yaml
 #     line (narrowest scope); an Admin instance row adding it wins over the yaml line at the same scope (read again);
 #     an Admin tag row (the instance's tag env:ctrproof) removing Plan Cache / Cache Pages takes it out, an Admin
-#     instance row adding it back wins; Admin and yaml both refuse removing Logins/sec ('read by ...'); a removal of a
+#     instance row adding it back wins; Admin and yaml both refuse removing Logins/sec ('read by ...'), Admin a Batch Resp
+#     Statistics bucket too (the histogram, part 3's finding 4); a removal of a
 #     counter in use from the yaml is refused at load; mssql_counter_yaml holds the lines the runner used. Admin and the
 #     yaml both refuse a kind on SQL Errors / Errors/sec ('its kind stays') and on a DMV column (sys.dm_os_schedulers /
 #     yield_count: 'is a DMV column'). A yaml line removing one instance of
@@ -71,7 +72,8 @@
 #        right after a gap read), both at 17:01 (red today: 17:00 has a rate over four hours).
 #     P3 (finding 4) update_conflict_pct 0 with 1 snapshot update in 60 s (under 1/s, one conflict), 5 with 6
 #        conflicts in 120 updates (red today: 100).
-#     P4 (finding 3) two tag rows at one level: a removal (older) and an add (newer) - the counter is in the list;
+#     P4 (finding 3) two tag rows at one level: a removal (older) and an add (newer) - the counter is in the list, and
+#     mssql_counter_layers_won names ONE winner, the add (part 3's finding 2: the Admin page's 'in force');
 #        the removal written again (newer) - it is not (red today: the older row wins by the plan's order).
 #     P5 (finding 3) a fleet row, then one naming the same counter in lower case: the second answers 'row <n>
 #        replaced by row <m>' (red today: 'added', two live rows).
@@ -82,7 +84,7 @@
 #     counters left mssql_cpu, not NULL with the join's body.
 #  J. the API: GET /api/mssql/counteradmin (no instance: config, defaults, log, catalog; with the instance: layers,
 #     catalog, absent, histogram) answers every part; with the UI login and the actions door's audit login: POST add
-#     done (200), a removal of a counter in use refused (409, 'read by'), end done; without a session 401, without the
+#     done (200), a removal of a counter in use refused (409, 'read by', the body's error naming it: part 3's finding 1), end done; without a session 401, without the
 #     header 403; a -no-login serve: writable false naming -no-login, POST 403, nothing written; mssql_counter_config_log
 #     holds exactly the done and refused attempts by the proof's user from 127.0.0.1.
 #  K. the pages in headless Chromium, light and dark: the instance's Metrics page shows the counters grid with the kind
@@ -474,6 +476,9 @@ col mssql_counters
 [[ $(readat 'Plan Cache' 'Cache Pages') -ge 1 ]] || fail "E: the instance row lost to the tag row"
 R=$(door '{"op":"add","ui_user":"proof-e","scope":"fleet","object":"General Statistics","counter":"Logins/sec","action":"remove"}')
 grep -q '"refused"' <<<"$R" && grep -q 'read by' <<<"$R" || fail "E: removing Logins/sec: $R"
+# review part 3's finding 4: the histogram's buckets are read by the Metrics page: a removal is refused
+R=$(door '{"op":"add","ui_user":"proof-e","scope":"fleet","object":"Batch Resp Statistics","counter":"Batches >=000000ms & <000001ms","action":"remove"}')
+grep -q '"refused"' <<<"$R" && grep -q 'histogram' <<<"$R" || fail "E: removing a Batch Resp Statistics bucket: $R"
 config "    mssql_counters:
       remove:
         - object: General Statistics
@@ -620,6 +625,10 @@ endrows() { for c in $(pq "SELECT config_id FROM pgvigil.mssql_counter_config WH
 door '{"op":"add","ui_user":"proof-p","scope":"tag","tag":"env:synx","object":"Plan Cache","counter":"Cache Pages","action":"remove"}' | grep -q '"done"' || fail "P4: the env:synx removal"
 door '{"op":"add","ui_user":"proof-p","scope":"tag","tag":"env:syny","object":"Plan Cache","counter":"Cache Pages","action":"add"}' | grep -q '"done"' || fail "P4: the env:syny add"
 L1=$(inlist 'Plan Cache' 'Cache Pages')
+# review part 3's finding 2: the Admin page's 'in force' is the list's own rule - one winner, the newer row
+W1=$(pq "SELECT count(*) FILTER (WHERE wins) || '|' || coalesce(string_agg(action, ',') FILTER (WHERE wins), '') FROM pgvigil.mssql_counter_layers_won($SY)
+  WHERE lower(object) = 'plan cache' AND lower(counter) = 'cache pages' AND inst = '' AND level = 4")
+[[ "$W1" == "1|add" ]] || fail "P4: the layers' winners at one level [$W1] (want 1|add)"
 door '{"op":"add","ui_user":"proof-p","scope":"tag","tag":"env:synx","object":"Plan Cache","counter":"Cache Pages","action":"remove"}' | grep -q 'replaced' || fail "P4: the env:synx removal again"
 L2=$(inlist 'Plan Cache' 'Cache Pages')
 [[ "$L1" != absent && "$L2" == absent ]] || fail "P4: two tag rows at one level: after the newer add [$L1] (want in the list), after the newer removal [$L2] (want absent)"
@@ -682,6 +691,8 @@ P1=$(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\
 CID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("config_id") or "")' "$TMPD/body")
 P2=$(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{"op":"add","scope":"fleet","object":"Locks","counter":"Lock Waits/sec","action":"remove"}' "$U/api/mssql/counteradmin")
 grep -q 'read by' "$TMPD/body" || fail "J: the refusal's words: $(cat "$TMPD/body")"
+# review part 3's finding 1: the page shows a refusal's reason from the body's error (api.ts post throws b.error)
+python3 -c 'import json,sys; sys.exit(0 if "is read by" in (json.load(open(sys.argv[1])).get("error") or "") else 1)' "$TMPD/body" || fail "J: the refusal's error field: $(cat "$TMPD/body")"
 P3=$(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"op\":\"end\",\"config_id\":$CID}" "$U/api/mssql/counteradmin")
 [[ "$P1 $P2 $P3" == "200 409 200" ]] || fail "J: POST add / refused / end: $P1 $P2 $P3"
 [[ $(code "$U2/api/mssql/counteradmin") == 200 ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["writable"] is False and "-no-login" in d["reason"] else 1)' "$TMPD/body" \
