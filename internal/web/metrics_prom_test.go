@@ -1,6 +1,9 @@
 package web
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,6 +35,19 @@ func TestPromNamesCoverTheCatalog(t *testing.T) {
 	if len(cat) != 62 {
 		t.Fatalf("metric_catalog's VALUES in 0085: %d keys read (want 62: the table was written for 62)", len(cat))
 	}
+	// a later file that re-creates the view could add a key this test would not read: none may, or this test reads it
+	files, err := filepath.Glob(filepath.Join("..", "repo", "sql", "*.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "0085_alert_rules.sql") {
+			continue
+		}
+		if b, err := os.ReadFile(f); err == nil && strings.Contains(string(b), "VIEW pgvigil.metric_catalog") {
+			t.Errorf("%s defines pgvigil.metric_catalog too: read it here", filepath.Base(f))
+		}
+	}
 	name := regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
 	seen, names := map[string]bool{}, map[string]bool{}
 	for _, p := range promNames {
@@ -42,9 +60,10 @@ func TestPromNamesCoverTheCatalog(t *testing.T) {
 		}
 		seen[p.key] = true
 		want := map[string]string{"database.deadlocks": "count", "server.checkpoints": "count", "server.checkpoints_req": "count"}[p.key]
-		if p.unit == "interval" && want != unit {
-			t.Errorf("%s: 'interval' on a key that is not a per-interval count", p.key)
-		} else if p.unit != "interval" && p.unit != unit {
+		switch {
+		case (want != "") != (p.unit == "interval"):
+			t.Errorf("%s: unit %q - 'interval' belongs on exactly the three per-interval counts", p.key, p.unit)
+		case p.unit != "interval" && p.unit != unit:
 			t.Errorf("%s: unit %q, the catalog says %q", p.key, p.unit, unit)
 		}
 		if _, ok := promUnitWords[p.unit]; !ok {
@@ -124,6 +143,10 @@ func TestCheckMetricsToken(t *testing.T) {
 	if err := os.WriteFile(long, []byte("  "+strings.Repeat("k", 32)+"\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	padded := filepath.Join(dir, "padded")
+	if err := os.WriteFile(padded, []byte("   "+strings.Repeat("p", 31)+"  \n"), 0o600); err != nil { // 37 bytes, 31 trimmed
+		t.Fatal(err)
+	}
 	t.Setenv("PGV_B24D_EMPTY", "  ")
 	for _, c := range []struct {
 		cfg   MetricsConfig
@@ -137,11 +160,19 @@ func TestCheckMetricsToken(t *testing.T) {
 		{MetricsConfig{Token: "file:" + long}, false, false},        // 32 bytes, whitespace trimmed
 		{MetricsConfig{Token: strings.Repeat("k", 40)}, true, true}, // the token itself in the file: refused
 		{MetricsConfig{Token: "file:" + filepath.Join(dir, "none")}, true, true},
+		{MetricsConfig{Token: "file:" + padded}, true, true}, // the trim proven: 31 bytes once trimmed
 	} {
 		warns, err := CheckMetricsToken(&c.cfg, c.login)
 		if (err != nil) != c.bad || len(warns) == 0 {
 			t.Errorf("CheckMetricsToken(%q, login %v): %v (warns %d), want refused %v", c.cfg.Token, c.login, err, len(warns), c.bad)
 		}
+		// a value without file: / env: may be the token itself: never in the error
+		if err != nil && !strings.HasPrefix(c.cfg.Token, "file:") && !strings.HasPrefix(c.cfg.Token, "env:") && c.cfg.Token != "" && strings.Contains(err.Error(), c.cfg.Token) {
+			t.Errorf("the error prints the literal token: %v", err)
+		}
+	}
+	if warns, _ := CheckMetricsToken(&MetricsConfig{}, true); !strings.Contains(strings.Join(warns, "|"), "metrics.token is not set") {
+		t.Errorf("login on, no token: the WARN %q lacks 'metrics.token is not set'", warns)
 	}
 }
 
@@ -213,11 +244,83 @@ func TestPromMetricsDoor(t *testing.T) {
 			t.Errorf("rotation: %d for the %s token", w.Code, map[bool]string{true: "new", false: "old"}[k == newTok])
 		}
 	}
-	// the limiter: the address had 3 refused bearer attempts; two more fill it, the sixth is 429
+	// the old token's 60 s end: refused after, the new one still accepted
+	if st.token.match(tok, time.Now().Add(61*time.Second), func(string) {}) {
+		t.Errorf("rotation: the old token still accepted 61 s after the change")
+	}
+	if !st.token.match(newTok, time.Now().Add(61*time.Second), func(string) {}) {
+		t.Errorf("rotation: the new token refused 61 s after the change")
+	}
+	// the limiter: the address had 3 refused bearer attempts; two more fill it; a wrong token is then 429 and the
+	// right one still passes (a shared address must not keep Prometheus out)
 	for i := 0; i < 2; i++ {
 		req("/metrics", map[string]string{"Authorization": "Bearer wrong"})
 	}
-	if w := req("/metrics", map[string]string{"Authorization": "Bearer " + newTok}); w.Code != http.StatusTooManyRequests {
-		t.Errorf("limiter: %d after 5 refused tokens, want 429", w.Code)
+	if w := req("/metrics", map[string]string{"Authorization": "Bearer wrong"}); w.Code != http.StatusTooManyRequests {
+		t.Errorf("limiter: %d for a wrong token after 5 refused, want 429", w.Code)
+	}
+	if w := req("/metrics", map[string]string{"Authorization": "Bearer " + newTok}); w.Code != http.StatusOK {
+		t.Errorf("limiter: the right token got %d during the lockout, want 200", w.Code)
+	}
+}
+
+// TestPromGet (B24d review C7): the cache and the one render - a body aged 1.5 x cache is served at once and one render
+// starts; eight concurrent gets during a held render start no second; a body aged 2.5 x cache with the render held past
+// the wait is an error (the 503); the stored gzip decompresses to the body.
+func TestPromGet(t *testing.T) {
+	st := &promState{cfg: &MetricsConfig{CacheSeconds: 2}}
+	cache := st.cfg.cache()
+	release := make(chan struct{})
+	var calls atomic.Int32
+	render := func(ctx context.Context, _ *promState) ([]byte, error) {
+		calls.Add(1)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return []byte("pgvigil_x 1\n"), nil
+	}
+	st.body, st.gz, st.at = []byte("old\n"), []byte("gz"), time.Now().Add(-cache*3/2)
+	b, _, err := st.get(context.Background(), time.Second, render)
+	if err != nil || string(b) != "old\n" {
+		t.Fatalf("a body of 1.5 x cache: %q %v, want the old body at once", b, err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _, _ = st.get(context.Background(), 50*time.Millisecond, render) }()
+	}
+	wg.Wait()
+	if n := calls.Load(); n != 1 {
+		t.Errorf("renders started: %d, want 1", n)
+	}
+	st.mu.Lock()
+	st.at = time.Now().Add(-cache * 5 / 2)
+	st.mu.Unlock()
+	if _, _, err := st.get(context.Background(), 100*time.Millisecond, render); err == nil {
+		t.Errorf("a body of 2.5 x cache with the render held past the wait: no error, want one (the 503)")
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st.mu.Lock()
+		done := st.running == nil && string(st.body) == "pgvigil_x 1\n"
+		gz := st.gz
+		st.mu.Unlock()
+		if done {
+			zr, err := gzip.NewReader(bytes.NewReader(gz))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := io.ReadAll(zr)
+			if err != nil || string(out) != "pgvigil_x 1\n" {
+				t.Errorf("the gzip body: %q %v", out, err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the render did not store its body")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

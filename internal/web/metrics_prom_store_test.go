@@ -14,17 +14,21 @@ import (
 )
 
 // TestPromMetricsOnAStore (B24d, P5 / P6 on a migrated repository, PGVIGIL_REPO_TEST_DSN; skipped without it): two
-// PostgreSQL instances.
-//   - 'fresh': sessions read 1 and 3 minutes ago, two databases read 3, 2 and 1 minute ago; 'db2' was reset 1 minute
-//     ago, so the instance's newest database point is the one of 2 minutes ago (metric_points' rule: a reset interval
-//     gives no point). PARITY: every key metric_grid gives a fresh 'current' equals metrics_newest's value (the
-//     instance's figures, database NULL), and metrics_newest gives no key the grid does not; the body carries
-//     pgvigil_sessions 10, pgvigil_sessions_connections_used_ratio 0.1, pgvigil_instance_deadlocks_per_second = the
-//     grid's per-interval count / the interval's seconds, pgvigil_instance_info, three pgvigil_findings severities.
+// PostgreSQL instances. Leftovers of a run killed before its cleanup (its own name prefixes) are removed first.
+//   - 'fresh': sessions read 3 minutes ago (total 12) and 1 minute ago (total 10): the NEWEST is 10, not the largest;
+//     three databases read 3, 2 and 1 minute ago - db1 with an uneven rate (its newest commits smaller than the read
+//     before), db2 reset at the newest read (so the instance's newest database point is the one of 2 minutes ago,
+//     metric_points' rule), db3 small. PARITY both ways with metric_grid: every key of the instance's figures and of
+//     each database's own series (metric_grid with that database) where the grid's 'current' is fresh.
+//   - the body: pgvigil_sessions 10, pgvigil_sessions_connections_used_ratio 0.1, pgvigil_instance_deadlocks_per_second
+//     0.1 (the seed's 6 deadlocks of the 2-minute read over its 60 s, a literal: never the code's own value / secs),
+//     pgvigil_instance_info, the findings' three severities (pgvigil.findings is a view over the rules: this row
+//     proves the query runs and the zeros are given, not a count).
 //   - 'stale': sessions read 20 minutes ago (fresh_secs 600): no pgvigil_sessions sample, its
 //     pgvigil_sample_timestamp_seconds{family="sessions"} there.
-//   - with metrics.databases on and max_databases 1: one database's series (the larger by database_sizes) and
-//     pgvigil_metrics_databases_cut 1.
+//   - metrics.databases on, max_databases 1: db2's series alone (the largest by pgvigil.databases' size_bytes; in the
+//     middle by dbid and by name, the smallest by activity) and pgvigil_metrics_databases_cut 2; with
+//     include_databases [db1]: db1's series alone and no cut row (an include list cuts nothing).
 func TestPromMetricsOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -43,6 +47,32 @@ func TestPromMetricsOnAStore(t *testing.T) {
 			t.Fatalf("%v\n%s", err, sql)
 		}
 	}
+	drop := func(c context.Context, ids []int) {
+		for _, tb := range []string{"activity_summary", "dbstats", "databases"} {
+			if _, err := pool.Exec(c, `DELETE FROM pgvigil.`+tb+` WHERE instance_id = ANY($1)`, ids); err != nil {
+				t.Logf("cleanup %s: %v", tb, err)
+			}
+		}
+		if _, err := pool.Exec(c, `DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`, ids); err != nil {
+			t.Logf("cleanup instances: %v", err)
+		}
+	}
+	var old []int
+	rows, err := pool.Query(ctx, `SELECT instance_id FROM pgvigil.instances WHERE name LIKE 'b24d-fresh-%' OR name LIKE 'b24d-stale-%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		old = append(old, id)
+	}
+	rows.Close()
+	if len(old) > 0 {
+		drop(ctx, old)
+	}
 	var made []int
 	defer func() {
 		if len(made) == 0 {
@@ -50,12 +80,7 @@ func TestPromMetricsOnAStore(t *testing.T) {
 		}
 		c, stop := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stop()
-		for _, q := range []string{`DELETE FROM pgvigil.activity_summary WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.dbstats WHERE instance_id = ANY($1)`,
-			`DELETE FROM pgvigil.database_sizes WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
-			if _, err := pool.Exec(c, q, made); err != nil {
-				t.Logf("cleanup: %v", err)
-			}
-		}
+		drop(c, made)
 	}()
 	sfx := time.Now().UnixNano() % 1000000000
 	inst := func(name string) (int, string) {
@@ -70,44 +95,54 @@ func TestPromMetricsOnAStore(t *testing.T) {
 	}
 	fresh, freshName := inst("b24d-fresh")
 	stale, staleName := inst("b24d-stale")
-	for _, tb := range []string{"dbstats", "database_sizes"} {
-		exec(`SELECT pgvigil.ensure_month_partition($1, m) FROM unnest(ARRAY[now() - interval '1 hour', now()]) m`, tb)
-	}
+	exec(`SELECT pgvigil.ensure_month_partition('dbstats', m) FROM unnest(ARRAY[now() - interval '1 hour', now()]) m`)
 	exec(`INSERT INTO pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, waiting_lock, longest_active_secs,
 	                                             longest_idle_txn_secs, oldest_xmin_age, max_connections)
-	      VALUES ($1, now() - interval '3 minutes', 8, 2, 6, 0, 0, 1, 0, 100, 100),
+	      VALUES ($1, now() - interval '3 minutes', 12, 5, 7, 2, 1, 9, 6, 300, 100),
 	             ($1, now() - interval '1 minute', 10, 3, 6, 1, 0, 4, 2, 150, 100),
 	             ($2, now() - interval '20 minutes', 5, 1, 4, 0, 0, 0, 0, 10, 100)`, fresh, stale)
-	// two databases, 60 s apart; db2's stats_reset changes at the newest read
+	// cumulative counters at 3, 2 and 1 minutes ago (k = 0, 1, 2): db1's commits 1000, 3000, 4000 (deltas 2000 then
+	// 1000: the newest smaller), deadlocks 0, 4, 6; db2's commits 10, 20, 30, deadlocks 0, 2, 4, its stats_reset new at
+	// the newest read; db3's commits 100, 200, 300, no deadlock. The 2-minute read: deadlocks 4 + 2 + 0 = 6 over 60 s.
 	exec(`INSERT INTO pgvigil.dbstats (instance_id, snapshot_at, dbid, datname, numbackends, xact_commit, xact_rollback, blks_read, blks_hit,
 	                                    tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted, temp_bytes, deadlocks, stats_reset)
-	      SELECT $1, date_trunc('second', now()) - make_interval(mins => m), d.dbid, d.name, 2, 1000 * (4 - m) * d.dbid, 10 * (4 - m), 50 * (4 - m), 950 * (4 - m),
-	             100 * (4 - m), 10 * (4 - m), 5 * (4 - m), 3 * (4 - m), 1 * (4 - m), 0, 3 * (4 - m),
-	             CASE WHEN d.name = 'db2' AND m = 1 THEN now() - interval '61 seconds' ELSE now() - interval '1 day' END
-	        FROM (VALUES (1, 'db1'), (2, 'db2')) d(dbid, name) CROSS JOIN generate_series(1, 3) m`, fresh)
-	exec(`INSERT INTO pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes)
-	      VALUES ($1, now() - interval '5 minutes', 1, 'db1', 1000), ($1, now() - interval '5 minutes', 2, 'db2', 9000)`, fresh)
+	      SELECT $1, date_trunc('second', now()) - make_interval(mins => 3 - k), d.dbid, d.name, 2,
+	             (ARRAY[d.c0, d.c1, d.c2])[k + 1], 10 * k, 50 * k, 950 * k, 100 * k, 10 * k, 5 * k, 3 * k, k, 0, (ARRAY[d.l0, d.l1, d.l2])[k + 1],
+	             CASE WHEN d.name = 'db2' AND k = 2 THEN now() - interval '61 seconds' ELSE now() - interval '1 day' END
+	        FROM (VALUES (1, 'db1', 1000, 3000, 4000, 0, 4, 6), (2, 'db2', 10, 20, 30, 0, 2, 4), (3, 'db3', 100, 200, 300, 0, 0, 0))
+	             d(dbid, name, c0, c1, c2, l0, l1, l2)
+	       CROSS JOIN generate_series(0, 2) k`, fresh)
+	exec(`INSERT INTO pgvigil.databases (instance_id, dbid, datname, snapshot_at, size_bytes, first_seen, is_present)
+	      VALUES ($1, 1, 'db1', now(), 1000, now(), true), ($1, 2, 'db2', now(), 9000, now(), true), ($1, 3, 'db3', now(), 500, now(), true)`, fresh)
 
-	// PARITY with the Metrics grid, both ways, the instance's figures
-	rows, err := pool.Query(ctx, `
-	  WITH g AS (SELECT g.key, g.current_value FROM pgvigil.metric_grid($1::int, now() - interval '1 hour', now()) g
-	              JOIN pgvigil.metric_catalog c ON c.key = g.key
-	             WHERE g.current_value IS NOT NULL AND g.current_at > now() - make_interval(secs => c.fresh_secs)),
-	       n AS (SELECT family || '.' || metric AS key, value FROM pgvigil.metrics_newest(ARRAY[$1::int]) WHERE database IS NULL)
-	  SELECT coalesce(g.key, n.key), g.current_value, n.value FROM g FULL JOIN n ON n.key = g.key
-	   WHERE g.key IS NULL OR n.key IS NULL OR abs(g.current_value - n.value) > 1e-9 * greatest(1, abs(g.current_value))`, fresh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var key string
-		var g, n *float64
-		if err := rows.Scan(&key, &g, &n); err != nil {
-			t.Fatal(err)
+	// PARITY with the Metrics grid, both ways: the instance's figures, then each database's own series
+	parity := func(label, grid, newest string, args ...any) {
+		t.Helper()
+		rows, err := pool.Query(ctx, `
+		  WITH g AS (SELECT g.key, g.current_value FROM `+grid+` g JOIN pgvigil.metric_catalog c ON c.key = g.key
+		             WHERE g.current_value IS NOT NULL AND g.current_at > now() - make_interval(secs => c.fresh_secs)),
+		       n AS (`+newest+`)
+		  SELECT coalesce(g.key, n.key), g.current_value, n.value FROM g FULL JOIN n ON n.key = g.key
+		   WHERE g.key IS NULL OR n.key IS NULL OR abs(g.current_value - n.value) > 1e-9 * greatest(1, abs(g.current_value))`, args...)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
 		}
-		t.Errorf("parity %s: the grid's current %v, metrics_newest %v", key, promDeref(g), promDeref(n))
+		defer rows.Close()
+		for rows.Next() {
+			var key string
+			var g, n *float64
+			if err := rows.Scan(&key, &g, &n); err != nil {
+				t.Fatal(err)
+			}
+			t.Errorf("parity %s %s: the grid's current %v, metrics_newest %v", label, key, promDeref(g), promDeref(n))
+		}
 	}
-	rows.Close()
+	parity("instance", `pgvigil.metric_grid($1::int, now() - interval '1 hour', now())`,
+		`SELECT family || '.' || metric AS key, value FROM pgvigil.metrics_newest(ARRAY[$1::int]) WHERE database IS NULL AND metric <> 'cut'`, fresh)
+	for _, db := range []string{"db1", "db2", "db3"} {
+		parity(db, `pgvigil.metric_grid($1::int, now() - interval '1 hour', now(), interval '15 minutes', $2::text, 'database')`,
+			`SELECT family || '.' || metric AS key, value FROM pgvigil.metrics_newest(ARRAY[$1::int], interval '15 minutes', true, 50) WHERE database = $2::text`, fresh, db)
+	}
 	var nkeys int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.metrics_newest(ARRAY[$1::int]) WHERE database IS NULL`, fresh).Scan(&nkeys); err != nil || nkeys < 18 {
 		t.Errorf("metrics_newest of 'fresh': %d keys, %v (want the 8 sessions and 10 database keys at least)", nkeys, err)
@@ -124,15 +159,13 @@ func TestPromMetricsOnAStore(t *testing.T) {
 	}
 	body := render(MetricsConfig{})
 	lab := func(n string) string { return `server="` + n + `",engine="postgres"` }
-	var dl float64
-	if err := pool.QueryRow(ctx, `SELECT value / secs FROM pgvigil.metrics_newest(ARRAY[$1::int]) WHERE family = 'database' AND metric = 'deadlocks' AND database IS NULL`, fresh).Scan(&dl); err != nil {
-		t.Errorf("deadlocks: %v", err)
-	}
 	for _, want := range []string{
 		"pgvigil_sessions{" + lab(freshName) + "} 10\n",
 		"pgvigil_sessions_connections_used_ratio{" + lab(freshName) + "} 0.1\n",
-		"pgvigil_instance_deadlocks_per_second{" + lab(freshName) + "} " + promFloat(dl) + "\n",
+		"pgvigil_instance_deadlocks_per_second{" + lab(freshName) + "} 0.1\n",
 		`pgvigil_instance_info{server="` + freshName + `",engine="postgres",platform="onprem",version="17.0"} 1` + "\n",
+		`pgvigil_findings{server="` + freshName + `",severity="info"} `,
+		`pgvigil_findings{server="` + freshName + `",severity="warning"} `,
 		`pgvigil_findings{server="` + freshName + `",severity="critical"} `,
 		`pgvigil_sample_timestamp_seconds{server="` + staleName + `",family="sessions"} `,
 		"# TYPE pgvigil_metrics_refused_total counter\n",
@@ -150,10 +183,16 @@ func TestPromMetricsOnAStore(t *testing.T) {
 	if strings.Count(body, "# TYPE pgvigil_sessions gauge\n") != 1 {
 		t.Errorf("pgvigil_sessions declared %d times", strings.Count(body, "# TYPE pgvigil_sessions gauge\n"))
 	}
+	dbLab := func(db string) string { return `{` + lab(freshName) + `,database="` + db + `"}` }
 	body = render(MetricsConfig{Databases: true, MaxDatabases: 1})
-	if !strings.Contains(body, `pgvigil_database_backends{server="`+freshName+`",engine="postgres",database="db2"} `) ||
-		strings.Contains(body, `database="db1"`) || !strings.Contains(body, `pgvigil_metrics_databases_cut{server="`+freshName+`"} 1`+"\n") {
-		t.Errorf("databases on, max 1: want db2's series (the larger), no db1, the cut 1:\n%s", grepLines(body, freshName))
+	if !strings.Contains(body, "pgvigil_database_backends"+dbLab("db2")+" ") || strings.Contains(body, dbLab("db1")) || strings.Contains(body, dbLab("db3")) ||
+		!strings.Contains(body, `pgvigil_metrics_databases_cut{server="`+freshName+`"} 2`+"\n") {
+		t.Errorf("databases on, max 1: want db2's series (the largest by size), no db1 or db3, the cut 2:\n%s", grepLines(body, freshName))
+	}
+	body = render(MetricsConfig{Databases: true, IncludeDatabases: []string{"db1"}})
+	if !strings.Contains(body, "pgvigil_database_backends"+dbLab("db1")+" ") || strings.Contains(body, dbLab("db2")) || strings.Contains(body, dbLab("db3")) ||
+		strings.Contains(body, `pgvigil_metrics_databases_cut{server="`+freshName+`"}`) {
+		t.Errorf("include_databases [db1]: want db1's series alone, no cut row:\n%s", grepLines(body, freshName))
 	}
 }
 
