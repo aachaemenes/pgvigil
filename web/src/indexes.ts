@@ -26,7 +26,7 @@ const problemText: Record<string, string> = {
 };
 const problemKind: Record<string, string> = { invalid: 'warn', duplicate: 'warn', redundant: '', unused: '' };
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 const indexCols: Col[] = [
   { key: 'datname', label: 'database' },
@@ -62,7 +62,7 @@ function inventoryCols(ctx?: Ctx): Col[] {
     { key: 'scans_30d', label: '30 d', num: true, fmt: blankNum },
     { key: 'idx_tup_fetch', label: 'rows fetched', num: true },
     { key: 'last_idx_scan', label: 'last scan', fmt: v => v ? fmtTime(v) : '' },
-    { key: 'problems', fmt: v => v ? badge(String(v), /invalid|duplicate/.test(String(v)) ? 'warn' : '') : '' },
+    { key: 'problems', fmt: v => v ? badge(String(v), /invalid|duplicate/.test(String(v)) ? 'warn' : 'none') : '' },
   ];
 }
 // one database at a time: /api/indexes?instance=&db= returns that database's 2,000 largest indexes and its total
@@ -298,7 +298,7 @@ export async function indexesFleetView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'instance', fmt: inst },
       { key: 'platform' },
       { key: 'inventory', label: 'indexes', num: true }, { key: 'inventory_bytes', label: 'their size', num: true, fmt: fmtBytes },
-      { key: 'invalid', num: true, fmt: warnNum }, { key: 'duplicate', num: true, fmt: warnNum },
+      { key: 'invalid', num: true, fmt: warnNum, cls: v => Number(v) > 0 ? '' : 'status ok' }, { key: 'duplicate', num: true, fmt: warnNum, cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'redundant', num: true }, { key: 'unused', num: true },
       { key: 'bytes', label: 'problem size', num: true, fmt: fmtBytes },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },

@@ -89,7 +89,7 @@ function strip(runs: Row[]): HTMLElement {
 const runCols: Col[] = [
   { key: 'start_time', label: 'start', fmt: fmtTime },
   { key: 'duration_s', label: 'took', num: true, fmt: dur },
-  { key: 'outcome', fmt: outcomeBadge },
+  { key: 'outcome', fmt: outcomeBadge, cls: v => v === 'succeeded' ? 'status ok' : v == null || v === '' || ['failed', 'cancelled', 'retry'].includes(String(v)) ? '' : 'status none' },
   { key: 'failed_step', label: 'step that failed' },
   { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
   { key: 'sql_severity', label: 'severity', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },

@@ -17,7 +17,7 @@ type XE = Record<XEParts, Table | null>;
 // the form follows the server's platform (server, rds, cloudsql, azuresqlmi, azuresqldb: docs/sqlserver-xe.md); the page
 // names the flag, not one form, since the bare command prints the server form, which RDS and Cloud SQL refuse
 const SCRIPT = 'pgvigil mssql-xe -print -form <the server\'s form>';
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
 const secs = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v) / 100) / 10) + ' s';
 const text = (v: unknown) => v == null ? '' : String(v);
@@ -281,7 +281,7 @@ const eventCols: Col[] = [
   { key: 'duration_ms', label: 'duration', num: true, fmt: ms }, { key: 'cpu_ms', label: 'cpu', num: true, fmt: ms },
   { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'physical_reads', label: 'physical reads', num: true },
   { key: 'writes', num: true }, { key: 'row_count', label: 'rows', num: true },
-  { key: 'result', fmt: v => v == null || v === 'OK' ? text(v) : badge(text(v), 'warn') },
+  { key: 'result', fmt: v => v == null || v === 'OK' ? text(v) : badge(text(v), 'warn'), cls: v => v === 'OK' ? 'status ok' : '' },
   { key: 'login_name', label: 'login' }, { key: 'host_name', label: 'host' }, { key: 'program_name', label: 'program' },
   { key: 'database_name', label: 'database' }, { key: 'session_id', label: 'session', num: true },
   { key: 'query_hash', label: 'query hash' }, { key: 'query_plan_hash', label: 'plan hash' },

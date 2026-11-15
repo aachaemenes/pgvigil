@@ -167,7 +167,7 @@ export function foldedGrid(f: Fold): HTMLElement {
         return b;
       } },
       { key: 'sessions', num: true },
-      { key: 'blocked', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : '0' },
+      { key: 'blocked', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : '0', cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'longest', label: f.ageLabel, num: true, fmt: fmtSecs },
     ], st.blocked ? 'No session is blocked in this snapshot.' : f.empty));
   };

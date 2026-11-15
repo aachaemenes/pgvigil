@@ -14,7 +14,7 @@ import { stripGrid } from './timestrip';
 
 const text = (v: unknown) => v == null ? '' : String(v);
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const CHECKS = ['deadlocks in the last hour', 'a capture is not installed', 'a capture is stopped', 'the ring buffer dropped events'];
 
 // stateLine: the deadlock capture as the reader last saw it (the Extended Events tabs' wording, shortened)

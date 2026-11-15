@@ -37,7 +37,7 @@ const dur = (v: unknown) => {
 const mb = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' MB';
 const times = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' x';
 const yes = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const stmt = (v: unknown) => v == null || v === '' ? '(no text stored)' : sqlCell(v);
 // a tinted cell (class 'status warn' / 'status crit') has no padding of its own: the stylesheet gives it to the
 // cell's .cell-link, so a tinted cell's content rides one (bare text sat against the cell's top and side)
@@ -280,7 +280,7 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
   const status = (v: unknown, r: Row) => {
     const t = text(v);
     if (t === 'new') return badge(kind === 'querystore' ? `new: first compiled ${fmtTime(r.first_compile)}` : 'NEW', 'warn');
-    if (t === 'gone') return badge('GONE', '');
+    if (t === 'gone') return badge('GONE', 'none');
     return t;
   };
   const keyCols: Col[] = kind === 'procs'
@@ -290,7 +290,7 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
       : [{ key: 'database_name', label: 'database' }, { key: 'query_hash', label: 'query hash' }, { key: 'object_name', label: 'object' }];
   const cols: Col[] = [
     ...keyCols,
-    { key: 'status', label: 'new / gone', fmt: status },
+    { key: 'status', label: 'new / gone', fmt: status, cls: v => v == null || v === '' || v === 'new' || v === 'gone' ? '' : 'status none' },
     { key: 'before_executions', label: 'executions before', num: true }, { key: 'executions', label: 'executions now', num: true },
     { key: 'executions_pct', label: 'executions +%', num: true, ...band(100, -50) },
     { key: 'before_avg_duration_ms', label: 'avg duration before', num: true, fmt: dur }, { key: 'avg_duration_ms', label: 'avg duration now', num: true, fmt: dur },

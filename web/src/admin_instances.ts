@@ -98,7 +98,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       moves.node,
       el('h3', {}, 'Changes (the last 200)'),
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
-        { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
+        { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? 'ok' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
     );
     readOnly(d);
   }
@@ -205,7 +205,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     { key: 'disabled', label: 'state', fmt: v => v ? badge('disabled', 'warn') : 'collected', cls: v => v ? '' : 'status ok' },
     { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
     { key: 'last_collected', label: 'last collected', fmt: fmtTime },
-    { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? '') },
+    { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? ''), cls: (v, r) => r.gone_source || v == null || v === '' ? '' : 'status ok' },
     { key: 'actions', fmt: (_v, r) => {
       const n = String(r.name);
       const test = el('button', { type: 'button', class: 'link', 'aria-label': `Test ${n}` }, 'Test');
@@ -339,7 +339,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     { key: 'note', label: 'note', wide: true, fmt: (v, r) => {
       const parts: (HTMLElement | string)[] = [];
       if (r.entra_only) parts.push(badge(String(v ?? 'Entra only'), 'warn'));
-      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'info'));
+      if (r.serverless) parts.push(badge(String(r.serverless), r.auto_pause ? 'warn' : 'none'));
       return parts.length ? el('span', {}, ...parts.flatMap((x, i) => i ? [' ', x] : [x])) : '';
     } },
     { key: 'state', fmt: (v, r) => r.gone ? badge('gone from the source', 'warn') : String(v ?? ''), cls: (v, r) => r.gone || v == null || v === '' ? '' : 'status ok' },

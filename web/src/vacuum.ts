@@ -8,7 +8,7 @@ import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
 type Parts = 'state' | 'checks' | 'running' | 'tables' | 'wraparound' | 'holders' | 'history';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const never = (v: unknown) => v == null ? 'never' : fmtTime(v);
 const yes = (v: unknown, kind = 'warn') => v ? badge('yes', kind) : '';
@@ -65,7 +65,7 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'table_name', label: 'table' },
     { key: 'is_auto', label: 'by', fmt: v => v ? 'autovacuum' : 'manual' },
     { key: 'is_wraparound', label: 'wraparound', fmt: v => yes(v, 'crit') },
-    { key: 'phase', fmt: (v, r) => r.wait_event_type === 'Lock' ? badge(String(v ?? 'waiting for its lock'), 'warn') : String(v ?? '') },
+    { key: 'phase', fmt: (v, r) => r.wait_event_type === 'Lock' ? badge(String(v ?? 'waiting for its lock'), 'warn') : String(v ?? ''), cls: (v, r) => r.wait_event_type === 'Lock' || v == null || v === '' ? '' : 'status ok' },
     { key: 'scanned_pct', label: 'heap scanned', num: true, fmt: pct },
     { key: 'heap_blks_total', label: 'heap blocks', num: true },
     { key: 'index_vacuum_count', label: 'index passes', num: true },

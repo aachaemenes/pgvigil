@@ -18,11 +18,11 @@ import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile }
 
 type Parts<K extends string> = Record<K, Table | null>;
 
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const yes = (v: unknown, bad = false) => v == null ? '' : v === true ? badge('yes', bad ? 'crit' : 'ok') : badge('no', bad ? '' : 'warn');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
+const yes = (v: unknown, bad = false) => v == null ? '' : v === true ? badge('yes', bad ? 'crit' : 'ok') : badge('no', bad ? 'ok' : 'warn');
 const num = (v: unknown) => v == null || v === '' ? NaN : Number(v);
 const hours = (v: unknown) => isNaN(num(v)) ? '' : num(v) < 48 ? `${fmtNum(v)} h` : `${(num(v) / 24).toFixed(1)} d`;
-const stateBadge = (v: unknown) => badge(String(v ?? ''), v === 'ok' ? 'ok' : v === 'error' ? 'crit' : v === 'running' || v === 'no_binary' ? 'warn' : '');
+const stateBadge = (v: unknown) => badge(String(v ?? ''), v === 'ok' ? 'ok' : v === 'error' ? 'crit' : v === 'running' || v === 'no_binary' ? 'warn' : 'none');
 
 function instLink(ctx: Ctx, name: unknown, id: unknown, tab: string): Node {
   return el('a', { href: href(ctx, { tab, instance: Number(id), tag: undefined }) }, String(name ?? ''));
@@ -221,7 +221,7 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> 
 const changeCols = (ctx: Ctx, withInstance: boolean): Col[] => [
   ...(withInstance ? [{ key: 'instance', fmt: (v: unknown, r: Row) => instLink(ctx, v, r.instance_id, 'pgstate') } as Col] : []),
   { key: 'changed_at', label: 'when', fmt: fmtTime }, { key: 'changed_at_source', label: 'time from' },
-  { key: 'change', fmt: v => badge(String(v), v === 'promotion' || v === 'demotion' ? 'warn' : v === 'another cluster' ? 'crit' : '') },
+  { key: 'change', fmt: v => badge(String(v), v === 'promotion' || v === 'demotion' ? 'warn' : v === 'another cluster' ? 'crit' : 'none') },
   { key: 'from_role', label: 'from' }, { key: 'to_role', label: 'to' }, { key: 'from_timeline', label: 'timeline before', num: true }, { key: 'to_timeline', label: 'timeline', num: true },
   { key: 'postmaster_restarted', label: 'restarted', fmt: v => v ? 'yes' : 'no' },
   { key: 'held_secs', label: 'role held for', num: true, fmt: v => v == null ? 'since before the first read' : fmtSecs(v) },

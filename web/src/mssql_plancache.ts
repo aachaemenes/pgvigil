@@ -64,7 +64,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
     for (const st of rowsOf(d.state)) if (st.status !== 'ok') out.push(el('p', { class: 'meta' }, `The ${String(st.collection)} collection's last run: ${String(st.status)}${st.note ? ' (' + String(st.note) + ')' : ''}.`));
     const findings = rowsOf(d.findings);
     if (findings.length) out.push(el('h3', {}, 'Findings'), grid(findings, [
-      { key: 'severity', fmt: v => badge(String(v), v === 'warning' ? 'warn' : 'info') },
+      { key: 'severity', fmt: v => badge(String(v), v === 'warning' ? 'warn' : 'none') },
       { key: 'check_name', label: 'check' }, { key: 'object', label: 'database' }, { key: 'detail', wide: true }, { key: 'at', label: 'read', fmt: fmtTime }]));
 
     out.push(el('h3', {}, 'Statements over the range'));
@@ -105,7 +105,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'physical_reads', label: 'physical reads', num: true },
         { key: 'logical_writes', label: 'writes', num: true },
         { key: 'row_count', label: 'rows', num: true },
-        { key: 'spills', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0' },
+        { key: 'spills', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0', cls: v => Number(v) > 0 ? '' : 'status ok' },
         { key: 'max_grant_kb', label: 'max grant (KB)', num: true },
         { key: 'grant_used_pct', label: 'grant used', num: true, fmt: pct },
         { key: 'max_dop', label: 'max DOP', num: true },

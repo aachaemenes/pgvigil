@@ -8,11 +8,11 @@
 import { get, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtTime, grid, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const n = (v: unknown) => Number(v ?? 0);
 const onBad = (v: unknown) => v === 'on' ? badge('on', 'crit') : String(v ?? '');
-const checksums = (v: unknown, r: Row) => v == null ? '' : v === 'off' ? badge('off', r.platform === 'onprem' ? 'warn' : '') : String(v);
-const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'corrupt' ? 'crit' : v === 'error' || v === 'partial' ? 'warn' : '');
+const checksums = (v: unknown, r: Row) => v == null ? '' : v === 'off' ? badge('off', r.platform === 'onprem' ? 'warn' : 'none') : String(v);
+const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'corrupt' ? 'crit' : v === 'error' || v === 'partial' ? 'warn' : v === 'ok' ? 'ok' : 'none');
 
 export type CorruptionLevel = 0 | 1 | 2;   // ok, warning, critical (the Summary grid's levels)
 
@@ -36,9 +36,9 @@ export function corruptionCell(r: Row): { level: CorruptionLevel; text: string; 
 const fleetCols = (instLink?: (name: string, id: unknown) => Node): Col[] => [
   { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
   { key: 'platform' },
-  { key: 'data_checksums', label: 'checksums', fmt: checksums },
-  { key: 'ignore_checksum_failure', label: 'ignore_checksum_failure', fmt: onBad },
-  { key: 'zero_damaged_pages', label: 'zero_damaged_pages', fmt: onBad },
+  { key: 'data_checksums', label: 'checksums', fmt: checksums, cls: v => v == null || v === 'off' ? '' : 'status ok' },
+  { key: 'ignore_checksum_failure', label: 'ignore_checksum_failure', fmt: onBad, cls: v => v == null || v === '' || v === 'on' ? '' : 'status ok' },
+  { key: 'zero_damaged_pages', label: 'zero_damaged_pages', fmt: onBad, cls: v => v == null || v === '' || v === 'on' ? '' : 'status ok' },
   { key: 'events_24h', label: 'log messages 24 h', num: true, fmt: v => n(v) > 0 ? badge(String(v), 'crit') : '' },
   { key: 'events_7d', label: 'log messages 7 d', num: true, fmt: v => n(v) > 0 ? String(v) : '' },
   { key: 'last_event', label: 'last message', fmt: v => v == null ? '' : fmtTime(v) },

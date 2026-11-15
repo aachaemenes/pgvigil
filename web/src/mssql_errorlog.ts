@@ -12,7 +12,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './
 
 type Part = Table | null;
 const text = (v: unknown) => v == null ? '' : String(v);
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
 const mb = (v: unknown) => v == null ? '' : fmtNum(v) + ' MB';
 
@@ -147,7 +147,7 @@ const growthSummaryCols: Col[] = [
   { key: 'size_mb', label: 'size change', num: true, fmt: mb }, { key: 'last_at', label: 'last', fmt: fmtTime },
 ];
 const growthCols: Col[] = [
-  { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'kind', fmt: v => text(v).includes('shrink') ? badge(text(v), 'warn') : text(v) },
+  { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'kind', fmt: v => text(v).includes('shrink') ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || String(v).includes('shrink') ? '' : 'status ok' },
   { key: 'database_name', label: 'database' }, { key: 'file_name', label: 'file' },
   { key: 'duration_ms', label: 'took', num: true, fmt: ms, cls: v => Number(v) > 1000 ? 'warn' : '' },
   { key: 'size_change_mb', label: 'size change', num: true, fmt: mb },
@@ -155,7 +155,7 @@ const growthCols: Col[] = [
 ];
 const disruptive = new Set(['DBCC FREEPROCCACHE', 'DBCC FREESYSTEMCACHE', 'DBCC DROPCLEANBUFFERS', 'DBCC WRITEPAGE']);
 const dbccSummaryCols: Col[] = [
-  { key: 'command', fmt: v => disruptive.has(text(v)) ? badge(text(v), 'warn') : text(v) }, { key: 'runs', num: true },
+  { key: 'command', fmt: v => disruptive.has(text(v)) ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || disruptive.has(String(v)) ? '' : 'status ok' }, { key: 'runs', num: true },
   { key: 'logins' }, { key: 'databases' }, { key: 'first_at', label: 'first', fmt: fmtTime }, { key: 'last_at', label: 'last', fmt: fmtTime },
 ];
 const dbccCols: Col[] = [
@@ -197,7 +197,7 @@ export async function mssqlDefaultTraceView(ctx: Ctx): Promise<HTMLElement> {
 
 // ---- System health
 
-const stateBadge = (v: unknown) => badge(text(v), v === 'ERROR' ? 'crit' : v === 'WARNING' ? 'warn' : v === 'CLEAN' ? 'ok' : '');
+const stateBadge = (v: unknown) => badge(text(v), v === 'ERROR' ? 'crit' : v === 'WARNING' ? 'warn' : v === 'CLEAN' ? 'ok' : 'none');
 const flag = (v: unknown) => Number(v) > 0 ? 'crit' : '';
 
 const systemCols: Col[] = [

@@ -14,7 +14,7 @@ export const mssqlFileIOTab = 'mssqlfileio';
 export const mssqlTempdbTab = 'mssqltempdb';
 export const mssqlConnectionsTab = 'mssqlconnections';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '-' : fmtNum(v) + ' %';
 const kb = (v: unknown) => v == null ? '-' : fmtBytes(Number(v) * 1024);
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';

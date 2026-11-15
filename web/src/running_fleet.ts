@@ -62,7 +62,7 @@ export async function runningFleet(ctx: Ctx): Promise<HTMLElement> {
     { key: 'sessions', num: true },
     { key: 'active', num: true },
     { key: 'idle_in_txn', label: 'idle in transaction', num: true },
-    { key: 'blocked', num: true, fmt: v => v == null ? '' : Number(v) > 0 ? badge(fmtNum(v), 'crit') : '0' },
+    { key: 'blocked', num: true, fmt: v => v == null ? '' : Number(v) > 0 ? badge(fmtNum(v), 'crit') : '0', cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
     { key: 'heads', label: 'chain heads', num: true },
     { key: 'longest_wait_secs', label: 'longest blocked wait', num: true, fmt: v => v == null ? '' : waitKind(v) ? badge(fmtSecs(v), waitKind(v)) : fmtSecs(v) || '0s' },
     { key: 'longest_stmt_secs', label: 'longest statement', num: true, fmt: fmtSecs },
@@ -71,9 +71,9 @@ export async function runningFleet(ctx: Ctx): Promise<HTMLElement> {
     // SQL Server only; a PostgreSQL row has no such figure and its cell stays empty
     { key: 'max_grant_kb', label: 'max memory grant', num: true, fmt: grant },
     { key: 'sum_grant_kb', label: 'sum of memory grants', num: true, fmt: grant },
-    { key: 'tempdb_waits', label: 'tempdb latch waits', num: true, fmt: waits },
+    { key: 'tempdb_waits', label: 'tempdb latch waits', num: true, fmt: waits, cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
     { key: 'tempdb_wait_ms', label: 'tempdb latch wait (ms)', num: true },
-    { key: 'tempdb_alloc_waits', label: 'tempdb allocation waits', num: true, fmt: waits },
+    { key: 'tempdb_alloc_waits', label: 'tempdb allocation waits', num: true, fmt: waits, cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
     { key: 'tempdb_alloc_wait_ms', label: 'tempdb allocation wait (ms)', num: true },
   ];
 

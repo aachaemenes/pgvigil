@@ -5,7 +5,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtTime, grid, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yes = (v: unknown) => v ? 'yes' : '';
 const flag = (kind: string) => (v: unknown) => v ? badge('yes', kind) : '';
 const never = (v: unknown) => v == null ? '' : fmtTime(v);
@@ -26,7 +26,7 @@ const roleCols: Col[] = [
   { key: 'bypassrls', label: 'bypassrls', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && (r.super || r.is_platform) ? 'status none' : '' },
   { key: 'inherit', fmt: v => v ? '' : 'noinherit' },
   { key: 'connlimit', label: 'conn. limit', num: true, fmt: v => v == null || Number(v) === -1 ? '' : String(v) },
-  { key: 'valid_until', label: 'password valid until', fmt: (v) => v == null ? '' : new Date(String(v)) < new Date() ? badge(fmtTime(v) + ' (expired)', 'warn') : fmtTime(v) },
+  { key: 'valid_until', label: 'password valid until', fmt: (v) => v == null ? '' : new Date(String(v)) < new Date() ? badge(fmtTime(v) + ' (expired)', 'warn') : fmtTime(v), cls: v => v == null || new Date(String(v)) < new Date() ? '' : 'status ok' },
   { key: 'member_of', label: 'member of', wide: true },
   { key: 'config', label: 'ALTER ROLE SET', wide: true },
 ];
@@ -168,12 +168,12 @@ export async function rolesFleetView(keep?: (r: Row) => boolean, instLink?: (nam
     el('p', { class: 'meta' }, 'Per server: who is superuser and who can log in. Read hourly; a password is never read.'),
     grid(sum, [
       { key: 'instance', fmt: link }, { key: 'platform' },
-      { key: 'superusers', label: 'superusers', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '0' },
+      { key: 'superusers', label: 'superusers', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '0', cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'login_roles', label: 'login roles', num: true },
-      { key: 'warnings', label: 'warnings', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '0' },
+      { key: 'warnings', label: 'warnings', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '0', cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'changes_7d', label: 'changes (7 d)', num: true },
       { key: 'hba_status', label: 'hba rules', fmt: v => v === 'read' ? 'read' : badge(String(v ?? 'not read'), '') },
-      { key: 'login_name', label: 'read as', fmt: (v, r) => r.login_has_pg_monitor === false ? badge(String(v) + ' (no pg_monitor)', 'warn') : String(v ?? '') },
+      { key: 'login_name', label: 'read as', fmt: (v, r) => r.login_has_pg_monitor === false ? badge(String(v) + ' (no pg_monitor)', 'warn') : String(v ?? ''), cls: (v, r) => r.login_has_pg_monitor === false || v == null || v === '' ? '' : r.login_has_pg_monitor === true ? 'status ok' : 'status none' },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ], 'No roles read yet: the roles collection runs hourly.'),
     el('h3', {}, 'Roles'), el('label', {}, 'Show ', which), out);

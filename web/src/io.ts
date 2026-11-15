@@ -14,7 +14,7 @@ import { depthError } from './statements';
 
 export interface Window { from: string; to: string }
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const ms = (v: number) => fmtNum(v) + ' ms';
 const pctFmt = (v: number) => fmtNum(v) + ' %';
 const bytesS = (v: number) => fmtBytes(v) + '/s';
@@ -98,7 +98,7 @@ type IOReply = Record<'state' | 'platform_latest' | 'platform' | 'pgio' | 'pgio_
 // ---- checkpoints from the server log (parity3 task 126; pgBadger's Checkpoints tab, PMM 13) -------------------------
 
 const secsTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' s';
-const causeBadge = (v: unknown) => badge(String(v ?? ''), v === 'wal' ? 'warn' : v === 'requested' ? 'warn' : v === 'start not read' ? '' : 'ok');
+const causeBadge = (v: unknown) => badge(String(v ?? ''), v === 'wal' ? 'warn' : v === 'requested' ? 'warn' : v === 'start not read' ? 'none' : 'ok');
 
 const checkpointLogCols: Col[] = [
   { key: 'completed_at', label: 'completed', fmt: fmtTime },
@@ -311,11 +311,11 @@ const dmsCols: Col[] = [
   { key: 'class' },
   { key: 'read_iops', label: 'read IOPS', num: true },
   { key: 'write_iops', label: 'write IOPS', num: true },
-  { key: 'read_latency_ms', label: 'read ms', num: true, fmt: (v, r) => latBadge(v, r) },
-  { key: 'write_latency_ms', label: 'write ms', num: true, fmt: (v, r) => latBadge(v, r) },
+  { key: 'read_latency_ms', label: 'read ms', num: true, fmt: (v, r) => latBadge(v, r), cls: v => v == null || Number(v) > 20 ? '' : 'status ok' },
+  { key: 'write_latency_ms', label: 'write ms', num: true, fmt: (v, r) => latBadge(v, r), cls: v => v == null || Number(v) > 20 ? '' : 'status ok' },
   { key: 'read_bytes_s', label: 'read / s', num: true, fmt: fmtBytes },
   { key: 'write_bytes_s', label: 'write / s', num: true, fmt: fmtBytes },
-  { key: 'queue_depth', label: 'queue', num: true, fmt: v => v != null && Number(v) > 10 ? badge(fmtNum(v), 'warn') : fmtNum(v) },
+  { key: 'queue_depth', label: 'queue', num: true, fmt: v => v != null && Number(v) > 10 ? badge(fmtNum(v), 'warn') : fmtNum(v), cls: v => v == null || Number(v) > 10 ? '' : 'status ok' },
   { key: 'net_rx_bytes_s', label: 'network in / s', num: true, fmt: fmtBytes },
   { key: 'net_tx_bytes_s', label: 'network out / s', num: true, fmt: fmtBytes },
   { key: 'free_storage_bytes', label: 'free storage', num: true, fmt: fmtBytes },

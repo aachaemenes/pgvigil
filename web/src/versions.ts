@@ -7,7 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtTime, grid } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yn = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const ver = (r: Row) => r.major != null ? `${r.major}.${r.minor}` : String(r.server_version ?? '');
 
@@ -33,7 +33,7 @@ export function versionCell(r: Row): { level: VersionLevel; text: string; detail
 }
 
 const behind = (v: unknown, r: Row) => r.newer_than_table ? 'newer than the table'
-  : v == null ? '' : Number(v) === 0 ? 'current' : badge(`${v} behind`, Number(v) >= 2 ? 'warn' : '');
+  : v == null ? '' : Number(v) === 0 ? 'current' : badge(`${v} behind`, Number(v) >= 2 ? 'warn' : 'ok');
 const eol = (v: unknown, r: Row) => v == null ? '' : r.eol_passed ? badge(`ended ${v}`, 'crit')
   : Number(r.eol_in_months) < 6 ? badge(`${v} (${r.eol_in_months} mo)`, 'warn') : `${v} (${r.eol_in_months} mo)`;
 
@@ -42,16 +42,16 @@ const fleetCols = (instLink?: (name: string, id: unknown) => Node): Col[] => [
   { key: 'platform' },
   { key: 'server_version', label: 'version', fmt: (_v, r) => ver(r) },
   { key: 'latest_minor', label: 'newest minor', fmt: (v, r) => v == null ? '' : `${r.major}.${v} (${r.latest_released})` },
-  { key: 'behind_by', label: 'behind', num: true, fmt: behind },
+  { key: 'behind_by', label: 'behind', num: true, fmt: behind, cls: (v, r) => r.newer_than_table ? 'status none' : v == null ? '' : Number(v) === 0 ? 'status ok' : '' },
   { key: 'released_days_ago', label: 'minor released', num: true, fmt: v => v == null ? '' : `${v} days ago` },
-  { key: 'eol', label: 'end of life', fmt: eol },
+  { key: 'eol', label: 'end of life', fmt: eol, cls: (v, r) => v == null || r.eol_passed || Number(r.eol_in_months) < 6 ? '' : 'status ok' },
   { key: 'engine_version', label: 'engine version', fmt: (v, r) => {
       const t = [v, r.aurora_version].filter(x => x != null && x !== '').join(' / ');
       return r.engine_status === 'deprecated' ? badge(t + ' deprecated', 'warn') : t;
-    } },
+    }, cls: (v, r) => r.engine_status === 'deprecated' || ((v == null || v === '') && (r.aurora_version == null || r.aurora_version === '')) ? '' : 'status ok' },
   // dated: AWS applies it on its own (warn); undated: it waits for someone to apply or schedule it
   { key: 'pending_actions', label: 'pending maintenance', num: true, fmt: (v, r) => Number(v) === 0 || v == null ? ''
-      : r.next_maintenance ? badge(`${v} from ${fmtTime(r.next_maintenance)}`, 'warn') : badge(`${v} undated`, '') },
+      : r.next_maintenance ? badge(`${v} from ${fmtTime(r.next_maintenance)}`, 'warn') : badge(`${v} undated`, 'none') },
   { key: 'auto_minor_version_upgrade', label: 'auto minor upgrade', fmt: yn },
   { key: 'maintenance_window', label: 'window' },
   { key: 'last_restart', label: 'last restart', fmt: fmtTime },

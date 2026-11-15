@@ -172,7 +172,7 @@ export async function counters(ctx: Ctx): Promise<HTMLElement> {
 
 const taskBadge = (v: unknown) => {
   const s = String(v ?? '');
-  const kind = ['failed', 'failed-move', 'error'].includes(s) ? 'crit' : s === 'running' ? 'ok' : ['stopped', 'stopping', 'starting', 'ready'].includes(s) ? 'warn' : '';
+  const kind = ['failed', 'failed-move', 'error'].includes(s) ? 'crit' : s === 'running' ? 'ok' : ['stopped', 'stopping', 'starting', 'ready'].includes(s) ? 'warn' : 'none';
   return badge(s, kind);
 };
 
@@ -803,7 +803,7 @@ export async function logs(ctx: Ctx): Promise<HTMLElement> {
     ...Object.entries(logKinds).filter(([k]) => logKindsAlways.has(k) || (counts.get(k) ?? 0) > 0 || k === kind).map(([k, l]) => el('a', { href: href(ctx, { tab: 'logs', logKind: k }), class: k === kind ? 'on' : '' }, `${l} (${counts.get(k) ?? 0})`)));
   const cols: Col[] = [
     { key: 'at', label: 'when', fmt: fmtTime },
-    { key: 'kind', fmt: v => badge(logKinds[String(v)] ?? String(v), critKinds.has(String(v)) ? 'crit' : v === 'slow' || v === 'plan' ? '' : 'warn') },
+    { key: 'kind', fmt: v => badge(logKinds[String(v)] ?? String(v), critKinds.has(String(v)) ? 'crit' : v === 'slow' || v === 'plan' ? 'none' : 'warn') },
     { key: 'duration_ms', label: 'ms', num: true },
     { key: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'usename', label: 'user' }, { key: 'client' },
     { key: 'statement', wide: true }, { key: 'detail', wide: true },

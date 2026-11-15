@@ -76,10 +76,10 @@ const headCell = (r: Row) => r.chain_note == null ? badge('head', 'crit')
 
 const cols: Col[] = [
   { key: 'session_id', label: 'session', num: true, fmt: v => String(v) },
-  { key: 'status', fmt: statusCell },
+  { key: 'status', fmt: statusCell, cls: (v, r) => v == null || v === '' || (v === 'sleeping' && Number(r.open_tran) > 0) ? '' : 'status ok' },
   { key: 'is_implicit_tran', label: 'implicit transaction', fmt: implicitCell },
   { key: 'command' },
-  { key: 'wait_type', label: 'waiting on', fmt: waitCell },
+  { key: 'wait_type', label: 'waiting on', fmt: waitCell, cls: (_v, r) => r.wait_type == null || String(r.wait_type).startsWith('LCK_') ? '' : 'status ok' },
   { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: v => Number(v) ? String(v) : '' },
   { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v) },
@@ -120,9 +120,9 @@ const treeCols = (kill: Col | null): Col[] => [
   { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? '') },
   ...(kill ? [{ key: '_kill', label: 'kill this head', fmt: (v: unknown, r: Row) => killable(r) && kill.fmt ? kill.fmt(v, r) : '' }] : []),
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
-  { key: 'status', fmt: statusCell },
+  { key: 'status', fmt: statusCell, cls: (v, r) => v == null || v === '' || (v === 'sleeping' && Number(r.open_tran) > 0) ? '' : 'status ok' },
   { key: 'is_implicit_tran', label: 'implicit transaction', fmt: implicitCell },
-  { key: 'wait_type', label: 'waiting on', fmt: waitCell },
+  { key: 'wait_type', label: 'waiting on', fmt: waitCell, cls: (_v, r) => r.wait_type == null || String(r.wait_type).startsWith('LCK_') ? '' : 'status ok' },
   { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
   // the head's own columns (Darling 13.5): when it logged in, when its last request ended (a sleeping head: how long
@@ -238,7 +238,7 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
 
 const shareCols: Col[] = [
   { key: 'statement', label: 'head statement', fmt: (v, r) => v == null ? String(r.head_key ?? '') : sqlCell(v, { heading: `head statement (sessions ${sessionsOf(r.head_sessions)})` }) },
-  { key: 'share_pct', label: 'share of the blocked wait', num: true, fmt: (v, r) => v == null ? '' : r.lead === true ? badge(`${fmtNum(v)} % lead`, 'warn') : `${fmtNum(v)} %` },
+  { key: 'share_pct', label: 'share of the blocked wait', num: true, fmt: (v, r) => v == null ? '' : r.lead === true ? badge(`${fmtNum(v)} % lead`, 'warn') : `${fmtNum(v)} %`, cls: (v, r) => v == null || r.lead === true ? '' : 'status ok' },
   { key: 'blocked_wait_ms', label: 'blocked wait', num: true, fmt: ms },
   { key: 'victims', label: 'blocked requests', num: true },
   { key: 'snapshots', label: 'snapshots', num: true },

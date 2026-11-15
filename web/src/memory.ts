@@ -11,7 +11,7 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, props, tile 
 
 type MemoryParts = 'buffer_state' | 'buffer_rels' | 'buffer_series' | 'temp_statements' | 'temp_hours' | 'temp_databases' | 'findings';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const relkinds: Record<string, string> = { r: 'table', i: 'index', t: 'TOAST', m: 'materialized view', S: 'sequence', p: 'partitioned table', I: 'partitioned index' };
 

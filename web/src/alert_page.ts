@@ -21,8 +21,8 @@ import { whatIsThis } from './sqlview';
 
 interface AlertPageData { card: Table | null; occurrences: Table | null; sends: Table | null; notes: Table | null }
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
+const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : 'none');
 const list = (v: unknown): string => Array.isArray(v) && v.length ? v.join(', ') : '';
 
 // hashParam: one parameter of the page's own address
@@ -303,7 +303,7 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'channel' },
     { key: 'kind' },
     { key: 'destination', wide: true },
-    { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'sent' ? 'ok' : v === 'failed' || v === 'refused' ? 'crit' : v === 'capped' ? 'warn' : '') },
+    { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'sent' ? 'ok' : v === 'failed' || v === 'refused' ? 'crit' : v === 'capped' ? 'warn' : 'none') },
     { key: 'n_firing', label: 'new', num: true },
     { key: 'n_repeat', label: 'repeated', num: true },
     { key: 'n_resolved', label: 'resolved', num: true },

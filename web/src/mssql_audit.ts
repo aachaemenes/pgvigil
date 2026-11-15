@@ -18,7 +18,7 @@ type Part = 'state' | 'read' | 'status' | 'findings' | 'audits' | 'specs' | 'by_
 type Parts = Record<Part, Table | null>;
 
 const text = (v: unknown) => v == null ? '' : String(v);
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 // prose in a grid cell: wraps inside a block that keeps its own width (a grid wider than the page squeezes a plain
 // wrapping cell to a few characters and its row grows to hundreds of pixels)
 const PROSE = 'display:inline-block;min-width:22rem;max-width:40rem;white-space:normal';
@@ -39,7 +39,7 @@ const categoryOf = new Map<number, string>();
 function stateBadge(v: unknown): HTMLElement {
   const s = text(v);
   return badge(s === 'failed' ? 'failed' : s === 'stopped' ? 'not started' : s || 'unknown',
-    s === 'started' ? 'ok' : s === 'failed' ? 'crit' : s === 'stopped' || s === 'shutting down' ? 'warn' : '');
+    s === 'started' ? 'ok' : s === 'failed' ? 'crit' : s === 'stopped' || s === 'shutting down' ? 'warn' : 'none');
 }
 
 // what became of an audit's events at the last read
@@ -49,19 +49,19 @@ function readCell(v: unknown, r: Row): string | Node {
     case 'read':
       return el('span', { style: PROSE }, badge('read', 'ok'), ` ${fmtNum(r.new_events ?? 0)} listed, ${fmtNum(r.counted_events ?? 0)} counted at the last read`, note ? `. ${note}` : '');
     case 'waiting':
-      return el('span', { style: PROSE }, badge('nothing read yet', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('nothing read yet', 'none'), ` ${note}`);
     case 'behind':
       return el('span', { style: PROSE }, badge('behind', 'warn'), ` ${note}`);
     case 'no right':
-      return el('span', { style: PROSE }, badge('health only', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('health only', 'none'), ` ${note}`);
     case 'not readable':
-      return el('span', { style: PROSE }, badge('not readable through T-SQL', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('not readable through T-SQL', 'none'), ` ${note}`);
     case 'error':
       return el('span', { style: PROSE }, badge('read failed', 'warn'), ` ${note}`);
     case '':
       return '';
   }
-  return el('span', { style: PROSE }, badge('not read', ''), ` ${note}`);
+  return el('span', { style: PROSE }, badge('not read', 'none'), ` ${note}`);
 }
 
 const fileLimit = (r: Row): string => {

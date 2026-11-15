@@ -8,7 +8,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const ageTxt = (v: unknown) => v == null ? '' : fmtSecs(v) + ' ago';
 const snapAge = (v: unknown) => v == null ? '' : Number(v) > 86400 ? badge(ageTxt(v), 'warn') : ageTxt(v);

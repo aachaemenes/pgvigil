@@ -16,7 +16,7 @@ const sourceText: Record<string, string> = {
 };
 
 // waitClass colours the event type the way the Running queries page reads it: Lock is blocking, the rest is not.
-const typeBadge = (v: unknown) => badge(String(v ?? ''), v === 'Lock' ? 'warn' : '');
+const typeBadge = (v: unknown) => badge(String(v ?? ''), v === 'Lock' ? 'warn' : 'ok');
 const secs = (v: unknown) => v == null ? '' : fmtSecs(Math.round(Number(v)));
 
 const eventCols: Col[] = [
@@ -38,7 +38,7 @@ const queryCols: Col[] = [
 const treeCols: Col[] = [
   { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${(Number(r.level) - 1) * 1.2}em` }, (Number(r.level) > 1 ? '└ ' : '') + String(v)) },
   { key: 'blocked', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
-  { key: 'state', fmt: v => v === 'idle in transaction' ? badge(String(v), 'warn') : String(v ?? '') },
+  { key: 'state', fmt: v => v === 'idle in transaction' ? badge(String(v), 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'idle in transaction' ? '' : 'status ok' },
   { key: 'wait' },
   { key: 'xact_start', label: 'transaction since', fmt: fmtTime },
   { key: 'datname', label: 'database' }, { key: 'usename', label: 'user' }, { key: 'application_name', label: 'application' },

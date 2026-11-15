@@ -6,7 +6,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 // a volume's level: the Drives page's judgement of the same drive (drives_now's status: the threshold in force for it,
 // task 176b: one rule), read into _drive_status by withDriveStatus; a volume the Drives page does not list is judged by

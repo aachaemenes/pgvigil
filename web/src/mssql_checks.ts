@@ -56,7 +56,7 @@ const verdict = (status: unknown, severity: unknown): string => {
     default: return 'no rule';
   }
 };
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'info');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
 const titled = (text: string, title: string): Node => title ? el('span', { title }, text) : document.createTextNode(text);
 

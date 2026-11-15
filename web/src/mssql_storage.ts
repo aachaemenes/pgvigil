@@ -15,7 +15,7 @@ export const mssqlFilesTab = 'mssqlfiles';
 
 type Parts = Record<'volumes' | 'databases' | 'files' | 'series' | 'checks', Table | null>;
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 // a volume's free per cent judged as the Drives page judges it (drives_now's status: the threshold in force, task 176)
 const lvlOf = (r: Row) => r.status === 'critical' ? 'crit' : r.status === 'warning' ? 'warn' : r.status === 'ok' ? 'ok' : '';

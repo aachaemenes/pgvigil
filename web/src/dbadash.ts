@@ -231,8 +231,8 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'refreshed_at', label: 'Summary refreshed', fmt: v => v == null ? '' : fmtTime(v) },
       { key: 'version', label: 'source version' },
       { key: 'instance_count', label: 'instances', num: true },
-      { key: 'critical', label: 'instances critical', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'crit') : String(v ?? '') },
-      { key: 'warning', label: 'instances warning', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : String(v ?? '') },
+      { key: 'critical', label: 'instances critical', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'crit') : String(v ?? ''), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
+      { key: 'warning', label: 'instances warning', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : String(v ?? ''), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
     ]),
     el('h3', {}, 'Summary'),
     fleetGrid(ctx, d, rows, rowsOf(d.checks)));
