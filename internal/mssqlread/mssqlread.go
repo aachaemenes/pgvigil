@@ -169,21 +169,24 @@ func DatabaseAllowed(perm string) bool {
 
 // sqlServerRights is every server right of the session's login that ServerRefusal judges: sysadmin, each row of
 // fn_my_permissions(NULL, 'SERVER') (effective: through server roles and the 2022 fixed roles too), and every other
-// login it may IMPERSONATE (a check could EXECUTE AS LOGIN = that one, as a PostgreSQL check can SET ROLE).
-const sqlServerRights = `SELECT CAST('role sysadmin' AS nvarchar(300)) WHERE IS_SRVROLEMEMBER('sysadmin') = 1
-UNION ALL SELECT CAST(permission_name AS nvarchar(300)) FROM sys.fn_my_permissions(NULL, 'SERVER')
-UNION ALL SELECT CAST(N'IMPERSONATE on login ' + p.name AS nvarchar(300)) FROM sys.server_principals p
+// login it may IMPERSONATE (a check could EXECUTE AS LOGIN = that one, as a PostgreSQL check can SET ROLE). Every
+// column in the database's collation: the catalog's names and a literal may differ (Msg 451 on the sandbox, 12:5x).
+const sqlServerRights = `SELECT CAST('role sysadmin' AS nvarchar(300)) COLLATE DATABASE_DEFAULT WHERE IS_SRVROLEMEMBER('sysadmin') = 1
+UNION ALL SELECT CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, 'SERVER')
+UNION ALL SELECT CAST(N'IMPERSONATE on login ' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.server_principals p
  WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> SUSER_ID() AND HAS_PERMS_BY_NAME(p.name, 'LOGIN', 'IMPERSONATE') = 1`
 
 // sqlDatabaseRights is the same in one database (run there by its own sp_executesql): each row of
 // fn_my_permissions(NULL, 'DATABASE'), and every other user the session may IMPERSONATE there.
-const sqlDatabaseRights = `SELECT CAST(permission_name AS nvarchar(300)) FROM sys.fn_my_permissions(NULL, 'DATABASE')
-UNION ALL SELECT CAST(N'IMPERSONATE on user ' + p.name AS nvarchar(300)) FROM sys.database_principals p
+const sqlDatabaseRights = `SELECT CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, 'DATABASE')
+UNION ALL SELECT CAST(N'IMPERSONATE on user ' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.database_principals p
  WHERE p.type IN ('S', 'U', 'G', 'E', 'X', 'C', 'K') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(p.name, 'USER', 'IMPERSONATE') = 1`
 
 // sqlEveryDatabaseRights is sqlDatabaseRights in every database the session can open, in one batch the server loops
 // (a check's own T-SQL can reach any of them: USE, or a three-part name). A database it cannot open now (offline,
-// restoring, a secondary that refuses reads) is skipped: a check run as the same login cannot open it either.
+// restoring, a secondary that refuses reads) answers one 'NOT READ: <the error>' row and is skipped: a check run as
+// the same login cannot open it either; when NO database answers its rights the fence fails (an error the loop
+// swallowed for each one must never read as "nothing to refuse").
 const sqlEveryDatabaseRights = `SET NOCOUNT ON;
 DECLARE @pgv_r TABLE (db sysname, p nvarchar(300));
 DECLARE @pgv_db sysname, @pgv_s nvarchar(max);
@@ -192,13 +195,14 @@ OPEN pgv_c;
 FETCH NEXT FROM pgv_c INTO @pgv_db;
 WHILE @@FETCH_STATUS = 0
 BEGIN
-  SET @pgv_s = N'USE ' + QUOTENAME(@pgv_db) + N'; SELECT DB_NAME(), CAST(permission_name AS nvarchar(300)) FROM sys.fn_my_permissions(NULL, ''DATABASE'')
-    UNION ALL SELECT DB_NAME(), CAST(N''IMPERSONATE on user '' + p.name AS nvarchar(300)) FROM sys.database_principals p
+  SET @pgv_s = N'USE ' + QUOTENAME(@pgv_db) + N'; SELECT DB_NAME() COLLATE DATABASE_DEFAULT, CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, ''DATABASE'')
+    UNION ALL SELECT DB_NAME() COLLATE DATABASE_DEFAULT, CAST(N''IMPERSONATE on user '' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.database_principals p
      WHERE p.type IN (''S'', ''U'', ''G'', ''E'', ''X'', ''C'', ''K'') AND p.principal_id <> USER_ID() AND HAS_PERMS_BY_NAME(p.name, ''USER'', ''IMPERSONATE'') = 1;';
   BEGIN TRY
     INSERT @pgv_r EXEC (@pgv_s);
   END TRY
   BEGIN CATCH
+    INSERT @pgv_r VALUES (@pgv_db, N'NOT READ: ' + LEFT(ERROR_MESSAGE(), 280));
   END CATCH
   FETCH NEXT FROM pgv_c INTO @pgv_db;
 END
@@ -215,11 +219,17 @@ func DatabasesRefusal(ctx context.Context, conn *sql.Conn) (string, error) {
 	}
 	defer func() { _ = rows.Close() }()
 	extra := map[string]map[string]bool{}
+	read, notRead := map[string]bool{}, ""
 	for rows.Next() {
 		var db, p string
 		if err := rows.Scan(&db, &p); err != nil {
 			return "", fmt.Errorf("reading the login's rights in each database: %w", err)
 		}
+		if strings.HasPrefix(p, "NOT READ: ") {
+			notRead = db + ": " + strings.TrimPrefix(p, "NOT READ: ")
+			continue
+		}
+		read[db] = true
 		if !DatabaseAllowed(p) {
 			if extra[db] == nil {
 				extra[db] = map[string]bool{}
@@ -229,6 +239,9 @@ func DatabasesRefusal(ctx context.Context, conn *sql.Conn) (string, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("reading the login's rights in each database: %w", err)
+	}
+	if len(read) == 0 {
+		return "", fmt.Errorf("the login's rights were read in no database (the last refusal: %s)", notRead)
 	}
 	if len(extra) == 0 {
 		return "", nil
