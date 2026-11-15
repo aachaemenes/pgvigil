@@ -113,3 +113,16 @@ func TestXECapturesParsers(t *testing.T) {
 		t.Errorf("the module's duration (microseconds): %v", m["duration_us"])
 	}
 }
+
+// a warning's detail is its data fields as name=value, a value of 200 characters or more left out; the statement is
+// the sql_text action's (the events a container does not raise on demand reach the proof only as imported rows)
+func TestXECapturesWarningDetail(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	doc := `<event name="long_io_detected" package="sqlserver" timestamp="2026-11-14T18:00:00.000Z"><data name="duration"><value>15000</value></data><data name="file_path"><value><![CDATA[` + long + `]]></value></data><data name="mode"><value>1</value><text>Read</text></data><action name="sql_text" package="sqlserver"><value><![CDATA[SELECT 1]]></value></action><action name="database_name" package="sqlserver"><value><![CDATA[xcdb]]></value></action><action name="event_sequence" package="package0"><value>5</value></action></event>`
+	w := parseXWarning(mustEvent(t, doc), xeContext{session: "pgvigil_cap_warnings", queryText: "full"})
+	d, _ := w["detail"].(string)
+	if w["kind"] != "xwarn" || w["event_name"] != "long_io_detected" || !strings.Contains(d, "duration=15000") || strings.Contains(d, long) ||
+		w["statement"] != "SELECT 1" || w["database_name"] != "xcdb" {
+		t.Errorf("the warning: %v", w)
+	}
+}
