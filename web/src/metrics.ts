@@ -178,6 +178,9 @@ const pmDefaultCounters = ['Batch Requests/sec', 'SQL Compilations/sec', 'SQL Re
 const maxCharted = 10;
 
 // what a series' figure is, by its kind (0152: the arithmetic follows the type SQL Server gives the counter)
+// a write's outcome across the page's redraw (adminCountersView)
+let carriedSaid = '';
+
 const kindWords: Record<string, string> = {
   rate: 'per second', count: 'change per read', fraction: '% of its base', average: 'average per event over the read',
   gauge: 'value as it stands', unpaired: 'as read (its base was not in the read)',
@@ -187,9 +190,11 @@ const kindWords: Record<string, string> = {
 function figureText(r: Row): string {
   const k = String(r.kind ?? 'gauge');
   if (r.figure == null) {
-    if (k === 'rate' || k === 'count') return 'no rate yet';
+    if (k === 'rate') return 'no rate yet';
+    if (k === 'count') return 'no change yet';
     if (k === 'average') return r.dbase === 0 ? 'no event in the read' : 'no average yet';
     if (k === 'unpaired') return fmtNum(r.value);
+    if (k === 'fraction' && Number(r.base) === 0) return 'base 0 in the read';
     return '';
   }
   return k === 'fraction' ? fmtNum(Number(r.figure).toFixed(2)) + ' %' : fmtNum(r.figure);
@@ -236,7 +241,7 @@ async function mssqlCounters(ctx: Ctx): Promise<HTMLElement> {
         }
         const byId = new Map(rows.map(r => [key(r), r]));
         chartBox.replaceChildren(lineChart('Performance counters (each series in its own figure: see the kind column)', [...at.values()],
-          ids.map(id => ({ key: 's' + id, label: byId.has(id) ? `${name(byId.get(id)!)} (${kindWords[String(byId.get(id)!.kind)] ?? ''})` : id })), v => fmtNum(v)));
+          ids.map(id => ({ key: 's' + id, label: byId.has(id) ? `${name(byId.get(id)!)} (${String(byId.get(id)!.kind) === 'count' ? 'change summed per step of the chart' : kindWords[String(byId.get(id)!.kind)] ?? ''})` : id })), v => fmtNum(v)));
       } catch (e) { chartBox.replaceChildren(errorBox(e)); }
     };
     const boxes: HTMLInputElement[] = [];
@@ -257,7 +262,7 @@ async function mssqlCounters(ctx: Ctx): Promise<HTMLElement> {
       { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
       { key: 'snapshot_at', label: 'newest read', fmt: fmtTime },
     ];
-    box.append(el('p', { class: 'meta' }, `${rows.length} counter row(s) at the newest read. A rate, count or average that never counted since the server started has the figure 0 (the read names it, no row is stored for it); a gauge has its row at every read.`),
+    box.append(el('p', { class: 'meta' }, `${rows.length} counter row(s) at the newest read. A rate or count that never counted since the server started has the figure 0 and an average reads 'no event in the read' (the read names it, no row is stored for it); a gauge has its row at every read.`),
       grid(rows, cols), said, chartBox);
     cap();
     await draw();
@@ -305,7 +310,7 @@ async function counterAbsent(ctx: Ctx): Promise<HTMLElement> {
     const rows = rowsOf((await get<Record<'absent', Table | null>>('mssql/counteradmin', { instance: ctx.instance, part: 'absent' })).absent);
     sec.append(rows.length
       ? grid(rows, [{ key: 'object' }, { key: 'counter' }, { key: 'inst', label: 'instance', fmt: v => String(v || 'every instance') }, { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' }, { key: 'why' }])
-      : el('p', { class: 'meta' }, 'Every listed counter was in the newest read.'));
+      : el('p', { class: 'meta' }, 'Every listed counter was in the newest read of its scope; a scope with no read yet (the first 5 minutes of mssql_counters_db, or the collection off) is not judged here: the grid above says when its newest read was.'));
   } catch (e) { sec.append(errorBox(e)); }
   return sec;
 }
@@ -323,11 +328,13 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
   const off = d.writable ? null : (d.reason ?? 'not writable here');
   sec.append(el('p', { class: 'meta' }, 'Each SQL Server instance reads the counters of its list: the defaults below, then pgvigil.yaml\'s mssql_counters lines (the root\'s, the instance\'s), then the rows here. For each counter the narrowest scope wins (an instance over a tag over the fleet); at one scope a row here wins over pgvigil.yaml. A change is read at the instance\'s next read.'),
     ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
-  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite', tabindex: '-1' });
+  if (carriedSaid) { said.textContent = carriedSaid; carriedSaid = ''; setTimeout(() => said.focus(), 0); }
   const send = async (body: Record<string, unknown>) => {
     try {
       const r = await post<{ outcome: string; detail: string }>('mssql/counteradmin', body);
-      said.textContent = `${r.outcome}: ${r.detail}`;
+      // the redraw rebuilds the page: the outcome is carried across it and the status line takes the focus (part 3's finding 6)
+      carriedSaid = `${r.outcome}: ${r.detail}`;
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     } catch (e) { said.textContent = 'Not written: ' + (e instanceof Error ? e.message : String(e)); }
   };
@@ -364,12 +371,16 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
   });
   const saveNote = offControl(save, off);
   sec.append(el('h3', {}, 'Add or remove a counter'), list, clist,
-    el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, object, counter, cinst, action, kind, note, save, saveNote), said);
+    el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, object, counter, cinst, action, kind, note, save, saveNote),
+    // a kind is the whole series' (review part 2's 10): the store reads its past again under the new kind
+    el('p', { class: 'meta' }, 'Kind: empty takes the kind of the layer below (a default\'s, else the one SQL Server types). A kind belongs to the counter\'s whole series: a change reads its past again under the new kind - gauge to rate leaves no points before the change, rate to gauge shows the raw totals since the server started.'),
+    said);
 
   // Admin's live rows, each with its End
   const endCell = (_v: unknown, r: Row) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})` }, 'End') as HTMLButtonElement;
-    b.addEventListener('click', () => { void send({ op: 'end', config_id: Number(r.config_id) }); });
+    // End asks first, as Alert rules' End does (part 3's NIT 10)
+    b.addEventListener('click', () => { if (window.confirm(`End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})? The counter list goes back to the word below it.`)) void send({ op: 'end', config_id: Number(r.config_id) }); });
     // the page's 'Edits are off here' line carries the long reason; each row says it short, a space after the button
     // (proof5's shot read 'Endthe counter list ...' run together and cut at the table's edge)
     const short = off ? el('span', { class: 'off-reason' }, 'off here: the line above says why') : undefined;
@@ -395,7 +406,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
       one.replaceChildren(
         el('p', { class: 'meta' }, yr ? `pgvigil.yaml's lines as its collector last handed them over at ${fmtTime(yr)}.` : 'Its collector has not run since this version: pgvigil.yaml\'s lines show after its first run.'),
         grid(lr, [
-          { key: 'wins', label: 'in force', fmt: v => v ? 'yes' : 'no (a narrower word wins)' }, { key: 'object' }, { key: 'counter' },
+          { key: 'wins', label: 'in force', fmt: (v, r) => v ? 'yes' : r.blocked ? 'no: a page reads this counter, it stays' : 'no: another word wins (a narrower one, or a newer one at the same level)' }, { key: 'object' }, { key: 'counter' },
           { key: 'inst', label: 'instance', fmt: v => String(v || 'every one') }, { key: 'action' }, { key: 'source', label: 'from' },
           { key: 'used_by', label: 'read by' }, { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
         ]));

@@ -46,9 +46,9 @@ const sqlCounterLog = `SELECT l.at, l.ui_user, l.op, l.config_id, l.outcome, l.d
   FROM pgvigil.mssql_counter_config_log l ORDER BY l.at DESC LIMIT 200`
 
 // the winning word per counter first, then the words it beat
-const sqlCounterLayers = `WITH l AS (SELECT x.*, rank() OVER (PARTITION BY lower(x.object), lower(x.counter), x.inst ORDER BY x.level DESC) AS rk
-             FROM pgvigil.mssql_counter_layers($1, pgvigil.mssql_counter_yaml_of($1)) x)
-SELECT l.object, l.counter, l.inst, l.action, l.kind, l.level, l.source, l.config_id, l.used_by, l.rk = 1 AS wins,
+// (0152's mssql_counter_layers_won: the list's own rule, ties and blocked removals included)
+const sqlCounterLayers = `WITH l AS (SELECT x.* FROM pgvigil.mssql_counter_layers_won($1, pgvigil.mssql_counter_yaml_of($1)) x)
+SELECT l.object, l.counter, l.inst, l.action, l.kind, l.level, l.source, l.config_id, l.used_by, l.wins, l.blocked,
        pgvigil.mssql_counter_scope(l.object) AS scope,
        (SELECT y.read_at FROM pgvigil.mssql_counter_yaml y WHERE y.instance_id = $1) AS yaml_read_at
   FROM l ORDER BY l.object, l.counter, l.inst, l.level DESC`
@@ -240,5 +240,9 @@ func (s *Server) MSSQLCounterAdminWrite(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{"outcome": res.Outcome, "detail": res.Detail, "config_id": res.ConfigID})
+	o := map[string]any{"outcome": res.Outcome, "detail": res.Detail, "config_id": res.ConfigID}
+	if code != http.StatusOK {
+		o["error"] = res.Detail // the page's post throws b.error: a refusal shows its reason (review part 3, finding 1)
+	}
+	_ = json.NewEncoder(w).Encode(o)
 }

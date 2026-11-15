@@ -189,11 +189,23 @@ func TestCountersInUseMatchMigration(t *testing.T) {
 	if len(sqlUse) != len(countersInUse) {
 		t.Errorf("0152 names %d counters in use, countersInUse %d", len(sqlUse), len(countersInUse))
 	}
+	// the defaults written as a list (T41's buckets: SELECT '<object>', b, ... FROM unnest(ARRAY[...]) b) are defaults too
+	listed := map[[2]string]bool{}
+	reList := regexp.MustCompile(`(?s)SELECT '((?:[^']|'')*)', b, '[^']*', '[^']*'\s+FROM unnest\(ARRAY\[(.*?)\]\) b;`)
+	reItem := regexp.MustCompile(`'((?:[^']|'')*)'`)
+	for _, m := range reList.FindAllStringSubmatch(s[:i], -1) {
+		for _, it := range reItem.FindAllStringSubmatch(m[2], -1) {
+			listed[[2]string{strings.ReplaceAll(m[1], "''", "'"), strings.ReplaceAll(it[1], "''", "'")}] = true
+		}
+	}
+	if len(listed) != 17 {
+		t.Errorf("0152's listed defaults: %d read, want T41's 17 buckets", len(listed))
+	}
 	for k, v := range countersInUse {
 		if sqlUse[k] != v {
 			t.Errorf("%v: Go %q, 0152 %q", k, v, sqlUse[k])
 		}
-		if !strings.Contains(s[:i], "('"+k[0]+"', '"+strings.ReplaceAll(k[1], "'", "''")+"', ") {
+		if !listed[k] && !strings.Contains(s[:i], "('"+k[0]+"', '"+strings.ReplaceAll(k[1], "'", "''")+"', ") {
 			t.Errorf("%v is in use but not a default", k)
 		}
 		if CounterInUse(strings.ToUpper(k[0]), strings.ToLower(k[1])) == "" {

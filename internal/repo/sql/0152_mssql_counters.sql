@@ -47,16 +47,38 @@
 -- CTR#3 #5-#7 #30 #32 #33 #35 #37 #39 #40 #52 #54 #55 #57-#59 #61 #64 #65 OVW#9 #12 #16 #40 #43 #51 #54 #58 #67 #72-#74
 -- #145 PBI#2 #6; SQLMonitor C43 C79 G287 G288 G290 G298 G302-G304 G317 G320 G323 G324 G329.
 
+-- Locks, and what an upgrade waits for (as 0137): each ADD COLUMN takes ACCESS EXCLUSIVE on its table (a partitioned
+-- parent and every partition) for a moment - it waits behind a long read of the table, and the counter imports wait
+-- behind it; CREATE INDEX on mssql_counter_sample holds SHARE on it until this file commits (a migration file runs in
+-- one transaction, so the build cannot be CONCURRENTLY): reads go on, the counter imports (instance and database)
+-- wait for the build. The build reads every sample 0124 stored once; on a large store that is the time 'pgvigil
+-- migrate' takes on this file (not measured: no store with months of 0124's samples was at hand). lock_timeout bounds
+-- each lock's wait, not the file's.
+SET LOCAL lock_timeout = '20s';
+
 ALTER TABLE pgvigil.mssql_counter_series ADD COLUMN IF NOT EXISTS kind text;
 ALTER TABLE pgvigil.mssql_counter_sample ADD COLUMN IF NOT EXISTS base bigint;
 ALTER TABLE pgvigil.mssql_counter_sample ADD COLUMN IF NOT EXISTS dvalue bigint;
 ALTER TABLE pgvigil.mssql_counter_sample ADD COLUMN IF NOT EXISTS dbase bigint;
 ALTER TABLE pgvigil.mssql_counter_last ADD COLUMN IF NOT EXISTS base bigint;
 ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS zero_series int[];
+-- after_gap: the read came after a gap (F15: no change and no rate in it), so its interval is not the schedule's
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS after_gap boolean;
+-- the newest SQL Agent jobs read (mssql_jobs) an instance read saw, stamped on the first instance read that saw it:
+-- its time, its history cursor, the jobs running at it, and the jobs started, failed or cancelled, and succeeded that
+-- it brought (G329: the job counts are taken once per jobs read, from the history it read)
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_read_at timestamptz;
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_cursor bigint;
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_running int;
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_started int;
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_failed int;
+ALTER TABLE pgvigil.mssql_counter_read ADD COLUMN IF NOT EXISTS jobs_succeeded int;
 
 -- the import's delete, the newest read and every window read go by instance and read time; the series last
--- (an estimate until the proof measures it: about 340 series a minute and 60 per database every 5 minutes on a
--- server with 8 databases, about 600,000 rows and 60 MB a day per instance with this index)
+-- (an idle SQL Server 2022 with two databases stored 312 rows per instance read and 30 per database read - its raw-0
+-- rows go to zero_series - about 458,400 rows a day at one instance read a minute; a busy server stores every row it
+-- reads, and the database read grows with the databases: the proof's part M prints the measured bytes per row and a
+-- per-database and a busy-server day; review part 4, finding 10)
 CREATE INDEX IF NOT EXISTS mssql_counter_sample_read_idx ON pgvigil.mssql_counter_sample (instance_id, snapshot_at, series_id);
 
 -- 0124's series rows get their kind from their type (a 65792 count since the start gets 'count' at its next read)
@@ -231,7 +253,24 @@ UPDATE pgvigil.mssql_counter_defaults d SET used_by = u.why
     ('Databases', 'Active Transactions', 'the counters metric active transactions and the storage pages'),
     ('sys.dm_os_process_memory', 'physical_memory_in_use_kb', 'the counters metric memory in use of the commit limit'),
     ('sys.dm_os_process_memory', 'available_commit_limit_kb', 'the counters metric memory in use of the commit limit'),
-    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker and the CPU page''s scheduler trend')
+    ('sys.dm_os_schedulers', 'failed_to_create_worker', 'the counters metric failed to create a worker and the CPU page''s scheduler trend'),
+    ('Batch Resp Statistics', 'Batches >=000000ms & <000001ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000001ms & <000002ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000002ms & <000005ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000005ms & <000010ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000010ms & <000020ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000020ms & <000050ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000050ms & <000100ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000100ms & <000200ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000200ms & <000500ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=000500ms & <001000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=001000ms & <002000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=002000ms & <005000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=005000ms & <010000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=010000ms & <020000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=020000ms & <050000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=050000ms & <100000ms', 'the Metrics page''s batch response histogram'),
+    ('Batch Resp Statistics', 'Batches >=100000ms', 'the Metrics page''s batch response histogram')
   ) AS u(object, counter, why)
  WHERE d.object = u.object AND d.counter = u.counter;
 
@@ -264,9 +303,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_counter_config (
     (scope = 'fleet' AND tag IS NULL AND instance_name IS NULL) OR (scope = 'tag' AND tag IS NOT NULL AND instance_name IS NULL)
     OR (scope = 'instance' AND tag IS NULL AND instance_name IS NOT NULL))
 );
--- one live row per counter and scope: a second one is an edit of the first
-CREATE UNIQUE INDEX IF NOT EXISTS mssql_counter_config_live_uq ON pgvigil.mssql_counter_config
-  (object, counter, inst, scope, coalesce(tag, ''), coalesce(instance_name, '')) WHERE ended_at IS NULL;
+-- one live row per counter and scope, the names in any case (the list matches them in any case): a second one is an
+-- edit of the first. The index of the first build matched the case and is replaced (0152 is on no released store).
+DROP INDEX IF EXISTS pgvigil.mssql_counter_config_live_uq;
+CREATE UNIQUE INDEX IF NOT EXISTS mssql_counter_config_live_ci_uq ON pgvigil.mssql_counter_config
+  (lower(object), lower(counter), inst, scope, coalesce(tag, ''), coalesce(instance_name, '')) WHERE ended_at IS NULL;
 COMMENT ON TABLE pgvigil.mssql_counter_config IS 'Admin''s additions and removals of SQL Server counters; written through import_mssql_counter_config only.';
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_counter_config_log (
@@ -333,9 +374,10 @@ BEGIN
       v_why := 'action must be add or remove';
     ELSIF v_kind NOT IN ('', 'count', 'rate', 'gauge') THEN
       v_why := 'kind must be empty (from the type read), count, rate or gauge';
-    ELSIF v_object LIKE 'sys.dm_os_%' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d WHERE d.object = v_object AND d.counter = v_counter) THEN
+    ELSIF lower(v_object) LIKE 'sys.dm\_os\_%' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d
+                                                                  WHERE lower(d.object) = lower(v_object) AND lower(d.counter) = lower(v_counter)) THEN
       v_why := format('%s has no column %s pgvigil reads', v_object, v_counter);
-    ELSIF v_object LIKE 'sys.dm_os_%' AND v_kind <> '' THEN
+    ELSIF lower(v_object) LIKE 'sys.dm\_os\_%' AND v_kind <> '' THEN
       -- a DMV column's arithmetic is pgvigil's own (pseudoRows): a kind would be ignored, so it is refused in words
       v_why := format('%s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty', v_object, v_counter);
     END IF;
@@ -358,9 +400,9 @@ BEGIN
         UPDATE pgvigil.mssql_counter_config SET ended_by = v_user, ended_at = p_at WHERE config_id = v_id;
         v_done := 'ended';
       ELSE
-        -- a live row for the same counter and scope is ended and replaced
+        -- a live row for the same counter (in any case) and scope is ended and replaced
         UPDATE pgvigil.mssql_counter_config c SET ended_by = v_user, ended_at = p_at
-         WHERE c.ended_at IS NULL AND c.object = v_object AND c.counter = v_counter AND c.inst = v_cinst AND c.scope = v_scope
+         WHERE c.ended_at IS NULL AND lower(c.object) = lower(v_object) AND lower(c.counter) = lower(v_counter) AND c.inst = v_cinst AND c.scope = v_scope
            AND coalesce(c.tag, '') = coalesce(v_tag, '') AND coalesce(c.instance_name, '') = coalesce(v_inst, '')
         RETURNING c.config_id INTO v_id;
         INSERT INTO pgvigil.mssql_counter_config (scope, tag, instance_name, object, counter, inst, action, kind, note, replaces,
@@ -420,21 +462,41 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- mssql_counter_list: the instance's list as counters.go reads it ([{object, counter, inst, scope, kind, except}]): per
--- counter the word of the highest level; a removal of a counter in use never wins (the defaults keep it). A removal of
+-- counter the word of the highest level; at one level (two tags of the instance, or two yaml lines) Admin's newest row
+-- wins, then a removal; a removal of a counter in use never wins (the defaults keep it). An add with no kind keeps the
+-- kind of the highest level below it that names one (a default's 'count' stays a count). A removal of
 -- one instance of a counter (a feature of Deprecated Features / Usage) names that instance in its every-instance line's
 -- except list, so the line that reads the others leaves it out.
+-- mssql_counter_layers_won: every layer's word with whether it wins, by the list's own rule (mssql_counter_list reads
+-- it, and so does the Admin page's 'in force': review part 3's finding 2): the highest level, then the newest Admin row
+-- (config_id), then a removal, then the kind; a removal of a counter in use never wins (blocked: the defaults keep it).
+CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_layers_won(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
+RETURNS TABLE (object text, counter text, inst text, action text, kind text, level int, source text, config_id bigint, used_by text,
+               wins boolean, blocked boolean)
+LANGUAGE sql STABLE AS $$
+  WITH l AS (SELECT x.*, (x.action = 'remove' AND EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d
+                            WHERE d.used_by IS NOT NULL AND lower(d.object) = lower(x.object) AND lower(d.counter) = lower(x.counter))) AS blocked
+               FROM pgvigil.mssql_counter_layers(p_instance_id, p_yaml) x)
+  SELECT l.object, l.counter, l.inst, l.action, l.kind, l.level, l.source, l.config_id, l.used_by,
+         NOT l.blocked AND row_number() OVER (PARTITION BY lower(l.object), lower(l.counter), l.inst, l.blocked
+                                              ORDER BY l.level DESC, l.config_id DESC NULLS LAST, l.action = 'remove' DESC, l.kind) = 1,
+         l.blocked
+    FROM l
+$$;
+
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_list(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
   WITH l AS (SELECT * FROM pgvigil.mssql_counter_layers(p_instance_id, p_yaml)),
-  inuse AS (SELECT lower(d.object) AS o, lower(d.counter) AS c FROM pgvigil.mssql_counter_defaults d WHERE d.used_by IS NOT NULL),
-  w AS (SELECT DISTINCT ON (lower(l.object), lower(l.counter), l.inst) l.*
-          FROM l
-         WHERE NOT (l.action = 'remove' AND (lower(l.object), lower(l.counter)) IN (SELECT o, c FROM inuse))
-         ORDER BY lower(l.object), lower(l.counter), l.inst, l.level DESC),
+  w AS (SELECT * FROM pgvigil.mssql_counter_layers_won(p_instance_id, p_yaml) WHERE wins),
   x AS (SELECT lower(w.object) AS o, lower(w.counter) AS c, jsonb_agg(w.inst ORDER BY w.inst) AS insts
           FROM w WHERE w.action = 'remove' AND w.inst <> '' GROUP BY 1, 2)
   SELECT coalesce(jsonb_agg(jsonb_build_object('object', w.object, 'counter', w.counter, 'inst', w.inst,
-                                               'scope', pgvigil.mssql_counter_scope(w.object), 'kind', w.kind)
+                                               'scope', pgvigil.mssql_counter_scope(w.object),
+                                               'kind', coalesce(nullif(w.kind, ''),
+                                                                (SELECT b.kind FROM l b
+                                                                  WHERE lower(b.object) = lower(w.object) AND lower(b.counter) = lower(w.counter)
+                                                                    AND b.inst = w.inst AND b.level < w.level AND b.kind <> ''
+                                                                  ORDER BY b.level DESC, b.config_id DESC NULLS LAST LIMIT 1), ''))
                             || CASE WHEN w.inst = '' AND x.insts IS NOT NULL THEN jsonb_build_object('except', x.insts) ELSE '{}'::jsonb END
                             ORDER BY w.object, w.counter, w.inst), '[]'::jsonb)
     FROM w LEFT JOIN x ON x.o = lower(w.object) AND x.c = lower(w.counter)
@@ -513,20 +575,22 @@ DECLARE
   v_n      int;
   v_prev   timestamptz;
   v_prev_iv real;
+  v_prev_gap boolean;
   v_gap    boolean;
   v_zero   int[];
 BEGIN
   SELECT count(*) INTO v_n FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'ctr';
   -- an older read arriving late: its scope's newest read is already stored
-  SELECT c.server_utc, c.interval_secs INTO v_prev, v_prev_iv FROM pgvigil.mssql_counter_read c
+  SELECT c.server_utc, c.interval_secs, coalesce(c.after_gap, false) INTO v_prev, v_prev_iv, v_prev_gap FROM pgvigil.mssql_counter_read c
    WHERE c.instance_id = p_instance_id AND c.scope = p_scope
    ORDER BY c.snapshot_at DESC LIMIT 1;
   IF v_prev IS NOT NULL AND v_prev >= p_now THEN RETURN; END IF;
   -- F15: no change and no rate after a gap in time - the scope's read before is older than twice its interval (the
-  -- read before's own interval, else the scope's default: 60 s, 300 s per database); a schedule made longer costs one
-  -- read's rates, a collector stopped for hours never puts its hours on one point
+  -- read before's own interval, else the scope's default: 60 s, 300 s per database; a read that came after a gap
+  -- lends no interval: its own is the gap's); a schedule made longer costs one read's rates, a collector stopped for
+  -- hours never puts its hours on one point, nor two stops close together
   v_gap := v_prev IS NOT NULL AND extract(epoch FROM p_now - v_prev)
-             > 2 * greatest(coalesce(v_prev_iv, 0), CASE p_scope WHEN 'database' THEN 300 ELSE 60 END);
+             > 2 * greatest(CASE WHEN v_prev_gap THEN 0 ELSE coalesce(v_prev_iv, 0) END, CASE p_scope WHEN 'database' THEN 300 ELSE 60 END);
 
   INSERT INTO pgvigil.mssql_counter_series AS k (instance_id, object, counter, inst, cntr_type, kind)
   SELECT DISTINCT ON (r->>'object', r->>'counter', r->>'instance') p_instance_id, r->>'object', r->>'counter', r->>'instance',
@@ -573,8 +637,41 @@ BEGIN
                                                      server_start = EXCLUDED.server_start;
 
   DELETE FROM pgvigil.mssql_counter_read WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at AND scope = p_scope;
-  INSERT INTO pgvigil.mssql_counter_read (instance_id, snapshot_at, scope, server_utc, rows_read, interval_secs, zero_series)
-  VALUES (p_instance_id, p_snapshot_at, p_scope, p_now, v_n, extract(epoch FROM p_now - v_prev)::real, coalesce(v_zero, '{}'));
+  -- G329: an instance read stamps the newest SQL Agent jobs read it sees, once, with what that jobs read brought: the
+  -- jobs running at it (mssql_jobs), the jobs started since the jobs read before (an ended run by its start, a running
+  -- one by running_since), and the runs it read that failed or were cancelled, or succeeded (step 0 by history id past
+  -- the cursor the jobs read before left: a run is counted at the jobs read that first read it, whatever its clock
+  -- says). The first jobs read seen, or a cursor gone back (msdb replaced), has no counts, only the stamp. A run that
+  -- started more than 7 days before the jobs read is not counted (the partitions are read by start). One statement,
+  -- so the cursor and the jobs running are of one jobs read.
+  WITH jc AS (SELECT c.updated_at AS at, c.last_history_id AS cur FROM pgvigil.mssql_jobs_cursor c
+               WHERE c.instance_id = p_instance_id AND p_scope = 'instance'),
+  seen AS (SELECT c.jobs_read_at AS at, c.jobs_cursor AS cur FROM pgvigil.mssql_counter_read c
+            WHERE c.instance_id = p_instance_id AND c.scope = 'instance' AND c.jobs_read_at IS NOT NULL AND p_scope = 'instance'
+            ORDER BY c.snapshot_at DESC LIMIT 1),
+  st AS (SELECT jc.at, jc.cur, seen.at AS seen_at, seen.cur AS seen_cur, seen.cur IS NOT NULL AND jc.cur >= seen.cur AS counted
+           FROM jc LEFT JOIN seen ON true
+          WHERE jc.at IS NOT NULL AND (seen.at IS NULL OR jc.at > seen.at))
+  INSERT INTO pgvigil.mssql_counter_read (instance_id, snapshot_at, scope, server_utc, rows_read, interval_secs, zero_series, after_gap,
+                                          jobs_read_at, jobs_cursor, jobs_running, jobs_started, jobs_failed, jobs_succeeded)
+  SELECT p_instance_id, p_snapshot_at, p_scope, p_now, v_n, extract(epoch FROM p_now - v_prev)::real, coalesce(v_zero, '{}'), v_gap,
+         st.at, st.cur,
+         CASE WHEN st.at IS NOT NULL THEN
+           (SELECT count(*)::int FROM pgvigil.mssql_jobs m WHERE m.instance_id = p_instance_id AND m.running_since IS NOT NULL) END,
+         CASE WHEN st.counted THEN
+           (SELECT count(*)::int FROM pgvigil.mssql_job_runs r
+             WHERE r.instance_id = p_instance_id AND r.step_id = 0 AND r.snapshot_at > st.seen_at AND r.snapshot_at <= st.at)
+           + (SELECT count(*)::int FROM pgvigil.mssql_jobs m
+               WHERE m.instance_id = p_instance_id AND m.running_since > st.seen_at AND m.running_since <= st.at) END,
+         CASE WHEN st.counted THEN
+           (SELECT count(*)::int FROM pgvigil.mssql_job_runs r
+             WHERE r.instance_id = p_instance_id AND r.step_id = 0 AND r.run_status IN (0, 3)
+               AND r.history_id > st.seen_cur AND r.history_id <= st.cur AND r.snapshot_at > st.at - interval '7 days') END,
+         CASE WHEN st.counted THEN
+           (SELECT count(*)::int FROM pgvigil.mssql_job_runs r
+             WHERE r.instance_id = p_instance_id AND r.step_id = 0 AND r.run_status = 1
+               AND r.history_id > st.seen_cur AND r.history_id <= st.cur AND r.snapshot_at > st.at - interval '7 days') END
+    FROM (SELECT 1) one LEFT JOIN st ON true;
 END $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.mssql_import_counters_scope(p_fn text, p_scope text, p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -721,13 +818,13 @@ SELECT v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.u
     ('sqlserver', 'counters', 'Counters', 50, 'buffer_cache_hit_pct',       'buffer cache hit ratio',                          'pct',   false,  600, 29),
     ('sqlserver', 'counters', 'Counters', 50, 'ple_per_4gb',                'page life expectancy per 4 GB of buffer pool (the lowest memory node)', 'secs', false, 600, 30),
     ('sqlserver', 'counters', 'Counters', 50, 'misguided_plans_s',          'misguided plan executions/sec',                   'per_s', false,  600, 31),
-    ('sqlserver', 'counters', 'Counters', 50, 'update_conflict_pct',        'snapshot update conflicts per 100 snapshot updates', 'pct', false,  600, 32),
+    ('sqlserver', 'counters', 'Counters', 50, 'update_conflict_pct',        'snapshot update conflicts per 100 snapshot updates (0 under 1 update/s)', 'pct', false, 600, 32),
     ('sqlserver', 'counters', 'Counters', 50, 'memory_commit_pct',          'memory in use of the commit limit',               'pct',   false,  600, 33),
     ('sqlserver', 'counters', 'Counters', 50, 'failed_to_create_worker',    'schedulers that failed to create a worker',       'count', false,  600, 34),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_active_jobs',          'SQL Agent jobs running',                          'count', false,  900, 35),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_started',         'SQL Agent jobs started per read',                 'count', false,  900, 36),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_failed',          'SQL Agent jobs failed or cancelled per read',     'count', false,  900, 37),
-    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_succeeded',       'SQL Agent jobs succeeded per read',               'count', false,  900, 38),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_active_jobs',          'SQL Agent jobs running (at each jobs read)',      'count', false,  900, 35),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_started',         'SQL Agent jobs started per jobs read',            'count', false,  900, 36),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_failed',          'SQL Agent jobs failed or cancelled per jobs read', 'count', false, 900, 37),
+    ('sqlserver', 'counters', 'Counters', 50, 'agent_jobs_succeeded',       'SQL Agent jobs succeeded per jobs read',          'count', false,  900, 38),
     ('sqlserver', 'counters', 'Counters', 50, 'write_transactions_s',       'write transactions/sec',                          'per_s', true,  1800, 39),
     ('sqlserver', 'counters', 'Counters', 50, 'log_flush_waits_s',          'log flush waits/sec',                             'per_s', true,  1800, 40),
     ('sqlserver', 'counters', 'Counters', 50, 'log_flush_wait_ms_s',        'log flush wait time per second',                  'ms',    true,  1800, 41),
@@ -828,28 +925,14 @@ LANGUAGE sql STABLE SET jit = off AS $$
       FROM pgvigil.mssql_counter_values(p_instance_id, p_from, p_to, 'database') v
      WHERE v.object = 'Databases' AND v.inst = coalesce(p_database, '_Total')
      GROUP BY v.snapshot_at),
-  -- SQL Agent's jobs at each instance read, from the job history FLEET stores (mssql_job_runs step 0, mssql_jobs'
-  -- running_since): running at the read, started, and ended failed / cancelled or succeeded since the read before
-  rd AS (SELECT c.snapshot_at, lag(c.snapshot_at) OVER (ORDER BY c.snapshot_at) AS prev
+  -- SQL Agent's jobs at each jobs read (G329: mssql_jobs, every 5 minutes), as the first instance read that saw it
+  -- stamped them (mssql_import_counters): a point at the jobs read's time, complete when it is written - a run is
+  -- counted at the jobs read that read it, so the newest point holds every run that read brought
+  ag AS (SELECT c.jobs_read_at AS snapshot_at, c.jobs_running AS active, c.jobs_started AS started, c.jobs_failed AS failed,
+                c.jobs_succeeded AS succeeded
            FROM pgvigil.mssql_counter_read c
-          WHERE c.instance_id = p_instance_id AND c.scope = 'instance' AND c.snapshot_at > p_from - p_lookback AND c.snapshot_at <= p_to),
-  ag AS (SELECT rd.snapshot_at,
-           (SELECT count(*) FROM pgvigil.mssql_job_runs j
-             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.snapshot_at > rd.snapshot_at - interval '7 days'
-               AND j.snapshot_at <= rd.snapshot_at AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) > rd.snapshot_at)
-           + (SELECT count(*) FROM pgvigil.mssql_jobs m
-               WHERE m.instance_id = p_instance_id AND m.running_since IS NOT NULL AND m.running_since <= rd.snapshot_at) AS active,
-           (SELECT count(*) FROM pgvigil.mssql_job_runs j
-             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.snapshot_at > rd.prev AND j.snapshot_at <= rd.snapshot_at) AS started,
-           (SELECT count(*) FROM pgvigil.mssql_job_runs j
-             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.run_status IN (0, 3) AND j.snapshot_at > rd.prev - interval '7 days'
-               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) > rd.prev
-               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) <= rd.snapshot_at) AS failed,
-           (SELECT count(*) FROM pgvigil.mssql_job_runs j
-             WHERE j.instance_id = p_instance_id AND j.step_id = 0 AND j.run_status = 1 AND j.snapshot_at > rd.prev - interval '7 days'
-               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) > rd.prev
-               AND j.snapshot_at + make_interval(secs => coalesce(j.duration_s, 0)) <= rd.snapshot_at) AS succeeded
-           FROM rd WHERE rd.prev IS NOT NULL AND rd.snapshot_at > p_from)
+          WHERE c.instance_id = p_instance_id AND c.scope = 'instance' AND c.jobs_read_at IS NOT NULL
+            AND c.snapshot_at > p_from - interval '1 hour' AND c.jobs_read_at > p_from AND c.jobs_read_at <= p_to)
   SELECT i.snapshot_at, x.metric, x.value
     FROM i CROSS JOIN LATERAL (VALUES
       ('logins_s', i.logins::double precision), ('logouts_s', i.logouts::double precision),
@@ -870,7 +953,11 @@ LANGUAGE sql STABLE SET jit = off AS $$
       ('avg_latch_wait_ms', CASE WHEN i.la_db IS NULL THEN NULL WHEN i.la_db = 0 THEN 0 ELSE i.la_dv::double precision / i.la_db END),
       ('buffer_cache_hit_pct', 100.0 * i.bchr_v / nullif(i.bchr_b, 0)),
       ('misguided_plans_s', i.misguided::double precision),
-      ('update_conflict_pct', CASE WHEN i.uc_db IS NULL THEN NULL WHEN i.uc_db = 0 THEN 0 ELSE 100.0 * i.uc_dv / i.uc_db END),
+      ('update_conflict_pct', CASE WHEN i.uc_db IS NULL THEN NULL
+                                   WHEN i.uc_db < coalesce((SELECT c.interval_secs FROM pgvigil.mssql_counter_read c
+                                                             WHERE c.instance_id = p_instance_id AND c.scope = 'instance'
+                                                               AND c.snapshot_at = i.snapshot_at), 1e9) THEN 0
+                                   ELSE 100.0 * i.uc_dv / i.uc_db END),
       ('memory_commit_pct', 100.0 * i.in_use_kb / nullif(i.in_use_kb + i.commit_kb, 0)),
       ('failed_to_create_worker', i.failed_worker::double precision)) AS x(metric, value)
    WHERE x.value IS NOT NULL
@@ -900,6 +987,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM ag CROSS JOIN LATERAL (VALUES
       ('agent_active_jobs', ag.active::double precision), ('agent_jobs_started', ag.started::double precision),
       ('agent_jobs_failed', ag.failed::double precision), ('agent_jobs_succeeded', ag.succeeded::double precision)) AS x(metric, value)
+   WHERE x.value IS NOT NULL
 $$;
 
 -- ---- the Counters page's other reads ----------------------------------------------------------------------------------
