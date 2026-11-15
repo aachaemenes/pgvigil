@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -722,11 +723,53 @@ LEFT JOIN (
   ORDER BY pct_used DESC, s.name, o.name
 ) q ON 1 = 1'`
 
-// The identity thresholds, per cent of the type's range used (pgvigil's own).
+// The identity rule's lines, per cent of the type's range used (pgvigil's own defaults). An instance's
+// mssql_thresholds may set its own: identity_warn_pct and identity_crit_pct (IdentityLimits).
 const (
 	identityWarnPct = 75
 	identityCritPct = 90
 )
+
+// IdentityThresholds are the names under an instance's mssql_thresholds that are the identity rule's, with their
+// defaults. They are not written to the repository's threshold store (its names are the HA/DR, jobs and backups
+// ones): the runner hands the two numbers to the collection on Info.
+var IdentityThresholds = map[string]float64{"identity_warn_pct": identityWarnPct, "identity_crit_pct": identityCritPct}
+
+// IdentityLimits gives the identity rule's two lines for an instance's mssql_thresholds block, the default where a
+// name is not set. A line is a number from the floor (IdentityFloorPct: a column under it is not read, so a line
+// under it could never be crossed) to 100, and the warning line is under the critical one. On an error the defaults
+// come back with it.
+func IdentityLimits(t map[string]any) (warn, crit float64, err error) {
+	lines := [2]float64{identityWarnPct, identityCritPct}
+	for i, k := range [2]string{"identity_warn_pct", "identity_crit_pct"} {
+		v, set := t[k]
+		if !set {
+			continue
+		}
+		n, ok := number(v)
+		if !ok || n < IdentityFloorPct || n > 100 {
+			return identityWarnPct, identityCritPct, fmt.Errorf("mssql threshold %s: %v is not a number from %d to 100 (a column under %d %% of its range is not read)", k, v, IdentityFloorPct, IdentityFloorPct)
+		}
+		lines[i] = n
+	}
+	warn, crit = lines[0], lines[1]
+	if warn >= crit {
+		return identityWarnPct, identityCritPct, fmt.Errorf("mssql threshold identity_warn_pct %s is not under identity_crit_pct %s (the default lines are %d and %d)", pctLine(warn), pctLine(crit), identityWarnPct, identityCritPct)
+	}
+	return warn, crit, nil
+}
+
+// identityLines: the lines the runner set on Info from the instance's mssql_thresholds; the defaults when it set
+// none.
+func identityLines(info Info) (warn, crit float64) {
+	if info.IdentityWarnPct > 0 && info.IdentityCritPct > info.IdentityWarnPct {
+		return info.IdentityWarnPct, info.IdentityCritPct
+	}
+	return identityWarnPct, identityCritPct
+}
+
+// pctLine writes a line as a person wrote it: 50, 62.5.
+func pctLine(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	dbs, err := QueryRows(ctx, conn, identityDatabasesSQL)
@@ -736,6 +779,7 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 	c := &checksRun{}
 	var failed []string
 	cut, noRight, scanned := 0, 0, 0
+	warn, crit := identityLines(info)
 	stop, hasStop := ctx.Deadline()
 	for _, db := range dbs {
 		name, _ := db["database_name"].(string)
@@ -772,7 +816,7 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 			c.add(scan)
 			continue
 		}
-		rows, fs := identityRows(name, raw)
+		rows, fs := identityRowsAt(name, raw, warn, crit)
 		scanned++
 		scan["scanned"], scan["listed"] = 1, len(rows)
 		if len(raw) > 0 {
@@ -807,9 +851,14 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 	return c.rows, nil
 }
 
-// identityRows turns one database's read into the payload's column rows and the findings of the columns past a
-// threshold.
+// identityRows judges one database's read with the default lines.
 func identityRows(database string, raw []collect.Row) (rows []collect.Row, findings []checkFinding) {
+	return identityRowsAt(database, raw, identityWarnPct, identityCritPct)
+}
+
+// identityRowsAt turns one database's read into the payload's column rows and the findings of the columns at or past
+// a line: warn and crit are the lines in force for the instance, and each finding names them.
+func identityRowsAt(database string, raw []collect.Row, warn, crit float64) (rows []collect.Row, findings []checkFinding) {
 	for _, r := range raw {
 		col, _ := r["column_name"].(string)
 		if col == "" {
@@ -822,9 +871,9 @@ func identityRows(database string, raw []collect.Row) (rows []collect.Row, findi
 			"status": "ok"}
 		sev := ""
 		switch {
-		case pct >= identityCritPct:
+		case pct >= crit:
 			sev = sevCritical
-		case pct >= identityWarnPct:
+		case pct >= warn:
 			sev = sevWarning
 		}
 		if sev != "" {
@@ -836,7 +885,7 @@ func identityRows(database string, raw []collect.Row) (rows []collect.Row, findi
 			maxValue, _ := r["max_value"].(string)
 			findings = append(findings, checkFinding{Area: AreaIdentity, Check: "identity column near its limit", Object: database + "." + schema + "." + table + "." + col,
 				Severity: sev, Rule: "pgvigil identity", Value: pctText,
-				Explain: fmt.Sprintf("%s.%s.%s.%s (%s) is at %s of %s: %s %% of the type's range used (warning at %d, critical at %d); at the limit every insert fails", database, schema, table, col, typ, last, maxValue, pctText, identityWarnPct, identityCritPct)})
+				Explain: fmt.Sprintf("%s.%s.%s.%s (%s) is at %s of %s: %s %% of the type's range used (warning at %s, critical at %s); at the limit every insert fails", database, schema, table, col, typ, last, maxValue, pctText, pctLine(warn), pctLine(crit))})
 		}
 		rows = append(rows, row)
 	}
@@ -933,4 +982,537 @@ func logHolderText(h collect.Row) string {
 	}
 	return fmt.Sprintf("held by session %d (%s, %s, %s), open since %s; last statement: %s", sid, str("login_name", "login not read"),
 		str("host_name", "host not read"), str("program_name", "program not read"), str("started_at_utc", "not read"), str("statement", "not read"))
+}
+
+// ---- mssql_confcheck and mssql_linkedserver_test (migration 0160) ---------------------------------------------------
+
+// confcheckCollector is mssql_confcheck (hourly): the facts the configuration checks of 0160 judge that no other
+// collection reads. Each part is read on its own and says 'not read' with the right or the platform when it cannot
+// be; nothing is written on the server.
+//
+//   - names: @@SERVERNAME, SERVERPROPERTY('ServerName'), the machine and its physical NetBIOS name (any login).
+//   - machine: the host's platform, the CPU count and dbatools' advised MAXDOP for it (VIEW SERVER STATE).
+//   - xe: every server event session, whether it starts with the server and whether it runs (VIEW SERVER STATE: a
+//     login without it gets an empty list and no error, so the part is not read without it).
+//   - errorlog: the error log files kept (NumErrorLogs through xp_instance_regread, the return code captured; on
+//     Windows no value = the default 6, on Linux no value = errorlog.numerrorlogs is not set) and the files present.
+//   - startup: master's startup procedures (VIEW ANY DEFINITION).
+//   - databases: per database its state, read-only, standby, recovery model, Query Store, a secondary's role (a
+//     mirror, an availability group secondary, a log shipping secondary) and the database-scoped MAXDOP of each
+//     database the login can enter.
+//   - linked: the linked servers and the shape of their login mappings (who is mapped, with its own credential or a
+//     remote login; never the remote login's name or password).
+type confcheckCollector struct{}
+
+func init() {
+	Register(confcheckCollector{})
+	Register(linkedServerTestCollector{})
+}
+
+func (confcheckCollector) Name() string                   { return Prefix + "confcheck" }
+func (confcheckCollector) DefaultInterval() time.Duration { return time.Hour }
+
+// Timeout: one statement per database for the scoped MAXDOP.
+func (confcheckCollector) Timeout() time.Duration { return 5 * time.Minute }
+
+func (confcheckCollector) Applies(info Info) (bool, string) {
+	if info.Kind == KindAzureDB {
+		return false, "not on Azure SQL Database: the server's configuration is the service's there"
+	}
+	return true, ""
+}
+
+const confNamesSQL = `SELECT CAST(@@SERVERNAME AS nvarchar(128)) AS server_name,
+  CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS property_server_name,
+  CAST(SERVERPROPERTY('MachineName') AS nvarchar(128)) AS machine_name,
+  CAST(SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS nvarchar(128)) AS netbios`
+
+// confHostSQL: sys.dm_os_host_info came with SQL Server 2017; an older server is a Windows one.
+const confHostSQL = `SELECT CAST(host_platform AS nvarchar(60)) AS host_platform FROM sys.dm_os_host_info`
+
+const confXESQL = `SELECT CAST(s.name AS nvarchar(256)) AS name, CAST(s.startup_state AS int) AS autostart,
+  CAST(CASE WHEN x.name IS NULL THEN 0 ELSE 1 END AS int) AS running
+FROM sys.server_event_sessions s
+LEFT JOIN sys.dm_xe_sessions x ON x.name = s.name
+ORDER BY s.name`
+
+// confErrorLogSQL: the registry value SQL Server reads at its start; rc is xp_instance_regread's return code (an
+// xp_ failure is a message, not an error a TRY block sees).
+const confErrorLogSQL = `DECLARE @v int, @rc int;
+EXEC @rc = master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer', N'NumErrorLogs', @v OUTPUT;
+SELECT CAST(@rc AS int) AS rc, CAST(@v AS int) AS num_errorlogs`
+
+const confErrorLogFilesSQL = `CREATE TABLE #pgv_cc_el (archive int, log_date nvarchar(60), size_bytes bigint);
+INSERT #pgv_cc_el EXEC sys.sp_enumerrorlogs;
+SELECT CAST(COUNT(*) AS int) AS files FROM #pgv_cc_el;
+DROP TABLE #pgv_cc_el`
+
+const confStartupSQL = `SELECT CAST(name AS nvarchar(256)) AS name FROM master.sys.procedures
+WHERE OBJECTPROPERTY(object_id, 'ExecIsStartup') = 1 ORDER BY name`
+
+// confDatabasesSQL: every database but the snapshots. %s is the availability group expression (asked only where
+// Always On is enabled and the server's state is readable).
+const confDatabasesSQL = `SELECT CAST(d.name AS nvarchar(256)) AS database_name, QUOTENAME(d.name) AS quoted_name,
+  CAST(d.state_desc AS nvarchar(60)) AS state, CAST(d.is_read_only AS int) AS read_only, CAST(d.is_in_standby AS int) AS in_standby,
+  CAST(d.recovery_model_desc AS nvarchar(60)) AS recovery_model, CAST(d.is_query_store_on AS int) AS query_store,
+  CAST(CASE WHEN d.state = 0 AND HAS_DBACCESS(d.name) = 1 THEN 1 ELSE 0 END AS int) AS can_enter,
+  CAST(CASE WHEN m.mirroring_role = 2 THEN N'mirror' WHEN %s THEN N'availability group secondary' END AS nvarchar(60)) AS secondary_role
+FROM sys.databases d
+LEFT JOIN sys.database_mirroring m ON m.database_id = d.database_id
+WHERE d.source_database_id IS NULL
+ORDER BY d.name`
+
+const confLogShippingSQL = `SELECT CAST(secondary_database AS nvarchar(256)) AS name FROM msdb.dbo.log_shipping_secondary_databases`
+
+// confScopedSQL runs inside one database (SQL Server 2016 and later have the view).
+const confScopedSQL = `EXEC %s.sys.sp_executesql N'SELECT CAST(value AS int) AS maxdop FROM sys.database_scoped_configurations WHERE name = N''MAXDOP'''`
+
+var confLinkedSQL = `SELECT s.server_id, CAST(s.name AS nvarchar(256)) AS name, CAST(s.product AS nvarchar(256)) AS product,
+  CAST(s.provider AS nvarchar(256)) AS provider, CAST(s.data_source AS nvarchar(1024)) AS data_source, CAST(s.catalog AS nvarchar(256)) AS catalog,
+  CAST(s.is_rpc_out_enabled AS int) AS rpc_out, CAST(s.is_data_access_enabled AS int) AS data_access,
+  CAST(s.connect_timeout AS int) AS connect_timeout, CAST(s.query_timeout AS int) AS query_timeout,
+  ` + utcText("s.modify_date") + ` AS modified_utc
+FROM sys.servers s
+WHERE s.is_linked = 1
+ORDER BY s.name`
+
+// confLinkedLoginsSQL: who is mapped at each linked server - a local login or every login (local_principal_id 0),
+// with its own credential or a remote login. The remote login's name is not read.
+const confLinkedLoginsSQL = `SELECT l.server_id,
+  CAST(CASE WHEN l.local_principal_id = 0 THEN N'every login' ELSE ISNULL(p.name, N'principal ' + CAST(l.local_principal_id AS nvarchar(20))) END AS nvarchar(256)) AS local_login,
+  CAST(l.uses_self_credential AS int) AS uses_self, CAST(CASE WHEN l.remote_name IS NULL THEN 0 ELSE 1 END AS int) AS has_remote
+FROM sys.linked_logins l
+JOIN sys.servers s ON s.server_id = l.server_id AND s.is_linked = 1
+LEFT JOIN sys.server_principals p ON p.principal_id = l.local_principal_id
+ORDER BY l.server_id, l.local_principal_id`
+
+// confPart is the payload's row for one part of the read.
+func confPart(part string, read bool, note string) collect.Row {
+	return collect.Row{"kind": "part", "part": part, "read": b2i(read), "note": nilIfEmpty(note)}
+}
+
+func confFact(key string, value any) collect.Row {
+	return collect.Row{"kind": "fact", "key": key, "value": value}
+}
+
+// hostedBy names the service that runs the host of a managed instance, or "".
+func hostedBy(kind Kind) string {
+	switch kind {
+	case KindRDS:
+		return "Amazon RDS"
+	case KindAzureMI:
+		return "Azure SQL Managed Instance"
+	case KindCloudSQL:
+		return "Google Cloud SQL"
+	}
+	return ""
+}
+
+func (confcheckCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	// the names: a failure of this read is the run's failure (any login reads them)
+	names, err := QueryRows(ctx, conn, confNamesSQL)
+	if err != nil || len(names) != 1 {
+		return nil, fmt.Errorf("the server's names: %v", err)
+	}
+	out := []collect.Row{confPart("names", true, "")}
+	for _, k := range []string{"server_name", "property_server_name", "machine_name", "netbios"} {
+		out = append(out, confFact(k, names[0][k]))
+	}
+	fail := func(part, source string, err error) {
+		out = append(out, confPart(part, false, "not read: "+err.Error()),
+			collect.Row{"kind": "collector_error", "source": source, "message": err.Error()})
+	}
+	perf := perfState(ctx, conn, info, "sys.dm_os_sys_info") == nil
+	noState := "not read: the login lacks VIEW SERVER STATE"
+
+	// the machine: the platform, the CPUs and the advised MAXDOP
+	platform := ""
+	switch {
+	case !perf:
+		out = append(out, confPart("machine", false, noState+": the host's platform and CPUs are not visible to it"))
+	default:
+		plat := "Windows"
+		if info.Kind == KindAzureMI || info.Major == 0 || info.Major >= 14 {
+			if h, herr := QueryRows(ctx, conn, confHostSQL); herr == nil && len(h) == 1 {
+				plat, _ = h[0]["host_platform"].(string)
+			} else {
+				plat = ""
+			}
+		}
+		si, serr := readSysInfo(ctx, conn)
+		switch {
+		case serr != nil:
+			fail("machine", "sys.dm_os_sys_info", serr)
+		case plat == "":
+			fail("machine", "sys.dm_os_host_info", fmt.Errorf("the host's platform was not read"))
+		default:
+			platform = plat
+			m := machineFacts{}
+			m.CPUs, _ = si["cpu_count"].(int64)
+			m.NUMANodes, _ = si["numa_nodes"].(int64)
+			out = append(out, confPart("machine", true, ""), confFact("host_platform", plat))
+			if m.CPUs > 0 {
+				out = append(out, confFact("cpu_count", m.CPUs), confFact("advised_maxdop", advisedMaxDOP(m)))
+			}
+		}
+	}
+
+	// the event sessions
+	if !perf {
+		out = append(out, confPart("xe", false, noState+": the event sessions are not visible to it"))
+	} else if xe, xerr := QueryRows(ctx, conn, confXESQL); xerr != nil {
+		fail("xe", "sys.server_event_sessions", xerr)
+	} else {
+		out = append(out, confPart("xe", true, ""))
+		for _, r := range xe {
+			r["kind"] = "xe"
+			out = append(out, r)
+		}
+	}
+
+	// the error log files kept
+	out = append(out, errorLogRows(ctx, conn, info, platform)...)
+
+	// master's startup procedures
+	if !info.ViewAnyDefinition {
+		out = append(out, confPart("startup", false, "not read: the login lacks VIEW ANY DEFINITION: master's procedures are not visible to it"))
+	} else if procs, perr := QueryRows(ctx, conn, confStartupSQL); perr != nil {
+		fail("startup", "master.sys.procedures", perr)
+	} else {
+		list := []string{}
+		for _, r := range procs {
+			if n, _ := r["name"].(string); n != "" {
+				list = append(list, n)
+			}
+		}
+		out = append(out, confPart("startup", true, ""), confFact("startup_procs", list))
+	}
+
+	out = append(out, confDatabaseRows(ctx, conn, info)...)
+	out = append(out, confLinkedRows(ctx, conn)...)
+	return out, nil
+}
+
+// errorLogRows reads how many error log files the server keeps. A managed service keeps its own; a Linux server
+// gives a value only once errorlog.numerrorlogs is set in mssql.conf.
+func errorLogRows(ctx context.Context, conn *sql.Conn, info Info, platform string) []collect.Row {
+	if by := hostedBy(info.Kind); by != "" {
+		return []collect.Row{confPart("errorlog", false, "not read: "+by+" runs the host and keeps the error log files itself")}
+	}
+	var out []collect.Row
+	files, filesRead := int64(-1), false
+	if fr, err := QueryRows(ctx, conn, confErrorLogFilesSQL); err == nil && len(fr) == 1 {
+		out = append(out, confFact("errorlog_files", fr[0]["files"]))
+		files, filesRead = asInt64(fr[0]["files"])
+	}
+	rows, err := QueryRows(ctx, conn, confErrorLogSQL)
+	switch {
+	case err != nil:
+		return append(out, confPart("errorlog", false, "not read: xp_instance_regread failed: "+err.Error()))
+	case len(rows) != 1 || rows[0]["rc"] != int64(0):
+		return append(out, confPart("errorlog", false, "not read: xp_instance_regread did not answer (its return code was not 0)"))
+	}
+	kept, set := rows[0]["num_errorlogs"].(int64)
+	return append(out, numErrorLogsRows(platform, kept, set, files, filesRead)...)
+}
+
+// numErrorLogsRows turns the registry read of NumErrorLogs into the errorlog part and its count. A value read is the
+// count. No value on Windows is SQL Server's default of 6 archived files only while the files present agree (the
+// current log and at most 6 archives): the registry read returns 0 and no value both when the value is not set and
+// when a login may not read it, so more files than the default keeps means the value is set and was not readable.
+func numErrorLogsRows(platform string, kept int64, set bool, files int64, filesRead bool) []collect.Row {
+	switch {
+	case set:
+		return []collect.Row{confPart("errorlog", true, ""), confFact("num_errorlogs", kept)}
+	case platform == "Windows" && filesRead && files <= 7:
+		return []collect.Row{confPart("errorlog", true, "NumErrorLogs is not set: the default of 6 applies"), confFact("num_errorlogs", int64(6))}
+	case platform == "Windows" && filesRead:
+		return []collect.Row{confPart("errorlog", false, fmt.Sprintf("not read: NumErrorLogs gave no value while the server keeps %d error log files (more than the default keeps): the value is set and the login may not read it", files))}
+	case platform == "Windows":
+		return []collect.Row{confPart("errorlog", false, "not read: NumErrorLogs gave no value and the error log files were not listed: whether the default of 6 applies is not known")}
+	case platform == "":
+		return []collect.Row{confPart("errorlog", false, "not read: NumErrorLogs is not set and the host's platform is not known (on Windows the default of 6 applies)")}
+	}
+	return []collect.Row{confPart("errorlog", false, "not read: errorlog.numerrorlogs is not set in mssql.conf, and SQL Server on "+platform+" shows no count without it")}
+}
+
+// confDatabaseRows reads every database's row and, where the login can enter, its database-scoped MAXDOP.
+func confDatabaseRows(ctx context.Context, conn *sql.Conn, info Info) []collect.Row {
+	ag := "1 = 0"
+	// sys.fn_hadr_is_primary_replica asks VIEW SERVER STATE (2022's performance right alone is not enough)
+	if info.HADREnabled && info.ViewServerState {
+		ag = "d.replica_id IS NOT NULL AND ISNULL(sys.fn_hadr_is_primary_replica(d.name), 0) = 0"
+	}
+	dbs, err := QueryRows(ctx, conn, fmt.Sprintf(confDatabasesSQL, ag))
+	if err != nil {
+		return []collect.Row{confPart("databases", false, "not read: "+err.Error()),
+			{"kind": "collector_error", "source": "sys.databases", "message": err.Error()}}
+	}
+	// log shipping secondaries: msdb's own table, read where the login may
+	shipped := map[string]bool{}
+	var notes, roles []string // roles: the secondaries not told apart (the state rule reads them 'not read', never a warning)
+	if !info.MsdbAccess {
+		roles = append(roles, "log shipping secondaries are not told apart: the login has no access to msdb")
+	} else if ls, lerr := QueryRows(ctx, conn, confLogShippingSQL); lerr != nil {
+		roles = append(roles, "log shipping secondaries are not told apart: "+lerr.Error())
+	} else {
+		for _, r := range ls {
+			if n, _ := r["name"].(string); n != "" {
+				shipped[strings.ToLower(n)] = true
+			}
+		}
+	}
+	if info.HADREnabled && !info.ViewServerState {
+		roles = append(roles, "availability group secondaries are not told apart: the login lacks VIEW SERVER STATE")
+	}
+	notes = append(notes, roles...)
+	var out []collect.Row
+	stop, hasStop := ctx.Deadline()
+	cut := 0
+	for _, db := range dbs {
+		name, _ := db["database_name"].(string)
+		if platformOwnDatabase(info.Kind, name) {
+			continue
+		}
+		row := collect.Row{"kind": "database", "database_name": name, "state": db["state"], "read_only": db["read_only"],
+			"in_standby": db["in_standby"], "recovery_model": db["recovery_model"], "query_store": db["query_store"],
+			"secondary_role": db["secondary_role"], "scoped_maxdop": nil, "scoped_note": nil}
+		if row["secondary_role"] == nil && shipped[strings.ToLower(name)] {
+			row["secondary_role"] = "log shipping secondary"
+		}
+		quoted, _ := db["quoted_name"].(string)
+		switch {
+		case info.Major > 0 && info.Major < 13 && info.Kind != KindAzureMI:
+			row["scoped_note"] = "not read: SQL Server 2016 and later have database-scoped configurations"
+		case db["can_enter"] != int64(1) || quoted == "":
+			if st, _ := db["state"].(string); st != "ONLINE" {
+				row["scoped_note"] = "not read: the database is " + strings.ToLower(st)
+			} else {
+				row["scoped_note"] = "not read: the login cannot enter the database"
+			}
+		case cut > 0 || ctx.Err() != nil || (hasStop && time.Until(stop) < 10*time.Second):
+			cut++
+			row["scoped_note"] = "not read: the run's deadline came before this database's turn"
+		default:
+			if sc, serr := QueryRows(ctx, conn, fmt.Sprintf(confScopedSQL, quoted)); serr != nil {
+				row["scoped_note"] = "not read: " + serr.Error()
+			} else if len(sc) == 1 {
+				row["scoped_maxdop"] = sc[0]["maxdop"]
+			} else {
+				row["scoped_note"] = "not read: the database lists no MAXDOP configuration"
+			}
+		}
+		out = append(out, row)
+	}
+	if cut > 0 {
+		notes = append(notes, fmt.Sprintf("the run's deadline came before %d database(s) gave their scoped MAXDOP", cut))
+	}
+	head := []collect.Row{confPart("databases", true, strings.Join(notes, "; "))}
+	if len(roles) > 0 {
+		head = append(head, confFact("secondary_roles_unread", strings.Join(roles, "; ")))
+	}
+	return append(head, out...)
+}
+
+// confLinkedSeesAllSQL: whether the login sees every linked server in sys.servers (Microsoft's sys.servers page names
+// ALTER ANY LINKED SERVER, ALTER ANY LOGIN, setupadmin and sysadmin; VIEW ANY DEFINITION shows every server's
+// metadata).
+const confLinkedSeesAllSQL = `SELECT CAST(CASE WHEN HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LINKED SERVER') = 1
+  OR HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LOGIN') = 1 OR HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION') = 1
+  OR IS_SRVROLEMEMBER('setupadmin') = 1 OR IS_SRVROLEMEMBER('sysadmin') = 1 THEN 1 ELSE 0 END AS int) AS sees_all`
+
+// linkedListShortNote is the linked part's note when the login may not see every linked server.
+const linkedListShortNote = "only the linked servers that keep their default login mapping or map the collector's login are visible: " +
+	"ALTER ANY LINKED SERVER, ALTER ANY LOGIN, VIEW ANY DEFINITION, setupadmin or sysadmin shows them all"
+
+// confLinkedRows reads the linked servers and who is mapped at each.
+func confLinkedRows(ctx context.Context, conn *sql.Conn) []collect.Row {
+	servers, err := QueryRows(ctx, conn, confLinkedSQL)
+	if err != nil {
+		return []collect.Row{confPart("linked", false, "not read: "+err.Error()),
+			{"kind": "collector_error", "source": "sys.servers", "message": err.Error()}}
+	}
+	// sys.servers shows a login the linked servers that keep their default login mapping or map that login; every
+	// one only with one of these rights. Without them the list may be short: nothing missing from it is taken as gone.
+	complete := int64(0)
+	if r, rerr := QueryRows(ctx, conn, confLinkedSeesAllSQL); rerr == nil && len(r) == 1 {
+		complete, _ = asInt64(r[0]["sees_all"])
+	}
+	note := ""
+	if complete != 1 {
+		note = linkedListShortNote
+	}
+	out := []collect.Row{confPart("linked", true, note), confFact("linked_list_complete", complete)}
+	if len(servers) == 0 {
+		return out
+	}
+	logins, lerr := QueryRows(ctx, conn, confLinkedLoginsSQL)
+	byServer := map[int64][]map[string]any{}
+	for _, l := range logins {
+		id, _ := l["server_id"].(int64)
+		byServer[id] = append(byServer[id], map[string]any{"local": l["local_login"], "self": l["uses_self"] == int64(1), "remote": l["has_remote"] == int64(1)})
+	}
+	for _, s := range servers {
+		id, _ := s["server_id"].(int64)
+		delete(s, "server_id")
+		s["kind"] = "linked"
+		// a server with no mapping row visible: the mappings were not read (a login without the right gets none, and no error)
+		s["logins_read"] = b2i(lerr == nil && len(byServer[id]) > 0)
+		if m := byServer[id]; m != nil {
+			s["logins"] = m
+		} else {
+			s["logins"] = []map[string]any{}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// LinkedServerTestTag is the tag that switches mssql_linkedserver_test on for an instance.
+const LinkedServerTestTag = "pgvigil:linkedserver-test"
+
+// linkedServerTestCollector is mssql_linkedserver_test (hourly, only on an instance that carries the tag
+// pgvigil:linkedserver-test): sys.sp_testlinkedserver for each linked server, FROM the monitored server, as the
+// collector's own login maps there. At most linkedTestsPerRun servers a run, in name order from where the last run
+// stopped (a cursor), each
+// under its own deadline; a server of another provider than SQL Server's own (SQLNCLI*, MSOLEDBSQL*) is left out.
+// Error 7416 (no login mapping) and 18456 (the mapped login failed) are 'unmapped': the collector's login, not the
+// link. The test opens a connection and closes it: nothing is read or written on either server.
+type linkedServerTestCollector struct{}
+
+const (
+	linkedTestsPerRun  = 2
+	linkedTestDeadline = 30 * time.Second
+)
+
+func (linkedServerTestCollector) Name() string                   { return Prefix + "linkedserver_test" }
+func (linkedServerTestCollector) DefaultInterval() time.Duration { return time.Hour }
+func (linkedServerTestCollector) Timeout() time.Duration {
+	return linkedTestsPerRun*linkedTestDeadline + 20*time.Second
+}
+
+func (linkedServerTestCollector) Applies(info Info) (bool, string) {
+	switch {
+	case info.Kind == KindAzureDB:
+		return false, "not on Azure SQL Database: it has no linked servers"
+	case !info.LinkedServerTest:
+		return false, "off: the instance does not carry the tag " + LinkedServerTestTag
+	}
+	return true, ""
+}
+
+const linkedTestListSQL = `SELECT CAST(s.name AS nvarchar(256)) AS name, CAST(s.provider AS nvarchar(256)) AS provider
+FROM sys.servers s WHERE s.is_linked = 1 ORDER BY s.name`
+
+// linkedTestSQL: one test; a failure is caught and returned as a row. @p1 the linked server's name.
+const linkedTestSQL = `DECLARE @t0 datetime2 = SYSDATETIME();
+BEGIN TRY
+  EXEC sys.sp_testlinkedserver @servername = @p1;
+  SELECT CAST(0 AS int) AS error_number, CAST(NULL AS nvarchar(1000)) AS error_message, DATEDIFF(millisecond, @t0, SYSDATETIME()) AS ms;
+END TRY
+BEGIN CATCH
+  SELECT CAST(ERROR_NUMBER() AS int) AS error_number, CAST(LEFT(ERROR_MESSAGE(), 1000) AS nvarchar(1000)) AS error_message, DATEDIFF(millisecond, @t0, SYSDATETIME()) AS ms;
+END CATCH`
+
+// sqlServerProvider says whether a linked server's provider is one of SQL Server's own.
+func sqlServerProvider(provider string) bool {
+	p := strings.ToUpper(strings.TrimSpace(provider))
+	return strings.HasPrefix(p, "SQLNCLI") || strings.HasPrefix(p, "MSOLEDBSQL") || p == "SQLOLEDB"
+}
+
+// linkedTestOutcome names a test's outcome from its error number.
+func linkedTestOutcome(errorNumber int64) string {
+	switch errorNumber {
+	case 0:
+		return "ok"
+	case 7416, 18456:
+		return "unmapped"
+	}
+	return "failed"
+}
+
+// linkedLoginRefused are the errors of a mapped login the remote server refused (the login failed, is disabled,
+// locked out, or its password expired or must change): the server's text for them names that login.
+var linkedLoginRefused = map[int64]bool{18452: true, 18456: true, 18470: true, 18486: true, 18487: true, 18488: true}
+
+// linkedLoginRefusedText is what is kept in place of such an error's own text.
+const linkedLoginRefusedText = "the login mapped for the collector's login was refused at the remote server"
+
+// reQuotedPrincipal finds a login, user or principal named in quotes in a server's error text, through the text's
+// last quote (a name may hold a quote of its own: nothing after its first quote is trusted to be outside it).
+var reQuotedPrincipal = regexp.MustCompile(`(?is)\b(user|login|principal)\s+['"].*['"]`)
+
+// linkedTestMessage is the error text kept for a connection test, never a remote login's name: a refused login's
+// errors keep one fixed sentence, and any other text is cut from a login, user or principal named in quotes through
+// its last quote.
+func linkedTestMessage(errorNumber int64, message string) string {
+	if linkedLoginRefused[errorNumber] {
+		return linkedLoginRefusedText
+	}
+	return reQuotedPrincipal.ReplaceAllString(message, "$1 '<not stored>'")
+}
+
+func (linkedServerTestCollector) Run(context.Context, *sql.Conn, Info) ([]collect.Row, error) {
+	return nil, fmt.Errorf("mssql_linkedserver_test runs with its cursor (RunBatches)")
+}
+
+// linkedTestCursor is the mssql_cursor source that keeps where the next run starts (last_seq: its index in the list
+// of testable linked servers in name order, taken modulo their count), so every server gets its turn.
+const linkedTestCursor = "mssql_linkedserver_test"
+
+func (linkedServerTestCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ Info, _ BatchOptions, cursor CursorFunc, emit EmitFunc) error {
+	servers, err := QueryRows(ctx, conn, linkedTestListSQL)
+	if err != nil {
+		return err
+	}
+	var out []collect.Row
+	var testable []string
+	for _, s := range servers {
+		name, _ := s["name"].(string)
+		prov, _ := s["provider"].(string)
+		if !sqlServerProvider(prov) {
+			out = append(out, collect.Row{"kind": "test", "name": name, "outcome": "not tested",
+				"note": "the provider " + prov + " is not one of SQL Server's own: left out"})
+			continue
+		}
+		testable = append(testable, name)
+	}
+	cur, err := cursor(ctx, linkedTestCursor)
+	if err != nil {
+		return err
+	}
+	start, tested := tablesStart(cur, len(testable)), 0
+	for i := 0; i < len(testable); i++ {
+		name := testable[(start+i)%len(testable)]
+		if i >= linkedTestsPerRun || ctx.Err() != nil {
+			out = append(out, collect.Row{"kind": "test", "name": name, "outcome": "not tested",
+				"note": fmt.Sprintf("at most %d linked servers are tested a run: this one waits for its turn", linkedTestsPerRun)})
+			continue
+		}
+		tctx, cancel := context.WithTimeout(ctx, linkedTestDeadline)
+		rows, terr := QueryRows(tctx, conn, linkedTestSQL, name)
+		cancel()
+		tested++
+		switch {
+		case terr != nil:
+			out = append(out, collect.Row{"kind": "test", "name": name, "outcome": "failed", "error_number": nil,
+				"error_message": "the test did not answer in " + linkedTestDeadline.String() + ": " + linkedTestMessage(0, terr.Error()), "seconds": linkedTestDeadline.Seconds()})
+		case len(rows) != 1:
+			out = append(out, collect.Row{"kind": "test", "name": name, "outcome": "not tested", "note": "the test returned no row"})
+		default:
+			n, _ := rows[0]["error_number"].(int64)
+			ms, _ := rows[0]["ms"].(int64)
+			row := collect.Row{"kind": "test", "name": name, "outcome": linkedTestOutcome(n), "seconds": float64(ms) / 1000}
+			if n != 0 {
+				msg, _ := rows[0]["error_message"].(string)
+				row["error_number"], row["error_message"] = n, linkedTestMessage(n, msg)
+			}
+			out = append(out, row)
+		}
+	}
+	next := int64(0)
+	if len(testable) > 0 {
+		next = int64((start + tested) % len(testable))
+	}
+	return emit(append(out, Cursor{LastSeq: next}.Row(linkedTestCursor)))
 }
