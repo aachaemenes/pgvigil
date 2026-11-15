@@ -130,8 +130,8 @@ xe() { "$BIN" collect -config "$CFG" -once mssql_xe -instance "$N1" > "$OUT" 2>&
 fn() { [ "$(q "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname = '$1'")" != 0 ]; }
 tab() { [ "$(q "select to_regclass('pgvigil.$1') is not null")" = t ]; }
 # the findings as the pages read them; the slice's own view (blocking_findings) beside them until it is wired into
-# pgvigil.findings (then read there, once)
-fsrc() { if tab blocking_findings && [ "$(q "select pg_get_viewdef('pgvigil.findings'::regclass) like '%blocking_findings%'")" = f ]; then
+# pgvigil.findings (then read there, once); matched as its own name - 0114's mssql_blocking_findings arm is in findings already
+fsrc() { if tab blocking_findings && [ "$(q "select pg_get_viewdef('pgvigil.findings'::regclass) ~ '[^a-z_]blocking_findings[^a-z_]'")" = f ]; then
     echo "(select instance_id, severity, setting, detail from pgvigil.findings union all select instance_id, severity, check_name, detail from pgvigil.blocking_findings)"
   else echo "(select instance_id, severity, setting, detail from pgvigil.findings)"; fi; }
 finding() { q "select coalesce(string_agg(severity || '|' || detail, ' / '), '') from $(fsrc) f where instance_id = $1 and setting = '$2'"; }
