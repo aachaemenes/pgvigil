@@ -199,7 +199,7 @@ func TestAWSReplicas(t *testing.T) {
 		CW: func(context.Context, string) (CWAPI, error) {
 			return &fakeCW{lag: map[string][]float64{"dbx": {7}}}, nil
 		},
-		Caller: func(context.Context) (string, string, error) { return "aws", "123456789012", nil },
+		Caller: func(context.Context, string) (string, string, error) { return "aws", "123456789012", nil },
 		Now:    func() time.Time { return now },
 	}
 	res, pts, notes, err = denied.Read(context.Background(), "us-east-2", "dbx")

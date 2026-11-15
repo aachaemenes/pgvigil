@@ -30,7 +30,7 @@ func TestAWSResourceIDIsTheARN(t *testing.T) {
 		return &AWSReader{
 			RDS:    func(_ context.Context, region string) (RDSAPI, error) { return lists[region], nil },
 			CW:     func(_ context.Context, region string) (CWAPI, error) { return lag[region], nil },
-			Caller: func(context.Context) (string, string, error) { return part, acct, nil },
+			Caller: func(context.Context, string) (string, string, error) { return part, acct, nil },
 			Now:    func() time.Time { return now },
 		}
 	}
@@ -84,7 +84,7 @@ func TestAWSResourceIDIsTheARN(t *testing.T) {
 	}
 
 	// a refused listing: the caller identity names the instance; the Door's read row says the same key
-	denied := func(caller func(context.Context) (string, string, error)) *AWSReader {
+	denied := func(caller func(context.Context, string) (string, string, error)) *AWSReader {
 		return &AWSReader{
 			RDS: func(context.Context, string) (RDSAPI, error) {
 				return &fakeRDS{err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "not authorized to perform: rds:DescribeDBInstances"}}, nil
@@ -97,7 +97,7 @@ func TestAWSResourceIDIsTheARN(t *testing.T) {
 		}
 	}
 	d := &Door{Now: func() time.Time { return now }, NewAWS: func(string) *AWSReader {
-		return denied(func(context.Context) (string, string, error) { return "aws-us-gov", "333333333333", nil })
+		return denied(func(context.Context, string) (string, string, error) { return "aws-us-gov", "333333333333", nil })
 	}}
 	rows, err := d.Rows(ctx, config.Instance{Name: "pg1", AWS: &config.AWS{Region: "us-gov-west-1", DBInstance: "G1-R1", Replicas: true}})
 	if err != nil || len(rows) == 0 || rows[0]["resource_id"] != gov+"g1-r1" {
@@ -110,7 +110,7 @@ func TestAWSResourceIDIsTheARN(t *testing.T) {
 	}
 	// neither the listing nor the caller identity: refused in words, nothing stored under another key
 	d = &Door{Now: func() time.Time { return now }, NewAWS: func(string) *AWSReader {
-		return denied(func(context.Context) (string, string, error) { return "", "", errors.New("no credentials") })
+		return denied(func(context.Context, string) (string, string, error) { return "", "", errors.New("no credentials") })
 	}}
 	if rows, err = d.Rows(ctx, config.Instance{Name: "pg1", AWS: &config.AWS{Region: "us-gov-west-1", DBInstance: "g1-r1", Replicas: true}}); err == nil || !strings.Contains(err.Error(), "GetCallerIdentity") {
 		t.Errorf("no listing and no caller identity: %v %v, want the read refused naming sts:GetCallerIdentity", rows, err)

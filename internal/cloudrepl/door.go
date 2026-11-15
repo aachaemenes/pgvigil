@@ -13,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
@@ -72,6 +73,8 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 	var self, key string
 	var read func() ([]Resource, []Point, []string, error)
 	var failovers func() ([]Failover, error)
+	// selfOf: the instance's own key once known (GCP: from the block; AWS: the listing's ARN or the caller identity's)
+	selfOf := func() (string, error) { return self, nil }
 	switch provider {
 	case "aws":
 		region := strings.TrimSpace(in.AWS.Region)
@@ -82,10 +85,18 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 			}
 			region = r
 		}
-		self, key = strings.ToLower(strings.TrimSpace(in.AWS.DBInstance)), "aws|"+in.AWS.Profile+"|"+region
+		ident := strings.ToLower(strings.TrimSpace(in.AWS.DBInstance))
+		key = "aws|" + in.AWS.Profile + "|" + region
 		r := d.awsReader(in.AWS.Profile)
-		read = func() ([]Resource, []Point, []string, error) { return r.Read(ctx, region, self) }
-		failovers = func() ([]Failover, error) { return r.Failovers(ctx, region, self) }
+		read = func() ([]Resource, []Point, []string, error) { return r.Read(ctx, region, ident) }
+		selfOf = func() (string, error) {
+			s, err := r.selfID(ctx, region, ident)
+			if err != nil {
+				return "", fmt.Errorf("the provider replica read cannot name the instance's own resource (its ARN): %v", err)
+			}
+			return s, nil
+		}
+		failovers = func() ([]Failover, error) { return r.Failovers(ctx, region, ident, self) }
 	case "gcp":
 		self, key = in.GCP.ResourceID(), "gcp|"+in.GCP.CredentialsFile+"|"+strings.ToLower(in.GCP.Project)
 		r, err := d.gcpReader(in.GCP.CredentialsFile)
@@ -98,6 +109,10 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 		return nil, errors.New(why)
 	}
 	if w, ok := d.resting(key); ok {
+		var err error
+		if self, err = selfOf(); err != nil {
+			return nil, err
+		}
 		return noteRows(provider, self, []string{w}), nil
 	}
 	res, pts, notes, err := read()
@@ -105,9 +120,15 @@ func (d *Door) Rows(ctx context.Context, in config.Instance) ([]map[string]any, 
 	if errors.As(err, &th) {
 		w := th.Error()
 		d.rest(key, w)
+		if self, err = selfOf(); err != nil {
+			return nil, err
+		}
 		return noteRows(provider, self, []string{w}), nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if self, err = selfOf(); err != nil {
 		return nil, err
 	}
 	// P3: the instance's own failover events under the same door; a refusal or a throttle is a note, the read stands
@@ -279,6 +300,22 @@ func newAWSReader(profile string) *AWSReader {
 				return nil, err
 			}
 			return rds.NewFromConfig(c), nil
+		},
+		// the credential's partition (its own ARN's second field) and account: no IAM right is needed for it
+		Caller: func(ctx context.Context, region string) (string, string, error) {
+			c, err := cfgFor(ctx, region)
+			if err != nil {
+				return "", "", err
+			}
+			out, err := sts.NewFromConfig(c).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+			if err != nil {
+				return "", "", err
+			}
+			p := strings.Split(aws.ToString(out.Arn), ":")
+			if len(p) < 5 {
+				return "", "", fmt.Errorf("the caller's ARN %q has no partition", aws.ToString(out.Arn))
+			}
+			return p[1], aws.ToString(out.Account), nil
 		},
 		Now: time.Now,
 	}

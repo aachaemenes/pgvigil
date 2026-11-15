@@ -52,8 +52,9 @@ func rdsPhase(msg string) string {
 	return ""
 }
 
-// Failovers reads the DB instance's failover events of the last two hours (every page).
-func (r *AWSReader) Failovers(ctx context.Context, region, dbInstance string) ([]Failover, error) {
+// Failovers reads the DB instance's failover events of the last two hours (every page), each under key, the
+// instance's own (its ARN: 390b ID (a)); DescribeEvents asks by the identifier.
+func (r *AWSReader) Failovers(ctx context.Context, region, dbInstance, key string) ([]Failover, error) {
 	id := strings.ToLower(strings.TrimSpace(dbInstance))
 	if r.Events == nil {
 		return nil, nil // a reader without the events seam (a test's stand-in): no P3 read
@@ -73,7 +74,7 @@ func (r *AWSReader) Failovers(ctx context.Context, region, dbInstance string) ([
 		for _, e := range res.Events {
 			msg := aws.ToString(e.Message)
 			if ph := rdsPhase(msg); ph != "" && e.Date != nil {
-				out = append(out, Failover{ResourceID: id, At: e.Date.UTC(), Phase: ph, Message: msg, Source: "rds events"})
+				out = append(out, Failover{ResourceID: key, At: e.Date.UTC(), Phase: ph, Message: msg, Source: "rds events"})
 			}
 		}
 		if aws.ToString(res.Marker) == "" {

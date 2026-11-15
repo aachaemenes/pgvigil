@@ -41,7 +41,11 @@ every 5 minutes and with no SQL statement, the instance's own resource, its dire
 one's status and replication status, and each replica's lag, so a replica pgvigil does not connect to still has its
 lag. Each lag is to the replica's DIRECT upstream: a replica of a replica (cascaded, marked on its row) lags its own
 source, not the first. A resource is one row whoever reads it: a source and its replica both monitored read the same
-chain and store it once; both pages show it. The page is the Replicas (provider) block under a PostgreSQL instance's
+chain and store it once; both pages show it. An RDS resource is keyed by its ARN (DBInstanceArn, lower case: unique
+across regions, accounts and partitions, where an identifier such as 'database-1' is not; a replica RDS names by its
+bare identifier takes its source's partition and account), the page showing its identifier; when the listing is
+refused, the instance's own key comes from the credential's identity (sts:GetCallerIdentity, which needs no right); a
+Cloud SQL resource is project:instance. The page is the Replicas (provider) block under a PostgreSQL instance's
 Replication tab and an RDS for SQL Server instance's Availability tab: source and replicas, the lag and byte lag charts
 over the range bar's window (hours past a day; a window past 31 days shows its newest 31, and the page says so), the
 changes, the findings.

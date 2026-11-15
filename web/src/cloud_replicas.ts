@@ -11,17 +11,23 @@ import { mssqlFindingCols } from './mssql_hadr';
 
 type Parts = Record<'read' | 'resources' | 'series' | 'events' | 'findings', Table | null>;
 
+// shortId: an RDS resource's key is its ARN (390b ID (a)): the page shows the identifier, the whole key in the title
+const shortId = (v: unknown): string => {
+  const s = String(v ?? ''), i = s.lastIndexOf(':db:');
+  return s.startsWith('arn:') && i >= 0 ? s.slice(i + 4) : s;
+};
+const idCell = (v: unknown): HTMLElement => el('span', { title: String(v ?? '') }, shortId(v));
 const replTone = (v: unknown): string => {
   const s = String(v ?? '').toLowerCase();
   return s === '' ? '' : s === 'replicating' || s === 'running' ? 'ok' : 'crit';
 };
 const resourceCols = (ctx: Ctx): Col[] => [
-  { key: 'resource_id', label: 'resource', fmt: (v, r) => r.self === true ? `${String(v)} (this instance)`
+  { key: 'resource_id', label: 'resource', fmt: (v, r) => r.self === true ? `${shortId(v)} (this instance)`
     // the page this block is on (Replication or Availability): a source and its replicas are one engine (part c finding 7)
-    : r.monitored_as != null ? el('a', { href: href(ctx, { tab: ctx.tab, instance: Number(r.monitored_as) }) }, String(v))
-    : `${String(v)} (not monitored)` },
+    : r.monitored_as != null ? el('a', { href: href(ctx, { tab: ctx.tab, instance: Number(r.monitored_as) }), title: String(v) }, shortId(v))
+    : `${shortId(v)} (not monitored)` },
   { key: 'role', label: 'role', fmt: (v, r) => String(v ?? '') + (r.cascaded === true ? ' (cascaded: a replica that is a source)' : '') },
-  { key: 'source_id', label: 'source' },
+  { key: 'source_id', label: 'source', fmt: v => idCell(v) },
   { key: 'status', label: 'status' },
   { key: 'repl_status', label: 'replication', fmt: (v, r) => v == null || v === '' ? (r.role === 'replica' ? 'not reported yet' : '')
     : badge(String(v), replTone(v)) },
@@ -34,7 +40,7 @@ const resourceCols = (ctx: Ctx): Col[] => [
 ];
 const eventCols: Col[] = [
   { key: 'at', label: 'seen', fmt: v => fmtTime(v) }, { key: 'prev_read_at', label: 'after the read at', fmt: v => fmtTime(v) },
-  { key: 'resource_id', label: 'resource' }, { key: 'kind', label: 'change' }, { key: 'subject', label: 'of' },
+  { key: 'resource_id', label: 'resource', fmt: v => idCell(v) }, { key: 'kind', label: 'change' }, { key: 'subject', label: 'of', fmt: v => idCell(v) },
   { key: 'old_value', label: 'from' }, { key: 'new_value', label: 'to', wide: true },
 ];
 
@@ -94,7 +100,7 @@ export async function cloudReplicasBlock(ctx: Ctx): Promise<HTMLElement> {
   for (const [metric, title, fmt] of [['replica_lag', 'Replica lag (each to its direct source)', (v: number) => `${fmtNum(v)} s`],
     ['replica_byte_lag', 'Replica byte lag (Cloud SQL, replay)', (v: number) => `${fmtNum(v)} bytes`]] as [string, string, (v: number) => string][]) {
     const p = pivot(series, metric);
-    if (p.rows.length) sec.append(lineChart(title, p.rows, p.ids.map(id => ({ key: id, label: id })), fmt));
+    if (p.rows.length) sec.append(lineChart(title, p.rows, p.ids.map(id => ({ key: id, label: shortId(id) })), fmt));
     else if (metric === 'replica_lag' && replicas.length) {
       // replicas listed and no lag datapoint in the window: said, never a silent gap (part c finding 11)
       sec.append(el('p', { class: 'empty' }, 'No replica lag datapoint in this window: the provider gave none (a replica made minutes ago, a window before its first read, or the metric call refused - see the refused calls above).'));

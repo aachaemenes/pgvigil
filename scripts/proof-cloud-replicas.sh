@@ -63,6 +63,13 @@ for t in psql jq python3 aws curl; do command -v "$t" >/dev/null || { echo "FAIL
 # shellcheck disable=SC1090
 . "$STATE"
 : "${SRC_ID:?} ${REP_ID:?} ${SRC_HOST:?} ${ADMIN_USER:?} ${ADMIN_PW:?} ${MON_USER:?} ${MON_PW:?}"
+# the keys pgvigil stores (390b ID (a)): each DB instance's lower-cased DBInstanceArn, as AWS answers it for the source;
+# the replica's built from the source's partition, region and account (its same-region form), checked against AWS's own
+# answer once the replica stands (R-B)
+SRC_KEY=$(aws --profile "$PGVIGIL_LAB_AWS_PROFILE" --region "$PGVIGIL_LAB_AWS_REGION" rds describe-db-instances --db-instance-identifier "$SRC_ID" \
+  --query 'DBInstances[0].DBInstanceArn' --output text | tr '[:upper:]' '[:lower:]')
+[[ $SRC_KEY == arn:*:rds:*:db:* ]] || { echo "FAIL: the source's DBInstanceArn was not read ('$SRC_KEY')" >&2; exit 1; }
+REP_KEY="${SRC_KEY%:db:*}:db:$(tr '[:upper:]' '[:lower:]' <<<"$REP_ID")"
 SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
 REPO_DB=pgvigil_crproof_$SUF; N=proof-cr-$SUF
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
@@ -121,11 +128,11 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/serv
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORTW/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 "$SRV_PID" 2>/dev/null || die "pgvigil serve exited: $(cat "$WORK/serve.out")"
 page() { curl -fs "http://127.0.0.1:$PORTW/api/cloud/replicas?instance=$(iid "$1")&part=resources" | python3 -c 'import json,sys; t=json.load(sys.stdin)["resources"]; i=t["columns"].index("resource_id"); print(",".join(sorted(r[i] for r in t["rows"])))'; }
-WANT_PAGE=$(printf '%s\n' "$SRC_ID" "$REP_ID" | LC_ALL=C sort | paste -sd,)
+WANT_PAGE=$(printf '%s\n' "$SRC_KEY" "$REP_KEY" | LC_ALL=C sort | paste -sd,)
 
 echo "--- R-A the source alone"
 run src
-S=$(status src); R=$(q "SELECT role || '|' || cardinality(replica_ids) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$SRC_ID'")
+S=$(status src); R=$(q "SELECT role || '|' || cardinality(replica_ids) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$SRC_KEY'")
 F=$(q "SELECT count(*) FROM pgvigil.cloud_replica_findings WHERE instance_id = $(iid src)")
 echo "  cloud_replicas: $S; the source: $R; findings: $F"
 [[ $S == ok* ]] && [ "$R" = "standalone|0" ] && [ "$F" = 0 ] && echo "R-A: OK" || bad "R-A: '$S' '$R' findings $F (want ok, standalone|0, 0)"
@@ -134,24 +141,27 @@ echo "--- R-B the replica made"
 "$LAB" replica | sed 's/^/  lab: /' &
 LP=$!
 STOPPED_SEEN=
-while kill -0 "$LP" 2>/dev/null; do run src; [ -n "$(finding src 'provider replica stopped' "$REP_ID")" ] && STOPPED_SEEN=1; sleep 60; done
+while kill -0 "$LP" 2>/dev/null; do run src; [ -n "$(finding src 'provider replica stopped' "$REP_KEY")" ] && STOPPED_SEEN=1; sleep 60; done
 wait "$LP" || die "R-B: the replica was not made (the lab's output above)"
 # shellcheck disable=SC1090
 . "$STATE"
 CR_REP_DSN=$(pgdsn "$REP_HOST"); writecfg
+GOT_KEY=$(aws --profile "$PGVIGIL_LAB_AWS_PROFILE" --region "$PGVIGIL_LAB_AWS_REGION" rds describe-db-instances --db-instance-identifier "$REP_ID" \
+  --query 'DBInstances[0].DBInstanceArn' --output text | tr '[:upper:]' '[:lower:]' || true)
+[ "$GOT_KEY" = "$REP_KEY" ] || bad "R-B: the replica's DBInstanceArn '$GOT_KEY' is not the key built from the source's ('$REP_KEY')"
 for i in $(seq 1 15); do
   run src; run rep
-  T=$(q "SELECT string_agg(resource_id || ':' || role || ':' || coalesce(source_id, '') || ':' || array_to_string(replica_ids, ',') || ':' || repl_status, ' ' ORDER BY resource_id) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id IN ('$SRC_ID', '$REP_ID')")
-  P=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag'")
-  [ "$T" = "$SRC_ID:source::$REP_ID: $REP_ID:replica:$SRC_ID::replicating" ] && [ "$P" -gt 0 ] && break; sleep 60
+  T=$(q "SELECT string_agg(resource_id || ':' || role || ':' || coalesce(source_id, '') || ':' || array_to_string(replica_ids, ',') || ':' || repl_status, ' ' ORDER BY resource_id) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id IN ('$SRC_KEY', '$REP_KEY')")
+  P=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag'")
+  [ "$T" = "$SRC_KEY:source::$REP_KEY: $REP_KEY:replica:$SRC_KEY::replicating" ] && [ "$P" -gt 0 ] && break; sleep 60
 done
-AD=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_ID' AND kind = 'added' AND subject = '$REP_ID'")
-ROWS=$(q "SELECT count(*) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id IN ('$SRC_ID', '$REP_ID')")
-PAGES=$(q "SELECT count(*) FROM pgvigil.cloud_replica_readers WHERE instance_id IN ($(iid src), $(iid rep)) AND resource_id IN ('$SRC_ID', '$REP_ID')")
+AD=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_KEY' AND kind = 'added' AND subject = '$REP_KEY'")
+ROWS=$(q "SELECT count(*) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id IN ('$SRC_KEY', '$REP_KEY')")
+PAGES=$(q "SELECT count(*) FROM pgvigil.cloud_replica_readers WHERE instance_id IN ($(iid src), $(iid rep)) AND resource_id IN ('$SRC_KEY', '$REP_KEY')")
 PG_SRC=$(page src || true); PG_REP=$(page rep || true)
 echo "  the pages list: the source's '$PG_SRC', the replica's '$PG_REP' (want '$WANT_PAGE')"
 echo "  after $i minute(s): $T; datapoints $P; 'added' $AD; rows $ROWS; page rows $PAGES${STOPPED_SEEN:+; a 'stopped' finding while it was made}"
-[ "$T" = "$SRC_ID:source::$REP_ID: $REP_ID:replica:$SRC_ID::replicating" ] && [ "$P" -gt 0 ] && [ "$AD" = 1 ] && [ "$ROWS" = 2 ] && [ "$PAGES" = 4 ] && [ "$PG_SRC" = "$WANT_PAGE" ] && [ "$PG_REP" = "$WANT_PAGE" ] && [ -z "$STOPPED_SEEN" ] \
+[ "$T" = "$SRC_KEY:source::$REP_KEY: $REP_KEY:replica:$SRC_KEY::replicating" ] && [ "$P" -gt 0 ] && [ "$AD" = 1 ] && [ "$ROWS" = 2 ] && [ "$PAGES" = 4 ] && [ "$PG_SRC" = "$WANT_PAGE" ] && [ "$PG_REP" = "$WANT_PAGE" ] && [ -z "$STOPPED_SEEN" ] \
   && echo "R-B: OK" || bad "R-B: topology '$T', datapoints $P, added $AD, rows $ROWS, page rows $PAGES, the pages '$PG_SRC' '$PG_REP', stopped while made '${STOPPED_SEEN:-no}'"
 
 # hold <minutes>: replay held on the replica (a REPEATABLE READ snapshot that a VACUUM's cleanup on the source conflicts
@@ -177,12 +187,12 @@ echo "--- R-C replay held: the source's tier warn 1 / crit 2 minutes, the replic
 tier src set 1 2; tier rep set 1
 hold 30   # pg_sleep's ceiling: release ends the hold after the 16 reads, so replay is held through the last of them
 for i in $(seq 1 16); do sleep 60; run src; run rep; done
-K1=$(finding src 'provider replica lag' "$REP_ID"); K2=$(finding rep 'provider replica lag' "$REP_ID")
-L=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag' AND snapshot_at > now() - interval '20 minutes'")
+K1=$(finding src 'provider replica lag' "$REP_KEY"); K2=$(finding rep 'provider replica lag' "$REP_KEY")
+L=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > now() - interval '20 minutes'")
 release
 C1=x; C2=x
 for i in $(seq 1 10); do sleep 60; run src; run rep
-  C1=$(finding src 'provider replica lag' "$REP_ID"); C2=$(finding rep 'provider replica lag' "$REP_ID"); [ -z "$C1$C2" ] && break; done
+  C1=$(finding src 'provider replica lag' "$REP_KEY"); C2=$(finding rep 'provider replica lag' "$REP_KEY"); [ -z "$C1$C2" ] && break; done
 tier src inherit; tier rep inherit
 echo "  held: the source's '$K1' (tier 1 / 2), the replica's '$K2' (tier 1) (lag up to $L s); released: '$C1' '$C2' after $i minute(s)"
 [ "$K1" = critical ] && [ "$K2" = warning ] && [ -z "$C1$C2" ] && echo "R-C: OK" \
@@ -190,8 +200,8 @@ echo "  held: the source's '$K1' (tier 1 / 2), the replica's '$K2' (tier 1) (lag
 
 echo "--- R-D 15 idle minutes"
 for i in $(seq 1 15); do sleep 60; run src; done
-IL=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag' AND snapshot_at > now() - interval '15 minutes'")
-D=$(finding src 'provider replica lag' "$REP_ID")
+IL=$(q "SELECT round(max(value)) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > now() - interval '15 minutes'")
+D=$(finding src 'provider replica lag' "$REP_KEY")
 echo "  the idle lag's maximum: ${IL:-none} s; the finding: '${D}'"
 [ -z "$D" ] && echo "R-D: OK" || bad "R-D: '$D' on an idle source at the defaults"
 
@@ -200,15 +210,15 @@ echo "--- R-E the replica rebooted"
 SEEN=; MISS=; STOP=; AFTER=0
 for i in $(seq 1 12); do
   sleep 60; run src
-  st=$(q "SELECT status FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_ID'"); SEEN="$SEEN $st"
-  [ -n "$(finding src 'provider lag missing' "$REP_ID")" ] && MISS=1
-  [ -n "$(finding src 'provider replica stopped' "$REP_ID")" ] && STOP=1
+  st=$(q "SELECT status FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_KEY'"); SEEN="$SEEN $st"
+  [ -n "$(finding src 'provider lag missing' "$REP_KEY")" ] && MISS=1
+  [ -n "$(finding src 'provider replica stopped' "$REP_KEY")" ] && STOP=1
   [ "$st" = available ] && [ $i -gt 2 ] && break
 done
 # a replica_lag datapoint dated after the read that saw 'available' (CloudWatch's delay: up to 6 more reads; part c finding 9)
 AV_AT=$(q "SELECT now()")
 for i in $(seq 1 6); do sleep 60; run src
-  AFTER=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag' AND snapshot_at > '$AV_AT'::timestamptz"); [ "$AFTER" -gt 0 ] && break; done
+  AFTER=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND metric = 'replica_lag' AND snapshot_at > '$AV_AT'::timestamptz"); [ "$AFTER" -gt 0 ] && break; done
 echo "  statuses read:$SEEN; replica_lag datapoints after 'available': $AFTER${MISS:+; 'lag missing' fired}${STOP:+; 'stopped' fired}"
 [[ $SEEN == *available ]] && [ "$AFTER" -gt 0 ] && [ -z "$MISS$STOP" ] && echo "R-E: OK" || bad "R-E: statuses '$SEEN', datapoints after available $AFTER, lag missing '${MISS:-no}', stopped '${STOP:-no}'"
 
@@ -223,10 +233,10 @@ fi
 
 echo "--- R-F promote"
 "$LAB" promote | sed 's/^/  lab: /'
-for i in $(seq 1 10); do run src; run rep; [ "$(q "SELECT role FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_ID'")" = standalone ] && break; sleep 60; done
-PR=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$REP_ID' AND kind = 'promoted'")
-RM=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_ID' AND kind = 'removed' AND subject = '$REP_ID'")
-F1=$(finding rep 'replica promoted or detached' "$REP_ID"); F2=$(finding src 'replica promoted or detached' "$REP_ID")
+for i in $(seq 1 10); do run src; run rep; [ "$(q "SELECT role FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_KEY'")" = standalone ] && break; sleep 60; done
+PR=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$REP_KEY' AND kind = 'promoted'")
+RM=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_KEY' AND kind = 'removed' AND subject = '$REP_KEY'")
+F1=$(finding rep 'replica promoted or detached' "$REP_KEY"); F2=$(finding src 'replica promoted or detached' "$REP_KEY")
 echo "  promoted $PR, removed $RM; findings: the replica's '$F1', the source's '$F2'"
 [ "$PR" = 1 ] && [ "$RM" = 1 ] && [ "$F1" = warning ] && [ "$F2" = warning ] && echo "R-F: OK" || bad "R-F: promoted $PR, removed $RM, '$F1', '$F2' (want 1, 1, warning, warning)"
 
