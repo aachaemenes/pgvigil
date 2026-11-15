@@ -74,7 +74,9 @@ Eight collections of this table run; the others are skipped by an Azure SQL Data
 | `mssql_activity` | skipped | `sys.dm_os_performance_counters` and the server's sessions there are the host's |
 | `mssql_reports` | skipped | no server roles, SQL logins or service list of its own to read |
 | `mssql_pool` | runs in an elastic pool, else skipped | the pool's figures from `sys.dm_elastic_pool_resource_stats`: [elastic pools](#azure-sql-database-elastic-pools) |
-| `mssql_ag`, `mssql_mirroring`, `mssql_logshipping`, `mssql_replication` | skipped | none of them exists on the service (its geo-replication is not read) |
+| `mssql_ag`, `mssql_mirroring`, `mssql_logshipping`, `mssql_replication` | skipped | none of them exists on the service (its geo-replication is `mssql_georepl`'s, below) |
+| `mssql_georepl` | runs | the database's active geo-replication links, every minute (VIEW DATABASE STATE) |
+| `mssql_failover_groups` | runs with an `azure:` block | the logical server's failover groups from Azure Resource Manager, every 5 minutes |
 | `mssql_jobs` | skipped | no SQL Server Agent (Elastic Jobs are not read) |
 | `mssql_backups` | skipped | no backup history in msdb: the backups are the service's own |
 | `mssql_versionstore` | skipped | tempdb's version store is not the tenant's |
@@ -107,6 +109,17 @@ Not proven live yet: everything in this part (no lab has run it); a pooled datab
 ### Extended Events
 
 `pgvigil mssql-xe -print -form azuresqldb -install-id <id>` prints the four database-scoped sessions (ring buffer targets); the database's admin runs it in the monitored database. The collector only reads them.
+
+### Geo-replication and failover groups
+
+DBA Dash reads none of this; pgvigil shows it on the database's Availability tab, in its availability group grid's shape.
+
+- **`mssql_georepl`, every minute**, reads `sys.dm_geo_replication_link_status` in the database (Microsoft: a row for each link "between primary and secondary databases"; empty in master; VIEW DATABASE STATE in the database). The lag (`replication_lag_sec`) and the last replication are the primary's only; on a secondary pgvigil shows that the lag is read on the primary. Beside the lag it keeps the primary's **unsent window** (its last commit less the last replication it heard back for, both on the primary's clock) and the time since the last acknowledgement, computed on the server.
+- **A failover** is seen as the database's role changing between two reads, or, for an instance whose host is a failover group's listener (`<group>.database.windows.net`), as the link's partner changing while the role stays: the read names the logical server it reached. Either is a change row with the read before it and a critical finding for an hour. The view cannot tell a planned failover from a forced one (Microsoft's own wording is about these T-SQL commands: they "only apply to active geo-replication and do not apply to failover groups"); the Activity Log can, below.
+- **Findings** (`mssql_georepl_findings`): the data loss - the greater of the lag and the unsent window - over `georepl_data_loss` for 5 minutes (warning 1 minute, sp_Blitz check 268's 60 s for an availability group's secondary; critical 5 minutes, pgvigil's own), set at the root or a tag (the instance level comes with the threshold engines of a later release); a link SUSPENDED in two reads (critical); seeding for over an hour (warning); a role or partner change (critical, an hour); a link removed while the database is still read (warning, 24 hours).
+- **`mssql_failover_groups`, every 5 minutes**, reads the server's groups from Azure Resource Manager (List By Server, api-version 2025-01-01: no T-SQL view shows a group): each group's role, replication state, read-write policy and grace period, read-only policy, secondary type (a Standby secondary takes no reads), partners and databases, one read per logical server per interval whichever of its databases reads it. It also reads, as a trial, the server's failover operations of the last two hours from the Activity Log (it arrives 3 to 20 minutes late), so a change can say planned or forced; the caller is never kept. A group's primary moving is a critical finding for an hour.
+- **Its door** is an `azure:` block on the instance (`subscription`, `resource_group`, `server`, and `cloud`: public, usgov or china). The token is the instance's own Entra identity when its connection signs in with one (a service principal written `<application id>@<tenant>`, or a managed identity), else azidentity's default chain (the environment, a workload identity, a managed identity, the Azure CLI's sign-in). The identity needs `Microsoft.Sql/servers/failoverGroups/read` on the server (Reader, or a custom role with that action), and `Microsoft.Insights/eventtypes/values/read` for the Activity Log. A refusal is stored with Resource Manager's code and the right it needs; a throttle waits for its Retry-After. Without the block nothing calls Resource Manager: the collection says so. A configuration file's door runs under either site profile; the host's administrator turns it on in pgvigil.yaml on that host, never the page. A discovered (page) instance carries no `azure:` block yet: task B24p.
+- Managed Instance's geo-replication is not read yet (its view is per database).
 
 ## Azure SQL Database elastic pools
 
@@ -273,6 +286,7 @@ These results are for this release's code, which includes the collector and page
 
 ## Not proven, not in this release
 
+- Geo-replication and failover groups (task 390a): NOT PROVEN until the lab's proof (`scripts/proof-mssql-georepl.sh`) runs; and not in it: Managed Instance's geo-replication, a SUSPENDED link (no way to make one), a group with several secondaries (Microsoft's preview), the usgov and china clouds (no lab), the `azure:` block on a discovered (page) instance (task B24p).
 - Azure SQL Database: the Basic, S0 and S1 tiers as single databases (their rights differ, above; a Basic elastic pool is proven live: the elastic pools section), a vCore elastic pool, Microsoft Entra sign-in with a service principal (`entra`) or a user-assigned identity against a live server (built: above; a system-assigned identity is proven live on a pooled database), a geo-replica.
 - Amazon RDS: Web and Enterprise (`-form rds` on Enterprise too); SQL Server versions other than 2019 (both proofs ran 15.0.4500.2); Multi-AZ (Always On or mirroring, the high availability mode's Multi-AZ values and `rds_failover_time`'s answer on the Properties page, the event sessions after a failover); the two Properties rows read live (their Go cases rest on R1's recorded answers); SQL Server Agent's jobs (skipped: above); the blocked-process capture with the threshold set in a parameter group; Windows authentication through AWS Managed Microsoft AD, RDS Custom.
 - Not in this release: AlloyDB is not proven against a real instance. Google Cloud SQL for SQL Server is (Express, the login above, above); Azure SQL Managed Instance is on General Purpose (above), not on Business Critical.
