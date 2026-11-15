@@ -21,7 +21,13 @@
 --   3. Mirroring: the state code, the role sequence, the database state, the endpoint; mssql_mirroring_sample (per
 --      read: the queues, the cumulative counters and the send rate, redo rate and transaction delay they give over
 --      two reads); mssql_mirroring_role_changes (a role swap, seen by the role or by the role sequence).
---   4. Log shipping from restore history: mssql_logrestore_state (current) and mssql_logrestore_sample.
+--   4. Log shipping from restore history: mssql_logrestore_state (current) and mssql_logrestore_sample. Log
+--      shipping's own configuration and what breaks it: mssql_logship_config (current: every job a configuration
+--      names - backup, copy, restore, alert - with whether it exists, is enabled and how often it runs; a primary
+--      database's recovery model and backup folders) and mssql_logship_foreign_logs (current: the log backups of a
+--      log-shipped primary database, of the last 24 hours, that are not copy-only and were written outside its
+--      log shipping folders). The findings: a job missing or disabled, a log backup outside log shipping, a primary
+--      in SIMPLE or BULK_LOGGED recovery, msdb's own alert off or its threshold under three times the job's interval.
 --   5. The failover cluster instance: mssql_fci_nodes (current), mssql_fci_owner_changes (a node change).
 --   6. mssql_hadr_findings again (0066's view; its replication arms move to pgvigil.mssql_repl_findings, which
 --      0142 (replication depth) owns: this file creates that view only where it does not exist yet, as 0066's two
@@ -458,13 +464,56 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_logrestore_sample (
 ) PARTITION BY RANGE (snapshot_at);
 CREATE INDEX IF NOT EXISTS mssql_logrestore_sample_at_idx ON pgvigil.mssql_logrestore_sample (snapshot_at);
 
--- payload: 0066's 'primary' and 'secondary' rows (msdb's monitor tables), 'restore' and 'pair' rows (restore history)
+-- Log shipping's own configuration, one row per job it names (current rows, replaced by each read of the part).
+-- A job the configuration names and SQL Server Agent no longer has is a row with job_exists false and its id.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_logship_config (
+  instance_id        int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  role               text NOT NULL CHECK (role IN ('primary', 'secondary', 'monitor')),
+  database_name      text NOT NULL,          -- '' for the monitor's alert job
+  job_role           text NOT NULL CHECK (job_role IN ('backup', 'copy', 'restore', 'alert')),
+  snapshot_at        timestamptz NOT NULL,
+  recovery_model     text,                   -- a primary database's
+  backup_directory   text,
+  backup_share       text,
+  primary_server     text,                   -- a secondary database's pair
+  primary_database   text,
+  restore_mode       int,                    -- a secondary database's: 0 NORECOVERY, 1 STANDBY
+  job_id             text,
+  job_name           text,
+  job_exists         boolean,
+  job_enabled        boolean,
+  enabled_schedules  int,
+  interval_min       numeric,                -- its shortest enabled schedule; NULL = no schedule that repeats by minutes or hours
+  PRIMARY KEY (instance_id, role, database_name, job_role)
+);
+
+-- The log backups of a log-shipped primary database that log shipping did not take (current rows of the last 24
+-- hours, replaced by each read of the part): not copy-only, written outside backup_directory and backup_share.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_logship_foreign_logs (
+  instance_id       int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  database_name     text NOT NULL,
+  finished_at       timestamptz NOT NULL,
+  file_name         text NOT NULL DEFAULT '',
+  snapshot_at       timestamptz NOT NULL,
+  started_at        timestamptz,
+  device            text,
+  backup_directory  text,
+  PRIMARY KEY (instance_id, database_name, finished_at, file_name)
+);
+
+-- payload: 0066's 'primary' and 'secondary' rows (msdb's monitor tables), 'restore' and 'pair' rows (restore history),
+-- 'lsconfig' rows (the configuration's jobs) and 'lsforeign' rows (log backups outside log shipping). The last two
+-- are parts of their own: a read that could not read one hands a collector_error whose source names it ('log
+-- shipping configuration', 'log shipping foreign log backups'), and that part's stored rows are kept as they are -
+-- every finding on them stops 15 minutes after their read, so a failed part never clears a finding by itself and
+-- never keeps one alive either.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_logshipping(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE v_rows jsonb := pgvigil.mssql_rows(p_payload);
 BEGIN
   IF NOT pgvigil.mssql_hadr_read(p_instance_id, 'mssql_logshipping', p_snapshot_at,
-           (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' IN ('primary', 'secondary', 'restore', 'pair'))) THEN
+           (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r
+             WHERE r->>'kind' IN ('primary', 'secondary', 'restore', 'pair', 'lsconfig', 'lsforeign'))) THEN
     RETURN;
   END IF;
   DELETE FROM pgvigil.mssql_logshipping_state WHERE instance_id = p_instance_id;
@@ -493,6 +542,33 @@ BEGIN
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' IN ('restore', 'pair') AND r->>'database_name' IS NOT NULL
    ORDER BY r->>'database_name', (r->>'kind' = 'restore') DESC;   -- a database that exists wins over a gone one of its name
+
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r
+                  WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'log shipping configuration') THEN
+    DELETE FROM pgvigil.mssql_logship_config WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.mssql_logship_config (instance_id, role, database_name, job_role, snapshot_at, recovery_model,
+        backup_directory, backup_share, primary_server, primary_database, restore_mode, job_id, job_name, job_exists,
+        job_enabled, enabled_schedules, interval_min)
+    SELECT DISTINCT ON (r->>'role', coalesce(r->>'database_name', ''), r->>'job_role')
+           p_instance_id, r->>'role', coalesce(r->>'database_name', ''), r->>'job_role', p_snapshot_at, r->>'recovery_model',
+           r->>'backup_directory', r->>'backup_share', r->>'primary_server', r->>'primary_database', (r->>'restore_mode')::int,
+           r->>'job_id', r->>'job_name', (r->>'job_exists')::int = 1, (r->>'job_enabled')::int = 1,
+           (r->>'enabled_schedules')::int, (r->>'interval_min')::numeric
+      FROM jsonb_array_elements(v_rows) r
+     WHERE r->>'kind' = 'lsconfig' AND r->>'role' IN ('primary', 'secondary', 'monitor')
+       AND r->>'job_role' IN ('backup', 'copy', 'restore', 'alert');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r
+                  WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'log shipping foreign log backups') THEN
+    DELETE FROM pgvigil.mssql_logship_foreign_logs WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.mssql_logship_foreign_logs (instance_id, database_name, finished_at, file_name, snapshot_at,
+        started_at, device, backup_directory)
+    SELECT DISTINCT ON (r->>'database_name', (r->>'finished_utc')::timestamptz, coalesce(r->>'file_name', ''))
+           p_instance_id, r->>'database_name', (r->>'finished_utc')::timestamptz, coalesce(r->>'file_name', ''), p_snapshot_at,
+           (r->>'started_utc')::timestamptz, r->>'device', r->>'backup_directory'
+      FROM jsonb_array_elements(v_rows) r
+     WHERE r->>'kind' = 'lsforeign' AND r->>'database_name' IS NOT NULL AND r->>'finished_utc' IS NOT NULL;
+  END IF;
 
   PERFORM pgvigil.ensure_month_partition('mssql_logrestore_sample', p_snapshot_at);
   DELETE FROM pgvigil.mssql_logrestore_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;

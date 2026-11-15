@@ -18,6 +18,7 @@ func hadrS3Statements(info Info) map[string]string {
 		"ag health session": agHealthSessionSQL,
 		"mirroring":         mirroringSQL(true), "mirroring without counters": mirroringSQL(false), "mirroring endpoint": mirroringEndpointSQL,
 		"log restores": logRestoreSQL(true), "log restores without counters": logRestoreSQL(false), "log restore pairs": logRestorePairSQL,
+		"log shipping config": lsConfigSQL, "log shipping foreign logs": lsForeignSQL,
 		"fci flag": fciFlagSQL, "fci nodes": fciNodesSQL,
 	}
 }
@@ -147,6 +148,35 @@ func TestLogRestoreText(t *testing.T) {
 	}
 }
 
+// the configuration read names every job of a log shipping setup with what the repository judges (existence, enabled,
+// its enabled schedules and their shortest interval); the foreign-log read takes only this server's own log backups
+// that are not copy-only, of the last 24 hours, outside the configuration's folders
+func TestLogShippingExtrasText(t *testing.T) {
+	for _, want := range []string{"msdb.dbo.log_shipping_primary_databases p", "msdb.dbo.log_shipping_secondary_databases sd",
+		"msdb.dbo.log_shipping_monitor_alert a", "p.backup_job_id AS job_id", "s.copy_job_id), (CAST('restore' AS varchar(10)), s.restore_job_id)",
+		"a.alert_job_id AS job_id", " AS job_exists,", " AS job_enabled,", " AS enabled_schedules,", " AS interval_min",
+		"d.recovery_model_desc", "CAST(sd.restore_mode AS int)", "ss.enabled = 1"} {
+		if !strings.Contains(lsConfigSQL, want) {
+			t.Errorf("the configuration read lacks %q", want)
+		}
+	}
+	if strings.Count(lsConfigSQL, "LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = x.job_id") != 3 {
+		t.Error("a job the configuration names must be read by LEFT JOIN in each of the three arms (a deleted job is a row, job_exists 0)")
+	}
+	for _, want := range []string{"bs.type = 'L' AND bs.is_copy_only = 0", "DATEADD(hour, -24, GETDATE())",
+		"bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))", "WHERE LEN(t.d1) > 0",
+		`LEFT(n.fn, LEN(t.d1) + 1) <> t.d1 + N'\'`, `(LEN(t.d2) = 0 OR LEFT(n.fn, LEN(t.d2) + 1) <> t.d2 + N'\')`,
+		`REPLACE(ISNULL(mf.physical_device_name, N''), N'/', N'\')`, " AS started_utc,", " AS finished_utc,"} {
+		if !strings.Contains(lsForeignSQL, want) {
+			t.Errorf("the foreign-log read lacks %q", want)
+		}
+	}
+	// each part is its own read: a failure is a collector_error of its source, which the repository's import keys on
+	if len(lsParts) != 2 || lsParts[0].source != "log shipping configuration" || lsParts[1].source != "log shipping foreign log backups" {
+		t.Errorf("the parts' sources changed: %+v (0143's import keeps a part's stored rows by these names)", lsParts)
+	}
+}
+
 // Every statement of the work against a real server (PGVIGIL_MSSQL_TEST_DSN; nothing is written): compiled under
 // SET NOEXEC ON whatever the server has, then run where its feature and the login's rights allow; every instant ends
 // in Z. scripts/proof-mssql-hadr.sh (part S), proof-mssql-mirroring.sh and proof-mssql-logshipping.sh run this as
@@ -171,7 +201,7 @@ func TestHADRS3StatementsLive(t *testing.T) {
 			continue
 		case (what == "mirroring" || what == "log restores" || strings.HasPrefix(what, "fci")) && !info.ViewServerState:
 			continue
-		case strings.HasPrefix(what, "log restore") && !info.MsdbAccess:
+		case (strings.HasPrefix(what, "log restore") || strings.HasPrefix(what, "log shipping")) && !info.MsdbAccess:
 			continue
 		}
 		rows, err := QueryRows(ctx, conn, q)

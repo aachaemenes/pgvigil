@@ -130,6 +130,89 @@ FROM (SELECT rh.destination_database_name, rh.restore_date, rh.recovery, bs.serv
 WHERE x.rn = 1 AND DB_ID(x.destination_database_name) IS NULL
 ORDER BY 2`
 
+// lsJobColumns: a log shipping job (x.job_id, x.job_role) as SQL Server Agent holds it: whether it exists, enabled,
+// its enabled schedules and the shortest interval among them in minutes (sysschedules freq_subday_type 2 seconds,
+// 4 minutes, 8 hours; any other schedule shape has no interval: NULL, not judged). job_id is read raw: the reader
+// gives it as the canonical upper-case text mssql_jobs holds.
+const lsJobColumns = `x.job_role, x.job_id, CAST(j.name AS nvarchar(128)) AS job_name,
+  CAST(CASE WHEN j.job_id IS NULL THEN 0 ELSE 1 END AS int) AS job_exists, CAST(j.enabled AS int) AS job_enabled,
+  (SELECT COUNT(*) FROM msdb.dbo.sysjobschedules js JOIN msdb.dbo.sysschedules ss ON ss.schedule_id = js.schedule_id
+    WHERE js.job_id = j.job_id AND ss.enabled = 1) AS enabled_schedules,
+  (SELECT CAST(MIN(CASE ss.freq_subday_type WHEN 2 THEN ss.freq_subday_interval / 60.0 WHEN 4 THEN ss.freq_subday_interval * 1.0
+                                            WHEN 8 THEN ss.freq_subday_interval * 60.0 END) AS float)
+     FROM msdb.dbo.sysjobschedules js JOIN msdb.dbo.sysschedules ss ON ss.schedule_id = js.schedule_id
+    WHERE js.job_id = j.job_id AND ss.enabled = 1) AS interval_min`
+
+// lsConfigSQL: SQL Server's own log shipping configuration on this server, one row per job: a primary database's
+// backup job (with the database's recovery model and its backup folders), a secondary database's copy and restore
+// jobs (with its primary and its restore mode: 0 NORECOVERY, 1 STANDBY), and the monitor's alert job
+// (log_shipping_monitor_alert, no database). A job id with no msdb.dbo.sysjobs row is job_exists 0 (the job was
+// deleted while the configuration names it). SQL Server 2016 SP1 and later (the tables are unchanged since 2005).
+var lsConfigSQL = `SELECT 'lsconfig' AS kind, 'primary' AS role, CAST(p.primary_database AS nvarchar(128)) AS database_name,
+  CAST(d.recovery_model_desc AS nvarchar(60)) AS recovery_model,
+  CAST(p.backup_directory AS nvarchar(500)) AS backup_directory, CAST(p.backup_share AS nvarchar(500)) AS backup_share,
+  CAST(NULL AS nvarchar(128)) AS primary_server, CAST(NULL AS nvarchar(128)) AS primary_database, CAST(NULL AS int) AS restore_mode,
+  ` + lsJobColumns + `
+FROM msdb.dbo.log_shipping_primary_databases p
+LEFT JOIN sys.databases d ON d.name = p.primary_database
+CROSS APPLY (SELECT CAST('backup' AS varchar(10)) AS job_role, p.backup_job_id AS job_id) x
+LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = x.job_id
+UNION ALL
+SELECT 'lsconfig', 'secondary', CAST(sd.secondary_database AS nvarchar(128)), NULL, NULL, NULL,
+  CAST(s.primary_server AS nvarchar(128)), CAST(s.primary_database AS nvarchar(128)), CAST(sd.restore_mode AS int),
+  ` + lsJobColumns + `
+FROM msdb.dbo.log_shipping_secondary_databases sd
+JOIN msdb.dbo.log_shipping_secondary s ON s.secondary_id = sd.secondary_id
+CROSS APPLY (VALUES (CAST('copy' AS varchar(10)), s.copy_job_id), (CAST('restore' AS varchar(10)), s.restore_job_id)) x (job_role, job_id)
+LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = x.job_id
+UNION ALL
+SELECT 'lsconfig', 'monitor', N'', NULL, NULL, NULL, NULL, NULL, NULL,
+  ` + lsJobColumns + `
+FROM msdb.dbo.log_shipping_monitor_alert a
+CROSS APPLY (SELECT CAST('alert' AS varchar(10)) AS job_role, a.alert_job_id AS job_id) x
+LEFT JOIN msdb.dbo.sysjobs j ON j.job_id = x.job_id`
+
+// lsForeignSQL: on a primary, every log backup of a log-shipped database finished in the last 24 hours (this
+// server's own rows) that is NOT copy-only and whose file is NOT under the configuration's backup_directory or
+// backup_share - another job's log backup: the secondaries never receive it, so they cannot restore past it. The
+// folders are compared upper-cased with '/' read as '\' and a separator after the folder (C:\LS never matches
+// C:\LS2\x.trn); a configuration with no backup_directory is not judged. A backup to the NUL device counts (nothing
+// was kept, and the chain is broken all the same). Times in UTC by the row's own backupset.time_zone.
+var lsForeignSQL = `SELECT 'lsforeign' AS kind, CAST(bs.database_name AS nvarchar(128)) AS database_name,
+  CAST(mf.physical_device_name AS nvarchar(500)) AS file_name,
+  CASE mf.device_type % 100 WHEN 2 THEN 'disk' WHEN 5 THEN 'tape' WHEN 7 THEN 'virtual device' WHEN 9 THEN 'url'
+       ELSE CAST(mf.device_type AS varchar(12)) END AS device,
+  ` + backupUTC("bs.backup_start_date") + ` AS started_utc,
+  ` + backupUTC("bs.backup_finish_date") + ` AS finished_utc,
+  CAST(p.backup_directory AS nvarchar(500)) AS backup_directory
+FROM msdb.dbo.log_shipping_primary_databases p
+JOIN msdb.dbo.backupset bs ON bs.database_name = p.primary_database AND bs.type = 'L' AND bs.is_copy_only = 0
+ AND bs.backup_finish_date >= DATEADD(hour, -24, GETDATE())
+ AND bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))
+OUTER APPLY (SELECT TOP (1) f.device_type, f.physical_device_name FROM msdb.dbo.backupmediafamily f
+              WHERE f.media_set_id = bs.media_set_id ORDER BY f.family_sequence_number) mf
+CROSS APPLY (SELECT UPPER(REPLACE(ISNULL(mf.physical_device_name, N''), N'/', N'\')) AS fn,
+                    UPPER(REPLACE(ISNULL(p.backup_directory, N''), N'/', N'\')) AS d1,
+                    UPPER(REPLACE(ISNULL(p.backup_share, N''), N'/', N'\')) AS d2) n
+CROSS APPLY (SELECT CASE WHEN RIGHT(n.d1, 1) = N'\' THEN LEFT(n.d1, LEN(n.d1) - 1) ELSE n.d1 END AS d1,
+                    CASE WHEN RIGHT(n.d2, 1) = N'\' THEN LEFT(n.d2, LEN(n.d2) - 1) ELSE n.d2 END AS d2) t
+WHERE LEN(t.d1) > 0
+  AND LEFT(n.fn, LEN(t.d1) + 1) <> t.d1 + N'\'
+  AND (LEN(t.d2) = 0 OR LEFT(n.fn, LEN(t.d2) + 1) <> t.d2 + N'\')
+ORDER BY bs.backup_finish_date DESC`
+
+// lsParts: the configuration and the foreign log backups, each its own part (a failure is a collector_error row of
+// its source, never the loss of the rest); the foreign read needs backupset and backupmediafamily too
+var lsParts = []struct {
+	source string
+	tables []string
+	query  string
+}{
+	{"log shipping configuration", []string{"log_shipping_primary_databases", "log_shipping_secondary", "log_shipping_secondary_databases",
+		"log_shipping_monitor_alert", "sysjobs", "sysjobschedules", "sysschedules"}, lsConfigSQL},
+	{"log shipping foreign log backups", []string{"log_shipping_primary_databases", "backupset", "backupmediafamily"}, lsForeignSQL},
+}
+
 func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	for _, t := range []string{"log_shipping_monitor_primary", "log_shipping_monitor_secondary"} {
 		if err := msdbReadable(ctx, conn, t); err != nil {
@@ -163,6 +246,25 @@ func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 		got, err := QueryRows(ctx, conn, q)
 		if err != nil {
 			rows = append(rows, collect.Row{"kind": "collector_error", "source": "msdb.dbo.restorehistory", "message": err.Error()})
+			continue
+		}
+		rows = append(rows, got...)
+	}
+	for _, part := range lsParts {
+		readable := true
+		for _, t := range part.tables {
+			if err := msdbReadable(ctx, conn, t); err != nil {
+				rows = append(rows, collect.Row{"kind": "collector_error", "source": part.source, "message": err.Error()})
+				readable = false
+				break
+			}
+		}
+		if !readable {
+			continue
+		}
+		got, err := QueryRows(ctx, conn, part.query)
+		if err != nil {
+			rows = append(rows, collect.Row{"kind": "collector_error", "source": part.source, "message": err.Error()})
 			continue
 		}
 		rows = append(rows, got...)
