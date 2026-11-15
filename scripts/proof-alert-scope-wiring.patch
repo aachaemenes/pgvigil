@@ -1,3 +1,37 @@
+diff --git i/internal/mcp/applications_test.go w/internal/mcp/applications_test.go
+index 9da543d4..89dd2f05 100644
+--- i/internal/mcp/applications_test.go
++++ w/internal/mcp/applications_test.go
+@@ -44,6 +44,7 @@ var toolCalls = []struct{ name, args string }{
+ 	{"table_state", `{"instance":"Alpha","table":"orders"}`},
+ 	{"storage_forecast", `{}`},
+ 	{"storage_forecast", `{"instance":"beta"}`},
++	{"alert_history", `{"instance":"beta","hours":48}`}, // task 403b
+ }
+ 
+ func allTools(t *testing.T, h http.Handler) string {
+diff --git i/internal/mcp/tools.go w/internal/mcp/tools.go
+index 7afb52bc..5153c508 100644
+--- i/internal/mcp/tools.go
++++ w/internal/mcp/tools.go
+@@ -75,7 +75,7 @@ var (
+ )
+ 
+ func tools() []tool {
+-	return []tool{
++	return append([]tool{
+ 		{Name: "fleet_summary", Title: "Fleet summary",
+ 			Description: "Every monitored PostgreSQL instance (platform, version, sessions, failing collections) and the fleet's failing daily checks (critical first): the starting point.",
+ 			args:        []arg{{name: "severity", typ: "string", desc: "only checks of this severity", enum: []string{"critical", "warning"}}},
+@@ -111,7 +111,7 @@ func tools() []tool {
+ 			Description: "Volumes with free space, growth per day over 7 and 30 days and the days until full, soonest first; with instance, also its database and table growth and storage checks.",
+ 			args:        []arg{{name: "instance", typ: "string", desc: "one instance (name or instance_id); without it, the whole fleet and the repository's own size"}},
+ 			run:         storageForecast},
+-	}
++	}, alertTools()...) // task 403b: alert_history (tools_alerts.go)
+ }
+ 
+ func toolList() []any {
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
 index a994399a..0dd90c91 100644
 --- i/internal/repo/sql/0190_join_release2.sql

@@ -11,6 +11,9 @@ package web
 //   history    the findings history (open, close, severity, the hourly sample) of one instance (instance_id), or of
 //              the fleet, in the window (at most 90 days)
 //   digests    the digests sent, failed or empty in the window
+//   alerts     (task 403b, the MCP tool alert_history) one instance's alerts (instance_id required): every firing open
+//              at some point of the window with its clearance, as the Alerts page's history part, filtered by the
+//              instance before the limit (the newest 1,000; cut = the reply says so)
 //   rules      0154's fields of every rule live or ended in the window (the tag list and its words, the family, the
 //              band and zone of a baseline rule, the flapping opt-out), merged into the rules page by rule id
 // POST /api/alertwindows makes, edits or ends one window the way of q_alert_rules.go: the UI login, the X-Pgvigil
@@ -79,6 +82,18 @@ SELECT x.*, count(*) OVER () = 20000 AS cut
          LIMIT 20000) x
  ORDER BY x.snapshot_at, x.finding_key`
 
+// task 403b: one instance's alerts open at some point of the window [$1, $2) - the Alerts page's history part
+// (sqlAlertHistory) for one instance, filtered BEFORE the limit, so a busy fleet never pushes the instance's rows out
+const sqlInstanceAlerts = `
+SELECT x.*, count(*) OVER () = 1000 AS cut
+  FROM (SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source, o.setting, o.value,
+               ` + alertThreshold + ` AS threshold, o.channels, o.sends, o.occurrence, o.finding_key
+          FROM pgvigil.alert_occurrences o
+         WHERE o.instance_id = $3 AND o.fired_at < $2 AND (o.cleared_at IS NULL OR o.cleared_at >= $1)
+         ORDER BY o.fired_at DESC
+         LIMIT 1000) x
+ ORDER BY x.fired_at DESC`
+
 const sqlAlertScopeRules = `
 SELECT r.rule_id, r.scope_tags, pgvigil.alert_scope_text(r.scope_tags) AS scope_text, r.op_family, r.band_pct, r.zone,
        r.ignore_flapping
@@ -108,7 +123,11 @@ func (s *Server) AlertScope(w http.ResponseWriter, r *http.Request) {
 		}
 		inst = &n
 	}
-	ps, err := onlyPart(r, []part{
+	if r.URL.Query().Get("part") == "alerts" && inst == nil {
+		writeErr(w, http.StatusBadRequest, errors.New("part alerts needs instance_id"))
+		return
+	}
+	parts := []part{
 		{"windows", sqlAlertWindows, []any{from}},
 		{"held", sqlAlertHeld, []any{from, to}},
 		{"flapping", sqlAlertFlapping, nil},
@@ -116,7 +135,11 @@ func (s *Server) AlertScope(w http.ResponseWriter, r *http.Request) {
 		{"history", sqlFindingsHistory, []any{from, to, inst}},
 		{"digests", sqlDigests, []any{from, to}},
 		{"rules", sqlAlertScopeRules, []any{from}},
-	})
+	}
+	if inst != nil {
+		parts = append(parts, part{"alerts", sqlInstanceAlerts, []any{from, to, inst}})
+	}
+	ps, err := onlyPart(r, parts)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
