@@ -4,9 +4,11 @@
 //   node scripts/fleet-mssql-check.mjs <cdp port> <base url/>
 //   FM_S1 / FM_S3 the demo's sql01 / sql03 instance_id; FM_NULDB sql01's database with a backup to NUL; FM_PROBLEMS /
 //   FM_ALL the hand counts of the databases under Problems and of all; FM_INSTS '<active instances>|<SQL Server ones>';
-//   FM_SJ / FM_PJ the seeded jobs' names; FM_JALL / FM_JPROB every job / the problem rows
+//   FM_SJ / FM_PJ the seeded jobs' names; FM_JALL / FM_JPROB every job / the problem rows; FM_JRATE the jobs failing
+//   over half their finished runs in 7 days (B9b J6); FM_DSN the store, for J8's hand count (psql)
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base] = process.argv.slice(2);
+import { execFileSync } from 'node:child_process';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
 const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
@@ -144,6 +146,61 @@ try {
     }
     check('J4 history', clicked && j4.head === `demo-onprem-sql01 | ${sj}` && j4.runs === 2 && oq.get('i') === s1 && oq.get('job') === sj && tabHead !== '',
       clicked ? `'${j4.head}', ${j4.runs} run row(s); its link '${j4.open}' -> the tab's picked history '${tabHead}'` : `no button '${sj}' in the grid`);
+
+    // J8 (B9b, B9-12): the tab's runs of the range - tiles equal to the API's cards part and to the hours by hand
+    await go(`#/mssqljobs?i=${s1}&w=24h`);
+    await sleep(2000);
+    const to8 = new Date(), from8 = new Date(to8.getTime() - 24 * 3600 * 1000);
+    const j8 = await ev(`(() => { const c = document.querySelector('main .job-cards'); if (!c) return null;
+      const tiles = Object.fromEntries([...c.querySelectorAll('.tile')].map(t => [t.querySelector('.tile-l')?.textContent ?? '', t.querySelector('.tile-v')?.textContent ?? '']));
+      const after = c.compareDocumentPosition(document.querySelector('main table.grid') ?? c) & Node.DOCUMENT_POSITION_FOLLOWING;
+      return { head: c.querySelector('h3')?.textContent ?? '', tiles, h4s: [...c.querySelectorAll('h4')].map(h => h.textContent), grids: c.querySelectorAll('table.grid, .empty-grid').length, above: !!after }; })()`);
+    const api8 = await (await fetch(base + `api/jobs/history?engine=mssql&instance=${s1}&from=${encodeURIComponent(from8.toISOString())}&to=${encodeURIComponent(to8.toISOString())}&part=cards`)).json();
+    const ac = api8.cards ? Object.fromEntries(api8.cards.columns.map((c, i) => [c, api8.cards.rows[0][i]])) : {};
+    const hand = execFileSync('psql', [process.env.FM_DSN, '-XAtq', '-c', `select coalesce(sum(failed), 0) || '|' || coalesce(sum(succeeded), 0) from pgvigil.job_stats_hourly
+      where instance_id = ${Number(s1)} and step_id = 0 and scheduler = 'sqlagent' and snapshot_at >= '${from8.toISOString()}' and snapshot_at < '${to8.toISOString()}'`], { encoding: 'utf8' }).trim();
+    const num = v => String(v ?? '').replace(/,/g, '');
+    const t8 = j8?.tiles ?? {};
+    check('J8 cards', !!j8 && j8.above && j8.head.startsWith('Runs, ') && num(t8['failed or cancelled']) === String(ac.failed) && num(t8['succeeded']) === String(ac.succeeded)
+      && num(t8['retries attempted']) === String(ac.retries) && hand === `${ac.failed}|${ac.succeeded}` && JSON.stringify(j8.h4s) === JSON.stringify(['Longest 5', 'Most frequent 5', 'Most failed 5']) && j8.grids === 3,
+      j8 ? `'${j8.head}' above the grid ${j8.above}; tiles ${JSON.stringify(t8)}; the API ${JSON.stringify(ac)}; by hand (failed|succeeded) ${hand}; ${JSON.stringify(j8.h4s)}, ${j8.grids} grid(s)` : 'no .job-cards section');
+
+    // J5-J7 (B9b, B9-10 / B9-11): Jobs by instance, the failure rate, Show
+    await go('#/jobs?w=1h');
+    await sleep(4000);   // the stats part (the rate) answers after the grid
+    const jx = `(() => { const tb = document.querySelector('#job-status-grid table.grid');
+      const heads = tb ? [...tb.querySelectorAll(':scope > thead > tr:first-child > th')].map(th => th.textContent.trim()) : [];
+      const rows = tb ? [...tb.querySelectorAll(':scope > tbody > tr')].filter(tr => !tr.classList.contains('trend-row')) : [];
+      const col = n => heads.findIndex(h => h.startsWith(n));
+      return { h3s: [...document.querySelectorAll('main h3')].map(h => h.textContent), filter: document.querySelector('#job-status-filter')?.value,
+               line: document.querySelector('#job-status-count')?.parentElement?.textContent ?? '', said: document.querySelector('#job-status-count')?.textContent ?? '',
+               jobs: rows.map(tr => tr.cells[col('job')]?.textContent ?? ''), insts: rows.map(tr => tr.cells[col('instance')]?.textContent ?? ''),
+               rate: rows.map(tr => tr.cells[col('failure rate 7 days')]?.textContent ?? '') }; })()`;
+    const show = async v => { await ev(`(() => { const p = document.querySelector('#job-status-filter'); p.value = ${JSON.stringify(v)}; p.dispatchEvent(new Event('change')); return 1; })()`); await sleep(500); return ev(jx); };
+    const allx = await show('all');
+    const badRate = allx ? allx.rate.filter(t => !/^[\d,.]+ %$|^no finished run$|^being built$/.test(t)) : ['no grid'];
+    const seededRate = allx ? [allx.rate[allx.jobs.indexOf(sj)], allx.rate[allx.jobs.indexOf(pj)]] : [];
+    const fr = await show('failrate');
+    check('J6 rate', !!allx && badRate.length === 0 && seededRate[0] === '50 %' && seededRate[1] === '50 %' && !!fr && fr.jobs.length === Number(process.env.FM_JRATE),
+      allx ? `${allx.rate.length} rate cells, ${badRate.length} neither a percent nor its words ${JSON.stringify(badRate.slice(0, 3))}; the seeded two ${JSON.stringify(seededRate)} (want 50 %); `
+        + `over 50 %: ${fr?.jobs.length} rows, '${fr?.said}' (the hours by hand: ${process.env.FM_JRATE})` : 'no grid');
+    const live7 = await (await fetch(base + 'api/jobsreport?part=status')).json();
+    const rc = live7.status.columns.indexOf('running_since');
+    const runningApi = live7.status.rows.filter(r => r[rc] != null).length;
+    const rn = await show('running');
+    check('J7 running', rc >= 0 && !!rn && rn.jobs.length === runningApi, `the status part's running_since column at ${rc}; Show 'Running now' ${rn?.jobs.length} rows, the API ${runningApi}`);
+    await go('#/jobs?w=1h');
+    const pre = await ev(jx);
+    const iB = pre ? pre.h3s.indexOf('Jobs by instance') : -1, iS2 = pre ? pre.h3s.indexOf('Job status') : -1;
+    const clicked5 = await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].find(g => g.closest('section') && g.querySelector('th') && [...g.querySelectorAll('th')].some(th => th.textContent.startsWith('last run succeeded')));
+      const tr = t ? [...t.querySelectorAll('tbody > tr')].find(r => r.textContent.startsWith('demo-onprem-sql01')) : null;
+      const col = t ? [...t.querySelectorAll('thead > tr:first-child > th')].findIndex(th => th.textContent.startsWith('last run succeeded')) : -1;
+      const b = tr?.cells[col]?.querySelector('button'); b?.click(); return !!b; })()`);
+    await sleep(800);
+    const j5 = await ev(jx);
+    check('J5 counts', iB >= 0 && iS2 > iB && clicked5 && !!j5 && j5.filter === 'lastok' && j5.line.includes('on demo-onprem-sql01') && j5.insts.length > 0
+      && j5.insts.every(n => n === 'demo-onprem-sql01') && j5.jobs.includes(sj),
+      `h3 'Jobs by instance' at ${iB}, 'Job status' at ${iS2}; sql01's 'last run succeeded' button ${clicked5}; then Show ${j5?.filter}, '${(j5?.line ?? '').slice(0, 120)}', ${j5?.insts.length} rows, all sql01 ${j5?.insts.every(n => n === 'demo-onprem-sql01')}, the seeded job there ${j5?.jobs.includes(sj)}`);
   } else { check('J3 stats', false, 'no section'); check('J2 all', false, 'no section'); check('J4 history', false, 'no section'); }
 
   // S1. the fleet Summary's Agent Jobs link of sql01 lands on a page that names the seeded job

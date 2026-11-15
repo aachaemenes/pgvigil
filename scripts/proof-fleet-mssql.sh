@@ -67,6 +67,19 @@
 #   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
 #   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
 #                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
+#   (B9b, expected written 2026-11-14 23:0x PST before any run; red on rel-b9's base 00e7b96, which has none of it)
+#   J8 cards     on that tab (sql01): 'Runs, <range>' above the grid with the tiles 'failed or cancelled', 'succeeded',
+#                'retries attempted' whose numbers equal /api/jobs/history?part=cards (parity) and the HAND COUNT from
+#                job_stats_hourly (sql01, step 0, the hours that started in the tab's range); 'Longest 5', 'Most frequent
+#                5', 'Most failed 5' each a grid
+#   J5 counts    #/jobs: 'Jobs by instance' above 'Job status', one row per instance with a job; sql01's 'last run
+#                succeeded' a button (both seeded jobs succeeded last); its click sets Show 'Last run succeeded' and the
+#                instance (the line says 'on demo-onprem-sql01'), every row then sql01's, the seeded SQL Agent job there
+#   J6 rate      4 s after the grid the 'failure rate 7 days' column holds no '0' for a rate not read: every cell a
+#                percent or 'no finished run' or 'being built'; both seeded jobs '50 %' (one failure, one success in the
+#                hours); Show 'Failure rate over 50 % (7 days)' lists exactly JRATE jobs (the HAND COUNT from the hours,
+#                present jobs of active instances, failed over finished > 0.5)
+#   J7 running   Show 'Running now' lists exactly the status part's rows with running_since (parity with the API)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -247,6 +260,14 @@ Q "select coalesce(json_agg(json_build_object('k', i.instance_id || '|' || s.sch
 JALL=$(Q "select (select count(*) from pgvigil.mssql_jobs m join pgvigil.instances i using (instance_id) where i.is_active)
             + (select count(*) from pgvigil.jobs g join pgvigil.instances i using (instance_id) where i.is_active and g.is_present)")
 JPROB=$(Q "select count(*) from pgvigil.instances i cross join lateral pgvigil.job_status(i.instance_id) s where i.is_active and s.status in ('crit', 'warn')")
+# B9b J6: the jobs whose hours of the last 7 days failed more than half their finished runs (present jobs, active instances)
+JRATE=$(Q "select count(*) from (select h.instance_id, h.scheduler, h.job_id, sum(h.failed) f, sum(h.succeeded) s
+             from pgvigil.job_stats_hourly h join pgvigil.instances i using (instance_id)
+            where i.is_active and h.step_id = 0 and h.snapshot_at >= now() - interval '168 hours'
+              and (exists (select 1 from pgvigil.mssql_jobs m where h.scheduler = 'sqlagent' and m.instance_id = h.instance_id and m.job_id = h.job_id)
+                   or exists (select 1 from pgvigil.jobs g where h.scheduler <> 'sqlagent' and g.instance_id = h.instance_id
+                                 and g.scheduler = h.scheduler and g.job_id::text = h.job_id and g.is_present))
+            group by 1, 2, 3) x where f + s > 0 and f::numeric / (f + s) > 0.5")
 JACK=$(Q "select count(*) from pgvigil.acks where kind = 'job' and ended_at is null" 2>/dev/null || echo 0)
 for u in "jobsreport" "jobsreport?part=status" "jobsreport?part=status&ids=$S1" "jobsreport?part=stats" "jobsreport?part=status&ids=abc" "mssql/summary" "overview"; do
   f="$WORK/j-$(printf %s "$u" | tr -c 'a-z0-9' _).json"; echo "$(curl -s -o "$f" -w '%{http_code}' "${BASE}api/$u") $f"; done > "$WORK/jcodes.txt"
@@ -341,7 +362,7 @@ CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 set +e
-FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
+FM_S1=$S1 FM_S3=$S3 FM_NULDB="$NULDB" FM_PROBLEMS=$PROBLEMS FM_ALL=$ALL FM_INSTS="$INSTS" FM_SJ="$SJ" FM_PJ="$PJ" FM_JALL=$JALL FM_JPROB=$((JPROB + JACK)) FM_JRATE=$JRATE FM_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" node scripts/fleet-mssql-check.mjs "$CDP" "$BASE" | tee "$WORK/check.txt"
 rc=${PIPESTATUS[0]}; set -e
 if [[ $rc -ne 0 ]]; then
   last=$(tail -n 1 "$WORK/check.txt" 2>/dev/null || true)
