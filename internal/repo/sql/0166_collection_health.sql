@@ -235,3 +235,72 @@ $$;
 -- between two times): its errors only. collection_log is a plain table (0001), so this build holds its writes for its
 -- length at the upgrade - measured at 10M rows on the box before it is kept here (the lead's 23:2x call)
 CREATE INDEX IF NOT EXISTS collection_log_errors_idx ON pgvigil.collection_log (instance_id, collection, snapshot_at) WHERE status = 'error';
+
+-- B6.4 (DONE-3, the lead's 23:4x calls): pgvigil's own health findings, each a view in the findings' columns; each is
+-- an arm of 0190's pgvigil.findings (a WIRING line there: this file never redefines what 0190 defines).
+
+-- 'collection runs long' (CHK#38 / OVW#140; source 'pgvigil collector', per instance and collection): over the current
+-- and the previous UTC hour of collection_health_hour, with 5 or more runs - critical when more than 5 % of the runs
+-- took longer than the collection's interval (its p95 over the interval), warning when more than 5 % took longer than
+-- half of it. A collection's interval is the shortest its runs were scheduled at (interval_s).
+CREATE OR REPLACE VIEW pgvigil.collection_runs_long_findings AS
+SELECT h.instance_id,
+       CASE WHEN sum(h.runs_over_interval) * 20 > sum(h.runs) THEN 'critical' ELSE 'warning' END AS severity,
+       'collection runs long'::text AS setting, h.collection AS value, NULL::boolean AS is_set,
+       'a longer interval for the collection (its schedules: in pgvigil.yaml), or what slows it on the server'::text AS suggested,
+       'all'::text AS platforms,
+       format('%s of %s run(s) since %s UTC took longer than half the collection''s %s s interval, %s longer than all of it',
+              sum(h.runs_over_half), sum(h.runs), to_char(min(h.hour) AT TIME ZONE 'UTC', 'HH24:MI'), min(h.interval_s),
+              sum(h.runs_over_interval)) AS detail,
+       'pgvigil collector'::text AS source,
+       max(greatest(h.last_ok_at, h.last_failure_at, h.last_partial_at)) AS at
+  FROM pgvigil.collection_health_hour h
+  JOIN pgvigil.instances i ON i.instance_id = h.instance_id AND i.is_active
+ WHERE h.hour >= date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 hour'
+ GROUP BY h.instance_id, h.collection
+HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
+
+-- 'alert sender idle' (CHK#35; source 'pgvigil repository', no instance): alert channels configured (a contact's route is
+-- not one) and the rules last judged more than 180 s ago - ONE number with the Alert rules page's line (alert_rules.ts
+-- 'ago > 180'). Never when no collector beats ('collector not seen' is the cause then: the sender runs inside pgvigil
+-- run), nor before the sender's first pass (the page says so in words). SHOWN, NEVER SENT: 0190's alert_findings leaves
+-- it out (a WIRING term) - an idle sender cannot send its own news.
+CREATE OR REPLACE VIEW pgvigil.alert_sender_idle_findings AS
+SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'alert sender idle'::text AS setting, NULL::text AS value, NULL::boolean AS is_set,
+       'pgvigil run''s log: its alert pass runs once a minute; a stopped pass leaves the alert states as they were'::text AS suggested,
+       'all'::text AS platforms,
+       format('no alert rule judged for %s s (the page''s line is 180 s): the alert states shown are from %s UTC',
+              extract(epoch FROM now() - s.evaluated_at)::int, to_char(s.evaluated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')) AS detail,
+       'pgvigil repository'::text AS source, s.evaluated_at AS at
+  FROM (SELECT max(r.evaluated_at) AS evaluated_at FROM pgvigil.alert_rule_state r) s
+ WHERE s.evaluated_at < now() - interval '180 seconds'
+   AND EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.is_configured AND c.name NOT LIKE 'contact-%')
+   AND EXISTS (SELECT 1 FROM pgvigil.collector_live);
+
+-- 'repository autovacuum behind' (PM Added 12; source 'pgvigil repository', warning): a table of the pgvigil schema
+-- (each partition judged alone, named with its parent) whose dead tuples are over autovacuum's own trigger -
+-- autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor x reltuples, each the table's reloption where set -
+-- and at least 10,000, with no vacuum (auto or manual) for 24 hours.
+CREATE OR REPLACE VIEW pgvigil.repository_autovacuum_findings AS
+WITH t AS (
+  SELECT s.relid, s.relname, s.n_dead_tup, s.n_live_tup, greatest(s.last_autovacuum, s.last_vacuum) AS last_vac,
+         greatest(c.reltuples, 0) AS reltuples,
+         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o WHERE o LIKE 'autovacuum\_vacuum\_threshold=%'),
+                  current_setting('autovacuum_vacuum_threshold')::float8) AS thr,
+         coalesce((SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o WHERE o LIKE 'autovacuum\_vacuum\_scale\_factor=%'),
+                  current_setting('autovacuum_vacuum_scale_factor')::float8) AS sf,
+         (SELECT p.relname FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhparent WHERE i.inhrelid = s.relid LIMIT 1) AS parent
+    FROM pg_stat_user_tables s
+    JOIN pg_class c ON c.oid = s.relid
+   WHERE s.schemaname = 'pgvigil'
+)
+SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autovacuum behind'::text AS setting,
+       coalesce(t.parent || ' / ', '') || t.relname AS value, NULL::boolean AS is_set,
+       'the repository''s autovacuum settings (autovacuum_max_workers, the table''s reloptions), or a VACUUM of the table'::text AS suggested,
+       'all'::text AS platforms,
+       format('%s dead tuple(s), %s live; autovacuum''s own trigger is %s; last vacuumed %s', t.n_dead_tup, t.n_live_tup,
+              round(greatest(10000, t.thr + t.sf * t.reltuples)), coalesce(to_char(t.last_vac AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', 'never')) AS detail,
+       'pgvigil repository'::text AS source, now() AS at
+  FROM t
+ WHERE t.n_dead_tup > greatest(10000, t.thr + t.sf * t.reltuples)
+   AND (t.last_vac IS NULL OR t.last_vac < now() - interval '24 hours');

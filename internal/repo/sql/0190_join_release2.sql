@@ -28,6 +28,14 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- task 201 (0121): the collector's own findings; instance_id NULL for the repository-wide ones
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_findings
     UNION ALL
+    -- B6.4 (0166, WIRING): pgvigil's own health - a collection that runs long, the alert sender idle (shown, never sent:
+    -- alert_findings below leaves it out), the repository's autovacuum behind
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collection_runs_long_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.alert_sender_idle_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.repository_autovacuum_findings
+    UNION ALL
     -- pg-collector: a database's frozen-xid age past 300 million (the databases collection's xid_age)
     SELECT d.instance_id, CASE WHEN d.xid_age >= 1000000000 THEN 'critical' ELSE 'warning' END, 'database xid age',
            d.datname || ': ' || d.xid_age::text, true, 'under 300000000', 'all',
@@ -457,7 +465,9 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
         SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y) f
   LEFT JOIN pgvigil.instances i USING (instance_id)
   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
- WHERE i.is_active OR f.source = 'pgvigil repository';
+ WHERE (i.is_active OR f.source = 'pgvigil repository')
+   -- B6.4 (WIRING): 'alert sender idle' is shown, never sent (an idle sender cannot send its own news)
+   AND NOT (f.source = 'pgvigil repository' AND f.setting = 'alert sender idle');
 
 -- task 201: alert_due is 0073's with these changes: a repository-wide finding (source 'pgvigil repository') goes to
 -- every channel past its severity floor, scoped channels too; an alert of a kind a shared cause explains

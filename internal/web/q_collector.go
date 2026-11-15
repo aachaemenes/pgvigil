@@ -24,13 +24,16 @@ SELECT s.collector_id, s.host, s.os, s.runs_as, s.version, s.pid, s.started_at, 
 const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 
 // sqlCollectorFindings: the collector's findings ($1 the instance, 0 = all: an instance sees its own and the
-// repository-wide ones)
+// repository-wide ones) - every finding of pgvigil's own health, from pgvigil.findings by its two sources: 0121's,
+// B6.4's (a collection that runs long, the alert sender idle, the repository's autovacuum behind) and 403b's K3 (an
+// alert channel failing) where its arm is joined; the claim ('why') is the collector parents' only
 const sqlCollectorFindings = `
 SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at,
-       CASE WHEN f.source = 'pgvigil repository' THEN pgvigil.collector_claim(f.detail) END AS why
-  FROM pgvigil.collector_findings f
+       CASE WHEN f.source = 'pgvigil repository' AND f.setting NOT IN ('alert sender idle', 'repository autovacuum behind', 'alert channel failing')
+            THEN pgvigil.collector_claim(f.detail) END AS why
+  FROM pgvigil.findings f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
- WHERE $1::int = 0 OR f.instance_id IS NULL OR f.instance_id = $1
+ WHERE f.source IN ('pgvigil collector', 'pgvigil repository') AND ($1::int = 0 OR f.instance_id IS NULL OR f.instance_id = $1)
  ORDER BY pgvigil.severity_rank(f.severity) DESC, f.instance_id NULLS FIRST, f.setting`
 
 // sqlCollectorCollections: per collection over 24 h. p50 / p95 from the summed histograms (an estimate within the
