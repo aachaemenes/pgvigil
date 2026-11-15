@@ -1,3 +1,25 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index 63414bd..56af0bc 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -285,7 +285,7 @@ func osRelease() string {
+ // key this list does not know (a new one, a misspelt one) is masked, never shown.
+ var keepKeys = map[string]bool{
+ 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
+-	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
++	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
+ 	// alerts:
+ 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
+ 	"clear_after": true, "port": true, "tls": true, "format": true,
+@@ -307,7 +307,7 @@ var knownKeys = map[string]bool{
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+ 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
+ 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+-	"latency_warn_secs": true, "archive_warn_minutes": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
+ 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
+ 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
+ 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
 diff --git i/deploy/examples/pgvigil.example.yaml w/deploy/examples/pgvigil.example.yaml
 index b7d8675..2d3c29d 100644
 --- i/deploy/examples/pgvigil.example.yaml
@@ -75,7 +97,7 @@ index c160b61..edfd088 100755
  "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
  SHIM=$WORK/shim; mkdir -p "$SHIM"
 diff --git i/web/src/pg_backups.ts w/web/src/pg_backups.ts
-index 5a5b5bb..2de19aa 100644
+index 5a5b5bb..cf4a1d0 100644
 --- i/web/src/pg_backups.ts
 +++ w/web/src/pg_backups.ts
 @@ -15,6 +15,7 @@ import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, w
@@ -102,7 +124,7 @@ index 5a5b5bb..2de19aa 100644
 +  const [d, ids, dest] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx), pgBackupDestFleet().catch(() => new Map<number, Row>())]);
    const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
 -  const tools = rowsOf(d.tools).filter(keep), rep = rowsOf(d.replay).filter(keep);
-+  const tools = rowsOf(d.tools).filter(keep).map(r => ({ ...r, ...(dest.get(Number(r.instance_id)) ? { base_to: dest.get(Number(r.instance_id))!.base_to, wal_to: dest.get(Number(r.instance_id))!.wal_to } : {}) })), rep = rowsOf(d.replay).filter(keep);
++  const tools = rowsOf(d.tools).filter(keep).map((r): Row => { const x = dest.get(Number(r.instance_id)); return x ? { ...r, base_to: x.base_to, wal_to: x.wal_to } : r; }), rep = rowsOf(d.replay).filter(keep);
    const cols: Col[] = [
      { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, { key: 'tool' }, { key: 'name', label: 'stanza / server' },
      { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: v => v == null ? badge('ok', 'ok') : sev(v) },
