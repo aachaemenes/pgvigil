@@ -364,7 +364,9 @@ flap_run() {   # flap_run <rule id> <values...>: one sample and one run a minute
   OFF=$((OFF + i))
 }
 mark() { q "select coalesce(flapping_since::text, 'NULL') from pgvigil.alert_rule_state where rule_id = $1 and instance_id = $HID"; }
-q "delete from pgvigil.activity_summary where instance_id = $HID" >/dev/null
+# part K's runs all ran at T0, so its threshold row (evaluated_at T0) outlived its rule (a run deletes only rows it did
+# not judge at its own time) and would lend F's series one result: F starts on an empty ring
+q "delete from pgvigil.activity_summary where instance_id = $HID; delete from pgvigil.alert_rule_state where instance_id = $HID" >/dev/null
 OFF=0
 RFL=$(rule "{\"op_dir\":\"above\",\"warning\":3,\"for_minutes\":0,\"scope\":\"instance\",\"instance_name\":\"$INSTH\"}")
 flap_run "$RFL" 8 8 0 0 8 8 0 0 8 8 0

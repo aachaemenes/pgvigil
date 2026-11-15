@@ -485,13 +485,19 @@ INSTH=proof-chan-h-$SUF
 HID=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
          values ('$INSTH', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
 RID=""
+# endall: every live rule of the seeded instance ended, found by query (newfinding runs inside $(...), a subshell, so a
+# rule id it keeps in a variable never reaches the next call)
+endall() {
+  local id
+  for id in $(q "select rule_id from pgvigil.alert_rules where ended_at is null and instance_name = '$INSTH'"); do
+    q "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"proof\",\"rule_id\":$id}'::jsonb)->>'outcome'" >/dev/null
+  done
+}
 # newfinding <critical threshold>: the previous rule ended, a new one (critical at the threshold) judged on a fresh sample
 # of 50; prints the one rule finding of the seeded instance
 newfinding() {
   local k
-  if [[ -n $RID ]]; then
-    q "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"proof\",\"rule_id\":$RID}'::jsonb)->>'outcome'" >/dev/null
-  fi
+  endall
   RID=$(q "select pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"proof\",\"metric\":\"sessions.idle_in_txn\",\"op_dir\":\"above\",\"warning\":$(( $1 - 1 )),\"critical\":$1,\"for_minutes\":0,\"scope\":\"instance\",\"instance_name\":\"$INSTH\"}'::jsonb)->>'rule_id'")
   [[ $RID =~ ^[0-9]+$ ]] || fail "the rule above $1 was not made: $RID"
   q "insert into pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, idle_in_txn_aborted, waiting_lock,
@@ -864,7 +870,7 @@ unack() { q "select pgvigil.import_ack(now(), '{\"op\":\"end\",\"ui_user\":\"pro
 keyof() { q "select string_agg(finding_key, ',') from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and setting ilike '%$1%'"; }
 back() { q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '2 hours' where channel = 'sb' and finding_key = '$1' and cleared_at is null" >/dev/null; }
 tsof() { q "select ts from pgvigil.alert_threads where channel = 'sb' and finding_key = '$1' order by posted_at desc limit 1"; }
-[[ -n $RID ]] && { endrule "$RID"; RID=""; }
+endall; RID=""   # the earlier parts' rules on the seeded instance (by query: see endall)
 sample 0 0 1; pass sab0   # the earlier parts' findings cleared on these channels
 SL0=$(sl count)
 fi

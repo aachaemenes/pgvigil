@@ -93,6 +93,21 @@ index 9da543d4..89dd2f05 100644
  }
  
  func allTools(t *testing.T, h http.Handler) string {
+diff --git i/internal/mcp/mcp_test.go w/internal/mcp/mcp_test.go
+index 6207dd6e..22d14df6 100644
+--- i/internal/mcp/mcp_test.go
++++ w/internal/mcp/mcp_test.go
+@@ -126,8 +126,8 @@ func TestProtocol(t *testing.T) {
+ 		t.Errorf("an unknown version gets the newest: got %v", v)
+ 	}
+ 	list := got["3"]["result"].(map[string]any)["tools"].([]any)
+-	if len(list) != 7 {
+-		t.Errorf("tools = %d, want 7", len(list))
++	if len(list) != 8 { // task 403b: alert_history
++		t.Errorf("tools = %d, want 8", len(list))
+ 	}
+ 	for _, x := range list {
+ 		a := x.(map[string]any)["annotations"].(map[string]any)
 diff --git i/internal/mcp/tools.go w/internal/mcp/tools.go
 index 7afb52bc..5153c508 100644
 --- i/internal/mcp/tools.go
