@@ -552,6 +552,42 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		Rows   *table `json:"rows"`
 		Note   string `json:"note,omitempty"`
 	}
+	// the instances whose policy keeps no text, or only normalized text, by the policy NOW (the request's one door set):
+	// a 'none' instance is not searched and its stored texts are never returned, whatever policy they were sent under
+	// (a policy change clears no stored text: j15's fix review finding 4)
+	var noText, normalized []string
+	skip := []int{}
+	ds := s.doorsNow()
+	pol, err := s.pool.Query(ctx, `SELECT name, instance_id FROM pgvigil.instances WHERE engine = 'sqlserver' ORDER BY name`)
+	if err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	for pol.Next() {
+		var n string
+		var id int
+		if err := pol.Scan(&n, &id); err != nil {
+			pol.Close()
+			s.reply(w, r, nil, err)
+			return
+		}
+		switch ds.planPolicy(n) {
+		case "none":
+			skip = append(skip, id)
+			if inst == nil || inst == id {
+				noText = append(noText, n)
+			}
+		case "normalized":
+			if inst == nil || inst == id {
+				normalized = append(normalized, n)
+			}
+		}
+	}
+	pol.Close()
+	if err := pol.Err(); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
 	var sources []src
 	for _, name := range []string{"plan cache", "Query Store"} {
 		one := src{Source: name}
@@ -563,7 +599,7 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		_, err = tx.Exec(ctx, "SET LOCAL statement_timeout = '"+searchBudget+"'")
 		if err == nil {
 			var rows pgx.Rows
-			rows, err = tx.Query(ctx, `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200)`, pattern, name, inst)
+			rows, err = tx.Query(ctx, `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4)`, pattern, name, inst, skip)
 			if err == nil {
 				t := &table{Rows: [][]any{}}
 				for _, f := range rows.FieldDescriptions() {
@@ -599,24 +635,6 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return
-	}
-	// the instances whose policy keeps no text, or only normalized text
-	var noText, normalized []string
-	ds := s.doorsNow()
-	if pol, err := s.pool.Query(ctx, `SELECT name, instance_id FROM pgvigil.instances WHERE engine = 'sqlserver' ORDER BY name`); err == nil {
-		for pol.Next() {
-			var n string
-			var id int
-			if pol.Scan(&n, &id) == nil && (inst == nil || inst == id) {
-				switch ds.planPolicy(n) {
-				case "none":
-					noText = append(noText, n)
-				case "normalized":
-					normalized = append(normalized, n)
-				}
-			}
-		}
-		pol.Close()
 	}
 	out := map[string]any{"sources": sources, "text_indexes": idx, "no_text": noText, "normalized": normalized}
 	if inst == nil && s.pgInstances(ctx) > 0 {

@@ -414,18 +414,24 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- the stored statement texts of SQL Server instances holding p_pattern (an ILIKE pattern the caller escaped, ESCAPE
--- '\'), from the plan cache's texts or the Query Store's; p_instance NULL = every instance. The caller bounds the time.
-CREATE OR REPLACE FUNCTION pgvigil.mssql_statement_search(p_pattern text, p_source text, p_instance int, p_limit int)
+-- '\'), from the plan cache's texts or the Query Store's; p_instance NULL = every instance. p_skip: the instances whose
+-- query_text policy is 'none' NOW (serve's configuration): a policy change clears no stored text (a plan cache text goes
+-- only when its key is sent again, a Query Store text when a later read returns its query), so their stored texts are
+-- never returned (j15's fix review finding 4). The caller bounds the time.
+DROP FUNCTION IF EXISTS pgvigil.mssql_statement_search(text, text, int, int);
+CREATE OR REPLACE FUNCTION pgvigil.mssql_statement_search(p_pattern text, p_source text, p_instance int, p_limit int, p_skip int[])
 RETURNS TABLE (instance_id int, instance text, source text, database text, statement_key text, object_name text, statement text, seen_at timestamptz)
 LANGUAGE sql STABLE AS $$
   SELECT t.instance_id, i.name, 'plan cache'::text, d.database_name, t.query_key, t.object_name, left(t.query, 400), t.seen_at
     FROM pgvigil.mssql_pc_text t JOIN pgvigil.instances i ON i.instance_id = t.instance_id
     LEFT JOIN pgvigil.mssql_pc_database d ON d.instance_id = t.instance_id AND d.database_id = t.database_id
-   WHERE p_source = 'plan cache' AND (p_instance IS NULL OR t.instance_id = p_instance) AND t.query ILIKE p_pattern ESCAPE '\'
+   WHERE p_source = 'plan cache' AND (p_instance IS NULL OR t.instance_id = p_instance) AND t.instance_id <> ALL (coalesce(p_skip, '{}'))
+     AND t.query ILIKE p_pattern ESCAPE '\'
   UNION ALL
   SELECT q.instance_id, i.name, 'Query Store', q.database_name, q.query_hash, q.object_name, left(q.query_text, 400), q.last_execution
     FROM pgvigil.mssql_qs_query q JOIN pgvigil.instances i ON i.instance_id = q.instance_id
-   WHERE p_source = 'Query Store' AND (p_instance IS NULL OR q.instance_id = p_instance) AND q.query_text ILIKE p_pattern ESCAPE '\'
+   WHERE p_source = 'Query Store' AND (p_instance IS NULL OR q.instance_id = p_instance) AND q.instance_id <> ALL (coalesce(p_skip, '{}'))
+     AND q.query_text ILIKE p_pattern ESCAPE '\'
    LIMIT p_limit
 $$;
 
