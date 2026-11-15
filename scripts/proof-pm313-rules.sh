@@ -47,6 +47,9 @@
 #     'database row n', model keeps 24; pgvigil.yaml's mssql_thresholds full_backup_hours 100: model 100 'pgvigil.yaml',
 #     msdb still 1 (the database row wins); msdb's row at 0: full_status 'not judged'; the door refuses a negative age,
 #     a database row on an instance it does not know, and an instance scope (the yaml's); every row ended: model 100.
+#     From 405 review part A (finding 5; red on 234aacc: 'MODEL' stored as typed and never applied, 'nosuchdb' done): a
+#     database row named 'MODEL' is stored under the server's own name 'model' and gives model's log 30 'database row n';
+#     a database the newest backup read does not list ('nosuchdb') is refused with 'no database'.
 #     R5b (with the wiring patch) the API under pgvigil serve: GET /api/mssql/protection?instance=pmbox's id answers
 #     overrides, log and limits with writable true; a POST without a session 401, without the X-Pgvigil header 403;
 #     a tag row added 200, a negative age refused 409, the row ended 200; a -no-login serve reads with writable false and
@@ -84,12 +87,19 @@
 #     ctrsyn over the hours of R8's records answers 200 with a memory_node_id column, the 5 records per node
 #     '0:3 1:1 none:1' (node 1's own 52; 103 read before the node column). Red without the patch: no such column. The
 #     page's Node column itself (shown with 2+ nodes) waits for a page shot.
+#     R8c (405 review part A, finding 3; red on 234aacc: 3 7 9, the sandbox run of the import's two statements of 11-14
+#     22:5x read 3 7 9 there and 3 4 5 on the fold) a server start of its own on ctrsyn: read A from a collector without
+#     nodes, records 200-202 -> 3; read B from the new collector, the same ids on node 0 at times 0.3 ms later with
+#     their ring_ms, and a new 203 -> 4; read C node 1's copy of 203 (id 70, the same ring_ms, its time 0.3 ms later)
+#     and node 1's own 71 -> 5; the watermark {"0": 203, "1": 71}.
 #  R4. the PostgreSQL poison wait (Changed 19, D4 changed): on built PostgreSQL instances' wait_sample rows judged at a
 #     fixed time: IPC:BufferIO 700 s in the newest 10 minutes and 650 s in the 10 before = warning (1.17 and 1.08), its
 #     query naming 'queryid 42: SELECT pgv_poison' from statement_text; IPC:BtreePage 6,100 s in the newest alone =
 #     critical (10.17); 700 s then 300 s = nothing; an instance with no wait_sample row = one info row 'not judged: needs
 #     pg_wait_sampling'; with the wiring patch an active instance's IPC:BtreePage at 6,100 s in the last 10 minutes
-#     is a critical 'poison wait' in darling_alert_findings, the info row is not. NOT PROVEN live: no PostgreSQL image on
+#     is a critical 'poison wait' in darling_alert_findings, and the 'not judged' info row is there too (405 review part A,
+#     finding 4: the words reach the Findings page and a channel set to info; red on 234aacc: the info row left out).
+#     NOT PROVEN live: no PostgreSQL image on
 #     the box carries pg_wait_sampling.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
@@ -287,12 +297,19 @@ R1=$(door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_
 R2=$(door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"nosuch","database_name":"x","full_backup_hours":1}')
 R3=$(door '{"op":"add","ui_user":"proof405","scope":"instance","instance_name":"pmbox","full_backup_hours":1}')
 grep -q '"refused"' <<<"$R1" && grep -q '"refused"' <<<"$R2" && grep -q 'mssql_thresholds' <<<"$R3" || fail "R5: the refusals [$R1] [$R2] [$R3]"
+# the database row's name as the server spells it (405 review part A, finding 5)
+door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"pmbox","database_name":"MODEL","log_backup_minutes":30}' | grep -q '"done"' || fail "R5: the MODEL row"
+DBN=$(pq "SELECT database_name FROM pgvigil.mssql_protection_overrides WHERE ended_at IS NULL AND scope = 'database' AND lower(database_name) = 'model'")
+J7=$(jb model); echo "   the row typed MODEL: stored as [$DBN]; model now $J7"
+[[ "$DBN" == model && "$J7" == "100|pgvigil.yaml|30|database row "* ]] || fail "R5: a database row typed MODEL [$DBN] [$J7] (want model, 30 from the database row)"
+R4=$(door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"pmbox","database_name":"nosuchdb","full_backup_hours":1}')
+grep -q '"refused"' <<<"$R4" && grep -q 'no database' <<<"$R4" || fail "R5: a database the backup read does not list [$R4]"
 for o in $(pq "SELECT override_id FROM pgvigil.mssql_protection_overrides WHERE ended_at IS NULL"); do
   door "{\"op\":\"end\",\"ui_user\":\"proof405\",\"override_id\":\"$o\"}" | grep -q '"done"' || fail "R5: ending row $o"; done
 J6=$(jb model); [[ "$J6" == "100|pgvigil.yaml|"* ]] || fail "R5: every row ended [$J6]"
 NL=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log"); [[ "$NL" -ge 10 ]] || fail "R5: $NL log rows"
 config; col mssql_backups
-ok "R5: the default, the strictest tag, a tag at 0 beside 24, a database row over the tags and the yaml, the yaml over the tags, 0 = not judged; three refusals; $NL attempts logged"
+ok "R5: the default, the strictest tag, a tag at 0 beside 24, a database row over the tags and the yaml, the yaml over the tags, 0 = not judged; a database row under the server's own name; four refusals; $NL attempts logged"
 freeport() { local lo=$1 hi=$2 p used
   used=$(ss -Htan) || fail "ss -Htan failed: the ports in use cannot be read"
   used=$(awk '{n = split($4, a, ":"); print a[n]}' <<<"$used" | sort -u)
@@ -458,6 +475,19 @@ PY3
 echo "   the API's records per node: $NB"
 [[ "$NB" == "0:3 1:1 none:1" ]] || fail "R8b: /api/mssql/memory's rmon per node [$NB] (want 0:3 1:1 none:1)"
 ok "R8b: the Memory page's records carry their node (0:3 1:1 none:1)"
+# R8c: the switch from a collector without nodes, and a copy on another node in a later read (405 review part A, finding 3)
+S8C=2026-11-03T00:00:00; T8C=$(pq "SELECT date_trunc('hour', now()) - interval '6 hours'")
+# rc <record id> <node or ''> <ms after T8C> <ring_ms or ''>: one record, its time to the microsecond
+rc() { local n= g=; [[ -n "$2" ]] && n=",\"memory_node_id\":$2"; [[ -n "$4" ]] && g=",\"ring_ms\":$4"
+  echo "{\"kind\":\"rmon\",\"server_start\":\"$S8C\",\"record_id\":$1$n$g,\"sample_at\":\"$(pq "SELECT to_char(('$T8C'::timestamptz + $3 * interval '1 millisecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")\",\"notification\":\"RESOURCE_MEMPHYSICAL_LOW\",\"ind_process\":2,\"ind_system\":0}"; }
+n8c() { pq "SELECT count(*) FROM pgvigil.mssql_memory_rmon WHERE instance_id = $SY AND server_start = '$S8C'"; }
+mem "$(pq "SELECT now() - interval '9 minutes'")" "$(rc 200 '' 1000 '')" "$(rc 201 '' 2000 '')" "$(rc 202 '' 3000 '')"; C1=$(n8c)
+mem "$(pq "SELECT now() - interval '8 minutes'")" "$(rc 200 0 1000.3 5001000)" "$(rc 201 0 2000.3 5002000)" "$(rc 202 0 3000.3 5003000)" "$(rc 203 0 4000.3 5004000)"; C2=$(n8c)
+mem "$(pq "SELECT now() - interval '7 minutes'")" "$(rc 70 1 4000.6 5004000)" "$(rc 71 1 5000.6 5005000)"; C3=$(n8c)
+WC=$(pq "SELECT rmon_last_by_node::text FROM pgvigil.mssql_memory_reads WHERE instance_id = $SY")
+echo "   R8c records of its server start after each read: $C1 $C2 $C3; watermark $WC"
+[[ "$C1 $C2 $C3" == "3 4 5" && "$WC" == '{"0": 203, "1": 71}' ]] || fail "R8c: stored $C1 $C2 $C3 (want 3 4 5), watermark [$WC] (want {0: 203, 1: 71})"
+ok "R8c: the records stored without a node are not stored again under node 0; a copy on another node in a later read is matched by its ring time"
 
 echo "== R4. the PostgreSQL poison wait (Changed 19) =="
 TP=$(pq "SELECT to_char(date_trunc('minute', now()) - interval '1 hour', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
@@ -488,7 +518,8 @@ pq "INSERT INTO pgvigil.wait_sample (instance_id, snapshot_at, interval_secs, so
 PA=$(pq "SELECT coalesce(string_agg(instance_id || '|' || severity || '|' || value, ' ; ' ORDER BY instance_id), 'none') FROM pgvigil.darling_alert_findings WHERE setting = 'poison wait' AND instance_id IN ($pw5, $pw4)")
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id IN ($pw5, $pw4)" >/dev/null
 echo "   the arm: $PA"
-[[ "$PA" == "$pw5|critical|IPC:BtreePage" ]] || fail "R4: darling_alert_findings' poison arm [$PA] (want $pw5's critical only, no info row of $pw4)"
-ok "R4: darling_alert_findings' poison arm: the critical in, the 'not judged' info row out"
+PW=("$pw4|info|not judged" "$pw5|critical|IPC:BtreePage"); (( pw4 < pw5 )) && PWANT="${PW[0]} ; ${PW[1]}" || PWANT="${PW[1]} ; ${PW[0]}"
+[[ "$PA" == "$PWANT" ]] || fail "R4: darling_alert_findings' poison arm [$PA] (want [$PWANT]: $pw5's critical and $pw4's 'not judged' info row)"
+ok "R4: darling_alert_findings' poison arm: the critical and the 'not judged' info row"
 
 echo "PROOF OK: pm313 rules (A R7 R9 R6 R5 R2 R1 R3 R8 R4)"

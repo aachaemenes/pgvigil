@@ -21,7 +21,8 @@
 --                                    the open alerts on user data files closed as 'rule retired' (D1).
 --   mssql_runnable_queue             Changed 13: the reading with its fallback window of the newest 3 reads.
 --   import_mssql_memory              Fixed 20: 0119's import, the resource monitor's records keyed (server start,
---                                    memory node, record id), the watermark per node, one copy of an event across nodes.
+--                                    memory node, record id), the watermark per node, one copy of an event across nodes
+--                                    (matched by its ring time, ring_ms, across reads).
 --   pg_poison_wait_findings          Changed 19 (PostgreSQL): IPC:BtreePage and IPC:BufferIO from wait_sample only.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
@@ -373,8 +374,10 @@ $$;
 -- over the RAM checks.go weighs it against (sys_info's physical memory, stored in mssql_instance) and the value in use
 -- (mssql_config): the OS reserve is the larger of 4,096 MB and 10 % of RAM but never more than half of it, the
 -- suggestion RAM minus the reserve (whole MB); unlimited (2147483647) = warning, over 95 % of RAM or under 50 % of more
--- than 8,192 MB = review, else ok. No row on Managed Instance or Azure SQL Database (engine edition 8 or 5: the
--- platform sets the memory) or before the configuration was read.
+-- than 8,192 MB = review, else ok (PerformanceMonitor's 'over 95 %': at exactly 95 % ok here, while checks.go's
+-- sp_PerfCheck 1002 rule warns at 95 % or more - two tools' rules, each as its source has it). No row on Managed
+-- Instance or Azure SQL Database (engine edition 8 or 5: the platform sets the memory) or before the configuration
+-- was read. No page reads it yet (WIRING still open); checks.go states the same number in its two findings' words.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_memory_suggestion(p_instance_id int)
 RETURNS TABLE (ram_mb bigint, reserve_mb bigint, suggested_mb bigint, max_server_memory_mb bigint, status text, message text)
 LANGUAGE sql STABLE AS $$
@@ -436,7 +439,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_protection_overrides (
   client              text,
   ended_by            text,
   ended_at            timestamptz,
-  CONSTRAINT "a tag row names its tag, a database row its instance and database" CHECK (
+  CONSTRAINT "a tag row names its tag, a database row its instance and db" CHECK (
     (scope = 'tag' AND tag IS NOT NULL AND instance_name IS NULL AND database_name IS NULL)
     OR (scope = 'database' AND tag IS NULL AND instance_name IS NOT NULL AND database_name IS NOT NULL)),
   CONSTRAINT "a row sets an age" CHECK (full_backup_hours IS NOT NULL OR log_backup_minutes IS NOT NULL)
@@ -502,6 +505,11 @@ BEGIN
       v_why := 'a database row names its instance and its database';
     ELSIF v_scope = 'database' AND NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.name = v_inst AND i.is_active AND i.engine = 'sqlserver') THEN
       v_why := format('no active SQL Server instance %L', v_inst);
+    -- the database as the newest backup read lists it, its case aside (405 review part A, finding 5): a name typed in
+    -- another case is stored as the server spells it below, so the resolver's exact match finds it
+    ELSIF v_scope = 'database' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_backup_state s JOIN pgvigil.instances i ON i.instance_id = s.instance_id
+                                                WHERE i.name = v_inst AND i.is_active AND s.is_present AND lower(s.database_name) = lower(v_db)) THEN
+      v_why := format('no database %L on %s in its newest backup read (a database made since is listed after the next read)', v_db, v_inst);
     ELSIF (coalesce(p_payload->>'full_backup_hours', '') <> '' AND v_full IS NULL) OR (coalesce(p_payload->>'log_backup_minutes', '') <> '' AND v_log IS NULL) THEN
       v_why := 'an age is a number of 0 or more (hours for the full backup, minutes for the log backup; 0 = not judged)';
     ELSIF v_full IS NULL AND v_log IS NULL THEN
@@ -510,6 +518,11 @@ BEGIN
       v_why := 'a tag is 200 characters at most, a database name 128, a note 500';
     END IF;
     IF v_scope = 'tag' THEN v_inst := NULL; v_db := NULL; ELSE v_tag := NULL; END IF;
+    IF v_why IS NULL AND v_scope = 'database' THEN     -- the server's own spelling; an exact match first (a case-sensitive server)
+      SELECT s.database_name INTO v_db FROM pgvigil.mssql_backup_state s JOIN pgvigil.instances i ON i.instance_id = s.instance_id
+       WHERE i.name = v_inst AND i.is_active AND s.is_present AND lower(s.database_name) = lower(v_db)
+       ORDER BY s.database_name = v_db DESC, s.database_name LIMIT 1;
+    END IF;
   END IF;
   IF v_why IS NULL THEN
     BEGIN
@@ -555,19 +568,20 @@ LANGUAGE sql STABLE AS $$
            AND ((x.scope = 'database' AND x.instance_name = me.name AND x.database_name = p_database)
                 OR (x.scope = 'tag' AND x.tag = ANY (me.tags)))),
   y AS (SELECT t.full_backup_hours, t.log_backup_minutes FROM pgvigil.mssql_hadr_thresholds t WHERE t.instance_id = p_instance_id),
-  -- per age: the database row, the yaml, the strictest tag row (the lowest over 0, else 0), the default
+  -- per age: the database row, the yaml, the strictest tag row (the lowest over 0, else 0), the default (read from 0066's
+  -- mssql_hadr_limits, the one place the defaults live: 405 review part A, finding 8)
   f AS (SELECT coalesce(
           (SELECT ARRAY[o.full_backup_hours::text, 'database row ' || o.override_id] FROM o WHERE o.scope = 'database' AND o.full_backup_hours IS NOT NULL),
           (SELECT ARRAY[y.full_backup_hours::text, 'pgvigil.yaml'] FROM y WHERE y.full_backup_hours IS NOT NULL),
           (SELECT ARRAY[o.full_backup_hours::text, 'tag ' || o.tag || ' (row ' || o.override_id || ')'] FROM o
             WHERE o.scope = 'tag' AND o.full_backup_hours IS NOT NULL ORDER BY o.full_backup_hours = 0, o.full_backup_hours, o.override_id LIMIT 1),
-          ARRAY['168', 'the default']) AS v),
+          (SELECT ARRAY[d.full_backup_hours::text, 'the default'] FROM pgvigil.mssql_hadr_limits d WHERE d.instance_id = p_instance_id)) AS v),
   l AS (SELECT coalesce(
           (SELECT ARRAY[o.log_backup_minutes::text, 'database row ' || o.override_id] FROM o WHERE o.scope = 'database' AND o.log_backup_minutes IS NOT NULL),
           (SELECT ARRAY[y.log_backup_minutes::text, 'pgvigil.yaml'] FROM y WHERE y.log_backup_minutes IS NOT NULL),
           (SELECT ARRAY[o.log_backup_minutes::text, 'tag ' || o.tag || ' (row ' || o.override_id || ')'] FROM o
             WHERE o.scope = 'tag' AND o.log_backup_minutes IS NOT NULL ORDER BY o.log_backup_minutes = 0, o.log_backup_minutes, o.override_id LIMIT 1),
-          ARRAY['60', 'the default']) AS v)
+          (SELECT ARRAY[d.log_backup_minutes::text, 'the default'] FROM pgvigil.mssql_hadr_limits d WHERE d.instance_id = p_instance_id)) AS v)
   SELECT f.v[1]::numeric, f.v[2], l.v[1]::numeric, l.v[2] FROM f, l
 $$;
 
@@ -666,8 +680,10 @@ SELECT j.instance_id, j.instance, j.database_name, j.snapshot_at, j.state, j.rec
 
 -- PerformanceMonitor 3.13.0's High CPU alert (AlertEngine.cs L1045-1404: 5 samples in a row at or over 80 %, critical
 -- at 95 %) as a starter rule, seeded OFF (the lead's D2 a: 0074's 'CPU at 90 % or more' already alerts; a second CPU
--- page at upgrade would double it). 0153's seed rule: written only when the fleet has never had a rule on cpu.sql_pct,
--- live or ended, so an upgrade never brings back a rule a DBA ended or replaced, and a re-run adds nothing; created_by
+-- page at upgrade would double it). 0153's seed rule: written only when the fleet has never had a fleet-scope rule on
+-- cpu.sql_pct, live or ended, so an upgrade never brings back a rule a DBA ended or replaced, and a re-run adds nothing
+-- (a DBA's tag or instance rule does not stop it: that rule is the more specific and wins where it covers, and the seed
+-- is off; 405 review part A, finding 6, the narrower rule said); created_by
 -- 'pgvigil' with the client '0156 seed', one alert_rule_log row. Its 15-minute clear hold and its once-per-incident
 -- page are B5's flapping hold (task 403): not built twice. 'above' is strict (0085), so 'at or over 80' is above
 -- 79.999 (as 0153's lock waits).
@@ -875,7 +891,8 @@ SELECT now(), r.instance_id, r.channel, count(*), 'cleared',
 -- runnable tasks per scheduler averaged over the reads of the last 5 minutes when they are 3 or more; else over the
 -- newest 3 reads when all 3 fall within the fallback window (10 minutes, or 4 times the reads' median spacing over the
 -- last hour when that is longer: a collector running late under load, or one set to read every 5 minutes, is still
--- judged); else no row (no evaluation: the alert neither fires nor clears). darling_alert_findings' runnable arm reads
+-- judged); else no row - an open alert's finding is then missing (0059's alert_mark) and it clears after the channel's
+-- clear delay, as 0118's arm has it (405 review part A, finding 7). darling_alert_findings' runnable arm reads
 -- it (WIRING: 0118's view is not this task's file); the warning stays a warning and paging at critical only waits on
 -- task 403's digest (the lead's D3 b); PerformanceMonitor's 30-minute stale resolve is not built (the lead's F3).
 CREATE OR REPLACE FUNCTION pgvigil.mssql_runnable_queue(p_instance_id int, p_at timestamptz)
@@ -908,6 +925,8 @@ $$;
 -- memory node writes its own record of one event); NULL = not read (a collector before 0156's read: memory.go's one
 -- column is WIRING). rmon_last_by_node: the watermark per node.
 ALTER TABLE pgvigil.mssql_memory_rmon ADD COLUMN IF NOT EXISTS memory_node_id int;
+-- ring_ms: the record's sys.dm_os_ring_buffers.timestamp (ms since the server started); NULL from a collector before it
+ALTER TABLE pgvigil.mssql_memory_rmon ADD COLUMN IF NOT EXISTS ring_ms bigint;
 ALTER TABLE pgvigil.mssql_memory_reads ADD COLUMN IF NOT EXISTS rmon_last_by_node jsonb;
 
 -- 0119's import, its resource monitor records keyed per node (the rest unchanged)
@@ -999,25 +1018,34 @@ BEGIN
 
   -- 0156 (Fixed 20, the lead's F4): the resource monitor's records past the newest stored for the same server start and
   -- memory node (each node numbers its own records: /Record/@id with its NodeId); a copy of one event on another node
-  -- (the same record time and notification) is stored once, the lowest node's. A record with no node (a collector
-  -- before 0156's read, or a store's rows from before it) is a node of its own: the old watermark rmon_last_id is its.
+  -- (the same ring time and notification) is stored once, the lowest node's. A record with no node (a collector
+  -- before 0156's read, or a store's rows from before it) is a node of its own: the old watermark rmon_last_id is its,
+  -- and every node's until a read has stored a node watermark for that server start (the first read with nodes sends
+  -- again the records stored without one: 405 review part A, finding 3). ring_ms is the record's
+  -- sys.dm_os_ring_buffers.timestamp, the same in every read and on each node's copy (PerformanceMonitor's identity of
+  -- a record, #7441), while sample_at is worked out again at each read and moves by a fraction of a millisecond: a copy
+  -- that lands in a later read is matched by ring_ms (by the time only when either side has none), looked for within
+  -- a minute of its time so the month partitions prune.
   INSERT INTO pgvigil.mssql_memory_rmon (instance_id, server_start, record_id, snapshot_at, notification, ind_process, ind_system,
-      avail_phys_kb, avail_vas_kb, read_at, memory_node_id)
+      avail_phys_kb, avail_vas_kb, read_at, memory_node_id, ring_ms)
   SELECT DISTINCT ON (x.ss, x.at, x.notification)
          p_instance_id, x.ss, x.rid, x.at, x.notification, (x.r->>'ind_process')::int, (x.r->>'ind_system')::int,
-         (x.r->>'avail_phys_kb')::bigint, (x.r->>'avail_vas_kb')::bigint, p_snapshot_at, x.node
+         (x.r->>'avail_phys_kb')::bigint, (x.r->>'avail_vas_kb')::bigint, p_snapshot_at, x.node, x.ring
     FROM (SELECT r AS r, r->>'server_start' AS ss, (r->>'record_id')::bigint AS rid, (r->>'memory_node_id')::int AS node,
-                 (r->>'sample_at')::timestamptz AS at, r->>'notification' AS notification
+                 (r->>'sample_at')::timestamptz AS at, r->>'notification' AS notification, (r->>'ring_ms')::bigint AS ring
             FROM jsonb_array_elements(p_payload) r
            WHERE r->>'kind' = 'rmon' AND r->>'record_id' IS NOT NULL AND r->>'server_start' IS NOT NULL AND r->>'sample_at' IS NOT NULL) x
    WHERE x.rid > greatest(
            coalesce((SELECT max(y.record_id) FROM pgvigil.mssql_memory_rmon y
                       WHERE y.instance_id = p_instance_id AND y.server_start = x.ss AND y.memory_node_id IS NOT DISTINCT FROM x.node), -1),
-           coalesce((SELECT CASE WHEN x.node IS NULL THEN w.rmon_last_id ELSE (w.rmon_last_by_node->>x.node::text)::bigint END
+           coalesce((SELECT CASE WHEN x.node IS NULL OR w.rmon_last_by_node IS NULL THEN w.rmon_last_id
+                                 ELSE (w.rmon_last_by_node->>x.node::text)::bigint END
                        FROM pgvigil.mssql_memory_reads w
                       WHERE w.instance_id = p_instance_id AND w.rmon_start = x.ss), -1))
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_memory_rmon y
-                      WHERE y.instance_id = p_instance_id AND y.server_start = x.ss AND y.snapshot_at = x.at
+                      WHERE y.instance_id = p_instance_id AND y.server_start = x.ss
+                        AND y.snapshot_at >= x.at - interval '1 minute' AND y.snapshot_at <= x.at + interval '1 minute'
+                        AND CASE WHEN y.ring_ms IS NOT NULL AND x.ring IS NOT NULL THEN y.ring_ms = x.ring ELSE y.snapshot_at = x.at END
                         AND y.notification IS NOT DISTINCT FROM x.notification AND y.memory_node_id IS DISTINCT FROM x.node)
    ORDER BY x.ss, x.at, x.notification, x.node NULLS FIRST;
 
@@ -1116,8 +1144,9 @@ END $$;
 -- the newest = critical at once. The lead's D4: wait_sample only (activity_sample's one-minute snapshots cannot stand
 -- in for accumulated wait time); an instance with no wait_sample row in a day gets one info row 'not judged: needs
 -- pg_wait_sampling'. The finding's words are in detail; the top statements (up to 3, by wait on the event, their
--- text from statement_text) are in query (task 415's mask covers the two keys). Its alert arm is darling_alert_findings'
--- (WIRING).
+-- text from statement_text) are in query (task 415's mask covers the two keys): no page reads query yet (WIRING still
+-- open: a part of the Waits page, q_waits.go, through the mask). Its alert arm is darling_alert_findings' (WIRING), the
+-- info row with it.
 CREATE OR REPLACE FUNCTION pgvigil.pg_poison_wait_findings(p_instance_id int, p_at timestamptz)
 RETURNS TABLE (severity text, check_name text, object text, at timestamptz, detail text, query text)
 LANGUAGE sql STABLE AS $$

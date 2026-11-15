@@ -1,5 +1,5 @@
 diff --git i/internal/mssql/checks.go w/internal/mssql/checks.go
-index 678f6c5..cbc25a1 100644
+index 678f6c5..460157e 100644
 --- i/internal/mssql/checks.go
 +++ w/internal/mssql/checks.go
 @@ -4,6 +4,7 @@ import (
@@ -26,13 +26,14 @@ index 678f6c5..cbc25a1 100644
  		case m.PhysMB == 0:
  			return met("a limit is set; not weighed against the machine's memory, which was not read")
  		}
-@@ -372,6 +373,17 @@ func advisedMaxDOP(m machineFacts) int64 {
+@@ -372,6 +373,18 @@ func advisedMaxDOP(m machineFacts) int64 {
  	return min64(max64(m.CPUs/m.NUMANodes, 1), 16)
  }
  
 +// pmMemorySuggestion: PerformanceMonitor 3.13.0's max server memory number (ConfigAuditGuidance.cs: the machine's
-+// memory less the larger of 4,096 MB and 10 %, never more than half), the one 0156's mssql_memory_suggestion gives the
-+// pages; "" when the machine's memory was not read.
++// memory less the larger of 4,096 MB and 10 %, never more than half), the same number as 0156's
++// mssql_memory_suggestion (which no page reads yet); "" when the machine's memory was not read. The 95 % rule above
++// is sp_PerfCheck 1002's (95 % or more); PerformanceMonitor's own review starts over 95 %.
 +func pmMemorySuggestion(physMB int64) string {
 +	if physMB <= 0 {
 +		return ""
@@ -45,24 +46,26 @@ index 678f6c5..cbc25a1 100644
  	if a < b {
  		return a
 diff --git i/internal/mssql/memory.go w/internal/mssql/memory.go
-index d80b603..cef85a2 100644
+index d80b603..76819d7 100644
 --- i/internal/mssql/memory.go
 +++ w/internal/mssql/memory.go
-@@ -113,7 +113,8 @@ const memoryNumaSQL = `SELECT 'numa' AS kind,
+@@ -113,7 +113,9 @@ const memoryNumaSQL = `SELECT 'numa' AS kind,
    (SELECT CAST(COUNT(*) AS int) FROM sys.dm_os_nodes WHERE node_id > 0 AND node_state_desc NOT LIKE N'%DAC') AS other_nodes`
  
  // memoryRmonSQL: PerformanceMonitor 3.12.0 MemoryPressureEventsCollector's read (the time in UTC from ms_ticks, to
 -// the millisecond) with the record's id and sp_PressureDetector's available physical and virtual memory.
 +// the millisecond) with the record's id, its memory node (3.13.0's NodeId: each node writes its own record of one
-+// event; 0156 stores one copy) and sp_PressureDetector's available physical and virtual memory.
++// event; 0156 stores one copy), the ring time (sys.dm_os_ring_buffers.timestamp: a record's identity across reads and
++// nodes, as PerformanceMonitor keys it) and sp_PressureDetector's available physical and virtual memory.
  const memoryRmonSQL = `DECLARE @ms_ticks bigint, @now datetime2(7) = SYSUTCDATETIME(), @start datetime;
  SELECT @ms_ticks = ms_ticks, @start = sqlserver_start_time FROM sys.dm_os_sys_info;
  SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigint) AS record_id,
-@@ -122,6 +123,7 @@ SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigi
+@@ -122,6 +124,8 @@ SELECT 'rmon' AS kind, CAST(t.record.value('(/Record/@id)[1]', 'bigint') AS bigi
    CAST(t.record.value('(/Record/ResourceMonitor/Notification)[1]', 'nvarchar(100)') AS nvarchar(100)) AS notification,
    t.record.value('(/Record/ResourceMonitor/IndicatorsProcess)[1]', 'int') AS ind_process,
    t.record.value('(/Record/ResourceMonitor/IndicatorsSystem)[1]', 'int') AS ind_system,
 +  t.record.value('(/Record/ResourceMonitor/NodeId)[1]', 'int') AS memory_node_id,
++  t.timestamp AS ring_ms,
    t.record.value('(/Record/MemoryRecord/AvailablePhysicalMemory)[1]', 'bigint') AS avail_phys_kb,
    t.record.value('(/Record/MemoryRecord/AvailableVirtualAddressSpace)[1]', 'bigint') AS avail_vas_kb
  FROM (SELECT dorb.timestamp, CONVERT(xml, dorb.record) AS record FROM sys.dm_os_ring_buffers AS dorb
@@ -122,10 +125,10 @@ index 693bf78..bc8d23d 100644
  // not judged, with Microsoft's reason, and its user database is judged as anywhere; on a server someone runs, model
  // with no backup is still 'never'.
 diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 40526c2..fb9c47a 100644
+index 40526c2..d1e5b4d 100644
 --- i/internal/repo/sql/0190_join_release2.sql
 +++ w/internal/repo/sql/0190_join_release2.sql
-@@ -698,3 +698,120 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
+@@ -698,3 +698,91 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
              WHEN 'warn' IN (j.conn_status, j.allow_status, j.encoding_status, j.collation_status, j.checksums_status, j.xid_status) THEN 'warn'
              ELSE 'ok' END AS worst
    FROM j;
@@ -207,44 +210,15 @@ index 40526c2..fb9c47a 100644
 +  FROM (SELECT DISTINCT ON (d.instance_id) d.* FROM pgvigil.collection_dates d ORDER BY d.instance_id, d.snapshot_at DESC) c
 +  JOIN pgvigil.instances i USING (instance_id)
 + WHERE i.is_active AND c.status = 'error' AND c.snapshot_at > now() - interval '30 minutes'
-+   AND c.note LIKE 'connect: %';
-+
-+-- import_connect_failure: a collection that could not connect to its instance, recorded as that collection's error with
-+-- the note 'connect: <the driver's error>'. An instance with no row - one of pgvigil.yaml never reached (its row is
-+-- made at its first read that connects) - gets its row here with the configuration's engine, platform and tags, so
-+-- it is reported as any instance that cannot be reached (the join's w9e, finding 7); not when the page removed the
-+-- name in the last 5 minutes (a read in flight of a removed page instance). A retired row (is_active false: removed,
-+-- disabled) is left alone. The collector's door (an import_ function: apply_roles makes it SECURITY DEFINER and the
-+-- collector's).
-+DROP FUNCTION IF EXISTS pgvigil.import_connect_failure(text, text, timestamptz, int, text);
-+CREATE OR REPLACE FUNCTION pgvigil.import_connect_failure(p_name text, p_collection text, p_at timestamptz, p_duration_ms int, p_error text,
-+                                                          p_engine text DEFAULT NULL, p_platform text DEFAULT NULL, p_tags text[] DEFAULT NULL)
-+RETURNS void LANGUAGE plpgsql AS $$
-+DECLARE v_id int; v_active boolean;
-+BEGIN
-+  -- the row of this engine only: a read of the other engine in flight (a name removed and added again with the other
-+  -- engine) writes nothing onto it (the fold's review, finding 2)
-+  SELECT i.instance_id, i.is_active INTO v_id, v_active FROM pgvigil.instances i WHERE i.name = p_name AND (p_engine IS NULL OR i.engine = p_engine);
-+  IF v_id IS NULL THEN
-+    IF coalesce(p_engine, '') NOT IN ('postgres', 'sqlserver')
-+       OR EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = p_name AND r.removed_at > now() - interval '5 minutes') THEN
-+      RETURN;
-+    END IF;
-+    INSERT INTO pgvigil.instances (name, platform, engine, tags)
-+    VALUES (p_name, coalesce(nullif(p_platform, ''), 'auto'), p_engine, coalesce(p_tags, '{}'))
-+    ON CONFLICT (name) DO NOTHING;
-+    SELECT i.instance_id, i.is_active INTO v_id, v_active FROM pgvigil.instances i WHERE i.name = p_name AND i.engine = p_engine;
-+  END IF;
-+  IF v_id IS NULL OR NOT v_active THEN RETURN; END IF;
-+  PERFORM pgvigil.log_collection(v_id, p_collection, p_at, p_duration_ms, 'error', 'connect: ' || left(coalesce(nullif(p_error, ''), 'no reason given'), 2000));
-+END $$
++   AND c.note LIKE 'connect: %'
 +UNION ALL
-+-- task 405 (Changed 19): the PostgreSQL poison wait (0156's pg_poison_wait_findings, wait_sample only); its info row
-+-- 'not judged: needs pg_wait_sampling' is the page's, not an alert
++-- task 405 (Changed 19): the PostgreSQL poison wait (0156's pg_poison_wait_findings, wait_sample only), its info row
++-- 'not judged: needs pg_wait_sampling' too: an info finding on the Findings page and for a channel set to info (405
++-- review part A, finding 4); the top statements (its query column) have no reader yet
 +SELECT i.instance_id, p.severity, 'poison wait', p.object, true, 'under 1.0 waiting backends on average', 'all', p.detail, 'pg-collector', p.at
 +  FROM pgvigil.instances i
 +  CROSS JOIN LATERAL pgvigil.pg_poison_wait_findings(i.instance_id, now()) p
-+ WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('warning', 'critical');
++ WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('info', 'warning', 'critical');
 +COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, replay lag, slot WAL, a volume under 5 GB free, an AG secondary behind, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
 diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
 index 078fe43..dd5de4b 100644
@@ -487,10 +461,21 @@ index 5def140..19859da 100644
  	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
  	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
 diff --git i/scripts/proof-darling-cpu.sh w/scripts/proof-darling-cpu.sh
-index e00d70e..dd36b01 100755
+index e00d70e..4643458 100755
 --- i/scripts/proof-darling-cpu.sh
 +++ w/scripts/proof-darling-cpu.sh
-@@ -567,8 +567,11 @@ wr() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND d
+@@ -57,8 +57,8 @@
+ #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
+ #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
+ #     raises, 49.9 % or 9 records none; 'a transaction open for a long time' idle 30 min warning, 29 min none, 4 h
+-#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' at 100.1 ms over
+-#     1,000 writes raises, 100 ms or 999 writes none; Running now's p95 and % of average equal a hand computation on the
++#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' never on a user
++#     database (task 405 D1), on tempdb at 10 ms over 250 writes (9.96 ms or 249 writes none); Running now's p95 and % of average equal a hand computation on the
+ #     stored job runs.
+ #  H. pgvigil serve: GET /api/mssql/cpu, /connections, /counters (one series picked), /fileio, /tempdb answer every
+ #     part, the counted ones equal to their functions.
+@@ -567,8 +567,19 @@ wr() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND d
    fnd 'slow data file writes'; }
  W1=$(wr 1000 100100); W2=$(wr 1000 100000); W3=$(wr 999 999000)
  pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND database_name = 'pgvproof'" >/dev/null
@@ -500,7 +485,15 @@ index e00d70e..dd36b01 100755
 +# latency (was: 100.1 ms over 1,000 writes raised); tempdb's data files are, at 10 / 30 ms over 250 writes
 +# (proof-pm313-rules.sh R1)
 +[[ "$W1/$W2/$W3" == "0/0/0" ]] || fail "G: slow data file writes on a user database: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 0/0/0: D1)"
-+echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes on a user database never raised (task 405 D1)"
++# the rule still raises on tempdb (405 review part A, finding 10: the zeros above pass if the arm dies): a tempdb data
++# file of its own name at 10 ms over 250 writes raises one warning; 9.96 ms or 249 writes none
++wt() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
++  pq "INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, file_name, type_desc, reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs) VALUES ($SB, now() - interval '5 minutes', 2, 99, 'tempdb', 'pgvproof_tmp', 'ROWS', 0, 0, 0, $1, $1 * 8192, $2, 60)" >/dev/null
++  pq "SELECT count(*) || ':' || coalesce(max(severity), 'none') FROM pgvigil.mssql_cpu_findings WHERE instance_id = $SB AND check_name = 'slow data file writes' AND object = 'tempdb: pgvproof_tmp'"; }
++WT1=$(wt 250 2500); WT2=$(wt 250 2490); WT3=$(wt 249 2490)
++pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
++[[ "$WT1/$WT2/$WT3" == "1:warning/0:none/0:none" ]] || fail "G: slow tempdb data file writes: 10 ms x250 $WT1, 9.96 ms x250 $WT2, 10 ms x249 $WT3 (want 1:warning/0:none/0:none)"
++echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes on a user database never raised, on tempdb at 10 ms over 250 writes (task 405 D1)"
  
  echo "== H. the API under pgvigil serve =="
  (cd web && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "H: the web build"; }
