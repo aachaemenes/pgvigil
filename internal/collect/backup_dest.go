@@ -77,8 +77,8 @@ func lexCommand(cmd string) (segs [][]lexWord, why string) {
 	}
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
-		switch {
-		case c == '\'' || c == '"':
+		switch c {
+		case '\'', '"':
 			j := strings.IndexByte(cmd[i+1:], c)
 			if j < 0 {
 				return nil, "not known: an unclosed quote"
@@ -93,16 +93,16 @@ func lexCommand(cmd string) (segs [][]lexWord, why string) {
 			w.WriteString(lit)
 			inWord = true
 			i += j + 1
-		case c == ' ' || c == '\t':
+		case ' ', '\t':
 			endWord()
-		case c == ';':
+		case ';':
 			endSeg()
-		case c == '&' || c == '|':
+		case '&', '|':
 			if i+1 < len(cmd) && cmd[i+1] == c {
 				i++
 			}
 			endSeg()
-		case c == '<' || c == '>':
+		case '<', '>':
 			endWord()
 			op := string(c)
 			if c == '>' && i+1 < len(cmd) && (cmd[i+1] == '>' || cmd[i+1] == '&') {
@@ -752,8 +752,8 @@ func destObjectCLI(d *backupDest, name string, args []lexWord) {
 		return
 	}
 	last := pos[len(pos)-1]
-	switch {
-	case name == "rclone":
+	switch name {
+	case "rclone":
 		remote, p, ok := strings.Cut(last.text, ":")
 		if strings.Contains(remote, ",") || strings.HasPrefix(last.text, ":") {
 			low := strings.ToLower(last.text)
@@ -774,7 +774,7 @@ func destObjectCLI(d *backupDest, name string, args []lexWord) {
 			d.path = pp
 		}
 		d.detail = "the remote " + remote + " is defined in the server's rclone configuration"
-	case name == "mc":
+	case "mc":
 		alias, p, ok := strings.Cut(last.text, "/")
 		if !ok || last.tainted || !reToolName.MatchString(alias) {
 			d.detail = "not known: mc's destination"
