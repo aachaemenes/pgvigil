@@ -166,7 +166,9 @@
 #   RU4  a table holding last month's partition name: an import of a sample there commits (the sample stored), one
 #        'rollup failed' row, its hours marked; the table dropped, the next import heals them ('rollup healed', the
 #        hour's row, no dirty range) [red FAIL]
-#   RU5  replication_hourly_purge drops the month 25 months back and keeps the one 24 months back (730 days) [red FAIL]
+#   RU5  replication_hourly_purge drops the month 25 months back and keeps the one 24 months back (730 days); it leaves
+#        every hours partition at fillfactor 90 and next month's made (F16, added 18:5x after LD measured 2 of 242
+#        updates HOT at 100) [red FAIL]
 #   RU6  the stand-in built (heal_one): a 4-hour window reads its 3 samples (100, 300, 200), a 3-day window its 2 hours
 #        (300, 200: the same max per hour), building false; a day older than every stored sample month reads the hours
 #        (a stand-in hour row 555); hadr-p, never built, reads its samples by hour with building true [red FAIL]
@@ -732,7 +734,8 @@ if want AF; then
         oldest_read_view_lsn pg_lsn, last_update_timestamp timestamptz) language sql as \$\$
         select 'hadr-af-w'::text, 'MASTER_SESSION_ID'::text, '0/1'::pg_lsn, null::pg_lsn, null::pg_lsn, 1::real, 1::real, null::real, 0::real, 0::bigint, null::pg_lsn, now()
         union all select 'hadr-af-r', 'af-session', '0/1', '0/1', '0/1', 1, 1, 20, 0, 0, '0/1', now() \$\$" >/dev/null
-  pq "create role pgva login password '$MPW' in role pg_monitor; alter role pgva set search_path = aurora_fake, pg_catalog, public" >/dev/null
+  # USAGE on the schema: a schema the role may not use is skipped in its search_path, silently (the first red run's rig fault)
+  pq "create role pgva login password '$MPW' in role pg_monitor; alter role pgva set search_path = aurora_fake, pg_catalog, public; grant usage on schema aurora_fake to pgva" >/dev/null
   for _ in $(seq 1 30); do [[ "$(sq "select count(*) from pg_proc where proname = 'aurora_replica_status'")" == 1 ]] && break; sleep 1; done
   OCFG=$CFG; { cat "$OCFG"; printf '  - name: hadr-sa\n    platform: aurora\n    dsn: "host=127.0.0.1 port=%s user=pgva password=%s dbname=postgres sslmode=disable"\n' "$SP" "$MPW"; } > "$WORK/pgvigil-af.yaml"
   CFG=$WORK/pgvigil-af.yaml
@@ -905,6 +908,10 @@ SQL
             pgvigil.ensure_month_partition('replication_hourly', (to_date('${KEEP}15', 'YYYYMMDD')::timestamp) at time zone 'UTC')" >/dev/null
   r=$(q "select array_to_string(pgvigil.replication_hourly_purge(), ',') || '|' || (to_regclass('pgvigil.replication_hourly_$OLD') is null) || '|' || (to_regclass('pgvigil.replication_hourly_$KEEP') is not null)")
   [[ "$r" == "replication_hourly_$OLD|true|true" ]] && ok "RU5 replication_hourly_purge dropped $OLD, kept $KEEP (730 days): $r" || fail "RU5 retention: '$r', expected replication_hourly_$OLD|true|true"
+  r=$(q "select count(*) filter (where not coalesce('fillfactor=90' = any (c.reloptions), false)) || '|' ||
+               (to_regclass('pgvigil.replication_hourly_' || to_char(date_trunc('month', now() at time zone 'UTC') + interval '1 month', 'YYYYMM')) is not null)
+           from pg_inherits i join pg_class c on c.oid = i.inhrelid where i.inhparent = 'pgvigil.replication_hourly'::regclass")
+  [[ "$r" == "0|true" ]] && ok "RU5 every hours partition at fillfactor 90, next month's made ahead: $r" || fail "RU5 fillfactor / next month (partitions not at 90|next month there): '$r', expected 0|true"
   # RU6 the series: a 2-day window reads the samples, a 3-day window the hours (the same max per hour); a window older
   # than the stored samples reads the hours; an instance not built says 'building'
   for p in "5 minutes|100" "25 minutes|300" "65 minutes|200"; do

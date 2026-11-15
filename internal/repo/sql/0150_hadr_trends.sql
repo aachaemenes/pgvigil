@@ -350,12 +350,22 @@ END $$;
 -- replication_hourly_purge: the months of replication_hourly wholly older than its hours_retention row (730 days when
 -- absent) dropped; returns their names (purge()'s last block adds them to the run's partitions_dropped). The builds and
 -- heals are the purge command's, one instance per transaction (replication_hourly_pending, replication_hourly_heal_one).
+-- It also makes next month's partition ahead and keeps every partition at fillfactor 90: the current hour's rows are
+-- rewritten every minute and an update stays HOT only with room on its page (measured at fillfactor 100 after a 30-day
+-- build: 2 of 242 updates HOT). Here, not in the trigger: setting it needs the table's owner (purge), not the collector.
 CREATE OR REPLACE FUNCTION pgvigil.replication_hourly_purge()
 RETURNS text[] LANGUAGE plpgsql AS $$
 DECLARE v_days int; v_part record; v_names text[] := '{}';
 BEGIN
   SELECT r.days INTO v_days FROM pgvigil.hours_retention r WHERE r.table_name = 'replication_hourly';
   v_days := coalesce(v_days, 730);
+  PERFORM pgvigil.ensure_month_partition('replication_hourly', (date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC');
+  FOR v_part IN
+    SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+     WHERE i.inhparent = 'pgvigil.replication_hourly'::regclass AND NOT coalesce('fillfactor=90' = ANY (c.reloptions), false)
+  LOOP
+    EXECUTE format('ALTER TABLE pgvigil.%I SET (fillfactor = 90)', v_part.relname);
+  END LOOP;
   FOR v_part IN
     SELECT c.relname
       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
