@@ -49,6 +49,9 @@ const ids = list => ev(`(() => { const want = ${JSON.stringify(list.map(String))
     if (!other) return [w, 'absent'];
     const t = other.closest('table'), th = t.querySelectorAll('thead th')[other.cellIndex];
     return [w, 'absent (also in ' + heading(t) + ' / ' + (th ? th.textContent.trim() : '?') + ')']; })); })()`);
+// gone: not among the id cells of the reads that hide ('absent', or 'absent (also in ...)': another grid of the page, such
+// as who pins the xmin horizon, may list the session)
+const gone = v => typeof v === 'string' && v.startsWith('absent');
 const sw = () => ev(`(() => { const i = document.querySelector('input[type=checkbox][data-own-switch]'); return i ? { on: i.checked, label: i.closest('label')?.textContent.replace(/\\s+/g, ' ').trim() } : null; })()`);
 const text = () => ev(`document.querySelector('main')?.textContent.replace(/\\s+/g, ' ') ?? ''`);
 const tick = async () => { await ev(`document.querySelector('input[type=checkbox][data-own-switch]').click(); 'ok'`); await settle(); };
@@ -64,7 +67,7 @@ const NOTE = 'this read is from before pgvigil marked its own sessions: nothing 
 await run('O1', async () => {
   await go(`#/activity?i=${E.OP_PG}`); if (await noSwitch('O1')) return;
   const r = await ids([70001, 70002, 70003, 70004, 70005]), s = await sw(), t = await text();
-  const def = r['70001'] === 'absent' && r['70002'] === 'absent' && r['70003'] === 'listed' && r['70004'] === 'listed' && r['70005'] === 'pgvigil';
+  const def = gone(r['70001']) && gone(r['70002']) && r['70003'] === 'listed' && r['70004'] === 'listed' && r['70005'] === 'pgvigil';
   check('O1', def && !s.on && /\(2 hidden\)/.test(s.label) && /includes? 3 of pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'include(s) 3' ${/includes? 3 of pgvigil's own/.test(t)}`);
   await tick();
   const k = await keys(), r2 = await ids([70001, 70002]);
@@ -73,13 +76,13 @@ await run('O1', async () => {
   const k2 = await keys(), t2 = await text();
   await clickText('Latest');
   const k3 = await keys(), r3 = await ids([70001, 70002, 70003, 70004, 70005]), t3 = await text();
-  check('O1 steps', k2.own === '1' && k3.own === '1' && Object.values(r3).every(v => v !== 'absent'), `Earlier: own=${k2.own}; Latest: own=${k3.own}, ${JSON.stringify(r3)}`);
+  check('O1 steps', k2.own === '1' && k3.own === '1' && Object.values(r3).every(v => !gone(v)), `Earlier: own=${k2.own}; Latest: own=${k3.own}, ${JSON.stringify(r3)}`);
   check('O9', t2.includes(NOTE) && !t3.includes(NOTE), `the read before T says it: ${t2.includes(NOTE)}; read T does not: ${!t3.includes(NOTE)}`);
 });
 await run('O2', async () => {
   await go(`#/mssql_running?i=${E.OP_MS}`); if (await noSwitch('O2')) return;
   const r = await ids([901, 902, 903, 904, 905]), s = await sw(), t = await text();
-  const def = r['901'] === 'absent' && r['902'] === 'absent' && r['903'] === 'listed' && r['904'] === 'listed' && r['905'] === 'pgvigil';
+  const def = gone(r['901']) && gone(r['902']) && r['903'] === 'listed' && r['904'] === 'listed' && r['905'] === 'pgvigil';
   check('O2', def && /\(2 hidden\)/.test(s.label) && /includes? 3 of pgvigil's own/.test(t), `by default: ${JSON.stringify(r)}, the switch '${s.label}', 'include(s) 3' ${/includes? 3 of pgvigil's own/.test(t)}`);
   await tick();
   reqs.length = 0;
@@ -93,18 +96,18 @@ await run('O2', async () => {
 await run('O2b', async () => {
   await go(`#/mssql_waiting?i=${E.OP_MS}`); if (await noSwitch('O2b')) return;
   const r = await ids([902, 903, 905]), s = await sw(), t = await text();
-  check('O2b', r['902'] === 'absent' && r['903'] === 'listed' && r['905'] === 'pgvigil' && /\(1 hidden\)/.test(s.label) && t.includes("pgvigil's own tasks are left out unless the switch is on"),
+  check('O2b', gone(r['902']) && r['903'] === 'listed' && r['905'] === 'pgvigil' && /\(1 hidden\)/.test(s.label) && t.includes("pgvigil's own tasks are left out unless the switch is on"),
     `${JSON.stringify(r)}, the switch '${s.label}', the wait-types line ${t.includes("pgvigil's own tasks are left out unless the switch is on")}`);
 });
 await run('O2c', async () => {
   await go(`#/waiting?i=${E.OP_PG}`); if (await noSwitch('O2c')) return;
   const r = await ids([70002, 70005]), s = await sw();
-  check('O2c', r['70002'] === 'absent' && r['70005'] === 'pgvigil' && /\(1 hidden\)/.test(s.label), `${JSON.stringify(r)}, the switch '${s.label}'`);
+  check('O2c', gone(r['70002']) && r['70005'] === 'pgvigil' && /\(1 hidden\)/.test(s.label), `${JSON.stringify(r)}, the switch '${s.label}'`);
 });
 await run('O2d', async () => {
   await go(`#/mssqlqueries?i=${E.OP_MS}`);
   const t = await text(), r = await ids([901, 902]);
-  check('O2d', /Active queries[^]*\(2 hidden\)/.test(t) && r['901'] === 'absent' && r['902'] === 'absent', `'(2 hidden)' by Active queries: ${/Active queries[^]*\(2 hidden\)/.test(t)}; ${JSON.stringify(r)}`);
+  check('O2d', /Active queries[^]*\(2 hidden\)/.test(t) && gone(r['901']) && gone(r['902']), `'(2 hidden)' by Active queries: ${/Active queries[^]*\(2 hidden\)/.test(t)}; ${JSON.stringify(r)}`);
 });
 await run('O3', async () => {
   await go('#/alerts?w=7d');
