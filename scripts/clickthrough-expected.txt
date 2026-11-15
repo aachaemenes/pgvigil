@@ -23,6 +23,9 @@ must disabled | * | .* | ^B Chart menu: .* > menu B Pick series > B All$ | a cha
 must disabled | * | .* | menu B Columns\.\.\. > B Show every column$ | the grid's Columns... 'Show every column' with none hidden: off, 'every column is shown' (web/src/gridtools.ts)
 must disabled | * | .* | menu B Columns\.\.\. > B Reset this grid$ | 'Reset this grid' with nothing changed: off, 'nothing in this grid is changed from its default' (web/src/gridtools.ts)
 must disabled | * | ^statements$ | ^B Reset all$ | the statements filter's 'Reset all' with no filter set: off, 'no filter is set: nothing to reset' (web/src/stmt_filter.ts)
-must disabled | * | ^activity$ | ^B Latest$ | Activity's 'Latest' while the page follows now: off, 'this is the newest snapshot: the page follows it' (web/src/running.ts)
+# the findings review's fold (review-13 should 4): Activity's Latest is off ('this is the newest snapshot: the page follows it')
+# only while auto refresh is on; the walk pauses it in every document (clickthrough.mjs), and paused Latest reads the
+# newest again (a hashchange on the same address) - with no newer snapshot that is a re-read with the same rows
+reads | * | ^activity$ | ^B Latest$ | Activity's 'Latest' with auto refresh 'Off (paused)' (the walk's state): it reads the newest snapshot again, the same rows when none is newer; off with its words only while auto refresh is on (web/src/running.ts, review-13 should 4)
 must disabled | root | ^diff$ | ^B Compare$ | Diff's 'Compare' while a pick is missing: off, the hint its reason ('Pick instance A.') (web/src/diff.ts)
 must disabled | ms | ^mssql_running$ | ^B (Later|Latest)$ | 'Later' and 'Latest' at the newest snapshot: off, 'this is the newest snapshot' (web/src/mssql_running.ts)

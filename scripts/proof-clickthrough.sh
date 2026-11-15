@@ -55,6 +55,13 @@
 # the newest snapshot); the Draws on the strip redraw or say '... has no interval in this range: no line to draw.' (no
 # reads row); the FAIL rows listed: the re-reads (12 to 15), the deadlock Graph 1, Admin's Servers 1, the alert page's
 # 'at the firing' 1; 'click-through: OK (... 14 must row(s) clicked ...)', rc 0
+# Expected (the findings review's fold, f2 - written before it): tsc rc 0; as the findings run's grade (f1: 17 FAIL rows
+# listed, 14 must rows clicked, 522 click-map links), but Activity's 'Latest' is ON in the walk (the walk pauses auto
+# refresh; off only while it is on): its must row gone (13 must rows clicked) and its row listed as 'reads' (18 FAIL rows
+# listed) - or, if the demo stored a newer snapshot between the load and the click, 'redraws' and that expected row
+# 'not seen' (17 listed, 1 not seen); Pick series All / None, Columns...'s two buttons and SQL Server's Later / Latest
+# still 'disabled' with their words (the walk opens the panels on a default grid, every series shown, the newest
+# snapshot read); no new NOTHING or reads row; 'click-through: OK (...)', rc 0
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=(); MADE=""

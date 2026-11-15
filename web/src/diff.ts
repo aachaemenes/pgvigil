@@ -282,6 +282,13 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     try { localStorage.setItem(lsKey, JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
     if (refill) void fillDatabases();
   }
+  // the two-times mode with B empty (the newest read): an A time still ahead of the clock turns Compare off, and the
+  // clock passing it changes no field - read again as the pointer or the focus reaches Compare
+  const recheck = () => {
+    const why = incomplete(p, engineOf(p.a));
+    if ((go.getAttribute('aria-disabled') === 'true') !== !!why) { hint.textContent = why; offControl(go, why || null, hint); }
+  };
+  go.addEventListener('mouseenter', recheck); go.addEventListener('focus', recheck);
   go.addEventListener('click', () => {
     const why = incomplete(p, engineOf(p.a));
     if (why) { hint.textContent = why; return; }

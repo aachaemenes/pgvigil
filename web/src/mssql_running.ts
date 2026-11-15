@@ -356,11 +356,13 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     const slider = el('input', { type: 'range', id: 'mssql-snap', min: '0', max: String(snaps.length - 1), step: '1', value: String(start) });
     const out = el('output', { for: 'mssql-snap' });
     // Later and Latest at the newest snapshot would read it again: off with one reason beside them (the walk's 'reads' rows)
+    // (a newest snapshot whose read failed leaves Latest on: its click reads it again)
     const newestNote = el('span', { class: 'off-reason' });
+    let failed = false;
     const say = () => {
       const atEnd = Number(slider.value) >= snaps.length - 1;
       newestNote.textContent = atEnd ? 'this is the newest snapshot' : '';
-      offControl(next, atEnd ? 'this is the newest snapshot' : null, newestNote); offControl(last, atEnd ? 'this is the newest snapshot' : null, newestNote);
+      offControl(next, atEnd ? 'this is the newest snapshot' : null, newestNote); offControl(last, atEnd && !failed ? 'this is the newest snapshot' : null, newestNote);
       const s = snaps[Number(slider.value)];
       const text = `${fmtTime(s.snapshot_at)}: ${fmtNum(s.sessions)} session(s), ${fmtNum(s.blocked)} blocked`;
       out.textContent = ' ' + text;
@@ -373,8 +375,8 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
       try {
         const pick = snaps[Number(slider.value)].snapshot_at;
         const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(pick) });
-        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, ctx.instance, pick, kill));
-      } catch (e) { if (mine === seq) holder.replaceChildren(errorBox(e)); }
+        if (mine === seq) { holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, ctx.instance, pick, kill)); failed = false; say(); }
+      } catch (e) { if (mine === seq) { holder.replaceChildren(errorBox(e)); failed = true; say(); } }
     };
     const step = (by: number) => { slider.value = String(Math.min(snaps.length - 1, Math.max(0, Number(slider.value) + by))); void load(); };
     const prev = el('button', { type: 'button' }, 'Earlier'), next = el('button', { type: 'button' }, 'Later'), last = el('button', { type: 'button' }, 'Latest');
