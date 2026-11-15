@@ -71,10 +71,16 @@
 #     under its floor (the proof's own floored() line; the product's page words are NOT PROVEN, as G says) - a hard
 #     clear either way, no NOT PROVEN for it; a clear read over its floor that still holds takes up to two more quiet
 #     pairs, each printed, and stays hard (finding 6).
-#  T. client timeouts (B24 Fixed 1, written before its first run): T0 mssql_attention_left_out on eleven built cases in
+#  T. client timeouts (B24 Fixed 1, written before its first run): T0 mssql_attention_left_out on fifteen built cases in
 #     PerformanceMonitor's order: 'under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio
-#     metadata|Azure Data Studio metadata|counts|under 1 ms|pgvigil's own reads|counts' (a NULL duration counts; a name
-#     rule before the 1 ms floor, the floor before azdata's shapes). T1 built rows (chkxs1: reads 60 s apart, the newest
+#     metadata|Azure Data Studio metadata|counts|Azure Data Studio metadata|pgvigil's own reads|counts|counts|counts|under
+#     1 ms|under 1 ms' (a NULL duration counts; a name rule before the 1 ms floor, the floor before azdata's shapes; the
+#     lead's 11-15 F1 FLOOR (a) + EDGE (1): the floor only for an event that came with no statement - has_text false, or
+#     for a row stored before the flag a blank statement - so a short azdata metadata statement reads azdata's reason, a
+#     short event with its text or with has_text true counts; red on ccbed981: no four-argument function). T6 the
+#     import's path: four attentions through import_mssql_xe on a built instance, at 500 us each: has_text true with no
+#     statement counts, false is under 1 ms, an older collector's row (no key) with a statement counts and without one is
+#     under 1 ms: 't:counts|f:under 1 ms|-:counts|-:under 1 ms' (red on ccbed981: no has_text column). T1 built rows (chkxs1: reads 60 s apart, the newest
 #     storing 200 counted rows): its point 66.67 (200 over the 3 minutes back to its base), an instance rule at the
 #     seed's 9.999 / 59.999 goes critical at that read; a quiet read after it: still critical (the 3-minute window holds
 #     the burst), as PerformanceMonitor's own text says of a storm. T2 built rows (chkxs2: a done read, a read cut
@@ -87,8 +93,9 @@
 #     made by sa from 'pgvigil mssql-xe -print': each mssql_xe read writes one mssql_attention_reads row (read_done);
 #     a Go client (go-mssqldb, a connection per batch, a 2 s context timeout on WAITFOR DELAY 10 s, every batch of a
 #     phase at once, the reads about 60 s apart): T3a 30 under 'proof-app' - exactly 30 rows with its marker, the
-#     counter's change at that read at least the rows stored, every row's interrupt_us 1.5-3 s (PerformanceMonitor's
-#     reading of the field: about the client's timeout), the point equal to PerformanceMonitor's span rule over the
+#     counter's change at that read at least the rows stored, every row's interrupt_us above 0 and under 1 s (the time
+#     the interrupt itself took: 402full3 read 255-713 us, against PerformanceMonitor's reading 'about the client's
+#     timeout'), every row has_text, the point equal to PerformanceMonitor's span rule over the
 #     stored rows, scaled by the counter's change as the function does (recomputed in python from the reads and the
 #     rows), between 10 and 60, the instance rule warning; quiet reads until that rule's point is 0: state ok. T3b 60
 #     under SSMS IntelliSense's name and 20 under 'vscode-mssql-ObjectExplorer': per program 60 rows 'SSMS
@@ -96,8 +103,11 @@
 #     counted point 0, state ok, the left-out point as recomputed. T3c under
 #     'azdata' 10 'create table #sver ...' batches (the marker after the statement) left out as Azure Data Studio
 #     metadata, 10 query-editor batches counted; the counted point as recomputed. The XE API's attentions carry
-#     left_out with those reasons. A cancel under 1 ms is proven on the function only, live 'NOT PROVEN live' unless
-#     one occurs. The reads table's cost printed after T3 (F1 part B, finding 2; the design's F3): its rows, bytes a
+#     left_out with those reasons. Every live cancel under 1 ms came with its statement and counts (a cancel with no
+#     statement is proven on the function and the import only, T0 / T6). T3n (the lead's 11-15 F1 FLOOR EDGE (1), the
+#     red row: on ccbed981 the 10 read 'under 1 ms'): the same server read as a second instance chkboxnone under
+#     query_text none (its own config file), 10 cancels under 'proof-none': 10 rows, no statement stored, has_text on
+#     every one, each counted; a run with no cancel under 1 ms says 'NOT PROVEN live' for the floor's edge. The reads table's cost printed after T3 (F1 part B, finding 2; the design's F3): its rows, bytes a
 #     row (pg_column_size), the table with its indexes, the attentions' read index over its partitions, and bytes a
 #     day per instance at one read a minute - printed, not judged. T5 (F1 part B, finding 1) the trigger's path on a
 #     built instance through import_mssql_xe: an attention state row with no new_events (a cut read) at 2 minutes
@@ -646,16 +656,18 @@ xend() { rule "{\"op\":\"end\",\"ui_user\":\"proof402\",\"rule_id\":\"$1\"}" >/d
 xpoint() { pq "SELECT round(value::numeric, 2) FROM pgvigil.mssql_attention_points($1, now() - interval '30 minutes', now()) WHERE metric = '$2' ORDER BY at DESC LIMIT 1"; }
 
 # T0: the left-out rules on built cases, in PerformanceMonitor's order
-LO=$(pq "SELECT string_agg(coalesce(pgvigil.mssql_attention_left_out(p, s, d), 'counts'), '|' ORDER BY n) FROM (VALUES
-  (1, 'proof-app', 'x', 500::bigint), (2, 'proof-app', 'x', NULL::bigint),
-  (3, 'Microsoft SQL Server Management Studio - Transact-SQL IntelliSense  ', 'x', 500), (4, 'vscode-mssql', 'x', 5000000),
-  (5, ' VSCODE-MSSQL-ObjectExplorer ', 'x', 5000000), (6, 'azdata', '  create table #SVer (a int)', 5000000),
-  (7, 'azdata', 'select c.name from sys.all_columns as clmns', 5000000), (8, 'azdata', 'select 1', 5000000),
-  (9, 'azdata', 'create table #sver (a int)', 500), (10, 'pgvigil', 'x', 5000000), (11, NULL, NULL, NULL)) v(n, p, s, d)")
+LO=$(pq "SELECT string_agg(coalesce(pgvigil.mssql_attention_left_out(p, s, d, h), 'counts'), '|' ORDER BY n) FROM (VALUES
+  (1, 'proof-app', NULL, 500::bigint, NULL::boolean), (2, 'proof-app', NULL, NULL::bigint, NULL),
+  (3, 'Microsoft SQL Server Management Studio - Transact-SQL IntelliSense  ', 'x', 500, NULL), (4, 'vscode-mssql', 'x', 5000000, NULL),
+  (5, ' VSCODE-MSSQL-ObjectExplorer ', 'x', 5000000, NULL), (6, 'azdata', '  create table #SVer (a int)', 5000000, NULL),
+  (7, 'azdata', 'select c.name from sys.all_columns as clmns', 5000000, NULL), (8, 'azdata', 'select 1', 5000000, NULL),
+  (9, 'azdata', 'create table #sver (a int)', 500, NULL), (10, 'pgvigil', 'x', 5000000, NULL), (11, NULL, NULL, NULL, NULL),
+  (12, 'proof-app', 'x', 500, NULL), (13, 'proof-app', NULL, 500, true), (14, 'proof-app', NULL, 500, false),
+  (15, 'proof-app', '   ', 500, NULL)) v(n, p, s, d, h)")
 echo "   T0: $LO"
-[[ "$LO" == "under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio metadata|Azure Data Studio metadata|counts|under 1 ms|pgvigil's own reads|counts" ]] \
+[[ "$LO" == "under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio metadata|Azure Data Studio metadata|counts|Azure Data Studio metadata|pgvigil's own reads|counts|counts|counts|under 1 ms|under 1 ms" ]] \
   || fail "T0: the left-out reasons"
-ok "T0: the left-out rules in PerformanceMonitor's order (names, then under 1 ms with NULL counted, then azdata's shapes), pgvigil's own reads"
+ok "T0: the left-out rules in PerformanceMonitor's order (names, then under 1 ms only with no statement sent, NULL counted, then azdata's shapes), pgvigil's own reads"
 
 # built instances: reads 60 s apart, rows stored at a read (snapshot_at) one second after their event
 for m in "now()" "now() - interval '1 hour'"; do pq "SELECT pgvigil.mssql_event_partition('mssql_attentions', $m)" >/dev/null; done
@@ -719,6 +731,18 @@ echo "   T5: the reads table after four imports: $P5"
 [[ "$P5" == "2m false -, 1m true 7" ]] || fail "T5: the trigger's rows [$P5] (want '2m false -, 1m true 7')"
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $XS5" >/dev/null
 ok "T5: through import_mssql_xe a cut read is not done, a done read keeps its counter, a repeat and another capture add no row"
+
+# T6 (the lead's 11-15 F1 FLOOR EDGE (1)): has_text through import_mssql_xe - four attentions at 500 us on a built instance
+XS6=$(xinst chkxs6); [[ "$XS6" =~ ^[0-9]+$ ]] || fail "T6: the built instance [$XS6]"
+xa() { echo "{\"kind\":\"attention\",\"event_at\":\"$(pq "SELECT to_char(('$XT'::timestamptz - interval '61 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'")\",\"event_key\":\"$1\",\"session_id\":60,\"request_id\":0,\"interrupt_us\":500,\"program_name\":\"proof-app\"$2}"; }
+pq "SELECT pgvigil.import_mssql_xe($XS6, '$XT'::timestamptz - interval '1 minute', '[$(xa t6a ',"statement":null,"has_text":true'), $(xa t6b ',"statement":null,"has_text":false'), $(xa t6c ',"statement":"WAITFOR DELAY 1"'), $(xa t6d '')]'::jsonb)" >/dev/null \
+  || fail "T6: the import"
+P6=$(pq "SELECT coalesce(string_agg(coalesce(left(has_text::text, 1), '-') || ':' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text), 'counts'), '|' ORDER BY event_key), 'none')
+  FROM pgvigil.mssql_attentions WHERE instance_id = $XS6")
+echo "   T6: the stored attentions $P6"
+[[ "$P6" == "t:counts|f:under 1 ms|-:counts|-:under 1 ms" ]] || fail "T6: [$P6] (want t:counts|f:under 1 ms|-:counts|-:under 1 ms)"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $XS6" >/dev/null
+ok "T6: through import_mssql_xe has_text is stored; a short attention counts when the server sent its statement, kept or not; an older row reads its stored statement"
 
 # T3: live. pgvigil's sessions made by sa from the printed script; a Go client's cancels
 "$TMPD/pgvigil" mssql-xe -print -install-id "c$SUF" > "$TMPD/xe.sql" || fail "T3: mssql-xe -print"
@@ -810,7 +834,7 @@ NX=0; LASTX=0
 xr() { local w=$(( 60 - ($(date +%s) - LASTX) )); (( w > 7 )) || w=7; sleep "$w"; col mssql_xe; LASTX=$(date +%s); NX=$((NX + 1)); }
 # PerformanceMonitor's rule in python over the stored reads and rows: the newest done read's counted and left-out rates
 hand() { pq "SELECT 'r|' || extract(epoch FROM snapshot_at) || '|' || coalesce(counter::text, '') FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB AND read_done AND state = 'running'
-  UNION ALL SELECT 'e|' || extract(epoch FROM snapshot_at) || '|' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us), '')
+  UNION ALL SELECT 'e|' || extract(epoch FROM snapshot_at) || '|' || coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text), '')
     FROM pgvigil.mssql_attentions WHERE instance_id = $SB" > "$TMPD/hand"
   python3 - "$TMPD/hand" <<'PY'
 import sys
@@ -846,7 +870,7 @@ ctr() { pq "SELECT coalesce(counter, 0) FROM pgvigil.mssql_attention_reads WHERE
 # mark <marker>: the stored rows with the marker per program and reason, 'program:rows:reason ; ...' in order (F1 part
 # B, finding 4: each app's own count, so a double on one and a loss on another cannot sum to the total)
 mark() { pq "SELECT coalesce(string_agg(x.program_name || ':' || x.n || ':' || x.reason, ' ; ' ORDER BY x.program_name COLLATE \"C\", x.reason COLLATE \"C\"), 'none')
-  FROM (SELECT program_name, coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us), 'counts') AS reason, count(*) AS n
+  FROM (SELECT program_name, coalesce(pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text), 'counts') AS reason, count(*) AS n
           FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND statement LIKE '%$1%' GROUP BY 1, 2) x"; }
 pq "SELECT count(*) FROM pgvigil.mssql_attention_reads WHERE instance_id = $SB" > "$TMPD/nx0"; NX0=$(cat "$TMPD/nx0")
 xr; xr
@@ -857,18 +881,20 @@ M1="pgvchk-t3a-$SUF"; C0=$(ctr)
 attn proof-app 30 "WAITFOR DELAY '00:00:10'; /* $M1 */"; xr
 K1=$(mark "$M1"); C1=$(ctr); H1=$(hand); F1=$(fn); run; S3a=$(xstate "$SB")
 IU=$(pq "SELECT min(interrupt_us) || '|' || max(interrupt_us) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND statement LIKE '%$M1%'")
-echo "   T3a: rows $K1, the counter $C0 -> $C1, interrupt_us $IU, by hand $H1, the function $F1 -> $S3a"
+HT=$(pq "SELECT count(*) FILTER (WHERE has_text) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND statement LIKE '%$M1%'")
+echo "   T3a: rows $K1, the counter $C0 -> $C1, interrupt_us $IU, has_text $HT, by hand $H1, the function $F1 -> $S3a"
 [[ "$K1" == "proof-app:30:counts" ]] || fail "T3a: the stored rows [$K1] (want proof-app:30:counts)"
 (( C1 - C0 >= 30 )) || fail "T3a: the counter moved $((C1 - C0)) for 30 stored rows"
-python3 -c "import sys; a, b = map(int, sys.argv[1].split('|')); sys.exit(0 if 1500000 <= a and b <= 3000000 else 1)" "$IU" \
-  || fail "T3a: interrupt_us [$IU] is not about the client's 2 s timeout (PerformanceMonitor's reading)"
+python3 -c "import sys; a, b = map(int, sys.argv[1].split('|')); sys.exit(0 if 0 < a and b < 1000000 else 1)" "$IU" 2>/dev/null \
+  || fail "T3a: interrupt_us [$IU] is not the interrupt's own time (above 0, under 1 s; 402full3 read 255-713 us)"
+[[ "$HT" == 30 ]] || fail "T3a: has_text on $HT of the 30 rows"
 same "$H1" "$F1" || fail "T3a: the function [$F1] against PerformanceMonitor's rule by hand [$H1]"
 python3 -c "import sys; v = float(sys.argv[1].split('|')[0]); sys.exit(0 if 9.999 < v < 59.999 else 1)" "$F1" || fail "T3a: the point [$F1] is outside the warning band (the reads' spacing)"
 [[ "$S3a" == warning ]] || fail "T3a: the rule's state [$S3a] (want warning)"
 for _ in 1 2 3 4 5; do xr; H=$(hand); [[ "${H%%|*}" == 0.00 ]] && break; done
 F=$(fn); run; S=$(xstate "$SB"); echo "   T3a clear: by hand $H, the function $F -> $S"
 [[ "${H%%|*}" == 0.00 && "$S" == ok ]] && same "$H" "$F" || fail "T3a: the clear [$H|$F|$S]"
-ok "T3a: 30 cancels stored once each (interrupt_us about the timeout), the rate as PerformanceMonitor's rule, warning, then ok"
+ok "T3a: 30 cancels stored once each with their statement (interrupt_us the interrupt's own time: $IU), the rate as PerformanceMonitor's rule, warning, then ok"
 
 # T3b: SSMS IntelliSense and a VS Code metadata connection, left out by name
 M2="pgvchk-t3b-$SUF"
@@ -899,10 +925,14 @@ CS=$(pq "SELECT count(*) || ' reads, ' || coalesce(round(avg(pg_column_size(a.*)
 CT=$(pq "SELECT pg_size_pretty(pg_total_relation_size('pgvigil.mssql_attention_reads')) || ' the reads table with its indexes; '
   || pg_size_pretty(coalesce((SELECT sum(pg_relation_size(t.relid)) FROM pg_partition_tree('pgvigil.mssql_attentions_read_idx') t), 0)) || ' the attentions'' read index over its partitions'")
 echo "   the cost: $CS; $CT"
-NS1=$(pq "SELECT count(*) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000")
-if [[ "$NS1" == 0 ]]; then echo "NOT PROVEN live: no cancel under 1 ms (the floor is proven on the function, T0)"
-else [[ $(pq "SELECT count(*) FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000 AND pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us) IS NULL") == 0 ]] \
-  || fail "T3: a cancel under 1 ms counted"; ok "T3: $NS1 live cancel(s) under 1 ms left out"; fi
+# every live cancel under 1 ms here came with its statement (the proof's own batches): each counts unless a name or a
+# shape leaves it out; one with no statement is the function's and the import's (T0, T6)
+NS1=$(pq "SELECT count(*) || '|' || count(*) FILTER (WHERE has_text IS NOT TRUE) || '|' || count(*) FILTER (WHERE pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text) = 'under 1 ms')
+  FROM pgvigil.mssql_attentions WHERE instance_id = $SB AND interrupt_us < 1000")
+echo "   T3: live cancels under 1 ms, with no statement sent, left out as under 1 ms: $NS1"
+[[ "${NS1#*|}" == "0|0" ]] || fail "T3: a live cancel with its statement read as no statement or left out under 1 ms [$NS1]"
+[[ "${NS1%%|*}" -gt 0 ]] && ok "T3: ${NS1%%|*} live cancel(s) under 1 ms with their statement, each counted (none left out by the floor)" \
+  || echo "NOT PROVEN live: no cancel under 1 ms (the floor is proven on the function and the import, T0 / T6)"
 curl -fs -m 20 "http://127.0.0.1:$PORT/api/mssql/xe?instance=$SB&part=attentions&from=$(urlq "$(date -u -d '-30 min' +%Y-%m-%dT%H:%M:%SZ)")&to=$(urlq "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" > "$TMPD/att.json" \
   || fail "T3: GET /api/mssql/xe?part=attentions: $(tail -3 "$TMPD/serve.log")"
 python3 - "$TMPD/att.json" "$M2" "$M3" <<'PY' || fail "T3: the XE API's left_out"
@@ -915,6 +945,22 @@ sys.exit(0 if got == (['SSMS IntelliSense', 'VS Code mssql metadata'], ['Azure D
 PY
 xend "$RX"
 ok "T3: one mssql_attention_reads row per read, all done; the XE API names each left-out reason"
+
+# T3n (the lead's 11-15 F1 FLOOR EDGE (1), the red row): the same server read as a second instance under query_text none
+CFGN=$TMPD/n.yaml
+printf 'repository:\n  dsn: "%s"\ninstances:\n  - name: chkboxnone\n    engine: sqlserver\n    dsn: env:PGV_CHK_MON\n    query_text: none\n' "$PGDSN" > "$CFGN"
+coln() { timeout 180 "$TMPD/pgvigil" collect -config "$CFGN" -instance chkboxnone -once mssql_xe > "$TMPD/coln.out" 2>&1 \
+  || { cat "$TMPD/coln.out" >&2; fail "T3n: collect mssql_xe on chkboxnone"; }; }
+coln; SN=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'chkboxnone'"); [[ "$SN" =~ ^[0-9]+$ ]] || fail "T3n: the none instance [$SN]"
+attn proof-none 10 "WAITFOR DELAY '00:00:10'; /* pgvchk-t3n-$SUF */"; sleep 7; coln
+KN=$(pq "SELECT count(*) || '|' || count(*) FILTER (WHERE statement IS NULL) || '|' || count(*) FILTER (WHERE has_text) || '|'
+  || count(*) FILTER (WHERE pgvigil.mssql_attention_left_out(program_name, statement, interrupt_us, has_text) IS NULL) || '|'
+  || count(*) FILTER (WHERE interrupt_us < 1000) FROM pgvigil.mssql_attentions WHERE instance_id = $SN AND program_name = 'proof-none'")
+echo "   T3n: on chkboxnone (query_text none) rows|no statement|has_text|counted|under 1 ms: $KN"
+[[ "${KN%|*}" == "10|10|10|10" ]] || fail "T3n: a real timeout on a none instance [$KN] (want 10|10|10|10|n: stored with no text, has_text, counted)"
+pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $SN" >/dev/null
+[[ "${KN##*|}" -gt 0 ]] && ok "T3n: under query_text none 10 real timeouts stored with no statement, has_text on each, every one counted (${KN##*|} under 1 ms)" \
+  || echo "NOT PROVEN live: T3n's 10 none-instance timeouts all took 1 ms or more to interrupt (the floor's edge is T6's)"
 fi
 
 echo "== G. the floors: not judged under a floor (FL6) =="

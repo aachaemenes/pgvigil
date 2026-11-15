@@ -94,10 +94,18 @@ SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 --     failed read, sets none), the session's state at that read, its event_counter and the events it missed. A plain
 --     table, purged by snapshot_at (purge(): WIRING): a monthly partition made inside 0065's import, after the import has
 --     locked its five partitioned parents, could deadlock with purge()'s drops.
---   mssql_attention_left_out(program, statement, interrupt_us)  NULL = the event counts, else the reason, in
+--   mssql_attention_left_out(program, statement, interrupt_us, has_text)  NULL = the event counts, else the reason, in
 --     PerformanceMonitor's order: SSMS IntelliSense and the VS Code mssql metadata names first; then a cancel under 1 ms
---     (a NULL duration counts) of any other application; then Azure Data Studio's two metadata statement shapes of an
---     event not already short; then pgvigil's own reads (the collector's app name 'pgvigil', a pgvigil departure).
+--     (a NULL duration counts) of any other application that came with NO statement; then Azure Data Studio's two
+--     metadata statement shapes of an event not already short; then pgvigil's own reads (the collector's app name
+--     'pgvigil', a pgvigil departure). The attention's duration is the time the interrupt itself took: 30 real client
+--     timeouts on the box (402full3, 11-15) took 255-713 us each, so PerformanceMonitor's floor on every event (#7061)
+--     would leave every real timeout out; the floor keeps to the noise PerformanceMonitor names (a cancel of a command
+--     that had already finished carries no statement: the lead's 11-15 F1 FLOOR (a)). 'No statement' is has_text false,
+--     else, for a row stored before the flag (NULL), a blank stored statement.
+--   mssql_attentions.has_text  whether the server sent the event's statement, recorded by the collector before the
+--     instance's text policy runs (query_text none stores no statement and keeps the flag; the flag holds no text: the
+--     lead's 11-15 F1 FLOOR EDGE (1)); set by import_mssql_xe, wrapped here the way 0116 wraps it.
 --   mssql_attention_points(instance, from, to)  per done read R of a running session in (from, to]: the base B = the
 --     newest done read at or before R - 3 minutes, else the oldest done read before R (a short history), both within
 --     the 60 minutes before R (PerformanceMonitor's ReadLookbackMinutes: after a gap the first read back gives no point
@@ -147,7 +155,36 @@ DROP TRIGGER IF EXISTS mssql_attention_read_log ON pgvigil.mssql_xe_state;
 CREATE TRIGGER mssql_attention_read_log AFTER INSERT OR UPDATE ON pgvigil.mssql_xe_state
   FOR EACH ROW WHEN (NEW.capture = 'attention') EXECUTE FUNCTION pgvigil.mssql_attention_read_log();
 
-CREATE OR REPLACE FUNCTION pgvigil.mssql_attention_left_out(p_program text, p_statement text, p_interrupt_us bigint)
+-- whether the server sent the attention's statement (the F1 floor's edge): NULL on a row stored before this file
+ALTER TABLE pgvigil.mssql_attentions ADD COLUMN IF NOT EXISTS has_text boolean;
+
+-- The importer: the one before this file (0116's wrapper over 0065's), renamed import_mssql_xe_pre153 and called first,
+-- then has_text of the attentions this import stored (a second import of an old event stores nothing and changes
+-- nothing). Renamed once: a rerun finds it.
+DO $$
+BEGIN
+  IF to_regprocedure('pgvigil.import_mssql_xe_pre153(integer, timestamp with time zone, jsonb)') IS NULL THEN
+    ALTER FUNCTION pgvigil.import_mssql_xe(int, timestamptz, jsonb) RENAME TO import_mssql_xe_pre153;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_xe(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pgvigil.import_mssql_xe_pre153(p_instance_id, p_snapshot_at, p_payload);
+  UPDATE pgvigil.mssql_attentions a
+     SET has_text = (r->>'has_text')::boolean
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'attention' AND r->>'event_at' IS NOT NULL AND r->>'event_key' IS NOT NULL AND r ? 'has_text'
+     AND a.instance_id = p_instance_id AND a.event_at = (r->>'event_at')::timestamptz AND a.event_key = r->>'event_key'
+     AND a.snapshot_at = p_snapshot_at;
+END $$;
+
+-- the three-argument rule of an earlier build of this file (a sandbox that ran it); nothing else calls it
+DROP FUNCTION IF EXISTS pgvigil.mssql_attention_left_out(text, text, bigint);
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_attention_left_out(p_program text, p_statement text, p_interrupt_us bigint,
+                                                            p_has_text boolean)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
   SELECT CASE
     -- ExcludedAppPredicate: SSMS starts with the prefix and, trailing blanks ignored, ends with the suffix, any case
@@ -158,8 +195,9 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
                                     'vscode-mssql-objectexplorer', 'vscode-mssql-objectexplorer-languageservice',
                                     'vscode-mssql-languageservice')
       THEN 'VS Code mssql metadata'
-    -- MinInterruptDurationUs 1000: a NULL duration is not under it
-    WHEN p_interrupt_us < 1000 THEN 'under 1 ms'
+    -- MinInterruptDurationUs 1000: a NULL duration is not under it; only an event that came with no statement (has_text
+    -- false, or for a row stored before the flag a blank statement): a real timeout takes under 1 ms to interrupt too
+    WHEN p_interrupt_us < 1000 AND NOT coalesce(p_has_text, nullif(btrim(p_statement), '') IS NOT NULL) THEN 'under 1 ms'
     -- AzdataMetadataPredicate: azdata's query editor shares the name, so only the two SMO shapes
     WHEN lower(trim(p_program)) = 'azdata' AND (ltrim(p_statement) ILIKE 'create table #sver%' OR p_statement ILIKE '% as clmns%')
       THEN 'Azure Data Studio metadata'
@@ -194,7 +232,7 @@ LANGUAGE sql STABLE AS $$
            count(*) FILTER (WHERE w.why IS NULL) AS counted,
            count(*) FILTER (WHERE w.why IS NOT NULL) AS left_out
       FROM pgvigil.mssql_attentions e
-      CROSS JOIN LATERAL (SELECT pgvigil.mssql_attention_left_out(e.program_name, e.statement, e.interrupt_us) AS why) w
+      CROSS JOIN LATERAL (SELECT pgvigil.mssql_attention_left_out(e.program_name, e.statement, e.interrupt_us, e.has_text) AS why) w
      WHERE e.instance_id = p_instance_id
        AND e.snapshot_at > (SELECT min(b.base_at) FROM b) AND e.snapshot_at <= (SELECT max(b.at) FROM b)
        AND e.event_at > (SELECT min(b.base_at) FROM b) - interval '1 day' AND e.event_at <= (SELECT max(b.at) FROM b)
@@ -233,7 +271,7 @@ WITH made AS (
   SELECT 'SQL Server: client timeouts (attentions)', 'xe.client_timeouts_per_min', 'above', 9.999, 59.999, 0, 'fleet',
          'PerformanceMonitor 3.13.0''s Client Timeouts floors: 10 a minute warning, 60 critical, over the newest 3 minutes '
          || 'of reads (its bars are >=; a rule''s above is strict, so 9.999 / 59.999). SSMS IntelliSense, the VS Code mssql '
-         || 'metadata connections, cancels under 1 ms, Azure Data Studio''s metadata statements and pgvigil''s own reads '
+         || 'metadata connections, cancels under 1 ms that came with no statement, Azure Data Studio''s metadata statements and pgvigil''s own reads '
          || 'are left out. Seeded off: PerformanceMonitor turned it on after a measured week of field data and a per-server '
          || 'baseline; pgvigil has neither.',
          false, 'pgvigil', now(), '0153 seed'
