@@ -111,7 +111,9 @@ func TestProbeJudgedFoldOnAStore(t *testing.T) {
 
 // TestProbeThresholdsMatchOnAStore (F4, vis-b24hbj2g): collector_probe_thresholds - B24h's two keys for every instance at
 // once - equals pg_threshold instance by instance: the root, a tag's level, an instance's own, and an instance's level
-// with no warning (off: never the root's value), each key; one transaction rolled back.
+// with no warning (off: never the root's value), each key; and a tag tie (the review of the fold #11: an instance with two
+// tags, each with a level row, takes the first tag by name - 0.02 from team:pt.., never 0.03 from team:pu..); one
+// transaction rolled back.
 func TestProbeThresholdsMatchOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -130,9 +132,9 @@ func TestProbeThresholdsMatchOnAStore(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	sfx := time.Now().UnixNano() % 1000000000
-	tag := fmt.Sprintf("team:pt%d", sfx)
+	tag, tag2 := fmt.Sprintf("team:pt%d", sfx), fmt.Sprintf("team:pu%d", sfx)
 	ids := map[string]int32{}
-	for name, tags := range map[string][]string{"plain": {}, "tagged": {tag}, "own": {tag}, "off": {}} {
+	for name, tags := range map[string][]string{"plain": {}, "tagged": {tag}, "own": {tag}, "off": {}, "tie": {tag2, tag}} {
 		var id int32
 		if err := tx.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '17.0', 170000, false, $2::text[], 'postgres')`,
 			fmt.Sprintf("pt-%s-%d", name, sfx), tags).Scan(&id); err != nil {
@@ -147,7 +149,7 @@ func TestProbeThresholdsMatchOnAStore(t *testing.T) {
 		warn       any
 	}{
 		{"round_trip_time", "root", nil, nil, 0.05}, {"round_trip_time", "tag", nil, tag, 0.07}, {"round_trip_time", "instance", ids["own"], nil, 0.09},
-		{"round_trip_time", "instance", ids["off"], nil, nil}, {"ping_time", "tag", nil, tag, 0.02},
+		{"round_trip_time", "instance", ids["off"], nil, nil}, {"ping_time", "tag", nil, tag, 0.02}, {"ping_time", "tag", nil, tag2, 0.03},
 	} {
 		if _, err := tx.Exec(ctx, `UPDATE pgvigil.pg_thresholds SET ended_at = now() WHERE ended_at IS NULL AND key = $1 AND level = 'root' AND $2 = 'root'`, r.key, r.level); err != nil {
 			t.Fatal(err)
@@ -164,14 +166,15 @@ func TestProbeThresholdsMatchOnAStore(t *testing.T) {
 	      FROM (SELECT i.name, k.key, (SELECT c.warn FROM pgvigil.collector_probe_thresholds c WHERE c.instance_id = i.instance_id AND c.key = k.key) AS a,
 	                   (SELECT p.warn FROM pgvigil.pg_threshold(i.instance_id, k.key) p) AS b
 	              FROM pgvigil.instances i CROSS JOIN (VALUES ('round_trip_time'), ('ping_time')) k(key)
-	             WHERE i.instance_id = ANY ($1)) x`, []int32{ids["plain"], ids["tagged"], ids["own"], ids["off"]}).Scan(&bad, &sample); err != nil {
+	             WHERE i.instance_id = ANY ($1)) x`, []int32{ids["plain"], ids["tagged"], ids["own"], ids["off"], ids["tie"]}).Scan(&bad, &sample); err != nil {
 		t.Fatalf("the comparison: %v", err)
 	}
 	if bad != 0 {
-		t.Errorf("collector_probe_thresholds differs from pg_threshold on %d of 8: %s", bad, sample)
+		t.Errorf("collector_probe_thresholds differs from pg_threshold on %d of 10: %s", bad, sample)
 	}
-	if want := "0.09/0.09"; !strings.Contains(sample, "own-"+fmt.Sprint(sfx)+" round_trip_time "+want) || !strings.Contains(sample, "off-"+fmt.Sprint(sfx)+" round_trip_time off/off") {
-		t.Errorf("the levels as set: %s (want own 0.09 and off empty)", sample)
+	if want := "0.09/0.09"; !strings.Contains(sample, "own-"+fmt.Sprint(sfx)+" round_trip_time "+want) || !strings.Contains(sample, "off-"+fmt.Sprint(sfx)+" round_trip_time off/off") ||
+		!strings.Contains(sample, "tie-"+fmt.Sprint(sfx)+" ping_time 0.02/0.02") {
+		t.Errorf("the levels as set: %s (want own 0.09, off empty, the tie 0.02 by its first tag)", sample)
 	}
 }
 

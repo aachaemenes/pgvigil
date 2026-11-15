@@ -164,9 +164,9 @@ SELECT w.host AS collector_host, w.instance_id, i.name, w.n, round(w.ms::numeric
  WHERE w.n >= 3 AND w.newest >= now() - interval '8 minutes';
 
 -- collector_probe_forming: 3 or more of a collector host's instances crossed into a slow round trip in their newest
--- measured minute - B24h's fold may be forming: a NEW 'query round trip slow' or 'ping slow' of them waits (the join's
--- line 3 term, as slow-connect's collector_slow_forming: the B24h-1 review part b #5 - the first member was sent before
--- the fold formed)
+-- measured minute - B24h's fold may be forming: a NEW 'query round trip slow' of them waits (the join's line 3 term, as
+-- slow-connect's collector_slow_forming: the B24h-1 review part b #5 - the first member was sent before the fold formed;
+-- a ping's is collector_probe_forming_hosts: the review of the fold #4)
 CREATE OR REPLACE VIEW pgvigil.collector_probe_forming AS
 SELECT x.instance_id
   FROM (SELECT r.instance_id, r.crossed, count(*) FILTER (WHERE r.crossed) OVER (PARTITION BY r.collector_host) AS n
@@ -177,7 +177,9 @@ SELECT x.instance_id
 -- 'not probed' rows left out) of the per-minute rounds only (probe_every_minute: the review of B24h-1 part b #7, the
 -- lead's 12:4x (a) - the default mode's probes after a failure feed the parent's words, never ping slow or silence):
 -- rounds, answered, the answered average and longest in seconds, the newest probed minute; silent3 = none answered in
--- each of its 3 newest probed minutes, the oldest of them within 6 minutes
+-- each of its 3 newest probed minutes, the oldest of them within 6 minutes; the 5 before the newest (answered_prev,
+-- avg_s_prev: a ping 'crossed' in the judged view - the review of the fold #4) and the silence's oldest minute
+-- (silent_from: an opened connection since answers for the host - the review of the fold #9)
 CREATE OR REPLACE VIEW pgvigil.collector_pings AS
 WITH p AS (
   SELECT h.host AS collector_host, p.host, p.address, p.method, p.minute, p.sent, p.answered, p.ms_sum, p.ms_max,
@@ -185,43 +187,65 @@ WITH p AS (
     FROM pgvigil.collector_probe p JOIN pgvigil.collector_heartbeat h USING (collector_id)
    WHERE p.minute > now() - interval '20 minutes' AND p.answered IS NOT NULL AND p.scheduled AND h.retired_at IS NULL
 )
-SELECT collector_host, host, address, max(method) AS method, count(*) AS rounds, sum(answered) AS answered,
-       round(sum(ms_sum)::numeric / nullif(sum(answered), 0) / 1000, 3) AS avg_s, round(max(ms_max)::numeric / 1000, 3) AS max_s,
+SELECT collector_host, host, address, max(method) FILTER (WHERE k <= 5) AS method, count(*) FILTER (WHERE k <= 5) AS rounds,
+       sum(answered) FILTER (WHERE k <= 5) AS answered,
+       round(sum(ms_sum) FILTER (WHERE k <= 5)::numeric / nullif(sum(answered) FILTER (WHERE k <= 5), 0) / 1000, 3) AS avg_s,
+       round(max(ms_max) FILTER (WHERE k <= 5)::numeric / 1000, 3) AS max_s,
        count(*) FILTER (WHERE k <= 3) = 3 AND coalesce(bool_and(answered = 0) FILTER (WHERE k <= 3), false)
          AND coalesce(min(minute) FILTER (WHERE k <= 3) >= now() - interval '6 minutes', false) AS silent3,
-       max(minute) AS newest   -- the newest probed minute (last: a view's columns are only added at its end)
-  FROM p WHERE k <= 5 GROUP BY collector_host, host, address;
+       max(minute) AS newest,   -- the newest probed minute
+       sum(answered) FILTER (WHERE k BETWEEN 2 AND 6) AS answered_prev,
+       round(sum(ms_sum) FILTER (WHERE k BETWEEN 2 AND 6)::numeric / nullif(sum(answered) FILTER (WHERE k BETWEEN 2 AND 6), 0) / 1000, 3) AS avg_s_prev,
+       min(minute) FILTER (WHERE k <= 3) AS silent_from
+  FROM p WHERE k <= 6 GROUP BY collector_host, host, address;
 
 -- collector_probe_judged: each instance judged by its own thresholds - its round trip, and its host's ping (3 or more
 -- answered probes of 5, the newest within 8 minutes: the review of B24h-1 part b #7c); 'not answering' = its host silent3
--- AND that address answered once (collector_probe_host) AND no connection of the instance opened from that collector in
--- the last 3 minutes (part b #12: an opened connection is an answer) - a host that never answered (ICMP blocked: a cloud
--- endpoint) is words on the page only, never a finding (B24h-b, the fold's #6a). ONE pass (part b #4, the lead's 12:4x
--- (a)): the pings read once and joined (a host reached at more than one address: the address with the most answers,
--- then by name, speaks for it), never a lateral read of the windowed view per instance
+-- AND that address answered once (collector_probe_host) AND no connection to that HOST opened from that collector since
+-- the silence's oldest probed minute (part b #12: an opened connection is an answer; the review of the fold #9: any
+-- instance's connection to the host, so an instance read every 5 minutes does not flap) - a host that never answered
+-- (ICMP blocked: a cloud endpoint) is words on the page only, never a finding (B24h-b, the fold's #6a); ping_crossed =
+-- ping slow now and not in the 5 before the newest (the fold's forming wait, collector_probe_forming_hosts). ONE pass
+-- (part b #4, the lead's 12:4x (a)): the pings read once and joined (a host reached at more than one address: the address
+-- probed newest - an endpoint's failover moves it: the review of the fold #7 - then the most answers, then by name,
+-- speaks for it), never a lateral read of the windowed view per instance
 CREATE OR REPLACE VIEW pgvigil.collector_probe_judged AS
 WITH pgs AS MATERIALIZED (
-  SELECT DISTINCT ON (x.collector_host, x.host) x.* FROM pgvigil.collector_pings x ORDER BY x.collector_host, x.host, x.answered DESC, x.address
+  SELECT DISTINCT ON (x.collector_host, x.host) x.* FROM pgvigil.collector_pings x ORDER BY x.collector_host, x.host, x.newest DESC, x.answered DESC, x.address
 ), ans AS MATERIALIZED (
   SELECT DISTINCT h.host AS collector_host, ph.address FROM pgvigil.collector_probe_host ph JOIN pgvigil.collector_heartbeat h USING (collector_id)
    WHERE ph.last_answered IS NOT NULL
-), op AS MATERIALIZED (
-  SELECT DISTINCT h.host AS collector_host, l.instance_id FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-   WHERE l.minute >= now() - interval '3 minutes' AND l.opened > 0
+), op AS MATERIALIZED (   -- per collector host and dial host, the newest minute a connection opened
+  SELECT h.host AS collector_host, pgvigil.collector_target_host(l.target) AS host, max(l.minute) AS last_opened
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute > now() - interval '20 minutes' AND l.opened > 0 AND l.target IS NOT NULL AND h.retired_at IS NULL
+   GROUP BY 1, 2
 )
 SELECT ih.collector_host, ih.instance_id, i.name, ih.host,
        rt.avg_s AS rt_avg_s, rt.max_s AS rt_max_s, rt.warn AS rt_warn, coalesce(rt.slow, false) AS rt_slow,
        pg.method, pg.avg_s AS ping_avg_s, pg.max_s AS ping_max_s, th.warn AS ping_warn,
        coalesce(pg.answered >= 3 AND pg.avg_s > th.warn AND pg.newest >= now() - interval '8 minutes', false) AS ping_slow,
-       coalesce(pg.silent3, false) AND an.address IS NOT NULL AND o.instance_id IS NULL AS not_answering
+       coalesce(pg.silent3, false) AND an.address IS NOT NULL AND NOT coalesce(o.last_opened >= pg.silent_from, false) AS not_answering,
+       coalesce(pg.answered >= 3 AND pg.avg_s > th.warn AND pg.newest >= now() - interval '8 minutes'
+                AND pg.answered_prev >= 3 AND pg.avg_s_prev <= th.warn, false) AS ping_crossed
   FROM pgvigil.collector_instance_hosts ih
   JOIN pgvigil.instances i ON i.instance_id = ih.instance_id AND i.is_active
   LEFT JOIN pgvigil.collector_round_trips rt ON rt.collector_host = ih.collector_host AND rt.instance_id = ih.instance_id
   LEFT JOIN pgs pg ON pg.collector_host = ih.collector_host AND pg.host = ih.host
   LEFT JOIN ans an ON an.collector_host = ih.collector_host AND an.address = pg.address
-  LEFT JOIN op o ON o.collector_host = ih.collector_host AND o.instance_id = ih.instance_id
+  LEFT JOIN op o ON o.collector_host = ih.collector_host AND o.host = ih.host
   LEFT JOIN pgvigil.collector_probe_thresholds th ON th.instance_id = ih.instance_id AND th.key = 'ping_time'
  WHERE rt.instance_id IS NOT NULL OR pg.host IS NOT NULL;
+
+-- collector_probe_forming_hosts: per collector host, its probed hosts whose ping crossed while 3 or more of its hosts
+-- crossed (the review of the fold #4: the host's 'ping slow' row is the one sent - every instance's own is held under
+-- it): a NEW host row of theirs waits while the fold may form (the join's line 3 term, as collector_probe_forming for a
+-- round trip); a staggered crossing (one host a pass before the rest) is not covered, as slow-connect's is not
+CREATE OR REPLACE VIEW pgvigil.collector_probe_forming_hosts AS
+SELECT x.collector_host, x.host
+  FROM (SELECT c.collector_host, c.host, c.crossed, count(*) FILTER (WHERE c.crossed) OVER (PARTITION BY c.collector_host) AS n
+          FROM (SELECT collector_host, host, bool_or(ping_crossed) AS crossed FROM pgvigil.collector_probe_judged GROUP BY collector_host, host) c) x
+ WHERE x.crossed AND x.n >= 3;
 
 -- collector_probe_fold: B24h's own fold over its two measures (the fold's #3, SLOW-CONNECT's form): per collector host,
 -- its probed hosts judged and those slow (an instance on it slow by its round trip or its host's ping); it FORMS at 3
