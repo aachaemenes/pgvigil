@@ -520,6 +520,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
 		// pgvigil's own shutdown (the parent ctx cancelled) is not recorded - the run's own timeout (sctx) still is
 		cerr := timeoutNote(sctx, limit, err)
+		var se *secrets.ReadError
+		if errors.As(err, &se) && ctx.Err() == nil {
+			// the password could not be read from AWS Secrets Manager (B24e): the collection's error, not the server's
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			if lerr := r.LogSecretFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
+				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			rcancel()
+			return collect.Result{Err: err, Duration: time.Since(start)}
+		}
 		if ctx.Err() == nil {
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			if lerr := r.LogConnectFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), cerr); lerr != nil {

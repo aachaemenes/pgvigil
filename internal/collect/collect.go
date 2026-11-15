@@ -169,6 +169,14 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
 		// pgvigil's own shutdown (ctx cancelled) is not the server's failure and is not recorded
+		var se *secrets.ReadError
+		if errors.As(err, &se) && ctx.Err() == nil {
+			// the password could not be read from AWS Secrets Manager (B24e): the collection's error, not the server's
+			if lerr := r.LogSecretFailure(ctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
+				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			return Result{Err: err, Duration: time.Since(start)}
+		}
 		if ctx.Err() == nil {
 			if lerr := r.LogConnectFailure(ctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
 				log.Warn("the failed connect was not recorded", "instance", in.Name, "collection", name, "err", lerr)

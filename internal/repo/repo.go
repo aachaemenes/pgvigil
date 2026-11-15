@@ -383,6 +383,26 @@ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection str
 // with no row (one of pgvigil.yaml never reached) gets it with the configuration's engine, platform and tags, so it is
 // recorded from its first read as a page instance is (0122 makes that row at the add); an inactive one is left alone
 // (pgvigil.import_connect_failure; the join's w9e, finding 7).
+// LogSecretFailure records a run whose login's password could not be read from AWS Secrets Manager (task B24e): the
+// collection's error with the refusal's words on the instance (made first when it has no row yet), never a connect
+// failure - the server was not asked, so 'server unreachable' must not count it.
+func (r *Repo) LogSecretFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	if platform == "" {
+		platform = "auto"
+	}
+	var id int
+	err := r.pool.QueryRow(ctx, `SELECT instance_id FROM pgvigil.instances WHERE name = $1`, name).Scan(&id)
+	if err != nil {
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, NULL::text, NULL::int, false, $3::text[], $4)`, name, platform, tags, engine).Scan(&id); err != nil {
+			return err
+		}
+	}
+	return r.LogCollection(ctx, id, collection, at, d, "error", "secret: "+cause.Error())
+}
+
 func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
 	if tags == nil {
 		tags = []string{}
