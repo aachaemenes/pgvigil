@@ -1,4 +1,4 @@
--- 0201_kit_findings: KITWATCH K4.2 (the design's F15 / F16) - the collector's sp_WhoIsActive fallback seen; and K4.3 (F14) - the kits' versions per instance (mssql_kit_versions, import_mssql_kits, kit_versions_fleet).
+-- 0253_kit_findings: KITWATCH K4.2 (the design's F15 / F16) - the collector's sp_WhoIsActive fallback seen; and K4.3 (F14) - the kits' versions per instance (mssql_kit_versions, import_mssql_kits, kit_versions_fleet).
 --
 -- mssql_requests runs sp_WhoIsActive and reads 14 of its columns by name; when the call fails the DMV read runs
 -- instead and the run is 'partial' with the note 'sp_WhoIsActive: <the server's error> (error <n>); the DMV read ran
