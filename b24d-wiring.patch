@@ -1,0 +1,78 @@
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index ec97781a..1704c9af 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -101,6 +101,21 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	if *noLogin {
+ 		log.Warn("serve runs without the UI login: anyone who reaches this loopback port reads the repository", "listen", *listen)
+ 	}
++	// B24d: doors.prometheus_metrics - the start checks (a token under 32 bytes or none under -no-login ends serve) and
++	// one WARN naming what is open, as -no-login does, until the site profile (task 330) lists the door
++	var promCfg *web.MetricsConfig
++	if cfg.Doors.PrometheusMetrics {
++		m := cfg.Metrics
++		promCfg = &web.MetricsConfig{Token: m.Token, CacheSeconds: m.CacheSeconds, Databases: m.Databases, MaxDatabases: m.MaxDatabases,
++			IncludeDatabases: m.IncludeDatabases, Tags: m.Tags}
++		warns, err := web.CheckMetricsToken(promCfg, !*noLogin)
++		for _, w := range warns {
++			log.Warn(w)
++		}
++		if err != nil {
++			return err
++		}
++	}
+ 	// bind first: the accepted Host values follow the bound port (-listen 127.0.0.1:0 picks one, as demo does)
+ 	ln, err := net.Listen("tcp", *listen)
+ 	if err != nil {
+@@ -165,6 +180,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	defer srv.Close()
++	srv.EnableMetrics(promCfg)
+ 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
+ 	// check); serve starts either way and the page says the same words
+ 	if why := srv.StoreReportsOff(ctx); why != "" {
+diff --git i/internal/config/config.go w/internal/config/config.go
+index 78f7dccc..133cbb58 100644
+--- i/internal/config/config.go
++++ w/internal/config/config.go
+@@ -43,6 +43,9 @@ type Config struct {
+ 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
+ 	// where this file's off still wins (file off > profile > page).
+ 	Doors Doors `yaml:"doors"`
++	// Metrics tunes serve's Prometheus endpoint (metrics.go): token, cache_seconds, databases, max_databases,
++	// include_databases, tags; nothing while doors.prometheus_metrics is off.
++	Metrics MetricsBlock `yaml:"metrics"`
+ 	// ReportsDSNRaw is the login a custom report on the store (the repository) runs as: IN ROLE pgvigil_reader alone
+ 	// ('pgvigil roles' prints it), on the repository the repository dsn names; env:NAME or file:/path like every dsn.
+ 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
+diff --git i/internal/config/pagedoor.go w/internal/config/pagedoor.go
+index 31fe0805..ce259687 100644
+--- i/internal/config/pagedoor.go
++++ w/internal/config/pagedoor.go
+@@ -21,6 +21,11 @@ type Doors struct {
+ 	// PageInstanceReads turns on Community tools and custom reports for the instances added in Admin > Instances.
+ 	// Off by default.
+ 	PageInstanceReads bool `yaml:"page_instance_reads"`
++	// PrometheusMetrics turns on GET /metrics on serve (B24d): every active instance's newest figures in the Prometheus
++	// text format, read with a signed-in session or metrics.token. Off by default; off, /metrics answers 404 with
++	// web.MetricsOff. What it opens: server names, engines, platforms, versions, every figure (tags and database names
++	// when metrics.tags / metrics.databases are on), to everyone who reads that Prometheus and its remote_write targets.
++	PrometheusMetrics bool `yaml:"prometheus_metrics"`
+ }
+ 
+ // PageReadsOff is the refusal while the switch is off.
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6290ed6e..ed0abdda 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -415,6 +415,9 @@ func (s *Server) Handler() http.Handler {
+ 	mux.HandleFunc("POST /api/login", s.login)
+ 	mux.HandleFunc("POST /api/logout", s.logout)
+ 	mux.HandleFunc("GET /api/session", s.sessionInfo)
++	// B24d: Prometheus' /metrics, its own gate (a session or metrics.token), registered when off too (404 with its line;
++	// the '/' catch-all below would answer 200 with the page shell)
++	mux.HandleFunc("GET /metrics", s.PromMetrics)
+ 	mux.Handle("/api/", s.requireLogin(withReadWindow(api)))
+ 	sub, err := fs.Sub(dist, "dist")
+ 	if err != nil {
