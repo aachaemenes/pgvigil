@@ -357,17 +357,37 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
   // the grid's sort and filters by column KEY (the keys stay, a unit changes only the headings): read from the clicks and
   // typing on the drawn grid, given again to the grid drawn in the new unit
   let sort: { key: string; asc: boolean } | undefined, replaying = false;
-  const filt = new Map<string, string>();
+  // a filter remembers the unit it was typed in: a bare number in a size column ('>5' under GB) is the same size in the
+  // next unit ('>5120' under MB), so a pick never changes which rows a filter keeps
+  const filt = new Map<string, { v: string; unit: string }>();
+  const sizeKeys = new Set(['allocated', 'used', 'data', 'log']);
+  const plainNum = (t: string) => {   // the number typed, as JavaScript reads one (the locale's grouping and decimal mark read as the grid's filter reads them)
+    const x = t.replace(/[\s\u00a0\u202f]+(?=\d)/g, ''), dot = x.lastIndexOf('.'), comma = x.lastIndexOf(',');
+    const dec = (1.5).toLocaleString().includes(',') ? ',' : '.';
+    const js = dot >= 0 && comma >= 0 ? (dot > comma ? x.replace(/,/g, '') : x.replace(/\./g, '').replace(',', '.'))
+      : comma >= 0 ? (dec === ',' && x.indexOf(',') === comma ? x.replace(',', '.') : x.replace(/,/g, '')) : x;
+    return Number(js);
+  };
+  const rescaled = (k: string, f: { v: string; unit: string }): string => {
+    const m = /^\s*(>=|<=|>|<|=)\s*(-?[\d.,\s\u00a0\u202f]*\d)\s*$/.exec(f.v);
+    if (!sizeKeys.has(k) || f.unit === unit || !m) return f.v;
+    const n = plainNum(m[2]);
+    return Number.isFinite(n) ? `${m[1]}${Number((n * 1024 ** (units.indexOf(f.unit) - units.indexOf(unit))).toPrecision(12))}` : f.v;
+  };
   const follow = (box: HTMLElement, cols: Col[]) => {
     const t = box.querySelector('table.grid'); if (!t) return;
     const ths = [...t.querySelectorAll(':scope > thead > tr:first-child > th')];
     const ins = [...t.querySelectorAll<HTMLInputElement>('thead input.filter')];
     ths.forEach((th, j) => th.addEventListener('click', () => { if (replaying) return; const k = cols[j]?.key; if (!k) return; sort = { key: k, asc: sort?.key === k ? !sort.asc : true }; }));
-    ins.forEach((inp, j) => inp.addEventListener('input', () => { const k = cols[j]?.key; if (!k) return; if (inp.value.trim()) filt.set(k, inp.value); else filt.delete(k); }));
+    ins.forEach((inp, j) => inp.addEventListener('input', () => { if (replaying) return; const k = cols[j]?.key; if (!k) return; if (inp.value.trim()) filt.set(k, { v: inp.value, unit }); else filt.delete(k); }));
     replaying = true;
     if (sort) { const j = cols.findIndex(c => c.key === sort!.key); const th = ths[j] as HTMLElement | undefined; if (th) { th.click(); if (!sort.asc) th.click(); } }
+    for (const [k, f] of filt) {
+      const j = cols.findIndex(c => c.key === k), inp = ins[j], v = rescaled(k, f);
+      filt.set(k, { v, unit });
+      if (inp) { inp.value = v; inp.dispatchEvent(new Event('input')); }
+    }
     replaying = false;
-    for (const [k, v] of filt) { const j = cols.findIndex(c => c.key === k); const inp = ins[j]; if (inp) { inp.value = v; inp.dispatchEvent(new Event('input')); } }
   };
   let last: { d: Parts<'instances' | 'databases' | 'history'>; sc: Awaited<ReturnType<typeof scope>> } | undefined;
   async function draw() {
@@ -388,7 +408,9 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
     const fig = (v: unknown) => v == null || v === '' ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
     const head = (w: string) => `${w} (${unit})`;
     // a size column whose figures all show 0 while its bytes are above 0 (TB with no decimal): said under the grid
-    const zeroNote = (rows: Row[], keys: string[]) => keys.some(k => rows.some(r => Number(r[k]) > 0) && rows.every(r => r[k] == null || Number(fig(r[k]).replace(/[^\d]/g, '')) === 0))
+    // (only when EVERY size column that holds bytes shows 0: one column of small logs is no grid of zeros)
+    const allZero = (rows: Row[], keys: string[]) => { const live = keys.filter(k => rows.some(r => Number(r[k]) > 0)); return live.length > 0 && live.every(k => rows.every(r => r[k] == null || Number(fig(r[k]).replace(/[^\d]/g, '')) === 0)); };
+    const zeroNote = (rows: Row[], keys: string[]) => allZero(rows, keys)
       ? el('p', { class: 'meta' }, `Every figure shows 0 in ${unit} with ${dp} decimal${dp === 1 ? '' : 's'}: pick a smaller unit or more decimals to see the sizes.`) : '';
     if (!ctx.instance) {
       const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated: inUnit(r.allocated_bytes), used: inUnit(r.used_bytes) }));
