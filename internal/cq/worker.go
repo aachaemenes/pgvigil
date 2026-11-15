@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -27,7 +28,62 @@ const (
 	perInstance = 2
 	stopWait    = 10 * time.Second
 	callTimeout = 15 * time.Second
+	// publishEvery: the facts a page reads instead of asking per view (the community tools present and their
+	// parameters) are published at start, at each change of the held set and this often
+	publishEvery   = 10 * time.Minute
+	publishTimeout = 60 * time.Second
+	publishAtOnce  = 4
 )
+
+// Publisher publishes one held instance's facts into the repository (S5: a page reads them, never a request per view).
+type Publisher func(ctx context.Context, env *Env) error
+
+var (
+	pubMu      sync.Mutex
+	publishers []Publisher
+)
+
+// RegisterPublisher adds a publisher; a part of the build calls it from its own file's init.
+func RegisterPublisher(p Publisher) {
+	pubMu.Lock()
+	defer pubMu.Unlock()
+	publishers = append(publishers, p)
+}
+
+// publish runs every publisher on every held instance, publishAtOnce at a time, each under publishTimeout.
+func (w *Worker) publish(ctx context.Context) {
+	pubMu.Lock()
+	ps := slices.Clone(publishers)
+	pubMu.Unlock()
+	if len(ps) == 0 {
+		return
+	}
+	w.mu.Lock()
+	held := make([]config.Instance, 0, len(w.held))
+	for _, in := range w.held {
+		held = append(held, in)
+	}
+	w.mu.Unlock()
+	sem := make(chan struct{}, publishAtOnce)
+	var wg sync.WaitGroup
+	for _, in := range held {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			env := w.env(in)
+			for _, p := range ps {
+				cctx, cancel := context.WithTimeout(ctx, publishTimeout)
+				if err := p(cctx, &env); err != nil {
+					w.log.Warn("request queue: a publisher failed", "instance", in.Name, "err", err)
+				}
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 // Source is what the worker reads its held instances from: the repository (the page's list), as the scheduler does.
 type Source = config.InventoryReader
@@ -99,6 +155,16 @@ func (w *Worker) loop(ctx context.Context, src Source) error {
 	defer beat.Stop()
 	poll := time.NewTicker(pollEvery)
 	defer poll.Stop()
+	pub := time.NewTicker(publishEvery)
+	defer pub.Stop()
+	publishing := make(chan struct{}, 1) // one publish pass at a time
+	publishNow := func() {
+		select {
+		case publishing <- struct{}{}:
+			go func() { defer func() { <-publishing }(); w.publish(ctx) }()
+		default:
+		}
+	}
 	w.beat(ctx)
 	for {
 		select {
@@ -108,6 +174,9 @@ func (w *Worker) loop(ctx context.Context, src Source) error {
 		case <-applied:
 			w.beat(ctx)
 			w.claim(ctx)
+			publishNow()
+		case <-pub.C:
+			publishNow()
 		case <-beat.C:
 			w.beat(ctx)
 		case <-poll.C:

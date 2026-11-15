@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -846,8 +845,12 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		c.Preset["sp_IndexCleanup"] = map[string]string{"@database_name": firstUserDB}
 		add("sp_IndexCleanup", noteNeed("sp_IndexCleanup's own default reads the database it is installed in ("+c.DB+"), a system database it skips: the form reads "+firstUserDB+"; @get_all_databases = 1 reads every database the login reaches", "", "live"))
 	}
-	s.blockViewerPreset(ctx, conn, c, id, liveThreshold, add)
-	s.quickieStorePreset(ctx, conn, c, id, name, add)
+	// the form's presets read the repository through the UI's reader: the request queue's collector (cq_community.go)
+	// checks with no reader pool and leaves them to serve
+	if s.pool != nil {
+		s.blockViewerPreset(ctx, conn, c, id, liveThreshold, add)
+		s.quickieStorePreset(ctx, conn, c, id, name, add)
+	}
 	return c
 }
 
@@ -1474,155 +1477,10 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
 	}
-	timeout := time.Duration(in.TimeoutSecs) * time.Second
-	t0 := time.Now()
-	var stmt string
-	// no read login on this door set: each kind refuses where it did before (a script's text is checked first),
-	// before anything is sent, the set's words as the run's
-	switch t.Kind {
-	case "query":
-		if no.Why != "" {
-			run.finish(t0, nil, no.Why, nil)
-			break
-		}
-		cfg, err := pgx.ParseConfig(dsn)
-		if err != nil {
-			run.finish(t0, nil, "", errors.New("the monitoring dsn does not parse"))
-			break
-		}
-		// a database other than the login's own: the same login on that database
-		if in.Database != "" {
-			cfg.Database = in.Database
-		}
-		args := pgx.NamedArgs{}
-		for _, p := range t.Params {
-			v := in.Params[p.Name]
-			x, err := paramValue(p, &v)
-			if err != nil {
-				s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-					"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}}),
-					fmt.Errorf("parameter %s %w", p.Name, err))
-				return
-			}
-			args[p.Name] = x
-		}
-		stmt = t.SQL
-		if t.ID == "pg_top_statements" {
-			// the view in the schema the extension was created in, whatever the login's search path
-			schema, err := pgExtSchema(ctx, cfg, "pg_stat_statements")
-			if err != nil {
-				run.finish(t0, nil, "", err)
-				break
-			}
-			if schema == "" {
-				run.finish(t0, nil, "pg_stat_statements is not created in this database: a superuser-class role runs CREATE EXTENSION pg_stat_statements there", nil)
-				break
-			}
-			stmt = strings.Replace(stmt, "FROM pg_stat_statements s", "FROM "+pgx.Identifier{schema, "pg_stat_statements"}.Sanitize()+" s", 1)
-		}
-		sets, why, err := runPG(ctx, cfg, stmt, args, timeout, 5000, nil)
-		run.finish(t0, sets, why, err)
-	case "script":
-		text := strings.TrimSpace(in.Text)
-		if text == "" || len(text) > 128<<10 {
-			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "report_name": in.QueryName}), errors.New("text is the query to run, 1 to 128 KB (pick a query of the script)"))
-			return
-		}
-		stmt = text
-		if in.Database != "" {
-			stmt = "USE " + msQuote(in.Database) + ";\n" + text
-		}
-		if no.Why != "" {
-			run.finish(t0, nil, no.Why, nil)
-			break
-		}
-		sets, why, err := runMS(ctx, dsn, stmt, nil, timeout, 5000, true)
-		run.finish(t0, sets, why, err)
-	default:
-		if no.Why != "" {
-			run.finish(t0, nil, no.Why, nil)
-			break
-		}
-		db, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
-		if err != nil || why != "" {
-			run.finish(t0, nil, why, err)
-			break
-		}
-		in.Database = msDB(in.Database)
-		params, _, found, err := readProcParams(ctx, conn, in.Database, t.Name, t.Help)
-		switch {
-		case err != nil:
-			run.finish(t0, nil, "", fmt.Errorf("the parameters of %s could not be read: %v", t.Name, err))
-		case !found:
-			run.finish(t0, nil, fmt.Sprintf("%s is not installed in %s on %s: pgvigil never installs it; get it from %s", t.Name, in.Database, name, t.URL), nil)
-		}
-		if run.Outcome != "" {
-			_ = conn.Close()
-			_ = db.Close()
-			break
-		}
-		byName := map[string]procParam{}
-		for _, p := range params {
-			byName[strings.ToLower(strings.TrimPrefix(p.Name, "@"))] = p
-		}
-		keys := make([]string, 0, len(in.Params))
-		for k := range in.Params {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var b strings.Builder
-		b.WriteString("EXEC " + msQuote(in.Database) + ".[dbo]." + msQuote(t.Name))
-		var args []any
-		var bad error
-		for _, k := range keys {
-			v := in.Params[k]
-			if strings.TrimSpace(v) == "" {
-				continue
-			}
-			key := strings.ToLower(strings.TrimPrefix(k, "@"))
-			p, ok := byName[key]
-			if !ok {
-				bad = fmt.Errorf("%s has no parameter @%s pgvigil passes (a parameter that writes a table, an OUTPUT one and @help are left out)", t.Name, key)
-				break
-			}
-			x, err := msArg(p, v)
-			if err != nil {
-				bad = err
-				break
-			}
-			pn := "p" + strconv.Itoa(len(args)+1)
-			if len(args) > 0 {
-				b.WriteString(",")
-			}
-			b.WriteString(" " + p.Name + " = @" + pn)
-			args = append(args, sql.Named(pn, x))
-		}
-		if bad != nil {
-			_ = conn.Close()
-			_ = db.Close()
-			s.refuseRun(w, r, run.audit(map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
-				"instance_id": in.InstanceID, "instance": name, "statement": b.String(), "params": map[string]any{"values": in.Params, "database": in.Database}}), bad)
-			return
-		}
-		stmt = b.String()
-		rctx, rcancel := context.WithTimeout(ctx, timeout)
-		rows, err := conn.QueryContext(rctx, stmt, args...)
-		var sets []resultSet
-		if err == nil {
-			sets, err = readMS(rows, 5000, &sizer{}, rcancel)
-		}
-		rcancel()
-		_ = conn.Close()
-		_ = db.Close()
-		run.finish(t0, sets, "", err)
-		// the procedure looked at this server and said no in one of its own listed messages, before any result set:
-		// still a failed run in the audit (the statement reached the server), drawn as a note
-		var me mssqldb.Error
-		if errors.As(err, &me) && len(sets) == 0 && declinedBy(t.Name, me) {
-			run.Declined = true
-			run.Error = fmt.Sprintf("%s declined: %s (msg %d, severity %d)", t.Name, strings.TrimSpace(me.Message), me.Number, me.Class)
-		}
+	run, stmt, refused := communityExec(ctx, t, &in, name, dsn, no, run, user, clientIP(r))
+	if refused != nil {
+		s.refuseRun(w, r, refused.row, refused.err)
+		return
 	}
 	run.Statement = stmt
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
