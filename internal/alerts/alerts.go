@@ -12,7 +12,7 @@
 //	alerts_dsn: env:PGVIGIL_ALERTS_DSN
 //	alerts:
 //	  - name: dba-mail               # [a-z0-9][a-z0-9_.-]*, unique
-//	    kind: smtp                   # smtp | webhook | file | pagerduty | opsgenie
+//	    kind: smtp                   # smtp | webhook | file | pagerduty | opsgenie | pushover | zabbix | azuremonitor
 //	    min_severity: warning        # info | warning (default) | critical
 //	    instances: [erp01]           # optional; instances: and tags: empty = every instance
 //	    tags: [env:prod]             # optional; a tag in its written form (prod, env:prod)
@@ -27,6 +27,7 @@
 //	    pagerduty: {routing_key: env:PD_KEY}            # Events API v2; one incident per finding, resolved when it clears
 //	    pushover: {token: env:PO_TOKEN, user: env:PO_USER}   # task B24k: one phone notification per alert (pushover.go)
 //	    zabbix: {server: zbx.example.org, host: pgvigil, tls_ca: /ca.pem, tls_cert: /c.crt, tls_key: /c.key}   # B24k (zabbix.go)
+//	    azuremonitor: {endpoint: https://..., dcr_id: dcr-..., stream: Custom-..., tenant: ..., client_id: ..., client_secret: env:S}   # B24k
 //
 // Each pass (every minute inside `pgvigil run`, once for `pgvigil alerts`) records the channels, stamps the open alerts
 // whose finding is gone (pgvigil.alert_mark), asks the repository what is owed (pgvigil.alert_due: firing, escalated,
@@ -100,6 +101,8 @@ type Channel struct {
 	Opsgenie    *Opsgenie        `yaml:"opsgenie"`
 	Pushover    *Pushover        `yaml:"pushover"` // task B24k (pushover.go)
 	Zabbix      *Zabbix          `yaml:"zabbix"`   // task B24k (zabbix.go)
+	// AzureMonitor is task B24k's Logs Ingestion API channel (azuremonitor.go).
+	AzureMonitor *AzureMonitor `yaml:"azuremonitor"`
 	// MaxPerHour caps the alerts the channel sends in any hour (0 = no cap): what is over it is held, logged as
 	// outcome 'capped', and sent by a later pass once the hour allows.
 	MaxPerHour int        `yaml:"max_per_hour"`
@@ -346,13 +349,13 @@ func (c *Channel) validate() error {
 	}
 	c.tpl = tpl
 	blocks := 0
-	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil, c.Zabbix != nil} {
+	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil, c.Zabbix != nil, c.AzureMonitor != nil} {
 		if set {
 			blocks++
 		}
 	}
 	if blocks != 1 {
-		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie:, pushover: or zabbix: is required")
+		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie:, pushover:, zabbix: or azuremonitor: is required")
 	}
 	switch c.Kind {
 	case "smtp":
@@ -396,8 +399,13 @@ func (c *Channel) validate() error {
 			return errors.New("kind zabbix needs a zabbix: block")
 		}
 		c.sender, err = c.Zabbix.build()
+	case "azuremonitor":
+		if c.AzureMonitor == nil {
+			return errors.New("kind azuremonitor needs an azuremonitor: block")
+		}
+		c.sender, err = c.AzureMonitor.build()
 	default:
-		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie, pushover or zabbix (got %q)", c.Kind)
+		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie, pushover, zabbix or azuremonitor (got %q)", c.Kind)
 	}
 	return err
 }
