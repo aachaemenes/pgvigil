@@ -601,6 +601,50 @@ if (sq) {
 // a PostgreSQL instance's DB Space page: its grid with no data / log columns, used 'not read'
 const pq_ = rows.find(r => r.engine === 'postgres' && r.platform === 'onprem') ?? rows.find(r => r.engine === 'postgres');
 if (pq_) out.dbspace_p = { ...(await page(`#/dbspace?i=${pq_.instance_id}`)), instance: pq_.name };
+// (pickers) DB Space's Unit and Decimal places: MB and 2 picked on the SQL Server instance's page (its grid sorted by
+// allocated first: the sort must survive the unit), its export read (dbspace_imb), the API's bytes of the same draw; the
+// folder's page then shows MB / 2 (remembered), after a reload too; TB and 0 on the PostgreSQL instance's page read (its
+// figures all 0: the note under the grid), TB and 3 exported (dbspace_ptb); GB and 1 picked back and no size key left. A page without the pickers is said in each read, never a throw
+const dbsPick = (u, k) => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp');
+  if (!a || !b) return { err: 'no Unit picker on the page' };
+  a.focus(); a.value = ${JSON.stringify(u)}; a.dispatchEvent(new Event('change', { bubbles: true }));
+  b.value = ${JSON.stringify(k)}; b.dispatchEvent(new Event('change', { bubbles: true })); a.focus();
+  return { ok: true }; })()`);
+const dbsRead = () => ev(`(() => { const a = document.getElementById('dbs-unit'), b = document.getElementById('dbs-dp'), t = document.querySelector('main table.grid');
+  return { unit: a ? a.value : null, dp: b ? b.value : null, focus: document.activeElement ? document.activeElement.id : '',
+    labels: [...document.querySelectorAll('main label')].map(l => l.htmlFor).filter(Boolean),
+    head: t ? [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()) : [],
+    first: t ? (t.querySelector('tbody tr td')?.textContent || '').trim() : '',
+    note: [...document.querySelectorAll('main p.meta')].map(p => p.textContent).filter(s => /shows 0/.test(s)),
+    keys: Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.dbspace.size-')) }; })()`);
+const dbsApi = () => ev(`(async () => { const u = performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/dbspace')).pop();
+  if (!u) return { err: 'no /api/dbspace read' }; const r = await fetch(u); return r.ok ? await r.json() : { err: 'HTTP ' + r.status }; })()`);
+if (sq && pq_) {
+  await cmd('Page.navigate', { url: U + `#/dbspace?i=${sq.instance_id}` }); await sleep(300);
+  if (!await settled()) throw new Error('the SQL Server DB Space page did not render');
+  // sorted by allocated, largest first (two clicks), the first row read before the unit changes
+  await ev(`(() => { const t = document.querySelector('main table.grid'); const h = [...t.querySelectorAll('thead th')].find(x => /^allocated/.test(x.textContent.trim())); if (h) { h.click(); h.click(); } return !!h; })()`);
+  await sleep(300);
+  out.dbs_sorted = await dbsRead();
+  out.dbs_pick_mb = await dbsPick('MB', '2'); await sleep(500);
+  out.dbs_after_mb = await dbsRead();
+  if (out.dbs_pick_mb.ok) {
+    out.dbs_api_i = await dbsApi();
+    out.dbspace_imb = { ...(await page(`#/dbspace?i=${sq.instance_id}`)), instance: sq.name };
+    await cmd('Page.navigate', { url: U + '#/dbspace' }); await sleep(300); await settled();
+    out.dbs_folder = await dbsRead();
+    await cmd('Page.reload', {}); await sleep(800); await settled();
+    out.dbs_reload = await dbsRead();
+    await cmd('Page.navigate', { url: U + `#/dbspace?i=${pq_.instance_id}` }); await sleep(300); await settled();
+    out.dbs_pick_tb0 = await dbsPick('TB', '0'); await sleep(500);
+    out.dbs_after_tb0 = await dbsRead();
+    out.dbs_pick_tb = await dbsPick('TB', '3'); await sleep(500);
+    out.dbs_api_p = await dbsApi();
+    out.dbspace_ptb = { ...(await page(`#/dbspace?i=${pq_.instance_id}`)), instance: pq_.name };
+    out.dbs_pick_back = await dbsPick('GB', '1'); await sleep(500);
+    out.dbs_back = await dbsRead();
+  }
+}
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
 const waitDl = async (before, what) => {
@@ -949,7 +993,8 @@ def number(t):
     except ValueError: return None
 def dbs_onedec(key, g, cells, cx):
     # (DBA Dash's 'Decimal Places: 1': '12.0', never '12') every GB figure of a DB Space grid shows exactly one decimal on
-    # the page (fr-FR '12,0'), its workbook cell a number under '0.0' whose value is the figure shown; a blank or 'not read'
+    # the page (fr-FR '12,0'), its workbook cell a number under '0.0' that rounds to the screen's figure (the value exact in
+    # its unit: only the display and the format round); a blank or 'not read'
     # cell is skipped. The grid must hold a whole figure (the case the rule is about), or the row proves nothing
     gb = [j for j, h in enumerate(g['head']) if h.endswith('(GB)')]
     seen, whole, bad = 0, 0, []
@@ -961,7 +1006,7 @@ def dbs_onedec(key, g, cells, cx):
             code = FMT_CODES.get(cx[sid]['fmt'], cx[sid]['fmt']) if sid < len(cx) else '?'
             n_ = number(t_); seen += 1
             if n_ is not None and n_ == int(n_): whole += 1
-            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - v_) >= 1e-9:
+            if not re.fullmatch(r'-?[\d\s\u202f\u00a0.,]*\d[.,]\d', t_) or v_ is None or code != '0.0' or n_ is None or abs(n_ - round(v_, 1)) >= 1e-9:
                 bad.append(f"{colname(j)}{i + 2} page {t_!r}, workbook {v_} under {code!r}")
     check(len(gb) >= 1 and seen >= 1 and whole >= 1 and not bad, f"{key}: every GB figure shows one decimal on the page and is a number under '0.0' in the workbook, the value shown ({len(gb)} GB columns, {seen} figures, {whole} whole; {len(bad)} off {bad[:3]})")
 def sheets_of(z):
@@ -1520,6 +1565,8 @@ else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs
 if d.get('dbspace_i'): PAGES.append(('dbspace_i', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_i']['instance'])))
 else: print("not checked: dbspace_i: the demo has no SQL Server instance (its DB Space grid)")
 if d.get('dbspace_p'): PAGES.append(('dbspace_p', 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d['dbspace_p']['instance'])))
+for _k in ('dbspace_imb', 'dbspace_ptb'):   # (pickers) the DB Space pages exported in the unit and decimals picked
+    if d.get(_k): PAGES.append((_k, 'DB-Space', re.sub(r'[^A-Za-z0-9._-]+', '-', d[_k]['instance'])))
 else: print("not checked: dbspace_p: the demo has no PostgreSQL instance (its DB Space grid)")
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
@@ -1746,8 +1793,8 @@ for key, tab, inst in PAGES:
             dsi_scr = [(row[dsi_j]['t'] if dsi_j < len(row) else '') for row in dsi_g.get('cells') or []]
             dsi_nums = [v for _, v, _ in dsi_v if v is not None]
             dsi_texts = sorted({t for _, v, t in dsi_v if v is None and t})
-            dsi_odd = [v for v in dsi_nums if abs(v * 10 - round(v * 10)) >= 1e-9]
-            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - v) < 1e-9))]
+            dsi_odd = []   # (each value exact in its unit; its figure under '0.0' is the screen's: dsi_diff and dbs_onedec)
+            dsi_diff = [(s_, v) for (_, v, _), s_ in zip(dsi_v, dsi_scr) if not ((v is None and not s_) or (v is not None and s_ and number(s_) is not None and abs(number(s_) - round(v, 1)) < 1e-9))]
             dsi_full = len(dsi_nums) >= 1 if dsi_w == 'used (GB)' else len(dsi_nums) == len(dsi_rows)
             check(len(dsi_rows) == dsi_g['rows'] == len(dsi_scr) and dsi_full and not dsi_texts and not dsi_odd and not dsi_diff,
                   f"dbspace_i: '{dsi_w}' a number in {len(dsi_nums)} of {len(dsi_rows)} rows (page {dsi_g['rows']}, screen read {len(dsi_scr)}), text cells {dsi_texts[:3]}, not a tenth {dsi_odd[:3]}, off the screen {dsi_diff[:3]}")
@@ -1765,12 +1812,39 @@ for key, tab, inst in PAGES:
         if len(dsp_cols) > 2:
             dsp_a = [(dsp_c.get((r, dsp_cols[1])) or (0, None, None)) for r in dsp_rows]
             dsp_as = [(row[1]['t'] if len(row) > 1 else '') for row in dsp_scr]
-            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or abs(v * 10 - round(v * 10)) >= 1e-9 or number(t_) is None or abs(number(t_) - v) >= 1e-9]
+            dsp_bad = [(t_, v) for (_, v, _), t_ in zip(dsp_a, dsp_as) if v is None or number(t_) is None or abs(number(t_) - round(v, 1)) >= 1e-9]
             check(len(dsp_rows) == dsp_g['rows'] == len(dsp_scr) and not dsp_bad, f"dbspace_p: 'allocated (GB)' a number rounded to 0.1, the screen's, in every row ({len(dsp_rows)} rows, page {dsp_g['rows']}, screen read {len(dsp_scr)}; off {dsp_bad[:3]})")
             dsp_u = [(dsp_c.get((r, dsp_cols[2])) or (0, None, None))[2] for r in dsp_rows]
             dsp_us = [(row[2]['t'] if len(row) > 2 else '') for row in dsp_scr]
             check(dsp_u and all(t_ == 'not read' for t_ in dsp_u + dsp_us), f"dbspace_p: 'used (GB)' 'not read' in every row (workbook {sorted(set(map(str, dsp_u)))[:3]}, screen {sorted(set(dsp_us))[:3]})")
         dbs_onedec('dbspace_p', dsp_g, dsp_c, cx)
+    if key in ('dbspace_imb', 'dbspace_ptb'):
+        # (pickers) the unit and the decimals picked (MB / 2 on the SQL Server instance, TB / 3 on the PostgreSQL one): the
+        # size headings carry the unit on the page and in the workbook; every figure on the page shows exactly that many
+        # decimals; each workbook cell is the size EXACT in the unit - the API's bytes of the same draw / 1024^p - and rounds
+        # to the screen's figure. Its names are its own (dpk_)
+        dpk_u, dpk_k, dpk_p, dpk_api = ('MB', 2, 2, 'dbs_api_i') if key == 'dbspace_imb' else ('TB', 3, 4, 'dbs_api_p')
+        dpk_g = gs[0]; dpk_c = cells_of(z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(), shared(z))
+        dpk_cols = sorted({c for r, c in dpk_c}); dpk_hdr = [(dpk_c.get((1, c)) or (0, None, None))[2] for c in dpk_cols]
+        dpk_want = [f'allocated ({dpk_u})', f'used ({dpk_u})'] + ([f'data ({dpk_u})', f'log ({dpk_u})'] if key == 'dbspace_imb' else [])
+        check(dpk_g['head'][1:1 + len(dpk_want)] == dpk_want and dpk_hdr[1:1 + len(dpk_want)] == dpk_want,
+              f"{key}: the size headings carry the unit picked, {dpk_want}: page {dpk_g['head'][1:1 + len(dpk_want)]}, workbook {dpk_hdr[1:1 + len(dpk_want)]}")
+        dpk_db = {str(r.get('database')): r for r in ((d.get(dpk_api) or {}).get('databases') or [])}
+        dpk_seen, dpk_bad = 0, []
+        for i, row in enumerate(dpk_g.get('cells') or []):
+            nm = row[0]['t'] if row else ''
+            api = dpk_db.get(nm)
+            for j, w in enumerate(dpk_want, 1):
+                t_ = row[j]['t'] if j < len(row) else ''
+                if t_ in ('', 'not read'): continue
+                b_ = (api or {}).get(w.split(' ')[0] + '_bytes')
+                v_ = (dpk_c.get((i + 2, dpk_cols[j])) or (0, None, None))[1] if j < len(dpk_cols) else None
+                dec = re.search(r'[.,](\d+)$', t_.replace('\u202f', '').replace('\u00a0', ''))
+                shown_k = len(dec.group(1)) if dec and (dpk_k > 0 or not re.search(r'[.,]\d{3}$', t_)) else 0
+                dpk_seen += 1
+                if b_ is None or v_ is None or abs(v_ - float(b_) / 1024 ** dpk_p) > 1e-9 * max(1.0, abs(v_)) or shown_k != dpk_k or number(t_) is None or abs(number(t_) - round(v_, dpk_k)) > 1e-9:
+                    dpk_bad.append(f"{nm} {w}: page {t_!r}, workbook {v_}, API {b_}")
+        check(dpk_seen >= 2 and not dpk_bad, f"{key}: every size figure shows {dpk_k} decimals; each workbook cell = the API's bytes / 1024^{dpk_p} exact, rounding to the screen's figure ({dpk_seen} figures; {dpk_bad[:3]})")
     if key == 'perf':
         hg = [(i, g) for i, g in enumerate(gs) if 'CPU histogram' in g['head'] and g['rows'] > 0]
         if hg:
@@ -1972,6 +2046,27 @@ _cells = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) number cells', l) f
 _cols = sum(int(m_.group(1)) for m_ in (re.search(r', (\d+) with decimals', l) for l in _pass) if m_)   # columns judged whose screen shows decimals
 check(len(_books) >= len(PAGES) - 1 and len(_pass) == len(_books) and not _fail and _cells >= 50 and _cols >= 3,
       f"decimals (X13): no number cell shows more decimals than its column on the screen, none under a fixed format fewer - {len(_pass)} of {len(_books)} page workbooks PASS, {_cells} number cells judged, {_cols} columns whose screen shows decimals; page in {os.path.basename(_pg)} ({[l[:300].replace(dl + '/', '') for l in _fail][:4]}{(' rc ' + str(_r.returncode) + ' ' + _r.stderr[-200:]) if _r.returncode not in (0, 1) else ''})")
+# (pickers) DB Space's Unit and Decimal places, the reads around the exports (their workbooks are graded above)
+if d.get('dbs_pick_mb') is None:
+    print("not checked: the DB Space pickers: the demo has no SQL Server and PostgreSQL instance pair")
+else:
+    pk = d['dbs_pick_mb']
+    check(bool(pk.get('ok')), f"pickers: a Unit and a Decimal places select on the SQL Server instance's DB Space page ({pk.get('err', 'found')})")
+    if pk.get('ok'):
+        a_, s_ = d.get('dbs_after_mb') or {}, d.get('dbs_sorted') or {}
+        check(a_.get('unit') == 'MB' and a_.get('dp') == '2' and {'dbs-unit', 'dbs-dp'} <= set(a_.get('labels') or []), f"pickers: MB and 2 picked, each select with its label ({a_.get('unit')}, {a_.get('dp')}, labels {a_.get('labels')})")
+        check(a_.get('focus') == 'dbs-unit', f"pickers: the focus stays on the Unit select after the grid is drawn again (on {a_.get('focus')!r})")
+        check(bool(s_.get('first')) and a_.get('first') == s_.get('first') and any(h.startswith('allocated (MB)') for h in a_.get('head') or []), f"pickers: the sort survives the unit - first row {s_.get('first')!r} before, {a_.get('first')!r} after (sorted by allocated, largest first)")
+        check(sorted(a_.get('keys') or []) == ['pgvigil.grid.dbspace.size-decimals', 'pgvigil.grid.dbspace.size-unit'], f"pickers: the choice kept under the grid tools' prefix ({a_.get('keys')})")
+        for nm_, r_ in (('the folder\'s page', d.get('dbs_folder') or {}), ('after a reload', d.get('dbs_reload') or {})):
+            check(r_.get('unit') == 'MB' and r_.get('dp') == '2' and 'allocated (MB)' in (r_.get('head') or []), f"pickers: {nm_} shows MB / 2 and 'allocated (MB)' (remembered: {r_.get('unit')}, {r_.get('dp')}, {r_.get('head', [])[:3]})")
+        z_ = d.get('dbs_after_tb0') or {}
+        check(bool(z_.get('note')), f"pickers: TB / 0 on the PostgreSQL page, its figures 0 while its bytes are not: one line under the grid says so ({(z_.get('note') or ['no such line'])[0][:120]})")
+        bk = d.get('dbs_back') or {}
+        check(bk.get('unit') == 'GB' and bk.get('dp') == '1' and bk.get('keys') == [], f"pickers: GB / 1 picked back removes the size keys (the default kept as no key: {bk.get('keys')})")
+        big = [r for r in ((d.get('dbs_api_p') or {}).get('databases') or []) if float(r.get('allocated_bytes') or 0) >= 1.1 * 1024 ** 3]
+        if big: check(True, f"pickers: the TB divisor proven on {len(big)} PostgreSQL database(s) of 1.1 GB or more (dbspace_ptb's rows)")
+        else: print("not checked: the TB divisor: no PostgreSQL database of 1.1 GB or more in the demo (TB divisor not proven)")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
