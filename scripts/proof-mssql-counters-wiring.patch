@@ -1,5 +1,5 @@
 diff --git i/internal/config/config.go w/internal/config/config.go
-index d8b09d7..d6cb8c8 100644
+index d8b09d7..12d2b7d 100644
 --- i/internal/config/config.go
 +++ w/internal/config/config.go
 @@ -31,6 +31,9 @@ type Config struct {
@@ -12,7 +12,7 @@ index d8b09d7..d6cb8c8 100644
  	// Flags carries command-line choices; never read from the file.
  	Flags Flags `yaml:"-"`
  }
-@@ -106,6 +109,58 @@ type Instance struct {
+@@ -106,6 +109,64 @@ type Instance struct {
  	PgBouncerDSNRaw string `yaml:"pgbouncer"`
  	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
  	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
@@ -65,13 +65,19 @@ index d8b09d7..d6cb8c8 100644
 +					return fmt.Errorf("%s.mssql_counters.remove[%d]: %s / %s is read by %s and stays in the list", where, i, r.Object, r.Counter, why)
 +				}
 +			}
++			// a counter a page or a rule reads keeps the arithmetic its type gives (a gauge kind on Errors/sec stores no rate)
++			if set.name == "add" && r.Kind != "" {
++				if why := CounterInUse(r.Object, r.Counter); why != "" {
++					return fmt.Errorf("%s.mssql_counters.add[%d]: %s / %s is read by %s: its kind stays as SQL Server types it", where, i, r.Object, r.Counter, why)
++				}
++			}
 +		}
 +	}
 +	return nil
  }
  
  // DBADashRepo is one DBADash repository of the dbadash: list.
-@@ -450,12 +505,19 @@ func (c *Config) Validate() error {
+@@ -450,12 +511,19 @@ func (c *Config) Validate() error {
  	if err := c.validateDBADash(); err != nil {
  		return err
  	}
@@ -91,7 +97,7 @@ index d8b09d7..d6cb8c8 100644
  		if seen[in.Name] {
  			return fmt.Errorf("instance %q is listed twice", in.Name)
  		}
-@@ -595,11 +657,15 @@ func Resolve(v string) string {
+@@ -595,11 +663,23 @@ func Resolve(v string) string {
  	}
  }
  
@@ -99,15 +105,52 @@ index d8b09d7..d6cb8c8 100644
 +// are mssql_counters' and mssql_counters_db's): a site that disabled the old one keeps the read off.
 +var renamedCollections = map[string]string{"mssql_cpu": "mssql_counters", "mssql_activity": "mssql_counters_db"}
 +
++// followingCollections: a collection that reads the same source as another and is off whenever that one is (the
++// counter catalogue reads sys.dm_os_performance_counters like mssql_counters: a site that switched the counters off,
++// or mssql_cpu before them, keeps that DMV unread - F7).
++var followingCollections = map[string]string{"mssql_counter_catalog": "mssql_counters"}
++
  // Interval returns the effective interval of a collection for an instance:
  // the instance's override, then the global override, then the default; zero = disabled.
  func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
  	for _, d := range in.Disabled {
 -		if d == collection {
 +		if d == collection || renamedCollections[d] == collection {
++			return 0
++		}
++		if f := followingCollections[collection]; f != "" && (d == f || renamedCollections[d] == f) {
  			return 0
  		}
  	}
+diff --git i/internal/config/config_test.go w/internal/config/config_test.go
+index 0651639..b8f26d1 100644
+--- i/internal/config/config_test.go
++++ w/internal/config/config_test.go
+@@ -251,3 +251,24 @@ func TestInlinePassword(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// A site that disabled mssql_cpu (the counters' old home) or mssql_counters keeps sys.dm_os_performance_counters
++// unread: the counters and the daily catalogue are off; the per-database counters follow mssql_activity only (task
++// 401, F7, review part 1 S6).
++func TestCounterOptOut(t *testing.T) {
++	c := &Config{}
++	for _, off := range []string{"mssql_cpu", "mssql_counters"} {
++		in := Instance{Disabled: []string{off}}
++		for _, col := range []string{"mssql_counters", "mssql_counter_catalog"} {
++			if got := c.Interval(in, col, time.Hour); got != 0 {
++				t.Fatalf("disabled %s: %s runs every %v", off, col, got)
++			}
++		}
++		if got := c.Interval(in, "mssql_counters_db", time.Hour); got != time.Hour {
++			t.Fatalf("disabled %s: mssql_counters_db %v, want 1h", off, got)
++		}
++	}
++	if got := c.Interval(Instance{Disabled: []string{"mssql_activity"}}, "mssql_counters_db", time.Hour); got != 0 {
++		t.Fatalf("disabled mssql_activity: mssql_counters_db runs every %v", got)
++	}
++}
 diff --git i/internal/mssql/activity.go w/internal/mssql/activity.go
 index dc8b2fe..e1001ef 100644
 --- i/internal/mssql/activity.go
@@ -555,62 +598,6 @@ index 40526c2..2ea6318 100644
 +    CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
 +                                                  s.cpu_count, wg.q::int) l
 +$$;
-diff --git i/internal/web/web.go w/internal/web/web.go
-index 5def140..048e2bc 100644
---- i/internal/web/web.go
-+++ w/internal/web/web.go
-@@ -318,6 +318,8 @@ func (s *Server) Handler() http.Handler {
- 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
- 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
- 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
-+	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
-+	api.HandleFunc("POST /api/mssql/counteradmin", s.MSSQLCounterAdminWrite)
- 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
- 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
- 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)
-diff --git i/web/src/main.ts w/web/src/main.ts
-index 7fe364d..06f6420 100644
---- i/web/src/main.ts
-+++ w/web/src/main.ts
-@@ -89,6 +89,7 @@ import { collectionDatesView } from './collectiondates';
- import { collectorView } from './collector';
- import { aboutLink, aboutView } from './about';
- import { adminInstancesView } from './admin_instances';
-+import { adminCountersView } from './metrics';
- import { reportPages } from './reports';
- import { customReportsView } from './customreports';
- import { communityView } from './community';
-@@ -142,7 +143,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
- };
- const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
- const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
--const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
-+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_counters: adminCountersView, ...reportPages, admin: adminView };
- const instancePages: Record<string, Render> = {
-   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
-   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
-diff --git i/web/src/router.ts w/web/src/router.ts
-index 2e453d1..2c3a601 100644
---- i/web/src/router.ts
-+++ w/web/src/router.ts
-@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
-   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
- }
- 
--export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin: 'Overview' };
-+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_counters: 'Counters (admin)', admin: 'Overview' };
- export const instanceTabs: Record<string, string> = {
-   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
-   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
-@@ -82,7 +82,7 @@ export const rootGroups: TabGroup[] = [
-   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
-   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
-   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
--  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin'] },
-+  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_counters', 'admin'] },
-   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
-   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
- ];
 diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
 index 078fe43..44bc71f 100644
 --- i/internal/web/q_mssql_perf.go
@@ -708,6 +695,40 @@ index 4e30bc2..4f8b0b4 100644
        FROM pgvigil.mssql_sched_sample x
       WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
    LEFT JOIN LATERAL (
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 5def140..048e2bc 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -318,6 +318,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+ 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+ 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
++	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
++	api.HandleFunc("POST /api/mssql/counteradmin", s.MSSQLCounterAdminWrite)
+ 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
+ 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
+ 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)
+diff --git i/web/src/main.ts w/web/src/main.ts
+index 7fe364d..06f6420 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -89,6 +89,7 @@ import { collectionDatesView } from './collectiondates';
+ import { collectorView } from './collector';
+ import { aboutLink, aboutView } from './about';
+ import { adminInstancesView } from './admin_instances';
++import { adminCountersView } from './metrics';
+ import { reportPages } from './reports';
+ import { customReportsView } from './customreports';
+ import { communityView } from './community';
+@@ -142,7 +143,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+ };
+ const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
+ const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
+-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
++const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_counters: adminCountersView, ...reportPages, admin: adminView };
+ const instancePages: Record<string, Render> = {
+   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
+   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
 diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
 index 823b6dd..10316ca 100644
 --- i/web/src/mssql_perf.ts
@@ -743,3 +764,25 @@ index 3863d49..ca9830f 100644
      { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
        : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
      { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 2e453d1..2c3a601 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
+   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
+ }
+ 
+-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin: 'Overview' };
++export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_counters: 'Counters (admin)', admin: 'Overview' };
+ export const instanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+@@ -82,7 +82,7 @@ export const rootGroups: TabGroup[] = [
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
+   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+-  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin'] },
++  { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_counters', 'admin'] },
+   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
+   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
+ ];

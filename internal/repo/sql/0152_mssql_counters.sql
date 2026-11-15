@@ -334,11 +334,14 @@ BEGIN
     ELSIF v_object LIKE 'sys.dm_os_%' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d WHERE d.object = v_object AND d.counter = v_counter) THEN
       v_why := format('%s has no column %s pgvigil reads', v_object, v_counter);
     END IF;
-    IF v_why IS NULL AND v_action = 'remove' THEN
+    -- a counter a page or a rule reads is never removed, and its kind is never overridden (the figure that reads it
+    -- needs the arithmetic its type gives: a gauge kind on Errors/sec would store no rate)
+    IF v_why IS NULL AND (v_action = 'remove' OR v_kind <> '') THEN
       SELECT d.used_by INTO v_used FROM pgvigil.mssql_counter_defaults d
        WHERE lower(d.object) = lower(v_object) AND lower(d.counter) = lower(v_counter) AND d.used_by IS NOT NULL LIMIT 1;
       IF v_used IS NOT NULL THEN
-        v_why := format('%s / %s is read by %s: it stays in the list', v_object, v_counter, v_used);
+        v_why := CASE WHEN v_action = 'remove' THEN format('%s / %s is read by %s: it stays in the list', v_object, v_counter, v_used)
+                      ELSE format('%s / %s is read by %s: its kind stays as SQL Server types it', v_object, v_counter, v_used) END;
       END IF;
     END IF;
     IF v_scope <> 'tag' THEN v_tag := NULL; END IF;
