@@ -1,0 +1,21 @@
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index a994399..f154c9b 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -414,6 +414,16 @@ BEGIN
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  -- 0200 (CQ): the request queue's read kinds after 7 days (a read's result is cleared within the hour by the sweep;
++  -- the row's ask and end go with it); the action kinds are an audit, kept whole as actions_log is; a worker stopped or
++  -- silent for 8 days goes with its doors and tool lists
++  IF to_regclass('pgvigil.action_requests') IS NOT NULL THEN
++    DELETE FROM pgvigil.action_requests WHERE class <> 'action' AND state NOT IN ('waiting', 'running')
++       AND asked_at < now() - interval '7 days';
++    GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++    DELETE FROM pgvigil.cq_workers WHERE coalesce(beat_at, stopped_at, started_at) < now() - interval '8 days';
++    GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  END IF;
+   -- 0139 (FLEET STATS ROLLUP): the hours tables last, each by its own age in pgvigil.hours_retention (not p_days), so
+   -- no runs table is locked after an hours parent; the months dropped join this run's partitions_dropped. The hours'
+   -- heals are not here (one transaction for all): 'pgvigil purge' runs them after this, one instance per transaction
