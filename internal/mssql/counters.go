@@ -54,6 +54,8 @@ type CounterSpec struct {
 	Instance string `json:"inst,omitempty"` // one instance name; '' = every instance
 	Scope    string `json:"scope"`          // 'instance' (mssql_counters) or 'database' (mssql_counters_db)
 	Kind     string `json:"kind,omitempty"` // '' = from the type read; 'count', 'rate', 'gauge' = given
+	// Except: on an every-instance line, the instances a one-instance removal took out (read no more)
+	Except []string `json:"except,omitempty"`
 }
 
 // ListCollector is a collection whose read list comes from the repository: RunOnce asks pgvigil.mssql_counter_list
@@ -392,7 +394,7 @@ func matchSpec(list []CounterSpec, object, counter, inst string) (CounterSpec, b
 		if s.Instance != "" && (s.Instance == inst || (inst == "" && strings.EqualFold(s.Instance, "_Total"))) {
 			return s, true
 		}
-		if s.Instance == "" && every == nil {
+		if s.Instance == "" && every == nil && !excepted(s.Except, inst) {
 			every = &list[i]
 		}
 	}
@@ -400,6 +402,17 @@ func matchSpec(list []CounterSpec, object, counter, inst string) (CounterSpec, b
 		return *every, true
 	}
 	return CounterSpec{}, false
+}
+
+// excepted: an instance a one-instance removal names (the same match as a one-instance line's: exact, '_Total' for the
+// row without an instance name)
+func excepted(except []string, inst string) bool {
+	for _, e := range except {
+		if e == inst || (inst == "" && strings.EqualFold(e, "_Total")) {
+			return true
+		}
+	}
+	return false
 }
 
 // pseudoQuery: one row of the listed columns of a DMV (only names of pseudoColumns reach the statement).

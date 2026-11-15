@@ -1,5 +1,5 @@
 diff --git i/internal/config/config.go w/internal/config/config.go
-index d8b09d7..12d2b7d 100644
+index d8b09d7..d98badb 100644
 --- i/internal/config/config.go
 +++ w/internal/config/config.go
 @@ -31,6 +31,9 @@ type Config struct {
@@ -12,7 +12,7 @@ index d8b09d7..12d2b7d 100644
  	// Flags carries command-line choices; never read from the file.
  	Flags Flags `yaml:"-"`
  }
-@@ -106,6 +109,64 @@ type Instance struct {
+@@ -106,6 +109,68 @@ type Instance struct {
  	PgBouncerDSNRaw string `yaml:"pgbouncer"`
  	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
  	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
@@ -60,6 +60,10 @@ index d8b09d7..12d2b7d 100644
 +			default:
 +				return fmt.Errorf("%s.mssql_counters.%s[%d]: kind must be empty, count, rate or gauge (got %q)", where, set.name, i, r.Kind)
 +			}
++			// a DMV column's arithmetic is pgvigil's own (the collector would ignore a kind): refused in words
++			if r.Kind != "" && strings.HasPrefix(strings.ToLower(r.Object), "sys.dm_os_") {
++				return fmt.Errorf("%s.mssql_counters.%s[%d]: %s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty", where, set.name, i, r.Object, r.Counter)
++			}
 +			if set.name == "remove" {
 +				if why := CounterInUse(r.Object, r.Counter); why != "" {
 +					return fmt.Errorf("%s.mssql_counters.remove[%d]: %s / %s is read by %s and stays in the list", where, i, r.Object, r.Counter, why)
@@ -77,7 +81,7 @@ index d8b09d7..12d2b7d 100644
  }
  
  // DBADashRepo is one DBADash repository of the dbadash: list.
-@@ -450,12 +511,19 @@ func (c *Config) Validate() error {
+@@ -450,12 +515,19 @@ func (c *Config) Validate() error {
  	if err := c.validateDBADash(); err != nil {
  		return err
  	}
@@ -97,7 +101,7 @@ index d8b09d7..12d2b7d 100644
  		if seen[in.Name] {
  			return fmt.Errorf("instance %q is listed twice", in.Name)
  		}
-@@ -595,11 +663,23 @@ func Resolve(v string) string {
+@@ -595,11 +667,23 @@ func Resolve(v string) string {
  	}
  }
  
@@ -123,10 +127,10 @@ index d8b09d7..12d2b7d 100644
  		}
  	}
 diff --git i/internal/config/config_test.go w/internal/config/config_test.go
-index 0651639..b8f26d1 100644
+index 0651639..069d082 100644
 --- i/internal/config/config_test.go
 +++ w/internal/config/config_test.go
-@@ -251,3 +251,24 @@ func TestInlinePassword(t *testing.T) {
+@@ -251,3 +251,36 @@ func TestInlinePassword(t *testing.T) {
  		}
  	}
  }
@@ -151,11 +155,152 @@ index 0651639..b8f26d1 100644
 +		t.Fatalf("disabled mssql_activity: mssql_counters_db runs every %v", got)
 +	}
 +}
++
++// A kind on a DMV column is refused in words (the collector's arithmetic for a DMV column is its own); a DMV column
++// with no kind passes (review 401 NIT 7).
++func TestCounterEditsDMVKind(t *testing.T) {
++	err := validateCounterEdits("root", CounterEdits{Add: []CounterRef{{Object: "sys.dm_os_schedulers", Counter: "yield_count", Kind: "rate"}}})
++	if err == nil || !strings.Contains(err.Error(), "is a DMV column: its kind is fixed by pgvigil") {
++		t.Fatalf("a kind on a DMV column: %v", err)
++	}
++	if err := validateCounterEdits("root", CounterEdits{Add: []CounterRef{{Object: "sys.dm_os_schedulers", Counter: "yield_count"}}}); err != nil {
++		t.Fatalf("a DMV column with no kind: %v", err)
++	}
++}
+diff --git i/internal/config/inventory.go w/internal/config/inventory.go
+index a04766f..887063a 100644
+--- i/internal/config/inventory.go
++++ w/internal/config/inventory.go
+@@ -65,9 +65,10 @@ func RefOK(v string) bool {
+ }
+ 
+ // Merge gives the file's instances, then the page's enabled ones the file does not name, each made an Instance the
+-// way Validate makes a file instance (platform auto when empty, the file-level query_text). A page instance that
+-// breaks a rule is left out with its reason in skipped (the page refuses those on write; this guards a hand edit).
+-func Merge(file []Instance, page []PageInstance, queryText string) (all []Instance, skipped []string) {
++// way Validate makes a file instance (platform auto when empty, the file-level query_text, the file's root
++// mssql_counters lines). A page instance that breaks a rule is left out with its reason in skipped (the page refuses
++// those on write; this guards a hand edit).
++func Merge(file []Instance, page []PageInstance, queryText string, root CounterEdits) (all []Instance, skipped []string) {
+ 	all = append(all, file...)
+ 	inFile := map[string]bool{}
+ 	for _, in := range file {
+@@ -103,7 +104,7 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+ 		if plat == "" {
+ 			plat = "auto"
+ 		}
+-		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
++		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText, MSSQLCountersRoot: root})
+ 	}
+ 	return all, skipped
+ }
+@@ -154,7 +155,7 @@ func Diff(old, cur []Instance) (stop, start []string) {
+ // hold (nil = always) says whether this collector holds the page's instances (one collector of a repository does:
+ // sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
+ // each tick: when the holder ends, the next to take the lock reads the page's list at once.
+-func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
++func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, apply func([]Instance)) {
+ 	if every <= 0 {
+ 		every = 15 * time.Second
+ 	}
+@@ -172,7 +173,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader,
+ 					toldOther = true
+ 				}
+ 				if held || have == -1 { // lost the lock, or never had it: the file's list alone
+-					all, _ := Merge(file, nil, queryText)
++					all, _ := Merge(file, nil, queryText, root)
+ 					apply(all)
+ 				}
+ 				held, have, failing = false, -3, false
+@@ -201,13 +202,13 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader,
+ 			failing = true
+ 			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick)
+ 				have = -2
+-				all, _ := Merge(file, nil, queryText)
++				all, _ := Merge(file, nil, queryText, root)
+ 				apply(all)
+ 			}
+ 			return
+ 		}
+ 		failing = false
+-		all, skipped := Merge(file, page, queryText)
++		all, skipped := Merge(file, page, queryText, root)
+ 		for _, s := range skipped {
+ 			log.Warn("instances: a page instance is left out", "why", s)
+ 		}
+diff --git i/internal/config/inventory_test.go w/internal/config/inventory_test.go
+index e2bd4e1..a01436a 100644
+--- i/internal/config/inventory_test.go
++++ w/internal/config/inventory_test.go
+@@ -27,7 +27,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
+ 		{Name: "inline", Engine: EnginePostgres, DSNRef: "host=x password=y"},            // a connection string, never run
+ 		{Name: "eng", Engine: "oracle", DSNRef: "file:/x/eng.dsn"},
+ 	}
+-	all, skipped := Merge(file, page, "normalized")
++	// the file's root mssql_counters lines reach a page instance too (review 401 S4: the runner reads them from it)
++	root := CounterEdits{Remove: []CounterRef{{Object: "Deprecated Features", Counter: "Usage", Instance: "sp_dboption"}}}
++	all, skipped := Merge(file, page, "normalized", root)
+ 	var names []string
+ 	for _, in := range all {
+ 		names = append(names, in.Name)
+@@ -41,6 +43,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
+ 	if all[1].Platform != "auto" || all[1].QueryText != "normalized" || all[1].DSNRaw != "file:/etc/pgvigil/instances/sql1.dsn" {
+ 		t.Fatalf("sql1 = %+v", all[1])
+ 	}
++	if len(all[1].MSSQLCountersRoot.Remove) != 1 || all[1].MSSQLCountersRoot.Remove[0] != root.Remove[0] {
++		t.Fatalf("sql1's root counter lines = %+v, want the file's root %+v", all[1].MSSQLCountersRoot, root)
++	}
+ 	if len(skipped) != 4 {
+ 		t.Fatalf("skipped %v, want 4 (pg1, bad ref, inline, eng)", skipped)
+ 	}
+@@ -95,7 +100,7 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	done := make(chan struct{})
+ 	go func() {
+-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
++		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
+ 			var n []string
+ 			for _, in := range all {
+ 				n = append(n, in.Name)
+@@ -427,7 +432,7 @@ func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	done := make(chan struct{})
+ 	go func() {
+-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
++		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
+ 			var n []string
+ 			for _, in := range all {
+ 				n = append(n, in.Name)
 diff --git i/internal/mssql/activity.go w/internal/mssql/activity.go
-index dc8b2fe..e1001ef 100644
+index dc8b2fe..6d40fa3 100644
 --- i/internal/mssql/activity.go
 +++ w/internal/mssql/activity.go
-@@ -141,7 +141,7 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
+@@ -25,9 +25,6 @@ import (
+ //     tasks) and sys.dm_db_session_space_usage (the session's finished tasks) summed per session over 50, kept when
+ //     the allocations are over 0, the 20 largest by allocations, with the running tasks' part apart and the session's
+ //     login, program, host, status, open transactions and last request's end.
+-//   - The per-database performance counters (the Databases and Database Replica objects of perfmonCounters, every
+-//     database but the system ones) as 'perfmon' rows: per-database counters every 5 minutes, the instance's every
+-//     minute (cpu.go).
+ //   - sp_PressureDetector's CPU details from sys.dm_os_sys_info: the columns it lists that this server has
+ //     (socket_count, numa_node_count, cpu_count, cores_per_socket, hyperthread_ratio, softnuma_configuration_desc,
+ //     scheduler_total_count, scheduler_count), found in sys.all_columns as sp_PressureDetector finds them (L3843-3881).
+@@ -105,14 +102,6 @@ GROUP BY u.session_id
+ HAVING SUM(u.ua + u.ia) > 0
+ ORDER BY SUM(u.ua + u.ia) DESC`
+ 
+-// activityDBCounterSQL: the per-database objects of perfmonCounters (cpuCounterRows keeps them with perDB).
+-var activityDBCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
+-  CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
+-FROM sys.dm_os_performance_counters
+-WHERE (RTRIM(object_name) LIKE N'%:Databases' OR RTRIM(object_name) LIKE N'%:Database Replica')
+-  AND counter_name IN (` + perfmonInList() + `)
+-  AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `)`
+-
+ // cpuInfoColumns: sp_PressureDetector's CPU details, in its order; a server lists only those sys.dm_os_sys_info has.
+ var cpuInfoColumns = []string{"socket_count", "numa_node_count", "cpu_count", "cores_per_socket", "hyperthread_ratio",
+ 	"softnuma_configuration_desc", "scheduler_total_count", "scheduler_count"}
+@@ -141,7 +130,7 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
  		out = append(out, keep(rows)...)
  	}
  	apart("sys.dm_db_session_space_usage", activityTempdbSQL, func(r []collect.Row) []collect.Row { return r })
@@ -164,24 +309,230 @@ index dc8b2fe..e1001ef 100644
  	if q, err := cpuInfoSQL(ctx, conn); err != nil {
  		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": err.Error()})
  	} else if q != "" {
+diff --git i/internal/mssql/activity_test.go w/internal/mssql/activity_test.go
+index 142e4d1..a4b4f41 100644
+--- i/internal/mssql/activity_test.go
++++ w/internal/mssql/activity_test.go
+@@ -7,72 +7,28 @@ import (
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+ )
+ 
+-// One read of the counters gives the four throughput counters as 'counter' rows exactly as before (counter, value)
+-// and the listed counters as 'perfmon' rows; the per-database objects go to the 5-minute read only, the system
+-// names nowhere.
+-func TestCPUCounterRowsSplit(t *testing.T) {
++// One read of the counters gives the four throughput counters as 'counter' rows exactly as before (counter, value);
++// every other counter is mssql_counters' (task 401) and leaves this read.
++func TestCPUCounterRows(t *testing.T) {
+ 	rows := []collect.Row{
+ 		{"object": "SQLServer:SQL Statistics", "counter": "Batch Requests/sec", "instance": "", "value": int64(900), "type": int64(272696576)},
+ 		{"object": "SQLServer:Databases", "counter": "Transactions/sec", "instance": "_Total", "value": int64(50), "type": int64(272696576)},
+ 		{"object": "SQLServer:Databases", "counter": "Transactions/sec", "instance": "sales", "value": int64(12), "type": int64(272696576)},
+-		{"object": "SQLServer:Databases", "counter": "Log Bytes Flushed/sec", "instance": "master", "value": int64(7), "type": int64(272696576)},
+ 		{"object": "MSSQL$NAMED:General Statistics", "counter": "Processes blocked", "instance": "", "value": int64(0), "type": int64(65792)},
+-		{"object": "SQLServer:Workload Group Stats", "counter": "Queued requests", "instance": "internal", "value": int64(3), "type": int64(65792)},
+-		{"object": "SQLServer:Workload Group Stats", "counter": "Queued requests", "instance": "default", "value": int64(2), "type": int64(65792)},
+-		{"object": "SQLServer:Plan Cache", "counter": "Cache Hit Ratio", "instance": "_Total", "value": int64(5), "type": int64(537003264)},
+ 	}
+-	inst := cpuCounterRows(rows, false)
+-	var counters, perfmon []collect.Row
+-	for _, r := range inst {
+-		switch r["kind"] {
+-		case "counter":
+-			counters = append(counters, r)
+-		case "perfmon":
+-			perfmon = append(perfmon, r)
+-		}
+-	}
+-	if len(counters) != 2 || counters[0]["counter"] != "Batch Requests/sec" || counters[1]["counter"] != "Transactions/sec" || len(counters[1]) != 3 {
+-		t.Fatalf("the 'counter' rows: %v (want Batch Requests/sec and _Total Transactions/sec, keys kind, counter, value)", counters)
+-	}
+-	want := map[string]bool{"SQL Statistics|Batch Requests/sec|_Total": true, "General Statistics|Processes blocked|_Total": true,
+-		"Workload Group Stats|Queued requests|default": true}
+-	if len(perfmon) != len(want) {
+-		t.Fatalf("instance 'perfmon' rows: %v", perfmon)
+-	}
+-	for _, r := range perfmon {
+-		k := r["object"].(string) + "|" + r["counter"].(string) + "|" + r["instance"].(string)
+-		if !want[k] {
+-			t.Errorf("unexpected perfmon row %s (a per-database object, a system name or an unlisted counter)", k)
+-		}
+-	}
+-	db := cpuCounterRows(rows, true)
+-	if len(db) != 2 {
+-		t.Fatalf("per-database rows: %v (want _Total and sales Transactions/sec; master left out; no 'counter' rows)", db)
+-	}
+-	for _, r := range db {
+-		if r["kind"] != "perfmon" || r["object"] != "Databases" || r["instance"] == "master" {
+-			t.Errorf("per-database row %v", r)
+-		}
++	got := cpuCounterRows(rows)
++	if len(got) != 2 || got[0]["counter"] != "Batch Requests/sec" || got[1]["counter"] != "Transactions/sec" || len(got[1]) != 3 || got[1]["kind"] != "counter" {
++		t.Fatalf("the 'counter' rows: %v (want Batch Requests/sec and _Total Transactions/sec, keys kind, counter, value)", got)
+ 	}
+ }
+ 
+-// The counter list is PerformanceMonitor's 61 names, no name twice, and the read's IN lists quote a name with a quote.
+-func TestPerfmonListAndQuoting(t *testing.T) {
+-	seen := map[string]bool{}
+-	for _, c := range perfmonCounters {
+-		if seen[c] {
+-			t.Errorf("%q twice", c)
+-		}
+-		seen[c] = true
+-	}
+-	if len(perfmonCounters) != 61 {
+-		t.Errorf("%d names, want 61", len(perfmonCounters))
+-	}
++// The read's IN lists quote a name with a quote; the CPU read names the four throughput counters only.
++func TestNListAndCPUCounterSQL(t *testing.T) {
+ 	if got := nList([]string{"a'b", "c"}); got != "N'a''b', N'c'" {
+ 		t.Errorf("nList = %s", got)
+ 	}
+-	if !strings.Contains(cpuCounterSQL, "N'Wait for the worker'") || !strings.Contains(activityDBCounterSQL, "N'mssqlsystemresource'") {
+-		t.Error("the reads do not carry the list or the system names")
++	if !strings.Contains(cpuCounterSQL, "N'SQL Re-Compilations/sec'") || strings.Contains(cpuCounterSQL, "N'Wait for the worker'") {
++		t.Error("the CPU read is not the four throughput counters alone")
+ 	}
+ }
+ 
 diff --git i/internal/mssql/cpu.go w/internal/mssql/cpu.go
-index c55c51a..c5e3e47 100644
+index c55c51a..8fea679 100644
 --- i/internal/mssql/cpu.go
 +++ w/internal/mssql/cpu.go
-@@ -145,7 +145,12 @@ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]colle
+@@ -27,10 +27,8 @@ import (
+ //   - Throughput: sys.dm_os_performance_counters' Batch Requests/sec, SQL Compilations/sec, SQL Re-Compilations/sec
+ //     and Databases _Total Transactions/sec, which count since the server started: the import stores each
+ //     interval's rate per second (no rate across a restart or a counter that went down).
+-//   - The performance counters (task 177 D14): the same read of sys.dm_os_performance_counters also returns the
+-//     counters of sp_PressureDetector's perfmon list and PerformanceMonitor's (perfmonCounters), every instance but
+-//     sp_PressureDetector's system names, as rows of their own kind 'perfmon' for mssql_counter_sample (0124); the
+-//     per-database objects (Databases, Database Replica) are read every 5 minutes by mssql_activity, not here.
++//   - The performance counters of task 177 D14 (sp_PressureDetector's perfmon list and PerformanceMonitor's) are
++//     mssql_counters' and mssql_counters_db's list since task 401 (counters.go): this read takes the four above only.
+ //   - The schedulers taken offline (VISIBLE OFFLINE) and the NUMA nodes online and in all, the DAC's node left out
+ //     (PerformanceMonitor's CpuSchedulerStatsCollector), in the scheduler statement.
+ //
+@@ -116,18 +114,14 @@ CROSS JOIN (SELECT CAST(COUNT(*) AS bigint) AS nodes_total,
+               FROM sys.dm_os_nodes WHERE node_state_desc NOT LIKE N'%DAC%') n
+ WHERE s.status = N'VISIBLE ONLINE'`
+ 
+-// cpuCounterSQL: the cumulative throughput counters and the instance-level performance counters, in one read.
+-// object_name carries the instance's prefix (SQLServer: or MSSQL$<name>:) and is nchar padded with blanks: trimmed
+-// before the match. cpuCounterRows splits the rows into the two kinds.
++// cpuCounterSQL: the four cumulative throughput counters. object_name carries the instance's prefix (SQLServer: or
++// MSSQL$<name>:) and is nchar padded with blanks: trimmed before the match.
+ var cpuCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
+   CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
+ FROM sys.dm_os_performance_counters
+ WHERE (RTRIM(object_name) LIKE N'%:SQL Statistics'
+        AND counter_name IN (N'Batch Requests/sec', N'SQL Compilations/sec', N'SQL Re-Compilations/sec'))
+-   OR (RTRIM(object_name) LIKE N'%:Databases' AND counter_name = N'Transactions/sec' AND instance_name = N'_Total')
+-   OR (counter_name IN (` + perfmonInList() + `)
+-       AND RTRIM(object_name) NOT LIKE N'%:Databases' AND RTRIM(object_name) NOT LIKE N'%:Database Replica'
+-       AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `))`
++   OR (RTRIM(object_name) LIKE N'%:Databases' AND counter_name = N'Transactions/sec' AND instance_name = N'_Total')`
+ 
+ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+ 	if err := perfState(ctx, conn, info, "sys.dm_os_ring_buffers and sys.dm_os_schedulers"); err != nil {
+@@ -145,7 +139,7 @@ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]colle
  	if err != nil {
  		return nil, err
  	}
 -	out = append(out, cpuCounterRows(counters, false)...)
-+	// the four throughput rows only: the counter list is mssql_counters' (task 401), one writer per series
-+	for _, r := range cpuCounterRows(counters, false) {
-+		if r["kind"] == "counter" {
-+			out = append(out, r)
-+		}
-+	}
++	out = append(out, cpuCounterRows(counters)...)
  	// the ring buffer is read on its own: a server that refuses it (a build without the record) keeps the rest
  	ring, err := QueryRows(ctx, conn, cpuRingSQL)
  	if err != nil {
+@@ -188,27 +182,8 @@ func cpuRows(ring []collect.Row, linux bool) []collect.Row {
+ 	return out
+ }
+ 
+-// perfmonCounters is the counter list of task 177 D14: PerformanceMonitor's (PerfmonStatsCollector.DefaultCounters,
+-// 3.12.0, 61 names), which is sp_PressureDetector's perfmon list (sp_PressureDetector.sql, darlingdata-20261101,
+-// L2373-2386, 59 names) and the two Database Replica names. Every instance of each is read; sp_PressureDetector's
+-// system names (perfmonSkip) are left out.
+-var perfmonCounters = []string{
+-	"Forwarded Records/sec", "Table Lock Escalations/sec", "Page reads/sec", "Page writes/sec", "Checkpoint pages/sec", "Requests completed/sec",
+-	"Transactions/sec", "Lock Requests/sec", "Lock Wait Time (ms)", "Lock Waits/sec", "Number of Deadlocks/sec", "Log Flushes/sec", "Page lookups/sec",
+-	"Granted Workspace Memory (KB)", "Lock Memory (KB)", "Memory Grants Pending", "SQL Cache Memory (KB)", "Background writer pages/sec",
+-	"Stolen Server Memory (KB)", "Target Server Memory (KB)", "Total Server Memory (KB)", "Lazy writes/sec", "Readahead pages/sec",
+-	"Batch Requests/sec", "SQL Compilations/sec", "SQL Re-Compilations/sec", "Longest Transaction Running Time", "Log Bytes Flushed/sec",
+-	"Lock waits", "Log buffer waits", "Log write waits", "Memory grant queue waits", "Network IO waits", "Log Flush Write Time (ms)",
+-	"Non-Page latch waits", "Page IO latch waits", "Page latch waits", "Thread-safe memory objects waits", "Wait for the worker",
+-	"Active parallel threads", "Active requests", "Blocked tasks", "Query optimizations/sec", "Queued requests", "Reduced memory grants/sec",
+-	"Version Store Size (KB)", "Free Space in tempdb (KB)", "Active Temp Tables", "Processes blocked", "Full Scans/sec", "Index Searches/sec",
+-	"Page Splits/sec", "Free list stalls/sec", "Workfiles Created/sec", "Worktables Created/sec", "Temp Tables Creation Rate", "Version Generation rate (KB/s)",
+-	"Version Cleanup rate (KB/s)", "Lock Timeouts/sec",
+-	"Transaction Delay", "Mirrored Write Transactions/sec",
+-}
+-
+ // perfmonSkip: the instance names sp_PressureDetector leaves out of its perfmon read (the system databases, and the
+-// internal workload group and resource pool).
++// internal workload group and resource pool); counters.go leaves them out of every counter read.
+ var perfmonSkip = []string{"internal", "master", "model", "msdb", "model_msdb", "model_replicatedmaster", "mssqlsystemresource"}
+ 
+ func nList(names []string) string {
+@@ -219,15 +194,6 @@ func nList(names []string) string {
+ 	return strings.Join(q, ", ")
+ }
+ 
+-func perfmonInList() string     { return nList(perfmonCounters) }
+-func perfmonSkipInList() string { return nList(perfmonSkip) }
+-
+-// perDBObject: the objects whose instances are databases (or a database's replica), read every 5 minutes.
+-func perDBObject(object string) bool {
+-	o := counterObject(object)
+-	return o == "Databases" || o == "Database Replica"
+-}
+-
+ // counterObject drops the instance's prefix from object_name (SQLServer:Buffer Manager, MSSQL$NAMED:Buffer Manager).
+ func counterObject(object string) string {
+ 	if i := strings.Index(object, ":"); i >= 0 {
+@@ -236,38 +202,19 @@ func counterObject(object string) string {
+ 	return object
+ }
+ 
+-// cpuCounterRows splits one read of sys.dm_os_performance_counters into the two kinds the import takes:
+-//   - 'counter': the four throughput counters exactly as cpu.go always sent them (counter, value; 0074's import keys
+-//     them by name and keeps their last values in mssql_perf_counter_last);
+-//   - 'perfmon': a counter of perfmonCounters with its object (prefix dropped), instance (an empty name read as _Total, as
+-//     sp_PressureDetector does), raw value and cntr_type, for 0124's mssql_counter_sample. perDB keeps the per-database
+-//     objects (mssql_activity's 5-minute read); otherwise they are left to it.
+-func cpuCounterRows(rows []collect.Row, perDB bool) []collect.Row {
+-	want := make(map[string]bool, len(perfmonCounters))
+-	for _, c := range perfmonCounters {
+-		want[c] = true
+-	}
+-	skip := make(map[string]bool, len(perfmonSkip))
+-	for _, s := range perfmonSkip {
+-		skip[s] = true
+-	}
++// cpuCounterRows keeps the four throughput counters exactly as cpu.go always sent them (kind 'counter', counter,
++// value; 0074's import keys them by name and keeps their last values in mssql_perf_counter_last).
++func cpuCounterRows(rows []collect.Row) []collect.Row {
+ 	var out []collect.Row
+ 	for _, r := range rows {
+ 		object, _ := r["object"].(string)
+ 		counter, _ := r["counter"].(string)
+ 		inst, _ := r["instance"].(string)
+ 		obj := counterObject(object)
+-		if !perDB && ((obj == "SQL Statistics" && (counter == "Batch Requests/sec" || counter == "SQL Compilations/sec" || counter == "SQL Re-Compilations/sec")) ||
+-			(obj == "Databases" && counter == "Transactions/sec" && inst == "_Total")) {
++		if (obj == "SQL Statistics" && (counter == "Batch Requests/sec" || counter == "SQL Compilations/sec" || counter == "SQL Re-Compilations/sec")) ||
++			(obj == "Databases" && counter == "Transactions/sec" && inst == "_Total") {
+ 			out = append(out, collect.Row{"kind": "counter", "counter": counter, "value": r["value"]})
+ 		}
+-		if !want[counter] || skip[inst] || perDBObject(object) != perDB {
+-			continue
+-		}
+-		if inst == "" {
+-			inst = "_Total"
+-		}
+-		out = append(out, collect.Row{"kind": "perfmon", "object": obj, "counter": counter, "instance": inst, "value": r["value"], "type": r["type"]})
+ 	}
+ 	return out
+ }
 diff --git i/internal/mssql/mssql.go w/internal/mssql/mssql.go
 index d9e4822..980e63d 100644
 --- i/internal/mssql/mssql.go
@@ -598,6 +949,32 @@ index 40526c2..2ea6318 100644
 +    CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
 +                                                  s.cpu_count, wg.q::int) l
 +$$;
+diff --git i/internal/sched/sched.go w/internal/sched/sched.go
+index 717a456..2728203 100644
+--- i/internal/sched/sched.go
++++ w/internal/sched/sched.go
+@@ -42,7 +42,7 @@ func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config
+ 	s := newScheduler(log, oldLoopsWait, func(ictx context.Context, in config.Instance, wg *sync.WaitGroup) int {
+ 		return startInstance(ictx, log, r, cfg, in, wg)
+ 	})
+-	config.WatchInventory(ctx, log, r, lock.hold, cfg.Instances, cfg.QueryText, 15*time.Second, func(all []config.Instance) { s.apply(ctx, all) })
++	config.WatchInventory(ctx, log, r, lock.hold, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, 15*time.Second, func(all []config.Instance) { s.apply(ctx, all) })
+ 	s.wait()
+ 	log.Info("scheduler stopped")
+ 	return nil
+diff --git i/internal/sched/sched_test.go w/internal/sched/sched_test.go
+index f8eb9cf..4ea536c 100644
+--- i/internal/sched/sched_test.go
++++ w/internal/sched/sched_test.go
+@@ -155,7 +155,7 @@ func TestApplyFollowsThePageList(t *testing.T) {
+ 	done := make(chan struct{})
+ 	file := []config.Instance{{Name: "f1", Engine: config.EnginePostgres, DSNRaw: "env:F1"}}
+ 	go func() {
+-		config.WatchInventory(ctx, log, inv, r.hold, file, "full", 20*time.Millisecond, func(all []config.Instance) { s.apply(ctx, all) })
++		config.WatchInventory(ctx, log, inv, r.hold, file, "full", config.CounterEdits{}, 20*time.Millisecond, func(all []config.Instance) { s.apply(ctx, all) })
+ 		s.wait()
+ 		close(done)
+ 	}()
 diff --git i/internal/web/q_mssql_perf.go w/internal/web/q_mssql_perf.go
 index 078fe43..44bc71f 100644
 --- i/internal/web/q_mssql_perf.go

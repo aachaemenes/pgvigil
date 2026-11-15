@@ -91,6 +91,8 @@ INSERT INTO pgvigil.mssql_counter_defaults (object, counter, kind, source) VALUE
   ('Databases', 'Transactions/sec', '', 'D14'), ('Databases', 'Log Flushes/sec', '', 'D14'),
   ('Databases', 'Log Bytes Flushed/sec', '', 'D14'), ('Databases', 'Log Flush Write Time (ms)', '', 'D14'),
   ('Database Replica', 'Transaction Delay', '', 'D14'), ('Database Replica', 'Mirrored Write Transactions/sec', '', 'D14'),
+  -- the same two names under Database Mirroring, which 0124's every-minute read took too (a mirroring site keeps them)
+  ('Database Mirroring', 'Transaction Delay', '', 'D14'), ('Database Mirroring', 'Mirrored Write Transactions/sec', '', 'D14'),
   ('General Statistics', 'Active Temp Tables', '', 'D14'), ('General Statistics', 'Processes blocked', '', 'D14'),
   ('General Statistics', 'Temp Tables Creation Rate', '', 'D14'),
   ('Locks', 'Lock Requests/sec', '', 'D14'), ('Locks', 'Lock Wait Time (ms)', '', 'D14'), ('Locks', 'Lock Waits/sec', '', 'D14'),
@@ -333,6 +335,9 @@ BEGIN
       v_why := 'kind must be empty (from the type read), count, rate or gauge';
     ELSIF v_object LIKE 'sys.dm_os_%' AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_counter_defaults d WHERE d.object = v_object AND d.counter = v_counter) THEN
       v_why := format('%s has no column %s pgvigil reads', v_object, v_counter);
+    ELSIF v_object LIKE 'sys.dm_os_%' AND v_kind <> '' THEN
+      -- a DMV column's arithmetic is pgvigil's own (pseudoRows): a kind would be ignored, so it is refused in words
+      v_why := format('%s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty', v_object, v_counter);
     END IF;
     -- a counter a page or a rule reads is never removed, and its kind is never overridden (the figure that reads it
     -- needs the arithmetic its type gives: a gauge kind on Errors/sec would store no rate)
@@ -414,8 +419,10 @@ LANGUAGE sql STABLE AS $$
      AND (c.scope = 'fleet' OR (c.scope = 'tag' AND c.tag = ANY (me.tags)) OR (c.scope = 'instance' AND c.instance_name = me.name))
 $$;
 
--- mssql_counter_list: the instance's list as counters.go reads it ([{object, counter, inst, scope, kind}]): per
--- counter the word of the highest level; a removal of a counter in use never wins (the defaults keep it).
+-- mssql_counter_list: the instance's list as counters.go reads it ([{object, counter, inst, scope, kind, except}]): per
+-- counter the word of the highest level; a removal of a counter in use never wins (the defaults keep it). A removal of
+-- one instance of a counter (a feature of Deprecated Features / Usage) names that instance in its every-instance line's
+-- except list, so the line that reads the others leaves it out.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_list(p_instance_id int, p_yaml jsonb DEFAULT '[]'::jsonb)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
   WITH l AS (SELECT * FROM pgvigil.mssql_counter_layers(p_instance_id, p_yaml)),
@@ -423,11 +430,15 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
   w AS (SELECT DISTINCT ON (lower(l.object), lower(l.counter), l.inst) l.*
           FROM l
          WHERE NOT (l.action = 'remove' AND (lower(l.object), lower(l.counter)) IN (SELECT o, c FROM inuse))
-         ORDER BY lower(l.object), lower(l.counter), l.inst, l.level DESC)
+         ORDER BY lower(l.object), lower(l.counter), l.inst, l.level DESC),
+  x AS (SELECT lower(w.object) AS o, lower(w.counter) AS c, jsonb_agg(w.inst ORDER BY w.inst) AS insts
+          FROM w WHERE w.action = 'remove' AND w.inst <> '' GROUP BY 1, 2)
   SELECT coalesce(jsonb_agg(jsonb_build_object('object', w.object, 'counter', w.counter, 'inst', w.inst,
                                                'scope', pgvigil.mssql_counter_scope(w.object), 'kind', w.kind)
+                            || CASE WHEN w.inst = '' AND x.insts IS NOT NULL THEN jsonb_build_object('except', x.insts) ELSE '{}'::jsonb END
                             ORDER BY w.object, w.counter, w.inst), '[]'::jsonb)
-    FROM w WHERE w.action = 'add'
+    FROM w LEFT JOIN x ON x.o = lower(w.object) AND x.c = lower(w.counter)
+   WHERE w.action = 'add'
 $$;
 
 -- mssql_counter_yaml: pgvigil.yaml's mssql_counters lines as the runner last handed them over for an instance (the

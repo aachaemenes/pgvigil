@@ -48,7 +48,12 @@
 #     line (narrowest scope); an Admin instance row adding it wins over the yaml line at the same scope (read again);
 #     an Admin tag row (the instance's tag env:ctrproof) removing Plan Cache / Cache Pages takes it out, an Admin
 #     instance row adding it back wins; Admin and yaml both refuse removing Logins/sec ('read by ...'); a removal of a
-#     counter in use from the yaml is refused at load; mssql_counter_yaml holds the lines the runner used.
+#     counter in use from the yaml is refused at load; mssql_counter_yaml holds the lines the runner used. Admin and the
+#     yaml both refuse a kind on SQL Errors / Errors/sec ('its kind stays') and on a DMV column (sys.dm_os_schedulers /
+#     yield_count: 'is a DMV column'). A yaml line removing one instance of
+#     Deprecated Features / Usage (a feature the server lists) takes that feature out of the next read (no stored row,
+#     not in zero_series) while another feature of the same counter is still read; the list's every-instance line
+#     names it in 'except'.
 #  F. the gap rule: Pages Allocated/sec removed for two reads and added back: its first read back has no change and no
 #     rate; the read after has both. F15 (a gap in time, review part 1 S3): a read 125 s after the one before (over twice
 #     the 60 s default) has no change and no rate on any series; the read 3 s after it has them.
@@ -67,7 +72,9 @@
 #     and figure columns (rows = /api/mssql/counters' now part), 'Batch response times' with 17 buckets, 'Listed but
 #     not read', the 'Counters' family grid; Admin > Counters shows 'Rows made here' (rows = the config part),
 #     'The defaults' (rows = the defaults part), 'Counters the servers have', 'Log', and its Save and End controls off
-#     with their reason on a -no-login serve; no error box, no exception.
+#     with their reason on a -no-login serve (Save row: the -no-login reason beside it; each End: a space, then 'off
+#     here: the line above says why', the long reason in its title; the page's line 'Edits are off here: ...
+#     -no-login'); no error box, no exception.
 #  N. D6 (the rows on other slices' pages, WIRING hunks): after two mssql_cpu and mssql_memory reads with 20 batches
 #     between them: /api/perfsummary's mssql part gives ctrbox compiles_per_100 = round(100 * compilations / batch
 #     requests, 1) from mssql_sched_sample's interval-weighted rates over the same window (0 under 1 batch/s); the CPU
@@ -452,6 +459,47 @@ config "    mssql_counters:
           counter: Logins/sec"
 O=$("$TMPD/pgvigil" collect -config "$CFG" -instance ctrbox -once mssql_counters 2>&1 || true); grep -q 'is read by' <<<"$O" || fail "E: the yaml removal of Logins/sec: $O"
 config
+R=$(door '{"op":"add","ui_user":"proof-e","scope":"fleet","object":"SQL Errors","counter":"Errors/sec","action":"add","kind":"gauge"}')
+grep -q '"refused"' <<<"$R" && grep -q 'its kind stays' <<<"$R" || fail "E: a gauge kind on Errors/sec at Admin: $R"
+config "    mssql_counters:
+      add:
+        - object: SQL Errors
+          counter: Errors/sec
+          kind: gauge"
+O=$("$TMPD/pgvigil" collect -config "$CFG" -instance ctrbox -once mssql_counters 2>&1 || true); grep -q 'its kind stays' <<<"$O" || fail "E: a gauge kind on Errors/sec in the yaml: $O"
+config
+R=$(door '{"op":"add","ui_user":"proof-e","scope":"fleet","object":"sys.dm_os_schedulers","counter":"yield_count","action":"add","kind":"gauge"}')
+grep -q '"refused"' <<<"$R" && grep -q 'is a DMV column' <<<"$R" || fail "E: a gauge kind on a DMV column at Admin: $R"
+config "    mssql_counters:
+      add:
+        - object: sys.dm_os_schedulers
+          counter: yield_count
+          kind: gauge"
+O=$("$TMPD/pgvigil" collect -config "$CFG" -instance ctrbox -once mssql_counters 2>&1 || true); grep -q 'is a DMV column' <<<"$O" || fail "E: a gauge kind on a DMV column in the yaml: $O"
+config
+ok "E: Admin and the yaml refuse a kind on SQL Errors / Errors/sec (its kind stays as SQL Server types it) and on a DMV column (sys.dm_os_schedulers / yield_count)"
+# seen: a series is in the scope's newest read (a stored row or named in zero_series)
+seen() { pq "SELECT count(*) FROM pgvigil.mssql_counter_series k
+  JOIN LATERAL (SELECT * FROM pgvigil.mssql_counter_read c WHERE c.instance_id = k.instance_id AND c.scope = pgvigil.mssql_counter_scope(k.object) ORDER BY c.snapshot_at DESC LIMIT 1) r ON true
+  LEFT JOIN pgvigil.mssql_counter_last l ON l.series_id = k.series_id
+  WHERE k.instance_id = $SB AND k.object = '$1' AND k.counter = '$2' AND k.inst = '$3' AND (l.server_utc = r.server_utc OR k.series_id = ANY (r.zero_series))"; }
+col mssql_counters
+DF=$(pq "SELECT string_agg(k.inst, ' ' ORDER BY k.inst) FROM (SELECT k.inst FROM pgvigil.mssql_counter_series k WHERE k.instance_id = $SB
+  AND k.object = 'Deprecated Features' AND k.counter = 'Usage' AND k.inst ~ '^[A-Za-z_]+$' ORDER BY k.inst LIMIT 2) k")
+read -r DFX DFY <<<"$DF"
+[[ -n "$DFX" && -n "$DFY" && $(seen 'Deprecated Features' 'Usage' "$DFX") == 1 && $(seen 'Deprecated Features' 'Usage' "$DFY") == 1 ]] \
+  || fail "E: two Deprecated Features / Usage features read before the removal [$DF]"
+config "    mssql_counters:
+      remove:
+        - object: Deprecated Features
+          counter: Usage
+          instance: $DFX"
+col mssql_counters
+EX=$(pq "SELECT e->>'except' FROM jsonb_array_elements(pgvigil.mssql_counter_list($SB, pgvigil.mssql_counter_yaml_of($SB))) e WHERE e->>'object' = 'Deprecated Features' AND e->>'counter' = 'Usage' AND e->>'inst' = ''")
+[[ $(seen 'Deprecated Features' 'Usage' "$DFX") == 0 && $(seen 'Deprecated Features' 'Usage' "$DFY") == 1 && "$EX" == "[\"$DFX\"]" ]] \
+  || fail "E: one feature removed: $DFX seen $(seen 'Deprecated Features' 'Usage' "$DFX") (want 0), $DFY seen $(seen 'Deprecated Features' 'Usage' "$DFY") (want 1), except [$EX]"
+config
+ok "E: a yaml line removing one feature of Deprecated Features / Usage ($DFX) takes it out of the read; $DFY still read; the list's line says except [\"$DFX\"]"
 ok "E: an Admin fleet row loses to the instance's yaml line, an Admin instance row wins over it; a tag row removes, an instance row adds back; Admin and yaml refuse removing Logins/sec"
 
 echo "== F. the gap rule =="
@@ -581,8 +629,15 @@ for (const theme of ['light', 'dark']) {
   check(`admin ${theme}`, await ev(gridRows('Rows made here')) === cfg, `Rows made here ${await ev(gridRows('Rows made here'))}, the API ${cfg}`);
   check(`admin ${theme}`, await ev(gridRows('The defaults')) === def, `The defaults ${await ev(gridRows('The defaults'))}, the API ${def}`);
   check(`admin ${theme}`, (await ev(gridRows('Counters the servers have'))) > 300, `Counters the servers have ${await ev(gridRows('Counters the servers have'))}`);
-  const offs = await ev(`[...document.querySelectorAll('main button')].filter(b => b.textContent.trim() === 'Save row' || b.textContent.trim() === 'End').map(b => b.getAttribute('aria-disabled') === 'true' && !!document.getElementById(b.getAttribute('aria-describedby') || '')?.textContent.includes('-no-login'))`);
-  check(`admin ${theme}`, offs.length >= 1 && offs.every(Boolean), `${offs.length} Save / End control(s), each off with its -no-login reason`);
+  // Save row: off with the -no-login reason beside it; each End: off, a space, the short 'off here: the line above says
+  // why' beside it, the long reason in its title; the page's line names -no-login
+  const offs = await ev(`[...document.querySelectorAll('main button')].filter(b => b.textContent.trim() === 'Save row' || b.textContent.trim() === 'End').map(b => {
+    const n = document.getElementById(b.getAttribute('aria-describedby') || '')?.textContent || '';
+    if (b.getAttribute('aria-disabled') !== 'true') return false;
+    if (b.textContent.trim() === 'Save row') return n.includes('-no-login');
+    return n === 'off here: the line above says why' && (b.title || '').includes('-no-login') && b.parentElement.textContent.startsWith('End off here'); })`);
+  check(`admin ${theme}`, offs.length >= 1 && offs.every(Boolean), `${offs.length} Save / End control(s), each off with its reason beside it (End: a space, the short reason, -no-login in its title)`);
+  check(`admin ${theme}`, await ev(`[...document.querySelectorAll('main p.meta')].some(p => p.textContent.startsWith('Edits are off here:') && p.textContent.includes('-no-login'))`), "the page's line 'Edits are off here: ... -no-login'");
   if (shots) { const s = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); (await import('node:fs')).writeFileSync(`${shots}/admin-counters-${theme}.png`, Buffer.from(s.result.data, 'base64')); }
 }
 check('pages', thrown.length === 0, thrown.length ? thrown.slice(0, 3).join(' | ') : 'no exception');
