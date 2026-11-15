@@ -33,3 +33,69 @@ A custom role with the two actions, read only:
 ```
 
 Not proven: the usgov and china clouds (no lab).
+
+## Provider replicas: Amazon RDS and Google Cloud SQL (task 390b)
+
+The collection `cloud_replicas` (PostgreSQL on RDS or Cloud SQL) and `mssql_cloud_replicas` (RDS for SQL Server) read,
+every 5 minutes and with no SQL statement, the instance's own resource, its direct source and its direct replicas, each
+one's status and replication status, and each replica's lag, so a replica pgvigil does not connect to still has its
+lag. Each lag is to the replica's DIRECT upstream: a replica of a replica (cascaded, marked on its row) lags its own
+source, not the first. A resource is one row whoever reads it: a source and its replica both monitored read the same
+chain and store it once; both pages show it. The page is the Replicas (provider) block under a PostgreSQL instance's
+Replication tab and an RDS for SQL Server instance's Availability tab: source and replicas, the lag and byte lag charts
+from 5 minutes to a year (hours past a day), the changes, the findings.
+
+The instance's own failover is read too, through the same door: RDS's event list (category failover: 'Multi-AZ instance
+failover started' and '... completed') and Cloud SQL's FAILOVER operations. An RDS Multi-AZ DB instance's or a Cloud SQL
+HA instance's failover reads 'restart' in the instance's own events (its standby runs no engine until it takes over);
+the provider's word wins: that restart becomes a failover with the provider's words, and a failover no read saw is
+written at its completion.
+
+### Amazon RDS (P1)
+
+| | |
+|---|---|
+| Config | the instance's `aws:` block: `region`, `profile` (optional), `db_instance`, and `replicas: true` - the switch, off by default (on SQL Server the block takes these four keys; `cluster`, `log_group` and `dms` are PostgreSQL's). Aurora's replicas are not this door. |
+| Credential (none stored by pgvigil) | the AWS SDK's chain, as the io and logs reads: the environment, the profile, `aws login`, an assumed role, the instance role |
+| Calls | `rds:DescribeDBInstances` (one paged listing a region and run, shared by every instance of the run), `cloudwatch:GetMetricData` (ReplicaLag, Maximum over 60 s, the last 20 minutes, a row a datapoint), `rds:DescribeEvents` (the DB instance's failover events, the last 2 hours) |
+| Narrowest right | the policy below; DescribeDBInstances and DescribeEvents with Resource "*" or the site's regions (a replica in another region is read in its own region: its hosts too) |
+| Outbound hosts | rds.<region>.amazonaws.com and monitoring.<region>.amazonaws.com for each region a replica is in; sts.<region>.amazonaws.com for an assumed role; the instance metadata endpoint 169.254.169.254 for an instance role |
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["rds:DescribeDBInstances", "rds:DescribeEvents"], "Resource": "arn:<partition>:rds:<region>:<account>:db:*" },
+    { "Effect": "Allow", "Action": "cloudwatch:GetMetricData", "Resource": "*" }
+  ]
+}
+```
+
+`<partition>` is the site's: `aws`, or `aws-us-gov` in GovCloud. A listing refused (AccessDenied) still reads the
+instance's own lag and says which right is missing; a throttle rests the door until its next interval.
+
+### Google Cloud SQL for PostgreSQL (P2)
+
+| | |
+|---|---|
+| Config | the instance's `gcp:` block: `project`, `instance` (the instance's name, not its connection name), `credentials_file` (optional). PostgreSQL only: Google lists no replica lag for Cloud SQL for SQL Server. |
+| Credential (none stored by pgvigil) | Application Default Credentials: GOOGLE_APPLICATION_CREDENTIALS, gcloud's application-default sign-in, the attached service account through the metadata server; or `credentials_file`: a workload identity federation file (no secret) or a service account key (a stored secret: keep it as one) - no other file type is taken |
+| Calls | Cloud SQL Admin `instances.get` (the instance, its source `masterInstanceName`, its replicas `replicaNames`), `operations.list` (its FAILOVER operations); Cloud Monitoring `timeSeries.list`: `database/replication/replica_lag` and `database/replication/state` on each replica, `database/postgresql/replication/replica_byte_lag` (replay) on the source, the last 15 minutes (Google: a point is 'not visible for up to 165 seconds') |
+| Narrowest right | roles/cloudsql.viewer and roles/monitoring.viewer, or a custom role with `cloudsql.instances.get`, `cloudsql.instances.list` (Google's IAM table names both for operations.list) and `monitoring.timeSeries.list` |
+| Outbound hosts | sqladmin.googleapis.com, monitoring.googleapis.com, oauth2.googleapis.com; sts.googleapis.com and iamcredentials.googleapis.com for a federation file; the metadata server for an attached service account |
+
+### What is judged
+
+| Finding | Rule | Default | Source |
+|---|---|---|---|
+| provider replica lag | the replica's lag over the tier in every datapoint of the 10 minutes to its newest one | warning 10 minutes, critical 30 (`provider_replica_lag`, root, tag or instance) | pgvigil's own, above AWS's 'up to five minutes' an idle source's replica reports |
+| provider replica stopped | an available replica whose reported replication status is not replicating (RDS) or Running (Cloud SQL), in two reads | critical | RDS StatusInfos; Cloud Monitoring's replication state. A blank status is 'not reported yet', never stopped |
+| provider lag missing | an available replica seen for 15 minutes with no lag datapoint in 15 minutes | warning | pgvigil's own |
+| replica promoted or detached | a replica's source gone, or a source no longer listing it | warning for 24 hours | pgvigil's own |
+| cloud door failing | 3 reads in a row with a refused or failed call, the sentence carried | warning | pgvigil's own; a read refused whole is the collector's 'collection failing' |
+
+An RDS instance's own Multi-AZ standby is not a replica here: it is read and shown, never judged.
+
+Not proven: an RDS for SQL Server read replica (Enterprise edition only: no lab), a cascaded or a cross-region replica
+(no lab makes one), an RDS Multi-AZ or Cloud SQL HA failover event (a billed lab not approved), the Cloud SQL rows until
+their lab runs, the GovCloud partition.

@@ -54,6 +54,11 @@ what happens in the other order, and what the project's own proof showed (`scrip
 - **Plans of running queries are off on every instance.** `mssql_running_plans` and `mssql_live_plans` are new and off
   by default; an instance added on Admin > Instances has a running plans box, unticked, and an instance of the file
   takes `schedules:` ([plans of running queries](sqlserver-indexes.md#plans-of-running-queries)).
+- **The provider replica doors are off.** `cloud_replicas` (PostgreSQL) and `mssql_cloud_replicas` (RDS for SQL
+  Server) are new: they read an RDS instance's read replicas through RDS and CloudWatch only where the instance's `aws:`
+  block says `replicas: true` (a new switch, off: the io, logs and DMS reads of the same block are unchanged), and a
+  Cloud SQL for PostgreSQL instance's through Google's APIs only where a new `gcp:` block names it
+  ([cloud-replicas.md](cloud-replicas.md)). Nothing calls a cloud for them after the upgrade until a block is written.
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.
