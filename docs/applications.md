@@ -96,15 +96,17 @@ such a store is made anew (a released store never held the older 0190).
 
 The inventory goes out as a file and comes back in (task 312, migration 0146). The **Inventory** grid lists one row per
 active server and one per database of it. **Export the inventory (.xlsx)** writes every row whatever the grid is
-filtered to (a sheet named Inventory, never the page's own workbook, which carries the Changes grid's user names and,
-while shown, the contacts); **Download the inventory (CSV)** gets the same rows from `GET
+filtered to (a sheet named Inventory, every value as the text the repository holds, its About sheet saying it holds
+every line; never the page's own workbook, which carries the Changes grid's user names and, while shown, the contacts);
+the button stays on in a read-only page (it is a read). **Download the inventory (CSV)** gets the same rows from `GET
 /api/applications/inventory.csv` (UTF-8 with a BOM, an attachment). **Import a file** reads a CSV, JSON or .xlsx file,
 previews what it would change, and changes it only on Apply.
 
 - **Columns**, in order: level (server or database), instance, engine, database, application, environment, tier,
   description, cmdb_url, not_an_application; then inherited_from, absent_since, source and set_at, which the export
   writes and an import reads back and ignores. The header line is found by its names (server, app, db and cmdb are
-  taken too), so the export bar's two lines above it are skipped.
+  taken too), so the export bar's two lines above it are skipped. A header naming one column twice (Instance and
+  Server, say) is refused, both cells named.
 - **Rows**: one per server (database blank) and one per database: every present database, and every absent one an
   assignment or a mark still names (absent_since filled). System databases and inactive servers are left out; a line
   naming an inactive server is refused.
@@ -114,29 +116,35 @@ previews what it would change, and changes it only on Apply.
   default); it and tier, description and cmdb_url (the application's, repeated on each of its rows) are read only on a
   line that names an application. Two lines giving one application different values refuse that application and name
   both lines.
-- **`(none)`** in application removes the target's own assignment: one an import set is a change, one a person entered
+- **`(none)`** (in any case) in application removes the target's own assignment: one an import set is a change, one a person entered
   is a conflict. On a database with no application of its own (it inherits, or has none) it changes nothing, and the
-  preview says so. `(none)` is no longer accepted as an application's name; an older store's application of that name
-  is kept, and in a file the word means none.
+  preview says so. `(none)`, in any case, is no longer accepted as an application's name; an older store's application
+  of that name is kept, and in a file the word means none.
 - **not_an_application**: yes marks the database, no unmarks it, blank changes nothing; yes beside an application on
   one line refuses the line; a whole server is never marked.
 - **Contacts are never in the file**, either way. A column named email, phone, contact or owner, like any column not
-  listed above, is not read, and the preview lists it under the columns not read.
+  listed above, is not read, and the preview lists it under the columns not read (the first 40 names and a count of
+  the rest).
 - **Matching**: a server by its exact name, else by the one name equal to it ignoring case; an import never makes a
   server: a line naming no known server is refused and the rest go on. A filled engine must be the server's. A database
   is matched the same way among the server's present databases and the absent ones still named; an unknown one is
   listed, never made. An absent database is assigned, re-assigned or marked on the page only.
 
 **Formats.** CSV: commas or semicolons (Excel in a comma-decimal locale saves semicolons), UTF-8; UTF-16, a
-tab-separated file and an .xls are refused in words. The CSV export writes one more `'` before a cell that starts with
-`=`, `+`, `-`, `@`, a tab or a carriage return (or with `'`s before one), so a spreadsheet does not run it as a formula,
-and an import takes one off: exact both ways, key columns too. JSON: the grid's `{columns, rows}` as the API answers
-it, or an array of objects. .xlsx: the sheet named Inventory, else the first whose header (in its first 20 rows) names
-instance and application; read as values, so a cell holding a formula or an error refuses its line. A date-formatted
-cell reads as its date (yyyy-MM-dd), a TRUE / FALSE cell as yes / no, a number as it is stored: the .xlsx export writes
-a number-like text as a number, so a description `1.50` comes back `1.5` through the .xlsx (the CSV keeps it). A file is
-read by what it holds, never by its name. Excel's own save of the workbook is not proven (no Excel where the proof
-runs: it reads the export's workbook and one with shared strings).
+tab-separated file and an .xls are refused in words, and so is a quote that ends a field early (with its line number:
+a stray quote never reads the rest of the file into one cell). The CSV export ends its lines with LF (a carriage return
+inside a cell is kept) and writes one more `'` before a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage
+return (or with `'`s before one), so a spreadsheet does not run it as a formula, and an import takes one off: exact both
+ways, key columns too; the page's export bar guards its CSV files the same way. JSON: the grid's `{columns, rows}` as
+the API answers it, or an array of objects (an element that is not one is a refused line). .xlsx: the sheet named
+Inventory, else the first whose header (in its first 20 rows) names instance and application; read as values, so a cell
+holding a formula or an error refuses its line; a workbook lists at most 32 sheets and unpacks to at most 128 MB, its
+rows go up (a row number twice is refused), and a cell past column 64 is not read. The inventory's own .xlsx writes
+every value as text, so it reads back as exported. A workbook another tool saved is read by its cells' types: a
+date-formatted cell as its date (yyyy-MM-dd; a 1904 workbook's too), a time alone as HH:MM:SS, a TRUE / FALSE cell as
+yes / no, a number as it is stored (`1.50` typed into a spreadsheet as a number is `1.5`). A file is read by what it
+holds, never by its name. Excel's own save of the workbook is not proven, nor a LibreOffice re-save (neither runs where
+the proof runs: it reads the export's workbook and one with shared strings the proof writes).
 
 **Preview and apply.**
 
@@ -145,18 +153,26 @@ runs: it reads the export's workbook and one with shared strings).
   servers and databases, the counts, and how many servers' `application:` tag would move (so which tag-scoped
   thresholds, acknowledgements, rules and routes cover them differently).
 - **A conflict** is a value a person entered on this page that the file would change, a database-level assignment under
-  a server whose application a person entered included: it is kept unless ticked. What an import set, the next import
+  a server whose application a person entered included: it is kept unless ticked. A ticked application writes every
+  field its words name (the ones entered by hand and the others the file changes); a line with a conflict waits whole
+  for its tick. A database with an import's own assignment under a server a person assigned is the import's to change. What an import set, the next import
   may change. Every field and assignment an import sets records its source `import:<name>`, the name typed beside the
   file (1 to 40 of a-z, 0-9, `_ . -`; default `file`).
 - **Apply the import** sends the preview's digest. When anything the plan read changed since the preview (a page write,
   another import), the apply is refused whole and nothing is written: preview again. A collector reading the servers'
   database lists in between is not a change.
 - The apply writes through this page's own writes, so each change has its audit row, plus one summary row (counts
-  only, never a cell's text). A line with a credential-shaped cell (a password, secret, token or API, access or private
-  key followed by = or :, a URL with user:password@, a link whose query sets token, key, sig, secret, password or auth)
-  is refused, its text in no answer and no audit row.
-- **One import at a time**: a second, while one runs, is refused in words, never queued. A file holds 5 MB and 20,000
-  lines at most, and an import has 120 s (else it is rolled back and says so: split the file).
+  only, never a cell's text). A line with a credential-shaped cell, each cell read alone (a password, secret, token or
+  API, access, private, account or shared access key followed by = or :, a URL with user:password@, a link whose query
+  sets token, key, sig, secret, password or auth, a PEM private key, a bearer token) is refused, its text in no answer
+  and no audit row - also when the page took the same text (a description such as `Token: rotated monthly`): the
+  export carries it and its re-import refuses those lines, so change that text on the page.
+- **One import at a time**: a second, preview or apply, while one runs, is refused in words, never queued. A preview
+  holds no lock on this page's writes; an apply does: a change made on this page while an apply runs waits about 2 s,
+  then is refused in words ("the applications are being written now"): make it again when the import has ended. A file
+  holds 5 MB and 20,000 lines at most, and an import has 120 s (else it is rolled back and says so: split the file).
+- An apply whose answer is lost on the way (a closed connection, a proxy's page) may still have been applied: the page
+  says so; read Changes, then preview the file again.
 - Signed-in users only (no door without the login cookie); with the page read only, the Import section is off too.
 
 ## In the repository (migrations 0136, 0146)
@@ -186,7 +202,8 @@ report calling the contacts' door) is said OWED, not failed, on a tree without t
 (no MCP tool reads or answers a contact, row A11), internal/sched/apptag_test.go (the file's application: tag named).
 
 `scripts/proof-app-import.sh` (the inventory file) on a throwaway repository: 0146's writes as an import against what a
-person entered (M1-M10), the file through the API on the same non-superuser logins on both engines (F1-F21), the page in
-a headless Chromium (P1-P3: the inventory's own .xlsx read back with the grid filtered and contacts shown, a file
-previewed, a conflict ticked and applied by clicks, axe-core light and dark) and the limits (section B: F13, 20,000
+person entered (M1-M12), the file through the API on the same non-superuser logins on both engines (F1-F26), the page in
+a headless Chromium (P1-P4: the inventory's own .xlsx read back with the grid filtered and contacts shown, a file
+previewed, one of two conflicts ticked and applied by clicks, a tick kept across a redraw of the preview, axe-core light
+and dark) and the limits (section B: F13, 20,000
 lines previewed and applied). Go tests: internal/web/q_app_import_test.go (the CSV, JSON and .xlsx readers).
