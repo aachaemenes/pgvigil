@@ -57,6 +57,7 @@ func TestMsServerOf(t *testing.T) {
 	for in, want := range map[string]string{
 		"sqlserver://reader:secret@10.0.0.5:14331?database=master":        "10.0.0.5,14331",
 		"sqlserver://reader:secret@sql01/inst2?database=master":           `sql01\inst2`,
+		"sqlserver://reader:secret@sql01:14331/inst2?database=master":     "sql01,14331",
 		"server=tcp:sql02,1433;user id=reader;password=secret;app name=x": "sql02,1433",
 		"nonsense": "",
 	} {

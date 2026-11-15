@@ -154,9 +154,11 @@ func readVersions(ctx context.Context, conn *sql.Conn, db string, azure bool, na
 // never its login or password; "" when it cannot be read.
 func msServerOf(dsn string) string {
 	if u, err := url.Parse(dsn); err == nil && u.Scheme == "sqlserver" && u.Host != "" {
+		// with a port the connection goes to it (the driver ignores the instance name then): 'host,port' alone;
+		// without one, 'host\instance'
 		h := u.Hostname()
 		if p := u.Port(); p != "" {
-			h += "," + p
+			return h + "," + p
 		}
 		if inst := strings.Trim(u.Path, "/"); inst != "" {
 			h += `\` + inst
