@@ -223,21 +223,22 @@ among them).
 ## Not proven by the proof
 
 `scripts/proof-parquet.sh` reads every file back with an independent reader and writes to an S3-compatible server
-and to Azurite in containers. It does not prove:
+and to Azurite in containers. Beyond it, the export was run by hand against real AWS S3 (`-check`, one window
+read back file by file, an 80 MB file in a multipart upload, S3's own refusal of a second manifest, a re-export)
+and under its own systemd units on a systemd host (as shipped the unit cannot write a folder destination; with the
+drop-in of step 4 it exports as the account `pgvigil`, and its timer and its lock hold). Neither proves:
 
-- real AWS S3 and real Azure Blob, the AWS `profile`, the Azure default credential;
-- the refusal of a second manifest on S3 and on Blob (a manifest is put only where none is; the folder's refusal
-  has a unit test, the two stores were tried for it with another client only);
+- real Azure Blob, the AWS `profile`, the Azure default credential;
+- the refusal of a second manifest on Blob (the folder's refusal has a unit test; Azurite's is proven);
 - the 256 MB line that closes a file at its real size (a unit test crosses it with small files; the 64 MB line of
   a row group and the 1,000,000-row line are crossed for real);
 - the refusal of a repository whose encoding is not UTF8;
 - a session through PgBouncer;
 - the build with FIPS 140-3 on, and the Windows file lock;
-- the Collector page's panel drawn in a browser (the proof reads what it draws from, `GET /api/export`).
+- the Collector page's panel drawn in a browser (the proof reads what it draws from, `GET /api/export`);
 - the door refusing a write that is not the export's own beyond the cases the proof seeds; the `sas_url` and
-  `account_url` ways into Blob (the proof uses a connection string); `-check` against S3 and Blob; a table given
-  up after upload failures; the 90-day trim of `export_runs`; the export running under its systemd unit (the
-  unit is scored offline only).
+  `account_url` ways into Blob (the proof uses a connection string); `-check` against Blob; a table given up after
+  upload failures; the 90-day trim of `export_runs`.
 
 The layout, the manifest and the rules above follow the file contract of PerformanceMonitor's exporter closely
 (MIT; see THIRD-PARTY-NOTICES.md).
