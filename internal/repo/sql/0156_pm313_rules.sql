@@ -11,6 +11,9 @@
 --                                    settings in force at the window's end (mssql_config_history).
 --   mssql_wait_findings_between      0115's body; its Parallelism and THREADPOOL advice composed.
 --   mssql_memory_suggestion          Fixed 8: PerformanceMonitor's max server memory audit and number over checks.go's RAM.
+--   mssql_protection_overrides       Changed 46: backup ages per tag or database (Admin, audited), the resolver
+--   mssql_protection_limits          (a database row > the instance's yaml > its tags, the strictest > the default) and
+--   mssql_backup_judged              0129's view judged by it, where each age comes from appended.
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85.
 -- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
@@ -400,3 +403,251 @@ LANGUAGE sql STABLE AS $$
               ELSE format('Max server memory (%s MB) looks reasonable for %s MB physical RAM.', to_char(s.msm, 'FM999,999,999,990'), to_char(s.ram, 'FM999,999,999,990')) END
     FROM s
 $$;
+
+-- ---- protection ages (Changed 46) -----------------------------------------------------------------------------------
+
+-- mssql_protection_overrides: the full backup and log backup ages a database is judged by, set from Admin for a tag
+-- or for one database of one instance (the instance's own ages stay in pgvigil.yaml's mssql_thresholds). Precedence
+-- (the lead's F2): a database row > the instance's yaml > the instance's tags (the strictest when they disagree: the
+-- lowest age over 0; 0 only when every tag row says 0) > the default (168 h, 60 min). 0 = not judged; no clamp.
+-- Written through import_mssql_protection_override only.
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_protection_overrides (
+  override_id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  scope               text NOT NULL CHECK (scope IN ('tag', 'database')),
+  tag                 text,
+  instance_name       text,
+  database_name       text,
+  full_backup_hours   numeric CHECK (full_backup_hours >= 0),
+  log_backup_minutes  numeric CHECK (log_backup_minutes >= 0),
+  note                text,
+  replaces            bigint,
+  created_by          text NOT NULL,
+  created_at          timestamptz NOT NULL,
+  client              text,
+  ended_by            text,
+  ended_at            timestamptz,
+  CONSTRAINT "a tag row names its tag, a database row its instance and database" CHECK (
+    (scope = 'tag' AND tag IS NOT NULL AND instance_name IS NULL AND database_name IS NULL)
+    OR (scope = 'database' AND tag IS NULL AND instance_name IS NOT NULL AND database_name IS NOT NULL)),
+  CONSTRAINT "a row sets an age" CHECK (full_backup_hours IS NOT NULL OR log_backup_minutes IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS mssql_protection_overrides_live_uq ON pgvigil.mssql_protection_overrides
+  (scope, coalesce(tag, ''), coalesce(instance_name, ''), coalesce(database_name, '')) WHERE ended_at IS NULL;
+COMMENT ON TABLE pgvigil.mssql_protection_overrides IS 'Admin''s backup ages per tag or database; written through import_mssql_protection_override only.';
+
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_protection_override_log (
+  log_id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  at           timestamptz NOT NULL,
+  ui_user      text NOT NULL,
+  client       text,
+  op           text,
+  override_id  bigint,
+  outcome      text NOT NULL CHECK (outcome IN ('done', 'refused')),
+  detail       text,
+  payload      jsonb
+);
+CREATE INDEX IF NOT EXISTS mssql_protection_override_log_at_idx ON pgvigil.mssql_protection_override_log (at DESC);
+
+-- import_mssql_protection_override: one edit from Admin (the actions door's audit login, behind the UI login): op
+-- 'add' (scope tag | database, tag | instance_name and database_name, full_backup_hours, log_backup_minutes, note; a
+-- live row for the same target is ended and replaced), 'end' (override_id). Every attempt is logged.
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_protection_override(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_op     text := p_payload->>'op';
+  v_user   text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_client text := nullif(p_payload->>'client', '');
+  v_scope  text := p_payload->>'scope';
+  v_tag    text := nullif(btrim(coalesce(p_payload->>'tag', '')), '');
+  v_inst   text := nullif(btrim(coalesce(p_payload->>'instance_name', '')), '');
+  v_db     text := nullif(btrim(coalesce(p_payload->>'database_name', '')), '');
+  v_note   text := nullif(btrim(coalesce(p_payload->>'note', '')), '');
+  v_full   numeric;
+  v_log    numeric;
+  v_id     bigint;
+  v_new    bigint;
+  v_why    text;
+  v_done   text;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_mssql_protection_override: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  IF v_op IS NULL OR v_op NOT IN ('add', 'end') THEN
+    v_why := 'op must be add or end';
+  ELSIF v_op = 'end' THEN
+    IF coalesce(p_payload->>'override_id', '') ~ '^[0-9]{1,18}$' THEN
+      v_id := (p_payload->>'override_id')::bigint;
+    END IF;
+    IF v_id IS NULL OR NOT EXISTS (SELECT 1 FROM pgvigil.mssql_protection_overrides WHERE override_id = v_id AND ended_at IS NULL) THEN
+      v_why := format('no live row %s', coalesce(p_payload->>'override_id', '(none)'));
+    END IF;
+  ELSE
+    IF coalesce(p_payload->>'full_backup_hours', '') ~ '^[0-9]{1,6}(\.[0-9]{1,3})?$' THEN v_full := (p_payload->>'full_backup_hours')::numeric; END IF;
+    IF coalesce(p_payload->>'log_backup_minutes', '') ~ '^[0-9]{1,7}(\.[0-9]{1,3})?$' THEN v_log := (p_payload->>'log_backup_minutes')::numeric; END IF;
+    IF v_scope IS NULL OR v_scope NOT IN ('tag', 'database') THEN
+      v_why := 'scope must be tag or database (an instance''s own ages are set in pgvigil.yaml''s mssql_thresholds)';
+    ELSIF v_scope = 'tag' AND v_tag IS NULL THEN
+      v_why := 'a tag row names its tag';
+    ELSIF v_scope = 'database' AND (v_inst IS NULL OR v_db IS NULL) THEN
+      v_why := 'a database row names its instance and its database';
+    ELSIF v_scope = 'database' AND NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.name = v_inst AND i.is_active AND i.engine = 'sqlserver') THEN
+      v_why := format('no active SQL Server instance %L', v_inst);
+    ELSIF (coalesce(p_payload->>'full_backup_hours', '') <> '' AND v_full IS NULL) OR (coalesce(p_payload->>'log_backup_minutes', '') <> '' AND v_log IS NULL) THEN
+      v_why := 'an age is a number of 0 or more (hours for the full backup, minutes for the log backup; 0 = not judged)';
+    ELSIF v_full IS NULL AND v_log IS NULL THEN
+      v_why := 'a row sets the full backup hours, the log backup minutes, or both';
+    ELSIF length(coalesce(v_tag, '')) > 200 OR length(coalesce(v_db, '')) > 128 OR length(coalesce(v_note, '')) > 500 THEN
+      v_why := 'a tag is 200 characters at most, a database name 128, a note 500';
+    END IF;
+    IF v_scope = 'tag' THEN v_inst := NULL; v_db := NULL; ELSE v_tag := NULL; END IF;
+  END IF;
+  IF v_why IS NULL THEN
+    BEGIN
+      IF v_op = 'end' THEN
+        UPDATE pgvigil.mssql_protection_overrides SET ended_by = v_user, ended_at = p_at WHERE override_id = v_id;
+        v_done := 'ended';
+      ELSE
+        UPDATE pgvigil.mssql_protection_overrides o SET ended_by = v_user, ended_at = p_at
+         WHERE o.ended_at IS NULL AND o.scope = v_scope AND coalesce(o.tag, '') = coalesce(v_tag, '')
+           AND coalesce(o.instance_name, '') = coalesce(v_inst, '') AND coalesce(o.database_name, '') = coalesce(v_db, '')
+        RETURNING o.override_id INTO v_id;
+        INSERT INTO pgvigil.mssql_protection_overrides (scope, tag, instance_name, database_name, full_backup_hours, log_backup_minutes,
+                                                        note, replaces, created_by, created_at, client)
+        VALUES (v_scope, v_tag, v_inst, v_db, v_full, v_log, v_note, v_id, v_user, p_at, v_client)
+        RETURNING override_id INTO v_new;
+        v_done := CASE WHEN v_id IS NOT NULL THEN format('row %s replaced by row %s', v_id, v_new) ELSE 'added' END;
+      END IF;
+    EXCEPTION
+      WHEN unique_violation THEN
+        v_why := 'a live row already holds this target';
+        v_new := NULL;
+      WHEN check_violation OR invalid_text_representation OR string_data_right_truncation OR numeric_value_out_of_range THEN
+        v_why := 'refused by the store: ' || SQLERRM;
+        v_new := NULL;
+    END;
+  END IF;
+  INSERT INTO pgvigil.mssql_protection_override_log (at, ui_user, client, op, override_id, outcome, detail, payload)
+  VALUES (p_at, v_user, v_client, v_op, coalesce(v_new, v_id), CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
+          coalesce(v_why, v_done), p_payload);
+  RETURN jsonb_build_object('outcome', CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
+                            'detail', coalesce(v_why, v_done), 'override_id', coalesce(v_new, v_id));
+END $$;
+
+-- mssql_protection_limits: the full backup hours and log backup minutes one database of one instance is judged by,
+-- each with where it comes from ('database row <n>', 'pgvigil.yaml', 'tag <tag> (row <n>)', 'the default')
+CREATE OR REPLACE FUNCTION pgvigil.mssql_protection_limits(p_instance_id int, p_database text)
+RETURNS TABLE (full_backup_hours numeric, full_from text, log_backup_minutes numeric, log_from text)
+LANGUAGE sql STABLE AS $$
+  WITH me AS (SELECT i.name, coalesce(t.tags, '{}'::text[]) AS tags FROM pgvigil.instances i
+                LEFT JOIN pgvigil.instance_tags_merged t ON t.instance_id = i.instance_id WHERE i.instance_id = p_instance_id),
+  o AS (SELECT x.* FROM pgvigil.mssql_protection_overrides x, me
+         WHERE x.ended_at IS NULL
+           AND ((x.scope = 'database' AND x.instance_name = me.name AND x.database_name = p_database)
+                OR (x.scope = 'tag' AND x.tag = ANY (me.tags)))),
+  y AS (SELECT t.full_backup_hours, t.log_backup_minutes FROM pgvigil.mssql_hadr_thresholds t WHERE t.instance_id = p_instance_id),
+  -- per age: the database row, the yaml, the strictest tag row (the lowest over 0, else 0), the default
+  f AS (SELECT coalesce(
+          (SELECT ARRAY[o.full_backup_hours::text, 'database row ' || o.override_id] FROM o WHERE o.scope = 'database' AND o.full_backup_hours IS NOT NULL),
+          (SELECT ARRAY[y.full_backup_hours::text, 'pgvigil.yaml'] FROM y WHERE y.full_backup_hours IS NOT NULL),
+          (SELECT ARRAY[o.full_backup_hours::text, 'tag ' || o.tag || ' (row ' || o.override_id || ')'] FROM o
+            WHERE o.scope = 'tag' AND o.full_backup_hours IS NOT NULL ORDER BY o.full_backup_hours = 0, o.full_backup_hours, o.override_id LIMIT 1),
+          ARRAY['168', 'the default']) AS v),
+  l AS (SELECT coalesce(
+          (SELECT ARRAY[o.log_backup_minutes::text, 'database row ' || o.override_id] FROM o WHERE o.scope = 'database' AND o.log_backup_minutes IS NOT NULL),
+          (SELECT ARRAY[y.log_backup_minutes::text, 'pgvigil.yaml'] FROM y WHERE y.log_backup_minutes IS NOT NULL),
+          (SELECT ARRAY[o.log_backup_minutes::text, 'tag ' || o.tag || ' (row ' || o.override_id || ')'] FROM o
+            WHERE o.scope = 'tag' AND o.log_backup_minutes IS NOT NULL ORDER BY o.log_backup_minutes = 0, o.log_backup_minutes, o.override_id LIMIT 1),
+          ARRAY['60', 'the default']) AS v)
+  SELECT f.v[1]::numeric, f.v[2], l.v[1]::numeric, l.v[2] FROM f, l
+$$;
+
+-- mssql_backup_judged: 0129's view (0066's with the Managed Instance reason for master, model and msdb), the full and
+-- log ages from mssql_protection_limits; full_hours_from and log_minutes_from appended (a view made over it with b.*
+-- keeps the columns it had: b.* was expanded when that view was made). internal/repo's TestBackupJudged0129Is0066PlusManagedInstance becomes '0156 = 0129 + the resolver'
+-- (WIRING: the test is not this task's file).
+CREATE OR REPLACE VIEW pgvigil.mssql_backup_judged AS
+WITH own AS (
+  SELECT s.*, i.name AS instance,
+         pl.full_backup_hours, l.diff_backup_hours, pl.log_backup_minutes, l.new_database_hours, l.nul_backup_days,
+         (SELECT p FROM unnest(l.backup_exclude) p WHERE s.database_name ILIKE p LIMIT 1) AS excluded_by,
+         pl.full_from AS full_hours_from, pl.log_from AS log_minutes_from
+    FROM pgvigil.mssql_backup_state s
+    JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+    JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = s.instance_id
+    CROSS JOIN LATERAL pgvigil.mssql_protection_limits(s.instance_id, s.database_name) pl
+   WHERE s.is_present
+), merged AS (
+  SELECT o.*,
+         coalesce(f.full_at, o.full_at) AS eff_full_at, coalesce(f.instance, o.instance) AS full_from,
+         coalesce(f.full_copy_only, o.full_copy_only) AS eff_full_copy_only,
+         coalesce(d.diff_at, o.diff_at) AS eff_diff_at, coalesce(d.instance, o.instance) AS diff_from,
+         coalesce(g.log_at, o.log_at) AS eff_log_at, coalesce(g.instance, o.instance) AS log_from,
+         coalesce(n.nul_at, o.nul_at) AS eff_nul_at, coalesce(n.nul_type, o.nul_type) AS eff_nul_type, coalesce(n.instance, o.instance) AS nul_from,
+         r.replicas_total, r.replicas_monitored
+    FROM own o
+    LEFT JOIN LATERAL (SELECT x.full_at, x.full_copy_only, xi.name AS instance FROM pgvigil.mssql_backup_state x JOIN pgvigil.instances xi ON xi.instance_id = x.instance_id AND xi.is_active
+                        WHERE o.ag_group_id IS NOT NULL AND x.ag_group_id = o.ag_group_id AND x.database_name = o.database_name AND x.is_present AND x.full_at IS NOT NULL
+                        ORDER BY x.full_at DESC LIMIT 1) f ON true
+    LEFT JOIN LATERAL (SELECT x.diff_at, xi.name AS instance FROM pgvigil.mssql_backup_state x JOIN pgvigil.instances xi ON xi.instance_id = x.instance_id AND xi.is_active
+                        WHERE o.ag_group_id IS NOT NULL AND x.ag_group_id = o.ag_group_id AND x.database_name = o.database_name AND x.is_present AND x.diff_at IS NOT NULL
+                        ORDER BY x.diff_at DESC LIMIT 1) d ON true
+    LEFT JOIN LATERAL (SELECT x.log_at, xi.name AS instance FROM pgvigil.mssql_backup_state x JOIN pgvigil.instances xi ON xi.instance_id = x.instance_id AND xi.is_active
+                        WHERE o.ag_group_id IS NOT NULL AND x.ag_group_id = o.ag_group_id AND x.database_name = o.database_name AND x.is_present AND x.log_at IS NOT NULL
+                        ORDER BY x.log_at DESC LIMIT 1) g ON true
+    LEFT JOIN LATERAL (SELECT x.nul_at, x.nul_type, xi.name AS instance FROM pgvigil.mssql_backup_state x JOIN pgvigil.instances xi ON xi.instance_id = x.instance_id AND xi.is_active
+                        WHERE o.ag_group_id IS NOT NULL AND x.ag_group_id = o.ag_group_id AND x.database_name = o.database_name AND x.is_present AND x.nul_at IS NOT NULL
+                        ORDER BY x.nul_at DESC LIMIT 1) n ON true
+    LEFT JOIN LATERAL (SELECT (SELECT count(*) FROM pgvigil.mssql_ag_state a WHERE a.instance_id = o.instance_id AND lower(a.group_id) = o.ag_group_id) AS replicas_total,
+                              (SELECT count(DISTINCT lower(a.replica_server)) FROM pgvigil.mssql_ag_state a JOIN pgvigil.instances ai ON ai.instance_id = a.instance_id AND ai.is_active
+                                WHERE lower(a.group_id) = o.ag_group_id AND a.is_local
+                                  AND EXISTS (SELECT 1 FROM pgvigil.mssql_backup_state b WHERE b.instance_id = a.instance_id AND b.ag_group_id = o.ag_group_id)) AS replicas_monitored
+                      ) r ON o.ag_group_id IS NOT NULL
+), j AS (
+  SELECT m.*,
+         CASE WHEN m.excluded_by IS NOT NULL THEN 'excluded by the pattern ' || m.excluded_by
+              WHEN m.database_name = 'tempdb' THEN 'tempdb is never backed up'
+              WHEN m.database_name IN ('master', 'model', 'msdb')
+                   AND EXISTS (SELECT 1 FROM pgvigil.instances x WHERE x.instance_id = m.instance_id AND x.platform = 'azuresqlmi')
+                THEN CASE WHEN m.database_name = 'master'
+                          THEN 'Azure SQL Managed Instance does not back up the physical master database and records no system database backup in msdb'
+                          ELSE 'Azure SQL Managed Instance backs up its system databases itself and does not record those backups in msdb' END
+              WHEN m.is_snapshot THEN 'a database snapshot'
+              WHEN m.state IS DISTINCT FROM 'ONLINE' THEN 'the database is ' || coalesce(lower(m.state), 'in an unknown state')
+              WHEN m.is_standby THEN 'a standby database (restoring logs)'
+              WHEN m.created_at > m.snapshot_at - make_interval(secs => (m.new_database_hours * 3600)::float8) THEN 'a new database'
+         END AS not_judged
+    FROM merged m
+)
+SELECT j.instance_id, j.instance, j.database_name, j.snapshot_at, j.state, j.recovery_model, j.created_at, j.ag_name, j.ag_group_id,
+       j.replicas_total, j.replicas_monitored,
+       (j.ag_group_id IS NOT NULL AND coalesce(j.replicas_monitored, 0) < coalesce(j.replicas_total, 0)) AS replicas_unseen,
+       j.not_judged,
+       -- <type>_from: the instance whose msdb holds that backup (where it ran)
+       j.eff_full_at AS full_at, CASE WHEN j.eff_full_at IS NOT NULL THEN j.full_from END AS full_from, j.eff_full_copy_only AS full_copy_only,
+       j.eff_diff_at AS diff_at, CASE WHEN j.eff_diff_at IS NOT NULL THEN j.diff_from END AS diff_from,
+       j.eff_log_at AS log_at, CASE WHEN j.eff_log_at IS NOT NULL THEN j.log_from END AS log_from,
+       j.eff_nul_at AS nul_at, j.eff_nul_type AS nul_type, CASE WHEN j.eff_nul_at IS NOT NULL THEN j.nul_from END AS nul_from,
+       j.history_from, j.full_backup_hours, j.diff_backup_hours, j.log_backup_minutes, j.nul_backup_days,
+       -- the ages AT THE READ: a view opened 50 minutes after an hourly read must not add those minutes to a log backup's age
+       extract(epoch FROM greatest(j.snapshot_at - j.eff_full_at, interval '0')) / 3600.0 AS full_age_hours,
+       extract(epoch FROM greatest(j.snapshot_at - j.eff_diff_at, interval '0')) / 3600.0 AS diff_age_hours,
+       extract(epoch FROM greatest(j.snapshot_at - j.eff_log_at, interval '0')) / 60.0 AS log_age_minutes,
+       CASE WHEN j.not_judged IS NOT NULL OR j.full_backup_hours = 0 THEN 'not judged'
+            WHEN j.eff_full_at IS NULL THEN 'never'
+            WHEN j.snapshot_at - j.eff_full_at > make_interval(secs => (j.full_backup_hours * 3600)::float8) THEN 'late'
+            ELSE 'ok' END AS full_status,
+       CASE WHEN j.not_judged IS NOT NULL OR j.diff_backup_hours = 0 OR j.database_name = 'master' THEN 'not judged'
+            WHEN j.eff_diff_at IS NULL AND j.eff_full_at IS NULL THEN 'never'
+            -- a full backup newer than the threshold stands in for a differential one
+            WHEN j.snapshot_at - greatest(j.eff_diff_at, j.eff_full_at) > make_interval(secs => (j.diff_backup_hours * 3600)::float8) THEN 'late'
+            ELSE 'ok' END AS diff_status,
+       CASE WHEN j.not_judged IS NOT NULL OR j.log_backup_minutes = 0 OR j.recovery_model IS DISTINCT FROM 'FULL' AND j.recovery_model IS DISTINCT FROM 'BULK_LOGGED'
+                 OR j.is_read_only OR j.database_name = 'model' THEN 'not judged'
+            -- under the full recovery model the log chain starts with the first full backup: before it there is nothing to back up
+            WHEN j.eff_full_at IS NULL THEN 'not judged'
+            WHEN j.eff_log_at IS NULL THEN 'never'
+            WHEN j.snapshot_at - j.eff_log_at > make_interval(secs => (j.log_backup_minutes * 60)::float8) THEN 'late'
+            ELSE 'ok' END AS log_status,
+       -- where each age the database is judged by comes from (0156: an override, pgvigil.yaml or the default)
+       j.full_hours_from, j.log_minutes_from
+  FROM j;

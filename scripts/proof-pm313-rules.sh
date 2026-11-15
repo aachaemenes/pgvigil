@@ -41,6 +41,13 @@
 #     sys.dm_os_sys_info reads it (printed beside free -m in the container), max server memory at the default, then
 #     at 97 % and 60 % of that RAM (mssql_instance, mssql_checks read each time): warning, review, ok, each suggestion
 #     = RAM minus the reserve. Red on f8e89d2: no mssql_memory_suggestion.
+#  R5. protection ages (Changed 46, F1, F2): on pmbox (tags env:pma, app:pmb) after mssql_backups, msdb's ages read
+#     168 'the default' / 60 'the default'; tag rows env:pma 48 h and app:pmb 24 h: 24 'tag app:pmb (row n)' (the
+#     strictest); env:pma at 0: still 24 (0 only when every tag says 0); a database row on msdb 1 h / 15 min: 1 and 15
+#     'database row n', model keeps 24; pgvigil.yaml's mssql_thresholds full_backup_hours 100: model 100 'pgvigil.yaml',
+#     msdb still 1 (the database row wins); msdb's row at 0: full_status 'not judged'; the door refuses a negative age,
+#     a database row on an instance it does not know, and an instance scope (the yaml's); every row ended: model 100.
+#     Red on f8e89d2: no import_mssql_protection_override.
 # NOT PROVEN HERE: SQL Server 2016, Managed Instance, a Windows host.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -89,7 +96,9 @@ go build -o "$TMPD/pgvigil" ./cmd/pgvigil
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
 PGDSN="${ADMIN_DSN/dbname=postgres/dbname=$PGDB}"; [[ "$PGDSN" == *"dbname=$PGDB"* ]] || PGDSN="$PGDSN dbname=$PGDB"
 CFG=$TMPD/m.yaml
-printf 'repository:\n  dsn: "%s"\ninstances:\n  - name: pmbox\n    engine: sqlserver\n    dsn: env:PGV_PM_MON\n' "$PGDSN" > "$CFG"
+# config [<yaml lines under the instance>]: the configuration, pmbox tagged env:pma and app:pmb
+config() { printf 'repository:\n  dsn: "%s"\ninstances:\n  - name: pmbox\n    engine: sqlserver\n    dsn: env:PGV_PM_MON\n    tags: [env:pma, app:pmb]\n%s' "$PGDSN" "${1:-}" > "$CFG"; }
+config
 "$TMPD/pgvigil" migrate -config "$CFG" > "$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "A: migrate"; }
 col mssql_instance mssql_memory
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'pmbox'")
@@ -202,4 +211,35 @@ echo "   live: default [$L1], 97 % [$L2], 60 % [$L3]; the suggestion by hand $WA
 sqok "max server memory back to the default" "EXEC sp_configure 'max server memory (MB)', 2147483647; RECONFIGURE;"
 ok "R6b: on the container's $RAM MB: unlimited warning, 97 % review, 60 % ok, the suggestion $WANTS MB"
 
-echo "PROOF OK: pm313 rules (A R7 R9 R6)"
+echo "== R5. protection ages (Changed 46) =="
+col mssql_backups
+door() { pq "SELECT pgvigil.import_mssql_protection_override(now(), '$1'::jsonb)"; }
+jb() { pq "SELECT full_backup_hours::float8 || '|' || full_hours_from || '|' || log_backup_minutes::float8 || '|' || log_minutes_from || '|' || full_status
+  FROM pgvigil.mssql_backup_judged WHERE instance_id = $SB AND database_name = '$1'"; }
+J0=$(jb msdb); [[ "$J0" == "168|the default|60|the default|"* ]] || fail "R5: msdb before any row [$J0]"
+door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":48}' | grep -q '"done"' || fail "R5: the env:pma row"
+door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"app:pmb","full_backup_hours":24}' | grep -q '"done"' || fail "R5: the app:pmb row"
+J1=$(jb msdb); [[ "$J1" == "24|tag app:pmb (row "*")|60|the default|"* ]] || fail "R5: two tag rows [$J1] (want 24 from app:pmb)"
+door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":0}' | grep -q 'replaced' || fail "R5: env:pma at 0"
+J2=$(jb msdb); [[ "$J2" == "24|tag app:pmb (row "* ]] || fail "R5: a tag at 0 beside one at 24 [$J2] (want 24)"
+door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"pmbox","database_name":"msdb","full_backup_hours":1,"log_backup_minutes":15}' | grep -q '"done"' || fail "R5: the msdb row"
+J3=$(jb msdb); J3M=$(jb model)
+[[ "$J3" == "1|database row "*"|15|database row "* && "$J3M" == "24|tag app:pmb"* ]] || fail "R5: the database row [$J3], model [$J3M]"
+config "    mssql_thresholds: {full_backup_hours: 100}
+"; col mssql_backups
+J4=$(jb msdb); J4M=$(jb model)
+[[ "$J4" == "1|database row "* && "$J4M" == "100|pgvigil.yaml|"* ]] || fail "R5: the yaml at 100: msdb [$J4] (want the database row), model [$J4M] (want 100 pgvigil.yaml)"
+door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"pmbox","database_name":"msdb","full_backup_hours":0}' | grep -q 'replaced' || fail "R5: msdb at 0"
+J5=$(jb msdb); [[ "$J5" == "0|database row "*"|not judged" ]] || fail "R5: msdb at 0 [$J5] (want not judged)"
+R1=$(door '{"op":"add","ui_user":"proof405","scope":"tag","tag":"env:pma","full_backup_hours":-1}')
+R2=$(door '{"op":"add","ui_user":"proof405","scope":"database","instance_name":"nosuch","database_name":"x","full_backup_hours":1}')
+R3=$(door '{"op":"add","ui_user":"proof405","scope":"instance","instance_name":"pmbox","full_backup_hours":1}')
+grep -q '"refused"' <<<"$R1" && grep -q '"refused"' <<<"$R2" && grep -q 'mssql_thresholds' <<<"$R3" || fail "R5: the refusals [$R1] [$R2] [$R3]"
+for o in $(pq "SELECT override_id FROM pgvigil.mssql_protection_overrides WHERE ended_at IS NULL"); do
+  door "{\"op\":\"end\",\"ui_user\":\"proof405\",\"override_id\":\"$o\"}" | grep -q '"done"' || fail "R5: ending row $o"; done
+J6=$(jb model); [[ "$J6" == "100|pgvigil.yaml|"* ]] || fail "R5: every row ended [$J6]"
+NL=$(pq "SELECT count(*) FROM pgvigil.mssql_protection_override_log"); [[ "$NL" -ge 10 ]] || fail "R5: $NL log rows"
+config; col mssql_backups
+ok "R5: the default, the strictest tag, a tag at 0 beside 24, a database row over the tags and the yaml, the yaml over the tags, 0 = not judged; three refusals; $NL attempts logged"
+
+echo "PROOF OK: pm313 rules (A R7 R9 R6 R5)"
