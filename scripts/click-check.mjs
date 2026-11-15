@@ -284,6 +284,9 @@ for (const sc of scopes) {
     }
     if (clickAll || !clicked.has(key)) {
       clicked.add(key);
+      // a link with a status filter is clicked with the Files page's stored filter on All (the folder page's own
+      // default is the filter asked for: without this its row could not fail), taken out again after the read
+      if (stWant) await ev(`(() => { for (const k of ['pgvigil.filesStatus.folder', 'pgvigil.filesStatus.instance']) localStorage.setItem(k, 'all'); return true; })()`);
       const got = await clickHref(sc.hash, l.href, l.kind === 'cell' ? l.column : null);
       const gt = tabOf(got.hash);
       landed = `${gt} (clicked: ${got.h2.slice(0, 50)})`;
@@ -294,8 +297,9 @@ for (const sc of scopes) {
         // the page itself shows the filter the link asked for (the Status select), not its stored one
         const sel = await ev(`document.querySelector('main select#files-status')?.value ?? '(no Status select)'`);
         if (sel !== stWant) verdict = `FAIL the landing's Status filter shows '${sel}', the link asked for '${stWant}'`;
-        else landed += `, Status ${sel}`;
+        else landed += `, Status ${sel} over a stored All`;
       }
+      if (stWant) await ev(`(() => { for (const k of ['pgvigil.filesStatus.folder', 'pgvigil.filesStatus.instance']) localStorage.removeItem(k); return true; })()`);
     }
     record({ scope: sc.name, kind: l.kind, column: l.column, engine, link: l.text, inst: l.inst, landed, href: l.href, verdict });
   }
@@ -516,12 +520,12 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const nh = await ev(`(() => { const n = document.querySelector('main .inst-header .inst-name'); return n ? n.tagName + '|' + (n.getAttribute('href') ?? '') + '|' + n.textContent.trim() : ''; })()`);
     pm(`${eng} ${inst.name}`, 'header name', eng, nh, nh === `SPAN||${inst.name}`, "the header's name on its own Summary: text, no link to the page it is on");
     if (await go(`#/findings?i=${inst.instance_id}`)) {
-      for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header .inst-name')`)); i++) await sleep(100);
+      for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header .inst-name')`)); i++) await sleep(250);
       const oh = await ev(`document.querySelector('main .inst-header .inst-name')?.getAttribute('href') ?? ''`);
       pm(`${eng} ${inst.name}`, 'header name (from Findings)', eng, oh, tabOf(oh) === 'summary' && paramsOf(oh).get('i') === String(inst.instance_id), "the header's name on another tab: a link to the instance's Summary");
     } else pm(`${eng} ${inst.name}`, 'header name (from Findings)', eng, 'not drawn', false, "the instance's Findings did not draw");
     if (!(await go(home))) { pm(`${eng} ${inst.name}`, 'header', eng, 'not drawn', false, 'the instance Summary did not draw again'); continue; }
-    for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(100);
+    for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(250);
     const dot = await ev(`(() => { const d = document.querySelector('#crumb .band-dot'); return d ? d.getAttribute('aria-label') : null; })()`);
     pm(`${eng} ${inst.name}`, 'breadcrumb dot', eng, String(dot), ['OK', 'Warning', 'Critical', 'Offline'].includes(dot), 'the band dot before the name in the breadcrumb, named by its word');
     // the calendar's month buttons
