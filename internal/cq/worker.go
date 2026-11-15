@@ -187,7 +187,7 @@ func (w *Worker) loop(ctx context.Context, src Source) error {
 	w.log.Info("request queue on", "collector", w.id, "workers", w.cfg.CQ.Workers, "kinds", registered())
 	applied := make(chan struct{}, 1)
 	go config.WatchInventory(ctx, w.log, src, w.pageHeld, w.cfg.Instances, w.cfg.QueryText, 15*time.Second, func(all []config.Instance) {
-		w.setHeld(ctx, all)
+		w.setHeld(all)
 		select {
 		case applied <- struct{}{}:
 		default:
@@ -215,7 +215,7 @@ func (w *Worker) loop(ctx context.Context, src Source) error {
 			w.stop()
 			return nil
 		case <-applied:
-			w.beat(ctx)
+			w.heldChanged(ctx)
 			w.claim(ctx)
 			publishNow()
 		case <-pub.C:
@@ -242,8 +242,8 @@ func (w *Worker) pageHeld(ctx context.Context) (bool, error) {
 	return held, err
 }
 
-// setHeld takes the instances held now and publishes their doors.
-func (w *Worker) setHeld(ctx context.Context, all []config.Instance) {
+// setHeld takes the instances held now (from the inventory's goroutine); the loop then calls heldChanged.
+func (w *Worker) setHeld(all []config.Instance) {
 	held := make(map[string]config.Instance, len(all))
 	for _, in := range all {
 		held[in.Name] = in
@@ -251,6 +251,13 @@ func (w *Worker) setHeld(ctx context.Context, all []config.Instance) {
 	w.mu.Lock()
 	w.held = held
 	w.mu.Unlock()
+}
+
+// heldChanged renews the lease with the held set, then publishes its doors, in that order and from the loop's
+// goroutine: a door row references its worker's lease row (0200's foreign key), so doors sent before the worker's first
+// beat are refused, and a refused publish waits for publishEvery.
+func (w *Worker) heldChanged(ctx context.Context) {
+	w.beat(ctx)
 	w.publishDoorsNow(ctx)
 }
 

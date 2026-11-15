@@ -357,3 +357,59 @@ func TestRunPanicEndsFailed(t *testing.T) {
 		t.Fatalf("a panicking runner: %+v", end)
 	}
 }
+
+// TestHeldChangedLeaseFirstOnAStore (r01's red, 'the lease and the doors: not within 10s'): on a migrated store
+// (PGVIGIL_REPO_TEST_DSN, skipped without it), a worker with no lease row yet - its doors sent first are refused by
+// 0200's foreign key and nothing is published (the old order: setHeld published from the inventory's goroutine,
+// racing the loop's first beat, and a refused publish waits for publishEvery); heldChanged renews the lease with the
+// held set first, so the lease names the instance and its door is there at once.
+func TestHeldChangedLeaseFirstOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sfx := time.Now().UnixNano() % 1000000000
+	inst := fmt.Sprintf("cq-hc-%d", sfx)
+	w := &Worker{log: slog.New(slog.DiscardHandler), pool: pool, id: fmt.Sprintf("cq-hc-%d", sfx), host: "test-host",
+		cfg:  &config.Config{CQ: config.CQ{Enabled: true, Workers: 2, ResultKeep: "read"}},
+		held: map[string]config.Instance{}, running: map[int64]*run{}, byInst: map[string]int{}, wake: make(chan struct{}, 1)}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.cq_workers WHERE collector_id = $1`, w.id)
+	})
+	registerForTest(t, "admin_test", standIn{fn: func(context.Context, *Env, Request) End { return End{State: "done"} }})
+	doors := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.action_doors WHERE collector_id = $1 AND instance = $2 AND kind = 'admin_test' AND open`, w.id, inst).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	w.setHeld([]config.Instance{{Name: inst, Engine: config.EnginePostgres}})
+	// the cause: doors sent before the worker's lease row exist are refused (the foreign key), none published
+	if err := publishDoors(ctx, pool, w.id, doorRows(w.env(config.Instance{}), w.held)); err == nil || !strings.Contains(err.Error(), "23503") {
+		t.Fatalf("doors before the lease: want the foreign key's refusal (23503), got %v", err)
+	}
+	if n := doors(); n != 0 {
+		t.Fatalf("doors before the lease: %d published", n)
+	}
+	// the order heldChanged keeps: the lease, then the doors
+	w.heldChanged(ctx)
+	var insts []string
+	if err := pool.QueryRow(ctx, `SELECT instances FROM pgvigil.cq_workers WHERE collector_id = $1 AND beat_at IS NOT NULL`, w.id).Scan(&insts); err != nil {
+		t.Fatalf("the lease row after heldChanged: %v", err)
+	}
+	if len(insts) != 1 || insts[0] != inst {
+		t.Fatalf("the lease names %v, want [%s]", insts, inst)
+	}
+	if n := doors(); n != 1 {
+		t.Fatalf("the door after heldChanged: %d (want 1)", n)
+	}
+}
