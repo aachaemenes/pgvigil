@@ -480,13 +480,15 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	limit := runTimeout(c)
 	sctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	logRun := func(instanceID int, status, note string) {
+	// logStage records the run with where it failed (0198: 'import' for a write into the repository); logRun names none
+	logStage := func(instanceID int, status, note, stage string) {
 		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 		defer rcancel()
-		if err := r.LogCollection(rctx, instanceID, name, start, time.Since(start), status, note); err != nil {
+		if err := r.LogCollectionStage(rctx, instanceID, name, start, time.Since(start), status, note, stage); err != nil {
 			log.Warn("the collection's result was not recorded", "instance", in.Name, "collection", name, "status", status, "err", err)
 		}
 	}
+	logRun := func(instanceID int, status, note string) { logStage(instanceID, status, note, "") }
 	db, conn, err := Connect(sctx, in)
 	if err != nil {
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
@@ -541,16 +543,21 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	err = StoreHADRThresholds(tctx, r, instanceID, name, start, in.MSSQLThresholds)
 	tcancel()
 	if err != nil {
-		logRun(instanceID, "error", err.Error())
+		logStage(instanceID, "error", err.Error(), "import")
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
 	var rows []collect.Row
+	cursorFailed := false // the read of the collector's own cursor failed: the repository's side, stage 'import' (0198)
 	if cc, ok := c.(CursorCollector); ok {
 		rows, err = cc.RunFrom(sctx, conn, info, func(_ context.Context, source string) (int64, bool, error) {
 			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			defer ccancel()
-			return r.MSSQLSeqCursor(cctx, instanceID, source)
+			seq, found, cerr := r.MSSQLSeqCursor(cctx, instanceID, source)
+			if cerr != nil {
+				cursorFailed = true
+			}
+			return seq, found, cerr
 		})
 	} else {
 		rows, err = c.Run(sctx, conn, info)
@@ -562,7 +569,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	if err != nil {
 		err = timeoutNote(sctx, limit, err)
-		logRun(instanceID, "error", err.Error())
+		if cursorFailed {
+			logStage(instanceID, "error", err.Error(), "import")
+		} else {
+			logRun(instanceID, "error", err.Error())
+		}
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	collect.ApplyTextPolicy(rows, in.QueryText)
@@ -570,7 +581,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	err = r.Import(ictx, instanceID, name, start, rows)
 	icancel()
 	if err != nil {
-		logRun(instanceID, "error", err.Error())
+		logStage(instanceID, "error", err.Error(), "import")
 		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// task 406: a collector that must learn its rows were stored (mssql_running_plans marks the plans it sent)
