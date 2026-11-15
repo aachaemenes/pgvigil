@@ -66,13 +66,20 @@ SELECT f.group_name, f.role, f.replication_state, f.secondary_type, f.rw_policy,
  WHERE f.server_key IN (` + sqlGeoServers + `)
  ORDER BY holds_database DESC, f.group_name`
 
-// the window's samples (newest first, at most a day of minutes; the hours past a day are B2a-N2's shape)
+// the window's series, newest first: a window of a day or less its samples; a longer one 0151's hours
+// (mssql_georepl_window: the whole hours from mssql_georepl_hour, the edges and any dirty range from the samples), each
+// row's lag and unsent window its maximum (a sample row's own values), so a chart reads 5 minutes to a year (task 390b
+// task 7, B2a-N2's shape)
 const sqlGeoSeries = `
-SELECT x.snapshot_at, x.link_guid, x.role, x.replication_state, x.replication_lag_sec, round(x.unsent_s) AS unsent_s, x.ack_age_s
+SELECT x.snapshot_at, x.link_guid, x.role, x.replication_state, x.replication_lag_sec, round(x.unsent_s) AS unsent_s, x.ack_age_s, 1 AS reads
   FROM pgvigil.mssql_georepl_sample x
- WHERE x.instance_id = $1 AND x.snapshot_at >= $2 AND x.snapshot_at < $3
- ORDER BY x.snapshot_at DESC
- LIMIT 1440`
+ WHERE $3::timestamptz - $2::timestamptz <= interval '1 day' AND x.instance_id = $1 AND x.snapshot_at >= $2 AND x.snapshot_at < $3
+UNION ALL
+SELECT w.snapshot_at, w.link_guid, NULL, NULL, w.lag_max, round(w.unsent_max), NULL, w.reads
+  FROM pgvigil.mssql_georepl_window(ARRAY[$1::int], $2, $3) w
+ WHERE $3::timestamptz - $2::timestamptz > interval '1 day'
+ ORDER BY 1 DESC
+ LIMIT 20000`
 
 // the window's events: the links' and the groups' (the groups' of the database's servers, sqlGeoServers)
 var sqlGeoEvents = `

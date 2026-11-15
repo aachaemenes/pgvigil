@@ -737,3 +737,412 @@ SELECT g.instance_id, 'warning', 'cloud door failing', CASE g.provider WHEN 'aws
   FROM pgvigil.cloud_replica_reads g
   JOIN pgvigil.instances i ON i.instance_id = g.instance_id AND i.is_active
  WHERE g.door_fails >= 3 AND g.snapshot_at > now() - interval '15 minutes';
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- The hours (task 390b task 7; the design's L51): cloud_replica_hour and mssql_georepl_hour in B2a-N2's settled shape
+-- (0167): the UTC hour (date_trunc on the UTC wall clock); per hour the points (or reads), the TOTAL and the minimum and
+-- maximum, so a window's average over hours = sum(total) / sum(points), the same as over the samples; filled by a
+-- statement trigger with a transition table (cloud_replica_sample: INSERT and UPDATE, its import revising a datapoint
+-- with a newer read's value; mssql_georepl_sample: INSERT, ON CONFLICT DO NOTHING) - per key its own lock in its own
+-- statement under lock_timeout 5 s, the key's dirty range healed under 200 ms, then the touched hours RECOMPUTED from
+-- the stored samples (never added to); a failure never fails the import (the hours merged into the key's dirty range,
+-- one 'rollup failed' row in collection_log an hour at most, healed by the next trigger call of the key or by 'pgvigil
+-- purge'); partitions by month without a second index (fillfactor 80), made by the trigger only when purge has not;
+-- 730 days by their own hours_retention rows. Departure from 0167: no first build - 0151 makes the sample tables and the
+-- hour tables together, so no stored sample predates the trigger. WIRING (as B2a-N2's patch): purge()'s last block
+-- calls cloud_replica_hour_purge and mssql_georepl_hour_purge and heals each pending key; apply_roles()' owner-only
+-- list gains the writers; purge's months ahead (AzureDBHourMonths' list) gains both tables.
+INSERT INTO pgvigil.hours_retention (table_name, days) VALUES ('cloud_replica_hour', 730), ('mssql_georepl_hour', 730)
+ON CONFLICT (table_name) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_hour (
+  provider     text NOT NULL,
+  resource_id  text NOT NULL,
+  metric       text NOT NULL,
+  snapshot_at  timestamptz NOT NULL,   -- the UTC hour
+  points       int NOT NULL,
+  total        double precision NOT NULL,
+  min_value    double precision,
+  max_value    double precision,
+  PRIMARY KEY (provider, resource_id, metric, snapshot_at)
+) PARTITION BY RANGE (snapshot_at);
+CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_hour_dirty (
+  provider     text NOT NULL,
+  resource_id  text NOT NULL,
+  from_at      timestamptz NOT NULL,
+  to_at        timestamptz NOT NULL,
+  why          text,
+  noted_at     timestamptz NOT NULL DEFAULT now(),
+  logged_at    timestamptz,
+  instance_id  int REFERENCES pgvigil.instances (instance_id) ON DELETE SET NULL,   -- the import whose call failed (the log row's)
+  PRIMARY KEY (provider, resource_id)
+);
+
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_georepl_hour (
+  instance_id     int NOT NULL,
+  link_guid       text NOT NULL,
+  snapshot_at     timestamptz NOT NULL,   -- the UTC hour
+  reads           int NOT NULL,
+  lag_total       bigint,                 -- the sum of the reads' replication_lag_sec
+  lag_counted     int,                    -- the reads that carry it (a secondary's carry none)
+  lag_min         int,
+  lag_max         int,
+  unsent_total    numeric,
+  unsent_counted  int,
+  unsent_min      numeric,
+  unsent_max      numeric,
+  PRIMARY KEY (instance_id, link_guid, snapshot_at)
+) PARTITION BY RANGE (snapshot_at);
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_georepl_hour_dirty (
+  instance_id  int PRIMARY KEY REFERENCES pgvigil.instances (instance_id) ON DELETE CASCADE,
+  from_at      timestamptz NOT NULL,
+  to_at        timestamptz NOT NULL,
+  why          text,
+  noted_at     timestamptz NOT NULL DEFAULT now(),
+  logged_at    timestamptz
+);
+
+-- one month's partition of either hour table (no second index; fillfactor 80)
+CREATE OR REPLACE FUNCTION pgvigil.hour_partition_0151(p_table text, p_at timestamptz)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  v_from timestamp := date_trunc('month', p_at AT TIME ZONE 'UTC');
+  v_name text := p_table || '_' || to_char(v_from, 'YYYYMM');
+BEGIN
+  IF p_table NOT IN ('cloud_replica_hour', 'mssql_georepl_hour') THEN
+    RAISE EXCEPTION 'hour_partition_0151: % is not one of 0151''s hour tables', p_table;
+  END IF;
+  IF to_regclass('pgvigil.' || quote_ident(v_name)) IS NOT NULL THEN
+    RETURN;
+  END IF;
+  BEGIN
+    EXECUTE format('CREATE TABLE pgvigil.%I PARTITION OF pgvigil.%I FOR VALUES FROM (%L) TO (%L) WITH (fillfactor = 80)',
+                   v_name, p_table, v_from AT TIME ZONE 'UTC', (v_from + interval '1 month') AT TIME ZONE 'UTC');
+  EXCEPTION WHEN duplicate_table THEN
+    NULL;   -- another importer made it first
+  END;
+END $$;
+
+-- the given UTC hours of one resource recomputed from its samples, every metric (the caller holds the resource's lock)
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_recompute(p_provider text, p_resource text, p_hours timestamptz[])
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE v_n int;
+BEGIN
+  PERFORM pgvigil.hour_partition_0151('cloud_replica_hour', m)
+     FROM (SELECT DISTINCT date_trunc('month', h AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS m FROM unnest(p_hours) h) x;
+  INSERT INTO pgvigil.cloud_replica_hour AS s (provider, resource_id, metric, snapshot_at, points, total, min_value, max_value)
+  SELECT p_provider, p_resource, x.metric, h.h, count(*), sum(x.value), min(x.value), max(x.value)
+    FROM unnest(p_hours) h(h)
+    JOIN pgvigil.cloud_replica_sample x ON x.provider = p_provider AND x.resource_id = p_resource
+                                       AND x.snapshot_at >= h.h AND x.snapshot_at < h.h + interval '1 hour'
+   GROUP BY x.metric, h.h
+  ON CONFLICT (provider, resource_id, metric, snapshot_at) DO UPDATE SET points = EXCLUDED.points, total = EXCLUDED.total,
+      min_value = EXCLUDED.min_value, max_value = EXCLUDED.max_value;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n;
+END $$;
+
+-- the given UTC hours of one instance's links recomputed from its samples (the caller holds the instance's lock)
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_recompute(p_instance_id int, p_hours timestamptz[])
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE v_n int;
+BEGIN
+  PERFORM pgvigil.hour_partition_0151('mssql_georepl_hour', m)
+     FROM (SELECT DISTINCT date_trunc('month', h AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS m FROM unnest(p_hours) h) x;
+  INSERT INTO pgvigil.mssql_georepl_hour AS s (instance_id, link_guid, snapshot_at, reads, lag_total, lag_counted, lag_min, lag_max,
+      unsent_total, unsent_counted, unsent_min, unsent_max)
+  SELECT p_instance_id, x.link_guid, h.h, count(*), sum(x.replication_lag_sec), count(x.replication_lag_sec), min(x.replication_lag_sec),
+         max(x.replication_lag_sec), sum(x.unsent_s), count(x.unsent_s), min(x.unsent_s), max(x.unsent_s)
+    FROM unnest(p_hours) h(h)
+    JOIN pgvigil.mssql_georepl_sample x ON x.instance_id = p_instance_id AND x.snapshot_at >= h.h AND x.snapshot_at < h.h + interval '1 hour'
+   GROUP BY x.link_guid, h.h
+  ON CONFLICT (instance_id, link_guid, snapshot_at) DO UPDATE SET reads = EXCLUDED.reads, lag_total = EXCLUDED.lag_total,
+      lag_counted = EXCLUDED.lag_counted, lag_min = EXCLUDED.lag_min, lag_max = EXCLUDED.lag_max, unsent_total = EXCLUDED.unsent_total,
+      unsent_counted = EXCLUDED.unsent_counted, unsent_min = EXCLUDED.unsent_min, unsent_max = EXCLUDED.unsent_max;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n;
+END $$;
+
+-- one key's dirty range rebuilt newest week first (the caller holds the key's lock); with a budget (ms, NULL = none)
+-- the heal stops once it is spent and keeps the rest as it was read; the range is changed or removed only as it was
+-- read (from, to, noted_at: a failure merged into it meanwhile keeps it whole)
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_heal(p_provider text, p_resource text, p_budget_ms int DEFAULT NULL)
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE v record; v_n int := 0; v_t0 timestamptz := clock_timestamp(); v_lo timestamptz; v_hi timestamptz; v_cut timestamptz; v_hours timestamptz[];
+BEGIN
+  SELECT d.from_at, d.to_at, d.noted_at, d.logged_at, d.instance_id INTO v FROM pgvigil.cloud_replica_hour_dirty d
+   WHERE d.provider = p_provider AND d.resource_id = p_resource;
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+  SELECT min(x.snapshot_at), max(x.snapshot_at) INTO v_lo, v_hi FROM pgvigil.cloud_replica_sample x
+   WHERE x.provider = p_provider AND x.resource_id = p_resource AND x.snapshot_at >= v.from_at AND x.snapshot_at < v.to_at;
+  v_lo := date_trunc('hour', v_lo AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
+  v_hi := (date_trunc('hour', v_hi AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC';
+  WHILE v_lo IS NOT NULL AND v_hi > v_lo LOOP
+    v_cut := greatest(v_lo, v_hi - interval '7 days');
+    SELECT array_agg(DISTINCT date_trunc('hour', x.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') INTO v_hours
+      FROM pgvigil.cloud_replica_sample x
+     WHERE x.provider = p_provider AND x.resource_id = p_resource AND x.snapshot_at >= v_cut AND x.snapshot_at < v_hi;
+    IF v_hours IS NOT NULL THEN
+      v_n := v_n + pgvigil.cloud_replica_hour_recompute(p_provider, p_resource, v_hours);
+    END IF;
+    v_hi := v_cut;
+    IF p_budget_ms IS NOT NULL AND v_hi > v_lo AND clock_timestamp() - v_t0 >= make_interval(secs => p_budget_ms / 1000.0) THEN
+      UPDATE pgvigil.cloud_replica_hour_dirty d SET to_at = v_hi, noted_at = clock_timestamp()
+       WHERE d.provider = p_provider AND d.resource_id = p_resource AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
+      RETURN v_n;
+    END IF;
+  END LOOP;
+  DELETE FROM pgvigil.cloud_replica_hour_dirty d
+   WHERE d.provider = p_provider AND d.resource_id = p_resource AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
+  IF FOUND AND v.logged_at IS NOT NULL AND v.instance_id IS NOT NULL THEN
+    INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
+    VALUES (v.instance_id, 'cloud_replica_hour', now(), 'ok', format('rollup healed: %s:%s''s hours %s to %s rebuilt', p_provider, p_resource,
+            to_char(v.from_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(v.to_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')));
+  END IF;
+  RETURN v_n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_heal(p_instance_id int, p_budget_ms int DEFAULT NULL)
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE v record; v_n int := 0; v_t0 timestamptz := clock_timestamp(); v_lo timestamptz; v_hi timestamptz; v_cut timestamptz; v_hours timestamptz[];
+BEGIN
+  SELECT d.from_at, d.to_at, d.noted_at, d.logged_at INTO v FROM pgvigil.mssql_georepl_hour_dirty d WHERE d.instance_id = p_instance_id;
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+  SELECT min(x.snapshot_at), max(x.snapshot_at) INTO v_lo, v_hi FROM pgvigil.mssql_georepl_sample x
+   WHERE x.instance_id = p_instance_id AND x.snapshot_at >= v.from_at AND x.snapshot_at < v.to_at;
+  v_lo := date_trunc('hour', v_lo AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
+  v_hi := (date_trunc('hour', v_hi AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC';
+  WHILE v_lo IS NOT NULL AND v_hi > v_lo LOOP
+    v_cut := greatest(v_lo, v_hi - interval '7 days');
+    SELECT array_agg(DISTINCT date_trunc('hour', x.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') INTO v_hours
+      FROM pgvigil.mssql_georepl_sample x WHERE x.instance_id = p_instance_id AND x.snapshot_at >= v_cut AND x.snapshot_at < v_hi;
+    IF v_hours IS NOT NULL THEN
+      v_n := v_n + pgvigil.mssql_georepl_hour_recompute(p_instance_id, v_hours);
+    END IF;
+    v_hi := v_cut;
+    IF p_budget_ms IS NOT NULL AND v_hi > v_lo AND clock_timestamp() - v_t0 >= make_interval(secs => p_budget_ms / 1000.0) THEN
+      UPDATE pgvigil.mssql_georepl_hour_dirty d SET to_at = v_hi, noted_at = clock_timestamp()
+       WHERE d.instance_id = p_instance_id AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
+      RETURN v_n;
+    END IF;
+  END LOOP;
+  DELETE FROM pgvigil.mssql_georepl_hour_dirty d
+   WHERE d.instance_id = p_instance_id AND d.from_at = v.from_at AND d.to_at = v.to_at AND d.noted_at = v.noted_at;
+  IF FOUND AND v.logged_at IS NOT NULL THEN
+    INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
+    VALUES (p_instance_id, 'mssql_georepl_hour', now(), 'ok', format('rollup healed: the hours %s to %s rebuilt',
+            to_char(v.from_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(v.to_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')));
+  END IF;
+  RETURN v_n;
+END $$;
+
+-- a trigger call that could not write its hours: merged into the key's dirty range, one 'rollup failed' row when the
+-- range is new or its last such row is an hour old
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_failed(p_provider text, p_resource text, p_instance_id int, p_from timestamptz, p_to timestamptz, p_why text)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_prev timestamptz; v_had boolean; v_log boolean;
+BEGIN
+  SELECT true, d.logged_at INTO v_had, v_prev FROM pgvigil.cloud_replica_hour_dirty d WHERE d.provider = p_provider AND d.resource_id = p_resource;
+  v_log := v_had IS NULL OR v_prev IS NULL OR v_prev < now() - interval '1 hour';
+  INSERT INTO pgvigil.cloud_replica_hour_dirty AS d (provider, resource_id, from_at, to_at, why, noted_at, logged_at, instance_id)
+  VALUES (p_provider, p_resource, p_from, p_to, p_why, clock_timestamp(), now(), p_instance_id)
+  ON CONFLICT (provider, resource_id) DO UPDATE
+    SET from_at = least(d.from_at, excluded.from_at), to_at = greatest(d.to_at, excluded.to_at), noted_at = clock_timestamp(), why = excluded.why,
+        logged_at = CASE WHEN v_log THEN now() ELSE d.logged_at END, instance_id = coalesce(excluded.instance_id, d.instance_id);
+  IF v_log AND p_instance_id IS NOT NULL THEN
+    INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
+    VALUES (p_instance_id, 'cloud_replica_hour', now(), 'error',
+            format('rollup failed for %s:%s''s hours %s to %s (the samples are stored; the hours are rebuilt by the next import or purge): %s',
+                   p_provider, p_resource, to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), p_why));
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_failed(p_instance_id int, p_from timestamptz, p_to timestamptz, p_why text)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_prev timestamptz; v_had boolean; v_log boolean;
+BEGIN
+  SELECT true, d.logged_at INTO v_had, v_prev FROM pgvigil.mssql_georepl_hour_dirty d WHERE d.instance_id = p_instance_id;
+  v_log := v_had IS NULL OR v_prev IS NULL OR v_prev < now() - interval '1 hour';
+  INSERT INTO pgvigil.mssql_georepl_hour_dirty AS d (instance_id, from_at, to_at, why, noted_at, logged_at)
+  VALUES (p_instance_id, p_from, p_to, p_why, clock_timestamp(), now())
+  ON CONFLICT (instance_id) DO UPDATE
+    SET from_at = least(d.from_at, excluded.from_at), to_at = greatest(d.to_at, excluded.to_at), noted_at = clock_timestamp(), why = excluded.why,
+        logged_at = CASE WHEN v_log THEN now() ELSE d.logged_at END;
+  IF v_log THEN
+    INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
+    VALUES (p_instance_id, 'mssql_georepl_hour', now(), 'error',
+            format('rollup failed for the hours %s to %s (the samples are stored; the hours are rebuilt by the next import or purge): %s',
+                   to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), p_why));
+  END IF;
+END $$;
+
+-- 'pgvigil purge' heals each pending key, one per transaction, with no budget
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_heal_one(p_provider text, p_resource text)
+RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.cloud_replica_hour'), hashtext(p_provider || ':' || p_resource));
+  RETURN pgvigil.cloud_replica_hour_heal(p_provider, p_resource);
+END $$;
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_heal_one(p_instance_id int)
+RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_georepl_hour'), p_instance_id);
+  RETURN pgvigil.mssql_georepl_hour_heal(p_instance_id);
+END $$;
+
+-- the triggers' bodies (0167's mssql_azuredb_hour_tg): per key in the statement's rows, lock_timeout 5 s inside that
+-- key's block alone, the lock in its own statement, the dirty range healed under 200 ms, the touched hours recomputed,
+-- the caller's lock_timeout back; any error caught per key and recorded under the caller's lock_timeout
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_tg()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v record; v_lt text := current_setting('lock_timeout');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM n) THEN RETURN NULL; END IF;
+  FOR v IN SELECT x.provider, x.resource_id, max(x.instance_id) AS instance_id,
+                  array_agg(DISTINCT date_trunc('hour', x.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS hours
+             FROM n x GROUP BY x.provider, x.resource_id ORDER BY x.provider, x.resource_id LOOP
+    BEGIN
+      PERFORM set_config('lock_timeout', '5s', true);
+      PERFORM pg_advisory_xact_lock(hashtext('pgvigil.cloud_replica_hour'), hashtext(v.provider || ':' || v.resource_id));
+      PERFORM pgvigil.cloud_replica_hour_heal(v.provider, v.resource_id, 200);
+      PERFORM pgvigil.cloud_replica_hour_recompute(v.provider, v.resource_id, v.hours);
+      PERFORM set_config('lock_timeout', v_lt, true);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        PERFORM set_config('lock_timeout', v_lt, true);
+        PERFORM pgvigil.cloud_replica_hour_failed(v.provider, v.resource_id, v.instance_id, (SELECT min(h) FROM unnest(v.hours) h),
+                                                  (SELECT max(h) FROM unnest(v.hours) h) + interval '1 hour', SQLERRM);
+      EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'cloud_replica_hour: the rollup of %:% failed and could not be recorded: %', v.provider, v.resource_id, SQLERRM;
+      END;
+    END;
+  END LOOP;
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_tg()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v record; v_lt text := current_setting('lock_timeout');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM n) THEN RETURN NULL; END IF;
+  FOR v IN SELECT x.instance_id, array_agg(DISTINCT date_trunc('hour', x.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS hours
+             FROM n x GROUP BY x.instance_id ORDER BY x.instance_id LOOP
+    BEGIN
+      PERFORM set_config('lock_timeout', '5s', true);
+      PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_georepl_hour'), v.instance_id);
+      PERFORM pgvigil.mssql_georepl_hour_heal(v.instance_id, 200);
+      PERFORM pgvigil.mssql_georepl_hour_recompute(v.instance_id, v.hours);
+      PERFORM set_config('lock_timeout', v_lt, true);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        PERFORM set_config('lock_timeout', v_lt, true);
+        PERFORM pgvigil.mssql_georepl_hour_failed(v.instance_id, (SELECT min(h) FROM unnest(v.hours) h),
+                                                  (SELECT max(h) FROM unnest(v.hours) h) + interval '1 hour', SQLERRM);
+      EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'mssql_georepl_hour: the rollup of instance % failed and could not be recorded: %', v.instance_id, SQLERRM;
+      END;
+    END;
+  END LOOP;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS cloud_replica_hour_ins ON pgvigil.cloud_replica_sample;
+CREATE TRIGGER cloud_replica_hour_ins AFTER INSERT ON pgvigil.cloud_replica_sample
+  REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION pgvigil.cloud_replica_hour_tg();
+DROP TRIGGER IF EXISTS cloud_replica_hour_upd ON pgvigil.cloud_replica_sample;
+CREATE TRIGGER cloud_replica_hour_upd AFTER UPDATE ON pgvigil.cloud_replica_sample
+  REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION pgvigil.cloud_replica_hour_tg();
+DROP TRIGGER IF EXISTS mssql_georepl_hour_ins ON pgvigil.mssql_georepl_sample;
+CREATE TRIGGER mssql_georepl_hour_ins AFTER INSERT ON pgvigil.mssql_georepl_sample
+  REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION pgvigil.mssql_georepl_hour_tg();
+
+-- the keys 'pgvigil purge' heals
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_pending()
+RETURNS TABLE (provider text, resource_id text) LANGUAGE sql STABLE AS $$
+  SELECT d.provider, d.resource_id FROM pgvigil.cloud_replica_hour_dirty d ORDER BY 1, 2
+$$;
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_pending()
+RETURNS SETOF int LANGUAGE sql STABLE AS $$
+  SELECT d.instance_id FROM pgvigil.mssql_georepl_hour_dirty d ORDER BY 1
+$$;
+
+-- the months of an hour table wholly older than its hours_retention row (730 days when absent) dropped; their names
+-- returned (purge()'s last block adds them to the run's partitions_dropped: WIRING)
+CREATE OR REPLACE FUNCTION pgvigil.hour_purge_0151(p_table text)
+RETURNS text[] LANGUAGE plpgsql AS $$
+DECLARE v_days int; v_part record; v_names text[] := '{}';
+BEGIN
+  IF p_table NOT IN ('cloud_replica_hour', 'mssql_georepl_hour') THEN
+    RAISE EXCEPTION 'hour_purge_0151: % is not one of 0151''s hour tables', p_table;
+  END IF;
+  SELECT r.days INTO v_days FROM pgvigil.hours_retention r WHERE r.table_name = p_table;
+  v_days := coalesce(v_days, 730);
+  FOR v_part IN
+    SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+     WHERE i.inhparent = ('pgvigil.' || p_table)::regclass AND c.relname ~ '_[0-9]{6}$'
+       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
+     ORDER BY c.relname
+  LOOP
+    EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);
+    v_names := v_names || v_part.relname::text;
+  END LOOP;
+  RETURN v_names;
+END $$;
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_purge() RETURNS text[] LANGUAGE sql AS $$ SELECT pgvigil.hour_purge_0151('cloud_replica_hour') $$;
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_hour_purge() RETURNS text[] LANGUAGE sql AS $$ SELECT pgvigil.hour_purge_0151('mssql_georepl_hour') $$;
+
+-- cloud_replica_window: the window [p_from, p_to) of the provider's resources p_ids in the hour table's shape: the whole
+-- hours [c, f) from the hours outside each resource's dirty range, the samples of the two edges [p_from, c) and
+-- [max(f, c), p_to) and of each dirty range within [c, f) (a sample row: points 1, total = min = max = its value).
+-- Summed, a window gives the same numbers as its samples.
+CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_window(p_provider text, p_ids text[], p_from timestamptz, p_to timestamptz)
+RETURNS SETOF pgvigil.cloud_replica_hour LANGUAGE sql STABLE AS $$
+  WITH b AS (SELECT CASE WHEN date_trunc('hour', p_from AT TIME ZONE 'UTC') = p_from AT TIME ZONE 'UTC' THEN p_from
+                         ELSE (date_trunc('hour', p_from AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC' END AS c,
+                    date_trunc('hour', p_to AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS f),
+  dr AS (SELECT d.resource_id, date_trunc('hour', greatest(d.from_at, b.c) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS lo,
+                CASE WHEN date_trunc('hour', least(d.to_at, b.f) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = least(d.to_at, b.f) THEN least(d.to_at, b.f)
+                     ELSE (date_trunc('hour', least(d.to_at, b.f) AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC' END AS hi
+           FROM pgvigil.cloud_replica_hour_dirty d CROSS JOIN b
+          WHERE d.provider = p_provider AND d.resource_id = ANY (p_ids) AND d.from_at < b.f AND d.to_at > b.c)
+  SELECT h.* FROM pgvigil.cloud_replica_hour h CROSS JOIN b
+   WHERE h.provider = p_provider AND h.resource_id = ANY (p_ids) AND h.snapshot_at >= b.c AND h.snapshot_at < b.f
+     AND NOT EXISTS (SELECT 1 FROM dr WHERE dr.resource_id = h.resource_id AND dr.lo <= h.snapshot_at AND dr.hi > h.snapshot_at)
+  UNION ALL
+  SELECT x.provider, x.resource_id, x.metric, x.snapshot_at, 1, x.value, x.value, x.value FROM pgvigil.cloud_replica_sample x CROSS JOIN b
+   WHERE x.provider = p_provider AND x.resource_id = ANY (p_ids)
+     AND ((x.snapshot_at >= p_from AND x.snapshot_at < least(b.c, p_to)) OR (x.snapshot_at >= greatest(b.f, b.c) AND x.snapshot_at < p_to))
+  UNION ALL
+  SELECT x.provider, x.resource_id, x.metric, x.snapshot_at, 1, x.value, x.value, x.value FROM dr
+    JOIN pgvigil.cloud_replica_sample x ON x.provider = p_provider AND x.resource_id = dr.resource_id AND x.snapshot_at >= dr.lo AND x.snapshot_at < dr.hi
+$$;
+
+-- mssql_georepl_window: the same for the instances p_ids' links (a sample row: reads 1, its values as total, min, max)
+CREATE OR REPLACE FUNCTION pgvigil.mssql_georepl_window(p_ids int[], p_from timestamptz, p_to timestamptz)
+RETURNS SETOF pgvigil.mssql_georepl_hour LANGUAGE sql STABLE AS $$
+  WITH b AS (SELECT CASE WHEN date_trunc('hour', p_from AT TIME ZONE 'UTC') = p_from AT TIME ZONE 'UTC' THEN p_from
+                         ELSE (date_trunc('hour', p_from AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC' END AS c,
+                    date_trunc('hour', p_to AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS f),
+  dr AS (SELECT d.instance_id, date_trunc('hour', greatest(d.from_at, b.c) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS lo,
+                CASE WHEN date_trunc('hour', least(d.to_at, b.f) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = least(d.to_at, b.f) THEN least(d.to_at, b.f)
+                     ELSE (date_trunc('hour', least(d.to_at, b.f) AT TIME ZONE 'UTC') + interval '1 hour') AT TIME ZONE 'UTC' END AS hi
+           FROM pgvigil.mssql_georepl_hour_dirty d CROSS JOIN b
+          WHERE d.instance_id = ANY (p_ids) AND d.from_at < b.f AND d.to_at > b.c)
+  SELECT h.* FROM pgvigil.mssql_georepl_hour h CROSS JOIN b
+   WHERE h.instance_id = ANY (p_ids) AND h.snapshot_at >= b.c AND h.snapshot_at < b.f
+     AND NOT EXISTS (SELECT 1 FROM dr WHERE dr.instance_id = h.instance_id AND dr.lo <= h.snapshot_at AND dr.hi > h.snapshot_at)
+  UNION ALL
+  SELECT x.instance_id, x.link_guid, x.snapshot_at, 1, x.replication_lag_sec, CASE WHEN x.replication_lag_sec IS NOT NULL THEN 1 ELSE 0 END,
+         x.replication_lag_sec, x.replication_lag_sec, x.unsent_s, CASE WHEN x.unsent_s IS NOT NULL THEN 1 ELSE 0 END, x.unsent_s, x.unsent_s
+    FROM pgvigil.mssql_georepl_sample x CROSS JOIN b
+   WHERE x.instance_id = ANY (p_ids)
+     AND ((x.snapshot_at >= p_from AND x.snapshot_at < least(b.c, p_to)) OR (x.snapshot_at >= greatest(b.f, b.c) AND x.snapshot_at < p_to))
+  UNION ALL
+  SELECT x.instance_id, x.link_guid, x.snapshot_at, 1, x.replication_lag_sec, CASE WHEN x.replication_lag_sec IS NOT NULL THEN 1 ELSE 0 END,
+         x.replication_lag_sec, x.replication_lag_sec, x.unsent_s, CASE WHEN x.unsent_s IS NOT NULL THEN 1 ELSE 0 END, x.unsent_s, x.unsent_s
+    FROM dr JOIN pgvigil.mssql_georepl_sample x ON x.instance_id = dr.instance_id AND x.snapshot_at >= dr.lo AND x.snapshot_at < dr.hi
+$$;
