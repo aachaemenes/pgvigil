@@ -18,7 +18,9 @@ import (
 // the datapoints must span the 10 minutes, a critical row, a stale resource row fires nothing (8); a critical-only
 // threshold fires (4); 'lag missing' counts from 'available', not from first sight (5); a blank replication status
 // keeps the reported one (10); a replica removed twice in 24 hours is one finding row (8); a reader whose own read is
-// stale (its door switched off) gets no finding of a resource another instance keeps fresh (9).
+// stale (its door switched off) gets no finding of a resource another instance keeps fresh (9); 'stopped' counts its 5
+// minutes from when the replica is available again, not from a read taken while it was rebooting (review 112616
+// finding 2).
 func TestCloudReplicaFindingsFoldB(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -43,7 +45,7 @@ func TestCloudReplicaFindingsFoldB(t *testing.T) {
 	}
 	rid := func(n string) string { return fmt.Sprintf("fb%d-%s", sfx, n) }
 	var all []string
-	for _, n := range []string{"src", "min", "x60", "crit", "warn", "span", "stale", "new", "old", "status", "dup", "srcb", "critonly", "srcc", "rc"} {
+	for _, n := range []string{"src", "min", "x60", "crit", "warn", "span", "stale", "new", "old", "status", "dup", "srcb", "critonly", "srcc", "rc", "boot", "boot2"} {
 		all = append(all, rid(n))
 	}
 	defer func() {
@@ -122,7 +124,7 @@ func TestCloudReplicaFindingsFoldB(t *testing.T) {
 		return out
 	}
 	// instance a reads src; its replicas over six reads
-	listed := []string{"min", "x60", "crit", "warn", "span", "stale", "new", "old", "status"}
+	listed := []string{"min", "x60", "crit", "warn", "span", "stale", "new", "old", "status", "boot", "boot2"}
 	srcRow := func(dup bool) map[string]any {
 		l := listed
 		if dup {
@@ -131,16 +133,18 @@ func TestCloudReplicaFindingsFoldB(t *testing.T) {
 		return res("src", "source", "", reps(l...), "available", "")
 	}
 	imp("a", now.Add(-30*time.Minute), "src", srcRow(true), res("new", "replica", "src", nil, "creating", ""), res("old", "replica", "src", nil, "available", ""),
-		res("dup", "replica", "src", nil, "available", ""))
+		res("dup", "replica", "src", nil, "available", ""), res("boot2", "replica", "src", nil, "rebooting", "error"))
 	imp("a", now.Add(-20*time.Minute), "src", srcRow(true), res("stale", "replica", "src", nil, "available", ""), res("new", "replica", "src", nil, "creating", ""),
-		res("old", "replica", "src", nil, "available", ""), res("dup", "replica", "src", nil, "available", ""))
+		res("old", "replica", "src", nil, "available", ""), res("dup", "replica", "src", nil, "available", ""),
+		res("boot", "replica", "src", nil, "rebooting", "error"), res("boot2", "replica", "src", nil, "available", "error"))
 	// 'status' reports error 8 minutes before the last read: 'stopped' needs the status to have stood 5 minutes
 	imp("a", now.Add(-8*time.Minute), "src", srcRow(false), res("status", "replica", "src", nil, "available", "error"))
-	imp("a", now.Add(-2*time.Minute), "src", srcRow(true), res("dup", "replica", "src", nil, "available", ""))
+	imp("a", now.Add(-2*time.Minute), "src", srcRow(true), res("dup", "replica", "src", nil, "available", ""), res("boot", "replica", "src", nil, "available", "error"))
 	imp("a", now.Add(-time.Minute), "src", srcRow(false))
 	last := []map[string]any{srcRow(false), res("min", "replica", "src", nil, "available", ""), res("x60", "replica", "src", nil, "available", ""),
 		res("crit", "replica", "src", nil, "available", ""), res("warn", "replica", "src", nil, "available", ""), res("span", "replica", "src", nil, "available", ""),
-		res("new", "replica", "src", nil, "available", ""), res("old", "replica", "src", nil, "available", ""), res("status", "replica", "src", nil, "available", "")}
+		res("new", "replica", "src", nil, "available", ""), res("old", "replica", "src", nil, "available", ""), res("status", "replica", "src", nil, "available", ""),
+		res("boot", "replica", "src", nil, "available", "error"), res("boot2", "replica", "src", nil, "available", "error")}
 	last = append(last, pts("min", 700, 10, 500)...)
 	last = append(last, pts("x60", 500, 10, 0)...)
 	last = append(last, pts("crit", 1900, 10, 0)...)
@@ -158,6 +162,8 @@ func TestCloudReplicaFindingsFoldB(t *testing.T) {
 	one("a", "provider lag missing", "new", "", "a replica seen 30 minutes ago while creating, available since this read (first sight, not 'available')")
 	one("a", "provider lag missing", "old", "warning", "a replica available for 30 minutes with no datapoint (the sanity row)")
 	one("a", "provider replica stopped", "status", "critical", "replication 'error' 8 minutes ago, then a read that reports none (a blank wiping a reported status or its time)")
+	one("a", "provider replica stopped", "boot", "", "error seen 20 minutes ago while rebooting, available 2 minutes (the 5 minutes counted from a rebooting read)")
+	one("a", "provider replica stopped", "boot2", "critical", "error seen 30 minutes ago while rebooting, available with error for 20 (the sanity row)")
 	var st string
 	if err := pool.QueryRow(ctx, `SELECT repl_status FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = $1`, rid("status")).Scan(&st); err != nil {
 		t.Fatal(err)

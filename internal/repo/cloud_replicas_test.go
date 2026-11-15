@@ -173,6 +173,10 @@ func TestCloudReplicasOnAStore(t *testing.T) {
 	if s := finding("rep", "provider replica stopped", r1); s != "" {
 		t.Errorf("a second stop 4 minutes old, 7 after the first: %q, want none (the time counted from the first stop, not from this one)", s)
 	}
+	imp("rep", now.Add(10*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
+	if s := finding("rep", "provider replica stopped", r1); s != "critical" {
+		t.Errorf("error in reads exactly 5 minutes apart: %q, want critical (the rule is 'has stood 5 minutes', at least)", s)
+	}
 	imp("rep", now.Add(11*time.Minute), r1, res(r1, "replica", db1, []string{r1a}, "available", "error"))
 	if s := finding("rep", "provider replica stopped", r1); s != "critical" {
 		t.Errorf("error in reads 6 minutes apart: %q, want critical", s)
