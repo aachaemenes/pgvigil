@@ -23,10 +23,11 @@ type Config struct {
 	Schedules map[string]Duration `yaml:"schedules"`
 	// QueryText says what statement text the repository may hold: full (default: the text as the server
 	// shows it), normalized (every literal replaced by ?), none (no statement text at all, only hashes and
-	// counters). Under every one, both engines, the password-shaped parts of a text are masked before it is
-	// stored (collect.MaskCredentials: a PASSWORD / SECRET / IDENTIFIED BY literal, a password-named T-SQL
-	// parameter, a connection string's or a URI's password, a command line's -P, a literal given to a key or
-	// passphrase function, a private key block); a password held as an ordinary value stays under full only.
+	// counters). Under every one, both engines, the password-shaped parts of a statement, a plan or an Extended
+	// Events report are masked before it is stored (collect.MaskCredentials lists the forms: a PASSWORD / SECRET /
+	// IDENTIFIED BY value, a password parameter by name or a password procedure's values by position, a connection
+	// string's or a URI's password, a sqlcmd / bcp / osql / isql -P, a literal given to a key, passphrase or
+	// certificate function, a private key block); a password held as an ordinary value stays under full only.
 	// An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
