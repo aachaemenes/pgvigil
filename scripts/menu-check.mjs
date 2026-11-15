@@ -1047,8 +1047,14 @@ SET @s = N'SELECT ''@@C|'' + CAST(g.pgvigil_rn AS varchar(10)) + ''|'' + CAST(c.
   ORDER BY g.pgvigil_rn, c.k, n.i';
 EXEC (@s);\nGO\n`;
       try {
-        const o = execFileSync('docker', ['exec', '-i', '--env-file', ef, sc, 'bash', '-c', 'SQLCMDPASSWORD=$SA_PW /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -x -w 65535 -f 65001 -y 8000 -h -1 -d tempdb -i /dev/stdin'],
-          { input: Buffer.concat([msf.buf, Buffer.from(rb, 'utf8')]), encoding: 'utf8', maxBuffer: 256 << 20 });
+        // the file as written (its UTF-8 BOM first) goes in by -i <file>, as a user runs it: through -i /dev/stdin sqlcmd
+        // read the BOM as text (gridmenu-b4: 'Incorrect syntax near U+FEFF'). The read-back is a second -i file (its
+        // leading GO ends the export's last batch)
+        fs.writeFileSync(path.join(work, 'gm-rb.sql'), rb, 'utf8');
+        // docker cp keeps the mode and makes root the owner: 0644 so the image's own user (mssql) reads them under any umask
+        for (const f of ['gm-ms.sql', 'gm-rb.sql']) { fs.chmodSync(path.join(work, f), 0o644); execFileSync('docker', ['cp', path.join(work, f), `${sc}:/tmp/${f}`], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+        const o = execFileSync('docker', ['exec', '--env-file', ef, sc, 'bash', '-c', 'SQLCMDPASSWORD=$SA_PW /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -x -w 65535 -f 65001 -y 8000 -h -1 -d tempdb -i /tmp/gm-ms.sql,/tmp/gm-rb.sql'],
+          { encoding: 'utf8', maxBuffer: 256 << 20 });
         const ls = o.split('\n').map(l => l.trim());
         const hex = h => h === 'NULL' ? null : Buffer.from(h, 'hex').toString('utf16le');
         const names = new Map(ls.filter(l => l.startsWith('@@N|')).map(l => { const [, k, h] = l.split('|'); return [Number(k), hex(h)]; }));
@@ -1091,15 +1097,27 @@ await guard('G-plain', async () => {
 });
 
 await guard('G-mssql', async () => {
-  // a SQL Server instance's grid: the same menu
+  // a SQL Server instance's grid: the same menu. The Drives page draws a grid only under Toggle Metrics (drives.ts
+  // draw(): drive cards by default - gridmenu-b4's red waited for a grid the card view never draws); the demo seeds
+  // sql01's volumes (mssql_storage_demo.go). The case presses Toggle Metrics as a user does, and puts the stored
+  // choice back after
   await go(`#/drives?i=${idOf('demo-onprem-sql01')}`);
-  // the grid comes after the page's own read (go() returns when the section is drawn): a cell waited for, up to 20 s
-  let cellThere = false;
-  for (let i = 0; i < 40 && !cellThere; i++) { cellThere = await ev(`!!document.querySelector('main table.grid tbody td')`); if (!cellThere) await sleep(500); }
-  const L = cellThere ? await gmOpen(`document.querySelector('main table.grid tbody td')`) : [], top = (L[0] ?? []).map(x => x.label);
+  const before = await ev(`localStorage.getItem('pgvigil.drivesMetrics') ?? '<none>'`);
+  let cellThere = false, top = [], pressed = 'no Toggle Metrics button', cards = 0;
+  try {
+    pressed = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === 'Toggle Metrics');
+      if (!b) return 'no Toggle Metrics button'; if (b.getAttribute('aria-pressed') !== 'true') b.click(); return 'Toggle Metrics aria-pressed ' + b.getAttribute('aria-pressed'); })()`);
+    // the grid comes after the page's own read (the toggle draws again): a cell waited for, up to 20 s
+    for (let i = 0; i < 40 && !cellThere; i++) { cellThere = await ev(`!!document.querySelector('main table.grid tbody td')`); if (!cellThere) await sleep(500); }
+    cards = cellThere ? 0 : await ev(`document.querySelectorAll('main .drive-list > *').length`);
+    const L = cellThere ? await gmOpen(`document.querySelector('main table.grid tbody td')`) : [];
+    top = (L[0] ?? []).map(x => x.label);
+    await gmClose();
+  } finally {
+    await ev(before === '<none>' ? `localStorage.removeItem('pgvigil.drivesMetrics'); true` : `localStorage.setItem('pgvigil.drivesMetrics', ${JSON.stringify(before)}); true`);
+  }
   const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row numbers', 'All filters', 'Clear filters'];
-  await gmClose();
-  check('G-mssql', wantTop.every(w => top.includes(w)), `demo-onprem-sql01's Drives grid: ${cellThere ? top.join(' / ') || '(no .tm-menu)' : 'no grid cell on the page in 20 s'}`);
+  check('G-mssql', wantTop.every(w => top.includes(w)), `demo-onprem-sql01's Drives grid (${pressed}): ${cellThere ? top.join(' / ') || '(no .tm-menu)' : `no grid cell on the page in 20 s (${cards} drive card(s) drawn)`}`);
 });
 
 await guard('G-chart', async () => {
