@@ -308,6 +308,12 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     const t = text(td);
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
     const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+    // (X15) a status cell that writes its status word after its figure ('463.71 warning', '92 % critical'; the screen keeps
+    // the word for a reader who cannot tell the colours apart): the figure, its status the fill; an activity mark ' *' goes
+    if (c.status && typeof c.v === 'string' && raw !== undefined) {
+      const fig = /^(.*?)(?: \*)? (?:ok|warning|critical)$/.exec(t);
+      if (fig) { const n = typed(raw, fig[1]); if (typeof n.v === 'number') Object.assign(c, n, { text: fig[1] }); }
+    }
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
     // are that number ('3' collection errors; on DBA Dash 4.25.0 '3' collections at warning or critical), as DBA Dash
     // writes its 'DBA Dash Errors (24hrs)' / 'Collection Health'
@@ -698,7 +704,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
   };
   // (X13) a grid sheet's number under its column's decimals as the page shows them: '0', '0.0' .. (a share: Excel's '0%')
   const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt)
-    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? 9 : st.code(c.dp ? '0.' + '0'.repeat(c.dp) : '0')) : fmtOf(c);
+    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? ([9, 167, 10][c.dp] ?? 10) : st.code(c.dp ? '0.' + '0'.repeat(c.dp) : '0')) : fmtOf(c);
   const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
   // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
   // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
@@ -799,6 +805,16 @@ export function gridSection(s: Section): Section {
   };
   for (let j = 0; j < ncol; j++) {
     const nums = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number');
+    // (X14) a percent column the page writes as bare figures (its header names the percent: 'free %', 'signal wait %'):
+    // the shares Excel's percent format draws, as DBA Dash writes every '%' column (13.4 -> 0.134 under '0.0%'), under
+    // the decimals the page shows (0, 1, 2: '0%', '0.0%', '0.00%')
+    if (j < cols.length && cols[j].includes('%')) for (const c of nums) if (c.kind === 'int' || c.kind === 'dec') {
+      c.dp = Math.min(decimalsOf(c.text, c.v) ?? 0, 2);
+      c.v = (c.v as number) / 100; c.kind = 'pct';
+    }
+    // (X8) a date column's cell with no date in it ('none in the last 7 days', 'never'): empty, as DBA Dash leaves a date
+    // with no value; the page keeps its words
+    if (nums.some(c => c.kind === 'date' || c.kind === 'day')) for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && c.v !== '') { c.v = ''; c.kind = 'text'; } }
     const largest = (k: Kind, per = false) => nums.filter(c => c.kind === k && !!c.per === per).reduce<Cell | undefined>((a, c) => !a || Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a, undefined);
     // a size per day: the unit the column's figures show most (zero left out of the count; a tie: the largest's)
     const rate = nums.filter(c => c.kind === 'bytes' && c.per);
