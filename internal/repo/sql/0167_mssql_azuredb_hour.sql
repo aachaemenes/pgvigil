@@ -20,8 +20,10 @@
 --                     and writes one 'rollup failed' row in collection_log (collection 'mssql_azuredb_hour') at most once
 --                     an hour; the next trigger call of the instance and 'pgvigil purge' heal it ('rollup healed').
 --   the first build   none in this file and no row written by it (no migration writes a stored row, docs/upgrade.md):
---                     the first heal that meets an instance with minutes and no first_build row queues its whole range
---                     and writes the row; readers take 'minutes stored and no first_build row' and a dirty range as
+--                     never in a trigger call either (1,819 imports a minute must not each spend a heal's budget on it):
+--                     a new instance (no minute older than its first insert) is built from its first minute; one whose
+--                     minutes predate 0167 is queued and built by 'pgvigil purge' (its first heal_one queues the whole
+--                     range and writes the row); readers take 'minutes stored and no first_build row' and a dirty range as
 --                     unbuilt and read those hours from the minutes. 'pgvigil purge' builds every pending instance, one
 --                     per transaction (mssql_azuredb_hour_pending / _heal_one), with no budget.
 --   partitions        by month, made by mssql_azuredb_hour_partition WITHOUT ensure_month_partition's second
@@ -186,12 +188,15 @@ END $$;
 -- one instance's dirty range rebuilt newest week first (the caller holds the instance's lock); an instance met for
 -- the first time with minutes and no first_build row has its whole range queued first; with a budget (ms, NULL = none)
 -- the heal stops once it is spent and keeps the rest of the range as it was read; next month's partition made ahead
-CREATE OR REPLACE FUNCTION pgvigil.mssql_azuredb_hour_heal(p_instance_id int, p_budget_ms int DEFAULT NULL)
+CREATE OR REPLACE FUNCTION pgvigil.mssql_azuredb_hour_heal(p_instance_id int, p_budget_ms int DEFAULT NULL, p_first boolean DEFAULT true)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE v record; v_n int := 0; v_t0 timestamptz := clock_timestamp(); v_lo timestamptz; v_hi timestamptz; v_cut timestamptz;
 BEGIN
   PERFORM pgvigil.mssql_azuredb_hour_partition(now() + interval '1 month');
   IF NOT EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_hour_first_build b WHERE b.instance_id = p_instance_id) THEN
+    IF NOT p_first THEN
+      RETURN 0;   -- the trigger: a first build is pgvigil purge's (the collector's imports never carry it)
+    END IF;
     IF EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = p_instance_id) THEN
       INSERT INTO pgvigil.mssql_azuredb_hour_dirty AS d (instance_id, from_at, to_at, why)
       VALUES (p_instance_id, '-infinity', 'infinity', 'the first build')
@@ -280,7 +285,13 @@ BEGIN
              FROM n x GROUP BY x.instance_id ORDER BY x.instance_id LOOP
     BEGIN
       PERFORM pg_advisory_xact_lock(hashtext('pgvigil.mssql_azuredb_hour'), v.instance_id);
-      PERFORM pgvigil.mssql_azuredb_hour_heal(v.instance_id, 200);
+      -- a new instance (no minute older than this statement's) has nothing to build: built from its first minute
+      IF NOT EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_hour_first_build b WHERE b.instance_id = v.instance_id)
+         AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = v.instance_id
+                          AND a.snapshot_at < (SELECT min(h) FROM unnest(v.hours) h)) THEN
+        INSERT INTO pgvigil.mssql_azuredb_hour_first_build (instance_id) VALUES (v.instance_id) ON CONFLICT (instance_id) DO NOTHING;
+      END IF;
+      PERFORM pgvigil.mssql_azuredb_hour_heal(v.instance_id, 200, false);
       PERFORM pgvigil.mssql_azuredb_hour_recompute(v.instance_id, v.hours);
     EXCEPTION WHEN OTHERS THEN
       BEGIN
