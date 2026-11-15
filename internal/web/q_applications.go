@@ -39,6 +39,29 @@ func (s *Server) applicationsOff() string {
 	return ""
 }
 
+// appOff is an application answer's why_not ("" = the session may change applications): the server's own reason
+// first (applicationsOff), then the role (admin) in the refusal's words, or the lookup's error when the role could not
+// be read - every answer that carries can_edit says it the same way (review-18 b24f1 S4 / N3).
+func (s *Server) appOff(r *http.Request) string {
+	if off := s.applicationsOff(); off != "" {
+		return off
+	}
+	if s.auth == nil || s.demo != nil {
+		return ""
+	}
+	wh, ok := whoOf(r)
+	if !ok {
+		wh = s.sessionWho(r)
+	}
+	switch {
+	case wh.err != nil:
+		return "the role could not be read: " + wh.err.Error()
+	case roleRank(wh.role) < needAdmin:
+		return roleWords(routeWhat["POST /api/admin/applications"], needAdmin, wh)
+	}
+	return ""
+}
+
 // appCanEdit is the application writes' login check; the role (admin) is s.post's, before the handler runs (B24f:
 // decision E3's one gate is the needs table now) ("" = allowed).
 func (s *Server) appCanEdit(user string) string {
@@ -176,11 +199,7 @@ func (s *Server) ApplicationsList(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("file tags: %w", err))
 		return
 	}
-	off, can := s.applicationsOff(), s.roleCan(r)
-	if off == "" && !can["admin"] {
-		wh, _ := whoOf(r)
-		off = roleWords(routeWhat["POST /api/admin/applications"], needAdmin, wh)
-	}
+	off, can := s.appOff(r), s.roleCan(r)
 	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "can": can, "applications": apps, "audit": audit, "file_tags": fileTags}, nil)
 }
 
@@ -215,8 +234,8 @@ func (s *Server) ApplicationOne(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("databases: %w", err))
 		return
 	}
-	off := s.applicationsOff()
-	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "contacts_off": s.contactsOff(), "application": app, "databases": dbs}, nil)
+	off := s.appOff(r)
+	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "can": s.roleCan(r), "contacts_off": s.contactsOff(), "application": app, "databases": dbs}, nil)
 }
 
 // contactsOff is why an application's contacts are not read here ("" = they are): they are personal data, read with
@@ -260,7 +279,7 @@ func (s *Server) ApplicationContacts(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("channels: %w", err))
 		return
 	}
-	off := s.applicationsOff()
+	off := s.appOff(r)
 	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "contacts": t, "routes": routes, "channels": channels}, nil)
 }
 
@@ -281,6 +300,6 @@ func (s *Server) ApplicationsUnassigned(w http.ResponseWriter, r *http.Request) 
 		s.reply(w, r, nil, fmt.Errorf("marked: %w", err))
 		return
 	}
-	off := s.applicationsOff()
+	off := s.appOff(r)
 	s.reply(w, r, map[string]any{"can_edit": off == "", "why_not": off, "unassigned": t, "marked": marked}, nil)
 }

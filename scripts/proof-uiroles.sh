@@ -40,6 +40,10 @@
 #     operator's edit of a fleet-wide rule, and of a one-instance rule to every instance, over a tag or with no end
 #     FAIL (not refused: the edit is role-checked no further than operator); the operator's edit of a one-instance
 #     rule that keeps its instance and an end ok; the admin's edit to every instance ok.
+#   The fold of review-18 (b24f1 N5 / S4; written before the run that carries it): S5 the operator's one-alert mute
+#     (finding_key, no instance) with an end: its own answer, not the role's words; A4 GET /api/applications/
+#     unassigned as a viewer and an operator: can_edit false, why_not 'changing an application needs the admin role:
+#     <user> is a viewer / an operator ...'; as the admin: can_edit true.
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
 #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
 #     (unchanged); logout ok.
@@ -62,7 +66,7 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-for t in psql curl ss; do command -v $t >/dev/null || die "$t is not on this machine"; done
+for t in psql curl ss python3; do command -v $t >/dev/null || die "$t is not on this machine"; done
 freeport() {
   local p
   for _ in $(seq 1 50); do
@@ -211,6 +215,20 @@ s5 o$SUF admin '{"kind":"mute","instance_id":999999,"check_key":"x"}' "a mute wi
 # a blackout over a tag is refused for every user before B24f ('a blackout names one instance', 409: roles-red1): no row
 s5 o$SUF own "{\"kind\":\"blackout\",\"instance_id\":999999,$END}" "a blackout of one instance with an end"
 s5 a$SUF own "{\"kind\":\"mute\",\"check_key\":\"x\",$END}" "a mute on every instance"
+# a one-alert mute (finding_key) is one scope whatever instance it names (review-18 b24f1 N5)
+s5 o$SUF own "{\"kind\":\"mute\",\"finding_key\":\"proof-one-$SUF\",$END}" "a one-alert mute with an end"
+
+# ---- A4: every application answer says the role (review-18 b24f1 S4) -------------------------------------------------
+for u in v$SUF o$SUF a$SUF; do
+  c=$(curl -s -o "$WORK/app.body" -w '%{http_code}' -b "$WORK/$u.jar" "$U/api/applications/unassigned")
+  got=$(python3 -c "import json,sys; d=json.load(open('$WORK/app.body')); print(str(d.get('can_edit')) + '|' + str(d.get('why_not', '')))" 2>&1)
+  if [[ ${ROLE[$u]} == admin ]]; then
+    [[ $c == 200 && $got == "True|" ]] && ok "A4 admin GET applications/unassigned: can_edit true" || bad "A4 admin applications/unassigned: $c $got"
+  else
+    [[ $c == 200 && $got == "False|changing an application needs the admin role: $u is $(art "${ROLE[$u]}") ${ROLE[$u]} "* ]] \
+      && ok "A4 ${ROLE[$u]} GET applications/unassigned: can_edit false with the role's words" || bad "A4 ${ROLE[$u]} applications/unassigned: $c $got"
+  fi
+done
 
 # S5e: an edit writes the rule's successor, a mute like any other. Two rules of the admin's: one on every instance,
 # one on an instance registered for these rows
