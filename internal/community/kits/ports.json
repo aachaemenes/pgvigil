@@ -42,5 +42,26 @@
     "end": ") AS v (search_string)",
     "sha256": "",
     "item_re": "\\('((?:[^']|'')+)'\\)"
+  },
+  {
+    "name": "waitCategories",
+    "go_file": "internal/mssql/waits.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its wait list by category",
+    "begin": "/*Disk*/",
+    "end": "N'RESMGR_THROTTLED'",
+    "sha256": "",
+    "item_re": "N'([A-Z0-9_]+)'"
+  },
+  {
+    "name": "sleepTaskSpills",
+    "go_file": "internal/mssql/waits.go",
+    "repo": "erikdarlingdata/DarlingData",
+    "path": "Install-All/DarlingData.sql",
+    "follows": "sp_PressureDetector 6.11 (20261101), its SLEEP_TASK rule",
+    "begin": "dows.wait_type = N'SLEEP_TASK'\n             AND ISNULL(",
+    "end": "CASE WHEN @sample_seconds > 0 THEN 0. ELSE 1000. END",
+    "sha256": ""
   }
 ]
