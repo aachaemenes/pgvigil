@@ -123,7 +123,7 @@ printf '[global]\nrepo1-path=/var/lib/pgbackrest\nrepo1-retention-full=2\nrepo1-
 setcmd 'pgbackrest --stanza=demo archive-push %p'
 row P1; collect backup_dest pgvd-b || fail "P1: pgvd-b's read"
 G=$(dests pgvd-a 'pgbackrest configuration'); D=$(detail pgvd-a 'pgbackrest configuration')
-[ "$G" = "base|pgbackrest|posix|||/var/lib/pgbackrest|false ;; wal|pgbackrest|posix|||/var/lib/pgbackrest|false" ] && [[ "$D" == *"retention 2 full (backups)"* ]] && [[ "$D" == *"not encrypted"* ]] || fail "P1 on: $G | $D"
+[ "$G" = "base|pgbackrest|posix|||/var/lib/pgbackrest|false ;; wal|pgbackrest|posix|||/var/lib/pgbackrest|false" ] && [[ "$D" == *"retention 2 full (backups)"* ]] && [[ "$D" == *"not encrypted"* ]] || fail "P1 on: $G | $D | every row: $(q "select string_agg(concat_ws('|', source, role, coalesce(tool,''), coalesce(dest_kind,''), coalesce(path,''), coalesce(detail,'')), ' ;; ') from pgvigil.pg_backup_dest where instance_id=$(iid pgvd-a)") | reads: $(q "select string_agg(tool || ' ' || name || ' ' || state || ' ' || coalesce(message, ''), ' ;; ') from pgvigil.pg_backup_dest_reads where instance_id=$(iid pgvd-a)") | archive_command now: $(su "$C17" "SHOW archive_command") | the collector: $(tail -c 600 "$OUT" | tr '\n' ' ')"
 [ "$(q "select state from pgvigil.pg_backup_dest_reads where instance_id=$(iid pgvd-a)")" = ok ] || fail "P1: pgvd-a's read state"
 [ "$(q "select state from pgvigil.pg_backup_dest_reads where instance_id=$(iid pgvd-b)")" = off ] && [ "$(finding pgvd-b 'backup tool read off')" = 1 ] || fail "P1 off: $(q "select state from pgvigil.pg_backup_dest_reads where instance_id=$(iid pgvd-b)")"
 collect backup_tools pgvd-b || fail "P1: backup_tools on pgvd-b"
