@@ -294,7 +294,7 @@ def all_helpers(text):
 
 
 def cls_text(body, hs):
-    """a Col's cls as written, with the body of the file's helper it names or calls"""
+    """a Col's cls as written, with the body of each helper of the file it names or calls"""
     i = body.find('cls:')
     if i < 0:
         return None
@@ -302,16 +302,134 @@ def cls_text(body, hs):
     while body[k:k + 1] in (' ', '\n'):
         k += 1
     t = body[k:expr_end(body, k)]
-    m = re.match(r'(\w+)\s*(?:\(|$)', t)
-    if m and m.group(1) in hs:
-        t += hs[m.group(1)]
-    return t
+    code = re.sub(r"'[^'\\]*'", "''", t)   # a helper's name inside a string is no call
+    return t + ''.join(hs[h] for h in hs if re.search(r'\b' + h + r'\b', code))   # each helper it names or calls
 
 
 # (file, key): why a column the badge scan does not see passes X18. 'empty' = its '' branch only meets an empty cell
 # (the fmt draws nothing there); 'cls' = its cls read one by one: every value-holding row gets a status (OK, N/A or its
-# warning / critical); 'badges' = every badge it draws has a status class (ok / none / warn / crit)
+# warning / critical); 'badges' = every badge it draws has a status class (ok / none / warn / crit); 'nostatus' = the
+# OK badge the scan saw is in a dialog the cell's button opens, or a word that names a helper - the cell draws none
 WIDE_REVIEWED = {
+    ('actions.ts', '_actions'): 'nostatus',
+    ('alert_rules.ts', 'source'): 'badges',
+    ('alerts.ts', '_act'): 'nostatus',
+    ('alerts.ts', 'state'): 'badges',
+    ('backups.ts', 'archive_age_s'): 'cls',
+    ('backups.ts', 'archiver_failing'): 'cls',
+    ('filedrop.ts', 'actRows'): 'cls',
+    ('filedrop.ts', 'share'): 'cls',
+    ('filedrop.ts', 'warnings'): 'empty',
+    ('indexes.ts', 'bloat_pct'): 'cls',
+    ('indexes.ts', 'pct_used'): 'cls',
+    ('indexes.ts', 'uses_index'): 'badges',
+    ('io.ts', 'blks_read'): 'cls',
+    ('jobs_fleet_status.ts', 'outcome'): 'empty',
+    ('jobsreport.ts', 'last_start'): 'cls',
+    ('mssql_actions.ts', 'state'): 'badges',
+    ('mssql_backups.ts', 'ag_name'): 'empty',
+    ('mssql_backups.ts', 'diff_status'): 'empty',
+    ('mssql_backups.ts', 'log_status'): 'empty',
+    ('mssql_backups.ts', 'nul_at'): 'empty',
+    ('mssql_checks.ts', 'i'): 'cls',
+    ('mssql_checks.ts', 'is_on'): 'cls',
+    ('mssql_checks.ts', 'notifies'): 'cls',
+    ('mssql_checks.ts', 'opt_'): 'cls',
+    ('mssql_checks.ts', 'pct_used'): 'cls',
+    ('mssql_checks.ts', 'value'): 'cls',
+    ('mssql_checks.ts', 'value_in_use'): 'cls',
+    ('mssql_errorlog.ts', 'access_violation'): 'cls',
+    ('mssql_errorlog.ts', 'bad_pages_detected'): 'cls',
+    ('mssql_errorlog.ts', 'deadlocked_schedulers'): 'cls',
+    ('mssql_errorlog.ts', 'dump_requests'): 'cls',
+    ('mssql_errorlog.ts', 'duration_ms'): 'cls',
+    ('mssql_errorlog.ts', 'failure_type'): 'empty',
+    ('mssql_errorlog.ts', 'interval_long_ios'): 'cls',
+    ('mssql_errorlog.ts', 'io_latch_timeouts'): 'cls',
+    ('mssql_errorlog.ts', 'is_process_physical_memory_low'): 'cls',
+    ('mssql_errorlog.ts', 'is_process_virtual_memory_low'): 'cls',
+    ('mssql_errorlog.ts', 'is_system_physical_memory_low'): 'cls',
+    ('mssql_errorlog.ts', 'last_notification'): 'cls',
+    ('mssql_errorlog.ts', 'latch_warnings'): 'cls',
+    ('mssql_errorlog.ts', 'memory_utilization'): 'cls',
+    ('mssql_errorlog.ts', 'non_yielding'): 'cls',
+    ('mssql_errorlog.ts', 'notification'): 'cls',
+    ('mssql_errorlog.ts', 'oom_exceptions'): 'cls',
+    ('mssql_errorlog.ts', 'other_cpu'): 'cls',
+    ('mssql_errorlog.ts', 'pending_tasks'): 'cls',
+    ('mssql_errorlog.ts', 'pool_out_of_memory'): 'cls',
+    ('mssql_errorlog.ts', 'process_memory_low'): 'cls',
+    ('mssql_errorlog.ts', 'process_virtual_low'): 'cls',
+    ('mssql_errorlog.ts', 'severity'): 'cls',
+    ('mssql_errorlog.ts', 'sick_spinlock'): 'empty',
+    ('mssql_errorlog.ts', 'slow'): 'cls',
+    ('mssql_errorlog.ts', 'sql_cpu'): 'cls',
+    ('mssql_errorlog.ts', 'system_memory_low'): 'cls',
+    ('mssql_errorlog.ts', 'unresolvable_deadlock'): 'cls',
+    ('mssql_errorlog.ts', 'write_access_violations'): 'cls',
+    ('mssql_hadr.ts', 'age_minutes'): 'cls',
+    ('mssql_hadr.ts', 'connected_state'): 'cls',
+    ('mssql_hadr.ts', 'member_state'): 'cls',
+    ('mssql_hadr.ts', 'state'): 'cls',
+    ('mssql_hadr.ts', 'status'): 'cls',
+    ('mssql_hadr.ts', 'synchronization_health'): 'cls',
+    ('mssql_hadr.ts', 'synchronization_state'): 'cls',
+    ('mssql_indexes.ts', 'benefit_per_day'): 'cls',
+    ('mssql_jobs.ts', 'last_run_at'): 'cls',
+    ('mssql_jobs.ts', 'last_run_utc'): 'empty',
+    ('mssql_perf.ts', 'read_ms'): 'cls',
+    ('mssql_perf.ts', 'write_ms'): 'cls',
+    ('mssql_plancache.ts', 'compiled_24h_pct'): 'cls',
+    ('mssql_plancache.ts', 'duplicate_pct'): 'cls',
+    ('mssql_plancache.ts', 'single_use_pct'): 'cls',
+    ('mssql_querystore.ts', 'actual_state'): 'cls',
+    ('mssql_querystore.ts', 'cpu_ratio'): 'cls',
+    ('mssql_querystore.ts', 'duration_ratio'): 'cls',
+    ('mssql_querystore.ts', 'force_failure_count'): 'cls',
+    ('mssql_querystore.ts', 'forced'): 'empty',
+    ('mssql_querystore.ts', 'severity'): 'cls',
+    ('pages.ts', 'waiting_lock'): 'empty',
+    ('pg_backups.ts', 'datname'): 'nostatus',
+    ('pg_backups.ts', 'key'): 'nostatus',
+    ('pg_backups.ts', 'postmaster_restarted'): 'nostatus',
+    ('pg_backups.ts', 'role'): 'badges',
+    ('pg_backups.ts', 'sync_state'): 'badges',
+    ('pg_backups.ts', 'worst'): 'badges',
+    ('pg_dboptions.ts', 'server_text'): 'cls',
+    ('pg_dboptions.ts', 'value_text'): 'cls',
+    ('pooler.ts', 'cl_waiting'): 'cls',
+    ('pooler.ts', 'clients_waiting'): 'cls',
+    ('reportmail.ts', 'enabled'): 'badges',
+    ('reportmail.ts', 'last_outcome'): 'badges',
+    ('reports.ts', 'days_until_expiration'): 'cls',
+    ('reports.ts', 'expired'): 'cls',
+    ('reports.ts', 'expiring'): 'cls',
+    ('reports.ts', 'i:'): 'cls',
+    ('reports.ts', 'ifi_enabled'): 'cls',
+    ('reports.ts', 'is_expired'): 'cls',
+    ('reports.ts', 'is_locked'): 'cls',
+    ('reports.ts', 'l:'): 'cls',
+    ('reports.ts', 'max_age'): 'cls',
+    ('reports.ts', 'md5'): 'cls',
+    ('reports.ts', 'outcome'): 'empty',
+    ('reports.ts', 'password_age_days'): 'cls',
+    ('reports.ts', 'snapshot_at'): 'empty',
+    ('reports.ts', 'startup_type'): 'cls',
+    ('reports.ts', 'status'): 'empty',
+    ('retention.ts', 'actual_days'): 'cls',
+    ('retention.ts', 'retention'): 'cls',
+    ('schema.ts', 'ddl_log'): 'badges',
+    ('statements.ts', 'jit_pct'): 'cls',
+    ('statements.ts', 'plan_pct'): 'cls',
+    ('statements.ts', 'workers_missing'): 'cls',
+    ('vacuum.ts', 'anl_ratio'): 'cls',
+    ('vacuum.ts', 'dead_ratio'): 'cls',
+    ('vacuum.ts', 'elapsed_secs'): 'cls',
+    ('vacuum.ts', 'freeze_pct'): 'cls',
+    ('vacuum.ts', 'hours_over'): 'cls',
+    ('vacuum.ts', 'ins_ratio'): 'cls',
+    ('vacuum.ts', 'mxid_freeze_pct'): 'cls',
+    ('vacuum.ts', 'xid_freeze_pct'): 'cls',
 }
 
 
