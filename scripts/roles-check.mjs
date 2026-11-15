@@ -14,6 +14,7 @@
 // totals; exit 1 on any FAIL.
 const [port, U, user, pw, role] = process.argv.slice(2);
 const rank = { viewer: 1, operator: 2, admin: 3 };
+const art = role === 'viewer' ? 'a' : 'an';
 if (!rank[role]) { console.log(`FAIL: role '${role}' is not viewer, operator or admin`); process.exit(2); }
 // [page key, need]: a control with data-need=<need> is drawn on that page for every role
 const MUST = [['alerts', 'operator'], ['alertrules', 'admin'], ['pgthresholds', 'admin'], ['drives', 'admin'], ['customreports', 'admin'],
@@ -120,14 +121,14 @@ for (const [scope, hash] of pages) {
     const mine = new RegExp(`needs the ${c.need} role: ${user} is an? ${role} `).test(c.title);
     let state;
     if (above) {
-      if (!c.off) { bad(`${hash} '${c.what}' (needs ${c.need}): ON for a ${role}`); continue; }
+      if (!c.off) { bad(`${hash} '${c.what}' (needs ${c.need}): ON for ${art} ${role}`); continue; }
       if (mine) {
         if (!c.descVis) { bad(`${hash} '${c.what}' (needs ${c.need}): off with the role's words as its title and no visible description ('${c.desc.slice(0, 80)}')`); continue; }
         state = 'role';
       } else if (anyRole.test(c.title)) { bad(`${hash} '${c.what}' (needs ${c.need}): off with other role words: '${c.title.slice(0, 140)}'`); continue; }
       else { state = 'own'; const w = (c.title || c.desc).slice(0, 90); ownWhy.set(w, (ownWhy.get(w) ?? 0) + 1); }
     } else {
-      if (c.off && anyRole.test(c.title)) { bad(`${hash} '${c.what}' (needs ${c.need}): off with the role's words for a ${role}: '${c.title.slice(0, 140)}'`); continue; }
+      if (c.off && anyRole.test(c.title)) { bad(`${hash} '${c.what}' (needs ${c.need}): off with the role's words for ${art} ${role}: '${c.title.slice(0, 140)}'`); continue; }
       state = c.off ? 'own' : 'on';
       if (c.off) { const w = (c.title || c.desc).slice(0, 90); ownWhy.set(w, (ownWhy.get(w) ?? 0) + 1); }
     }
@@ -154,9 +155,9 @@ const click = await ev(`(async () => {
 })()`, true);
 if (!click.found) bad(`click: no Silence / Unsilence control with data-need=operator on #/summary?i=${pg.instance_id}`);
 else if (rank.operator > rank[role]) {
-  if (click.off && !click.dialog) console.log(`ok   click: the off Silence clicked as a ${role}: nothing opened`);
-  else bad(`click: Silence as a ${role}: off ${click.off}, a dialog opened ${click.dialog} ('${click.title}')`);
-} else if (!click.off && click.dialog && click.save.length && click.save.every(x => x.need === 'operator' && !anyRole.test(x.title))) console.log(`ok   click: Silence clicked as an ${role}: '${click.title}' opened, its Save carries the operator need and is not off for the role`);
+  if (click.off && !click.dialog) console.log(`ok   click: the off Silence clicked as ${art} ${role}: nothing opened`);
+  else bad(`click: Silence as ${art} ${role}: off ${click.off}, a dialog opened ${click.dialog} ('${click.title}')`);
+} else if (!click.off && click.dialog && click.save.length && click.save.every(x => x.need === 'operator' && !anyRole.test(x.title))) console.log(`ok   click: Silence clicked as ${art} ${role}: '${click.title}' opened, its Save carries the operator need and is not off for the role`);
 else bad(`click: Silence as ${role}: off ${click.off}, dialog ${click.dialog} ('${click.title}'), its controls ${JSON.stringify(click.save).slice(0, 200)}`);
 
 for (const [k, need] of MUST) {
@@ -167,10 +168,10 @@ for (const [k, need] of MUST) {
 for (const [k, need] of WORDS) {
   const s = seen.get(`${k}|${need}`) ?? { n: 0, role: 0, own: 0, on: 0 };
   if (rank[need] > rank[role]) {
-    if (s.role > 0) console.log(`ok   words ${k}: ${s.role} control(s) off with '... needs the ${need} role: ${user} is ${role === 'viewer' ? 'a' : 'an'} ${role} ...'`);
-    else bad(`words ${k}: no control off with the ${need} role's words for a ${role} (${s.n} with that need: ${s.own} off for the server's own reason, ${s.on} on)`);
-  } else if (s.on > 0) console.log(`ok   on ${k}: ${s.on} control(s) of need ${need} on for a ${role}`);
-  else bad(`on ${k}: no control of need ${need} is on for a ${role} (${s.n} with that need, ${s.own} off for the server's own reason)`);
+    if (s.role > 0) console.log(`ok   words ${k}: ${s.role} control(s) off with '... needs the ${need} role: ${user} is ${art} ${role} ...'`);
+    else bad(`words ${k}: no control off with the ${need} role's words for ${art} ${role} (${s.n} with that need: ${s.own} off for the server's own reason, ${s.on} on)`);
+  } else if (s.on > 0) console.log(`ok   on ${k}: ${s.on} control(s) of need ${need} on for ${art} ${role}`);
+  else bad(`on ${k}: no control of need ${need} is on for ${art} ${role} (${s.n} with that need, ${s.own} off for the server's own reason)`);
 }
 for (const [w, n] of [...ownWhy].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`own  ${n} x '${w}'`);
 console.log(`roles-check ${role}: ${walked} page(s) read, ${notRendered} not rendered, ${withControls} with a control that carries a need; `
