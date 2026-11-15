@@ -411,9 +411,21 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
   const asked = hashParam('status');
   if (asked && [...statusSel.options].some(o => o.value === asked)) statusSel.value = asked;
   const dropAsked = () => {
-    const [path, qs] = location.hash.split('?'); const q = new URLSearchParams(qs ?? '');
-    if (!q.has('status')) return;
-    q.delete('status'); history.replaceState(null, '', q.toString() ? `${path}?${q}` : path);
+    const without = (h: string): string | null => {
+      const [path, qs] = h.split('?'); const q = new URLSearchParams(qs ?? '');
+      if (!q.has('status')) return null;
+      q.delete('status'); return q.toString() ? `${path}?${q}` : path;
+    };
+    const mine = without(location.hash);
+    if (mine === null) return;
+    history.replaceState(null, '', mine);
+    // the links to this page drawn before the choice (the tab strip's Files, the tree's) carry the address's status
+    // still (router.ts keeps it on the page's own links) and nothing redraws them: taken out of them too, or a click
+    // on the Files tab would bring the old filter back over the choice
+    for (const a of document.querySelectorAll<HTMLAnchorElement>('a[href^="#/dbfiles"]')) {
+      const h = without(a.getAttribute('href') ?? '');
+      if (h !== null) a.setAttribute('href', h);
+    }
   };
   const refresh = el('button', { type: 'button' }, 'Refresh');
   const body = el('div');
