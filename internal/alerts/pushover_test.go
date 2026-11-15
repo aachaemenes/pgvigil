@@ -76,6 +76,23 @@ func (st *poStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(st.body))
 }
 
+// answer sets the stub's next answers under its lock; posts reads what it got there.
+func (st *poStub) answer(code int, body string, hdr map[string]string) {
+	st.mu.Lock()
+	st.code, st.body, st.hdr = code, body, hdr
+	st.mu.Unlock()
+}
+
+func (st *poStub) posts(reset bool) []url.Values {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := st.forms
+	if reset {
+		st.forms = nil
+	}
+	return out
+}
+
 func TestPushoverSend(t *testing.T) {
 	st := &poStub{code: 200, body: `{"status":1,"request":"647d2300-702c-4b38-8b2f-d56326ae460b"}`,
 		hdr: map[string]string{"X-Limit-App-Limit": "10000", "X-Limit-App-Remaining": "7496", "X-Limit-App-Reset": "1393653600"}}
@@ -95,18 +112,19 @@ func TestPushoverSend(t *testing.T) {
 	if err := s.send(context.Background(), Message{Channel: "po", SentAt: at, Alerts: []Alert{withURL, warn, res}}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	if len(st.forms) != 3 {
-		t.Fatalf("%d posts, want one per alert (3)", len(st.forms))
+	forms := st.posts(true)
+	if len(forms) != 3 {
+		t.Fatalf("%d posts, want one per alert (3)", len(forms))
 	}
-	f := st.forms[0]
+	f := forms[0]
 	if f.Get("token") != poTestToken || f.Get("user") != poTestUser || f.Get("device") != "phone1,tablet" {
 		t.Errorf("token / user / device: %v", f)
 	}
-	if f.Get("priority") != "1" || st.forms[1].Get("priority") != "0" || st.forms[2].Get("priority") != "-1" {
-		t.Errorf("priorities %s %s %s, want 1 (critical), 0 (warning), -1 (recovery)", f.Get("priority"), st.forms[1].Get("priority"), st.forms[2].Get("priority"))
+	if f.Get("priority") != "1" || forms[1].Get("priority") != "0" || forms[2].Get("priority") != "-1" {
+		t.Errorf("priorities %s %s %s, want 1 (critical), 0 (warning), -1 (recovery)", f.Get("priority"), forms[1].Get("priority"), forms[2].Get("priority"))
 	}
-	if f.Get("url") != withURL.URL || f.Get("url_title") == "" || st.forms[1].Get("url") != "" {
-		t.Errorf("url %q / %q, want the alert's page on the first only", f.Get("url"), st.forms[1].Get("url"))
+	if f.Get("url") != withURL.URL || f.Get("url_title") == "" || forms[1].Get("url") != "" {
+		t.Errorf("url %q / %q, want the alert's page on the first only", f.Get("url"), forms[1].Get("url"))
 	}
 	if f.Get("timestamp") != fmt.Sprint(at.Unix()) || !strings.Contains(f.Get("message"), "erp01") || f.Get("title") == "" {
 		t.Errorf("timestamp / message / title: %v", f)
@@ -121,14 +139,14 @@ func TestPushoverSend(t *testing.T) {
 	// lengths in characters: a title of 300 runes is cut to 250, a message stays within 1,024
 	long := crit
 	long.Instance = strings.Repeat("é", 300)
-	st.forms = nil
 	if err := s.send(context.Background(), Message{SentAt: at, Subject: strings.Repeat("ü", 300), Alerts: []Alert{long}}); err != nil {
 		t.Fatal(err)
 	}
-	if n := utf8.RuneCountInString(st.forms[0].Get("title")); n != 250 {
+	forms = st.posts(true)
+	if n := utf8.RuneCountInString(forms[0].Get("title")); n != 250 {
 		t.Errorf("title of %d characters, want 250", n)
 	}
-	if n := utf8.RuneCountInString(st.forms[0].Get("message")); n > 1024 {
+	if n := utf8.RuneCountInString(forms[0].Get("message")); n > 1024 {
 		t.Errorf("message of %d characters", n)
 	}
 }
@@ -157,7 +175,7 @@ func TestPushoverAnswers(t *testing.T) {
 		{"500", 500, `oops`, nil, "500", false, time.Time{}},
 	}
 	for _, c := range cases {
-		st.code, st.body, st.hdr = c.code, c.body, c.hdr
+		st.answer(c.code, c.body, c.hdr)
 		err := s.send(context.Background(), msg(crit))
 		if err == nil || !strings.Contains(err.Error(), c.errHas) {
 			t.Errorf("%s: err %v, want it to hold %q", c.name, err, c.errHas)

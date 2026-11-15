@@ -26,6 +26,7 @@
 //	    file: {dir: /var/spool/pgvigil/alerts}
 //	    pagerduty: {routing_key: env:PD_KEY}            # Events API v2; one incident per finding, resolved when it clears
 //	    pushover: {token: env:PO_TOKEN, user: env:PO_USER}   # task B24k: one phone notification per alert (pushover.go)
+//	    zabbix: {server: zbx.example.org, host: pgvigil, tls_ca: /ca.pem, tls_cert: /c.crt, tls_key: /c.key}   # B24k (zabbix.go)
 //
 // Each pass (every minute inside `pgvigil run`, once for `pgvigil alerts`) records the channels, stamps the open alerts
 // whose finding is gone (pgvigil.alert_mark), asks the repository what is owed (pgvigil.alert_due: firing, escalated,
@@ -98,6 +99,7 @@ type Channel struct {
 	PagerDuty   *PagerDuty       `yaml:"pagerduty"`
 	Opsgenie    *Opsgenie        `yaml:"opsgenie"`
 	Pushover    *Pushover        `yaml:"pushover"` // task B24k (pushover.go)
+	Zabbix      *Zabbix          `yaml:"zabbix"`   // task B24k (zabbix.go)
 	// MaxPerHour caps the alerts the channel sends in any hour (0 = no cap): what is over it is held, logged as
 	// outcome 'capped', and sent by a later pass once the hour allows.
 	MaxPerHour int        `yaml:"max_per_hour"`
@@ -344,13 +346,13 @@ func (c *Channel) validate() error {
 	}
 	c.tpl = tpl
 	blocks := 0
-	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil} {
+	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil, c.Pushover != nil, c.Zabbix != nil} {
 		if set {
 			blocks++
 		}
 	}
 	if blocks != 1 {
-		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie: or pushover: is required")
+		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty:, opsgenie:, pushover: or zabbix: is required")
 	}
 	switch c.Kind {
 	case "smtp":
@@ -389,8 +391,13 @@ func (c *Channel) validate() error {
 			return errors.New("kind pushover needs a pushover: block")
 		}
 		c.sender, err = c.Pushover.build()
+	case "zabbix":
+		if c.Zabbix == nil {
+			return errors.New("kind zabbix needs a zabbix: block")
+		}
+		c.sender, err = c.Zabbix.build()
 	default:
-		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie or pushover (got %q)", c.Kind)
+		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty, opsgenie, pushover or zabbix (got %q)", c.Kind)
 	}
 	return err
 }
@@ -1216,6 +1223,11 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 	}
 	defer pool.Close()
 	log.Info("alerts started", "channels", len(chs))
+	for i := range chs {
+		if chs[i].PlainByOptIn() {
+			log.Warn("alerts: a channel sends plain text off loopback by allow_plain (an admin's opt-in)", "channel", chs[i].Name, "destination", chs[i].Destination())
+		}
+	}
 	type back struct {
 		fails int
 		until time.Time
