@@ -165,7 +165,17 @@ function cleanup() {
   if (done) return; done = true;
   try { srv?.kill('SIGTERM'); } catch { /* gone */ }
   try { chr?.kill('SIGTERM'); } catch { /* gone */ }
-  try { psql(`drop database if exists ${db} with (force)`, 'postgres'); } catch (e) { console.error(`FAIL cleanup: the database ${db} was not dropped: ${e.message}`); process.exitCode = 1; }
+  // the drop retried while the demo's sessions close: SIGTERM does not wait, and a demo still seeding has a pool that
+  // opens a session again after FORCE ends it ('is being accessed by other users', gridmenu-b2 under a load of 66): after
+  // a refusal the serve is killed outright, up to 10 tries 0.5 s apart (a sync pause: no timer runs in an exit handler)
+  for (let k = 1; ; k++) {
+    try { psql(`drop database if exists ${db} with (force)`, 'postgres'); break; }
+    catch (e) {
+      if (k >= 10) { console.error(`FAIL cleanup: the database ${db} was not dropped: ${e.message}`); process.exitCode = 1; break; }
+      try { srv?.kill('SIGKILL'); } catch { /* gone */ }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    }
+  }
   try { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); } catch (e) { console.error(`cleanup: ${work} was not removed: ${e.message}`); }
 }
 process.on('exit', cleanup);
