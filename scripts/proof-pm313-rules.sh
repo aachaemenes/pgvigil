@@ -276,10 +276,12 @@ pq "UPDATE pgvigil.mssql_cpu_info SET info = '{\"cpu_count\": 16, \"numa_node_co
 pq "SELECT pgvigil.ensure_month_partition('mssql_wait_sample', now() - interval '5 hours'), pgvigil.ensure_month_partition('mssql_wait_sample', now())" >/dev/null
 for ago in 90 300; do pq "INSERT INTO pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, category, is_benign, waiting_tasks, wait_ms, signal_ms, interval_secs)
   VALUES ($SY, now() - interval '$ago minutes', 'CXPACKET', 'Parallelism', false, 100, 30000, 0, 60), ($SY, now() - interval '$ago minutes', 'THREADPOOL', 'CPU', false, 100, 12000, 0, 60)" >/dev/null; done
-# wfa <minutes ago> <wait type> <advice kind> <static text>: t|t when the detail ends with the advice at the read's time (or the static text when none), and which
+# wfa <minutes ago> <wait type> <advice kind> <static text>: t when the detail's text ends with the advice at the read's time
+# (or the static text when none) - right before the source suffix ' (sp_PerfCheck check 6001, priority ...)' the
+# function appends to every detail (box run 405green1: the tail compared without it read false) - and which
 wfa() { pq "SELECT coalesce(string_agg(CASE WHEN pgvigil.mssql_parallelism_advice($SY, f.at, '$3') IS NOT NULL
-      THEN 'advice|' || (right(f.detail, length(pgvigil.mssql_parallelism_advice($SY, f.at, '$3'))) = pgvigil.mssql_parallelism_advice($SY, f.at, '$3'))
-      ELSE 'static|' || (right(f.detail, length('$4')) = '$4') END, ','), 'none')
+      THEN 'advice|' || (strpos(f.detail, pgvigil.mssql_parallelism_advice($SY, f.at, '$3') || ' (sp_PerfCheck check 6001, ') > 0)
+      ELSE 'static|' || (strpos(f.detail, '$4' || ' (sp_PerfCheck check 6001, ') > 0) END, ','), 'none')
   FROM pgvigil.mssql_wait_findings_between($SY, now() - interval '$1 minutes' - interval '1 minute', now() - interval '$1 minutes' + interval '1 minute') f WHERE f.object LIKE '$2 (%'"; }
 CXS='Usually a cost threshold for parallelism / MAXDOP tuning issue rather than a problem in itself.'
 TPS='Scheduling pressure. Review parallelism settings and plan quality; THREADPOOL specifically means worker-thread exhaustion.'
