@@ -27,8 +27,10 @@ func TestCollectionHealthHourly(t *testing.T) {
 	h.record("i1", "postgres", "activity", Result{Duration: 5 * sec, Note: " (skipped: no pg_cron)"}, at.Add(4*sec), m)
 	h.record("i1", "postgres", "activity", Result{Err: context.Canceled}, at.Add(5*sec), m)
 	h.record("i1", "postgres", "activity", Result{Duration: 30 * sec}, at.Add(6*sec), m)
-	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond}, at.Add(7*sec), 2*m)
-	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond, Outcome: OutcomePartial}, at.Add(8*sec), m)
+	// the last partial BEFORE the last ok (the review of the fold, 20261115-001030 #1): an ok branch that stops setting
+	// lastOk, or sets lastPartial, shows here
+	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond, Outcome: OutcomePartial}, at.Add(7*sec), m)
+	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond}, at.Add(8*sec), 2*m)
 	b := h.take()
 	if len(b.Health) != 1 {
 		t.Fatalf("health rows %d, want 1: %+v", len(b.Health), b.Health)
@@ -41,7 +43,7 @@ func TestCollectionHealthHourly(t *testing.T) {
 		name string
 		got  *time.Time
 		want time.Time
-	}{{"last ok (a partial included)", g.LastOk, at.Add(8 * sec)}, {"last error", g.LastError, at.Add(3 * sec)}, {"last partial", g.LastPartial, at.Add(8 * sec)}} {
+	}{{"last ok (a partial included)", g.LastOk, at.Add(8 * sec)}, {"last error", g.LastError, at.Add(3 * sec)}, {"last partial", g.LastPartial, at.Add(7 * sec)}} {
 		if c.got == nil || !c.got.Equal(c.want) {
 			t.Errorf("%s %v, want %v", c.name, c.got, c.want.UTC())
 		}
@@ -82,6 +84,20 @@ func TestCollectionHealthClockBack(t *testing.T) {
 	if len(b.Health) != 1 || b.Health[0].Hour != time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC) || b.Health[0].Runs != 1 {
 		t.Fatalf("after the clock stepped back %+v, want the 03:00 row alone, runs 1", b.Health)
 	}
+	// the hour's slack (the review of the fold, 20261115-001030 #3): two runs that read the clock either side of 06:00
+	// and took the lock in the other order are one hour apart, not a clock step back - both hours are kept
+	h = &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	six := time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
+	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond}, six.Add(500*time.Millisecond), time.Minute)
+	h.record("i1", "postgres", "activity", Result{Duration: time.Millisecond}, six.Add(-100*time.Millisecond), time.Minute)
+	b = h.take()
+	got := map[time.Time]int{}
+	for _, r := range b.Health {
+		got[r.Hour] = r.Runs
+	}
+	if len(b.Health) != 2 || got[six.Add(-time.Hour)] != 1 || got[six] != 1 {
+		t.Fatalf("two runs either side of 06:00 recorded out of order %+v, want 05:00 runs 1 and 06:00 runs 1", b.Health)
+	}
 }
 
 // TestBeatBodyHealthOnce: the hourly rows ride in their own statement's body, never in the heartbeat's (which
@@ -97,12 +113,15 @@ func TestBeatBodyHealthOnce(t *testing.T) {
 	if strings.Contains(string(body), `"health"`) {
 		t.Errorf("the heartbeat's body carries the hourly rows: %s", body)
 	}
-	hb, err := healthBody(b.Health)
+	// what beat() sends (healthWrite): the import door, the collector's id, the hourly rows' own body
+	q, args, err := healthWrite("c1", b.Health)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(hb), `{"health":[{"instance":"i1","collection":"activity"`) {
-		t.Errorf("the hourly rows' body %s, want {\"health\":[{\"instance\":\"i1\",...", hb)
+	hb, _ := args[1].(string)
+	if !strings.Contains(q, "pgvigil.import_collection_health($1, $2::jsonb)") || len(args) != 2 || args[0] != "c1" ||
+		!strings.HasPrefix(hb, `{"health":[{"instance":"i1","collection":"activity"`) {
+		t.Errorf("the hourly write %q %v, want import_collection_health with c1 and {\"health\":[{\"instance\":\"i1\",...", q, args)
 	}
 }
 

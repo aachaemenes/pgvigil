@@ -673,10 +673,10 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	if len(b.Health) > 0 {
 		// running totals: a beat lost here is repaired by the next one; their own body and their own 30 s (a slow
 		// heartbeat statement leaves this one its full time; at a stop both share the caller's 8 s)
-		hb, err := healthBody(b.Health)
+		q, args, err := healthWrite(h.id, b.Health)
 		if err == nil {
 			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
-			_, err = h.pool.Exec(hctx, `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, h.id, string(hb))
+			_, err = h.pool.Exec(hctx, q, args...)
 			hcancel()
 		}
 		if err != nil {
@@ -688,6 +688,16 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
 		}
 	}
+}
+
+// healthWrite: the hourly rows' statement and its arguments as beat() sends them - their own body (healthBody), never
+// the heartbeat's; TestBeatBodyHealthOnce reads what beat() writes through it
+func healthWrite(id string, rows []beatHealth) (string, []any, error) {
+	hb, err := healthBody(rows)
+	if err != nil {
+		return "", nil, err
+	}
+	return `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, []any{id, string(hb)}, nil
 }
 
 // ChannelBackoff keeps a failing alert channel out of the next passes, as the collector's own alert loop does
