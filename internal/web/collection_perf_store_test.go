@@ -64,10 +64,10 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 		t.Fatalf("the hour rows: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, duration_ms, status, note)
-	  VALUES ($1, $2, $3 + interval '10 minutes', 120, 'error', 'proof: boom'),
-	         ($1, $2, $3 + interval '20 minutes', 90, 'partial', 'proof: one part refused'),
-	         ($1, $2, $3 + interval '30 minutes', NULL, 'skipped', 'proof: skipped'),
-	         ($1, 'job_stats_hourly', $3 + interval '40 minutes', 5, 'error', 'proof: rollup failed')`, s1, coll, h); err != nil {
+	  VALUES ($1, $2, $3::timestamptz + interval '10 minutes', 120, 'error', 'proof: boom'),
+	         ($1, $2, $3::timestamptz + interval '20 minutes', 90, 'partial', 'proof: one part refused'),
+	         ($1, $2, $3::timestamptz + interval '30 minutes', NULL, 'skipped', 'proof: skipped'),
+	         ($1, 'job_stats_hourly', $3::timestamptz + interval '40 minutes', 5, 'error', 'proof: rollup failed')`, s1, coll, h); err != nil {
 		t.Fatalf("the log rows: %v", err)
 	}
 	from, to := h.Add(-time.Hour), h.Add(2*time.Hour)
