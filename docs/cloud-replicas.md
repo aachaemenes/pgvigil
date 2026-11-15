@@ -94,7 +94,7 @@ instance's own lag and says which right is missing; a throttle rests the door un
 | Finding | Rule | Default | Source |
 |---|---|---|---|
 | provider replica lag | the replica's lag over the tier in every datapoint of the 10 minutes to its newest one | warning 10 minutes, critical 30 (`provider_replica_lag`, root, tag or instance) | pgvigil's own, above AWS's 'up to five minutes' an idle source's replica reports |
-| provider replica stopped | an available replica whose reported replication status is not replicating (RDS) or Running (Cloud SQL) and has stood 5 minutes: a read at least 5 minutes after the one that first saw it | critical | RDS StatusInfos; Cloud Monitoring's replication state. A blank status is 'not reported yet', never stopped |
+| provider replica stopped | an available replica whose reported replication status is not replicating (RDS) or Running (Cloud SQL) and has stood 5 minutes on an available replica: a read at least 5 minutes after the one that first saw it (or after the replica was available again, if later) | critical | RDS StatusInfos; Cloud Monitoring's replication state. A blank status is 'not reported yet', never stopped |
 | provider lag missing | an available replica seen for 15 minutes with no lag datapoint in 15 minutes | warning | pgvigil's own |
 | replica promoted or detached | a replica's source gone, or a source no longer listing it | warning for 24 hours | pgvigil's own |
 | cloud door failing | 3 reads in a row with a refused or failed call, the sentence carried | warning | pgvigil's own; a read refused whole is the collector's 'collection failing' |
@@ -102,7 +102,7 @@ instance's own lag and says which right is missing; a throttle rests the door un
 A replica reads stopped for a few minutes after a reboot. RDS's own events say so: 'Replication has stopped.' and,
 about 2.5 minutes later, 'Replication for the Read Replica resumed', with the instance available all the while. So the
 stopped finding waits until the status has stood 5 minutes, however many reads saw it; a status that changes starts the
-5 minutes again. At the default 5-minute collection the finding comes at the second or third read of a stopped replica
+5 minutes again, and the time while the replica itself was not available (rebooting, modifying) does not count. At the default 5-minute collection the finding comes at the second or third read of a stopped replica
 (5 to 10 minutes after the first).
 
 An RDS instance's own Multi-AZ standby is not a replica here and is not read: no row and no finding; its failover is the

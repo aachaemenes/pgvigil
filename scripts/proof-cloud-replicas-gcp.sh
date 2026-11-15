@@ -37,7 +37,8 @@
 #      status Google does not report while replication is off = a FAIL with what was read.
 #      CHANGED 2026-11-15, AFTER lab CP's run: the store's rule was 'in two reads' then (critical came at the read
 #      after the first, as that run's log shows); it is by time now - the status must have stood 5 minutes - so
-#      critical comes at the first read 5 minutes or more after the one that stored it (the loop's 15 reads cover it).
+#      critical comes at the first read 5 minutes or more after the one that stored it: the loop reads up to 8 more
+#      times after that read (25 at most; 15 when no status other than Running comes) - review 112616 finding 5.
 #      NOT PROVEN live under the new rule: no second lab CP; the store test (TestCloudReplicasOnAStore) stands for it.
 #  C-F promote-replica: the replica 'standalone' with a 'promoted' event, the primary's 'removed' event, the 'replica
 #      promoted or detached' finding (warning) on both instances.
@@ -205,8 +206,12 @@ ST=; SEEN=; ONE=; FIRST=; OFF=1
 offread() { local s; run "$1"; s=$(rstat); SEEN="$SEEN $1:${s:-blank}"
   if [ -z "$FIRST" ] && [ -n "$s" ] && [ "$s" != Running ]; then FIRST=$s; ONE=$(finding src 'provider replica stopped' "$REP_ID"); fi; }
 if [ -n "$OFF" ]; then
-  for i in $(seq 1 15); do sleep 60; offread src; offread rep
-    ST=$(finding src 'provider replica stopped' "$REP_ID"); [ "$ST" = critical ] && break; done
+  FI=
+  for i in $(seq 1 25); do sleep 60; offread src; offread rep
+    [ -n "$FIRST" ] && [ -z "$FI" ] && FI=$i
+    ST=$(finding src 'provider replica stopped' "$REP_ID"); [ "$ST" = critical ] && break
+    if [ -n "$FI" ]; then [ $((i - FI)) -ge 8 ] && break; else [ "$i" -ge 15 ] && break; fi
+  done
 fi
 "$LAB" repl-on | sed 's/^/  lab: /' || bad "C-E: repl-on refused (the lab's output above)"
 OA=$(q "SELECT now()"); CL=x; FR=

@@ -744,13 +744,15 @@ UNION ALL
 -- stopped: only an available replica whose replication status is reported (fold 9: blank = not reported yet) and has
 -- stood 5 minutes: a read at least 5 minutes after the one that first saw it (repl_since). By time, not by reads: RDS
 -- itself reports 'Replication has stopped.' for about 2.5 minutes after a replica's reboot (its events, lab RP
--- 2026-11-15), and two reads a minute apart both fell inside it. A status that changes starts its 5 minutes again.
+-- 2026-11-15), and two reads a minute apart both fell inside it. A status that changes starts its 5 minutes again,
+-- and so does the instance's own status: a read taken while it rebooted does not count (status_since, review 112616
+-- finding 2).
 SELECT r.instance_id, 'critical', 'provider replica stopped', c.resource_id, c.snapshot_at,
        format('the replica %s reports replication %s since %s%s', c.resource_id, c.repl_status,
               to_char(c.repl_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), coalesce(': ' || c.repl_note, ''))
   FROM pgvigil.cloud_replicas c
   JOIN pgvigil.cloud_replica_readers r ON r.provider = c.provider AND r.resource_id = c.resource_id
- WHERE c.role = 'replica' AND c.snapshot_at > now() - interval '15 minutes' AND c.snapshot_at >= c.repl_since + interval '5 minutes'
+ WHERE c.role = 'replica' AND c.snapshot_at > now() - interval '15 minutes' AND c.snapshot_at >= greatest(c.repl_since, c.status_since) + interval '5 minutes'
    AND lower(c.status) IN ('available', 'runnable') AND c.repl_status <> '' AND lower(c.repl_status) NOT IN ('replicating', 'running')
 UNION ALL
 SELECT r.instance_id, 'warning', 'provider lag missing', c.resource_id, c.snapshot_at,
