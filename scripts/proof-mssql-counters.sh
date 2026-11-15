@@ -380,7 +380,9 @@ import subprocess, sys
 dsn, sb = sys.argv[1], sys.argv[2]
 q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F', '|', '-c', s], capture_output=True, text=True, check=True).stdout.strip()
 at = q(f"SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")
-rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate), 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
+# rate is stored real: read it as float8 so Python gets the very value SQL divides (psql prints a real by its shortest
+# text, 112.827, against SQL's 112.82700347...: box run 401proof13 read 136.73499899 against 136.73500137)
+rate = lambda o, c, i='_Total': float(q(f"SELECT coalesce(max(v.rate)::float8, 0) FROM pgvigil.mssql_counter_values({sb}, '{at}'::timestamptz - interval '1 second', '{at}', 'instance') v WHERE v.object = '{o}' AND v.counter = '{c}' AND v.inst = '{i}'") or 0)
 # the point AT this read: metric_points also hands back the point its lookback carries in from the read before (box run
 # 401proof12 read '136.73...\n16.00...' for one metric)
 pt = lambda m: q(f"SELECT value FROM pgvigil.metric_points({sb}, 'counters', '{at}'::timestamptz - interval '1 second', '{at}') WHERE metric = '{m}' AND at = '{at}'::timestamptz")
