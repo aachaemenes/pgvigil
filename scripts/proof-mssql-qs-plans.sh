@@ -151,6 +151,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
+# where the proof's own logins connect: ADMIN_DSN's host and port pairs as it names them (keyword form, no quoted values),
+# never a fixed port - a sandbox on a port of its own makes the roles there
+PGWHERE=$(tr ' ' '\n' <<<"$ADMIN_DSN" | { grep -E '^(host|hostaddr|port)=' || true; } | tr '\n' ' ' | sed 's/ $//')
 IMG_SQL=${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 EXTRACT=${PGVIGIL_PLAN_EXTRACT:-.lab/extract.py}
 PARTS=${PGVIGIL_PARTS:-ABCDEFGH}
@@ -458,7 +461,7 @@ if [[ "$(pq "SELECT count(*) FROM pg_roles WHERE rolname IN ('pgvigil_reader', '
   for case in "b12b $ARO $ARO_PW" "b12c $AAU $AAU_PW"; do
     read -r tag who wpw <<<"$case"
     [[ $tag == b12c ]] && pq "REVOKE EXECUTE ON FUNCTION pgvigil.import_custom_report_run(timestamptz, jsonb) FROM pgvigil_collector" >/dev/null
-    sed "s|dsn: \"$PGDSN\"|dsn: \"host=127.0.0.1 port=5432 user=$who password=$wpw dbname=$PGDB\"|" "$TMPD/m.yaml" > "$TMPD/m-$tag.yaml"
+    sed "s|dsn: \"$PGDSN\"|dsn: \"$PGWHERE user=$who password=$wpw dbname=$PGDB\"|" "$TMPD/m.yaml" > "$TMPD/m-$tag.yaml"
     NPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
     "$TMPD/pgvigil" serve -config "$TMPD/m-$tag.yaml" -listen "127.0.0.1:$NPORT" >"$TMPD/serve-$tag.out" 2>&1 & NLPID=$!
     for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$NPORT/api/session" 2>/dev/null && break; sleep 0.1; done
@@ -647,7 +650,7 @@ echo "ok   C8: rpon's policy full -> none: its next read dropped every kept plan
 # global schedules: mssql_running_plans: 0 stops a ticked one; a file instance keeps its own schedules:
 COL=pgv_qcol_$SUF; COL_PW=$(pw)
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_collector;\n" "$COL" "$COL_PW" | psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 >/dev/null
-export PGV_Q_COL="host=127.0.0.1 port=5432 user=$COL password=$COL_PW dbname=$PGDB"
+export PGV_Q_COL="$PGWHERE user=$COL password=$COL_PW dbname=$PGDB"
 sed "s|dsn: \"$PGDSN\"|dsn: env:PGV_Q_COL|" "$TMPD/m.yaml" | python3 -c 'import sys
 out, skip = [], False
 for l in sys.stdin.read().split("\n"):
