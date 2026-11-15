@@ -82,7 +82,9 @@ const cols: Col[] = [
   { key: 'wait_type', label: 'waiting on', fmt: waitCell, cls: (_v, r) => r.wait_type == null || String(r.wait_type).startsWith('LCK_') ? '' : 'status ok' },
   { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: v => Number(v) ? String(v) : '' },
-  { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v) },
+  // a deeper row's head id and a chain note are not judged by the head check (N/A); the head's own row is its badge
+  { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v),
+    cls: (v, r) => (v != null && Number(r.chain_depth) !== 0) || (v == null && r.chain_note) ? 'status none' : '' },
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
   { key: 'elapsed_ms', label: 'running for', num: true, fmt: ms },
   { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
@@ -117,7 +119,7 @@ const headOnly = (f: (v: unknown) => string) => (v: unknown, r: Row) => r.tree_r
 const killable = (r: Row) => r.tree_role === 'head' && r.chain_note == null && r.status !== 'not in the read';
 const treeCols = (kill: Col | null): Col[] => [
   { key: 'session_id', label: 'session', fmt: (v, r) => el('span', { style: `padding-left:${Number(r.tree_depth) * 1.2}em` }, (Number(r.tree_depth) > 0 ? '└ ' : '') + String(v)) },
-  { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? '') },
+  { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? ''), cls: v => v == null || v === '' || v === 'head' ? '' : 'status none' },
   ...(kill ? [{ key: '_kill', label: 'kill this head', fmt: (v: unknown, r: Row) => killable(r) && kill.fmt ? kill.fmt(v, r) : '' }] : []),
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
   { key: 'status', fmt: statusCell, cls: (v, r) => v == null || v === '' || (v === 'sleeping' && Number(r.open_tran) > 0) ? '' : 'status ok' },

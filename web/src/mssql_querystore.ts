@@ -611,7 +611,7 @@ function stateView(d: QS): HTMLElement[] {
     grid(rows, cols, 'No database read.'),
     ...(flagged.length ? [el('h3', {}, 'What each flagged state means'), grid(flagged, [
       { key: 'database_name', label: 'database' },
-      { key: 'severity', label: 'status', fmt: v => v === 'info' ? badge('note', '') : sevBadge(v) },
+      { key: 'severity', label: 'status', fmt: v => v === 'info' ? badge('note', 'none') : sevBadge(v) },
       { key: 'verdict', label: 'what it means', wide: true },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ], '')] : []),

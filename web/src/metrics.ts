@@ -124,7 +124,7 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'critical', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op)} ${fmtMetric(v, r.unit)}` },
       { key: 'rule_id', label: 'rule', fmt: (v, r) => v == null ? '' : el('span', {},
         `${Number(r.for_minutes) > 0 ? `for ${String(r.for_minutes)} min` : 'at the first sample'}, ${scopeWords(r.rule_scope, r.rule_target)}${r.rule_database != null ? `, database ${String(r.rule_database)}` : ''}: `,
-        r.rule_state == null ? 'not judged yet' : stateBadge(r.rule_state, r.rule_held)) },
+        r.rule_state == null ? 'not judged yet' : stateBadge(r.rule_state, r.rule_held)), cls: (v, r) => v != null && r.rule_state == null ? 'status none' : '' },
       { key: '_threshold', label: 'threshold', fmt: (_v, r) => thresholdCell(d, ctx.instance!, r, cut(r)) },
       { key: '_chart', label: 'chart', fmt: (_v, r) => {
         const b = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(open.has(String(r.key))), 'aria-label': `Chart ${famLabel}: ${String(r.label)}` }, 'Chart');
