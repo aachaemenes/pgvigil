@@ -2,8 +2,8 @@
 """A status column's other cells, on the screen's side of xlsx-check's X18, for the BADGE-DRAWN status columns: a
 grid column (a Col literal `{ key: '...', ... }` in web/src, on one line or several) that draws a warning or critical
 badge on some rows - in its own text or through a helper of its file that does. X18 itself counts any column with an
-OK, warning or critical fill: a column coloured by its cls alone, or by an OK badge alone, is NOT held here - `--wide`
-lists those as candidates (an '' branch may hold only empty values: each read one by one). A badge-drawn status
+OK, warning or critical fill: a column coloured by its cls alone, or by an OK badge alone, is held by `--wide`
+(WIDE_REVIEWED: an '' branch may hold only empty values, so each is read one by one). A badge-drawn status
 column's other value-holding cells must carry a status too: OK where the column's check judged the row and found
 nothing, N/A where it did not judge it. Two ways pass:
   - the column's cls (a 'status ok' / 'status none' class on the cell), or
@@ -18,7 +18,7 @@ regex literals; a REVIEWED key covers every Col of that key in its file; a badge
 unread.
 
 usage: x18-scan.py <the web/src folder>   prints one line per FAIL, then the counts; exit 1 on any FAIL
-       x18-scan.py --wide <the web/src folder>   the candidates beyond the badge scan; exit 1 on any
+       x18-scan.py --wide <the web/src folder>   the columns beyond the badge scan, held by WIDE_REVIEWED; exit 1 on any FAIL
 """
 import glob
 import re
@@ -308,12 +308,20 @@ def cls_text(body, hs):
     return t
 
 
+# (file, key): why a column the badge scan does not see passes X18. 'empty' = its '' branch only meets an empty cell
+# (the fmt draws nothing there); 'cls' = its cls read one by one: every value-holding row gets a status (OK, N/A or its
+# warning / critical); 'badges' = every badge it draws has a status class (ok / none / warn / crit)
+WIDE_REVIEWED = {
+}
+
+
 def wide(src):
     """the status columns the badge scan does not see (X18 calls a column a status column by any OK, warning or
     critical fill): (a) a cls that colours some rows (warn / crit / ok, bare or 'status ...') and returns '' on
-    others; (b) a column whose only status is an OK badge. Each is a candidate: an '' branch may be an empty value
-    only - read one by one"""
-    n = 0
+    others; (b) a column whose only status is an OK badge. Each passes only on WIDE_REVIEWED (an '' branch may hold
+    only empty values: read one by one); a 'badges' entry also with every badge of a status class. A WIDE_REVIEWED
+    entry that matches no such column is a FAIL (the list follows the source)"""
+    bad, n, seen = 0, 0, set()
     for path in sorted(glob.glob(f'{src}/*.ts')):
         name = path.split('/')[-1]
         if '.test.' in name:
@@ -321,25 +329,43 @@ def wide(src):
         text = open(path, encoding='utf-8').read()
         hs, ha = helpers(text), all_helpers(text)
         okh = {h: b for h, b in ha.items() if 'badge(' in b and re.search(r"'ok'", b)}
+        done = set()
         for m in COL.finditer(text):
             body = text[m.start():close_of(text, m.start(), '{')]
             key, line = m.group(1), text.count('\n', 0, m.start()) + 1
+            if (key, body) in done:
+                continue
+            done.add((key, body))
             used = [h for h in hs if re.search(r'fmt:\s*(?:(?:\([^)]*\)|\w+)\s*=>\s*)?' + h + r'\b', body)]
             if ('badge(' in body and STATUS.search(body)) or used:
                 continue   # the badge scan's own
             ct = cls_text(body, ha)
-            if ct is not None:
-                if CLS_STATUS.search(ct) and "''" in ct:
-                    print(f"WIDE a {name}:{line} '{key}': its cls colours some rows and returns '' on others")
-                    n += 1
-                continue
             oku = [h for h in okh if re.search(r'\b' + h + r'\b', body)]
-            if ('badge(' in body and "'ok'" in ' '.join(badges(body))) or oku:
-                print(f"WIDE b {name}:{line} '{key}': an OK badge on some rows, no cls")
-                n += 1
-    print(f'{n} candidate status columns beyond the badge scan')
-    return 1 if n else 0
-
+            if ct is not None:
+                if not (CLS_STATUS.search(ct) and "''" in ct):
+                    continue
+                kind = "its cls colours some rows and returns '' on others"
+            elif ('badge(' in body and "'ok'" in ' '.join(badges(body))) or oku:
+                kind = 'an OK badge on some rows, no cls'
+            else:
+                continue
+            n += 1
+            why = WIDE_REVIEWED.get((name, key))
+            if why is None:
+                print(f"FAIL {name}:{line} '{key}': {kind}, not reviewed")
+                bad += 1
+                continue
+            seen.add((name, key))
+            if why == 'badges':
+                plain = [c for c in badges(body + ''.join(okh[h] for h in oku)) if c in ("''", "'info'") or re.search(r"(?<!\?)\?\s*''|:\s*''|[?:]\s*'info'", c)]
+                if plain:
+                    print(f"FAIL {name}:{line} '{key}' (badges): a badge with no status class ({', '.join(plain)})")
+                    bad += 1
+    for k in sorted(set(WIDE_REVIEWED) - seen):
+        print(f"FAIL WIDE_REVIEWED {k[0]} '{k[1]}': no such column (the list follows the source)")
+        bad += 1
+    print(f'{n - bad} of {n} wide status columns ok' if bad <= n else f'{bad} FAIL')
+    return 1 if bad else 0
 
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == '--wide':

@@ -167,8 +167,8 @@
 #              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook. X18 (a status column has a status
 #              or N/A on every cell) on every page; scripts/x18-scan.py first: every BADGE-DRAWN status column of
 #              web/src (a warning or critical badge, inline or through a helper) has a cls (its values read by review) or
-#              is on its reviewed list with each badge of class ok / none; the columns coloured by a cls alone or by an
-#              OK badge alone are not held by the scan (x18-scan.py --wide lists them)
+#              is on its reviewed list with each badge of class ok / none; then --wide: every column coloured by a cls
+#              alone or by an OK badge alone is on its WIDE_REVIEWED list (read one by one)
 #   decimals   (X13) no number cell shows more decimals than its column shows on the screen (nor fewer under a fixed
 #              format): the read-back takes each grid column's most decimals from the screen's text (a grid drawn whole;
 #              not a chart's series: the driver reads one point of it) into page-<lang>.json and runs
@@ -211,6 +211,8 @@ ok "X rules' tests: $(tail -1 "$WORK/xcheck-unit.out")"
 echo "== a status column's other cells on the screen (scripts/x18-scan.py)"
 python3 -I scripts/x18-scan.py web/src > "$WORK/x18-scan.out" 2>&1 || { cat "$WORK/x18-scan.out"; fail "a status column's other cells (scripts/x18-scan.py)"; }
 ok "x18-scan: $(tail -1 "$WORK/x18-scan.out")"
+python3 -I scripts/x18-scan.py --wide web/src > "$WORK/x18-wide.out" 2>&1 || { cat "$WORK/x18-wide.out"; fail "a cls- or OK-badge-coloured column's other cells (scripts/x18-scan.py --wide)"; }
+ok "x18-scan --wide: $(tail -1 "$WORK/x18-wide.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
