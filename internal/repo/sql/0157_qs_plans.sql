@@ -27,6 +27,9 @@
 -- arm changed as above and one arm more: 'a plan compiled on stale statistics' (info); its columns are unchanged, so
 -- pgvigil.findings' arm is unchanged.
 --
+-- The running plans switch of a page instance (admin_instances.running_plans, false for every row; ticked on Admin >
+-- Instances through import_admin_running_plans; admin_inventory() re-made with it) and the audit of a plan read by its
+-- handle (custom_report_log op 'plan_read'; 0131's import_custom_report_run with the op) are at the end.
 -- For the join: the actions_log constraints below start from 0102 and 0078: a join that adds an action merges the lists.
 -- Add 'mssql_qs_plans_purge' and 'mssql_plan_stats_store' to apply_roles()' owner-only list (it deletes) and
 -- n := n + pgvigil.mssql_qs_plans_purge(p_days) to purge(). No partitioned parent, no findings arm here.
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_running_plan (
   max_grant_kb    bigint,
   max_longest_ms  bigint,
   reasons         text,                    -- the thresholds the last read saw met: cpu, grant, count, duration
+  compatibility_level int,                 -- the database's, as the last read saw it (the statistics' auto-update line)
   plan_xml        text,
   plan_state      text,                    -- read | policy | too large | encrypted | gone | no plan | error; NULL = not asked yet
   plan_note       text,
@@ -70,8 +74,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_live_plan (
   cpu_ms         bigint,
   running_ms     bigint,
   database_name  text,
-  live_xml       text,                     -- NULL under a query_text policy other than full
-  plan_state     text NOT NULL             -- read | policy
+  live_xml       text,                     -- NULL under a query_text policy other than full, or over the size cap
+  plan_bytes     bigint,
+  plan_state     text NOT NULL             -- read | policy | too large
 );
 CREATE INDEX IF NOT EXISTS mssql_live_plan_key_idx ON pgvigil.mssql_live_plan (instance_id, query_hash, plan_hash, stmt_start, stmt_end, captured_at);
 CREATE INDEX IF NOT EXISTS mssql_live_plan_at_idx ON pgvigil.mssql_live_plan (instance_id, captured_at);
@@ -87,18 +92,34 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_live_read (
 -- payload: 'running' rows {query_hash_hex, plan_hash_hex, stmt_start, stmt_end, plan_handle, database_name, requests,
 -- cpu_ms, grant_kb, longest_ms, reasons[, plan_state, plan_note, plan_bytes][, kind_of 'plan', statement = the plan]}.
 -- A row without plan_state carries its figures only (its plan was sent within the hour). A row whose kind_of is
--- 'plan' and whose statement the policy emptied stores no plan and drops one a wider policy stored.
+-- 'plan' and whose statement the policy emptied stores no plan and drops one a wider policy stored. Every read sends
+-- one 'plan_policy' row {kind_of 'plan', statement 'kept'}: emptied by the policy, the instance's stored plans and live
+-- captures are dropped whole (mssql_plans_policy_drop), as 0083 drops a database's Query Store XML.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_plans_policy_drop(p_instance_id int, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(pgvigil.mssql_rows(p_payload)) r
+              WHERE r->>'kind' = 'plan_policy' AND coalesce(r->>'statement', '') = '') THEN
+    -- the running plans first, then the live captures: both imports take them in this order
+    UPDATE pgvigil.mssql_running_plan SET plan_xml = NULL, plan_state = 'policy', plan_note = NULL
+     WHERE instance_id = p_instance_id AND plan_xml IS NOT NULL;
+    UPDATE pgvigil.mssql_live_plan SET live_xml = NULL, plan_state = 'policy'
+     WHERE instance_id = p_instance_id AND live_xml IS NOT NULL;
+  END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_running_plans(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_running_plans'), p_instance_id);
+  PERFORM pgvigil.mssql_plans_policy_drop(p_instance_id, p_payload);
   INSERT INTO pgvigil.mssql_running_plan AS t (instance_id, query_hash, plan_hash, stmt_start, stmt_end, database_name, plan_handle,
-      first_seen, last_seen, reads, max_requests, max_cpu_ms, max_grant_kb, max_longest_ms, reasons,
+      first_seen, last_seen, reads, max_requests, max_cpu_ms, max_grant_kb, max_longest_ms, reasons, compatibility_level,
       plan_xml, plan_state, plan_note, plan_bytes, plan_read_at)
   SELECT DISTINCT ON (r->>'query_hash_hex', r->>'plan_hash_hex', (r->>'stmt_start')::int, (r->>'stmt_end')::int)
          p_instance_id, r->>'query_hash_hex', r->>'plan_hash_hex', (r->>'stmt_start')::int, (r->>'stmt_end')::int, r->>'database_name',
          r->>'plan_handle', p_snapshot_at, p_snapshot_at, 1, (r->>'requests')::int, (r->>'cpu_ms')::bigint, (r->>'grant_kb')::bigint,
-         (r->>'longest_ms')::bigint, r->>'reasons',
+         (r->>'longest_ms')::bigint, r->>'reasons', (r->>'compatibility_level')::int,
          CASE WHEN r->>'kind_of' = 'plan' THEN r->>'statement' END,
          CASE WHEN r->>'kind_of' = 'plan' AND coalesce(r->>'statement', '') = '' THEN 'policy' ELSE r->>'plan_state' END,
          r->>'plan_note', (r->>'plan_bytes')::bigint, CASE WHEN r ? 'plan_state' THEN p_snapshot_at END
@@ -116,6 +137,7 @@ BEGIN
     max_grant_kb   = greatest(t.max_grant_kb, EXCLUDED.max_grant_kb),
     max_longest_ms = greatest(t.max_longest_ms, EXCLUDED.max_longest_ms),
     reasons        = EXCLUDED.reasons,
+    compatibility_level = coalesce(EXCLUDED.compatibility_level, t.compatibility_level),
     -- a plan read replaces the stored one; a policy row drops it; a failed read keeps what was stored
     plan_xml       = CASE WHEN EXCLUDED.plan_state = 'read' THEN EXCLUDED.plan_xml WHEN EXCLUDED.plan_state = 'policy' THEN NULL ELSE t.plan_xml END,
     plan_state     = CASE WHEN EXCLUDED.plan_state IS NULL THEN t.plan_state
@@ -128,18 +150,21 @@ BEGIN
 END $$;
 
 -- payload: 'live' rows {query_hash_hex, plan_hash_hex, stmt_start, stmt_end, session_id, request_id, cpu_ms, running_ms,
--- database_name, kind_of 'plan', statement = the live plan}; one 'live_read' row {asked, read[, note]}.
+-- database_name, plan_bytes, kind_of 'plan', statement = the live plan} (over the size cap: plan_state 'too large', no
+-- statement); one 'live_read' row {asked, read[, note]}; one 'plan_policy' row (above).
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_live_plans(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   livePlanKeep CONSTANT int := 5;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_live_plans'), p_instance_id);
+  PERFORM pgvigil.mssql_plans_policy_drop(p_instance_id, p_payload);
   INSERT INTO pgvigil.mssql_live_plan (instance_id, captured_at, query_hash, plan_hash, stmt_start, stmt_end, session_id, request_id,
-      cpu_ms, running_ms, database_name, live_xml, plan_state)
+      cpu_ms, running_ms, database_name, live_xml, plan_bytes, plan_state)
   SELECT p_instance_id, p_snapshot_at, r->>'query_hash_hex', r->>'plan_hash_hex', (r->>'stmt_start')::int, (r->>'stmt_end')::int,
          (r->>'session_id')::int, (r->>'request_id')::int, (r->>'cpu_ms')::bigint, (r->>'running_ms')::bigint, r->>'database_name',
-         nullif(r->>'statement', ''), CASE WHEN coalesce(r->>'statement', '') = '' THEN 'policy' ELSE 'read' END
+         CASE WHEN r->>'kind_of' = 'plan' THEN nullif(r->>'statement', '') END, (r->>'plan_bytes')::bigint,
+         CASE WHEN r->>'plan_state' = 'too large' THEN 'too large' WHEN coalesce(r->>'statement', '') = '' THEN 'policy' ELSE 'read' END
     FROM jsonb_array_elements(pgvigil.mssql_rows(p_payload)) r
    WHERE r->>'kind' = 'live' AND r->>'query_hash_hex' IS NOT NULL AND r->>'plan_hash_hex' IS NOT NULL
      AND r->>'stmt_start' IS NOT NULL AND r->>'stmt_end' IS NOT NULL;
@@ -231,15 +256,20 @@ $$;
 CREATE OR REPLACE VIEW pgvigil.mssql_plan_stat_status AS
 SELECT s.instance_id, s.source, s.plan_key, s.database_name, s.plan_id, s.stmt, s.stat_database, s.stat_schema, s.stat_table, s.stat_name,
        s.modification_count, s.sampling_pct, s.last_update, s.captured_at, t.row_count AS table_rows, t.read_at AS rows_read_at,
-       qp.compatibility_level,
+       c.compatibility_level,
        round(100.0 * s.modification_count / nullif(t.row_count, 0), 1) AS modified_pct,
-       round(pgvigil.mssql_stats_update_line(t.row_count, qp.compatibility_level)) AS update_line,
-       (s.modification_count >= pgvigil.mssql_stats_update_line(t.row_count, qp.compatibility_level)) AS stale_at_compile
+       round(pgvigil.mssql_stats_update_line(t.row_count, c.compatibility_level)) AS update_line,
+       (s.modification_count >= pgvigil.mssql_stats_update_line(t.row_count, c.compatibility_level)) AS stale_at_compile,
+       CASE WHEN t.row_count IS NULL THEN 'rows not read'
+            WHEN c.compatibility_level IS NULL THEN 'not judged: the database''s compatibility level is not known' END AS not_judged
   FROM pgvigil.mssql_plan_stat s
   LEFT JOIN LATERAL (SELECT max(i.row_count) AS row_count, max(i.snapshot_at) AS read_at FROM pgvigil.mssql_index i
                       WHERE i.instance_id = s.instance_id AND i.database_name = s.stat_database AND i.schema_name = s.stat_schema
                         AND i.table_name = s.stat_table AND i.index_id IN (0, 1)) t ON true
-  LEFT JOIN pgvigil.mssql_qs_plan qp ON s.source = 'qs' AND qp.instance_id = s.instance_id AND qp.database_name = s.database_name AND qp.plan_id = s.plan_id;
+  LEFT JOIN pgvigil.mssql_qs_plan qp ON s.source = 'qs' AND qp.instance_id = s.instance_id AND qp.database_name = s.database_name AND qp.plan_id = s.plan_id
+  LEFT JOIN pgvigil.mssql_running_plan rp ON s.source = 'running' AND rp.instance_id = s.instance_id
+        AND s.plan_key = concat_ws('|', rp.query_hash, rp.plan_hash, rp.stmt_start, rp.stmt_end)
+  CROSS JOIN LATERAL (SELECT coalesce(qp.compatibility_level, rp.compatibility_level) AS compatibility_level) c;
 
 -- 0126's import, renamed and called unchanged; then the statistics of the plans this read stored
 DO $$ BEGIN
@@ -330,8 +360,11 @@ SELECT p.instance_id, CASE WHEN coalesce(ff.paged, true) THEN 'warning' ELSE 'in
               CASE WHEN ff.paged IS NULL THEN ''
                    WHEN ff.paged THEN format(' Since it was last forced: %s failure(s) in %s read(s); %s.', ff.failures, ff.failure_reads,
                                              CASE WHEN ff.two_in_one_read THEN 'one read saw 2 or more' ELSE 'two within 24 hours' END)
-                   ELSE format(' Held: it failed once (read %s UTC); it pages on a second failure within 24 hours of that one.',
-                               to_char(ff.first_failure AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')) END)
+                   -- held: the newest failure starts the 24 h a second one pages within
+                   ELSE format(' Held: %s (read %s UTC); it pages on a second failure within 24 hours of that one.',
+                               CASE WHEN ff.failure_reads = 1 THEN 'it failed once'
+                                    ELSE format('no two of its %s failures since it was forced lie within 24 hours of each other', ff.failures) END,
+                               to_char(ff.last_failure AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')) END)
   FROM pgvigil.mssql_qs_plan p
   LEFT JOIN pgvigil.mssql_qs_query q ON q.instance_id = p.instance_id AND q.database_name = p.database_name AND q.query_id = p.query_id
                                     AND q.query_hash IS NOT DISTINCT FROM p.query_hash
@@ -445,3 +478,119 @@ LANGUAGE sql STABLE AS $$
    WHERE l.instance_id = p_instance AND l.query_key = p_query_hash AND h.plan_hash = p_plan_hash
      AND (d.database_name IS NULL OR d.database_name = p_database)
 $$;
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- a plan read by its handle is audited (task 406's FOLD: a plan carries the statement's literals): op 'plan_read' in
+-- custom_report_log, written by serve through the actions door's audit login before the plan is answered (who, the
+-- client, the instance, the handle and offsets, the state read; never the plan). 0131's CHECK and function, the op
+-- added; a join that adds another op (0164's 'histogram') merges the lists.
+-- ---------------------------------------------------------------------------------------------------------------
+ALTER TABLE pgvigil.custom_report_log DROP CONSTRAINT IF EXISTS custom_report_log_op_check;
+ALTER TABLE pgvigil.custom_report_log ADD CONSTRAINT custom_report_log_op_check
+  CHECK (op IN ('add', 'edit', 'delete', 'move', 'folder_add', 'folder_rename', 'folder_delete',
+                'run', 'community_run', 'community_help', 'community_form', 'plan_read'));
+
+CREATE OR REPLACE FUNCTION pgvigil.import_custom_report_run(p_at timestamptz, p_payload jsonb)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_user text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_op   text := p_payload->>'op';
+  v_out  text := p_payload->>'outcome';
+  v_door text := nullif(p_payload->>'door', '');
+  v_id   bigint;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_custom_report_run: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  IF v_op IS NULL OR v_op NOT IN ('run', 'community_run', 'community_help', 'community_form', 'plan_read') THEN
+    RAISE EXCEPTION 'import_custom_report_run: op % is not run, community_run, community_help, community_form or plan_read', v_op USING ERRCODE = '22023';
+  END IF;
+  IF v_out IS NULL OR v_out NOT IN ('done', 'refused', 'failed') THEN
+    RAISE EXCEPTION 'import_custom_report_run: outcome % is not done, refused or failed', v_out USING ERRCODE = '22023';
+  END IF;
+  IF v_door IS NOT NULL AND v_door NOT IN ('file', 'page', 'store') THEN
+    RAISE EXCEPTION 'import_custom_report_run: door % is not file, page or store', v_door USING ERRCODE = '22023';
+  END IF;
+  INSERT INTO pgvigil.custom_report_log (at, ui_user, client, op, report_id, report_name, tool, instance_id, instance, outcome,
+                                         detail, rows, duration_ms, statement, payload, door, door_generation)
+  VALUES (p_at, v_user, nullif(p_payload->>'client', ''), v_op,
+          CASE WHEN coalesce(p_payload->>'report_id', '') ~ '^[0-9]{1,18}$' THEN (p_payload->>'report_id')::bigint END,
+          nullif(p_payload->>'report_name', ''), nullif(p_payload->>'tool', ''),
+          CASE WHEN coalesce(p_payload->>'instance_id', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'instance_id')::int END,
+          nullif(p_payload->>'instance', ''), v_out, left(p_payload->>'detail', 4000),
+          CASE WHEN coalesce(p_payload->>'rows', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'rows')::int END,
+          CASE WHEN coalesce(p_payload->>'duration_ms', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'duration_ms')::int END,
+          left(p_payload->>'statement', 200000), p_payload->'params', v_door,
+          CASE WHEN coalesce(p_payload->>'door_generation', '') ~ '^-?[0-9]{1,18}$' THEN (p_payload->>'door_generation')::bigint END)
+  RETURNING log_id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- the running plans switch of an instance added in Admin > Instances (task 406's FOLD, the lead's Q15 call: the locked-
+-- down default). admin_instances.running_plans is false for every row, those there at the upgrade and those added
+-- after; an admin ticks it on the page (import_admin_running_plans, audited as the page's other changes). The collector
+-- reads it through admin_inventory() (0131's, one column more) and runs mssql_running_plans each minute for a ticked
+-- instance unless pgvigil.yaml's schedules: say otherwise (config.Interval reads the page's default after the file's
+-- schedules:). An instance of pgvigil.yaml keeps its own schedules: as before.
+-- ---------------------------------------------------------------------------------------------------------------
+ALTER TABLE pgvigil.admin_instances ADD COLUMN IF NOT EXISTS running_plans boolean NOT NULL DEFAULT false;
+
+-- payload {op 'running_plans', ui_user, client, name, on, file_names}: the answer as import_admin_instance's
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_running_plans(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_user text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_cli  text := p_payload->>'client';
+  v_name text := btrim(coalesce(p_payload->>'name', ''));
+  v_on   text := p_payload->>'on';
+  v_have pgvigil.admin_instances%ROWTYPE;
+  v_why  text;
+  v_gen  bigint;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_admin_running_plans: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  SELECT * INTO v_have FROM pgvigil.admin_instances WHERE name = v_name;
+  IF coalesce(p_payload->>'op', '') <> 'running_plans' THEN
+    v_why := 'op must be running_plans';
+  ELSIF v_on IS NULL OR v_on NOT IN ('true', 'false') THEN
+    v_why := 'on must be true or false';
+  ELSIF jsonb_typeof(p_payload->'file_names') = 'array' AND p_payload->'file_names' ? v_name THEN
+    v_why := format('%s is an instance of pgvigil.yaml: its schedules: in the file switch its running plans (mssql_running_plans: 1m)', v_name);
+  ELSIF v_have.name IS NULL THEN
+    v_why := format('no instance %s was added here', v_name);
+  ELSIF v_have.engine <> 'sqlserver' THEN
+    v_why := format('%s is not a SQL Server instance: the plans of running queries are read on SQL Server only', v_name);
+  END IF;
+  IF v_why IS NOT NULL THEN
+    PERFORM pgvigil.admin_log(v_user, v_cli, 'instance running_plans', v_name, 'refused', v_why);
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', v_why);
+  END IF;
+  UPDATE pgvigil.admin_instances SET running_plans = (v_on = 'true'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
+  v_gen := pgvigil.admin_bump();
+  PERFORM pgvigil.admin_log(v_user, v_cli, 'instance running_plans', v_name, 'done',
+    CASE WHEN v_on = 'true' THEN 'on: the plans of its running queries are read each minute (their statement text and literals, masked, kept under the query_text policy)'
+         ELSE 'off: the plans of its running queries are no longer read' END);
+  RETURN jsonb_build_object('outcome', 'done', 'detail', format('running plans %s for %s', CASE WHEN v_on = 'true' THEN 'on' ELSE 'off' END, v_name), 'generation', v_gen);
+END $$;
+
+DROP FUNCTION IF EXISTS pgvigil.admin_inventory();
+CREATE FUNCTION pgvigil.admin_inventory()
+RETURNS TABLE (name text, engine text, platform text, dsn_ref text, tags text[], disabled boolean, auth text, options text, generation bigint,
+               running_plans boolean)
+LANGUAGE sql STABLE AS $$
+  SELECT a.name, a.engine, a.platform, a.dsn_ref, a.tags, a.disabled, a.auth, a.options, s.generation, a.running_plans
+    FROM pgvigil.admin_inventory_state s LEFT JOIN pgvigil.admin_instances a ON true
+   WHERE s.one
+   ORDER BY a.name
+$$;
+ALTER FUNCTION pgvigil.admin_inventory() SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgvigil_collector') THEN
+    GRANT EXECUTE ON FUNCTION pgvigil.admin_inventory() TO pgvigil_collector;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgvigil_reader') THEN
+    GRANT EXECUTE ON FUNCTION pgvigil.admin_inventory() TO pgvigil_reader;
+  END IF;
+END $$;

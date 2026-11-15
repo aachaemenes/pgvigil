@@ -123,7 +123,8 @@ func (s *Server) MSSQLPlanCacheEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 // openPlanRead opens one short connection on the read login for a read on demand. Unlike a custom report's, the
-// statements are pgvigil's own fixed reads, so a read login in sysadmin is not refused here (the collections use it).
+// statements are pgvigil's own fixed reads, so a read login in sysadmin is not refused here (the collections use it;
+// task 406's FOLD records the departure from its design).
 func openPlanRead(ctx context.Context, dsn string) (*sql.DB, *sql.Conn, error) {
 	db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-plan"))
 	if err != nil {
@@ -200,18 +201,58 @@ func (s *Server) MSSQLPlanCachePlan(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, map[string]any{"state": "off", "words": why}, nil)
 		return
 	}
-	dsn, _, _ := s.doorsNow().readLogin("sqlserver", name)
+	// a plan carries the statement's literals: every read is audited (op plan_read in the custom reports' log, as a
+	// community tool's run), the row written before the answer; a server without the audit door sends nothing
+	if why := s.serverOff(); why != "" {
+		s.reply(w, r, map[string]any{"state": "off", "words": "Reading a plan by its handle needs " + why + "."}, nil)
+		return
+	}
+	user := s.sessionUser(r)
+	if user == "" {
+		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
+		return
+	}
+	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)
+	defer acancel()
+	if err := s.mayAudit(actx); err != nil {
+		s.reply(w, r, map[string]any{"state": "off", "words": strings.Replace(err.Error(), "nothing was run", "the plan was not read", 1)}, nil)
+		return
+	}
+	// a sysadmin read login is not refused (task 406's FOLD): these are pgvigil's own fixed reads, the ones the
+	// collectors already make on that login; openMS refuses one because a custom report runs the DBA's own SQL
+	ds := s.doorsNow()
+	dsn, kind, _ := ds.readLogin("sqlserver", name)
+	row := (&instanceRun{Door: kind, DoorGen: ds.Gen}).audit(map[string]any{"op": "plan_read", "ui_user": user, "client": clientIP(r),
+		"instance_id": id, "instance": name, "params": map[string]any{"plan_handle": handleText, "start": start, "end": end, "plan_hash": want}})
 	ctx, cancel := context.WithTimeout(r.Context(), planReadBudget)
 	defer cancel()
+	t0 := time.Now()
 	db, conn, err := openPlanRead(ctx, dsn)
 	if err != nil {
+		row["outcome"], row["detail"], row["duration_ms"] = "failed", "the read login could not connect: "+err.Error(), time.Since(t0).Milliseconds()
+		if aerr := s.auditRun(actx, row); aerr != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the read's audit row could not be written: %v", aerr))
+			return
+		}
 		s.reply(w, r, map[string]any{"state": "error", "words": "the read login could not connect: " + err.Error()}, nil)
 		return
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
 	f, err := mssql.PlanByHandle(ctx, conn, handle, start, end, want)
 	if err != nil {
+		row["outcome"], row["detail"], row["duration_ms"] = "failed", "the plan was not read: "+err.Error(), time.Since(t0).Milliseconds()
+		if aerr := s.auditRun(actx, row); aerr != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the read's audit row could not be written: %v", aerr))
+			return
+		}
 		s.reply(w, r, map[string]any{"state": "error", "words": "the plan was not read: " + err.Error()}, nil)
+		return
+	}
+	// the row names what was read (the state, the plan's hash, object and size), never the plan
+	row["outcome"], row["duration_ms"] = "done", time.Since(t0).Milliseconds()
+	row["detail"] = fmt.Sprintf("%s: %s (plan hash %s, %s %s, %d bytes)", f.State, f.Words, f.PlanHash, f.ObjType, f.Object, f.Bytes)
+	if err := s.auditRun(actx, row); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("the read's audit row could not be written (%v): its plan is withheld", err))
 		return
 	}
 	out := map[string]any{"state": f.State, "words": f.Words, "plan_hash": f.PlanHash, "objtype": f.ObjType, "database": f.Database,
@@ -309,6 +350,16 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		query, tag, args = sqlMSSQLLivePlanXML, "live", append(args, lid)
 	}
+	name, ok := s.mssqlInstanceName(w, r, id)
+	if !ok {
+		return
+	}
+	// the policy as this serve reads it now: a plan kept under 'full' is not served once the policy is narrower (the
+	// collectors' policy row then drops what is kept, at their next run)
+	if qt := s.mssqlPlanPolicy(name); qt != "full" {
+		s.reply(w, r, map[string]any{"state": "none", "words": fmt.Sprintf("not shown: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", qt)}, nil)
+		return
+	}
 	err = s.pool.QueryRow(r.Context(), query, args...).Scan(&xml, &state, &db, &inst)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, errors.New("no such plan is kept"))
@@ -322,14 +373,16 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 		words := "no plan is kept for it"
 		if deref(state) == "policy" {
 			words = "not kept: this instance's query_text policy is not \"full\", and a plan carries the statement's text and its compiled values"
+		} else if deref(state) == "too large" {
+			words = "no plan is kept for it: it is over the 4 MB a plan may take"
 		} else if deref(state) != "" {
 			words = "no plan is kept for it: " + deref(state)
 		}
 		s.reply(w, r, map[string]any{"state": "none", "words": words}, nil)
 		return
 	}
-	name := fmt.Sprintf("plan-%s-%s-%s-%s.sqlplan", safeFileName(deref(inst)), safeFileName(deref(db)), tag, strings.ToLower(strings.TrimPrefix(ph, "0x")))
-	s.reply(w, r, map[string]any{"state": "ok", "words": "the plan kept for this running query", "plan": mssql.MaskPlanXML(*xml), "file": name}, nil)
+	file := fmt.Sprintf("plan-%s-%s-%s-%s.sqlplan", safeFileName(deref(inst)), safeFileName(deref(db)), tag, strings.ToLower(strings.TrimPrefix(ph, "0x")))
+	s.reply(w, r, map[string]any{"state": "ok", "words": "the plan kept for this running query", "plan": mssql.MaskPlanXML(*xml), "file": file}, nil)
 }
 
 // ---- the statistics a plan was compiled with; a forced plan's failures ----------------------------------------------
@@ -340,7 +393,7 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 
 const sqlMSSQLPlanStats = `
 SELECT stmt, stat_database AS database, stat_schema AS schema, stat_table AS "table", stat_name AS statistic, modification_count,
-       table_rows, modified_pct, update_line, stale_at_compile, sampling_pct, last_update, compatibility_level, rows_read_at, captured_at
+       table_rows, modified_pct, update_line, stale_at_compile, not_judged, sampling_pct, last_update, compatibility_level, rows_read_at, captured_at
   FROM pgvigil.mssql_plan_stat_status
  WHERE instance_id = $1 AND source = $2 AND plan_key = $3
  ORDER BY stale_at_compile DESC NULLS LAST, modification_count DESC NULLS LAST, stmt, stat_table, stat_name`

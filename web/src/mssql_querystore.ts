@@ -571,7 +571,7 @@ export function planStatsPanel(ctx: Ctx, key: Record<string, string | number>, t
         + 'or from compatibility level 130 the smaller of that and the square root of 1,000 x rows: a statistic past it was stale at compile '
         + '(AUTO_UPDATE_STATISTICS off, asynchronous updates or NORECOMPUTE).'),
       grid(rows, [
-        { key: 'stale_at_compile', label: 'stale at compile', fmt: v => v === true ? badge('stale', 'warn') : v === false ? 'no' : 'rows not read' },
+        { key: 'stale_at_compile', label: 'stale at compile', fmt: (v, r) => v === true ? badge('stale', 'warn') : v === false ? 'no' : String(r.not_judged ?? 'not judged') },
         { key: 'stmt', label: 'statement', num: true }, { key: 'database' }, { key: 'schema' }, { key: 'table' }, { key: 'statistic' },
         { key: 'modification_count', label: 'rows changed', num: true }, { key: 'table_rows', label: 'table rows', num: true },
         { key: 'modified_pct', label: 'modified %', num: true }, { key: 'update_line', label: 'auto-update line', num: true },

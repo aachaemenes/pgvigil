@@ -166,6 +166,44 @@ func TestMaskPlanXML(t *testing.T) {
 	if got := MaskPlanXML(""); got != "" {
 		t.Errorf("empty: %q", got)
 	}
+	// review 20261114-173221 finding 4: a mask that ran past an attribute's quote broke the XML, and one stopped at
+	// &quot;'s ';' and kept the secret
+	wrap := func(stmt string) string {
+		return `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>` +
+			`<StmtSimple StatementText="` + stmt + `" StatementId="1" QueryPlanHash="0x01"/></Statements></Batch></BatchSequence></ShowPlanXML>`
+	}
+	for _, c := range []struct{ name, stmt, secret string }{
+		{"sqlcmd -P at the end of a statement", `UPDATE t SET a = a -Pct`, ""},
+		{"net use in xp_cmdshell", `EXEC xp_cmdshell &apos;net use \\h\s pass1&apos;`, "pass1"},
+		{"Pwd in double quotes in a connection string", `SELECT * FROM OPENROWSET(&apos;SQLNCLI&apos;, &apos;Server=x;Uid=u;Pwd=&quot;s3cretD&quot;;&apos;, &apos;SELECT 1&apos;)`, "s3cretD"},
+		{"a CR LF and a password", `CREATE LOGIN x WITH PASSWORD = &apos;s3cretE&apos;&#xD;&#xA;SELECT 1 &lt; 2`, "s3cretE"},
+	} {
+		out := MaskPlanXML(wrap(c.stmt))
+		var doc struct {
+			Stmt []struct {
+				Text string `xml:"StatementText,attr"`
+				ID   string `xml:"StatementId,attr"`
+			} `xml:"BatchSequence>Batch>Statements>StmtSimple"`
+		}
+		if err := xml.Unmarshal([]byte(out), &doc); err != nil {
+			t.Errorf("%s: the masked plan is not XML: %v\n%s", c.name, err, out)
+			continue
+		}
+		if len(doc.Stmt) != 1 || doc.Stmt[0].ID != "1" {
+			t.Errorf("%s: the next attribute was lost: %+v\n%s", c.name, doc.Stmt, out)
+		}
+		if c.secret != "" && strings.Contains(out, c.secret) {
+			t.Errorf("%s: %s kept: %s", c.name, c.secret, out)
+		}
+		if !strings.Contains(out, "&lt;masked&gt;") {
+			t.Errorf("%s: nothing masked: %s", c.name, out)
+		}
+	}
+	// a value the mask leaves alone keeps its bytes (its entities as SQL Server wrote them)
+	plain := wrap(`SELECT a FROM t WHERE b = N&apos;x&apos; AND c &lt; 3&#xD;&#xA;`)
+	if got := MaskPlanXML(plain); got != plain {
+		t.Errorf("an unmasked plan changed:\n%s\n%s", plain, got)
+	}
 }
 
 func TestPlanStatsUsed(t *testing.T) {

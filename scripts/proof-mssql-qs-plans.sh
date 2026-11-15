@@ -78,7 +78,8 @@
 #     E2 two more failures in the next read (one read saw 2): warning, 'one read saw 2 or more';
 #     E3 the plan forced anew (count back to 0): a reset row; one failure after it: info again (a new window);
 #     E4 one more failure in the next read: warning, 'two within 24 hours';
-#     E5 the window's first failure moved 25 h back in the repository: info again (it starts over after 24 h);
+#     E5 every row before E4's failure moved 25 h back in the repository (the reset too, so E3's failure stays in the
+#        window): two failure reads, not paged, info 'Held: no two of its 2 failures ... (read <E4's read> UTC)';
 #     GET /api/mssql/forcefail lists the plan with its reads.
 #     Red on f8e89d2: no mssql_qs_force_fail table; 'a forced plan fails' is a warning at E1.
 #  F. one statement on every instance, statements by their text (PerformanceMonitor 3.13 Added 14, 15, 16; F13, F14,
@@ -488,7 +489,7 @@ for x in bad: print('DIFF', x)
 print(f"C1-C4, C7: cases {sorted(cases)}; rpon rows {len(rows)}; plan sources of the duration case {sorted(kinds)}")
 sys.exit(1 if bad else 0)
 PYEND
-echo "ok   C1-C4: one row per threshold case with its plan, none below the thresholds or for a zero plan hash, rpnone kept no plan, the API's list and plan"
+echo "ok   C1-C4, C7: one row per threshold case with its plan, none below the thresholds or for a zero plan hash, rpnone kept no plan, the API's list and plan; the duration case's plan sources (running, plan cache)"
 
 # C5 the live plan
 MAJ=${VER%%.*}
@@ -637,11 +638,15 @@ col sqlfull mssql_querystore
 [[ "$(pq "SELECT count(*) FROM pgvigil.mssql_qs_force_fail WHERE database_name = 'pgvqs2' AND plan_id = $PID AND reset")" -ge 1 ]] || fail "E3: no reset row after forcing anew (server count $(fcount))"
 sleep 11; fail_runs 1; col sqlfull mssql_querystore; expect E3 info "Held: it failed once"
 fail_runs 1; col sqlfull mssql_querystore; expect E4 warning "two within 24 hours"
+# E5: every row before E4's failure moved 25 h back (the reset with them, so E3's failure stays in the window): two
+# failures since the plan was forced anew, 25 h apart - held, and the read named is E4's (the newest starts the 24 h)
+E4AT=$(pq "SELECT to_char(max(seen_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM pgvigil.mssql_qs_force_fail WHERE database_name = 'pgvqs2' AND plan_id = $PID AND rise > 0")
 pq "UPDATE pgvigil.mssql_qs_force_fail f SET seen_at = seen_at - interval '25 hours'
-     WHERE f.database_name = 'pgvqs2' AND f.plan_id = $PID AND f.rise > 0
-       AND f.seen_at = (SELECT min(x.seen_at) FROM pgvigil.mssql_qs_force_fail x WHERE x.database_name = 'pgvqs2' AND x.plan_id = $PID AND x.rise > 0
-                         AND x.seen_at >= (SELECT max(y.seen_at) FROM pgvigil.mssql_qs_force_fail y WHERE y.database_name = 'pgvqs2' AND y.plan_id = $PID AND y.reset))" >/dev/null
-expect E5 info "Held: it failed once"
+     WHERE f.database_name = 'pgvqs2' AND f.plan_id = $PID
+       AND f.seen_at < (SELECT max(x.seen_at) FROM pgvigil.mssql_qs_force_fail x WHERE x.database_name = 'pgvqs2' AND x.plan_id = $PID AND x.rise > 0)" >/dev/null
+[[ "$(pq "SELECT failure_reads || '|' || paged FROM pgvigil.mssql_qs_force_fail_status WHERE database_name = 'pgvqs2' AND plan_id = $PID")" == "2|false" ]] \
+  || fail "E5: the window after the move: $(pq "SELECT failure_reads || '|' || paged FROM pgvigil.mssql_qs_force_fail_status WHERE database_name = 'pgvqs2' AND plan_id = $PID") (want 2 failure reads, not paged)"
+expect E5 info "Held: no two of its 2 failures since it was forced lie within 24 hours of each other (read $E4AT UTC)"
 CODE=$(api "mssql/forcefail?instance=$IF" "$TMPD/e.json"); [[ "$CODE" == 200 ]] && grep -q "\"$PID\"\|,$PID," "$TMPD/e.json" || fail "E: GET /api/mssql/forcefail: HTTP $CODE $(head -c 300 "$TMPD/e.json")"
 echo "ok   E: held at one failure, paged at two in one read and at two within 24 h, a new window after forcing anew, held again past 24 h; the API lists it"
 fi
