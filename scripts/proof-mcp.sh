@@ -8,10 +8,11 @@
 #  (1) the owner's login is refused before any message is read: exit 3, "refused", nothing on stdout; (1b) a
 #      pgvigil_reader login that also holds DELETE on one repository table is refused the same way;
 #  (2) initialize answers protocolVersion 2025-06-18 (the client's) with serverInfo.name pgvigil and a tools capability;
-#  (3) tools/list names exactly the seven tools, each with an object inputSchema and readOnlyHint true;
+#  (3) tools/list names exactly the nine tools, each with an object inputSchema and readOnlyHint true;
 #  (4) every tool answers once, isError false, with its own content: fleet_summary lists the demo's instances,
 #      instance_findings has checks, blocking_chain has a snapshot, top_statements has rows, plan_findings by id has
-#      the plan, table_state has the table, storage_forecast has volumes;
+#      the plan, table_state has the table, storage_forecast has volumes; statement_everywhere echoes its hash and
+#      answers rows (none when the demo holds no SQL Server statement), find_statements answers its sources;
 #  (5) a write is refused: a tools/call of a tool that would terminate a backend is a JSON-RPC error naming
 #      read-only, a resources/write method is "not served", and the reader login itself cannot write
 #      (INSERT on pgvigil.instances: permission denied) - the door has no path to a write;
@@ -91,11 +92,11 @@ ok "(2) initialize: protocol 2025-06-18, server pgvigil, tools capability"
 # (3) tools/list
 r=$(rpc 2 tools/list '{}')
 names=$(jq -r '[.result.tools[].name]|sort|join(",")' <<<"$r")
-want="blocking_chain,fleet_summary,instance_findings,plan_findings,storage_forecast,table_state,top_statements"
+want="blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
 [[ "$names" == "$want" ]] || fail "(3) tools: $names, want $want"
 jq -e 'all(.result.tools[]; .inputSchema.type=="object" and .annotations.readOnlyHint==true and .annotations.destructiveHint==false)' <<<"$r" >/dev/null \
   || fail "(3) a tool without an object schema or the read-only marks"
-ok "(3) tools/list: the seven tools, each read-only with an object schema"
+ok "(3) tools/list: the nine tools, each read-only with an object schema"
 
 # (4) every tool once
 r=$(tool fleet_summary '{}'); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) fleet_summary: $r"
@@ -135,6 +136,15 @@ TNAME=$(body <<<"$SR" | jq -r '.tables[0].schema_name + "." + .tables[0].table_n
 r=$(tool table_state "$(jq -cn --arg i "$INST" --arg t "$TNAME" --arg d "$TDB" '{instance:$i,table:$t,database:$d}')"); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) table_state: $r"
 [[ $(body <<<"$r" | jq '.tables|length') == 1 ]] || fail "(4) table_state: not one row for $TDB.$TNAME"
 ok "(4) table_state $TDB.$TNAME: $(body <<<"$r" | jq -c '.tables[0]|{total_bytes,dead_pct,checks}')"
+
+# task 406's two SQL Server statement tools, through the same reader login
+r=$(tool statement_everywhere '{"query_hash":"0x1A2B3C4D","hours":24}'); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) statement_everywhere: $r"
+[[ $(body <<<"$r" | jq -r '.query_hash') == 0x1A2B3C4D ]] || fail "(4) statement_everywhere: the hash is not echoed: $r"
+body <<<"$r" | jq -e '.rows|type == "array"' >/dev/null || fail "(4) statement_everywhere: no rows list: $r"
+ok "(4) statement_everywhere 0x1A2B3C4D: $(body <<<"$r" | jq '.rows|length') row(s); note: $(body <<<"$r" | jq -r '.note // "none"')"
+r=$(tool find_statements '{"text":"select"}'); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) find_statements: $r"
+body <<<"$r" | jq -e '.sources|type == "array"' >/dev/null || fail "(4) find_statements: no sources list: $r"
+ok "(4) find_statements 'select': $(body <<<"$r" | jq '.sources|length') source(s), $(body <<<"$r" | jq '[.sources[]?.rows.rows // [] | length]|add // 0') row(s)"
 
 # (5) a refused write, three ways
 r=$(tool terminate_backend '{"pid":1}')

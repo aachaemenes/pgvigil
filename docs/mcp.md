@@ -4,7 +4,7 @@
 
 ## What it is and what it is not
 
-- Read only. Seven tools, each a read of the repository; none writes, cancels, terminates, runs EXPLAIN or takes SQL. A call to any other tool name, or to any method beyond `initialize`, `ping`, `tools/list` and `tools/call` (the empty `resources/list`, `resources/templates/list` and `prompts/list` answer too), is refused with a JSON-RPC error.
+- Read only. Nine tools, each a read of the repository; none writes, cancels, terminates, runs EXPLAIN or takes SQL. A call to any other tool name, or to any method beyond `initialize`, `ping`, `tools/list` and `tools/call` (the empty `resources/list`, `resources/templates/list` and `prompts/list` answer too), is refused with a JSON-RPC error.
 - The same SQL as the web UI's JSON API. Every tool is answered by the API's own handler, called inside the process: the parameter checks, the queries and the results are the API's. The session is the UI's read-only one (`default_transaction_read_only`, a 15 s statement timeout, a 2 s lock timeout).
 - A reader login only. Before it reads a message, `pgvigil mcp` checks its login and refuses (exit 3) a superuser, the schema's owner or any login with CREATE on it, a login that may change a repository table, the collector (`pgvigil_collector`) and the UI's password door (`pgvigil_auth`). The login is IN ROLE `pgvigil_reader` and nothing else.
 - The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep; the door never reads a monitored server.
@@ -22,6 +22,8 @@
 | `plan_findings` | `plan_id`, or `instance` with `queryid`, `from`, `to`, `hours` | one captured plan with the plan rules it hits, or the plans captured in a window (default 24 hours) to find a `plan_id` | `/api/plan`, `/api/plans` |
 | `table_state` | `instance`, `table` (name or schema.table), `database` | the table's latest sizes, tuples, bloat, visibility, vacuum and analyze history, scans, XID age and checks, with its database's summary | `/api/tables` |
 | `storage_forecast` | `instance` (optional) | volumes with free space, growth per day and days until full; with `instance`, also database and table growth and the storage checks; without it, the fleet and the repository's own size | `/api/storage`, `/api/storage/fleet` |
+| `statement_everywhere` | `query_hash` (0x and up to 16 hex digits), `from`, `to`, `hours` | SQL Server only: one query hash on every SQL Server instance over the window (default 24 hours), per instance, database and source (plan cache, Query Store): executions, CPU, duration, reads, the most CPU first; PostgreSQL statements are not compared (a queryid is its own server's) | `/api/mssql/everywhere` |
+| `find_statements` | `text` (3 to 400 characters), `instance` (optional) | SQL Server only: the stored statement texts holding the text (case ignored), from the plan cache and the Query Store, of one instance or every one, each with its query hash for `statement_everywhere`; the instances whose query_text policy keeps no text are named; PostgreSQL instances are not searched | `/api/mssql/search` |
 
 An instance is named by its name (as `fleet_summary` lists it) or its `instance_id`. Times are RFC 3339 (`2026-11-09T08:00:00Z`). Each list in a reply is cut at 200 rows and each text at 20,000 characters; a cut says so in the reply.
 

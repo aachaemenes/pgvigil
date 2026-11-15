@@ -375,7 +375,7 @@ func skipQuotedB(s string, i int, backslash bool) int {
 	return n
 }
 
-// enclosing is the literal whose body holds offset p (start < p < end-1 for a closed one), if any.
+// enclosing is the literal that holds offset p after its opening quote (start < p < end), if any.
 func enclosing(spans []litSpan, p int) (litSpan, bool) {
 	k := sort.Search(len(spans), func(i int) bool { return spans[i].end > p })
 	if k < len(spans) && spans[k].start < p {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func fakeAPI(t *testing.T, seen *[]string) http.Handler {
 		"/api/mssql/everywhere": map[string]any{"rows": tbl([]string{"instance", "database", "source", "executions", "cpu_ms"},
 			[]any{"Alpha", "app", "plan cache", 3, 12}), "note": "PostgreSQL statements are not compared"},
 		"/api/mssql/search": map[string]any{"sources": []any{map[string]any{"source": "plan cache",
-			"rows": tbl([]string{"instance", "query_hash", "text"}, []any{"Alpha", "0x1A2B", "select * from orders"})}}, "no_text": []string{"beta"}},
+			"rows": tbl([]string{"instance", "query_hash", "text"}, []any{"Alpha", "0x1A2B", "select * from orders where pw = 's3cret-pw'"})}}, "no_text": []string{"beta"}},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*seen = append(*seen, r.Method+" "+r.URL.String())
@@ -205,7 +206,7 @@ func TestTools(t *testing.T) {
 		"15": {err: true, has: []string{"RFC 3339"}},
 		"16": {has: []string{`"query_hash": "0x1a2b"`, `"source": "plan cache"`, `"executions": 3`, "not compared"}},
 		"17": {err: true, has: []string{"query_hash must be 0x"}},
-		"18": {has: []string{"select * from orders", `"no_text"`}},
+		"18": {has: []string{"select * from orders where pw = '[redacted]'", `"no_text"`}},
 		"19": {has: []string{"select * from orders"}},
 	}
 	for id, w := range want {
@@ -264,8 +265,16 @@ func TestTools(t *testing.T) {
 			search = append(search, r)
 		}
 	}
-	if len(every) != 1 || !strings.Contains(every[0], "hash=0x1a2b") || !strings.Contains(every[0], "from=") {
+	if len(every) != 1 || !strings.Contains(every[0], "hash=0x1a2b") {
 		t.Errorf("everywhere requests (the bad hash sends none): %v", every)
+	} else if u, err := url.Parse(strings.TrimPrefix(every[0], "GET ")); err != nil {
+		t.Errorf("everywhere request: %v", err)
+	} else {
+		from, err1 := time.Parse(time.RFC3339, u.Query().Get("from"))
+		to, err2 := time.Parse(time.RFC3339, u.Query().Get("to"))
+		if err1 != nil || err2 != nil || to.Sub(from) != 6*time.Hour {
+			t.Errorf("everywhere window: hours 6 sent as from %q to %q", u.Query().Get("from"), u.Query().Get("to"))
+		}
 	}
 	if len(search) != 2 || strings.Contains(search[0], "instance=") || !strings.Contains(search[1], "instance=2") || !strings.Contains(search[1], "q=orders") {
 		t.Errorf("search requests: %v", search)
