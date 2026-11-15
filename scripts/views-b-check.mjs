@@ -229,12 +229,12 @@ await run('W3', async () => {
 await run('W3c', async () => {
   // review M4: Auto Size acts on the Group by panel alone; a statement there shows up to 400 characters, off 80
   await go('#/slowqueries?view=none&g=text&fit=1'); if (await noControl('W3c')) return;
-  const on = await P.ev(`(() => { const b = [...document.querySelectorAll('.slow-groups table.grid button.sqlcell')].find(x => (x.dataset.full || '').replace(/\\s+/g, ' ').length > 80);
+  const on = await P.ev(`(() => { const b = [...document.querySelectorAll('.slow-groups table.grid button.sqlcell')].find(x => (x.dataset.full || '').replace(/\\s+/g, ' ').trim().length > 90);
     return { panel: !!document.querySelector('.slow-groups.fit-cols'), page: !!document.querySelector('section.fit-cols'), long: !!b, len: b ? b.textContent.length : 0, title: b ? (b.closest('td').title || '').length : 0 }; })()`);
   await go('#/slowqueries?view=none&g=text&fit=0');
-  const off = await P.ev(`(() => { const b = [...document.querySelectorAll('.slow-groups table.grid button.sqlcell')].find(x => (x.dataset.full || '').replace(/\\s+/g, ' ').length > 80); return b ? b.textContent.length : 0; })()`);
-  check('W3c', on.panel && !on.page && on.long && on.len > 81 && on.title > 81 && off > 0 && off <= 81,
-    `fit=1: the panel ${on.panel}, the page section ${on.page}, a statement over 80 characters ${on.long}: ${on.len} shown, title ${on.title}; fit=0: ${off} shown`);
+  const off = await P.ev(`(() => { const b = [...document.querySelectorAll('.slow-groups table.grid button.sqlcell')].find(x => (x.dataset.full || '').replace(/\\s+/g, ' ').trim().length > 90); return b ? b.textContent.length : 0; })()`);
+  check('W3c', on.panel && !on.page && on.long && on.len > 83 && on.title > 83 && off > 0 && off <= 83,
+    `fit=1: the panel ${on.panel}, the page section ${on.page}, a statement over 90 characters ${on.long}: ${on.len} shown, title ${on.title}; fit=0: ${off} shown`);
 });
 await run('W3b', async () => {
   if (!E.VB_MSSQL) { check('W3b', false, 'the demo fleet has no SQL Server instance'); return; }

@@ -42,7 +42,8 @@
 #     view at once. W7b (H1) u2, its localStorage clear, opens #/summary?view=<f1h> (no keys): focus=1 written, the
 #     focused grid, the button 'View: f1h'.
 #  W3c (M4) #/slowqueries?g=text&fit=1: the Group by panel carries Auto Size, the page section does not; a statement
-#     over 80 characters shows more than 80, its cell's title too; fit=0: at most 80 (+ the ellipsis).
+#     over 90 characters shows more than 83, its cell's title too; fit=0: at most 83 (80 + firstChars' '...').
+#     [refined after the fold's red: it said 'over 80 / at most 81', but firstChars' ellipsis is three characters]
 #  W6b (H2) p6 renamed 'p6r': picking it from 1 h restores w=6h.
 #  W7 (M5) reads what u2's page drew (Group By, Top, Auto Size on the panel), not the address it opened.
 #  W9 (B1) the views list read of the Summary held (CDP Fetch) while the reader moves to Slow queries, then let go: the
