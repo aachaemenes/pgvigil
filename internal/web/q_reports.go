@@ -288,8 +288,9 @@ SELECT i.instance_id, i.name AS instance, l.login_name, l.is_disabled, l.created
 
 const sqlRepPgLogins = `
 SELECT i.instance_id, i.name AS instance, a.rolname AS role_name, a.super AS is_superuser, a.valid_until,
-       CASE WHEN a.valid_until IS NULL OR a.valid_until = 'infinity' THEN NULL
+       CASE WHEN a.valid_until IS NULL OR NOT isfinite(a.valid_until) THEN NULL
             ELSE floor(extract(epoch FROM a.valid_until - now()) / 86400)::int END AS days_until_expiration,
+       a.valid_until < now() AS is_expired, -- '-infinity': always expired, no days ('infinity': never; NULL: no expiry)
        p.method, CASE WHEN p.role_name IS NULL THEN coalesce(s.status, 'not read') ELSE 'read' END AS method_read,
        s.note AS method_note
   FROM pgvigil.role_attributes a JOIN pgvigil.instances i ON i.instance_id = a.instance_id

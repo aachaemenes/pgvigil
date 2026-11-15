@@ -554,7 +554,8 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
       a.roles = Number(a.roles) + 1;
       if (r.is_superuser === true) a.superusers = Number(a.superusers) + 1;
       const left = r.days_until_expiration == null ? null : Number(r.days_until_expiration);
-      if (left == null) a.no_expiry = Number(a.no_expiry) + 1; else if (left < 0) a.expired = Number(a.expired) + 1; else if (left <= 30) a.expiring = Number(a.expiring) + 1;
+      // is_expired carries '-infinity' (expired, no days); 'infinity' and NULL have no days and are not expired
+      if (r.is_expired === true) a.expired = Number(a.expired) + 1; else if (left == null) a.no_expiry = Number(a.no_expiry) + 1; else if (left <= 30) a.expiring = Number(a.expiring) + 1;
       const m = r.method === 'scram-sha-256' ? 'scram' : r.method === 'md5' ? 'md5' : r.method === 'none' ? 'none' : r.method == null ? 'not_read' : 'other';
       a[m] = Number(a[m]) + 1;
       pgPer.set(k, a);
@@ -568,7 +569,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
       el('h3', {}, 'PostgreSQL password expiry'),
       grid(pg, [instCol(ctx), { key: 'role_name', label: 'Role' }, { key: 'is_superuser', label: 'Superuser', fmt: yes },
         { key: 'valid_until', label: 'Valid Until', fmt: x => x == null ? 'no expiry' : fmtTime(x) },
-        { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: x => x == null ? '' : Number(x) < 0 ? 'crit' : Number(x) <= 30 ? 'warn' : '' },
+        { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: (x, r) => r.is_expired === true ? 'crit' : x == null ? '' : Number(x) <= 30 ? 'warn' : '' },
         { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x === 'md5' ? 'warn' : '' }],
       'No PostgreSQL login role is stored for this scope.'));
   }
