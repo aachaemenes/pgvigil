@@ -96,6 +96,11 @@
 #  P14 a contact's one field edited on the page: its audit row names that field alone (review C, M2)
 #  P15 a contact added, the contacts hidden, the page exported: no contact's name or address in the status or the file
 #      (review C, M3); P2 also: the added application opens (review C, MINOR 1)
+#  P16 the tree's '(no <key>)' folder (?tag=<key>:, a key no instance has): the page lists the same databases with no
+#      application as the page with no tag, more than none, and the sentence keeps its system-database clause (the j14
+#      join review, S1: the page's own tag filter matched no instance there)
+#  P17 /api/instances and /api/overview fail in the browser: the page still draws, unscoped, its sentence naming every
+#      engine's system databases (the j14 join review, S2: the whole page failed with them)
 # Section O, owner-routed alerts (a contact's route through a configured smtp channel: one derived channel per route,
 # 'contact-<route_id>', the base's relay, repeat, clear_after, quiet hours and cap, scoped by the application's tag;
 # real passes of 'pgvigil alerts' against a loopback SMTP sink that keeps each message with its RCPT list):
@@ -479,7 +484,7 @@ c7=$(get "$U" applications/unassigned); h7=$(js 'r = d["unassigned"]; i = r["col
 FTI=$(q "select pgvigil.ensure_instance('proof-file-tag', 'onprem', '18.0', 180000, false, '{application:FromFile,env:x}'::text[])")
 c8=$(get "$U" applications); h8=$(js 'r = d.get("file_tags") or {"columns": [], "rows": []}; c = r["columns"]
 print(",".join("%s=%s/%s" % (x[c.index("instance")], x[c.index("tag")], x[c.index("source")]) for x in r["rows"]))' 2>&1)
-[[ $c8 == 200 && ",$h8," == *",proof-file-tag=application:FromFile/pgvigil.yaml,"* && ",$(tags "$FTI")," != *",application:"* ]] \
+[[ $c8 == 200 && ",$h8," == *",proof-file-tag=application:FromFile/pgvigil.yaml or a DBA Dash import,"* && ",$(tags "$FTI")," != *",application:"* ]] \
   && ok "H8 an application: tag from pgvigil.yaml is not taken and the list's answer names it (proof-file-tag)" || bad "H8 $c8 '${h8:0:200}'; its merged tags $(tags "$FTI")"
 # H8b (review B, m4): a key with spaces around it is the view's 'application' too (tag_split trims it): named as well
 FT2=$(q "select pgvigil.ensure_instance('proof-file-tag2', 'onprem', '18.0', 180000, false, '{\"application : Spaced\",env:x}'::text[])")
@@ -502,7 +507,7 @@ else bad "H6 setup: the -no-login serve did not answer ($(tail -3 "$WORK/serve-$
 # ================= P: the page (Admin > Applications in a headless Chromium over CDP, on the H section's serves) =================
 # the bundle is built from this tree on the box (.ap/run.sh: npm ci, npm run build) with 310's WIRING of router.ts and
 # main.ts applied; a binary without the page's route is the red: every P row 'not on this tree'
-PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15"
+PROWS="P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11 P12 P13 P14 P15 P16 P17"
 if ! grep -a -q 'admin_applications:"Applications"' "$BIN"; then   # the bundle's tab (0136's text names admin_applications too: review P, m10)
   for row in $PROWS; do bad "$row not on this tree (no Admin > Applications in the bundle)"; done
 else
@@ -602,6 +607,17 @@ try {
   out('P1.strip', await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.textContent.trim()).join('|')`));
   out('P13.note', await ev(`document.querySelector('main .applications [data-part=file-tags]')?.textContent ?? ''`));
   out('P1.names', await ev(`[...document.querySelectorAll('main .applications button')].map(b => b.getAttribute('aria-label') ?? '').filter(l => l.startsWith('Open ')).map(l => l.slice(5)).join('|')`));
+  // P16 the '(no <key>)' folder of a key no instance has: every instance is in it, so the same rows as no tag
+  const unHead = () => ev(`[...document.querySelectorAll('main .applications h3')].map(h => h.textContent.trim()).find(t => t.startsWith('Databases with no application')) ?? 'none'`);
+  const unSentence = () => ev(`[...document.querySelectorAll('main .applications p.meta')].map(p => p.textContent.replace(/\\s+/g, ' ').trim()).find(t => t.startsWith('Every present database')) ?? 'none'`);
+  out('P16.notag', await unHead());
+  out('P16.notag_ticks', await ticks());
+  out('P16.notag_sentence', await unSentence());
+  out('P16.ready', await go(U, '#/admin_applications?tag=proofnokey:'));
+  out('P16.folder', await unHead());
+  out('P16.folder_ticks', await ticks());
+  out('P16.sentence', await unSentence());
+  await go(U, '#/admin_applications');
   // P2 add through the form
   out('P2.fill', await fill('Add an application', { name: 'Page Added', tier: '2', environment: 'test', description: 'added by the page' }));
   out('P2.status', await submit('Add an application'));
@@ -696,6 +712,16 @@ try {
     out(`P11.clicks_${t}`, [o, sh].some(x => String(x).startsWith('NOT FOUND')) ? `${o} / ${sh}` : 'ok');
     out(`P11.${t}`, await axe());
   }
+  // P17 /api/instances and /api/overview fail in the browser (CDP Fetch): the page still draws, unscoped, its sentence
+  // naming every engine's system databases
+  const failFleet = m => { const d = JSON.parse(m.data); if (d.method === 'Fetch.requestPaused') cmd('Fetch.failRequest', { requestId: d.params.requestId, errorReason: 'Failed' }); };
+  ws.addEventListener('message', failFleet);
+  await cmd('Fetch.enable', { patterns: [{ urlPattern: '*/api/instances*' }, { urlPattern: '*/api/overview*' }] });
+  out('P17.ready', await go(U, '#/admin_applications'));
+  out('P17.head', await unHead());
+  out('P17.ticks', await ticks());
+  out('P17.sentence', await unSentence());
+  await cmd('Fetch.disable'); ws.removeEventListener('message', failFleet);
   // P10 the -no-login serve: every write control off with a visible reason; contacts in words; axe there too
   await cmd('Page.navigate', { url: U6 + '#/about' }); await sleep(500); await theme('light');
   out('P10.ready', await go(U6, '#/admin_applications'));
@@ -762,7 +788,7 @@ if [[ $P_SET == 1 ]]; then
   [[ ${r9%%|*} != "-" && -n ${r9%%|*} && ${r9#*|} == pdb1_new* && $t9 == pdb1_new && "|$(pv P9.after)|" == *"|pdb1_new:own|"* ]] && ok "P9 a renamed database: absent since and 'renamed to pdb1_new' shown; the offer moved the assignment" \
     || bad "P9 row (absent|renamed) '$r9'; store '$t9'; after '$(pv P9.after)'; offer '$(pv P9.offer)'"
   # P13 (decision E5)
-  [[ $(pv P13.note) == *"proof-file-tag has application:FromFile from pgvigil.yaml"* ]] && ok "P13 the page names the instance whose pgvigil.yaml gives it an application: tag ('$(pv P13.note | cut -c1-120)')" \
+  [[ $(pv P13.note) == *"proof-file-tag has application:FromFile from pgvigil.yaml or a DBA Dash import"* ]] && ok "P13 the page names the instance whose pgvigil.yaml gives it an application: tag ('$(pv P13.note | cut -c1-120)')" \
     || bad "P13 the page's notice '$(pv P13.note)'"
   # P10
   c10=$(pv P10.controls); n10=${c10%% *}
@@ -791,6 +817,18 @@ if [[ $P_SET == 1 ]]; then
     [[ $(pv P15.fill) == ok && $s15 == 1 && $l15 == 0 && $(pv P15.status) != *"Zed"* ]] && ok "P15 a contact added then the contacts hidden: the status words and the page's export hold neither its name nor its address" \
       || bad "P15 fill $(pv P15.fill); stored $s15; hits in the export $l15; status '$(pv P15.status)'"
   else bad "P15 no workbook downloaded ($F15)"; fi
+  # P16
+  n16=$(pv P16.notag | sed -n 's/.*(\([0-9]*\)).*/\1/p'); f16=$(pv P16.folder | sed -n 's/.*(\([0-9]*\)).*/\1/p')
+  [[ $(pv P16.ready) == true && -n "$n16" && $n16 -gt 0 && "$f16" == "$n16" && "$(pv P16.folder_ticks)" == "$(pv P16.notag_ticks)" \
+     && $(pv P16.sentence) == *"in this folder"* && $(pv P16.sentence) == *"master, model, msdb, tempdb"* && $(pv P16.sentence) == *"template0"* \
+     && $(pv P16.notag_sentence) != *"in this folder"* && $(pv P16.notag_sentence) == *"master, model, msdb, tempdb"* && $(pv P16.notag_sentence) == *"template0"* ]] \
+    && ok "P16 the '(no proofnokey)' folder lists the same $n16 database(s) with no application as the page with no tag; both pages' sentences name both engines' system databases" \
+    || bad "P16 ready $(pv P16.ready); no tag '$(pv P16.notag)' / folder '$(pv P16.folder)'; ticks equal $([[ "$(pv P16.folder_ticks)" == "$(pv P16.notag_ticks)" ]] && echo yes || echo no); sentence '$(pv P16.sentence | cut -c1-200)'; no-tag sentence '$(pv P16.notag_sentence | cut -c1-200)'"
+  # P17
+  n17=$(pv P17.head | sed -n 's/.*(\([0-9]*\)).*/\1/p')
+  [[ $(pv P17.ready) == true && -n "$n17" && $n17 -gt 0 && $(pv P17.sentence) == *"master, model, msdb, tempdb"* && $(pv P17.sentence) == *"template0"* && $(pv P17.sentence) != *"in this folder"* ]] \
+    && ok "P17 /api/instances and /api/overview failed: the page still drew, $n17 database(s) with no application, both engines' system databases named" \
+    || bad "P17 ready $(pv P17.ready); head '$(pv P17.head)'; sentence '$(pv P17.sentence | cut -c1-200)'"
   [[ -s "$WORK/p.err" ]] && echo "read: the click run's stderr: $(head -c 300 "$WORK/p.err" | tr '\n' ' ')"
 else
   for row in $PROWS; do bad "$row not run (P setup)"; done

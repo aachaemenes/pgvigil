@@ -9,7 +9,7 @@
 // only when asked, so an export of this page carries them only while they are shown (the page is never mailed). The route and the
 // tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
-import { fleet, tagsOf } from './fleet';
+import { fleet, inTagScope } from './fleet';
 import { Ctx } from './router';
 import { Col, el, fmtTime, grid, gridModel, offControl } from './ui';
 
@@ -88,15 +88,19 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
 
   async function draw(): Promise<void> {
     const mine = ++seq;
-    const [d, u, f] = await Promise.all([get<ListData>('applications'), get<UnData>('applications/unassigned'), fleet()]);
+    // the fleet read is optional (the j14 join review, S2): when it fails the page draws as it did before the tree's
+    // scope, every database listed and every engine's system databases named, never a failed page
+    const [d, u, f] = await Promise.all([get<ListData>('applications'), get<UnData>('applications/unassigned'), fleet().catch(() => null)]);
     if (mine !== seq) return;
     whyNot = d.can_edit ? '' : str(d.why_not);
     // the databases follow the tree's scope as every page does (a tag folder shows its own servers' databases only, and the
-    // sentence names only the system databases of the engines in view); applications themselves are fleet-wide
-    const inView = f.instances.filter(r => !ctx.tag || (ctx.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(ctx.tag)));
+    // sentence names only the system databases of the engines in view); applications themselves are fleet-wide. The scope
+    // is the tree's own rule (inTagScope: 'untagged', the '(no <key>)' folder '<key>:', a written tag - the review's S1)
+    const tag = f ? ctx.tag : undefined;
+    const inView = f ? f.instances.filter(r => !tag || inTagScope(tag, r)) : [];
     const viewIds = new Set(inView.map(r => String(r.instance_id)));
-    const scoped = (rs: Row[]): Row[] => ctx.tag ? rs.filter(r => viewIds.has(str(r.instance_id))) : rs;
-    const msIn = inView.some(r => r.engine === 'sqlserver'), pgIn = inView.some(r => r.engine !== 'sqlserver');
+    const scoped = (rs: Row[]): Row[] => tag ? rs.filter(r => viewIds.has(str(r.instance_id))) : rs;
+    const msIn = !f || inView.some(r => r.engine === 'sqlserver'), pgIn = !f || inView.some(r => r.engine !== 'sqlserver');
     const sysDbs = [pgIn ? 'template0, template1, rdsadmin' : '', msIn ? 'master, model, msdb, tempdb' : ''].filter(Boolean).join(', ');
     const apps = rowsOf(d.applications), un = scoped(rowsOf(u.unassigned)), marked = scoped(rowsOf(u.marked)), audit = rowsOf(d.audit), fileTags = rowsOf(d.file_tags);
     const onList = new Set(un.map(pickKey));
@@ -119,7 +123,7 @@ export async function adminApplicationsView(ctx: Ctx): Promise<HTMLElement> {
       grid(apps, listCols, 'No application yet: add one above.'),
       one ?? '',
       el('h3', {}, `Databases with no application (${un.length})`),
-      el('p', { class: 'meta' }, `Every present database of a monitored server${ctx.tag ? ' in this folder' : ''} with no application of its own or of its server's; `
+      el('p', { class: 'meta' }, `Every present database of a monitored server${tag ? ' in this folder' : ''} with no application of its own or of its server's; `
         + (sysDbs ? `system databases (${sysDbs}) are left out. ` : '') + 'Tick rows, then assign them or mark them not an application.'),
       unGrid(un),
       selectedForm(apps),

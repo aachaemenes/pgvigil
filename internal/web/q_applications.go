@@ -156,9 +156,10 @@ func (s *Server) ApplicationsList(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("audit: %w", err))
 		return
 	}
-	// an application: tag that is not taken (decision E5): a file's tag (instances.tags, from pgvigil.yaml) or an older
-	// override of the key - the tag view leaves both out, the page names them
-	fileTags, err := s.query(ctx, `SELECT i.instance_id, i.name AS instance, t.tag, 'pgvigil.yaml' AS source
+	// an application: tag that is not taken (decision E5): a file's tag (instances.tags: from pgvigil.yaml, or a DBA Dash
+	// import's "Application" tag - the row does not say which, so the words name both: the j14 join review, N1) or an
+	// older override of the key - the tag view leaves both out, the page names them
+	fileTags, err := s.query(ctx, `SELECT i.instance_id, i.name AS instance, t.tag, 'pgvigil.yaml or a DBA Dash import' AS source
 	  FROM pgvigil.instances i CROSS JOIN LATERAL unnest(i.tags) AS t(tag)
 	 WHERE i.is_active AND EXISTS (SELECT 1 FROM pgvigil.tag_split(t.tag) k WHERE k.key = 'application')   -- the view's own split (review B, m4)
 	UNION ALL
