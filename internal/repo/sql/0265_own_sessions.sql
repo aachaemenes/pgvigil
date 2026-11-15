@@ -74,12 +74,13 @@ END $$;
 CREATE OR REPLACE FUNCTION pgvigil.own_shown_pg(p_wait_type text, p_is_blocker boolean, p_state text, p_query_start timestamptz,
                                                 p_state_change timestamptz, p_xact_start timestamptz, p_at timestamptz)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT coalesce(p_wait_type = 'Lock', false) OR coalesce(p_is_blocker, false)
+  -- the whole answer coalesced: a backend in its startup window has no state yet (NULL) - no reason known, no reason
+  SELECT coalesce(coalesce(p_wait_type = 'Lock', false) OR coalesce(p_is_blocker, false)
       OR (p_state = 'active' AND p_at - p_query_start > interval '60 seconds')
       OR (p_state LIKE 'idle in transaction%' AND p_at - p_state_change > interval '60 seconds')
       -- a transaction over 60 s holds the xmin horizon whatever its statements' length (the collector caps a statement at
       -- 30 s: a long REPEATABLE READ read of short statements is only seen here)
-      OR coalesce(p_at - p_xact_start > interval '60 seconds', false)   -- no transaction (xact_start NULL): no reason
+      OR coalesce(p_at - p_xact_start > interval '60 seconds', false), false)   -- no transaction (xact_start NULL): no reason
 $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.own_shown_mssql(p_session_id int, p_blocking int, p_head int, p_in_cycle boolean,
