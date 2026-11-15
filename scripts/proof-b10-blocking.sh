@@ -129,13 +129,17 @@ EOF
 xe() { "$BIN" collect -config "$CFG" -once mssql_xe -instance "$N1" > "$OUT" 2>&1 || { cat "$OUT"; fail "$1: mssql_xe read"; }; }
 fn() { [ "$(q "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname = '$1'")" != 0 ]; }
 tab() { [ "$(q "select to_regclass('pgvigil.$1') is not null")" = t ]; }
-# the findings as the pages read them; the slice's own view (blocking_findings) beside them until it is wired into
-# pgvigil.findings (then read there, once); matched as its own name - 0114's mssql_blocking_findings arm is in findings already
+# the findings the pages read (pgvigil.findings); the slice's own view (blocking_findings) beside them until the join
+# wires it into pgvigil.findings (then read there, once; until then no page shows its rows, a note in the output says
+# so); matched as its own name - 0114's mssql_blocking_findings arm is in findings already
 fsrc() { if tab blocking_findings && [ "$(q "select pg_get_viewdef('pgvigil.findings'::regclass) ~ '[^a-z_]blocking_findings[^a-z_]'")" = f ]; then
     echo "(select instance_id, severity, setting, detail from pgvigil.findings union all select instance_id, severity, check_name, detail from pgvigil.blocking_findings)"
   else echo "(select instance_id, severity, setting, detail from pgvigil.findings)"; fi; }
 finding() { q "select coalesce(string_agg(severity || '|' || detail, ' / '), '') from $(fsrc) f where instance_id = $1 and setting = '$2'"; }
 has() { [ -n "$(q "select 1 from $(fsrc) f where instance_id = $1 and setting = '$2' limit 1")" ] && echo yes || echo no; }
+if [ "$(fsrc)" != "(select instance_id, severity, setting, detail from pgvigil.findings)" ]; then
+  echo "note: pgvigil.blocking_findings read beside pgvigil.findings - not joined into it on this tree, so no page shows its rows before the join"
+fi
 waits() { if fn "$1"; then q "select count(*) from pgvigil.$1($2, now() - interval '1 hour', now())"; else echo "no $1"; fi; }
 "$BIN" serve -config "$CFG" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login > "$OUT.serve" 2>&1 & SRVPID=$!
 for i in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 1; done
