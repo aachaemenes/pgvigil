@@ -53,8 +53,22 @@
 # USE HINT('DISALLOW_BATCH_MODE') - on 2022 at compatibility 160 they ran in batch mode over rowstore, whose spills
 # raise no hash_warning (the file and the store both held 0) [inferred: the hint's run says]; S registers xc_lost with
 # one collect (an instance's row is made when a collect first connects, not by migrate or serve).
-#  G. auto create statistics off in xcdb, then: G1 a hash aggregate and a hash join with MAX_GRANT_PERCENT = 0 -
-#     hash_warning stored as sa's read of the file has it, at least 1; G2 a predicate on a column with no statistics
+# Changed after green4 (sqltb-s2-411-green4; every other check passed): hash_warning was still 0 in the file and the
+# store. The old join carried only its int key (COUNT(*)), so its build rows were about 12 bytes and may never have
+# spilled; and Hash Warning is documented for recursion (a partition that still does not fit) and bailout (the deepest
+# level reached, data skew), so a spill that fits after one partitioning may raise none. G1 now runs three statements,
+# each tagged and each with FORCE ORDER where it joins: G1a the hash aggregate as before; G1b a hash join whose build
+# carries pad (char(200), about 42 MB against the minimum grant); G1c a hash join of dbo.hw (10,000 rows of char(2000),
+# every key 0) with itself and a residual that is never true - no partitioning can split one key and both sides are the
+# same size (role reversal gains nothing), so it must recurse to the deepest level and bail out. Printed as 'G1 info'
+# (evidence for the grade, never graded): the event's description and data columns from sys.dm_xe_objects /
+# dm_xe_object_columns, each statement's total_spills from sys.dm_exec_query_stats, and the file's hash_warning rows by
+# type and level. Expected: G1c raises hash_warning (recursion, then bailout) and G1-G3 passes with at least 1.
+# Result green5 (sqltb-s2-411-green5: PROOF OK MABCDEFGS, go test ok): G1-G3 passed with 16, every one 'Recursion level
+# 1', and they came from G1b (6,144 spills); G1c spilled 0 (total_spills 0, 3 s), not the bailout expected [unverified
+# why]. G1c stays as run until the review's fold.
+#  G. auto create statistics off in xcdb, then: G1 a hash aggregate, a wide-build hash join and a one-key hash join (all
+#     MAX_GRANT_PERCENT = 0, row mode) - hash_warning stored as sa's read of the file has it, at least 1; G2 a predicate on a column with no statistics
 #     (dbo.g.pad) - missing_column_statistics the same, at least 1; G3 a filtered index (vc_f, WHERE id > 100) and a
 #     parameterised query through sp_executesql that cannot use it - unmatched_filtered_indexes the same, at least 1;
 #     G4 sp_cache_miss's difference between B's two reads at least 20 (B ran 20 statements of distinct text);
@@ -243,8 +257,12 @@ if has G; then
   I=$(iid)
   sq "ALTER DATABASE xcdb SET AUTO_CREATE_STATISTICS OFF;" >/dev/null || bad "G: auto create statistics off"
   # G1 hash spills; G2 a column with no statistics; G3 a filtered index a parameterised query cannot use
-  sq "SELECT COUNT(*) FROM (SELECT v % 150000 AS g, COUNT(*) AS n FROM dbo.t GROUP BY v % 150000) x OPTION (HASH GROUP, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
-  sq "SELECT COUNT(*) FROM dbo.t a JOIN dbo.t b ON a.v = b.v OPTION (HASH JOIN, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
+  sq "/* G1a */ SELECT COUNT(*) FROM (SELECT v % 150000 AS g, COUNT(*) AS n FROM dbo.t GROUP BY v % 150000) x OPTION (HASH GROUP, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
+  sq "/* G1b */ SELECT MAX(a.pad) FROM dbo.t a JOIN dbo.t b ON a.v = b.v OPTION (HASH JOIN, FORCE ORDER, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
+  sq "CREATE TABLE dbo.hw (id int NOT NULL, k int NOT NULL, pad char(2000) NOT NULL DEFAULT 'x'); INSERT dbo.hw (id, k) SELECT TOP (10000) id, 0 FROM dbo.t;" xcdb >/dev/null || bad "G1: dbo.hw"
+  T0=$SECONDS
+  sq "/* G1c */ SELECT COUNT(*) FROM dbo.hw a JOIN dbo.hw b ON a.k = b.k AND b.id < a.id - 1000000 OPTION (HASH JOIN, FORCE ORDER, MAX_GRANT_PERCENT = 0, USE HINT('DISALLOW_BATCH_MODE'));" xcdb >/dev/null
+  echo "G1 info: G1c ran $((SECONDS - T0)) s"
   sq "SELECT COUNT(*) FROM dbo.g WHERE pad = 'y';" xcdb >/dev/null
   sq "CREATE INDEX vc_f ON dbo.vc (code) WHERE id > 100;" xcdb >/dev/null || bad "G3: the filtered index"
   sq "EXEC sp_executesql N'SELECT code FROM dbo.vc WHERE id > @p AND code = ''1''', N'@p int', @p = 200;" xcdb >/dev/null
@@ -263,6 +281,11 @@ SQL
   done
   sleep 6
   collect mssql_xe_captures
+  # evidence for G1, never graded: the event as the server documents it, each hash statement's spills, the file's rows
+  echo "G1 info: hash_warning is: $(sq "SELECT LEFT(description, 300) FROM sys.dm_xe_objects WHERE name = N'hash_warning' AND object_type = N'event'")"
+  echo "G1 info: its data columns: $(sq "SELECT STRING_AGG(name, N',') FROM sys.dm_xe_object_columns WHERE object_name = N'hash_warning' AND column_type = N'data'")"
+  echo "G1 info: spills by statement: $(sq "SELECT SUBSTRING(t.text, CHARINDEX(N'/* G1', t.text), 9) + N'=' + CAST(SUM(qs.total_spills) AS nvarchar(20)) FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE N'%/* G1_ */%' AND t.text NOT LIKE N'%dm_exec_query_stats%' GROUP BY SUBSTRING(t.text, CHARINDEX(N'/* G1', t.text), 9)" | tr '\n' ' ')"
+  echo "G1 info: hash_warning rows in the file by type and level: $(sq "SELECT ISNULL(e.x.value('(event/data[@name=\"hash_warning_type\"]/text)[1]', 'nvarchar(40)'), N'?') + N' level ' + ISNULL(e.x.value('(event/data[@name=\"recursion_level\"]/value)[1]', 'nvarchar(10)'), N'?') FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_cap_warnings*.xel', NULL, NULL, NULL) f CROSS APPLY (SELECT CAST(f.event_data AS xml) x) e WHERE f.object_name = N'hash_warning'" | sort | uniq -c | tr '\n' ' ')"
   for e in hash_warning missing_column_statistics unmatched_filtered_indexes; do
     N=$(storedwarn $e); HN=$(handwarn $e)
     [ "$N" = "$HN" ] && [ "$HN" -ge 1 ] 2>/dev/null && pass "G1-G3: $e stored as sa's read has it ($N)" || bad "G1-G3: $e stored [$N], sa's read [$HN], want equal and at least 1"
