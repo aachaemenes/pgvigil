@@ -285,7 +285,9 @@ acks_real() { P -c "select (select count(*) from pgvigil.acks where instance_nam
 OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed2.log") || { cat "$WORK/seed2.log" >&2; fail "seed 2"; }
 got=$(door); [[ "${got% *}" == "1/1/1/1 true 3" ]] || fail "a real DBA Dash door after a re-seed (rows, configured, demo instances): ${got% *}"
 ok "a real DBA Dash door sharing a demo id: its rows kept and it stays configured over a re-seed"
-acks=$(acks_real); [[ "$acks" == "1/1/0 true/true 7" ]] || fail "a real instance's alert and a real user demo's silence after a re-seed (silence/log/acks on the alert, rule tags, seed rows): $acks, wanted 1/1/0 true/true 7"
+# seed rows: SeedAcks' 7 + the collector errors seed's 2 (an acknowledgement of the first PostgreSQL instance's errors
+# and the 17806 known-noise label, tagged demo)
+acks=$(acks_real); [[ "$acks" == "1/1/0 true/true 9" ]] || fail "a real instance's alert and a real user demo's silence after a re-seed (silence/log/acks on the alert, rule tags, seed rows): $acks, wanted 1/1/0 true/true 9"
 ok "a re-seed's acknowledgements stay on the demo fleet: the real user demo's silence and log kept, the real alert untouched, the rules tagged demo"
 DEMO_HIST=${got##* }
 echo "$OUT"
