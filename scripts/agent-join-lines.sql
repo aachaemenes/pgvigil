@@ -1,0 +1,30 @@
+-- The agent door (migration 0268): the arms of joined objects, for the next join file. 0268 itself creates only its
+-- own objects.
+--
+-- 1. apply_roles(): the agent's functions are the agent's door, not the reader's. In the owner-only branch (the
+--    functions apply_roles revokes from pgvigil_reader), add
+--      'agent_investigation_list', 'agent_investigation_claim', 'agent_investigation_renew', 'agent_investigation_release',
+--      'agent_investigation_report', 'agent_investigation_journal_select', 'agent_investigation_journal_done',
+--      'investigations_purge', 'investigations_settle', 'investigation_journal_add', 'agent_claim_row'
+--    and after it, for the seven agent_investigation_* (0268's own GRANT, which apply_roles leaves standing):
+--      GRANT EXECUTE ON FUNCTION pgvigil.agent_investigation_list(text, text, int), pgvigil.agent_investigation_claim(bigint, text),
+--        pgvigil.agent_investigation_renew(bigint, text), pgvigil.agent_investigation_release(bigint, text, text),
+--        pgvigil.agent_investigation_report(bigint, text, text, text, text, jsonb, jsonb, text),
+--        pgvigil.agent_investigation_journal_select(bigint, text, text),
+--        pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_agent;
+--    (no USAGE for pgvigil_agent: the agent's login is IN ROLE pgvigil_reader, pgvigil_agent; the reader's USAGE is its way in)
+--    Until then the seven raise for a session user that is not a member of pgvigil_agent (agent_login_check, inside
+--    each), and internal/repo/secdef_reader_test.go lists their signatures with that reason; once apply_roles takes the
+--    reader's EXECUTE back, the seven leave that list.
+--
+-- 2. purge(): one line beside the other self-trimming tables:
+--      PERFORM pgvigil.investigations_purge(90);
+--    (requests that ended more than 90 days after they were asked; an open or claimed one never; the journal and the
+--    texts go with them through ON DELETE CASCADE).
+--
+-- 3. CQ's request queue (rel-cq, 0200-0209), when it joins: a queue-mode serve writes the requests through
+--    pgvigil_requester, so grant it the two serve functions:
+--      GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_request(timestamptz, jsonb),
+--        pgvigil.import_investigation_event(timestamptz, jsonb) TO pgvigil_requester;
+--    and the ask's Run stays off in queue mode, as custom reports are (customReportsOff): the WIRING line in
+--    internal/web/q_investigate.go names it.
