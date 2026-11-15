@@ -516,7 +516,8 @@ done
 dcase() { local c=$1 opt=$2
   sqok "D: $c setting" "$opt" pgvqs2
   sqok "D: $c change" "UPDATE dbo.$c SET v = v + 1 WHERE id % 10 < 3;" pgvqs2
-  sqok "D: $c query" "SELECT COUNT(*) /* pgvd-$c */ FROM dbo.$c WHERE v BETWEEN 100 AND 200;" pgvqs2
+  # a join: no simple parameterization (it would store the statement's text without the marker)
+  sqok "D: $c query" "SELECT COUNT(*) /* pgvd-$c */ FROM dbo.$c a JOIN dbo.$c b ON b.id = a.id WHERE a.v BETWEEN 100 AND 200;" pgvqs2
   sleep 1; }
 dcase d0 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS ON; ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS_ASYNC OFF;"
 dcase d1 "ALTER DATABASE pgvqs2 SET AUTO_UPDATE_STATISTICS OFF;"
@@ -625,7 +626,7 @@ STF="SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.a > 4
 sqok "F: three runs" "$STF $STF $STF" pgvqs; sqok "F: two runs under Query Store" "$STF $STF EXEC sys.sp_query_store_flush_db;" pgvqs2
 sq2 "$STF $STF $STF $STF $STF" pgvqs >/dev/null || fail "F: five runs on f2"
 col sqlfull mssql_plancache mssql_querystore; col f2 mssql_plancache
-HAND1=$(sq "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20)) + '|' + CAST(t.dbid AS varchar(10))
+HAND1=$(sq "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20)) + '|' + ISNULL(CAST(t.dbid AS varchar(10)), '0')
   FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE '%pgvf[_]marker%' AND t.text NOT LIKE '%dm_exec%'")
 HAND2=$(sq2 "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20))
   FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE '%pgvf[_]marker%' AND t.text NOT LIKE '%dm_exec%'")
@@ -656,10 +657,10 @@ if code != 200: bad.append(f"F1 HTTP {code} {str(b)[:200]}")
 pcfull = sum(float(x['executions']) for x in got if x['instance'] == 'sqlfull' and x['source'] == 'plan cache')
 pcf2 = [x for x in got if x['instance'] == 'f2' and x['source'] == 'plan cache']
 qsfull = [x for x in got if x['instance'] == 'sqlfull' and x['source'] == 'Query Store']
-hand_full = sum(e for e, _ in want['sqlfull']); hand_f2 = int(rows2[0][1])
+hand_full = sum(e for e, _ in want['sqlfull']); hand_f2 = sum(int(r[1]) for r in rows2); cpu_f2 = sum(int(r[2]) for r in rows2) / 1000.0
 if pcfull != hand_full: bad.append(f"F1 sqlfull plan cache executions {pcfull} != hand {hand_full} ({rows1})")
 if not pcf2 or float(pcf2[0]['executions']) != hand_f2: bad.append(f"F1 f2 plan cache {pcf2} != hand {hand_f2}")
-elif abs(float(pcf2[0]['cpu_ms']) - int(rows2[0][2]) / 1000.0) > 1: bad.append(f"F1 f2 CPU {pcf2[0]['cpu_ms']} vs hand {int(rows2[0][2]) / 1000.0}")
+elif abs(float(pcf2[0]['cpu_ms']) - cpu_f2) > 1: bad.append(f"F1 f2 CPU {pcf2[0]['cpu_ms']} vs hand {cpu_f2}")
 if not qsfull or float(qsfull[0]['executions']) != float(hq or 0): bad.append(f"F1 sqlfull Query Store {qsfull} != hand {hq}")
 if b.get('note'): bad.append(f"F4 a PostgreSQL note with no PostgreSQL instance: {b.get('note')}")
 print(f"F1 {qh}: plan cache sqlfull {pcfull} / f2 {hand_f2}, Query Store {hq}")
