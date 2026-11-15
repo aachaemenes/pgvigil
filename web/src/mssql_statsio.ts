@@ -245,7 +245,7 @@ const fmtMs = (v: { low: number; high: number } | null) => v == null ? '' : v.lo
 
 // statsioView draws a messages text: the parts a viewer dialog holds (filedrop's Tools > Open and paste call it).
 export async function statsioView(name: string, text: string): Promise<HTMLElement[]> {
-  const { el, grid, badge } = await import('./ui');
+  const { el, grid, badge, offControl } = await import('./ui');
   if (text.length > MAX_TEXT) return [el('p', { class: 'error' }, `The text is over ${MAX_TEXT / 1024 / 1024} MB: not read.`)];
   const saved = readSaved(text);
   const messages = saved ? saved.messages : text;
@@ -314,10 +314,10 @@ export async function statsioView(name: string, text: string): Promise<HTMLEleme
     const others = docs.filter(d => d.id !== doc.id).flatMap(d => d.parsed.runs.map((r, i) => ({ d, r, i })));
     const sel = el('select', { 'aria-label': 'Compare the last run with a run of another opened file' }) as HTMLSelectElement;
     const cmpOut = el('div', { 'aria-live': 'polite' });
+    const offNote = el('p', { class: 'meta' }, others.length ? '' : 'No other file has statistics to compare with: open another one first.');
     if (!others.length) {
-      sel.disabled = true;
-      sel.title = 'No other file has statistics to compare with: open another one first';
       sel.append(el('option', {}, 'No other file has statistics to compare with'));
+      offControl(sel, 'No other file has statistics to compare with: open another one first', offNote);
     } else {
       sel.append(el('option', { value: '' }, 'pick a run'), ...others.map((o, k) => el('option', { value: String(k) }, `${o.d.name}: ${o.r.label}`)));
       sel.addEventListener('change', () => {
@@ -326,7 +326,7 @@ export async function statsioView(name: string, text: string): Promise<HTMLEleme
         cmpOut.replaceChildren(...(sel.value === '' || !o ? [] : cmp(mine, o.r, `${doc.name}: ${mine.label}`, `${o.d.name}: ${o.r.label}`)));
       });
     }
-    kids.push(el('h4', {}, 'Compare with another file'), el('label', {}, 'Run ', sel), cmpOut);
+    kids.push(el('h4', {}, 'Compare with another file'), el('label', {}, 'Run ', sel), others.length ? '' : offNote, cmpOut);
     out.replaceChildren(...kids);
   };
   const save = el('button', { type: 'button' }, 'Save messages');

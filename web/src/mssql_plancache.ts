@@ -10,7 +10,7 @@ import { lineChart } from './chart';
 import { queryHistory } from './mssql_queries';
 import { compareSection, everywherePanel, planStatsPanel, statementSearch } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
-import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlPlanCacheTab = 'mssqlplancache';
@@ -216,29 +216,25 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
   }
   const entries = rowsOf(d.entries);
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  // the reason the plans are not read here, said once and named by every button it holds off
+  const fetchOffNote = el('p', { class: 'meta' }, d.fetch_off || '');
   // the actions door's plan_evict (task 406): on, or off with its reason said once above the grid
   const st = await mssqlActionsState(ctx.instance);
   const evictOff = st.actions.plan_evict?.enabled ? '' : st.actions.plan_evict?.reason || 'actions are off for this instance';
-  const evictNote = evictOff ? el('p', { class: 'meta', id: `evict-off-${String(row.query_key)}` }, `Evict is off for this instance: ${evictOff}`) : '';
+  const evictNote = el('p', { class: 'meta' }, evictOff ? `Evict is off for this instance: ${evictOff}` : '');
   const evictBtn = (e: Row) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `Evict the plan ${String(e.plan_handle)}` }, 'Evict') as HTMLButtonElement;
     if (evictOff) {
-      b.setAttribute('aria-disabled', 'true');
-      b.setAttribute('aria-describedby', `evict-off-${String(row.query_key)}`);
       b.style.opacity = '.55';
       b.style.cursor = 'not-allowed';
-      return b;
+      return offControl(b, evictOff, evictNote) as HTMLButtonElement;
     }
     b.addEventListener('click', () => { void evictDialog(ctx, String(e.plan_handle), b, () => { void cachedPlans(ctx, row, box); }); });
     return b;
   };
   const act = (e: Row, label: string, batch: boolean, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${String(e.plan_handle)} at ${String(e.stmt_start)}` }, label) as HTMLButtonElement;
-    if (d.fetch_off) {
-      b.disabled = true;
-      b.title = d.fetch_off;
-      return b;
-    }
+    if (d.fetch_off) return offControl(b, d.fetch_off, fetchOffNote) as HTMLButtonElement;
     b.addEventListener('click', async () => {
       status.textContent = 'Reading the plan on demand ...';
       try {
@@ -259,7 +255,7 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
     el('p', { class: 'meta' }, 'The statement\'s entries in the plan cache at the last read (each a plan handle and the statement\'s place in its batch). '
       + 'A plan is read from the server when asked, through the read login: the statement\'s plan, or the plan of its whole batch or module. '
       + 'A plan hash that differs from the one read with the sample says the statement was compiled again since.'),
-    d.fetch_off ? el('p', { class: 'meta' }, d.fetch_off) : '',
+    d.fetch_off ? fetchOffNote : '',
     grid(entries, [
       { key: 'plan_handle', label: 'plan handle' }, { key: 'stmt_start', label: 'start', num: true }, { key: 'stmt_end', label: 'end', num: true },
       { key: 'plan_hash', label: 'plan hash' }, { key: 'creation_time', label: 'compiled (server clock)' },
@@ -268,7 +264,7 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
       { key: 'batch', label: 'batch plan', fmt: (_, e) => el('span', {}, act(e, 'Download batch', true, false), ' ', act(e, 'Open batch', true, true)) },
       { key: 'evict', label: 'remove from the cache', fmt: (_, e) => evictBtn(e) },
     ], 'The last plan cache read held no entry for this statement: it left the cache.'),
-    evictNote, status);
+    evictOff ? evictNote : '', status);
   (box.firstElementChild as HTMLElement).focus();
 }
 

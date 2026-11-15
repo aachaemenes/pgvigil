@@ -12,6 +12,75 @@ index 812798e..85fe592 100644
  		}
  	}
  	srv.SetMSSQLActions(doors)
+diff --git i/docs/sqlserver-indexes.md w/docs/sqlserver-indexes.md
+index 7e7b0cc..3dac319 100644
+--- i/docs/sqlserver-indexes.md
++++ w/docs/sqlserver-indexes.md
+@@ -45,6 +45,22 @@ Findings (a read older than three hours raises nothing):
+ | single-use plans in the cache | single-use ad hoc or prepared plans are over 10 % of a user database's compiled plans (info) or over 75 % (warning), with 100 at least |
+ | one statement compiled into many plans | statements of a query hash with several plans are over 5 % of a user database's cached statements (info) or over 75 % (warning), with 100 at least |
+ 
++### Cached plans, read on demand
++
++A row of the Plan cache tab's statements has **Cached plans**: each entry the last read held (plan handle, the statement's offsets, plan hash, compile time), with **Download .sqlplan** and **Open** of the statement's plan or the whole batch's, read from the server when asked through the read login (`sys.dm_exec_text_query_plan`). A plan is read under the instance's `query_text` policy `full` only (a plan carries the statement's text and its compiled values) and its T-SQL password forms are masked. The reply says when the plan's hash is not the sample's (compiled again since), when the cache no longer holds it, when the handle holds a parameterized statement's shell, and when the module is encrypted. **Evict** removes the plan through the actions door (`plan_evict`, off by default: [actions](sqlserver-actions.md)). **On every instance** lists the statement's query hash on every SQL Server instance over the range.
++
++### Plans of running queries
++
++`mssql_running_plans` and `mssql_live_plans` are off by default. An instance added on Admin > Instances has `mssql_running_plans` on (DBA Dash 4.25.0 turns plans on for a new connection); for an instance of the configuration file add to it:
++
++```yaml
++    schedules:
++      mssql_running_plans: 1m
++      mssql_live_plans: 1m      # where the build allows it (the table above)
++```
++
++and restart the collector. The tab's **Plans of running queries** lists each plan kept, why (CPU, memory grant, running time, requests), the largest figures a read saw, its plan and its newest live plan, and **Statistics used** (the statistics the plan was compiled with, stale at compile when their changes had passed the auto-update line). A slow query's or a running request's **Plan** lists every plan pgvigil holds or can read for its query and plan hash.
++
+ ## Indexes (`mssql_indexes`)
+ 
+ There is one row per index of every user table and indexed view. Each row holds:
+diff --git i/docs/sqlserver-querystore.md w/docs/sqlserver-querystore.md
+index cdcb5c1..1fc6d26 100644
+--- i/docs/sqlserver-querystore.md
++++ w/docs/sqlserver-querystore.md
+@@ -77,6 +77,24 @@ A window takes every interval of the store that overlaps it: with 60-minute inte
+ 
+ A cleared store (`ALTER DATABASE ... SET QUERY_STORE CLEAR`) numbers its queries and plans again from 1. Rows read before the clear keep the hashes they were read with and never show the text of the query that took their number; they show without text. A plan number that comes back under another query loses the XML stored for it.
+ 
++### Statistics used, forced plans that fail, one statement everywhere
++
++- A plan's **Statistics used** lists the statistics the optimizer loaded to compile it (the plan's OptimizerStatsUsage, written by SQL Server 2017 and 2016 SP2): rows changed at compile, the table's rows, modified %, the auto-update line and **stale at compile**; 'a plan compiled on stale statistics' is an info finding.
++- **Failures since forced** (under Forced plans): each read that saw a forced plan's failure count change. 'A forced plan fails' is a warning when one read saw 2 or more failures, or two failures were read within 24 hours of each other; one failure alone is held as an info (PerformanceMonitor 3.13's rule); forcing the plan anew starts again.
++- **On every instance**: a query hash on every SQL Server instance over the range, from the plan cache and the Query Store, the most CPU first. A PostgreSQL statement's identifier is its own server's, so PostgreSQL instances are not compared.
++
++### Finding statements by their text
++
++**Find statements** (Top view and the Plan cache tab) searches the stored statement texts of this instance, or every SQL Server instance, for a text (3 to 400 characters, case ignored, `%` and `_` as they are). An instance under `query_text: none` keeps no text and is named, not searched; under `normalized` a literal is stored as `?` and is not found. Without an index each source stops after 4 seconds and says so. The DBA may build the optional trigram indexes, as the repository's owner, outside a transaction:
++
++```sql
++CREATE EXTENSION IF NOT EXISTS pg_trgm;
++CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_pc_text_query_trgm ON pgvigil.mssql_pc_text USING gin (query gin_trgm_ops);
++CREATE INDEX CONCURRENTLY IF NOT EXISTS mssql_qs_query_text_trgm ON pgvigil.mssql_qs_query USING gin (query_text gin_trgm_ops);
++```
++
++The search says whether each index is there and valid (a failed `CONCURRENTLY` build leaves an invalid one: drop it and build it again). pgvigil never builds them.
++
+ ## The Queries page
+ 
+ The Performance row's Queries tab (in Plan cache's place: the full Plan cache grid keeps its address and opens from the page) is PerformanceMonitor 3.12.0's Queries view in its section order, on what pgvigil stores. Each section reads when it first comes into view, by itself, and the page is not refreshed every 30 s.
+diff --git i/docs/sqlserver.md w/docs/sqlserver.md
+index 3ec1c5e..1e041b7 100644
+--- i/docs/sqlserver.md
++++ w/docs/sqlserver.md
+@@ -87,6 +87,8 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
+ | `mssql_audit` | 5 min | the server audits, their server and database specifications and their state; the events of a file audit read forward from a cursor (role, permission, DDL and audit changes and failed sign-ins as rows, the rest counted) | VIEW ANY DEFINITION and VIEW SERVER STATE; VIEW SERVER SECURITY AUDIT for the events (2022) | skipped (its blob target is not built) | [SQL Server Audit](sqlserver-audit.md) |
+ | `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
++| `mssql_running_plans` | off (1 min once on) | the plan of a running query past DBA Dash 4.25.0's thresholds (1 s of CPU, 50 MB granted, 10 s running, or two requests on one plan), kept once an hour per plan; on for an instance added on Admin > Instances, an instance of this file switches it on with `schedules: {mssql_running_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
++| `mssql_live_plans` | off (1 min once on) | the plan with its operator counters of a request past 60 s of CPU or 5 minutes running unblocked, 10 a read at most; SQL Server 2016 SP1, 2017 CU26, 2019 CU12 and later, Managed Instance, Azure SQL Database; before 2019 lightweight profiling needs trace flag 7412; switched on with `schedules: {mssql_live_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
+ | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+ | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
 diff --git i/internal/config/config.go w/internal/config/config.go
 index 07e6a24..44ab676 100644
 --- i/internal/config/config.go
