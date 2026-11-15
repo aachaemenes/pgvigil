@@ -22,7 +22,9 @@
 #                    hidden; a number whose every line is hidden is left out unless noise=1
 #     part lines   - at, instance_id, instance, error_number, severity, state, class, database, message, source
 #                    ('error log' | 'AlwaysOn_health'), noise (its label when noise=1)
-#     part noise   - ack_id, check_key, match_text, instance, tag, note, hits (lines it hides in the window)
+#     part noise   - this page's labels (check_key 'error log' or 'error log:<n>'): ack_id, check_key, match_text, instance,
+#                    tag, note, hits (lines it hides in the window)
+#     part cannot  - error_number, why: a listed number pgvigil keeps no row of (D5: said, not collected)
 #     part agstate - instance_id, instance, state: an instance whose AlwaysOn_health capture was not read
 #   GET /api/mssql/summary?part=collect - errors_24h, failing and detail after the instance's 'collector errors' mark
 #
@@ -316,10 +318,10 @@ check "$(py "sorted((r['error_number'], r['occurrences'], r['instances'], r['sev
 check "$(py "len(T('lines'))")|$(py "sorted(set(r['source'] for r in T('lines') if r['error_number'] == 35206))")" "7|['AlwaysOn_health', 'error log']" \
   "F: seven lines, 35206 once from each source"
 check "$(py "'|'.join(str(one(T('lines'), error_number=n).get('database')) for n in (824, 1480, 823))")|$(py "sorted(r['database'] for r in T('lines') if r['error_number'] == 9002)")" \
-  "database ID 5 (now inv)|agdb||['hr', 'salesdb']" "F: the database cell - an id with today's name, double quotes, none, single quotes"
+  "database ID 5 (now inv)|agdb|None|['hr', 'salesdb']" "F: the database cell - an id with today's name, double quotes, none (NULL), single quotes"
 check "$(py "'|'.join(str(one(T('lines'), error_number=1480).get(k)) for k in ('state', 'class'))")" "None|role" "F: an AlwaysOn_health row - no state, its family as its class"
 check "$(py "'|'.join('%s=%s' % (r['check_key'], r['hits']) for r in sorted(T('noise'), key=lambda r: str(r['check_key'])))")" \
-  "None=0|error log=0|error log:17806=3" "F: the 17806 label hides its three lines, the textless and the instance-only labels nothing"
+  "error log=0|error log:17806=3" "F: the page's labels - 17806's hides its three lines, the textless one nothing (the instance-only label is the Alerts page's: not listed, and the M2 lines stay in the counts above)"
 get "/api/mssql/errorfleet?noise=1&$W"
 check "$(py "len(T('lines'))")|$(py "sorted(set(r['noise'] for r in T('lines') if r['error_number'] == 17806))")|$(py "one(T('byerror'), error_number=17806).get('hidden')")" \
   "10|['known SSPI noise']|3" "F: noise=1 shows the three 17806 lines with their label"
