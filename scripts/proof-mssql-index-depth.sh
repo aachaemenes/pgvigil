@@ -441,7 +441,9 @@ def norm(k):
     # a date and time as either side writes it: 'T' or a space, the fraction's trailing zeros dropped
     if k is None: return None
     k = str(k)
-    if re.match(r"^\d{4}-\d\d-\d\d[T ]\d\d:\d\d", k): k = re.sub(r"\.?0+$", "", k.replace("T", " "))
+    if re.match(r"^\d{4}-\d\d-\d\d[T ]\d\d:\d\d", k):
+        k = k.replace("T", " ")
+        if "." in k: k = k.rstrip("0").rstrip(".")   # the fraction's trailing zeros, never the seconds
     return k
 bad = []
 if d.get("state") != "ok": bad.append(f"state {d.get('state')}: {d.get('words')}")

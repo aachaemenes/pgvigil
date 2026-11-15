@@ -73,12 +73,15 @@ func TestConstraintsCollector(t *testing.T) {
 // a system database, one not online, one the login cannot enter; the cloud services' own databases before any read
 func TestOnDemandDecision(t *testing.T) {
 	ok := collect.Row{"quoted_name": "[d]", "database_state": "ONLINE", "can_enter": int64(1), "not_user": int64(0), "secondary": int64(0)}
-	with := func(k string, v any) collect.Row {
+	// with: ok with some columns changed, as the server sends them (can_enter is 1 only for an online database)
+	with := func(kv ...any) collect.Row {
 		r := collect.Row{}
 		for a, b := range ok {
 			r[a] = b
 		}
-		r[k] = v
+		for i := 0; i+1 < len(kv); i += 2 {
+			r[kv[i].(string)] = kv[i+1]
+		}
 		return r
 	}
 	for _, c := range []struct {
@@ -90,7 +93,7 @@ func TestOnDemandDecision(t *testing.T) {
 		{with("secondary", int64(1)), true, "secondary replica"},
 		{with("secondary", int64(1)), false, ""},
 		{with("not_user", int64(1)), false, "system database"},
-		{with("database_state", "OFFLINE"), false, "offline"},
+		{with("database_state", "OFFLINE", "can_enter", int64(0)), false, "offline"},
 		{with("can_enter", int64(0)), false, "cannot enter"},
 	} {
 		q, err := onDemandDecision(c.row, "d", c.secondary)
