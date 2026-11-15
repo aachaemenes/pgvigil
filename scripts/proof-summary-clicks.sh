@@ -8,8 +8,8 @@
 #   CLICK_ALL=1             every instance-grid cell, not one per column, engine and text shape
 #   SUMCLICK_SCOPES         root,tag,instance (default all three): the fleet Summary, a tag folder, two instances
 # Expected (written before the first run, 2026-11-14 18:3x PST):
-#  RED on main 1aba474 and on rel-j14pre 70c86da (the fault as reported: 'lots of texts in the summary tab wont
-#  response to any click for excample deadlock'): FAIL rows at least for the Needs attention strip's reasons (their
+#  RED on main 1aba474 and on rel-j14pre 70c86da (the fault as reported: many texts of the Summary, the Deadlocks
+#  cell among them, do nothing on a click): FAIL rows at least for the Needs attention strip's reasons (their
 #  text is one plain span: 'Deadlocks n (x/hr)', 'Blocking n (x/hr)' and the cells' words), for pgvigil's own instance
 #  grid columns that are plain values (Total CPU ... Measured, Platform, Role, Sessions, Lock Waits, Last Sample), for
 #  the counts line, and wherever a click's change lands below the fold only (the test grid's count and name buttons
@@ -30,6 +30,22 @@
 #  yet', 'skipped') is a link. Run 3's own expectation: 0 FAIL at the root and the tag folder; on the two instance
 #  pages FAIL rows may remain only in their grids' plain cells (a finding's severity, object, time) - read them, then
 #  decide. A hang or a closed CDP socket is a FAIL line of its own ('the page hung ...'), never a silent exit.
+#  REVISED 2026-11-14 22:0x PST, before run 4 (the review of 823e113 folded; this states what 823e113 widened after
+#  run 3 and what the fold changed, so the expectation names every plain kind the walk ships): PLAIN kinds, all of
+#  them - a heading; a label (a properties table's label, a dt, the health calendar's heads and month, an off-reason,
+#  the chart legend's time row, words ending in ':'); a properties table's value; a text marked data-nolink; a
+#  disabled control that says why (its title or the off-reason beside it); a grid cell (tbody td) whose row holds a
+#  link or an enabled button (DBA Dash's grids: one link per row, text cells beside it). A link or a button is
+#  tested BEFORE any of these, so a control inside a heading, a label or a value is clicked, never called plain.
+#  The walk: the app's refresh is Off (paused) for the run, a same-address redraw waits until the old page is gone,
+#  each scope is opened at the app's own address (w=1h) so a link to the page it is on changes nothing and FAILS,
+#  the point clicked must be on the target (another element over it FAILS), a bare number is found again only in its
+#  own box, the strip's '+n more' is clicked, texts over 80 characters are clicked too, and a landing outside the
+#  tab strip says so. Expected at 823e113 + the fold: 'clicks: <n>; 0 FAIL; <k> plain' at the root, the tag folder
+#  and both instance pages; on the SQL Server instance its header's Memory dumps / DB Mail reasons are plain
+#  ('marked as text') and Instance Uptime 'opens a dialog or a menu'; on the PostgreSQL instance the properties
+#  'sessions', 'failing collections' and 'last activity sample' are links ('lands on #/activity...' /
+#  '#/collectiondates...'). Any FAIL row is read and its cause named, never argued away.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"

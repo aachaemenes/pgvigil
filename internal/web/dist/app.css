@@ -242,8 +242,8 @@ table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: var(-
 .grid th:hover .filter-btn, .grid th .filter-btn:focus-visible, .grid th .filter-btn.on { opacity: 1; }
 .grid th .filter-btn.on { color: var(--accent); }
 /* a sorted heading says so (ui.ts grid sets aria-sort on the clicked heading): an arrow drawn here, never a word of the heading */
-.grid th[aria-sort="ascending"] .th-label::after { content: " \25B2"; font-size: var(--fs-xs); }
-.grid th[aria-sort="descending"] .th-label::after { content: " \25BC"; font-size: var(--fs-xs); }
+.grid th[aria-sort="ascending"] .th-label::after { content: " \25B2" / ""; font-size: var(--fs-xs); }
+.grid th[aria-sort="descending"] .th-label::after { content: " \25BC" / ""; font-size: var(--fs-xs); }
 .grid tr.filters td { padding: var(--sp-half) var(--sp-1); background: var(--surface-panel); }
 .grid tr.filters input.filter { width: 100%; min-width: 5rem; box-sizing: border-box; font: inherit; font-size: var(--fs-sm); padding: 0 var(--sp-1); border: var(--bw) solid var(--line); border-radius: var(--r-sm); background: var(--surface-page); color: var(--text); }
 .grid-box .filter-count:empty { display: none; }
@@ -450,6 +450,8 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 .inst-header .status-line.awaiting { color: var(--warn); }
 .inst-reason { margin: var(--sp-1) 0 0; }
 .inst-reason.crit { color: var(--crit); } .inst-reason.warn { color: var(--warn); }
+/* the header's reasons and status line are links: they keep the state colour of their line (never the link colour) */
+.inst-reason a, .inst-header .status-line a { color: inherit; }
 .chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
 .chip { min-width: 9.5rem; padding: var(--sp-1) var(--sp-2); border: var(--bw) solid transparent; border-left: var(--stripe) solid var(--na); border-radius: var(--r-sm); background: var(--surface-card); }
 .chip.band-ok { border-left-color: var(--ok); } .chip.band-warn { border-left-color: var(--warn); } .chip.band-crit { border-left-color: var(--crit); }

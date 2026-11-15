@@ -340,11 +340,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // each count is a filter of the instance grid below (the test grid's counts' way: the same count again, or Clear
   // Filter, shows them all), the instance count shows the grid, the blocking counts open Running queries
   const levelBtn = (b: Bucket, text: string, cls = '') => {
-    const bt = el('button', { type: 'button', class: `link ${cls}`.trim(), 'aria-label': `${text}: show ${b === 'na' ? 'the offline instances' : `the instances ${levelWords[b]}`} below` }, text);
+    const bt = el('button', { type: 'button', class: `link ${cls}`.trim(), 'aria-pressed': 'false', 'data-level': b, 'aria-label': `${text}: show ${b === 'na' ? 'the offline instances' : `the instances ${levelWords[b]}`} below` }, text);
     bt.addEventListener('click', () => { setPick(pick && pick.key === LEVEL && pick.b === b ? null : { key: LEVEL, label: 'level', b }); drawLower(); showResult(); });
     return bt;
   };
-  const allBtn = el('button', { type: 'button', class: 'link', 'aria-label': 'show every instance below' }, `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances`);
+  const allText = `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances`;
+  const allBtn = el('button', { type: 'button', class: 'link', 'aria-label': `${allText}: show every instance below` }, allText);
   allBtn.addEventListener('click', () => { setPick(null); drawLower(); showResult(); });
   const running = (text: string, cls: string, title?: string) => el('a', { class: `cell-link ${cls}`.trim(), href: href(ctx, { tab: 'running', instance: undefined }), ...(title ? { title } : {}) }, text);
   const tiles = el('p', { class: 'meta counts' },
@@ -485,6 +486,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const base = () => focus ? rows.filter(r => groups.some(g => bad(r, g.key))) : rows;
   const countBtns = new Map<string, HTMLElement>();
   const drawLower = () => {
+    // the counts line's level buttons say which one filters the grid now (aria-pressed, as the test grid's counts)
+    tiles.querySelectorAll<HTMLButtonElement>('button[data-level]').forEach(x => x.setAttribute('aria-pressed', String(!!pick && pick.key === LEVEL && pick.b === x.dataset.level)));
     const live = groups.filter(g => rows.some(r => focus ? bad(r, g.key) : bucketOf(r, g.key) !== 'na'));
     const keep = new Set(live.map(g => 'g_' + g.key));
     let shown = base();
@@ -583,15 +586,17 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const reasonLine = (links: { text: string; href: string }[]): HTMLElement => {
     const box = el('span', { style: 'flex:1' });
     const draw = (all: boolean) => {
-      const show = all ? links : links.slice(0, 4);
+      const show = (all ? links : links.slice(0, 4)).map(x => el('a', { href: x.href, class: 'cell-link' }, x.text));
       const parts: (string | HTMLElement)[] = [];
-      show.forEach((x, i) => { if (i) parts.push(' · '); parts.push(el('a', { href: x.href, class: 'cell-link' }, x.text)); });
+      show.forEach((a, i) => { if (i) parts.push(' · '); parts.push(a); });
       if (!all && links.length > 4) {
         const more = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false' }, `+${links.length - 4} more`);
         more.addEventListener('click', () => draw(true));
         parts.push(' · ', more);
       }
       box.replaceChildren(...parts);
+      // the button is gone: the focus moves to the first reason it added (ui.ts's grid 'show more' does the same)
+      if (all && links.length > 4) show[4].focus();
     };
     draw(false);
     return box;
@@ -744,16 +749,17 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
   two.append(el('div', {}, el('h3', {}, 'Instance'), props([
     ['version', String(r.server_version ?? '')],
     ['started', fmtTime(r.postmaster_start)],
-    ['sessions', `${fmtNum(r.total)} (${fmtNum(r.active)} active, ${fmtNum(r.idle_in_txn)} idle in transaction, ${fmtNum(r.waiting_lock)} waiting on a lock)`],
+    // the values the fleet grid links (Sessions, the failing collections, Last Sample) link here to the same pages
+    ['sessions', el('a', { class: 'cell-link', href: href(ctx, { tab: 'activity' }) }, `${fmtNum(r.total)} (${fmtNum(r.active)} active, ${fmtNum(r.idle_in_txn)} idle in transaction, ${fmtNum(r.waiting_lock)} waiting on a lock)`)],
     ['longest active', fmtSecs(r.longest_active_secs) || '0s'],
     ['oldest xmin age', fmtNum(r.oldest_xmin_age)],
-    ['failing collections', fmtNum(r.collections_failing)],
+    ['failing collections', el('a', { class: 'cell-link', href: href(ctx, { tab: 'collectiondates' }) }, fmtNum(r.collections_failing))],
     ['max connections', fmtNum(r.max_connections)],
     ['data checksums', String(r.data_checksums ?? '')],
     ['pg_stat_statements', r.has_pg_stat_statements ? 'yes' : 'no'],
     ['tags', tagsOf(r).join(', ')],
     ['last seen', notReadYet(r) || fmtTime(r.last_seen)],
-    ['last activity sample', fmtTime(r.activity_at)],
+    ['last activity sample', r.activity_at == null ? '' : el('a', { class: 'cell-link', href: href(ctx, { tab: 'activity' }) }, fmtTime(r.activity_at))],
   ])));
   const checkCols: Col[] = [
     { key: 'severity', fmt: v => badge(String(v), v === 'critical' ? 'crit' : 'warn') },

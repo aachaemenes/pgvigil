@@ -25,6 +25,7 @@ import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, loadAckSafe, offBeside, pageNote, writeButton } from './ack';
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href, isMssql } from './router';
+import { summaryCellAction } from './uptimedialog';
 import { verdict, verdictCard } from './verdict';
 import { el, fmtTime, pill } from './ui';
 
@@ -262,17 +263,29 @@ function hidden(n: HTMLElement): HTMLElement { n.setAttribute('aria-hidden', 'tr
 export const treeBell = (): HTMLElement => el('span', { class: 'silenced-bell', role: 'img', 'aria-label': 'Alerts silenced', title: 'Alerts silenced for this server' });
 
 // reasonLine: the header's reasons, each a link to the page of its cell (the Summary cell's own target, cellTarget),
-// 'Offline' to the collection dates; the first six, then '+n more', a button that shows the rest in place
-function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>): HTMLElement {
+// 'Offline' to the collection dates; one whose page is this one is text (verdict.ts's rule: a SQL Server Memory dump or
+// DB Mail on its Summary), except Instance Uptime, which opens its dialog there as DBA Dash's Uptime cell does; the
+// first six, then '+n more', a button that shows the rest in place with the focus on the first one it adds
+function reasonLine(ctx: Ctx, b: ReturnType<typeof instBand>, r: Row): HTMLElement {
   const to = (t: { tab: string; kind?: string; cv?: string }) => { const base = href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) }); return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base; };
-  const links = [...(b.offline ? [{ text: 'Offline - no recent collection', href: href(ctx, { tab: 'collectiondates' }) }] : []),
-    ...b.items.map(i => ({ text: `${i.label} ${cellText(i.cell)}`, href: to(i.target) }))];
+  const links = [...(b.offline ? [{ key: 'offline', text: 'Offline - no recent collection', tab: 'collectiondates', href: href(ctx, { tab: 'collectiondates' }) }] : []),
+    ...b.items.map(i => ({ key: i.key, text: `${i.label} ${cellText(i.cell)}`, tab: i.target.tab, href: to(i.target) }))];
   const box = el('div', { class: `meta inst-reason ${b.cls}` });
+  const one = (x: typeof links[number]): HTMLElement => {
+    if (x.tab !== ctx.tab) return el('a', { class: 'cell-link', href: x.href }, x.text);
+    if (x.key !== 'uptime') return el('span', { class: 'reason-text', 'data-nolink': 'this page' }, x.text);
+    const a = el('a', { class: 'cell-link', href: x.href }, x.text) as HTMLAnchorElement;
+    summaryCellAction(a, 'uptime', r);
+    return a;
+  };
   const draw = (all: boolean) => {
     const parts: (string | HTMLElement)[] = [];
-    (all ? links : links.slice(0, 6)).forEach((x, i) => { if (i) parts.push(', '); parts.push(el('a', { class: 'cell-link', href: x.href }, x.text)); });
+    const shown = (all ? links : links.slice(0, 6)).map(one);
+    shown.forEach((x, i) => { if (i) parts.push(', '); parts.push(x); });
     if (!all && links.length > 6) { const more = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false' }, `+${links.length - 6} more`); more.addEventListener('click', () => draw(true)); parts.push(', ', more); }
     box.replaceChildren(...parts);
+    // the button is gone: the focus moves to the first reason it added (ui.ts's grid 'show more' does the same)
+    if (all && links.length > 6) { const f = shown[6]; if (!f.matches('a')) f.tabIndex = -1; f.focus(); }
   };
   draw(false);
   return box;
@@ -299,15 +312,18 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   // data-groups: the band's items in order (an offline band 'offline' first): the verdict card's reasons are these
   // the band word opens the instance's Findings (every finding behind the band, with its detail); no text of the
-  // header is dead
-  const word = el('a', { class: `badge band-word ${b.cls}`, href: href(ctx, { tab: 'findings' }), 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);
+  // header is dead, and none is a link to the page it is on (on that page it is text: data-nolink)
+  const self = (tab: string) => tab === ctx.tab ? { 'data-nolink': 'this page' } : null;
+  const linkOr = (tab: string, attrs: Record<string, string>, ...kids: (string | HTMLElement)[]) => self(tab)
+    ? el('span', { ...attrs, ...self(tab)! }, ...kids) : el('a', { ...attrs, href: href(ctx, { tab }) }, ...kids);
+  const word = linkOr('findings', { class: `badge band-word ${b.cls}`, 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);
   if (b.reasons.length) word.title = b.reasons.join('\n');
   const header = el('section', { class: 'inst-header panel', 'aria-label': `${String(r.name)}: ${b.word}` },
-    el('div', { class: 'inst-header-top' }, bandDot(b), ' ', el('a', { href: href(ctx, { tab: 'summary' }), class: 'inst-name' }, String(r.name)), ' ', word,
-      silencedMark(live) ?? '', el('span', { class: `meta status-line${fr === 'awaiting' ? ' awaiting' : ''}` }, el('a', { class: 'cell-link', href: href(ctx, { tab: 'collectiondates' }) }, status)),
+    el('div', { class: 'inst-header-top' }, bandDot(b), ' ', linkOr('summary', { class: 'inst-name' }, String(r.name)), ' ', word,
+      silencedMark(live) ?? '', el('span', { class: `meta status-line${fr === 'awaiting' ? ' awaiting' : ''}` }, linkOr('collectiondates', { class: 'cell-link' }, status)),
       el('span', { style: 'margin-left:auto' }, silenceButton(ad, r, live, redraw))),
-    b.reasons.length ? reasonLine(ctx, b) : null,
-    el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(c => { const t = chipTab(c.key, isMssql(r.engine)); return chipEl(c, t ? href(ctx, { tab: t }) : undefined); })),
+    b.reasons.length ? reasonLine(ctx, b, r) : null,
+    el('div', { class: `chips${fr === 'offline' ? ' stale' : ''}` }, ...chips.map(c => { const t = chipTab(c.key, isMssql(r.engine)); if (t && t === ctx.tab) { const d = chipEl(c); d.dataset.nolink = 'this page'; return d; } return chipEl(c, t ? href(ctx, { tab: t }) : undefined); })),
     // the verdict card on the instance's Summary (both engines): a reading of this band and freshness, never another;
     // a fault in it leaves the header standing (instanceFrame's caller drops the whole header on a throw)
     ctx.tab === 'summary' ? (() => { try { return verdictCard(ctx, verdict(r, live, now, b, fr)); } catch { return null; } })() : null);

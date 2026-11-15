@@ -131,8 +131,8 @@ export function verdictCard(ctx: Ctx, v: Verdict): HTMLElement {
     const base = href(ctx, { tab: t.tab, ...(t.kind ? { kind: t.kind } : {}) });
     return t.cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${t.cv}` : base;
   };
-  // the word and the sentence are one link to the instance's Findings (the header's band word goes there too: Allen
-  // 11-14 18:25, no text of the Summary that does nothing on a click)
+  // the word and the sentence are one link to the instance's Findings (the header's band word goes there too: no
+  // text of the Summary does nothing on a click)
   const card = el('section', { class: `verdict-card ${stateCls[v.state]}`, 'data-state': v.state, 'aria-label': `In plain words: ${v.word}` },
     el('div', { class: 'verdict-head' }, el('a', { class: 'verdict-link', href: href(ctx, { tab: 'findings' }) },
       el('span', { class: `badge verdict-word ${stateCls[v.state]}` }, v.word), ' ', el('span', { class: 'verdict-sentence' }, v.sentence))));

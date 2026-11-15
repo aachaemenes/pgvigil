@@ -430,7 +430,7 @@ export function dot(level: number, title = ''): HTMLElement {
 // (.tile-v) is the first child and the label (.tile-l) holds only its words: the proofs read both; app.css draws the
 // label above the figure.
 // A label that is itself a state's word ('Critical', 'Warnings') takes no pill: it would say the state twice.
-// href: the tile is a link to that page (the whole card answers a click; Allen 11-14 18:25)
+// href: the tile is a link to that page (the whole card answers a click)
 export interface TileOpts { unit?: string; sub?: string | Node; pill?: string | false; href?: string }
 export function tile(label: string, value: string, kind = '', o: TileOpts = {}): HTMLElement {
   const said = /^(critical|warnings?|ok|healthy)$/i.test(label.trim());

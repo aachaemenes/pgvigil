@@ -32,8 +32,10 @@ const tag = [...tagCount.entries()].filter(([, e]) => e.n < insts.length && e.en
 const pgI = insts.find(r => r.engine !== 'sqlserver' && String(r.name).endsWith('onprem-erp01')) ?? insts.find(r => r.engine !== 'sqlserver');
 const msI = insts.find(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql01')) ?? insts.find(r => r.engine === 'sqlserver');
 const want = new Set((process.env.SUMCLICK_SCOPES || 'root,tag,instance').split(','));
-const scopes = [...(want.has('root') ? [['root', '#/summary']] : []), ...(tag && want.has('tag') ? [[`tag ${tag}`, '#/summary?tag=' + encodeURIComponent(tag)]] : []),
-  ...(want.has('instance') ? [pgI, msI].filter(Boolean).map(r => [`instance ${r.name}`, `#/summary?i=${r.instance_id}`]) : [])];
+// each scope opened at the address the app's own links give it (the window w=1h: router.ts href), so a link to the
+// page it is on changes nothing in the walk either (the review of 823e113, finding 2)
+const scopes = [...(want.has('root') ? [['root', '#/summary?w=1h']] : []), ...(tag && want.has('tag') ? [[`tag ${tag}`, '#/summary?tag=' + encodeURIComponent(tag) + '&w=1h']] : []),
+  ...(want.has('instance') ? [pgI, msI].filter(Boolean).map(r => [`instance ${r.name}`, `#/summary?i=${r.instance_id}&w=1h`]) : [])];
 // DBA Dash's text cells (not links): a dead click there is DBA Dash's too
 const plainColumns = new Set(['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB Mail']);
 
@@ -104,10 +106,15 @@ const go = async hash => { await cmd('Page.navigate', { url: 'about:blank' }); a
 // the top. The first draw of a scope loads the app (go).
 const key = async k => { await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: k, windowsVirtualKeyCode: 27 }); await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: k, windowsVirtualKeyCode: 27 }); };
 const reset = async (hash, load = false) => {
-  if (load) { await go(hash); await ev(`sessionStorage.removeItem('pgvigil.summaryPick')`); await go(hash); await ev('window.scrollTo(0, 0)'); return; }
+  // the app's own refresh is Off (paused) for the whole walk: a refresh landing between a click's two looks would
+  // read as the click's change (the review of 823e113, finding 3)
+  if (load) { await go(hash); await ev(`(() => { sessionStorage.removeItem('pgvigil.summaryPick'); localStorage.setItem('pgvigil.refresh', '0'); return true; })()`); await go(hash); await ev('window.scrollTo(0, 0)'); return; }
   await key('Escape'); await key('Escape');
+  // the page on screen is marked first: the app keeps it until its new read (main.ts), so the walk waits until it is gone
   await ev(`(() => { sessionStorage.removeItem('pgvigil.summaryPick'); document.querySelectorAll('dialog[open]').forEach(d => d.close());
+    for (const c of document.querySelector('main')?.children ?? []) c.setAttribute('data-walkold', '1');
     if (location.hash !== ${JSON.stringify(hash)}) location.hash = ${JSON.stringify(hash)}; else window.dispatchEvent(new HashChangeEvent('hashchange')); return true; })()`);
+  for (const t = Date.now(); Date.now() - t < 20000; await sleep(150)) if (!(await ev(`!!document.querySelector('main [data-walkold]')`))) break;
   await sleep(250); await drawn(); await ev('window.scrollTo(0, 0)');
 };
 
@@ -143,7 +150,10 @@ const PARTS = HELP + `
       const m = document.querySelector('main'); let e = m; for (const i of d.path) { e = e?.children[i]; }
       const holds = x => !!x && [...x.childNodes].some(n => n.nodeType === 3 && sameShape(normT(n.textContent), d.text));
       if (holds(e)) return e;
-      return [...(m?.querySelectorAll('*') ?? [])].find(holds) ?? null;
+      // found again by its shape: a bare number only inside the box it was in (any number on the page would match it:
+      // the review of 823e113, finding 13), any other text anywhere on the page
+      let box = m; if (/^[0-9][0-9.,]*$/.test(d.text)) for (const i of d.path.slice(0, -1)) box = box?.children[i];
+      return [...(box?.querySelectorAll('*') ?? [])].find(holds) ?? null;
     }
     return null;
   };
@@ -177,18 +187,21 @@ const enumerate = full => ev(`(() => { ${PARTS}
       const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
       // drawn off the page (a screen reader's words: position absolute, left -10000px): nobody clicks it
       if (r.right <= 0 || r.left >= document.documentElement.scrollWidth) continue;
-      // a disabled control is plain only when it says why (its title, or the off-reason words beside it: Allen 11-12)
+      // a disabled control is plain only when it says why (its title, or the off-reason words beside it)
       const offBtn = e.closest('button:disabled, [aria-disabled="true"]');
-      const base = e.closest('h1, h2, h3, h4, h5, h6') ? 'heading'
+      // a control first (the review of 823e113, finding 4): a link or a button inside a heading, a label or a value is
+      // clicked like any other, never called plain by the place it sits in
+      const base = offBtn && (offBtn.title || offBtn.parentElement?.querySelector('.off-reason')) ? 'off'
+        : e.closest('a, button') ? 'control'
+        : e.closest('h1, h2, h3, h4, h5, h6') ? 'heading'
         : e.closest('table.props th, dt, .healthcal-head, .healthcal-month, .off-reason, .u-legend .u-series:first-child') ? 'label'
         : e.closest('table.props td, dd') ? 'value'
-        : offBtn && (offBtn.title || offBtn.parentElement?.querySelector('.off-reason')) ? 'off'
-        : e.closest('a, button') ? 'control' : e.closest('[data-nolink]') ? 'nolink'
+        : e.closest('[data-nolink]') ? 'nolink'
         : e.closest('tbody td') && e.closest('tr')?.querySelector('a[href], button:not(:disabled)') ? 'cell' : 'text';
       for (const n of e.childNodes) {
         if (n.nodeType !== 3) continue;
         const own = n.textContent.replace(/\\s+/g, ' ').trim();
-        if (!own || own.length > 80 || /^[·,:;.()\\/|+-]+$/.test(own)) continue;
+        if (!own || /^[·,:;.()\\/|+-]+$/.test(own)) continue;
         const kind = base === 'text' && /:$/.test(own) ? 'label' : base;
         out.push({ part: 'inst', path: pathOf(e), label: (e.closest('[class]')?.className || e.tagName).toString().split(' ')[0], text: own, kind });
       }
@@ -216,6 +229,9 @@ const enumerate = full => ev(`(() => { ${PARTS}
     // the reasons: the line's text after the name, split at its separators
     const rest = txt(r).slice(name.length).replace(/(Critical|Warning)\\s*Acknowledge.*$/, '').trim();
     for (const w of rest.split(' · ').map(s => s.replace(/\\s*\\+\\d+ more$/, '').trim()).filter(Boolean)) out.push({ part: 'strip', row: name, label: w.replace(/\\s.*$/, ''), text: w });
+    // its '+n more' (the line's other reasons shown in place) is clicked as well (the review of 823e113, finding 10)
+    const more = [...r.querySelectorAll('button')].find(b => /^\\+\\d+ more$/.test(txt(b)));
+    if (more) out.push({ part: 'strip', row: name, label: '+n more', text: txt(more) });
   }
   const counts = document.querySelector('main p.counts');
   if (counts) for (const w of txt(counts).split(/[:,;]\\s*/).map(s => s.trim()).filter(s => /[0-9]/.test(s))) out.push({ part: 'counts', label: w.replace(/^[0-9]+ (of [0-9]+ )?/, ''), text: w });
@@ -243,6 +259,9 @@ const locate = d => ev(`(() => { ${PARTS}
   if (!b || b.width === 0) return { why: 'its text is not drawn' };
   const x = b.left + Math.min(b.width / 2, 40), y = b.top + b.height / 2;
   const hit = document.elementFromPoint(x, y);
+  // the point a person clicks must be on the target itself: another element over it (a sticky bar, a menu) would take
+  // the click, and its effect would be counted as the target's (the review of 823e113, finding 13)
+  if (hit && !(e === hit || e.contains(hit) || hit.contains(e))) return { why: 'another element is over its text: ' + hit.tagName.toLowerCase() + (typeof hit.className === 'string' && hit.className ? '.' + hit.className.split(' ')[0] : '') };
   return { x, y, hit: hit ? hit.tagName.toLowerCase() + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.split(' ')[0] : '') : '' };
 })()`);
 // what a person can see, and what the page holds: the text in view by place, the text anywhere, the sort marks, an
@@ -262,7 +281,8 @@ const snap = () => ev(`(() => {
   const sort = [...document.querySelectorAll('th[aria-sort]')].map(t => t.getAttribute('aria-sort')).join(',');
   // a chart legend's series switched off (uPlot's u-off), a pressed or selected control: a change drawn on a canvas
   const marks = [...document.querySelectorAll('.u-off, [aria-pressed="true"], [aria-selected="true"]')].length;
-  return { hash: location.hash, modal, sort, marks, view: inView.join('\\n'), all: all.join('\\n') };
+  const tab = document.querySelector('#tabs [aria-current="page"]')?.getAttribute('href') ?? '';
+  return { hash: location.hash, tab, modal, sort, marks, view: inView.join('\\n'), all: all.join('\\n') };
 })()`);
 const mouse = async (type, x, y) => cmd('Input.dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: type === 'mouseMoved' ? 0 : 1 });
 
@@ -286,7 +306,8 @@ const clickOne = async (scope, t) => {
   let after = await snap();
   if (after.hash !== before.hash) { await drawn(); after = await snap(); }
   const effects = [];
-  if (after.hash !== before.hash) effects.push('lands on ' + after.hash);
+  // where it lands: the address, and a page the tab strip does not hold said so (finding 14 of the review of 823e113)
+  if (after.hash !== before.hash) effects.push('lands on ' + after.hash + (after.tab ? '' : ' (a page outside the tab strip)'));
   if (dialogs.length > d0) effects.push('opens a browser dialog: ' + dialogs.slice(d0).join(' / ').slice(0, 80));
   if (after.modal > before.modal) effects.push('opens a dialog or a menu');
   if (after.sort !== before.sort) effects.push('sort mark ' + (after.sort || 'none'));

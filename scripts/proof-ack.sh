@@ -218,7 +218,7 @@ if (mode === 'pick') {
   })()`));
 } else if (mode === 'dialog') {
   // Needs attention's first line: Acknowledge, Save with the defaults, read the dialog's answer
-  out.dlgName = await ev(`(() => { const r = document.querySelector('.attention-row'); r.querySelector('button').click(); return r.querySelector('strong').textContent; })()`);
+  out.dlgName = await ev(`(() => { const r = document.querySelector('.attention-row'); r.querySelector('button[aria-label^="Acknowledge "]').click(); return r.querySelector('strong').textContent; })()`);
   await sleep(300);
   await ev(`document.querySelector('dialog.act-dialog button[type=submit]').click()`);
   const t1 = Date.now();
