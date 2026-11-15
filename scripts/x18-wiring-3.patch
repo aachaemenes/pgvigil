@@ -1,0 +1,714 @@
+diff --git a/docs/configuration.md b/docs/configuration.md
+index f7e3ca71..0fca40b2 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -75,7 +75,7 @@ yellow or red even where the server's value is green, and the server's value sta
+   measurement, never by a default rule).
+ - `ALTER ROLE ALL SET` and an override of the database the collector connects to are also seen by the `instance`
+   collection as server-level values (`pg_settings` sources `global` and `database`), so the Best practice grid can
+-  show the same value. On such a row the server's value is shown uncoloured, marked as read under the override.
++  show the same value. On such a row the server's value is shown N/A (grey), marked as read under the override.
+ - Values that can carry a credential are masked as the server's are.
+ 
+ **Findings.** Every override that breaks a rule is a finding with the rule's severity. The database cells raise
+diff --git a/docs/sqlserver-checks.md b/docs/sqlserver-checks.md
+index 1e6a68be..c0f0e87a 100644
+--- a/docs/sqlserver-checks.md
++++ b/docs/sqlserver-checks.md
+@@ -5,7 +5,7 @@ Three collections judge a SQL Server instance the way a DBA does on the first da
+ - **green**: the value is at its default or meets its best practice;
+ - **yellow**: a warning or an advice rule is broken (a value that is only off its default is advice);
+ - **red**: a critical rule is broken;
+-- **uncoloured**: no rule covers the value, or the column is shown and not judged.
++- **grey (N/A)**: no rule covers the value, or the column is shown and not judged.
+ 
+ A coloured cell is never the only signal: its title names the rule and says why, and on an instance's page a column of words in the same row says it too (the fleet's option pivot has the title only). Each broken rule is also a finding, with the rule that raised it (the source tool and its check number) and the number that broke it.
+ 
+diff --git a/web/src/alert_rules.ts b/web/src/alert_rules.ts
+index 1afc7985..f4716806 100644
+--- a/web/src/alert_rules.ts
++++ b/web/src/alert_rules.ts
+@@ -452,7 +452,7 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
+   };
+   const cols: Col[] = [
+     { key: 'instance' },
+-    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : '') },
++    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : 'none') },
+     { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
+     { key: 'database', fmt: v => String(v ?? '') },
+     { key: 'op', label: 'rule', fmt: (_v, r) => {
+diff --git a/web/src/alerts.ts b/web/src/alerts.ts
+index 7d27b170..86d474c4 100644
+--- a/web/src/alerts.ts
++++ b/web/src/alerts.ts
+@@ -728,7 +728,7 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
+       }
+       return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
+         grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
+-          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
++          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
+     }],
+   ];
+   let cur = new URLSearchParams(location.hash.split('?')[1] ?? '').get('atab') ?? 'servers';
+diff --git a/web/src/backups.ts b/web/src/backups.ts
+index d6089d73..1616c884 100644
+--- a/web/src/backups.ts
++++ b/web/src/backups.ts
+@@ -124,7 +124,7 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
+       { key: 'platform' },
+       { key: 'worst', label: 'findings', fmt: (v, r) => v == null ? '' : badge(`${fmtNum(r.findings)} ${String(v)}`, v === 'critical' ? 'crit' : 'warn') },
+       { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; }, cls: (_v, r) => archiverState(r)[1] ? '' : 'status none' },
+-      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
++      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] || 'status none'},
+       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
+       { key: 'failed_count', label: 'failed', num: true },
+       { key: 'retention_days', label: 'retention', num: true, fmt: retTxt, cls: v => v == null ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },
+diff --git a/web/src/filedrop.ts b/web/src/filedrop.ts
+index 0a0c61d3..59f05071 100644
+--- a/web/src/filedrop.ts
++++ b/web/src/filedrop.ts
+@@ -150,9 +150,9 @@ function planView(doc: Document): HTMLElement[] {
+     { key: 'object' },
+     { key: 'estRows', label: 'estimated rows (per execution)', num: true },
+     { key: 'estExecs', label: 'estimated executions', num: true },
+-    { key: 'actRows', label: 'actual rows (all executions)', num: true, fmt: (v, r) => v == null ? '' : off(r) ? `${fmtNum(v)} (estimate ${cost(Number(r.estAll))})` : fmtNum(v), cls: (_v, r) => off(r) ? 'warn' : '' },
++    { key: 'actRows', label: 'actual rows (all executions)', num: true, fmt: (v, r) => v == null ? '' : off(r) ? `${fmtNum(v)} (estimate ${cost(Number(r.estAll))})` : fmtNum(v), cls: (v, r) => v == null ? '' : off(r) ? 'warn' : r.estAll != null && Number(r.estAll) > 0 ? 'status ok' : 'status none'},
+     { key: 'execs', label: 'actual executions', num: true },
+-    { key: 'share', label: 'cost %', num: true, fmt: v => v == null ? '' : `${fmtNum(Math.round(Number(v) * 10) / 10)} %`, cls: v => v != null && Number(v) >= 50 ? 'warn' : '' },
++    { key: 'share', label: 'cost %', num: true, fmt: v => v == null ? '' : `${fmtNum(Math.round(Number(v) * 10) / 10)} %`, cls: v => v == null ? '' : Number(v) >= 50 ? 'warn' : 'status ok'},
+     { key: 'subtree', label: 'subtree cost', num: true, fmt: v => v == null ? '' : cost(Number(v)) },
+     { key: 'warnings', wide: true, cls: v => v ? 'warn' : '' },
+   ];
+diff --git a/web/src/indexes.ts b/web/src/indexes.ts
+index 35ba0fc7..e0d8a9b4 100644
+--- a/web/src/indexes.ts
++++ b/web/src/indexes.ts
+@@ -148,7 +148,7 @@ export function adviceView(rep: AdvReport): HTMLElement {
+         { key: 'cost_before', label: 'cost before', num: true },
+         { key: 'cost_after', label: 'cost with the index', num: true },
+         { key: 'gain_pct', label: 'gain', num: true, fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) + ' %' },
+-        { key: 'uses_index', label: 'plan uses it', fmt: v => v ? badge('yes', 'ok') : 'no' },
++        { key: 'uses_index', label: 'plan uses it', fmt: v => v ? badge('yes', 'ok') : badge('no', 'none') },
+         { key: 'note', wide: true },
+         { key: 'query', wide: true },
+       ], 'No statement to test.'));
+@@ -166,7 +166,7 @@ const bloatCols: Col[] = [
+   { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes },
+   { key: 'est_bytes', label: 'its rows need', num: true, fmt: fmtBytes },
+   { key: 'bloat_bytes', label: 'bloat', num: true, fmt: fmtBytes },
+-  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => Number(v) >= 50 ? 'warn' : '' },
++  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 50 ? 'warn' : 'status ok'},
+   { key: 'fillfactor', num: true }, { key: 'tuples', label: 'rows', num: true, fmt: fmtNum },
+   { key: 'est_note', label: 'not estimated', wide: true },
+   { key: 'reindex_sql', label: 'rebuild (run it yourself)', wide: true },
+@@ -178,7 +178,7 @@ const seqCols: Col[] = [
+   { key: 'last_value', label: 'last value', num: true, fmt: fmtNum },
+   { key: 'max_value', label: 'its maximum', num: true, fmt: fmtNum },
+   { key: 'col_table', label: 'feeds', fmt: (v, r) => v == null ? '' : `${String(v)}.${String(r.col_name ?? '')} (${String(r.col_type ?? '')})` },
+-  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : '' },
++  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => v == null ? '' : Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : 'status ok'},
+   { key: 'readable', label: 'readable', fmt: v => v === false ? badge('no: the login may not read it', 'warn') : '' },
+   { key: 'blks_read', label: 'blocks read', num: true, fmt: fmtNum }, { key: 'blks_hit', label: 'blocks hit', num: true, fmt: fmtNum },
+ ];
+diff --git a/web/src/io.ts b/web/src/io.ts
+index 968d57fc..a74beb5b 100644
+--- a/web/src/io.ts
++++ b/web/src/io.ts
+@@ -212,7 +212,7 @@ const slruCols: Col[] = [
+   { key: 'family', label: 'cache' }, { key: 'name', label: 'as the server names it' },
+   { key: 'blks_hit', label: 'hits', num: true, fmt: fmtNum },
+   { key: 'blks_read', label: 'read from disk', num: true, fmt: fmtNum,
+-    cls: (v, r) => Number(v) > 0 && ['subtransaction', 'multixact_member', 'multixact_offset'].includes(String(r.family)) ? 'warn' : '' },
++    cls: (v, r) => v == null || v === '' ? '' : !['subtransaction', 'multixact_member', 'multixact_offset'].includes(String(r.family)) ? 'status none' : Number(v) > 0 ? 'warn' : 'status ok'},
+   { key: 'hit_pct', label: 'hit', num: true, fmt: v => v == null ? '' : pctFmt(Number(v)) },
+   { key: 'blks_written', label: 'written', num: true, fmt: fmtNum }, { key: 'blks_zeroed', label: 'zeroed', num: true, fmt: fmtNum },
+   { key: 'flushes', num: true, fmt: fmtNum }, { key: 'truncates', num: true, fmt: fmtNum },
+diff --git a/web/src/jobsreport.ts b/web/src/jobsreport.ts
+index b71fb89e..784e1163 100644
+--- a/web/src/jobsreport.ts
++++ b/web/src/jobsreport.ts
+@@ -21,7 +21,7 @@ const runBadge = (v: unknown, r: Row) => {
+ // a short run keeps its tenths; a long one reads as minutes and hours
+ const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(v) + ' s' : fmtSecs(v);
+ // the value cells in the colour of the rule that judges them: the last start by the last run's outcome, the streak by its own thresholds
+-const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v || !s ? '' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
++const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v ? '' : !s ? 'status none' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
+ const streakCls = (v: unknown) => Number(v) >= 3 ? 'crit' : Number(v) > 0 ? 'warn' : 'ok';   // as streak(): no value reads 0
+ const streak = (v: unknown) => Number(v) >= 3 ? badge(fmtNum(v), 'crit') : Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
+ const fails = (v: unknown) => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
+diff --git a/web/src/mssql_actions.ts b/web/src/mssql_actions.ts
+index 589b8e2e..e26355ae 100644
+--- a/web/src/mssql_actions.ts
++++ b/web/src/mssql_actions.ts
+@@ -241,7 +241,7 @@ export async function mssqlActionsLogView(ctx: Ctx): Promise<HTMLElement> {
+   }));
+   sec.append(el('h3', {}, 'What is on for this instance'), grid(rows, [
+     { key: 'action' }, { key: 'what' },
+-    { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') },
++    { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') },
+     { key: 'reason', label: 'why off', wide: true },
+   ]));
+   sec.append(el('h3', {}, 'Attempts'),
+diff --git a/web/src/mssql_checks.ts b/web/src/mssql_checks.ts
+index 1d93fcd3..3d256c0d 100644
+--- a/web/src/mssql_checks.ts
++++ b/web/src/mssql_checks.ts
+@@ -94,8 +94,8 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
+ function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
+   const cols: Col[] = [
+     { key: 'area', fmt: v => link(areaNames[String(v)] ?? String(v), x => x.set('cv', areaView[String(v)] ?? 'summary')) },
+-    // an area the last run could not read is not coloured: its findings are the last known, its cell says so
+-    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? '' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
++    // an area the last run could not read is N/A (grey): its findings are the last known, its cell says so
++    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? 'status none' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
+       fmt: (v, r) => r.sampled !== true ? el('span', { class: 'meta' }, 'not read')
+         : titled(r.is_read !== true ? `not read now (last read ${fmtTime(r.read_at)}): ${String(v ?? '')}` : String(v ?? ''), Array.isArray(r.detail) ? r.detail.map(String).join('\n') : '') },
+     { key: 'verdict', fmt: (_v, r) => r.sampled !== true ? '' : r.is_read !== true ? 'not read now'
+@@ -117,7 +117,7 @@ function optionsView(rows: Row[]): HTMLElement[] {
+   const n = (s: string) => rows.filter(r => r.is_present !== false && r.status === s).length;
+   const cols: Col[] = [
+     { key: 'name', label: 'option' },
+-    { key: 'value_in_use', label: 'in use', num: true, cls: (_v, r) => statusCls(r.status),
++    { key: 'value_in_use', label: 'in use', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status none'),
+       fmt: (v, r) => titled(fmtNum(v), 'best practice: ' + verdict(r.status, r.severity)) },
+     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
+     { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
+@@ -147,7 +147,7 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[]
+     const key = String(c.key);
+     cols.push({
+       key: 'opt_' + key, label: String(c.label),
+-      cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] != null && c.best ? 'status ok' : ''; },
++      cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] == null || opts(r)[key] === '' ? '' : c.best ? 'status ok' : 'status none'; },
+       fmt: (_v, r) => {
+         const v = opts(r)[key], x = dev(r)[key];
+         const text = v == null ? '' : key === 'last_good_checkdb' && v !== 'never' ? fmtTime(v) : typeof v === 'number' ? fmtNum(v) : String(v);
+@@ -163,7 +163,7 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[]
+     el('p', { class: 'meta' }, risk
+       ? el('span', {}, `${fmtNum(shown.length)} database(s) whose ${label} deviates. `, link('All databases', x => x.delete('risk')))
+       : `${fmtNum(dbs.length)} databases. Green: the value meets its rule. Yellow: a warning or an advice rule is broken. Red: a critical `
+-        + 'rule is broken. Uncoloured: a column shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
++        + 'rule is broken. Grey (N/A): a value shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
+         + 'it is held to.'),
+     grid(shown.map(flatten), cols, risk ? 'No database deviates on this option.' : 'No database read yet.'),
+   ];
+@@ -181,7 +181,7 @@ const flatten = (r: Row): Row => {
+ function flagsView(rows: Row[]): HTMLElement[] {
+   const cols: Col[] = [
+     { key: 'flag', num: true },
+-    { key: 'is_on', label: 'state', cls: (_v, r) => statusCls(r.status), fmt: (v, r) => r.is_present === false ? 'no longer on' : v === true ? 'on' : 'off' },
++    { key: 'is_on', label: 'state', cls: (_v, r) => statusCls(r.status) || 'status none', fmt: (v, r) => r.is_present === false ? 'no longer on' : v === true ? 'on' : 'off' },
+     { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
+     { key: 'detail', label: 'what it does', wide: true }, { key: 'rule' },
+     { key: 'first_seen', label: 'in this state since', fmt: fmtTime },
+@@ -220,7 +220,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[
+     grid(alerts, [
+       { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true },
+       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
+-      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => r.enabled === true && Number(v) === 0 && r.has_job !== true ? 'status warn' : '' },
++      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => v == null || v === '' ? '' : r.enabled !== true ? 'status none' : Number(v) === 0 && r.has_job !== true ? 'status warn' : 'status ok'},
+       { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },
+       { key: 'has_job', label: 'starts a job', fmt: yn }, { key: 'include_event_description', label: 'error text in the message', fmt: yn },
+       { key: 'occurrence_count', label: 'raised', num: true }, { key: 'last_occurrence_at', label: 'last raised', fmt: fmtTime },
+@@ -245,7 +245,7 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
+     grid(cols, [
+       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
+       { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
+-      { key: 'pct_used', label: '% used', num: true, cls: (_v, r) => statusCls(r.status), fmt: fmtNum },
++      { key: 'pct_used', label: '% used', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status ok'), fmt: fmtNum },
+       { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical (90 % and more)' : v === 'warn' ? 'warning (75 % and more)' : 'under 75 %' },
+       { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
+       { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
+@@ -299,9 +299,9 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
+     ...risks.map(([k, , risk]) => count(k, risk)),
+     { key: 'max_vlf', label: 'max VLF count', num: true, fmt: fmtNum },
+     // an instance whose options were never read has no count to colour
+-    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status crit' : 'status ok',
++    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? 'status none' : Number(v) > 0 ? 'status crit' : 'status ok',
+       fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
+-    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status warn' : 'status ok',
++    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? 'status none' : Number(v) > 0 ? 'status warn' : 'status ok',
+       fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
+     { key: 'option_advice', label: 'options off their default', num: true, fmt: fmtNum },
+     { key: 'databases_read_at', label: 'read', fmt: v => v == null ? 'not yet' : fmtTime(v) },
+@@ -325,7 +325,7 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
+   });
+   const pcols: Col[] = [{ key: 'name', label: 'option' }, ...insts.map(([id, name]): Col => ({
+     key: 'i' + id, label: name, num: true,
+-    cls: (_v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status),
++    cls: (v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status) || (v == null || v === '' ? '' : 'status none'),
+     fmt: (v, r) => { const o = by.get(`${String(r.name)}|${id}`); return o ? titled(fmtNum(v), `${verdict(o.status, o.severity)}${o.detail ? ': ' + String(o.detail) : ''}`) : ''; },
+   })), { key: 'differs', label: `differs ${across}`, fmt: yn }];
+   sec.append(el('h3', {}, `Server options ${across}`),
+diff --git a/web/src/mssql_errorlog.ts b/web/src/mssql_errorlog.ts
+index 639712bb..9d385ea2 100644
+--- a/web/src/mssql_errorlog.ts
++++ b/web/src/mssql_errorlog.ts
+@@ -63,7 +63,7 @@ function readerNote(t: Part, reader: string): HTMLElement {
+ 
+ const lineCols: Col[] = [
+   { key: 'log_at', label: 'when', fmt: fmtTime },
+-  { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : '' },
++  { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => v == null ? '' : Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : 'status none'},
+   { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) },
+   { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v), cls: v => v == null || v === '' || v === 'corruption' ? '' : 'status none' },
+   { key: 'message', label: 'line', wide: true },
+@@ -142,14 +142,14 @@ export async function mssqlErrorLogView(ctx: Ctx): Promise<HTMLElement> {
+ 
+ const growthSummaryCols: Col[] = [
+   { key: 'database_name', label: 'database' }, { key: 'kind' }, { key: 'events', num: true },
+-  { key: 'slow', label: 'over 1 s', num: true, cls: v => Number(v) > 0 ? 'warn' : '' },
++  { key: 'slow', label: 'over 1 s', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok'},
+   { key: 'worst_ms', label: 'slowest', num: true, fmt: ms }, { key: 'total_ms', label: 'total time', num: true, fmt: ms },
+   { key: 'size_mb', label: 'size change', num: true, fmt: mb }, { key: 'last_at', label: 'last', fmt: fmtTime },
+ ];
+ const growthCols: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'kind', fmt: v => text(v).includes('shrink') ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || String(v).includes('shrink') ? '' : 'status ok' },
+   { key: 'database_name', label: 'database' }, { key: 'file_name', label: 'file' },
+-  { key: 'duration_ms', label: 'took', num: true, fmt: ms, cls: v => Number(v) > 1000 ? 'warn' : '' },
++  { key: 'duration_ms', label: 'took', num: true, fmt: ms, cls: v => v == null ? '' : Number(v) > 1000 ? 'warn' : 'status ok'},
+   { key: 'size_change_mb', label: 'size change', num: true, fmt: mb },
+   { key: 'program_name', label: 'program' }, { key: 'login_name', label: 'login' }, { key: 'session_id', label: 'session', num: true },
+ ];
+@@ -198,7 +198,7 @@ export async function mssqlDefaultTraceView(ctx: Ctx): Promise<HTMLElement> {
+ // ---- System health
+ 
+ const stateBadge = (v: unknown) => badge(text(v), v === 'ERROR' ? 'crit' : v === 'WARNING' ? 'warn' : v === 'CLEAN' ? 'ok' : 'none');
+-const flag = (v: unknown) => Number(v) > 0 ? 'crit' : '';
++const flag = (v: unknown) => v == null || v === '' ? '' : Number(v) > 0 ? 'crit' : 'status ok';   // a zero count was read: OK
+ 
+ const systemCols: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
+@@ -213,7 +213,7 @@ const systemCols: Col[] = [
+ ];
+ const qpCols: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
+-  { key: 'pending_tasks', label: 'pending tasks', num: true, cls: v => Number(v) >= 10 ? 'warn' : '' },
++  { key: 'pending_tasks', label: 'pending tasks', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 10 ? 'warn' : 'status ok'},
+   { key: 'oldest_pending_ms', label: 'oldest pending', num: true, fmt: ms },
+   { key: 'max_workers', label: 'max workers', num: true }, { key: 'workers_created', label: 'workers', num: true },
+   { key: 'workers_idle', label: 'idle', num: true }, { key: 'tasks_completed', label: 'tasks completed', num: true },
+@@ -246,12 +246,12 @@ function groupedGrid(title: string, rows: Row[], base: Col[], groups: ColGroup[]
+   return box;
+ }
+ 
+-const yes = (v: unknown) => Number(v) > 0 || v === 'true' ? 'warn' : '';
++const yes = (v: unknown) => v == null || v === '' ? '' : Number(v) > 0 || v === 'true' ? 'warn' : 'status ok';
+ const kb = (v: unknown) => v == null ? '' : fmtNum(v) + ' KB';
+ 
+ const resourceBase: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
+-  { key: 'last_notification', label: 'last notification', cls: v => text(v).endsWith('_LOW') ? 'warn' : '' },
++  { key: 'last_notification', label: 'last notification', cls: v => text(v) === '' ? '' : text(v).endsWith('_LOW') ? 'warn' : 'status ok'},
+   { key: 'oom_exceptions', label: 'out-of-memory exceptions', num: true, cls: flag },
+   { key: 'pool_out_of_memory', label: 'pool out of memory', num: true, cls: flag },
+   { key: 'target_committed_mb', label: 'target committed', num: true, fmt: mb },
+@@ -277,7 +277,7 @@ const resourceGroups = (): ColGroup[] => [
+ // the events read beside the component results (0120): sp_HealthParser's columns, PerformanceMonitor's grids
+ const brokerCols: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'broker_id', label: 'broker id', num: true }, { key: 'broker' },
+-  { key: 'notification', cls: v => text(v) === 'SHRINK' ? 'warn' : '' }, { key: 'pool_metadata_id', label: 'pool metadata id', num: true },
++  { key: 'notification', cls: v => text(v) === '' ? '' : text(v) === 'SHRINK' ? 'warn' : 'status ok'}, { key: 'pool_metadata_id', label: 'pool metadata id', num: true },
+   { key: 'delta_time', label: 'delta time', num: true }, { key: 'memory_ratio', label: 'memory ratio', num: true },
+   { key: 'new_target', label: 'new target', num: true }, { key: 'overall', num: true }, { key: 'rate', num: true },
+   { key: 'currently_predicated', label: 'predicated', num: true }, { key: 'currently_allocated', label: 'allocated', num: true },
+@@ -316,10 +316,10 @@ const oomGroups = (): ColGroup[] => [
+ ];
+ const schedulerCols: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime },
+-  { key: 'sql_cpu', label: 'SQL Server CPU %', num: true, cls: v => Number(v) >= 90 ? 'warn' : '' },
+-  { key: 'other_cpu', label: 'other processes CPU %', num: true, cls: v => Number(v) >= 50 ? 'warn' : '' },
++  { key: 'sql_cpu', label: 'SQL Server CPU %', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 90 ? 'warn' : 'status ok'},
++  { key: 'other_cpu', label: 'other processes CPU %', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 50 ? 'warn' : 'status ok'},
+   { key: 'system_idle', label: 'idle %', num: true },
+-  { key: 'memory_utilization', label: 'memory utilization %', num: true, cls: v => v != null && Number(v) <= 50 ? 'warn' : '' },
++  { key: 'memory_utilization', label: 'memory utilization %', num: true, cls: v => v == null || v === '' ? '' : Number(v) <= 50 ? 'warn' : 'status ok'},
+   { key: 'page_faults', label: 'page faults', num: true }, { key: 'working_set_delta_mb', label: 'working set change', num: true, fmt: mb },
+ ];
+ const waitCols: Col[] = [
+diff --git a/web/src/mssql_hadr.ts b/web/src/mssql_hadr.ts
+index 692f093a..258f79b0 100644
+--- a/web/src/mssql_hadr.ts
++++ b/web/src/mssql_hadr.ts
+@@ -34,7 +34,7 @@ const kbs = (v: unknown) => v == null ? '' : fmtBytes(Number(v) * 1024) + '/s';
+ 
+ // a state cell is marked by its word AND its colour: never by colour alone
+ const stateCls = (good: string[], warn: string[] = []) => (v: unknown) =>
+-  v == null ? '' : good.includes(String(v)) ? '' : warn.includes(String(v)) ? 'warn' : 'crit';
++  v == null ? '' : good.includes(String(v)) ? 'status ok' : warn.includes(String(v)) ? 'warn' : 'crit';
+ 
+ const replicaCols: Col[] = [
+   { key: 'group_name', label: 'group' },
+@@ -59,8 +59,8 @@ const replicaCols: Col[] = [
+ // that column in its API) leaves SYNCHRONIZING unmarked. Suspended, and any state but the two, is red whatever the mode
+ // (as the finding 'a database is not synchronizing').
+ const dbStateCls = (v: unknown, r: Row) => r.is_suspended === true ? 'crit'
+-  : v == null || v === 'SYNCHRONIZED' ? ''
+-  : v === 'SYNCHRONIZING' ? (r.availability_mode === 'SYNCHRONOUS_COMMIT' ? 'warn' : '')
++  : v == null ? '' : v === 'SYNCHRONIZED' ? 'status ok'
++  : v === 'SYNCHRONIZING' ? (r.availability_mode === 'SYNCHRONOUS_COMMIT' ? 'warn' : r.availability_mode === 'ASYNCHRONOUS_COMMIT' ? 'status ok' : 'status none')
+   : 'crit';
+ 
+ const dbCols: Col[] = [
+@@ -118,7 +118,7 @@ const shipCols: Col[] = [
+   { key: 'last_backup_at', label: 'last backup', fmt: fmtTime }, { key: 'last_copied_at', label: 'last copy', fmt: fmtTime },
+   { key: 'last_restored_at', label: 'last restore', fmt: fmtTime },
+   // an empty cell is never filled: a secondary with no restore yet says so in words
+-  { key: 'age_minutes', label: 'age at the read (min)', num: true, fmt: (v, r) => v == null ? (late(v, r) ? 'none read' : '') : fmtNum(v), cls: late },
++  { key: 'age_minutes', label: 'age at the read (min)', num: true, fmt: (v, r) => v == null ? (late(v, r) ? 'none read' : '') : fmtNum(v), cls: (v, r) => late(v, r) ? 'warn' : v == null ? '' : r.threshold_minutes != null && Number(r.threshold_minutes) > 0 ? 'status ok' : 'status none'},
+   { key: 'threshold_minutes', label: 'threshold (min)', num: true },
+   { key: 'alert_enabled', label: 'alert', fmt: yes },
+   { key: 'last_restored_file', label: 'last file', wide: true, fmt: (v, r) => String(v ?? r.last_backup_file ?? r.last_copied_file ?? '') },
+@@ -132,7 +132,7 @@ const pubCols: Col[] = [
+ const subCols: Col[] = [
+   { key: 'publication' }, { key: 'publisher_db', label: 'from' },
+   { key: 'subscriber', fmt: (v, r) => `${String(v ?? '')}.${String(r.subscriber_db ?? '')}` },
+-  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
++  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok')},
+   { key: 'undistributed', label: 'undistributed commands', num: true },
+   { key: 'est_catchup_s', label: 'est. to deliver', num: true, fmt: fmtSecs },
+   { key: 'latency_ms', label: 'latency (ms)', num: true }, { key: 'last_run_at', label: 'last report', fmt: fmtTime },
+@@ -140,7 +140,7 @@ const subCols: Col[] = [
+ ];
+ const agentCols: Col[] = [
+   { key: 'agent_type', label: 'agent' }, { key: 'agent_name', label: 'name' }, { key: 'publisher_db', label: 'database' },
+-  { key: 'publication' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
++  { key: 'publication' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok')},
+   { key: 'last_run_at', label: 'last report', fmt: fmtTime }, { key: 'status_text', label: 'message', wide: true },
+ ];
+ 
+diff --git a/web/src/mssql_indexes.ts b/web/src/mssql_indexes.ts
+index 6c95f736..b3c09714 100644
+--- a/web/src/mssql_indexes.ts
++++ b/web/src/mssql_indexes.ts
+@@ -80,7 +80,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
+       grid(missing, [
+         { key: 'database' }, { key: 'table_ref', label: 'table' }, { key: 'equality_columns', label: 'equality' }, { key: 'inequality_columns', label: 'inequality' },
+         { key: 'included_columns', label: 'included' }, { key: 'user_seeks', label: 'seeks', num: true }, { key: 'user_scans', label: 'scans', num: true },
+-        { key: 'avg_impact', label: 'impact %', num: true }, { key: 'benefit_per_day', label: 'benefit / day', num: true, cls: v => Number(v) >= 100000 ? 'warn' : '' },
++        { key: 'avg_impact', label: 'impact %', num: true }, { key: 'benefit_per_day', label: 'benefit / day', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 100000 ? 'warn' : 'status ok'},
+         { key: 'last_request', label: 'last asked', fmt: fmtTime }], 'No missing-index request.'));
+     out.push(el('h3', {}, 'Statistics'), grid(rowsOf(d.statsdbs), [
+       { key: 'database' }, { key: 'statistics', num: true }, { key: 'statistics_with_props', label: 'with properties', num: true },
+diff --git a/web/src/mssql_perf.ts b/web/src/mssql_perf.ts
+index 080b12f2..e0e2c1f9 100644
+--- a/web/src/mssql_perf.ts
++++ b/web/src/mssql_perf.ts
+@@ -269,12 +269,12 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'database_name', label: 'database' },
+     { key: 'file_name', label: 'file' },
+     { key: 'type_desc', label: 'type' },
+-    { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => row.type_desc !== 'LOG' && Number(v) >= 50 ? 'warn' : '' },
++    { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc === 'LOG' ? 'status none' : Number(v) >= 50 ? 'warn' : 'status ok'},
+     { key: 'reads', num: true },
+     { key: 'read_bytes', label: 'read', num: true, fmt: fmtBytes },
+     // task 177 D14: sp_PressureDetector's KB per read and per write (file stats)
+     { key: '_kb_read', label: 'KB per read', num: true, fmt: (_v, row) => Number(row.reads) > 0 ? fmtNum(Math.round(10 * Number(row.read_bytes) / 1024 / Number(row.reads)) / 10) : '' },
+-    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => row.type_desc === 'LOG' && Number(v) >= 20 ? 'warn' : '' },
++    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc !== 'LOG' ? 'status none' : Number(v) >= 20 ? 'warn' : 'status ok'},
+     { key: 'writes', num: true },
+     { key: 'write_bytes', label: 'written', num: true, fmt: fmtBytes },
+     { key: '_kb_write', label: 'KB per write', num: true, fmt: (_v, row) => Number(row.writes) > 0 ? fmtNum(Math.round(10 * Number(row.write_bytes) / 1024 / Number(row.writes)) / 10) : '' },
+diff --git a/web/src/mssql_plancache.ts b/web/src/mssql_plancache.ts
+index 3bc02764..048accd1 100644
+--- a/web/src/mssql_plancache.ts
++++ b/web/src/mssql_plancache.ts
+@@ -18,7 +18,8 @@ const LIMIT = 1000;
+ const num3 = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
+ const secs = (v: unknown) => v == null ? '' : num3(Math.round(Number(v)) / 1000);
+ const pct = (v: unknown) => v == null ? '' : `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} %`;
+-const level = (v: unknown, warn: number, info: number) => Number(v) > warn ? 'warn' : Number(v) > info ? 'info' : '';
++// over warn a warning; over info a note (N/A, as every info level); under it judged and fine (OK)
++const level = (v: unknown, warn: number, info: number) => v == null || v === '' ? '' : Number(v) > warn ? 'warn' : Number(v) > info ? 'status none' : 'status ok';
+ // a statement's text, its first characters shown and the whole kept for the copy and the export
+ const text = (v: unknown) => {
+   const s = String(v ?? '');
+diff --git a/web/src/mssql_querystore.ts b/web/src/mssql_querystore.ts
+index d6b43acb..c661ef56 100644
+--- a/web/src/mssql_querystore.ts
++++ b/web/src/mssql_querystore.ts
+@@ -415,7 +415,7 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
+     side === 'base' && !r.has_baseline ? '' : Number(r[`${side}_unsplit`]) > 0 ? notApart : dur(v);
+   const abortedTip = 'Timeouts (Aborted) is execution_type 3: "Client initiated aborted execution" (Microsoft): a timeout or a cancel by the client.';
+   const cols: Col[] = [
+-    { key: 'severity', label: 'Severity', cls: sevCls, fmt: v => sevCls(v) ? tinted(text(v)) : text(v) },
++    { key: 'severity', label: 'Severity', cls: v => sevCls(v) || (v == null || v === '' ? '' : 'status none'), fmt: v => sevCls(v) ? tinted(text(v)) : text(v) },
+     { key: 'raised_by', label: 'Why' },
+     { key: 'database_name', label: 'Database' },
+     { key: 'query', label: 'Query', fmt: stmt },
+@@ -458,8 +458,8 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
+     { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
+     { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes', cls: (v, r) => !r.has_baseline || v ? '' : 'status ok' },
+     { key: 'forced', fmt: v => v ? badge('forced', 'ok') : '' },
+-    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
+-    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
++    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok'},
++    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => v == null || v === '' ? '' : Number(v) >= 1.5 ? 'status warn' : 'status ok'},
+     { key: 'object_name', label: 'object' },
+   ];
+   const baseWords = base === 'prev' ? 'the range of equal length before it' : base === 'day' ? 'the same range 24 hours earlier'
+@@ -503,7 +503,7 @@ function forcedView(ctx: Ctx, d: QS): HTMLElement[] {
+     { key: 'object_name', label: 'object' },
+     { key: 'query', label: 'statement', fmt: stmt },
+     { key: 'forcing_type', label: 'plan forcing', fmt: v => text(v).toLowerCase() },
+-    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => Number(v) > 0 ? 'status warn' : '' },
++    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'status warn' : 'status ok'},
+     { key: 'force_failure_reason', label: 'last force failure' },
+     { key: 'plan_count', label: 'plans of the query', num: true },
+     { key: 'plan_last_execution', label: 'last execution (plan)', fmt: fmtTime },
+diff --git a/web/src/pg_backups.ts b/web/src/pg_backups.ts
+index bace4263..18cc7eb4 100644
+--- a/web/src/pg_backups.ts
++++ b/web/src/pg_backups.ts
+@@ -333,10 +333,10 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
+   }
+   const cols: Col[] = [
+     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
+-    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : '') }, { key: 'timeline_id', label: 'timeline', num: true },
++    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : 'none') }, { key: 'timeline_id', label: 'timeline', num: true },
+     { key: 'role_since', label: 'role since', fmt: fmtTime },
+     { key: 'has_receiver', label: 'fed by', fmt: (v, r) => r.role === 'primary' ? '' : v ? `streaming from ${String(r.sender_host ?? '?')}` : 'restore_command (file shipping)' },
+-    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : '') },
++    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : 'none') },
+     { key: 'sender_state', label: 'sender' },
+     { key: 'replay_lag_bytes', label: 'replay lag', num: true, fmt: (v, r) => v == null ? '' : `${fmtBytes(v)}${r.replay_lag_secs != null ? `, ${fmtSecs(Math.round(num(r.replay_lag_secs)))}` : ''}` },
+     { key: 'replay_delay_secs', label: 'replay delay', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },
+diff --git a/web/src/pg_dboptions.ts b/web/src/pg_dboptions.ts
+index 554960dc..5fed501b 100644
+--- a/web/src/pg_dboptions.ts
++++ b/web/src/pg_dboptions.ts
+@@ -138,7 +138,7 @@ function overridesGrid(all: Row[], read: Row | undefined, brokenOnly: boolean):
+   const unitOf = (r: Row) => r.unit ? ` ${str(r.unit)}` : '';
+   // the value as written, and as the rules read it where that differs (256MB = 262144 kB)
+   const valueText = (r: Row): string => str(r.raw_value) + (r.value_read === true && str(r.value) !== str(r.raw_value) ? ` = ${str(r.value)}${unitOf(r)}` : '');
+-  // the server's value: uncoloured where the instance read takes this very override as the server's (ALTER ROLE ALL SET,
++  // the server's value: N/A (grey) where the instance read takes this very override as the server's (ALTER ROLE ALL SET,
+   // an override of the database the collector connects to)
+   const serverStatus = (r: Row): unknown => r.server_from_override === true ? null : r.server_status;
+   const serverText = (r: Row): string => r.server_value == null ? '' : str(r.server_value) + unitOf(r) + (r.server_is_set === true ? '' : ' (default)');
+@@ -147,9 +147,9 @@ function overridesGrid(all: Row[], read: Row | undefined, brokenOnly: boolean):
+   const cols: Col[] = [
+     { key: 'setting' },
+     { key: 'statement', label: 'set by' },
+-    { key: 'value_text', label: 'value', cls: (_v, r) => statusCls(r.status),
++    { key: 'value_text', label: 'value', cls: (_v, r) => statusCls(r.status) || (valueText(r) ? 'status none' : ''),
+       fmt: (_v, r) => titled(valueText(r), `${shownVerdict(r)}${r.detail && (r.status === 'warn' || r.status === 'crit') ? ': ' + str(r.detail) : ''}`) },
+-    { key: 'server_text', label: 'the server\'s value', cls: (_v, r) => statusCls(serverStatus(r)),
++    { key: 'server_text', label: 'the server\'s value', cls: (_v, r) => statusCls(serverStatus(r)) || (serverText(r) ? 'status none' : ''),
+       fmt: (_v, r) => titled(serverText(r), serverVerdict(r)) },
+     { key: 'suggested', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? str(v) : '' },
+     // the colours in words: the override's verdict and the server's
+diff --git a/web/src/pooler.ts b/web/src/pooler.ts
+index 09e12da9..9b83a215 100644
+--- a/web/src/pooler.ts
++++ b/web/src/pooler.ts
+@@ -25,7 +25,7 @@ const yes = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
+ const poolCols: Col[] = [
+   { key: 'database' }, { key: 'user' },
+   { key: 'cl_active', label: 'clients active', num: true },
+-  { key: 'cl_waiting', label: 'clients waiting', num: true, cls: v => Number(v) > 0 ? 'warn' : '' },
++  { key: 'cl_waiting', label: 'clients waiting', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok'},
+   { key: 'sv_active', label: 'servers active', num: true },
+   { key: 'sv_idle', label: 'servers idle', num: true },
+   { key: 'sv_used', label: 'servers used', num: true },
+@@ -139,7 +139,7 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
+         { key: 'head_application', label: 'head application' },
+         { key: 'head_via_pooler', label: 'head through the pooler', fmt: (v, r) => v === true ? `yes: serves ${String(r.head_client_application ?? 'a client')}` : v === false ? 'no (a direct session)' : '' },
+         { key: 'servers_behind', label: 'pooler servers blocked behind it', num: true },
+-        { key: 'clients_waiting', label: 'clients waiting in those pools', num: true, cls: v => Number(v) > 0 ? 'warn' : '' },
++        { key: 'clients_waiting', label: 'clients waiting in those pools', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok'},
+         { key: 'longest_wait_us', label: 'longest client wait', num: true, fmt: waitUs },
+         { key: 'pools', fmt: pids },
+         { key: 'head_query', label: 'head\'s last statement', fmt: (v, r) => sqlCell(v, { heading: `pid ${String(r.head_pid)}: last statement` }) },
+diff --git a/web/src/reports.ts b/web/src/reports.ts
+index 28c9fe42..ef81e09b 100644
+--- a/web/src/reports.ts
++++ b/web/src/reports.ts
+@@ -419,7 +419,7 @@ const failedView: Render = ctx => page(ctx, 'rp_failed', [daysPicker('failed-day
+     { key: 'first_failed', label: 'First Failed Login', fmt: fmtTime }, { key: 'last_failed', label: 'Last Failed Login', fmt: fmtTime },
+     { key: 'snapshot_age', label: 'Snapshot Age', num: true, fmt: (_x, r) => r.snapshot_at == null ? '' : fmtSecs((Date.now() - Date.parse(text(r.snapshot_at))) / 1000) },
+     { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: (_x, r) => fresh(r) },
+-    { key: 'read_status', label: 'Snapshot Status', fmt: (_x, r) => status(r), cls: (_x, r) => r.read_status === 'read' || r.read_status === 'ok' ? 'ok' : r.read_status == null ? '' : 'warn' }], 'No instance in this scope.')),
++    { key: 'read_status', label: 'Snapshot Status', fmt: (_x, r) => status(r), cls: (_x, r) => r.read_status === 'read' || r.read_status === 'ok' ? 'ok' : r.read_status == null ? 'status none' : 'warn'}], 'No instance in this scope.')),
+   ...section('Login Summary', grid(rowsOf(d.logins), sum('Login'), 'No failed login in this time.')),
+   ...section('Client Summary', grid(rowsOf(d.clients), sum('Client'), 'No failed login in this time.')),
+   ...section('Message Summary', grid(rowsOf(d.messages), sum('Message'), 'No failed login in this time.')),
+@@ -489,7 +489,7 @@ const rolesView: Render = ctx => page(ctx, 'rp_roles', [], async (_v, s, out) =>
+       for (const i of insts) o['i:' + i] = has.has(`${i}\u0000${l}`) ? 'A' : '-'; return o; });
+     const byInst = insts.map(i => { const o: Row = { instance: i, instance_id: rows.find(r => r.instance === i)?.instance_id };
+       for (const l of logins) o['l:' + l] = has.has(`${i}\u0000${l}`) ? 'A' : '-'; return o; });
+-    const mark = (x: unknown) => x === 'A' ? 'ok' : '';
++    const mark = (x: unknown) => x === 'A' ? 'ok' : x === '-' ? 'status none' : '';   // a membership is not judged: '-' N/A
+     grids.replaceChildren(
+       ...section('Normal', grid(rows, [instCol(ctx), engCol, { key: 'role_name', label: 'Role' }, { key: 'login_name', label: 'Login' }, { key: 'login_type', label: 'Type' },
+         { key: 'type_desc', label: 'Type Description' }, { key: 'is_disabled', label: 'Is Disabled', fmt: yes }, { key: 'created_at', label: 'Created Date', fmt: fmtTime },
+@@ -533,7 +533,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
+   }
+   // the oldest first, the unknown ages last
+   const oldest = [...logins].sort((a, b) => (b.password_age_days == null ? -1 : Number(b.password_age_days)) - (a.password_age_days == null ? -1 : Number(a.password_age_days)));
+-  const ageCls = (x: unknown) => x == null ? '' : Number(x) > 365 ? 'crit' : Number(x) > 90 ? 'warn' : '';
++  const ageCls = (x: unknown) => x == null ? '' : Number(x) > 365 ? 'crit' : Number(x) > 90 ? 'warn' : 'status ok';
+   out.append(stateNote(rowsOf(d.state), 'The SQL logins'),
+     ...(s.engines.has('sqlserver') ? [
+       ...section('Summary', grid([...per.values()], [instCol(ctx), { key: 'logins', label: 'SQL Logins', num: true },
+@@ -543,7 +543,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
+         { key: 'created_at', label: 'Created Date', fmt: fmtTime }, { key: 'modified_at', label: 'Modified Date', fmt: fmtTime },
+         { key: 'password_set_at', label: 'Password Last Set', fmt: fmtTime }, { key: 'password_age_days', label: 'Password Age (Days)', num: true, cls: ageCls },
+         { key: 'is_policy_checked', label: 'Policy Checked', fmt: yes }, { key: 'is_expiration_checked', label: 'Expiration Checked', fmt: yes },
+-        { key: 'is_expired', label: 'Expired', fmt: yes, cls: x => x === true ? 'crit' : '' }, { key: 'is_locked', label: 'Locked', fmt: yes, cls: x => x === true ? 'warn' : '' }],
++        { key: 'is_expired', label: 'Expired', fmt: yes, cls: x => x === true ? 'crit' : x === false ? 'status ok' : ''}, { key: 'is_locked', label: 'Locked', fmt: yes, cls: x => x === true ? 'warn' : x === false ? 'status ok' : ''}],
+       'No SQL login password of this age.'))] : []));
+   if (s.engines.has('postgres')) {
+     const pg = rowsOf(d.pg);
+@@ -562,14 +562,14 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
+     out.append(el('h3', {}, 'PostgreSQL login roles'),
+       el('p', { class: 'meta' }, 'PostgreSQL keeps no time a password was set, so there is no password age: the twin is the expiry (VALID UNTIL) and the password method (md5 is deprecated; scram-sha-256 is the default since PostgreSQL 14). The method is read from pg_authid, which only a superuser login may read; it is "not read" otherwise.'),
+       grid([...pgPer.values()], [instCol(ctx), { key: 'roles', label: 'Login Roles', num: true }, { key: 'superusers', label: 'Superusers', num: true },
+-        { key: 'expired', label: 'Expired', num: true, cls: x => Number(x) > 0 ? 'crit' : '' }, { key: 'expiring', label: 'Expiring in 30 Days', num: true, cls: x => Number(x) > 0 ? 'warn' : '' },
+-        { key: 'no_expiry', label: 'No Expiry', num: true }, { key: 'scram', label: 'scram-sha-256', num: true }, { key: 'md5', label: 'md5', num: true, cls: x => Number(x) > 0 ? 'warn' : '' },
++        { key: 'expired', label: 'Expired', num: true, cls: x => x == null || x === '' ? '' : Number(x) > 0 ? 'crit' : 'status ok'}, { key: 'expiring', label: 'Expiring in 30 Days', num: true, cls: x => x == null || x === '' ? '' : Number(x) > 0 ? 'warn' : 'status ok'},
++        { key: 'no_expiry', label: 'No Expiry', num: true }, { key: 'scram', label: 'scram-sha-256', num: true }, { key: 'md5', label: 'md5', num: true, cls: (x, r) => x == null || x === '' ? '' : Number(x) > 0 ? 'warn' : Number(r.not_read) > 0 ? 'status none' : 'status ok'},
+         { key: 'none', label: 'No Password', num: true }, { key: 'other', label: 'Other Method', num: true }, { key: 'not_read', label: 'Method Not Read', num: true }], 'No PostgreSQL login role is stored for this scope.'),
+       el('h3', {}, 'PostgreSQL password expiry'),
+       grid(pg, [instCol(ctx), { key: 'role_name', label: 'Role' }, { key: 'is_superuser', label: 'Superuser', fmt: yes },
+         { key: 'valid_until', label: 'Valid Until', fmt: x => x == null ? 'no expiry' : fmtTime(x) },
+-        { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: x => x == null ? '' : Number(x) < 0 ? 'crit' : Number(x) <= 30 ? 'warn' : '' },
+-        { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x === 'md5' ? 'warn' : '' }],
++        { key: 'days_until_expiration', label: 'Days Until Expiration', num: true, cls: x => x == null ? '' : Number(x) < 0 ? 'crit' : Number(x) <= 30 ? 'warn' : 'status ok'},
++        { key: 'method', label: 'Password Method', fmt: (x, r) => x == null ? `not read${r.method_note ? ' (' + text(r.method_note) + ')' : ''}` : text(x), cls: x => x == null ? 'status none' : x === 'md5' ? 'warn' : 'status ok'}],
+       'No PostgreSQL login role is stored for this scope.'));
+   }
+ });
+@@ -584,12 +584,12 @@ const servicesView: Render = ctx => page(ctx, 'rp_services', [{ key: 'svc-type',
+   out.append(s.engines.has('postgres') ? sqlServerOnly('PostgreSQL runs as one service the operating system keeps; its Host page has what pgvigil reads of the host.') : '',
+     stateNote(rowsOf(d.state), 'The service file names'),
+     ...section('Server Services', grid(rows, [instCol(ctx), { key: 'service_type', label: 'Service Type' }, { key: 'service_name', label: 'Service Name' },
+-      { key: 'startup_type', label: 'Startup Type', cls: x => x === 'Automatic' ? 'ok' : x === 'Disabled' ? 'warn' : '' },
++      { key: 'startup_type', label: 'Startup Type', cls: x => x === 'Automatic' ? 'ok' : x === 'Disabled' ? 'warn' : x == null || x === '' ? '' : 'status none'},
+       { key: 'status', label: 'Status', cls: x => x === 'Running' ? 'ok' : x === 'Stopped' ? 'crit' : x ? 'warn' : '' }, { key: 'process_id', label: 'Process ID', num: true },
+       { key: 'last_startup_at', label: 'Last Startup Time', fmt: fmtTime }, { key: 'service_account', label: 'Service Account' },
+       { key: 'is_managed_account', label: 'Managed Service Account?', fmt: yes }, { key: 'filename', label: 'FileName', wide: true },
+       { key: 'is_clustered', label: 'Is Clustered', fmt: yes }, { key: 'cluster_nodename', label: 'Cluster Node Name' },
+-      { key: 'ifi_enabled', label: 'Instant File Initialization Enabled', fmt: yes, cls: (x, r) => r.service_type === 'SQL Server' ? (x === true ? 'ok' : x === false ? 'warn' : '') : '' },
++      { key: 'ifi_enabled', label: 'Instant File Initialization Enabled', fmt: yes, cls: (x, r) => x !== true && x !== false ? '' : r.service_type !== 'SQL Server' ? 'status none' : x === true ? 'ok' : 'warn'},
+       { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: fresh }], 'No service is stored for this scope.')));
+ });
+ 
+@@ -690,7 +690,7 @@ const recycleView: Render = ctx => page(ctx, 'rp_recycle', [], async (_v, s, out
+   out.append(el('p', { class: 'meta' }, 'Instances made inactive (kept with their history; nothing is collected from them) and active ones no collection has reached for a day (taken out of the configuration, or unreachable). '
+     + 'Restore: name the instance in the configuration again (an inactive one is made active by its next collection). Delete: as the repository owner, DELETE FROM pgvigil.instances WHERE instance_id = <Connection ID> removes it and every row of it; the actions log keeps its rows under the instance\'s name.'),
+   ...section('Recycle Bin', grid(rows, [{ key: 'instance_id', label: 'Connection ID', num: true }, { key: 'instance', label: 'Instance' }, engCol,
+-    { key: 'is_active', label: 'State', fmt: x => x === false ? 'inactive' : 'not collected for a day', cls: x => x === false ? '' : 'warn' },
++    { key: 'is_active', label: 'State', fmt: x => x === false ? 'inactive' : 'not collected for a day', cls: x => x === false ? 'status none' : 'warn'},
+     { key: 'last_collection', label: 'Last Collection Date', fmt: fmtTime }, { key: 'secs_since', label: 'Time Since Last Collection', num: true, fmt: fmtSecs },
+     { key: 'restore', label: 'Restore', fmt: () => 'add it to the configuration' }, { key: 'delete', label: 'Delete', fmt: (_x, r) => `DELETE FROM pgvigil.instances WHERE instance_id = ${text(r.instance_id)}` }],
+   'The recycle bin is empty: every instance is active and collected.')));
+diff --git a/web/src/retention.ts b/web/src/retention.ts
+index 613abfed..941597cb 100644
+--- a/web/src/retention.ts
++++ b/web/src/retention.ts
+@@ -58,13 +58,13 @@ export async function retentionView(_ctx: Ctx): Promise<HTMLElement> {
+       { key: 'table_name', label: 'Table' },
+       { key: 'size_bytes', label: 'Size', num: true, fmt: fmtBytes },
+       { key: 'rows_estimate', label: 'Rows (estimate)', num: true, fmt: fmtNum },
+-      { key: 'retention', label: 'Retention', cls: (_v, r) => r.note != null && String(r.note).startsWith('partitioned') ? 'warn' : '' },
++      { key: 'retention', label: 'Retention', cls: (v, r) => r.note != null && String(r.note).startsWith('partitioned') ? 'warn' : v == null || v === '' ? '' : v === 'kept whole' ? 'status none' : 'status ok'},
+       { key: 'column_name', label: 'By column' },
+       { key: 'same_as', label: 'Same as' },
+       { key: 'partitions', label: 'Partitions', num: true, fmt: v => Number(v) > 0 ? fmtNum(v) : '' },
+       { key: 'oldest_partition', label: 'Oldest partition', fmt: day },
+       { key: 'oldest_row', label: 'Oldest row', fmt: day },
+-      { key: 'actual_days', label: 'Actual retention (days)', num: true, fmt: (v, r) => v == null ? '' : late(r, days) ? `${fmtNum(v)} (older than the age allows)` : fmtNum(v), cls: (_v, r) => late(r, days) ? 'warn' : '' },
++      { key: 'actual_days', label: 'Actual retention (days)', num: true, fmt: (v, r) => v == null ? '' : late(r, days) ? `${fmtNum(v)} (older than the age allows)` : fmtNum(v), cls: (v, r) => v == null ? '' : late(r, days) ? 'warn' : r.judged === true ? 'status ok' : 'status none'},
+       { key: 'would_drop', label: `Partitions a purge at ${days} days drops`, num: true, fmt: v => Number(v) > 0 ? fmtNum(v) : '' },
+       { key: 'would_drop_bytes', label: 'Size it frees', num: true, fmt: v => Number(v) > 0 ? fmtBytes(v) : '' },
+       { key: 'note', label: 'Note', wide: true },
+diff --git a/web/src/schema.ts b/web/src/schema.ts
+index faf4d5dc..9b1ad7ee 100644
+--- a/web/src/schema.ts
++++ b/web/src/schema.ts
+@@ -33,7 +33,7 @@ const ddlText: Record<string, string> = {
+ function ddlBadge(v: unknown): HTMLElement | string {
+   const s = String(v ?? '');
+   if (s === 'installed') return badge(ddlText[s], 'ok');
+-  if (s === 'not installed' || s === '') return ddlText['not installed'];
++  if (s === 'not installed' || s === '') return badge(ddlText['not installed'], 'none');   // opt-in, not installed: nothing checked (N/A)
+   return badge(ddlText[s] ?? s, 'warn');
+ }
+ 
+diff --git a/web/src/statements.ts b/web/src/statements.ts
+index de7cd41c..5264c475 100644
+--- a/web/src/statements.ts
++++ b/web/src/statements.ts
+@@ -30,12 +30,12 @@ const depthCols: Col[] = [
+   { key: 'plans', num: true, fmt: fmtNum },
+   { key: 'total_plan_ms', label: 'planning', num: true, fmt: ms },
+   { key: 'mean_plan_ms', label: 'per plan', num: true, fmt: ms },
+-  { key: 'plan_pct', label: 'planning share', num: true, fmt: pct, cls: v => Number(v) >= 50 ? 'warn' : '' },
++  { key: 'plan_pct', label: 'planning share', num: true, fmt: pct, cls: (v, r) => v == null ? '' : Number(v) >= 50 ? 'warn' : Number(r.plans) > 0 ? 'status ok' : 'status none'},
+   { key: 'generic_plan_calls', label: 'generic plans', num: true, fmt: fmtNum },
+   { key: 'custom_plan_calls', label: 'custom plans', num: true, fmt: fmtNum },
+   { key: 'jit_functions', label: 'JIT functions', num: true, fmt: fmtNum },
+   { key: 'jit_ms', label: 'JIT time', num: true, fmt: ms },
+-  { key: 'jit_pct', label: 'JIT share', num: true, fmt: pct, cls: v => Number(v) >= 20 ? 'warn' : '' },
++  { key: 'jit_pct', label: 'JIT share', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) >= 20 ? 'warn' : 'status ok'},
+   { key: 'wal_records', label: 'WAL records', num: true, fmt: fmtNum },
+   { key: 'wal_fpi', label: 'full-page images', num: true, fmt: fmtNum },
+   { key: 'fpi_pct', label: 'FPI share', num: true, fmt: pct },
+@@ -43,7 +43,7 @@ const depthCols: Col[] = [
+   { key: 'wal_buffers_full', label: 'WAL buffers full', num: true, fmt: fmtNum },
+   { key: 'workers_to_launch', label: 'workers planned', num: true, fmt: fmtNum },
+   { key: 'workers_launched', label: 'launched', num: true, fmt: fmtNum },
+-  { key: 'workers_missing', label: 'not launched', num: true, fmt: fmtNum, cls: v => Number(v) > 0 ? 'warn' : '' },
++  { key: 'workers_missing', label: 'not launched', num: true, fmt: fmtNum, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok'},
+   { key: 'local_blks_read', label: 'local blks read', num: true, fmt: fmtNum },
+   { key: 'temp_blks_written', label: 'temp blks written', num: true, fmt: fmtNum },
+ ];
+diff --git a/web/src/vacuum.ts b/web/src/vacuum.ts
+index 6a0f0c49..4b77b4a9 100644
+--- a/web/src/vacuum.ts
++++ b/web/src/vacuum.ts
+@@ -13,7 +13,7 @@ const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
+ const never = (v: unknown) => v == null ? 'never' : fmtTime(v);
+ const yes = (v: unknown, kind = 'warn') => v ? badge('yes', kind) : '';
+ const ratio = (v: unknown) => v == null ? '' : fmtNum(v) + 'x';
+-const ratioCls = (v: unknown) => Number(v) >= 1 ? 'warn' : '';
++const ratioCls = (v: unknown) => v == null || v === '' ? '' : Number(v) >= 1 ? 'warn' : 'status ok';
+ const weekMs = 7 * 24 * 3600 * 1000;
+ 
+ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
+@@ -70,7 +70,7 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'heap_blks_total', label: 'heap blocks', num: true },
+     { key: 'index_vacuum_count', label: 'index passes', num: true },
+     { key: 'dead_tuples', label: 'dead tuples found', num: true },
+-    { key: 'elapsed_secs', label: 'elapsed', num: true, fmt: fmtSecs, cls: v => Number(v) >= 3600 ? 'warn' : '' },
++    { key: 'elapsed_secs', label: 'elapsed', num: true, fmt: fmtSecs, cls: v => v == null || v === '' ? '' : Number(v) >= 3600 ? 'warn' : 'status ok'},
+     { key: 'wait_event', label: 'wait', fmt: (v, r) => v ? `${r.wait_event_type}:${v}` : '' },
+     { key: 'blocking_pids', label: 'blocked by', fmt: v => Array.isArray(v) && v.length ? v.join(', ') : '' },
+     { key: 'query', wide: true },
+@@ -86,12 +86,12 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'dead_ratio', label: 'dead / threshold', num: true, fmt: ratio, cls: ratioCls },
+     { key: 'ins_ratio', label: 'inserts / threshold', num: true, fmt: ratio, cls: ratioCls },
+     { key: 'anl_ratio', label: 'changes / analyze threshold', num: true, fmt: ratio, cls: ratioCls },
+-    { key: 'hours_over', label: 'hours over', num: true, cls: v => Number(v) >= 6 ? 'warn' : '' },
++    { key: 'hours_over', label: 'hours over', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 6 ? 'warn' : 'status ok'},
+     { key: 'autovacuum_enabled', label: 'autovacuum', fmt: (v, r) => v === false ? badge('off', 'warn') : r.has_own_settings ? 'own settings' : 'on', cls: v => v === false ? '' : 'status ok' },
+     { key: 'last_autovacuum', label: 'last autovacuum', fmt: never },
+     { key: 'last_vacuum', label: 'last vacuum', fmt: never },
+     { key: 'last_autoanalyze', label: 'last autoanalyze', fmt: never },
+-    { key: 'freeze_pct', label: 'xid age, % of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
++    { key: 'freeze_pct', label: 'xid age, % of freeze max', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok'},
+   ];
+   sec.append(el('h3', {}, 'Tables over or near a threshold'),
+     el('p', { class: 'meta' }, 'Thresholds as autovacuum computes them: the table\'s own reloptions over the server settings, base + scale factor x reltuples. A ratio of 1x or more is over. Read hourly per database, at most 50 tables per database.'),
+@@ -108,9 +108,9 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(el('h3', {}, 'Wraparound'), grid(wrap, [
+     { key: 'datname', label: 'database' },
+     { key: 'xid_age', label: 'xid age', num: true },
+-    { key: 'xid_freeze_pct', label: '% of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
++    { key: 'xid_freeze_pct', label: '% of freeze max', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok'},
+     { key: 'mxid_age', label: 'multixact age', num: true },
+-    { key: 'mxid_freeze_pct', label: '% of mxid freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
++    { key: 'mxid_freeze_pct', label: '% of mxid freeze max', num: true, fmt: pct, cls: v => v == null ? '' : Number(v) > 100 ? 'warn' : 'status ok'},
+     { key: 'xid_horizon_pct', label: '% of 2^31', num: true, fmt: pct },
+     { key: 'user_tables', label: 'user tables', num: true },
+     { key: 'over_vacuum', label: 'over vacuum threshold', num: true },
