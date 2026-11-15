@@ -1994,6 +1994,7 @@ check(len(_books) >= len(PAGES) - 1 and len(_pass) == len(_books) and not _fail 
 import importlib.util
 _xs = importlib.util.spec_from_file_location('xlsx_check', 'scripts/xlsx-check.py'); _xc = importlib.util.module_from_spec(_xs); _xs.loader.exec_module(_xc)
 MEASURED = {}
+_n17 = {}   # (file, sheet) -> [data rows, the mapped columns' cells that hold a value]: what X17 can judge on each sheet
 for _n in sorted(os.listdir(dl)):
     if not _n.endswith('.xlsx'): continue
     try: _bk = _xc.Book(f"{dl}/{_n}")
@@ -2008,7 +2009,11 @@ for _n in sorted(os.listdir(dl)):
         if {'job', 'status', 'last failure'} <= set(_h):
             _m.update({'job': 'status', 'last failure': 'status'})
             if 'since last failure (minutes)' in _h: _m['since last failure (minutes)'] = '*'
-        if _m: MEASURED.setdefault(_n, {})[_s['name']] = _m
+        if _m:
+            MEASURED.setdefault(_n, {})[_s['name']] = _m
+            _mc = {c['col'] for c in _s['cells'] if c['row'] == 1 and str(c['v'] if c['v'] is not None else '').strip() in _m}
+            _n17[(_n, _s['name'])] = [len({c['row'] for c in _s['cells'] if c['row'] > 1}),
+                                      sum(1 for c in _s['cells'] if c['row'] > 1 and c['col'] in _mc and str(c['v'] if c['v'] is not None else '').strip())]
 _mg = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), f'measured-{want}.json')
 json.dump(MEASURED, open(_mg, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
 if os.environ.get('PGVIGIL_EXPORT_OUT') and os.path.isdir(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want)):   # kept beside the downloads
@@ -2017,8 +2022,11 @@ _r17 = subprocess.run([sys.executable, '-I', 'scripts/xlsx-check.py', 'rules', '
 _p17 = [l for l in _r17.stdout.splitlines() if l.startswith('PASS X17 ')]; _f17 = [l for l in _r17.stdout.splitlines() if l.startswith('FAIL X17 ')]
 _c17 = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) cells', l) for l in _p17) if m_)
 _s17 = sorted({s for v in MEASURED.values() for s in v})
-check('Drives' in _s17 and any(s != 'Drives' for s in _s17) and len(_p17) == len(MEASURED) and not _f17 and _c17 >= 4,
-      f"measured cells (X17): the Drives sheet's free % / free and the job grids' job / last failure carry their row's status - {len(_p17)} of {len(MEASURED)} workbooks PASS on sheets {_s17}, {_c17} cells judged; map in {os.path.basename(_mg)}; {(_f17 or [''])[0][:300]}")
+# every mapped sheet with rows judged on cells of its own: the Drives cells alone never carry the job grids
+_none17 = [f"{n}:{sn}" for (n, sn), (nr, nc) in _n17.items() if nr and not nc]
+_drv17 = sum(nc for (n, sn), (nr, nc) in _n17.items() if sn == 'Drives'); _job17 = sum(nc for (n, sn), (nr, nc) in _n17.items() if sn != 'Drives')
+check('Drives' in _s17 and any(s != 'Drives' for s in _s17) and len(_p17) == len(MEASURED) and not _f17 and _drv17 > 0 and _job17 > 0 and not _none17,
+      f"measured cells (X17): the Drives sheet's free % / free and the job grids' job / last failure carry their row's status - {len(_p17)} of {len(MEASURED)} workbooks PASS on sheets {_s17}, {_c17} cells judged ({_drv17} on Drives, {_job17} on the job grids; a sheet with rows and none judged: {_none17[:3]}); map in {os.path.basename(_mg)}; {(_f17 or [''])[0][:300]}")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
