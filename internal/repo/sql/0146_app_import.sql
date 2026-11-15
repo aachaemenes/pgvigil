@@ -18,11 +18,12 @@
 ALTER TABLE pgvigil.app_not_application ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'entered';
 
 -- an application name is a tag's value: 1 to 100 bytes, no comma or control character, no space at either end; never
--- '(none)', the file's unassign token (an older store's application of that name is kept; in a file the token wins)
+-- '(none)' in any case, the file's unassign token (an older store's application of that name is kept; in a file the
+-- token wins: review A, m2)
 CREATE OR REPLACE FUNCTION pgvigil.app_name_ok(p_name text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT p_name IS NOT NULL AND octet_length(p_name) BETWEEN 1 AND 100 AND p_name !~ '[,[:cntrl:]]' AND p_name = btrim(p_name)
-     AND p_name <> '(none)'
+     AND lower(p_name) <> '(none)'
 $$;
 
 -- THE conflict rule (task 312). p_what:
@@ -423,12 +424,15 @@ BEGIN
 END $$;
 
 -- a cell that looks like a credential: a password / secret / token / key assignment, a URL with user:password@, a
--- query parameter named for a secret (task 312, D5: such a line is refused and its text never echoed)
+-- query parameter named for a secret, an Azure account or shared access key, a PEM private key, a bearer token (task
+-- 312, D5: such a line is refused and its text never echoed; review A, m3: one cell at a time - import_app_file)
 CREATE OR REPLACE FUNCTION pgvigil.app_secret_shaped(p text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT coalesce(p, '') ~* '(password|passwd|pwd|secret|token|api[_ -]?key|access[_ -]?key|private[_ -]?key)[[:space:]]*[=:]'
+  SELECT coalesce(p, '') ~* '(password|passwd|pwd|secret|token|api[_ -]?key|access[_ -]?key|private[_ -]?key|accountkey|sharedaccesskey)[[:space:]]*[=:]'
       OR coalesce(p, '') ~ '://[^/@[:space:]:]+:[^/@[:space:]]*@'
       OR coalesce(p, '') ~* '[?&;](token|key|sig|signature|secret|password|pwd|auth|access_token|api_key|apikey)='
+      OR coalesce(p, '') ~* '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+      OR coalesce(p, '') ~* 'bearer[[:space:]]+[A-Za-z0-9._~+/=-]{16,}'
 $$;
 
 -- the round trip's rows (task 312, D1): every active server (level server) and its databases - present ones (no
@@ -518,7 +522,10 @@ BEGIN
   IF NOT pg_try_advisory_xact_lock(hashtext('pgvigil.app_import')) THEN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', 'another import is running now: try again when it has ended (an import never waits behind another)');
   END IF;
-  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.app_writes'));
+  -- the page's writes wait only for an apply, never for a preview (review B, m3): an apply plans under the write lock
+  IF NOT v_dry THEN
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.app_writes'));
+  END IF;
   IF v_sname !~ '^[a-z0-9_.-]{1,40}$' THEN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', 'a source name is 1 to 40 of a-z, 0-9, _ . - (it is written as import:<name> on every field it sets)');
   END IF;
@@ -536,7 +543,8 @@ BEGIN
     line int, lvl text, inst text, eng text, db text, app text, env text, tier text, descr text, url text, naa text,
     iid int, iname text, iengine text, iactive boolean, dbname text, dbpresent boolean, unk text, why text, note text,
     own_app int, own_env text, own_src text, own_set timestamptz, srv_app int, srv_name text, srv_src text, mark_src text,
-    akey text, tapp int, op1 text, op2 text, c1 boolean DEFAULT false, c2 boolean DEFAULT false, outcome text, words text
+    akey text, tapp int, op1 text, op2 text, c1 boolean DEFAULT false, c2 boolean DEFAULT false, outcome text, words text,
+    sec boolean DEFAULT false
   ) ON COMMIT DROP;
   INSERT INTO pg_temp.app_imp_r (line, why, lvl, inst, eng, db, app, env, tier, descr, url, naa)
   SELECT x.line, nullif(x.why, ''), lower(btrim(coalesce(x.level, ''))), btrim(coalesce(x.instance, '')), lower(btrim(coalesce(x.engine, ''))),
@@ -544,14 +552,24 @@ BEGIN
          coalesce(x.description, ''), btrim(coalesce(x.cmdb_url, '')), lower(btrim(coalesce(x.not_an_application, '')))
     FROM jsonb_to_recordset(v_rows) AS x(line int, why text, level text, instance text, engine text, database text, application text,
                                          environment text, tier text, description text, cmdb_url text, not_an_application text);
+  -- every join keys on the line: a line number given twice (or none) refuses the request (review A, M4)
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_temp.app_imp_r WHERE line IS NULL) THEN 'a line has no number in the request'
+              ELSE format('line %s comes twice in the request', min(x.line)) END INTO v_bad
+    FROM (SELECT line FROM pg_temp.app_imp_r WHERE line IS NOT NULL GROUP BY line HAVING count(*) > 1) x
+  HAVING count(*) > 0 OR EXISTS (SELECT 1 FROM pg_temp.app_imp_r WHERE line IS NULL);
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('outcome', 'refused', 'detail', v_bad || ': each line is numbered once (save the file again; nothing was written)');
+  END IF;
+  -- '(none)' in any case is the unassign token (review A, m2)
+  UPDATE pg_temp.app_imp_r r SET app = '(none)' WHERE lower(r.app) = '(none)' AND r.app <> '(none)';
   -- statistics at each stage (t-im-g2 F13: 20000 lines previewed in 79 s): a fresh temp table has none and autovacuum
   -- never reaches one, so the joins below were planned blind; analyzed again once a stage fills the columns the next
   -- stage joins on (the server match fills iid, the database match dbname, the planning op1 / outcome)
   ANALYZE pg_temp.app_imp_r;
 
   -- a credential-shaped cell: the line refused, its text never echoed (D5)
-  UPDATE pg_temp.app_imp_r r SET why = 'a cell looks like a credential (a password, a token or a key): nothing of this line is read'
-   WHERE pgvigil.app_secret_shaped(concat_ws(chr(10), r.inst, r.db, r.app, r.env, r.tier, r.descr, r.url, r.naa));
+  UPDATE pg_temp.app_imp_r r SET why = 'a cell looks like a credential (a password, a token or a key): nothing of this line is read', sec = true
+   WHERE EXISTS (SELECT 1 FROM unnest(ARRAY[r.inst, r.eng, r.db, r.app, r.env, r.tier, r.descr, r.url, r.naa]) c WHERE pgvigil.app_secret_shaped(c));
   UPDATE pg_temp.app_imp_r r SET lvl = CASE WHEN r.db = '' THEN 'server' ELSE 'database' END WHERE r.lvl = '';
   UPDATE pg_temp.app_imp_r r SET why = 'level is server or database' WHERE r.why IS NULL AND r.lvl NOT IN ('server', 'database');
   UPDATE pg_temp.app_imp_r r SET why = 'a line names its server (instance)' WHERE r.why IS NULL AND r.inst = '';
@@ -638,6 +656,13 @@ BEGIN
   UPDATE pg_temp.app_imp_r r SET mark_src = m.source
     FROM pgvigil.app_not_application m
    WHERE r.why IS NULL AND r.unk IS NULL AND r.lvl = 'database' AND m.instance_id = r.iid AND m.database_name = r.dbname;
+  -- an absent database is assigned, re-assigned or marked on the page only: such a line is refused before it names an
+  -- application item, so a line refused later neither adds an application nor feeds its fields (review A, M3)
+  UPDATE pg_temp.app_imp_r r SET why = format('%s is absent (gone since its last read): only the page changes it', r.dbname)
+   WHERE r.why IS NULL AND r.unk IS NULL AND r.lvl = 'database' AND NOT r.dbpresent
+     AND ((r.app NOT IN ('', '(none)') AND (r.own_app IS NULL OR (r.env <> '' AND r.env IS DISTINCT FROM r.own_env)
+                                             OR NOT EXISTS (SELECT 1 FROM pgvigil.app_applications ap WHERE ap.app_id = r.own_app AND lower(ap.name) = lower(r.app))))
+          OR (r.naa = 'yes' AND r.mark_src IS NULL));
   UPDATE pg_temp.app_imp_r r SET akey = lower(r.app) WHERE r.why IS NULL AND r.unk IS NULL AND r.app NOT IN ('', '(none)');
   ANALYZE pg_temp.app_imp_r;
 
@@ -674,7 +699,10 @@ BEGIN
    WHERE a.outcome IS NULL;
   UPDATE pg_temp.app_imp_a a SET
     outcome = CASE WHEN cardinality(a.conf) > 0 THEN 'conflict' WHEN cardinality(a.chg) > 0 THEN 'change' ELSE 'unchanged' END,
-    words = CASE WHEN cardinality(a.conf) > 0 THEN format('%s: %s entered by hand (changed only when ticked)', a.name, array_to_string(a.conf, ', '))
+    words = CASE WHEN cardinality(a.conf) > 0 THEN format('%s: %s entered by hand%s (changed only when ticked)', a.name, array_to_string(a.conf, ', '),
+                                                          CASE WHEN cardinality(a.chg) > cardinality(a.conf)
+                                                               THEN '; also changed when ticked: ' || array_to_string(ARRAY(SELECT f FROM unnest(a.chg) f WHERE f <> ALL (a.conf)), ', ')
+                                                               ELSE '' END)
                  WHEN cardinality(a.chg) > 0 THEN format('%s: %s changed', a.name, array_to_string(a.chg, ', '))
                  ELSE format('%s: as stored', a.name) END
    WHERE a.outcome IS NULL;
@@ -710,6 +738,7 @@ BEGIN
              CASE WHEN r.srv_name IS NOT NULL THEN format('inherits %s from its server: (none) changes nothing', r.srv_name)
                   ELSE 'has no application of its own: (none) changes nothing' END END,
       CASE r.op2 WHEN 'mark' THEN 'mark not an application' WHEN 'unmark' THEN 'unmark' || CASE WHEN r.c2 THEN ' (marked by hand: only when ticked)' ELSE '' END END,
+      CASE WHEN (r.c1 OR r.c2) AND r.op1 IS NOT NULL AND r.op2 IS NOT NULL THEN 'the whole line only when ticked' END,
       r.note) END;
   ANALYZE pg_temp.app_imp_r;
 
@@ -736,9 +765,12 @@ BEGIN
                               'outcome', a.outcome, 'words', a.words) AS i
       FROM pg_temp.app_imp_a a WHERE a.outcome <> 'unchanged'
     UNION ALL
-    SELECT jsonb_build_object('id', 't' || r.line, 'kind', 'target', 'line', r.line, 'level', r.lvl, 'instance', coalesce(r.iname, r.inst),
-                              'database', coalesce(r.dbname, r.db), 'application', r.app, 'outcome', r.outcome, 'words', r.words)
-      FROM pg_temp.app_imp_r r WHERE r.outcome <> 'unchanged') z;
+    SELECT jsonb_build_object('id', 't' || r.line, 'kind', 'target', 'line', r.line, 'level', CASE WHEN r.sec THEN '' ELSE r.lvl END,
+                              'instance', CASE WHEN r.sec THEN '' ELSE coalesce(r.iname, r.inst) END,
+                              'database', CASE WHEN r.sec THEN '' ELSE coalesce(r.dbname, r.db) END,
+                              'application', CASE WHEN r.sec THEN '' ELSE r.app END, 'outcome', r.outcome, 'words', r.words)
+      FROM pg_temp.app_imp_r r
+     WHERE r.outcome <> 'unchanged' OR (r.app = '(none)' AND r.op1 IS NULL)) z;   -- '(none) changes nothing' said (review P, P-3)
   SELECT jsonb_build_object(
            'lines', (SELECT count(*) FROM pg_temp.app_imp_r),
            'applications_added', (SELECT count(*) FROM pg_temp.app_imp_a WHERE outcome = 'add'),
@@ -746,7 +778,7 @@ BEGIN
            'targets_changed', (SELECT count(*) FROM pg_temp.app_imp_r WHERE outcome = 'change'),
            'conflicts', (SELECT count(*) FROM pg_temp.app_imp_a WHERE outcome = 'conflict') + (SELECT count(*) FROM pg_temp.app_imp_r WHERE outcome = 'conflict'),
            'unknown_servers', (SELECT count(*) FROM pg_temp.app_imp_r WHERE unk = 'server'),
-           'unknown_databases', (SELECT count(*) FROM pg_temp.app_imp_r WHERE unk = 'database'),
+           'unknown_databases', (SELECT count(*) FROM pg_temp.app_imp_r WHERE unk = 'database' AND outcome = 'unknown'),
            'refused', (SELECT count(*) FROM pg_temp.app_imp_r WHERE outcome = 'refused' AND unk IS DISTINCT FROM 'server')
                     + (SELECT count(*) FROM pg_temp.app_imp_a WHERE outcome = 'refused'),
            'unchanged', (SELECT count(*) FROM pg_temp.app_imp_r WHERE outcome = 'unchanged')) INTO v_cnt;
