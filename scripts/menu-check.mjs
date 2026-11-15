@@ -521,8 +521,16 @@ await guard('G grid menu', async () => {
   for (const f of fs.readdirSync(dl)) fs.rmSync(path.join(dl, f));
   await rightClick(`document.querySelector('main table.grid tbody td')`);
   await clickItem('Export Excel'); let x = '';
-  for (let k = 0; k < 40 && !x; k++) { await sleep(250); x = fs.readdirSync(dl).find(f => f.endsWith('.xlsx')) ?? ''; }
-  const buf = x ? fs.readFileSync(path.join(dl, x)) : Buffer.alloc(0);
+  // the download: Chrome can show the file under its final name before its bytes land, so the file is read once its
+  // size is above zero and the same on two looks 250 ms apart (10 s at most)
+  for (let k = 0, last = -1; k < 40; k++) {
+    await sleep(250);
+    x = fs.readdirSync(dl).find(f => f.endsWith('.xlsx')) ?? '';
+    const size = x ? fs.statSync(path.join(dl, x), { throwIfNoEntry: false })?.size ?? -1 : -1;
+    if (size > 0 && size === last) break;
+    last = size;
+  }
+  const buf = x && fs.existsSync(path.join(dl, x)) ? fs.readFileSync(path.join(dl, x)) : Buffer.alloc(0);
   // a text column whose values look like numbers (the version, '17.10'): no Sum line
   await rightClick(`[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.children[[...document.querySelectorAll('main table.grid thead tr:first-child th')].findIndex(h => h.textContent.startsWith('version'))]).find(td => /^\\d+\\.\\d+$/.test(td.textContent.trim()))`);
   const verLast = await ev(`(() => { const b = [...document.querySelectorAll('.menu button')].map(x => x.textContent); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return b[b.length - 1] ?? ''; })()`);
