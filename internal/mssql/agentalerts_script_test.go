@@ -114,13 +114,15 @@ func TestAgentAlertsScript(t *testing.T) {
 	for _, c := range []struct {
 		platform string
 		edition  int
+		host     string
 		want     string
 	}{
-		{"sqlserver", 3, ""}, {"sqlserver", 0, ""}, {"sqlserver", 4, "Express"}, {"rdssqlserver", 2, "Amazon RDS"},
-		{"azuresqlmi", 8, "41914"}, {"azuresqldb", 5, "Azure SQL Database"}, {"cloudsqlsqlserver", 3, "sysadmin"}, {"sqlserver", 9, "Edge"},
+		{"sqlserver", 3, "", ""}, {"sqlserver", 0, "Windows", ""}, {"sqlserver", 4, "", "Express"}, {"rdssqlserver", 2, "", "Amazon RDS"},
+		{"azuresqlmi", 8, "", "41914"}, {"azuresqldb", 5, "", "Azure SQL Database"}, {"cloudsqlsqlserver", 3, "Linux", "sysadmin"}, {"sqlserver", 9, "", "Edge"},
+		{"sqlserver", 3, "Linux", "on Linux"},
 	} {
-		if got := AgentAlertsNotApplicable(c.platform, c.edition); (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
-			t.Errorf("AgentAlertsNotApplicable(%s, %d) = %q, want %q", c.platform, c.edition, got, c.want)
+		if got := AgentAlertsNotApplicable(c.platform, c.edition, c.host); (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("AgentAlertsNotApplicable(%s, %d, %s) = %q, want %q", c.platform, c.edition, c.host, got, c.want)
 		}
 	}
 }

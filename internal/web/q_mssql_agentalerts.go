@@ -21,7 +21,8 @@ const sqlAgentAlertsScriptFacts = `
 SELECT i.name, i.engine, coalesce(i.platform, ''),
        coalesce((SELECT m.engine_edition FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id), 0),
        coalesce((SELECT o.name FROM pgvigil.mssql_agent_operator o
-                  WHERE o.instance_id = i.instance_id AND o.enabled AND o.has_email ORDER BY o.name LIMIT 1), '')
+                  WHERE o.instance_id = i.instance_id AND o.enabled AND o.has_email ORDER BY o.name LIMIT 1), ''),
+       coalesce((SELECT p.value FROM pgvigil.mssql_property p WHERE p.instance_id = i.instance_id AND p.name = 'host_platform'), '')
   FROM pgvigil.instances i
  WHERE i.instance_id = $1`
 
@@ -32,9 +33,9 @@ func (s *Server) MSSQLAgentAlertsScript(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	var name, engine, platform, op string
+	var name, engine, platform, op, host string
 	var edition int
-	err = s.pool.QueryRow(r.Context(), sqlAgentAlertsScriptFacts, id).Scan(&name, &engine, &platform, &edition, &op)
+	err = s.pool.QueryRow(r.Context(), sqlAgentAlertsScriptFacts, id).Scan(&name, &engine, &platform, &edition, &op, &host)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
@@ -53,7 +54,7 @@ func (s *Server) MSSQLAgentAlertsScript(w http.ResponseWriter, r *http.Request) 
 		Operator   string `json:"operator,omitempty"`
 		Script     string `json:"script,omitempty"`
 	}{}
-	if out.Reason = mssql.AgentAlertsNotApplicable(platform, edition); out.Reason != "" {
+	if out.Reason = mssql.AgentAlertsNotApplicable(platform, edition, host); out.Reason != "" {
 		s.reply(w, r, out, nil)
 		return
 	}

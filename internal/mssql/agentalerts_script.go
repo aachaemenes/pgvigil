@@ -9,7 +9,8 @@ package mssql
 // What the script holds to (the design's C13-1..10 as the design pass folded them):
 //   - it stops with words, before anything else, where Agent alerts cannot be made: Express, Azure SQL Database,
 //     Managed Instance (sp_add_alert raises 41914 there), Azure SQL Edge, Amazon RDS (rdsadmin present), SQL Server on
-//     Linux (Microsoft lists Agent alerts among its unsupported features; asked of the lead 00:2x), and a login
+//     Linux (Microsoft lists Agent alerts among its unsupported features; the lead's 00:1x; read through @@VERSION,
+//     which every version has - sys.dm_os_host_info came in SQL Server 2017), and a login
 //     that is not sysadmin (sp_verify_alert, error 15003: Cloud SQL and RDS give no login that role). The stop is its
 //     own first batch, so its words print before a later batch's msdb reference is compiled;
 //   - a condition is covered when an alert of ANY name sits on msdb's own key for it (sp_add_alert_internal: message
@@ -345,9 +346,10 @@ SELECT COUNT(*) AS pgvigil_alerts_left FROM msdb.dbo.sysalerts WHERE name LIKE N
 ` + agentAlertsEnd
 }
 
-// AgentAlertsNotApplicable is why the script has no place on an instance of this platform (pgvigil.instances.platform)
-// and engine edition (0 = not read), or "" where it applies. The script stops on these by itself as well.
-func AgentAlertsNotApplicable(platform string, engineEdition int) string {
+// AgentAlertsNotApplicable is why the script has no place on an instance of this platform (pgvigil.instances.platform),
+// engine edition (0 = not read) and host platform (mssql_property host_platform: Windows | Linux, "" = not read), or ""
+// where it applies. The script stops on these by itself as well.
+func AgentAlertsNotApplicable(platform string, engineEdition int, hostPlatform string) string {
 	switch {
 	case Kind(platform) == KindRDS:
 		return "Amazon RDS for SQL Server does not support SQL Server Agent alerts and operators"
@@ -361,6 +363,8 @@ func AgentAlertsNotApplicable(platform string, engineEdition int) string {
 		return "SQL Server Express has no SQL Server Agent"
 	case engineEdition == 9:
 		return "Azure SQL Edge is not a platform the script supports"
+	case strings.EqualFold(hostPlatform, "Linux"):
+		return "SQL Server on Linux (Microsoft lists Agent alerts as unsupported)"
 	}
 	return ""
 }
