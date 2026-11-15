@@ -129,20 +129,21 @@ export function routeOf(hash = location.hash): string {
 // sections with their empties are export.ts's (the workbook's); which of them is an empty grid is read from the page in
 // the same order (a table, or a p.empty that names columns). Should the two ever disagree, the body is the tables alone.
 function bodySections(root: ParentNode, fallback: string): { secs: Section[]; nums: boolean[][]; words: (string | undefined)[] } {
-  const tnums = numbers(root);
+  const tables = sections(root, fallback), tnums = numbers(root);
   const all = sections(root, fallback, true);
   const els = [...root.querySelectorAll<HTMLElement>('table.grid, table.props, p.empty[data-cols]')].filter(e => {
     if (e.tagName === 'TABLE') return true;
     try { const c: unknown = JSON.parse(e.dataset.cols ?? '[]'); return Array.isArray(c) && c.length > 0; } catch { return false; }
   });
-  if (els.length !== all.length) return { secs: sections(root, fallback), nums: tnums, words: [] };
-  const nums: boolean[][] = [], words: (string | undefined)[] = [];
+  if (els.length !== all.length || els.filter(e => e.tagName === 'TABLE').length !== tables.length) return { secs: tables, nums: tnums, words: [] };
+  const secs: Section[] = [], nums: boolean[][] = [], words: (string | undefined)[] = [];
   let t = 0;
-  for (const e of els) {
-    if (e.tagName === 'TABLE') { nums.push(tnums[t++] ?? []); words.push(undefined); }
-    else { nums.push([]); words.push((e.textContent ?? '').replace(/\s+/g, ' ').trim() || undefined); }
-  }
-  return { secs: all, nums, words };
+  els.forEach((e, i) => {
+    // a grid with rows is the tables-alone reading's own section (its name as every mail before had it)
+    if (e.tagName === 'TABLE') { secs.push(tables[t]); nums.push(tnums[t] ?? []); words.push(undefined); t++; }
+    else { secs.push(all[i]); nums.push([]); words.push((e.textContent ?? '').replace(/\s+/g, ' ').trim() || undefined); }
+  });
+  return { secs, nums, words };
 }
 
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {

@@ -321,9 +321,9 @@ const SCREEN = `(() => {
   return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props, main p.empty[data-cols]')].flatMap(e => {
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') { const within = e.closest('[role=region]'); if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; } return []; }
     const named = inner && inner.within.contains(e) ? inner.text : outer;
-    // a grid with no row (ui.ts grid: its note carries the columns): no table in the mail's body, a sheet of its header
-    // row in its workbook (P03: the mail's workbook is Export .xlsx's)
-    if (e.tagName === 'P') { let cols = []; try { cols = JSON.parse(e.dataset.cols || '[]'); } catch { cols = []; } return Array.isArray(cols) && cols.length ? [{ named, grid: true, empty: true, rows: 0, head: cols.map(String), cells: [] }] : []; }
+    // a grid with no row (ui.ts grid: its note carries the columns): in the mail's body its header row and the sentence
+    // the screen shows for it (words), a sheet of its header row in its workbook (P03: the mail's workbook is Export .xlsx's)
+    if (e.tagName === 'P') { let cols = []; try { cols = JSON.parse(e.dataset.cols || '[]'); } catch { cols = []; } return Array.isArray(cols) && cols.length ? [{ named, grid: true, empty: true, rows: 0, head: cols.map(String), cells: [], words: words(e) }] : []; }
     const grid = e.classList.contains('grid');
     const ths = grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')] : [];
     const keep = ths.map(h => !h.hasAttribute('data-gt-hidden'));   // a column hidden with the grid tools is left out, as the export leaves it
@@ -667,7 +667,7 @@ for f in sorted(glob.glob(os.path.join(W, 'sink', '*.eml'))):
         mails[int(m['X-Pgvigil-Report'])] = m
 class P(HTMLParser):
     def __init__(s):
-        super().__init__(convert_charrefs=True); s.tags = set(); s.bad = []; s.grids = []; s.h3 = None; s.cur = None; s.cell = None; s.unstyled = 0; s.inh3 = False; s.skip = False
+        super().__init__(convert_charrefs=True); s.tags = set(); s.bad = []; s.grids = []; s.h3 = None; s.cur = None; s.cell = None; s.unstyled = 0; s.inh3 = False; s.skip = False; s.ps = []; s.p = None
     def handle_starttag(s, t, a):
         a = dict(a); s.tags.add(t)
         if 'class' in a: s.bad.append('class=' + a['class'])
@@ -675,6 +675,7 @@ class P(HTMLParser):
             if k.startswith('on'): s.bad.append(k)
             if v and 'javascript:' in v.lower(): s.bad.append('javascript:')
         if t == 'h3': s.inh3 = True; s.h3 = ''
+        if t == 'p': s.p = ''
         if t == 'table':
             s.skip = a.get('role') == 'presentation'
             if not s.skip: s.cur = {'name': s.h3, 'head': [], 'rows': []}
@@ -686,6 +687,7 @@ class P(HTMLParser):
             s.cell = {'t': '', 'bg': bg and bg.group(1), 'fg': fg and fg.group(1), 'th': t == 'th', 'bold': 'font-weight:bold' in st}
     def handle_endtag(s, t):
         if t == 'h3': s.inh3 = False
+        if t == 'p' and s.p is not None: s.ps.append(re.sub(r'\s+', ' ', s.p).strip()); s.p = None
         if t in ('th', 'td') and s.cell is not None and s.cur is not None and not s.skip:
             s.cell['t'] = re.sub(r'\s+', ' ', s.cell['t']).strip(); s.row.append(s.cell)
         if t in ('th', 'td'): s.cell = None
@@ -697,6 +699,7 @@ class P(HTMLParser):
             s.cur = None; s.skip = False
     def handle_data(s, d):
         if s.inh3: s.h3 += d
+        if s.p is not None: s.p += d
         if s.cell is not None: s.cell['t'] += d
 problems = []; total = 0
 # a cell carrying its instant (data-at: the whole minutes since it, DBA Dash's DATEDIFF) is compared by that instant: the
@@ -730,23 +733,24 @@ for sid, s in sorted(sends.items()):
     if p.bad: problems.append(f'mail {sid}: {p.bad[:3]}')
     if p.unstyled: problems.append(f'mail {sid}: {p.unstyled} cells without a style')
     if re.search(r'<\s*(script|style)\b', body, re.I): problems.append(f'mail {sid}: a script or style element')
-    # the base is the read whose grids with rows match the mail's by name and row count (the earliest such read): its
-    # grid list, empty grids and sheet count; the first read when none does (its differences are then the problems)
-    shape = lambda r: [(g['named'], g['rows']) for g in r if not g.get('empty')]
+    # the base is the read whose grids match the mail's by name and row count (the earliest such read; a grid with no row
+    # is in the body too: its header row, no data row): its grid list and sheet count; the first read when none does (its
+    # differences are then the problems)
+    shape = lambda r: [(g['named'], g['rows']) for g in r]
     scr = next((r for r in reads if shape(r) == [(g['name'], len(g['rows'])) for g in p.grids]), reads[0])
     alt_scrs = [r for r in reads if r is not scr]
     # the bar's export pressed at each read of the route that has one (not 'sm', 'nowb')
     rb = bars.get(norm(s['route']), {})
     barfs = [rb[k] for k in pair if k in rb]
     book = [g for g in scr]   # every grid of the page in order, the empty ones too: the workbook's sheets
-    grids = [g for g in scr if not g.get('empty')]   # the grids with rows: the mail's body
+    grids = [g for g in scr]   # the mail's body: every grid of the page in order, an empty one its header row and its sentence
     zone = re.search(r'>Time zone</th><td[^>]*>([^<]*)<', body)
     if s['schedule'] == SLA and s['kind'] == 'scheduled' and not (zone and zone.group(1).startswith('America/Los_Angeles')): problems.append(f'mail {sid}: the Los Angeles schedule\'s time zone line {zone and zone.group(1)!r}')
     if s['schedule'] == SJOB and (not p.grids or HIDDEN in [c['t'] for c in p.grids[0]['head']]): problems.append(f'mail {sid}: the column {HIDDEN!r} the owner hid is in the mail')
     if [g['name'] for g in p.grids] != [g['named'] for g in grids]:
         problems.append(f'mail {sid}: grids {[g["name"] for g in p.grids]} vs the screen {[g["named"] for g in grids]}'); continue
-    cells = coloured = moved = instants = 0
-    altss = [[g for g in a if not g.get('empty')] for a in alt_scrs]
+    cells = coloured = moved = instants = empties = 0
+    altss = [[g for g in a] for a in alt_scrs]
     altss = [a if len(a) == len(grids) else grids for a in altss]
     for gi, (g, sg) in enumerate(zip(p.grids, grids)):
         ags = [a[gi] for a in altss]
@@ -754,6 +758,10 @@ for sid, s in sorted(sends.items()):
         for c in g['head']:
             if (c['bg'], c['fg'], c['bold']) != ('#0063a3', '#ffffff', True): problems.append(f'mail {sid} {sg["named"]}: a header cell {c}'); break
         if len(g['rows']) not in [sg['rows']] + [ag['rows'] for ag in ags]: problems.append(f'mail {sid} {sg["named"]}: {len(g["rows"])} rows vs {sg["rows"]} on the screen')
+        # an empty grid's own sentence ('All checks pass: ...') is in the body, as the screen shows it; never 'No rows.' in its place
+        if sg.get('empty') and not g['rows']:
+            empties += 1
+            if sg.get('words') and sg['words'] not in p.ps: problems.append(f'mail {sid} {sg["named"]}: the empty grid\'s sentence {sg["words"]!r} is not in the body ({[x for x in p.ps if x][:4]})')
         for i, (mr, sr) in enumerate(zip(g['rows'], sg['cells'])):
             rows_i = [sr] + [ag['cells'][i] for ag in ags if i < len(ag['cells']) and len(ag['cells'][i]) == len(sr)]
             miss = lambda r: sum(1 for mc, c in zip(mr, r) if mc['t'] != c['t'])
@@ -797,9 +805,9 @@ for sid, s in sorted(sends.items()):
     # header row and as many data rows as that sheet in a bar file of the route ('About' by name only: its times are the
     # export's own), and every grid of the page its own sheet in order
     summ = lambda w: [(ws.title, head_of(ws), rows_of(ws)) for ws in w.worksheets]
-    problems += x_problems(sid, summ(wb), [summ(openpyxl.load_workbook(f)) for f in barfs], book, p.grids)
+    problems += x_problems(sid, summ(wb), [summ(openpyxl.load_workbook(f)) for f in barfs], book, [mg for mg, sg in zip(p.grids, grids) if not sg.get('empty')])
     total += cells
-    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read; {instants} compared by their instant), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
+    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids ({empties} empty, each with its sentence), {cells} cells equal to the screen ({moved} rows matched a later read; {instants} compared by their instant), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 # the file rules (scripts/xlsx-check.py rules) on every mailed workbook
 xr = subprocess.run([sys.executable, '-I', XCHECK, 'rules', *books], capture_output=True, text=True)
 if xr.returncode != 0 or not books: problems += [f'xlsx-check: {l}' for l in xr.stdout.splitlines() if l.startswith('FAIL')] or [f'xlsx-check rc {xr.returncode}: {(xr.stderr or xr.stdout)[-300:]}']
