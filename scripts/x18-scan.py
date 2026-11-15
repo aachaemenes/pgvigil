@@ -13,6 +13,9 @@ nothing, N/A where it did not judge it. Two ways pass:
 The scan reads that a cls is there, not what it returns: each cls's values are read by review. A status column that
 does neither is a FAIL; a REVIEWED entry that matches no status column is a FAIL too (the list
 follows the source).
+Known limits (none wrong on today's tree): the bracket reader skips // comments and strings, not /* */ comments or
+regex literals; a REVIEWED key covers every Col of that key in its file; a badge class held in a variable passes
+unread.
 
 usage: x18-scan.py <the web/src folder>   prints one line per FAIL, then the counts; exit 1 on any FAIL
        x18-scan.py --wide <the web/src folder>   the candidates beyond the badge scan; exit 1 on any
