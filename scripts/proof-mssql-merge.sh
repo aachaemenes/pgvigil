@@ -62,6 +62,8 @@ IMG="${PGVIGIL_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-GDR2-ubuntu
 MODE=${1:-}
 [[ "$MODE" == stubs || "$MODE" == lab ]] || fail "usage: scripts/proof-mssql-merge.sh stubs | lab"
 WORK=$(mktemp -d); OUT=$WORK/out
+trap 'rm -rf "$WORK"' EXIT   # until a part sets its own cleanup (which removes it too)
+OKLINE=   # the final line: printed by cleanup, after everything is removed and read back (review q10c N12)
 RED=()   # rows that are not as expected; the run goes on so one run shows every row
 red() { echo "RED $*"; RED+=("$1"); }
 ok() { echo "ok $*"; }
@@ -73,7 +75,8 @@ if [[ "$MODE" == stubs ]]; then
   HX=$(openssl rand -hex 3); TAG="pgvmrg$HX"; NET="$TAG-net"; NODE="mstub$HX"
   SA="S$(openssl rand -hex 14)!a"; export SA
   REPO_DB=pgvigil_mergeproof_$HX; MADE_REPO=; MADE_LAB=
-  mask() { sed "s/$SA/<sa>/g"; }
+  # mask: in bash itself, so no password reaches a command line (review q10c S3)
+  mask() { local l; while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "${l//"$SA"/<sa>}"; done; }
   cleanup() {
     local rc=$? left_c left_n
     trap - ERR; set +e
@@ -85,6 +88,7 @@ if [[ "$MODE" == stubs ]]; then
     fi
     [ -n "$MADE_REPO" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
     rm -rf "$WORK"
+    [ $rc = 0 ] && [ -n "$OKLINE" ] && echo "$OKLINE"
     exit $rc
   }
   trap cleanup EXIT
@@ -92,8 +96,8 @@ if [[ "$MODE" == stubs ]]; then
 
   echo "--- the stub server $NODE ($IMG)"
   docker network create --label "pgvmrg=$TAG" "$NET" >/dev/null; MADE_LAB=1
-  docker run -d --name "$NODE" --hostname "$NODE" --network "$NET" --label "pgvmrg=$TAG" -e ACCEPT_EULA=Y -e MSSQL_PID=Developer \
-    -e MSSQL_SA_PASSWORD="$SA" -e MSSQL_MEMORY_LIMIT_MB=2048 "$IMG" >/dev/null 2>&1 || fail "docker run of $NODE refused"
+  MSSQL_SA_PASSWORD=$SA docker run -d --name "$NODE" --hostname "$NODE" --network "$NET" --label "pgvmrg=$TAG" -e ACCEPT_EULA=Y \
+    -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD -e MSSQL_MEMORY_LIMIT_MB=2048 "$IMG" >/dev/null 2>&1 || fail "docker run of $NODE refused"
   SQLCMD=()
   for _ in $(seq 1 120); do
     [[ "$(docker inspect -f '{{.State.Running}}' "$NODE" 2>/dev/null || true)" == true ]] || { docker logs --tail 20 "$NODE" 2>&1 | mask; fail "$NODE stopped at its start"; }
@@ -231,7 +235,7 @@ warning:a replication agent keeps failing or retrying:merge / merge-failing'
   if [ "$LAT" = "distribution/d1=0,distribution/d2=0,merge/s1=null,merge/s2=null,merge/s3=null,merge/s4=null,merge/s9=null" ]; then ok "T4: the samples' latency (merge NULL): $LAT"; else red "T4-samples" "$LAT"; fi
   echo "--- T5. removed (cleanup follows)"
   if [ ${#RED[@]} -gt 0 ]; then echo "PART T RED: ${RED[*]}"; exit 1; fi
-  echo "PROOF OK (part T)"
+  OKLINE="PROOF OK (part T)"
   exit 0
 fi
 
@@ -259,20 +263,27 @@ fi
 #       the snapshot agent's row runstatus 2, its job stopped and not continuous; published_db pgvmerge 'merge',
 #       distributor local; the merge series' sample latency NULL. No replication finding. A second read 90 s later:
 #       the stored last run moved (an idle continuous merge agent writes a session per poll; if it does not, 'a
-#       replication agent writes nothing' would fire on an idle merge agent after 15 minutes: RED MG3-idle).
+#       replication agent writes nothing' would fire on an idle merge agent after 15 minutes: RED MG3-idle; sa's
+#       sessions are printed with their duration, the data for that fix: a session that stays open with a growing
+#       duration would make the last run start + duration). A stored row that moved between sa's two reads is read
+#       once more before a red.
 #  MG4. the subscriber password made wrong (sp_changemergesubscription, the job restarted as Microsoft's page asks):
-#       within 180 s sa's newest session is a retry or a failure (5 / 6); the next read: runstatus = sa's,
-#       failing since = the start of the first failed session after the last good one (sa's sessions printed),
-#       within 180 s after the change; an error code and text (expected 18456, a failed login); 'a replication agent
-#       failed' (warning) on 'merge / <agent>'. The retrying threshold at 1 minute (instance level): once the failure
-#       is over a minute old, 'a replication agent keeps failing or retrying' and no 'failed'. The password back, the
-#       job restarted: within 180 s a good session (2 / 4); the read: not failing, neither finding; the threshold
+#       BASE = sa's newest session id once the job has stopped; within 180 s a retry or failed session (5 / 6) newer
+#       than BASE (never the stop's own session); the next read: runstatus = sa's, failing since = sa's own reading
+#       of the rule (the start of the first retry / failed session after the newest succeeded / idle one; sa's
+#       sessions printed, and the offset from the job's start: a negative one is the stop's own session); an error
+#       code and text (expected 18456, a failed login: printed, not graded); 'a replication agent failed' (warning) on
+#       'merge / <agent>'. The retrying threshold at 1 minute (instance level): once the failure is over a minute old,
+#       'a replication agent keeps failing or retrying' and no 'failed'. The password back, the job restarted: within
+#       180 s a good session (2 / 4) newer than the new BASE; the read: not failing, neither finding; the threshold
 #       inherited again.
-#  MG5. the merge agent's job stopped: two reads: job_state stopped, continuous; 'a replication agent is stopped'
-#       (warning) on 'merge / <agent>'. Started: running within 60 s; the read: no finding.
+#  MG5. the merge agent's job stopped (sa's sessions printed: what a stop leaves): two reads: job_state stopped,
+#       continuous; 'a replication agent is stopped' (warning) on 'merge / <agent>'. Started: running within 60 s, a
+#       good session newer than BASE within 180 s; the read: no finding.
 #  MG6. TestHADRStatementsLive and TestReplicationStatementsLive as the monitoring login on the real distribution
 #       database: both PASS.
-#  MG7. the login dropped (read back), the helper and the repository removed. 'PROOF OK (part W)'.
+#  MG7. the login dropped (read back) before the final line; the helper and the repository removed by cleanup, then
+#       'PROOF OK (part W)' (cleanup prints it only when everything is removed).
 #  NOT PROVEN HERE: a pull merge subscription (its agent at the subscriber: 'not here'), a remote distributor for
 #  merge, web synchronization, merge conflicts as a measure, SQL Server 2016-2019 and 2025.
 for t in docker psql python3 go; do command -v $t >/dev/null || fail "$t is not on this machine"; done
@@ -289,7 +300,8 @@ BADPW="Wr0ng$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 CFG=$WORK/pgvigil.yaml
 HELPER=; MADE_REPO=; MADE_LOGIN=; PW_WRONG=; JOB_STOPPED=; I=
 declare -A PORT=([p]=$PPORT [m]=$MPORT) NAME=([p]=PGVPRINCIPAL [m]=PGVMIRROR)
-mask() { sed "s/$SAPW/<sa>/g; s/$PM/<monitor>/g; s/$BADPW/<wrong>/g"; }
+# mask: in bash itself, so no password reaches a command line (review q10c S3)
+mask() { local l; while IFS= read -r l || [ -n "$l" ]; do l=${l//"$SAPW"/<sa>}; l=${l//"$PM"/<monitor>}; l=${l//"$BADPW"/<wrong>}; printf '%s\n' "$l"; done; }
 S() { SQLCMDPASSWORD=$SAPW docker exec -e SQLCMDPASSWORD "$TAG" /opt/mssql-tools18/bin/sqlcmd -C -S "tcp:$H,${PORT[$1]}" -U sa -b -I -W -h -1 -s '|' -d "${3:-master}" -Q "SET NOCOUNT ON; $2"; }
 # Sin <node> [db]: a batch on stdin; it may name the passwords as the sqlcmd variables $(MSA), $(MPM) and $(MBAD)
 Sin() { SQLCMDPASSWORD=$SAPW MSA=$SAPW MPM=$PM MBAD=$BADPW docker exec -i -e SQLCMDPASSWORD -e MSA -e MPM -e MBAD "$TAG" /opt/mssql-tools18/bin/sqlcmd -C -S "tcp:$H,${PORT[$1]}" -U sa -b -I -W -h -1 -d "${2:-master}" -i /dev/stdin; }
@@ -307,6 +319,13 @@ running() { S p "SELECT COUNT(*) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sy
 wait_running() { local want=$1; for _ in $(seq 1 30); do [ "$(running)" = "$want" ] && return 0; sleep 2; done; return 1; }
 stop_job() { [ "$(running)" = 1 ] && Sq p "EXEC msdb.dbo.sp_stop_job @job_name = N'$JOB'"; wait_running 0; }
 start_job() { [ "$(running)" = 0 ] && Sq p "EXEC msdb.dbo.sp_start_job @job_name = N'$JOB'"; wait_running 1; }
+# drop_login: the monitoring login and its users, read back (0 = gone)
+drop_login() {
+  S p "IF USER_ID('$LM') IS NOT NULL DROP USER [$LM];" msdb >/dev/null 2>&1 || true
+  S p "IF USER_ID('$LM') IS NOT NULL DROP USER [$LM];" distribution >/dev/null 2>&1 || true
+  S p "IF SUSER_ID('$LM') IS NOT NULL DROP LOGIN [$LM];" >/dev/null 2>&1 || true
+  [ "$(S p "SELECT COUNT(*) FROM sys.server_principals WHERE name = '$LM'" 2>/dev/null)" = 0 ]
+}
 cleanup() {
   local rc=$?
   trap - ERR; set +e
@@ -318,16 +337,14 @@ cleanup() {
       start_job >/dev/null 2>&1 && echo "cleanup: the merge job running again" || { echo "CLEANUP: the merge job is not running" >&2; [ $rc = 0 ] && rc=1; }
     fi
     if [ -n "$MADE_LOGIN" ]; then
-      S p "IF USER_ID('$LM') IS NOT NULL DROP USER [$LM];" msdb >/dev/null 2>&1
-      S p "IF USER_ID('$LM') IS NOT NULL DROP USER [$LM];" distribution >/dev/null 2>&1
-      S p "IF SUSER_ID('$LM') IS NOT NULL DROP LOGIN [$LM];" >/dev/null 2>&1
-      [ "$(S p "SELECT COUNT(*) FROM sys.server_principals WHERE name = '$LM'" 2>/dev/null)" = 0 ] && echo "cleanup: login $LM dropped (read back)" \
-        || { echo "CLEANUP: login $LM left on PGVPRINCIPAL" >&2; [ $rc = 0 ] && rc=1; }
+      drop_login && echo "cleanup: login $LM dropped (read back)" || { echo "CLEANUP: login $LM left on PGVPRINCIPAL" >&2; [ $rc = 0 ] && rc=1; }
     fi
     docker rm -f "$TAG" >/dev/null 2>&1
+    [ -z "$(docker ps -a -q --filter "label=pgvmrgw=$TAG")" ] || { echo "CLEANUP: the helper $TAG is left" >&2; [ $rc = 0 ] && rc=1; }
   fi
   [ -n "$MADE_REPO" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
   rm -rf "$WORK"
+  [ $rc = 0 ] && [ -n "$OKLINE" ] && echo "$OKLINE"
   exit $rc
 }
 trap cleanup EXIT
@@ -342,6 +359,7 @@ docker run -d --name "$TAG" --network host --label "pgvmrgw=$TAG" --entrypoint s
 echo "--- MG1. the lab as sa"
 PSN=$(S p "SELECT @@SERVERNAME") || fail "MG1: PGVPRINCIPAL on $H:$PPORT does not answer"
 MSN=$(S m "SELECT @@SERVERNAME") || fail "MG1: PGVMIRROR on $H:$MPORT does not answer"
+[[ ${PSN^^} == *'\PGVPRINCIPAL' && ${MSN^^} == *'\PGVMIRROR' ]] || fail "MG1: the servers are '$PSN' on $PPORT and '$MSN' on $MPORT (want <host>\PGVPRINCIPAL, <host>\PGVMIRROR: PGVIGIL_MERGE_PORTS swapped?)"
 AGENT=$(S p "SELECT name FROM $D.MSmerge_agents WHERE publication = N'pgvm_merge'")
 JOB=$(S p "SELECT j.name FROM msdb.dbo.sysjobs j JOIN $D.MSmerge_agents a ON j.job_id = CAST(a.job_id AS uniqueidentifier) WHERE a.publication = N'pgvm_merge'")
 [ -n "$AGENT" ] && [ -n "$JOB" ] || fail "MG1: no merge agent or job for pgvm_merge (win-merge.ps1 up first)"
@@ -353,6 +371,7 @@ leftl=$(S p "SELECT ISNULL(STRING_AGG(name, ','), '') FROM sys.server_principals
 ok "MG1: publisher $PSN, subscriber $MSN; merge agent '$AGENT', job '$JOB' running; rows $ROWS"
 
 echo "--- MG2. the monitoring login"
+MADE_LOGIN=1   # before the batch: a failure after CREATE LOGIN still drops it (review q10c N7)
 Sin p >"$WORK/sin" 2>&1 <<SQL || { mask < "$WORK/sin"; fail "MG2: the login"; }
 SET NOCOUNT ON;
 CREATE LOGIN [$LM] WITH PASSWORD = N'\$(MPM)', CHECK_POLICY = OFF;
@@ -362,7 +381,6 @@ USE msdb; CREATE USER [$LM] FOR LOGIN [$LM]; ALTER ROLE db_datareader ADD MEMBER
 GO
 USE distribution; CREATE USER [$LM] FOR LOGIN [$LM]; ALTER ROLE db_datareader ADD MEMBER [$LM];
 SQL
-MADE_LOGIN=1
 [ "$(S p "SELECT IS_SRVROLEMEMBER('sysadmin', N'$LM')")" = 0 ] || fail "MG2: $LM is sysadmin"
 export MSSQL_MERGE_PUB_DSN="sqlserver://$LM:$PM@$H:$PPORT?database=master&encrypt=true&TrustServerCertificate=true"
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: mergeproof-pub\n    engine: sqlserver\n    dsn: env:MSSQL_MERGE_PUB_DSN\n' > "$CFG"
@@ -383,11 +401,25 @@ sa_sess() { local sid
   sid=$(S p "SELECT TOP (1) x.session_id FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC")
   echo "$(S p "SELECT CONCAT(runstatus, '|', DATEDIFF_BIG(second, '19700101', DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), COALESCE(end_time, start_time)))) FROM $D.MSmerge_sessions WHERE session_id = $sid")|$(S p "SELECT TOP (1) CAST(LEFT(y.comments, 1000) AS nvarchar(1000)) FROM $D.MSmerge_history y WHERE y.session_id = $sid ORDER BY y.timestamp DESC")"; }
 st_sess() { q "select runstatus || '|' || floor(extract(epoch from last_run_at))::bigint || '|' || coalesce(status_text, '') from pgvigil.mssql_replication_state where instance_id = $I and kind = 'subscription' and agent_type = 'merge'"; }
-sa_sessions() { S p "SELECT TOP (8) CONCAT(x.session_id, ' ', x.runstatus, ' ', CONVERT(varchar(19), x.start_time, 126), ' - ', ISNULL(CONVERT(varchar(19), x.end_time, 126), '')) FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC" | sed 's/^/      /'; }
+sa_sessions() { S p "SELECT TOP (8) CONCAT(x.session_id, ' ', x.runstatus, ' ', CONVERT(varchar(19), x.start_time, 126), ' - ', ISNULL(CONVERT(varchar(19), x.end_time, 126), ''), ' duration ', ISNULL(CAST(x.duration AS varchar(12)), 'null')) FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC" | sed 's/^/      /'; }
 mrow() { q "select $1 from pgvigil.mssql_replication_state where instance_id = $I and kind = 'subscription' and agent_type = 'merge'"; }
+# the merge agent's sessions as sa reads them: the newest id; the newest runstatus; the rule's failing time (epoch s, UTC,
+# as utcText converts: the start of the first retry / failed session after the newest succeeded / idle one, or null)
+MSES="$D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge'"
+newest_sid() { S p "SELECT ISNULL(MAX(x.session_id), 0) FROM $MSES"; }
+newest_rs() { S p "SELECT TOP (1) x.runstatus FROM $MSES ORDER BY x.session_id DESC"; }
+sa_since() { S p "SELECT ISNULL(CAST(DATEDIFF_BIG(second, '19700101', DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MIN(x.start_time))) AS varchar(20)), 'null') FROM $MSES AND x.runstatus IN (5, 6) AND x.session_id > ISNULL((SELECT MAX(y.session_id) FROM $D.MSmerge_sessions y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)), -2147483648)"; }
+# wait_sess <base> <runstatus list>: up to 180 s for a session newer than base in one of those states; prints its runstatus
+wait_sess() { local r; for _ in $(seq 1 36); do
+    r=$(S p "SELECT TOP (1) x.runstatus FROM $MSES AND x.session_id > $1 AND x.runstatus IN ($2) ORDER BY x.session_id DESC") || r=
+    [ -n "$r" ] && { echo "$r"; return 0; }; sleep 5; done; return 1; }
 
 echo "--- MG3. a healthy read"
-A1=$(sa_sess); rd; A2=$(sa_sess); GOTS=$(st_sess)
+for try in 1 2; do   # once more when the newest session moved past both of sa's reads during the read (review q10c N9)
+  A1=$(sa_sess); rd; A2=$(sa_sess); GOTS=$(st_sess)
+  { [ "$GOTS" = "$A1" ] || [ "$GOTS" = "$A2" ]; } && break
+  [ $try = 2 ] || echo "    the session moved during the read: read again"
+done
 [ "$GOTS" = "$A1" ] || [ "$GOTS" = "$A2" ] || red MG3-session "stored '$GOTS', sa '$A1' / '$A2'"
 lc() { tr '[:upper:]' '[:lower:]'; }
 PUBROW=$(q "select publisher || '|' || publisher_db || '|' || publication || '|' || publication_type || '|' || articles from pgvigil.mssql_replication_state where instance_id = $I and kind = 'publication'")
@@ -407,49 +439,49 @@ echo "    the stored last run: $L1, 90 s later $L2; sa's sessions:"; sa_sessions
 ok "MG3: subscription '$SUBROW'; session '$GOTS'; publication '$PUBROW'; snapshot '$SNAP'; published '$PUBDB'"
 
 echo "--- MG4. the merge agent fails"
-T0=$(S p "SELECT DATEDIFF_BIG(second, '19700101', SYSUTCDATETIME())")
-stop_job || fail "MG4: the job did not stop"; JOB_STOPPED=1
-set_pw MBAD || fail "MG4: the wrong password"; PW_WRONG=1
+JOB_STOPPED=1; stop_job || fail "MG4: the job did not stop"   # flags before their action (review q10c N7)
+BASE=$(newest_sid)   # the stop's own session and every older one are not the fault's (review q10c S4)
+PW_WRONG=1; set_pw MBAD || fail "MG4: the wrong password"
 start_job || fail "MG4: the job did not start"; JOB_STOPPED=
-FAILED=
-for _ in $(seq 1 36); do
-  r=$(S p "SELECT TOP (1) x.runstatus FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC")
-  if [ "$r" = 5 ] || [ "$r" = 6 ]; then FAILED=$r; break; fi
-  sleep 5
-done
-echo "    sa's newest session runstatus ${FAILED:-none in 180 s}; sa's sessions:"; sa_sessions
+T0=$(S p "SELECT DATEDIFF_BIG(second, '19700101', SYSUTCDATETIME())")
+FAILED=$(wait_sess "$BASE" "5, 6") || FAILED=
+echo "    a retry / failed session newer than $BASE: ${FAILED:-none in 180 s}; sa's sessions:"; sa_sessions
 echo "    sa's newest MSrepl_errors rows (the failure's stack, as SQL Server wrote it):"
 S p "SELECT TOP (6) CONCAT(id, ' ', CONVERT(varchar(23), time, 126), ' code ', ISNULL(error_code, ''), ': ', LEFT(CAST(error_text AS nvarchar(max)), 140)) FROM $D.MSrepl_errors ORDER BY time DESC, id DESC" | mask | sed 's/^/      /'
-newest_rs() { S p "SELECT TOP (1) x.runstatus FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC"; }
 if [ -n "$FAILED" ]; then
-  R1=$(newest_rs); rd; R2=$(newest_rs)
-  F=$(mrow "runstatus || '|' || coalesce(floor(extract(epoch from failing_since))::bigint::text, 'null') || '|' || coalesce(error_code, 'null') || '|' || coalesce(error_text, 'null')")
+  for try in 1 2; do
+    R1=$(newest_rs); SS1=$(sa_since); rd; R2=$(newest_rs); SS2=$(sa_since)
+    F=$(mrow "runstatus || '|' || coalesce(floor(extract(epoch from failing_since))::bigint::text, 'null') || '|' || coalesce(error_code, 'null') || '|' || coalesce(error_text, 'null')")
+    IFS='|' read -r FRS FSINCE FCODE _ <<<"$F"
+    { [ "$FRS" = "$R1" ] || [ "$FRS" = "$R2" ]; } && { [ "$FSINCE" = "$SS1" ] || [ "$FSINCE" = "$SS2" ]; } && break
+    [ $try = 2 ] || echo "    the sessions moved during the read: read again"
+  done
   echo "    stored: $F" | mask
-  IFS='|' read -r FRS FSINCE FCODE _ <<<"$F"
   [ "$FRS" = "$R1" ] || [ "$FRS" = "$R2" ] || red MG4-runstatus "stored $FRS, sa $R1 / $R2"
-  if [ "$FSINCE" = null ] || [ "$FSINCE" -lt $((T0 - 5)) ] || [ "$FSINCE" -gt $((T0 + 180)) ]; then red MG4-since "$FSINCE (the change at $T0)"; fi
+  [ "$FSINCE" = "$SS1" ] || [ "$FSINCE" = "$SS2" ] || red MG4-since "stored $FSINCE, sa's rule $SS1 / $SS2"
+  [[ $FSINCE =~ ^[0-9]+$ ]] && echo "    failing since: $(( FSINCE - T0 )) s from the job's start after the change (negative: the stop's own session)"
   [ "$FCODE" = 18456 ] || echo "    the error code is $FCODE, not 18456 (said, not a red: the code SQL Server gave)"
   [ "$FCODE" != null ] || red MG4-error "no error code"
   [[ "$(fnd)" == *"warning:a replication agent failed:merge / $AGENT"* ]] || red MG4-failed "$(fnd)"
   o=$(q "select pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'set', 'key', 'repl_agent_retrying', 'level', 'instance', 'instance_id', $I, 'warn', 1, 'ui_user', 'proof'))->>'outcome'")
   [ "$o" = done ] || fail "MG4: the retrying threshold: $o"
-  wait_s=$(( FSINCE + 70 - $(S p "SELECT DATEDIFF_BIG(second, '19700101', SYSUTCDATETIME())") )); [ "$wait_s" -gt 0 ] && sleep "$wait_s"
-  rd
-  FS=$(fnd)
-  [[ "$FS" == *"a replication agent keeps failing or retrying:merge / $AGENT"* && "$FS" != *"a replication agent failed:merge / $AGENT"* ]] || red MG4-keeps "$FS"
+  if [[ $FSINCE =~ ^[0-9]+$ ]]; then   # a stored null failing time leaves no time to wait for (review q10c S2)
+    wait_s=$(( FSINCE + 70 - $(S p "SELECT DATEDIFF_BIG(second, '19700101', SYSUTCDATETIME())") )); [ "$wait_s" -gt 0 ] && sleep "$wait_s"
+    rd
+    FS=$(fnd)
+    [[ "$FS" == *"a replication agent keeps failing or retrying:merge / $AGENT"* && "$FS" != *"a replication agent failed:merge / $AGENT"* ]] || red MG4-keeps "$FS"
+  else
+    red MG4-keeps "no failing time stored: the threshold step not run"
+  fi
 else
-  red MG4-nofailure "no retry or failed session in 180 s"
+  red MG4-nofailure "no retry or failed session newer than $BASE in 180 s"
 fi
-stop_job || fail "MG4: the job did not stop"; JOB_STOPPED=1
+JOB_STOPPED=1; stop_job || fail "MG4: the job did not stop"
+BASE=$(newest_sid)
 set_pw MSA || fail "MG4: the password back"; PW_WRONG=
 start_job || fail "MG4: the job did not start"; JOB_STOPPED=
-GOOD=
-for _ in $(seq 1 36); do
-  r=$(S p "SELECT TOP (1) x.runstatus FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'pgvm_merge' ORDER BY x.session_id DESC")
-  if [ "$r" = 2 ] || [ "$r" = 4 ]; then GOOD=$r; break; fi
-  sleep 5
-done
-[ -n "$GOOD" ] || red MG4-recovery "no good session in 180 s"
+GOOD=$(wait_sess "$BASE" "2, 4") || GOOD=
+[ -n "$GOOD" ] || red MG4-recovery "no good session newer than $BASE in 180 s"
 rd
 [ "$(mrow "coalesce(failing_since::text, 'null')")" = null ] || red MG4-cleared "still failing: $(mrow "failing_since")"
 FS=$(fnd); [[ "$FS" != *"merge / $AGENT"* ]] || red MG4-cleared "$FS"
@@ -457,14 +489,19 @@ q "select pgvigil.import_pg_threshold(now(), jsonb_build_object('op', 'inherit',
 ok "MG4: done (any RED line above names a difference)"
 
 echo "--- MG5. the merge agent's job stopped"
-stop_job || fail "MG5: the job did not stop"; JOB_STOPPED=1
+JOB_STOPPED=1; stop_job || fail "MG5: the job did not stop"
+BASE=$(newest_sid)
+echo "    sa's sessions after the stop (what a stop leaves):"; sa_sessions
 rd; sleep 5; rd
 [ "$(mrow "coalesce(job_state, 'null') || '|' || coalesce(continuous::text, 'null')")" = "stopped|true" ] || red MG5-job "$(mrow "job_state || '|' || continuous")"
 [[ "$(fnd)" == *"warning:a replication agent is stopped:merge / $AGENT"* ]] || red MG5-stopped "$(fnd)"
+SDET=$(q "select detail from pgvigil.mssql_repl_findings where instance_id = $I and object = 'merge / $AGENT' limit 1" || true)
 start_job || fail "MG5: the job did not start"; JOB_STOPPED=
+GOOD=$(wait_sess "$BASE" "2, 4") || GOOD=   # the clearing read only after a session of the new run (review q10c S4)
+[ -n "$GOOD" ] || red MG5-good "no good session newer than $BASE in 180 s"
 rd
 [ -z "$(fnd)" ] || red MG5-cleared "$(fnd)"
-ok "MG5: stopped -> '$(q "select detail from pgvigil.mssql_repl_findings where instance_id = $I limit 1" || true)' none after the start" 
+ok "MG5: stopped -> '$SDET'; none after the start"
 
 echo "--- MG6. the statements as the monitoring login"
 # printed for the read's cost and its match (review q10a, could not verify): the merge tables' indexes, and whether
@@ -476,6 +513,9 @@ if PGVIGIL_MSSQL_TEST_DSN="$MSSQL_MERGE_PUB_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION
    && [ "$(grep -c -E '^--- PASS: (TestHADRStatementsLive|TestReplicationStatementsLive)' "$OUT")" = 2 ]; then
   ok "MG6: both live tests pass"
 else mask < "$OUT" | tail -20; red MG6 "the live tests"; fi
-echo "--- MG7. removed (cleanup follows)"
+echo "--- MG7. removed"
+if drop_login; then MADE_LOGIN=; ok "MG7: login $LM dropped (read back); the helper and the repository: cleanup follows"
+else red MG7-login "login $LM left on PGVPRINCIPAL (cleanup tries again)"; fi
 if [ ${#RED[@]} -gt 0 ]; then echo "PART W RED: ${RED[*]}"; exit 1; fi
-echo "PROOF OK (part W)"
+OKLINE="PROOF OK (part W)"
+exit 0
