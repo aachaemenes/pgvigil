@@ -623,7 +623,10 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const re = new RegExp(${JSON.stringify(keyRe)});
     const want = ${JSON.stringify(topLink)};
     const scopeBox = () => want ? [...document.querySelectorAll('#tree .folder')].find(f => [...f.querySelectorAll(':scope > .folder-head a')].some(a => ((a.getAttribute('href') || '').split('?')[1] || '').split('&').includes(want))) : document.querySelector('#tree');
-    const carets = () => { const b = scopeBox(); return b ? [...b.querySelectorAll('button.caret')].filter(c => re.test(c.dataset.key || '')) : []; };
+    // under a tag folder its OWN group folders only (key '<its key>/<group>'): a nested tag folder opened by an earlier row
+    // holds groups of its own, which must not stand for the top folder's
+    const own = want ? (scopeBox()?.querySelector(':scope > .folder-head button.caret')?.dataset.key ?? '') : '';
+    const carets = () => { const b = scopeBox(); return b ? [...b.querySelectorAll('button.caret')].filter(c => re.test(c.dataset.key || '') && (!own || /^[a-z]+$/.test((c.dataset.key || '').slice(own.length + 1)) && (c.dataset.key || '').startsWith(own + '/'))) : []; };
     for (const c of carets()) if (c.getAttribute('aria-expanded') !== 'true') { c.click(); await new Promise(r => setTimeout(r, 300)); }
     const out = {};
     for (const c of carets()) {
