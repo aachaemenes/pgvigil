@@ -122,6 +122,9 @@ DECLARE
   v_why     text;
   v_new     bigint;
   v_ver     int;
+  v_con     text;
+  v_op      text := CASE WHEN p_payload->>'view_id' IS NOT NULL THEN 'save' ELSE 'create' END;
+  v_req     bigint := CASE WHEN coalesce(p_payload->>'view_id', '') ~ '^[0-9]{1,18}$' THEN (p_payload->>'view_id')::bigint END;
 BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_view_save: no ui_user' USING ERRCODE = '22023';
@@ -141,6 +144,12 @@ BEGIN
     v_out := 'refused'; v_why := 'a description is at most 1,000 characters and a folder at most 100';
   ELSIF v_state IS NULL OR jsonb_typeof(v_state) <> 'object' THEN
     v_out := 'refused'; v_why := 'state must be a JSON object';
+  ELSIF v_kind = 'page' AND (EXISTS (SELECT 1 FROM jsonb_object_keys(v_state) k WHERE k NOT IN ('params', 'layouts', 'range'))
+        OR jsonb_typeof(coalesce(v_state->'params', '{}'::jsonb)) <> 'object'
+        OR EXISTS (SELECT 1 FROM jsonb_each(coalesce(v_state->'params', '{}'::jsonb)) e WHERE jsonb_typeof(e.value) <> 'string')
+        OR jsonb_typeof(coalesce(v_state->'layouts', '[]'::jsonb)) <> 'array'
+        OR jsonb_typeof(coalesce(v_state->'range', '{}'::jsonb)) <> 'object') THEN
+    v_out := 'refused'; v_why := 'a page view''s state is {params, layouts, range}: params an object of text values, layouts a list, range an object';
   ELSIF octet_length(v_state::text) > 65536 THEN
     v_out := 'refused'; v_why := format('the view''s state is %s KB: a view holds at most 64 KB', octet_length(v_state::text) / 1024);
   ELSIF v_shared AND NOT v_ok THEN
@@ -166,8 +175,9 @@ BEGIN
     END IF;
   END IF;
   IF v_out IS NULL THEN
-    -- a personal view keeps its owner; a new one is the user's; a shared view turned personal becomes the user's
-    v_owner := CASE WHEN v_id IS NULL OR (v_old.shared AND NOT v_shared) THEN v_uid ELSE coalesce(v_old.owner_user_id, v_uid) END;
+    -- a new view is the user's; a view keeps its owner, shared or not (an editor who un-shares another's view leaves it
+    -- its owner's); an ownerless shared view (its owner removed) becomes the user's
+    v_owner := CASE WHEN v_id IS NULL THEN v_uid ELSE coalesce(v_old.owner_user_id, v_uid) END;
     BEGIN
       IF v_def THEN   -- one default per owner and page (personal) or per page (shared): the old one cleared, its version moved
         UPDATE pgvigil.ui_views w SET is_default = false, version = w.version + 1, updated_by = v_user, updated_at = p_at
@@ -189,16 +199,18 @@ BEGIN
       END IF;
     EXCEPTION
       WHEN unique_violation THEN
+        GET STACKED DIAGNOSTICS v_con = CONSTRAINT_NAME;
         v_out := 'conflict';
-        v_why := format('a view named %L already exists among %s on %s', v_name,
-                        CASE WHEN v_shared THEN 'the shared views' ELSE 'your views' END, v_page);
+        v_why := CASE WHEN v_con LIKE '%default' THEN format('another default for %s was set at the same moment: reload and save again', v_page)
+                      ELSE format('a view named %L already exists among %s on %s', v_name,
+                                  CASE WHEN v_shared THEN 'the shared views' ELSE 'your views' END, v_page) END;
         v_new := NULL; v_ver := NULL;
       WHEN check_violation OR foreign_key_violation OR string_data_right_truncation THEN
         v_out := 'refused'; v_why := 'refused by the store: ' || SQLERRM; v_new := NULL; v_ver := NULL;
     END;
   END IF;
   INSERT INTO pgvigil.ui_view_log (at, ui_user, client, op, view_id, name, outcome, detail)
-  VALUES (p_at, v_user, v_client, CASE WHEN v_id IS NULL THEN 'create' ELSE 'save' END, coalesce(v_new, v_id),
+  VALUES (p_at, v_user, v_client, v_op, coalesce(v_new, v_id, v_req),
           left(v_name, 100), coalesce(v_out, 'done'), coalesce(v_why, format('saved, version %s', v_ver)));
   RETURN jsonb_build_object('outcome', coalesce(v_out, 'done'), 'detail', coalesce(v_why, format('saved, version %s', v_ver)),
                             'view_id', coalesce(v_new, v_id), 'version', v_ver);

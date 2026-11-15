@@ -12,8 +12,8 @@ func TestViewPayload(t *testing.T) {
 	for _, c := range []struct {
 		name, op, in, want string
 	}{
-		{"page view: i, tag, view and the range dropped", "save",
-			`{"kind":"page","page":"instance:slowqueries","name":"x","ui_user":"mallory","shared_ok":true,"state":{"params":{"i":"7","tag":"env:x","view":"3","w":"24h","ms":"5000"},"layouts":[]}}`,
+		{"page view: i, ti, tag, view, at and the range dropped", "save",
+			`{"kind":"page","page":"instance:slowqueries","name":"x","ui_user":"mallory","shared_ok":true,"state":{"params":{"i":"7","ti":"8","tag":"env:x","view":"3","at":"2026-11-15T10:00:00Z","w":"24h","ms":"5000"},"layouts":[]}}`,
 			`{"kind":"page","name":"x","page":"instance:slowqueries","state":{"layouts":[],"params":{"ms":"5000"}}}`},
 		{"keep_range keeps the range apart", "save",
 			`{"kind":"page","page":"root:fleet","name":"x","keep_range":true,"state":{"params":{"from":"a","to":"b","i":"1"}}}`,

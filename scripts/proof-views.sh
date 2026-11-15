@@ -13,11 +13,13 @@
 #     alone (a store custom report's or a Grafana reader's) has no SELECT on either and no EXECUTE on ui_view_list,
 #     ui_view_get, import_view_save or import_view_delete - its SELECT of ui_views is refused 'permission denied'; the
 #     four functions are SECURITY DEFINER.
-#  A  the API (serve with the UI login; u1 is in pgvigil.yaml views.shared_editors, u2 is not):
+#  A  the API (serve with the UI login; u1 and u3 are in pgvigil.yaml views.shared_editors, u2 is not):
 #     S1 u1 saves a personal page view on root:fleet -> 200, version 1; u1's list has it ('mine'); u2's list does not;
 #        u2's GET of its id -> 404 in words.
 #     S2 u2 saves a shared view -> 403 in words naming views.shared_editors, nothing stored; u1 saves the shared 'team'
 #        -> 200; u2's list shows it, not 'mine'; u2's edit of it -> 403.
+#     S2b [review fold] the owner check: u2 saves its personal 'u2mine' -> 200; u2's save and delete of u1's personal
+#        'mine' -> 403 ('only its owner'), 'mine' unchanged; editor u1's save of u2's 'u2mine' -> 403.
 #     S3 u1 saves 'mine' again with version 0 (stale) -> 409 naming the stored version 1; with version 1 -> 200,
 #        version 2.
 #     S4 u1 saves a second personal 'MINE' on root:fleet -> 409 (the name is taken, case-blind); 'MINE' on
@@ -28,12 +30,18 @@
 #     S6 a state over 64 KB -> 400 in words, nothing stored.
 #     S7 the page-key rule: a page view saved with params {i, tag, w, ms} keeps {ms} only; with keep_range its state.range
 #        keeps w; a page key 'Fleet!' -> 400.
-#     S11 every POST of A left one ui_view_log row with its outcome (done, forbidden, conflict, refused).
+#     S7b [review fold] a page view's state other than {params, layouts, range} with text params -> 400 in words: a
+#        top-level 'i', params as a string, a number parameter.
+#     S8 [review fold] un-sharing keeps the owner: u1's personal 'flip' shared by u1, then un-shared by editor u3 ->
+#        200, still u1's (in u1's list as mine, not in u3's).
+#     S11 every POST of A left one ui_view_log row, its outcome the HTTP answer's (200 done, 400 refused, 403 forbidden,
+#        409 conflict), compared one by one as counts per outcome.
 #     S12 delete: u1's delete of 'mine2' with a stale version -> 409; with its version -> 200 and the view is gone; u2's
 #        delete of 'team' -> 403.
 #  U  a removed user (pgvigil user remove u1): u1's personal views are deleted with it; the shared 'team' stays, its
-#     owner NULL, still in u2's list; the log rows stay.
-#  N  a -no-login serve: GET /api/views lists the shared views with writable false and the reason naming -no-login;
+#     owner NULL, still in u2's list; u2's own personal 'u2mine' stays (only u1's go); the log rows stay.
+#  N  a -no-login serve: GET /api/views lists the shared views ('team' when part A ran) with writable false and the
+#     reason naming -no-login;
 #     POST /api/views -> 403 with it, nothing written.
 #  Red on 42801b55 (before the store): S 'no table pgvigil.ui_views'; A, N the route answers 404 'no such endpoint'.
 set -uo pipefail
@@ -43,7 +51,7 @@ PARTS=${PGVIGIL_PARTS:-S A U N}
 part() { [[ " $PARTS " == *" $1 "* ]]; }
 SUF=$RANDOM
 REPO=pgvigil_views_$SUF; RDR=pgvigil_views_rdr_$SUF
-PW=p$RANDOM$RANDOM$RANDOM; U1=ed$SUF; U2=vw$SUF; U1PW=a$RANDOM$RANDOM$RANDOM; U2PW=b$RANDOM$RANDOM$RANDOM
+PW=p$RANDOM$RANDOM$RANDOM; U1=ed$SUF; U2=vw$SUF; U3=ex$SUF; U1PW=a$RANDOM$RANDOM$RANDOM; U2PW=b$RANDOM$RANDOM$RANDOM; U3PW=c$RANDOM$RANDOM$RANDOM
 WORK=$(mktemp -d); SRV=""; SRV2=""; ATT=0; : > "$WORK/attempts"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
@@ -78,7 +86,7 @@ export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 { printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n'
   # the key is new with the store: a tree before it is given no such key (its red is the missing table and route)
-  [[ $HAVE == 1 ]] && printf 'views:\n  shared_editors: [%s]\n' "$U1"
+  [[ $HAVE == 1 ]] && printf 'views:\n  shared_editors: [%s, %s]\n' "$U1" "$U3"
 } > "$WORK/cfg.yaml"
 CFG=$WORK/cfg.yaml
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { tail -5 "$WORK/migrate.out" >&2; fail "migrate"; }
@@ -87,7 +95,8 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create role $RDR login passw
 as_rdr() { psql "$PGVIGIL_ADMIN_DSN dbname=$REPO user=$RDR password=$PW" -XAt -c "$1" 2>&1 || true; }
 PGVIGIL_PASSWORD=$U1PW "$BIN" user add -config "$CFG" "$U1" >/dev/null 2>&1 || fail "user add $U1"
 PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" "$U2" >/dev/null 2>&1 || fail "user add $U2"
-echo "ok   setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), users $U1 (shared editor) and $U2"
+PGVIGIL_PASSWORD=$U3PW "$BIN" user add -config "$CFG" "$U3" >/dev/null 2>&1 || fail "user add $U3"
+echo "ok   setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), users $U1 and $U3 (shared editors) and $U2"
 
 if part S; then
   [[ $(q "select to_regclass('pgvigil.ui_views') is not null and to_regclass('pgvigil.ui_view_log') is not null") == t ]] || fail "S: no table pgvigil.ui_views / ui_view_log (red before 0259)"
@@ -100,13 +109,12 @@ if part S; then
   ok "S: ui_views and ui_view_log owner-only by name: the reader's SELECT refused, no EXECUTE on the four functions; each SECURITY DEFINER"
 fi
 
-serve_up() {   # serve_up <var for the pid> <port> [extra flags]
-  local port=$2; shift 2
+serve_up() {   # serve_up <var for the pid> <port> [extra flags]: never inside $(...) (its fail would end the subshell only)
+  local var=$1 port=$2; shift 2
   "$BIN" serve -config "$CFG" -listen "127.0.0.1:$port" "$@" >> "$WORK/serve-$port.log" 2>&1 &
-  local pid=$!
+  printf -v "$var" '%s' "$!"
   for _ in $(seq 1 100); do curl -s -o /dev/null "http://127.0.0.1:$port/api/session" 2>/dev/null && break; sleep 0.1; done
-  kill -0 "$pid" 2>/dev/null || { tail -5 "$WORK/serve-$port.log" >&2; fail "serve exited"; }
-  echo "$pid"
+  kill -0 "${!var}" 2>/dev/null || { tail -5 "$WORK/serve-$port.log" >&2; fail "serve exited"; }
 }
 login() {   # login <jar> <user> <password>
   [[ $(curl -s -o /dev/null -w '%{http_code}' -c "$1" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$2\",\"password\":\"$3\"}" "$U/api/login") == 200 ]] || fail "the API login of $2"
@@ -116,7 +124,8 @@ call() {
   local jar=$1 m=$2 p=$3 d=${4:-} c=()
   [[ $jar != - ]] && c=(-b "$jar")
   if [[ $m == GET ]]; then curl -s -o "$WORK/out.json" -w '%{http_code}' "${c[@]}" -H 'X-Pgvigil: 1' "$U$p"
-  else echo "$p" >> "$WORK/attempts"; curl -s -o "$WORK/out.json" -w '%{http_code}' "${c[@]}" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$d" "$U$p"; fi
+  else local code; code=$(curl -s -o "$WORK/out.json" -w '%{http_code}' "${c[@]}" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$d" "$U$p")
+    echo "$code" >> "$WORK/attempts"; echo "$code"; fi
 }
 body() { printf '%s' "$1" > "$WORK/in.json"; echo "$WORK/in.json"; }
 # js <python expression over d (the reply) and rows(t) (a {columns, rows} table as dicts)>
@@ -124,7 +133,7 @@ js() { python3 -c "import json; d=json.load(open('$WORK/out.json')); rows=lambda
 expect() { [[ $1 == "$2" ]] || fail "$3: HTTP $1, want $2: $(head -c 300 "$WORK/out.json")"; }
 
 if part A; then
-  PORT=$(freeport); U="http://127.0.0.1:$PORT"; SRV=$(serve_up SRV "$PORT")
+  PORT=$(freeport); U="http://127.0.0.1:$PORT"; serve_up SRV "$PORT"
   J1=$WORK/j1; J2=$WORK/j2; login "$J1" "$U1" "$U1PW"; login "$J2" "$U2" "$U2PW"
   # S1
   c=$(call "$J1" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"mine","state":{"params":{"focus":"1"},"layouts":[]}}')")
@@ -147,6 +156,15 @@ if part A; then
   c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$TEAM,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"team\",\"shared\":true,\"state\":{\"params\":{\"focus\":\"1\"}}}")")
   expect "$c" 403 "S2: u2's edit of the shared view"
   ok "S2: shared writes only by views.shared_editors (u2 refused in words: create and edit); u2 reads 'team'"
+  J3=$WORK/j3; login "$J3" "$U3" "$U3PW"
+  c=$(call "$J2" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"u2mine","state":{"params":{}}}')"); expect "$c" 200 "S2b: u2's personal save"; U2MINE=$(js "d['view_id']")
+  c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$MINE,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"taken\",\"state\":{\"params\":{}}}")")
+  expect "$c" 403 "S2b: u2's save of u1's personal view"; [[ $(js "d.get('error', '')") == *"only its owner"* ]] || fail "S2b: the refusal: $(js "d")"
+  c=$(call "$J2" POST /api/views/delete "$(body "{\"view_id\":$MINE,\"version\":1}")"); expect "$c" 403 "S2b: u2's delete of u1's personal view"
+  [[ $(q "select name || ' ' || version from pgvigil.ui_views where view_id = $MINE") == "mine 1" ]] || fail "S2b: 'mine' changed: $(q "select name, version from pgvigil.ui_views where view_id = $MINE")"
+  c=$(call "$J1" POST /api/views "$(body "{\"view_id\":$U2MINE,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"u2mine\",\"state\":{\"params\":{\"x\":\"1\"}}}")")
+  expect "$c" 403 "S2b: editor u1's save of u2's personal view"
+  ok "S2b: a personal view is changed and deleted by its owner only (u2 on u1's, editor u1 on u2's: 403), unchanged"
   # S3
   c=$(call "$J1" POST /api/views "$(body "{\"view_id\":$MINE,\"version\":0,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"mine\",\"state\":{\"params\":{\"focus\":\"0\"}}}")")
   expect "$c" 409 "S3: a stale version"; [[ $(js "d.get('error', '')") == *"version 1"* ]] || fail "S3: the 409 does not name the stored version: $(js "d")"
@@ -186,6 +204,18 @@ if part A; then
   [[ $(q "select (state->'params')::text || ' ' || (state->'range')::text from pgvigil.ui_views where view_id = $RANGED") == '{"ms": "5000"} {"w": "24h"}' ]] || fail "S7: keep_range: $(q "select state from pgvigil.ui_views where view_id = $RANGED")"
   c=$(call "$J1" POST /api/views "$(body '{"kind":"page","page":"Fleet!","name":"bad","state":{"params":{}}}')"); expect "$c" 400 "S7: a bad page key"
   ok "S7: a page view keeps its page's parameters only (i, tag, view, the range dropped; the range kept by keep_range); a bad page key 400"
+  for bad in '{"params":{},"i":"7"}' '{"params":"i=7&ms=5"}' '{"params":{"ms":5}}'; do
+    c=$(call "$J1" POST /api/views "$(body "{\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"shape\",\"state\":$bad}")"); expect "$c" 400 "S7b: the state $bad"
+  done
+  [[ $(q "select count(*) from pgvigil.ui_views where name = 'shape'") == 0 ]] || fail "S7b: a bad shape stored"
+  ok "S7b: a page view's state is {params, layouts, range} with text params ($(js "d.get('error')"))"
+  c=$(call "$J1" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"flip","state":{"params":{}}}')"); expect "$c" 200 "S8: u1's personal 'flip'"; FLIP=$(js "d['view_id']")
+  c=$(call "$J1" POST /api/views "$(body "{\"view_id\":$FLIP,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"flip\",\"shared\":true,\"state\":{\"params\":{}}}")"); expect "$c" 200 "S8: u1 shares 'flip'"
+  c=$(call "$J3" POST /api/views "$(body "{\"view_id\":$FLIP,\"version\":2,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"flip\",\"shared\":false,\"state\":{\"params\":{}}}")"); expect "$c" 200 "S8: editor u3 un-shares 'flip'"
+  [[ $(q "select u.username from pgvigil.ui_views v join pgvigil.ui_users u on u.user_id = v.owner_user_id where v.view_id = $FLIP") == "$U1" ]] || fail "S8: 'flip' is no longer u1's"
+  expect "$(call "$J1" GET '/api/views?page=root:fleet')" 200 "S8: u1's list"; [[ $(js "[v['mine'] for v in rows(d['views']) if v['name'] == 'flip']") == "[True]" ]] || fail "S8: u1's list of 'flip'"
+  expect "$(call "$J3" GET '/api/views?page=root:fleet')" 200 "S8: u3's list"; [[ $(js "len([v for v in rows(d['views']) if v['name'] == 'flip'])") == 0 ]] || fail "S8: u3 lists u1's personal 'flip'"
+  ok "S8: un-sharing keeps the owner: u3 un-shared u1's 'flip', it is u1's personal view again"
   # S12
   c=$(call "$J1" POST /api/views/delete "$(body "{\"view_id\":$MINE2,\"version\":0}")"); expect "$c" 409 "S12: a stale delete"
   c=$(call "$J1" POST /api/views/delete "$(body "{\"view_id\":$MINE2,\"version\":1}")"); expect "$c" 200 "S12: the delete"
@@ -194,7 +224,9 @@ if part A; then
   ok "S12: a delete checks the version (409) and the right (403); the view is gone"
   # S11
   ATT=$(wc -l < "$WORK/attempts")
-  [[ $(q "select count(*) from pgvigil.ui_view_log") == "$ATT" ]] || fail "S11: $(q "select count(*) from pgvigil.ui_view_log") log rows for $ATT attempts"
+  WANT=$(python3 -c "import collections,sys; m={'200':'done','400':'refused','403':'forbidden','409':'conflict'}; c=collections.Counter(m.get(l.strip(), 'http'+l.strip()) for l in open(sys.argv[1]) if l.strip()); print(', '.join(f'{k} {c[k]}' for k in sorted(c)))" "$WORK/attempts")
+  GOT=$(q "select string_agg(outcome || ' ' || n, ', ' order by outcome) from (select outcome, count(*) n from pgvigil.ui_view_log group by 1) x")
+  [[ "$GOT" == "$WANT" ]] || fail "S11: the log's outcomes '$GOT', the answers' '$WANT'"
   ok "S11: one ui_view_log row per attempt ($ATT): $(q "select string_agg(outcome || ' ' || n, ', ' order by outcome) from (select outcome, count(*) n from pgvigil.ui_view_log group by 1) x")"
 fi
 
@@ -202,20 +234,22 @@ if part U; then
   [[ -n "${TEAM:-}" ]] || fail "U: needs part A's views"
   LOGN=$(q "select count(*) from pgvigil.ui_view_log")
   "$BIN" user remove -config "$CFG" "$U1" > "$WORK/remove.out" 2>&1 || { cat "$WORK/remove.out" >&2; fail "U: user remove $U1"; }
-  [[ $(q "select count(*) from pgvigil.ui_views where not shared") == 0 ]] || fail "U: u1's personal views kept: $(q "select name from pgvigil.ui_views where not shared")"
+  [[ $(q "select count(*) from pgvigil.ui_views where not shared and created_by = '$U1'") == 0 ]] || fail "U: u1's personal views kept: $(q "select name from pgvigil.ui_views where not shared and created_by = '$U1'")"
+  [[ $(q "select count(*) from pgvigil.ui_views where view_id = $U2MINE") == 1 ]] || fail "U: u2's own personal view went with u1"
   [[ $(q "select coalesce(owner_user_id::text, 'null') from pgvigil.ui_views where view_id = $TEAM") == null ]] || fail "U: the shared view's owner after the remove"
   [[ $(q "select count(*) from pgvigil.ui_view_log") == "$LOGN" ]] || fail "U: log rows lost"
   expect "$(call "$J2" GET '/api/views?page=root:fleet')" 200 "U: u2's list"
-  [[ $(js "[v['name'] for v in rows(d['views'])]") == "['team']" ]] || fail "U: u2's list after the remove: $(js "[v['name'] for v in rows(d['views'])]")"
-  ok "U: removing u1 deleted its personal views, kept the shared 'team' (owner NULL, still listed) and every log row"
+  [[ $(js "[v['name'] for v in rows(d['views'])]") == "['u2mine', 'team']" ]] || fail "U: u2's list after the remove: $(js "[v['name'] for v in rows(d['views'])]")"
+  ok "U: removing u1 deleted its personal views only (u2's 'u2mine' stays), kept the shared 'team' (owner NULL, still listed) and every log row"
 fi
 
 if part N; then
-  PORT2=$(freeport); U="http://127.0.0.1:$PORT2"; SRV2=$(serve_up SRV2 "$PORT2" -no-login)
+  PORT2=$(freeport); U="http://127.0.0.1:$PORT2"; serve_up SRV2 "$PORT2" -no-login
   c=$(call - GET '/api/views?page=root:fleet')
   [[ $c == 404 ]] && fail "N: GET /api/views: HTTP 404 (red before the store: no route)"
   expect "$c" 200 "N: the -no-login list"
   [[ $(js "d['writable']") == False && $(js "d.get('off', '')") == *-no-login* ]] || fail "N: writable / off: $(js "(d['writable'], d.get('off'))")"
+  if [[ -n "${TEAM:-}" ]]; then [[ $(js "[v['name'] for v in rows(d['views'])]") == "['team']" ]] || fail "N: the shared views listed: $(js "[v['name'] for v in rows(d['views'])]")"; fi
   N0=$(q "select count(*) from pgvigil.ui_views")
   c=$(call - POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"anon","state":{"params":{}}}')"); expect "$c" 403 "N: a -no-login save"
   [[ $(q "select count(*) from pgvigil.ui_views") == "$N0" ]] || fail "N: a -no-login save stored"

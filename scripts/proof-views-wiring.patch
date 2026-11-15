@@ -24,10 +24,10 @@ index 493c261a..14fa16a5 100644
  	// check); serve starts either way and the page says the same words
  	if why := srv.StoreReportsOff(ctx); why != "" {
 diff --git i/docs/configuration.md w/docs/configuration.md
-index f7e3ca71..6a35e923 100644
+index f7e3ca71..724eacc7 100644
 --- i/docs/configuration.md
 +++ w/docs/configuration.md
-@@ -107,6 +107,19 @@ database than the repository dsn's is refused, with words. Without the key (or w
+@@ -107,6 +107,23 @@ database than the repository dsn's is refused, with words. Without the key (or w
  the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
  instances need nothing here. The rules and the words: [customreports.md](customreports.md).
  
@@ -42,13 +42,17 @@ index f7e3ca71..6a35e923 100644
 +created, changed, deleted or made a page's shared default only by the users named here. A personal view is its owner's
 +alone, and removing a user (`pgvigil user remove`) deletes that user's personal views; a shared one stays. Views are
 +saved through the actions door's audit login, so saving is off under `-no-login` and on `pgvigil demo -serve`; every
-+attempt is kept in `ui_view_log`. When the per-user roles arrive, their 'change shared views' right replaces this list.
++attempt that reaches the store is kept in `ui_view_log` (a request serve refuses before it - no X-Pgvigil header, a
++body over 256 KB - is not). These rules are serve's: like alert rules, the store's write functions
++(`import_view_save`, `import_view_delete`) are the collector's door, so a login of the collector's role can write any
++view as any user - keep the collector's login on the hosts you trust. When the per-user roles arrive, their 'change
++shared views' right replaces this list.
 +
  ## Instances added in the page
  
  Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
 diff --git i/internal/config/config.go w/internal/config/config.go
-index ce855797..6a2eeadd 100644
+index ce855797..2edcdbb1 100644
 --- i/internal/config/config.go
 +++ w/internal/config/config.go
 @@ -33,6 +33,8 @@ type Config struct {
@@ -60,10 +64,10 @@ index ce855797..6a2eeadd 100644
  	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
  	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
  	// collects nothing from SQL Server itself.
-@@ -254,6 +256,13 @@ func (c *Config) validateDBADash() error {
+@@ -253,6 +255,13 @@ func (c *Config) validateDBADash() error {
+ 	return nil
  }
  
- // UI is the ui: block: the tree's folder levels and the order of the values in them.
 +// Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
 +type Views struct {
 +	// SharedEditors: the UI users who may create, change, delete and set the default of shared views; none = nobody
@@ -71,9 +75,9 @@ index ce855797..6a2eeadd 100644
 +	SharedEditors []string `yaml:"shared_editors"`
 +}
 +
+ // UI is the ui: block: the tree's folder levels and the order of the values in them.
  type UI struct {
  	// GroupBy lists tag keys, one folder level each, in order (e.g. [env, team]); empty = one folder per tag.
- 	GroupBy []string `yaml:"group_by"`
 diff --git i/internal/web/web.go w/internal/web/web.go
 index 9e87cd1d..3e810afe 100644
 --- i/internal/web/web.go

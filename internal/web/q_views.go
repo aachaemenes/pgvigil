@@ -22,8 +22,8 @@ import (
 //   POST /api/views               save one: no view_id = create; a view_id with the version read = change it
 //   POST /api/views/delete        {view_id, version}
 // A page key is 'root:<tab>' or 'instance:<tab>' (the router's tab), a dashboard's 'dashboard'. A page view's state is
-// {params, layouts[, range]}: serve keeps the page's own parameters and drops the instance, the tag, the view and the
-// range (i, tag, view, w, from, to), so a view never moves its user to another instance or window; with keep_range the
+// {params, layouts[, range]} (the store refuses any other shape): serve keeps the page's own parameters and drops the
+// instance, the tag, the view, a snapshot's time and the range (viewDropped), so a view never moves its user to another instance or window; with keep_range the
 // range is kept apart in state.range. Reads: pgvigil.ui_view_list / ui_view_get on the read pool. Writes:
 // import_view_save / import_view_delete on the actions door's audit pool (the read pool is read-only) with the
 // session's user and client, one ui_view_log row per attempt: done 200, refused 400, forbidden 403, conflict 409 (a
@@ -40,8 +40,9 @@ var (
 	viewEditors atomic.Pointer[map[string]bool]
 )
 
-// viewDropped: the address parameters a page view never keeps (the instance, the tag, a view's own number and the range).
-var viewDropped = []string{"i", "tag", "view", "w", "from", "to"}
+// viewDropped: the address parameters a page view never keeps: the instance (i, and ti, a tab's own instance), the
+// tag, a view's own number, a snapshot's time (at) and the range.
+var viewDropped = []string{"i", "ti", "tag", "view", "at", "w", "from", "to"}
 
 // SetViewEditors names the users who may write shared views (pgvigil.yaml views.shared_editors); none = nobody.
 func (s *Server) SetViewEditors(names []string) {
@@ -112,8 +113,22 @@ func (s *Server) Views(w http.ResponseWriter, r *http.Request) {
 	if off == "" && user == "" {
 		off = "sign in to save a view"
 	}
-	s.reply(w, r, map[string]any{"views": t, "writable": off == "", "shared_writable": off == "" && viewEditor(user),
-		"off": off, "user": user}, err)
+	if err != nil && s.auth == nil {
+		// -no-login checks no pgvigil_auth grant at the start: a serve login without it cannot read the store; the page
+		// says so in words instead of an error
+		s.log.Warn("views: the list could not be read", "err", err)
+		off += "; views cannot be read here: this server's repository login may not read them (" + err.Error() + ")"
+		t, err = nil, nil
+	}
+	sharedOff := ""
+	switch {
+	case off != "":
+		sharedOff = off
+	case !viewEditor(user):
+		sharedOff = "shared views are written by the users named in pgvigil.yaml views.shared_editors"
+	}
+	s.reply(w, r, map[string]any{"views": t, "writable": off == "", "shared_writable": sharedOff == "", "off": off,
+		"shared_off": sharedOff, "user": user}, err)
 }
 
 // ViewSave is POST /api/views.

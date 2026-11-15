@@ -103,6 +103,10 @@ func (r *Repo) UIUserRemove(ctx context.Context, name string) error {
 		return uiErr("remove", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// the user row first, locked: a view saved by the user while the remove runs waits for it (then finds no user)
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM pgvigil.ui_users WHERE username = $1 FOR UPDATE`, name); err != nil {
+		return uiErr("remove", err)
+	}
 	var hasViews bool
 	if err := tx.QueryRow(ctx, `SELECT to_regclass('pgvigil.ui_views') IS NOT NULL`).Scan(&hasViews); err != nil {
 		return uiErr("remove", err)
