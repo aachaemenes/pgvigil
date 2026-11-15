@@ -2,9 +2,7 @@
 # Proof of task 390b on real replicas: the provider replica read (cloud_replicas: RDS DescribeDBInstances and CloudWatch
 # ReplicaLag; Cloud SQL Admin and Cloud Monitoring) as pgvigil reads, stores, judges and shows it, each fault made, its
 # finding read, cleared and the clear read. Part R drives lab RP (scripts/lab/aws-rds-replica.sh: up, allow, logins
-# done before; replica, reboot, promote here); part C drives lab CP (scripts/lab/gcp-cloudsql.sh) and runs only with
-# PGVIGIL_PROOF_CP=1 - CP waits for Allen's own word (the lead's Q10): until then each C row is 'not proven: CP waits
-# for Allen's word'.
+# done before; replica, reboot, promote here); part C (lab CP, Cloud SQL) is scripts/proof-cloud-replicas-gcp.sh.
 #
 # Runs on the machine that holds the AWS CLI sign-in (and gcloud's application-default sign-in for part C): no
 # credential or token goes to a cloud box (the lab rule of 2026-11-14); the repository is reached from here (the A1-E
@@ -208,11 +206,7 @@ fi
 NOTPROVEN+=("P3 (the provider's failover event): an RDS Multi-AZ DB instance is billed and not approved; the Go cases and the store row prove the hand-off")
 
 echo "--- C-A..C-F (Cloud SQL)"
-if [ "${PGVIGIL_PROOF_CP:-}" = 1 ]; then
-  bad "C rows: PGVIGIL_PROOF_CP=1 but lab CP's steps are not written here yet: they follow Allen's word (the lead's Q10) with the lab's own commands"
-else
-  NOTPROVEN+=("C-A..C-F: CP waits for Allen's word (the lead's Q10)")
-fi
+NOTPROVEN+=("C-A..C-F: run by scripts/proof-cloud-replicas-gcp.sh on lab CP (scripts/lab/gcp-cloudsql-pg-replica.sh; Allen's Q37 YES), not here")
 
 echo
 for n in "${NOTPROVEN[@]}"; do echo "NOT PROVEN: $n"; done
