@@ -509,11 +509,19 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const home = `#/summary?i=${inst.instance_id}`;
     if (!(await go(home))) { pm(`${eng} ${inst.name}`, 'header', eng, 'not drawn', false, 'the instance Summary did not draw'); continue; }
     for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(250);
-    // the header's name: the instance's Summary (the header and the breadcrumb's dot follow the page when their read
-    // ends: waited for)
+    // the header's name (the header and the breadcrumb's dot follow the page when their read ends: waited for): on the
+    // instance's own Summary it is text - no header text links to the page it is on -, and from another tab of the
+    // instance (Findings: both engines have it) it links to that Summary
     for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot')`)); i++) await sleep(100);
-    const nh = await ev(`document.querySelector('main .inst-header .inst-name')?.getAttribute('href') ?? ''`);
-    pm(`${eng} ${inst.name}`, 'header name', eng, nh, tabOf(nh) === 'summary' && paramsOf(nh).get('i') === String(inst.instance_id), "the header's name: the instance's Summary");
+    const nh = await ev(`(() => { const n = document.querySelector('main .inst-header .inst-name'); return n ? n.tagName + '|' + (n.getAttribute('href') ?? '') + '|' + n.textContent.trim() : ''; })()`);
+    pm(`${eng} ${inst.name}`, 'header name', eng, nh, nh === `SPAN||${inst.name}`, "the header's name on its own Summary: text, no link to the page it is on");
+    if (await go(`#/findings?i=${inst.instance_id}`)) {
+      for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header .inst-name')`)); i++) await sleep(100);
+      const oh = await ev(`document.querySelector('main .inst-header .inst-name')?.getAttribute('href') ?? ''`);
+      pm(`${eng} ${inst.name}`, 'header name (from Findings)', eng, oh, tabOf(oh) === 'summary' && paramsOf(oh).get('i') === String(inst.instance_id), "the header's name on another tab: a link to the instance's Summary");
+    } else pm(`${eng} ${inst.name}`, 'header name (from Findings)', eng, 'not drawn', false, "the instance's Findings did not draw");
+    if (!(await go(home))) { pm(`${eng} ${inst.name}`, 'header', eng, 'not drawn', false, 'the instance Summary did not draw again'); continue; }
+    for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(100);
     const dot = await ev(`(() => { const d = document.querySelector('#crumb .band-dot'); return d ? d.getAttribute('aria-label') : null; })()`);
     pm(`${eng} ${inst.name}`, 'breadcrumb dot', eng, String(dot), ['OK', 'Warning', 'Critical', 'Offline'].includes(dot), 'the band dot before the name in the breadcrumb, named by its word');
     // the calendar's month buttons
