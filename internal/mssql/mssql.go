@@ -51,6 +51,18 @@ type Collector interface {
 	Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error)
 }
 
+// InstanceRunner is a collection that reads the instance's configuration too (a cloud door: task 390a's azure:
+// block); RunOnce calls RunInstance in place of Run.
+type InstanceRunner interface {
+	RunInstance(ctx context.Context, conn *sql.Conn, info Info, in config.Instance) ([]collect.Row, error)
+}
+
+// Configurer is a collection that runs only where the configuration names its door; a run without it is skipped
+// with the reason before any connection (as a collection that does not apply).
+type Configurer interface {
+	Configured(in config.Instance) (bool, string)
+}
+
 // Timeouter is what a collector adds when one run needs more (or must take less) than RunTimeout on the SQL
 // Server side: a reader of an Extended Events file, a pass over every database.
 type Timeouter interface {
@@ -333,6 +345,7 @@ func msTarget(p msdsn.Config) string {
 // A DSN that sets no 'connection timeout' (or sets 0) has the connect and the session setup end after
 // collect.DefaultConnectTimeout (10 s), as a PostgreSQL instance's; one that sets it keeps its own.
 func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error) {
+	connects.Add(1)
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" {
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (unset variable or unreadable file)", in.Name))
@@ -481,6 +494,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			log.Warn("the collection's result was not recorded", "instance", in.Name, "collection", name, "status", status, "err", err)
 		}
 	}
+	// a collection that does not apply to the instance as its last detect saw it is skipped without a connection
+	// (detectcache.go): recorded on the instance the connecting run named, its row (last_seen, version) left as that
+	// run wrote it - nothing was read; an instance row gone meanwhile (removed and added again) is made again first
+	if info, instanceID, ok := cachedDetect(in, start); ok {
+		applies, why := c.Applies(info)
+		if cc, isCfg := c.(Configurer); applies && isCfg {
+			applies, why = cc.Configured(in)
+		}
+		if !applies {
+			lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			err := r.LogCollection(lctx, instanceID, name, start, time.Since(start), "skipped", why)
+			lcancel()
+			if err != nil {
+				ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+				instanceID, err = r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+				ecancel()
+				if err != nil {
+					return collect.Result{Err: err, Duration: time.Since(start)}
+				}
+				logRun(instanceID, "skipped", why)
+			}
+			return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+		}
+	}
 	db, conn, err := Connect(sctx, in)
 	if err != nil {
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
@@ -501,10 +538,8 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
 	}
-	for _, t := range in.TagPairs() {
-		if t.Key == "pool" {
-			info.PoolTag = t.Value
-		}
+	if tag := poolTag(in); tag != "" {
+		info.PoolTag = tag
 	}
 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
@@ -512,7 +547,12 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return collect.Result{Err: err, Duration: time.Since(start)}
 	}
-	if ok, why := c.Applies(info); !ok {
+	rememberDetect(in, info, instanceID, start)
+	ok, why := c.Applies(info)
+	if cc, isCfg := c.(Configurer); ok && isCfg {
+		ok, why = cc.Configured(in)
+	}
+	if !ok {
 		logRun(instanceID, "skipped", why)
 		return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
@@ -535,6 +575,8 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			defer ccancel()
 			return r.MSSQLSeqCursor(cctx, instanceID, source)
 		})
+	} else if ir, isInst := c.(InstanceRunner); isInst {
+		rows, err = ir.RunInstance(sctx, conn, info, in)
 	} else {
 		rows, err = c.Run(sctx, conn, info)
 	}

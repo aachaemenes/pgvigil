@@ -101,6 +101,9 @@ type Instance struct {
 	QueryText string `yaml:"query_text"`
 	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
 	AWS *AWS `yaml:"aws"`
+	// Azure names an Azure SQL Database's logical server in Azure Resource Manager for the failover group read
+	// (mssql_failover_groups, task 390a); nil = no Azure door (no call to Resource Manager). SQL Server only.
+	Azure *Azure `yaml:"azure"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
 	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
@@ -370,6 +373,24 @@ type AWS struct {
 	DMS *DMS `yaml:"dms"`
 }
 
+// Azure is an instance's door to Azure Resource Manager (task 390a): the logical server whose failover groups are read.
+// The token comes from the instance's own Entra identity when its dsn signs in with one (fedauth service principal,
+// with its tenant named, or a managed identity), else from azidentity's default chain (the environment, a workload
+// identity, a managed identity, the Azure CLI's sign-in); nothing is stored here. The identity needs
+// Microsoft.Sql/servers/failoverGroups/read on the server (Reader, or a custom role with that action).
+type Azure struct {
+	Subscription  string `yaml:"subscription"`
+	ResourceGroup string `yaml:"resource_group"`
+	Server        string `yaml:"server"` // the logical server's name (not its host name)
+	// Cloud is public (the default), usgov or china: its Resource Manager host and token audience
+	Cloud string `yaml:"cloud"`
+}
+
+// ServerKey names the logical server once, whichever database's instance reads it.
+func (a Azure) ServerKey() string {
+	return strings.ToLower(a.Subscription + "/" + a.ResourceGroup + "/" + a.Server)
+}
+
 // DMS is the AWS DMS part of an instance's AWS door: which replication tasks to read and the latency
 // threshold the overview check applies to them.
 type DMS struct {
@@ -529,6 +550,9 @@ func (c *Config) Validate() error {
 			default:
 				return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
 			}
+			if in.Azure != nil {
+				return fmt.Errorf("instance %q: the azure: block is SQL Server's (an Azure SQL Database's failover groups)", in.Name)
+			}
 			// a PostgreSQL instance's cancel and terminate are on with its actions_dsn; its job actions (task 161) only
 			// where actions: names them
 			seenPG := map[string]bool{}
@@ -583,6 +607,10 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
 			case in.AWS != nil:
 				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
+			case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
+				return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
+			case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
+				return fmt.Errorf("instance %q: azure.cloud is public, usgov or china, not %q", in.Name, in.Azure.Cloud)
 			case in.Backups != nil:
 				return fmt.Errorf("instance %q: the backups: block is PostgreSQL's", in.Name)
 			}
@@ -661,4 +689,13 @@ func (c *Config) Interval(in Instance, collection string, def time.Duration) tim
 		return v.Duration
 	}
 	return def
+}
+
+// validAzureCloud: the clouds the Azure door knows (internal/discover's map: public, usgov, china).
+func validAzureCloud(c string) bool {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "", "public", "usgov", "china":
+		return true
+	}
+	return false
 }
