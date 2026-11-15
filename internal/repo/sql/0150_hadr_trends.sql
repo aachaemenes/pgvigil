@@ -497,7 +497,9 @@ ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, di
 --                               stopped, raise nothing. Patroni clusters too (the detail names Patroni's leader).
 --   'cluster without a primary' critical, ONE finding on the member last seen primary (else the lowest instance id), when
 --                               no fresh member is primary, every fresh standby of the identifier has had its receiver
---                               down for 2 reads or more, and a member was read as primary in the last 7 days; never
+--                               down for 2 reads or more or is cascaded (a fresh standby of the cluster streams to it now:
+--                               its receiver stays up), at least one is down, and a member was read as primary in the
+--                               last 7 days; never
 --                               where a fresh Patroni read covers a member (task 376's 'no leader' says it). A primary
 --                               not read while its standbys stream raises nothing here.
 --   'standby queries cancelled' warning on a standby in recovery, one per database, when a read in the last 2 minutes
@@ -550,17 +552,23 @@ headless AS (
                   (SELECT min(x.instance_id) FROM m x WHERE x.sysid = g.sysid)) AS instance_id,
          (SELECT x.name || ' at ' || to_char(x.read_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'
             FROM m x WHERE x.sysid = g.sysid AND NOT x.is_replica ORDER BY x.read_at DESC LIMIT 1) AS last_primary
-    FROM (SELECT mm.sysid, string_agg(mm.name, ', ' ORDER BY mm.name) FILTER (WHERE mm.fresh AND mm.is_replica) AS standbys,
-                 min(mm.down_reads) FILTER (WHERE mm.fresh AND mm.is_replica) AS reads, max(mm.read_at) AS at
+    FROM (SELECT mm.sysid, string_agg(mm.name, ', ' ORDER BY mm.name) FILTER (WHERE mm.fresh AND mm.is_replica AND NOT mm.cascaded) AS standbys,
+                 min(mm.down_reads) FILTER (WHERE mm.fresh AND mm.is_replica AND NOT mm.cascaded) AS reads, max(mm.read_at) AS at
             FROM (SELECT m.*, st.in_recovery AS st_in_recovery, st.down_reads, st.read_at AS st_read_at,
                          EXISTS (SELECT 1 FROM pgvigil.pg_patroni_read pr
-                                  WHERE pr.instance_id = m.instance_id AND pr.ok AND pr.snapshot_at > now() - interval '3 minutes') AS patroni_fresh
+                                  WHERE pr.instance_id = m.instance_id AND pr.ok AND pr.snapshot_at > now() - interval '3 minutes') AS patroni_fresh,
+                         -- a cascaded standby: a fresh standby of the cluster streams to it now (its receiver stays up)
+                         EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_seen l JOIN m u ON u.instance_id = l.instance_id AND u.sysid = m.sysid AND u.fresh AND u.is_replica
+                                  WHERE l.checked_at > now() - interval '3 minutes' AND l.gone_reads = 0 AND l.last_state = 'streaming'
+                                    AND lower(l.application_name) IN (lower(m.name), lower(coalesce(m.cluster_name, '')))) AS cascaded
                     FROM m LEFT JOIN pgvigil.pg_repl_standby_state st ON st.instance_id = m.instance_id) mm
            GROUP BY mm.sysid
           HAVING count(*) FILTER (WHERE mm.fresh AND NOT mm.is_replica) = 0
              AND count(*) FILTER (WHERE mm.fresh AND mm.is_replica) > 0
+             AND count(*) FILTER (WHERE mm.fresh AND mm.is_replica AND mm.st_in_recovery AND mm.down_reads >= 2 AND mm.st_read_at > now() - interval '3 minutes') > 0
              AND count(*) FILTER (WHERE mm.fresh AND mm.is_replica)
-                 = count(*) FILTER (WHERE mm.fresh AND mm.is_replica AND mm.st_in_recovery AND mm.down_reads >= 2 AND mm.st_read_at > now() - interval '3 minutes')
+                 = count(*) FILTER (WHERE mm.fresh AND mm.is_replica
+                                      AND (mm.st_in_recovery AND mm.down_reads >= 2 AND mm.st_read_at > now() - interval '3 minutes' OR mm.cascaded))
              AND count(*) FILTER (WHERE NOT mm.is_replica AND mm.read_at > now() - interval '7 days') > 0
              AND NOT bool_or(mm.patroni_fresh)) g
 ),

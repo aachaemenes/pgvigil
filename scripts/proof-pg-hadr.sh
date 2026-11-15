@@ -145,19 +145,64 @@
 # lost without invalidation_reason), a database walsender (a table copy) kept out of the links, a named synchronous
 # standby whose link is down, 'sending server not read', a WAL receiver without a replay position (pg_receivewal),
 # 0006's standby-side 'replay lag' for a standby no monitored primary sends to.
+# Task 375's rows (migration 0150), written before the first run 2026-11-14 18:0x PST; red = the tree before 375
+# (rel-hadr-s1 ef59fba: no 0150 - its functions, views and checks do not exist, so every row below fails there):
+#   RU1  the rig's own samples (hadr-p, hadr-s): every (kind, key, UTC hour) of replication_hourly equals a direct
+#        aggregate of replication_sample (reads, lag_bytes and lag_secs min / max / sum / count, active reads), none
+#        missing, none extra; a stand-in slot's spill_count 10, 20, 5, 7, 9 at H+10m, 15m, 20m, 59m30s, 60m30s: hour H
+#        3 pairs rise 15 (a reset: the later value) gap_rise 2 (the 39-minute pair), H+1 1 pair rise 2 - the same as a
+#        direct lag() over the samples [red FAIL]
+#   RU2  a late sample at H+59m50s (8): H rise 16, H+1 rise 1; the hours recomputed twice are the same rows [red FAIL]
+#   RU3  inside BEGIN ... ROLLBACK: a pair across the next month's first second - the trigger makes that month's
+#        partition, the pair's rise 4 in the new month's first hour; nothing left after the rollback [red FAIL]
+#   RU4  a table holding last month's partition name: an import of a sample there commits (the sample stored), one
+#        'rollup failed' row, its hours marked; the table dropped, the next import heals them ('rollup healed', the
+#        hour's row, no dirty range) [red FAIL]
+#   RU5  replication_hourly_purge drops the month 25 months back and keeps the one 24 months back (730 days) [red FAIL]
+#   RU6  the stand-in built (heal_one): a 4-hour window reads its 3 samples (100, 300, 200), a 3-day window its 2 hours
+#        (300, 200: the same max per hour), building false; a day older than every stored sample month reads the hours
+#        (a stand-in hour row 555); hadr-p, never built, reads its samples by hour with building true [red FAIL]
+#   LK   a heal holds the stand-in's lock for 8 s: an import meanwhile commits in under 2 s and marks its hours (no hour
+#        row); the next import after the lock heals them (2 reads, max 43, no dirty range) [red FAIL]
+#   LD   a stand-in standby with 30 days of reads a minute at 300 databases (about 13 M samples, stored with the
+#        triggers off: history before the upgrade); its first build from purge (heal_one) while an import of 300
+#        databases runs every second: every import under 2 s, the build exits 0, 72x receiver hours, the first build
+#        recorded, no build range left; the next import heals the hours marked meanwhile. The build's time, the bytes
+#        per hour row and the HOT share of the hours' updates are printed (docs/upgrade.md's line; F16) [red FAIL]
+#   CC   hadr-c, a standby of hadr-s (pg_basebackup from it, cluster_name hadrc1): its link row sending hadr-s, status
+#        'streaming (cascaded from hadr-s)', sending_in_recovery true, paired once; hadr-p's link to hadr-s stays
+#        'streaming' [red FAIL]
+#   SQ   max_standby_streaming_delay 0 on hadr-c: 3 queries on it cancelled by a replayed ACCESS EXCLUSIVE lock, one
+#        read: 'standby queries cancelled' warning on hadr-c, 'database postgres', its detail '3 queries cancelled ...
+#        (confl_lock +3)'; nothing on hadr-p; the reads moved 13 minutes back (a stand-in for the window's passing):
+#        gone [red FAIL]
+#   RB2  hadr-p's bands (never changed role): unknown, primary [red FAIL]
+#   CL3  a copy of hadr-p started as a primary (never a standby, one system identifier), both read twice: no cluster
+#        finding [red ok]
+#   CL2  hadr-p stopped (a real stop) for 3.5 minutes, hadr-s and hadr-c read: ONE 'cluster without a primary' critical,
+#        on hadr-p (the member last seen primary), naming hadr-s's receiver down (hadr-c is cascaded) [red FAIL]
+#   CL4  hadr-s promoted while hadr-p is stopped (a switchover): no cluster finding [red ok]
+#   RB   hadr-s's bands across its promotion: unknown, standby, primary; the standby band ends at the promotion [red FAIL]
+#   CL1  hadr-p started again while hadr-s is primary, both read twice: 'two primaries' critical on each, naming the
+#        other [red FAIL]
+#   CL1b hadr-c (streaming from hadr-s) promoted while hadr-s runs: 'two primaries' on hadr-c naming hadr-s, and on
+#        hadr-s naming hadr-c and hadr-p [red FAIL]
+# Not proven here (375): a Patroni cluster (the leader's name, 'no leader' left to task 376), a link paired by slot only
+# (the topology needs the other's name or cluster_name in the link, or a 'cluster' tag), confl_active_logicalslot
+# (PostgreSQL 16+), the hours' series past the cap, the purge command's Go loop (the lead's wiring).
 # PROOF_ONLY=R1,R2W,... runs the rig, B, A0, L1 and the named rows only (R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D
-# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4; a riding row runs its host: L7 R2W, NS and NS2 G, S3 L6, G2 and L5
-# R3, SL2H SL2); an unknown name stops the run; unset = all.
+# L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL; a riding row runs its host: L7 R2W, NS and NS2 G,
+# S3 L6, G2 and L5 R3, SL2H SL2, RU1-RU6 RU, CL1-CL4 CL1b RB RB2 CL); an unknown name stops the run; unset = all.
 # Prints 'ok' / 'FAIL' per assertion and 'proof-pg-hadr: OK' or 'proof-pg-hadr: <n> FAIL'; exit 0 only when every row passed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); FAILS=0
 fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 ok() { echo "ok   $*"; }
-ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 "
+ROWS=" R1 R1N R1B R2W R2C R2X G L3T L2W L2C L2S L2X L3D L6 P S1 S2 S4 S6 S5 SL3 SL2 SL1 SP AU RP R3 R3X L4 RU LK LD CC SQ CL "
 if [[ -n "${PROOF_ONLY:-}" ]]; then   # a riding row runs its host row; an unknown name is a typo, not an empty OK
   PO=""; for n in ${PROOF_ONLY//,/ }; do
-    case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; esac
+    case "$n" in L7) n=R2W ;; NS|NS2) n=G ;; S3) n=L6 ;; G2|L5) n=R3 ;; SL2H) n=SL2 ;; RU[1-6]) n=RU ;; CL[1-4]|CL1b|RB|RB2) n=CL ;; esac
     [[ "$ROWS" == *" $n "* ]] || { echo "FAIL PROOF_ONLY names an unknown row: $n"; exit 1; }
     PO+="$n,"; done; PROOF_ONLY=$PO
 fi
@@ -166,17 +211,17 @@ fp() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 PW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 MPW=$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 RP=$(fp); PP=$(fp); SP=$(fp)
-NET=pgvhadr-$$; REPO=pgvhadr-repo-$$; PRI=pgvhadr-p-$$; STB=pgvhadr-s-$$; BB=pgvhadr-bb-$$; ARC=pgvhadr-arc-$$
+NET=pgvhadr-$$; REPO=pgvhadr-repo-$$; PRI=pgvhadr-p-$$; STB=pgvhadr-s-$$; BB=pgvhadr-bb-$$; ARC=pgvhadr-arc-$$; CAS=pgvhadr-c-$$; CPY=pgvhadr-x-$$
 FEED=""; R2W_VALUE=""; HOLD=""; DFEED=""; SYNCW=""
 cleanup() {
   [[ -n "$SYNCW" ]] && kill "$SYNCW" 2>/dev/null || true
   [[ -n "$FEED" ]] && kill "$FEED" 2>/dev/null || true
   [[ -n "$HOLD" ]] && kill "$HOLD" 2>/dev/null || true
   [[ -n "$DFEED" ]] && kill "$DFEED" 2>/dev/null || true
-  docker rm -f -v "$BB" "$STB" "$PRI" "$REPO" >/dev/null 2>&1 || true
+  docker rm -f -v "$BB" "$CPY" "$CAS" "$STB" "$PRI" "$REPO" >/dev/null 2>&1 || true
   docker volume rm "$ARC" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  for c in "$BB" "$STB" "$PRI" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
+  for c in "$BB" "$CPY" "$CAS" "$STB" "$PRI" "$REPO"; do docker inspect "$c" >/dev/null 2>&1 && echo "container $c LEFT"; done
   docker volume inspect "$ARC" >/dev/null 2>&1 && echo "volume $ARC LEFT"
   docker network inspect "$NET" >/dev/null 2>&1 && echo "network $NET LEFT"
   rm -rf "$WORK"
@@ -728,6 +773,270 @@ if want L4; then
   IFS='|' read -r nk na nbad nall <<<"$r"
   floor=10; [[ -n "${PROOF_ONLY:-}" ]] && floor=1   # B alone stores 2 rows; the full run stores dozens
   [[ -n "$nall" && "$nall" -gt "$floor" && "$nk" == "$na" && "$nbad" == "0" ]] && ok "L4 $nall sender rows of hadrs1, keyed app:hadrs1@<address> ($nk key(s) for $na address(es))" || fail "L4 hadrs1's sender keys: keys $nk, addresses $na, off the link key $nbad, rows $nall"
+fi
+
+# ---- 375: the hourly rollup (0150), repository rows on a stand-in instance ------------------------------------------
+imp() { q "select pgvigil.import_replication($1, $2, '$3'::jsonb)" >/dev/null; }   # imp <instance_id> <timestamptz sql> <payload>: one read
+if want RU || want LK || want LD; then
+  RU=$(q "select pgvigil.ensure_instance('ru-standin', 'self-managed', '18.0', 180000, false, '{}')")
+  H=$(q "select to_char(date_trunc('hour', now() at time zone 'UTC') - interval '3 hours', 'YYYY-MM-DD HH24:00:00+00')")
+fi
+if want RU; then
+  # RU1 the rig's own samples (its two instances) against a direct aggregate of replication_sample, every hour and object
+  r=$(q "with d as (select instance_id, kind, key, date_trunc('hour', snapshot_at at time zone 'UTC') at time zone 'UTC' as h, count(*)::int as n,
+                           min(lag_bytes) as bmin, max(lag_bytes) as bmax, sum(lag_bytes) as bsum, count(lag_bytes)::int as bn,
+                           round(min(lag_secs)::numeric, 6) as smin, round(max(lag_secs)::numeric, 6) as smax, round(sum(lag_secs)::numeric, 6) as ssum,
+                           count(lag_secs)::int as sn, (count(*) filter (where active))::int as act
+                      from pgvigil.replication_sample where instance_id in ($PID_, $SID_)
+                       and (kind in ('receiver', 'slot', 'aurora_replica') or (kind = 'sender' and (key like 'app:%' or key like 'slot:%')))
+                     group by 1, 2, 3, 4),
+               h as (select instance_id, kind, key, snapshot_at, samples, lag_bytes_min, lag_bytes_max, lag_bytes_sum, lag_bytes_n,
+                            round(lag_secs_min::numeric, 6), round(lag_secs_max::numeric, 6), round(lag_secs_sum::numeric, 6), lag_secs_n, active_reads
+                       from pgvigil.replication_hourly where instance_id in ($PID_, $SID_) and kind in ('sender', 'receiver', 'slot', 'aurora_replica'))
+          select (select count(*) from d) || '|' || (select count(*) from (select * from d except select * from h) x) || '|' || (select count(*) from (select * from h except select * from d) x)")
+  IFS='|' read -r n1 n2 n3 <<<"$r"
+  [[ "$n1" =~ ^[1-9][0-9]*$ && "$n2" == 0 && "$n3" == 0 ]] && ok "RU1 the rig's $n1 hour rows equal a direct aggregate of its samples (none missing, none extra)" || fail "RU1 hours vs samples (rows|missing|extra): '$r'"
+  # RU1 a counter with a reset, a collector gap and a pair across the hour (slot_stats spill_count 10, 20, 5, 7, 9)
+  for p in "10 minutes|10" "15 minutes|20" "20 minutes|5" "59 minutes 30 seconds|7" "60 minutes 30 seconds|9"; do
+    imp "$RU" "'$H'::timestamptz + interval '${p%%|*}'" "[{\"kind\":\"slot_stats\",\"slot_name\":\"ru_slot\",\"spill_count\":${p##*|}}]"
+  done
+  r=$(q "select string_agg(to_char(snapshot_at - '$H'::timestamptz, 'HH24') || ' ' || samples || ' ' || (rise->>'spill_count') || ' ' || coalesce(gap_rise->>'spill_count', '-'), '; ' order by snapshot_at)
+           from pgvigil.replication_hourly where instance_id = $RU and kind = 'slot_stats' and key = 'ru_slot'")
+  d=$(q "with s as (select snapshot_at, (detail->>'spill_count')::numeric as v, lag(snapshot_at) over w as pa, lag((detail->>'spill_count')::numeric) over w as pv
+                      from pgvigil.replication_sample where instance_id = $RU and kind = 'slot_stats' and key = 'ru_slot' window w as (order by snapshot_at)),
+              p as (select date_trunc('hour', snapshot_at at time zone 'UTC') at time zone 'UTC' as h, case when v >= pv then v - pv else v end as rise, snapshot_at - pa <= interval '10 minutes' as short
+                      from s where pa is not null)
+         select string_agg(to_char(h - '$H'::timestamptz, 'HH24') || ' ' || n || ' ' || r || ' ' || coalesce(g::text, '-'), '; ' order by h)
+           from (select h, count(*) as n, sum(rise) filter (where short) as r, sum(rise) filter (where not short) as g from p group by h) x")
+  [[ "$r" == "00 3 15 2; 01 1 2 -" && "$r" == "$d" ]] && ok "RU1 counter rises (hour pairs rise gap): $r = a direct lag() over the samples" || fail "RU1 counter rises: '$r', direct '$d', expected '00 3 15 2; 01 1 2 -'"
+  # RU2 a late sample, the last of hour H, changes H+1's rise; a recompute twice = once
+  imp "$RU" "'$H'::timestamptz + interval '59 minutes 50 seconds'" '[{"kind":"slot_stats","slot_name":"ru_slot","spill_count":8}]'
+  r=$(q "select string_agg(to_char(snapshot_at - '$H'::timestamptz, 'HH24') || ' ' || (rise->>'spill_count'), '; ' order by snapshot_at)
+           from pgvigil.replication_hourly where instance_id = $RU and key = 'ru_slot'")
+  [[ "$r" == "00 16; 01 1" ]] && ok "RU2 the late sample recomputed hour H (16) and H+1 (1): $r" || fail "RU2 after the late sample: '$r', expected '00 16; 01 1'"
+  m1=$(q "select md5(string_agg(h::text, ',' order by kind, key, snapshot_at)) from pgvigil.replication_hourly h where instance_id = $RU")
+  r=$(psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 2>&1 <<SQL
+begin;
+select pg_advisory_xact_lock(hashtext('pgvigil.replication_hourly'), $RU);
+select pgvigil.replication_hours($RU, '$H'::timestamptz - interval '1 hour', '$H'::timestamptz + interval '3 hours');
+select pgvigil.replication_hours($RU, '$H'::timestamptz - interval '1 hour', '$H'::timestamptz + interval '3 hours');
+commit;
+SQL
+)
+  m2=$(q "select md5(string_agg(h::text, ',' order by kind, key, snapshot_at)) from pgvigil.replication_hourly h where instance_id = $RU")
+  [[ -n "$m1" && "$m1" == "$m2" ]] && ok "RU2 the hours recomputed twice are the same rows" || fail "RU2 twice != once ($m1 / $m2; $r)"
+  # RU3 the month boundary, inside BEGIN ... ROLLBACK (a future sample must not stay: replication_latest takes the newest)
+  M=$(q "select to_char(date_trunc('month', now() at time zone 'UTC') + interval '1 month', 'YYYY-MM-DD 00:00:00+00')")
+  MP=$(q "select to_char('$M'::timestamptz at time zone 'UTC', 'YYYYMM')")
+  r=$(psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 2>&1 <<SQL
+begin;
+select pgvigil.import_replication($RU, '$M'::timestamptz - interval '1 minute', '[{"kind":"slot_stats","slot_name":"ru_m","spill_count":3}]'::jsonb);
+select pgvigil.import_replication($RU, '$M'::timestamptz + interval '30 seconds', '[{"kind":"slot_stats","slot_name":"ru_m","spill_count":7}]'::jsonb);
+select (to_regclass('pgvigil.replication_hourly_$MP') is not null) || '|' || coalesce((select rise->>'spill_count' from pgvigil.replication_hourly
+         where instance_id = $RU and key = 'ru_m' and snapshot_at = '$M'::timestamptz), 'none');
+rollback;
+SQL
+)
+  r=$(tail -1 <<<"$r"); r2=$(q "select count(*) from pgvigil.replication_sample where instance_id = $RU and key = 'ru_m'")
+  [[ "$r" == "true|4" && "$r2" == 0 ]] && ok "RU3 across $M: the trigger made replication_hourly_$MP, the pair across the boundary rose 4; rolled back" || fail "RU3 month boundary: '$r' (expected true|4), samples left $r2"
+  # RU4 a failure injected (a table holds the partition's name), the import commits, 'rollup failed'; the next import heals
+  P=$(q "select to_char(date_trunc('month', now() at time zone 'UTC') - interval '1 month' + interval '14 days 12 hours', 'YYYY-MM-DD HH24:00:00+00')")
+  PP_=$(q "select to_char('$P'::timestamptz at time zone 'UTC', 'YYYYMM')")
+  if [[ "$(q "select to_regclass('pgvigil.replication_hourly_$PP_') is null")" == t ]]; then
+    q "create table pgvigil.replication_hourly_$PP_ (blocker int)" >/dev/null
+    imp "$RU" "'$P'::timestamptz" '[{"kind":"slot","slot_name":"ru_fail","retained_bytes":11,"wal_status":"reserved","active":true}]'
+    r=$(q "select (select count(*) from pgvigil.replication_sample where instance_id = $RU and key = 'ru_fail') || '|' ||
+               (select count(*) from pgvigil.collection_log where instance_id = $RU and collection = 'replication_hourly' and status = 'error' and note like 'rollup failed%') || '|' ||
+               (select count(*) from pgvigil.replication_hourly_dirty where instance_id = $RU and source = 'mark')")
+    [[ "$r" == "1|1|1" ]] && ok "RU4 the import committed (sample stored), 'rollup failed' logged, its hours marked: $r" || fail "RU4 injected failure (sample|failed rows|mark): '$r', expected 1|1|1"
+    q "drop table pgvigil.replication_hourly_$PP_" >/dev/null
+    imp "$RU" "now()" '[{"kind":"slot","slot_name":"ru_now","retained_bytes":12,"wal_status":"reserved","active":true}]'
+    r=$(q "select (select count(*) from pgvigil.replication_hourly where instance_id = $RU and key = 'ru_fail') || '|' ||
+               (select count(*) from pgvigil.collection_log where instance_id = $RU and collection = 'replication_hourly' and status = 'ok' and note like 'rollup healed%') || '|' ||
+               (select count(*) from pgvigil.replication_hourly_dirty where instance_id = $RU)")
+    [[ "$r" == "1|1|0" ]] && ok "RU4 the next import healed the marked hours ('rollup healed', the hour row there, no dirty range): $r" || fail "RU4 heal (hour rows|healed rows|dirty): '$r', expected 1|1|0"
+  else
+    fail "RU4 replication_hourly_$PP_ exists already: no partition to block"
+  fi
+  # RU5 retention: the month 25 months back dropped, the one 24 months back kept (730 days)
+  r=$(q "select string_agg(to_char(m, 'YYYYMM'), ',') from (select date_trunc('month', now() at time zone 'UTC') - make_interval(months => k) as m from unnest(array[25, 24]) k) x")
+  OLD=${r%%,*}; KEEP=${r##*,}
+  q "select pgvigil.ensure_month_partition('replication_hourly', (to_date('${OLD}15', 'YYYYMMDD')::timestamp) at time zone 'UTC'),
+            pgvigil.ensure_month_partition('replication_hourly', (to_date('${KEEP}15', 'YYYYMMDD')::timestamp) at time zone 'UTC')" >/dev/null
+  r=$(q "select array_to_string(pgvigil.replication_hourly_purge(), ',') || '|' || (to_regclass('pgvigil.replication_hourly_$OLD') is null) || '|' || (to_regclass('pgvigil.replication_hourly_$KEEP') is not null)")
+  [[ "$r" == "replication_hourly_$OLD|true|true" ]] && ok "RU5 replication_hourly_purge dropped $OLD, kept $KEEP (730 days): $r" || fail "RU5 retention: '$r', expected replication_hourly_$OLD|true|true"
+  # RU6 the series: a 2-day window reads the samples, a 3-day window the hours (the same max per hour); a window older
+  # than the stored samples reads the hours; an instance not built says 'building'
+  for p in "5 minutes|100" "25 minutes|300" "65 minutes|200"; do
+    imp "$RU" "'$H'::timestamptz + interval '${p%%|*}'" "[{\"kind\":\"slot\",\"slot_name\":\"ru_lag\",\"retained_bytes\":${p##*|},\"wal_status\":\"reserved\",\"active\":true}]"
+  done
+  q "select pgvigil.replication_hourly_heal_one($RU)" >/dev/null
+  r=$(q "select count(*) || '|' || string_agg(lag_bytes::text, ',' order by snapshot_at) || '|' || bool_or(building)
+           from pgvigil.replication_series($RU, '$H'::timestamptz - interval '1 hour', '$H'::timestamptz + interval '3 hours', 60, 'lag') where key = 'ru_lag'")
+  r2=$(q "select count(*) || '|' || string_agg(lag_bytes::text, ',' order by snapshot_at) || '|' || bool_or(building)
+            from pgvigil.replication_series($RU, now() - interval '3 days', now(), 432, 'lag') where key = 'ru_lag'")
+  [[ "$r" == "3|100,300,200|false" && "$r2" == "2|300,200|false" ]] && ok "RU6 2 days: the samples ($r); 3 days: the hours, the same max per hour ($r2)" || fail "RU6 the switch: 2 days '$r' (expected 3|100,300,200|false), 3 days '$r2' (expected 2|300,200|false)"
+  OLDS=$(q "select to_char(min(to_date(right(c.relname, 6) || '01', 'YYYYMMDD')) - interval '1 month' + interval '14 days 10 hours', 'YYYY-MM-DD HH24:00:00+00')
+              from pg_inherits i join pg_class c on c.oid = i.inhrelid where i.inhparent = 'pgvigil.replication_sample'::regclass and c.relname ~ '_[0-9]{6}\$'")
+  q "select pgvigil.ensure_month_partition('replication_hourly', '$OLDS'::timestamptz);
+     insert into pgvigil.replication_hourly (instance_id, kind, key, snapshot_at, samples, lag_bytes_max) values ($RU, 'slot', 'ru_hist', '$OLDS'::timestamptz, 60, 555)" >/dev/null
+  r=$(q "select count(*) || '|' || string_agg(lag_bytes::text, ',') from pgvigil.replication_series($RU, '$OLDS'::timestamptz - interval '10 hours', '$OLDS'::timestamptz + interval '14 hours', 144, 'lag') where key = 'ru_hist'")
+  r2=$(q "select coalesce(bool_and(building), false) || '|' || count(*) from pgvigil.replication_series($PID_, now() - interval '3 days', now(), 432, 'lag')")
+  [[ "$r" == "1|555" && "$r2" == true\|* && "${r2#*|}" != 0 ]] && ok "RU6 a day older than the samples reads the hours ($r); hadr-p, not built, reads its samples by hour, building ($r2)" || fail "RU6 old window '$r' (expected 1|555), unbuilt hadr-p '$r2' (expected true|<rows>)"
+fi
+# ---- LK: an import while the instance's hours are being healed (F4) --------------------------------------------------
+if want LK; then
+  (psql "$RDSN dbname=pgvigil" -XAtq -c "begin" -c "select pg_advisory_xact_lock(hashtext('pgvigil.replication_hourly'), $RU)" -c "select pg_sleep(8)" -c "commit" >/dev/null 2>&1) & LKH=$!
+  sleep 2
+  t0=$(date +%s%N); imp "$RU" "now()" '[{"kind":"slot","slot_name":"ru_lk","retained_bytes":42,"wal_status":"reserved","active":true}]'; ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+  r=$(q "select (select count(*) from pgvigil.replication_hourly where instance_id = $RU and key = 'ru_lk') || '|' || (select count(*) from pgvigil.replication_hourly_dirty where instance_id = $RU and source = 'mark')")
+  [[ "$ms" -lt 2000 && "$r" == "0|1" ]] && ok "LK the import while a heal held the lock committed in $ms ms, its hours marked (hour rows|mark): $r" || fail "LK the import under a held lock: $ms ms, '$r' (expected under 2000 ms, 0|1)"
+  wait "$LKH" 2>/dev/null
+  imp "$RU" "now()" '[{"kind":"slot","slot_name":"ru_lk","retained_bytes":43,"wal_status":"reserved","active":true}]'
+  r=$(q "select (select samples || ' ' || lag_bytes_max from pgvigil.replication_hourly where instance_id = $RU and key = 'ru_lk' and snapshot_at = date_trunc('hour', now() at time zone 'UTC') at time zone 'UTC') || '|' ||
+             (select count(*) from pgvigil.replication_hourly_dirty where instance_id = $RU)")
+  [[ "$r" == "2 43|0" ]] && ok "LK the next import healed the hour (samples max|dirty): $r" || fail "LK after the lock: '$r', expected '2 43|0'"
+fi
+# ---- LD: the first build of 30 days at 300 databases, the imports going on (F1) -------------------------------------
+if want LD; then
+  LD=$(q "select pgvigil.ensure_instance('ld-standin', 'self-managed', '18.0', 180000, true, '{}')")
+  t0=$(date +%s)
+  r=$(psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 2>&1 <<SQL
+set session_replication_role = replica;   -- history stored before the upgrade: no trigger
+select count(*) from (select pgvigil.ensure_month_partition('replication_sample', d) from generate_series(now() - interval '31 days', now(), interval '1 day') d) x;
+insert into pgvigil.replication_sample (instance_id, snapshot_at, kind, key, state, lag_bytes, lag_secs, active, detail)
+select $LD, t, 'standby', 'recovery', 'receiving', 1000, NULL, true, '{"kind":"standby","has_receiver":true}'::jsonb
+  from generate_series(date_trunc('minute', now()) - interval '30 days', date_trunc('minute', now()) - interval '10 minutes', interval '1 minute') t
+union all
+select $LD, t, 'receiver', 'hadr_slot', 'streaming', NULL, (extract(epoch from t)::bigint % 17)::float8, NULL, '{"kind":"receiver"}'::jsonb
+  from generate_series(date_trunc('minute', now()) - interval '30 days', date_trunc('minute', now()) - interval '10 minutes', interval '1 minute') t
+union all
+select $LD, t, 'conflict', 'db' || g, NULL, NULL, NULL, NULL,
+       jsonb_build_object('kind', 'conflict', 'datname', 'db' || g, 'confl_tablespace', 0, 'confl_lock', (extract(epoch from t)::bigint / 3600 + g) % 5,
+                          'confl_snapshot', 0, 'confl_bufferpin', 0, 'confl_deadlock', 0)
+  from generate_series(date_trunc('minute', now()) - interval '30 days', date_trunc('minute', now()) - interval '10 minutes', interval '1 minute') t, generate_series(1, 300) g;
+select count(*) from pgvigil.replication_sample where instance_id = $LD;
+SQL
+)
+  echo "  LD seeded $(tail -1 <<<"$r") samples in $(( $(date +%s) - t0 )) s"
+  ( s0=$(date +%s%N); psql "$RDSN dbname=pgvigil" -XAtq -v ON_ERROR_STOP=1 -c "select pgvigil.replication_hourly_heal_one($LD)" > "$WORK/ld-build.out" 2>&1
+    echo "rc $? ms $(( ($(date +%s%N) - s0) / 1000000 ))" >> "$WORK/ld-build.out" ) & LDB=$!
+  sleep 2; worst=0; n=0
+  CONF=$(q "select '[' || string_agg(format('{\"kind\":\"conflict\",\"datname\":\"db%s\",\"confl_lock\":0}', g), ',') || ',{\"kind\":\"standby\",\"has_receiver\":true,\"conninfo_set\":true}]' from generate_series(1, 300) g")
+  while kill -0 "$LDB" 2>/dev/null && (( n < 200 )); do
+    t1=$(date +%s%N); imp "$LD" "now()" "$CONF"; ms=$(( ($(date +%s%N) - t1) / 1000000 )); (( ms > worst )) && worst=$ms; n=$((n + 1)); sleep 1
+  done
+  wait "$LDB" 2>/dev/null; b=$(tail -1 "$WORK/ld-build.out")
+  r=$(q "select (select count(*) from pgvigil.replication_hourly where instance_id = $LD and kind = 'receiver') || '|' ||
+             (select count(*) from pgvigil.replication_hourly_first_build where instance_id = $LD) || '|' ||
+             (select count(*) from pgvigil.replication_hourly_dirty where instance_id = $LD and source = 'build')")
+  echo "  LD the build: $b; $n imports during it, the slowest $worst ms; (receiver hours|first build|build range left) $r"
+  [[ "$b" == rc\ 0\ * && "$n" -ge 1 && "$worst" -lt 2000 && "$r" == 72[0-9]\|1\|0 ]] && ok "LD the first build ($b) ran beside $n imports, each under 2 s (slowest $worst ms); 72x receiver hours" || fail "LD build '$b', $n imports, slowest $worst ms, '$r' (expected rc 0, every import under 2000 ms, 72x|1|0)"
+  imp "$LD" "now()" "$CONF"
+  r=$(q "select count(*) from pgvigil.replication_hourly_dirty where instance_id = $LD")
+  [[ "$r" == 0 ]] && ok "LD the import after the build healed the hours marked during it" || fail "LD dirty ranges after the build: $r"
+  echo "  LD measured: $(q "select count(*) || ' hour rows, ' || pg_size_pretty(sum(pg_total_relation_size(c.oid))) || ' with indexes, ' || coalesce(round(sum(pg_total_relation_size(c.oid)) / nullif((select count(*) from pgvigil.replication_hourly), 0)), 0) || ' B a row; HOT updates ' || coalesce(sum(s.n_tup_hot_upd), 0) || ' of ' || coalesce(sum(s.n_tup_upd), 0)
+                          from pg_inherits i join pg_class c on c.oid = i.inhrelid left join pg_stat_user_tables s on s.relid = c.oid where i.inhparent = 'pgvigil.replication_hourly'::regclass" 2>&1)"
+fi
+# ---- 375: a cascaded standby, standby queries cancelled, the cluster checks (CL ends the rig) ------------------------
+rc_() { local i; for i in "$@"; do "$BIN" collect -config "$CFG" -once rolechange -instance "$i" >>"$WORK/collect.out" 2>&1 || echo "  (rolechange of $i failed: $(tail -1 "$WORK/collect.out"))"; done; }
+cdetail() { q "select check_name || '|' || severity || '|' || detail from pgvigil.pg_cluster_checks where instance_id = $1 and check_name = '$2'"; }
+if want CC || want SQ || want CL; then
+  CP=$(fp); XP=$(fp)
+  CDSN="host=127.0.0.1 port=$CP user=postgres password=$PW sslmode=disable dbname=postgres"
+  cq() { psql "$CDSN" -XAtq -c "$1" 2>/dev/null; }
+  # hadr-c: a standby of the standby (pg_basebackup from hadr-s), max_standby_streaming_delay 0 (its queries yield to replay)
+  docker run -d --name "$CAS" --network "$NET" --user postgres -e PGPASSWORD="$PW" -p "127.0.0.1:$CP:5432" postgres:18 bash -c 'set -e; D=/var/lib/postgresql/cdata
+    if [ ! -s "$D/PG_VERSION" ]; then pg_basebackup -h standby -U postgres -D "$D" -R -X stream -c fast; chmod 700 "$D"; fi
+    exec postgres -D "$D" -c cluster_name=hadrc1 -c hot_standby=on -c listen_addresses="*" -c max_standby_streaming_delay=0' >/dev/null
+  for _ in $(seq 1 90); do [[ "$(cq "select status from pg_stat_wal_receiver")" == streaming ]] && break; sleep 1; done
+  [[ "$(cq "select status from pg_stat_wal_receiver")" == streaming ]] || { fail "375 rig: hadr-c is not streaming from hadr-s"; docker logs --tail 15 "$CAS"; }
+  { cat "$WORK/pgvigil.yaml"; printf '  - name: hadr-c\n    dsn: "host=127.0.0.1 port=%s user=pgv password=%s dbname=postgres sslmode=disable"\n' "$CP" "$MPW"
+    printf '  - name: hadr-x\n    dsn: "host=127.0.0.1 port=%s user=pgv password=%s dbname=postgres sslmode=disable"\n' "$XP" "$MPW"; } > "$WORK/pgvigil-375.yaml"
+  CFG=$WORK/pgvigil-375.yaml
+  "$BIN" collect -config "$CFG" -once instance -instance hadr-c >>"$WORK/collect.out" 2>&1 || fail "375 rig: instance read of hadr-c: $(tail -1 "$WORK/collect.out")"
+  CID=$(q "select instance_id from pgvigil.instances where name = 'hadr-c'")
+  rc_ hadr-p hadr-s hadr-c
+fi
+if want CC; then
+  read_ hadr-s 2; read_ hadr-c 1; read_ hadr-p 1
+  r=$(q "select status || '|' || sending_in_recovery || '|' || coalesce(standby_id::text, '-') from pgvigil.pg_repl_link_health where sending_id = $SID_ and link like 'app:hadrc1@%'")
+  [[ "$r" == "streaming (cascaded from hadr-s)|true|$CID" ]] && ok "CC hadr-c's link from hadr-s: $r" || fail "CC the cascaded link (status|sending_in_recovery|standby): '$r', expected 'streaming (cascaded from hadr-s)|true|$CID'"
+  r=$(q "select count(*) || '|' || string_agg(status, ',') from pgvigil.pg_repl_link_health where standby_id = $CID")
+  r2=$(q "select status from pgvigil.pg_repl_link_health where sending_id = $PID_ and link like 'app:hadrs1@%'")
+  [[ "$r" == 1\|* && "$r2" == streaming ]] && ok "CC hadr-c paired once ($r); hadr-p's own link to hadr-s stays 'streaming'" || fail "CC pairing: hadr-c '$r' (expected one row), hadr-p -> hadr-s '$r2' (expected streaming)"
+fi
+if want SQ; then
+  pq "create table if not exists hadr_sq (id int); insert into hadr_sq values (1)" >/dev/null
+  for _ in $(seq 1 30); do [[ "$(cq "select count(*) from hadr_sq")" =~ ^[1-9] ]] && break; sleep 1; done
+  read_ hadr-c 1   # the counters before
+  for k in 1 2 3; do
+    ( psql "$CDSN" -XAtq -c "begin" -c "select count(*) from hadr_sq" -c "select pg_sleep(30)" -c "commit" > "$WORK/sq$k.out" 2>&1 ) & SQP=$!
+    sleep 2; pq "begin; lock table hadr_sq in access exclusive mode; commit" >/dev/null
+    for _ in $(seq 1 25); do kill -0 "$SQP" 2>/dev/null || break; sleep 1; done; kill "$SQP" 2>/dev/null; wait "$SQP" 2>/dev/null
+  done
+  n=$(grep -l "conflict with recovery" "$WORK"/sq[123].out 2>/dev/null | wc -l)
+  read_ hadr-c 1
+  r=$(finding "$CID" 'standby queries cancelled'); r2=$(cdetail "$CID" 'standby queries cancelled')
+  [[ "$n" == 3 && "$r" == "warning|database postgres: queries cancelled by recovery conflicts (warning at 3 in 10 minutes)" && "$r2" == *"3 queries cancelled"*"confl_lock +3"* ]] \
+    && ok "SQ $n standby queries cancelled on hadr-c: '$r' ($r2)" || fail "SQ $n of 3 cancelled; finding '$r', check '$r2' (expected the warning, confl_lock +3)"
+  r=$(finding "$PID_" 'standby queries cancelled')
+  [[ -z "$r" ]] && ok "SQ nothing on the primary" || fail "SQ raised on hadr-p: '$r'"
+  # the window passed: the conflict reads moved 13 minutes back (a stand-in for the wait), the finding is gone
+  q "update pgvigil.replication_sample set snapshot_at = snapshot_at - interval '13 minutes' where instance_id = $CID and kind = 'conflict' and snapshot_at > now() - interval '30 minutes'" >/dev/null
+  r=$(finding "$CID" 'standby queries cancelled')
+  [[ -z "$r" ]] && ok "SQ gone once its reads are past the window" || fail "SQ still raised past the window: '$r'"
+fi
+if want CL; then
+  # RB2 an instance that never changed role: unknown before its first read, then its role
+  r=$(q "select string_agg(role, ',' order by from_at) from pgvigil.pg_role_bands($PID_, now() - interval '1 day', now())")
+  [[ "$r" == "unknown,primary" ]] && ok "RB2 hadr-p's bands (never changed role): $r" || fail "RB2 hadr-p's bands: '$r', expected unknown,primary"
+  # CL3 a promoted copy that never streamed (a backup of hadr-p started as a primary): nothing
+  docker run -d --name "$CPY" --network "$NET" --user postgres -e PGPASSWORD="$PW" -p "127.0.0.1:$XP:5432" postgres:18 bash -c 'set -e; D=/var/lib/postgresql/xdata
+    if [ ! -s "$D/PG_VERSION" ]; then pg_basebackup -h primary -U postgres -D "$D" -X stream -c fast; chmod 700 "$D"; fi
+    exec postgres -D "$D" -c cluster_name=hadrx1 -c listen_addresses="*"' >/dev/null
+  for _ in $(seq 1 90); do psql "host=127.0.0.1 port=$XP user=postgres password=$PW sslmode=disable dbname=postgres" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
+  "$BIN" collect -config "$CFG" -once instance -instance hadr-x >>"$WORK/collect.out" 2>&1 || fail "CL3 instance read of hadr-x: $(tail -1 "$WORK/collect.out")"
+  XID=$(q "select instance_id from pgvigil.instances where name = 'hadr-x'")
+  rc_ hadr-x hadr-p; sleep 60; rc_ hadr-x hadr-p
+  r=$(q "select coalesce(string_agg(instance_id || ' ' || check_name, ', '), '') from pgvigil.pg_cluster_checks where check_name in ('two primaries', 'cluster without a primary')")
+  r2=$(q "select (select system_identifier from pgvigil.pg_role_state where instance_id = $XID) = (select system_identifier from pgvigil.pg_role_state where instance_id = $PID_)")
+  [[ -z "$r" && "$r2" == t ]] && ok "CL3 a copy of hadr-p started as a primary (one system identifier, never a standby): no cluster finding" || fail "CL3 the copy: '$r' (expected none), same identifier '$r2'"
+  docker rm -f -v "$CPY" >/dev/null
+  # CL2 the primary stopped (a real stop): hadr-s's receiver down, hadr-c cascaded from hadr-s; past 3 minutes no
+  # fresh primary: 'cluster without a primary' critical on hadr-p (the member last seen primary)
+  rc_ hadr-p; docker stop "$PRI" >/dev/null
+  for k in 1 2 3 4 5 6 7; do sleep 30; read_ hadr-s 1; read_ hadr-c 1; (( k % 2 == 0 )) && rc_ hadr-s hadr-c; done
+  rc_ hadr-s hadr-c
+  r=$(finding "$PID_" 'cluster without a primary'); r2=$(cdetail "$PID_" 'cluster without a primary')
+  r3=$(q "select count(*) from pgvigil.pg_cluster_checks where check_name = 'cluster without a primary'")
+  [[ "$r" == critical\|"system identifier "*": no primary: every standby's WAL receiver is down" && "$r2" == *"standbys hadr-s have had no WAL receiver"* && "$r3" == 1 ]] \
+    && ok "CL2 'cluster without a primary' on hadr-p once ($r2)" || fail "CL2 '$r' / '$r2' / rows $r3 (expected one critical on hadr-p naming hadr-s)"
+  # CL4 a switchover with the old primary stopped: hadr-s promoted; nothing (hadr-p not read), the headless finding gone
+  sq "select pg_promote()" >/dev/null
+  for _ in $(seq 1 30); do [[ "$(sq 'select pg_is_in_recovery()')" == f ]] && break; sleep 1; done
+  rc_ hadr-s; sleep 60; rc_ hadr-s hadr-c; read_ hadr-s 1; read_ hadr-c 1
+  r=$(q "select coalesce(string_agg(instance_id || ' ' || check_name, ', '), '') from pgvigil.pg_cluster_checks where check_name in ('two primaries', 'cluster without a primary')")
+  [[ -z "$r" ]] && ok "CL4 hadr-s promoted while hadr-p is stopped: no cluster finding" || fail "CL4 after the switchover: '$r', expected none"
+  r=$(q "select string_agg(role, ',' order by from_at) from pgvigil.pg_role_bands($SID_, now() - interval '1 day', now())")
+  r2=$(q "select to_char(min(to_at), 'HH24:MI') = to_char((select max(changed_at) from pgvigil.pg_role_changes where instance_id = $SID_ and change = 'promotion'), 'HH24:MI')
+            from pgvigil.pg_role_bands($SID_, now() - interval '1 day', now()) where role = 'standby'")
+  [[ "$r" == "unknown,standby,primary" && "$r2" == t ]] && ok "RB hadr-s's bands across its promotion: $r (the standby band ends at the promotion)" || fail "RB hadr-s's bands: '$r' (expected unknown,standby,primary), ends at the promotion '$r2'"
+  # CL1 the old primary back while hadr-s is primary: two primaries, critical on each
+  docker start "$PRI" >/dev/null
+  for _ in $(seq 1 60); do pq "select 1" >/dev/null 2>&1 && break; sleep 1; done
+  rc_ hadr-p hadr-s; sleep 60; rc_ hadr-p hadr-s
+  r=$(finding "$PID_" 'two primaries'); r2=$(finding "$SID_" 'two primaries')
+  [[ "$r" == "critical|system identifier "*": primary together with hadr-s: a split brain" && "$r2" == "critical|system identifier "*": primary together with hadr-p: a split brain" ]] \
+    && ok "CL1 'two primaries' critical on hadr-p and on hadr-s, each naming the other" || fail "CL1 hadr-p '$r', hadr-s '$r2' (expected critical on each naming the other)"
+  # CL1b the lead's case: a standby promoted while its primary runs (hadr-c, streaming from hadr-s)
+  read_ hadr-s 1
+  cq "select pg_promote()" >/dev/null
+  for _ in $(seq 1 30); do [[ "$(cq 'select pg_is_in_recovery()')" == f ]] && break; sleep 1; done
+  rc_ hadr-c hadr-s; sleep 60; rc_ hadr-c hadr-s
+  r=$(finding "$CID" 'two primaries'); r2=$(finding "$SID_" 'two primaries')
+  [[ "$r" == *"primary together with hadr-s: a split brain" && "$r2" == *"primary together with hadr-c, hadr-p: a split brain" ]] \
+    && ok "CL1b hadr-c promoted while hadr-s runs: 'two primaries' on hadr-c ($r) and hadr-s ($r2)" || fail "CL1b hadr-c '$r', hadr-s '$r2' (expected hadr-c naming hadr-s, hadr-s naming hadr-c and hadr-p)"
 fi
 
 echo "rows run: ${PROOF_ONLY:-all}"
