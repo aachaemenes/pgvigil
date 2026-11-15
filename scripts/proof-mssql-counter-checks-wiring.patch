@@ -11,7 +11,7 @@ index d3a338a2..0e154847 100644
  | The Queries view's section order, the query heatmap (its bins aiming at 144 columns, seven log10 buckets per metric, eight log-scale shades, its legend, cell words and 'Show as table', 'Show Active Queries at This Time' at the bin's middle, the 7-day reach), the time strips over Active queries and the Query Store grid with a row's overlay, the wait filter's words, the per-query trend and the procedure history's four metrics, the Query Store overhead's sleep waits and its memory clerk line | PerformanceMonitor 3.12.0: server-tabs.js, query-heatmap.js, query-heatmap-model.js, time-slicer.js, stats-history.js, charts.js, DarlingQueryHeatmapReader.cs, DarlingMcpQueryHeatmapTools.cs, DarlingMcpTrendTools.cs, ViewerDataService.QueryStoreClutter.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_plancache.go, web/src/mssql_queries.ts, web/src/mssql_querystore.ts, web/src/timestrip.ts, and the wiring's mssql_running.ts, mssql_procs.ts |
  
 diff --git i/docs/alerts.md w/docs/alerts.md
-index bbc51aaf..463ba252 100644
+index bbc51aaf..e7efacba 100644
 --- i/docs/alerts.md
 +++ w/docs/alerts.md
 @@ -247,6 +247,26 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
@@ -46,12 +46,12 @@ index bbc51aaf..463ba252 100644
  | `pgvigil.alert_rules` | The rules; an edit ends a row and writes its successor (`replaces`), so the table is its own history. |
  | `pgvigil.alert_rule_log` | Every attempt from the UI, done or refused: who, from where, what. Not purged, like the acknowledge log. |
 -| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical` or `nodata`, held or not, the newest sample, since when. |
-+| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical`, `nodata` or `na` (under a metric's floor: not judged), held or not, the newest sample, since when. |
++| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical`, `nodata` or `na` (not judged: under a metric's floor, or for a reason of the metric's own), held or not, the newest sample, since when. |
  | `pgvigil.alert_rule_fired` | Per rule: when it last began to fire, on which instance, how often. |
  | `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
  | `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |
 diff --git i/docs/metrics.md w/docs/metrics.md
-index 1026fd6d..ad9f4acf 100644
+index 1026fd6d..262e9be3 100644
 --- i/docs/metrics.md
 +++ w/docs/metrics.md
 @@ -12,10 +12,10 @@ One row per counter, over the time range picked in the header:
@@ -63,7 +63,7 @@ index 1026fd6d..ad9f4acf 100644
  | samples | How many samples the range holds. 0 = nothing was collected in the range (the figures are empty). |
  | warning, critical | The thresholds in force for the row, with their direction (`above 80 %`). |
 -| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, or *not judged yet*. |
-+| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, *N/A (too few to judge)*, or *not judged yet*. |
++| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, *N/A* with its reason in words (*too few to judge* under a floor, or the metric's own reason), or *not judged yet*. |
  | threshold | *New threshold* where none is in force; *Edit* for the rule in force; *Override here* to give this instance its own rule over a wider one. |
  | chart | Draws the row over the range, with its thresholds as flat lines. *Chart every row* draws the family. |
  
@@ -388,14 +388,14 @@ index 2ea63181..75f3d046 100644
 +  END LOOP;
 +END $$;
 diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
-index 25a49aaf..3ea47aa8 100644
+index 25a49aaf..eeae7ba8 100644
 --- i/internal/web/q_alert_rules.go
 +++ w/internal/web/q_alert_rules.go
 @@ -38,6 +38,7 @@ WITH sc AS (
           count(*) FILTER (WHERE s.state IN ('warning', 'critical')) AS firing,
           count(*) FILTER (WHERE s.state = 'pending') AS pending,
           count(*) FILTER (WHERE s.state = 'nodata') AS nodata,
-+         count(*) FILTER (WHERE s.state = 'na') AS na,   -- task 402: under a metric's floor, not judged
++         count(*) FILTER (WHERE s.state = 'na') AS na,   -- task 402: not judged (under the metric's floor, or its own reason in metric_na_reasons)
           string_agg(i.name || CASE WHEN s.database <> '' THEN ' [' || s.database || ']' ELSE '' END, ', ' ORDER BY i.name, s.database)
             FILTER (WHERE s.state IN ('warning', 'critical')) AS firing_on,
           max(s.evaluated_at) AS evaluated_at
@@ -514,7 +514,7 @@ index 08bfdcaf..fee8172f 100644
      SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
             (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
 diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
-index 751c72e1..0f4db5b2 100644
+index 751c72e1..95db08e3 100644
 --- i/web/src/alert_rules.ts
 +++ w/web/src/alert_rules.ts
 @@ -28,7 +28,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null
@@ -551,17 +551,18 @@ index 751c72e1..0f4db5b2 100644
    return badge(held ? `${words}, held (no fresh sample)` : words, kind);
  };
  
-@@ -359,7 +363,8 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -359,7 +363,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
          : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
          : r.evaluated_at == null ? 'not judged yet'
          : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
 -        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
 +        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : '',
-+           Number(r.na) ? `${fmtNum(r.na)} not judged (under the metric's floor)` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
++           // 'na' is a floor or a reason of the metric's own (0152's metric_na_reasons): the count names neither
++           Number(r.na) ? `${fmtNum(r.na)} not judged (N/A: State per instance says why)` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
        { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
        { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
        { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
-@@ -379,13 +384,14 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -379,13 +385,14 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
    }
  
    const stateCols: Col[] = [
@@ -581,7 +582,7 @@ index 751c72e1..0f4db5b2 100644
      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(r.scope, r.target)})` },
      { key: 'since', label: 'in this state since', fmt: fmtTime },
 diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
-index 87040eb5..ce3181bc 100644
+index 87040eb5..688210c3 100644
 --- i/web/src/mssql_xe.ts
 +++ w/web/src/mssql_xe.ts
 @@ -300,6 +300,8 @@ const attentionCols: Col[] = [
