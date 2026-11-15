@@ -59,6 +59,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     const acked = (r: Row) => { const a = jobAcks(ad).get(`${String(r.instance_id)}|${String(r.job_name)}`); return !!a && r.last_failed_at != null && String(a.seen_state) === String(r.last_failed_at); };
     // acknowledged in DBA Dash's sense: the job's status is the acknowledgement's, not critical / warning
     const ackd = (r: Row) => (r.status === 'crit' || r.status === 'warn') && acked(r) && ackRule(r);
+    // the measured cells carry the job's status, as DBA Dash colours its Job Name and Last Failed (the status column
+    // stays): the row's status, acknowledged blue, or N/A where the job has none; a cell with no value stays plain
+    const rowCls = (r: Row) => ackd(r) ? 'status none ack' : statusCls(r.status) || 'status none';
     const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
     const crit = rows.filter(r => r.status === 'crit' && !ackd(r)).length, warn = rows.filter(r => r.status === 'warn' && !ackd(r)).length, ackN = rows.filter(acked).length;
     sec.append(el('div', { class: 'tiles' },
@@ -112,24 +115,24 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       { key: 'instance', fmt: (v, r) => el('a', { href: instHref(r) }, String(v ?? '')) },
       { key: 'platform' },
       { key: 'scheduler', fmt: scheduler },
-      { key: 'job_name', label: 'job', fmt: (v, r) => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(v)} on ${String(r.instance)}` }, String(v ?? '')); b.addEventListener('click', () => { void pick(r); }); return b; } },
+      { key: 'job_name', label: 'job', fmt: (v, r) => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(v)} on ${String(r.instance)}` }, String(v ?? '')); b.addEventListener('click', () => { void pick(r); }); return b; }, cls: (_v, r) => rowCls(r) },
       { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
       { key: 'category' },
       { key: 'description', wide: true },
-      { key: 'status', cls: (v, r) => ackd(r) ? '' : statusCls(v), fmt: (v, r) => ackd(r)
+      { key: 'status', cls: (v, r) => ackd(r) ? 'status none ack' : statusCls(v), fmt: (v, r) => ackd(r)
         ? el('span', {}, badge('acknowledged', ''), r.reason ? ` ${String(r.reason)}` : '')
         : el('span', {}, badge(statusWords[String(v)] ?? String(v ?? ''), v === 'crit' ? 'crit' : v === 'warn' ? 'warn' : v === 'ok' ? 'ok' : ''),
           r.reason ? ` ${String(r.reason)}` : '', acked(r) ? ' (acknowledged)' : '') },
-      { key: 'last_failed_at', label: 'last failure', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v) },
-      { key: 'last_run_failed', label: 'last run failed', fmt: (v, r) => v ? (acked(r) ? 'yes' : badge('yes', 'crit')) : 'no', cls: (v, r) => v && !acked(r) ? 'status crit' : '' },
-      { key: '_since_fail', label: 'since last failure (minutes)', num: true, fmt: sinceCell('last_failed_at') },
+      { key: 'last_failed_at', label: 'last failure', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v), cls: (v, r) => v == null ? '' : rowCls(r) },
+      { key: 'last_run_failed', label: 'last run failed', fmt: (v, r) => v ? (acked(r) ? 'yes' : badge('yes', 'crit')) : 'no', cls: (v, r) => !v ? 'status ok' : acked(r) ? 'status none ack' : 'status crit' },
+      { key: '_since_fail', label: 'since last failure (minutes)', num: true, fmt: sinceCell('last_failed_at'), cls: (_v, r) => r.last_failed_at == null ? '' : rowCls(r) },
       { key: 'failed_step', label: 'failed step', fmt: (v, r) => v == null ? '' : `${String(r.failed_step_id)} ${String(v)}` },
       { key: 'last_succeeded_at', label: 'last success', fmt: (v, r) => v == null ? noneIn(r) : fmtTime(v) },
       { key: '_since_ok', label: 'since last success (minutes)', num: true, fmt: sinceCell('last_succeeded_at') },
       { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(r.instance_id), String(r.job_name), r.last_failed_at, redraw, undefined, names.get(Number(r.instance_id))) },
-      { key: 'fail_24h', label: 'failed 24 h', num: true, cls: (v, r) => Number(v) > 0 && !acked(r) ? 'status warn' : '' },
+      { key: 'fail_24h', label: 'failed 24 h', num: true, cls: (v, r) => !(Number(v) > 0) ? 'status ok' : acked(r) ? 'status none ack' : 'status warn' },
       statCol('ok_24h', 'succeeded 24 h', v => v == null ? '' : fmtNum(v)),
-      { key: 'fail_7d', label: 'failed 7 days', num: true, cls: (v, r) => Number(v) > 0 && !acked(r) ? 'status warn' : '' },
+      { key: 'fail_7d', label: 'failed 7 days', num: true, cls: (v, r) => !(Number(v) > 0) ? 'status ok' : acked(r) ? 'status none ack' : 'status warn' },
       statCol('ok_7d', 'succeeded 7 days', v => v == null ? '' : fmtNum(v)),
       { key: 'step_fail_24h', label: 'failed steps 24 h', num: true },
       { key: 'step_fail_7d', label: 'failed steps 7 days', num: true },

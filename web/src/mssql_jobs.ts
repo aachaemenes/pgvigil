@@ -374,12 +374,15 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
         el('span', { title: x.reason ? String(x.reason) : `judged by the ${String(x.level)} level` }, statusWord(x) + (x.reason ? `: ${String(x.reason)}` : '')), ' ', b);
     },
   });
+  // the measured cells carry the job's status, as DBA Dash colours its Job Name and Last Failed (the status column
+  // stays): the status the thresholds give, or N/A where they give none; no thresholds in force: plain, as the status
+  const jobCls = (r: Row) => { if (!th) return ''; const x = st(r); return x && !r.dropped_at ? `status ${String(x.status)}` : 'status none'; };
   const cols: Col[] = [
     { key: 'name', label: 'job', fmt: (v, r) => {
       const b = el('button', { class: 'link', type: 'button' }, String(v ?? ''));
       b.addEventListener('click', () => { void pick(r); });
       return b;
-    } },
+    }, cls: (_v, r) => jobCls(r) },
     { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
     { key: 'schedule', fmt: oneLine },
     // the value cells carry the outcome's level, so the screen and the export show one colour
@@ -388,7 +391,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'last_outcome', label: 'outcome', cls: (v, r) => r.dropped_at ? '' : outcomeCls(v),
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
-    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
+    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)), cls: (v, r) => v == null ? '' : jobCls(r) },
     { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), lastFailOf(r), ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },

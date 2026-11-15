@@ -33,6 +33,8 @@ function ago(secs: unknown): string {
 }
 const statusWord: Record<string, string> = { critical: 'Critical', warning: 'Warning', ok: 'OK', unknown: 'Size not read' };
 const statusKind: Record<string, string> = { critical: 'crit', warning: 'warn', ok: 'ok', unknown: '' };
+// a grey N/A cell's words when the mouse rests on it
+const noThreshold = 'no threshold set';
 const statusColor: Record<string, string> = { critical: 'var(--crit)', warning: 'var(--warn)', ok: 'var(--ok)', unknown: 'var(--muted)' };
 
 // the folder's instances (a tag folder: its own; the root: every one) and each instance's engine
@@ -256,7 +258,11 @@ function drivesGrid(ctx: Ctx, rows: Row[], folder: boolean): HTMLElement {
     { key: 'drive' }, { key: 'label', label: 'volume' },
     { key: 'status', fmt: v => badge(statusWord[String(v)] ?? String(v), statusKind[String(v)] ?? '') },
     { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
-    { key: 'free_bytes', label: 'free', num: true, fmt: fmtBytes }, { key: 'free_pct', label: 'free %', num: true },
+    // the measured cell carries the drive's status, as DBA Dash colours its Free %: free % the status its thresholds give
+    // (N/A where none applies), free the N/A grey (the thresholds are percents: no size threshold is set); the status
+    // column stays
+    { key: 'free_bytes', label: 'free', num: true, fmt: v => el('span', { title: noThreshold }, fmtBytes(v)), cls: () => 'status none' },
+    { key: 'free_pct', label: 'free %', num: true, cls: (_v, r) => statusKind[String(r.status)] || 'status none' },
     { key: 'warn_pct', label: 'warning under %', num: true }, { key: 'crit_pct', label: 'critical under %', num: true },
     { key: 'threshold_level', label: 'threshold set on', fmt: (v, r) => v === 'tag' ? `tag ${String(r.threshold_tag)}` : String(v ?? '') },
     { key: 'engine' }, { key: 'source', label: 'read from' }, { key: 'snapshot_at', label: 'updated', fmt: fmtTime },
