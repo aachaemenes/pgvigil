@@ -407,6 +407,8 @@ post() { code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d
 post3() { code -b "$JAR3" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "$2" "$U3/api/$1"; }
 getc() { code -b "$JAR" "$U/api/$1"; }
 js() { python3 -c "import json,sys; d=json.load(open('$WORK/body')); print($1)"; }
+# tl: like js, with t = the community reply's tools by id (V, UV, DV and the rows after them)
+tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
 logn() { q "select count(*) from pgvigil.custom_report_log"; }
 runlog() { q "select count(*) from pgvigil.custom_report_log where op in ('run', 'community_run', 'community_help')"; }
 [[ $(getc customreports) == 200 ]] || fail "GET /api/customreports: $(cat "$WORK/body") (the serve must carry the wiring)"
@@ -675,7 +677,6 @@ fi
 ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
 # ---- N: before the click (task B3 DONE-1) ----------------------------------------------------------------------------------
-tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
 fresh() { getc "community?instance=$1&fresh=1${2:+&database=$2}"; }   # past the 60 s keep: the checks run again
 if [[ -z "$SKIP_MSSQL" ]]; then
   [[ $(fresh "$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True && $(tl "d['checked_at'] is not None") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
