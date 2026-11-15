@@ -554,6 +554,24 @@ func runsAs() string {
 	return "console"
 }
 
+// repoNotices logs a WARNING the repository raises on the beat's connections (review B6f10 #6): import_collection_health
+// warns when the 'collections run long' stamps fail and keeps the beat's hour rows - without this the warning reached
+// only the server's log. The severity is read unlocalized; a NOTICE is not logged.
+func repoNotices(log *slog.Logger) func(*pgconn.PgConn, *pgconn.Notice) {
+	return func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		if n == nil {
+			return
+		}
+		sev := n.SeverityUnlocalized
+		if sev == "" {
+			sev = n.Severity
+		}
+		if sev == "WARNING" {
+			log.Warn("repository warning", "message", n.Message, "where", n.Where)
+		}
+	}
+}
+
 // StartHeartbeat writes this collector's row (its start in the repository's clock) and beats every minute until ctx ends,
 // then writes the last minute and marks a clean stop. dsn is the collector's repository DSN (the import_ door). The
 // returned wait blocks until that is done (at most 15 s: the final beat 8 s, the stop mark 5 s, the pool's close): the
@@ -565,6 +583,7 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 	}
 	cfg.MaxConns = 2
 	cfg.ConnConfig.RuntimeParams["application_name"] = "pgvigil-heartbeat"
+	cfg.ConnConfig.OnNotice = repoNotices(log)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: %w", err)

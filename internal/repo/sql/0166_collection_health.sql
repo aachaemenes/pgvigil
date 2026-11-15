@@ -306,13 +306,16 @@ HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 -- term, 0190 WIRING, through collection_runs_long_held); one above it is sent on its own, and a new one waits while 3
 -- or more of the host's instances turned long within its span and a minute (collection_runs_long_forming). Its alert is
 -- not resolved while the host's own 'collector or network' stands (alert_due). An arm of 0190's pgvigil.findings
--- (WIRING). What is judged (B6f7, the review of the fold; the lead's 07:1x / 07:2x calls): the host's runs not retired,
--- and the host only while a run of it beat within its span + 3 minutes (a stopped, retired or renamed host folds
--- nothing from its old rows); never an instance a 'collector or network' holds now (collector_held_instances, as
--- collector_connects: a cut slows the runs it does not fail); never a host whose 'collector or network' alert was open
--- inside the window on a configured channel - the cut's rows stay in the two hours, so the host is judged again once
--- the window has passed its parent. A parent never sent (no channel configured, quiet hours over the whole of it) is
--- not seen here: its rows are judged once it clears (docs/alerts.md).
+-- (WIRING). What is judged (B6f7, the review of the fold; the lead's 07:1x / 07:2x / 07:5x calls; B6f10): the host's
+-- runs not retired, and the host only while a run of it beat within its span + 3 minutes (a stopped, retired or renamed
+-- host folds nothing from its old rows); never an instance a 'collector or network' holds now (collector_held_instances,
+-- as collector_connects: a cut slows the runs it does not fail); and no NEW fold for a host whose 'collector or network'
+-- stood inside the window - its alert open there on a configured channel, or held unsent by a mute (ack_suppressed; a
+-- silence or blackout names an instance and never holds it) - the cut's rows stay in the two hours, so the host is
+-- judged again once the window has passed its parent. A host whose fold's alert is not cleared keeps being judged (its
+-- finding missing for a pass too: B6f10 #1), the held instances still left out. A parent the alert sender never saw (no
+-- channel configured, quiet hours over the whole of it, every send failing, its channel removed and no mute) is not seen
+-- here: its rows are judged once it clears (docs/alerts.md).
 CREATE OR REPLACE FUNCTION pgvigil.collection_runs_long_open(p_host text)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT EXISTS (SELECT 1 FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
@@ -325,23 +328,29 @@ $$;
 CREATE OR REPLACE VIEW pgvigil.collection_runs_long_rows AS
 WITH w AS (
   SELECT date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 hour' AS start
-), hb AS (    -- the host's runs not retired; the host beating; and no 'collector or network' of it inside the window - sent
-              -- on a configured channel, or held unsent by a mute, silence or blackout (ack_suppressed, the lead's
-              -- 07:5x) - unless the host's fold is already open: an open fold keeps being judged (B6f9 #1, the lead's
-              -- 07:5x (a)), the instances a parent holds still left out below
+), stood AS MATERIALIZED (   -- the hosts whose 'collector or network' stood inside the window: sent on a configured
+                             -- channel, or held unsent by a mute (ack_suppressed, the lead's 07:5x); read once, not per
+                             -- heartbeat row (B6f10 #3)
+  SELECT s.value AS host FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
+   CROSS JOIN w
+   WHERE s.source = 'pgvigil repository' AND s.setting = 'collector or network' AND (s.cleared_at IS NULL OR s.cleared_at >= w.start)
+  UNION
+  SELECT x.value FROM pgvigil.ack_suppressed x CROSS JOIN w
+   WHERE x.source = 'pgvigil repository' AND x.setting = 'collector or network' AND x.last_at >= w.start
+), kept AS MATERIALIZED (    -- the hosts whose fold's alert is not cleared on a configured channel, its finding missing
+                             -- for a pass or not (B6f10 #1: the hysteresis's collection_runs_long_open reads a present one)
+  SELECT f.value AS host FROM pgvigil.alert_state f JOIN pgvigil.alert_channels k ON k.name = f.channel AND k.is_configured
+   WHERE f.cleared_at IS NULL AND f.source = 'pgvigil repository' AND f.setting = 'collections run long'
+), hb AS (    -- the host's runs not retired; the host beating; and no 'collector or network' of it inside the window,
+              -- unless the host's fold's alert is not cleared: that fold keeps being judged (B6f9 #1, the lead's 07:5x
+              -- (a); B6f10 #1), the instances a parent holds still left out below
   SELECT h.collector_id, h.host
-    FROM pgvigil.collector_heartbeat h CROSS JOIN w
+    FROM pgvigil.collector_heartbeat h
    WHERE h.retired_at IS NULL
      AND EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat n
                   WHERE n.host = h.host AND n.retired_at IS NULL
                     AND n.beat_at >= now() - pgvigil.collector_span(h.host) - interval '3 minutes')
-     AND ((NOT EXISTS (SELECT 1 FROM pgvigil.alert_state s JOIN pgvigil.alert_channels c ON c.name = s.channel AND c.is_configured
-                        WHERE s.source = 'pgvigil repository' AND s.setting = 'collector or network' AND s.value = h.host
-                          AND (s.cleared_at IS NULL OR s.cleared_at >= w.start))
-           AND NOT EXISTS (SELECT 1 FROM pgvigil.ack_suppressed x
-                            WHERE x.source = 'pgvigil repository' AND x.setting = 'collector or network' AND x.value = h.host
-                              AND x.last_at >= w.start))
-          OR pgvigil.collection_runs_long_open(h.host))
+     AND (NOT EXISTS (SELECT 1 FROM stood WHERE stood.host = h.host) OR EXISTS (SELECT 1 FROM kept WHERE kept.host = h.host))
 )
 SELECT hb.host, h.instance_id, h.collection, sum(h.runs) AS runs, sum(h.runs_over_half) AS half,
        sum(h.runs_over_interval) AS over_i, max(greatest(h.last_ok_at, h.last_failure_at, h.last_partial_at)) AS at

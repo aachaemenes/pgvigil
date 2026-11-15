@@ -275,12 +275,15 @@ the host stopped, not because they got shorter. An instance read by two hosts is
 What is judged: a host's runs that are not retired, and a host only while a run of it beats (a stopped, retired or
 renamed host makes no alert from its old runs); never an instance that a *collector or network* holds (a cut slows
 the runs it does not fail); and no new alert for a host whose *collector or network* stood inside the two hours - its
-alert open there on a configured channel, or held unsent by a mute, silence or blackout - since the cut's long runs
-stay in the window: the host is judged again once the window has passed the parent. An alert already open when the
-parent rises keeps being judged without the instances the parent holds: its members stay held, and the parent's tail
-does not resolve it (the cut's runs may keep it up to two hours after the parent clears). A parent never seen by the
-alert sender is not seen here: no channel configured, quiet hours over the whole of it, every send of it failing, or
-its channel removed since - its runs are judged once it clears. After a cut, the instances' own *collection runs long*
+alert open there on a configured channel, or held unsent by a mute (a silence or a blackout names an instance and never
+holds it) - since the cut's long runs stay in the window: the host is judged again once the window has passed the
+parent. An alert not yet cleared when the parent rises keeps being judged without the instances the parent holds - its
+finding missing for a pass as well, so a fold that flickers comes back: its members stay held unless the parent holds
+enough of them to drop it (the rest are then sent on their own until the cut ends and the fold forms again), and the
+parent's tail does not resolve it (the cut's runs may keep it up to two hours after the parent clears). A parent never
+seen by the alert sender is not seen here: no channel configured, quiet hours over the whole of it, every send of it
+failing, or its channel removed since - its runs are judged once it clears (a mute that held it on that channel keeps
+the host unjudged until the window has passed the hold: the safe side). After a cut, the instances' own *collection runs long*
 stand on the cut's runs for up to two hours, and are sent one by one.
 
 **alert sender idle** (warning, source `pgvigil repository`, no instance): alert channels are configured (a contact's

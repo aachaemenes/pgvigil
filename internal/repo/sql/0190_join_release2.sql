@@ -472,6 +472,38 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
    -- B6.4 (WIRING): 'alert sender idle' is shown, never sent (an idle sender cannot send its own news)
    AND NOT (f.source = 'pgvigil repository' AND f.setting = 'alert sender idle');
 
+-- B6f10 #2 (WIRING): alert_mark is 0073's with alert_due's channel scope - a repository-wide finding (source 'pgvigil
+-- repository') reaches every channel but a route's (repo_wide false, task 310), scoped channels too: its holds are
+-- written to ack_suppressed there as the sends would be (the 'collections run long' fold's tail reads a muted 'collector
+-- or network' from them; the Alerts page's Held sends count them), and its missing / back marks are unchanged
+CREATE OR REPLACE FUNCTION pgvigil.alert_mark(p_at timestamptz, p_channels jsonb)
+RETURNS void LANGUAGE plpgsql SET jit = off AS $$
+DECLARE
+  v_names text[] := ARRAY(SELECT e->>'name' FROM jsonb_array_elements(coalesce(p_channels, '[]'::jsonb)) e);
+BEGIN
+  UPDATE pgvigil.alert_state s SET missing_since = p_at
+   WHERE s.cleared_at IS NULL AND s.missing_since IS NULL AND s.channel = ANY (v_names)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = s.finding_key);
+  UPDATE pgvigil.alert_state s SET missing_since = NULL
+   WHERE s.cleared_at IS NULL AND s.missing_since IS NOT NULL AND s.channel = ANY (v_names)
+     AND EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = s.finding_key);
+  INSERT INTO pgvigil.ack_suppressed AS x (ack_id, channel, finding_key, instance_id, instance_name, severity, source,
+                                           setting, value, first_at, last_at, passes)
+  SELECT h.ack_id, h.channel, h.finding_key, h.instance_id, h.instance, h.severity, h.source, h.setting, h.value, p_at, p_at, 1
+    FROM (SELECT DISTINCT ON (c.name, f.finding_key) c.name AS channel, f.*,
+                 pgvigil.ack_hold(p_at, f.instance, f.tags, f.finding_key, f.source, f.setting, f.value) AS ack_id
+            FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
+                 AS c(name text, min_severity text, instances text[], tags text[], repo_wide boolean)
+            JOIN pgvigil.alert_findings f
+              ON pgvigil.alert_in_scope(f.instance, f.tags, coalesce(c.instances, '{}'), coalesce(c.tags, '{}'))
+                 OR (f.source = 'pgvigil repository' AND coalesce(c.repo_wide, true))
+           WHERE pgvigil.severity_rank(f.severity) >= pgvigil.severity_rank(c.min_severity)
+           ORDER BY c.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC) h
+   WHERE h.ack_id IS NOT NULL
+  ON CONFLICT (ack_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at, passes = x.passes + 1,
+    severity = EXCLUDED.severity, value = EXCLUDED.value;
+END $$;
+
 -- task 201: alert_due is 0073's with these changes: a repository-wide finding (source 'pgvigil repository') goes to
 -- every channel past its severity floor, scoped channels too; an alert of a kind a shared cause explains
 -- (pgvigil.collector_shared_cause) is held - it neither fires, repeats nor resolves - while a 'collector or network' of
