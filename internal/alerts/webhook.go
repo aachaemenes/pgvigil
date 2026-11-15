@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -115,13 +116,15 @@ func (s *webhookSender) send(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.u.String(), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "pgvigil-alerts")
-	resp, err := s.client.Do(req)
+	resp, wait, err := postRetrying(ctx, s.client, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.u.String(), bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "pgvigil-alerts")
+		return req, nil
+	})
 	if err != nil {
 		// the error text holds the URL, and the URL holds the token: report the host only
 		var ue *url.Error
@@ -136,9 +139,99 @@ func (s *webhookSender) send(ctx context.Context, m Message) error {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		return refused("%s answered %d with a redirect: not followed (the send goes to the configured URL only)", hostOf(s.u), resp.StatusCode)
 	case resp.StatusCode >= 400:
-		return fmt.Errorf("%s answered %s", hostOf(s.u), resp.Status)
+		return fmt.Errorf("%s answered %s%s", hostOf(s.u), resp.Status, wait.note(resp))
 	}
 	return nil
+}
+
+// ---- a 429's Retry-After (task 403b, PerformanceMonitor Fixed 28) --------------------------------------------------
+
+// maxRetryAfter is the longest Retry-After one send waits out inside the pass (PerformanceMonitor's 10 s): a 429 that
+// asks for more, or none, fails that send, and the loop's back-off holds that channel alone, as before.
+const maxRetryAfter = 10 * time.Second
+
+// retryWait waits d or until ctx ends; the tests replace it.
+var retryWait = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// retryAfter reads a 429's Retry-After header (delay-seconds, or an HTTP date, RFC 9110 10.2.3) at now: the wait and
+// true when it is readable and at most maxRetryAfter.
+func retryAfter(h string, now time.Time) (time.Duration, bool) {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0, false
+	}
+	var d time.Duration
+	if n, err := strconv.Atoi(h); err == nil {
+		if n < 0 {
+			return 0, false
+		}
+		d = time.Duration(n) * time.Second
+	} else if t, err := http.ParseTime(h); err == nil {
+		d = max(t.Sub(now), 0)
+	} else {
+		return 0, false
+	}
+	return d, d <= maxRetryAfter
+}
+
+// retried says what a send did about a 429, for the error text of a send that still failed.
+type retried struct {
+	waited time.Duration // > 0 or tried: the send waited this long and posted once more
+	tried  bool
+	asked  string // the first 429's Retry-After when it was not waited out ("" = none)
+}
+
+func (r retried) note(resp *http.Response) string {
+	switch {
+	case r.tried:
+		return fmt.Sprintf(" (after waiting out a Retry-After of %s and posting once more)", r.waited)
+	case resp.StatusCode == http.StatusTooManyRequests && r.asked != "":
+		return fmt.Sprintf(" (Retry-After %q: more than the %s a send waits)", r.asked, maxRetryAfter)
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return " (no Retry-After)"
+	}
+	return ""
+}
+
+// postRetrying sends the request build makes; a 429 whose Retry-After is at most maxRetryAfter is waited out (inside
+// ctx: the send's own timeout) and the request built and sent once more. The answer of the second try stands. A
+// redirect is never followed (the client's CheckRedirect).
+func postRetrying(ctx context.Context, client *http.Client, build func() (*http.Request, error)) (*http.Response, retried, error) {
+	var r retried
+	req, err := build()
+	if err != nil {
+		return nil, r, err
+	}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests {
+		return resp, r, err
+	}
+	h := resp.Header.Get("Retry-After")
+	d, ok := retryAfter(h, time.Now())
+	if !ok {
+		r.asked = h
+		return resp, r, nil
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	if err := retryWait(ctx, d); err != nil {
+		return nil, r, fmt.Errorf("waiting out a Retry-After of %s: %w", d, err)
+	}
+	r.waited, r.tried = d, true
+	if req, err = build(); err != nil {
+		return nil, r, err
+	}
+	resp, err = client.Do(req)
+	return resp, r, err
 }
 
 func (s *webhookSender) payload(m Message) ([]byte, error) {
