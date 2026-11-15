@@ -126,7 +126,13 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	// the accepted Host values come from the bound port (-listen 127.0.0.1:0 picks one)
 	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: expectedIntervals(&config.Config{}), Hosts: web.LoopbackHosts(port),
+	// the demo's SQL Server instances run mssql_running_plans every minute (off by default; an admin's schedules: line
+	// turns it on): the seed sends it each snapshot, so the stale check and Collection dates expect it there
+	exp := expectedIntervals(&config.Config{})
+	for _, name := range fleet.RunningPlanInstances() {
+		exp.Instances[name] = map[string]int{"mssql_running_plans": 60}
+	}
+	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: exp, Hosts: web.LoopbackHosts(port),
 		Tags: web.TagsUI{GroupBy: []string{"env"}, EnvOrder: config.DefaultEnvOrder}, Version: versionLine(),
 		// the demo's own write door: user demo, on the instances this run seeded, on the repository login demo already holds
 		DemoDoor: &web.DemoDoor{DSN: repoDSN, Instances: fleet.IDs(), Prefix: fleet.Prefix()}})

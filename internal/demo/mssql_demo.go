@@ -35,7 +35,10 @@ func (g *Gen) mssqlStep(t time.Time) []Batch {
 	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
 		add("mssql_services", t, g.mssqlServicesRows(t))
 	}
-	add("mssql_requests", t, g.mssqlRequestsRows(t))
+	reqs := g.mssqlRequestsRows(t)
+	add("mssql_requests", t, reqs)
+	// mssql_runplans_demo.go: the demo turns mssql_running_plans on (every snapshot, as the collector at 60 s)
+	add("mssql_running_plans", t, g.mssqlRunningPlansRows(t, reqs))
 	add("mssql_waits", t, g.mssqlWaitsRows(t))
 	add("mssql_ag", t, g.mssqlAgDemoRows(t))
 	add("mssql_cpu", t, g.mssqlCPUDemoRows(t))
@@ -161,7 +164,7 @@ func (g *Gen) mssqlStorageRows(t time.Time) []Row {
 
 // mssqlCollections names what a SQL Server instance's collector runs (for the collection log).
 func (g *Gen) mssqlCollections() []string {
-	c := []string{"mssql_instance", "mssql_services", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag", "mssql_cpu", "mssql_memory", "mssql_fileio", "mssql_tempdb", "mssql_querystore"}
+	c := []string{"mssql_instance", "mssql_services", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag", "mssql_cpu", "mssql_memory", "mssql_fileio", "mssql_tempdb", "mssql_querystore", "mssql_running_plans"}
 	if g.is("-sql01") || g.is("-sql02") {
 		c = append(c, "mssql_backups")
 	}

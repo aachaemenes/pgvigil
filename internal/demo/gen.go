@@ -108,6 +108,8 @@ type Gen struct {
 	srvCum     counters
 	ioCum      []counters
 	runID      int64
+
+	runPlanSent map[string]time.Time // mssql_runplans_demo.go: when each running plan was last sent
 }
 
 // NewGen builds the generator of one instance; seed and idx make it deterministic.

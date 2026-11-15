@@ -327,12 +327,12 @@ func (s *Server) MSSQLRunningPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 const sqlMSSQLRunningPlanXML = `
-SELECT p.plan_xml, p.plan_state, p.database_name, i.name
+SELECT p.plan_xml, p.plan_state, p.database_name, i.name, p.plan_note
   FROM pgvigil.mssql_running_plan p JOIN pgvigil.instances i USING (instance_id)
  WHERE p.instance_id = $1 AND p.query_hash = $2 AND p.plan_hash = $3 AND p.stmt_start = $4 AND p.stmt_end = $5`
 
 const sqlMSSQLLivePlanXML = `
-SELECT l.live_xml, l.plan_state, l.database_name, i.name
+SELECT l.live_xml, l.plan_state, l.database_name, i.name, NULL::text AS plan_note
   FROM pgvigil.mssql_live_plan l JOIN pgvigil.instances i USING (instance_id)
  WHERE l.instance_id = $1 AND l.query_hash = $2 AND l.plan_hash = $3 AND l.stmt_start = $4 AND l.stmt_end = $5 AND l.live_id = $6`
 
@@ -355,7 +355,7 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("start and end must be the statement's offsets"))
 		return
 	}
-	var xml, state, db, inst *string
+	var xml, state, db, inst, note *string
 	args := []any{id, qh, ph, start, end}
 	query, tag := sqlMSSQLRunningPlanXML, "running"
 	if v := q.Get("live"); v != "" {
@@ -376,7 +376,7 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, map[string]any{"state": "none", "words": fmt.Sprintf("not shown: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", qt)}, nil)
 		return
 	}
-	err = s.pool.QueryRow(r.Context(), query, args...).Scan(&xml, &state, &db, &inst)
+	err = s.pool.QueryRow(r.Context(), query, args...).Scan(&xml, &state, &db, &inst, &note)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, errors.New("no such plan is kept"))
 		return
@@ -399,7 +399,13 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	file := fmt.Sprintf("plan-%s-%s-%s-%s.sqlplan", safeFileName(deref(inst)), safeFileName(deref(db)), tag, strings.ToLower(strings.TrimPrefix(ph, "0x")))
-	s.reply(w, r, map[string]any{"state": "ok", "words": "the plan kept for this running query", "plan": mssql.MaskPlanXML(*xml), "file": file}, nil)
+	// the stored note rides with the plan: a failed later read's reason (the plan shown is the one read before it), or
+	// the demo's 'demo data' line
+	words := "the plan kept for this running query"
+	if n := strings.TrimSpace(deref(note)); n != "" {
+		words += "; " + n
+	}
+	s.reply(w, r, map[string]any{"state": "ok", "words": words, "plan": mssql.MaskPlanXML(*xml), "file": file}, nil)
 }
 
 // ---- the statistics a plan was compiled with; a forced plan's failures ----------------------------------------------
