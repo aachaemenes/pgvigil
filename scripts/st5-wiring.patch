@@ -21,6 +21,34 @@ index cc3be83..e82eda2 100644
  			}
  			return nil
  		}
+diff --git c/cmd/pgvigil/mcp.go i/cmd/pgvigil/mcp.go
+index 458f158..f4aa553 100644
+--- c/cmd/pgvigil/mcp.go
++++ i/cmd/pgvigil/mcp.go
+@@ -46,10 +46,11 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
+ 	} else {
+ 		return &configError{errors.New("-dsn does not parse as a PostgreSQL connection string")}
+ 	}
+-	exp := expectedIntervals(&config.Config{}) // every collection's default interval
++	cfg := &config.Config{}
++	exp := expectedIntervals(cfg) // every collection's default interval
+ 	if *path != "" {
+-		cfg, err := config.Load(*path)
+-		if err != nil {
++		var err error
++		if cfg, err = config.Load(*path); err != nil {
+ 			return &configError{err}
+ 		}
+ 		// the custom: list (task 61): the stale check counts the custom collection where a check applies
+@@ -68,6 +69,8 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	defer srv.Close()
++	// a page instance's own intervals for the stale check, as serve's (ST5a's review F1); mcp's doors stay the file's
++	go srv.WatchPageIntervals(ctx, log, cfg, web.DoorEvery, func(in config.Instance) map[string]int { return instanceIntervals(cfg, in) })
+ 	log.Info("pgvigil mcp ready on stdio", "login", user, "version", version)
+ 	return mcp.New(srv.Handler(), version, secret).Serve(ctx, os.Stdin, os.Stdout)
+ }
 diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
 index 493c261..15ce6dc 100644
 --- c/cmd/pgvigil/serve.go
@@ -181,7 +209,7 @@ index 6bf663c..ce8fa29 100644
  	// connection's search_path
  	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 diff --git c/internal/web/doorset.go i/internal/web/doorset.go
-index 6aae0c3..721b9fd 100644
+index 6aae0c3..72d1fcb 100644
 --- c/internal/web/doorset.go
 +++ i/internal/web/doorset.go
 @@ -46,6 +46,9 @@ type doorSet struct {
@@ -194,6 +222,15 @@ index 6aae0c3..721b9fd 100644
  }
  
  // noDoor is why an instance has no read login here (Why: the words a refusal and the page carry) and what opens it
+@@ -61,7 +64,7 @@ const (
+ 	howCorrect   = "correct its row in Admin > Instances (docs/configuration.md)"
+ 	howSwitch    = "an admin sets 'doors: page_instance_reads: on' in pgvigil.yaml and serves again, or the instance goes into pgvigil.yaml with its read login (docs/configuration.md)"
+ 	howInTheFile = "put the instance in pgvigil.yaml with its read login (docs/configuration.md)"
+-	howUnread    = "serve reads the list again every 15 s; its log names why a read failed (a repository without migration 0131, or serve's role without EXECUTE on admin_inventory())"
++	howUnread    = "serve reads the list again every 15 s; its log names why a read failed (a repository older than this serve - run pgvigil migrate (0131, 0263) - or serve's role without EXECUTE on admin_inventory() or admin_instance_settings())"
+ )
+ 
+ // unreadWords: an instance this serve cannot place while the page's list is unread
 @@ -191,6 +194,8 @@ type pageDoorsConfig struct {
  	file      []config.Instance
  	queryText string
@@ -280,7 +317,7 @@ index 6aae0c3..721b9fd 100644
  	file := s.fileDoors()
  	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
  	first.Unread, first.PageReads = true, c.reads
-@@ -476,3 +501,22 @@ func (s *Server) doorsAfterGen(gen int64, err error) string {
+@@ -476,3 +501,25 @@ func (s *Server) doorsAfterGen(gen int64, err error) string {
  	}
  	return doorTakesEffect(s.wakeDoors(gen, doorWait), DoorEvery)
  }
@@ -289,6 +326,9 @@ index 6aae0c3..721b9fd 100644
 +// current door set's generation (its own settings, the running plans box, the file's global schedules:).
 +func (s *Server) expectedNow() Expected {
 +	page := s.doorsNow().Expected
++	if len(page) == 0 {
++		page = s.pageIntervalsNow() // pgvigil mcp: no door watcher, its own reader of the page's intervals (page_intervals.go)
++	}
 +	if len(page) == 0 {
 +		return s.expected
 +	}
@@ -304,10 +344,10 @@ index 6aae0c3..721b9fd 100644
 +	return e
 +}
 diff --git c/internal/web/doorset_test.go i/internal/web/doorset_test.go
-index 3e9f974..0af649b 100644
+index 3e9f974..2234632 100644
 --- c/internal/web/doorset_test.go
 +++ i/internal/web/doorset_test.go
-@@ -392,3 +392,54 @@ func TestPlanButtonsPageDoor(t *testing.T) {
+@@ -392,3 +392,66 @@ func TestPlanButtonsPageDoor(t *testing.T) {
  		t.Errorf("the default policy: %q", qt)
  	}
  }
@@ -360,6 +400,18 @@ index 3e9f974..0af649b 100644
 +	}
 +	if s.expected.Instances["p-open"] != nil {
 +		t.Error("expectedNow wrote into the file's map")
++	}
++
++	// pgvigil mcp (no door watcher): the page's intervals its own watcher keeps (page_intervals.go; ST5a's review F1)
++	m := &Server{log: discardLog(), expected: Expected{Defaults: map[string]int{"activity": 60}, Builtin: map[string]int{"activity": 60},
++		Instances: map[string]map[string]int{"pgfile": {"activity": 120}}}}
++	t.Cleanup(func() { pageIntervalSets.Delete(m) })
++	if e := m.expectedNow(); len(e.Instances) != 1 {
++		t.Errorf("mcp before its first read: %v", e.Instances)
++	}
++	keepPageIntervals(m, map[string]map[string]int{"p-a": {"activity": 0}, "pgfile": {"activity": 1}})
++	if e := m.expectedNow(); e.Instances["p-a"]["activity"] != 0 || len(e.Instances["p-a"]) != 1 || e.Instances["pgfile"]["activity"] != 120 {
++		t.Errorf("mcp with the page's: %v (want p-a's activity off beside pgfile's own 120)", e.Instances)
 +	}
 +}
 diff --git c/internal/web/q_ack.go i/internal/web/q_ack.go
