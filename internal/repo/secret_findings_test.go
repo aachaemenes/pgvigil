@@ -29,7 +29,9 @@ func TestSecretFindingsOnAStore(t *testing.T) {
 		fmt.Sprintf("sec-%d", time.Now().UnixNano()%1000000000)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id) }()
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id)
+	}()
 	logc := func(coll, status, note string, at time.Time) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, 10, $4, $5)`, id, coll, at, status, note); err != nil {
