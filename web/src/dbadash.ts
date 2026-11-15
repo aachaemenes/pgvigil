@@ -21,7 +21,7 @@ import { mssqlJobCol, mssqlKillCol } from './mssql_actions';
 import { offBeside } from './ack';
 import { Ctx, href, mssqlInstanceGroups, mssqlInstanceTabs, window_ } from './router';
 import { hashParam } from './dbinfo';
-import { fleetWideNote, tagScopeIds, tagWords } from './fleet';
+import { fleet, fleetWideNote, folderWords, tagScopeIds, tagWords } from './fleet';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtTime, grid, props, tile } from './ui';
 
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null; imported?: Table | null }
@@ -212,6 +212,12 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
   const inFolder = (r: Row) => { const pv = pgvigilOf(d, String(r.repository), Number(r.instance_id)); return !ids || !pv || ids.has(pv.instanceId); };
   const rows = rowsAll.filter(inFolder);
   const sec = el('section', {}, el('h2', {}, (repo ? `Imported: ${repo}` : 'Imported servers') + (ids ? ` - ${tagWords(ctx.tag!)}` : '')));
+  // a folder with no SQL Server instance (the engine rule: the tree and the strip leave this page out of it; an old link
+  // still opens it): one line, no SQL Server grid (the review of rel-tagall #4; scripts/wording-expected.txt's pg-tag rows)
+  if (ids && !(await fleet()).instances.some(r => ids.has(Number(r.instance_id)) && r.engine === 'sqlserver')) {
+    sec.append(el('p', { class: 'empty' }, `This page holds SQL Server servers only, and ${folderWords(ctx.tag!)} has no SQL Server instance: All instances lists the imported servers.`));
+    return sec;
+  }
   if (repos.length === 0) {
     sec.append(el('p', { class: 'empty' }, repo
       ? `No repository named ${repo} in the configuration.`
@@ -228,7 +234,8 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
     ...(ids ? [el('p', { class: 'meta' }, `In view: ${tagWords(ctx.tag!)} - the servers pgvigil holds as one of its ${ids.size} instance(s), and every server not yet one of pgvigil's instances (no tag is read for one).`
       + (rowsAll.length > rows.length ? ` Not listed here: ${rowsAll.length - rows.length} server(s) of other instances (All instances lists them).` : ''))] : []),
     fleetWideNote(ctx, 'The repositories and their servers not yet in pgvigil are one list') ?? '',
-    el('div', { class: 'tiles' }, tile('SQL Server instances', String(rows.length)), tile('Critical instances', String(n[2]), n[2] ? 'crit' : 'ok'),
+    // under a folder the count is of what is listed: its servers and every server not yet in pgvigil (the review #9)
+    el('div', { class: 'tiles' }, tile(ids ? 'SQL Server instances in view' : 'SQL Server instances', String(rows.length)), tile('Critical instances', String(n[2]), n[2] ? 'crit' : 'ok'),
       tile('Warning instances', String(n[1]), n[1] ? 'warn' : 'ok'), tile('Repositories not read', String(repos.filter(r => r.status !== 'ok').length),
         repos.some(r => r.status !== 'ok') ? 'warn' : 'ok')),
     el('h3', {}, 'Repositories'),
