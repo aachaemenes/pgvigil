@@ -24,8 +24,11 @@ import (
 // When a database is read: a pass asks the repository (import_mssql_schema_due) which databases are due a WHOLE read
 // - never read, another database on a reused id, a restore, a committed CREATE / ALTER / DROP the default trace's
 // reader stored since the database's last read (trusted only while that reader is current), a reader gap, a torn
-// read, or the daily reconcile - and reads them oldest first inside a 5-minute pass, 120 seconds a database; every
-// other database of the scope is sent 'seen' (kept as it was). The trace keeps neither schema nor object id, so a
+// read, or the daily reconcile - and reads them by reason, then oldest read first, each started inside a 5-minute
+// pass and given 120 seconds; every other database of the scope is sent 'seen' (kept as it was). A read-only or
+// standby database is read when new and at the reconcile only; one too large to store ('partial') is tried again at
+// the reconcile, never every pass. A database's identity is its id and its create_date in the server's own clock
+// (never the UTC value, which a daylight-saving change moves). The trace keeps neither schema nor object id, so a
 // database is re-read whole, never object by object: import_schema's unit is the database.
 //
 // What a definition holds: the catalog's facts in a fixed order, and for a module (procedure, function, trigger) its
@@ -42,8 +45,9 @@ import (
 // views, or over 160 MB of definitions even with bodies as hashes, 'partial': its stored snapshot is kept.
 //
 // Rights: VIEW ANY DEFINITION (or VIEW DEFINITION in each database), CONNECT ANY DATABASE (or a user in each);
-// msdb's restorehistory for telling a restore from another database on the same id. SQL Server 2016 or later (the
-// reads use FOR JSON).
+// msdb's restorehistory for telling a restore from another database on the same id (without it a restore that moves
+// create_date reads as another database: a new baseline, no diff). SQL Server 2016 or later (the reads use FOR JSON), Azure SQL Managed
+// Instance, Azure SQL Database.
 
 type schemaCollector struct{}
 
@@ -59,10 +63,17 @@ const (
 
 func (schemaCollector) Name() string                   { return Prefix + "schema" }
 func (schemaCollector) DefaultInterval() time.Duration { return 15 * time.Minute }
-func (schemaCollector) Timeout() time.Duration         { return schemaPass + batchMargin + 30*time.Second }
 
+// Timeout: a database is started inside the 5-minute pass and given its 120 seconds, so the last one started ends
+// before the run's deadline (a database is never started when its 120 seconds would pass the batch deadline).
+func (schemaCollector) Timeout() time.Duration {
+	return schemaPass + schemaPerDB + batchMargin + 30*time.Second
+}
+
+// Applies: Azure SQL Managed Instance and Azure SQL Database answer Major 12 whatever engine they run (detect.go), so
+// Kind is asked first, as querystore.go does.
 func (schemaCollector) Applies(info Info) (bool, string) {
-	if info.Major > 0 && info.Major < 13 {
+	if info.Kind != KindAzureMI && info.Kind != KindAzureDB && info.Major > 0 && info.Major < 13 {
 		return false, "the schema history needs SQL Server 2016 or later (its reads use FOR JSON)"
 	}
 	return true, ""
@@ -263,7 +274,7 @@ SELECT ` + schemaCols(`CASE WHEN o.type IN ('P', 'PC', 'X', 'RF') THEN 'procedur
     CASE WHEN m.object_id IS NOT NULL THEN N' ansi_nulls ' + CASE WHEN m.uses_ansi_nulls = 1 THEN N'on' ELSE N'off' END
                                          + N' quoted_identifier ' + CASE WHEN m.uses_quoted_identifier = 1 THEN N'on' ELSE N'off' END END,
     CASE WHEN m.object_id IS NOT NULL AND m.definition IS NULL THEN N' encrypted' END,
-    CASE WHEN am.object_id IS NOT NULL THEN N' clr ' + asm.name + N'.' + am.assembly_class + N'.' + am.assembly_method END)`,
+    CASE WHEN am.object_id IS NOT NULL THEN CONCAT(N' clr ', asm.name, N'.', am.assembly_class, N'.' + am.assembly_method) END)`,
 	"m.definition", "o.owner", "CASE WHEN m.definition IS NULL THEN 0 ELSE 1 END") + `
   FROM o LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
   LEFT JOIN sys.assembly_modules am ON am.object_id = o.object_id LEFT JOIN sys.assemblies asm ON asm.assembly_id = am.assembly_id
@@ -282,6 +293,8 @@ SELECT ` + schemaCols("'sequence'", "o.sch", "o.name", "NULL", "NULL", `CONCAT(N
 UNION ALL
 SELECT ` + schemaCols("'type'", "SCHEMA_NAME(ty.schema_id)", "ty.name", "NULL", "NULL", `CONCAT(N'type ',
     CASE WHEN ty.is_table_type = 1 THEN N'table ' + ISNULL(`+schemaJSONCols+`, N'[]')
+         WHEN ty.is_assembly_type = 1 THEN CONCAT(N'clr ', (SELECT CONCAT(a.name, N'.', aty.assembly_class) FROM sys.assembly_types aty
+                                                              JOIN sys.assemblies a ON a.assembly_id = aty.assembly_id WHERE aty.user_type_id = ty.user_type_id))
          ELSE TYPE_NAME(ty.system_type_id) + N'(' + CONVERT(nvarchar(10), ty.max_length) + N',' + CONVERT(nvarchar(5), ty.precision)
               + N',' + CONVERT(nvarchar(5), ty.scale) + N')' + CASE WHEN ty.is_nullable = 1 THEN N' null' ELSE N' not null' END END)`,
 	"NULL", "USER_NAME(COALESCE(ty.principal_id, (SELECT s2.principal_id FROM sys.schemas s2 WHERE s2.schema_id = ty.schema_id)))", "0") + `
@@ -421,16 +434,49 @@ func schemaNoTrace(ctx context.Context, conn *sql.Conn, info Info) string {
 	return ""
 }
 
-// mssqlDBRow is the 'mssql_db' row of one database: its identity, its state and note, and the server's clock of a
-// whole read.
-func mssqlDBRow(db userDB, state, note string, readAt *time.Time) collect.Row {
+// schemaLocal is what the schema pass reads of sys.databases beyond userDatabases: create_date in the server's own
+// clock as text (the identity: the UTC value userDatabases gives is moved by today's offset, an hour off across a
+// daylight-saving change) and whether the database is read-only or a standby (read at the reconcile only).
+type schemaLocal struct {
+	createLocal string
+	readOnly    bool
+}
+
+const schemaLocalSQL = `SELECT CAST(d.database_id AS int) AS database_id, CONVERT(varchar(23), d.create_date, 126) AS create_local,
+  CAST(CASE WHEN d.is_read_only = 1 OR d.is_in_standby = 1 THEN 1 ELSE 0 END AS int) AS read_only
+FROM sys.databases d WHERE d.database_id > 4`
+
+func readSchemaLocal(ctx context.Context, conn *sql.Conn) (map[int64]schemaLocal, error) {
+	raw, err := QueryRows(ctx, conn, schemaLocalSQL)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]schemaLocal, len(raw))
+	for _, r := range raw {
+		id, ok := r["database_id"].(int64)
+		if !ok {
+			continue
+		}
+		cl, _ := r["create_local"].(string)
+		ro, _ := r["read_only"].(int64)
+		out[id] = schemaLocal{createLocal: cl, readOnly: ro == 1}
+	}
+	return out, nil
+}
+
+// mssqlDBRow is the 'mssql_db' row of one database: its identity, its state and note, the server's clock of a whole
+// read (readAt) or of a read that ended 'partial' (partialAt).
+func mssqlDBRow(db userDB, loc schemaLocal, state, note string, readAt, partialAt *time.Time) collect.Row {
 	r := collect.Row{"kind": "mssql_db", "database_id": db.id, "name": db.name, "create_date": db.row["created_at"],
-		"restored_at": db.row["last_restore"], "state": state, "note": nil}
+		"create_local": nilIfEmpty(loc.createLocal), "restored_at": db.row["last_restore"], "state": state, "note": nil}
 	if note != "" {
 		r["note"] = note
 	}
 	if readAt != nil {
 		r["read_at"] = readAt.UTC()
+	}
+	if partialAt != nil {
+		r["partial_at"] = partialAt.UTC()
 	}
 	return r
 }
@@ -458,14 +504,19 @@ func (c schemaCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 	if err != nil {
 		return err
 	}
+	local, err := readSchemaLocal(ctx, conn)
+	if err != nil {
+		return err
+	}
 	inScope := schemaInScope(opt.SchemaDatabases)
 	var final []collect.Row
-	keep := func(db userDB, state, note string, isErr bool) {
-		final = append(final, mssqlDBRow(db, state, note, nil), collect.Row{"kind": "seen", "dbid": db.id})
+	keepAt := func(db userDB, state, note string, isErr bool, partialAt *time.Time) {
+		final = append(final, mssqlDBRow(db, local[db.id], state, note, nil, partialAt), collect.Row{"kind": "seen", "dbid": db.id})
 		if isErr {
 			final = append(final, collect.Row{"kind": "collector_error", "source": "schema:" + db.name, "message": note})
 		}
 	}
+	keep := func(db userDB, state, note string, isErr bool) { keepAt(db, state, note, isErr, nil) }
 	var readable []userDB
 	for _, db := range all {
 		switch {
@@ -495,7 +546,9 @@ func (c schemaCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 		}
 		list := make([]map[string]any, 0, len(readable))
 		for _, db := range readable {
-			list = append(list, map[string]any{"database_id": db.id, "name": db.name, "create_date": db.row["created_at"], "restored_at": db.row["last_restore"]})
+			loc := local[db.id]
+			list = append(list, map[string]any{"database_id": db.id, "name": db.name, "create_local": nilIfEmpty(loc.createLocal),
+				"restored_at": db.row["last_restore"], "read_only": loc.readOnly})
 		}
 		b, err := json.Marshal(map[string]any{"now": now.UTC(), "no_trace": schemaNoTrace(ctx, conn, info), "dbs": list})
 		if err != nil {
@@ -523,10 +576,8 @@ func (c schemaCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 	for _, db := range readable {
 		byID[db.id] = db
 	}
+	// a database is started inside the 5-minute pass, and only while its 120 seconds end before the batch deadline
 	pass := start.Add(schemaPass)
-	if !opt.Deadline.IsZero() && opt.Deadline.Before(pass) {
-		pass = opt.Deadline
-	}
 	done := map[int64]bool{}
 	for _, id := range order {
 		db, ok := byID[id]
@@ -534,8 +585,8 @@ func (c schemaCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 			continue
 		}
 		done[id] = true
-		if ctx.Err() != nil || time.Now().After(pass) {
-			keep(db, "seen", "due ("+reason[id]+"), not read this pass: the pass's 5 minutes ran out; the next pass reads it first", false)
+		if ctx.Err() != nil || time.Now().After(pass) || (!opt.Deadline.IsZero() && time.Now().Add(schemaPerDB).After(opt.Deadline)) {
+			keep(db, "seen", "due ("+reason[id]+"), not read this pass: the pass's time ran out; the next pass reads it first", false)
 			continue
 		}
 		dctx, cancel := context.WithTimeout(ctx, schemaPerDB)
@@ -545,11 +596,14 @@ func (c schemaCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 		case rerr != nil:
 			keep(db, "seen", "the read failed ("+reason[id]+"): "+rerr.Error(), true)
 		case state == "read" || state == "hashes":
-			batch := append([]collect.Row{mssqlDBRow(db, state, note, &readAt),
+			batch := append([]collect.Row{mssqlDBRow(db, local[db.id], state, note, &readAt, nil),
 				{"kind": "db", "dbid": db.id, "datname": db.name, "read_at": readAt.UTC(), "objects": len(rows)}}, rows...)
 			if err := emit(batch); err != nil {
 				return err
 			}
+		case state == "partial":
+			// measured from this attempt: tried again at the reconcile, on a restore or on DDL after it
+			keepAt(db, state, note, true, &readAt)
 		default:
 			keep(db, state, note, state != "torn")
 		}

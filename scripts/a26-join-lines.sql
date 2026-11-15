@@ -15,3 +15,8 @@
 -- Nothing else of import_schema changes. No other joined object: A26 adds no findings arm (schema_findings already
 -- reads every engine's rows), no purge() line (the existing NOT is_present lines take the objects now) and no
 -- apply_roles line (its two collector doors are named import_mssql_schema and import_mssql_schema_due).
+--
+-- On a joined TABLE, nothing to re-create: 0267's trigger mssql_schema_trace_gap on 0091's mssql_reader_state (A26's
+-- own trigger and function; it copies a default-trace read's 'not read' note into A26's mssql_schema_trace_gaps). A
+-- join that re-creates mssql_reader_state, or 0091's reader import, keeps the trigger as it is; a join that renames
+-- the reader's note words updates the trigger's WHEN pattern '(were|could) not (be )?read' with them.

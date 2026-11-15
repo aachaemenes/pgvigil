@@ -84,7 +84,10 @@ function compareCell(ctx: Ctx): (v: unknown, r: Row) => Node {
         if (!c) { box.replaceChildren(el('p', { class: 'empty' }, 'The change is no longer held (past the retention).')); return; }
         const before = c.before == null ? undefined : String(c.before), after = c.after == null ? '' : String(c.after);
         const hashed = /\nbody sha256:[0-9a-f]{16}$/.test(before ?? '') || /\nbody sha256:[0-9a-f]{16}$/.test(after);
+        // a change whose stored text is the same on both sides: it is inside a masked part, or past the stored cut
+        const same = r.change === 'changed' && before !== undefined && before === after;
         box.replaceChildren(
+          same ? el('p', { class: 'meta' }, 'Changed inside a masked part (a password or a secret, kept masked) or past the 20,000-character cut: the stored text is the same on both sides.') : '',
           hashed ? el('p', { class: 'meta' }, 'A body kept as its SHA-256 shows only that its text changed: its text is kept where the instance\'s query_text is full.') : '',
           textDiffView(before, after, `before (read ${fmtTime(c.prev_at)})`, `after (read ${fmtTime(c.snapshot_at)})`));
       } catch (e) {

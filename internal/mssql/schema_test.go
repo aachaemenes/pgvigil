@@ -3,6 +3,7 @@ package mssql
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSchemaInScope(t *testing.T) {
@@ -124,5 +125,19 @@ func TestSchemaFingerprintSame(t *testing.T) {
 		if a.same(b) {
 			t.Errorf("%+v and %+v read as the same (a torn read would be stored)", a, b)
 		}
+	}
+}
+
+// B-3 and S-2 of the build review: the 'mssql_db' row carries the server-clock create date (the identity) and the
+// clock of a read that ended 'partial'.
+func TestSchemaDBRowIdentity(t *testing.T) {
+	db := userDB{id: 7, name: "shop", row: map[string]any{"created_at": "2026-03-08T10:00:00Z"}}
+	at := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	r := mssqlDBRow(db, schemaLocal{createLocal: "2026-03-08T02:00:00.000"}, "partial", "too large", nil, &at)
+	if pa, ok := r["partial_at"].(time.Time); r["create_local"] != "2026-03-08T02:00:00.000" || !ok || !pa.Equal(at) || r["read_at"] != nil {
+		t.Errorf("the row is %v, want create_local, partial_at and no read_at", r)
+	}
+	if r := mssqlDBRow(db, schemaLocal{}, "seen", "", nil, nil); r["create_local"] != nil || r["partial_at"] != nil {
+		t.Errorf("a row without a local create date or an attempt: %v", r)
 	}
 }

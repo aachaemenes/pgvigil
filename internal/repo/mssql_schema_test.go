@@ -187,8 +187,13 @@ func TestSchemaGoneDatabaseObjectsOnAStore(t *testing.T) {
 	}
 }
 
+// localOf is a create date as the collector sends it for the identity: sys.databases.create_date in the server's own
+// clock, as text (these tests take UTC for the server's clock).
+func localOf(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000") }
+
 func mdb(dbid int, name string, created time.Time, restored *time.Time, state string, readAt *time.Time) map[string]any {
-	m := map[string]any{"kind": "mssql_db", "database_id": dbid, "name": name, "create_date": created, "state": state}
+	m := map[string]any{"kind": "mssql_db", "database_id": dbid, "name": name, "create_date": created, "create_local": localOf(created),
+		"state": state}
 	if restored != nil {
 		m["restored_at"] = *restored
 	}
@@ -321,14 +326,15 @@ func TestMssqlSchemaDueOnAStore(t *testing.T) {
 	s.importWith("import_mssql_schema", now.Add(-time.Hour), mdb(1, "quiet", created, nil, "read", &fresh), snap(1, "quiet", fresh),
 		mdb(2, "busy", created, nil, "read", &fresh), snap(2, "busy", fresh), mdb(3, "stale", created, nil, "read", &old), snap(3, "stale", old), end)
 	list := func(extra ...map[string]any) []map[string]any {
-		out := []map[string]any{{"database_id": 1, "name": "quiet", "create_date": created}, {"database_id": 2, "name": "busy", "create_date": created},
-			{"database_id": 3, "name": "stale", "create_date": created}}
+		out := []map[string]any{{"database_id": 1, "name": "quiet", "create_date": created, "create_local": localOf(created)},
+			{"database_id": 2, "name": "busy", "create_date": created, "create_local": localOf(created)},
+			{"database_id": 3, "name": "stale", "create_date": created, "create_local": localOf(created)}}
 		return append(out, extra...)
 	}
 	s.traceDDL(now.Add(-5*time.Minute), "busy", "alter", "Orders", "U", "dev")
 
 	// no reader row: the trace is not trusted, so 'busy' waits for its reconcile; the words say why
-	r := s.due(now, list(map[string]any{"database_id": 4, "name": "newdb", "create_date": now})...)
+	r := s.due(now, list(map[string]any{"database_id": 4, "name": "newdb", "create_date": now, "create_local": localOf(now)})...)
 	if r.TraceOK || r.TraceWhy == nil || !strings.Contains(*r.TraceWhy, "has not been read") {
 		t.Errorf("no reader row: trace_ok %v, why %v", r.TraceOK, r.TraceWhy)
 	}
@@ -361,6 +367,12 @@ func TestMssqlSchemaDueOnAStore(t *testing.T) {
 	// (a gap ranks before a reconcile, oldest read first: 'stale' is due by the gap too)
 	if got := reasons(s.due(now, list()...)); got != "2:ddl 3:gap 1:gap" {
 		t.Errorf("a reader gap: due [%s], want [2:ddl 3:gap 1:gap]", got)
+	}
+	// S-1 of the build review: the reader's next read (every 5 minutes) replaces its note; the gap stays until each
+	// database is read after it (red on bce3a4d3: the gap was read from the note alone)
+	s.reader("read", now, "")
+	if got := reasons(s.due(now, list()...)); got != "2:ddl 3:gap 1:gap" {
+		t.Errorf("a reader gap after the reader's next clean read: due [%s], want [2:ddl 3:gap 1:gap]", got)
 	}
 }
 
@@ -428,5 +440,103 @@ func TestMssqlSchemaWhoOnAStore(t *testing.T) {
 	}
 	if w := got["dbo.New"]; w.n != 0 || !strings.Contains(str(w.note), "not in the default trace") {
 		t.Errorf("dbo.New (added, no trace row): %d candidate(s), note %s", w.n, str(w.note))
+	}
+}
+
+// B-2 of the build review: Sales (id 8) is dropped and Reports is RESTORED onto id 8 (a routine dev refresh, inside
+// one pass): another database, a new baseline - never Sales' objects 'dropped' and Reports' 'added' (red on bce3a4d3:
+// the restore under another name was diffed against Sales, and the due answered 'restore').
+func TestMssqlSchemaRestoreOtherNameOnAStore(t *testing.T) {
+	s := newSchemaStore(t, "sqlserver")
+	t0 := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
+	c1, c2 := t0.Add(-48*time.Hour), t0.Add(30*time.Minute)
+	r0 := t0
+	s.importWith("import_mssql_schema", t0, mdb(8, "Sales", c1, nil, "read", &r0),
+		map[string]any{"kind": "db", "dbid": 8, "datname": "Sales", "objects": 1, "read_at": t0},
+		obj(8, "Sales", "table", "dbo.s1", "", "s1"), map[string]any{"kind": "end"})
+	t1 := t0.Add(time.Hour)
+	restored := t0.Add(30 * time.Minute)
+	if got := reasons(s.due(t1, map[string]any{"database_id": 8, "name": "Reports", "create_date": c2, "create_local": localOf(c2),
+		"restored_at": restored})); got != "8:new" {
+		t.Errorf("another database restored onto id 8: due [%s], want [8:new]", got)
+	}
+	r1 := t1
+	s.importWith("import_mssql_schema", t1, mdb(8, "Reports", c2, &restored, "read", &r1),
+		map[string]any{"kind": "db", "dbid": 8, "datname": "Reports", "objects": 1, "read_at": t1},
+		obj(8, "Reports", "table", "dbo.r1", "", "r1"), map[string]any{"kind": "end"})
+	if ch := s.changes(8, t1); len(ch) != 0 {
+		t.Errorf("Reports restored onto Sales' id recorded %v, want no change (a new baseline)", ch)
+	}
+	if p := s.present(8); p["dbo.s1"] || !p["dbo.r1"] {
+		t.Errorf("objects after the restore under another name: %v, want only dbo.r1 present", p)
+	}
+}
+
+// B-3 of the build review: on a server not set to UTC, a daylight-saving change moves the UTC create_date an hour;
+// the server-clock create date is the identity, so the database is the same one, diffed, never a new baseline (red
+// on bce3a4d3: every database 'new' and re-baselined twice a year, its changes in between never recorded).
+func TestMssqlSchemaDaylightSavingOnAStore(t *testing.T) {
+	s := newSchemaStore(t, "sqlserver")
+	t0 := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
+	created := t0.Add(-100 * 24 * time.Hour)
+	r0 := t0
+	s.importWith("import_mssql_schema", t0, mdb(9, "hr", created, nil, "read", &r0),
+		map[string]any{"kind": "db", "dbid": 9, "datname": "hr", "objects": 1, "read_at": t0},
+		obj(9, "hr", "table", "dbo.h1", "", "h1 v1"), map[string]any{"kind": "end"})
+	moved := created.Add(time.Hour) // the same create date, moved to UTC by the offset after the change
+	t1 := t0.Add(time.Hour)
+	if got := reasons(s.due(t1, map[string]any{"database_id": 9, "name": "hr", "create_date": moved, "create_local": localOf(created)})); got != "" {
+		t.Errorf("after a daylight-saving change: due [%s], want nothing due", got)
+	}
+	r1 := t1
+	m := mdb(9, "hr", created, nil, "read", &r1)
+	m["create_date"] = moved
+	s.importWith("import_mssql_schema", t1, m, map[string]any{"kind": "db", "dbid": 9, "datname": "hr", "objects": 1, "read_at": t1},
+		obj(9, "hr", "table", "dbo.h1", "", "h1 v2"), map[string]any{"kind": "end"})
+	if ch := strings.Join(s.changes(9, t1), ", "); ch != "changed dbo.h1" {
+		t.Errorf("a change read after a daylight-saving change recorded [%s], want [changed dbo.h1]", ch)
+	}
+}
+
+// S-2 and S-3 of the build review: a database too large to store ('partial') is tried again at the reconcile, never
+// on every pass (a 'seen' row keeps its 'partial'); a read-only or standby database is read when new and at the
+// reconcile only, never on each log restore (red on bce3a4d3: 'new' or 'reconcile' every pass for the large one,
+// 'restore' every pass for the standby).
+func TestMssqlSchemaDuePartialAndStandbyOnAStore(t *testing.T) {
+	s := newSchemaStore(t, "sqlserver")
+	now := time.Now().UTC().Truncate(time.Second)
+	created := now.Add(-100 * 24 * time.Hour)
+	tried, fresh, old := now.Add(-time.Hour), now.Add(-20*time.Minute), now.Add(-30*time.Hour)
+	big := mdb(11, "big", created, nil, "partial", nil)
+	big["partial_at"], big["note"] = tried, "not snapshotted: over 160 MB"
+	grown := mdb(12, "grown", created, nil, "partial", nil)
+	grown["partial_at"] = tried
+	s.importWith("import_mssql_schema", old, mdb(12, "grown", created, nil, "read", &old),
+		map[string]any{"kind": "db", "dbid": 12, "datname": "grown", "objects": 0, "read_at": old}, map[string]any{"kind": "end"})
+	s.importWith("import_mssql_schema", tried, big, grown, mdb(13, "standby", created, nil, "read", &fresh),
+		map[string]any{"kind": "db", "dbid": 13, "datname": "standby", "objects": 0, "read_at": fresh}, map[string]any{"kind": "seen", "dbid": 12},
+		map[string]any{"kind": "end"})
+	// a later pass that does not read them: 'seen' keeps the 'partial'
+	s.importWith("import_mssql_schema", now.Add(-10*time.Minute), mdb(11, "big", created, nil, "seen", nil), mdb(12, "grown", created, nil, "seen", nil),
+		mdb(13, "standby", created, nil, "seen", nil), map[string]any{"kind": "seen", "dbid": 11}, map[string]any{"kind": "seen", "dbid": 12},
+		map[string]any{"kind": "seen", "dbid": 13}, map[string]any{"kind": "end"})
+	var st string
+	if err := s.pool.QueryRow(s.ctx, `SELECT state FROM pgvigil.mssql_schema_dbs WHERE instance_id = $1 AND database_id = 11`, s.id).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != "partial" {
+		t.Errorf("a 'seen' pass over a 'partial' database left state %q, want partial", st)
+	}
+	restored := now.Add(-2 * time.Minute)
+	list := func() []map[string]any {
+		return []map[string]any{{"database_id": 11, "name": "big", "create_local": localOf(created)},
+			{"database_id": 12, "name": "grown", "create_local": localOf(created)},
+			{"database_id": 13, "name": "standby", "create_local": localOf(created), "restored_at": restored, "read_only": true}}
+	}
+	if got := reasons(s.due(now, list()...)); got != "" {
+		t.Errorf("an hour after the partial attempts, a log restore on the standby: due [%s], want nothing due", got)
+	}
+	if got := reasons(s.due(now.Add(25*time.Hour), list()...)); got != "11:reconcile 12:reconcile 13:reconcile" {
+		t.Errorf("a day later: due [%s], want [11:reconcile 12:reconcile 13:reconcile]", got)
 	}
 }

@@ -14,7 +14,8 @@
 #  P2. the first read is the baseline: shop's kinds (schema, table, column, constraint, trigger, view, procedure,
 #      function, synonym, sequence, type; its first plain index is P3's) stored, no change; mssql_schema_dbs 'read'.
 #  P7a. a database where the login is denied VIEW DEFINITION: 'not readable', no object, no change.
-#  P8. a database of 10,001 tables: 'partial', not snapshotted.
+#  P8. a database of 10,001 tables: 'partial', not snapshotted; P8b: not tried again on the next pass (its partial_at
+#      unchanged: the build review's S-2).
 #  P3. after DDL and a default-trace read, ONE pass (no daily read due): CREATE TABLE -> added, who sa; ALTER TABLE
 #      ADD COLUMN -> the column added; CREATE INDEX -> added; DROP TABLE -> dropped (one row); ALTER VIEW -> changed;
 #      ALTER PROCEDURE -> changed with the body's before / after TEXT, its password masked (query_text full); on an
@@ -22,15 +23,18 @@
 #      present ('seen').
 #  P4. a rolled-back ALTER TABLE: no change on the next pass.
 #  P5. sp_rename: found (by the trace or a forced daily read), as R0 says.
-#  P7b. a login without ALTER TRACE: the reader 'no right', no trace-driven read (no change after DDL) until its daily
-#      read; the API's trace part says trusted false.
+#  P7b. a login without ALTER TRACE: the reader 'no right', no trace-driven read; on a26-full, DDL the reader stored and
+#      then a reader row 20 minutes stale: not trusted, so no 'ddl' read (shop's read_at unchanged); in A the API's
+#      trace part says trusted false for a26-notrace (the build review's S-6).
 #  B1. a database dropped and another created on the same id: no 'dropped' row, the new one a baseline.
 #  P6. a restore over shop: diffed, not a baseline (the table made after the backup 'dropped').
 #  S10. a dropped database: its objects marked not present.
-#  S9. a 2,000-procedure database's whole re-read: the import's run time and the repository's WAL printed against the
-#      lead's bound (15 s of 30 s; 100 MB), over = a note, never a FAIL.
+#  S9. a 2,000-procedure database's whole re-read: the collect's run time (the catalog read and the import, so the
+#      import's own time is within it) and the repository's WAL printed against the lead's bound (15 s of 30 s;
+#      100 MB), over = a note, never a FAIL.
 #  A.  the API: /api/schema on the SQL Server instance has the trace, mssql_dbs and who parts; part=change gives the
 #      procedure's whole before / after with the password masked.
+#  The first line is 'containers: <SQL Server> <repository>' (a job that kills this script removes exactly those).
 #  The last line is 'proof-mssql-schema: PASS (...)' and exit 0 only when every row holds.
 #  NOT PROVEN HERE: a torn read (unit-tested), the 160 MB fall-back (unit-tested), 3,000 databases' baseline, the
 #  Schema tab in a browser (proof-a11y at the join), SQL Server 2016 / 2019, Azure SQL Database.
@@ -38,6 +42,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d /tmp/pgv-a26-XXXXXX)
 N=$RANDOM; CT=a26ms_$N; RC=a26repo_$N; CFG=$WORK/pgvigil.yaml; OUT=$WORK/out
+echo "containers: $CT $RC"
 MADE_CT=; MADE_RC=; SRV_PID=; UNWIRE=0
 fail() { echo "FAIL $*"; exit 1; }
 ok() { echo "ok   $*"; }
@@ -163,6 +168,8 @@ eq "P7a: locked's objects" "$(q "select count(*) from pgvigil.schema_objects whe
 eq "P8: big's state" "$(mstate a26-full big)" partial
 eq "P8: big's objects" "$(q "select count(*) from pgvigil.schema_objects where instance_id = $(iid a26-full) and dbid = $(dbid big)")" 0
 [ -z "$(q "select 1 from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid mid)")" ] || fail "P2: mid read though '-mid' leaves it out"
+PA8=$(q "select partial_at from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid big)")
+[ -n "$PA8" ] || fail "P8: big's partial_at is empty"
 ok "P2 baseline: 11 kinds in shop (its first plain index comes in P3), no change; P7a locked not readable; P8 big partial; -mid left out"
 
 echo "--- P3. DDL, one pass"
@@ -178,7 +185,9 @@ grep -q "S3cretTwo" <<<"$AFTER" && fail "P3: the password is in the stored text"
 HAFTER=$(q "select after from pgvigil.schema_changes where instance_id = $(iid a26-hash) and dbid = $(dbid shop) and identity = 'dbo.p_key' order by snapshot_at desc limit 1")
 grep -q "body sha256:" <<<"$HAFTER" && ! grep -q "SELECT 2" <<<"$HAFTER" || fail "P3: under query_text none the procedure's after is not its sha line: $(head -c 200 <<<"$HAFTER")"
 eq "P3: quiet kept present" "$(q "select is_present from pgvigil.schema_databases where instance_id = $(iid a26-full) and dbid = $(dbid quiet)")" t
-ok "P3 one pass: 6 changes, the who sa, the body's text masked under full and its sha under none, quiet kept"
+eq "P8b: big's partial_at after P3's pass" "$(q "select partial_at from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid big)")" "$PA8"
+eq "P8b: big's state after P3's pass" "$(mstate a26-full big)" partial
+ok "P3 one pass: 6 changes, the who sa, the body's text masked under full and its sha under none, quiet kept; P8b big not tried again"
 
 echo "--- P4. a rolled-back ALTER"
 N4=$(nchanges a26-full shop)
@@ -205,7 +214,15 @@ N7=$(nchanges a26-notrace shop)
 collect mssql_defaulttrace a26-notrace; collect mssql_schema a26-notrace
 eq "P7b: the reader's state" "$(q "select state from pgvigil.mssql_reader_state where instance_id = $(iid a26-notrace) and reader = 'defaulttrace'")" "no right"
 eq "P7b: no trace-driven read" "$(nchanges a26-notrace shop)" "$N7"
-ok "P7b no ALTER TRACE: the reader 'no right', no trace-driven read"
+RA=$(q "select read_at from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid shop)")
+sq "CREATE TABLE dbo.P7bT (a int);" shop >/dev/null || fail "P7b's DDL"
+collect mssql_defaulttrace a26-full
+eq "P7b: the reader stored the DDL" "$(q "select count(*) > 0 from pgvigil.mssql_trace_events where instance_id = $(iid a26-full) and kind = 'ddl' and database_name = 'shop' and object_name = 'P7bT'")" t
+q "update pgvigil.mssql_reader_state set snapshot_at = snapshot_at - interval '20 minutes' where instance_id = $(iid a26-full) and reader = 'defaulttrace'" >/dev/null
+q "delete from pgvigil.mssql_schema_trace_gaps where instance_id = $(iid a26-full)" >/dev/null
+collect mssql_schema a26-full
+eq "P7b: shop's read_at after a pass on a stale reader" "$(q "select read_at from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid shop)")" "$RA"
+ok "P7b no ALTER TRACE: the reader 'no right', no trace-driven read; a stale reader's stored DDL not trusted (no read)"
 
 echo "--- B1. another database on a reused id"
 OLD=$(dbid gone1); pass a26-full
@@ -215,8 +232,8 @@ pass a26-full
 if [ "$OLD" = "$NEW" ]; then
   eq "B1: dropped rows on the reused id" "$(q "select count(*) from pgvigil.schema_changes where instance_id = $(iid a26-full) and dbid = $NEW and change = 'dropped'")" 0
   eq "B1: reborn's object" "$(q "select string_agg(identity, ',') from pgvigil.schema_objects where instance_id = $(iid a26-full) and dbid = $NEW and is_present and kind = 'table'")" "dbo.r"
-  ok "B1 reused id $NEW: a new baseline, no false drop"
-else echo "NOT PROVEN B1: the server gave reborn id $NEW, not gone1's $OLD"; fi
+  ok "B1 reused id $NEW: a new baseline, no false drop"; B1W=B1
+else echo "NOT PROVEN B1: the server gave reborn id $NEW, not gone1's $OLD"; B1W="B1 NOT PROVEN"; fi
 
 echo "--- P6. a restore over shop"
 sq "BACKUP DATABASE shop TO DISK = N'/var/opt/mssql/data/shop_a26.bak' WITH INIT;" >/dev/null || fail "P6's backup"
@@ -256,7 +273,9 @@ jq -e '.trace and .mssql_dbs and .changes' "$WORK/a.json" >/dev/null || fail "A:
 CH=$(q "select to_char(snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') from pgvigil.schema_changes where instance_id = $(iid a26-full) and identity = 'dbo.p_key' and attribute = 'definition' order by snapshot_at desc limit 1")
 curl -fs "http://127.0.0.1:$PORT/api/schema?instance=$(iid a26-full)&db=$(dbid shop)&kind=procedure&identity=dbo.p_key&attribute=definition&change_at=$CH&part=change" > "$WORK/c.json" || fail "A: part=change"
 grep -q "SELECT 2 AS two" "$WORK/c.json" && ! grep -q "S3cretTwo" "$WORK/c.json" || fail "A: part=change is not the masked whole text: $(head -c 300 "$WORK/c.json")"
-ok "A API: the trace, mssql_dbs and changes parts; part=change gives the whole masked text"
+curl -fs "http://127.0.0.1:$PORT/api/schema?instance=$(iid a26-notrace)&from=$(date -u -d '-3 hours' +%FT%TZ)&to=$(date -u -d '+5 minutes' +%FT%TZ)" > "$WORK/nt.json" || fail "A: GET /api/schema for a26-notrace"
+eq "A: a26-notrace's trace trusted" "$(jq -r '(.trace.columns | index("trusted")) as $i | .trace.rows[0][$i]' "$WORK/nt.json")" false
+ok "A API: the trace, mssql_dbs and changes parts; part=change gives the whole masked text; a26-notrace's trace not trusted"
 
 echo "NOT PROVEN: a torn read and the 160 MB fall-back (unit-tested), 3,000 databases' baseline, the Schema tab in a browser (proof-a11y at the join), SQL Server 2016 / 2019, Azure SQL Database"
-echo "proof-mssql-schema: PASS (R0, P1, P2, P7a, P8, P3, P4, P5, P7b, B1, P6, S10, S9, A)"
+echo "proof-mssql-schema: PASS (R0, P1, P2, P7a, P8, P8b, P3, P4, P5, P7b, $B1W, P6, S10, S9, A)"

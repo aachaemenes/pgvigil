@@ -187,11 +187,16 @@ view's text is kept under every policy. The object's hash is taken over the body
 change of `query_text` (or of a masked password) is never recorded as a schema change. A definition is stored up to
 20,000 characters; a change past that point is still found.
 
-**When a database is read.** Every 15 minutes a pass reads, oldest first and within 5 minutes (120 seconds a
-database), the databases that are due: never read, another database on a reused id, a restore over it (msdb's restore
-history), a `CREATE`, `ALTER` or `DROP` the default trace's reader (`mssql_defaulttrace`) stored since its last read,
-a gap the reader reported, a read that met a change halfway, and the daily read of every database. A database is read
-whole: the default trace keeps neither the schema nor the id of an object. Where there is no default trace to trust -
+**When a database is read.** Every 15 minutes a pass reads the databases that are due, by reason in this order, then
+the oldest read first; each is started within the pass's 5 minutes and given 120 seconds. The reasons: never read,
+another database on a reused id, a restore over it under the same name (msdb's restore history), a `CREATE`, `ALTER`
+or `DROP` the default trace's reader (`mssql_defaulttrace`) stored since its last read, a gap the reader reported
+(kept until each database is read after it), a read that met a change halfway, and the daily read of every database.
+A read-only or standby database (a log-shipping secondary) is read when new and at the daily read only, never on each
+log restore. A database too large to store is tried again at the daily read, on a restore or on DDL after the attempt,
+never on every pass. A database is the same one while its id and its create date in the server's own clock stay (a
+daylight-saving change does not make it new); another database restored onto a dropped one's id is a new baseline. A
+database is read whole: the default trace keeps neither the schema nor the id of an object. Where there is no default trace to trust -
 Azure SQL Database, a server that switched it off, a login without ALTER TRACE, a reader that is failing or behind -
 changes are found at the daily read alone, and the Schema tab says so with the reason and how old the oldest read is.
 
@@ -203,10 +208,13 @@ the two reads. A name two schemas share, or several statements in the interval, 
 during the read leaves it unstored (read again next pass). A database without VIEW DEFINITION for the login is "not
 readable" and records no change. Over 10,000 tables and views, or over 160 MB of definitions even with the bodies as
 hashes, a database is not snapshotted and its stored snapshot is kept. An owner change (the default trace's event
-153, which the reader leaves out) is found at the daily read. SQL Server 2016 or later.
+153, which the reader leaves out) is found at the daily read. A change inside a masked part of a body (a password) or
+past the 20,000-character cut is recorded with the same stored text on both sides, and the compare says so. SQL
+Server 2016 or later, Azure SQL Managed Instance, Azure SQL Database.
 
 **Rights**: VIEW ANY DEFINITION (or VIEW DEFINITION in each database), CONNECT ANY DATABASE (or a user in each), SELECT
-on `msdb.dbo.restorehistory`; ALTER TRACE for the default trace's reader.
+on `msdb.dbo.restorehistory` (without it a restore that moves the database's create date reads as another database: a
+new baseline, no diff); ALTER TRACE for the default trace's reader.
 
 ## The repository (migration 0058)
 
@@ -219,7 +227,8 @@ on `msdb.dbo.restorehistory`; ALTER TRACE for the default trace's reader.
 | `import_schema(i, at, payload)`                   | the collector's import: the diff, the snapshot, the log rows, the cursor         |
 | `schema_changes_window(i, from, to, dbid)`        | the changes of a window (2,000 newest), each with its matched statement          |
 | `schema_findings`                                 | the two findings above                                                           |
-| `mssql_schema_dbs` (0267)                         | SQL Server: each database the collection has seen - its id, name, create date, newest restore, the last pass's state and note, `read_at` (the server's UTC clock before its last whole read) |
+| `mssql_schema_dbs` (0267)                         | SQL Server: each database the collection has seen - its id, name, create date (UTC for the page; `create_local`, the server's own clock, for its identity), newest restore, the last pass's state and note (a pass that does not read it keeps a 'torn' or 'partial'), `read_at` (the server's UTC clock before its last whole read), `partial_at` (the same, of its last read too large to store) |
+| `mssql_schema_trace_gaps` (0267)                  | SQL Server: per instance, the newest default-trace read that said events were not read (kept by a trigger on `mssql_reader_state`) |
 | `import_mssql_schema(i, at, payload)` (0267)      | SQL Server's import: another database on a reused id becomes a new baseline (a restore, a rename keep the history), then `import_schema` |
 | `import_mssql_schema_due(i, at, payload)` (0267)  | which databases a pass reads whole, and why                                      |
 | `mssql_schema_changes_window(i, from, to, dbid)` (0267) | SQL Server's changes of a window, each with the default trace's candidates |
