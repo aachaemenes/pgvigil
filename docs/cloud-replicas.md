@@ -43,7 +43,8 @@ lag. Each lag is to the replica's DIRECT upstream: a replica of a replica (casca
 source, not the first. A resource is one row whoever reads it: a source and its replica both monitored read the same
 chain and store it once; both pages show it. The page is the Replicas (provider) block under a PostgreSQL instance's
 Replication tab and an RDS for SQL Server instance's Availability tab: source and replicas, the lag and byte lag charts
-from 5 minutes to a year (hours past a day), the changes, the findings.
+over the range bar's window (hours past a day; a window past 31 days shows its newest 31, and the page says so), the
+changes, the findings.
 
 The instance's own failover is read too, through the same door: RDS's event list (category failover: 'Multi-AZ instance
 failover started' and '... completed') and Cloud SQL's FAILOVER operations. An RDS Multi-AZ DB instance's or a Cloud SQL
@@ -58,15 +59,15 @@ written at its completion.
 | Config | the instance's `aws:` block: `region`, `profile` (optional), `db_instance`, and `replicas: true` - the switch, off by default (on SQL Server the block takes these four keys; `cluster`, `log_group` and `dms` are PostgreSQL's). Aurora's replicas are not this door. |
 | Credential (none stored by pgvigil) | the AWS SDK's chain, as the io and logs reads: the environment, the profile, `aws login`, an assumed role, the instance role |
 | Calls | `rds:DescribeDBInstances` (one paged listing a region and run, shared by every instance of the run), `cloudwatch:GetMetricData` (ReplicaLag, Maximum over 60 s, the last 20 minutes, a row a datapoint), `rds:DescribeEvents` (the DB instance's failover events, the last 2 hours) |
-| Narrowest right | the policy below; DescribeDBInstances and DescribeEvents with Resource "*" or the site's regions (a replica in another region is read in its own region: its hosts too) |
+| Narrowest right | the policy below: DescribeDBInstances on the account's DB instances in every region (`rds:*` in the ARN: a replica in another region is listed in its own region; its hosts too); DescribeEvents and GetMetricData take no resource type, so only Resource "*" grants them |
 | Outbound hosts | rds.<region>.amazonaws.com and monitoring.<region>.amazonaws.com for each region a replica is in; sts.<region>.amazonaws.com for an assumed role; the instance metadata endpoint 169.254.169.254 for an instance role |
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
-    { "Effect": "Allow", "Action": ["rds:DescribeDBInstances", "rds:DescribeEvents"], "Resource": "arn:<partition>:rds:<region>:<account>:db:*" },
-    { "Effect": "Allow", "Action": "cloudwatch:GetMetricData", "Resource": "*" }
+    { "Effect": "Allow", "Action": "rds:DescribeDBInstances", "Resource": "arn:<partition>:rds:*:<account>:db:*" },
+    { "Effect": "Allow", "Action": ["rds:DescribeEvents", "cloudwatch:GetMetricData"], "Resource": "*" }
   ]
 }
 ```
@@ -94,7 +95,8 @@ instance's own lag and says which right is missing; a throttle rests the door un
 | replica promoted or detached | a replica's source gone, or a source no longer listing it | warning for 24 hours | pgvigil's own |
 | cloud door failing | 3 reads in a row with a refused or failed call, the sentence carried | warning | pgvigil's own; a read refused whole is the collector's 'collection failing' |
 
-An RDS instance's own Multi-AZ standby is not a replica here: it is read and shown, never judged.
+An RDS instance's own Multi-AZ standby is not a replica here and is not read: no row and no finding; its failover is the
+provider's failover event (DescribeEvents, above).
 
 Not proven: an RDS for SQL Server read replica (Enterprise edition only: no lab), a cascaded or a cross-region replica
 (no lab makes one), an RDS Multi-AZ or Cloud SQL HA failover event (a billed lab not approved), the Cloud SQL rows until

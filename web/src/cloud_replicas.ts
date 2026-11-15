@@ -17,7 +17,8 @@ const replTone = (v: unknown): string => {
 };
 const resourceCols = (ctx: Ctx): Col[] => [
   { key: 'resource_id', label: 'resource', fmt: (v, r) => r.self === true ? `${String(v)} (this instance)`
-    : r.monitored_as != null ? el('a', { href: href(ctx, { tab: 'replication', instance: Number(r.monitored_as) }) }, String(v))
+    // the page this block is on (Replication or Availability): a source and its replicas are one engine (part c finding 7)
+    : r.monitored_as != null ? el('a', { href: href(ctx, { tab: ctx.tab, instance: Number(r.monitored_as) }) }, String(v))
     : `${String(v)} (not monitored)` },
   { key: 'role', label: 'role', fmt: (v, r) => String(v ?? '') + (r.cascaded === true ? ' (cascaded: a replica that is a source)' : '') },
   { key: 'source_id', label: 'source' },
@@ -52,10 +53,13 @@ function pivot(rows: Row[], metric: string): { rows: Row[]; ids: string[] } {
   return { rows: [...by.values()].sort((a, b) => Date.parse(String(a.snapshot_at)) - Date.parse(String(b.snapshot_at))), ids: [...ids].sort() };
 }
 
-// hasCloudReplicas: whether the instance's provider replicas were read (the shell's check for the block)
+// hasCloudReplicas: whether the instance's provider replicas were read, or their read ran and failed or was skipped (the
+// shell's check for the block: a failing read keeps the tab, so its words are seen - part c finding 8); an instance
+// whose door is closed has neither
 export async function hasCloudReplicas(instance: number): Promise<boolean> {
   const d = await get<Parts>('cloud/replicas', { instance, part: 'read' });
-  return rowsOf(d.read)[0]?.has === true;
+  const read = rowsOf(d.read)[0];
+  return read?.has === true || read?.run_status != null;
 }
 
 export async function cloudReplicasBlock(ctx: Ctx): Promise<HTMLElement> {
@@ -91,6 +95,10 @@ export async function cloudReplicasBlock(ctx: Ctx): Promise<HTMLElement> {
     ['replica_byte_lag', 'Replica byte lag (Cloud SQL, replay)', (v: number) => `${fmtNum(v)} bytes`]] as [string, string, (v: number) => string][]) {
     const p = pivot(series, metric);
     if (p.rows.length) sec.append(lineChart(title, p.rows, p.ids.map(id => ({ key: id, label: id })), fmt));
+    else if (metric === 'replica_lag' && replicas.length) {
+      // replicas listed and no lag datapoint in the window: said, never a silent gap (part c finding 11)
+      sec.append(el('p', { class: 'empty' }, 'No replica lag datapoint in this window: the provider gave none (a replica made minutes ago, a window before its first read, or the metric call refused - see the refused calls above).'));
+    }
   }
   sec.append(el('h4', {}, 'Changes'), grid(rowsOf(d.events), eventCols, 'No replica added, removed, promoted or changed status, and no provider failover, in this window.'));
   return sec;

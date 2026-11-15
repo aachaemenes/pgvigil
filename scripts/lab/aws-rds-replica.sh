@@ -175,8 +175,16 @@ reboot)
 promote)
   need_aws; load
   aw rds promote-read-replica --db-instance-identifier "$REP_ID" --backup-retention-period 0 --query 'DBInstance.DBInstanceStatus' --output text | sed "s/^/promoting: $REP_ID /"
+  # the waiter can return at once while the status is still 'available', before 'modifying' (part c finding 13): the
+  # promotion is read as done only when the instance names no source
+  S=
+  for _ in $(seq 1 60); do
+    S=$(aw rds describe-db-instances --db-instance-identifier "$REP_ID" --query 'DBInstances[0].ReadReplicaSourceDBInstanceIdentifier' --output text)
+    { [ "$S" = None ] || [ -z "$S" ]; } && break; sleep 10
+  done
+  { [ "$S" = None ] || [ -z "$S" ]; } || fail "$REP_ID still names its source $S after 10 minutes: read status, then down"
   aw rds wait db-instance-available --db-instance-identifier "$REP_ID" || aw rds wait db-instance-available --db-instance-identifier "$REP_ID"
-  echo "promoted: $REP_ID is a standalone instance"
+  echo "promoted: $REP_ID is a standalone instance (no source read back)"
   ;;
 status)
   need_aws

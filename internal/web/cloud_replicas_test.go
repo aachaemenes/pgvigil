@@ -44,6 +44,7 @@ func TestCloudReplicasPageOnAStore(t *testing.T) {
 	db1, r1, other := fmt.Sprintf("pdb%d", sfx), fmt.Sprintf("pdb%d-r1", sfx), fmt.Sprintf("pother%d", sfx)
 	defer func() {
 		for _, q := range []string{`DELETE FROM pgvigil.cloud_replica_sample WHERE resource_id = ANY($1)`, `DELETE FROM pgvigil.cloud_replica_hour WHERE resource_id = ANY($1)`,
+			`DELETE FROM pgvigil.cloud_replica_hour_dirty WHERE resource_id = ANY($1)`,
 			`DELETE FROM pgvigil.cloud_replica_events WHERE resource_id = ANY($1)`, `DELETE FROM pgvigil.cloud_failover_events WHERE resource_id = ANY($1)`,
 			`DELETE FROM pgvigil.cloud_replica_reads WHERE resource_id = ANY($1)`, `DELETE FROM pgvigil.cloud_replicas WHERE resource_id = ANY($1)`} {
 			if _, err := pool.Exec(context.Background(), q, []string{db1, r1, other}); err != nil {
@@ -139,6 +140,29 @@ func TestCloudReplicasPageOnAStore(t *testing.T) {
 	}
 	if len(day) != 24*60 || len(three) != 48 {
 		t.Errorf("series rows: a day %d (want 1440 samples), three days %d (want 48 hours)", len(day), len(three))
+	}
+	// part c finding 10: a window whose ends are off the hour reads the whole hours between (h0 .. h0+46h: the first
+	// whole hour after its start has no data before h0) and its trailing edge's samples (h0+47h .. +36 min); a dirty hour
+	// inside it (h0+10h) reads its 60 samples in place of its hour row: 46 + 60 + 37 rows
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.cloud_replica_hour_dirty (provider, resource_id, from_at, to_at, why) VALUES ('aws', $1, $2, $3, 'test')`,
+		r1, h0.Add(10*time.Hour), h0.Add(11*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	edge := query(sqlCloudReplicaSeries, ids["rep"], now.Add(-72*time.Hour+17*time.Minute), now.Add(-23*time.Minute))
+	var inDirty, inTail, rest int
+	for _, r := range edge {
+		at, _ := r["snapshot_at"].(time.Time)
+		switch {
+		case !at.Before(h0.Add(10*time.Hour)) && at.Before(h0.Add(11*time.Hour)):
+			inDirty++
+		case !at.Before(h0.Add(47 * time.Hour)):
+			inTail++
+		default:
+			rest++
+		}
+	}
+	if inDirty != 60 || inTail != 37 || rest != 46 {
+		t.Errorf("an off-the-hour window with a dirty hour: %d rows in the dirty hour (want its 60 samples), %d in the trailing edge (want 37 samples), %d others (want 46 hour rows)", inDirty, inTail, rest)
 	}
 	ev := query(sqlCloudReplicaEvents, ids["rep"], now.Add(-2*time.Hour), rn.Add(time.Hour))
 	kinds := map[string]int{}

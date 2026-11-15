@@ -21,7 +21,7 @@
 #      replica 'replica' with source_id = the primary and replication status Running, at least one replica_lag
 #      datapoint (the replica's cloudsql_database) - replica_byte_lag datapoints printed (the primary's replay_location
 #      series: whether Google gives them is printed, not graded); the primary's 'added' event; both instances' pages
-#      list both resources.
+#      (GET /api/cloud/replicas part=resources, from a pgvigil serve of the proof's repository) list both resources.
 #  C-C replay held by a long REPEATABLE READ on the replica (the lab's max_standby_streaming_delay -1) with an INSTANCE
 #      tier of warn 1 minute on both instances, 16 minutes of reads: 'provider replica lag' warning on both (the rule
 #      fires when every datapoint of the 10 minutes to the newest is over the tier: at the default 10 minutes a hold
@@ -54,7 +54,7 @@ cd "$(dirname "$0")/.."
 : "${PGVIGIL_LAB_GCP_PROJECT:?the project id}" "${PGVIGIL_LAB_PROOF:?the label value of the lab}"
 LAB=scripts/lab/gcp-cloudsql-pg-replica.sh
 STATE=${PGVIGIL_LAB_DIR:-.lab}/gcp-cloudsql-pg-replica.env
-for t in psql jq python3 gcloud; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+for t in psql jq python3 gcloud curl; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
 [ -r "$STATE" ] || { echo "FAIL: no lab state file $STATE (gcp-cloudsql-pg-replica.sh up, allow, logins)" >&2; exit 1; }
 gcloud auth application-default print-access-token >/dev/null 2>&1 || { echo "FAIL: no Application Default Credentials on this machine (gcloud auth application-default login: Allen's step)" >&2; exit 1; }
 # shellcheck disable=SC1090
@@ -63,7 +63,7 @@ gcloud auth application-default print-access-token >/dev/null 2>&1 || { echo "FA
 SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
 REPO_DB=pgvigil_crgproof_$SUF; N=proof-crg-$SUF
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
-MADE_DB=; MADE_T=; HOLD_PID=; WRITE_PID=; LP=
+MADE_DB=; MADE_T=; HOLD_PID=; WRITE_PID=; SRV_PID=; LP=
 FAILS=(); NOTPROVEN=()
 SRC_ID=$(tr '[:upper:]' '[:lower:]' <<<"$PGVIGIL_LAB_GCP_PROJECT:$PRI_INSTANCE"); REP_ID=$(tr '[:upper:]' '[:lower:]' <<<"$PGVIGIL_LAB_GCP_PROJECT:$REP_INSTANCE")
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
@@ -74,6 +74,7 @@ stopbg() { for p in $HOLD_PID $WRITE_PID; do kill "$p" 2>/dev/null || true; done
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   stopbg
+  [ -z "$SRV_PID" ] || kill "$SRV_PID" 2>/dev/null
   if [ -n "$MADE_T" ]; then src "DROP TABLE IF EXISTS public.pgvproof_crg_$SUF" >/dev/null 2>&1 || echo "CLEANUP: public.pgvproof_crg_$SUF not dropped (down removes the instance)" >&2; fi
   if [ -n "$MADE_DB" ]; then psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; fi
   rm -rf "$WORK"
@@ -111,6 +112,16 @@ rstat() { q "SELECT repl_status FROM pgvigil.cloud_replicas WHERE provider = 'gc
 # fresh <time>: the replica's row as 'status|read after <time>' (a clear counts only on a read after the change, finding 7)
 fresh() { q "SELECT repl_status || '|' || (snapshot_at > '$1'::timestamptz) FROM pgvigil.cloud_replicas WHERE provider = 'gcp' AND resource_id = '$REP_ID'"; }
 REP_IP=; writecfg; "$BIN" migrate -config "$CFG" >/dev/null
+# the page's own read (part c finding 9): a pgvigil serve of this repository on a free local port without a login
+# (this proof's own process, stopped by the cleanup); page <src|rep> = the resource ids GET /api/cloud/replicas
+# part=resources lists for that instance, sorted and joined by commas
+PORTW=$((20000 + RANDOM % 20000)); while ss -ltnH "sport = :$PORTW" | grep -q .; do PORTW=$((20000 + RANDOM % 20000)); done
+printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/serve.yaml"
+"$BIN" serve -config "$WORK/serve.yaml" -listen "127.0.0.1:$PORTW" -no-login > "$WORK/serve.out" 2>&1 & SRV_PID=$!
+for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORTW/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
+kill -0 "$SRV_PID" 2>/dev/null || die "pgvigil serve exited: $(cat "$WORK/serve.out")"
+page() { curl -fs "http://127.0.0.1:$PORTW/api/cloud/replicas?instance=$(iid "$1")&part=resources" | python3 -c 'import json,sys; t=json.load(sys.stdin)["resources"]; i=t["columns"].index("resource_id"); print(",".join(sorted(r[i] for r in t["rows"])))'; }
+WANT_PAGE=$(printf '%s\n' "$SRC_ID" "$REP_ID" | LC_ALL=C sort | paste -sd,)
 
 echo "--- C-A the primary alone"
 run src
@@ -138,9 +149,11 @@ done
 BL=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'gcp' AND resource_id = '$REP_ID' AND metric = 'replica_byte_lag'")
 AD=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'gcp' AND resource_id = '$SRC_ID' AND kind = 'added' AND subject = '$REP_ID'")
 PAGES=$(q "SELECT count(*) FROM pgvigil.cloud_replica_readers WHERE instance_id IN ($(iid src), $(iid rep)) AND resource_id IN ('$SRC_ID', '$REP_ID')")
+PG_SRC=$(page src || true); PG_REP=$(page rep || true)
+echo "  the pages list: the source's '$PG_SRC', the replica's '$PG_REP' (want '$WANT_PAGE')"
 echo "  after $i minute(s): $T; replication '$RS'; lag datapoints $P; byte-lag datapoints $BL (printed); 'added' $AD; page rows $PAGES${STOPPED_SEEN:+; a 'stopped' finding while it was made}"
-[ "$T" = "$SRC_ID:source::$REP_ID $REP_ID:replica:$SRC_ID:" ] && [ "$RS" = Running ] && [ "$P" -gt 0 ] && [ "$AD" = 1 ] && [ "$PAGES" = 4 ] && [ -z "$STOPPED_SEEN" ] \
-  && echo "C-B: OK" || bad "C-B: topology '$T', replication '$RS', datapoints $P, added $AD, page rows $PAGES, stopped while made '${STOPPED_SEEN:-no}'"
+[ "$T" = "$SRC_ID:source::$REP_ID $REP_ID:replica:$SRC_ID:" ] && [ "$RS" = Running ] && [ "$P" -gt 0 ] && [ "$AD" = 1 ] && [ "$PAGES" = 4 ] && [ "$PG_SRC" = "$WANT_PAGE" ] && [ "$PG_REP" = "$WANT_PAGE" ] && [ -z "$STOPPED_SEEN" ] \
+  && echo "C-B: OK" || bad "C-B: topology '$T', replication '$RS', datapoints $P, added $AD, page rows $PAGES, the pages '$PG_SRC' '$PG_REP', stopped while made '${STOPPED_SEEN:-no}'"
 
 hold() {
   src "CREATE TABLE IF NOT EXISTS public.pgvproof_crg_$SUF (id int PRIMARY KEY, v int); INSERT INTO public.pgvproof_crg_$SUF SELECT g, 0 FROM generate_series(1, 1000) g ON CONFLICT DO NOTHING" >/dev/null; MADE_T=1

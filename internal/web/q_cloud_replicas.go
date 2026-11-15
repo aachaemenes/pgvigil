@@ -41,7 +41,8 @@ SELECT c.provider, c.resource_id, c.resource_id = g.resource_id AS self, c.role,
  ORDER BY CASE c.role WHEN 'source' THEN 0 WHEN 'standalone' THEN 1 ELSE 2 END, c.resource_id`
 
 // the window's series of those resources, newest first: a day or less their samples; longer the hours
-// (cloud_replica_window: each row's maximum, a sample row its own value), so a chart reads 5 minutes to a year
+// (cloud_replica_window: each row's maximum, a sample row its own value); a window past 31 days reads its newest 31
+// (params' defaultReach, the reply says so: part c finding 5), as B2a-N2's page
 const sqlCloudReplicaSeries = `
 WITH ids AS (SELECT r.provider, array_agg(r.resource_id) AS ids FROM pgvigil.cloud_replica_readers r WHERE r.instance_id = $1 GROUP BY r.provider)
 SELECT x.snapshot_at, x.resource_id, x.metric, x.value

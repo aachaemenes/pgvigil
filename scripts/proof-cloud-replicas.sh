@@ -14,6 +14,8 @@
 #   PGVIGIL_LAB_AWS_PROFILE, PGVIGIL_LAB_AWS_REGION, PGVIGIL_LAB_PROOF   as the lab script (its state file .lab/aws-rds-replica.env)
 #   PGVIGIL_PROOF_DENY_PROFILE  (R-G, optional) an AWS profile whose identity may read CloudWatch but not
 #                            rds:DescribeDBInstances; without it R-G is 'not proven: no such profile here'
+#   PGVIGIL_PROOF_DOC_PROFILE   (R-H, optional) an AWS profile whose identity holds ONLY docs/cloud-replicas.md's policy,
+#                            verbatim; without it R-H is 'not proven: no such profile here'
 #
 # Expected (written before the first run; red first: on a tree without 390b, cloud_replicas is an unknown collection
 # and every R row FAILs):
@@ -21,7 +23,8 @@
 #  R-B replica: while it is made, no 'provider replica stopped' (fold 9: a blank status is 'not reported yet'); within
 #      15 minutes of it being available: the source 'source' with replica_ids = [the replica], the replica 'replica'
 #      with source_id = the source and repl_status 'replicating', at least one replica_lag datapoint; the source's
-#      'added' event; both instances' pages (GET /api/cloud/replicas) list both resources; the replica's own read stores
+#      'added' event; both instances' pages (GET /api/cloud/replicas part=resources, from a pgvigil serve of the proof's
+#      repository) list both resources; the replica's own read stores
 #      no second row of either.
 #  R-C replay held by a long REPEATABLE READ on the replica (max_standby_streaming_delay -1 in the lab's parameter
 #      group; a delete and VACUUM of the proof's table on the source, a write every 20 s), 16 minutes of reads with
@@ -31,12 +34,16 @@
 #      minutes before every datapoint of a 10-minute window is over 600 s (review 055507 finding 4), so it is not held.
 #  R-D 15 idle minutes: the idle lag's maximum printed (AWS: 'up to five minutes' on an idle source), no lag finding at
 #      the defaults.
-#  R-E the replica rebooted: its status read 'rebooting' (or the read between), no 'provider lag missing' and no
-#      'stopped' while it reboots, 'available' again with datapoints after it.
+#  R-E the replica rebooted: its status read 'rebooting' (or the read between), no 'stopped' while it reboots,
+#      'available' again and a replica_lag datapoint dated after that read within 6 more reads; no 'provider lag
+#      missing' too, but WEAK: that rule needs 15 minutes without a datapoint and this row reads 12 at most, so it cannot
+#      fail here (part c finding 9).
 #  R-F promote: the replica 'standalone' with a 'promoted' event, the source's 'removed' event, the 'replica promoted or
 #      detached' finding (warning) on both instances.
 #  R-G a profile without rds:DescribeDBInstances: the read row's note names AccessDenied and the right, the run
 #      partial, the lag still read; after 3 such reads the 'cloud door failing' finding.
+#  R-H (before R-F, while the replica stands) the documented policy verbatim: a run 'ok', no refused call (door_fails
+#      0, no door error) - DescribeDBInstances, DescribeEvents and GetMetricData all allowed by it (part c finding 3).
 #  P3 the provider's failover event: NOT PROVEN (an RDS Multi-AZ DB instance is billed and not approved); the Go cases
 #      and the store row prove the hand-off.
 #  C-A..C-F (Cloud SQL, the same as R-A..R-F): the source alone; the replica made (masterInstanceName / replicaNames:
@@ -51,7 +58,7 @@ cd "$(dirname "$0")/.."
 : "${PGVIGIL_LAB_AWS_PROFILE:?the AWS CLI profile}" "${PGVIGIL_LAB_AWS_REGION:?the region}" "${PGVIGIL_LAB_PROOF:?the tag value of the lab}"
 LAB=scripts/lab/aws-rds-replica.sh
 STATE=${PGVIGIL_LAB_DIR:-.lab}/aws-rds-replica.env
-for t in psql jq python3 aws; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+for t in psql jq python3 aws curl; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
 [ -r "$STATE" ] || { echo "FAIL: no lab state file $STATE (aws-rds-replica.sh up, allow, logins)" >&2; exit 1; }
 # shellcheck disable=SC1090
 . "$STATE"
@@ -59,7 +66,7 @@ for t in psql jq python3 aws; do command -v "$t" >/dev/null || { echo "FAIL: $t 
 SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
 REPO_DB=pgvigil_crproof_$SUF; N=proof-cr-$SUF
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
-MADE_DB=; MADE_T=; HOLD_PID=; WRITE_PID=
+MADE_DB=; MADE_T=; HOLD_PID=; WRITE_PID=; SRV_PID=
 FAILS=(); NOTPROVEN=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -70,9 +77,11 @@ stopbg() { for p in $HOLD_PID $WRITE_PID; do kill "$p" 2>/dev/null || true; done
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   stopbg
+  [ -z "$SRV_PID" ] || kill "$SRV_PID" 2>/dev/null
   if [ -n "$MADE_T" ]; then src "DROP TABLE IF EXISTS public.pgvproof_cr_$SUF" >/dev/null 2>&1 || echo "CLEANUP: public.pgvproof_cr_$SUF not dropped (down removes the instance)" >&2; fi
   if [ -n "$MADE_DB" ]; then psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; fi
   rm -rf "$WORK"
+  [ ! -r "$STATE" ] || echo "the lab is still up (billed until down): $LAB down" >&2   # part c finding 13
   exit $rc
 }
 trap cleanup EXIT
@@ -90,7 +99,8 @@ export CR_REP_DSN=
 writecfg() {   # the source, and the replica once it is up; P1's door on (aws.replicas), the lab's profile and region
   { echo "repository:"; echo "  dsn: env:PGVIGIL_REPO_DSN"; echo "instances:"
     for x in "src|CR_SRC_DSN|$SRC_ID|$PGVIGIL_LAB_AWS_PROFILE" ${REP_HOST:+"rep|CR_REP_DSN|$REP_ID|$PGVIGIL_LAB_AWS_PROFILE"} \
-             ${PGVIGIL_PROOF_DENY_PROFILE:+"deny|CR_SRC_DSN|$SRC_ID|$PGVIGIL_PROOF_DENY_PROFILE"}; do
+             ${PGVIGIL_PROOF_DENY_PROFILE:+"deny|CR_SRC_DSN|$SRC_ID|$PGVIGIL_PROOF_DENY_PROFILE"} \
+             ${PGVIGIL_PROOF_DOC_PROFILE:+"doc|CR_SRC_DSN|$SRC_ID|$PGVIGIL_PROOF_DOC_PROFILE"}; do
       IFS='|' read -r k v id prof <<<"$x"
       printf '  - name: %s-%s\n    dsn: env:%s\n    platform: rds\n    aws:\n      region: %s\n      profile: %s\n      db_instance: %s\n      replicas: true\n' \
         "$N" "$k" "$v" "$PGVIGIL_LAB_AWS_REGION" "$prof" "$id"
@@ -102,6 +112,16 @@ finding() { q "SELECT coalesce(max(f.severity), '') FROM pgvigil.cloud_replica_f
 tier() { local o; o=$(q "SELECT pgvigil.import_pg_threshold(now(), jsonb_build_object('op', '$2', 'ui_user', 'proof', 'key', 'provider_replica_lag', 'level', 'instance', 'instance_id', $(iid "$1"), 'warn', ${3:-null}, 'crit', ${4:-null}))::text")
   case $o in *'"refused"'*) bad "the tier $2 ${3:-} ${4:-} on $1 was refused: $o" ;; esac; }
 writecfg; "$BIN" migrate -config "$CFG" >/dev/null
+# the page's own read (part c finding 9): a pgvigil serve of this repository on a free local port without a login
+# (this proof's own process, stopped by the cleanup); page <src|rep> = the resource ids GET /api/cloud/replicas
+# part=resources lists for that instance, sorted and joined by commas
+PORTW=$((20000 + RANDOM % 20000)); while ss -ltnH "sport = :$PORTW" | grep -q .; do PORTW=$((20000 + RANDOM % 20000)); done
+printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/serve.yaml"
+"$BIN" serve -config "$WORK/serve.yaml" -listen "127.0.0.1:$PORTW" -no-login > "$WORK/serve.out" 2>&1 & SRV_PID=$!
+for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORTW/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
+kill -0 "$SRV_PID" 2>/dev/null || die "pgvigil serve exited: $(cat "$WORK/serve.out")"
+page() { curl -fs "http://127.0.0.1:$PORTW/api/cloud/replicas?instance=$(iid "$1")&part=resources" | python3 -c 'import json,sys; t=json.load(sys.stdin)["resources"]; i=t["columns"].index("resource_id"); print(",".join(sorted(r[i] for r in t["rows"])))'; }
+WANT_PAGE=$(printf '%s\n' "$SRC_ID" "$REP_ID" | LC_ALL=C sort | paste -sd,)
 
 echo "--- R-A the source alone"
 run src
@@ -128,9 +148,11 @@ done
 AD=$(q "SELECT count(*) FROM pgvigil.cloud_replica_events WHERE provider = 'aws' AND resource_id = '$SRC_ID' AND kind = 'added' AND subject = '$REP_ID'")
 ROWS=$(q "SELECT count(*) FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id IN ('$SRC_ID', '$REP_ID')")
 PAGES=$(q "SELECT count(*) FROM pgvigil.cloud_replica_readers WHERE instance_id IN ($(iid src), $(iid rep)) AND resource_id IN ('$SRC_ID', '$REP_ID')")
+PG_SRC=$(page src || true); PG_REP=$(page rep || true)
+echo "  the pages list: the source's '$PG_SRC', the replica's '$PG_REP' (want '$WANT_PAGE')"
 echo "  after $i minute(s): $T; datapoints $P; 'added' $AD; rows $ROWS; page rows $PAGES${STOPPED_SEEN:+; a 'stopped' finding while it was made}"
-[ "$T" = "$SRC_ID:source::$REP_ID: $REP_ID:replica:$SRC_ID::replicating" ] && [ "$P" -gt 0 ] && [ "$AD" = 1 ] && [ "$ROWS" = 2 ] && [ "$PAGES" = 4 ] && [ -z "$STOPPED_SEEN" ] \
-  && echo "R-B: OK" || bad "R-B: topology '$T', datapoints $P, added $AD, rows $ROWS, page rows $PAGES, stopped while made '${STOPPED_SEEN:-no}'"
+[ "$T" = "$SRC_ID:source::$REP_ID: $REP_ID:replica:$SRC_ID::replicating" ] && [ "$P" -gt 0 ] && [ "$AD" = 1 ] && [ "$ROWS" = 2 ] && [ "$PAGES" = 4 ] && [ "$PG_SRC" = "$WANT_PAGE" ] && [ "$PG_REP" = "$WANT_PAGE" ] && [ -z "$STOPPED_SEEN" ] \
+  && echo "R-B: OK" || bad "R-B: topology '$T', datapoints $P, added $AD, rows $ROWS, page rows $PAGES, the pages '$PG_SRC' '$PG_REP', stopped while made '${STOPPED_SEEN:-no}'"
 
 # hold <minutes>: replay held on the replica (a REPEATABLE READ snapshot that a VACUUM's cleanup on the source conflicts
 # with; the lab's max_standby_streaming_delay -1 makes replay wait for it) and a write every 20 s on the source
@@ -175,7 +197,7 @@ echo "  the idle lag's maximum: ${IL:-none} s; the finding: '${D}'"
 
 echo "--- R-E the replica rebooted"
 "$LAB" reboot | sed 's/^/  lab: /'
-SEEN=; MISS=; STOP=
+SEEN=; MISS=; STOP=; AFTER=0
 for i in $(seq 1 12); do
   sleep 60; run src
   st=$(q "SELECT status FROM pgvigil.cloud_replicas WHERE provider = 'aws' AND resource_id = '$REP_ID'"); SEEN="$SEEN $st"
@@ -183,8 +205,21 @@ for i in $(seq 1 12); do
   [ -n "$(finding src 'provider replica stopped' "$REP_ID")" ] && STOP=1
   [ "$st" = available ] && [ $i -gt 2 ] && break
 done
-echo "  statuses read:$SEEN${MISS:+; 'lag missing' fired}${STOP:+; 'stopped' fired}"
-[[ $SEEN == *available ]] && [ -z "$MISS$STOP" ] && echo "R-E: OK" || bad "R-E: statuses '$SEEN', lag missing '${MISS:-no}', stopped '${STOP:-no}'"
+# a replica_lag datapoint dated after the read that saw 'available' (CloudWatch's delay: up to 6 more reads; part c finding 9)
+AV_AT=$(q "SELECT now()")
+for i in $(seq 1 6); do sleep 60; run src
+  AFTER=$(q "SELECT count(*) FROM pgvigil.cloud_replica_sample WHERE provider = 'aws' AND resource_id = '$REP_ID' AND metric = 'replica_lag' AND snapshot_at > '$AV_AT'::timestamptz"); [ "$AFTER" -gt 0 ] && break; done
+echo "  statuses read:$SEEN; replica_lag datapoints after 'available': $AFTER${MISS:+; 'lag missing' fired}${STOP:+; 'stopped' fired}"
+[[ $SEEN == *available ]] && [ "$AFTER" -gt 0 ] && [ -z "$MISS$STOP" ] && echo "R-E: OK" || bad "R-E: statuses '$SEEN', datapoints after available $AFTER, lag missing '${MISS:-no}', stopped '${STOP:-no}'"
+
+echo "--- R-H the documented policy verbatim"
+if [ -n "${PGVIGIL_PROOF_DOC_PROFILE:-}" ]; then
+  run doc; S=$(status doc); NT=$(q "SELECT coalesce(door_error, '') || '|' || door_fails FROM pgvigil.cloud_replica_reads WHERE instance_id = $(iid doc)")
+  echo "  run: $S; read: '$NT'"
+  [[ $S == ok* ]] && [ "$NT" = "|0" ] && echo "R-H: OK" || bad "R-H: '$S' '$NT' (want ok and no refused call)"
+else
+  NOTPROVEN+=("R-H: no PGVIGIL_PROOF_DOC_PROFILE on this machine (an identity holding only the documented policy)")
+fi
 
 echo "--- R-F promote"
 "$LAB" promote | sed 's/^/  lab: /'

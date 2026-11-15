@@ -68,8 +68,8 @@ SELECT f.group_name, f.role, f.replication_state, f.secondary_type, f.rw_policy,
 
 // the window's series, newest first: a window of a day or less its samples; a longer one 0151's hours
 // (mssql_georepl_window: the whole hours from mssql_georepl_hour, the edges and any dirty range from the samples), each
-// row's lag and unsent window its maximum (a sample row's own values), so a chart reads 5 minutes to a year (task 390b
-// task 7, B2a-N2's shape)
+// row's lag and unsent window its maximum (a sample row's own values); a window past 31 days reads its newest 31
+// (params' defaultReach, the reply says so: part c finding 5) - task 390b task 7, B2a-N2's shape
 const sqlGeoSeries = `
 SELECT x.snapshot_at, x.link_guid, x.role, x.replication_state, x.replication_lag_sec, round(x.unsent_s) AS unsent_s, x.ack_age_s, 1 AS reads
   FROM pgvigil.mssql_georepl_sample x
