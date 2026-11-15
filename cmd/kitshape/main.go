@@ -1,6 +1,6 @@
 // Command kitshape is KITWATCH's compare (scripts/kitwatch.sh calls it; nothing here touches a server):
 //
-//	kitshape compare -want shapes.json -got run.json -out lines.json   the tools' lines (internal/community/kits)
+//	kitshape compare -want shapes.json -got run.json -out lines.json [-label words]   the tools' lines (internal/community/kits)
 //	kitshape ports -manifest ports.json -dir <files> -out lines.json  the ported blocks' lines (files at <dir>/<repo>/<path>)
 //	kitshape pin -manifest ports.json -dir <files>                    -baseline: each port's sha256 and items from the files
 //	kitshape version <file>...                                        a definition's kit version and date, tab-separated
@@ -126,6 +126,7 @@ func writeJSON(path string, v any) error {
 func compare(args []string) error {
 	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
 	want, got, out := fs.String("want", "", "the baseline"), fs.String("got", "", "this run"), fs.String("out", "", "the lines file")
+	label := fs.String("label", "", "words after each line's tool (the pinned pass against shapes.json: 'pgvigil or the environment')")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -157,6 +158,11 @@ func compare(args []string) error {
 	sort.Strings(extra)
 	for _, t := range extra {
 		lines = append(lines, kits.Line{Class: kits.Info, Tool: t, Kind: "tool new", What: "a run the baseline does not hold"})
+	}
+	if *label != "" {
+		for i := range lines {
+			lines[i].Tool += " (" + *label + ")"
+		}
 	}
 	return writeJSON(*out, lines)
 }

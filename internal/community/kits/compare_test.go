@@ -146,6 +146,20 @@ func TestCompareRunAndForm(t *testing.T) {
 	}
 }
 
+// F3: a procedure the tool now fails without (revoke-and-run) is BREAK; one it no longer needs is DRIFT.
+func TestCompareSiblings(t *testing.T) {
+	want, got := run(), run()
+	want.HardSiblings = []string{"sp_BlitzCache", "sp_ineachdb"}
+	got.HardSiblings = []string{"sp_ineachdb", "sp_BlitzWho"}
+	ls := Compare(want, got)
+	if n := linesOf(ls, "new hard sibling"); len(n) != 1 || n[0].Class != Break || !strings.Contains(n[0].What, "sp_BlitzWho") {
+		t.Errorf("a new hard sibling: %+v", ls)
+	}
+	if g := linesOf(ls, "sibling no longer needed"); len(g) != 1 || g[0].Class != Drift || !strings.Contains(g[0].What, "sp_BlitzCache") {
+		t.Errorf("a sibling gone: %+v", ls)
+	}
+}
+
 // F2: the collector entry - a column pgvigil reads BY NAME missing from the newest shape is BREAK, whatever else.
 func TestCompareReadByName(t *testing.T) {
 	want := run(Set{Columns: []Column{col("session_id", "number", "SMALLINT", false), col("tempdb_current", "number", "BIGINT", true)}})

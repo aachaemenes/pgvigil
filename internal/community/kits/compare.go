@@ -37,6 +37,23 @@ func Compare(want, got Run) []Line {
 		}
 	}
 	compareParams(want, got, add)
+	var newSib, goneSib []string
+	for _, x := range got.HardSiblings {
+		if !slices.Contains(want.HardSiblings, x) {
+			newSib = append(newSib, x)
+		}
+	}
+	for _, x := range want.HardSiblings {
+		if !slices.Contains(got.HardSiblings, x) {
+			goneSib = append(goneSib, x)
+		}
+	}
+	if len(newSib) > 0 {
+		add(Break, "new hard sibling", "%s: the run fails without EXECUTE on it (a site that granted only the listed procedures fails)", strings.Join(newSib, ", "))
+	}
+	if len(goneSib) > 0 {
+		add(Drift, "sibling no longer needed", "%s", strings.Join(goneSib, ", "))
+	}
 	if got.Described < want.Described {
 		add(Break, "help", "descriptions %d of %d form parameters (was %d): the help form's cells are not read", got.Described, len(got.FormParams), want.Described)
 	}
