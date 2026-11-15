@@ -135,7 +135,7 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 		withConnectTimeout(cfg)
 		t0 := time.Now()
 		conn, err = pgx.ConnectConfig(ctx, cfg)
-		took = time.Since(t0) // the slow-connect tier: the connect itself, the session setup after it not counted
+		took = connTook(t0) // the slow-connect tier: the connect itself, the session setup after it not counted
 	}
 	err = InstanceConnectTimed(in.Name, err, took)
 	if err != nil {

@@ -21,12 +21,12 @@ func TestTokenHoldNotCounted(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		inner()
 		rel()
-		if h := d.heldTotal(); h < 300*time.Millisecond || h > 2*time.Second {
-			t.Errorf("%s: held %v, want about 300 ms", tc.name, h)
+		if h := d.heldTotal(); h < 300*time.Millisecond || h > 550*time.Millisecond {
+			t.Errorf("%s: held %v, want about 300 ms (the nested hold once: twice is 600 ms or more)", tc.name, h)
 		}
-		if got := connectTook(400*time.Millisecond+d.heldTotal(), d.heldTotal()); got < 390*time.Millisecond || got > 410*time.Millisecond {
-			t.Errorf("%s: connect time %v, want 400 ms (the hold taken off)", tc.name, got)
-		}
+	}
+	if got := connectTook(400*time.Millisecond, 300*time.Millisecond); got != 100*time.Millisecond {
+		t.Errorf("connectTook(400 ms, held 300 ms): %v, want 100 ms (the hold taken off)", got)
 	}
 	if got := connectTook(100*time.Millisecond, 300*time.Millisecond); got <= 0 {
 		t.Errorf("connectTook under its hold: %v, want above 0 (an opened connect is timed)", got)

@@ -334,9 +334,14 @@ func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (
 	InstanceTarget(instance, PgTarget(cfg))
 	t0 := time.Now()
 	conn, err := pgx.ConnectConfig(ctx, cfg)
-	CountConnectTimed(instance, err, time.Since(t0)) // the slow-connect tier times the per-database connects too (#6)
+	CountConnectTimed(instance, err, connTook(t0)) // the slow-connect tier times the per-database connects too (#6)
 	return conn, err
 }
+
+// connTook: a PostgreSQL connect's time from t0, never under a nanosecond - a clock that moves in ticks (Windows'
+// 15.6 ms one) reads a short connect as 0, which countConnectTimed would leave untimed; an opened connect is always
+// timed, as SQL Server's connectTook (internal/mssql)
+func connTook(t0 time.Time) time.Duration { return max(time.Since(t0), time.Nanosecond) }
 
 func (h *Heartbeat) loadOf(instance string) *loadAgg {
 	l := h.load[instance]
