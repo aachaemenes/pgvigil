@@ -60,8 +60,10 @@ WITH scope AS (
          'not read: ' || d.repository || coalesce(': ' || d.reason, ''), false, '#/dbadash'
     FROM pgvigil.dbadash_repositories d
    WHERE $3::int IS NULL AND d.status = 'not read' AND d.is_configured AND d.read_at >= $1 AND d.read_at < $2
-), f AS (
+), e2 AS (
   SELECT e.*, coalesce(e.note, '') ~* $12::text AS no_right FROM e
+), f AS (
+  SELECT * FROM e2 e
    WHERE ($7::text IS NULL OR e.collection = $7) AND ($8::text IS NULL OR lower(e.type) = lower($8))
      AND ($9::text IS NULL OR lower(e.stage) = lower($9)) AND ($10::text IS NULL OR strpos(lower(e.note), lower($10)) > 0)
      AND ($11 OR e.type <> 'Skipped')
@@ -79,7 +81,8 @@ const sqlCollectorErrorsCounts = `
        nullif(count(*) FILTER (WHERE f.stage = 'Import'), 0)::int AS import,
        nullif(count(*) FILTER (WHERE f.stage = 'Other'), 0)::int AS other,
        min(f.at) AS first_at, max(f.at) AS last_at,
-       left((array_agg(f.note ORDER BY f.at DESC, f.log_id DESC NULLS LAST))[1], 1000) AS last_message`
+       left((array_agg(f.note ORDER BY f.at DESC, f.log_id DESC NULLS LAST))[1], 1000) AS last_message,
+       (array_agg(f.note ORDER BY f.at DESC, f.log_id DESC NULLS LAST))[1] AS last_message_full`
 
 // The suggestions (DBA Dash's dbo.CollectionErrorSuggestion, its WMI rule in pgvigil's own two known causes): 2 or
 // more collections failing on a missing right ('rights'), every error of the instance a failed connection
@@ -90,7 +93,8 @@ const sqlCollectorErrorsSuggest = `
            count(DISTINCT f.collection) FILTER (WHERE f.type IN ('Error', 'Warning') AND f.no_right) AS rights,
            count(*) FILTER (WHERE f.type = 'Error') AS errs,
            count(*) FILTER (WHERE f.type = 'Error' AND f.stage = 'Connect') AS conns
-      FROM f WHERE f.instance_id IS NOT NULL GROUP BY f.instance_id, f.instance
+      -- over the range and scope only, never the page's filters: a Stage filter must not make an instance 'unreachable'
+      FROM e2 f WHERE f.instance_id IS NOT NULL AND ($11 OR f.type <> 'Skipped') GROUP BY f.instance_id, f.instance
   ), sg AS (
     SELECT g.instance_id, g.instance,
            CASE WHEN g.rights >= 2 THEN 'rights' WHEN g.errs > 0 AND g.errs = g.conns THEN 'unreachable' END AS kind,
@@ -113,7 +117,8 @@ SELECT f.instance_id, f.instance, count(DISTINCT f.collection)::int AS collectio
  ORDER BY count(*) FILTER (WHERE f.type = 'Error') DESC, count(*) DESC, f.instance`
 
 const sqlCollectorErrorsByCollection = sqlCollectorErrorsBase + `
-SELECT f.collection, count(DISTINCT f.instance)::int AS instances,` + sqlCollectorErrorsCounts + `
+SELECT f.collection, count(DISTINCT f.instance)::int AS instances,` + sqlCollectorErrorsCounts + `,
+       max(f.log_id) AS max_log_id
   FROM f
  GROUP BY f.collection
  ORDER BY count(*) FILTER (WHERE f.type = 'Error') DESC, count(*) DESC, f.collection`
