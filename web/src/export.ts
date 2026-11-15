@@ -617,7 +617,10 @@ export function shown(c: Cell): string {
   // '-0.0')
   if (c.dp !== undefined) {
     const x = c.kind === 'pct' ? n * 100 : n;
-    return (x < 0 ? '-' : '') + Math.abs(x).toFixed(c.dp) + (c.kind === 'pct' ? '%' : '');
+    // a grouped column ('#,##0' ..) is drawn with its thousands separators: measured with them
+    const t = Math.abs(x).toFixed(c.dp), [ip, fp] = t.split('.');
+    const body = c.grp ? ip.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fp !== undefined ? '.' + fp : '') : t;
+    return (x < 0 ? '-' : '') + body + (c.kind === 'pct' ? '%' : '');
   }
   switch (c.kind) {
     case 'date': return (c.stamp ?? '').slice(0, 16);
