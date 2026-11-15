@@ -11,10 +11,24 @@
 #                   mssql_perf.ts, 0190: the lead's files) to this copy when the tree lacks them.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch.
 #
-# Expected (written before the first run; the user / system rule of P1, P1b and A3 waits on the lead's answer to the
-# 09:1x question and is written in before the first run of those rows):
+# Expected (written before the first run). THE RULE (the lead 09:4x): user / system = sys.dm_exec_sessions.is_user_process
+# (1 user, 0 system) over ALL sessions, everywhere on the Connections page; the activity total moves from 'session_id > 50'
+# (PerformanceMonitor's) to all sessions too (docs and a release-note line name the departure).
 #  A. the container: a monitor login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE); three logins
 #     l1-l3; database pgvss with dbo.t (100,000 rows) and dbo.hold (one row).
+#  P1 sessions by status x user / system: the held set below plus l1-l3 idle sessions (sleeping) and a dormant-free box:
+#     the stored per-minute counts (mssql_sessions) of user running / sleeping / dormant / preconnect and system
+#     running / sleeping / background equal a hand read of sys.dm_exec_sessions GROUP BY is_user_process, status taken
+#     before and after the collector's read in the same minute (both equal, or retried, at most 5 cycles); pgvigil's own
+#     reading session is left out of both (its program name) and the hand read says how many it left out.
+#  P1b the activity total under the rule (the WIRING patch): the 5-minute total's sessions = every session the hand read
+#     sees (system sessions under 51 included), its background = the system sessions; the program / host / database
+#     groups unchanged ('user sessions with a program name', A2) and their sum named so on the page.
+#  A3 the groups (5 minutes, activity.go's GROUPING SETS): by login, by status x user / system, by interface (net_transport
+#     + protocol_type of the physical connection: parent_connection_id IS NULL inside the LEFT JOIN's ON), by client
+#     address, by isolation level: each dimension's rows sum to the total session count with system sessions present
+#     (a system session has no connection: it falls in the NULL bucket, kept and named 'no connection'); a session over
+#     MARS counted once; the 'other' row by GROUPING() (P6).
 #  P2 requests by status: a held set - a request blocked on dbo.hold (suspended, LCK_M_*), a WAITFOR DELAY (suspended,
 #     WAITFOR), a CPU loop (running or runnable), a sleeping session with an open transaction - read by mssql_sessions:
 #     the stored counts of running + runnable, suspended, sleeping and background equal a hand read of
