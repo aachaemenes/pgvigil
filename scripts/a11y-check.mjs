@@ -113,8 +113,8 @@ pages.push('#/summary|range');   // the Summary once more with the range panel o
 // a Diff with both sides picked (the walk above opens only its empty form): two instances, then one instance at two times
 pages.push(`#/diff?m=i&a=${onprem.instance_id}&b=${cloud.instance_id}`, `#/diff?m=t&a=${onprem.instance_id}&ta=${encodeURIComponent(new Date(Date.now() - 86400e3).toISOString())}`);
 // TAGALL: the pages a tag folder gained (router.ts tagPages), opened under the tag click-check.mjs takes (both engines,
-// not every instance, a top-level folder: the demo's env:prod) - their scope lines, narrowed pickers and folder headings
-// scanned -, Imported servers under a PostgreSQL-only tag (its one line, no grid) and Data retention under untagged
+// not every instance, a top-level folder: the demo's env:prod), Imported servers under a PostgreSQL-only tag and Data
+// retention under untagged - each rendered and scanned; what each lists and says is click-check.mjs's TAGALL rows
 const tagCount = new Map();
 for (const r of rows) for (const t of (Array.isArray(r.tags) ? r.tags : [])) {
   const e = tagCount.get(t) ?? { n: 0, engines: new Set() }; e.n++; e.engines.add(r.engine === 'sqlserver' ? 'sqlserver' : 'postgres'); tagCount.set(t, e);
