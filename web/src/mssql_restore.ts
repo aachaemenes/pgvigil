@@ -12,7 +12,7 @@ import { Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl, props }
 type Parts = 'databases' | 'steps' | 'files';
 
 const stateWord: Record<string, string> = {
-  whole: 'restorable', broken: 'broken', held: 'not yet read from every replica', 'no full': 'no full backup', none: 'no backup read',
+  whole: 'restorable', broken: 'broken', held: 'held: not judged yet', 'no full': 'no full backup', none: 'no backup read',
 };
 const stateCls = (v: unknown) => v === 'broken' || v === 'no full' ? 'warn' : v === 'whole' ? 'ok' : 'status none';
 const roleWord: Record<string, string> = { full: 'full', copy_full: 'full (copy-only)', diff: 'differential', log: 'log' };
@@ -31,8 +31,9 @@ export async function mssqlRestore(ctx: Ctx): Promise<HTMLElement> {
     const platform = String(dbs[0]?.platform ?? '');
     if (platformLine[platform]) sec.append(el('p', { class: 'meta' }, platformLine[platform]));
     sec.append(el('p', { class: 'meta' }, 'From each database\'s newest start set - the newest full backup, its differential, or a newer copy-only full (it restores like any full) - '
-      + 'then every log backup in LSN order, from every monitored replica of its availability group. A break is a log no msdb read holds; while a replica\'s last read is older '
-      + 'than the log after the gap, the gap is held ("not yet read"), never called a break. pgvigil writes and runs no restore.'));
+      + 'then every log backup in LSN order, from every monitored replica of its availability group, on the recovery fork of the newest backup. A break is a log no msdb read holds; '
+      + 'a gap is held, never called a break, while a replica\'s last read is older than the log after it ("not yet read"), while a read did not list every log back to the gap '
+      + '("not read whole"), and in a distributed availability group, whose other side is not read ("not judged"). pgvigil writes and runs no restore.'));
     if (!dbs.length) {
       sec.append(el('p', { class: 'empty' }, 'mssql_restore_chain has not stored a read of this server yet (hourly; a user in msdb with db_datareader).'));
       return sec;
@@ -68,10 +69,17 @@ export async function mssqlRestore(ctx: Ctx): Promise<HTMLElement> {
     const list = steps.flatMap(s => (ofStep.get(String(s.backup_set_uuid)) ?? []).filter(f => Number(f.mirror) === 0).map(f => String(f.path)));
     const copy = el('button', { type: 'button' }, 'Copy the file list'), said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
     const capped = mine.capped === true;
-    if (!capped) copy.addEventListener('click', () => { void copyText(list.join('\n')).then(ok => { said.textContent = ok ? ` ${fmtNum(list.length)} paths copied` : ' copy refused'; }); });
+    // a step to a virtual device (a third-party tool) has a device name, not a path: a list from it would mislead
+    const vdev = steps.some(s => (ofStep.get(String(s.backup_set_uuid)) ?? []).some(f => f.device_kind === 'virtual device'));
+    const off = capped ? `Not every log backup since the start set was read (${fmtNum(mine.logs_sent)} of ${fmtNum(mine.logs_since)}): a list from it would miss some.`
+      : vdev ? 'A step of this chain went to a virtual device (a third-party backup tool): its device name is not a file path; that step is restored through the tool.' : '';
+    if (!off) copy.addEventListener('click', () => { void copyText(list.join('\n')).then(ok => { said.textContent = ok ? ` ${fmtNum(list.length)} paths copied` : ' copy refused'; }); });
     sec.append(el('h3', { id: 'mssql-restore-steps' }, `The chain of ${asked}`),
       props([['verdict', String(verdict?.marks ?? mine.verdict ?? '')], ['restorable to', verdict?.restorable_to ? fmtTime(verdict.restorable_to) : '']]),
-      el('p', { class: 'meta' }, copy, ' ', ...(capped ? [offControl(copy, `Not every log backup since the start set was read (${fmtNum(mine.logs_sent)} of ${fmtNum(mine.logs_since)}): a list from it would miss some.`)] : []), said));
+      el('p', { class: 'meta' }, copy, ' ', ...(off ? [offControl(copy, off)] : []), said));
+    if (Number(mine.partial_sets) > 0) {
+      sec.append(el('p', { class: 'meta' }, `msdb lists ${fmtNum(mine.partial_sets)} partial or file backups of ${asked}: no chain here reads them.`));
+    }
     const stepCols: Col[] = [
       { key: 'step', label: 'step', num: true },
       { key: 'role', label: 'backup', fmt: v => roleWord[String(v)] ?? String(v ?? '') },

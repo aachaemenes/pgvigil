@@ -5,16 +5,16 @@ import (
 )
 
 // The restore chain of a SQL Server database (task 304; migration 0147). GET /api/mssql/restore?instance=<id> answers
-// per database the stored verdict (whole, broken, held while a replica's read is late, no full backup) with the read's
-// counts; &db=<name> adds the steps a restore takes in order - each set's role, where it ran, its LSNs AS TEXT (an LSN
+// per database the stored verdict (whole, broken, held - a replica's read late, a read that did not list every log, a
+// distributed group's other side not merged -, no full backup) with the read's counts; &db=<name> adds the steps a restore takes in order - each set's role, where it ran, its LSNs AS TEXT (an LSN
 // has up to 25 digits: a JSON number would lose some in a browser) and pgvigil's marks - and every file of each step. The
 // route is the lead's wiring in web.go. pgvigil writes no RESTORE statement and runs none.
 
 // sqlMSSQLRestoreDatabases: $1 the instance.
 const sqlMSSQLRestoreDatabases = `
 SELECT v.database_name, v.state, v.verdict, v.restorable_to, v.steps, v.decided_at, r.read_at, r.logs_since, r.logs_sent,
-       (r.logs_since > r.logs_sent) AS capped, r.server_gaps, b.recovery_model, b.ag_name, b.not_judged, b.replicas_unseen,
-       i.platform
+       (r.logs_since > r.logs_sent) AS capped, r.server_gaps, r.covered_since, r.partial_sets, b.recovery_model, b.ag_name,
+       b.not_judged, b.replicas_unseen, i.platform
   FROM pgvigil.mssql_restore_verdicts v
   JOIN pgvigil.instances i ON i.instance_id = v.instance_id
   LEFT JOIN pgvigil.mssql_restore_reads r ON r.instance_id = v.instance_id AND r.database_name = v.database_name
