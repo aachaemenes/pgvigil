@@ -154,6 +154,38 @@ off Windows Kerberos, the login the principal and the driver options naming the 
 works where is [SQL Server in the cloud](sqlserver-cloud.md#signing-in-without-a-stored-password). Entra and Kerberos
 are not proven against a live server in this release.
 
+### Cloud blocks on a page instance
+
+An instance of `pgvigil.yaml` reads its cloud side through its `aws:` block (CloudWatch IO and logs, Performance
+Insights, Aurora Serverless) or its `azure:` block (an Azure SQL Database's failover groups). An instance added in
+Admin > Instances, or approved from a discovery source, can carry the same blocks (the form's collapsed **Cloud**
+fieldset; an approved proposal gets its block from the cloud's own identity of the server) - but its reads run under
+the **collector host's own cloud identity**, while a page instance may be added by any signed-in user. So the file
+turns them on, off by default on every install:
+
+```yaml
+doors:
+  page_cloud_blocks: on          # let the instances of Admin > Instances carry an aws: or azure: block
+  page_aws_profiles: [prod-read] # the AWS profiles such a block may name (empty = none: the host's default chain)
+```
+
+- **Off** (the default): every page block is kept in the repository but not used - the collector logs 'a page
+  instance's cloud block is not used' with the switch's words, the page shows them on the row, and the instance keeps
+  collecting everything else. The form's Cloud fieldset is off with the same words.
+- **The block's keys**: `aws` region, cluster, db_instance (log_group and dms stay the file's); `azure` subscription,
+  resource_group, server, cloud. `aws:` on a PostgreSQL instance only (on SQL Server it waits for its own reads),
+  `azure:` on a SQL Server instance of platform `azuresqldb` only. No profile is typed on the page; an approved
+  proposal takes its source's profile only when `page_aws_profiles` lists it.
+- **The name match**: before a block's first read its target must be the instance's own host by name - an RDS
+  endpoint `<db_instance or cluster>.<x>.<region>.rds.amazonaws.com` (`.cluster-` and `.cluster-ro-` endpoints too;
+  `.amazonaws.com.cn` in the China regions), or `<server>.database.windows.net` (`.database.usgovcloudapi.net` with
+  `cloud: usgov`, `.database.chinacloudapi.cn` with `cloud: china`). A CNAME, a private DNS name (privatelink) or an
+  address is refused with both names: give such an instance its block in `pgvigil.yaml`, where the file's author
+  answers for it.
+- A block set, changed or cleared restarts the instance's loops within the collector's next read of the list (15 s).
+  Its Clear is its own control; an emptied fieldset clears nothing.
+- Not in this release: a `gcp:` block on a page instance (its credentials file is a path on the host).
+
 ### Community tools and custom reports on a page instance
 
 `pgvigil serve` runs Community tools and custom reports on an instance of `pgvigil.yaml` through its read login. On
