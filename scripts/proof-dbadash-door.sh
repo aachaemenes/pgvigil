@@ -45,7 +45,10 @@
 #  CH9 (B6.3; written before the run): on 4.25.0 the tenth screen answers with its five result sets (CH9a); the same read
 #     login with dbo.CollectionHealth_Get's GRANT taken back reads 'page collectionhealth ... sets=0 ... note=not read:
 #     this login has no EXECUTE on dbo.CollectionHealth_Get' (CH9e, the review of B6.2, part b #2), then the GRANT is
-#     given again; on 4.24.1 the screen is not called and says it came with 4.25.0 (CH9c).
+#     given again; on 4.24.1 the screen is not called and says it came with 4.25.0 (CH9c). CH9b (part G, Chromium): the
+#     fleet grid's header ('Collection Health' on 4.25.0, 'Collection errors (24hrs)' on 4.24.1) with DBA Dash's own
+#     tooltip, each row's landing by the version, on 4.25.0 the screen's h3 and five h4s and its Collections grid without
+#     the columns DBA Dash hides, on 4.24.1 the 'not read' line alone; a mixed fleet NOT COVERED (one release per rig).
 #  C. the pages: TestLivePages through the read login prints 9 lines 'page <key> ok ... proven=true'; the same nine
 #     procedures called as sa by pymssql (FreeTDS: another driver, the GUI's parameters written out in T-SQL here)
 #     return, page by page, the same number of result sets, the same column names in the same order, the same row
@@ -756,6 +759,60 @@ n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(l
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
 gtabs "$g1" "" "$SCREENS mssqlstorage" G1
 echo "ok   G1: the DBA Dash instance's own page: $GWANT tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
+# CH9b (the review of B6.2, part b #15): the door's fleet grid and its Collection Health landing, by this run's version -
+# 4.25.0: the header 'Collection Health' with DBA Dash's tooltip, every row's cell on the instance's Collection Health
+# screen, that screen's h3 and five h4s in DBA Dash's order, the Collections grid without the columns DBA Dash hides;
+# 4.24.1: 'Collection errors (24hrs)' with 4.24.1's tooltip, the old landing, and the screen's 'not read' line alone.
+# A mixed fleet (one repository of each) needs two releases in one rig: NOT COVERED here, said.
+cat > "$TMPD/g-ch9b.mjs" <<'JS'
+const [port, U, ver, id] = process.argv.slice(2);
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let n = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++n; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let fails = 0; const say = (ok, row, what) => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${row}: ${what}`); };
+const go = async h => { await cmd('Page.navigate', { url: U + h }); for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main table.grid, main p.empty, main p.meta')`)) break; await sleep(200); } await sleep(1500); };
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
+if (st !== 200) { console.log(`FAIL CH9b login: ${st}`); process.exit(1); }
+// DBA Dash's own tooltips (4.25.0's and 4.24.1's Checks/Summary.Designer.cs L433, word for word)
+const TIP = {
+  '4.25.0': 'Collections at warning or critical: failing in a row for long enough, or a high failure rate since errors were acknowledged (24hrs at most) - thresholds configured in the Collection Health tab.  For an instance whose DBA Dash service predates collection health, the count of collection and import errors in the last 24hrs.  Click to see collection health.',
+  '4.24.1': 'Count of errors encountered by the DBA Dash service during data collection or import for the instance.  Retries are highlighted as warning, failures are critical.' };
+const LABEL = { '4.25.0': 'Collection Health', '4.24.1': 'Collection errors (24hrs)' };
+await go('#/dbadash?w=24h');
+const g = await ev(`(() => { for (const t of document.querySelectorAll('main table.grid')) { const ths = [...t.querySelectorAll('thead tr:first-child th')];
+  const k = ths.findIndex(th => /^Collection (Health|errors)/.test((th.querySelector('.th-label') ?? th).textContent.trim())); if (k < 0) continue; const th = ths[k];
+  return { label: (th.querySelector('.th-label') ?? th).textContent.trim(), title: th.getAttribute('title') ?? th.querySelector('[title]')?.getAttribute('title') ?? '',
+    links: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.querySelector('a')?.getAttribute('href') ?? '') }; } return null; })()`);
+say(!!g && g.label === LABEL[ver], 'CH9b header', g ? g.label : 'no Collection column');
+say(!!g && g.title === TIP[ver], 'CH9b header tooltip', g ? g.title.slice(0, 80) : '-');
+const lands = (g?.links ?? []).map(h => new URLSearchParams(h.split('?')[1] ?? '').get('dp'));
+say(!!g && g.links.length > 0 && lands.every(d => ver === '4.25.0' ? d === 'collectionhealth' : d !== 'collectionhealth'), 'CH9b each row\'s landing', `${g?.links.length ?? 0} row(s): ${[...new Set(lands)].join(', ')}`);
+await go(`#/dbadash?dr=lab&di=${id}&dp=collectionhealth&w=24h`);
+const s = await ev(`(() => { const m = document.querySelector('main'); const h3 = [...m.querySelectorAll('h3')].map(h => h.textContent.trim()); const h4 = [...m.querySelectorAll('h4')].map(h => h.textContent.trim());
+  const t = m.querySelector('table.grid'); const heads = t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()) : [];
+  const k = heads.indexOf('Status Reason');
+  return { h3, h4, heads, rows: t ? t.querySelectorAll('tbody tr').length : 0, coloured: k < 0 || !t ? false : [...t.querySelectorAll('tbody tr')].every(tr => tr.children[k]?.classList.contains('status')),
+    notRead: /not read: dbo\.CollectionHealth_Get is not in this DBA Dash repository \(it came with DBA Dash 4\.25\.0\)/.test(m.textContent), grids: m.querySelectorAll('table.grid').length }; })()`);
+if (ver === '4.25.0') {
+  say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
+  const hidden = ['No Status', 'InstanceID', 'Reference', 'Step', 'Status', 'ErrorsFrom', 'ErrorsTo'].filter(h => s.heads.includes(h));
+  say(s.heads.length > 0 && hidden.length === 0 && s.rows > 0 && s.coloured, 'CH9b the Collections grid', `${s.rows} row(s); ${s.heads.join(' | ')}${hidden.length ? '; shown though DBA Dash hides: ' + hidden.join(', ') : ''}`);
+} else {
+  say(s.notRead && s.grids === 0, 'CH9b the screen on ' + ver, `not read line ${s.notRead}, ${s.grids} grid(s)`);
+}
+console.log('NOT COVERED: CH9b on a mixed fleet (a 4.25.0 and a 4.24.1 repository in one rig)');
+console.log(fails ? `ch9b: ${fails} FAIL` : 'ch9b: 0 FAIL');
+process.exit(fails ? 1 : 0);
+JS
+ch9b=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-ch9b.mjs" "$CDP" "$U/" "$DDV" "$ID" 2>&1) || fail "CH9b: $ch9b"
+echo "$ch9b"; echo "ok   CH9b: the door's Collection Health column and landing on $DDV ($(echo "$ch9b" | tail -1))"
 "$BIN" import dbadash -config "$TMPD/g.yaml" -repo lab >"$TMPD/g-import.out" 2>&1 || { cat "$TMPD/g-import.out" >&2; fail "G2: pgvigil import dbadash"; }
 GID=$(psql "$GDSN" -XAtq -c "SELECT instance_id FROM pgvigil.instances WHERE name = '$DISP' AND engine = 'sqlserver'")
 [[ "$GID" =~ ^[1-9][0-9]*$ ]] || { cat "$TMPD/g-import.out" >&2; fail "G2: no imported server named $DISP"; }
