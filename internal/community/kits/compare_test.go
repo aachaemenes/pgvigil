@@ -15,6 +15,13 @@ func run(sets ...Set) Run {
 	return Run{Tool: "sp_Test", Kit: "FRK", Version: "8.34", Outcome: "done", Sets: sets}
 }
 
+// toolRun is run under a tool's own name
+func toolRun(tool string, sets ...Set) Run {
+	r := run(sets...)
+	r.Tool = tool
+	return r
+}
+
 // lines picks the lines of one kind
 func linesOf(ls []Line, kind string) []Line {
 	var out []Line
@@ -112,16 +119,16 @@ func TestCompareNoRowsSet(t *testing.T) {
 	b := Set{Columns: []Column{col("database_name", "text", "NVARCHAR", true), col("size_mb", "number", "DECIMAL", true)}}
 	c := Set{Columns: []Column{col("check_id", "number", "INT", false), col("hours", "number", "DECIMAL", true)}}
 	only := func(ls []Line, kind string) bool { return len(ls) == 1 && ls[0].Kind == kind && ls[0].Class == Info }
-	if ls := Compare(run(full, b, c), run(ph, b, c)); !only(ls, "no rows") || Verdict(ls) != 0 || !strings.Contains(ls[0].What, "event_time") {
+	if ls := Compare(toolRun("sp_HealthParser", full, b, c), toolRun("sp_HealthParser", ph, b, c)); !only(ls, "no rows") || Verdict(ls) != 0 || !strings.Contains(ls[0].What, "event_time") {
 		t.Errorf("the baseline's set 1 without rows in this run: %+v, want one INFO 'no rows' naming the columns not compared", ls)
 	}
-	if ls := Compare(run(ph, b, c), run(full, b, c)); !only(ls, "no rows") || Verdict(ls) != 0 {
+	if ls := Compare(toolRun("sp_HealthParser", ph, b, c), toolRun("sp_HealthParser", full, b, c)); !only(ls, "no rows") || Verdict(ls) != 0 {
 		t.Errorf("set 1 without rows in the baseline, with rows now: %+v, want one INFO 'no rows'", ls)
 	}
 	tp := Set{Columns: []Column{col("session_id", "number", "SMALLINT", true), col("wait_duration_ms", "number", "BIGINT", true),
 		col("threadpool_waits", "text", "NVARCHAR", true)}}
 	tpNone := Set{Columns: []Column{col("THREADPOOL", "text", "NVARCHAR", false)}}
-	if ls := Compare(run(b, tp, c), run(b, tpNone, c)); !only(ls, "no rows") {
+	if ls := Compare(toolRun("sp_PressureDetector", b, tp, c), toolRun("sp_PressureDetector", b, tpNone, c)); !only(ls, "no rows") {
 		t.Errorf("sp_PressureDetector's THREADPOOL set without rows: %+v, want one INFO 'no rows'", ls)
 	}
 	x := Set{Columns: []Column{col("alpha", "text", "NVARCHAR", true), col("beta", "text", "NVARCHAR", true), col("gamma", "text", "NVARCHAR", true)}}
@@ -129,12 +136,32 @@ func TestCompareNoRowsSet(t *testing.T) {
 	if ls := Compare(run(x), run(other)); len(linesOf(ls, "set removed")) != 1 || len(linesOf(ls, "set added")) != 1 || len(linesOf(ls, "no rows")) != 0 {
 		t.Errorf("a one-column set the other set does not name: %+v, want BREAK 'set removed' + DRIFT 'set added'", ls)
 	}
-	if ls := Compare(run(full, ph), run(ph)); len(linesOf(ls, "set removed")) != 1 || Verdict(ls) != 1 {
+	if ls := Compare(toolRun("sp_HealthParser", full, ph), toolRun("sp_HealthParser", ph)); len(linesOf(ls, "set removed")) != 1 || Verdict(ls) != 1 {
 		t.Errorf("a set gone next to a set without rows: %+v, want still one BREAK 'set removed'", ls)
 	}
 	two := Set{Columns: []Column{col("finding", "text", "VARCHAR", false), col("detail", "text", "NVARCHAR", true)}}
-	if ls := Compare(run(two), run(ph)); len(linesOf(ls, "no rows")) != 0 || len(ls) == 0 {
+	if ls := Compare(toolRun("sp_HealthParser", two), toolRun("sp_HealthParser", ph)); len(linesOf(ls, "no rows")) != 0 || len(ls) == 0 {
 		t.Errorf("a two-column set losing a column: %+v, want its column line, not 'no rows'", ls)
+	}
+}
+
+// Review finding 12: the 'no rows' rule is the two tools' alone, with their exact placeholders (sp_HealthParser's
+// 'finding', sp_PressureDetector's 'THREADPOOL'): a newer sp_Blitz whose 11-column set became a one-column 'Finding'
+// set is a set removed (BREAK), and sp_HealthParser's set turned into a one-column 'event' set is no 'no rows'.
+func TestCompareNoRowsOnlyItsTools(t *testing.T) {
+	blitz := Set{Columns: []Column{col("Priority", "number", "TINYINT", true), col("FindingsGroup", "text", "VARCHAR", true),
+		col("Finding", "text", "VARCHAR", true), col("DatabaseName", "text", "NVARCHAR", true), col("URL", "text", "VARCHAR", true),
+		col("Details", "text", "NVARCHAR", true), col("QueryPlan", "xml", "XML", true), col("QueryPlanFiltered", "text", "NVARCHAR", true),
+		col("CheckID", "number", "INT", true), col("ServerName", "text", "NVARCHAR", true), col("ComputerName", "text", "NVARCHAR", true)}}
+	one := Set{Columns: []Column{col("Finding", "text", "VARCHAR", true)}}
+	if ls := Compare(toolRun("sp_Blitz", blitz), toolRun("sp_Blitz", one)); len(linesOf(ls, "no rows")) != 0 || len(linesOf(ls, "set removed")) != 1 || Verdict(ls) != 1 {
+		t.Errorf("sp_Blitz's 11-column set now one 'Finding' column: %+v, want BREAK 'set removed', no 'no rows'", ls)
+	}
+	full := Set{Columns: []Column{col("finding", "text", "VARCHAR", false), col("event_time", "time", "DATETIME2", true),
+		col("event", "text", "NVARCHAR", true), col("duration_ms", "number", "BIGINT", true)}}
+	ev := Set{Columns: []Column{col("event", "text", "NVARCHAR", false)}}
+	if ls := Compare(toolRun("sp_HealthParser", full), toolRun("sp_HealthParser", ev)); len(linesOf(ls, "no rows")) != 0 || Verdict(ls) != 1 {
+		t.Errorf("sp_HealthParser's set now one 'event' column (not its placeholder): %+v, want no 'no rows' and a BREAK", ls)
 	}
 }
 
@@ -208,6 +235,42 @@ func TestCompareReadByName(t *testing.T) {
 	}
 }
 
+// Review finding 6: a run that timed out, or whose sets were not compared (a failed run), says nothing of its
+// columns - no read-by-name line: the collector entry timing out in the newest pass is one INFO 'timeout' (verdict 0),
+// never 14 BREAKs saying each column is gone; a failed run is its outcome's BREAK alone.
+func TestCompareReadByNameNotCompared(t *testing.T) {
+	want := run(Set{Columns: []Column{col("session_id", "number", "SMALLINT", false), col("tempdb_current", "number", "BIGINT", true)}})
+	want.ReadByName = []string{"session_id", "tempdb_current"}
+	got := run()
+	got.Outcome = "timeout"
+	if ls := Compare(want, got); len(ls) != 1 || ls[0].Kind != "timeout" || Verdict(ls) != 0 {
+		t.Errorf("the collector entry timed out: %+v, want one INFO 'timeout', verdict 0", ls)
+	}
+	got.Outcome, got.Message = "failed", "Login failed for user 'pgvigil_read'."
+	if ls := Compare(want, got); len(linesOf(ls, "read by name")) != 0 || len(linesOf(ls, "outcome")) != 1 {
+		t.Errorf("the collector entry failed: %+v, want its outcome line and no read-by-name line", ls)
+	}
+}
+
+// Review finding 7: siblings are searched only after a control run (the defaults, every grant) is done; when it is
+// not, or a run of the search timed out, the run's siblings are unknown - one INFO line, nothing compared (never a
+// 'new hard sibling' BREAK that is a slow runner's, never a 'no longer needed' DRIFT), either side.
+func TestCompareSiblingsUnknown(t *testing.T) {
+	want, got := run(), run()
+	want.HardSiblings = []string{"sp_BlitzCache"}
+	got.SiblingsUnknown = "the control run (the defaults, every grant): timeout"
+	ls := Compare(want, got)
+	if u := linesOf(ls, "siblings unknown"); len(u) != 1 || u[0].Class != Info || !strings.Contains(u[0].What, "control run") || len(ls) != 1 {
+		t.Errorf("this run's siblings unknown: %+v, want one INFO 'siblings unknown' alone", ls)
+	}
+	want, got = run(), run()
+	want.SiblingsUnknown = "sp_BlitzWho: the run without it timed out"
+	got.HardSiblings = []string{"sp_BlitzWho"}
+	if ls := Compare(want, got); len(linesOf(ls, "new hard sibling")) != 0 || len(linesOf(ls, "siblings unknown")) != 1 || Verdict(ls) != 0 {
+		t.Errorf("the baseline's siblings unknown: %+v, want one INFO 'siblings unknown', no BREAK", ls)
+	}
+}
+
 // F4 / F6: a port's block between its anchors - same = no line; changed = DRIFT 're-read'; a data list's items added
 // and removed named; an anchor gone = DRIFT 'anchor gone'. Never BREAK (a stale copy does not stop pgvigil).
 func TestComparePort(t *testing.T) {
@@ -226,6 +289,11 @@ func TestComparePort(t *testing.T) {
 	}
 	if ls := ComparePort(p, []byte("-- the block moved away\n")); len(ls) != 1 || ls[0].Kind != "anchor gone" || ls[0].Class != Drift {
 		t.Errorf("the anchor gone: %+v", ls)
+	}
+	// review finding 4: a ported file the newest kit no longer has (the fetch's 404) is a DRIFT 'file gone' naming it,
+	// weighed as an anchor gone, never an INFO
+	if ls := PortFileGone(p); len(ls) != 1 || ls[0].Kind != "file gone" || ls[0].Class != Drift || !strings.Contains(ls[0].What, "re-read") {
+		t.Errorf("the ported file gone: %+v, want one DRIFT 'file gone'", ls)
 	}
 }
 

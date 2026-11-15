@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,22 @@ func TestPinnedShapes(t *testing.T) {
 		}
 		if !slices.ContainsFunc(tool.AllParams, func(a Param) bool { return a.Name == p.param }) {
 			t.Errorf("the community checks preset %s's %s, which the stored shape does not have", p.tool, p.param)
+		}
+	}
+	// review finding 3: kitwatch.sh's entries carry every parameter a check can preset (KW_PRESETS), not only the one
+	// its own server's check chose: on the kitwatch server sp_HumanEventsBlockViewer needs no preset (its default
+	// session runs), while every other site's click passes @session_name - a kit that drops it must be a BREAK
+	kw, err := os.ReadFile("../../../scripts/kitwatch.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^KW_PRESETS="([^"]*)"`).FindSubmatch(kw)
+	if m == nil {
+		t.Fatal(`scripts/kitwatch.sh has no KW_PRESETS="<tool>:<param> ..." line`)
+	}
+	for _, p := range presets {
+		if !strings.Contains(" "+string(m[1])+" ", " "+p.tool+":"+p.param+" ") {
+			t.Errorf("kitwatch.sh's KW_PRESETS lacks %s:%s, which q_community.go presets", p.tool, p.param)
 		}
 	}
 	dates := map[string]string{"frk": "20260702", "dd": "20261101", "wia": "20260409"}
