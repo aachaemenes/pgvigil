@@ -40,6 +40,10 @@ SELECT check_name, targets, snapshot_at AS gone_at FROM pgvigil.custom_checks WH
 
 const sqlCustomReport = `SELECT * FROM pgvigil.custom_report()`
 
+// sqlCustomInstance is the instance's engine: the tab's words follow it (a SQL Server instance's checks run behind
+// another fence: internal/mssql/custom.go)
+const sqlCustomInstance = `SELECT engine FROM pgvigil.instances WHERE instance_id = $1`
+
 // Custom serves one instance's Custom tab, or the fleet's Custom report without instance.
 func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("instance") == "" {
@@ -61,5 +65,6 @@ func (s *Server) Custom(w http.ResponseWriter, r *http.Request) {
 		{"series", sqlCustomSeries, []any{id, from, to, step}},
 		{"findings", sqlCustomFindings, []any{id}},
 		{"gone", sqlCustomGone, []any{id}},
+		{"instance", sqlCustomInstance, []any{id}},
 	})
 }

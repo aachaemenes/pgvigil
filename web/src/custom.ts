@@ -55,12 +55,16 @@ function rowsGrid(r: Row): HTMLElement {
 
 export async function customView(ctx: Ctx): Promise<HTMLElement> {
   const w = window_(ctx);
-  const d = await get<Record<'checks' | 'series' | 'findings' | 'gone', Table | null>>('custom', { instance: ctx.instance, from: w.from, to: w.to });
+  const d = await get<Record<'checks' | 'series' | 'findings' | 'gone' | 'instance', Table | null>>('custom', { instance: ctx.instance, from: w.from, to: w.to });
   const checks = withRank(rowsOf(d.checks)), series = rowsOf(d.series), gone = rowsOf(d.gone);
+  // a SQL Server instance's checks are written for it (engine: sqlserver, ST6) and run behind another fence
+  const ms = rowsOf(d.instance)[0]?.engine === 'sqlserver';
   const sec = el('section', {}, el('h2', {}, 'Custom checks'));
   if (!checks.length) {
     sec.append(el('p', { class: 'empty' }, 'No custom check runs on this instance: the configuration\'s custom: list names none for it '
-      + '(a check runs on the instances and tags it names, or on every instance when it names neither). The catalogue of ready-made checks is in docs/custom.md.'));
+      + (ms ? '(a SQL Server check is written with engine: sqlserver, or as a procedure:, and runs on the SQL Server instances and tags it names, or on every SQL Server instance when it names neither). '
+        : '(a check runs on the instances and tags it names, or on every instance when it names neither). ')
+      + 'The catalogue of ready-made checks is in docs/custom.md.'));
     if (gone.length) sec.append(el('h3', {}, 'Taken off this instance'), grid(gone, [{ key: 'check_name', label: 'check' }, { key: 'targets', label: 'ran on' }, { key: 'gone_at', label: 'gone since', fmt: fmtTime }]));
     return sec;
   }
@@ -73,8 +77,12 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
     tile('failed', fmtNum(err), err ? 'crit' : 'ok'),
     tile('not run in 2 cadences', fmtNum(late), late ? 'warn' : 'ok')));
   sec.append(el('p', { class: 'meta' },
-    'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
-    + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. '
+    (ms ? 'Each check is the DBA\'s own T-SQL from the configuration (its sql:, or the EXEC of its procedure:), run by the collector as the instance\'s read login, '
+      + 'each on a connection of its own, inside a transaction that is rolled back, 30 s at most. The collection runs only while that login holds no right beyond the '
+      + 'documented read login\'s (on the server, or a right that writes in any database it can open): the rights, not the transaction, keep a check from writing. '
+      + 'A check that ends its transaction, or makes, starts or stops a trace, is shown failed (pgvigil leaves the trace as it is). Its result is its first result set. '
+      : 'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
+      + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. ')
     + 'A value check judges its value column (or the column named value, else the first) of the first row; a row-count check judges the rows returned. '
     + 'Critical is tested before warning; no value (no row, or NULL) judges nothing. At most 100 rows of a run are kept, and only under query_text full. '
     + 'Not run in 2 cadences: the collection still visits the instance but the check\'s latest run is more than two cadences behind it.'));
@@ -126,7 +134,8 @@ export async function customReportView(keep?: (r: Row) => boolean, instLink?: (n
       + 'Each instance\'s Custom tab has the chart and the rows.'),
     grid(rows, [
       { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
+      { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },
       { key: 'platform' },
       ...checkCols.filter(c => !['duration_ms', 'description'].includes(c.key)),
-    ], 'No custom check runs in the fleet: the configuration has no custom: list, or it names no instance.'));
+    ], 'No custom check runs in the fleet: the configuration has no custom: list, or it names no instance (a SQL Server check is written with engine: sqlserver).'));
 }
