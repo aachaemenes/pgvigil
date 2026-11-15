@@ -248,8 +248,8 @@ def expr_end(text, k):
             return j
         elif not stack and c == '\n':
             nxt = text[j + 1:].lstrip(' ')
-            if not re.match(r'(\?|:|\+|\.|&&|\|\|)', nxt):
-                return j
+            if not re.match(r'(\?|:|\+|\.|&&|\|\|)', nxt) and not text[k:j].rstrip().endswith('=>'):
+                return j   # a line that ends in '=>' goes on (a curried helper's inner arrow)
         j += 1
     return j
 
