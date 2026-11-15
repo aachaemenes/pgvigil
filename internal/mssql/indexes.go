@@ -449,3 +449,300 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 func noDefinitionNote(what string) string {
 	return "the login lacks VIEW ANY DEFINITION: a database's catalog lists only the objects the login has a permission on, so the " + what + " stored may be a part of what the database has"
 }
+
+// constraintsCollector is mssql_constraints (task 414; dbachecks Database#41, #42): the untrusted foreign keys and
+// check constraints of every user database, every six hours.
+//
+// A constraint enabled again WITH NOCHECK, or with ALTER TABLE ... CHECK CONSTRAINT and no WITH CHECK, is not trusted
+// (is_not_trusted = 1): the rows written while it was off were never checked, and the optimizer does not use it to
+// simplify a plan. The predicates are dbachecks 3.0.2's: a foreign key with is_not_trusted = 1 and not NOT FOR
+// REPLICATION (a disabled one too: it is not trusted either, and the row says it is disabled); a check constraint with
+// is_not_trusted = 1, enabled and not NOT FOR REPLICATION. The disabled check constraints are counted apart and not
+// named. ALTER TABLE ... WITH CHECK CHECK CONSTRAINT trusts one again; it reads the whole table, so pgvigil only shows
+// the text.
+//
+// Each database is read through its own sys.sp_executesql (two SELECTs, nothing written) and stored as a batch of its
+// own, the database the repository holds the oldest read of first. Rights: VIEW ANY DEFINITION (without it a
+// database's catalog lists only the objects the login has a permission on, and the run says the list may be a part)
+// and CONNECT ANY DATABASE, or a user in each database. Not on Azure SQL Database.
+type constraintsCollector struct{}
+
+func init() { Register(constraintsCollector{}) }
+
+func (constraintsCollector) Name() string                   { return Prefix + "constraints" }
+func (constraintsCollector) DefaultInterval() time.Duration { return 6 * time.Hour }
+func (constraintsCollector) Timeout() time.Duration         { return 5 * time.Minute }
+
+func (constraintsCollector) Applies(info Info) (bool, string) {
+	if info.Kind == KindAzureDB {
+		return false, "not on Azure SQL Database (the per-database pass runs through other databases' sys.sp_executesql)"
+	}
+	return true, ""
+}
+
+// ctCap is the most untrusted constraints of one database a read stores.
+const ctCap = 5000
+
+// constraintsSQL runs inside one database: the untrusted constraints dbachecks names.
+const constraintsSQL = `SELECT TOP (@cap) u.* FROM (
+SELECT 'constraint' AS kind, CAST(fk.object_id AS bigint) AS object_id, CAST(N'foreign key' AS nvarchar(20)) AS constraint_kind,
+  CAST(SCHEMA_NAME(o.schema_id) AS nvarchar(128)) AS schema_name, CAST(o.name AS nvarchar(128)) AS table_name, CAST(fk.name AS nvarchar(128)) AS constraint_name,
+  CAST(fk.is_disabled AS int) AS is_disabled, CAST(fk.referenced_object_id AS bigint) AS ref_object_id,
+  CAST(OBJECT_SCHEMA_NAME(fk.referenced_object_id) AS nvarchar(128)) AS ref_schema, CAST(OBJECT_NAME(fk.referenced_object_id) AS nvarchar(128)) AS ref_table
+FROM sys.foreign_keys fk JOIN sys.objects o ON o.object_id = fk.parent_object_id
+WHERE fk.is_not_trusted = 1 AND fk.is_not_for_replication = 0 AND o.is_ms_shipped = 0
+UNION ALL
+SELECT 'constraint', CAST(cc.object_id AS bigint), CAST(N'check' AS nvarchar(20)), CAST(SCHEMA_NAME(o.schema_id) AS nvarchar(128)), CAST(o.name AS nvarchar(128)),
+  CAST(cc.name AS nvarchar(128)), 0, CAST(NULL AS bigint), CAST(NULL AS nvarchar(128)), CAST(NULL AS nvarchar(128))
+FROM sys.check_constraints cc JOIN sys.objects o ON o.object_id = cc.parent_object_id
+WHERE cc.is_not_trusted = 1 AND cc.is_disabled = 0 AND cc.is_not_for_replication = 0 AND o.is_ms_shipped = 0
+) u ORDER BY u.schema_name, u.table_name, u.constraint_name`
+
+// constraintCountsSQL runs inside one database: the counts of the database's row.
+const constraintCountsSQL = `SELECT
+  CAST((SELECT COUNT(*) FROM sys.foreign_keys fk JOIN sys.objects o ON o.object_id = fk.parent_object_id
+         WHERE fk.is_not_trusted = 1 AND fk.is_not_for_replication = 0 AND o.is_ms_shipped = 0) AS int) AS untrusted_fk,
+  CAST((SELECT COUNT(*) FROM sys.check_constraints cc JOIN sys.objects o ON o.object_id = cc.parent_object_id
+         WHERE cc.is_not_trusted = 1 AND cc.is_disabled = 0 AND cc.is_not_for_replication = 0 AND o.is_ms_shipped = 0) AS int) AS untrusted_check,
+  CAST((SELECT COUNT(*) FROM sys.check_constraints cc JOIN sys.objects o ON o.object_id = cc.parent_object_id
+         WHERE cc.is_disabled = 1 AND o.is_ms_shipped = 0) AS int) AS disabled_check`
+
+// constraintsStateSQL: the run's state row (the import checks the server's time)
+const constraintsStateSQL = `SELECT 'state' AS kind, TODATETIMEOFFSET(SYSUTCDATETIME(), 0) AS server_utc`
+
+func (c constraintsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	var out []collect.Row
+	err := c.RunBatches(ctx, conn, info, BatchOptions{}, nil, func(rows []collect.Row) error {
+		out = append(out, rows...)
+		return nil
+	})
+	return out, err
+}
+
+// RunBatches reads the databases one by one, each a batch with the run's state row, then the list of the databases.
+func (c constraintsCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, cursor CursorFunc, emit EmitFunc) error {
+	state, err := QueryRows(ctx, conn, constraintsStateSQL)
+	if err != nil {
+		return err
+	}
+	if len(state) == 0 {
+		return fmt.Errorf("the server's time was not read")
+	}
+	st := state[0]
+	dbs, _, err := userDatabases(ctx, conn, info)
+	if err != nil {
+		return err
+	}
+	if dbs, err = oldestFirst(ctx, dbs, "ct:", cursor); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(dbs))
+	var failed []string
+	var firstErr error
+	cut := 0
+	for _, db := range dbs {
+		names = append(names, db.name)
+		row := collect.Row{"kind": "db", "database_id": db.id, "database_name": db.name, "database_state": db.state, "read": false, "note": nil}
+		batch := []collect.Row{st, row}
+		switch {
+		case db.secondary:
+			row["note"] = "not read: a secondary replica of an availability group here; its constraints are the primary's (read there)"
+		case !db.canEnter:
+			row["note"] = whyNotEntered(db)
+		case cut > 0 || ctx.Err() != nil || (!opt.Deadline.IsZero() && time.Now().After(opt.Deadline)):
+			row["note"] = "not read this time: the run's deadline came before this database's turn; the next run starts at another database"
+			cut++
+		default:
+			counts, err := qsRead(ctx, conn, db.quoted, constraintCountsSQL, "")
+			var rows []collect.Row
+			if err == nil {
+				rows, err = qsRead(ctx, conn, db.quoted, constraintsSQL, "@cap int", sql.Named("cap", ctCap))
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					row["note"] = "not read this time: the run's deadline came during this database's read"
+					cut++
+					break
+				}
+				row["note"] = "the read failed: " + err.Error()
+				failed = append(failed, db.name)
+				if firstErr == nil {
+					firstErr = err
+				}
+				break
+			}
+			row["read"] = true
+			if len(counts) > 0 {
+				for _, k := range []string{"untrusted_fk", "untrusted_check", "disabled_check"} {
+					row[k] = counts[0][k]
+				}
+			}
+			if len(rows) >= ctCap {
+				row["note"] = fmt.Sprintf("more than %d untrusted constraints: the first %d by table are stored", ctCap-1, ctCap)
+			}
+			for _, r := range rows {
+				r["database_name"] = db.name
+			}
+			batch = append(batch, rows...)
+		}
+		if err := emit(batch); err != nil {
+			return err
+		}
+	}
+	last := []collect.Row{st, {"kind": "databases", "names": names}}
+	if len(failed) > 0 {
+		last = append(last, collect.Row{"kind": "collector_error", "source": "sys.foreign_keys",
+			"message": fmt.Sprintf("%d database(s) were not read this time (%s): %v; the repository keeps what it holds of them", len(failed), firstFew(failed, 5), firstErr)})
+	}
+	if cut > 0 {
+		last = append(last, collect.Row{"kind": "collector_error", "source": "sys.foreign_keys",
+			"message": fmt.Sprintf("the run's deadline came before %d database(s) were read; the next run starts at another database", cut)})
+	}
+	if !info.ViewAnyDefinition {
+		last = append(last, collect.Row{"kind": "collector_error", "source": "sys.foreign_keys", "message": noDefinitionNote("untrusted constraints")})
+	}
+	return emit(last)
+}
+
+// ---- fragmentation on demand (task 414; SQLWATCH REP#1) ------------------------------------------------------------
+
+// FragMinPages: a row of the fragmentation read is kept from this many pages (SQLWATCH's line; a smaller index is
+// counted, not kept).
+const FragMinPages = 1000
+
+// FragLockTimeoutMS is the read's lock timeout: the function takes an IS lock on each table, and a table under an X or
+// Sch-M lock (an offline rebuild, an ALTER) holds it up this long before the read ends with error 1222.
+const FragLockTimeoutMS = 30000
+
+// fragTargetSQL: the database by name, whether it can be entered and whether it is a secondary replica here.
+const fragTargetSQL = `SELECT QUOTENAME(d.name) AS quoted_name, CAST(d.state_desc AS nvarchar(60)) AS database_state,
+  CAST(CASE WHEN d.state = 0 AND HAS_DBACCESS(d.name) = 1 THEN 1 ELSE 0 END AS int) AS can_enter,
+  CAST(CASE WHEN d.database_id <= 4 OR d.source_database_id IS NOT NULL THEN 1 ELSE 0 END AS int) AS not_user,
+  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs WHERE rs.database_id = d.database_id AND rs.is_local = 1
+                          AND rs.is_primary_replica = 0) THEN 1 ELSE 0 END AS int) AS secondary
+FROM sys.databases d WHERE d.name = @db`
+
+// OnDemandDatabase finds a user database an on-demand read names (task 414) and answers its QUOTENAME, or an error
+// with the words: a cloud service's own database (rdsadmin, gcloud_cloudsqladmin), a system database or a snapshot,
+// not online, no way in, and with refuseSecondary a secondary replica here (the fragmentation read's IS locks can
+// block the redo thread there: Learn, sys.dm_db_index_physical_stats).
+func OnDemandDatabase(ctx context.Context, conn *sql.Conn, database string, refuseSecondary bool) (string, error) {
+	if strings.EqualFold(database, "rdsadmin") || strings.EqualFold(database, "gcloud_cloudsqladmin") {
+		return "", fmt.Errorf("%s is the cloud service's own database: pgvigil does not read it", database)
+	}
+	rows, err := QueryRows(ctx, conn, fragTargetSQL, sql.Named("db", database))
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", fmt.Errorf("the server has no database %s", database)
+	}
+	r := rows[0]
+	quoted, _ := r["quoted_name"].(string)
+	state, _ := r["database_state"].(string)
+	switch {
+	case r["not_user"] == int64(1):
+		return "", fmt.Errorf("%s is a system database or a database snapshot: only user databases are read", database)
+	case refuseSecondary && r["secondary"] == int64(1):
+		return "", fmt.Errorf("%s is a secondary replica of an availability group here: the read's locks can block the redo thread, so it is refused; read it on the primary", database)
+	case r["can_enter"] != int64(1) && state != "ONLINE":
+		return "", fmt.Errorf("%s is %s", database, strings.ToLower(state))
+	case r["can_enter"] != int64(1) || quoted == "":
+		return "", fmt.Errorf("the read login cannot enter %s (CONNECT ANY DATABASE, or a user in the database, is the missing right)", database)
+	}
+	return quoted, nil
+}
+
+// heapSizeSQL runs inside the database: its heap pages and all its pages.
+const heapSizeSQL = `SELECT CAST(ISNULL(SUM(CASE WHEN p.index_id = 0 THEN p.used_page_count END), 0) AS bigint) AS heap_pages,
+  CAST(COUNT(DISTINCT CASE WHEN p.index_id = 0 THEN p.object_id END) AS int) AS heaps,
+  CAST(ISNULL(SUM(p.used_page_count), 0) AS bigint) AS all_pages
+FROM sys.dm_db_partition_stats p JOIN sys.objects o ON o.object_id = p.object_id WHERE o.is_ms_shipped = 0`
+
+// HeapSize is a database's heap pages, its heaps and all its pages (used pages of its user objects).
+func HeapSize(ctx context.Context, conn *sql.Conn, quoted string) (heapPages int64, heaps int, allPages int64, err error) {
+	hs, err := qsRead(ctx, conn, quoted, heapSizeSQL, "")
+	if err != nil || len(hs) == 0 {
+		return 0, 0, 0, err
+	}
+	heapPages, _ = hs[0]["heap_pages"].(int64)
+	allPages, _ = hs[0]["all_pages"].(int64)
+	n, _ := hs[0]["heaps"].(int64)
+	return heapPages, int(n), allPages, nil
+}
+
+// fragSQL runs inside the database: every index and heap at its leaf level, the names read per row (a subquery, so the
+// rows stream as the function returns them and a read that ends early keeps those before).
+var fragSQL = fmt.Sprintf("SET LOCK_TIMEOUT %d;\n", FragLockTimeoutMS) + `SELECT CAST(ps.object_id AS bigint) AS object_id, CAST(ps.index_id AS int) AS index_id, CAST(ps.partition_number AS int) AS partition_number,
+  CAST(OBJECT_SCHEMA_NAME(ps.object_id) AS nvarchar(128)) AS schema_name, CAST(OBJECT_NAME(ps.object_id) AS nvarchar(128)) AS table_name,
+  CAST((SELECT i.name FROM sys.indexes i WHERE i.object_id = ps.object_id AND i.index_id = ps.index_id) AS nvarchar(128)) AS index_name,
+  CAST(ps.index_type_desc AS nvarchar(60)) AS index_type, CAST(ps.alloc_unit_type_desc AS nvarchar(60)) AS alloc_unit,
+  CAST(ps.page_count AS bigint) AS page_count, CAST(ps.avg_fragmentation_in_percent AS float) AS fragment_pct,
+  CAST(ps.fragment_count AS bigint) AS fragment_count, CAST(ps.avg_page_space_used_in_percent AS float) AS page_density,
+  CAST(ps.record_count AS bigint) AS record_count, CAST(ps.forwarded_record_count AS bigint) AS forwarded
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, @mode) ps
+WHERE ps.index_level = 0`
+
+// FragResult is one fragmentation read: the rows kept (FragMinPages and more), how many the server returned, and where
+// a read that ended early stopped.
+type FragResult struct {
+	Rows    []collect.Row
+	Read    int
+	Stopped string // "" = read to the end
+}
+
+// FragmentationRead reads sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, mode) in the database, LIMITED or
+// SAMPLED (never DETAILED). object_id NULL is the only form the read login may call (VIEW DATABASE STATE; a named
+// object needs CONTROL on it), so every index and heap is read: LIMITED reads the pages above the leaf of an index and
+// every data page of a heap; SAMPLED 1 % of an index or heap of 10,000 pages or more and all of a smaller one (Learn).
+// progress is called with the rows read so far (every 50 rows). An error after some rows keeps them: the result says
+// where the read stopped, and err is the server's.
+func FragmentationRead(ctx context.Context, conn *sql.Conn, quoted, mode string, progress func(read int)) (FragResult, error) {
+	var res FragResult
+	if mode != "LIMITED" && mode != "SAMPLED" {
+		return res, fmt.Errorf("mode must be LIMITED or SAMPLED")
+	}
+	rs, err := conn.QueryContext(ctx, inDatabase(quoted, "@mode nvarchar(20)"), sql.Named("stmt", fragSQL), sql.Named("mode", mode))
+	if err != nil {
+		return res, err
+	}
+	defer func() { _ = rs.Close() }()
+	cols, err := rs.Columns()
+	if err != nil {
+		return res, err
+	}
+	last := ""
+	for rs.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rs.Scan(ptrs...); err != nil {
+			return res, err
+		}
+		row := make(collect.Row, len(cols))
+		for i, c := range cols {
+			row[c] = vals[i]
+		}
+		res.Read++
+		s, _ := row["schema_name"].(string)
+		t, _ := row["table_name"].(string)
+		last = quoteName(s) + "." + quoteName(t)
+		if pc, _ := row["page_count"].(int64); pc >= FragMinPages {
+			res.Rows = append(res.Rows, row)
+		}
+		if progress != nil && res.Read%50 == 0 {
+			progress(res.Read)
+		}
+	}
+	if err := rs.Err(); err != nil {
+		if last == "" {
+			res.Stopped = "before the first index (nothing was read)"
+		} else {
+			res.Stopped = fmt.Sprintf("after %s (%d index and heap rows read)", last, res.Read)
+		}
+		return res, err
+	}
+	return res, nil
+}
