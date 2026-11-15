@@ -75,4 +75,4 @@ fleet stream is SQL Server errors (`docs/sqlserver-readers.md`).
 
 ## Proof
 
-`scripts/proof-b24o.sh` rows A-E, G and H.
+`scripts/proof-collector-errors.sh` rows A-E, G and H.

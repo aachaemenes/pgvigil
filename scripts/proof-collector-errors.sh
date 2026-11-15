@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proof-b24o.sh - the collector's error log (/api/collectorerrors, the page #/collectorerrors) and the fleet's SQL Server
+# proof-collector-errors.sh - the collector's error log (/api/collectorerrors, the page #/collectorerrors) and the fleet's SQL Server
 # error stream (/api/mssql/errorfleet, the page #/mssqlerrors), on real collector runs and seeded rows.
 #
 # Needs: docker, psql, curl, python3, chromium (row G), the build to prove at PGVIGIL_BIN (default bin/pgvigil), run from
@@ -59,11 +59,15 @@
 #     pages do not exist.
 #  H. a collector login calls the 6-argument and the 7-argument log_collection (no 'function is not unique'): rows in
 #     collection_dates and collection_log, stage NULL and 'import'; a reader login is refused. RED: no 7-argument form.
+#  Not proven here: drill in place and Back in a browser (G reads the addresses only); both themes (proof-a11y.sh, run
+#  once over the build); the Collector page's failure link (this store has no heartbeat runs: its counts are 0); the SQL
+#  Server batch path's import stage (internal/mssql xe_test.go TestRunBatched, the swallowing reader included); the
+#  'cannot' part's words (a constant).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 PIMG=${PGVIGIL_PG_IMAGE:-postgres:18}
 SUF=$$
-RCT=b24o-repo-$SUF; TCT=b24o-target-$SUF
+RCT=cerr-repo-$SUF; TCT=cerr-target-$SUF
 RPORT=$((21000 + SUF % 9000)); TPORT=$((31000 + SUF % 9000)); PORT=$((41000 + SUF % 9000)); PORT2=$((PORT + 1))
 WORK=$(mktemp -d); SRV=; SRV2=
 bad=0
@@ -89,43 +93,43 @@ export PGVIGIL_REPO_DSN="host=127.0.0.1 port=$RPORT user=postgres dbname=postgre
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 tq() { psql "host=127.0.0.1 port=$TPORT user=postgres dbname=${2:-postgres}" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 
-# ---- the target: b24o_ok (pg_stat_statements created, not preloaded: its read fails) and b24o_fail (its schema part
+# ---- the target: cerr_ok (pg_stat_statements created, not preloaded: its read fails) and cerr_fail (its schema part
 # is refused by the repository below)
-tq "create database b24o_ok" >/dev/null; tq "create database b24o_fail" >/dev/null
-tq "create extension pg_stat_statements; create table b24o_ok_t (id int primary key)" b24o_ok >/dev/null
-tq "create table b24o_fail_marker (id int primary key)" b24o_fail >/dev/null
-export B24O_PG_DSN="host=127.0.0.1 port=$TPORT user=postgres dbname=b24o_ok sslmode=disable"
-export B24O_DOWN_DSN="host=127.0.0.1 port=$((TPORT + 3)) user=postgres dbname=postgres sslmode=disable connect_timeout=3"
-PGT=b24o-pg-$SUF; DOWN=b24o-down-$SUF
+tq "create database cerr_ok" >/dev/null; tq "create database cerr_fail" >/dev/null
+tq "create extension pg_stat_statements; create table cerr_ok_t (id int primary key)" cerr_ok >/dev/null
+tq "create table cerr_fail_marker (id int primary key)" cerr_fail >/dev/null
+export CERR_PG_DSN="host=127.0.0.1 port=$TPORT user=postgres dbname=cerr_ok sslmode=disable"
+export CERR_DOWN_DSN="host=127.0.0.1 port=$((TPORT + 3)) user=postgres dbname=postgres sslmode=disable connect_timeout=3"
+PGT=cerr-pg-$SUF; DOWN=cerr-down-$SUF
 cat > "$WORK/cfg.yaml" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
 instances:
   - name: $PGT
     engine: postgres
-    dsn: env:B24O_PG_DSN
+    dsn: env:CERR_PG_DSN
   - name: $DOWN
     engine: postgres
-    dsn: env:B24O_DOWN_DSN
+    dsn: env:CERR_DOWN_DSN
 EOF
 "$BIN" migrate -config "$WORK/cfg.yaml" > "$WORK/migrate.log" 2>&1 || fail "migrate: $(tail -3 "$WORK/migrate.log")"
 fn() { [ "$(q "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname = '$1'")" != 0 ]; }
 
-# ---- the repository refuses two imports: activity always, schema for the b24o_fail database's part only. Each
+# ---- the repository refuses two imports: activity always, schema for the cerr_fail database's part only. Each
 # import_<collection> is renamed and a wrapper of the same arguments raises or calls it (SECURITY DEFINER kept: the
 # collector's door is unchanged for every other part)
 refuse() {   # refuse <collection> <SQL condition on p_payload, true = refuse>
   local args; args=$(q "select pg_get_function_identity_arguments('pgvigil.import_$1'::regproc)")
-  q "alter function pgvigil.import_$1($args) rename to import_$1_b24o_real" >/dev/null
+  q "alter function pgvigil.import_$1($args) rename to import_$1_cerr_real" >/dev/null
   q "create function pgvigil.import_$1(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb) returns void
      language plpgsql security definer set search_path = pg_catalog, pgvigil as \$f\$
      BEGIN
-       IF $2 THEN RAISE EXCEPTION 'b24o: this import is refused'; END IF;
-       PERFORM pgvigil.import_$1_b24o_real(p_instance_id, p_snapshot_at, p_payload);
+       IF $2 THEN RAISE EXCEPTION 'cerr: this import is refused'; END IF;
+       PERFORM pgvigil.import_$1_cerr_real(p_instance_id, p_snapshot_at, p_payload);
      END \$f\$" >/dev/null
 }
 refuse activity "true"
-refuse schema "p_payload::text LIKE '%b24o_fail_marker%'"
+refuse schema "p_payload::text LIKE '%cerr_fail_marker%'"
 once() { "$BIN" collect -config "$WORK/cfg.yaml" -once "$1" -instance "$2" > "$WORK/once-$1-$2.log" 2>&1 || true; }
 once activity "$PGT"; once schema "$PGT"; once statements "$PGT"; once activity "$DOWN"
 iid() { q "select instance_id from pgvigil.instances where name = '$1'"; }
@@ -135,7 +139,7 @@ PGI=$(iid "$PGT"); DNI=$(iid "$DOWN")
 syn() {   # a synthetic instance: name suffix, engine[, tags as a text[] literal]: its id
   local tg=${3:-}; [ -n "$tg" ] || tg='{}'
   q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
-       values ('b24o-$1-$SUF', '$( [ "$2" = sqlserver ] && echo sqlserver || echo onprem )', '$tg', now(), now(), true, '$2') returning instance_id" | head -1
+       values ('cerr-$1-$SUF', '$( [ "$2" = sqlserver ] && echo sqlserver || echo onprem )', '$tg', now(), now(), true, '$2') returning instance_id" | head -1
 }
 lc() { q "select pgvigil.log_collection($1, '$2', now() - interval '$3 minutes', 10, '$4', \$n\$$5\$n\$)" >/dev/null; }
 OLD=$(syn old postgres); P=$(syn perm postgres); QI=$(syn one postgres); UI=$(syn down2 postgres)
@@ -175,16 +179,16 @@ get "/api/collectorerrors?view=instance&$W"
 check "$(py "'|'.join(str(one(T('rows'), instance='$PGT').get(k)) for k in ('total','errors','warnings','connect','collect','import','other'))")" \
   "3|2|1|None|1|2|None" "A: the target - activity's refused import and schema's one refused part Import, statements Collect; schema a Warning"
 check "$(py "'|'.join(str(one(T('rows'), instance='$DOWN').get(k)) for k in ('total','errors','connect'))")" "1|1|1" "A: the unreachable instance Connect"
-check "$(py "'|'.join(str(one(T('rows'), instance='b24o-old-$SUF').get(k)) for k in ('total','connect','collect','skipped'))")" "2|1|1|None" \
+check "$(py "'|'.join(str(one(T('rows'), instance='cerr-old-$SUF').get(k)) for k in ('total','connect','collect','skipped'))")" "2|1|1|None" \
   "A: old rows by their note, the 'ok' rollup row absent, the skip hidden"
 check "$(py "all((r['errors'] or 0) + (r['warnings'] or 0) + (r['skipped'] or 0) == r['total'] == (r['connect'] or 0) + (r['collect'] or 0) + (r['import'] or 0) + (r['other'] or 0) for r in T('rows')) and len(T('rows')) > 0")" \
   "True" "A: per row the types and the stages each add up to Total"
-check "$(py "'|'.join(str(bool(one(T('rows'), instance=n).get('suggestion'))) for n in ('b24o-perm-$SUF','b24o-one-$SUF','b24o-down2-$SUF'))")|$(py "'unreachable' in str(one(T('rows'), instance='b24o-down2-$SUF').get('suggestion')).lower()")" \
+check "$(py "'|'.join(str(bool(one(T('rows'), instance=n).get('suggestion'))) for n in ('cerr-perm-$SUF','cerr-one-$SUF','cerr-down2-$SUF'))")|$(py "'unreachable' in str(one(T('rows'), instance='cerr-down2-$SUF').get('suggestion')).lower()")" \
   "True|False|True|True" "A: C10 - two collections denied a right suggest, one does not; every error 'connect: ' says unreachable"
-check "$(py "sorted([r['kind'] for r in T('insights')])")|$(py "all('b24o-perm-$SUF' in str(r['instances']) or 'b24o-down2-$SUF' in str(r['instances']) for r in T('insights'))")" \
+check "$(py "sorted([r['kind'] for r in T('insights')])")|$(py "all('cerr-perm-$SUF' in str(r['instances']) or 'cerr-down2-$SUF' in str(r['instances']) for r in T('insights'))")" \
   "['rights', 'unreachable']|True" "A: one card per suggestion kind, naming its instances"
 get "/api/collectorerrors?view=instance&skipped=1&$W"
-check "$(py "one(T('rows'), instance='b24o-old-$SUF').get('skipped')")|$(py "one(T('rows'), instance='b24o-old-$SUF').get('total')")" "1|3" "A: skipped=1 counts the skip"
+check "$(py "one(T('rows'), instance='cerr-old-$SUF').get('skipped')")|$(py "one(T('rows'), instance='cerr-old-$SUF').get('total')")" "1|3" "A: skipped=1 counts the skip"
 
 echo "--- B. every count lists the rows it counts"
 get "/api/collectorerrors?view=instance&skipped=1&$W"
@@ -205,45 +209,50 @@ while IFS='|' read -r sel f want name; do
 done < "$WORK/b.txt"
 check "$BOK/$BN|$([ "$BN" -ge 10 ] && echo many)" "$BN/$BN|many" "B: each of the instance view's counts lists its rows"
 get "/api/collectorerrors?view=collection&skipped=1&instance=$PGI&$W"
-CB=$(py "'|'.join('%s=%s' % (r['collection'], r['total']) for r in T('rows'))")
+CB=$(py "'|'.join('%s=%s' % (r['collection'], r['total']) for r in sorted(T('rows'), key=lambda r: r['collection']))")
 CBOK=yes; for kv in ${CB//|/ }; do c=${kv%%=*}; n=${kv##*=}; get "/api/collectorerrors?view=error&skipped=1&instance=$PGI&coll=$c&$W"; [ "$(py "len(T('rows'))")" = "$n" ] || CBOK="no ($c)"; done
 check "$CB|$CBOK" "activity=1|schema=1|statements=1|yes" "B: the target's collection view, each Total listing its rows"
 
 echo "--- C. the service's own failures"
-q "select pgvigil.ensure_month_partition('alert_log', now())" >/dev/null 2>&1 || true
+q "select pgvigil.ensure_month_partition('alert_log', now()), pgvigil.ensure_month_partition('alert_log', now() - interval '1 hour')" >/dev/null 2>&1 || true
 q "insert into pgvigil.alert_log (snapshot_at, channel, kind, destination, outcome, error, keys) values
      (now() - interval '10 minutes', 'ops', 'mail', 'ops@example.invalid', 'failed', 'smtp: 535 authentication failed', '{k1}'),
      (now() - interval '9 minutes', 'ops', 'mail', 'ops@example.invalid', 'refused', 'the server offers no STARTTLS', '{k2}'),
      (now() - interval '8 minutes', 'ops', 'mail', 'ops@example.invalid', 'failed', 'smtp: dial tcp: refused', '{test-7}'),
      (now() - interval '7 minutes', 'ops', 'mail', 'ops@example.invalid', 'sent', NULL, '{k3}')" >/dev/null
-q "insert into pgvigil.report_mail_sends (kind, name, route, requested_by, requested_at, channel, recipients, subject, outcome, error) values
-     ('now', 'Daily summary', '#/summary', 'proof', now() - interval '6 minutes', 'ops', '{a@example.invalid}', 's', 'failed', 'smtp: 550 mailbox unavailable'),
-     ('now', 'Daily summary', '#/summary', 'proof', now() - interval '5 minutes', 'ops', '{a@example.invalid}', 's', 'refused', 'no STARTTLS')" >/dev/null
+q "insert into pgvigil.report_mail_sends (kind, name, route, requested_by, requested_at, taken_at, done_at, channel, recipients, subject, outcome, error) values
+     ('now', 'Daily summary', '#/summary', 'proof', now() - interval '6 minutes', now() - interval '6 minutes', now() - interval '359 seconds', 'ops', '{a@example.invalid}', 's', 'failed', 'smtp: 550 mailbox unavailable'),
+     ('now', 'Daily summary', '#/summary', 'proof', now() - interval '5 minutes', now() - interval '5 minutes', now() - interval '299 seconds', 'ops', '{a@example.invalid}', 's', 'refused', 'no STARTTLS')" >/dev/null
 q "insert into pgvigil.dbadash_repositories (repository, is_configured, status, reason, read_at) values
-     ('b24o-repo-1', true, 'not read', 'login failed for user', now() - interval '4 minutes'),
-     ('b24o-repo-2', false, 'not read', 'removed from the config', now() - interval '4 minutes'),
-     ('b24o-repo-3', true, 'ok', NULL, now() - interval '4 minutes')" >/dev/null
+     ('cerr-repo-1', true, 'not read', 'login failed for user', now() - interval '4 minutes'),
+     ('cerr-repo-2', false, 'not read', 'removed from the config', now() - interval '4 minutes'),
+     ('cerr-repo-3', true, 'ok', NULL, now() - interval '4 minutes')" >/dev/null
 W0=$(q "select (select count(*) from pgvigil.acks) || '/' || (select count(*) from pgvigil.ack_log) || '/' || (select count(*) from pgvigil.collection_log) || '/' || (select count(*) from pgvigil.collection_dates)")
 get "/api/collectorerrors?view=error&service=1&$W"
 check "$(py "sorted(r['collection'] for r in T('rows'))")" "['DBA Dash import', 'alerts', 'alerts', 'alerts', 'report mail', 'report mail']" \
   "C: failed and refused alert sends, a failed test send, two report mails, one configured repository not read"
-check "$(py "sum(1 for r in T('rows') if str(r['note']).startswith('test send'))")|$(py "all(r['instance'] == '(the service)' and r['instance_id'] is None and r['link'] for r in T('rows'))")|$(py "any('b24o-repo-2' in str(r['note']) for r in T('rows'))")" \
+check "$(py "sum(1 for r in T('rows') if str(r['note']).startswith('test send'))")|$(py "all(r['instance'] == '(the service)' and r['instance_id'] is None and r['link'] for r in T('rows'))")|$(py "any('cerr-repo-2' in str(r['note']) for r in T('rows'))")" \
   "1|True|False" "C: the test send labelled, each row '(the service)' with its link, the unconfigured repository absent"
 get "/api/collectorerrors?view=error&instance=$PGI&$W"
 check "$(py "sum(1 for r in T('rows') if r['instance'] == '(the service)')")" "0" "C: no service row at one instance"
+get "/api/collectorerrors?view=instance&$W"
+SE=$(py "one(T('rows'), instance='(the service)').get('errors')"); SO=$(py "one(T('rows'), instance='(the service)').get('other')")
+get "/api/collectorerrors?view=error&service=1&type=Error&$W"; SE2=$(py "len(T('rows'))")
+get "/api/collectorerrors?view=error&service=1&stage=Other&$W"; SO2=$(py "len(T('rows'))")
+check "$SE|$SO|$SE2|$SO2" "6|6|6|6" "C (B's rule for the service row): its Errors and Other counts each list their six rows"
 check "$(q "select (select count(*) from pgvigil.acks) || '/' || (select count(*) from pgvigil.ack_log) || '/' || (select count(*) from pgvigil.collection_log) || '/' || (select count(*) from pgvigil.collection_dates)")" "$W0" "C: the reads wrote nothing"
 
 echo "--- E. skips and retries"
 get "/api/collectorerrors?view=error&$W"
-check "$(py "sum(1 for r in T('rows') if r['type'] == 'Skipped')")" "0" "E: no skip without skipped=1"
+check "$(py "sum(1 for r in T('rows') if r['type'] == 'Skipped')")|$(py "len(T('rows')) > 0")" "0|True" "E: no skip without skipped=1 (rows there)"
 get "/api/collectorerrors?view=error&skipped=1&$W"
 check "$(py "sum(1 for r in T('rows') if r['type'] == 'Skipped')")" "1" "E: the skip with skipped=1"
 get "/api/collectorerrors?view=instance&$W"
-check "$(py "[c for c in C('rows') if 'retr' in c.lower()]")" "[]" "E: no Retry column"
+check "$(py "[c for c in C('rows') if 'retr' in c.lower()]")|$(py "len(C('rows')) > 0")" "[]|True" "E: no Retry column (the columns there)"
 
 echo "--- H. the two forms of log_collection"
-q "create role b24o_col login in role pgvigil_collector; create role b24o_rd login in role pgvigil_reader" >/dev/null
-CD="${PGVIGIL_REPO_DSN/user=postgres/user=b24o_col}"; RD="${PGVIGIL_REPO_DSN/user=postgres/user=b24o_rd}"
+q "create role cerr_col login in role pgvigil_collector; create role cerr_rd login in role pgvigil_reader" >/dev/null
+CD="${PGVIGIL_REPO_DSN/user=postgres/user=cerr_col}"; RD="${PGVIGIL_REPO_DSN/user=postgres/user=cerr_rd}"
 H6=$(psql "$CD" -XAt -c "select pgvigil.log_collection($OLD, 'h6', now(), 1, 'error', 'h six')" >/dev/null 2>&1 && echo ok || echo no)
 H7=$(psql "$CD" -XAt -c "select pgvigil.log_collection($OLD, 'h7', now(), 1, 'error', 'h seven', 'import')" >/dev/null 2>&1 && echo ok || echo no)
 HR=$(psql "$RD" -XAt -c "select pgvigil.log_collection($OLD, 'h8', now(), 1, 'error', 'h eight', 'import')" 2>&1 || true)
@@ -252,11 +261,11 @@ check "$H6|$H7|$HS|$(q "select count(*) from pgvigil.collection_dates where inst
   "ok|ok|h6=null,h7=import|2|1" "H: the collector calls both forms, the stage kept; the reader refused"
 
 echo "--- D. the acknowledgement"
-PGVIGIL_PASSWORD=b24o-ui-pw-$SUF "$BIN" user add -config "$WORK/cfg.yaml" b24o_ui >/dev/null 2>&1 || fail "user add"
+PGVIGIL_PASSWORD=cerr-ui-pw-$SUF "$BIN" user add -config "$WORK/cfg.yaml" cerr_ui >/dev/null 2>&1 || fail "user add"
 "$BIN" serve -config "$WORK/cfg.yaml" -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 & SRV=$!
 U="http://127.0.0.1:$PORT"; JAR=$WORK/jar
 for _ in $(seq 1 60); do curl -sf -o /dev/null "$U/" && break; sleep 0.5; done
-curl -s -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"b24o_ui\",\"password\":\"b24o-ui-pw-$SUF\"}" "$U/api/login" >/dev/null
+curl -s -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"cerr_ui\",\"password\":\"cerr-ui-pw-$SUF\"}" "$U/api/login" >/dev/null
 post() { curl -s -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "$2" "$U$1"; }
 X=$(syn ack postgres)
 lc "$X" c1 30 error "c1 failed"; lc "$X" c2 20 error "c2 failed"; lc "$X" c2 10 error "c2 failed again"
@@ -269,7 +278,7 @@ M=$(q "select max(log_id) from pgvigil.collection_log where instance_id = $X")
 A1=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"log_id:$M\",\"until_change\":true}" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("ack_id"))' 2>/dev/null || echo none)
 check "$(summ)|$(dline)" "0|0|False" "D: acknowledged up to log_id $M - nothing counted, c2 not failing, no detail line"
 get "/api/collectorerrors?view=error&instance=$X&$W"
-check "$(py "all(r['acked'] for r in T('rows'))")" "True" "D: the error view marks the acknowledged rows"
+check "$(py "all(r['acked'] for r in T('rows'))")|$(py "len(T('rows'))")" "True|3" "D: the error view marks the acknowledged rows (all three)"
 q "select pgvigil.log_collection($X, 'c3', now() - interval '40 minutes', 10, 'error', 'c3 started before the others, logged after the acknowledgement')" >/dev/null
 check "$(summ)" "1|1" "D: a run that started earlier but was logged after the mark still counts"
 M2=$(q "select max(log_id) from pgvigil.collection_log where instance_id = $X")
@@ -277,30 +286,32 @@ A2=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collect
 check "$(summ)" "0|0" "D: a second acknowledgement"
 for a in $A1 $A2; do post /api/ack/end "{\"ack_id\":$a}" >/dev/null; done
 check "$(summ)" "4|2" "D: Unacknowledge (every live row ended) brings all four back"
-post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"x\",\"until_change\":true}" >/dev/null
-check "$(summ)" "4|2" "D: a malformed mark leaves the part answering and counts nothing away"
+AX=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"x\",\"until_change\":true}" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("outcome"))' 2>/dev/null || echo none)
+check "$AX|$(summ)" "done|4|2" "D: a malformed mark (saved) leaves the part answering and counts nothing away"
 check "$(( $(q "select count(*) from pgvigil.ack_log") - L0 ))" "5" "D: ack_log holds the three adds and the two ends"
 
 echo "--- F. the fleet's SQL Server error stream"
-M1=$(syn m1 sqlserver '{b24of}'); MM2=$(syn m2 sqlserver '{b24of}'); M3=$(syn m3 sqlserver)
+M1=$(syn m1 sqlserver '{cerrf}'); MM2=$(syn m2 sqlserver '{cerrf}'); M3=$(syn m3 sqlserver)
 for tb in mssql_errorlog mssql_ag_events; do
-  q "select pgvigil.mssql_event_partition('$tb', now())" >/dev/null 2>&1 || q "select pgvigil.ensure_month_partition('$tb', now())" >/dev/null
+  for at in "now()" "now() - interval '1 hour'"; do   # a run in a month's first hour seeds rows in the month before
+    q "select pgvigil.mssql_event_partition('$tb', $at)" >/dev/null 2>&1 || q "select pgvigil.ensure_month_partition('$tb', $at)" >/dev/null
+  done
 done
 el() {   # instance, minutes ago (whole seconds), key, number, severity, class, message
   q "insert into pgvigil.mssql_errorlog (instance_id, log_at, line_key, snapshot_at, logged_local, error_number, severity, error_state, class, message)
-     values ($1, date_trunc('second', now()) - interval '$2 minutes', 'b24o-$3', now(), localtimestamp, $4, $5, 1, '$6', \$m\$$7\$m\$)" >/dev/null
+     values ($1, date_trunc('second', now()) - interval '$2 minutes', 'cerr-$3', now(), localtimestamp, $4, $5, 1, '$6', \$m\$$7\$m\$)" >/dev/null
 }
 el "$M1" 50 a 824 24 corruption "SQL Server detected a logical consistency-based I/O error: incorrect checksum. It occurred during a read of page (1:178064) in database ID 5 at offset 0x00000057020000 in file 'D:\\data\\inv.mdf'."
 for k in 1 2 3; do el "$M1" $((40 + k)) "s$k" 17806 20 general "SSPI handshake failed with error code 0x8009030c, state 14 while establishing a connection with integrated security"; done
 el "$M1" 30 c 35206 16 availability "A connection timeout has occurred on a previously established connection to availability replica 'R2'."
 q "insert into pgvigil.mssql_ag_events (instance_id, event_at, event_key, snapshot_at, event_name, error_number, severity, family, message) values
-     ($M1, date_trunc('second', now()) - interval '30 minutes', 'b24o-ag1', now(), 'error_reported', 35206, 16, 'connection', 'A connection timeout has occurred on a previously established connection to availability replica ''R2''.'),
-     ($M1, date_trunc('second', now()) - interval '20 minutes', 'b24o-ag2', now(), 'error_reported', 35206, 16, 'connection', 'A connection timeout has occurred on a previously established connection to availability replica ''R3''.'),
-     ($MM2, date_trunc('second', now()) - interval '25 minutes', 'b24o-ag3', now(), 'error_reported', 1480, 10, 'role', 'The availability group database \"agdb\" is changing roles from \"SECONDARY\" to \"PRIMARY\" because of a failover.')" >/dev/null
+     ($M1, date_trunc('second', now()) - interval '30 minutes', 'cerr-ag1', now(), 'error_reported', 35206, 16, 'connection', 'A connection timeout has occurred on a previously established connection to availability replica ''R2''.'),
+     ($M1, date_trunc('second', now()) - interval '20 minutes', 'cerr-ag2', now(), 'error_reported', 35206, 16, 'connection', 'A connection timeout has occurred on a previously established connection to availability replica ''R3''.'),
+     ($MM2, date_trunc('second', now()) - interval '25 minutes', 'cerr-ag3', now(), 'error_reported', 1480, 10, 'role', 'The availability group database \"agdb\" is changing roles from \"SECONDARY\" to \"PRIMARY\" because of a failover.')" >/dev/null
 el "$MM2" 45 d 9002 17 general "The transaction log for database 'salesdb' is full due to 'LOG_BACKUP'."
 el "$MM2" 35 e 823 24 io "The operating system returned error 21(The device is not ready.) to SQL Server during a read at offset 0x00000000012000."
 q "insert into pgvigil.mssql_errorlog (instance_id, log_at, line_key, snapshot_at, logged_local, class, custom, message)
-     values ($MM2, now() - interval '33 minutes', 'b24o-f', now(), localtimestamp, 'general', true, 'b24o custom string seen')" >/dev/null
+     values ($MM2, now() - interval '33 minutes', 'cerr-f', now(), localtimestamp, 'general', true, 'cerr custom string seen')" >/dev/null
 el "$MM2" 32 g 18456 14 general "Login failed for user 'app'. Reason: Password did not match."
 el "$M3" 31 h 9002 17 general "The transaction log for database 'hr' is full due to 'ACTIVE_TRANSACTION'."
 el "$M3" 29 i 3041 16 general "BACKUP failed to complete the command BACKUP DATABASE hr."
@@ -308,9 +319,11 @@ q "insert into pgvigil.mssql_files (instance_id, database_id, file_id, database_
 q "insert into pgvigil.mssql_xe_state (instance_id, capture, snapshot_at, state, state_since, source, session_name) values
      ($M3, 'ag', now(), 'stopped', now() - interval '1 day', 'AlwaysOn_health', 'AlwaysOn_health'),
      ($MM2, 'ag', now(), 'running', now() - interval '1 day', 'AlwaysOn_health', 'AlwaysOn_health')" >/dev/null
-post /api/ack "{\"kind\":\"noise\",\"check_key\":\"error log:17806\",\"note\":\"known SSPI noise\"}" >/dev/null
-post /api/ack "{\"kind\":\"noise\",\"check_key\":\"error log\",\"note\":\"a label with no text\"}" >/dev/null
-post /api/ack "{\"kind\":\"noise\",\"instance_id\":$MM2,\"note\":\"a noisy box (an Alerts-page label)\"}" >/dev/null
+oc() { python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("outcome"))' 2>/dev/null || echo none; }
+N1=$(post /api/ack "{\"kind\":\"noise\",\"check_key\":\"error log:17806\",\"note\":\"known SSPI noise\"}" | oc)
+N2=$(post /api/ack "{\"kind\":\"noise\",\"check_key\":\"error log\",\"note\":\"a label with no text\"}" | oc)
+N3=$(post /api/ack "{\"kind\":\"noise\",\"instance_id\":$MM2,\"note\":\"a noisy box (an Alerts-page label)\"}" | oc)
+check "$N1|$N2|$N3" "done|done|done" "F: the three labels saved"
 get "/api/mssql/errorfleet?$W"
 check "$(py "sorted((r['error_number'], r['occurrences'], r['instances'], r['severity']) for r in T('byerror'))")" \
   "[(823, 1, 1, 24), (824, 1, 1, 24), (1480, 1, 1, 10), (9002, 2, 2, 17), (35206, 2, 1, 16)]" \
@@ -325,12 +338,12 @@ check "$(py "'|'.join('%s=%s' % (r['check_key'], r['hits']) for r in sorted(T('n
 get "/api/mssql/errorfleet?noise=1&$W"
 check "$(py "len(T('lines'))")|$(py "sorted(set(r['noise'] for r in T('lines') if r['error_number'] == 17806))")|$(py "one(T('byerror'), error_number=17806).get('hidden')")" \
   "10|['known SSPI noise']|3" "F: noise=1 shows the three 17806 lines with their label"
-get "/api/mssql/errorfleet?tag=b24of&$W"
+get "/api/mssql/errorfleet?tag=cerrf&$W"
 check "$(py "one(T('byerror'), error_number=9002).get('occurrences')")|$(py "sorted(set(r['instance'] for r in T('lines')))")" \
-  "1|['b24o-m1-$SUF', 'b24o-m2-$SUF']" "F: a tag narrows to its instances"
-check "$(py "[r['instance'] for r in T('agstate')]")" "[]" "F: the tag's instances read AlwaysOn_health (none stopped)"
+  "1|['cerr-m1-$SUF', 'cerr-m2-$SUF']" "F: a tag narrows to its instances"
+check "$(py "[r['instance'] for r in T('agstate')]")|$(py "'agstate' in d")" "[]|True" "F: the tag's instances read AlwaysOn_health (none stopped; the part there)"
 get "/api/mssql/errorfleet?$W"
-check "$(py "[(r['instance'], r['state']) for r in T('agstate')]")" "[('b24o-m3-$SUF', 'stopped')]" "F: an instance whose AlwaysOn_health is stopped is named"
+check "$(py "[(r['instance'], r['state']) for r in T('agstate')]")" "[('cerr-m3-$SUF', 'stopped')]" "F: an instance whose AlwaysOn_health is stopped is named"
 
 echo "--- G. the pages"
 if command -v chromium >/dev/null; then
@@ -346,4 +359,4 @@ if command -v chromium >/dev/null; then
 else check "no chromium" "chromium" "G: the pages (chromium is not on this machine)"; fi
 
 echo
-[ "$bad" = 0 ] && echo "proof-b24o: every row ok" || { echo "proof-b24o: $bad row(s) FAIL"; exit 1; }
+[ "$bad" = 0 ] && echo "proof-collector-errors: every row ok" || { echo "proof-collector-errors: $bad row(s) FAIL"; exit 1; }
