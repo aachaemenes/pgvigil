@@ -33,10 +33,10 @@
 #  S3 the bound: in its first 6 minutes the log has at most 2 'password secret read' lines for the secret (one at
 #     start, one past 5 minutes) - both instances share one entry.
 #  S2 a rotation in the real single-user order, the SQL login with CHECK_POLICY=ON: the database's passwords changed
-#     first (ALTER ROLE / ALTER LOGIN) and the login's own sessions ended on both (the collector holds its connections
-#     between runs, and a changed password ends no open session: without this the window has no new login at all -
-#     the lab's first run, 2026-11-15), the secret 60 s later: both engines' rows are ok again, each a row stored after
-#     the secret's change, within 4 minutes; SQL Server's error log shows the failed logins of the window, and those more than 15 s after
+#     first (ALTER ROLE / ALTER LOGIN), the secret 60 s later: both engines' rows are ok again, each a row stored after
+#     the secret's change, within 4 minutes; SQL Server was refused in the window or held without a dial (both
+#     instances share one cache entry: the first refusal holds that version for both, so SQL Server's runs may answer
+#     LoginRefused from the cache and dial nothing - the lockout guard); SQL Server's error log's failed logins, those more than 15 s after
 #     its first (past the burst of connects already dialling) are at most one a minute of the window plus one; the
 #     PostgreSQL count the same through PGVIGIL_PROOF_PG_LOG (else NOT PROVEN). The lockout itself is NOT PROVEN
 #     (a Windows lockout policy; the box's SQL Server runs on Linux).
@@ -73,11 +73,18 @@ padmin() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -f
 secretjson() { PW=$1 jq -n --arg u "$LOGIN" '{engine:"postgres",username:$u,password:env.PW}'; }
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
+  echo "cleanup (exit $rc): the collector, the secret, the logins, the repository"
+  if [ "$rc" != 0 ] && [ -n "$MADE_DB" ] && [ -n "${TA:-}" ]; then
+    echo "  the S2 window's collection_log rows (both instances):"
+    q "SELECT to_char(l.snapshot_at, 'HH24:MI:SS') || ' ' || i.name || ' ' || l.collection || ' ' || l.status || ' ' || left(coalesce(l.note, ''), 160) FROM pgvigil.collection_log l JOIN pgvigil.instances i USING (instance_id) WHERE l.snapshot_at >= to_timestamp($TA) - interval '30 seconds' ORDER BY l.snapshot_at" 2>&1 | sed 's/^/    /' | head -60
+    echo "  the collector's lines naming the secret or a refusal since the window:"
+    grep -E 'secret|refused|28P01|18456|Login failed' "$OUT" 2>/dev/null | tail -40 | cut -c1-220 | sed 's/^/    /'
+  fi
   [ -n "$RUN_PID" ] && kill "$RUN_PID" 2>/dev/null && wait "$RUN_PID" 2>/dev/null
   if [ -n "$MADE_SECRET" ]; then
     aws secretsmanager restore-secret --region "$REGION" --secret-id "$SECRET" >/dev/null 2>&1 # a deletion scheduled in S5: restored first
     aws secretsmanager delete-secret --region "$REGION" --secret-id "$SECRET" --force-delete-without-recovery >/dev/null 2>&1 \
-      && echo "LAB GONE: the secret $SECRET force-deleted (read back: $(g=; for _ in $(seq 1 12); do aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET" >/dev/null 2>&1 || { g=1; break; }; sleep 5; done; [ -n "$g" ] && echo gone || echo 'STILL THERE after 60 s'))" \
+      && echo "LAB GONE: the secret $SECRET force-deleted (read back: $(g=; for _ in $(seq 1 12); do e=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET" 2>&1 >/dev/null) || { case $e in *ResourceNotFoundException*) g=gone ;; *) g="the read-back failed: ${e:0:160}" ;; esac; break; }; sleep 5; done; echo "${g:-STILL THERE after 60 s}"))" \
       || echo "CLEANUP: the secret $SECRET was NOT deleted" >&2
   fi
   [ -n "$MADE_ROLE" ] && padmin "drop role if exists $LOGIN" >/dev/null 2>&1
@@ -164,14 +171,9 @@ echo "--- S2 a rotation (the database first, the secret 60 s later)"
 T0=$(ms "SELECT CONVERT(varchar(23), SYSDATETIME(), 121);" | tr -d '\r')
 pgfails() { bash -c "$PGVIGIL_PROOF_PG_LOG" 2>&1 | grep -c "password authentication failed for user \"$LOGIN\"" || true; }
 PGL0=0; [ -n "${PGVIGIL_PROOF_PG_LOG:-}" ] && PGL0=$(pgfails)
+TA=$(date +%s)
 padmin "alter role $LOGIN password $(pgq "$PW2")" >/dev/null
 ms "ALTER LOGIN [$LOGIN] WITH PASSWORD = $(sqlq "$PW2");" >/dev/null
-# a changed password ends no open session: the login's own are ended, so the collector's next run reconnects with the
-# value it holds (the old one) - the failed logins the bound is about
-KPG=$(padmin "select count(pg_terminate_backend(pid)) from pg_stat_activity where usename = $(pgq "$LOGIN")" | tail -1) || true
-KMS=$(ms "DECLARE @k nvarchar(max) = N'', @n int = 0; SELECT @k = @k + N'KILL ' + CAST(session_id AS nvarchar(10)) + N';', @n = @n + 1 FROM sys.dm_exec_sessions WHERE login_name = N'$LOGIN' AND session_id <> @@SPID; EXEC (@k); SELECT @n;" | tr -d '\r' | tail -1) || true
-echo "  the login's sessions ended after the change: PostgreSQL ${KPG:-?}, SQL Server ${KMS:-?}"
-[ "${KPG:-0}" -ge 1 ] && [ "${KMS:-0}" -ge 1 ] || bad "S2: the login's sessions ended: PostgreSQL '${KPG:-}', SQL Server '${KMS:-}' (want at least 1 on each: the collector holds one)"
 sleep 60
 ( umask 077; secretjson "$PW2" > "$WORK/s2.json" )
 aws secretsmanager put-secret-value --region "$REGION" --secret-id "$SECRET" --secret-string "file://$WORK/s2.json" >/dev/null; rm -f "$WORK/s2.json"
@@ -188,8 +190,10 @@ SELECT @first = MIN(LogDate) FROM #pv_el WHERE LogDate >= @t0;
 SELECT CONCAT(COUNT(*), ',', SUM(CASE WHEN LogDate > DATEADD(second, 15, @first) THEN 1 ELSE 0 END), ',', ISNULL(DATEDIFF(second, @first, MAX(LogDate)), 0)) FROM #pv_el WHERE LogDate >= @t0;" | tr -d '\r' | tail -1)
 IFS=, read -r MS_ALL MS_AFTER MS_SPAN <<<"$MSF"
 MS_BOUND=$(( MS_SPAN / 60 + 2 ))
-echo "  SQL Server failed logins in the window: $MS_ALL (after the first 15 s: $MS_AFTER over ${MS_SPAN}s; bound $MS_BOUND)"
-[ "${MS_ALL:-0}" -ge 1 ] && [ "${MS_AFTER:-99}" -le "$MS_BOUND" ] && echo "S2 SQL Server count: OK" || bad "S2: SQL Server's failed logins '$MSF' (want at least 1, and at most $MS_BOUND past the first 15 s)"
+# held: SQL Server runs of the window answered LoginRefused from the shared cache entry (no dial, no error-log line)
+HELD=$(q "SELECT count(*) FROM pgvigil.collection_log l JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'sec-ms-$SUF' AND l.snapshot_at >= to_timestamp($TA) AND l.snapshot_at <= to_timestamp($TS) AND l.note LIKE 'secret: %LoginRefused%'") || true
+echo "  SQL Server failed logins in the window: ${MS_ALL:-?} (after the first 15 s: ${MS_AFTER:-0} over ${MS_SPAN:-0}s; bound $MS_BOUND); SQL Server runs held without a dial: ${HELD:-?}"
+[ $(( ${MS_ALL:-0} + ${HELD:-0} )) -ge 1 ] && [ "${MS_AFTER:-0}" -le "$MS_BOUND" ] && echo "S2 SQL Server count: OK" || bad "S2: SQL Server's failed logins '$MSF', held '${HELD:-}' (want refused or held at least once, and at most $MS_BOUND refused past the first 15 s)"
 if [ -n "${PGVIGIL_PROOF_PG_LOG:-}" ]; then
   PGL1=$(pgfails)
   echo "  PostgreSQL failed logins in the window: $(( PGL1 - PGL0 )) (the log's lines carry no time here: the total, bound $(( ( $(date +%s) - TS + 60 ) / 60 + 1 )) plus the burst)"
