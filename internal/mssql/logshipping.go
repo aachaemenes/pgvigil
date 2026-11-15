@@ -228,7 +228,8 @@ ORDER BY x.backup_finish_date DESC`
 // exceptions"): the agent's own line (sequence 0), then the engine's (source '.Net SqlClient Data Provider'). The
 // copy agent's rows name no database (Microsoft: "empty for copy"): they take the databases of its secondary id.
 // standby_noise marks, on a secondary restored WITH STANDBY (restore_mode 1), a row that says the database is
-// read-only: the repository shows such rows counted and never judges them.
+// read-only (SQL Server's own Msg 3906 reads 'Failed to update database "<name>" because the database is read-only.'):
+// the repository shows such rows counted and never judges them.
 var lsErrorSQL = `WITH e AS (
   SELECT e.agent_type, e.session_id, e.sequence_number, e.log_time_utc, e.message, e.source,
          COALESCE(NULLIF(e.database_name, N''), CASE e.agent_type WHEN 0 THEN p.primary_database ELSE sd.secondary_database END) AS database_name,
@@ -248,7 +249,8 @@ SELECT 'lserror' AS kind, CASE r.agent_type WHEN 0 THEN 'backup' WHEN 1 THEN 'co
   ` + isUTCText("r.log_time_utc") + ` AS logged_utc,
   CAST(LEFT(r.message, 2000) AS nvarchar(2000)) AS message, CAST(LEFT(r.source, 200) AS nvarchar(200)) AS source,
   CAST(r.rows_24h AS int) AS rows_24h,
-  CAST(CASE WHEN r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%')
+  CAST(CASE WHEN r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%'
+                                         OR r.message LIKE N'%because the database is read-only%')
             THEN 1 ELSE 0 END AS int) AS standby_noise
 FROM r
 WHERE r.ord <= 20

@@ -682,11 +682,20 @@ SELECT k.key, k.label, k.unit, k.direction, k.warn_default, k.crit_default, k.le
 // 15 minutes holds it), what its agents logged in the last 24 hours (the newest 20 per agent and database; a STANDBY
 // copy's read-only rows flagged), how often a restore job found nothing to apply in the last hour, and the log
 // backups taken outside log shipping. $1 / $2 the scope only.
+// job_severity: the judge's own finding for that job (pgvigil.mssql_logship_judged(), matched by its object), so the
+// panel colours a job only where Findings has it: a role change done Microsoft's way leaves disabled jobs that raise
+// nothing, and the monitor's alert job is a warning, never a critical.
 const sqlHADRLogShippingJobs = `
-WITH ` + hadrScope + `
+WITH ` + hadrScope + `, jf AS (
+  SELECT j.instance_id, j.object, j.severity FROM pgvigil.mssql_logship_judged() j
+   WHERE j.check_name IN ('a log shipping job is missing', 'a log shipping job is disabled')
+)
 SELECT c.instance_id, sc.name AS instance, c.role, nullif(c.database_name, '') AS database_name, c.job_role, c.job_name, c.job_id,
        c.job_exists, c.job_enabled, c.enabled_schedules, c.interval_min, c.recovery_model, c.restore_mode, c.backup_directory,
-       c.primary_server, c.primary_database, mj.last_outcome, mj.last_run_at, c.snapshot_at
+       c.primary_server, c.primary_database, mj.last_outcome, mj.last_run_at, c.snapshot_at,
+       (SELECT max(jf.severity) FROM jf WHERE jf.instance_id = c.instance_id
+           AND jf.object = c.role || CASE WHEN c.database_name <> '' THEN ' / ' || c.database_name ELSE '' END || ' / '
+                           || coalesce(c.job_name, c.job_role || ' job ' || c.job_id)) AS job_severity
   FROM pgvigil.mssql_logship_config c
   JOIN sc ON sc.instance_id = c.instance_id
   LEFT JOIN pgvigil.mssql_jobs mj ON mj.instance_id = c.instance_id AND mj.job_id = c.job_id AND mj.snapshot_at > now() - interval '15 minutes'
@@ -696,18 +705,18 @@ SELECT c.instance_id, sc.name AS instance, c.role, nullif(c.database_name, '') A
 const sqlHADRLogShippingMessages = `
 WITH ` + hadrScope + `
 SELECT e.instance_id, sc.name AS instance, nullif(e.database_name, '') AS database_name, e.agent, e.logged_at, e.session_id,
-       e.sequence_number, e.message, e.source, e.rows_24h, e.standby_noise, e.ord, e.snapshot_at
+       e.sequence_number, e.message, e.source, e.rows_24h, NULL::int AS idle_runs_1h, e.standby_noise, e.ord, e.snapshot_at
   FROM pgvigil.mssql_logship_errors e
   JOIN sc ON sc.instance_id = e.instance_id
 UNION ALL
 SELECT i.instance_id, sc.name, i.database_name, 'restore', i.last_at, NULL, NULL,
        format('Could not find a log backup file that could be applied to secondary database (%s time%s in the last hour after its last restore)',
               i.runs, CASE WHEN i.runs = 1 THEN '' ELSE 's' END),
-       'the restore job''s history', i.runs, false, 0, i.snapshot_at
+       'the restore job''s history', NULL, i.runs, false, 0, i.snapshot_at
   FROM pgvigil.mssql_logship_idle i
   JOIN sc ON sc.instance_id = i.instance_id
  WHERE i.runs > 0
- ORDER BY 2, 3, 5 DESC NULLS LAST, 4, 12`
+ ORDER BY 2, 3, 5 DESC NULLS LAST, 4, 13`
 
 const sqlHADRLogShippingForeign = `
 WITH ` + hadrScope + `

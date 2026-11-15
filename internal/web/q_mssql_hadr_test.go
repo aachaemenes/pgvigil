@@ -903,11 +903,18 @@ func TestLogShipExtrasOnAStore(t *testing.T) {
 //	  lsx_e_file critical, its one session the agent's own lines only (sequence 0 each, no engine line stored): the
 //	  note gives the session's FIRST line 'The file ... is too recent to apply', never the closing 'Could not find
 //	  ...' one written 7 ms after it, and '(2 error lines of that job in 24 hours).'.
-//	THE PAGE at S2: the messages part holds the 8 rows of lsx_e_chain, lsx_e_file, lsx_e_ok and lsx_e_msdb that are
-//	  no noise plus 2 idle rows (lsx_e_chain's and lsx_e_idle's) and the 2 noise rows flagged standby_noise; the jobs
-//	  part the 2 configuration rows; the foreign part none.
-//	A later read of S2 whose two message parts failed keeps both tables' rows and the notes; a later clean read with
-//	  none of them clears both.
+//	  (review lsx2) lsx_e_chain's note never takes the backup agent's line stored on this secondary (the role's
+//	  agents only); lsx_e_tie critical, a copy and a restore line at the same time: 'its restore job logged' with the
+//	  restore line; lsx_e_past warning 'log shipping is behind its threshold' (msdb's 45 minutes, 60 behind) whose
+//	  only error was logged BEFORE its last restore: the idle sentence 'Its restore job ran 2 times', never that error.
+//	THE PAGE at S2: the messages part holds the 12 rows of lsx_e_chain, lsx_e_file, lsx_e_tie, lsx_e_past, lsx_e_ok and
+//	  lsx_e_msdb that are no noise plus 3 idle rows (lsx_e_chain's, lsx_e_idle's, lsx_e_past's; lsx_e_idle's message
+//	  '(4 times in the last hour after its last restore)', its count under idle_runs_1h, rows_24h empty) and the 2
+//	  noise rows flagged standby_noise; the jobs part the 3 configuration rows, job_severity only on the monitor's
+//	  disabled alert job, and 'warning' (the judge's), the copy and restore jobs none; the foreign part none.
+//	A later read of S2 whose two message parts failed keeps both tables' rows and the notes; once those kept error rows
+//	  are older than 15 minutes, no error note (stale) and no idle note either (what the agents say now is not known);
+//	  a later clean read with none of them clears both.
 func TestLogShipMessagesOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -994,8 +1001,15 @@ func TestLogShipMessagesOnAStore(t *testing.T) {
 	fileClosing["logged_utc"] = at(7 * time.Millisecond)
 	fileFirst := errRow("restore", "lsx_e_file", 2, 8, 0, 1, "The file '/ship/lsx_e_file_20261115194430.trn' is too recent to apply to the secondary database 'lsx_e_file'.", agentSrc, 2, 0)
 	fileFirst["logged_utc"] = at(0)
+	tieCopy := errRow("copy", "lsx_e_tie", 1, 12, 0, 1, "the copy agent's line at the same time", agentSrc, 1, 0)
+	tieCopy["logged_utc"] = at(0)
+	tieRestore := errRow("restore", "lsx_e_tie", 1, 13, 0, 1, "the restore agent's line at the same time", agentSrc, 1, 0)
+	tieRestore["logged_utc"] = at(0)
 	msgRows := []map[string]any{
-		closing, engineLine, fileLine, older, fileClosing, fileFirst,
+		closing, engineLine, fileLine, older, fileClosing, fileFirst, tieCopy, tieRestore,
+		errRow("backup", "lsx_e_chain", 1, 30, 0, 0, "a backup agent's line, never on a secondary", agentSrc, 1, 0),
+		errRow("restore", "lsx_e_past", 1, 11, 1, 120, "Exclusive access could not be obtained (resolved by the later restore)", engineSrc, 1, 0),
+		{"kind": "lsidle", "database_name": "lsx_e_past", "last_utc": z(2), "runs": 2},
 		errRow("restore", "lsx_e_ok", 1, 3, 1, 30, "Exclusive access could not be obtained because the database is in use.  RESTORE LOG is terminating abnormally.", engineSrc, 1, 0),
 		errRow("copy", "lsx_e_msdb", 1, 9, 0, 5, "The copy operation failed: the backup share cannot be reached.", agentSrc, 1, 0),
 		errRow("restore", "lsx_e_standby", 1, 4, 1, 2, "Failed to update database 'lsx_e_standby' because the database is read-only.", engineSrc, 2, 1),
@@ -1006,7 +1020,11 @@ func TestLogShipMessagesOnAStore(t *testing.T) {
 	}
 	sRows := []map[string]any{
 		restoreRow("lsx_e_chain", 3000), restoreRow("lsx_e_idle", 3000), restoreRow("lsx_e_standby", 3000), restoreRow("lsx_e_ok", 10),
-		restoreRow("lsx_e_file", 3000),
+		restoreRow("lsx_e_file", 3000), restoreRow("lsx_e_tie", 3000),
+		{"kind": "secondary", "secondary_server": "", "database_name": "lsx_e_past", "primary_server": pri, "primary_database": "lsx_e_past",
+			"threshold_minutes": 45, "alert_enabled": 1, "last_copied_utc": z(65), "last_restored_utc": z(60), "last_restored_latency_min": 2},
+		{"kind": "lsconfig", "role": "monitor", "database_name": "", "job_role": "alert", "job_id": "A-e", "job_name": "LSAlert_E",
+			"job_exists": 1, "job_enabled": 0, "enabled_schedules": 1, "interval_min": 2.0},
 		{"kind": "secondary", "secondary_server": "", "database_name": "lsx_e_msdb", "primary_server": pri, "primary_database": "lsx_e_msdb",
 			"threshold_minutes": 45, "alert_enabled": 1, "last_copied_utc": z(95), "last_restored_utc": z(90), "last_restored_latency_min": 2},
 		{"kind": "lsconfig", "role": "secondary", "database_name": "lsx_e_chain", "primary_server": pri, "primary_database": "lsx_e_chain", "restore_mode": 0,
@@ -1070,11 +1088,15 @@ func TestLogShipMessagesOnAStore(t *testing.T) {
 		for k, v := range f {
 			got[k] = v.sev
 		}
-		if fmt.Sprint(got) != fmt.Sprint(map[string]string{"lsx_e_chain": "critical", "lsx_e_file": "critical", "lsx_e_idle": "critical", "lsx_e_standby": "critical", "lsx_e_msdb": "warning"}) {
+		if fmt.Sprint(got) != fmt.Sprint(map[string]string{"lsx_e_chain": "critical", "lsx_e_file": "critical", "lsx_e_tie": "critical", "lsx_e_idle": "critical", "lsx_e_standby": "critical", "lsx_e_msdb": "warning", "lsx_e_past": "warning"}) {
 			t.Errorf("%s: S2's behind findings = %v (lsx_e_ok, with an error of its own, must have none)", when, got)
 		}
 		has(when+" lsx_e_chain", f["lsx_e_chain"].detail, "The newest error its restore job logged (", "which is too recent to apply to the database", "(6 error lines of that job in 24 hours).")
-		hasNot(when+" lsx_e_chain", f["lsx_e_chain"].detail, "the copy job is where to look", "Could not find a log backup file", "an older session")
+		hasNot(when+" lsx_e_chain", f["lsx_e_chain"].detail, "the copy job is where to look", "Could not find a log backup file", "an older session", "a backup agent's line")
+		has(when+" lsx_e_tie", f["lsx_e_tie"].detail, "The newest error its restore job logged (", "the restore agent's line at the same time")
+		hasNot(when+" lsx_e_tie", f["lsx_e_tie"].detail, "the copy agent's line")
+		has(when+" lsx_e_past", f["lsx_e_past"].detail, "Its restore job ran 2 times in the last hour after its last restore")
+		hasNot(when+" lsx_e_past", f["lsx_e_past"].detail, "resolved by the later restore", "The newest error")
 		has(when+" lsx_e_file", f["lsx_e_file"].detail, "The newest error its restore job logged (", "The file '/ship/lsx_e_file_20261115194430.trn' is too recent to apply", "(2 error lines of that job in 24 hours).")
 		hasNot(when+" lsx_e_file", f["lsx_e_file"].detail, "Could not find a log backup file", "the copy job is where to look")
 		has(when+" lsx_e_idle", f["lsx_e_idle"].detail, "Its restore job ran 4 times in the last hour after its last restore", "the copy job is where to look (Microsoft, error 14421).")
@@ -1126,8 +1148,39 @@ func TestLogShipMessagesOnAStore(t *testing.T) {
 			}
 		}
 	}
-	if got := fmt.Sprintf("messages %d (noise %d, idle %d), jobs %d, foreign %d", count("messages"), noise, idle, count("jobs"), count("foreign")); got != "messages 12 (noise 2, idle 2), jobs 2, foreign 0" {
-		t.Errorf("the page's panel at S2: %s, want messages 12 (noise 2, idle 2), jobs 2, foreign 0", got)
+	if got := fmt.Sprintf("messages %d (noise %d, idle %d), jobs %d, foreign %d", count("messages"), noise, idle, count("jobs"), count("foreign")); got != "messages 17 (noise 2, idle 3), jobs 3, foreign 0" {
+		t.Errorf("the page's panel at S2: %s, want messages 17 (noise 2, idle 3), jobs 3, foreign 0", got)
+	}
+	// the fold's columns are looked up without stopping the test (a column missing is one error, the rest still runs)
+	colOr := func(tb *table, name string) int {
+		for i, c := range tb.Columns {
+			if c == name {
+				return i
+			}
+		}
+		t.Errorf("the page's part has no column %s (columns %v)", name, tb.Columns)
+		return -1
+	}
+	if m := page["messages"]; m != nil && colOr(m, "idle_runs_1h") >= 0 {
+		for _, r := range m.Rows {
+			if fmt.Sprint(r[col(m, "database_name")]) == "lsx_e_idle" {
+				if !strings.Contains(fmt.Sprint(r[col(m, "message")]), "(4 times in the last hour after its last restore)") ||
+					fmt.Sprint(r[col(m, "idle_runs_1h")]) != "4" || r[col(m, "rows_24h")] != nil {
+					t.Errorf("the page's idle row of lsx_e_idle: message %q, idle_runs_1h %v, rows_24h %v; want the 4 runs in idle_runs_1h only",
+						r[col(m, "message")], r[col(m, "idle_runs_1h")], r[col(m, "rows_24h")])
+				}
+			}
+		}
+	}
+	if j := page["jobs"]; j != nil && colOr(j, "job_severity") >= 0 {
+		var sevs []string
+		for _, r := range j.Rows {
+			sevs = append(sevs, fmt.Sprintf("%v=%v", r[col(j, "job_role")], r[col(j, "job_severity")]))
+		}
+		sort.Strings(sevs)
+		if got := strings.Join(sevs, ","); got != "alert=warning,copy=<nil>,restore=<nil>" {
+			t.Errorf("the page's job_severity at S2: %s, want alert=warning,copy=<nil>,restore=<nil> (the judge's own, a warning for the alert job)", got)
+		}
 	}
 
 	// a read whose two message parts failed keeps their rows; a clean read without them clears both
@@ -1135,6 +1188,11 @@ func TestLogShipMessagesOnAStore(t *testing.T) {
 		map[string]any{"kind": "collector_error", "source": "log shipping agent errors", "message": "SELECT permission denied"},
 		map[string]any{"kind": "collector_error", "source": "log shipping idle restores", "message": "SELECT permission denied"}))
 	check("after a read whose message parts failed")
+	// the kept error rows grow older than 15 minutes (the parts keep failing): no error note, and no idle note either
+	exec(`UPDATE pgvigil.mssql_logship_errors SET snapshot_at = snapshot_at - interval '20 minutes' WHERE instance_id = $1`, S2)
+	st := findings(S2)
+	hasNot("lsx_e_chain with stale error rows", st["lsx_e_chain"].detail, "The newest error", "Its restore job ran")
+	hasNot("lsx_e_idle with stale error rows", st["lsx_e_idle"].detail, "Its restore job ran")
 	imp(S2, now.Add(2*time.Second), sRows)
 	var errLeft, idleLeft int
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pgvigil.mssql_logship_errors WHERE instance_id = $1),

@@ -745,16 +745,28 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: '#/mssqllogshipping', landed: 'no Detail row with a Database button',
       verdict: 'not proven: no log shipping Detail row in this data' });
   } else {
+    // the box before the click (it must read every database, or the click proves nothing), then the click, then every
+    // Database cell of the panel's three grids: each the clicked name (ignoring case), or the grid empty
+    const before = await ev(`(() => document.querySelector('main .mssql-hadr-logship-config select')?.value ?? null)()`);
     await ev(`(() => { [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '') && x.textContent === ${JSON.stringify(pick)})?.click(); })()`);
     await sleep(300); await settled();
     const st = await ev(`(() => { const p = document.querySelector('main .mssql-hadr-logship-config'); if (!p) return null;
-      return { value: p.querySelector('select')?.value ?? null, grids: p.querySelectorAll('h4').length, err: p.querySelectorAll('.error').length }; })()`);
+      const want = ${JSON.stringify(pick)}.toLowerCase(); let rows = 0; const other = [];
+      for (const t of p.querySelectorAll('table:not(.grid-empty)')) {
+        const i = [...t.querySelectorAll('thead th')].map(h => (h.querySelector('.th-label')?.textContent ?? h.textContent).trim()).indexOf('Database');
+        if (i < 0) continue;
+        for (const tr of t.querySelectorAll('tbody tr')) { const c = tr.children[i]; if (!c) continue; rows++; const v = c.textContent.trim(); if (v.toLowerCase() !== want) other.push(v); }
+      }
+      return { value: p.querySelector('select')?.value ?? null, grids: p.querySelectorAll('h4').length, err: p.querySelectorAll('.error').length, rows, other: other.slice(0, 5) }; })()`);
     record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: `#/mssqllogshipping Database ${pick}`,
-      landed: st ? `Database box ${st.value}; ${st.grids} grids; ${st.err} error boxes` : 'no panel',
-      verdict: !st ? 'FAIL the page has no log shipping panel'
-        : st.value !== pick ? `FAIL the Database box reads ${st.value}, want ${pick}`
+      landed: st ? `before the click ${before === '' ? 'every database' : before}; Database box ${st.value}; ${st.grids} grids, ${st.rows} rows; ${st.err} error boxes` : 'no panel',
+      verdict: pick === '' ? 'FAIL the Detail\'s Database button has no name'
+        : !st ? 'FAIL the page has no log shipping panel'
+        : before !== '' ? `FAIL the Database box read ${before} before the click (want every database)`
+        : String(st.value).toLowerCase() !== pick.toLowerCase() ? `FAIL the Database box reads ${st.value}, want ${pick}`
         : st.grids !== 3 || st.err ? `FAIL ${st.grids} grids (want 3), ${st.err} error boxes`
-        : 'ok (pgvigil\'s own: the panel narrowed to the clicked database)' });
+        : st.other.length ? `FAIL the panel still lists other databases after the click: ${st.other.join(', ')}`
+        : `ok (pgvigil's own: the panel narrowed to the clicked database, ${st.rows} row${st.rows === 1 ? '' : 's'} of it)` });
   }
 }
 

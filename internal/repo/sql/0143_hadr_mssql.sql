@@ -715,9 +715,11 @@ END $$;
 
 -- mssql_logship_agent_note: what log shipping's own agents said about a database, for the detail of a finding that
 -- its log shipping is behind (the lead's D4: no finding of its own - an agent's messages raise no alert by
--- themselves). The newest error its agents logged in the 24 hours read (a primary: the backup agent; a secondary: the
--- restore agent first, then the copy agent), with how many lines that agent wrote; a STANDBY copy's read-only rows
--- never. An error is a session's sequence of rows (Microsoft: "Each error is logged as a sequence of exceptions"), and
+-- themselves). The newest error its agents logged in the 24 hours read and after p_since - the finding's own time,
+-- the last restore of a secondary or the last backup of a primary (an error a later restore or backup got past is
+-- over: the idle line, or nothing, is the current word) - from the role's agents (a primary: the backup agent; a
+-- secondary: the restore and the copy agent, the newest of them, the restore agent's at a tie), with how many lines
+-- that agent wrote; a STANDBY copy's read-only rows never. An error is a session's sequence of rows (Microsoft: "Each error is logged as a sequence of exceptions"), and
 -- its newest row is not the telling one: a broken chain's restore session writes the agent's 'The file ... is too
 -- recent to apply' (sequence 0), the engine's 'The log in this backup set begins at LSN ..., which is too recent to
 -- apply' (sequence 1), then, milliseconds later, the agent's closing 'Could not find a log backup file that could be
@@ -725,16 +727,22 @@ END $$;
 -- session (its agent and session id; the restore agent's at a tie), and in it the row of the highest sequence (the
 -- innermost exception, the engine's explanation), the earliest of those at a tie (a session of the agent's own lines
 -- only: its first line, never the closing one). With no such error, a restore job that ran in the last hour after
--- its last restore and found nothing to apply: the copy job is where to look (Microsoft's page for error 14421).
--- Empty when the agents said nothing.
-CREATE OR REPLACE FUNCTION pgvigil.mssql_logship_agent_note(p_instance_id int, p_role text, p_database text)
+-- its last restore and found nothing to apply: the copy job is where to look (Microsoft's page for error 14421) -
+-- unless the server holds error rows older than 15 minutes (its errors part failed and kept them): then what the
+-- agents said now is not known, and a broken chain's restore also writes that history line, so no idle line. Empty
+-- when the agents said nothing. The database is matched by its exact name (both tables hold msdb's own spelling; the
+-- primary key's database_name column serves the lookup: this runs once per 'behind' finding on every read).
+DROP FUNCTION IF EXISTS pgvigil.mssql_logship_agent_note(int, text, text);
+CREATE OR REPLACE FUNCTION pgvigil.mssql_logship_agent_note(p_instance_id int, p_role text, p_database text, p_since timestamptz)
 RETURNS text LANGUAGE sql STABLE AS $fn$
 WITH cand AS (
   SELECT e.agent, e.session_id, e.sequence_number, e.logged_at, e.ord, e.message, e.rows_24h
     FROM pgvigil.mssql_logship_errors e
-   WHERE e.instance_id = p_instance_id AND lower(e.database_name) = lower(p_database) AND NOT e.standby_noise
-     AND e.snapshot_at > now() - interval '15 minutes'
+   WHERE e.instance_id = p_instance_id
      AND e.agent = ANY (CASE p_role WHEN 'primary' THEN ARRAY['backup'] ELSE ARRAY['restore', 'copy'] END)
+     AND e.database_name = p_database AND NOT e.standby_noise
+     AND e.snapshot_at > now() - interval '15 minutes'
+     AND (p_since IS NULL OR e.logged_at > p_since)
 ), sess AS (
   SELECT c.agent, c.session_id
     FROM cand c
@@ -752,8 +760,11 @@ WITH cand AS (
   SELECT format(' Its restore job ran %s time%s in the last hour after its last restore and found no log backup it could apply ("Could not find a log backup file that could be applied to secondary database"): the copy job is where to look (Microsoft, error 14421).',
                 i.runs, CASE WHEN i.runs = 1 THEN '' ELSE 's' END) AS note
     FROM pgvigil.mssql_logship_idle i
-   WHERE p_role = 'secondary' AND i.instance_id = p_instance_id AND lower(i.database_name) = lower(p_database)
+   WHERE p_role = 'secondary' AND i.instance_id = p_instance_id AND i.database_name = p_database
      AND i.runs > 0 AND i.snapshot_at > now() - interval '15 minutes'
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_logship_errors k
+                      WHERE k.instance_id = p_instance_id AND k.snapshot_at <= now() - interval '15 minutes')
+   ORDER BY i.snapshot_at DESC
    LIMIT 1
 )
 SELECT coalesce((SELECT note FROM err), (SELECT note FROM idle), '')
@@ -821,7 +832,7 @@ SELECT s.instance_id, s.database_name, s.role, 'warning'::text AS severity, 'log
                 coalesce(to_char(s.last_restored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
                 coalesce(round(extract(epoch FROM s.snapshot_at - s.last_restored_at) / 60)::text, '?'), s.threshold_minutes,
                 coalesce(to_char(s.last_copied_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'))
-       END || pgvigil.mssql_logship_agent_note(s.instance_id, s.role, s.database_name) AS detail
+       END || pgvigil.mssql_logship_agent_note(s.instance_id, s.role, s.database_name, CASE s.role WHEN 'primary' THEN s.last_backup_at ELSE s.last_restored_at END) AS detail
   FROM pgvigil.mssql_logshipping_state s
  WHERE s.snapshot_at > now() - interval '15 minutes' AND s.threshold_minutes > 0
    AND coalesce(s.snapshot_at - CASE s.role WHEN 'primary' THEN s.last_backup_at ELSE s.last_restored_at END, interval '1000 years')
@@ -835,7 +846,7 @@ SELECT x.instance_id, x.database_name, 'secondary', x.sev, 'log restores are beh
               to_char(x.last_log_restore_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), round(x.age_min::numeric),
               coalesce(round(x.latency_min::numeric)::text, '?'), coalesce(x.age_warn::text, '-'), coalesce(x.lat_warn::text, '-'),
               coalesce(x.age_crit::text, '-'), coalesce(x.lat_crit::text, '-'), coalesce(x.last_file, '?'))
-       || pgvigil.mssql_logship_agent_note(x.instance_id, 'secondary', x.database_name)
+       || pgvigil.mssql_logship_agent_note(x.instance_id, 'secondary', x.database_name, x.last_log_restore_at)
   FROM (SELECT lr.*, CASE WHEN lr.age_min > lr.age_crit OR lr.latency_min > lr.lat_crit THEN 'critical'
                           WHEN (NOT lr.msdb_judged AND lr.age_min > lr.age_warn) OR lr.latency_min > lr.lat_warn THEN 'warning' END AS sev   -- msdb judges no latency
           FROM lr) x

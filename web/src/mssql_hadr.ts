@@ -637,7 +637,7 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'instance', label: 'Instance' },
       { key: 'database_name', label: 'Database', fmt: v => {   // pgvigil's own: a click narrows the panel below to this database
         const b = el('button', { type: 'button', class: 'link', 'aria-label': `Show log shipping's jobs and messages for ${String(v ?? '')}` }, String(v ?? ''));
-        b.addEventListener('click', () => { dbPick.value = String(v ?? ''); drawPanel(); dbPick.focus(); });
+        b.addEventListener('click', () => { dbPick.value = pickFor(String(v ?? '')); drawPanel(); dbPick.focus(); });
         return b;
       } },
       { key: 'primary_server', label: 'Primary Instance' },
@@ -662,11 +662,19 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'checks', label: 'finding', wide: true },
     ];
     panelRows = { jobs: rowsOf(d.jobs), messages: rowsOf(d.messages), foreign: rowsOf(d.foreign) };
-    const names = [...new Set([...panelRows.jobs, ...panelRows.messages, ...panelRows.foreign]
-      .map(r => r.database_name).filter(v => v != null && v !== '').map(String))].sort();
+    // the box lists the panel's databases AND the Detail's (a pair restored by hand has no panel row, and a click on it
+    // must still narrow the panel, to its empty texts), one entry per name ignoring case (a finding matches its row by
+    // lower(database_name) the same way)
+    const seen = new Map<string, string>();
+    for (const r of [...panelRows.jobs, ...panelRows.messages, ...panelRows.foreign, ...rowsOf(d.detail)]) {
+      if (r.database_name == null || r.database_name === '') continue;
+      const n = String(r.database_name);
+      if (!seen.has(n.toLowerCase())) seen.set(n.toLowerCase(), n);
+    }
+    const names = [...seen.values()].sort();
     const keep = dbPick.value;
     dbPick.replaceChildren(el('option', { value: '' }, 'every database'), ...names.map(n => el('option', { value: n }, n)));
-    dbPick.value = names.includes(keep) ? keep : '';
+    dbPick.value = pickFor(keep);
     body.replaceChildren(el('h3', {}, 'Summary'), grid(rowsOf(d.summary), sumCols, 'No log shipped database on these instances.'),
       el('h3', {}, 'Detail'), grid(rowsOf(d.detail), detCols, `No database matches the filter (${statusText()}).`), panel);
     drawPanel();
@@ -682,17 +690,22 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
     el('p', { class: 'meta' }, 'As SQL Server\'s log shipping configuration in msdb names them, where log shipping was set up with its procedures or the '
       + 'wizard (a pair restored by hand has none). Database ', dbPick, ' (or click a database above).'), panelBody);
   dbPick.addEventListener('change', () => drawPanel());
+  // the box's option for a database name, ignoring case ('' = every database, also for a name the box does not list)
+  const pickFor = (name: string) => Array.from(dbPick.querySelectorAll('option')).map(o => o.value)
+    .find(v => v !== '' && v.toLowerCase() === name.toLowerCase()) ?? '';
   const yesNo = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
   const outcome: Record<string, string> = { '0': 'failed', '1': 'succeeded', '3': 'cancelled', '5': 'unknown' };
   function drawPanel() {
     const pick = dbPick.value;
-    const mine = (r: Row) => !pick || String(r.database_name ?? '') === pick;
+    const mine = (r: Row) => !pick || String(r.database_name ?? '').toLowerCase() === pick.toLowerCase();
     const jobCols: Col[] = [
       { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database', fmt: v => v == null ? '(the monitor)' : String(v) },
       { key: 'role', label: 'Role' }, { key: 'job_role', label: 'Job' }, { key: 'job_name', label: 'Job Name', fmt: (v, r) => v == null ? `missing (id ${String(r.job_id ?? '?')})` : String(v) },
-      { key: 'job_exists', label: 'Exists', fmt: yesNo, cls: v => v === false ? stCls('critical') : '' },
-      { key: 'job_enabled', label: 'Enabled', fmt: yesNo, cls: v => v === false ? stCls('critical') : '' },
-      { key: 'enabled_schedules', label: 'Schedules Running It', num: true, cls: (v, r) => r.job_exists === true && Number(v ?? 0) === 0 ? stCls('critical') : '' },
+      // coloured only where the judge has a finding for the job (job_severity), in its severity
+      { key: 'job_exists', label: 'Exists', fmt: yesNo, cls: (v, r) => v === false && r.job_severity != null ? stCls(String(r.job_severity)) : '' },
+      { key: 'job_enabled', label: 'Enabled', fmt: yesNo, cls: (v, r) => v === false && r.job_severity != null ? stCls(String(r.job_severity)) : '' },
+      { key: 'enabled_schedules', label: 'Schedules Running It', num: true,
+        cls: (v, r) => r.job_exists === true && Number(v ?? 0) === 0 && r.job_severity != null ? stCls(String(r.job_severity)) : '' },
       { key: 'interval_min', label: 'Every (min)', num: true },
       { key: 'last_outcome', label: 'Last Outcome', fmt: v => v == null ? '' : outcome[String(v)] ?? String(v), cls: v => String(v) === '0' ? stCls('critical') : '' },
       { key: 'last_run_at', label: 'Last Run', fmt: fmtTime },
@@ -707,10 +720,14 @@ export async function mssqlLogShippingView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database' }, { key: 'agent', label: 'Agent' },
       { key: 'logged_at', label: 'Logged', fmt: fmtTime }, { key: 'message', label: 'Message', wide: true },
       { key: 'source', label: 'Source' }, { key: 'rows_24h', label: 'Lines in 24 h', num: true },
+      { key: 'idle_runs_1h', label: 'Idle Runs (1 h)', num: true },
+      // a part whose read failed keeps its rows from the last read that worked: Read says how old they are
+      { key: 'snapshot_at', label: 'Read', fmt: fmtTime },
     ];
     const forCols: Col[] = [
       { key: 'instance', label: 'Instance' }, { key: 'database_name', label: 'Database' }, { key: 'finished_at', label: 'Finished', fmt: fmtTime },
       { key: 'file_name', label: 'File', wide: true }, { key: 'device', label: 'Device' }, { key: 'backup_directory', label: 'Log Shipping Folder', wide: true },
+      { key: 'snapshot_at', label: 'Read', fmt: fmtTime },
     ];
     panelBody.replaceChildren(
       el('h4', {}, 'Jobs'), grid(panelRows.jobs.filter(mine), jobCols, 'No log shipping configuration read on these instances.'),

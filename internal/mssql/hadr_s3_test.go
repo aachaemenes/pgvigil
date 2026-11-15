@@ -201,7 +201,8 @@ func TestLogShippingExtrasText(t *testing.T) {
 	for _, want := range []string{"e.log_time_utc >= DATEADD(hour, -24, GETUTCDATE())", "WHERE r.ord <= 20",
 		"PARTITION BY e.agent_type, e.database_name ORDER BY e.log_time_utc DESC, e.session_id DESC, e.sequence_number DESC",
 		"sd.secondary_id = e.agent_id", "p.primary_id = e.agent_id", " AS logged_utc,", " AS rows_24h,",
-		"r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%')"} {
+		"r.restore_mode = 1 AND (r.message LIKE N'%read-only database%' OR r.message LIKE N'%database is in read-only mode%'",
+		"OR r.message LIKE N'%because the database is read-only%')"} {
 		if !strings.Contains(lsErrorSQL, want) {
 			t.Errorf("the agents' errors read lacks %q", want)
 		}

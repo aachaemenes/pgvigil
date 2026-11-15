@@ -84,12 +84,15 @@
 #  L. the primary's recovery model: BULK_LOGGED -> 'a log-shipped database is in BULK_LOGGED recovery' warning; SIMPLE
 #     -> 'a log-shipped database is in SIMPLE recovery' critical with Microsoft's sentence, the warning gone; FULL
 #     again -> neither.
-#  M. a job gone, on a second pair of its own (lsj, msdb's procedures again): its copy job deleted (sp_delete_job) while
+#  M. a job gone, on a second pair of its own (lsj, msdb's procedures again): one round of its backup, copy and restore
+#     jobs (a log restored: restorehistory has lsj's 'L' row), then its copy job deleted (sp_delete_job) while
 #     the configuration names it: 'a log shipping job is missing' critical naming the copy job's id. If SQL Server
 #     refuses the delete, M prints 'M NOT PROVEN' with its words.
-#  P. a restore job with nothing to apply (run after M, on lsj, whose copy job M deleted): lsj's backup job and
-#     restore job each run once; the restore job logs no error and its history says 'Could not find a log backup file
-#     that could be applied': one idle row of lsj stored (runs >= 1); msdb's restore threshold of lsj lowered from M's
+#  P. a restore job with nothing to apply (run after M, on lsj: M ran lsj's backup, copy and restore jobs once - a log
+#     restored - before it deleted the copy job): msdb's restore time of lsj read, lsj's backup job once, its restore
+#     job TWICE; the restore job logs no error and its history says 'Could not find a log backup file that could be
+#     applied'; msdb's restore time unchanged by both idle runs (Microsoft, 14421: 'the restore time is not updated');
+#     one idle row of lsj stored counting both runs (runs >= 2); msdb's restore threshold of lsj lowered from M's
 #     45 minutes to 1 and a minute waited (lsj's monitor row printed before the wait), then msdb's 'log shipping is
 #     behind its threshold' for lsj adds 'Its restore job ran ... the copy job is where to look (Microsoft, error 14421)'.
 #  N. log shipping removed: lsw's by msdb's sp_delete_log_shipping_* on both servers - the next reads store no
@@ -496,6 +499,13 @@ EXEC master.dbo.sp_add_log_shipping_secondary_primary @primary_server = N'$PRI',
   @overwrite = 1, @copy_job_id = @c OUTPUT, @restore_job_id = @r OUTPUT, @secondary_id = @s OUTPUT;
 EXEC master.dbo.sp_add_log_shipping_secondary_database @secondary_database = N'lsj', @primary_server = N'$PRI', @primary_database = N'lsj',
   @restore_delay = 0, @restore_mode = 0, @disconnect_users = 0, @restore_threshold = 45, @threshold_alert_enabled = 1, @history_retention_period = 5760, @overwrite = 1;" >/dev/null || fail "M: the secondary's procedures for lsj"
+  # one round of lsj's own jobs first, so lsj has a log restored by its restore job (P's field case: a secondary that
+  # restored, then its copy stopped)
+  jobrun sp LSBackup_lsj || fail "M: LSBackup_lsj did not end in 180 s"
+  jobrun ss LSCopy_lsj || fail "M: LSCopy_lsj did not end in 180 s"
+  jobrun ss LSRestore_lsj || fail "M: LSRestore_lsj did not end in 180 s"
+  [ "$(ss "SELECT COUNT(*) FROM msdb.dbo.restorehistory WHERE destination_database_name = 'lsj' AND restore_type = 'L'")" -ge 1 ] \
+    || fail "M: lsj's restore job restored no log ($(ss "SELECT TOP (3) CONCAT(LEFT(message, 140), ' | ') FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj' ORDER BY log_time_utc DESC" | tr '\n' ' '))"
   CID=$(ss "SELECT CAST(copy_job_id AS varchar(36)) FROM msdb.dbo.log_shipping_secondary WHERE primary_database = N'lsj'")
   if ! ss "EXEC msdb.dbo.sp_delete_job @job_name = N'LSCopy_lsj';" > "$OUT" 2>&1; then
     MOK=; echo "  M NOT PROVEN: SQL Server refused the delete: $(tr '\n' ' ' < "$OUT" | cut -c1-300)"
@@ -508,8 +518,18 @@ EXEC master.dbo.sp_add_log_shipping_secondary_database @secondary_database = N'l
 
   echo "--- P. a restore job with nothing to apply"
   if [ -z "$MOK" ]; then echo "  P NOT PROVEN: M could not delete lsj's copy job"; POK=; else
+    # msdb's own restore time of lsj (M's real log restore), then a log backup the copy job no longer brings, then the
+    # restore job twice with nothing to apply: the time must stay (Microsoft's page for 14421: 'the restore time is not
+    # updated'), else msdb's own 'behind' measure would never fire while a restore job keeps running
+    LSJD="SELECT ISNULL(CONVERT(varchar(30), last_restored_date_utc, 126), 'NULL') FROM msdb.dbo.log_shipping_monitor_secondary WHERE secondary_database = N'lsj'"
+    d0=$(ss "$LSJD")
     jobrun sp LSBackup_lsj || fail "P: LSBackup_lsj did not end in 180 s"
     jobrun ss LSRestore_lsj || fail "P: LSRestore_lsj did not end in 180 s"
+    d1=$(ss "$LSJD")
+    jobrun ss LSRestore_lsj || fail "P: LSRestore_lsj (its second run) did not end in 180 s"
+    d2=$(ss "$LSJD")
+    echo "  lsj's msdb restore time: after M's log restore $d0, after the 1st idle run $d1, after the 2nd $d2"
+    [ "$d0" != NULL ] && [ "$d0" = "$d1" ] && [ "$d1" = "$d2" ] || fail "P: an idle restore run changed msdb's restore time of lsj: $d0 -> $d1 -> $d2"
     [ "$(ss "SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj'")" = 0 ] || echo "  P: lsj's restore agent logged an error too: $(ss "SELECT TOP (2) LEFT(message, 160) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj' ORDER BY log_time_utc DESC" | tr '\n' ' ')"
     # M configured lsj with msdb's restore threshold at 45 minutes, which nothing in this proof outlasts: lowered to 1
     # minute, then a minute passes with no restore (lsj's jobs have no schedule), so msdb's own measure says behind
@@ -518,12 +538,12 @@ EXEC master.dbo.sp_add_log_shipping_secondary_database @secondary_database = N'l
     echo "  lsj's monitor row before the wait: $(ss "$LSJMON")"
     sleep 65
     collect "$NS"
-    [ "$(q "select coalesce(max(runs), 0) from pgvigil.mssql_logship_idle where instance_id = $IS and database_name = 'lsj'")" -ge 1 ] || fail "P: no idle row of lsj stored"
+    [ "$(q "select coalesce(max(runs), 0) from pgvigil.mssql_logship_idle where instance_id = $IS and database_name = 'lsj'")" -ge 2 ] || fail "P: lsj's idle row does not count both runs: $(q "select coalesce(max(runs)::text, 'none') from pgvigil.mssql_logship_idle where instance_id = $IS and database_name = 'lsj'")"
     d=$(detail "$IS" 'log shipping is behind its threshold' 'secondary / lsj')
     [ -n "$d" ] || fail "P: no 'log shipping is behind its threshold' for lsj (msdb: $(ss "$LSJMON"); stored: $(q "select threshold_minutes || ' | ' || coalesce(last_restored_at::text, 'NULL') || ' | ' || snapshot_at from pgvigil.mssql_logshipping_state where instance_id = $IS and role = 'secondary' and database_name = 'lsj'"))"
     if ss "SELECT COUNT(*) FROM msdb.dbo.log_shipping_monitor_error_detail WHERE database_name = N'lsj'" | grep -qx 0; then
       grep -q 'Its restore job ran' <<<"$d" && grep -q 'the copy job is where to look (Microsoft, error 14421)' <<<"$d" || fail "P: the detail does not name the idle restore runs: $d"
-      ok "P: lsj's restore job ran with nothing to apply: stored as idle, and msdb's 'behind' finding points at the copy job"
+      ok "P: lsj's restore job ran twice with nothing to apply: msdb's restore time unchanged ($d0), stored as idle (2 runs), and msdb's 'behind' finding points at the copy job"
     else
       ok "P: lsj's restore job ran with nothing to apply (stored as idle); its agent also logged an error, which the detail carries instead: $(grep -o 'The newest error[^.]*' <<<"$d" | head -1)"
     fi
