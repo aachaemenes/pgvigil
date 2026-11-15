@@ -79,11 +79,18 @@ su() { local c=$1; shift; docker exec -i "$c" psql -U postgres -XAtq -v ON_ERROR
 echo "== containers and the store"
 for spec in "$C17 17 on" "$C13 13 on" "$C18 18 off"; do
   set -- $spec
-  docker run -d --name "$1" --label pgvigil-proof=inv302 -e POSTGRES_PASSWORD="$SUPW" -p 127.0.0.1::5432 "postgres:$2" -c archive_mode="$3" -c archive_command=/bin/true >/dev/null
+  # archive_mode alone on the command line: a setting given there outranks ALTER SYSTEM (PostgreSQL's config docs,
+  # 'Parameter Interaction via the Shell'), and every row changes archive_command with ALTER SYSTEM (run 302p1)
+  docker run -d --name "$1" --label pgvigil-proof=inv302 -e POSTGRES_PASSWORD="$SUPW" -p 127.0.0.1::5432 "postgres:$2" -c archive_mode="$3" >/dev/null
 done
 for c in "$C17" "$C13" "$C18"; do
   for _ in $(seq 1 60); do docker exec "$c" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
   su "$c" "CREATE ROLE pgvd_mon LOGIN PASSWORD '$MONPW' IN ROLE pg_monitor" >/dev/null
+  su "$c" "ALTER SYSTEM SET archive_command = '/bin/true'" >/dev/null; su "$c" "SELECT pg_reload_conf()" >/dev/null
+done
+sleep 1
+for c in "$C17" "$C13" "$C18"; do
+  [ "$(su "$c" "SHOW archive_command")" = /bin/true ] || fail "the store: $c's archive_command did not take ALTER SYSTEM"
 done
 port() { docker port "$1" 5432/tcp | head -1 | sed 's/.*://'; }
 psql "$PGVIGIL_REPO_DSN" -XAtqc "CREATE DATABASE $REPO_DB" >/dev/null; MADE_DB=1
@@ -112,7 +119,9 @@ SHIM=$WORK/shim; mkdir -p "$SHIM"
 export PGBACKREST_CONFIG="$WORK/pgbackrest.conf"
 collect() { PATH="$SHIM:$PATH" "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&1 || { cat "$OUT"; return 1; }; cat "$OUT" >> "$WORK/collect.log"; }
 iid() { q "select instance_id from pgvigil.instances where name='$1'"; }
-setcmd() { su "$C17" "ALTER SYSTEM SET archive_command = \$q\$$1\$q\$" >/dev/null; su "$C17" "SELECT pg_reload_conf()" >/dev/null; sleep 1; }
+# the row's command must be the server's own before the read (the value is never printed: some rows carry a literal)
+setcmd() { su "$C17" "ALTER SYSTEM SET archive_command = \$q\$$1\$q\$" >/dev/null; su "$C17" "SELECT pg_reload_conf()" >/dev/null; sleep 1
+  [ "$(su "$C17" "SHOW archive_command")" = "$1" ] || fail "setcmd: the server's archive_command is not the row's command after the reload"; }
 dests() { q "select coalesce(string_agg(concat_ws('|', role, coalesce(tool, ''), coalesce(dest_kind, ''), coalesce(host, ''), coalesce(container, ''), coalesce(path, ''), secret_seen::text), ' ;; ' order by role, seq), '') from pgvigil.pg_backup_dest where instance_id=$(iid "$1") and source='$2'"; }
 detail() { q "select coalesce(string_agg(detail, ' ;; ' order by role, seq), '') from pgvigil.pg_backup_dest where instance_id=$(iid "$1") and source='$2'"; }
 finding() { q "select count(*) from pgvigil.pg_backup_dest_findings where instance_id=$(iid "$1") and check_name='$2'"; }
