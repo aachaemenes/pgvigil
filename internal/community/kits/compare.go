@@ -327,7 +327,7 @@ func Hash(block string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// PortFileGone: the port's file is not in the newest kit (the fetch's 404): DRIFT, as an anchor gone - the block moved
+// PortFileGone is the line of a port whose file is not in the newest kit (the fetch's 404): DRIFT, as an anchor gone - the block moved
 // or went, re-read where (a fetch that failed otherwise stops the run: kitwatch.sh's exit 3)
 func PortFileGone(p Port) []Line {
 	return []Line{{Class: Drift, Tool: p.Name, Kind: "file gone", What: fmt.Sprintf("port %s (%s): %s/%s is gone from the newest kit: re-read where it moved", p.Name, p.GoFile, p.Repo, p.Path)}}
