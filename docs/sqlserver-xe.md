@@ -122,8 +122,8 @@ Neither session is ever started, stopped or altered. An `AlwaysOn_health` sessio
 
 | Finding | Severity |
 |---|---|
-| deadlocks in the last hour | warning; more than ten: critical |
-| blocked-process reports naming the same head statement (two or more in the last hour) | warning |
+| deadlocks in the last hour (a deadlock whose every victim is pgvigil's own read is not counted, docs/blocking.md) | warning; more than ten: critical |
+| blocked-process reports naming the same head statement (two or more in the last hour; the detail counts the waits they belong to, docs/blocking.md) | warning |
 | a capture is not installed (one row per instance, after two reads) | info |
 | a capture is stopped (one row per instance, after two reads) | warning |
 | the ring buffer dropped events (the session dropped events, or events left a ring buffer between two reads) | warning |
