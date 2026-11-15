@@ -7,8 +7,8 @@ package alerts
 // doors.slack_actions and the channel's app_id in slack_apps:) a post's firing alerts carry Acknowledge and Mute 1 h;
 // every alert with a page address carries an 'Open in pgvigil' link button.
 // Slack's pages (docs.slack.dev, read 2026-11-14/15):
-//   - POST <api>/chat.postMessage, a JSON body, the token "as an HTTP Authorization header" [unverified: the 'Bearer'
-//     scheme is not on the method page; it is the OAuth form the Web API takes];
+//   - POST <api>/chat.postMessage, a JSON body, the token "as a bearer token in the Authorization HTTP header"
+//     (docs.slack.dev/apis/web-api, read 2026-11-15);
 //   - the answer's ok and ts; ok false carries an error code from the page's table - only the code is kept;
 //   - thread_ts makes a reply, reply_broadcast shows it to the channel; cannot_reply_to_message and
 //     restricted_action_thread_locked / _non_threadable_channel refuse a reply (then the alert goes as a new post);
@@ -17,7 +17,9 @@ package alerts
 //     its calls); a 429 carries Retry-After (K1's postRetrying);
 //   - GovSlack: "use slack-gov.com when calling any API endpoint instead of slack.com" (docs.slack.dev/govslack).
 // The token never reaches an error text, a log, the destination or alert_log. A finding's text is escaped (&, <, >)
-// so it can never mention a person, a group or the channel [unverified: Slack's formatting page not read this session].
+// so it can never mention a person, a group or the channel: "&, <, and > ... must be converted to HTML entities if
+// they're not going to be used for their parsing purpose"; nothing else is encoded (docs.slack.dev/messaging/
+// formatting-message-text, read 2026-11-15).
 
 import (
 	"bytes"

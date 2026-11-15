@@ -13,9 +13,11 @@ package web
 //     acknowledges or mutes the occurrence open now;
 //   - Acknowledge = an alert_ack of that finding key (its repeats stop on every channel) unless one already covers the
 //     occurrence; Mute 1 h = a mute of that finding key until now + 1 h unless a live one ends at or after now + 55 min.
-// [unverified: the response_url's validity (30 minutes, 5 uses) and its in_channel reply are the design pass's read
-// of Slack's interaction page; this session's reader found that page unavailable.] Role: after B24f, operator or above,
-// checked against the store at the click (no roles exist yet).
+// Slack's interaction page (docs.slack.dev/interactivity/handling-user-interaction, read 2026-11-15): a response_url
+// takes "up to 5 times within 30 minutes of receiving the payload"; a reply is ephemeral unless response_type is
+// in_channel; "A message's type cannot be changed from ephemeral to in_channel", so every answer here is a new
+// message (replace_original false). Role: after B24f, operator or above, checked against the store at the click (no
+// roles exist yet).
 
 import (
 	"bytes"
