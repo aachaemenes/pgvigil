@@ -29,6 +29,13 @@ if (m) {
   call('whole hours of a past range: 09:30 .. 11:20 = 3 (09, 10, 11)', () => m.chartHours('2026-11-15T09:30:00Z', '2026-11-15T11:20:00Z', now + 3 * H), 3);
   call('a range ending in the future counts no hour past now: 09:30 .. 12:00 read at 09:45 = 1', () => m.chartHours('2026-11-15T09:30:00Z', '2026-11-15T12:00:00Z', now), 1);
   call('a range on the hour: 08:00 .. 10:00 = 2', () => m.chartHours('2026-11-15T08:00:00Z', '2026-11-15T10:00:00Z', now + H), 2);
+  // B6g-1 (N25 / N26): what a cost cell says when it holds no number - PostgreSQL's 'not read by pgvigil' (the lead's
+  // words: nothing more is said of why), any other empty cell 'not read'; a number, zero too, is drawn as a number
+  call('a cost cell with a number: drawn as a number', () => m.costWords(12, 'sqlserver'), null);
+  call('a cost cell with 0: a number, not "not read"', () => m.costWords(0, 'sqlserver'), null);
+  call('an empty cost cell of a PostgreSQL row', () => m.costWords(null, 'postgres'), 'not read by pgvigil');
+  call('an empty cost cell of a SQL Server row (no run reached its end read)', () => m.costWords(null, 'sqlserver'), 'not read');
+  call('an empty cost cell of a row per collection (no engine)', () => m.costWords(undefined, undefined), 'not read');
 }
 console.log(bad ? `chhealth: ${bad} FAIL` : 'chhealth: 0 FAIL');
 process.exit(bad ? 1 : 0);

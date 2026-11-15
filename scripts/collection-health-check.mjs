@@ -82,11 +82,12 @@ const setStatus = only => ev(`(() => { for (const i of document.querySelectorAll
 const drawnAs = async want => { for (let i = 0; i < 100; i++) { if (await ev(`document.querySelector('main section[data-drawn]')?.dataset.drawn === ${JSON.stringify(want)}`)) return true; await sleep(150); } return false; };
 const setShow = v => ev(`(() => { const s = document.querySelector('main #ch-show'); if (!s) return false; s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
 
-const COLS = ['Instance', 'Collection', 'Status', 'Status Reason', 'Runs', 'Succeeded %', 'Failed %', 'Failed % 24hrs', 'Succeeded', 'Partial', 'Failed',
-  'Failures In A Row', 'Last Run', 'Last Success', 'Last Failure', 'Avg Duration (ms)', 'Max Duration (ms)', 'Rows', 'Errors', 'Thresholds'];
+const COLS = ['Instance', 'Collection', 'Status', 'Status Reason', 'Runs', 'Succeeded %', 'Failed %', 'Failed % 24hrs', 'Succeeded', 'Partial', 'Failed', 'Import Failed',
+  'Failures In A Row', 'Last Run', 'Last Success', 'Last Failure', 'Avg Duration (ms)', 'Max Duration (ms)', 'Avg Import (ms)', 'Max Import (ms)',
+  'Total CPU (ms)', 'Avg CPU (ms)', 'Max CPU (ms)', 'Logical Reads', 'Avg Logical Reads', 'Rows', 'Errors', 'Thresholds'];
 const BYCOLL = ['Collection', 'Status', 'Instances', 'Failing Instances', ...COLS.slice(4)];
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const LAG = 'pgvigil writes each collection in its own run: there is no import step to lag';
+const LAG = 'pgvigil writes into the repository inside the run that collected: no queue stands between the two, so there is no import lag (Avg Import is the write\'s own time)';
 
 // CH6 the tab at three levels
 for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['tag ' + tag, `#/collectionhealth?tag=${encodeURIComponent(tag ?? '')}&w=24h`, COLS],

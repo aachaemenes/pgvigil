@@ -12,14 +12,14 @@ import { href, window_ } from './router';
 import { fleet, inTagScope, tagWords } from './fleet';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 import { lineChart } from './chart';
-import { chartHours } from './chhealth';
+import { chartHours, costWords } from './chhealth';
 
 const word: Record<string, string> = { critical: 'Critical', warning: 'Warning', 'n/a': 'N/A', ok: 'OK' };
 const kind: Record<string, string> = { critical: 'crit', warning: 'warn', 'n/a': '', ok: 'ok' };
 const statuses: [string, string][] = [['critical', 'Critical'], ['warning', 'Warning'], ['na', 'N/A'], ['ok', 'OK']];
 const shows: [string, string][] = [['instance', 'Row per collection per instance'], ['collection', 'Row per collection']];
 // the lead's words (23:2x 11-14) where DBA Dash shows its Import Lag chart
-export const importLagWords = 'pgvigil writes each collection in its own run: there is no import step to lag';
+export const importLagWords = 'pgvigil writes into the repository inside the run that collected: no queue stands between the two, so there is no import lag (Avg Import is the write\'s own time)';
 const pct = (v: unknown) => v == null ? '' : String(Number(v));
 
 export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
@@ -102,13 +102,24 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'partial', label: 'Partial', num: true, fmt: fmtNum },
       // Failed opens the window it counts (the hours from the one holding the range's start to the end of the one holding
       // its end: rate_from .. rate_to); Errors keeps the range (the review of B6.2, part b #1)
-      { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'failed', { from: String(r.rate_from), to: String(r.rate_to) }) : fmtNum(v) },
+      { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'failed', { from: String(r.rate_from), to: String(r.rate_to) }) : fmtNum(v),
+        title: 'Runs that failed at the read on the monitored server.  A run that read and then failed at its write into the repository is under Import Failed; Failed % is over both, and the link lists the errors of both.' },
+      // B6g-1 (N27): DBA Dash's Import Failed, its own count
+      { key: 'import_failed', label: 'Import Failed', num: true, fmt: fmtNum,
+        title: 'Runs whose read succeeded and whose write into the repository failed.  A collection written in parts whose part was refused while the run went on is Partial, not here.' },
       { key: 'failures_in_a_row', label: 'Failures In A Row', num: true, fmt: fmtNum },
       { key: 'last_run_at', label: 'Last Run', fmt: fmtTime },
       { key: 'last_success', label: 'Last Success', fmt: fmtTime },
       { key: 'last_failure', label: 'Last Failure', fmt: (v, r) => v == null ? '' : errorsLink(r, v, 'lastfailure', { from: String(r.errors_from), to: String(r.errors_to) }) },
       { key: 'avg_duration_ms', label: 'Avg Duration (ms)', num: true, fmt: fmtNum },
       { key: 'max_duration_ms', label: 'Max Duration (ms)', num: true, fmt: fmtNum },
+      // B6g-1 (N27): the write into the repository alone, over the runs that attempted one (the durations hold it too)
+      { key: 'avg_import_ms', label: 'Avg Import (ms)', num: true, fmt: fmtNum, title: 'The time of the writes into the repository alone, over the runs that wrote.  Avg Duration includes it.' },
+      { key: 'max_import_ms', label: 'Max Import (ms)', num: true, fmt: fmtNum },
+      // B6g-1 (N25 / N26): the run's own session's cost, read at the run's end on SQL Server; a PostgreSQL row says so
+      ...([['total_cpu_ms', 'Total CPU (ms)'], ['avg_cpu_ms', 'Avg CPU (ms)'], ['max_cpu_ms', 'Max CPU (ms)'], ['logical_reads', 'Logical Reads'], ['avg_logical_reads', 'Avg Logical Reads']] as const)
+        .map(([key, label]): Col => ({ key, label, num: true, fmt: (v, r) => costWords(v, r.engine) ?? fmtNum(v),
+          title: 'Of the run\'s own session on SQL Server (cpu_time, logical_reads of sys.dm_exec_sessions), read at the run\'s end, over the runs that read it.' })),
       { key: 'rows', label: 'Rows', num: true, fmt: fmtNum },
       { key: 'errors', label: 'Errors', num: true, fmt: (v, r) => Number(v ?? 0) > 0 ? errorsLink(r, v, 'errors') : fmtNum(v) },
       { key: 'thresholds', label: 'Thresholds' },
@@ -141,8 +152,10 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
         // the rule in docs/collection-health.md's words (0166; the review of B6.2, part b #10)
         + 'Status: critical at 3 or more failures in a row and 30 minutes or more from the last success to the latest failure, or 50 % or more of 5 or more runs failed with the last run failed; '
         + 'warning at 1 or more failures in a row and 10 minutes or more from the last success to the latest failure, or 10 % or more of 5 or more runs failed or ended partial; N/A when the collection is off or only skipped (DBA Dash\'s defaults). '
-        + 'Failed % 24hrs is the Summary\'s rate. Not shown, as pgvigil has no source for them: Warnings, Retried, Import Failed, No Status, CPU, Logical Reads, '
-        + 'the import columns; no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
+        + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
+        + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end; a PostgreSQL row says not read by pgvigil. '
+        + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads, the highest logical reads of one run; '
+        + 'no Steps (pgvigil has no run steps); Runs and Max Duration are not links (no Collection Performance report yet); '
         + 'the Status column shows the word as well as the colour.'),
       grid(rows, cols, on.length === 0 ? 'No status is picked: pick one or more to list the collections.' : 'No collection matches: show every status, or a wider range.'));
     sec.dataset.drawn = drawn;

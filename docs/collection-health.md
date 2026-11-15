@@ -42,12 +42,19 @@ a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in 
 A collection whose runs take longer than its interval is also a finding, *collection runs long*, on the Collector page
 and the Summary, and it can be sent: [alerts.md](alerts.md#pgvigils-own-health).
 
-What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warnings, Retried, Import Failed, No
-Status, CPU and Logical Reads per collection, the import columns and the Import Lag chart (pgvigil writes each
-collection in its own run: there is no import step to lag), the insights card, and the Steps picker (pgvigil's
-collections have no steps). Runs and Max Duration are not links (DBA Dash's Collection Performance report is a later
-task), and the thresholds are DBA Dash's defaults, not yet settable. The Status column shows the word as well as the
-colour.
+**Failed** counts the runs that failed at the read on the monitored server; **Import Failed** the runs that read and
+then failed at their write into the repository. Failed % is over both, as the status rule counts them. **Avg Import**
+and **Max Import** are the time of the writes into the repository alone, over the runs that wrote; Avg Duration and Max
+Duration are the whole run and include them. **Total CPU**, **Avg CPU**, **Max CPU**, **Logical Reads** and **Avg
+Logical Reads** are the run's own session's on SQL Server (`cpu_time` and `logical_reads` of `sys.dm_exec_sessions`,
+read at the run's end, over the runs that read them); a PostgreSQL row says *not read by pgvigil*.
+
+What DBA Dash shows and pgvigil does not, as pgvigil has no source for it: Warnings, Retried, No Status, the import's
+own CPU and reads, the highest logical reads of one run, the Import Lag chart (pgvigil writes into the repository
+inside the run that collected: no queue stands between the two, so there is no import lag), the insights card, and the
+Steps picker (pgvigil's collections have no steps). Runs and Max Duration are not links (DBA Dash's Collection
+Performance report is a later task), and the thresholds are DBA Dash's defaults, not yet settable. The Status column
+shows the word as well as the colour.
 
 A departure from DBA Dash: a collection written in parts (the schema collection's databases, the Extended Events and
 audit readers' batches) whose part the repository refused while the run went on is counted **partial**, not import

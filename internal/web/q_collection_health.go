@@ -59,6 +59,7 @@ WITH c AS (
 SELECT c.instance_id, c.instance, c.engine, c.collection, c.status, c.status_reason, c.runs, c.ok, c.partial, c.failed, c.skipped,
        c.failed_pct, c.problem_pct, s.failed24, s.known24, c.consecutive_failures, c.last_run_at, c.last_ok_at, c.last_failure_at,
        c.dur_sum, c.dur_max, c.rows_written, coalesce(e.errors, 0) AS errors,
+       c.import_failed, c.import_runs, c.import_sum, c.import_max, c.cpu_runs, c.cpu_sum, c.cpu_max, c.reads_sum,
        CASE WHEN c.consecutive_failures > 0 AND c.last_ok_at IS NOT NULL THEN c.last_ok_at ELSE c.last_failure_at - interval '10 minutes' END AS errors_from,
        c.last_failure_at + interval '1 hour' AS errors_to
   FROM c
@@ -72,9 +73,18 @@ const chCols = `
        round(100.0 * r.failed / nullif(r.ok + r.partial + r.failed, 0), 2) AS failed_pct,
        -- DBA Dash's 0 where nothing failed in the summary's period, even with no run in it (CollectionHealth_Get :441-443)
        CASE WHEN coalesce(r.failed24, 0) = 0 THEN 0.00 ELSE round(100.0 * r.failed24 / nullif(r.known24, 0), 2) END AS failed_pct_24h,
-       r.ok + r.partial AS succeeded, r.partial, r.failed, r.consecutive_failures AS failures_in_a_row,
+       -- B6g-1 (N27): Failed is the failures at the read, Import Failed the ones at the write into the repository - DBA
+       -- Dash's two counts (CollectionHealth_Get.sql :113-114); Failed % above is over both (:439), as 0166 judges
+       r.ok + r.partial AS succeeded, r.partial, r.failed - r.import_failed AS failed, r.import_failed,
+       r.consecutive_failures AS failures_in_a_row,
        r.last_run_at, r.last_ok_at AS last_success, r.last_failure_at AS last_failure,
        round(r.dur_sum::numeric / nullif(r.ok + r.partial + r.failed, 0)) AS avg_duration_ms, r.dur_max AS max_duration_ms,
+       -- the import's own time, over the runs that attempted one (the durations above hold it too); B6g-1 (N25 / N26):
+       -- the CPU and logical reads of the runs that read their own session at their end (SQL Server) - NULL where none
+       -- did (the page: 'not read'), never 0
+       round(r.import_sum::numeric / nullif(r.import_runs, 0)) AS avg_import_ms, CASE WHEN r.import_runs > 0 THEN r.import_max END AS max_import_ms,
+       r.cpu_sum AS total_cpu_ms, round(r.cpu_sum::numeric / nullif(r.cpu_runs, 0)) AS avg_cpu_ms, r.cpu_max AS max_cpu_ms,
+       r.reads_sum AS logical_reads, round(r.reads_sum::numeric / nullif(r.cpu_runs, 0)) AS avg_logical_reads,
        r.rows_written AS rows, r.errors, 'DBA Dash''s defaults' AS thresholds, r.errors_from, r.errors_to,
        ` + chHourFrom + ` AS rate_from, least(` + chHourTo + `, now()) AS rate_to`
 
@@ -97,6 +107,9 @@ var sqlCHCollection = `WITH x AS (` + sqlCHRows + `), r AS (
          sum(x.failed24) AS failed24, sum(x.known24) AS known24, max(x.consecutive_failures) AS consecutive_failures,
          max(x.last_run_at) AS last_run_at, max(x.last_ok_at) AS last_ok_at, max(x.last_failure_at) AS last_failure_at,
          sum(x.dur_sum) AS dur_sum, max(x.dur_max) AS dur_max, sum(x.rows_written) AS rows_written, sum(x.errors)::int AS errors,
+         sum(x.import_failed)::int AS import_failed, sum(x.import_runs)::int AS import_runs, sum(x.import_sum) AS import_sum,
+         max(x.import_max) AS import_max, sum(x.cpu_runs)::int AS cpu_runs, sum(x.cpu_sum) AS cpu_sum, max(x.cpu_max) AS cpu_max,
+         sum(x.reads_sum) AS reads_sum,
          min(x.errors_from) AS errors_from, max(x.errors_to) AS errors_to
     FROM x
    GROUP BY x.collection
