@@ -13,7 +13,7 @@
 # the proof stops at its first collection when it does not.
 # What it makes, and removes on every exit path the shell can catch: its own SQL Server container (a throwaway sa
 # password made here, never printed), its own repository database pgvigil_st6_<n>; inside the container (gone with
-# it): twelve logins (eleven an instance's, one the target of an impersonation), two databases, two tables, two
+# it): twelve logins (eleven an instance's, one the target of an impersonation), two databases, three tables, three
 # procedures, two traces (closed by the proof). A proof killed with
 # kill -9 leaves them: the container is pgv-st6-mssql-<n> and the database pgvigil_st6_<n>, both named first.
 #
@@ -53,6 +53,16 @@
 #     x_text (a text value column): error 'nvarchar column is not a number'; x_sets (two result sets): note 'the
 #     first of 2 result sets read'.
 #  E  the PostgreSQL check pg_only (no engine) has no custom_checks row on any SQL Server instance.
+#  D  (ST6b) DBA Dash's custom check: pgvp_util.dbo.DBADash_CustomCheck (owned by dbo, EXECUTE granted, reading
+#     dbo.pgv_cc_rows: backup/db1 Status 1 with its Info, backup/db2 2, jobs/agent 4, na/x 3) as rule: status on the
+#     documented login: the run critical, value 2, row_count 4; custom_status_rows the four rows with db1's Info; two
+#     findings - critical 'custom check d_dbadash: backup (db1)' = its Info, warning '... backup (db2)' = 'Status 2' -
+#     and none from the threshold arm; the bad shapes each an error in words (no Status column: 'no column Status';
+#     Status 7: 'Status 7 is not 1 to 4'; a pair twice: 'Test "t" and Context "c" come twice'). On st6-dd (the same
+#     login, query_text: none): its rows without Info and db1's finding = 'Status 1'; after the table loses its Status 1
+#     and 2 rows, the next run ok, value 0, its set two rows (jobs, na), its findings none. The Summary (GET
+#     /api/mssql/summary, in R): the Custom Checks cell of st6-mon critical 1 with db1's finding first, state ok; of
+#     st6-sa (refused, no check stored) n/a.
 #  R  the store: custom_report() lists the SQL Server checks with engine sqlserver; custom_findings holds v_dbs's
 #     warning and the W checks' errors with the SQL Server words ('a T-SQL batch or procedure that runs as the read
 #     login, in a transaction rolled back'); GET /api/custom?instance=<id> on a serve -no-login answers the checks and
@@ -160,8 +170,14 @@ CREATE PROCEDURE dbo.pgv_check_secret AS SELECT k FROM dbo.secret;
 GO
 CREATE PROCEDURE dbo.pgv_check_nogrant AS SELECT 1 AS value;
 GO
+CREATE TABLE dbo.pgv_cc_rows (Test nvarchar(128) NOT NULL, Context nvarchar(128) NOT NULL, Status tinyint NOT NULL, Info nvarchar(max) NULL);
+INSERT dbo.pgv_cc_rows VALUES (N'backup', N'db1', 1, N'the last full backup is 9 days old'), (N'backup', N'db2', 2, NULL), (N'jobs', N'agent', 4, N'ok'), (N'na', N'x', 3, NULL);
+GO
+CREATE PROCEDURE dbo.DBADash_CustomCheck AS SELECT Test, Context, Status, Info FROM dbo.pgv_cc_rows;
+GO
 CREATE USER [pgv_mon_$SUF] FOR LOGIN [pgv_mon_$SUF];
 GRANT EXECUTE ON dbo.pgv_check_secret TO [pgv_mon_$SUF];
+GRANT EXECUTE ON dbo.DBADash_CustomCheck TO [pgv_mon_$SUF];
 GO
 SQL
 } | sqs >/dev/null
@@ -197,6 +213,7 @@ instances:
   - {name: st6-sch-$SUF, engine: sqlserver, dsn: env:MS_SCH, tags: [st6:fence]}
   - {name: st6-obj-$SUF, engine: sqlserver, dsn: env:MS_OBJ, tags: [st6:fence]}
   - {name: st6-exe-$SUF, engine: sqlserver, dsn: env:MS_EXE, tags: [st6:fence]}
+  - {name: st6-dd-$SUF, engine: sqlserver, dsn: env:MS_MON, tags: [st6:dd], query_text: none}
 custom:
   - {name: pg_only, sql: SELECT 1 AS value}
   - {name: v_dbs, engine: sqlserver, sql: "SELECT COUNT(*) AS value FROM sys.databases", warning: 0, tags: [st6:mon, st6:fence]}
@@ -221,6 +238,10 @@ custom:
   - {name: x_bit, engine: sqlserver, tags: [st6:mon], sql: "SELECT CAST(1 AS bit) AS value"}
   - {name: x_text, engine: sqlserver, tags: [st6:mon], sql: "SELECT N'abc' AS value"}
   - {name: x_sets, engine: sqlserver, tags: [st6:mon], sql: "SELECT 1 AS value; SELECT 2 AS other"}
+  - {name: d_dbadash, procedure: pgvp_util.dbo.DBADash_CustomCheck, rule: status, tags: [st6:mon, st6:dd]}
+  - {name: d_nostatus, engine: sqlserver, rule: status, tags: [st6:mon], sql: "SELECT N't' AS Test, N'c' AS Context, N'i' AS Info"}
+  - {name: d_seven, engine: sqlserver, rule: status, tags: [st6:mon], sql: "SELECT N't' AS Test, N'c' AS Context, 7 AS Status, N'i' AS Info"}
+  - {name: d_twice, engine: sqlserver, rule: status, tags: [st6:mon], sql: "SELECT N't' AS Test, N'c' AS Context, 4 AS Status UNION ALL SELECT N't', N'c', 2"}
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
 [[ $(q "select count(*) from pgvigil.schema_version where version = '0262_mssql_custom.sql'") == 1 ]] || fail "0262 is not applied"
@@ -275,6 +296,28 @@ ok "X: 101 rows -> 100 kept, 51 columns -> 50, a 2,000-character cell kept at $C
 [[ $(q "select count(*) from pgvigil.custom_checks c join pgvigil.instances i using (instance_id) where i.engine = 'sqlserver' and c.check_name = 'pg_only'") == 0 ]] || fail "E: the PostgreSQL check pg_only is listed on a SQL Server instance"
 ok "E: the PostgreSQL check pg_only is on no SQL Server instance"
 
+echo "--- D: DBA Dash's custom check (rule status)"
+srows() { q "select coalesce(string_agg(test || '/' || context || '/' || status || coalesce('=' || info, ''), ' ' order by test, context), '-') from pgvigil.custom_status_rows r join pgvigil.instances i using (instance_id) where i.name = '$1' and r.check_name = '$2'"; }
+cfind() { q "select coalesce(string_agg(severity || '|' || setting || '|' || value, ' ; ' order by severity, setting), '-') from pgvigil.custom_findings f join pgvigil.instances i using (instance_id) where i.name = '$1' and f.setting like 'custom check $2%'"; }
+[[ $(res "$MON" d_dbadash "status || ' ' || value || ' ' || row_count") == "critical 2 4" ]] || fail "D: d_dbadash's run $(res "$MON" d_dbadash "status || ' ' || coalesce(value::text, '') || ' ' || coalesce(row_count::text, '') || ' ' || coalesce(error, '')")"
+GOTR=$(srows "$MON" d_dbadash)
+[[ $GOTR == "backup/db1/1=the last full backup is 9 days old backup/db2/2 jobs/agent/4=ok na/x/3" ]] || fail "D: d_dbadash's rows: $GOTR"
+GOTF=$(cfind "$MON" d_dbadash)
+[[ $GOTF == "critical|custom check d_dbadash: backup (db1)|the last full backup is 9 days old ; warning|custom check d_dbadash: backup (db2)|Status 2" ]] || fail "D: d_dbadash's findings: $GOTF"
+[[ $(res "$MON" d_nostatus "error") == *"no column Status"* ]] || fail "D: d_nostatus $(res "$MON" d_nostatus "status || ' ' || coalesce(error, '')")"
+[[ $(res "$MON" d_seven "error") == *"Status 7 is not 1 to 4"* ]] || fail "D: d_seven $(res "$MON" d_seven "status || ' ' || coalesce(error, '')")"
+[[ $(res "$MON" d_twice "error") == *'Test "t" and Context "c" come twice'* ]] || fail "D: d_twice $(res "$MON" d_twice "status || ' ' || coalesce(error, '')")"
+ok "D: DBA Dash's procedure as rule status: critical, 2 of 4 rows at warning or critical, the four rows kept with db1's Info, two findings in its words and none from the threshold arm; no Status column, Status 7 and a pair twice refused in words"
+DD=st6-dd-$SUF
+collect "$DD"
+[[ $(srows "$DD" d_dbadash) == "backup/db1/1 backup/db2/2 jobs/agent/4 na/x/3" && $(cfind "$DD" d_dbadash) == "critical|custom check d_dbadash: backup (db1)|Status 1 ; warning|custom check d_dbadash: backup (db2)|Status 2" ]] \
+  || fail "D: on $DD (query_text none): rows $(srows "$DD" d_dbadash), findings $(cfind "$DD" d_dbadash); $(tail -2 "$OUT")"
+sq "DELETE dbo.pgv_cc_rows WHERE Status IN (1, 2);" pgvp_util >/dev/null
+collect "$DD"
+[[ $(res "$DD" d_dbadash "status || ' ' || value || ' ' || row_count") == "ok 0 2" && $(srows "$DD" d_dbadash) == "jobs/agent/4 na/x/3" && $(cfind "$DD" d_dbadash) == "-" ]] \
+  || fail "D: the second run on $DD: $(res "$DD" d_dbadash "status || ' ' || coalesce(value::text, '') || ' ' || coalesce(row_count::text, '') || ' ' || coalesce(error, '')"), rows $(srows "$DD" d_dbadash), findings $(cfind "$DD" d_dbadash)"
+ok "D: under query_text none the rows keep no Info (db1's finding says 'Status 1'); the next run's set replaced the stored one (ok, 0 of 2), its findings gone"
+
 echo "--- F: the fence, one login at a time"
 for pair in "sa|role sysadmin" "ctl|CONTROL SERVER" "conn|ALTER ANY CONNECTION" "imp|IMPERSONATE on login sa" "bulk|ADMINISTER BULK OPERATIONS" "dw|in database pgvp_app DELETE, INSERT, UPDATE" \
   "impd|IMPERSONATE on login pgv.dot_$SUF" "sch|in database pgvp_app INSERT on schema dbo" "obj|in database pgvp_app UPDATE on object dbo.target" "exe|in database pgvp_app EXECUTE"; do
@@ -310,7 +353,18 @@ assert eng and eng[0].get('engine') == 'sqlserver', eng
 assert {'v_dbs', 'p_secret', 'w_trace', 'x_rows'} <= names, sorted(names)
 print('  the API: instance engine sqlserver,', len(names), 'checks')
 PY
-ok "R: custom_report() lists the SQL Server checks with engine sqlserver; custom_findings holds v_dbs's warning and the errors in the SQL Server words; GET /api/custom answers the checks and the engine"
+curl -sf -o "$WORK/sum.json" "http://127.0.0.1:$PORT/api/mssql/summary" || fail "R: GET /api/mssql/summary: $(tail -2 "$WORK/serve.log")"
+python3 - "$WORK/sum.json" "$MID" "$(iid "st6-sa-$SUF")" <<'PY' || fail "R: the Summary's Custom Checks cells"
+import json, sys
+d = json.load(open(sys.argv[1]))['cells']
+rows = [dict(zip(d['columns'], r)) for r in d['rows']] if isinstance(d, dict) and 'columns' in d else d
+cell = {str(r['instance_id']): r for r in rows if r['key'] == 'custom'}
+m, s = cell.get(sys.argv[2]), cell.get(sys.argv[3])
+assert m and m['state'] == 'ok' and m['critical'] == 1 and (m['detail'] or [''])[0].startswith('custom check d_dbadash: backup (db1)'), m
+assert s and s['state'] == 'n/a' and s['critical'] == 0 and s['warning'] == 0, s
+print('  the Summary: st6-mon Custom Checks critical 1 (' + m['detail'][0] + '), warning', m['warning'], '; st6-sa n/a')
+PY
+ok "R: custom_report() lists the SQL Server checks with engine sqlserver; custom_findings holds v_dbs's warning and the errors in the SQL Server words; GET /api/custom answers the checks and the engine; the Summary's Custom Checks cell of a SQL Server row counts its custom findings (n/a with no check)"
 
 echo "--- L: the two fences of the DBA's own SQL (go test, live)"
 if command -v go >/dev/null; then

@@ -48,7 +48,7 @@ custom:
     every: 5m                          # the cadence: 1m to 24h (default 5m)
     instances: [erp01]                 # instance names from instances:, and / or
     tags: [env:prod]                   # tags the instances carry in instances: (key:value or a plain word)
-    rule: value                        # value (default) | rows
+    rule: value                        # value (default) | rows | status (SQL Server: DBA Dash's custom check)
     value: value                       # the value column (default: the column named value, else the first column)
     compare: ">"                       # > (default)  >=  <  <=  =  !=
     warning: 5
@@ -61,7 +61,8 @@ custom:
 - **The rule.** A *value* check reads one number: the value column of the first row (order the statement so the
   first row is the worst). A *rows* check counts the rows the statement returns (`value:` is refused with it). No row,
   or a NULL value, judges nothing: the run is `ok` with the note "no row" or "the value is NULL". A value that is not
-  a number (text that does not parse, a date) is the check's error.
+  a number (text that does not parse, a date) is the check's error. A *status* check is SQL Server's alone: [DBA
+  Dash's custom check](#dba-dashs-custom-check), whose rows judge themselves.
 - **The thresholds.** `critical` is tested before `warning`; either may be left out. With `>` or `>=` critical must be
   at or above warning, with `<` or `<=` at or below it. `=` and `!=` take any pair.
 - **What is kept.** The status (`ok`, `warning`, `critical`, `error`), the value, the row count, the column names, at
@@ -158,6 +159,30 @@ custom:
   (a login without `VIEW ANY DEFINITION`: Azure SQL Database's contained user; not proven). A write
   through an EXISTING linked server whose login mapping holds rights on the remote server is the remote server's and
   is not undone by the local rollback: pgvigil cannot see the mapping.
+- **DBA Dash's custom check.** <a id="dba-dashs-custom-check"></a>A check with `rule: status` reads the columns of DBA
+  Dash's `dbo.DBADash_CustomCheck` - `Test`, `Context`, `Status` (1 critical, 2 warning, 3 N/A, 4 OK) and `Info` -
+  by name, without case (`Info` may be left out; another column is named in the run's note), so the procedure a DBA
+  Dash site already has runs as it is:
+
+  ```yaml
+  custom:
+    - name: dbadash_custom_check
+      procedure: dbo.DBADash_CustomCheck   # in the dsn's database, as DBA Dash runs it (or Utility.dbo.DBADash_CustomCheck)
+      rule: status
+      every: 1h                            # DBA Dash's schedule
+  ```
+
+  It is an entry of the list like any check (never found and run by itself: DBA Dash runs the procedure whenever it
+  exists), with no `warning`, `critical`, `compare` or `value` (each refused in words), behind the same fence; a
+  `sql:` batch that returns the four columns is a status check too. Each row is judged by its own Status: one
+  finding per row at 1 (critical) or 2 (warning), named `custom check <name>: <Test> (<Context>)`, its value the
+  row's Info; the run's status is the worst row, its value the rows at warning or critical (the chart), its row count
+  the rows. The rows the last run returned are kept as the check's current set (one per Test and Context, at most
+  1,000; `Info` only under `query_text: full`, cut at 1,000 characters), replaced by each run and kept by a failed
+  one, as DBA Dash keeps its `CustomChecks` table; DBA Dash's per-row history is not kept (the runs are). A Status
+  NULL or outside 1 to 4, a `Test` or `Context` NULL or over 128 characters, or one pair twice is the check's error.
+  The Summary's Custom Checks column reads, for a SQL Server instance, its custom findings (these rows, a threshold
+  crossed, a check failed or late) and says n/a where no check reaches the instance, as DBA Dash's N/A.
 - **Not DBA Dash's storage.** DBA Dash puts a collection's rows in a table of the user's (`UserData.<name>`, made by a
   script the user runs in its repository, with its own retention); pgvigil keeps each run's value, row count and at
   most 100 rows in its own store, with the purge, as PostgreSQL's checks.
