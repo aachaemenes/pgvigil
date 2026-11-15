@@ -383,7 +383,10 @@ function Invoke-Up {
         }
         Invoke-LabSql $pubInst "EXEC sp_adddistributor @distributor = @@SERVERNAME, @password = @pw;" 'master' @{ pw = (New-LabPassword) } | Out-Null
         Invoke-LabSql $pubInst "EXEC sp_adddistributiondb @database = N'$distDb', @security_mode = 1;" | Out-Null
-        Invoke-LabSql $pubInst "EXEC sp_adddistpublisher @publisher = @@SERVERNAME, @distribution_db = N'$distDb', @security_mode = 1, @trusted = N'false', @thirdparty_flag = 0, @publisher_type = N'MSSQLSERVER';" | Out-Null
+        # the working directory named: with none, SQL Server stores its admin-share default \\<host>\C$\...\ReplData
+        # (dba-lab-win 2026-11-15 06:18), which the check below refuses (the grant is on the local folder; the agents
+        # run on this host for a push subscription)
+        Invoke-LabSql $pubInst "EXEC sp_adddistpublisher @publisher = @@SERVERNAME, @distribution_db = N'$distDb', @security_mode = 1, @working_directory = @wd, @trusted = N'false', @thirdparty_flag = 0, @publisher_type = N'MSSQLSERVER';" 'master' @{ wd = $replData } | Out-Null
         $workDir = Get-LabValue $pubInst 'SELECT CAST(working_directory AS nvarchar(512)) FROM msdb.dbo.MSdistpublishers WHERE name = @@SERVERNAME'
         Say "distributor: $distDb made, working directory $workDir"
         if ($workDir.TrimEnd('\') -ne $replData.TrimEnd('\')) { throw "the working directory '$workDir' is not the instance's own ReplData '$replData'" }
