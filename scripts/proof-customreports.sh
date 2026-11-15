@@ -176,8 +176,10 @@
 #     never answers, as a hanging listener does).
 #  V. the community tools' versions (DBA Dash's Check Versions; nothing deployed, nothing run): with the three scripts of
 #     PGVIGIL_COMMUNITY_DIR installed in master, GET /api/community (fresh) gives each procedure its version read from
-#     its own text, the tested one and a word: the First Responder Kit 8.34, Darling Data 3.11, sp_WhoIsActive
-#     2200.20260409, every one 'the tested version'; the reply's install_script says nothing to install. A database
+#     its own text, the tested one and a word: the First Responder Kit's six 8.34, Darling Data's release of 2026-11-01
+#     with each procedure's own (sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11,
+#     sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409, every one 'the tested
+#     version', no mixed-versions note; the reply's install_script says nothing to install. A database
 #     pgcr_v of stubs (sp_BlitzCache at 8.30, sp_Blitz at 8.40, sp_PressureDetector without a version line; each would
 #     raise an error if run): 'older than tested', 'newer than tested (not tested by pgvigil)', 'version not read', the
 #     rest 'not installed'; version_notes says the Kit's procedures are at mixed versions; install_script holds
@@ -197,7 +199,7 @@
 #     RED (ebf9a9c): not reached (V reds first); on its own no 'Installed community tools' heading.
 #  DV. the demo's versions (the demo serve, no login, as the 8080 demo): on the first demo SQL Server instance off and on
 #     the test server's platform, the page's grid of 13 rows, every one 'the tested version' at the tested version and date
-#     of its kit (8.34 2026-07-02, 3.11 2026-11-01, 2200.20260409 2026-04-09), the database cell empty (no server stands
+#     of its kit (8.34 2026-07-02; Darling Data each procedure's own of 2026-11-01; 2200.20260409 2026-04-09), the database cell empty (no server stands
 #     behind it), no note, the script 'nothing to install' equal to the demo serve's own reply; no custom_report_log row.
 #     RED (ebf9a9c): not reached; on its own no 'Installed community tools' heading on a demo instance.
 #  A. the audit: the log's run rows (run, community_run, community_help) = the runs this proof made.
@@ -570,10 +572,11 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   # ---- V: each procedure's version against the tested one, read from its own text; the install script printed
   if [[ ${#INSTALLED[@]} == 3 ]]; then
     [[ $(getc "community?instance=$MRID&fresh=1") == 200 ]] || fail "V: GET community: $(cat "$WORK/body")"
-    V1=$(tl "'|'.join(sorted({'%s=%s/%s' % (x['group'], x.get('version'), x.get('version_word')) for x in d['tools'] if x['kind'] == 'proc'}))")
-    [[ $V1 == "Darling Data=3.11/the tested version|First Responder Kit=8.34/the tested version|sp_WhoIsActive=2200.20260409/the tested version" ]] || fail "V: master's versions: $V1"
+    V1=$(tl "'|'.join(sorted('%s=%s/%s' % (x['name'], x.get('version'), x.get('version_word')) for x in d['tools'] if x['kind'] == 'proc'))")
+    [[ $V1 == "sp_Blitz=8.34/the tested version|sp_BlitzCache=8.34/the tested version|sp_BlitzFirst=8.34/the tested version|sp_BlitzIndex=8.34/the tested version|sp_BlitzLock=8.34/the tested version|sp_BlitzWho=8.34/the tested version|sp_HealthParser=3.11/the tested version|sp_HumanEventsBlockViewer=5.11/the tested version|sp_IndexCleanup=2.11/the tested version|sp_LogHunter=3.11/the tested version|sp_PressureDetector=6.11/the tested version|sp_QuickieStore=6.11/the tested version|sp_WhoIsActive=2200.20260409/the tested version" ]] || fail "V: master's versions: $V1"
+    [[ $(js "len(d.get('version_notes') or [])") == 0 ]] || fail "V: master's notes (one release per kit): $(js "d.get('version_notes')")"
     [[ $(js "str(d.get('install_script', '')).count('Install-Dba')") == 0 && $(js "'nothing to install' in str(d.get('install_script', ''))") == True ]] || fail "V: master's script: $(js "d.get('install_script')")"
-    ok "V: every procedure in master at the tested version (8.34, 3.11, 2200.20260409); the script says nothing to install"
+    ok "V: every procedure in master at its own version of the tested release (the Kit 8.34; Darling Data 6.11 / 5.11 / 3.11 / 2.11 of 2026-11-01; 2200.20260409), no mixed-versions note; the script says nothing to install"
     # the stubs (each would raise if run), made again for the page's rows (UV)
     vstubs() {
       sq "CREATE DATABASE pgcr_v" >/dev/null
@@ -590,7 +593,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
     for c in Install-DbaFirstResponderKit Install-DbaDarlingData Install-DbaWhoIsActive; do
       grep -qE "^$c .*-Database 'pgcr_v'" <<< "$VS" || fail "V: the script lacks $c for pgcr_v: $VS"
     done
-    grep -q -- "-LocalFile" <<< "$VS" && grep -q "8\.34" <<< "$VS" && grep -q "3\.11" <<< "$VS" || fail "V: the script's comment on -LocalFile and the tested releases: $VS"
+    grep -q -- "-LocalFile" <<< "$VS" && grep -q "8\.34" <<< "$VS" && grep -q "release of 2026-11-01" <<< "$VS" || fail "V: the script's comment on -LocalFile and the tested releases: $VS"
     [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgcr_v')") == 0 ]] || fail "V: a stub ran"
     sq "DROP DATABASE pgcr_v" >/dev/null
     ok "V: pgcr_v older / newer / version not read / not installed, the Kit's mixed versions said, the script's three installs for pgcr_v with -LocalFile named; no stub ran"
@@ -1983,13 +1986,17 @@ PY
     python3 - "$WORK/dv-$dv.json" "$WORK/dv-$dv-api.json" "$(ident "$dv")" <<'PY' || fail "DV: see above"
 import json, sys
 p = json.load(open(sys.argv[1])); a = json.load(open(sys.argv[2])); who = sys.argv[3]
-tested = {'First Responder Kit': ('8.34', '2026-07-02'), 'Darling Data': ('3.11', '2026-11-01'), 'sp_WhoIsActive': ('2200.20260409', '2026-04-09')}
+# each procedure's own version in its kit's tested release, and the release's date
+own = {'sp_Blitz': '8.34', 'sp_BlitzFirst': '8.34', 'sp_BlitzCache': '8.34', 'sp_BlitzIndex': '8.34', 'sp_BlitzLock': '8.34', 'sp_BlitzWho': '8.34',
+       'sp_PressureDetector': '6.11', 'sp_QuickieStore': '6.11', 'sp_HumanEventsBlockViewer': '5.11', 'sp_HealthParser': '3.11', 'sp_LogHunter': '3.11',
+       'sp_IndexCleanup': '2.11', 'sp_WhoIsActive': '2200.20260409'}
+date = {'First Responder Kit': '2026-07-02', 'Darling Data': '2026-11-01', 'sp_WhoIsActive': '2026-04-09'}
 assert not p.get('error'), f"DV {who}: the driver: {p.get('error')}"
 assert a.get('demo') is True, f"DV {who}: the demo serve's reply is not a demo instance's"
 assert p.get('heading'), f"DV {who}: no 'Installed community tools' heading on the demo's page"
 rows = p.get('rows') or []
-bad = [r for r in rows if r['status'] != 'the tested version' or (r['version'], r['its date']) != tested.get(r['kit'])
-       or r['tested by pgvigil'] != tested.get(r['kit'], ('',))[0] or r['database'] != '' or 'ok' not in r['_badge'].split()]
+bad = [r for r in rows if r['status'] != 'the tested version' or r['version'] != own.get(r['procedure']) or r['its date'] != date.get(r['kit'])
+       or r['tested by pgvigil'] != r['version'] or r['database'] != '' or 'ok' not in r['_badge'].split()]
 assert len(rows) == 13 and not bad, f"DV {who}: {len(rows)} rows; unlike the tested version: {bad[:3]}"
 api = [t for t in a['tools'] if t['kind'] == 'proc']
 assert len(api) == 13 and all(t.get('version_word') == 'the tested version' for t in api), f"DV {who}: the reply's words {sorted({str(t.get('version_word')) for t in api})}"

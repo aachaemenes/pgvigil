@@ -15,12 +15,27 @@ import (
 	"strings"
 )
 
-// testedVersions: per catalogue group, the release pgvigil's proofs and lab ran, and dbatools' installer for it.
-var testedVersions = map[string]struct{ Version, Date, Install string }{
-	"First Responder Kit": {"8.34", "2026-07-02", "Install-DbaFirstResponderKit"},
-	"Darling Data":        {"3.11", "2026-11-01", "Install-DbaDarlingData"},
-	"sp_WhoIsActive":      {"2200.20260409", "2026-04-09", "Install-DbaWhoIsActive"},
+// testedVersions: per catalogue group, the release pgvigil's proofs and lab ran (its date and the words the printed
+// script names it by) and dbatools' installer for it. A kit's procedures carry versions of their own (Darling Data's
+// release of 2026-11-01 holds sp_PressureDetector 6.11 beside sp_HealthParser 3.11): each procedure is compared with
+// its own version in that release (testedProc).
+var testedVersions = map[string]struct{ Date, Words, Install string }{
+	"First Responder Kit": {"2026-07-02", "the First Responder Kit 8.34 (2026-07-02)", "Install-DbaFirstResponderKit"},
+	"Darling Data":        {"2026-11-01", "Darling Data's release of 2026-11-01", "Install-DbaDarlingData"},
+	"sp_WhoIsActive":      {"2026-04-09", "sp_WhoIsActive 2200.20260409 (2026-04-09)", "Install-DbaWhoIsActive"},
 }
+
+// testedProc: each catalogue procedure's version in its group's tested release, as the release files' own version
+// lines give it (lower-case names)
+var testedProc = map[string]string{
+	"sp_blitz": "8.34", "sp_blitzfirst": "8.34", "sp_blitzcache": "8.34", "sp_blitzindex": "8.34", "sp_blitzlock": "8.34", "sp_blitzwho": "8.34",
+	"sp_pressuredetector": "6.11", "sp_quickiestore": "6.11", "sp_humaneventsblockviewer": "5.11", "sp_healthparser": "3.11",
+	"sp_loghunter": "3.11", "sp_indexcleanup": "2.11",
+	"sp_whoisactive": "2200.20260409",
+}
+
+// testedOf: a procedure's version in the tested release ("" = not a catalogue procedure)
+func testedOf(name string) string { return testedProc[strings.ToLower(name)] }
 
 // the groups in the script's order
 var testedOrder = []string{"First Responder Kit", "Darling Data", "sp_WhoIsActive"}
@@ -72,16 +87,16 @@ func compareVersions(a, b string) int {
 	return 0
 }
 
-// versionWord: the word for an installed procedure's version against its group's tested one.
-func versionWord(installed bool, v toolVersion, group string) string {
-	t, known := testedVersions[group]
+// versionWord: the word for an installed procedure's version against its own version in the tested release.
+func versionWord(installed bool, v toolVersion, name string) string {
+	t := testedOf(name)
 	switch {
 	case !installed:
 		return "not installed"
-	case v.Version == "" || !known:
+	case v.Version == "" || t == "":
 		return "version not read"
 	}
-	switch compareVersions(v.Version, t.Version) {
+	switch compareVersions(v.Version, t) {
 	case 0:
 		return "the tested version"
 	case -1:
@@ -154,7 +169,7 @@ func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + 
 
 // installScript: the script a DBA runs to install what is missing, older than tested or of no readable version in db
 // (a newer one is left as it is), with dbatools; pgvigil runs none of it. notes: a group's procedures at different
-// versions.
+// releases.
 func installScript(name, server, db string, tools []toolState) (script string, notes []string) {
 	need, seen := map[string]bool{}, map[string]map[string][]string{}
 	for _, t := range tools {
@@ -166,18 +181,25 @@ func installScript(name, server, db string, tools []toolState) (script string, n
 			need[t.Group] = true
 		}
 		if t.Version != nil {
+			// a kit's release is its date (Darling Data's procedures differ in version within one release)
+			rel, label := t.VersionDate, t.Name+" "+*t.Version
+			if rel == "" {
+				rel = "v" + *t.Version
+			} else {
+				label += " of " + t.VersionDate
+			}
 			if seen[t.Group] == nil {
 				seen[t.Group] = map[string][]string{}
 			}
-			seen[t.Group][*t.Version] = append(seen[t.Group][*t.Version], t.Name)
+			seen[t.Group][rel] = append(seen[t.Group][rel], label)
 		}
 	}
 	for _, g := range testedOrder {
 		if len(seen[g]) > 1 {
 			vs := make([]string, 0, len(seen[g]))
-			for v, ns := range seen[g] {
+			for _, ns := range seen[g] {
 				sort.Strings(ns)
-				vs = append(vs, strings.Join(ns, ", ")+" "+v)
+				vs = append(vs, strings.Join(ns, ", "))
 			}
 			sort.Strings(vs)
 			notes = append(notes, g+": mixed versions ("+strings.Join(vs, "; ")+")")
@@ -195,14 +217,13 @@ func installScript(name, server, db string, tools []toolState) (script string, n
 	fmt.Fprintf(&b, "# as a login that may create procedures in %s.\n", db)
 	fmt.Fprintf(&b, "# dbatools fetches each tool's newest release. pgvigil was tested with")
 	for i, g := range testedOrder {
-		t := testedVersions[g]
 		sep := ","
 		if i == len(testedOrder)-1 {
 			sep = ":"
 		} else if i == len(testedOrder)-2 {
 			sep = " and"
 		}
-		fmt.Fprintf(&b, " %s %s (%s)%s", g, t.Version, t.Date, sep)
+		fmt.Fprintf(&b, " %s%s", testedVersions[g].Words, sep)
 	}
 	fmt.Fprintf(&b, "\n# to install those, download their release files and add -LocalFile <the file> to each line.\n")
 	fmt.Fprintf(&b, "$SqlInstance = %s   # %s in pgvigil\n", psQuote(server), name)

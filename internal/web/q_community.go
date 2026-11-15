@@ -1201,9 +1201,9 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		t := &out.Tools[i]
 		if out.Demo && t.Kind == "proc" && engine == "sqlserver" {
 			// a demo instance's procedures: invented at the tested version, as the rest of its data is invented
-			if tv, ok := testedVersions[t.Group]; ok {
-				vv := tv.Version
-				t.Version, t.VersionDate, t.Tested, t.VersionWord = &vv, tv.Date, tv.Version, "the tested version"
+			if tv, ok := testedVersions[t.Group]; ok && testedOf(t.Name) != "" {
+				vv := testedOf(t.Name)
+				t.Version, t.VersionDate, t.Tested, t.VersionWord = &vv, tv.Date, vv, "the tested version"
 			}
 		}
 		if out.Demo {
@@ -1234,7 +1234,7 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 						vv := v.Version
 						t.Version = &vv
 					}
-					t.VersionDate, t.Tested, t.VersionWord = v.Date, testedVersions[t.Group].Version, versionWord(yes, v, t.Group)
+					t.VersionDate, t.Tested, t.VersionWord = v.Date, testedOf(t.Name), versionWord(yes, v, t.Name)
 				}
 			}
 			t.Preset = c.Preset[t.ID]

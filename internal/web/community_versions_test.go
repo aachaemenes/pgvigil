@@ -26,20 +26,26 @@ func TestCompareAndWord(t *testing.T) {
 	if compareVersions("8.4", "8.34") != -1 || compareVersions("8.34", "8.34") != 0 || compareVersions("8.40", "8.34") != 1 || compareVersions("2200.20260409", "2200.20250101") != 1 {
 		t.Fatal("compareVersions")
 	}
+	// each procedure against its own version in the tested release (Darling Data's differ within one release)
 	for _, c := range []struct {
 		installed bool
-		v, group  string
+		v, name   string
 		want      string
 	}{
-		{false, "", "First Responder Kit", "not installed"},
-		{true, "", "First Responder Kit", "version not read"},
-		{true, "8.34", "First Responder Kit", "the tested version"},
-		{true, "8.30", "First Responder Kit", "older than tested"},
-		{true, "8.40", "First Responder Kit", "newer than tested (not tested by pgvigil)"},
-		{true, "3.11", "Darling Data", "the tested version"},
+		{false, "", "sp_Blitz", "not installed"},
+		{true, "", "sp_Blitz", "version not read"},
+		{true, "8.34", "sp_Blitz", "the tested version"},
+		{true, "8.30", "sp_BlitzCache", "older than tested"},
+		{true, "8.40", "sp_Blitz", "newer than tested (not tested by pgvigil)"},
+		{true, "6.11", "sp_PressureDetector", "the tested version"},
+		{true, "5.11", "sp_HumanEventsBlockViewer", "the tested version"},
+		{true, "3.11", "sp_HealthParser", "the tested version"},
+		{true, "2.11", "sp_IndexCleanup", "the tested version"},
+		{true, "3.11", "sp_PressureDetector", "older than tested"},
+		{true, "1.0", "sp_NotInTheCatalogue", "version not read"},
 	} {
-		if got := versionWord(c.installed, toolVersion{Version: c.v}, c.group); got != c.want {
-			t.Errorf("versionWord(%v, %q, %q) = %q, want %q", c.installed, c.v, c.group, got, c.want)
+		if got := versionWord(c.installed, toolVersion{Version: c.v}, c.name); got != c.want {
+			t.Errorf("versionWord(%v, %q, %q) = %q, want %q", c.installed, c.v, c.name, got, c.want)
 		}
 	}
 }
@@ -59,15 +65,17 @@ func TestMsServerOf(t *testing.T) {
 
 func TestInstallScript(t *testing.T) {
 	yes, no := true, false
-	v834, v830, v311 := "8.34", "8.30", "3.11"
+	v834, v830, v611, v311 := "8.34", "8.30", "6.11", "3.11"
 	tools := []toolState{
-		{communityTool: communityTool{Name: "sp_Blitz", Group: "First Responder Kit", Kind: "proc"}, Installed: &yes, Version: &v834, VersionWord: "the tested version"},
-		{communityTool: communityTool{Name: "sp_BlitzCache", Group: "First Responder Kit", Kind: "proc"}, Installed: &yes, Version: &v830, VersionWord: "older than tested"},
-		{communityTool: communityTool{Name: "sp_PressureDetector", Group: "Darling Data", Kind: "proc"}, Installed: &yes, Version: &v311, VersionWord: "the tested version"},
+		{communityTool: communityTool{Name: "sp_Blitz", Group: "First Responder Kit", Kind: "proc"}, Installed: &yes, Version: &v834, VersionDate: "2026-07-02", VersionWord: "the tested version"},
+		{communityTool: communityTool{Name: "sp_BlitzCache", Group: "First Responder Kit", Kind: "proc"}, Installed: &yes, Version: &v830, VersionDate: "2025-01-01", VersionWord: "older than tested"},
+		// one Darling Data release, two versions: not mixed
+		{communityTool: communityTool{Name: "sp_PressureDetector", Group: "Darling Data", Kind: "proc"}, Installed: &yes, Version: &v611, VersionDate: "2026-11-01", VersionWord: "the tested version"},
+		{communityTool: communityTool{Name: "sp_HealthParser", Group: "Darling Data", Kind: "proc"}, Installed: &yes, Version: &v311, VersionDate: "2026-11-01", VersionWord: "the tested version"},
 		{communityTool: communityTool{Name: "sp_WhoIsActive", Group: "sp_WhoIsActive", Kind: "proc"}, Installed: &no, VersionWord: "not installed"},
 	}
 	s, notes := installScript("prod-1", "sql01,1433", "dba", tools)
-	for _, want := range []string{"$SqlInstance = 'sql01,1433'", "Install-DbaFirstResponderKit -SqlInstance $SqlInstance -Database 'dba'", "Install-DbaWhoIsActive -SqlInstance $SqlInstance -Database 'dba'", "-LocalFile", "8.34", "3.11", "runs none of it"} {
+	for _, want := range []string{"$SqlInstance = 'sql01,1433'", "Install-DbaFirstResponderKit -SqlInstance $SqlInstance -Database 'dba'", "Install-DbaWhoIsActive -SqlInstance $SqlInstance -Database 'dba'", "-LocalFile", "8.34", "release of 2026-11-01", "2200.20260409", "runs none of it"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the script lacks %q:\n%s", want, s)
 		}
@@ -75,7 +83,7 @@ func TestInstallScript(t *testing.T) {
 	if strings.Contains(s, "Install-DbaDarlingData") {
 		t.Errorf("Darling Data is at the tested version, the script installs it:\n%s", s)
 	}
-	if len(notes) != 1 || !strings.Contains(notes[0], "First Responder Kit: mixed versions") {
+	if len(notes) != 1 || !strings.Contains(notes[0], "First Responder Kit: mixed versions (sp_Blitz 8.34 of 2026-07-02; sp_BlitzCache 8.30 of 2025-01-01)") {
 		t.Errorf("notes = %q", notes)
 	}
 	s, _ = installScript("prod-1", "", "master", tools[:1])

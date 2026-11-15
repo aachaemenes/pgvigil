@@ -141,10 +141,12 @@ says where to get it.
 
 **Installed community tools** (SQL Server; DBA Dash's Check Versions): each procedure found in the database, its version
 and date as its own text says them (read from the definition around its version line: `@Version = '8.34'`,
-`@version = '3.11'`, `Who Is Active? v2200.20260409`; the procedure is never run), the version pgvigil was tested with,
-and a word: the tested version, older than tested, newer than tested (not tested by pgvigil), version not read, not
-installed. A kit whose procedures are at different versions is said once above the grid. Tested: the First Responder
-Kit 8.34 (2026-07-02), Darling Data 3.11 (2026-11-01), sp_WhoIsActive 2200.20260409.
+`@version = '3.11'`, `Who Is Active? v2200.20260409`; the procedure is never run), the procedure's own version in
+the release pgvigil was tested with, and a word: the tested version, older than tested, newer than tested (not tested by
+pgvigil), version not read, not installed. A kit whose procedures come from different releases (their dates) is said once
+above the grid. Tested: the First Responder Kit 8.34 (2026-07-02; every procedure 8.34), Darling Data's release of
+2026-11-01 (each procedure its own version: sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11,
+sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409 (2026-04-09).
 
 **Print the install script** gives a PowerShell script for the server's DBA: dbatools' `Install-DbaFirstResponderKit`,
 `Install-DbaDarlingData` and `Install-DbaWhoIsActive` for each kit with a procedure missing, older than tested or of no
