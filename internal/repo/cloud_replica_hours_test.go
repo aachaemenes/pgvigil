@@ -27,7 +27,14 @@ func TestCloudReplicaHoursOnAStore(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
+	// every import under a +05:30 session (the 390b part b review's finding 7: a trigger truncating hours in the
+	// session's zone passes when only the last SELECT runs in it)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["timezone"] = "Asia/Kolkata"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
