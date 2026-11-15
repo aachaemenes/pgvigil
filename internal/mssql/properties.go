@@ -234,6 +234,24 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	netRows(p, net)
 	partial = append(partial, netPartial...)
 
+	// the default backup path (task 301b, Instance#14): the path as the server names it, a change of it logged as any
+	// property's. Whether the service account sees it is mssql_backup_checks' read (its own cap: a share that does not
+	// answer never holds this collection up); the tab shows that beside it, from mssql_backup_path_cells.
+	bp, bpWhy := defaultBackupPath(ctx, conn, info, func() propGate {
+		if !gate.read && !managed {
+			gate = readPropGate(ctx, conn)
+		}
+		return gate
+	})
+	switch {
+	case bpWhy == "":
+		p.add("default_backup_path", "Backups", "Default backup path", 800, bp, "")
+	case managed && info.Kind != KindAzureMI && info.Major == 14:
+		p.add("default_backup_path", "Backups", "Default backup path", 800, nil, "not read: the registry is not read on a managed service")
+	default:
+		p.add("default_backup_path", "Backups", "Default backup path", 800, nil, "not read: "+bpWhy)
+	}
+
 	maxMB, _ := s["max_memory_mb"].(int64)
 	physMB, _ := val("physical_memory_mb").(int64)
 	p.add("physical_memory_mb", "Memory", "Physical memory (MB)", 400, val("physical_memory_mb"), note())

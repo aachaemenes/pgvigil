@@ -87,13 +87,85 @@ SELECT i.instance_id, i.name AS instance, x.full_checksums, x.diff_checksums, x.
  WHERE i.is_active AND i.engine = 'sqlserver'
  ORDER BY i.name`
 
-// MSSQLBackupFiles serves GET /api/mssql/backup_files (the route is the lead's wiring in web.go).
+// ---- task 301b (migration 0191, the collections mssql_backup_history and mssql_backup_checks): the database's backup
+// history and restore history (the drill's two grids), the three checks' cells and findings, the default backup path.
+
+// sqlMSSQLBackupHistory: $1 the instance, $2 the database. The newest 10 sets per type and copy-only that
+// mssql_backup_history keeps, newest first: DBA Dash's Last Backup columns that msdb's history holds, in its order,
+// then pgvigil's own; last_verify = the newest verify_backup of the set in the actions log (target_id = its uuid).
+const sqlMSSQLBackupHistory = `
+SELECT h.database_name, h.recovery_model, CASE h.backup_type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' ELSE 'log' END AS backup_type,
+       h.start_at, h.finish_at, extract(epoch FROM h.finish_at - h.start_at)::bigint AS duration_s, h.size_bytes,
+       round(h.size_bytes / nullif(extract(epoch FROM h.finish_at - h.start_at), 0) / 1048576.0, 1) AS mb_s, h.compressed_bytes,
+       round((1 - h.compressed_bytes::numeric / nullif(h.size_bytes, 0)) * 100, 1) AS saving_pct,
+       round(h.compressed_bytes / nullif(extract(epoch FROM h.finish_at - h.start_at), 0) / 1048576.0, 1) AS write_mb_s,
+       h.is_damaged, h.has_checksums,
+       (h.compressed_bytes IS NOT NULL AND h.size_bytes IS NOT NULL AND h.compressed_bytes < h.size_bytes) AS is_compressed,
+       h.is_password_protected, (h.key_algorithm IS NOT NULL AND h.key_algorithm <> 'NO_Encryption') AS is_encrypted,
+       h.key_algorithm, h.compression_algorithm,
+       h.path, h.family_count, h.position, h.device_kind, h.user_name, h.machine_name, h.server_name, h.set_name, h.is_copy_only,
+       h.first_lsn, h.last_lsn, h.checkpoint_lsn, h.database_backup_lsn, h.differential_base_guid::text AS differential_base_guid,
+       h.backup_set_uuid::text AS backup_set_uuid, h.backup_set_id,
+       v.outcome AS verify_outcome, v.at AS verify_at, v.detail AS verify_detail, v.ui_user AS verify_user, h.read_at
+  FROM pgvigil.mssql_backup_history h
+  LEFT JOIN LATERAL (
+       SELECT a.outcome, a.at, a.detail, a.ui_user FROM pgvigil.actions_log a
+        WHERE a.instance_id = h.instance_id AND a.action = 'verify_backup' AND a.target_id = upper(h.backup_set_uuid::text)
+        ORDER BY a.at DESC LIMIT 1) v ON true
+ WHERE h.instance_id = $1 AND h.database_name = $2
+ ORDER BY h.finish_at DESC, h.backup_set_id DESC`
+
+// sqlMSSQLRestoreHistory: $1 the instance, $2 the destination database. The newest 20 restores per restore type
+// mssql_restore_history keeps, newest first, with the backup set each restored.
+const sqlMSSQLRestoreHistory = `
+SELECT r.restore_at, r.destination_database_name, r.restore_type, r.user_name, r.is_replace, r.is_recovery, r.stop_at,
+       r.source_server, r.source_database,
+       CASE r.source_type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' WHEN 'L' THEN 'log' ELSE r.source_type END AS source_type,
+       r.source_finish_at, r.source_path, r.source_backup_set_uuid::text AS source_backup_set_uuid, r.restore_history_id, r.read_at
+  FROM pgvigil.mssql_restore_history r
+ WHERE r.instance_id = $1 AND r.destination_database_name = $2
+ ORDER BY r.restore_at DESC, r.restore_history_id DESC`
+
+// sqlMSSQLBackupCheckCells: $1 the instance, $2 a database (NULL = all). Per database of the last mssql_backup_checks
+// read: pseudo-simple (Database#39) and the newest full / differential / log backup's file (Database#7), in words.
+const sqlMSSQLBackupCheckCells = `
+SELECT c.database_name, c.recovery_model, c.pseudo_simple, c.file_full, c.file_diff, c.file_log, c.read_at
+  FROM pgvigil.mssql_backup_check_cells c
+ WHERE c.instance_id = $1 AND ($2::text IS NULL OR c.database_name = $2)
+ ORDER BY c.database_name`
+
+// sqlMSSQLBackupPathCell: $1 the instance. The default backup path (Instance#14) and its words, the file check's state,
+// and the two collections' last reads and runs.
+const sqlMSSQLBackupPathCell = `
+SELECT p.default_backup_path, p.default_backup_path_state, p.reachable, p.files_state, p.read_at AS checks_at,
+       cur.restore_state, cur.read_at AS history_at,
+       ch.status AS checks_status, ch.note AS checks_note, hh.status AS history_status, hh.note AS history_note
+  FROM pgvigil.instances i
+  LEFT JOIN pgvigil.mssql_backup_path_cells p ON p.instance_id = i.instance_id
+  LEFT JOIN pgvigil.mssql_backup_history_cursor cur ON cur.instance_id = i.instance_id
+  LEFT JOIN pgvigil.collection_dates ch ON ch.instance_id = i.instance_id AND ch.collection = 'mssql_backup_checks'
+  LEFT JOIN pgvigil.collection_dates hh ON hh.instance_id = i.instance_id AND hh.collection = 'mssql_backup_history'
+ WHERE i.instance_id = $1`
+
+// sqlMSSQLBackupCheckFindings: $1 the instance (NULL = every active SQL Server instance). The three findings of
+// mssql_backup_check_findings (the Summary and pgvigil.findings take them through the join lines).
+const sqlMSSQLBackupCheckFindings = `
+SELECT f.severity, f.check_name, f.object, f.at, f.detail, f.instance_id, i.name AS instance
+  FROM pgvigil.mssql_backup_check_findings f
+  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
+ WHERE ($1::int IS NULL OR f.instance_id = $1)
+ ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.at DESC, i.name, f.object`
+
+// MSSQLBackupFiles serves GET /api/mssql/backup_files (the route is the lead's wiring in web.go). Task 301b's parts
+// ride it: checks, path and check_findings with an instance; history and restores only with a database too (a
+// server's whole history is never one answer); check_findings with no instance for the fleet.
 func (s *Server) MSSQLBackupFiles(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if q.Get("instance") == "" {
 		s.multiPart(w, r, []part{
 			{"by_instance", sqlMSSQLBackupLocByInstance, nil},
 			{"findings", sqlMSSQLBackupLocFindings, []any{nil}},
+			{"check_findings", sqlMSSQLBackupCheckFindings, []any{nil}},
 		})
 		return
 	}
@@ -106,12 +178,19 @@ func (s *Server) MSSQLBackupFiles(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("db"); v != "" {
 		db = v
 	}
-	s.multiPart(w, r, []part{
+	parts := []part{
 		{"sets", sqlMSSQLBackupSets, []any{id, db}},
 		{"files", sqlMSSQLBackupFileRows, []any{id, db}},
 		{"writers", sqlMSSQLBackupWriterRows, []any{id, db}},
 		{"roots", sqlMSSQLBackupRootRows, []any{id, db}},
 		{"findings", sqlMSSQLBackupLocFindings, []any{id}},
 		{"read", sqlMSSQLBackupFilesRead, []any{id}},
-	})
+		{"checks", sqlMSSQLBackupCheckCells, []any{id, db}},
+		{"path", sqlMSSQLBackupPathCell, []any{id}},
+		{"check_findings", sqlMSSQLBackupCheckFindings, []any{id}},
+	}
+	if db != nil {
+		parts = append(parts, part{"history", sqlMSSQLBackupHistory, []any{id, db}}, part{"restores", sqlMSSQLRestoreHistory, []any{id, db}})
+	}
+	s.multiPart(w, r, parts)
 }

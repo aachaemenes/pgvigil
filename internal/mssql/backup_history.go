@@ -120,7 +120,8 @@ ORDER BY bs.backup_set_id`
 }
 
 // restoreLocalUTC is a restorehistory time (the server's local time, no offset recorded) as UTC by the server's
-// current offset: a restore in the hour the clocks went back can read an hour off (said in docs/backups-sqlserver.md).
+// offset at the read: a restore made under the other daylight-saving offset (before the clocks last changed) reads an
+// hour off (said in docs/backups-sqlserver.md and on the page).
 func restoreLocalUTC(col string) string {
 	return "CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), " + col + "), 126) + 'Z'"
 }
@@ -558,34 +559,15 @@ func backupPathRow(ctx context.Context, conn *sql.Conn, info Info) collect.Row {
 		row["state"], row["detail"] = "not judged", "not judged: "+why
 		return row
 	}
-	if info.Kind == KindAzureMI {
-		return notJudged("Azure SQL Managed Instance keeps its backups itself")
+	path, why := defaultBackupPath(ctx, conn, info, func() propGate { return readPropGate(ctx, conn) })
+	if why != "" {
+		return notJudged(why)
 	}
-	if info.Major < 14 {
-		return notJudged("SQL Server 2017 and later")
-	}
-	var path sql.NullString
-	if info.Major >= 15 {
-		if err := conn.QueryRowContext(ctx, backupPathSQL).Scan(&path); err != nil {
-			return notJudged("the default backup path could not be read")
-		}
-	} else {
-		if g := readPropGate(ctx, conn); !g.instanceRegread {
-			return notJudged("no right to read the registry (xp_instance_regread)")
-		}
-		var rc sql.NullInt64
-		if err := conn.QueryRowContext(ctx, backupPathRegSQL).Scan(&rc, &path); err != nil || !rc.Valid || rc.Int64 != 0 {
-			return notJudged("the registry's BackupDirectory could not be read")
-		}
-	}
-	if !path.Valid || strings.TrimSpace(path.String) == "" {
-		return notJudged("no default backup path set")
-	}
-	row["path"] = path.String
+	row["path"] = path
 	cctx, cancel := context.WithTimeout(ctx, backupPathTimeout)
 	defer cancel()
 	var exists, isDir, parent sql.NullInt64
-	if err := conn.QueryRowContext(cctx, backupExistsSQL, path.String).Scan(&exists, &isDir, &parent); err != nil {
+	if err := conn.QueryRowContext(cctx, backupExistsSQL, path).Scan(&exists, &isDir, &parent); err != nil {
 		if cctx.Err() != nil {
 			return notJudged(fmt.Sprintf("the path did not answer in %d seconds", int(backupPathTimeout.Seconds())))
 		}
@@ -597,6 +579,37 @@ func backupPathRow(ctx context.Context, conn *sql.Conn, info Info) collect.Row {
 		row["state"], row["detail"] = "gone", "not a directory the service account sees"
 	}
 	return row
+}
+
+// defaultBackupPath reads the instance's default backup path (Instance#14): SERVERPROPERTY('InstanceDefaultBackupPath')
+// from SQL Server 2019, the registry's BackupDirectory on 2017 once gate says xp_instance_regread may be called. why
+// is the reason there is no path, in fixed words (the server's text is never kept); both callers put their own prefix
+// before it (mssql_backup_checks 'not judged: ', the Properties row 'not read: ').
+func defaultBackupPath(ctx context.Context, conn *sql.Conn, info Info, gate func() propGate) (path, why string) {
+	if info.Kind == KindAzureMI {
+		return "", "Azure SQL Managed Instance keeps its backups itself"
+	}
+	if info.Major < 14 {
+		return "", "SQL Server 2017 and later"
+	}
+	var p sql.NullString
+	if info.Major >= 15 {
+		if err := conn.QueryRowContext(ctx, backupPathSQL).Scan(&p); err != nil {
+			return "", "the default backup path could not be read"
+		}
+	} else {
+		if g := gate(); !g.instanceRegread {
+			return "", "no right to read the registry (xp_instance_regread)"
+		}
+		var rc sql.NullInt64
+		if err := conn.QueryRowContext(ctx, backupPathRegSQL).Scan(&rc, &p); err != nil || !rc.Valid || rc.Int64 != 0 {
+			return "", "the registry's BackupDirectory could not be read"
+		}
+	}
+	if !p.Valid || strings.TrimSpace(p.String) == "" {
+		return "", "no default backup path set"
+	}
+	return p.String, ""
 }
 
 // intOf reads a whole number a driver returned in any of its integer shapes (0 for anything else).

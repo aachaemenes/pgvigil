@@ -73,6 +73,68 @@ folder mounted for the backups alone, and the instance's volumes list only those
 until a real row of theirs is seen. Each replica of an availability group has its own msdb: the newest set of each type
 is the newest any monitored replica took, and two destinations split between two replicas are not seen.
 
+## Backup history, restore history and three checks
+
+Two more collections sit beside `mssql_backup_files`:
+
+| Collection | Every | Reads | Needs |
+|---|---|---|---|
+| `mssql_backup_history` | 1 hour | `msdb.dbo.backupset` with the first file of each set (`backupmediafamily`, mirror 0) and `backupmediaset`: per database, type and copy-only the newest 10 sets this server took and kept somewhere; `msdb.dbo.restorehistory` with the set each restore used: per destination database and restore type the newest 20 restores | a user in msdb with db_datareader (msdb's guest is enough: every login may SELECT these tables unless it is denied) |
+| `mssql_backup_checks` | 1 hour | `sys.databases`, then `sys.database_recovery_status` for the databases it may read; the default backup path (`SERVERPROPERTY('InstanceDefaultBackupPath')` from SQL Server 2019, the registry's `BackupDirectory` through `xp_instance_regread` on 2017 once the right is checked); `sys.dm_os_file_exists` for that path and, where the instance opts in, for the newest backups' files | nothing beyond the monitoring login: it reads the databases `sys.databases` lists to it; `sys.dm_os_file_exists` answers every login (SQL Server 2017 and later); on 2017 the registry read needs EXECUTE on `xp_instance_regread` |
+
+The history is read as the newest sets are: from a cursor on `backup_set_id` (and one on `restore_history_id`), the
+first read whole, a replaced msdb or a database listed again sending the next read back to the start; the repository
+keeps 10 sets per database, type and copy-only and 20 restores per destination and restore type, the oldest pruned at
+each read. A database created anew under an old name starts without the old one's sets (the hour of slack holds as
+above). A login denied SELECT on `restorehistory` reads no restores: the read says 'no right' and the restores read
+before stay.
+
+**The time of a restore.** msdb records `restore_date` and `stop_at` in the server's local time with no offset (a
+backup's own times carry `backupset.time_zone`; a restore's do not). pgvigil turns them to UTC with the server's offset
+at the read, so a restore made under the other daylight-saving offset (before the clocks last changed) shows an hour
+off.
+
+The three checks (each a warning; info when a replica of the database's availability group is not monitored):
+
+| Finding | When | Not judged |
+|---|---|---|
+| backup file missing | the newest full, differential or log backup that is not copy-only (the one the Backups tab judges) names a file `sys.dm_os_file_exists` answers is not there: 'the file is gone', or 'the folder `<dir>` is gone'. A job that moves or prunes backups after they are taken is one reason; the finding names it | read only where the instance opts in (`backups: check_files`, off by default: the check makes the SQL Server service account touch each backup destination once an hour); disk backups only (a URL, tape or virtual device is not checked); each destination root is asked first on its own connection (15 seconds): a root that does not answer leaves its files 'not judged: `<root>` did not answer', and the files of the roots that answered share 60 seconds; a refused check is 'not judged' |
+| pseudo-simple recovery | a database in FULL or BULK_LOGGED recovery whose `last_log_backup_lsn` is NULL: no log backup can be taken (no full or differential backup since the log chain began), so it behaves as SIMPLE - before its first full backup, and after a switch from SIMPLE until a full or a differential | master, model, msdb, tempdb and snapshots; a database the Backups tab does not judge; a secondary replica's copy, a standby database and one that is not ONLINE (a RESTORING one reads NULL); an AUTO_CLOSE database: reading its recovery status opens it, so it is left out and its cell says 'not read: AUTO_CLOSE (reading would open it)' unless the instance opts in (`reads: auto_close_databases`, off by default) |
+| default backup path not reachable | the default backup path is not a directory the service account sees | SQL Server 2016 and earlier; Azure SQL Managed Instance (the service keeps its backups); no right to read the registry on 2017; a path that does not answer in 20 seconds |
+
+'A directory the service account sees' is all the path check says: a folder that only the service's own account may
+list reads as a directory, and writing to it is never tried.
+
+The two opt-ins are per instance in `pgvigil.yaml`:
+
+```yaml
+instances:
+  - name: sql01
+    engine: sqlserver
+    reads:
+      auto_close_databases: true   # read AUTO_CLOSE databases' recovery status (it opens each one every hour)
+    backups:
+      check_files: true            # check the newest backups' files (the service account touches each destination hourly)
+```
+
+The page: the Backups tab's read block names the default backup path and how the checks and the history were last read;
+**Backup checks** lists every database's pseudo-simple and file cells under the Databases grid; a database's panel adds
+**Backup history** (its kept sets newest first: DBA Dash's Last Backup columns that msdb's history holds, in its order,
+then pgvigil's own - the first file, the file count, the position, device, login, machine, set name, the LSNs, the
+differential's base and the set's uuid) and **Restore history** (when, the type, by whom, replace, recovery, stop at,
+and the backup restored: its server, database, type, finish and first file). DBA Dash has no backup-history grid and
+reads restores only for log shipping. The Properties tab shows the default backup path, and beside it whether the
+service account sees it.
+
+**Verify.** Where the instance's actions door offers `verify_backup` (off by default; see
+[sqlserver-actions.md](sqlserver-actions.md)), the Backup history grid's last verify cell holds a Verify button for a
+disk backup, and its right-click menu a 'Verify this backup...' line. The dialog shows the set as the server reads it
+now: its files, the size it reads on the server (over the network for a share), and whether its page checksums are
+checked (a backup taken without checksums is checked at the header level only); a password-protected or encrypted
+backup, or one to a URL, tape or virtual device, is not offered. Typing the database's name and a reason sends
+RESTORE VERIFYONLY through the actions login; it runs on after the reply, its end goes to the Actions log and the grid's
+last verify. No database is made.
+
 ## The platforms that keep their backups
 
 - Azure SQL Database: the service keeps them (point-in-time restore 1 to 35 days, 7 by default, Basic 1 to 7); they

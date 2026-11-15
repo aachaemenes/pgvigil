@@ -332,12 +332,14 @@ SELECT dc.instance_id, dc.database_name, dc.recovery_model, dc.read_at,
   LEFT JOIN pgvigil.mssql_backup_path_check p ON p.instance_id = dc.instance_id
   LEFT JOIN pgvigil.mssql_backup_judged j ON j.instance_id = dc.instance_id AND j.database_name = dc.database_name;
 
--- mssql_backup_path_cells: per instance the default backup path (Properties' two rows) and its words.
+-- mssql_backup_path_cells: per instance the default backup path, its words and reachable (yes / no; NULL = not judged):
+-- the Properties tab's row 'Default backup path reachable' beside mssql_properties' own 'Default backup path'.
 CREATE OR REPLACE VIEW pgvigil.mssql_backup_path_cells AS
 SELECT p.instance_id, p.path AS default_backup_path,
        coalesce(p.detail, CASE p.state WHEN 'directory' THEN 'a directory the service account sees (writing not tried)'
                                        WHEN 'gone' THEN 'not a directory the service account sees' ELSE 'not judged' END) AS default_backup_path_state,
-       p.files_state, p.read_at
+       p.files_state, p.read_at,
+       CASE p.state WHEN 'directory' THEN 'yes' WHEN 'gone' THEN 'no' END AS reachable
   FROM pgvigil.mssql_backup_path_check p;
 
 -- mssql_backup_check_findings: the three findings (warning each, the lead's E5). A file is judged only for a database

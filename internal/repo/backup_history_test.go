@@ -259,6 +259,7 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 		{`SELECT file_full || ' | ' || file_log || ' | ' || file_diff FROM pgvigil.mssql_backup_check_cells WHERE instance_id = $1 AND database_name = 'hdb'`,
 			"present | the file is gone | the folder /mnt/old/ is gone"},
 		{`SELECT file_full FROM pgvigil.mssql_backup_check_cells WHERE instance_id = $1 AND database_name = 'pok'`, `not judged: \\nas\sql did not answer`},
+		{`SELECT reachable FROM pgvigil.mssql_backup_path_cells WHERE instance_id = $1`, "no"},
 	} {
 		if got := one(c2.q, c); got != c2.want {
 			t.Errorf("%s:\n got %s\nwant %s", c2.q, got, c2.want)
@@ -274,7 +275,7 @@ func TestBackupHistoryOnAStore(t *testing.T) {
 	if got := one(`SELECT file_full FROM pgvigil.mssql_backup_check_cells WHERE instance_id = $1 AND database_name = 'pfull'`, c); got != "not read: the file check is off" {
 		t.Errorf("the file check off: %s", got)
 	}
-	if got := one(`SELECT default_backup_path || ' | ' || default_backup_path_state FROM pgvigil.mssql_backup_path_cells WHERE instance_id = $1`, c); got != "/var/opt/mssql/data | a directory the service account sees (writing not tried)" {
+	if got := one(`SELECT default_backup_path || ' | ' || default_backup_path_state || ' | ' || reachable FROM pgvigil.mssql_backup_path_cells WHERE instance_id = $1`, c); got != "/var/opt/mssql/data | a directory the service account sees (writing not tried) | yes" {
 		t.Errorf("the default path: %s", got)
 	}
 
