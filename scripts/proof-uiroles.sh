@@ -241,7 +241,9 @@ done
 # S5e: an edit writes the rule's successor, a mute like any other. Two rules of the admin's: one on every instance,
 # one on an instance registered for these rows
 post a$SUF /api/ack "{\"kind\":\"mute\",\"instance_id\":$IID,\"check_key\":\"y\",$END}" > /dev/null
-WIDE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id is null and ended_at is null")
+# the fleet-wide rule: no instance and no one alert (roles-p2: S5's one-alert mute is instance-less too, and its edit
+# is one scope by design - review-18 b24f1 N5)
+WIDE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id is null and finding_key is null and ended_at is null")
 ONE=$(q "select coalesce(max(ack_id), 0) from pgvigil.acks where kind = 'mute' and instance_id = $IID and ended_at is null")
 if [[ $WIDE == 0 || $ONE == 0 ]]; then bad "S5e: the admin's two mute rules are not in the store (every instance: $WIDE, one instance: $ONE): no edit row ran"
 else

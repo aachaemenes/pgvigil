@@ -177,7 +177,8 @@ else bad(`click: Silence as ${role}: off ${click.off}, dialog ${click.dialog} ('
 // every role (a job's thresholds); where the opener itself needs the role, a click on it below the need opens nothing.
 // Each opener is clicked, the open dialog's controls with data-need judged as the pages' are, and the dialog closed
 // (nothing is saved). [the page, the opener's words, its scope]
-const OPENERS = [[`#/jobs?i=${ms.instance_id}`, /^Thresholds$/, 'a job\'s thresholds'], ['#/drives', /^Configure$/, 'the drive thresholds'],
+// (a SQL Server instance's Jobs page is mssqljobs: jobs is PostgreSQL's - roles-p2 looked on the wrong page)
+const OPENERS = [[`#/mssqljobs?i=${ms.instance_id}`, /^Thresholds$/, 'a job\'s thresholds'], ['#/drives', /^Configure$/, 'the drive thresholds'],
   ['#/pgthresholds', /^Set\.\.\.$/, 'a PostgreSQL threshold'], ['#/alertrules', /^New rule$/, 'a new alert rule'], ['#/reportmail', /^New schedule\.\.\.$/, 'a new mail schedule']];
 for (const [hash, words, name] of OPENERS) {
   await cmd('Page.navigate', { url: U + hash }); await sleep(400);
