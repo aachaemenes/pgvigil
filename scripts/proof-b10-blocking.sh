@@ -14,7 +14,7 @@
 # A wait (PerformanceMonitor 3.13's rule): one (blocked, blocking) pair whose start, the event's time less its wait, is
 # within 2 s of the pair's previous start; a self-wait (blocked = blocking) is no wait. SQL Server: the blocked-process
 # reports; for an hour with none, the blocked rows of the requests snapshots. PostgreSQL: a session's Lock waits in
-# activity_sample, split where the samples leave a gap longer than two sample intervals.
+# activity_sample, split where a sample is missed (a gap over 1.5 sample intervals, the median gap between snapshots).
 #
 # Expected (written before the first run; RED = what the tree before this change does):
 #  A. ONE WAIT, real. A head holds a row lock 80 s, a waiter blocks behind it from 2 s in: mssql_blocked_reports holds
@@ -49,6 +49,9 @@
 #  J. PostgreSQL (activity_sample every 15 s): pid 101 waits on a Lock in samples 0-60 s and again 105-135 s under the
 #     same query_start (a 45 s gap, over two intervals): 2 waits; pid 102 waits 30 s once: 1; pgvigil.pg_block_waits
 #     gives 3, the day and the live part 3, and the hour arm fires (3 waits, the longest 60 s). RED: 2 (one per query).
+#     J2, sampled once a minute (snapshots at 0, 60, 61, 120, 180 s: the median gap 59 s): pid 104 in a Lock wait at 0 and
+#     120 s and not waiting at 60 s = 2 waits; pid 106 in a Lock wait at 0, 60 and 120 s = 1 wait; 3 in all. RED: 4
+#     (104 merged at 'two intervals'; 106 split three times by the 1 s near-duplicate as the smallest gap).
 #  K. PostgreSQL deadlocks (log_events kind 'deadlock'): a pair of statements not seen in 30 days fires 'a deadlock
 #     between a new pair of statements' (warning) naming both; 5 deadlocks of a known pair in an hour fire 'deadlocks
 #     in the last hour' (warning); 2 of a known pair: neither. RED: no PostgreSQL deadlock finding.
@@ -242,6 +245,14 @@ q "select pgvigil.ensure_month_partition('activity_sample', now());
 check "$(waits pg_block_waits "$J")" 3 "J: 101 two waits (a 45 s gap), 102 one"
 check "$(api healthcal "$J" blocking)|$(api ack "$J" blocking)" "3|3" "J: the day and the live part read 3"
 check "$(has "$J" 'blocking events in the last hour')" yes "J: the hour arm fires on PostgreSQL (3 waits, the longest 60 s)"
+J2=$(syn j2 postgres)
+q "insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, datname, usename, state, wait_event_type, wait_event, query_start, blocking_pids)
+   select $J2, t0 + make_interval(secs => v.s), v.p, t0 - interval '1 hour', 'b10', 'app', 'active', v.wt, v.we, t0 - interval '5 seconds', v.bp
+     from (select date_trunc('minute', now()) - interval '30 minutes' t0) x,
+          (values (104, 0, 'Lock', 'transactionid', '{100}'::int[]), (104, 60, null, null, '{}'::int[]), (104, 120, 'Lock', 'transactionid', '{100}'),
+                  (105, 0, null, null, '{}'), (105, 61, null, null, '{}'), (105, 180, null, null, '{}'),
+                  (106, 0, 'Lock', 'tuple', '{100}'), (106, 60, 'Lock', 'tuple', '{100}'), (106, 120, 'Lock', 'tuple', '{100}')) v(p, s, wt, we, bp)" >/dev/null
+check "$(waits pg_block_waits "$J2")" 3 "J2: once a minute with a near-duplicate snapshot: 104 two waits (not waiting at 60 s), 106 one"
 
 echo "--- K. PostgreSQL deadlocks"
 K1=$(syn k1 postgres); K2=$(syn k2 postgres); K3=$(syn k3 postgres)

@@ -18,8 +18,9 @@
 --                                           (5 s at least) by the same rule (source 'snapshot').
 --   pg_block_waits(instance, from, to)      one row per PostgreSQL wait whose last sight falls in (from, to] (read as
 --                                           above): a session's Lock waits in activity_sample under
---                                           one statement (pid, backend_start, query_start), split where the samples
---                                           leave a gap longer than two of the instance's sample intervals.
+--                                           one statement (pid, backend_start, query_start), split where a sample is
+--                                           missed (a gap over 1.5 of the instance's sample intervals: the median gap
+--                                           between its snapshots); its length the first to the last sample of the run.
 
 CREATE OR REPLACE FUNCTION pgvigil.mssql_block_waits(p_instance int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (blocked_spid int, blocking_spid int, started_at timestamptz, last_seen_at timestamptz, wait_ms bigint, seen int, source text)
@@ -79,14 +80,15 @@ LANGUAGE sql STABLE AS $$
      WHERE a.instance_id = p_instance AND a.wait_event_type = 'Lock'
        AND a.snapshot_at > p_from - interval '1 hour' AND a.snapshot_at <= p_to + interval '1 hour'
   ), step AS (
-    -- the instance's sample interval: the smallest gap between two of its snapshots in the stretch read (15 s by default)
-    SELECT coalesce(min(g), interval '15 seconds') AS iv FROM (
+    -- the instance's sample interval: the median gap between two of its snapshots in the stretch read (one extra or
+    -- near-duplicate snapshot does not move it; the activity collection runs once a minute by default)
+    SELECT coalesce(percentile_disc(0.5) WITHIN GROUP (ORDER BY g), interval '60 seconds') AS iv FROM (
       SELECT t.at - lag(t.at) OVER (ORDER BY t.at) AS g
         FROM (SELECT DISTINCT a.snapshot_at AS at FROM pgvigil.activity_sample a
                WHERE a.instance_id = p_instance AND a.snapshot_at > p_from - interval '1 hour' AND a.snapshot_at <= p_to + interval '1 hour') t) x
      WHERE g > interval '0'
   ), marked AS (
-    SELECT s.*, CASE WHEN lag(s.at) OVER w IS NULL OR s.at - lag(s.at) OVER w > 2 * (SELECT iv FROM step) THEN 1 ELSE 0 END AS fresh
+    SELECT s.*, CASE WHEN lag(s.at) OVER w IS NULL OR s.at - lag(s.at) OVER w > 1.5 * (SELECT iv FROM step) THEN 1 ELSE 0 END AS fresh
       FROM s
     WINDOW w AS (PARTITION BY s.p, s.bs, s.qs ORDER BY s.at)
   ), numbered AS (
