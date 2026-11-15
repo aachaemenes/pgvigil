@@ -10,6 +10,8 @@
 # credential or token goes to a cloud box (the lab rule of 2026-11-14); the repository is reached from here (the A1-E
 # form: the box's PostgreSQL through a tunnel). Needs psql, jq, python3, aws, PGVIGIL_BIN (a built pgvigil) or a go
 # toolchain, and
+# Every run makes its own repository database and drops it (0151 is edited in place before the tag: a store that
+# once applied 390a's 0151 would skip 390b's Part P, so no run reuses one).
 #   PGVIGIL_ADMIN_DSN        a superuser connection to a PostgreSQL in KEYWORD form, no dbname (the repository is made there)
 #   PGVIGIL_LAB_AWS_PROFILE, PGVIGIL_LAB_AWS_REGION, PGVIGIL_LAB_PROOF   as the lab script (its state file .lab/aws-rds-replica.env)
 #   PGVIGIL_PROOF_DENY_PROFILE  (R-G, optional) an AWS profile whose identity may read CloudWatch but not
