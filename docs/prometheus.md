@@ -101,6 +101,10 @@ instances expect about 42,400 series by default; `databases: on` adds 10 series 
 10 x `max_databases` per PostgreSQL instance, 500 at the default cut). A rate's lookback is each instance's own (3 x its
 longest dbstats, serverstats or iostats interval, 15 minutes at least), as on the Metrics page.
 
+An instance a remote collector reads ([remote-collector.md](remote-collector.md)) is exported from its newest loaded
+bundle, with no timestamp of its own: its series lag by the bundle interval plus the transfer, so a Prometheus alert on
+it fires that much later than on an instance pgvigil reads itself.
+
 ## Not proven
 
 See `scripts/proof-prometheus.sh` for the rows proven on a box run and the ones left NOT PROVEN.
