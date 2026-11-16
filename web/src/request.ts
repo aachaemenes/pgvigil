@@ -7,8 +7,8 @@
 // user's GET is refused by the server).
 // Data: GET /api/requests/{id}?wait=N, POST /api/requests/{id}/cancel (internal/web/q_requests.go).
 import { LoginRequired, post } from './api';
-import { InstanceRun, ResultSet } from './customreports';
-import { el, fmtTime } from './ui';
+import { InstanceRun, ResultSet, resultView } from './customreports';
+import { badge, el, fmtNum, fmtTime } from './ui';
 
 export interface Queued { request_id: number; expires_at?: string; detail?: string; via?: string }
 
@@ -27,17 +27,22 @@ export function isQueued(x: unknown): x is Queued {
 
 const ended = (s: string) => s !== 'waiting' && s !== 'running';
 
-// stateWords: what the page says while a request waits or runs, and when it ended without a result.
+// sentence: an end's words closed with a stop, so ' Request <n>.' after them starts a sentence of its own (the
+// collector's words carry none: 'cancelled by its asker while it ran').
+const sentence = (s: string) => /[.!?]$/.test(s.trim()) ? s.trim() : s.trim() + '.';
+
+// stateWords: what the page says while a request waits or runs, and when it ended without a result. The repository
+// stores '' for words a state does not have (a done run's refusal), so the fallbacks are by ||, never ??.
 export function stateWords(e: RequestEnd): string {
   switch (e.state) {
     case 'waiting': return 'Waiting for the collector to take it' + (e.asked_at ? ` (asked ${fmtTime(e.asked_at)})` : '') + '.';
     case 'running': return `Running on ${e.taken_host ?? 'the collector'}` + (e.taken_at ? ` since ${fmtTime(e.taken_at)}` : '') + '.';
     case 'done': return `Ran on ${e.taken_host ?? 'the collector'}` + (e.done_at ? ` at ${fmtTime(e.done_at)}` : '') + '.';
-    case 'refused': return e.refusal ?? 'Refused.';
-    case 'expired': return e.outcome ?? 'No collector took it before it expired: it was never run.';
-    case 'lost': return e.outcome ?? 'The collector stopped while running it: it may or may not have run.';
-    case 'cancelled': return e.outcome ?? 'Cancelled.';
-    default: return e.outcome ?? e.state;
+    case 'refused': return sentence(e.refusal || 'Refused.');
+    case 'expired': return sentence(e.outcome || 'No collector took it before it expired: it was never run.');
+    case 'lost': return sentence(e.outcome || 'The collector stopped while running it: it may or may not have run.');
+    case 'cancelled': return sentence(e.outcome || 'Cancelled.');
+    default: return sentence(e.outcome || e.state);
   }
 }
 
@@ -120,8 +125,18 @@ export function asRun(e: RequestEnd, instance: string, engine: string): Instance
   const sets = (r.sets ?? []).map(s => r.cut ? { ...s, truncated: false } : s);
   return {
     instance, engine, outcome, rows: e.rows ?? 0, duration_ms: e.duration_ms ?? r.duration_ms ?? 0, sets,
-    declined: r.declined, error: e.state === 'done' ? (r.error || undefined) : (e.refusal ?? e.outcome ?? r.error),
+    declined: r.declined, error: e.state === 'done' ? (r.error || undefined) : (e.refusal || e.outcome || r.error || undefined),
   };
+}
+
+// endView: a queued run's end in the panel. A run that ended done, refused or failed is drawn as the direct reply's
+// run (resultView). A cancel, an expiry or a loss is not a failure of the call: its own word on the badge (a loss red:
+// it may or may not have run), its words as a note, in the same result section.
+export function endView(e: RequestEnd, instance: string, engine: string, title: string): HTMLElement {
+  if (e.state !== 'cancelled' && e.state !== 'expired' && e.state !== 'lost') return resultView([asRun(e, instance, engine)], undefined, title);
+  return el('section', { class: 'report-result' }, el('h3', {}, `${title}: ${instance}`),
+    el('p', { class: 'meta' }, badge(e.state, e.state === 'lost' ? 'crit' : 'warn'), ` ${fmtNum(e.rows ?? 0)} rows in ${fmtNum(e.duration_ms ?? 0)} ms`),
+    el('p', { class: 'meta refused', role: 'note' }, stateWords(e)));
 }
 
 // cutWords: the stored result's own cut ('cut at <n> rows: queue mode keeps 8 MB'), or nothing.

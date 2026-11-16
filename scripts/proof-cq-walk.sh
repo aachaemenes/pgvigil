@@ -136,6 +136,8 @@ if [[ -n "$IDS" ]]; then
     st=$(rq "select state from pgvigil.action_requests where request_id = $id")
     case $wr in
       W6) [[ $st == cancelled ]] || { echo "FAIL: $wr's request $id is $st in the repository (want cancelled)"; WRC=1; } ;;
+      W9) [[ $st == failed ]] || { echo "FAIL: $wr's request $id is $st in the repository (want failed)"; WRC=1; }
+          [[ $(rq "select count(*) from pgvigil.custom_report_log where payload->>'via' = 'queue' and payload->>'request_id' = '$id' and outcome = 'failed'") == 1 ]] || { echo "FAIL: $wr's request $id has no failed audit row with via queue"; WRC=1; } ;;
       *) [[ $st == done ]] || { echo "FAIL: $wr's request $id is $st in the repository (want done)"; WRC=1; }
          [[ $(rq "select count(*) from pgvigil.custom_report_log where payload->>'via' = 'queue' and payload->>'request_id' = '$id'") == 1 ]] || { echo "FAIL: $wr's request $id has no audit row with via queue"; WRC=1; } ;;
     esac

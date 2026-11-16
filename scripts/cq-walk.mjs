@@ -8,7 +8,11 @@
 //       (waiting / running on <host> / ran on <host> ... Request <n>.), the result's tables and rows on the page
 //   W6 sp_WhoIsActive @delta_interval 50: Run, Cancel once the page says it runs (the page's wait answers at an end
 //       or after 25 s; the worker reads a running cancel on its 5 s poll), the status line's end words saying cancel
+//       and closed before ' Request <n>.'; the panel's result section: badge 'cancelled' (never 'failed'), its words
 //   W7 / W8 the Running pages of both instances in queue mode: every off control and its words
+//   W9 sp_WhoIsActive @filter_type 'bogus' (the procedure's own RAISERROR): the status line's end is its words, closed
+//       before ' Request <n>.'; the panel: badge 'failed' and the procedure's words in the panel (r10's W6 shot: a
+//       queued end's '' refusal hid every failed run's words)
 // A run's result counts only as the panel's own result section (section.report-result): its badge 'done' and a table
 // with rows (the form's parameter table is not a result). An off control counts only with its words (title and the
 // note a person reads); W2 wants one at least (the walk's SQL Server has no Darling Data installed).
@@ -155,8 +159,22 @@ await fenced('W6', `#/community?i=${msId} (SQL Server)`, async () => {
   const tool = (await tools(msId)).find(t => t.id === 'sp_WhoIsActive');
   if (!tool) { row('W6', page, 'sp_WhoIsActive', 'not in the tool list', false); return; }
   const r = await runTool('W6', page, tool, { delta_interval: '50' }, true);
-  if (r) row('W6', page, `sp_WhoIsActive @delta_interval 50 -> Run -> Cancel while it runs`, `status: ${r.seen.join(' -> ')}`,
-    r.cancelled && r.id > 0 && !/^Ran on /.test(r.end) && /cancel/i.test(r.end));
+  if (r) row('W6', page, `sp_WhoIsActive @delta_interval 50 -> Run -> Cancel while it runs`,
+    `status: ${r.seen.join(' -> ')}; result: badge '${r.res.badge}'${r.res.err ? '; error: ' + r.res.err : ''}${r.res.note ? '; note: ' + r.res.note : ''}`,
+    r.cancelled && r.id > 0 && !/^Ran on /.test(r.end) && /cancel/i.test(r.end) && /[.!?] Request \d+\.$/.test(r.end.trim())
+      && r.res.badge === 'cancelled' && /cancel/i.test(r.res.note) && !r.res.err);
+});
+
+// W9 a run that fails through the queue: sp_WhoIsActive's own refusal of a filter type it does not know
+await fenced('W9', `#/community?i=${msId} (SQL Server)`, async () => {
+  const page = `#/community?i=${msId} (SQL Server)`;
+  if (!await go(`#/community?i=${msId}`)) { row('W9', page, 'the page', 'never drew', false); return; }
+  const tool = (await tools(msId)).find(t => t.id === 'sp_WhoIsActive');
+  if (!tool) { row('W9', page, 'sp_WhoIsActive', 'not in the tool list', false); return; }
+  const r = await runTool('W9', page, tool, { filter_type: 'bogus' });
+  if (r) row('W9', page, `sp_WhoIsActive @filter_type bogus -> Run`,
+    `status: ${r.seen.join(' -> ')}; result: badge '${r.res.badge}'${r.res.err ? '; error: ' + r.res.err : ''}${r.res.note ? '; note: ' + r.res.note : ''}`,
+    r.id > 0 && /Valid filter types/.test(r.end) && /[.!?] Request \d+\.$/.test(r.end.trim()) && r.res.badge === 'failed' && /Valid filter types/.test(r.res.err));
 });
 
 // W7 / W8 the Running pages: the action doors in queue mode
