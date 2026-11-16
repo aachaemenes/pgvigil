@@ -55,13 +55,27 @@
 # by rule); under normalized a hit is judged on the part of the stored text the reply shows (a finding quotes a
 # statement cut short, before its literal); a route that answers under full and 5xx under another policy fails; a
 # session xmin holder's site is its query (the part after ': '): its own words before it are kept by rule.
+# Review 3's (the expectations unchanged; the run says what it does not reach): every call's status is compared with
+# its status under full (a 200 there and not here, a dropped connection, a reply that is not JSON = FAIL); A fails
+# under full when no dropped string is a stored text and under none when no file is dropped; the .sqlplan / .xdl /
+# running-plan bodies are judged, and are 'not shown' 404s under normalized and mixed too; the Running plan by its keys
+# and the statement search are walked; F names why each filled site no reply showed (a full-only document not walked)
+# and fails on any other, and names the sites the seed leaves empty; Z also fails a reply that holds a stored text's
+# start and one of its quoted literals (a statement half normalized); M counts how many texts only erp01 / sql01 hold
+# (its decisiveness) and no longer passes a fleet row with no instance as another's; the wiring patch is taken back
+# out when the run ends; texts.tsv is decoded as COPY writes it; a SQL Server slow event's shape is a site. Not
+# reached (said in TEXT-NOW's DONE): POST routes, the MCP door (proof-mcp), the alert sends under normalized / mixed,
+# the report-mail render (it reads the pages' API), a quote under 24 characters or with no space.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
 WORK=$(mktemp -d); DB="pgvigil_textnow_$RANDOM"; SRV=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
+PATCHED=""
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
+  # the lead's files back as they were (the patch is this run's, never the tree's)
+  [[ -n "$PATCHED" ]] && { git apply -R scripts/textnow-wiring.patch 2>/dev/null || patch -R -p1 --no-backup-if-mismatch < scripts/textnow-wiring.patch >/dev/null 2>&1 || echo "WARN: the wiring patch could not be taken back out" >&2; }
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -75,6 +89,7 @@ for _ in $(seq 1 20); do p=$((21000 + RANDOM % 9000)); if ! ss -ltnH "( sport = 
 # applied to this run's copy when the tree holds textread.go and web.go lacks the hook (a red tree has neither)
 if [[ -f scripts/textnow-wiring.patch && -f internal/web/textread.go ]] && ! grep -q applyTextNow internal/web/web.go; then
   git apply scripts/textnow-wiring.patch 2>/dev/null || patch -p1 --no-backup-if-mismatch < scripts/textnow-wiring.patch >/dev/null || fail "the wiring patch does not apply"
+  PATCHED=1
   echo "the wiring patch applied (scripts/textnow-wiring.patch)"
 fi
 echo "== build pgvigil and seed the demo into $DB"
@@ -92,12 +107,12 @@ AFI=$(q "select instance_id from pgvigil.log_events where kind = 'auth_fail' ord
 
 echo "== the stored texts (every site of TestStoredTextTagged's list the seed filled)"
 python3 - "$WORK/sites.sql" <<'EOF'
-import sys
+import re, sys
 sites = {"query_text": ["query"], "statement_text": ["query"], "log_events": ["statement", "detail", "message"], "slow_events": ["statement"],
   "plans": ["query", "plan_text"], "vacuum_running": ["query"], "schema_ddl_log": ["statement"], "pgaudit_events": ["statement", "parameters"],
   "mssql_qs_query": ["query_text"], "mssql_qs_plan": ["plan_xml"], "mssql_pc_text": ["query"], "mssql_requests": ["statement"],
   "mssql_deadlocks": ["victim_statement", "graph"], "mssql_blocked_reports": ["blocking_statement", "blocked_statement", "report"],
-  "mssql_slow_events": ["statement"], "mssql_attentions": ["statement"], "mssql_ag_events": ["statement"], "mssql_trace_events": ["statement"],
+  "mssql_slow_events": ["statement", "shape"], "mssql_attentions": ["statement"], "mssql_ag_events": ["statement"], "mssql_trace_events": ["statement"],
   "mssql_audit_events": ["statement"], "mssql_memory_grant_query": ["statement"], "mssql_running_plan": ["plan_xml"], "mssql_live_plan": ["plan_xml"],
   "mssql_statement_text": ["statement"], "mssql_waiting_tasks": ["statement"], "mssql_versionstore_sample": ["holder_statement"],
   "pi_sql": ["digest", "full_text"], "session_sets": ["query"]}
@@ -125,6 +140,8 @@ parts.append("SELECT DISTINCT 'vacuum_xmin_holders.detail' AS site, x.instance_i
 parts.append("SELECT DISTINCT 'session_sets.value' AS site, x.instance_id, x.value AS t FROM pgvigil.session_sets x "
              "WHERE NOT x.planner AND length(x.value) >= 24 AND x.value ~ ' '")
 open(sys.argv[1], "w").write("\nUNION ALL\n".join(parts))
+# every site's name, filled or not (the judge names the ones the seed leaves empty)
+open(sys.argv[1] + ".names", "w").write("\n".join(re.findall(r"SELECT DISTINCT '([a-z_]+\.[a-z_]+)' AS site", "\n".join(parts))))
 EOF
 # a site whose table this tree lacks is left out by name (to_regclass cannot guard a column list): each read apart
 : > "$WORK/texts.tsv"
@@ -184,7 +201,7 @@ def call(path, params, who):
         try:
             v = json.loads(body); rec["strings"] = strings(v, []); rec["json"] = v
         except ValueError:
-            rec["strings"] = []
+            rec["strings"] = []; rec["badjson"] = True
     elif st == 200:
         rec["strings"] = [body.decode("utf-8", "replace")]
     else:
@@ -217,6 +234,7 @@ if r and r.get("query_id") and r.get("query_hash"):
     if pr and pr.get("plan_id"):
         st, body, _ = get("/api/mssql/querystore/plan.sqlplan", {"instance": msi, "db": r["database_name"], "plan": pr["plan_id"]})
         out["downloads"]["sqlplan"] = [st, body[:300].decode("utf-8", "replace")]
+        if st == 200: out["calls"].append({"path": "download .sqlplan", "who": "ms", "status": st, "params": {}, "strings": [body.decode("utf-8", "replace")]})
 for view in ("regressed", "forced", "tuning"):
     call("/api/mssql/querystore", {**win, "instance": msi, "view": view}, "ms")
 for part in ("deadlocks", "blocked", "slow", "attentions", "ag_events"):
@@ -226,6 +244,24 @@ if d:
     call("/api/mssql/xe/deadlock", {"instance": msi, "at": d["event_at"], "key": d["event_key"]}, "ms")
     st, body, _ = get("/api/mssql/xe/deadlock.xdl", {"instance": msi, "at": d["event_at"], "key": d["event_key"]})
     out["downloads"]["xdl"] = [st, body[:300].decode("utf-8", "replace")]
+    if st == 200: out["calls"].append({"path": "download .xdl", "who": "ms", "status": st, "params": {}, "strings": [body.decode("utf-8", "replace")]})
+# the Running plan by its keys (a kept plan), and the statement search (review 3 M1)
+def tabs(v, acc):
+    if isinstance(v, dict):
+        if "columns" in v and "rows" in v: acc.append(v)
+        else:
+            for x in v.values(): tabs(x, acc)
+    elif isinstance(v, list):
+        for x in v: tabs(x, acc)
+    return acc
+rpl = next((rec for rec in out["calls"] if rec["path"] == "/api/mssql/runningplans" and rec["who"] == "ms" and rec["status"] == 200), None)
+kp = next((dict(zip(t["columns"], r)) for t in tabs((rpl or {}).get("json"), []) if "plan_hash" in t["columns"] for r in t["rows"]
+           if dict(zip(t["columns"], r)).get("has_plan")), None)
+if kp:
+    rec = call("/api/mssql/runningplans/plan", {"instance": msi, "qh": kp["query_hash"], "ph": kp["plan_hash"], "start": kp["stmt_start"], "end": kp["stmt_end"]}, "ms")
+    out["downloads"]["runningplan"] = [rec["status"], json.dumps(rec.get("json"))[:300] if rec.get("json") is not None else rec.get("error", "")]
+call("/api/mssql/search", {**win, "q": "SELECT", "instance": msi}, "ms")
+call("/api/mssql/search", {**win, "q": "SELECT"}, "fleet")
 b = first("/api/mssql/xe", "blocked", "ms", {"part": "blocked"})
 if b: call("/api/mssql/xe/blocked", {**win, "instance": msi, "head": b.get("head_key")}, "ms")
 s = first("/api/mssql/xe", "slow", "ms", {"part": "slow"})
@@ -282,7 +318,8 @@ pol, work, pgi, msi = sys.argv[1:5]
 texts = []
 for l in open(f"{work}/texts.tsv", encoding="utf-8", errors="replace"):
     p = l.rstrip("\n").split("\t", 2)
-    if len(p) == 3: texts.append((p[0], "" if p[1] == "\\N" else p[1], p[2].replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")))
+    # COPY's text format: a backslash escapes the next character (\n \t \r \b \f \v, \\ a backslash), decoded in one pass
+    if len(p) == 3: texts.append((p[0], "" if p[1] == "\\N" else p[1], re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v"}.get(m.group(1), m.group(1)), p[2])))
 by = collections.defaultdict(list)
 for t in texts: by[t[2][:24]].append(t)
 lit = re.compile(r"'[^']+'|(?<![\w$])\d+(?![\w])")
@@ -331,7 +368,7 @@ def strs(v, acc):
     elif isinstance(v, list):
         for x in v: strs(x, acc)
     return acc
-shown, leaks, qmarks, placed, embedded = collections.Counter(), [], 0, 0, collections.Counter()
+shown, leaks, qmarks, placed, embedded, litcache = collections.Counter(), [], 0, 0, collections.Counter(), {}
 for c in walk["calls"]:
     ss = c.get("strings", [])
     if pol == "mixed" and c["who"] in ("pg", "ms") and "json" in c:
@@ -349,6 +386,16 @@ for c in walk["calls"]:
         if "?" in s and re.search(r"\b(SELECT|UPDATE|INSERT|DELETE)\b", s, re.I): qmarks += 1
         ha = hits_at(s)
         if any(i > 0 for _, i in ha): embedded[c["path"]] += 1
+        if pol == "normalized":
+            # Z2: a stored text's first 24 characters and, after them, one of its own quoted literals (half normalized)
+            for k in range(len(s) - 23):
+                for (site2, inst2, t2) in by.get(s[k:k + 24], ()):
+                    if site2 in ("log_events.message",): continue
+                    if t2 not in litcache: litcache[t2] = re.findall(r"'([^']{4,})'", t2)
+                    for q in litcache[t2]:
+                        if "'" + q + "'" in s[k:]:
+                            leaks.append(f"{c['path']} [{c['who']}] shows {site2} of instance {inst2 or '?'} half normalized, its literal '{q[:30]}' kept: {s[k:k + 80]!r}")
+                            break
         for (site, inst, t), i in ha:
             shown[site] += 1
             ov = t if s.startswith(t, i) else s[i:]   # the part of the stored text this string shows
@@ -384,14 +431,26 @@ planner = [r for r in (pr.get("sets") or []) if r.get("planner") is True]
 print(f"   J1: JSON plan {'read' if pr.get('jsonplan') else 'NOT FOUND'}, text {'none' if ptxt is None else repr(ptxt[:90])}; S1: {len(custom)} custom SET row(s), values {[r.get('value') for r in custom][:4]}; L4: {len(walk.get('atcols', []))} '@' column(s)")
 for c in sorted(set(walk.get("atcols", [])))[:10]: bad.append(f"L4: {c}")
 undecided = []
-# a route that answers under full and 5xx here: the rule broke its reply
+# every call against its status under full: a reply the rule broke (review 3 H1)
+for c in walk["calls"]:
+    if c.get("status") == 0: bad.append(f"no reply (the connection dropped): {c['path']} [{c['who']}] {str(c.get('error', ''))[:80]}")
+    elif c.get("badjson"): bad.append(f"a reply that is not JSON: {c['path']} [{c['who']}]")
 if pol != "full":
     try:
-        full5 = {x.rsplit(" ", 1)[0] for x in json.load(open(f"{work}/walk-full.json"))["skipped"]}
-        for x in five:
-            if x.rsplit(" ", 1)[0] not in full5: bad.append(f"5xx under {pol}, answered under full: {x}")
+        key = lambda c: (c["path"], c["who"], json.dumps(c.get("params", {}), sort_keys=True, default=str))
+        fst = {key(c): c["status"] for c in json.load(open(f"{work}/walk-full.json"))["calls"]}
+        compared = 0
+        for c in walk["calls"]:
+            if key(c) not in fst: continue
+            compared += 1
+            if fst[key(c)] == 200 and c["status"] not in (0, 200):
+                bad.append(f"{c['status']} under {pol}, 200 under full: {c['path']} [{c['who']}] {str(c.get('error', ''))[:80]}")
+        print(f"   statuses compared with full: {compared} calls")
     except (OSError, ValueError, KeyError):
-        bad.append("walk-full.json unreadable: the 5xx compare did not run")
+        bad.append("walk-full.json unreadable: the status compare did not run")
+# A (review 3 H2): under none the alert sends must drop files
+alert_files = sum(c.get("files", 0) for c in walk["calls"] if c["who"] == "alert")
+if pol == "none" and any(c["who"] == "alert" for c in walk["calls"]) and alert_files == 0: bad.append("A: no alert file dropped under none (the sends were not exercised)")
 if pol == "full":
     if not ptxt or "acme" not in ptxt.lower(): undecided.append("J1: no JSON plan text with its literal under full")
     if not any(r.get("value") is not None for r in custom): undecided.append("S1: no custom SET value shown under full")
@@ -405,13 +464,26 @@ if pol != "full":
     if any(r.get("value") is not None for r in custom): bad.append(f"S1: a custom SET value shown under {pol}: {[r.get('value') for r in custom if r.get('value') is not None][:3]}")
 if pol == "full":
     for u in undecided: print(f"   {u}: NOT DECISIVE")
-    if not alert_hits: print("   the alert sends under full drop no stored text: A is NOT DECISIVE")
+    if not alert_hits: bad.append("A: the alert sends under full drop no stored text (A is not decisive)")
     sites = sorted(set(t[0] for t in texts))
-    print("   sites the seed filled and no reply showed: " + ", ".join(s for s in sites if not shown[s]) or "none")
+    # a filled site no reply showed: said with why (not walked), any other fails F (review 3 M1)
+    why_not = {"mssql_deadlocks.graph": "a full-only document, served by the .xdl download (judged) when the deadlock walked has one",
+               "mssql_qs_plan.plan_xml": "a full-only document, served by the .sqlplan download (judged) for the plan walked",
+               "mssql_running_plan.plan_xml": "a full-only document, served by the Running plan read (walked by one plan's keys)",
+               "vacuum_running.query": "a vacuum running at the read (the demo's seed holds one only at its anchor)"}
+    for x in sites:
+        if not shown[x]:
+            print(f"   filled, no reply showed: {x} - {why_not.get(x, 'NOT EXPLAINED')}")
+            if x not in why_not: bad.append(f"F: the filled site {x} is shown by no reply")
+    empty = sorted(set(open(f"{work}/sites.sql.names").read().split()) - set(sites))
+    print(f"   sites the seed leaves empty (not decided here): {', '.join(empty)}")
     sys.exit(0 if sum(shown.values()) and not undecided and not bad else 1)
-if pol == "none":
+if pol != "full":
+    # the full-only documents: 'not shown' under none and normalized, and under mixed (sql01 is none) - review 3 L3
     for k, v in walk["downloads"].items():
-        if v[0] != 404 or "not shown" not in v[1]: bad.append(f"download {k}: {v[0]} {v[1][:80]!r}")
+        if k == "runningplan":
+            if "not shown" not in v[1]: bad.append(f"the Running plan under {pol}: {v[0]} {v[1][:80]!r}")
+        elif v[0] != 404 or "not shown" not in v[1]: bad.append(f"download {k}: {v[0]} {v[1][:80]!r}")
 if pol == "normalized" and qmarks == 0: bad.append("no reply shows a normalized statement ('?')")
 if pol == "mixed":
     print(f"   rows of other instances in the replies to calls naming erp01 / sql01 (a fleet-wide route), judged as the fleet's: {placed} stored-text string(s)")
@@ -423,11 +495,15 @@ if pol == "mixed":
             if "instance_id" not in t["columns"]: continue
             ii = t["columns"].index("instance_id")
             for r in t["rows"]:
+                if r[ii] is None: continue   # a row with no instance: judged by its texts' instances below (review 3 M2)
                 mine = str(r[ii]) in (pgi, msi)
                 for cell in r:
                     if isinstance(cell, str) and hits(cell):
                         if mine: bad.append(f"{c['path']} [fleet] row of instance {r[ii]} shows {hits(cell)[0][0]}: {cell[:80]!r}")
                         else: others += 1
+    only = sum(1 for t in texts if t[1] in (pgi, msi) and all(u[1] in (pgi, msi) for u in by.get(t[2][:24], []) if u[2] == t[2]))
+    print(f"   stored texts only erp01 / sql01 hold (the texts the rule below can decide): {only} of {len(texts)}")
+    if only == 0: bad.append("M: no stored text is erp01's / sql01's alone: the fleet placement is not decisive")
     # a fleet string whose stored texts are erp01's / sql01's only is theirs, whatever columns its table has (review 2 M3)
     for c in walk["calls"]:
         if c["who"] != "fleet": continue
@@ -454,7 +530,7 @@ def strings(v):
     elif isinstance(v, list): [strings(x) for x in v]
 files = sorted(os.listdir(sys.argv[2]))
 for f in files: strings(json.load(open(os.path.join(sys.argv[2], f))))
-w["calls"].append({"path": "pgvigil alerts (file drop)", "who": "alert", "status": 200, "params": {}, "strings": acc})
+w["calls"].append({"path": "pgvigil alerts (file drop)", "who": "alert", "status": 200, "params": {}, "strings": acc, "files": len(files)})
 json.dump(w, open(sys.argv[1], "w"))
 print(f"alerts under {os.path.basename(sys.argv[2])[5:]}: {len(files)} file(s) dropped")
 PY
