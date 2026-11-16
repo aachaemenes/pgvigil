@@ -74,21 +74,24 @@ WITH scope AS (
 )`
 
 // sqlCollectorErrorsExportArm is the Parquet export's '(the service)' row (0256). export_service holds a state that
-// stands now, not an event, so the row is dated when its trouble began - the earliest last attempt of a window still
-// failed (export_service's own choice of attempt), else 3 hours after its newest window or its configuration (the
-// view's 'behind') - and it shows in every range that ends after that time. A repository below 0256 has no
+// stands now, not an event. Its trouble began at the earlier of the earliest last attempt of a window still failed (the
+// attempt export_service itself picks) and 3 hours after its newest window or its configuration (the view's 'behind');
+// both hold without a break from then on, so the row shows in every range that ends after that start. It is dated at
+// the range's end (now for a range that ends later), the time the state is read at, and its note says since when: a
+// row dated at its start would sit under an old date on a page of the last hour. A repository below 0256 has no
 // export_service: CollectorErrors leaves the arm out there.
 const sqlCollectorErrorsExportArm = `
   UNION ALL
-  SELECT NULL, x.since, NULL, '(the service)', NULL, 'export', 'Error', 'Other', x.detail, false, '#/collector'
+  SELECT NULL, least($2::timestamptz, now()), NULL, '(the service)', NULL, 'export', 'Error', 'Other',
+         x.detail || ' - since ' || to_char(x.since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', false, '#/collector'
     FROM (SELECT s.detail,
-                 coalesce((SELECT min(l.finished_at)
-                             FROM (SELECT DISTINCT ON (r.window_from) r.outcome, r.finished_at
-                                     FROM pgvigil.export_runs r
-                                    WHERE r.name = s.name
-                                    ORDER BY r.window_from, r.started_at DESC, r.run_id DESC) l
-                            WHERE l.outcome = 'failed'),
-                          coalesce(st.newest_window_to, st.configured_at) + interval '3 hours') AS since
+                 least((SELECT min(l.finished_at)
+                          FROM (SELECT DISTINCT ON (r.window_from) r.outcome, r.finished_at
+                                  FROM pgvigil.export_runs r
+                                 WHERE r.name = s.name
+                                 ORDER BY r.window_from, r.started_at DESC, r.run_id DESC) l
+                         WHERE l.outcome = 'failed'),
+                       coalesce(st.newest_window_to, st.configured_at) + interval '3 hours') AS since
             FROM pgvigil.export_service s
             JOIN pgvigil.export_state st ON st.name = s.name) x
    WHERE $3::int IS NULL AND x.since < $2`

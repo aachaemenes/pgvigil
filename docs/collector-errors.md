@@ -20,9 +20,10 @@ is set up on a monitored server.
   mail), a configured DBA Dash repository that was not read at its last attempt (Imported servers), a configured
   Parquet export with a window that failed at its last attempt or more than 3 hours behind (the Collector page's
   Parquet export grid; `pgvigil export -off` ends the row for an export no longer used). The export's row is a state
-  that holds now: it is dated when the trouble began (that window's last attempt, or 3 hours after the newest window)
-  and shows in every range that ends after it. They show at the root and in a tag folder, never on one instance, each
-  with a link to the page where it is handled.
+  that holds now, not an event: it shows in every range that ends after its trouble began (the earlier of that
+  window's last attempt and 3 hours after the newest window), dated at the range's end (now for a range that ends
+  later), and its message ends 'since <that start> UTC'. They show at the root and in a tag folder, never on one
+  instance, each with a link to the page where it is handled.
 - **Not here**: what only the service's own log holds (journalctl, or the Windows event log for the service), and a run
   that failed before its instance was recognised (the platform not detected, the instance row not made).
 
