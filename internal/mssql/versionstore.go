@@ -34,14 +34,22 @@ func (versionStoreCollector) Applies(info Info) (bool, string) {
 }
 
 // storeSQL: SQL Server 2016 SP1+. The two rate counters are cumulative (cntr_type 272696576): the value is the KB
-// generated or cleaned since the server started, and a rate is the delta between two reads.
-const storeSQL = `SELECT 'store' AS kind,
-  (SELECT CAST(SUM(CAST(version_store_reserved_page_count AS bigint)) * 8 AS bigint) FROM tempdb.sys.dm_db_file_space_usage) AS reserved_kb,
-  (SELECT CAST(SUM(CAST(total_page_count AS bigint)) * 8 AS bigint) FROM tempdb.sys.dm_db_file_space_usage) AS tempdb_data_kb,
+// generated or cleaned since the server started, and a rate is the delta between two reads. tempdb's data files are
+// read once for every figure of them: the version store, the total, and the user objects (temporary tables, table
+// variables), the internal objects (sorts, hashes, spools, cursors), the mixed extents and the space not allocated
+// (task 407: what tempdb is full of, and how full it is against what it can still grow to).
+const storeSQL = `SELECT 'store' AS kind, t.reserved_kb, t.tempdb_data_kb, t.user_object_kb, t.internal_object_kb, t.mixed_extent_kb, t.unallocated_kb,
   (SELECT MAX(cntr_value) FROM sys.dm_os_performance_counters WHERE object_name LIKE '%:Transactions%' AND counter_name = 'Version Store Size (KB)') AS store_kb,
   (SELECT MAX(cntr_value) FROM sys.dm_os_performance_counters WHERE object_name LIKE '%:Transactions%' AND counter_name = 'Version Generation rate (KB/s)') AS generation_raw_kb,
   (SELECT MAX(cntr_value) FROM sys.dm_os_performance_counters WHERE object_name LIKE '%:Transactions%' AND counter_name = 'Version Cleanup rate (KB/s)') AS cleanup_raw_kb,
-  (SELECT COUNT(*) FROM sys.dm_tran_active_snapshot_database_transactions WHERE session_id <> @@SPID) AS snapshot_tx_count`
+  (SELECT COUNT(*) FROM sys.dm_tran_active_snapshot_database_transactions WHERE session_id <> @@SPID) AS snapshot_tx_count
+FROM (SELECT CAST(SUM(CAST(u.version_store_reserved_page_count AS bigint)) * 8 AS bigint) AS reserved_kb,
+  CAST(SUM(CAST(u.total_page_count AS bigint)) * 8 AS bigint) AS tempdb_data_kb,
+  CAST(SUM(CAST(u.user_object_reserved_page_count AS bigint)) * 8 AS bigint) AS user_object_kb,
+  CAST(SUM(CAST(u.internal_object_reserved_page_count AS bigint)) * 8 AS bigint) AS internal_object_kb,
+  CAST(SUM(CAST(u.mixed_extent_page_count AS bigint)) * 8 AS bigint) AS mixed_extent_kb,
+  CAST(SUM(CAST(u.unallocated_extent_page_count AS bigint)) * 8 AS bigint) AS unallocated_kb
+  FROM tempdb.sys.dm_db_file_space_usage u) t`
 
 // holderSQL: SQL Server 2016 SP1+. The oldest active transaction that generates or may read row versions (the
 // lowest transaction sequence number: the one version cleanup cannot pass), its session and its last statement
