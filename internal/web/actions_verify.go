@@ -57,11 +57,11 @@ var verifyState sync.Map // *Server -> *verifyRuns
 
 // verifies is the server's verify state (made on first use, verify_timeout VerifyTimeoutDefault until SetVerifyTimeout).
 func (s *Server) verifies() *verifyRuns {
-	if v, ok := verifyState.Load(s); ok {
+	if v, ok := verifyState.Load(s.self()); ok {
 		return v.(*verifyRuns)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	v, _ := verifyState.LoadOrStore(s, &verifyRuns{ctx: ctx, cancel: cancel, timeout: mssql.VerifyTimeoutDefault})
+	v, _ := verifyState.LoadOrStore(s.self(), &verifyRuns{ctx: ctx, cancel: cancel, timeout: mssql.VerifyTimeoutDefault})
 	return v.(*verifyRuns)
 }
 
@@ -252,7 +252,7 @@ func (s *Server) MSSQLVerifyPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	set, stmt, why := mssql.VerifyPreview(ctx, m.doors[name], name, in.UUID)
+	set, stmt, why := mssql.VerifyPreview(ctx, m.doorsNow().MS[name], name, in.UUID) // the door set read once, here
 	s.reply(w, r, struct {
 		OK        bool            `json:"ok"`
 		Reason    string          `json:"reason,omitempty"`
@@ -335,7 +335,8 @@ func (s *Server) MSSQLVerifyRun(w http.ResponseWriter, r *http.Request) {
 		_, _ = lockConn.Exec(uctx, `SELECT pg_advisory_unlock($1, $2)`, verifyLockClass, in.InstanceID)
 		_ = lockConn.Close(uctx)
 	}
-	job, res := mssql.VerifyPrepare(ctx, m.doors[name], req)
+	door := m.doorsNow().MS[name] // the door set read once: the prepare and the run use the same door
+	job, res := mssql.VerifyPrepare(ctx, door, req)
 	if res.Outcome != mssql.OutcomeStarted {
 		unlock()
 		code := http.StatusConflict
@@ -360,7 +361,6 @@ func (s *Server) MSSQLVerifyRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("the verify's start could not be written (%v): nothing was sent", err))
 		return
 	}
-	door := m.doors[name]
 	go func() {
 		defer v.wg.Done()
 		defer unlock()
