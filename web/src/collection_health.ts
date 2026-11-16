@@ -271,7 +271,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'succeeded_pct', label: 'Succeeded %', num: true, fmt: pct },
       { key: 'failed_pct', label: 'Failed %', num: true, fmt: pct },
       // DBA Dash's own words (CollectionHealthView.cs FailedPct24Hrs), the acknowledgement's place and scope (pgvigil's is
-      // per instance), and over which instances it is counted (the lead's 00:5x call on the review's #9a)
+      // per instance), and over which instances it is counted (DBA Dash's SummaryKnownCount)
       { key: 'failed_pct_24h', label: 'Failed % 24hrs', num: true, fmt: pct,
         title: 'Runs that failed over the period the summary rates - the last 24hrs, or since errors were acknowledged if that\'s sooner, from the start of '
           + 'the next hour.  The summary\'s status is from this rate and the failures in a row now, whatever period is selected here.  Errors are '

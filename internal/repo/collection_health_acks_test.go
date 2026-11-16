@@ -78,8 +78,9 @@ func TestCollectionHealthHonoursAcksOnAFreshStore(t *testing.T) {
 		level, n                      int
 		allNA                         bool
 	}
-	// read: c2's row of the page's read over the last day (or the given range) and the instance's Summary cell
-	read := func(id int, rng string) row {
+	// readWith: c2's row of the page's read over the given range and the instance's Summary cell (sum: the summary's
+	// argument, the expected intervals; empty = none)
+	readWith := func(id int, rng, sum string) row {
 		t.Helper()
 		var x row
 		if err := r.pool.QueryRow(ctx, `SELECT coalesce(c.status, 'absent'), coalesce(c.status_reason, ''), coalesce(c.judged_status, 'absent'),
@@ -88,13 +89,32 @@ func TestCollectionHealthHonoursAcksOnAFreshStore(t *testing.T) {
 		                                       coalesce(s.level, -1), coalesce(s.n, -1), coalesce(s.all_na, false)
 		                                  FROM (SELECT 1) one
 		                                  LEFT JOIN pgvigil.collection_health(`+rng+`) c ON c.instance_id = $1 AND c.collection = 'c2'
-		                                  LEFT JOIN pgvigil.collection_health_summary() s ON s.instance_id = $1`, id).
+		                                  LEFT JOIN pgvigil.collection_health_summary(`+sum+`) s ON s.instance_id = $1`, id).
 			Scan(&x.status, &x.reason, &x.judged, &x.ackBy, &x.cf, &x.judgedCF, &x.runs, &x.failed, &x.level, &x.n, &x.allNA); err != nil {
 			t.Fatal(err)
 		}
 		return x
 	}
+	read := func(id int, rng string) row { t.Helper(); return readWith(id, rng, "") }
 	day := "now() - interval '1 day'"
+	// ackMark: an acknowledgement with its own mark and user (the page always writes the instance's newest error)
+	ackMark := func(id int, name, at string, mark int64, user string) {
+		t.Helper()
+		var outcome string
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.import_ack(`+at+`, jsonb_build_object('op', 'add', 'ui_user', $4::text, 'kind', 'ack',
+		  'instance_id', $1::int, 'instance_name', $2::text, 'check_key', 'collector errors', 'seen_state', 'log_id:' || $3::bigint,
+		  'until_change', true))->>'outcome'`, id, name, mark, user).Scan(&outcome); err != nil || outcome != "done" {
+			t.Fatalf("%s: the acknowledgement up to %d by %s: %q, %v", name, mark, user, outcome, err)
+		}
+	}
+	logID := func(id int, agg string) int64 {
+		t.Helper()
+		var n int64
+		if err := r.pool.QueryRow(ctx, `SELECT `+agg+`(log_id) FROM pgvigil.collection_log WHERE instance_id = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
 
 	t.Run("G7a and the page: the Summary masks the streak, the page keeps it; a newer failure brings it back whole", func(t *testing.T) {
 		id, name := inst("a")
@@ -163,6 +183,41 @@ func TestCollectionHealthHonoursAcksOnAFreshStore(t *testing.T) {
 		hour(name, 1, 5, 0, 0, 5) // 5 failed runs an hour back: inside the 24 hours, after the acknowledgement
 		if x := read(id, day); x.judged != "critical" || x.judgedCF != 0 || x.level != 2 {
 			t.Errorf("an old acknowledgement, 5 failed runs an hour back: %+v - want critical by the rate (100 %%, the last run failed), still 0 in a row", x)
+		}
+	})
+
+	t.Run("G7g, as the page writes it: failures 31-33 hours back, acknowledged 30 hours back - masked", func(t *testing.T) {
+		id, name := inst("g2")
+		logRun(id, 33*time.Hour, "error")
+		logRun(id, 32*time.Hour, "error")
+		logRun(id, 31*time.Hour, "error")
+		ack(id, name, "now() - interval '30 hours'")
+		exp := `'{"defaults": {"c2": 86400}}'::jsonb` // a daily collection: listed for three of its intervals
+		if x := readWith(id, day+", "+exp, exp); x.status != "critical" || x.cf != 3 || x.judged != "ok" || x.judgedCF != 0 || x.level != 0 {
+			t.Errorf("failures before an acknowledgement 30 hours old: %+v - want the page critical with 3 in a row, judged ok with 0, the cell's level 0", x)
+		}
+	})
+
+	t.Run("a late-logged error older than the last success never counts", func(t *testing.T) {
+		id, name := inst("k")
+		logRun(id, 40*time.Minute, "ok")
+		logRun(id, 20*time.Minute, "error")
+		logRun(id, 10*time.Minute, "error")
+		ack(id, name, "now()")
+		logRun(id, 50*time.Minute, "error") // logged past the mark, but it ran before the last success
+		if x := read(id, day); x.status != "warning" || x.cf != 2 || x.judged != "ok" || x.judgedCF != 0 || !strings.Contains(x.reason, ": 2 in a row before it") {
+			t.Errorf("a late row older than the last success: %+v - want the page warning with 2 in a row and the acknowledged words, judged ok with 0", x)
+		}
+	})
+
+	t.Run("two live acknowledgements: the higher mark's time and user", func(t *testing.T) {
+		id, name := inst("w")
+		logRun(id, 20*time.Minute, "error")
+		logRun(id, 10*time.Minute, "error")
+		ackMark(id, name, "now() - interval '5 minutes'", logID(id, "max"), "chacka") // the higher mark, the older row
+		ackMark(id, name, "now()", logID(id, "min"), "chackb")                        // a lower mark, the newer row
+		if x := read(id, day); x.ackBy != "chacka" || x.judged != "ok" || x.judgedCF != 0 || !strings.Contains(x.reason, " by chacka: 2 in a row before it") {
+			t.Errorf("two live acknowledgements: %+v - want the higher mark's user (chacka), judged ok with 0", x)
 		}
 	})
 

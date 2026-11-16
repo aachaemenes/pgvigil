@@ -51,7 +51,7 @@ WITH c AS (
 ), s AS (   -- the Summary's rate: its window, 24 hours from the next whole hour, or from the instance's acknowledgement of
             -- its collector errors rounded up to the hour if that is later (CollectionHealthRateFrom.sql; CollectionHealth_Get
             -- L154-169); the known runs only of an instance with a failure or a partial in it (DBA Dash's SummaryKnownCount,
-            -- CollectionHealth_Get :244; the lead's 00:5x on #9a)
+            -- CollectionHealth_Get :244)
   SELECT h.instance_id, h.collection, sum(h.failed) AS failed24,
          CASE WHEN sum(h.failed) + sum(h.partial) > 0 THEN sum(h.ok + h.partial + h.failed) ELSE 0 END AS known24
     FROM pgvigil.collection_health_hour h

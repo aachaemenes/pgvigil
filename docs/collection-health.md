@@ -28,15 +28,16 @@ acknowledgement below if that is later).
 ### Acknowledged errors
 
 An instance's collector errors are acknowledged on the **Collector errors** page (Acknowledge, per instance or every
-instance in view; Unacknowledge takes it back). As DBA Dash's Acknowledge Errors, it changes the Summary only:
+instance in view, offered with no filter set and a range of 24 hours or more ending now; Unacknowledge takes it back).
+As DBA Dash's Acknowledge Errors, it changes the Summary and Failed % 24hrs only:
 
 - The Summary's Collection Health cell counts a collection's failures in a row again once a failure newer than the
   acknowledgement comes, and then all of them (3 failures, an acknowledgement, one more failure: 4 in a row). Newer
   means a failed run logged after the acknowledgement's newest error, in the order the repository logged them: a run
   that started earlier but was logged later counts. When the newest failure's log row has been purged (after 30 days),
   its time is compared with the acknowledgement's instead.
-- The Summary's rate, and **Failed % 24hrs** on this page, count the hours from the acknowledgement's next whole hour (24
-  hours at most), so the runs in the hour the acknowledgement was made are not counted.
+- The Summary's rate, and **Failed % 24hrs** on this page, count the hours from the acknowledgement's next whole hour (its
+  own hour when it is made on the hour; 24 hours at most), so the runs earlier in the hour it was made in are not counted.
 - This page keeps its Status, Failures In A Row, Runs and Failed as they are. A row whose failures in a row the Summary
   leaves out says `acknowledged at <time> by <user>: n in a row before it` in its Status Reason.
 - An acknowledged collection with no run since is OK on the Summary, never N/A; Don't monitor still makes it N/A.

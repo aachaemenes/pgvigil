@@ -388,9 +388,9 @@ LANGUAGE sql STABLE AS $$
    ORDER BY a.instance_id, x.mark DESC, a.created_at DESC
 $$;
 
--- its result grew (B6g-1; the judged values and the acknowledgement after it): CREATE OR REPLACE cannot change a
--- result's columns, so an earlier form is dropped first (nothing depends on it: collection_health_summary's body is
--- text, the page reads it by name)
+-- its result grew (the import and cost columns, then the judged values and the acknowledgement): CREATE OR REPLACE
+-- cannot change a result's columns, so an earlier form is dropped first (nothing depends on it:
+-- collection_health_summary's body is text, the page reads it by name)
 DROP FUNCTION IF EXISTS pgvigil.collection_health(timestamptz, jsonb, timestamptz, int[], text);
 CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL, p_rate_to timestamptz DEFAULT NULL,
                                                      p_instances int[] DEFAULT NULL, p_collection text DEFAULT NULL)
