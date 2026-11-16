@@ -81,6 +81,13 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //  4. The slices' findings reach pgvigil.findings, the one view the alerts and the Findings page read: a Patroni
 //     cluster that two reads a minute apart find without a leader (0144's pg_patroni_checks) is a critical
 //     'patroni no leader' finding of source 'patroni' there (0144 leaves that union arm to the join's 0190).
+//  5. purge() and an availability group's import take the three AG sample parents in ONE order. purge() drops old
+//     months by parent name (mssql_ag_dbcounter_sample, mssql_ag_replica_sample, mssql_ag_sample) and holds each
+//     parent to its end; import_mssql_ag wrote them the other way round, so an import in flight held the last two and
+//     waited for the first while purge held the first and waited for the second - PostgreSQL ends one of them
+//     (40P01; purge has no retry). Shown with two sessions: a transaction holds the first parent as purge does after
+//     its first drop, the import runs and waits, the transaction asks for the second parent - it gets it at once, and
+//     the import ends without an error when the transaction commits.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -219,4 +226,47 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		       FROM pgvigil.pg_patroni_checks WHERE instance_id = $1`, pat), "critical|patroni member down|m1,critical|patroni no leader|c1")
 	want("'patroni no leader' in pgvigil.findings",
 		str(`SELECT count(*)::text FROM pgvigil.findings WHERE instance_id = $1 AND setting = 'patroni no leader' AND severity = 'critical' AND source = 'patroni'`, pat), "1")
+
+	// 5. the lock order of purge() and import_mssql_ag over the three AG sample parents
+	exec(`SELECT pgvigil.import_mssql_ag($1, now() - interval '1 minute', '[]'::jsonb)`, ms) // this month's partitions exist from here on
+	pc, err := r.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Release()
+	ptx, err := pc.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ptx.Rollback(context.Background()) }()
+	for _, q := range []string{`SET LOCAL lock_timeout = '20s'`, `LOCK TABLE pgvigil.mssql_ag_dbcounter_sample IN ACCESS EXCLUSIVE MODE`} {
+		if _, err := ptx.Exec(ctx, q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	imported := make(chan error, 1)
+	go func() {
+		_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_mssql_ag($1, now(), '[]'::jsonb)`, ms)
+		imported <- err
+	}()
+	waits := false
+	for i := 0; i < 100 && !waits; i++ { // 10 s at most: the import reaches its wait on the parent the transaction holds
+		waits = str(`SELECT (count(*) > 0)::text FROM pg_locks WHERE relation = 'pgvigil.mssql_ag_dbcounter_sample'::regclass AND NOT granted
+		                AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`) == "true"
+		if !waits {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if !waits {
+		t.Fatal("the import never waited for mssql_ag_dbcounter_sample: the two sessions did not meet")
+	}
+	if _, err := ptx.Exec(ctx, `LOCK TABLE pgvigil.mssql_ag_replica_sample IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Errorf("the purge-side transaction asking for its next parent while an AG import waits: %v", err)
+	}
+	if err := ptx.Commit(ctx); err != nil {
+		t.Logf("the purge-side transaction's end: %v", err)
+	}
+	if err := <-imported; err != nil {
+		t.Errorf("the AG import that ran beside the purge-side transaction: %v", err)
+	}
 }
