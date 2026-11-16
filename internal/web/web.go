@@ -280,6 +280,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/sessionsets", s.SessionSets)
 	api.HandleFunc("GET /api/memory", s.Memory)
 	api.HandleFunc("GET /api/mssql/audit", s.MSSQLAudit)
+	api.HandleFunc("GET /api/mssql/security", s.MSSQLSecurity)
+	api.HandleFunc("POST /api/mssql/security/config", s.MSSQLSecurityConfigWrite)
 	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
 	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
 	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)

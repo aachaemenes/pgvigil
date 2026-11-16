@@ -542,6 +542,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			}
 			return seq, found, cerr
 		})
+	} else if sc, ok := c.(SettingsCollector); ok {
+		// a collection whose reads depend on the repository's settings (task 408): the settings first; a failed read of
+		// them reads every part the login has the right for (nil settings), never nothing
+		lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+		raw, lerr := r.MSSQLSettings(lctx, instanceID, sc.SettingsFunc())
+		lcancel()
+		if lerr != nil {
+			raw = nil
+		}
+		rows, err = sc.RunWithSettings(sctx, conn, info, raw)
 	} else {
 		rows, err = c.Run(sctx, conn, info)
 	}

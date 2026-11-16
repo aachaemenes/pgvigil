@@ -476,6 +476,19 @@ func IsDeadlock(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
+// MSSQLSettings returns the settings a SQL Server collection reads by (task 408): pgvigil.<fn>(instance_id), fn an
+// import_ function of the collection (0159's import_mssql_security_parts), as JSON.
+func (r *Repo) MSSQLSettings(ctx context.Context, instanceID int, fn string) ([]byte, error) {
+	if !validIdent(fn) {
+		return nil, fmt.Errorf("settings function %q is not a valid identifier", fn)
+	}
+	var b []byte
+	if err := r.pool.QueryRow(ctx, fmt.Sprintf(`SELECT pgvigil.%s($1)::text`, fn), instanceID).Scan(&b); err != nil {
+		return nil, fmt.Errorf("%s: %w", fn, err)
+	}
+	return b, nil
+}
+
 // LogCursor returns how far a log source was read for an instance (false: never).
 func (r *Repo) LogCursor(ctx context.Context, instanceID int, source string) (time.Time, bool, error) {
 	var t *time.Time
