@@ -15,6 +15,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { collectionTickKey, subNoun, subSeries, subWords, tickStore, visibleFamilies } from './metricfam';
+import { markNeed, routeWhy } from './needs';
 
 interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null; collections?: Table | null }
 // the 'Collection Metrics' tick, per browser; with storage off it lasts this page's life (module state survives the
@@ -348,7 +349,8 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
   type AdminData = { writable?: boolean; reason?: string; config: Table | null; defaults: Table | null; log: Table | null; catalog: Table | null };
   let d: AdminData;
   try { d = await get<AdminData>('mssql/counteradmin'); } catch (e) { sec.append(errorBox(e)); return sec; }
-  const off = d.writable ? null : (d.reason ?? 'not writable here');
+  // the server's reason first, then the role (B24f: a counter list is configuration others live with, admin)
+  const off = d.writable ? routeWhy('mssql/counteradmin') : (d.reason ?? 'not writable here');
   sec.append(el('p', { class: 'meta' }, 'Each SQL Server instance reads the counters of its list: the defaults below, then pgvigil.yaml\'s mssql_counters lines (the root\'s, the instance\'s), then the rows here. For each counter the narrowest scope wins (an instance over a tag over the fleet); at one scope a row here wins over pgvigil.yaml. A change is read at the instance\'s next read.'),
     ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite', tabindex: '-1' });
@@ -386,7 +388,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
     inst.replaceChildren(...all.map(r => el('option', { value: String(r.instance_id) }, String(r.name))));
   } catch { /* the instance list is optional for fleet and tag rows */ }
   showScope();
-  const save = el('button', { type: 'button' }, 'Save row') as HTMLButtonElement;
+  const save = markNeed(el('button', { type: 'button' }, 'Save row') as HTMLButtonElement, 'mssql/counteradmin');
   save.addEventListener('click', () => {
     if (!object.value.trim() || !counter.value.trim()) { said.textContent = 'Name the object and the counter.'; return; }
     void send({ op: 'add', scope: scope.value, tag: tag.value, instance_id: Number(inst.value || 0), object: object.value.trim(), counter: counter.value.trim(),
@@ -401,7 +403,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
 
   // Admin's live rows, each with its End
   const endCell = (_v: unknown, r: Row) => {
-    const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})` }, 'End') as HTMLButtonElement;
+    const b = markNeed(el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})` }, 'End') as HTMLButtonElement, 'mssql/counteradmin');
     // End asks first, as Alert rules' End does (part 3's NIT 10)
     b.addEventListener('click', () => { if (window.confirm(`End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})? The counter list goes back to the word below it.`)) void send({ op: 'end', config_id: Number(r.config_id) }); });
     // the page's 'Edits are off here' line carries the long reason; each row says it short, a space after the button

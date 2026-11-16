@@ -121,6 +121,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/admin/sources` | admin | a discovery source and its cloud settings (add, edit, enable, disable, remove, sync, sweep) |
 | `POST /api/admin/proposals` | admin | approve or ignore a proposed instance |
 | `POST /api/admin/dbadash_moves` | admin | move a DBA Dash instance |
+| `POST /api/mssql/counteradmin` | admin | a SQL Server counter list row (Admin > Counters: add, end) |
 | `POST /api/admin/applications` | admin | an application |
 | `POST /api/admin/applications/contacts` | admin | an application's contacts |
 | `POST /api/admin/applications/assign` | admin | assign instances to an application |
