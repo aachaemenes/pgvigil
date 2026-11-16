@@ -433,7 +433,7 @@ WITH ` + hadrScope + `, rs AS (
                        AND x.changed_before > coalesce(s.changed_after, s.changed_before) - interval '2 minutes'
                        AND x.changed_before <= s.changed_before + interval '2 minutes')
 )
-SELECT rc.instance_id AS "instance_id@inst", n.name AS instance, rc.group_name, rc.replica_server,
+SELECT rc.instance_id, n.name AS instance, rc.group_name, rc.replica_server,
        CASE WHEN rc.new_role = 1 THEN 'Became Primary' WHEN rc.prev_role = 1 THEN 'No Longer Primary'
             ELSE concat(CASE rc.prev_role WHEN 1 THEN 'PRIMARY' ELSE 'SECONDARY' END, ' => ', CASE rc.new_role WHEN 1 THEN 'PRIMARY' ELSE 'SECONDARY' END) END AS change,
        CASE rc.prev_role WHEN 1 THEN 'PRIMARY' WHEN 2 THEN 'SECONDARY' END AS previous_role,
@@ -448,6 +448,8 @@ SELECT rc.instance_id AS "instance_id@inst", n.name AS instance, rc.group_name, 
                 ie.reason) AS "reason@stmt",
        -- the reason is a stored statement only when a manual or forced failover's DDL gave it; else words and messages, as read
        NOT (age.is_forced OR age.is_manual) AS "@keep",
+       -- the row is placed by the replica whose event holds the statement (the policy of the instance that ran it), else by its own
+       coalesce(CASE WHEN age.is_forced OR age.is_manual THEN age.statement_instance END, rc.instance_id) AS "@inst",
        rc.source
   FROM rc
   JOIN names n ON n.instance_id = rc.instance_id
@@ -457,7 +459,9 @@ SELECT rc.instance_id AS "instance_id@inst", n.name AS instance, rc.group_name, 
     SELECT coalesce(bool_or(lower(e.event_name) = 'alwayson_ddl_executed' AND e.statement ILIKE '%FORCE\_FAILOVER\_ALLOW\_DATA\_LOSS%'), false) AS is_forced,
            coalesce(bool_or(lower(e.event_name) = 'alwayson_ddl_executed' AND e.statement ILIKE '%FAILOVER%'), false) AS is_manual,
            coalesce(bool_or(lower(e.event_name) = 'availability_group_lease_expired'), false) AS is_lease,
-           max(e.statement) FILTER (WHERE lower(e.event_name) = 'alwayson_ddl_executed' AND e.statement ILIKE '%FAILOVER%') AS statement
+           max(e.statement) FILTER (WHERE lower(e.event_name) = 'alwayson_ddl_executed' AND e.statement ILIKE '%FAILOVER%') AS statement,
+           (array_agg(e.instance_id ORDER BY e.statement DESC, e.instance_id)
+              FILTER (WHERE lower(e.event_name) = 'alwayson_ddl_executed' AND e.statement ILIKE '%FAILOVER%'))[1] AS statement_instance
       FROM pgvigil.mssql_ag_events e
      WHERE e.instance_id IN (SELECT a.instance_id FROM pgvigil.mssql_ag_state a
                               WHERE lower(a.group_name) = lower(rc.group_name)

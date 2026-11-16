@@ -52,7 +52,8 @@ WITH f AS (
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.repository_autovacuum_findings
           UNION ALL
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_fold
-          UNION ALL   -- 403b / B24k (0154): K3, the alert channels' own findings (alert_findings' arm through alert_channel_findings)
+          UNION ALL   -- 403b / B24k (0154): K3, the alert channels' own findings (alert_findings' arm through alert_channel_findings);
+                      -- while a channel fails, alert_channel_failing's ck CTE reads pgvigil.findings whole: the cost of reading K3 here
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.alert_channel_failing
           UNION ALL
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.alert_channel_quota_low) x
