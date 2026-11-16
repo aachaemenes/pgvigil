@@ -308,8 +308,9 @@ var keepKeys = map[string]bool{
 	// export: its knobs and the kind of destination; its name, paths, bucket, container and endpoint name the site
 	"type": true, "settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
 	"snapshot_max_bytes": true, "statement_timeout": true,
-	// remote: and remote_sites: (config/remote.go): the knobs; the names, folders, drops and keys are masked
-	"keep_days": true, "max_mb": true, "sign": true, "expected_every": true, "gap_wait": true,
+	// remote: and remote_sites: (config/remote.go): the knobs; the names, folders, drops and keys are masked, and so
+	// is sign: (secretKey reads a key with "sign" in it as a secret's)
+	"keep_days": true, "max_mb": true, "expected_every": true, "gap_wait": true,
 }
 
 // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
