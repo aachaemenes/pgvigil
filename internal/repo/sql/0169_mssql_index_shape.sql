@@ -31,7 +31,19 @@
 --   mssql_fk_columns   one row per enabled foreign key: its parent and referenced table, the parent columns in constraint
 --                      order (BI L2632-2653)
 --   mssql_index_parts  per database: the parts its last index read stored (ixextra, segments, heaps, shape, fks), the
---                      parts cut at 20,000 rows, and why a part was not read (the server's words)
+--                      parts cut at 20,000 rows, and why a part was not read (the server's words). A database with no
+--                      row here was last read before 0169: every part counts as not read.
+-- THE RULES' GATE (review S5): a part not read leaves its table without the database's rows, which is safe only for a
+-- rule that needs a row to raise. A rule that decides by leaving something out, or by an absence, judges a database
+-- only when its parts say so (D405's 0170, D436's 0212): RC (sparse, text / ntext / image and temporal tables are left
+-- out from mssql_table_shape) needs 'shape' read; R32 (no indexed view: object_type) needs 'ixextra' read; R72F (a
+-- foreign key with no supporting index, the parent read at least once) needs 'fks' and 'heaps' read and neither in
+-- parts_capped, besides 0092's capped; R44-46 (no forwarded fetch or delete on any index) need 'ixextra' and 'heaps';
+-- R130 needs 'segments'; any other rule needs the part its column comes from. A database not gated through is 'not
+-- judged: <part> not read' in the grid, never silently clean.
+-- DEPARTURES from the design's words (review N7): each part is its own sys.sp_executesql after the index read (the
+-- collector catches a part's error), not a TRY ... CATCH inside the index read's statement; the partition function is
+-- stored by name (partition_function), not by its id - the page names it, and R65 compares type, count and range.
 -- The import: import_mssql_indexes (0164's) renamed import_mssql_indexes_0164 and called unchanged by a new one that
 -- then writes the new columns (one UPDATE of the rows 0092 just inserted) and the new tables from the same payload. A
 -- batch that did not read a database keeps all of its rows (0092's rule); a part not read leaves its table without
@@ -194,7 +206,7 @@ BEGIN
       FROM jsonb_array_elements(p_payload) r
      WHERE r->>'kind' = 'index' AND x.instance_id = p_instance_id AND x.database_name = r->>'database_name' AND x.database_name = ANY (v_dbs)
        AND x.object_id = (r->>'object_id')::bigint AND x.index_id = (r->>'index_id')::int AND x.snapshot_at = p_snapshot_at
-       AND r ? 'object_type';
+       AND (r ? 'object_type' OR r ? 'cs_rebuild_columns');   -- ixextra's keys or segments' (review S3: either part alone)
 
     DELETE FROM pgvigil.mssql_heap WHERE instance_id = p_instance_id AND database_name = ANY (v_dbs);
     INSERT INTO pgvigil.mssql_heap (instance_id, database_name, object_id, database_id, schema_name, table_name, row_count, size_kb, partitions,

@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -60,8 +61,12 @@ func TestMergeExtra(t *testing.T) {
 	if _, ok := idx[2]["object_type"]; ok {
 		t.Fatal("an index the part did not list took its columns")
 	}
-	if bad := mergeExtra([]collect.Row{{"object_id": int64(1), "index_id": int64(2)}}, []collect.Row{{"object_id": int64(1), "index_id": int64(2), "filter_json": "x"}}); bad != 1 {
+	half := []collect.Row{{"object_id": int64(1), "index_id": int64(2)}}
+	if bad := mergeExtra(half, []collect.Row{{"object_id": int64(1), "index_id": int64(2), "object_type": "U", "filter_json": "x"}}); bad != 1 {
 		t.Fatalf("a bad filter list: bad %d", bad)
+	}
+	if _, ok := half[0]["object_type"]; ok {
+		t.Fatal("a row that could not be read was half stored")
 	}
 }
 
@@ -98,6 +103,20 @@ func TestPartRows(t *testing.T) {
 	}
 }
 
+func TestPartFailures(t *testing.T) {
+	f := partFailures{}
+	f.add("a", map[string]error{"fks": errors.New("denied")})
+	f.add("b", map[string]error{"fks": errors.New("other"), "heaps": errors.New("lock")})
+	f.add("c", map[string]error{})
+	rows := f.rows()
+	if len(rows) != 2 || rows[0]["source"] != "sys.dm_db_partition_stats" || rows[1]["source"] != "sys.foreign_key_columns" {
+		t.Fatalf("rows: %v", rows)
+	}
+	if m, _ := rows[1]["message"].(string); !strings.Contains(m, "the foreign keys of 2 database(s) were not read (a, b): denied") {
+		t.Fatalf("fks message: %q", m)
+	}
+}
+
 func TestIndexPartsSQL(t *testing.T) {
 	// every part keeps the index read's set (no memory-optimized table) and runs on SQL Server 2016 SP1: no STRING_AGG,
 	// CONCAT_WS or TRIM (2017); min_deep_data only in the segments part, which runs only where the column exists
@@ -110,7 +129,7 @@ func TestIndexPartsSQL(t *testing.T) {
 		if name != "segments" && strings.Contains(q, "min_deep_data") {
 			t.Errorf("%s reads min_deep_data", name)
 		}
-		if name != "segments" && name != "fks" && !strings.Contains(q, "is_memory_optimized") {
+		if name != "segments" && !strings.Contains(q, "is_memory_optimized") {
 			t.Errorf("%s does not leave memory-optimized tables out", name)
 		}
 	}

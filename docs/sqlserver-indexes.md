@@ -55,6 +55,21 @@ There is one row per index of every user table and indexed view. Each row holds:
 
 Each database is read and stored on its own. If a database's read fails, the repository keeps what it already holds for it.
 
+### What else each read stores
+
+After a database's index read, five more reads of the same database, each a plain `SELECT` (sp_BlitzIndex 8.34 and sp_IndexCleanup 2.11 read the same things; their rules come from these values):
+
+- Per index: whether its object is a table or an indexed view; its filegroup or partition scheme, with the partition function's argument type, partition count and boundaries (`RANGE RIGHT FOR VALUES (100, 200)`, each value written whole) and the partitioning column; whether any partition is uncompressed; and a filtered index's filter columns.
+- Per index, from `sys.dm_db_index_operational_stats` summed over the partitions: row and page lock waits, page latch and page I/O latch waits (count and milliseconds), forwarded fetches and leaf deletes. These count only since the table's metadata entered the server's cache, which can be later than the server's start.
+- Per columnstore index, on SQL Server 2022 and later: the columns whose compressed segments keep no minimum and maximum string data. Such an index was built before 2022 and gains string segment elimination only from a rebuild. Before 2022 this is not read, and the database's read notes say so.
+- Per heap of a user table: its size, rows, reads, writes, forwarded fetches and deletes, its filegroup or partition scheme and the table's create date. The Indexes tab lists them in a Heaps block under the inventory.
+- Per user table and indexed view: its columns' count and declared bytes, its LOB and string columns, whether it has a sparse column or a `text`, `ntext` or `image` column, the clustered key's bytes and columns, and whether it is a system-versioned temporal table or a history table.
+- Per enabled foreign key: its table, the table it references and its columns in order.
+
+The filter columns are the table's columns whose bracketed name the filter holds, as sp_IndexCleanup finds them. sp_BlitzIndex reads them from `sys.sql_expression_dependencies`, but by default only `db_owner` may read that view, so the monitor login cannot. No new right is needed for any of these reads.
+
+When one of these reads fails (a lock timeout, a denied right), the index read and the other reads still stand. The database's **read notes** on the Usage window grid name the part and the server's words, and the collection's run shows as partial. A part that was not read stores nothing for that database: a rule that needs it does not judge that database.
+
 ### The usage window
 
 The usage counters are kept in memory. They start again whenever:
@@ -83,7 +98,7 @@ An index that backs a primary key or a unique constraint, or that a foreign key 
 | written, seldom read | 10,000 or more writes, under 10,000 reads, ten times more writes than reads | none |
 | same keys, another order / same leading column | for review | none |
 
-A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `SORT_IN_TEMPDB` and `DATA_COMPRESSION`, and keeps the index's `IGNORE_DUP_KEY`, `ALLOW_ROW_LOCKS`, `ALLOW_PAGE_LOCKS` and `STATISTICS_NORECOMPUTE`. pgvigil does not read `OPTIMIZE_FOR_SEQUENTIAL_KEY` or the filegroup: check both before running the text. A disabled index comes back with `ALTER INDEX ... REBUILD`. Findings are raised per database: exact duplicates, unused indexes that are written, unused indexes, and redundant indexes.
+A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `SORT_IN_TEMPDB` and `DATA_COMPRESSION`, and keeps the index's `IGNORE_DUP_KEY`, `ALLOW_ROW_LOCKS`, `ALLOW_PAGE_LOCKS` and `STATISTICS_NORECOMPUTE`. The merged definition does not name the filegroup or partition scheme (the inventory shows it), and pgvigil does not read `OPTIMIZE_FOR_SEQUENTIAL_KEY`: check both before running the text. A disabled index comes back with `ALTER INDEX ... REBUILD`. Findings are raised per database: exact duplicates, unused indexes that are written, unused indexes, and redundant indexes.
 
 ### Missing-index requests
 

@@ -368,6 +368,7 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 	}
 	// D404: whether the columnstore segments keep their deep data here (read once per run)
 	deep := hasDeepData(ctx, conn)
+	partsFailed := partFailures{}
 	for _, db := range dbs {
 		names = append(names, db.name)
 		batch := []collect.Row{st, db.row}
@@ -411,7 +412,8 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 					"message": fmt.Sprintf("%s: the column list of %d index(es) could not be read; they are not stored", db.name, bad)})
 			}
 			// D404: the parts read after the index read (indexparts.go); a part that fails leaves the rest standing
-			pr := readIndexParts(ctx, conn, db, idx, deep)
+			pr := readIndexParts(ctx, conn, db, idx, deep, opt.Deadline)
+			partsFailed.add(db.name, pr.failed)
 			db.row["parts_read"], db.row["parts_capped"], db.row["parts_note"] = append([]string{}, pr.read...), append([]string{}, pr.capped...), nil
 			if len(pr.notes) > 0 {
 				db.row["parts_note"] = strings.Join(pr.notes, "; ")
@@ -436,6 +438,7 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 		// or the table's metadata changed)
 		last = append(append(last, missing...), collect.Row{"kind": "missing_read", "capped": len(missing) >= ixMissingCap})
 	}
+	last = append(last, partsFailed.rows()...)
 	if !restoreRead {
 		last = append(last, collect.Row{"kind": "collector_error", "source": "msdb.dbo.restorehistory",
 			"message": "the login may not read msdb.dbo.restorehistory: a database's usage window is taken from the server's start and the database's create date alone, and a restore since then is not seen"})

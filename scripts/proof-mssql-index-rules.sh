@@ -13,11 +13,15 @@
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment.
 # Each X row is graded on its own (a FAIL does not stop the rows after it); the last line counts them.
+# DEPARTURES from the design's words (review N7): each part is its own sys.sp_executesql after the index read (the
+# collector catches a part's error), not a TRY ... CATCH inside the index read's statement; the partition function is
+# stored by name, not by id. The review's pass (in-process FALLBACK, 1ca3e07d) folded at the rows it names below.
 #
 # Expected (written before the first run):
 #  A. the container: the monitor login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, an msdb reader);
-#     databases pgvr (every fixture below), pgvr_drop (a heap, a table with a foreign key; dropped before read 2) and
-#     pgvr_deny (a table with a foreign key; the monitor login's user there DENIED SELECT on sys.foreign_key_columns);
+#     databases pgvr (every fixture below), pgvr_drop (a heap, a table with a foreign key; dropped before read 2),
+#     pgvr_deny (a table with a foreign key; the monitor login's user there DENIED SELECT on sys.foreign_key_columns) and
+#     pgvr_cs (COLLATE Latin1_General_CS_AS, not the server's: a filtered index and a partitioned heap);
 #     instance ixr; read 1 of mssql_indexes stores pgvr's indexes (A2: as many as sa counts: index_id > 0 of user tables
 #     and indexed views).
 #  X1 HEAPS (BI 44-46's sources): pgvigil.mssql_heap holds one row per heap of a user table of pgvr (h_fwd, h_plain, ph,
@@ -26,7 +30,8 @@
 #     over partitions (sys.dm_db_index_operational_stats), the table's create date to the second, the data space's name
 #     and type, the partitioning column, the partition count, the compression (MIXED when the partitions differ) and
 #     whether any partition is uncompressed; h_fwd's forwarded_fetch_count > 0 and leaf_delete_count > 0 (half its rows
-#     widened to 3,000 bytes, then a scan, then a delete); ph on PARTITION_SCHEME ps_a, column [k].
+#     widened to 3,000 bytes, then a scan, then a delete); ph on PARTITION_SCHEME ps_a, column [k], its partition 1 PAGE:
+#     MIXED with a partition uncompressed (review N5).
 #     Red on the base 7184f8ea: no table pgvigil.mssql_heap.
 #  X1b OPERATIONAL COUNTERS on mssql_index (D436's breakdown, IC L2883-2896): row and page lock waits (count, ms), page
 #     latch and page I/O latch waits (count, ms), forwarded_fetch_count, leaf_delete_count, summed over partitions, each
@@ -38,7 +43,9 @@
 #     object type, total columns, the sum of max_length with -1 as 0, columns of max_length -1, string-or-LOB columns by
 #     BI's test (type named by user_type_id IN varchar / nvarchar / char, or max_length -1), any sparse column, any
 #     text / ntext / image column, the clustered key's bytes and key-column count (NULL when there is none); wide:
-#     sparse 1, text 1, LOB 1; ck4: 4 key columns, 20 bytes; v_iv: type V.
+#     sparse 1, text 1, LOB 1; ck4: 4 key columns, 20 bytes; v_iv: type V; and, worked out by hand from the DDL so a
+#     wrong formula cannot pass on both sides (review B1): ck4 7 columns / 130 bytes / 2 strings (s, ch; nchar is not one
+#     by BI L5708), v_iv 2 / 8 / 0, wide 37 / 156 / 1 (text is 16 bytes and not a string by BI's test).
 #     Red on the base: no table pgvigil.mssql_table_shape.
 #  X3 DATA SPACES AND OBJECT TYPE on mssql_index: every index of pgvr equal to sa's read in object type, data space name
 #     and type_desc, the partition function's name, argument type, partition count and range ('RANGE RIGHT FOR VALUES
@@ -47,7 +54,9 @@
 #     pd's clustered index argument type datetime2(3), RANGE LEFT, its boundary '2026-01-01 00:00:00.0000000' (the first
 #     expected said '...00.000': run d404-g3 read the product's 'Jan  1 2026 12:00AM' - a sql_variant cast to nvarchar
 #     takes style 0 - a product fault, fixed); pm's function on money with its boundary whole (1.2345, not 1.23);
-#     cx_v_iv object type V.
+#     cx_v_iv object type V; review B2: pdt's datetime boundary '2026-01-31 23:59:59.997' whole, pvs's varchar(10) quoted
+#     ('m'), pdc's decimal(9,2) 10.50; review S9: xg's primary XML and spatial indexes in the equality (their data space by
+#     LEFT JOIN, a NULL spelled '~'), their stored values printed - no fixed value was known before the run.
 #     Red on the base: mssql_index has no column object_type.
 #  X4 TEMPORAL on mssql_table_shape: temporal_type and history_table_id equal to sys.tables for every table of pgvr (NULL
 #     for a view); tt 2 with tt_hist's object id, tt_hist 1, the rest 0.
@@ -68,7 +77,10 @@
 #     Red on the base: the new tables are absent.
 #  XN A PART THAT FAILS: pgvr_deny's indexes stored as sa counts them (the index read stands), its foreign-key part not
 #     read: pgvigil.mssql_index_parts says parts_read without 'fks' and a note naming the foreign keys and the server's
-#     words (denied), no mssql_fk_columns row of pgvr_deny; pgvr's parts_read holds heaps, shape, fks, ixextra, segments.
+#     words (denied), no mssql_fk_columns row of pgvr_deny; pgvr's parts_read holds heaps, shape, fks, ixextra, segments;
+#     the run's state partial, its note the foreign keys of 1 database(s) (review S2: a failed part makes the run partial).
+#  XC A DATABASE IN ANOTHER COLLATION (review S8): pgvr_cs's parts all five read, Ix_Cf's filter columns [B],[C], its heap
+#     Ch on Ps_Cs [K].
 #     Red on the base: no table pgvigil.mssql_index_parts.
 #  XA THE API: GET /api/mssql/indexes?instance=<ixr> answers a part 'heaps' with as many rows as mssql_heap holds for the
 #     instance, and its 'indexes' rows carry object_type, data_space_name, data_space_type, partition_function,
@@ -77,11 +89,13 @@
 #  XS THE PAGE (with PGVIGIL_SHOTS = a folder, and chromium and node here; the bundle built from this tree first): a headless
 #     Chromium signed in as the proof's user opens #/mssqlindexes?i=<ixr>: the 'Heaps' block lists as many rows as
 #     mssql_heap holds for the instance, the inventory shows 'indexed view' on cx_v_iv's row and 'ps_a ([k])' as a partition
-#     scheme, the usage-window grid has its 'parts not read' column with pgvr_deny's words; a full-page picture in the light
+#     scheme, the usage-window grid has its 'read notes' column with pgvr_deny's words; a full-page picture in the light
 #     and the dark scheme into PGVIGIL_SHOTS. Without PGVIGIL_SHOTS: 'XS not run' (not counted).
 #  NOT PROVEN here: the 20,000-row caps of the new parts (no such database in a container: the cap logic is the index
 #  read's, read in the code); SQL Server before 2022 (cs_rebuild_columns NULL and the note: the box's 2019 image runs D405's
-#  X15 trial); a memory-optimized table (left out as the index read leaves it out).
+#  X15 trial); a memory-optimized table (left out as the index read leaves it out, its foreign keys too: review S4); a
+#  non-empty cs_rebuild_columns (no pre-2022 segment here: D405's X15, review S7); a part cut by the run's deadline
+#  (review S1: read in the code).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -132,7 +146,8 @@ VER=$(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))")
 sqok "A: the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON]; GRANT CONNECT ANY DATABASE TO [$MON];"
 sqok "A: the monitor's msdb user" "CREATE USER [$MON] FOR LOGIN [$MON]; ALTER ROLE db_datareader ADD MEMBER [$MON];" msdb
 sqok "A: the databases" "CREATE DATABASE pgvr; ALTER DATABASE pgvr SET RECOVERY SIMPLE; CREATE DATABASE pgvr_drop; ALTER DATABASE pgvr_drop SET RECOVERY SIMPLE;
-  CREATE DATABASE pgvr_deny; ALTER DATABASE pgvr_deny SET RECOVERY SIMPLE;"
+  CREATE DATABASE pgvr_deny; ALTER DATABASE pgvr_deny SET RECOVERY SIMPLE;
+  CREATE DATABASE pgvr_cs COLLATE Latin1_General_CS_AS; ALTER DATABASE pgvr_cs SET RECOVERY SIMPLE;"
 NUMS="(SELECT TOP (@n) ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS n FROM sys.all_objects x CROSS JOIN sys.all_objects y) z"
 # X1: two heaps and a partitioned heap; h_fwd's rows widened (forwarded records), scanned (forwarded fetches), some deleted
 sqok "A: the partition functions and schemes" "CREATE PARTITION FUNCTION pf_a (int) AS RANGE RIGHT FOR VALUES (100, 200);
@@ -144,7 +159,13 @@ sqok "A: the partition functions and schemes" "CREATE PARTITION FUNCTION pf_a (i
   CREATE PARTITION FUNCTION pf_d (datetime2(3)) AS RANGE LEFT FOR VALUES ('2026-01-01');
   CREATE PARTITION SCHEME ps_d AS PARTITION pf_d ALL TO ([PRIMARY]);
   CREATE PARTITION FUNCTION pf_m (money) AS RANGE RIGHT FOR VALUES (1.2345);
-  CREATE PARTITION SCHEME ps_m AS PARTITION pf_m ALL TO ([PRIMARY]);" pgvr
+  CREATE PARTITION SCHEME ps_m AS PARTITION pf_m ALL TO ([PRIMARY]);
+  CREATE PARTITION FUNCTION pf_t (datetime) AS RANGE LEFT FOR VALUES ('2026-01-31T23:59:59.997');
+  CREATE PARTITION SCHEME ps_t AS PARTITION pf_t ALL TO ([PRIMARY]);
+  CREATE PARTITION FUNCTION pf_s (varchar(10)) AS RANGE LEFT FOR VALUES ('m');
+  CREATE PARTITION SCHEME ps_s AS PARTITION pf_s ALL TO ([PRIMARY]);
+  CREATE PARTITION FUNCTION pf_n (decimal(9,2)) AS RANGE RIGHT FOR VALUES (10.50);
+  CREATE PARTITION SCHEME ps_n AS PARTITION pf_n ALL TO ([PRIMARY]);" pgvr
 sqok "A: the heaps" "DECLARE @n int = 2000;
   CREATE TABLE dbo.h_fwd (id int NOT NULL, v varchar(4000) NULL);
   INSERT dbo.h_fwd (id, v) SELECT n, 'x' FROM $NUMS;
@@ -157,7 +178,8 @@ sqok "A: the heaps" "DECLARE @n int = 2000;
   CREATE INDEX ix_h_plain ON dbo.h_plain (id) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE);
   SELECT @n = COUNT(*) FROM dbo.h_plain;
   CREATE TABLE dbo.ph (k int NOT NULL, v int NOT NULL) ON ps_a (k);
-  SET @n = 300; INSERT dbo.ph (k, v) SELECT n, n FROM $NUMS;" pgvr 300
+  SET @n = 300; INSERT dbo.ph (k, v) SELECT n, n FROM $NUMS;
+  ALTER TABLE dbo.ph REBUILD PARTITION = 1 WITH (DATA_COMPRESSION = PAGE);" pgvr 300
 # X1b: a row lock waited for 3 s on dbo.lk's primary key
 sqok "A: dbo.lk" "CREATE TABLE dbo.lk (id int NOT NULL CONSTRAINT pk_lk PRIMARY KEY CLUSTERED, v int NOT NULL); INSERT dbo.lk (id, v) VALUES (1, 1), (2, 2), (3, 3);" pgvr
 sq "BEGIN TRAN; UPDATE dbo.lk SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:04'; COMMIT;" pgvr 60 >/dev/null 2>&1 & BG+=($!)
@@ -193,7 +215,14 @@ sqok "A: the partitioned tables" "CREATE TABLE dbo.pt (k int NOT NULL, j int NOT
   CREATE TABLE dbo.pd (d datetime2(3) NOT NULL, v int NOT NULL);
   CREATE CLUSTERED INDEX cx_pd ON dbo.pd (d) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_d (d);
   CREATE TABLE dbo.pm (m money NOT NULL, v int NOT NULL);
-  CREATE CLUSTERED INDEX cx_pm ON dbo.pm (m) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_m (m);" pgvr
+  CREATE CLUSTERED INDEX cx_pm ON dbo.pm (m) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_m (m);
+  CREATE TABLE dbo.pdt (t datetime NOT NULL); CREATE CLUSTERED INDEX cx_pdt ON dbo.pdt (t) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_t (t);
+  CREATE TABLE dbo.pvs (s varchar(10) NOT NULL); CREATE CLUSTERED INDEX cx_pvs ON dbo.pvs (s) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_s (s);
+  CREATE TABLE dbo.pdc (n decimal(9,2) NOT NULL); CREATE CLUSTERED INDEX cx_pdc ON dbo.pdc (n) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_n (n);
+  CREATE TABLE dbo.xg (id int NOT NULL CONSTRAINT pk_xg PRIMARY KEY CLUSTERED, doc xml NULL, geo geography NULL);
+  INSERT dbo.xg (id, doc, geo) VALUES (1, N'<a>1</a>', geography::Point(47.6, -122.3, 4326));
+  CREATE PRIMARY XML INDEX px_xg ON dbo.xg (doc);
+  CREATE SPATIAL INDEX sx_xg ON dbo.xg (geo);" pgvr
 # X4: a system-versioned table and its history table with a nonclustered index of its own
 sqok "A: the temporal table" "CREATE TABLE dbo.tt (id int NOT NULL CONSTRAINT pk_tt PRIMARY KEY CLUSTERED, v int NOT NULL,
     vf datetime2 GENERATED ALWAYS AS ROW START NOT NULL, vt datetime2 GENERATED ALWAYS AS ROW END NOT NULL, PERIOD FOR SYSTEM_TIME (vf, vt))
@@ -216,6 +245,11 @@ sqok "A: pgvr_drop" "CREATE TABLE dbo.hd (id int NOT NULL); INSERT dbo.hd VALUES
 sqok "A: pgvr_deny" "CREATE TABLE dbo.np (id int NOT NULL CONSTRAINT pk_np PRIMARY KEY); CREATE TABLE dbo.nc (id int NOT NULL CONSTRAINT pk_nc PRIMARY KEY, pid int NOT NULL CONSTRAINT fk_nc_np REFERENCES dbo.np (id));
   CREATE TABLE dbo.nh (id int NOT NULL);
   CREATE USER [$MON] FOR LOGIN [$MON]; DENY SELECT ON sys.foreign_key_columns TO [$MON];" pgvr_deny
+sqok "A: pgvr_cs (case-sensitive, not the server's collation)" "CREATE PARTITION FUNCTION Pf_Cs (int) AS RANGE RIGHT FOR VALUES (10);
+  CREATE PARTITION SCHEME Ps_Cs AS PARTITION Pf_Cs ALL TO ([PRIMARY]);
+  CREATE TABLE dbo.Cf (Id int NOT NULL CONSTRAINT Pk_Cf PRIMARY KEY, B int NOT NULL, C varchar(10) NULL);
+  CREATE INDEX Ix_Cf ON dbo.Cf (Id) WHERE B > 0 AND C IS NOT NULL WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE);
+  CREATE TABLE dbo.Ch (K int NOT NULL) ON Ps_Cs (K); INSERT dbo.Ch (K) VALUES (1), (20);" pgvr_cs
 DENYREAD=$(printf 'SET NOCOUNT ON;\nGO\nSELECT COUNT(*) FROM sys.foreign_key_columns\n' | docker exec -i -e "P=$MON_PW" "$SQL" bash -c "SQLCMDPASSWORD=\$P $SQLCMD -S localhost -U $MON $TRUST -b -W -h -1 -d pgvr_deny -i /dev/stdin" 2>&1 | tr '\n' ' ')
 echo "read: the monitor login's own read of sys.foreign_key_columns in pgvr_deny: ${DENYREAD:0:200}"
 
@@ -274,9 +308,9 @@ if ! has mssql_heap; then bad "X1: no table pgvigil.mssql_heap"; else
     FROM pgvigil.mssql_heap WHERE instance_id = $I AND database_name = 'pgvr'" > "$TMPD/x1.pg" 2>"$TMPD/x1.err" || bad "X1: the stored read: $(head -c 300 "$TMPD/x1.err")"
   if same X1 "the heaps" "$TMPD/x1.sa" "$TMPD/x1.pg"; then
     f=$(pq "SELECT concat_ws('|', forwarded_fetch_count > 0, leaf_delete_count > 0) FROM pgvigil.mssql_heap WHERE instance_id = $I AND database_name = 'pgvr' AND table_name = 'h_fwd'")
-    p=$(pq "SELECT concat_ws('|', data_space_name, data_space_type, partition_column, partitions) FROM pgvigil.mssql_heap WHERE instance_id = $I AND database_name = 'pgvr' AND table_name = 'ph'")
-    if [[ "$f" == "t|t" && "$p" == "ps_a|PARTITION_SCHEME|[k]|3" ]]; then ok "X1: $(wc -l < "$TMPD/x1.pg") heaps equal to sa's read; h_fwd forwarded fetches and deletes > 0; ph on ps_a [k], 3 partitions"
-    else bad "X1: h_fwd forwarded > 0 | deletes > 0 = '$f' (wanted t|t); ph = '$p' (wanted ps_a|PARTITION_SCHEME|[k]|3)"; fi
+    p=$(pq "SELECT concat_ws('|', data_space_name, data_space_type, partition_column, partitions, compression, any_uncompressed::int) FROM pgvigil.mssql_heap WHERE instance_id = $I AND database_name = 'pgvr' AND table_name = 'ph'")
+    if [[ "$f" == "t|t" && "$p" == "ps_a|PARTITION_SCHEME|[k]|3|MIXED|1" ]]; then ok "X1: $(wc -l < "$TMPD/x1.pg") heaps equal to sa's read; h_fwd forwarded fetches and deletes > 0; ph on ps_a [k], 3 partitions, MIXED"
+    else bad "X1: h_fwd forwarded > 0 | deletes > 0 = '$f' (wanted t|t); ph = '$p' (wanted ps_a|PARTITION_SCHEME|[k]|3|MIXED|1)"; fi
   fi
 fi
 
@@ -318,23 +352,29 @@ if ! has mssql_table_shape; then bad "X2: no table pgvigil.mssql_table_shape"; e
       $(nv 'has_text_image::int'), $(nv cx_key_bytes), $(nv cx_key_columns)) FROM pgvigil.mssql_table_shape WHERE instance_id = $I AND database_name = 'pgvr'" > "$TMPD/x2.pg" 2>"$TMPD/x2.err" \
     || bad "X2: the stored read: $(head -c 300 "$TMPD/x2.err")"
   if same X2 "the table shapes" "$TMPD/x2.sa" "$TMPD/x2.pg"; then
-    w=$(pq "SELECT string_agg(concat_ws(':', table_name, object_type, has_sparse::int, has_text_image::int, lob_columns, cx_key_columns, cx_key_bytes), ' ' ORDER BY table_name)
+    w=$(pq "SELECT string_agg(concat_ws(':', table_name, object_type, total_columns, nonlob_bytes, string_columns, has_sparse::int, has_text_image::int, lob_columns, cx_key_columns, cx_key_bytes), ' ' ORDER BY table_name)
               FROM pgvigil.mssql_table_shape WHERE instance_id = $I AND database_name = 'pgvr' AND table_name IN ('wide', 'ck4', 'v_iv', 'v_plain')")
-    if [[ "$w" == "ck4:U:0:0:0:4:20 v_iv:V:0:0:0:1:4 wide:U:1:1:1:1:4" ]]; then ok "X2: $(wc -l < "$TMPD/x2.pg") tables and indexed views equal to sa's read; $w; v_plain not stored"
-    else bad "X2: the fixed rows read '$w' (wanted 'ck4:U:0:0:0:4:20 v_iv:V:0:0:0:1:4 wide:U:1:1:1:1:4')"; fi
+    # by hand from the DDL (review B1): ck4 7 columns, 4+4+4+8+80+10+20 = 130 bytes, s and ch strings (nchar not, BI L5708);
+    # v_iv 2 / 8 / 0; wide 37 columns, 4 + 33 x 4 + 4 + 0 (max) + 16 (text) = 156 bytes, lob alone a string (text is not, by BI's test)
+    if [[ "$w" == "ck4:U:7:130:2:0:0:0:4:20 v_iv:V:2:8:0:0:0:0:1:4 wide:U:37:156:1:1:1:1:1:4" ]]; then ok "X2: $(wc -l < "$TMPD/x2.pg") tables and indexed views equal to sa's read; $w; v_plain not stored"
+    else bad "X2: the fixed rows read '$w' (wanted 'ck4:U:7:130:2:0:0:0:4:20 v_iv:V:2:8:0:0:0:0:1:4 wide:U:37:156:1:1:1:1:1:4')"; fi
   fi
 fi
 
 echo "== X3. data spaces and object type =="
 if ! has mssql_index object_type; then bad "X3: mssql_index has no column object_type"; else
-  sq "SELECT CONCAT_WS('|', s.name $DD, o.name $DD, i.name $DD, RTRIM(o.type) $DD, ds.name $DD, ds.type_desc $DD, ISNULL(pf.name $DD, '~'), ISNULL(pf.t $DD, '~'),
-      ISNULL(CAST(pf.fanout AS varchar(10)), '~'), ISNULL(pf.r $DD, '~'), ISNULL(pc.name $DD, '~'), pt.unc)
+  sq "SELECT CONCAT_WS('|', s.name $DD, o.name $DD, i.name $DD, RTRIM(o.type) $DD, ISNULL(ds.name $DD, '~'), ISNULL(ds.type_desc $DD, '~'), ISNULL(pf.name $DD, '~'), ISNULL(pf.t $DD, '~'),
+      ISNULL(CAST(pf.fanout AS varchar(10)), '~'), ISNULL(pf.r $DD, '~'), ISNULL(pc.name $DD, '~'), ISNULL(CAST(pt.unc AS varchar(1)), '~'))
     FROM sys.indexes i JOIN sys.objects o ON o.object_id = i.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id
-    JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
+    LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     OUTER APPLY (SELECT f.name, f.fanout,
-                        TYPE_NAME(pp.user_type_id) + CASE WHEN TYPE_NAME(pp.system_type_id) IN ('datetime2', 'time', 'datetimeoffset') THEN '(' + CAST(pp.scale AS varchar(3)) + ')' ELSE '' END AS t,
+                        TYPE_NAME(pp.user_type_id) + CASE WHEN TYPE_NAME(pp.system_type_id) IN ('datetime2', 'time', 'datetimeoffset') THEN '(' + CAST(pp.scale AS varchar(3)) + ')'
+                          WHEN TYPE_NAME(pp.system_type_id) IN ('varchar', 'char', 'varbinary', 'binary') THEN '(' + CAST(pp.max_length AS varchar(10)) + ')'
+                          WHEN TYPE_NAME(pp.system_type_id) IN ('decimal', 'numeric') THEN '(' + CAST(pp.precision AS varchar(3)) + ',' + CAST(pp.scale AS varchar(3)) + ')' ELSE '' END AS t,
                         'RANGE ' + CASE WHEN f.boundary_value_on_right = 1 THEN 'RIGHT' ELSE 'LEFT' END + ' FOR VALUES ('
                           + (SELECT STRING_AGG(CAST(CASE SQL_VARIANT_PROPERTY(v.value, 'BaseType') WHEN 'datetime2' THEN CONVERT(nvarchar(40), CAST(v.value AS datetime2(7)), 121)
+                                                         WHEN 'datetime' THEN CONVERT(nvarchar(40), CAST(v.value AS datetime), 121)
+                                                         WHEN 'varchar' THEN '''' + CAST(v.value AS nvarchar(4000)) + ''''
                                                          WHEN 'money' THEN CONVERT(nvarchar(40), CAST(v.value AS money), 2) ELSE CAST(v.value AS nvarchar(4000)) END AS nvarchar(max)), N', ')
                                       WITHIN GROUP (ORDER BY v.boundary_id) FROM sys.partition_range_values v WHERE v.function_id = f.function_id) + ')' AS r
                    FROM sys.partition_schemes sch JOIN sys.partition_functions f ON f.function_id = sch.function_id
@@ -348,9 +388,12 @@ if ! has mssql_index object_type; then bad "X3: mssql_index has no column object
     > "$TMPD/x3.pg" 2>"$TMPD/x3.err" || bad "X3: the stored read: $(head -c 300 "$TMPD/x3.err")"
   if same X3 "the data spaces" "$TMPD/x3.sa" "$TMPD/x3.pg"; then
     w=$(pq "SELECT string_agg(concat_ws(':', index_name, object_type, data_space_name, data_space_type, partition_function, pf_type, pf_range, compression, any_uncompressed::int), ' ' ORDER BY index_name)
-              FROM pgvigil.mssql_index WHERE instance_id = $I AND database_name = 'pgvr' AND index_name IN ('ix_pt_fg', 'ix_pt_eq', 'cx_pt', 'cx_pd', 'cx_pm', 'cx_v_iv')")
-    want="cx_pd:U:ps_d:PARTITION_SCHEME:pf_d:datetime2(3):RANGE LEFT FOR VALUES (2026-01-01 00:00:00.0000000):NONE:1 cx_pm:U:ps_m:PARTITION_SCHEME:pf_m:money:RANGE RIGHT FOR VALUES (1.2345):NONE:1 cx_pt:U:ps_a:PARTITION_SCHEME:pf_a:int:RANGE RIGHT FOR VALUES (100, 200):MIXED:1 cx_v_iv:V:PRIMARY:ROWS_FILEGROUP:NONE:1 ix_pt_eq:U:ps_b:PARTITION_SCHEME:pf_b:int:RANGE RIGHT FOR VALUES (100, 200):NONE:1 ix_pt_fg:U:PRIMARY:ROWS_FILEGROUP:NONE:1"
-    if [[ "$w" == "$want" ]]; then ok "X3: $(wc -l < "$TMPD/x3.pg") indexes' data spaces equal to sa's read; the fixed rows as wanted"
+              FROM pgvigil.mssql_index WHERE instance_id = $I AND database_name = 'pgvr' AND index_name IN ('ix_pt_fg', 'ix_pt_eq', 'cx_pt', 'cx_pd', 'cx_pm', 'cx_pdt', 'cx_pvs', 'cx_pdc', 'cx_v_iv')")
+    want="cx_pd:U:ps_d:PARTITION_SCHEME:pf_d:datetime2(3):RANGE LEFT FOR VALUES (2026-01-01 00:00:00.0000000):NONE:1 cx_pdc:U:ps_n:PARTITION_SCHEME:pf_n:decimal(9,2):RANGE RIGHT FOR VALUES (10.50):NONE:1 cx_pdt:U:ps_t:PARTITION_SCHEME:pf_t:datetime:RANGE LEFT FOR VALUES (2026-01-31 23:59:59.997):NONE:1 cx_pm:U:ps_m:PARTITION_SCHEME:pf_m:money:RANGE RIGHT FOR VALUES (1.2345):NONE:1 cx_pt:U:ps_a:PARTITION_SCHEME:pf_a:int:RANGE RIGHT FOR VALUES (100, 200):MIXED:1 cx_pvs:U:ps_s:PARTITION_SCHEME:pf_s:varchar(10):RANGE LEFT FOR VALUES ('m'):NONE:1 cx_v_iv:V:PRIMARY:ROWS_FILEGROUP:NONE:1 ix_pt_eq:U:ps_b:PARTITION_SCHEME:pf_b:int:RANGE RIGHT FOR VALUES (100, 200):NONE:1 ix_pt_fg:U:PRIMARY:ROWS_FILEGROUP:NONE:1"
+    xs=$(pq "SELECT string_agg(concat_ws(':', index_name, index_type, coalesce(data_space_name, '~'), coalesce(data_space_type, '~'), coalesce(any_uncompressed::int::text, '~')), ' ' ORDER BY index_name)
+              FROM pgvigil.mssql_index WHERE instance_id = $I AND database_name = 'pgvr' AND index_name IN ('px_xg', 'sx_xg')")
+    echo "read: the XML and spatial indexes as stored (equal to sa's read above; no fixed value was known before the run): $xs"
+    if [[ "$w" == "$want" ]]; then ok "X3: $(wc -l < "$TMPD/x3.pg") indexes' data spaces equal to sa's read (XML and spatial included); the fixed rows as wanted"
     else bad "X3: the fixed rows read '$w'"; echo "       wanted '$want'"; fi
   fi
 fi
@@ -430,9 +473,16 @@ if ! has mssql_index_parts; then bad "XN: no table pgvigil.mssql_index_parts"; e
   nn=$(pq "SELECT note FROM pgvigil.mssql_index_parts WHERE instance_id = $I AND database_name = 'pgvr_deny'")
   nf=$(pq "SELECT count(*) FROM pgvigil.mssql_fk_columns WHERE instance_id = $I AND database_name = 'pgvr_deny'" 2>/dev/null || echo '?')
   pr=$(pq "SELECT array_to_string(ARRAY(SELECT unnest(parts_read) ORDER BY 1), ',') FROM pgvigil.mssql_index_parts WHERE instance_id = $I AND database_name = 'pgvr'")
-  if [[ "$np" == "$ns" && "$np" -gt 0 && "$nr" == "f|t|t|t" && "$nf" == 0 && "$pr" == "fks,heaps,ixextra,segments,shape" ]]; then
-    ok "XN: pgvr_deny's $np indexes stored, its foreign keys not read ('${nn:0:160}'), no fk row; pgvr's parts $pr"
-  else bad "XN: pgvr_deny indexes $np (sa $ns); fks|heaps|shape|note = '$nr' (wanted f|t|t|t); fk rows $nf (wanted 0); pgvr's parts '$pr' (wanted fks,heaps,ixextra,segments,shape); note '${nn:0:200}'"; fi
+  st=$(pq "SELECT concat_ws('|', status, note LIKE '%the foreign keys of 1 database(s) were not read (pgvr_deny)%') FROM pgvigil.collection_dates
+             WHERE instance_id = $I AND collection = 'mssql_indexes' ORDER BY snapshot_at DESC LIMIT 1")
+  if [[ "$np" == "$ns" && "$np" -gt 0 && "$nr" == "f|t|t|t" && "$nf" == 0 && "$pr" == "fks,heaps,ixextra,segments,shape" && "$st" == "partial|t" ]]; then
+    ok "XN: pgvr_deny's $np indexes stored, its foreign keys not read ('${nn:0:160}'), no fk row; pgvr's parts $pr; the run partial"
+  else bad "XN: pgvr_deny indexes $np (sa $ns); fks|heaps|shape|note = '$nr' (wanted f|t|t|t); fk rows $nf (wanted 0); pgvr's parts '$pr' (wanted fks,heaps,ixextra,segments,shape); run state|note '$st' (wanted partial|t); note '${nn:0:200}'"; fi
+  cs=$(pq "SELECT concat_ws('|', (SELECT array_to_string(ARRAY(SELECT unnest(parts_read) ORDER BY 1), ',') FROM pgvigil.mssql_index_parts WHERE instance_id = $I AND database_name = 'pgvr_cs'),
+                (SELECT array_to_string(filter_columns, ',') FROM pgvigil.mssql_index WHERE instance_id = $I AND database_name = 'pgvr_cs' AND index_name = 'Ix_Cf'),
+                (SELECT concat_ws(' ', data_space_name, partition_column) FROM pgvigil.mssql_heap WHERE instance_id = $I AND database_name = 'pgvr_cs' AND table_name = 'Ch'))")
+  if [[ "$cs" == "fks,heaps,ixextra,segments,shape|[B],[C]|Ps_Cs [K]" ]]; then ok "XC: pgvr_cs (Latin1_General_CS_AS): every part read, Ix_Cf [B],[C], Ch on Ps_Cs [K]"
+  else bad "XC: pgvr_cs parts|Ix_Cf filter|Ch = '$cs' (wanted 'fks,heaps,ixextra,segments,shape|[B],[C]|Ps_Cs [K]')"; fi
 fi
 sqok "XD: drop pgvr_drop" "ALTER DATABASE pgvr_drop SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE pgvr_drop;"
 col mssql_indexes
@@ -508,7 +558,7 @@ for (const scheme of ['light', 'dark']) {
     for (let k = 0; k < 4 && n && rows < 0; k++) { n = n.nextElementSibling; const t = n && (n.matches('table') ? n : n.querySelector('table')); if (t) rows = t.querySelectorAll('tbody tr').length; }
     const cells = [...document.querySelectorAll('td')].map(td => td.textContent.trim());
     const heads = [...document.querySelectorAll('th')].map(th => th.textContent.trim());
-    return { heaps: h ? rows : null, view: cells.includes('indexed view'), scheme: cells.includes('ps_a ([k])'), partsHead: heads.includes('parts not read'),
+    return { heaps: h ? rows : null, view: cells.includes('indexed view'), scheme: cells.includes('ps_a ([k])'), partsHead: heads.includes('read notes'),
              denyWords: cells.some(c => c.includes('foreign keys: not read')), title: h ? h.textContent : '' };
   })()`);
   const height = await ev('document.documentElement.scrollHeight');
@@ -522,7 +572,7 @@ process.exit(0);
 JS
   xs=$(timeout 120 node "$TMPD/shot.mjs" "$CDP" "$U/#/mssqlindexes?i=$I" "$TMPD/cj" "$PGVIGIL_SHOTS" 2>&1 | tail -1)
   want="{\"heaps\":$hc,\"view\":true,\"scheme\":true,\"partsHead\":true,\"denyWords\":true,\"title\":\"Heaps ($hc)\"}"
-  if [[ "$xs" == "{\"light\":$want,\"dark\":$want}" ]]; then ok "XS: the page in both schemes: Heaps ($hc rows), 'indexed view', 'ps_a ([k])', 'parts not read' with pgvr_deny's words; pictures in $PGVIGIL_SHOTS"
+  if [[ "$xs" == "{\"light\":$want,\"dark\":$want}" ]]; then ok "XS: the page in both schemes: Heaps ($hc rows), 'indexed view', 'ps_a ([k])', 'read notes' with pgvr_deny's words; pictures in $PGVIGIL_SHOTS"
   else bad "XS: the page read '${xs:0:600}'"; echo "       wanted {light, dark} each $want"; fi
 fi
 

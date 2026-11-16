@@ -47,6 +47,12 @@ const noHistogram = (t: unknown) => {
   return '';
 };
 const q = (s: unknown) => '[' + String(s ?? '').replace(/]/g, ']]') + ']';
+// the Heaps grid's empty words: 'no heap' only where every database shown had its heaps read (review S6)
+const heapsEmpty = (dbs: Row[]) => {
+  const unread = dbs.filter(r => !(Array.isArray(r.parts_read) && r.parts_read.includes('heaps'))).map(r => String(r.database));
+  return unread.length ? `No heap stored. The heaps were not read in ${unread.length === dbs.length ? 'any database shown' : unread.join(', ')}: see the read notes above.`
+    : 'No heap: every user table of the databases shown has a clustered index.';
+};
 
 export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Indexes and statistics'));
@@ -106,7 +112,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'usage_days', label: 'days of counters', num: true, cls: (_v, r) => r.judged ? 'ok' : 'warn' },
       { key: 'usage_reason', label: 'since' }, { key: 'usage_since', label: 'at', fmt: fmtTime },
       { key: 'guard', wide: true }, { key: 'indexes', num: true }, { key: 'note', wide: true },
-      { key: 'parts_note', label: 'parts not read', wide: true }, { key: 'read_at', label: 'read', fmt: fmtTime }]));
+      { key: 'parts_note', label: 'read notes', wide: true }, { key: 'read_at', label: 'read', fmt: fmtTime }]));
     if (dp) out.push(...usageOverTime(dp));
     else out.push(el('h3', {}, 'User actions over time'), errorBox(dpErr));
     out.push(el('h3', {}, 'Indexes a rule names'), grid(rowsOf(d.verdicts), [
@@ -184,7 +190,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'forwarded_fetch_count', label: 'forwarded fetches', num: true }, { key: 'leaf_delete_count', label: 'deletes', num: true },
         { key: 'data_space_name', label: 'partition scheme', fmt: (v, r) => r.data_space_type === 'PARTITION_SCHEME' ? `${String(v)}${r.partition_column ? ' (' + String(r.partition_column) + ')' : ''}` : '' },
         { key: 'compression' }, { key: 'last_read', label: 'last read', fmt: fmtTime }, { key: 'table_created', label: 'table created', fmt: fmtTime }],
-        'No heap: every user table has a clustered index.'));
+        heapsEmpty(shown)));
     body.replaceChildren(...out);
   }
 

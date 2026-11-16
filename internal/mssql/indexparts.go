@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
@@ -86,25 +87,29 @@ LEFT JOIN (SELECT z.object_id, z.index_id, SUM(z.row_lock_wait_count) AS rlc, SU
              FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) z GROUP BY z.object_id, z.index_id) os
        ON os.object_id = i.object_id AND os.index_id = i.index_id`
 
-// pfValueText is a partition boundary (a sql_variant) as text with nothing lost: a sql_variant cast to nvarchar takes
-// style 0, so a datetime2 reads 'Jan  1 2026 12:00AM' (its seconds and fractions gone; box run d404-g3), money keeps 2
-// decimals and float 6 digits - two functions that differ there would read 'essentially the same'. The date and time
-// types at 7 digits (style 121), money at 4 decimals (style 2), float and real at 17 digits (style 3, SQL Server 2016
-// and later), binary as 0x hex (style 1); every other type as it casts.
+// pfValueText is a partition boundary (a sql_variant) as its DDL would write it, with nothing lost: a sql_variant cast
+// to nvarchar takes style 0, so a datetime2 reads 'Jan  1 2026 12:00AM' (its seconds and fractions gone; box run
+// d404-g3), money keeps 2 decimals and float 6 digits - two functions that differ there would read 'essentially the
+// same'. datetime and smalldatetime by style 121 ('2026-01-31 23:59:59.997'), datetime2, datetimeoffset and time at 7
+// digits, money at 4 decimals (style 2), float and real at 17 digits (style 3, SQL Server 2016 and later), binary as
+// 0x hex (style 1), a string quoted ('m', N'm'); every other type as it casts.
 const pfValueText = `CASE
-  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('datetime', 'smalldatetime', 'datetime2') THEN CONVERT(nvarchar(4000), CAST(v.value AS datetime2(7)), 121)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('datetime', 'smalldatetime') THEN CONVERT(nvarchar(4000), CAST(v.value AS datetime), 121)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') = 'datetime2' THEN CONVERT(nvarchar(4000), CAST(v.value AS datetime2(7)), 121)
   WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') = 'datetimeoffset' THEN CONVERT(nvarchar(4000), CAST(v.value AS datetimeoffset(7)), 121)
   WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') = 'time' THEN CONVERT(nvarchar(4000), CAST(v.value AS time(7)), 114)
   WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('money', 'smallmoney') THEN CONVERT(nvarchar(4000), CAST(v.value AS money), 2)
   WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('float', 'real') THEN CONVERT(nvarchar(4000), CAST(v.value AS float), 3)
   WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('binary', 'varbinary') THEN CONVERT(nvarchar(4000), CAST(v.value AS varbinary(8000)), 1)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('char', 'varchar') THEN N'''' + REPLACE(CAST(v.value AS nvarchar(4000)), N'''', N'''''') + N''''
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('nchar', 'nvarchar') THEN N'N''' + REPLACE(CAST(v.value AS nvarchar(4000)), N'''', N'''''') + N''''
   ELSE CAST(v.value AS nvarchar(4000)) END`
 
 // ixExtraSQL: per index of indexesSQL's set, what the index read does not carry.
 var ixExtraSQL = `SELECT CAST(i.object_id AS bigint) AS object_id, CAST(i.index_id AS int) AS index_id, CAST(RTRIM(o.type) AS nvarchar(2)) AS object_type,
   ` + ixSpaceCols + `,
   CASE WHEN i.has_filter = 1 THEN ISNULL((SELECT c.name AS n FROM sys.columns c
-         WHERE c.object_id = i.object_id AND CHARINDEX(QUOTENAME(c.name), i.filter_definition) > 0
+         WHERE c.object_id = i.object_id AND CHARINDEX(QUOTENAME(c.name) COLLATE DATABASE_DEFAULT, i.filter_definition COLLATE DATABASE_DEFAULT) > 0
          ORDER BY c.name FOR JSON PATH), N'[]') END AS filter_json
 FROM sys.indexes i
 JOIN sys.objects o ON o.object_id = i.object_id
@@ -177,6 +182,7 @@ const ixFKSQL = `SELECT TOP (@cap) 'fk' AS kind, CAST(fk.object_id AS bigint) AS
     WHERE k.constraint_object_id = fk.object_id ORDER BY k.constraint_column_id FOR JSON PATH) AS cols_json
 FROM sys.foreign_keys fk
 WHERE fk.is_disabled = 0 AND fk.is_ms_shipped = 0
+  AND NOT EXISTS (SELECT 1 FROM sys.tables mt WHERE mt.object_id = fk.parent_object_id AND mt.is_memory_optimized = 1)
 ORDER BY OBJECT_SCHEMA_NAME(fk.parent_object_id), OBJECT_NAME(fk.parent_object_id), fk.name`
 
 // ixKey is an index's identity inside a database.
@@ -266,8 +272,9 @@ func mergeExtra(idx []collect.Row, extra []collect.Row) (bad int) {
 		if !ok {
 			continue
 		}
-		r["object_type"] = e["object_type"]
-		if err := spaceFields(r, e); err != nil {
+		// a scratch row first: a row that cannot be read leaves the index row as it was (review NIT 1)
+		t := collect.Row{"object_type": e["object_type"]}
+		if err := spaceFields(t, e); err != nil {
 			bad++
 			continue
 		}
@@ -277,7 +284,10 @@ func mergeExtra(idx []collect.Row, extra []collect.Row) (bad int) {
 				bad++
 				continue
 			}
-			r["filter_columns"] = cols
+			t["filter_columns"] = cols
+		}
+		for k, v := range t {
+			r[k] = v
 		}
 	}
 	return bad
@@ -337,22 +347,31 @@ func partRows(db userDB, part string, rows []collect.Row) (out []collect.Row, ba
 	return out, bad
 }
 
-// partResult is what the parts of one database's read left: the rows to store, and the database row's words.
+// partResult is what the parts of one database's read left: the rows to store, the database row's words, and the
+// parts that failed with the server's error (the run's last batch counts them: a failed part makes the run partial).
 type partResult struct {
 	rows   []collect.Row
 	read   []string
 	capped []string
 	notes  []string
+	failed map[string]error
+}
+
+// deepData is the run's one probe of sys.column_store_segments: ok, the column min_deep_data exists; err, the probe
+// itself failed.
+type deepData struct {
+	ok  bool
+	err error
 }
 
 // readIndexParts runs the five parts in a database whose index read succeeded: the index rows take ixextra's and
-// segments' columns, the other parts' rows are returned. segments: the server has min_deep_data. A context that ends
-// stops the parts left.
-func readIndexParts(ctx context.Context, conn *sql.Conn, db userDB, idx []collect.Row, segments bool) partResult {
-	var res partResult
+// segments' columns, the other parts' rows are returned. A context that ends, or the run's soft deadline passed
+// (opt.Deadline, the one the index read keeps: the run's last batch still needs its time), stops the parts left.
+func readIndexParts(ctx context.Context, conn *sql.Conn, db userDB, idx []collect.Row, deep deepData, deadline time.Time) partResult {
+	res := partResult{failed: map[string]error{}}
 	for _, p := range indexParts {
-		if ctx.Err() != nil {
-			res.notes = append(res.notes, p+": not read this time (the run's deadline came)")
+		if ctx.Err() != nil || (!deadline.IsZero() && time.Now().After(deadline)) {
+			res.notes = append(res.notes, partWords[p]+": not read this time (the run's deadline came)")
 			continue
 		}
 		var rows []collect.Row
@@ -361,8 +380,12 @@ func readIndexParts(ctx context.Context, conn *sql.Conn, db userDB, idx []collec
 		case "ixextra":
 			rows, err = qsRead(ctx, conn, db.quoted, ixExtraSQL, "")
 		case "segments":
-			if !segments {
-				res.notes = append(res.notes, "segments: not read (sys.column_store_segments keeps no min_deep_data before SQL Server 2022)")
+			if deep.err != nil {
+				res.notes = append(res.notes, partWords[p]+": not read: the probe of sys.column_store_segments failed: "+deep.err.Error())
+				continue
+			}
+			if !deep.ok {
+				res.notes = append(res.notes, partWords[p]+": not read (sys.column_store_segments keeps no min_deep_data before SQL Server 2022)")
 				continue
 			}
 			rows, err = qsRead(ctx, conn, db.quoted, ixSegmentsSQL, "")
@@ -375,6 +398,9 @@ func readIndexParts(ctx context.Context, conn *sql.Conn, db userDB, idx []collec
 		}
 		if err != nil {
 			res.notes = append(res.notes, partWords[p]+": not read: "+err.Error())
+			if ctx.Err() == nil {
+				res.failed[p] = err
+			}
 			continue
 		}
 		switch p {
@@ -410,11 +436,52 @@ var partWords = map[string]string{
 	"fks":      "foreign keys",
 }
 
+// partSource names the view a part's failure is counted under in the run's collector_error rows.
+var partSource = map[string]string{
+	"ixextra":  "sys.dm_db_index_operational_stats",
+	"segments": "sys.column_store_segments",
+	"heaps":    "sys.dm_db_partition_stats",
+	"shape":    "sys.columns",
+	"fks":      "sys.foreign_key_columns",
+}
+
 // hasDeepData asks the server once per run whether sys.column_store_segments has min_deep_data.
-func hasDeepData(ctx context.Context, conn *sql.Conn) bool {
+func hasDeepData(ctx context.Context, conn *sql.Conn) deepData {
 	var n sql.NullInt64
 	if err := conn.QueryRowContext(ctx, ixSegmentsProbe).Scan(&n); err != nil {
-		return false
+		return deepData{err: err}
 	}
-	return n.Int64 > 0
+	return deepData{ok: n.Int64 > 0}
+}
+
+// partFailures is the run's count of failed parts: per part, the databases and the first error.
+type partFailures map[string]*struct {
+	dbs   []string
+	first error
+}
+
+func (f partFailures) add(db string, failed map[string]error) {
+	for p, err := range failed {
+		if f[p] == nil {
+			f[p] = &struct {
+				dbs   []string
+				first error
+			}{first: err}
+		}
+		f[p].dbs = append(f[p].dbs, db)
+	}
+}
+
+// rows are the run's collector_error rows, one per failed part (a failed part makes the run partial, batch.go).
+func (f partFailures) rows() []collect.Row {
+	var out []collect.Row
+	for _, p := range indexParts {
+		x := f[p]
+		if x == nil {
+			continue
+		}
+		out = append(out, collect.Row{"kind": "collector_error", "source": partSource[p],
+			"message": fmt.Sprintf("the %s of %d database(s) were not read (%s): %v; the index read of each stands", partWords[p], len(x.dbs), firstFew(x.dbs, 5), x.first)})
+	}
+	return out
 }
