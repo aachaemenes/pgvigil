@@ -60,15 +60,17 @@ func (s *Server) FrameStatus(w http.ResponseWriter, r *http.Request) {
 // allows, the overview's rule), healthy (ok and fresh).
 const sqlFrameStatus = `
 WITH c AS (
-  SELECT c.status, c.note, c.snapshot_at,
-         coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
+  SELECT c.status, c.note, c.snapshot_at, coalesce(r.as_of, now()) AS ref_at,
+         coalesce(x.interval_secs, ($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
     FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
+    LEFT JOIN pgvigil.remote_instance_state r ON r.instance_id = c.instance_id
+    LEFT JOIN pgvigil.remote_collection_interval x ON x.instance_id = c.instance_id AND x.collection = c.collection
    WHERE i.is_active
 ), k AS (
   SELECT CASE WHEN status <> 'ok' AND coalesce(note, '') ~* $3 THEN 'no_permission'
               WHEN status = 'error' THEN 'failing'
               WHEN status <> 'ok' THEN 'not_collected'
-              WHEN now() - snapshot_at > make_interval(secs => CASE WHEN iv IS NULL THEN $2::int ELSE greatest(300, 3 * iv) END) THEN 'stale'
+              WHEN ref_at - snapshot_at > make_interval(secs => CASE WHEN iv IS NULL THEN $2::int ELSE greatest(300, 3 * iv) END) THEN 'stale'
               ELSE 'healthy' END AS state, snapshot_at, status
     FROM c WHERE coalesce(iv, -1) <> 0
 )
