@@ -74,8 +74,8 @@ index c6f2646..c513a54 100644
 +    "path": "sp_BlitzCache.sql",
 +    "follows": "8.34 (20260702), sp_BlitzCache's compile time read (the plan's CompileTime)",
 +    "begin": "CompileTime = query_plan.value('sum(//p:QueryPlan/@CompileTime)', 'float')",
-+    "end": ",",
-+    "sha256": "fedc7db6380de6862814e922dc3287c16be60f1108b345fe259442587e999d70"
++    "end": "'float') ,",
++    "sha256": "138eaebacfc0a00290e17b40acaca537d8f19d89fbb042386437c46764c3ef4b"
 +  },
 +  {
 +    "name": "blitzCacheLongCompile",

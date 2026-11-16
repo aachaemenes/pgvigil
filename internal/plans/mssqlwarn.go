@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ type MSSQLRuntime struct {
 	AvgRows       *float64 // rows returned per execution
 	AvgWritePages *float64 // logical writes per execution, 8 KB pages
 	AvgSpillPages *float64 // pages spilled to tempdb per execution
-	AvgCompileMS  *float64 // compile duration per compile, ms (Query Store's average compile duration)
+	AvgCompileMS  *float64 // compile duration per compile, ms (Query Store's avg_compile_duration is in microseconds: / 1000)
 }
 
 // Num returns a pointer to v, for an MSSQLRuntime field.
@@ -914,7 +915,7 @@ func ruleRowGoal(c *wctx) {
 }
 
 // #59: the statement's estimated rows a thousand times off the rows a run returns, either way (sp_BlitzCache 8.34
-// L4951; the estimate L3319-3322).
+// L4951; the estimate L3319-3322, read only above 0).
 func ruleBadEstimate(c *wctx) {
 	rows, ok := c.rt("is_bad_estimate", "rows returned", func(r *MSSQLRuntime) *float64 { return r.AvgRows })
 	if !ok {
@@ -923,6 +924,10 @@ func ruleBadEstimate(c *wctx) {
 	est, ok := c.s.n.num("StatementEstRows")
 	if !ok {
 		c.notJudged("is_bad_estimate", "the plan holds no StatementEstRows")
+		return
+	}
+	if est <= 0 {
+		c.notJudged("is_bad_estimate", "a zero estimate: sp_BlitzCache 8.34 sets a statement's estimated rows only above 0 (L3322)")
 		return
 	}
 	if rows > 0 && (est*1000 < rows || est > rows*1000) {
@@ -1117,6 +1122,12 @@ func ruleLongCompile(c *wctx) {
 // (8.34 L4188-4215).
 func ruleNonSargable(c *wctx) {
 	for _, r := range c.s.relops {
+		// each form needs a scan's predicate or a join: any other operator is not walked (a deep plan would walk each
+		// subtree once per operator above it)
+		pred := kidsPath(r, "IndexScan", "Predicate", "ScalarOperator")
+		if len(pred) == 0 && !strings.Contains(r.attr("LogicalOp"), "Join") {
+			continue
+		}
 		var fnIf, like, expr bool
 		var consts []string
 		r.own(func(d *xnode) {
@@ -1132,7 +1143,6 @@ func ruleNonSargable(c *wctx) {
 			}
 			expr = expr || strings.Contains(d.attr("ScalarString"), "Expr")
 		})
-		pred := kidsPath(r, "IndexScan", "Predicate", "ScalarOperator")
 		why := ""
 		switch {
 		case fnIf && len(kidsPath(r, "IndexScan", "Predicate", "ScalarOperator", "Compare", "ScalarOperator")) > 0:
@@ -1190,9 +1200,10 @@ func ruleUnparameterized(c *wctx) {
 	}
 }
 
-// warningKinds names a Warnings element's children and its set flags ('NoJoinPredicate').
+// warningKinds names a Warnings element's children (in document order) and its set flags ('NoJoinPredicate'), the
+// flags sorted: one order on every read.
 func warningKinds(w *xnode) string {
-	var k []string
+	var k, flags []string
 	for _, x := range w.kids {
 		if !slicesContains(k, x.name) {
 			k = append(k, x.name)
@@ -1200,10 +1211,11 @@ func warningKinds(w *xnode) string {
 	}
 	for a := range w.attrs {
 		if w.flag(a) && !slicesContains(k, a) {
-			k = append(k, a)
+			flags = append(flags, a)
 		}
 	}
-	return strings.Join(k, ", ")
+	sort.Strings(flags)
+	return strings.Join(append(k, flags...), ", ")
 }
 
 // #18: the plan's own warnings (sp_BlitzCache 8.34 L3439-3443).
