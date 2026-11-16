@@ -21,8 +21,8 @@
 # between 100,000 and 999,000; twice - under the plan the database picks, then with the database set to hash joins and
 # scans only - an old dbstats month is made again, 'purge -dry-run' must name exactly dbstats_<old> and 'purge -days 30'
 # must remove it, each ending 0: 'ok   a name ending in no month (...)'. Without the month guard: 'date/time field
-# value out of range' (SQLSTATE 22008) - purge() under the forced plan (box job sqltb-s2-n4-2), PurgeCandidates too
-# under some plans (t-pd-p1b).
+# value out of range' (SQLSTATE 22008) - purge() under the forced plan, PurgeCandidates too
+# under some plans.
 # Until the join places scripts/n4-join-lines.sql, a rel-n4 tree applies scripts/n4-wiring.patch before its build
 # (`git apply scripts/n4-wiring.patch`): without it 0190's purge() and 0139's job_stats_hourly_purge() are unguarded.
 set -euo pipefail
@@ -37,6 +37,7 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/n
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -c "$1"; }
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
+m0=$(q "select to_char(now() at time zone 'utc', 'YYYYMM')")
 "$BIN" migrate -config "$CFG" >/dev/null
 iid=$(q "select pgvigil.ensure_instance('proof-purge', 'onprem', '18.0', 180000, false, '{}'::text[])")
 old=$(q "select to_char((now() - interval '100 days') at time zone 'utc', 'YYYYMM')")
@@ -47,6 +48,8 @@ q "select pgvigil.import_dbstats($iid, now() - interval '100 days', '[{\"kind\":
 q "select pgvigil.import_dbstats($iid, now(), '[{\"kind\":\"server\",\"checkpoints_timed\":2}]'::jsonb)" >/dev/null
 parts() { q "select string_agg(c.relname, ',' order by c.relname) from pg_inherits i join pg_class c on c.oid=i.inhrelid join pg_class p on p.oid=i.inhparent join pg_namespace n on n.oid=p.relnamespace where n.nspname='pgvigil' and p.relname in ('dbstats','serverstats','iostats')"; }
 before=$(parts)
+# a setup that crosses 00:00 UTC of a month's first day reads other months than migrate made ahead: said by name
+[ "$(q "select to_char(now() at time zone 'utc', 'YYYYMM')")" = "$m0" ] || fail "setup: the UTC month changed during the setup (it began in $m0): run again"
 # the next month's three come from migrate's pass alone (no import here is dated there): purge must leave them
 [ "$before" = "dbstats_$old,dbstats_$cur,dbstats_$nxt,iostats_$old,iostats_$cur,iostats_$nxt,serverstats_$old,serverstats_$cur,serverstats_$nxt" ] || fail "setup partitions: $before (want the month 100 days back, this month and the next month migrate makes ahead: $old, $cur, $nxt)"
 
