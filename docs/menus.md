@@ -125,11 +125,13 @@ would drop. The rules are read from `pgvigil.purge()` as installed, so the page 
 | rows absent longer than the age | rows no longer present at the source, older than the age, are deleted |
 | rows *table* no longer names | rows are deleted once the other table no longer refers to them (with "older than the age": both) |
 | rows older than the age, under conditions | the age and conditions of its own (a channel no longer configured, the newest row of each instance kept) |
+| rows older than *n* days, whatever the age | a fixed age of its own: the collector's beat trims its `collector_*` tables at 8 days itself, every minute, whatever the purge age (with "under conditions" or "that *table* no longer names" where it has them); a purge drops none of them and the page does not judge them |
 | *n* rules | the purge deletes from it in more than one way, each listed |
 | kept whole | the purge never deletes from it (inventories, settings, the current state) |
 
 The rules are read from `pgvigil.purge()` and the `*_purge` functions it calls (SQL Server's running queries, reads and
-plan cache).
+plan cache), and from the collector's beat functions (`import_collector_*` and `collector_trim`), which trim their own
+tables.
 
 A partitioned table that `purge()` does not name is marked: it grows until a release names it. The actual retention is
 marked amber, with the words 'older than the age allows', where a table under a rule of the age alone holds rows older
