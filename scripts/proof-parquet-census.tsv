@@ -9,7 +9,7 @@ action_doors	state							collector_id,instance,kind,name,why
 action_kinds	state							kind,engine,class,fields,door_field,label
 action_requests	window	asked_at	audit	outcome				kind,class,instance,ui_user,client,asked_login,state,taken_by,taken_host,outcome,refusal,keep
 actions_log	window	at	audit	statement,server_message				instance_name,ui_user,client,action,target_user,target_app,reason,outcome,detail,datname,statement,engine,server_message,target_host,target,target_id
-activity_sample	window	snapshot_at						datname,usename,application_name,client,state,wait_event_type,wait_event,backend_type
+activity_sample	window	snapshot_at				usename,client		datname,usename,application_name,client,state,wait_event_type,wait_event,backend_type
 activity_summary	window	snapshot_at						
 admin_audit	window	at	audit					ui_user,client,op,target,outcome,detail
 admin_file_tests	left-out							
@@ -70,7 +70,7 @@ collector_streaks	state			last_error				collection,host,last_error
 collector_trim_mark	left-out							
 compare_findings_cache	left-out							
 compare_state	state							
-conn_sources	window	snapshot_at						application_name,usename,datname,client
+conn_sources	window	snapshot_at				usename,client		application_name,usename,datname,client
 cq_tools	state							collector_id,instance,tool,why,version,params,database
 cq_workers	state							collector_id,host,instances
 custom_checks	state			sql				check_name,description,sql,rule,value_column,compare,targets
@@ -83,7 +83,7 @@ darling_benign_waits	state							wait_type
 database_collations	state							datname,provider,locale,recorded_version,actual_version
 database_extensions	state							name,datname,version,schema_name
 database_sizes	window	snapshot_at						datname
-databases	state							datname,owner,encoding,lc_collate,lc_ctype,tablespace,comment
+databases	state					owner		datname,owner,encoding,lc_collate,lc_ctype,tablespace,comment
 db_checks	state			fix_sql				check_kind,object,datname,detail,fix_sql
 dbadash_instances	state							repository,instance,connection_id,display_name,product_version,edition
 dbadash_move_ids	left-out							
@@ -101,7 +101,7 @@ dms_table_stats	state							task_arn,schema_name,table_name,table_state,validati
 dms_task_sample	window	snapshot_at						task_arn,status
 dms_tasks	state							task_arn,task_id,ri_arn,migration_type,status,stop_reason,last_failure,cdc_start_position,recovery_checkpoint,source_endpoint_arn,target_endpoint_arn
 drive_thresholds	state					created_by,client,ended_by		level,tag,drive,created_by,client,ended_by
-export_runs	window	started_at						name,pass,outcome,error,login
+export_runs	window	started_at				login		name,pass,outcome,error,login
 export_state	left-out							
 extension_history	window	changed_at						datname,name,change,old_value,new_value
 findings_history	window	snapshot_at						finding_key,instance_name,source,setting,value,event,severity
@@ -123,7 +123,7 @@ instance_events	state							kind,old_value,new_value,source
 instance_extension_settings	state							name,setting,unit
 instance_extensions	state							name,default_version,comment,preloaded_via
 instance_setting_history	window	changed_at						name,old_value,new_value
-instance_state	state							platform,server_version,time_zone,connected_database,connected_user,server_addr,data_checksums,shared_buffers,work_mem,wal_level,track_io_timing,log_min_duration_statement,extensions,non_default_settings,settings_detail
+instance_state	state					connected_user		platform,server_version,time_zone,connected_database,connected_user,server_addr,data_checksums,shared_buffers,work_mem,wal_level,track_io_timing,log_min_duration_statement,extensions,non_default_settings,settings_detail
 instance_tag_overrides	state					set_by		key,vals,set_by
 instance_versions	state							server_version,version_string,aurora_version,aws_resource,engine,engine_version,engine_status,maintenance_window,aws_members
 instances	state							name,platform,server_version,tags,engine
@@ -141,7 +141,7 @@ job_thresholds	state					created_by,client,ended_by		level,job_name,last_fail_is
 job_versions	state			definition,changes,script				scheduler,job_id,job_name,def_hash,definition,changes,script
 jobs	state			command				scheduler,job_name,schedule,command,datname,run_as,nodename,schedule_note
 log_cursor	left-out							
-log_events	window	snapshot_at		statement,detail,message			kind = 'auth_fail'	kind,client,usename,datname,statement,detail,source,event_key,shape_key,level,message
+log_events	window	snapshot_at		statement,detail,message		client,usename	kind = 'auth_fail'	kind,client,usename,datname,statement,detail,source,event_key,shape_key,level,message
 mssql_activity_read	window	snapshot_at						skipped
 mssql_ag_database_cluster	state							group_id,replica_server,database_name,group_name
 mssql_ag_database_state	state							group_id,replica_server,database_name,group_name,synchronization_state,synchronization_health,database_state,suspend_reason,data_loss_basis
@@ -156,7 +156,7 @@ mssql_agent_alert	state							name
 mssql_agent_alerting	state							failsafe_operator
 mssql_agent_operator	state							name
 mssql_attention_reads	window	snapshot_at						state
-mssql_attentions	window	event_at		statement				event_key,session_name,statement,login_name,host_name,program_name,database_name
+mssql_attentions	window	event_at		statement		login_name,host_name		event_key,session_name,statement,login_name,host_name,program_name,database_name
 mssql_audit	state							name,audit_guid,state,status,target,type,on_failure,predicate,log_file_path,log_file_name,current_file,read_state,read_note
 mssql_audit_counts	window	hour_at	audit					count_key,audit_name,category,action_id,action,login_name,database_name,schema_name,object_name
 mssql_audit_events	window	event_at	audit	statement				event_key,audit_name,audit_guid,category,action_id,action,class_type,class_name,login_name,session_login,database_user,target_login,target_user,database_name,schema_name,object_name,client_ip,application,host,reason,statement
@@ -184,8 +184,8 @@ mssql_backup_sets	state					user_name		database_name,backup_type,backup_set_uuid
 mssql_backup_state	state							database_name,state,recovery_model,ag_group_id,ag_name,full_device,full_device_name,diff_device,diff_device_name,log_device,log_device_name,nul_type
 mssql_backup_writers	state					users		database_name,device_kind,root,users
 mssql_block_hourly	window	hour						
-mssql_blocked_reports	window	event_at		blocked_statement,blocking_statement,report				event_key,session_name,database_name,wait_resource,lock_mode,blocked_login,blocked_host,blocked_program,blocked_statement,blocking_status,blocking_login,blocking_host,blocking_program,blocking_statement,blocking_last_batch,head_key,report,source,resource_owner_type,blocked_status,blocked_isolation,blocked_lock_mode,blocked_transaction_name,blocked_last_batch,blocked_last_batch_completed,blocked_last_tran_started,blocked_currentdb,blocking_isolation,blocking_lock_mode,blocking_transaction_name,blocking_last_batch_completed,blocking_last_tran_started,blocking_currentdb,blocking_wait_resource,blocking_sql_handle
-mssql_blocking	window	snapshot_at						head_status,head_wait_type,head_login,head_host,head_program,head_database,note
+mssql_blocked_reports	window	event_at		blocked_statement,blocking_statement,report		blocked_login,blocked_host,blocking_login,blocking_host		event_key,session_name,database_name,wait_resource,lock_mode,blocked_login,blocked_host,blocked_program,blocked_statement,blocking_status,blocking_login,blocking_host,blocking_program,blocking_statement,blocking_last_batch,head_key,report,source,resource_owner_type,blocked_status,blocked_isolation,blocked_lock_mode,blocked_transaction_name,blocked_last_batch,blocked_last_batch_completed,blocked_last_tran_started,blocked_currentdb,blocking_isolation,blocking_lock_mode,blocking_transaction_name,blocking_last_batch_completed,blocking_last_tran_started,blocking_currentdb,blocking_wait_resource,blocking_sql_handle
+mssql_blocking	window	snapshot_at				head_login,head_host		head_status,head_wait_type,head_login,head_host,head_program,head_database,note
 mssql_build	state							status,branch,update_name,newest_branch,catalogue,note
 mssql_check_area	state							area,note
 mssql_check_finding	state							area,check_name,object,rule,severity,value,detail
@@ -212,7 +212,7 @@ mssql_database_option	state							database_name,state,options,deviations
 mssql_database_size	window	snapshot_at						database_name
 mssql_database_space	window	snapshot_at						database_name
 mssql_db_confcheck	state			scoped_note				database_name,state,recovery_model,secondary_role,scoped_note
-mssql_deadlocks	window	event_at		victim_statement,processes,resources,graph				event_key,source,session_name,victim_login,victim_program,victim_statement,database_names,object_names,processes,resources,graph
+mssql_deadlocks	window	event_at		victim_statement,processes,resources,graph		victim_login		event_key,source,session_name,victim_login,victim_program,victim_statement,database_names,object_names,processes,resources,graph
 mssql_errorlog	window	log_at		message				line_key,process,class,matched,message
 mssql_failed_logins	window	logged_at	audit	message				line_key,login_name,client,reason,message
 mssql_failover_group_events	state							server_key,group_name,kind,old_value,new_value,event_id
@@ -251,7 +251,7 @@ mssql_indexlock_sample	window	snapshot_at						database_name,schema_name,table_n
 mssql_indexlock_state	state							
 mssql_instance	state							machine_name,server_name,instance_name,edition,product_version,product_level,product_update_level,product_update_reference,server_collation,virtual_machine_type,physical_machine
 mssql_job_runs	window	snapshot_at		message,failed_message				job_id,job_name,step_name,message,failed_step_name,failed_message
-mssql_jobs	state			last_message				job_id,name,description,category,owner,schedule_names,last_message,steps,schedule_text
+mssql_jobs	state			last_message		owner		job_id,name,description,category,owner,schedule_names,last_message,steps,schedule_text
 mssql_jobs_cursor	left-out							
 mssql_kit_versions	state							database_name,procedure_name,version,version_date,modify_date
 mssql_linked_server	state				data_source	logins		name,product,provider,data_source,catalog,logins
@@ -321,7 +321,7 @@ mssql_reader_state	state							reader,state,scope,note
 mssql_repl_hourly	window	hour						series,kind,agent_type,publisher_db,publication,subscriber,subscriber_db
 mssql_repl_sample	window	snapshot_at						series,kind,agent_type,publisher,publisher_db,publication,subscriber,subscriber_db,job_state
 mssql_replication_state	state			status_text,error_text				kind,distribution_db,publisher,publisher_db,publication,publication_type,subscriber,subscriber_db,subscription_type,agent_type,agent_name,status_text,subscription_status,error_code,error_text,job_state,database_name,distributor,log_reuse_wait
-mssql_requests	window	snapshot_at						status,command,wait_type,wait_resource,isolation_level,login_name,host_name,program_name,database_name,plan_handle,query_hash,query_plan_hash,session_waits,chain_note
+mssql_requests	window	snapshot_at				login_name,host_name		status,command,wait_type,wait_resource,isolation_level,login_name,host_name,program_name,database_name,plan_handle,query_hash,query_plan_hash,session_waits,chain_note
 mssql_requests_summary	window	snapshot_at						source,source_note
 mssql_restore_files	state							backup_set_uuid,device_kind,path
 mssql_restore_history	state					user_name		destination_database_name,user_name,restore_type,source_server,source_database,source_type,source_path
@@ -335,7 +335,7 @@ mssql_running_plan	state			plan_xml,plan_note				query_hash,plan_hash,database_n
 mssql_sched_sample	window	snapshot_at						
 mssql_schema_dbs	state			note				name,create_local,fork_guid,state,note
 mssql_schema_trace_gaps	state			note				note
-mssql_security_auth	state							auth_scheme,net_transport,client_address,local_address
+mssql_security_auth	state					client_address		auth_scheme,net_transport,client_address,local_address
 mssql_security_auth_counts	state							auth_scheme,net_transport
 mssql_security_config	state					created_by,client,ended_by,value		scope,tag,instance_name,key,value,note,created_by,client,ended_by
 mssql_security_config_log	window	at	audit					ui_user,client,op,outcome,detail,payload
@@ -351,14 +351,14 @@ mssql_security_server_perms	state		audit					class_desc,permission_name,state_de
 mssql_security_setting_keys	state							key,label,value_kind,default_val
 mssql_server_option	state							name,advised,status,severity,rule,detail
 mssql_server_role_members	state		audit					role_name,login_name,login_type,type_desc
-mssql_service	state							service_name,startup_type,status,service_account
+mssql_service	state					service_account		service_name,startup_type,status,service_account
 mssql_service_ext	state							service_name,filename,cluster_nodename
 mssql_session_by	window	snapshot_at					dimension IN ('login', 'address')	dimension,name
 mssql_session_count	window	snapshot_at						
 mssql_session_group	window	snapshot_at						grp,name
 mssql_session_summary	window	snapshot_at						
-mssql_session_tempdb	window	snapshot_at						login_name,program_name,host_name,status
-mssql_slow_events	window	event_at		statement,shape				event_key,session_name,event_name,result,statement,object_name,login_name,host_name,program_name,database_name,query_hash,query_plan_hash,shape_key,shape
+mssql_session_tempdb	window	snapshot_at				login_name,host_name		login_name,program_name,host_name,status
+mssql_slow_events	window	event_at		statement,shape		login_name,host_name		event_key,session_name,event_name,result,statement,object_name,login_name,host_name,program_name,database_name,query_hash,query_plan_hash,shape_key,shape
 mssql_sql_logins	state		audit					login_name
 mssql_stat	state			filter_definition				database_name,schema_name,table_name,stats_name,stat_columns,filter_definition
 mssql_statement_text	dimension	last_seen	text					sql_handle,statement
@@ -372,13 +372,13 @@ mssql_tables	state							database_name,schema_name,table_name,table_type,tempora
 mssql_tables_db_read	state			note				database_name,note
 mssql_tempdb	state							volumes
 mssql_tempdb_files	state							file_name,type_desc,physical_name,volume
-mssql_trace_events	window	event_at		statement				event_key,kind,sub,database_name,file_name,login_name,host_name,program_name,object_name,object_type,statement
+mssql_trace_events	window	event_at		statement		login_name,host_name		event_key,kind,sub,database_name,file_name,login_name,host_name,program_name,object_name,object_type,statement
 mssql_trace_flag_history	window	changed_at						change,status,severity,rule,detail
 mssql_trace_flags	state							status,severity,rule,detail
 mssql_trace_flags_read	state							advised
 mssql_untrusted_constraint	state							database_name,kind,schema_name,table_name,constraint_name,ref_schema,ref_table
 mssql_versionstore_db	state							database_name
-mssql_versionstore_sample	window	snapshot_at		holder_statement				holder_login,holder_host,holder_program,holder_database,holder_statement
+mssql_versionstore_sample	window	snapshot_at		holder_statement		holder_login,holder_host		holder_login,holder_host,holder_program,holder_database,holder_statement
 mssql_volume_key	state							volume
 mssql_volume_sample	window	snapshot_at						volume
 mssql_volumes	state							volume,logical_name,file_system
@@ -396,11 +396,11 @@ mssql_xe_foreign_read	state
 mssql_xe_modules	window	event_at				login_name,host_name		event_key,session_name,object_name,object_type,login_name,host_name,program_name,database_name,module_database,schema_name
 mssql_xe_session_state	state							session_name
 mssql_xe_state	state							capture,state,source,session_name,target,note
-mssql_xe_waits	window	event_at		statement				event_key,session_name,event_name,wait_type,category,login_name,host_name,program_name,database_name,plan_handle,query_plan_hash,statement
+mssql_xe_waits	window	event_at		statement		login_name,host_name		event_key,session_name,event_name,wait_type,category,login_name,host_name,program_name,database_name,plan_handle,query_plan_hash,statement
 mssql_xe_warning_counts	window	snapshot_at						event_name,session_name,session_created
 mssql_xe_warning_hours	window	hour_at						event_name,database_name,query_plan_hash
 mssql_xe_warning_keys	left-out							
-mssql_xe_warning_samples	window	hour_at		detail,statement				event_name,database_name,query_plan_hash,detail,statement,login_name,host_name,program_name
+mssql_xe_warning_samples	window	hour_at		detail,statement		login_name,host_name		event_name,database_name,query_plan_hash,detail,statement,login_name,host_name,program_name
 pg_backup_dest	state							source,role,tool,dest_kind,host,container,path,repo_key,detail
 pg_backup_dest_entered	state					entered_by,ended_by		role,dest_text,note,entered_by,ended_by,read_at_entry
 pg_backup_dest_reads	state			message				tool,name,state,message
@@ -408,14 +408,14 @@ pg_backup_dest_settings	state							archive_mode
 pg_backup_detect	state							archive_mode
 pg_backup_tools	state							tool,name,named_by,state,message,status_message,archive_min,archive_max,system_id,db_version
 pg_base_backups	state							tool,name,label,backup_type,status,tool_status,retention_status,wal_start,wal_stop,prior
-pg_db_role_settings	state							scope,datname,rolname,name,raw_value,value,vartype,unit,context,boot_val
+pg_db_role_settings	state					rolname		scope,datname,rolname,name,raw_value,value,vartype,unit,context,boot_val
 pg_db_role_settings_read	state							
 pg_logical_pubs	state							datname,pubname,operations
 pg_logical_rels	state							datname,subname,rel,state
 pg_logical_subs	state							datname,subname,slot_name,publications,conflicts,rels_ready
 pg_patroni_members	state				api_url,api_message,pending_restart_reason			member,scope,role,state,host,lag_text,api_url,pending_restart_reason,api_message,version,down_reason
 pg_patroni_read	state				url			url,message,scope,leader,system_identifier
-pg_repl_link_seen	state							link,application_name,client_addr,slot_name,last_state,sync_state
+pg_repl_link_seen	state					client_addr		link,application_name,client_addr,slot_name,last_state,sync_state
 pg_repl_slot_state	state							slot_name
 pg_repl_standby_state	state							receiver_status,sender_host,primary_slot,last_primary_slot
 pg_role_changes	window	changed_at						changed_at_source,change,from_role,to_role,from_system_identifier,to_system_identifier
@@ -428,13 +428,13 @@ pgaudit_count_secs	left-out
 pgaudit_counts	window	snapshot_at	audit					usename,datname,class,command,object_type,object_name
 pgaudit_events	window	snapshot_at	audit	statement,parameters				audit_type,class,command,object_type,object_name,target_role,usename,datname,client,statement,parameters,source,event_key
 pgaudit_rules	state							name,what,command_like,object_like,severity,note
-pgaudit_settings	state							scope,datname,rolname,name,value,source
-pgaudit_state	state							preload_libraries,log_where,log_read,log_read_reason,log_source,forged_by
+pgaudit_settings	state		audit					scope,datname,rolname,name,value,source
+pgaudit_state	state					forged_by		preload_libraries,log_where,log_read,log_read_reason,log_source,forged_by
 pi_load	window	snapshot_at						dim_group,dim_key,wait_type
 pi_sql	dimension	last_seen	text					tokenized_id,db_id,digest,full_text,text_status,sql_id
 pi_state	state							db_instance,resource_id,note
 plans	dimension	captured_at	text					plan_key,source,datname,usename,query,format,plan_text,plan,plan_note,shape_key
-pooler_conn_sample	window	snapshot_at						kind,database,usr,state,application_name,addr,ptr,link
+pooler_conn_sample	window	snapshot_at				addr		kind,database,usr,state,application_name,addr,ptr,link
 pooler_sample	window	snapshot_at						kind,database,usr,pool_mode,pool_size_from
 pooler_state	state							status,reason,version,databases,config
 purge_runs	window	started_at						partitions_dropped
@@ -453,23 +453,23 @@ role_databases	state							datname
 role_history	window	changed_at	audit					object_kind,datname,object,change,old_value,new_value
 role_member_closure	state		audit					member_name,role_name
 role_members	state		audit					role_name,member_name,grantor_name
-role_state	state							login_name,hba_status,hba_note,hba_checksum,unreadable_dbs
+role_state	state					login_name		login_name,hba_status,hba_note,hba_checksum,unreadable_dbs
 schema_changes	window	snapshot_at		before,after				datname,kind,identity,schema_name,object_name,parent,change,attribute,before,after
 schema_databases	state							datname,ddl_log,ddl_log_table,ddl_log_note
 schema_ddl_log	window	snapshot_at		statement		role_name		datname,event,command_tag,object_type,schema_name,object_identity,role_name,statement
-schema_objects	state			definition		acl		kind,identity,datname,schema_name,object_name,parent,definition,owner,acl,hash,def_hash
+schema_objects	state			definition		owner,acl		kind,identity,datname,schema_name,object_name,parent,definition,owner,acl,hash,def_hash
 schema_version	state							version
 sequence_state	state							datname,schema_name,seq_name,data_type,col_schema,col_table,col_name,col_type
 serverless_sample	window	snapshot_at						metric,stat,unit,dim
 serverless_scaling	state							db_instance,cluster,class,note
 serverstats	window	snapshot_at						
-session_sets	dimension	last_seen		value,query				datname,rolname,command,setting,value,query
+session_sets	dimension	last_seen		value,query		rolname		datname,rolname,command,setting,value,query
 session_sets_sample	window	snapshot_at						
 session_sets_state	state							status,reason,track_utility
 slru_sample	window	snapshot_at						name
 statement_text	dimension	last_seen	text					query,shape_key
 statements_current	left-out							
-statements_delta	window	snapshot_at						datname,usename
+statements_delta	window	snapshot_at				usename		datname,usename
 statements_info	window	snapshot_at						
 statements_monitor_seen	left-out							
 statements_monitor_total	left-out							
@@ -479,7 +479,7 @@ table_activity	window	snapshot_at						datname,schema_name,table_name
 table_databases	state							datname
 table_sizes	window	snapshot_at						
 tables	state							datname,schema_name,table_name,relkind
-temp_sample	window	snapshot_at						source,datname,usename
+temp_sample	window	snapshot_at				usename		source,datname,usename
 ui_action_data	left-out							
 ui_app_contact_routes	left-out							
 ui_app_contacts	left-out							
