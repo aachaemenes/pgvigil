@@ -1,7 +1,7 @@
-diff --git i/docs/performance.md w/docs/performance.md
-index daea736..50afe86 100644
---- i/docs/performance.md
-+++ w/docs/performance.md
+diff --git c/docs/performance.md i/docs/performance.md
+index daea7365..50afe867 100644
+--- c/docs/performance.md
++++ i/docs/performance.md
 @@ -52,6 +52,31 @@ with a sample in any chart). Each title opens the detailed page.
  API: `GET /api/performance?instance=N&from=&to=[&part=]` - parts `meta`, `grid` and, per engine, `cpu`, `sessions`,
  `waits`, `db`, `io` (PostgreSQL) or `cpu`, `sessions`, `waits`, `db`, `io` (SQL Server).
@@ -34,10 +34,10 @@ index daea736..50afe86 100644
  ## Not proven
  
  The SQL Server columns and charts on SQL Server 2016 (task 164), on Windows (task 144), on Amazon RDS for SQL Server (task 165) and on Azure SQL Managed Instance: `scripts/proof-mssql-perf.sh` runs on SQL Server 2017 to 2025 in Linux containers (through `scripts/proof-mssql-versions.sh`).
-diff --git i/internal/mssql/instance.go w/internal/mssql/instance.go
-index bcd7ac4..88a2b87 100644
---- i/internal/mssql/instance.go
-+++ w/internal/mssql/instance.go
+diff --git c/internal/mssql/instance.go i/internal/mssql/instance.go
+index bcd7ac41..88a2b875 100644
+--- c/internal/mssql/instance.go
++++ i/internal/mssql/instance.go
 @@ -22,6 +22,8 @@ func (instanceCollector) Applies(Info) (bool, string)    { return true, "" }
  const serverSQL = `SELECT
    'server' AS kind,
@@ -65,34 +65,10 @@ index bcd7ac4..88a2b87 100644
  FROM sys.dm_os_sys_info`
  
  func (instanceCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
-diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 40526c2..c1a123d 100644
---- i/internal/repo/sql/0190_join_release2.sql
-+++ w/internal/repo/sql/0190_join_release2.sql
-@@ -154,6 +154,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
-     UNION ALL
-     -- task 177 D14 (0124): other processes holding the CPU, a transaction open for a long time, slow data file writes
-     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_cpu', at FROM pgvigil.mssql_cpu_findings
-+    UNION ALL
-+    -- task 404 (0155): a restart, a failover, a crash restart or a build change in the last 24 hours (info)
-+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.restart_findings
-   ) x
-  ORDER BY x.instance_id, x.setting, x.value, x.detail;
- 
-@@ -200,6 +203,9 @@ BEGIN
-   END LOOP;
-   DELETE FROM pgvigil.job_runs WHERE start_time < now() - make_interval(days => p_days);
-   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-+  -- task 404 (0155): restarts and build changes keep 365 days, the longest chart range, whatever p_days says
-+  DELETE FROM pgvigil.instance_events WHERE at < now() - interval '365 days';
-+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-   DELETE FROM pgvigil.activity_summary WHERE snapshot_at < now() - make_interval(days => p_days);
-   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-   DELETE FROM pgvigil.statements_info WHERE snapshot_at < now() - make_interval(days => p_days);
-diff --git i/internal/web/q_frame.go w/internal/web/q_frame.go
-index b9cdd5f..f0efa48 100644
---- i/internal/web/q_frame.go
-+++ w/internal/web/q_frame.go
+diff --git c/internal/web/q_frame.go i/internal/web/q_frame.go
+index b9cdd5ff..f0efa48f 100644
+--- c/internal/web/q_frame.go
++++ i/internal/web/q_frame.go
 @@ -16,7 +16,8 @@ import (
  //       window (newest first, at most frameEventCap of each kind): 'setting' (a setting's value changed: PostgreSQL's
  //       instance_setting_history, SQL Server's mssql_config_history past its first read), 'restart' (the instance's
@@ -133,10 +109,10 @@ index b9cdd5f..f0efa48 100644
      UNION ALL
      SELECT f.at, 'failover', f.group_name || ': ' || f.old_primary || ' -> ' || f.new_primary, 'availability'
        FROM pgvigil.mssql_ag_failovers f
-diff --git i/web/src/chart.ts w/web/src/chart.ts
-index 53260c6..47ed72e 100644
---- i/web/src/chart.ts
-+++ w/web/src/chart.ts
+diff --git c/web/src/chart.ts i/web/src/chart.ts
+index 8a1ea88a..7d5d4b07 100644
+--- c/web/src/chart.ts
++++ i/web/src/chart.ts
 @@ -90,9 +90,10 @@ function chartWindow(xs: number[]): { from: number; to: number } {
    const to = Math.ceil(b / minute) * minute;
    return { from: Math.max(Math.floor(a / minute) * minute, to - MAX_RANGE_MS), to };
