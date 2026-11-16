@@ -123,7 +123,7 @@ export const instanceGroups: TabGroup[] = [
 // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
 export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
-  mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
+  mssql_blocked: 'Blocked reports', mssql_xewaits: 'Waits over the threshold', mssql_xewarnings: 'Query warnings', mssql_xemodules: 'Procedure runs', mssql_xecaptures: 'XE captures', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
@@ -135,7 +135,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
   drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
   { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },

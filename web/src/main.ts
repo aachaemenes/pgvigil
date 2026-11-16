@@ -48,7 +48,7 @@ import { perfSummaryView } from './perfsummary';
 import { performanceView } from './performance';
 import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
-import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
+import { mssqlBlocked, mssqlSlow, mssqlAgEvents, mssqlXEWaits, mssqlXEWarnings, mssqlXEModules, mssqlXECaptures } from './mssql_xe';
 import { mssqlDeadlocksView } from './mssql_deadlocks';
 import { hasAvailability, mssqlAgView, mssqlAvailability, mssqlLogShippingView, mssqlMirroringView } from './mssql_hadr';
 import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
@@ -104,7 +104,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_xewaits: mssqlXEWaits, mssql_xewarnings: mssqlXEWarnings, mssql_xemodules: mssqlXEModules, mssql_xecaptures: mssqlXECaptures, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
@@ -127,6 +127,7 @@ const mssqlTabRuns: Record<string, string[]> = {
   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
   mssqlsecurity: ['mssql_security'],
+  mssql_xewaits: ['mssql_xe_captures'], mssql_xewarnings: ['mssql_xe_captures'], mssql_xemodules: ['mssql_xe_captures'], mssql_xecaptures: ['mssql_xe_captures'],
 };
 for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
   const page = mssqlPages[tab];

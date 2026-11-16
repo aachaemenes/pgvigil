@@ -132,6 +132,8 @@ func runMSSQLXE(args []string) error {
 	drop := fs.Bool("drop", false, "with -print: the script that drops the sessions instead")
 	id := fs.String("install-id", "main", "the install id in the session names (pgvigil_<install id>_<capture>): 1 to 20 lower-case letters and digits")
 	form := fs.String("form", mssql.XEFormServer, "server (SQL Server), rds (Amazon RDS for SQL Server), azuresqlmi, azuresqldb or cloudsql (Google Cloud SQL)")
+	captures := fs.String("captures", "", "the optional captures instead of the four sessions (task 411): waits,warnings,warncounts,modules or all")
+	text := fs.String("text", "", "with -captures, required: the instance's query_text - full, normalized or none (none leaves the statement text action out)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -141,6 +143,23 @@ func runMSSQLXE(args []string) error {
 	script, err := mssql.XEScript(*id, *form)
 	if *drop {
 		script, err = mssql.XEDropScript(*id, *form)
+	}
+	if *captures != "" {
+		var list []string
+		if *captures != "all" {
+			list = strings.Split(*captures, ",")
+		}
+		switch {
+		case *drop:
+			script, err = mssql.XECapturesDropScript(*id, *form, list)
+		case *text == "":
+			return errors.New("-captures needs -text full, normalized or none: the instance's query_text (the XE captures tab prints the script with the instance's own policy and settings)")
+		default:
+			// the CLI reads no repository: the script carries the defaults and says so in its header
+			set := mssql.DefaultXECaptureSettings()
+			set.Origin = mssql.XECaptureDefaultsOrigin
+			script, err = mssql.XECapturesScript(*id, *form, *text, list, set)
+		}
 	}
 	if err != nil {
 		return err
