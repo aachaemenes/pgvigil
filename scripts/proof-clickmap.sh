@@ -90,8 +90,9 @@
 #     '9 days', '5hrs', 'Never', '3 days', '42.5% / 3 months', 'View', the dump instance's Memory Dump '3 days', sql01's
 #     Instance Uptime 'ack: ...'; the test grid's headers are 'Test', 'Instance Count OK', 'Instance Count Warning',
 #     'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged', its tests sorted by name, each
-#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, View,
-#     Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
+#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, the
+#     View control (views.ts viewControl, found by data-view-control: its label 'View: <a name or None>', its menu Focused
+#     View, Show Test Summary ticked, then {None} and Save - D16), Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
 #     Summary Max Height % (10% ... 90%, 70% ticked; 40% sets the test pane to 40vh); Memory Dumps > Configure
 #     Thresholds opens 'Memory Dump Thresholds' with Critical 100 and Warning 200 (the root row T10 set), its words in
 #     DBA Dash's order (Warning, Critical, Acknowledge, Clear, Cancel, Update), the warning check box right of its
