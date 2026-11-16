@@ -398,7 +398,7 @@ SELECT e.instance_id, 'critical', 'failover group primary moved', e.group_name, 
 --   cloud_replica_findings (instance_id, severity, check_name, object, at, detail) on EVERY instance that reads the
 --                          resource (its own, its replicas, its source); its arm in pgvigil.findings, alerting and the
 --                          Summary's HA cell, and the purge lines (the partition parent cloud_replica_sample; the events
---                          past 24 hours' window), are the join's WIRING, as part G's.
+--                          past the window), are the join's WIRING, as part G's.
 -- The threshold: pg_threshold_keys 'provider_replica_lag' (minutes: the keys' units are minutes, hours and days; warning
 -- 10 = 600 s, critical 30 = 1800 s, pgvigil's own, above AWS's idle 'up to five minutes'); root, tag and instance (an
 -- instance level on a SQL Server instance is refused by this base's import_pg_threshold until 0142 joins: WIRING with
