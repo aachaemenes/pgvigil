@@ -35,7 +35,9 @@ func TestBlitzOutcome(t *testing.T) {
 		{"no set, an error", blitzRead{msgs: []blitzMsg{notice, e229}, errs: 1}, nil, false, "failed", "Msg 229, severity 14"},
 		{"no set, nothing", blitzRead{}, nil, false, "failed", "no result set and no message"},
 		{"no set, the connection's error", blitzRead{}, errors.New("read tcp: reset"), false, "failed", "reset"},
-		{"past the timeout", blitzRead{set: true}, context.DeadlineExceeded, true, "timed out", "its 7 s timeout"},
+		{"the set cut by the connection's error", blitzRead{set: true, rows: []blitzFinding{{}}}, errors.New("read tcp: reset"), false, "failed", "ended early: read tcp: reset"},
+		{"no set, only pgvigil's note", blitzRead{msgs: []blitzMsg{{proc: "pgvigil", text: "sp_Blitz's version was not read"}}}, nil, false, "failed", "no result set and no message"},
+		{"past the timeout", blitzRead{set: true}, context.DeadlineExceeded, true, "timed out", "within 7 s"},
 	} {
 		got, why := blitzOutcome(c.rd, c.err, c.timedOut, 7)
 		if got != c.want || (c.why == "") != (why == "") || !strings.Contains(why, c.why) {
@@ -51,7 +53,7 @@ func TestBlitzOutcome(t *testing.T) {
 }
 
 // TestBlitzAdd: a server message is kept with its number and severity; severity 11 and more counts as an error; the
-// list stops at blitzMsgsMax while the count goes on.
+// list stops at blitzMsgsMax while the count goes on, an error taking the place of the oldest notice.
 func TestBlitzAdd(t *testing.T) {
 	var rd blitzRead
 	rd.add(mssqldb.Error{Number: 0, Class: 0, State: 11, Message: "The user x does not have VIEW SERVER STATE permissions."})
@@ -65,6 +67,12 @@ func TestBlitzAdd(t *testing.T) {
 	}
 	if len(rd.msgs) != blitzMsgsMax || rd.errs != 2+blitzMsgsMax+5 {
 		t.Errorf("msgs %d (max %d), errs %d", len(rd.msgs), blitzMsgsMax, rd.errs)
+	}
+	// a full list keeps errors over notices: the notice gave its place to an error
+	for _, m := range rd.msgs {
+		if m.class < 11 {
+			t.Errorf("a notice kept in a full list of errors: %+v", m)
+		}
 	}
 }
 
