@@ -300,9 +300,11 @@ for n in $(seq 2 10); do ask_q "q$n" >/dev/null; done
 c=$(api "$S1" s1 "$U1" POST investigations '{"kind":"ask","question":"the eleventh"}')
 [[ $c == 409 && $(cat "$WORK/body") == *"already has 10 open"* ]] && ok "Q3 the 11th open request of a user: 409 'already has 10 open'" || bad "Q3 the 11th: $c $(head -c 200 "$WORK/body")"
 reset_inv
+CC=()   # the 25 curls' pids: a bare wait would also wait on the wire proxy, a child that never ends
 for n in $(seq 1 25); do u=$U1; ((n > 9)) && u=$U2; ((n > 17)) && u=$U3
   curl -s --max-time 60 -o "$WORK/cc-$n" -w '%{http_code}\n' -b "$WORK/jar-s1-$u" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"kind\":\"ask\",\"question\":\"c$n\"}" "$S1/api/investigations" > "$WORK/cc-$n.code" &
-done; wait
+  CC+=($!)
+done; wait "${CC[@]}"
 n200=$(cat "$WORK"/cc-*.code | grep -c '^200$'); n409=$(cat "$WORK"/cc-*.code | grep -c '^409$'); w=$(grep -l '20 investigations in the last hour' "$WORK"/cc-[0-9]* 2>/dev/null | wc -l)
 [[ $n200 == 20 && $n409 == 5 && $w == 5 ]] && ok "Q4 25 requests at once from three users: 20 accepted, 5 refused '20 investigations in the last hour'" || bad "Q4 25 at once: $n200 accepted, $n409 refused, $w with the words"
 NOTPROVEN+=("Q5 / K7 queue mode: the request queue (pgvigil_requester, custom reports off in queue mode) is not in this tree")
