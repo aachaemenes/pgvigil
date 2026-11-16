@@ -377,7 +377,7 @@ if (E.VB_SHOTS) await run('SHOTS', async () => {
   const pages = [['summary', '#/summary?view=none'], ['perfsummary', '#/perfsummary?view=none'], ['slowqueries', '#/slowqueries?view=none'],
     ...(E.VB_PG ? [['slowqueries-instance', `#/slowqueries?i=${E.VB_PG}&view=none`]] : []),
     ...(E.VB_MSSQL ? [['mssql-slow', `#/mssql_slow?i=${E.VB_MSSQL}&view=none`]] : [])];
-  const made = [];
+  const made = [], unseen = [];
   for (const theme of ['light', 'dark']) {
     await go('#/about');
     await P.ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
@@ -385,12 +385,19 @@ if (E.VB_SHOTS) await run('SHOTS', async () => {
     for (const [name, h] of pages) {
       await go(h);
       if (await vcText() === null) continue;
+      // a control below the top third of the window (SQL Server's Slow queries: under its statement grid) is brought up
+      // first, or the picture is the page's top without the menu
+      await P.ev(`(() => { const b = document.querySelector('[data-view-control]'); if (b.getBoundingClientRect().top > innerHeight / 3) b.scrollIntoView({ block: 'center' }); return 'ok'; })()`);
+      await sleep(300);
       await openMenu();
+      // the picture counts only with the control and every line of its menu inside the window
+      const inView = await P.ev(`(() => { const r = [document.querySelector('[data-view-control]'), ...document.querySelectorAll('div.menu[role=menu] [role=menuitem]')].map(x => x.getBoundingClientRect()); return r.length > 1 && r.every(x => x.top >= 0 && x.bottom <= innerHeight); })()`);
+      if (!inView) unseen.push(`${name}-${theme}`);
       const d = await P.send('Page.captureScreenshot', { format: 'png' });
       if (d.result?.data) { fs.writeFileSync(`${E.VB_SHOTS}/views-b-${name}-${theme}.png`, Buffer.from(d.result.data, 'base64')); made.push(`${name}-${theme}`); }
     }
   }
-  check('SHOTS', made.length === pages.length * 2, `${made.length} of ${pages.length * 2} pictures in ${E.VB_SHOTS}: ${made.join(', ')}`);
+  check('SHOTS', made.length === pages.length * 2 && !unseen.length, `${made.length} of ${pages.length * 2} pictures in ${E.VB_SHOTS}: ${made.join(', ')}; the menu outside the window: ${unseen.join(', ') || 'none'}`);
 });
 
 console.log(failed ? `${failed} case(s) failed` : 'all cases ok');
