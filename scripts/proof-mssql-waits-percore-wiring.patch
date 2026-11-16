@@ -1,0 +1,1138 @@
+diff --git i/THIRD-PARTY-NOTICES.md w/THIRD-PARTY-NOTICES.md
+index 0e154847..7d026d46 100644
+--- i/THIRD-PARTY-NOTICES.md
++++ w/THIRD-PARTY-NOTICES.md
+@@ -111,7 +111,8 @@ Each piece below is named in a comment beside it in the file. Where only a shape
+ | The wait types of idle background work (the rows marked Ignorable in its wait category table), as data | SQL Server First Responder Kit 8.34, sp_BlitzFirst.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited | internal/mssql/waits.go (benignWaits) |
+ | The wait list grouped by what it points at, as data | DarlingData 6.11, sp_PressureDetector.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/waits.go (waitCategories) |
+ | The default of every sys.configurations option (the #ConfigurationDefaults table) and sp_Blitz's CheckIDs, as data; the database options its #DatabaseDefaults table holds off, as rules; the notes on global trace flags (CheckID 74), in this project's words | SQL Server First Responder Kit 8.34, sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited; portions of sp_Blitz Copyright Microsoft (tigertoolbox, MIT) | internal/mssql/checks.go (configDefaultList, traceFlagNotes), internal/mssql/dboptions.go (databaseRules) |
+-| The catalogue of SQL Server builds 2016-2025 with their release and support end dates, as data | SQL Server First Responder Kit 8.34, SqlServerVersions.sql (the script by Josh Darnell, SqlServerVersionScript, MIT) | MIT, Copyright (c) 2022 Brent Ozar Unlimited; Copyright for SqlServerVersionScript held by Josh Darnell | internal/mssql/checks.go (buildCatalogue) |
++| The catalogue of SQL Server builds 2016-2025 with their release and support end dates and each build's page (its [Url]), as data | SQL Server First Responder Kit 8.34, SqlServerVersions.sql (the script by Josh Darnell, SqlServerVersionScript, MIT) | MIT, Copyright (c) 2022 Brent Ozar Unlimited; Copyright for SqlServerVersionScript held by Josh Darnell | internal/mssql/checks.go (buildCatalogue, BuildDocs) |
++| The waits per core per minute figure (its formula and its 180 flag) and the 27 wait types its per-core list leaves out beyond sp_BlitzFirst's Ignorable ones, as data | SQLMonitor (github.com/imajaydwivedi/SQLMonitor) at de87d37: DDLs/SCH-usp_waits_per_core_per_minute.sql, DDLs/SCH-Create-All-Objects.sql (BlitzFirst_WaitStats_Categories) | MIT, Copyright (c) 2022 Ajay Dwivedi | internal/repo/sql/0152_mssql_counters.sql (mssql_wait_percore_ignored, mssql_wait_core_points, mssql_wait_core_summary), internal/repo/sql/0153_mssql_counter_checks.sql (the seed) |
+ | The error log's match list and noise list (the search strings of its @custom_message_only = 0 run less 'Microsoft SQL Server' and 'Server name is', and the line patterns it deletes after the search), as data | DarlingData (darlingdata-20261101), sp_LogHunter.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/errorlog.go (errorLogMatches, errorLogNoise*) |
+ | The waiting-tasks read (its query and WHERE: sessions 50 and up, not the collector's own, a wait type, not PerformanceMonitor's own database; the collector's own session dropped as a blocker) and the ignored-wait list (IgnoredWaitDefaults.All, 126 types), as data; THREADPOOL waiters counted with no filter as sp_PressureDetector reads them | PerformanceMonitor 3.12.0, PerformanceMonitor.Collectors/WaitingTasksCollector.cs and IgnoredWaitDefaults.cs; DarlingData (darlingdata-20261101), sp_PressureDetector.sql | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/darling_waiting.go (waitingSQL, pmIgnoredWaits, threadpoolSQL), internal/repo/sql/0108_darling_waiting_tasks.sql |
+ | The blocking findings' rules and words (an implicit transaction blocking, sessions in implicit transactions, a lead blocker's share of the blocked wait at 10 %), the wait findings' thresholds and words (wait share, signal wait ratio, SOS_SCHEDULER_YIELD, tempdb page latch, forced grants, poison waits, range locks, CMEMTHREAD on NUMA), and the blocked-process reports' checks 1-10, 1000 and 1001 with the lead walk, ported from the procedures' text | DarlingData (darlingdata-20261101): sp_HumanEventsBlockViewer 5.11 (checks 1-10, 1000, 1001), sp_PerfCheck 2.11 (6001, 6101, 6102, 2010, 4101), sp_HealthParser 3.11 (system_health's blockingTasks); SQL Server First Responder Kit 8.34: sp_BlitzFirst (30, 37), sp_Blitz (117, 121, 162, 215) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/repo/sql/0114_darling_blocking.sql, 0115_darling_waits.sql, 0116_darling_blocking_history.sql, internal/mssql/xe_shred.go (blockingTasks) |
+diff --git i/docs/alerts.md w/docs/alerts.md
+index 463ba252..8274558e 100644
+--- i/docs/alerts.md
++++ w/docs/alerts.md
+@@ -267,6 +267,13 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
+   its statement counts at any duration. Whether the server sent a statement is recorded as `has_text` before the
+   instance's `query_text` policy runs, so under `none` (no text stored) a real timeout still counts, and the flag
+   holds no text.
++- **Wait seconds per core per minute (SQLMonitor's figure).** The seeded rule (off) warns above 180, SQLMonitor's
++  dashboard flag, and is critical from 300, its red; each point already spans five minutes of reads, so the rule's
++  minutes are 0. Where pgvigil differs from SQLMonitor's procedure: the scheduler count is the newest read at or before
++  the point (SQLMonitor counts at its call); a SLEEP_TASK the collector marked a hash spill counts (SQLMonitor leaves
++  every SLEEP_TASK out); the figure keeps 2 decimals (SQLMonitor rounds up to a whole second); a restart's read gives
++  no point. A point with no value (no scheduler count) is not judged, and says so: *N/A: not judged: no scheduler
++  count (the mssql_cpu collection is off, or Azure SQL Database)*.
+ - **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
+   15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
+   no fresh sample came: the collector may be down, or the instance. When the samples come back still beyond the
+diff --git i/docs/metrics.md w/docs/metrics.md
+index ad9f4acf..de3419bc 100644
+--- i/docs/metrics.md
++++ w/docs/metrics.md
+@@ -37,6 +37,7 @@ The families:
+ | SQL Server | Scheduler | Batch requests, transactions, compilations and recompilations per second; runnable tasks, the work queue, pending IO, workers. |
+ | SQL Server | Memory | Page life expectancy, memory grants pending and outstanding, total and target server memory, the buffer pool, the plan cache, stolen and available memory, physical memory used. |
+ | SQL Server | Extended Events | The attention capture of `mssql_xe` (pgvigil's own session): client timeouts per minute over the newest 3 minutes of reads (PerformanceMonitor 3.13.0's rule: the reads back to 3 minutes, the attentions they stored over that span, at least a minute), without SSMS IntelliSense, the VS Code mssql metadata connections, cancels under 1 ms that came with no statement (a cancel of a command that had already finished; whether the server sent a statement is recorded before the text policy, so under `query_text: none` a real timeout still counts), Azure Data Studio's metadata statements and pgvigil's own reads; those are their own metric, and the XE page's Attentions grid names each one's reason. A read the run did not finish gives no point (the next read's span covers it); a ring buffer that dropped events between reads undercounts; an `mssql_xe` interval over 10 minutes gives no fresh point; with `query_text: none` no statement is stored, so Azure Data Studio's metadata reads count (as in PerformanceMonitor). The seeded rule (off) warns at 10 a minute and pages at 60; a firing alert whose capture stops is held, where PerformanceMonitor resolves it after 30 minutes. pgvigil's own reads are left out by the collector's app name `pgvigil` (a DSN that sets its own app name is not recognised). |
++| SQL Server | Waits | Wait seconds per core per minute, SQLMonitor's figure: at each wait read, the waits of the newest five minutes of reads (benign waits and SQLMonitor's per-core list of 84 types left out, CXCONSUMER among them) in seconds, over the visible online schedulers, per minute; no point until five minutes of reads are covered; a point with no value where no scheduler count is read (the mssql_cpu collection off, or Azure SQL Database), said in words. The Waits page's ms/sec/core of one wait type is the same measure per second: 1 ms/sec/core = 0.06 s/core/min. |
+ | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
+ 
+ A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
+diff --git i/internal/mssql/builddocs_test.go w/internal/mssql/builddocs_test.go
+new file mode 100644
+index 00000000..ec8dd88c
+--- /dev/null
++++ w/internal/mssql/builddocs_test.go
+@@ -0,0 +1,71 @@
++package mssql
++
++import (
++	"strings"
++	"testing"
++)
++
++// TestBuildDocs (task 412, the lead's 11-15 B1 (a)): a build's own page only when the catalogue lists that very build;
++// an RTM row with no page and a 2025 product page link Microsoft's build list in words; an unlisted or newer build says
++// so; a major the catalogue lacks gets nothing.
++func TestBuildDocs(t *testing.T) {
++	cases := []struct {
++		major, build int
++		url, words   string
++	}{
++		{15, 4470, "https://support.microsoft.com/kb/5090407", "Microsoft: Cumulative Update 32 GDR (15.0.4470)"},
++		{16, 1000, buildListURL, "no page of RTM's own"},
++		{17, 1000, buildListURL, "no page of RTM's own"},
++		{15, 4466, buildListURL, "a build the catalogue does not list"}, // between 4465 and 4470, 2019's newest
++		{15, 4471, buildListURL, "a build newer than the catalogue"},
++		{17, 99999, buildListURL, "a build newer than the catalogue"},
++	}
++	for _, c := range cases {
++		d := BuildDocs(c.major, c.build)
++		if d == nil {
++			t.Fatalf("BuildDocs(%d, %d): nil", c.major, c.build)
++		}
++		if d["build_url"] != c.url || !strings.Contains(d["build_url_words"].(string), c.words) {
++			t.Errorf("BuildDocs(%d, %d): %q %q (want %q, words with %q)", c.major, c.build, d["build_url"], d["build_url_words"], c.url, c.words)
++		}
++	}
++	if d := BuildDocs(17, 4055); d["newest_build"] != "17.0.4055" || d["newest_url"] == "" {
++		t.Errorf("the newest 2025 build: %v", d)
++	}
++	if d := BuildDocs(12, 6024); d != nil {
++		t.Errorf("a major the catalogue lacks: %v", d)
++	}
++	if d := BuildDocsOf(""); len(d) != 0 {
++		t.Errorf("BuildDocsOf(\"\"): %v", d)
++	}
++	if d := BuildDocsOf("15.0.4470.1"); d["build_url"] != "https://support.microsoft.com/kb/5090407" {
++		t.Errorf("BuildDocsOf(15.0.4470.1): %v", d)
++	}
++	// what the instance row holds is the first line of @@VERSION, not the bare product version (box run 412proof1: no
++	// link on any real instance): the dotted build inside it is the one read
++	if d := BuildDocsOf("Microsoft SQL Server 2019 (RTM-CU32-GDR) (KB5090407) - 15.0.4470.1 (X64) "); d["build_url"] != "https://support.microsoft.com/kb/5090407" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 15.0.4470.1): %v", d)
++	}
++	if d := BuildDocsOf("Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) - 16.0.4325.4 (X64)"); d["build_url"] != buildListURL ||
++		!strings.Contains(d["build_url_words"].(string), "a build newer than the catalogue") || d["newest_build"] != "16.0.4255" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 16.0.4325.4): %v", d)
++	}
++	if d := BuildDocsOf("Microsoft SQL Azure (RTM) - 12.0.2000.8"); len(d) != 0 {
++		t.Errorf("BuildDocsOf(Azure SQL Database, a major the catalogue lacks): %v", d)
++	}
++	// a preview's name holds a dotted number of its own ('CTP2.1'): the build read is the three-part one after it, a
++	// row the catalogue lists with a product page only (a read of '2.1' would be major 2: no row, an empty map)
++	if d := BuildDocsOf("Microsoft SQL Server 2025 (CTP2.1) - 17.0.800.3 (X64)"); d["build_url"] != buildListURL ||
++		!strings.Contains(d["build_url_words"].(string), "no page of Preview CTP 2.1's own") || d["newest_build"] != "17.0.4055" {
++		t.Errorf("BuildDocsOf(the first line of @@VERSION, 17.0.800.3): %v", d)
++	}
++	// every page of the catalogue is empty or Microsoft's, with no blank around it
++	for major, rows := range builds {
++		for _, r := range rows {
++			if r.URL != strings.TrimSpace(r.URL) || (r.URL != "" && !strings.HasPrefix(r.URL, "https://support.microsoft.com/") &&
++				!strings.HasPrefix(r.URL, "https://learn.microsoft.com/") && !strings.HasPrefix(r.URL, "https://info.microsoft.com/")) {
++				t.Errorf("%d.0.%d: page %q", major, r.Build, r.URL)
++			}
++		}
++	}
++}
+diff --git i/internal/mssql/checks.go w/internal/mssql/checks.go
+index 678f6c5e..48e10f96 100644
+--- i/internal/mssql/checks.go
++++ w/internal/mssql/checks.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"fmt"
++	"regexp"
+ 	"sort"
+ 	"strconv"
+ 	"strings"
+@@ -574,6 +575,7 @@ type buildRow struct {
+ 	Release      time.Time
+ 	Mainstream   time.Time // the end of mainstream support of this build's branch
+ 	Extended     time.Time // the end of extended support
++	URL          string    // Microsoft's page of this build (its KB or release notes) as the source lists it; may be empty
+ }
+ 
+ // BuildsAsOf is the version and date of the catalogue's source.
+@@ -596,7 +598,7 @@ func parseBuilds(text string) map[int][]buildRow {
+ 	}
+ 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+ 		f := strings.Split(line, "|")
+-		if len(f) != 7 {
++		if len(f) != 8 {
+ 			panic("build catalogue: " + line)
+ 		}
+ 		major, err1 := strconv.Atoi(f[0])
+@@ -604,7 +606,8 @@ func parseBuilds(text string) map[int][]buildRow {
+ 		if err1 != nil || err2 != nil {
+ 			panic("build catalogue: " + line)
+ 		}
+-		row := buildRow{Major: major, Build: build, Branch: f[2], Name: f[6], Release: day(f[3]), Mainstream: day(f[4]), Extended: day(f[5])}
++		row := buildRow{Major: major, Build: build, Branch: f[2], Name: f[6], Release: day(f[3]), Mainstream: day(f[4]), Extended: day(f[5]),
++			URL: strings.TrimSpace(f[7])}
+ 		rows := out[major]
+ 		if n := len(rows); n > 0 && rows[n-1].Build == build {
+ 			if row.Release.Before(rows[n-1].Release) {
+@@ -620,6 +623,64 @@ func parseBuilds(text string) map[int][]buildRow {
+ 	return out
+ }
+ 
++// buildListURL is Microsoft's list of every SQL Server build, linked where the catalogue has no page of a build's own.
++const buildListURL = "https://support.microsoft.com/kb/321185"
++
++// BuildDocs: the documentation links of an instance's build (task 412, the lead's 11-15 B1 (a)): its own page only when
++// the catalogue lists this very build (the nearest lower row is another build's page); a build of the catalogue with no
++// page of its own (an RTM row: empty; a preview or RTM of 2025: a product page) links Microsoft's build list, said in
++// words; a build newer than the catalogue's newest says so. The newest build of the major is linked beside it. Read at
++// serve time from the catalogue in this binary (no column stored). Keys: build_url, build_url_words, newest_build,
++// newest_url, newest_url_words; none for a major the catalogue lacks.
++func BuildDocs(major, build int) map[string]any {
++	rows := builds[major]
++	if len(rows) == 0 || build <= 0 {
++		return nil
++	}
++	link := func(r buildRow) (string, string) {
++		u := r.URL
++		if u == "" || strings.Contains(u, "info.microsoft.com") {
++			return buildListURL, "Microsoft's list of SQL Server builds (no page of " + r.Name + "'s own)"
++		}
++		return u, "Microsoft: " + r.Name + " (" + strconv.Itoa(r.Major) + ".0." + strconv.Itoa(r.Build) + ")"
++	}
++	out := map[string]any{}
++	newest := rows[0]
++	switch {
++	case build > newest.Build:
++		out["build_url"], out["build_url_words"] = buildListURL, "a build newer than the catalogue ("+BuildsAsOf+"): Microsoft's list of SQL Server builds"
++	default:
++		for _, r := range rows {
++			if r.Build == build {
++				out["build_url"], out["build_url_words"] = link(r)
++				break
++			}
++		}
++		if out["build_url"] == nil {
++			out["build_url"], out["build_url_words"] = buildListURL, "a build the catalogue does not list: Microsoft's list of SQL Server builds"
++		}
++	}
++	out["newest_build"] = strconv.Itoa(newest.Major) + ".0." + strconv.Itoa(newest.Build)
++	out["newest_url"], out["newest_url_words"] = link(newest)
++	return out
++}
++
++// buildInVersion finds the dotted build in a version text ('16.0.4325.4', with or without its fourth part).
++var buildInVersion = regexp.MustCompile(`\b\d+\.\d+\.\d+(?:\.\d+)?\b`)
++
++// BuildDocsOf is BuildDocs over the version an instance row holds: the first line of @@VERSION, which the collector
++// stores as server_version ('Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) - 16.0.4325.4 (X64)'), or a bare
++// product version as SERVERPROPERTY('ProductVersion') gives it ('16.0.4325.4'): the first dotted build in the text is
++// the one read (box run 412proof1: the whole line read as a product version gave major 0 and no link). An empty map
++// for a version the catalogue cannot place (the API's part then reads one row of nulls).
++func BuildDocsOf(version string) map[string]any {
++	major, _, build := parseVersion(buildInVersion.FindString(version))
++	if d := BuildDocs(major, build); d != nil {
++		return d
++	}
++	return map[string]any{}
++}
++
+ // buildVerdict is an instance's build against the catalogue.
+ type buildVerdict struct {
+ 	Known  bool   // the catalogue has the major and the platform's builds are the customer's to choose
+@@ -911,222 +972,223 @@ var configDefaultList = []struct {
+ }
+ 
+ // buildCatalogue: every build of SQL Server 2016 to 2025 with its release date and the support ends of its branch,
+-// one build a line: major|build|branch|released|mainstream support ends|extended support ends|name. The rows are
++// one build a line: major|build|branch|released|mainstream support ends|extended support ends|name|page (the source's
++// [Url], trimmed: a KB or release-notes page, a product page, or empty; task 412). The rows are
+ // SqlServerVersions.sql's (SQL Server First Responder Kit 8.34, MIT; the script by Josh Darnell, MIT;
+ // THIRD-PARTY-NOTICES), ported as data.
+ const buildCatalogue = `
+-17|4055|CU6|2026-06-17|2031-01-06|2036-01-06|Cumulative Update 6
+-17|4045|CU5|2026-05-20|2031-01-06|2036-01-06|Cumulative Update 5
+-17|4040|CU4 GDR|2026-05-12|2031-01-06|2036-01-06|Cumulative Update 4 GDR
+-17|4035|CU4|2026-04-16|2031-01-06|2036-01-06|Cumulative Update 4
+-17|4030|CU3 GDR|2026-04-14|2031-01-06|2036-01-06|Cumulative Update 3 GDR
+-17|4025|CU3|2026-03-12|2031-01-06|2036-01-06|Cumulative Update 3
+-17|4020|CU2 GDR|2026-03-10|2031-01-06|2036-01-06|Cumulative Update 2 GDR
+-17|4015|CU2|2026-02-12|2031-01-06|2036-01-06|Cumulative Update 2
+-17|4006|CU1 v2|2026-01-29|2031-01-06|2036-01-06|Cumulative Update 1 v2
+-17|4005|CU1|2026-01-15|2031-01-06|2036-01-06|Cumulative Update 1 (Removed)
+-17|1000|RTM|2025-11-18|2031-01-06|2036-01-06|RTM
+-17|925|RC1|2025-09-17|2025-11-18|2025-11-18|Preview RC1
+-17|900|RC0|2025-08-20|2025-11-18|2025-11-18|Preview RC0
+-17|800|CTP 2.1|2025-06-16|2025-11-18|2025-11-18|Preview CTP 2.1
+-17|700|CTP 2.0|2025-05-19|2025-11-18|2025-11-18|Preview CTP 2.0
+-16|4255|CU25|2026-05-20|2028-01-11|2033-01-11|Cumulative Update 25
+-16|4250|CU24 GDR|2026-04-14|2028-01-11|2033-01-11|Cumulative Update 24 GDR
+-16|4245|CU24|2026-03-12|2028-01-11|2033-01-11|Cumulative Update 24
+-16|4236|CU23 GDR|2026-03-10|2028-01-11|2033-01-11|Cumulative Update 23 GDR
+-16|4236|CU23 v2|2026-01-29|2028-01-11|2033-01-11|Cumulative Update 23 v2
+-16|4235|CU23|2026-01-15|2028-01-11|2033-01-11|Cumulative Update 23 (Removed)
+-16|4225|CU22|2025-11-13|2028-01-11|2033-01-11|Cumulative Update 22
+-16|4215|CU21|2025-09-11|2028-01-11|2033-01-11|Cumulative Update 21
+-16|4205|CU20|2025-07-10|2028-01-11|2033-01-11|Cumulative Update 20
+-16|4200|CU19 GDR|2025-07-08|2028-01-11|2033-01-11|Cumulative Update 19 GDR
+-16|4195|CU19|2025-05-19|2028-01-11|2033-01-11|Cumulative Update 19
+-16|4185|CU18|2025-03-13|2028-01-11|2033-01-11|Cumulative Update 18
+-16|4175|CU17|2025-01-16|2028-01-11|2033-01-11|Cumulative Update 17
+-16|4165|CU16|2024-11-14|2028-01-11|2033-01-11|Cumulative Update 16
+-16|4150|CU15 GDR|2024-10-08|2028-01-11|2033-01-11|Cumulative Update 15 GDR
+-16|4145|CU15|2024-09-25|2028-01-11|2033-01-11|Cumulative Update 15
+-16|4140|CU14 GDR|2024-09-10|2028-01-11|2033-01-11|Cumulative Update 14 GDR
+-16|4135|CU14|2024-07-23|2028-01-11|2033-01-11|Cumulative Update 14
+-16|4125|CU13|2024-05-16|2028-01-11|2033-01-11|Cumulative Update 13
+-16|4115|CU12|2024-03-14|2028-01-11|2033-01-11|Cumulative Update 12
+-16|4105|CU11|2024-01-11|2028-01-11|2033-01-11|Cumulative Update 11
+-16|4100|CU10 GDR|2024-01-09|2028-01-11|2033-01-11|Cumulative Update 10 GDR
+-16|4095|CU10|2023-11-16|2028-01-11|2033-01-11|Cumulative Update 10
+-16|4085|CU9|2023-10-12|2028-01-11|2033-01-11|Cumulative Update 9
+-16|4075|CU8|2023-09-14|2028-01-11|2033-01-11|Cumulative Update 8
+-16|4065|CU7|2023-08-10|2028-01-11|2033-01-11|Cumulative Update 7
+-16|4055|CU6|2023-07-13|2028-01-11|2033-01-11|Cumulative Update 6
+-16|4045|CU5|2023-06-15|2028-01-11|2033-01-11|Cumulative Update 5
+-16|4035|CU4|2023-05-11|2028-01-11|2033-01-11|Cumulative Update 4
+-16|4025|CU3|2023-04-13|2028-01-11|2033-01-11|Cumulative Update 3
+-16|4015|CU2|2023-03-15|2028-01-11|2033-01-11|Cumulative Update 2
+-16|4003|CU1|2023-02-16|2028-01-11|2033-01-11|Cumulative Update 1
+-16|1050|RTM GDR|2023-02-14|2028-01-11|2033-01-11|RTM
+-16|1000|RTM|2022-11-15|2028-01-11|2033-01-11|RTM
+-15|4470|CU32 GDR|2026-05-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4465|CU32 GDR|2026-04-14|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4460|CU32 GDR|2026-03-10|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4455|CU32 GDR|2025-11-11|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4445|CU32 GDR|2025-09-09|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4440|CU32 GDR|2025-08-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4435|CU32 GDR|2025-07-08|2025-01-07|2030-01-08|Cumulative Update 32 GDR
+-15|4430|CU32|2025-02-27|2025-01-07|2030-01-08|Cumulative Update 32
+-15|4420|CU31|2025-02-13|2025-01-07|2030-01-08|Cumulative Update 31
+-15|4415|CU30|2024-12-13|2025-01-07|2030-01-08|Cumulative Update 30
+-15|4405|CU29|2024-10-31|2025-01-07|2030-01-08|Cumulative Update 29
+-15|4395|CU28 GDR|2024-10-08|2025-01-07|2030-01-08|Cumulative Update 28 GDR
+-15|4390|CU28 GDR|2024-09-10|2025-01-07|2030-01-08|Cumulative Update 28 GDR
+-15|4385|CU28|2024-08-01|2025-01-07|2030-01-08|Cumulative Update 28
+-15|4375|CU27|2024-06-14|2025-01-07|2030-01-08|Cumulative Update 27
+-15|4365|CU26|2024-04-11|2025-01-07|2030-01-08|Cumulative Update 26
+-15|4355|CU25|2024-02-15|2025-01-07|2030-01-08|Cumulative Update 25
+-15|4345|CU24|2023-12-14|2025-01-07|2030-01-08|Cumulative Update 24
+-15|4335|CU23|2023-10-12|2025-01-07|2030-01-08|Cumulative Update 23
+-15|4322|CU22|2023-08-14|2025-01-07|2030-01-08|Cumulative Update 22
+-15|4316|CU21|2023-06-15|2025-01-07|2030-01-08|Cumulative Update 21
+-15|4312|CU20|2023-04-13|2025-01-07|2030-01-08|Cumulative Update 20
+-15|4298|CU19|2023-02-16|2025-01-07|2030-01-08|Cumulative Update 19
+-15|4280|CU18 GDR|2023-02-14|2025-01-07|2030-01-08|Cumulative Update 18 GDR
+-15|4261|CU18|2022-09-28|2025-01-07|2030-01-08|Cumulative Update 18
+-15|4249|CU17|2022-08-11|2025-01-07|2030-01-08|Cumulative Update 17
+-15|4236|CU16 GDR|2022-06-14|2025-01-07|2030-01-08|Cumulative Update 16 GDR
+-15|4223|CU16|2022-04-18|2025-01-07|2030-01-08|Cumulative Update 16
+-15|4198|CU15|2022-01-07|2025-01-07|2030-01-08|Cumulative Update 15
+-15|4188|CU14|2021-11-22|2025-01-07|2030-01-08|Cumulative Update 14
+-15|4178|CU13|2021-10-05|2025-01-07|2030-01-08|Cumulative Update 13
+-15|4153|CU12|2021-08-04|2025-01-07|2030-01-08|Cumulative Update 12
+-15|4138|CU11|2021-06-10|2025-01-07|2030-01-08|Cumulative Update 11
+-15|4123|CU10|2021-04-06|2025-01-07|2030-01-08|Cumulative Update 10
+-15|4102|CU9|2021-02-11|2025-01-07|2030-01-08|Cumulative Update 9
+-15|4073|CU8 GDR|2021-01-12|2025-01-07|2030-01-08|Cumulative Update 8 GDR
+-15|4073|CU8|2020-10-01|2025-01-07|2030-01-08|Cumulative Update 8
+-15|4063|CU7|2020-09-02|2025-01-07|2030-01-08|Cumulative Update 7
+-15|4053|CU6|2020-08-04|2025-01-07|2030-01-08|Cumulative Update 6
+-15|4043|CU5|2020-06-22|2025-01-07|2030-01-08|Cumulative Update 5
+-15|4033|CU4|2020-03-31|2025-01-07|2030-01-08|Cumulative Update 4
+-15|4023|CU3|2020-03-12|2025-01-07|2030-01-08|Cumulative Update 3
+-15|4013|CU2|2020-02-13|2025-01-07|2030-01-08|Cumulative Update 2
+-15|4003|CU1|2020-01-07|2025-01-07|2030-01-08|Cumulative Update 1
+-15|2070|GDR|2019-11-04|2025-01-07|2030-01-08|RTM GDR
+-15|2000|RTM|2019-11-04|2025-01-07|2030-01-08|RTM
+-14|3530|RTM CU31 GDR|2026-05-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3525|RTM CU31 GDR|2026-04-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3520|RTM CU31 GDR|2026-03-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3515|RTM CU31 GDR|2025-11-11|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3505|RTM CU31 GDR|2025-09-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3500|RTM CU31 GDR|2025-08-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3495|RTM CU31 GDR|2025-07-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3485|RTM CU31 GDR|2024-11-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3480|RTM CU31 GDR|2024-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3475|RTM CU31 GDR|2024-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3471|RTM CU31 GDR|2024-07-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3465|RTM CU31 GDR|2023-10-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3460|RTM CU31 GDR|2023-02-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
+-14|3456|RTM CU31|2022-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 31
+-14|3451|RTM CU30|2022-07-13|2022-10-11|2027-10-12|RTM Cumulative Update 30
+-14|3445|RTM CU29 GDR|2022-06-14|2022-10-11|2027-10-12|RTM Cumulative Update 29 GDR
+-14|3436|RTM CU29|2022-03-31|2022-10-11|2027-10-12|RTM Cumulative Update 29
+-14|3430|RTM CU28|2022-01-13|2022-10-11|2027-10-12|RTM Cumulative Update 28
+-14|3421|RTM CU27|2021-10-27|2022-10-11|2027-10-12|RTM Cumulative Update 27
+-14|3411|RTM CU26|2021-09-14|2022-10-11|2027-10-12|RTM Cumulative Update 26
+-14|3401|RTM CU25|2021-07-12|2022-10-11|2027-10-12|RTM Cumulative Update 25
+-14|3391|RTM CU24|2021-05-10|2022-10-11|2027-10-12|RTM Cumulative Update 24
+-14|3381|RTM CU23|2021-02-25|2022-10-11|2027-10-12|RTM Cumulative Update 23
+-14|3370|RTM CU22 GDR|2021-01-12|2022-10-11|2027-10-12|RTM Cumulative Update 22 GDR
+-14|3356|RTM CU22|2020-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 22
+-14|3335|RTM CU21|2020-07-01|2022-10-11|2027-10-12|RTM Cumulative Update 21
+-14|3294|RTM CU20|2020-04-07|2022-10-11|2027-10-12|RTM Cumulative Update 20
+-14|3257|RTM CU19|2020-02-05|2022-10-11|2027-10-12|RTM Cumulative Update 19
+-14|3257|RTM CU18|2019-12-09|2022-10-11|2027-10-12|RTM Cumulative Update 18
+-14|3238|RTM CU17|2019-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 17
+-14|3223|RTM CU16|2019-08-01|2022-10-11|2027-10-12|RTM Cumulative Update 16
+-14|3162|RTM CU15|2019-05-24|2022-10-11|2027-10-12|RTM Cumulative Update 15
+-14|3076|RTM CU14|2019-03-25|2022-10-11|2027-10-12|RTM Cumulative Update 14
+-14|3048|RTM CU13|2018-12-18|2022-10-11|2027-10-12|RTM Cumulative Update 13
+-14|3045|RTM CU12|2018-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 12
+-14|3038|RTM CU11|2018-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 11
+-14|3037|RTM CU10|2018-08-27|2022-10-11|2027-10-12|RTM Cumulative Update 10
+-14|3030|RTM CU9|2018-07-18|2022-10-11|2027-10-12|RTM Cumulative Update 9
+-14|3029|RTM CU8|2018-06-21|2022-10-11|2027-10-12|RTM Cumulative Update 8
+-14|3026|RTM CU7|2018-05-23|2022-10-11|2027-10-12|RTM Cumulative Update 7
+-14|3025|RTM CU6|2018-04-17|2022-10-11|2027-10-12|RTM Cumulative Update 6
+-14|3023|RTM CU5|2018-03-20|2022-10-11|2027-10-12|RTM Cumulative Update 5
+-14|3022|RTM CU4|2018-02-20|2022-10-11|2027-10-12|RTM Cumulative Update 4
+-14|3015|RTM CU3|2018-01-04|2022-10-11|2027-10-12|RTM Cumulative Update 3
+-14|3008|RTM CU2|2017-11-28|2022-10-11|2027-10-12|RTM Cumulative Update 2
+-14|3006|RTM CU1|2017-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 1
+-14|1000|RTM|2017-10-02|2022-10-11|2027-10-12|RTM
+-13|7055|SP3 Azure Feature Pack GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7045|SP3 Azure Feature Pack GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7040|SP3 Azure Feature Pack GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7037|SP3 Azure Feature Pack GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7029|SP3 Azure Feature Pack GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7024|SP3 Azure Feature Pack GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7016|SP3 Azure Feature Pack GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
+-13|7000|SP3 Azure Feature Pack|2022-05-19|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack
+-13|6490|SP3 GDR|2026-05-12|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6485|SP3 GDR|2026-04-14|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6480|SP3 GDR|2026-03-10|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6475|SP3 GDR|2025-11-11|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6470|SP3 GDR|2025-09-09|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6465|SP3 GDR|2025-08-12|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6460|SP3 GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6455|SP3 GDR|2024-11-12|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6450|SP3 GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6445|SP3 GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6441|SP3 GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6435|SP3 GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6430|SP3 GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6419|SP3 GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6404|SP3 GDR|2021-10-27|2021-07-13|2026-07-14|Service Pack 3 GDR
+-13|6300|SP3|2021-09-15|2021-07-13|2026-07-14|Service Pack 3
+-13|5888|SP2 CU17|2021-03-29|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 17
+-13|5882|SP2 CU16|2021-02-11|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 16
+-13|5865|SP2 CU15 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15 GDR
+-13|5850|SP2 CU15|2020-09-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15
+-13|5830|SP2 CU14|2020-08-06|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 14
+-13|5820|SP2 CU13|2020-05-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 13
+-13|5698|SP2 CU12|2020-02-25|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 12
+-13|5598|SP2 CU11|2019-12-09|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 11
+-13|5492|SP2 CU10|2019-10-08|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 10
+-13|5479|SP2 CU9|2019-09-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 9
+-13|5426|SP2 CU8|2019-07-31|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 8
+-13|5337|SP2 CU7|2019-05-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 7
+-13|5292|SP2 CU6|2019-03-19|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 6
+-13|5264|SP2 CU5|2019-01-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 5
+-13|5233|SP2 CU4|2018-11-13|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 4
+-13|5216|SP2 CU3|2018-09-20|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 3
+-13|5201|SP2 CU2 + Security Update|2018-08-21|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2 + Security Update
+-13|5153|SP2 CU2|2018-07-16|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2
+-13|5149|SP2 CU1|2018-05-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 1
+-13|5103|SP2 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 GDR
+-13|5026|SP2|2018-04-24|2021-07-13|2026-07-14|Service Pack 2
+-13|4574|SP1 CU15|2019-05-16|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 15
+-13|4560|SP1 CU14|2019-03-19|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 14
+-13|4550|SP1 CU13|2019-01-23|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 13
+-13|4541|SP1 CU12|2018-11-13|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 12
+-13|4528|SP1 CU11|2018-09-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 11
+-13|4514|SP1 CU10|2018-07-16|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10
+-13|4502|SP1 CU9|2018-05-30|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 9
+-13|4474|SP1 CU8|2018-03-19|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 8
+-13|4466|SP1 CU7|2018-01-04|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 7
+-13|4457|SP1 CU6|2017-11-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 6
+-13|4451|SP1 CU5|2017-09-18|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 5
+-13|4446|SP1 CU4|2017-08-08|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 4
+-13|4435|SP1 CU3|2017-05-15|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 3
+-13|4422|SP1 CU2|2017-03-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 2
+-13|4411|SP1 CU1|2017-01-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 1
+-13|4224|SP1 CU10 + Security Update|2018-08-22|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10 + Security Update
+-13|4001|SP1|2016-11-16|2019-07-09|2019-07-09|Service Pack 1
+-13|2216|RTM CU9|2017-11-20|2018-01-09|2018-01-09|RTM Cumulative Update 9
+-13|2213|RTM CU8|2017-09-18|2018-01-09|2018-01-09|RTM Cumulative Update 8
+-13|2210|RTM CU7|2017-08-08|2018-01-09|2018-01-09|RTM Cumulative Update 7
+-13|2204|RTM CU6|2017-05-15|2018-01-09|2018-01-09|RTM Cumulative Update 6
+-13|2197|RTM CU5|2017-03-20|2018-01-09|2018-01-09|RTM Cumulative Update 5
+-13|2193|RTM CU4|2017-01-17|2018-01-09|2018-01-09|RTM Cumulative Update 4
+-13|2186|RTM CU3|2016-11-16|2018-01-09|2018-01-09|RTM Cumulative Update 3
+-13|2164|RTM CU2|2016-09-22|2018-01-09|2018-01-09|RTM Cumulative Update 2
+-13|2149|RTM CU1|2016-07-25|2018-01-09|2018-01-09|RTM Cumulative Update 1
+-13|1601|RTM|2016-06-01|2019-01-09|2019-01-09|RTM
++17|4055|CU6|2026-06-17|2031-01-06|2036-01-06|Cumulative Update 6|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate6
++17|4045|CU5|2026-05-20|2031-01-06|2036-01-06|Cumulative Update 5|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate5
++17|4040|CU4 GDR|2026-05-12|2031-01-06|2036-01-06|Cumulative Update 4 GDR|https://support.microsoft.com/kb/5089899
++17|4035|CU4|2026-04-16|2031-01-06|2036-01-06|Cumulative Update 4|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate4
++17|4030|CU3 GDR|2026-04-14|2031-01-06|2036-01-06|Cumulative Update 3 GDR|https://support.microsoft.com/kb/5083245
++17|4025|CU3|2026-03-12|2031-01-06|2036-01-06|Cumulative Update 3|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate3
++17|4020|CU2 GDR|2026-03-10|2031-01-06|2036-01-06|Cumulative Update 2 GDR|https://support.microsoft.com/help/5077466
++17|4015|CU2|2026-02-12|2031-01-06|2036-01-06|Cumulative Update 2|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate2
++17|4006|CU1 v2|2026-01-29|2031-01-06|2036-01-06|Cumulative Update 1 v2|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate1
++17|4005|CU1|2026-01-15|2031-01-06|2036-01-06|Cumulative Update 1 (Removed)|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate1
++17|1000|RTM|2025-11-18|2031-01-06|2036-01-06|RTM|https://info.microsoft.com/ww-landing-sql-server-2025.html
++17|925|RC1|2025-09-17|2025-11-18|2025-11-18|Preview RC1|https://info.microsoft.com/ww-landing-sql-server-2025.html
++17|900|RC0|2025-08-20|2025-11-18|2025-11-18|Preview RC0|https://info.microsoft.com/ww-landing-sql-server-2025.html
++17|800|CTP 2.1|2025-06-16|2025-11-18|2025-11-18|Preview CTP 2.1|https://info.microsoft.com/ww-landing-sql-server-2025.html
++17|700|CTP 2.0|2025-05-19|2025-11-18|2025-11-18|Preview CTP 2.0|https://info.microsoft.com/ww-landing-sql-server-2025.html
++16|4255|CU25|2026-05-20|2028-01-11|2033-01-11|Cumulative Update 25|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate25
++16|4250|CU24 GDR|2026-04-14|2028-01-11|2033-01-11|Cumulative Update 24 GDR|https://support.microsoft.com/kb/5083252
++16|4245|CU24|2026-03-12|2028-01-11|2033-01-11|Cumulative Update 24|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate24
++16|4236|CU23 GDR|2026-03-10|2028-01-11|2033-01-11|Cumulative Update 23 GDR|https://support.microsoft.com/help/5077464
++16|4236|CU23 v2|2026-01-29|2028-01-11|2033-01-11|Cumulative Update 23 v2|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate23
++16|4235|CU23|2026-01-15|2028-01-11|2033-01-11|Cumulative Update 23 (Removed)|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate23
++16|4225|CU22|2025-11-13|2028-01-11|2033-01-11|Cumulative Update 22|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate22
++16|4215|CU21|2025-09-11|2028-01-11|2033-01-11|Cumulative Update 21|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate21
++16|4205|CU20|2025-07-10|2028-01-11|2033-01-11|Cumulative Update 20|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate20
++16|4200|CU19 GDR|2025-07-08|2028-01-11|2033-01-11|Cumulative Update 19 GDR|https://support.microsoft.com/help/5058721
++16|4195|CU19|2025-05-19|2028-01-11|2033-01-11|Cumulative Update 19|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate19
++16|4185|CU18|2025-03-13|2028-01-11|2033-01-11|Cumulative Update 18|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate18
++16|4175|CU17|2025-01-16|2028-01-11|2033-01-11|Cumulative Update 17|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate17
++16|4165|CU16|2024-11-14|2028-01-11|2033-01-11|Cumulative Update 16|https://support.microsoft.com/help/5048033
++16|4150|CU15 GDR|2024-10-08|2028-01-11|2033-01-11|Cumulative Update 15 GDR|https://support.microsoft.com/help/5046059
++16|4145|CU15|2024-09-25|2028-01-11|2033-01-11|Cumulative Update 15|https://support.microsoft.com/help/5041321
++16|4140|CU14 GDR|2024-09-10|2028-01-11|2033-01-11|Cumulative Update 14 GDR|https://support.microsoft.com/help/5042578
++16|4135|CU14|2024-07-23|2028-01-11|2033-01-11|Cumulative Update 14|https://support.microsoft.com/help/5038325
++16|4125|CU13|2024-05-16|2028-01-11|2033-01-11|Cumulative Update 13|https://support.microsoft.com/help/5036432
++16|4115|CU12|2024-03-14|2028-01-11|2033-01-11|Cumulative Update 12|https://support.microsoft.com/help/5033663
++16|4105|CU11|2024-01-11|2028-01-11|2033-01-11|Cumulative Update 11|https://support.microsoft.com/help/5032679
++16|4100|CU10 GDR|2024-01-09|2028-01-11|2033-01-11|Cumulative Update 10 GDR|https://support.microsoft.com/help/5033592
++16|4095|CU10|2023-11-16|2028-01-11|2033-01-11|Cumulative Update 10|https://support.microsoft.com/help/5031778
++16|4085|CU9|2023-10-12|2028-01-11|2033-01-11|Cumulative Update 9|https://support.microsoft.com/help/5030731
++16|4075|CU8|2023-09-14|2028-01-11|2033-01-11|Cumulative Update 8|https://support.microsoft.com/help/5029666
++16|4065|CU7|2023-08-10|2028-01-11|2033-01-11|Cumulative Update 7|https://support.microsoft.com/help/5028743
++16|4055|CU6|2023-07-13|2028-01-11|2033-01-11|Cumulative Update 6|https://support.microsoft.com/help/5027505
++16|4045|CU5|2023-06-15|2028-01-11|2033-01-11|Cumulative Update 5|https://support.microsoft.com/help/5026806
++16|4035|CU4|2023-05-11|2028-01-11|2033-01-11|Cumulative Update 4|https://support.microsoft.com/help/5026717
++16|4025|CU3|2023-04-13|2028-01-11|2033-01-11|Cumulative Update 3|https://support.microsoft.com/help/5024396
++16|4015|CU2|2023-03-15|2028-01-11|2033-01-11|Cumulative Update 2|https://support.microsoft.com/help/5023127
++16|4003|CU1|2023-02-16|2028-01-11|2033-01-11|Cumulative Update 1|https://support.microsoft.com/help/5022375
++16|1050|RTM GDR|2023-02-14|2028-01-11|2033-01-11|RTM|https://support.microsoft.com/kb/5021522
++16|1000|RTM|2022-11-15|2028-01-11|2033-01-11|RTM|
++15|4470|CU32 GDR|2026-05-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5090407
++15|4465|CU32 GDR|2026-04-14|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5084816
++15|4460|CU32 GDR|2026-03-10|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/help/5077469
++15|4455|CU32 GDR|2025-11-11|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/help/5068404
++15|4445|CU32 GDR|2025-09-09|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5065222
++15|4440|CU32 GDR|2025-08-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5063757
++15|4435|CU32 GDR|2025-07-08|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5058722
++15|4430|CU32|2025-02-27|2025-01-07|2030-01-08|Cumulative Update 32|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2019/cumulativeupdate32
++15|4420|CU31|2025-02-13|2025-01-07|2030-01-08|Cumulative Update 31|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2019/cumulativeupdate31
++15|4415|CU30|2024-12-13|2025-01-07|2030-01-08|Cumulative Update 30|https://support.microsoft.com/kb/5049235
++15|4405|CU29|2024-10-31|2025-01-07|2030-01-08|Cumulative Update 29|https://support.microsoft.com/kb/5046365
++15|4395|CU28 GDR|2024-10-08|2025-01-07|2030-01-08|Cumulative Update 28 GDR|https://support.microsoft.com/kb/5046060
++15|4390|CU28 GDR|2024-09-10|2025-01-07|2030-01-08|Cumulative Update 28 GDR|https://support.microsoft.com/kb/5042749
++15|4385|CU28|2024-08-01|2025-01-07|2030-01-08|Cumulative Update 28|https://support.microsoft.com/kb/5039747
++15|4375|CU27|2024-06-14|2025-01-07|2030-01-08|Cumulative Update 27|https://support.microsoft.com/kb/5037331
++15|4365|CU26|2024-04-11|2025-01-07|2030-01-08|Cumulative Update 26|https://support.microsoft.com/kb/5035123
++15|4355|CU25|2024-02-15|2025-01-07|2030-01-08|Cumulative Update 25|https://support.microsoft.com/kb/5033688
++15|4345|CU24|2023-12-14|2025-01-07|2030-01-08|Cumulative Update 24|https://support.microsoft.com/kb/5031908
++15|4335|CU23|2023-10-12|2025-01-07|2030-01-08|Cumulative Update 23|https://support.microsoft.com/kb/5030333
++15|4322|CU22|2023-08-14|2025-01-07|2030-01-08|Cumulative Update 22|https://support.microsoft.com/kb/5027702
++15|4316|CU21|2023-06-15|2025-01-07|2030-01-08|Cumulative Update 21|https://support.microsoft.com/kb/5025808
++15|4312|CU20|2023-04-13|2025-01-07|2030-01-08|Cumulative Update 20|https://support.microsoft.com/kb/5024276
++15|4298|CU19|2023-02-16|2025-01-07|2030-01-08|Cumulative Update 19|https://support.microsoft.com/kb/5023049
++15|4280|CU18 GDR|2023-02-14|2025-01-07|2030-01-08|Cumulative Update 18 GDR|https://support.microsoft.com/kb/5021124
++15|4261|CU18|2022-09-28|2025-01-07|2030-01-08|Cumulative Update 18|https://support.microsoft.com/help/5017593
++15|4249|CU17|2022-08-11|2025-01-07|2030-01-08|Cumulative Update 17|https://support.microsoft.com/help/5016394
++15|4236|CU16 GDR|2022-06-14|2025-01-07|2030-01-08|Cumulative Update 16 GDR|https://support.microsoft.com/help/5014353
++15|4223|CU16|2022-04-18|2025-01-07|2030-01-08|Cumulative Update 16|https://support.microsoft.com/help/5011644
++15|4198|CU15|2022-01-07|2025-01-07|2030-01-08|Cumulative Update 15|https://support.microsoft.com/help/5008996
++15|4188|CU14|2021-11-22|2025-01-07|2030-01-08|Cumulative Update 14|https://support.microsoft.com/help/5007182
++15|4178|CU13|2021-10-05|2025-01-07|2030-01-08|Cumulative Update 13|https://support.microsoft.com/help/5005679
++15|4153|CU12|2021-08-04|2025-01-07|2030-01-08|Cumulative Update 12|https://support.microsoft.com/help/5004524
++15|4138|CU11|2021-06-10|2025-01-07|2030-01-08|Cumulative Update 11|https://support.microsoft.com/help/5003249
++15|4123|CU10|2021-04-06|2025-01-07|2030-01-08|Cumulative Update 10|https://support.microsoft.com/help/5001090
++15|4102|CU9|2021-02-11|2025-01-07|2030-01-08|Cumulative Update 9|https://support.microsoft.com/help/5000642
++15|4073|CU8 GDR|2021-01-12|2025-01-07|2030-01-08|Cumulative Update 8 GDR|https://support.microsoft.com/help/4583459
++15|4073|CU8|2020-10-01|2025-01-07|2030-01-08|Cumulative Update 8|https://support.microsoft.com/help/4577194
++15|4063|CU7|2020-09-02|2025-01-07|2030-01-08|Cumulative Update 7|https://support.microsoft.com/help/4570012
++15|4053|CU6|2020-08-04|2025-01-07|2030-01-08|Cumulative Update 6|https://support.microsoft.com/help/4563110
++15|4043|CU5|2020-06-22|2025-01-07|2030-01-08|Cumulative Update 5|https://support.microsoft.com/help/4548597
++15|4033|CU4|2020-03-31|2025-01-07|2030-01-08|Cumulative Update 4|https://support.microsoft.com/help/4548597
++15|4023|CU3|2020-03-12|2025-01-07|2030-01-08|Cumulative Update 3|https://support.microsoft.com/help/4538853
++15|4013|CU2|2020-02-13|2025-01-07|2030-01-08|Cumulative Update 2|https://support.microsoft.com/help/4536075
++15|4003|CU1|2020-01-07|2025-01-07|2030-01-08|Cumulative Update 1|https://support.microsoft.com/help/4527376
++15|2070|GDR|2019-11-04|2025-01-07|2030-01-08|RTM GDR|https://support.microsoft.com/help/4517790
++15|2000|RTM|2019-11-04|2025-01-07|2030-01-08|RTM|
++14|3530|RTM CU31 GDR|2026-05-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5090354
++14|3525|RTM CU31 GDR|2026-04-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5084818
++14|3520|RTM CU31 GDR|2026-03-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5077471
++14|3515|RTM CU31 GDR|2025-11-11|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5068402
++14|3505|RTM CU31 GDR|2025-09-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5065225
++14|3500|RTM CU31 GDR|2025-08-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5063759
++14|3495|RTM CU31 GDR|2025-07-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5058714
++14|3485|RTM CU31 GDR|2024-11-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5046858
++14|3480|RTM CU31 GDR|2024-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5046061
++14|3475|RTM CU31 GDR|2024-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5042215
++14|3471|RTM CU31 GDR|2024-07-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5040940
++14|3465|RTM CU31 GDR|2023-10-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5029376
++14|3460|RTM CU31 GDR|2023-02-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5021126
++14|3456|RTM CU31|2022-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 31|https://support.microsoft.com/help/5016884
++14|3451|RTM CU30|2022-07-13|2022-10-11|2027-10-12|RTM Cumulative Update 30|https://support.microsoft.com/help/5013756
++14|3445|RTM CU29 GDR|2022-06-14|2022-10-11|2027-10-12|RTM Cumulative Update 29 GDR|https://support.microsoft.com/help/5014553
++14|3436|RTM CU29|2022-03-31|2022-10-11|2027-10-12|RTM Cumulative Update 29|https://support.microsoft.com/help/5010786
++14|3430|RTM CU28|2022-01-13|2022-10-11|2027-10-12|RTM Cumulative Update 28|https://support.microsoft.com/help/5006944
++14|3421|RTM CU27|2021-10-27|2022-10-11|2027-10-12|RTM Cumulative Update 27|https://support.microsoft.com/help/5006944
++14|3411|RTM CU26|2021-09-14|2022-10-11|2027-10-12|RTM Cumulative Update 26|https://support.microsoft.com/help/5005226
++14|3401|RTM CU25|2021-07-12|2022-10-11|2027-10-12|RTM Cumulative Update 25|https://support.microsoft.com/help/5003830
++14|3391|RTM CU24|2021-05-10|2022-10-11|2027-10-12|RTM Cumulative Update 24|https://support.microsoft.com/help/5001228
++14|3381|RTM CU23|2021-02-25|2022-10-11|2027-10-12|RTM Cumulative Update 23|https://support.microsoft.com/help/5000685
++14|3370|RTM CU22 GDR|2021-01-12|2022-10-11|2027-10-12|RTM Cumulative Update 22 GDR|https://support.microsoft.com/help/4583457
++14|3356|RTM CU22|2020-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 22|https://support.microsoft.com/help/4577467
++14|3335|RTM CU21|2020-07-01|2022-10-11|2027-10-12|RTM Cumulative Update 21|https://support.microsoft.com/help/4557397
++14|3294|RTM CU20|2020-04-07|2022-10-11|2027-10-12|RTM Cumulative Update 20|https://support.microsoft.com/help/4541283
++14|3257|RTM CU19|2020-02-05|2022-10-11|2027-10-12|RTM Cumulative Update 19|https://support.microsoft.com/help/4535007
++14|3257|RTM CU18|2019-12-09|2022-10-11|2027-10-12|RTM Cumulative Update 18|https://support.microsoft.com/help/4527377
++14|3238|RTM CU17|2019-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 17|https://support.microsoft.com/help/4515579
++14|3223|RTM CU16|2019-08-01|2022-10-11|2027-10-12|RTM Cumulative Update 16|https://support.microsoft.com/help/4508218
++14|3162|RTM CU15|2019-05-24|2022-10-11|2027-10-12|RTM Cumulative Update 15|https://support.microsoft.com/help/4498951
++14|3076|RTM CU14|2019-03-25|2022-10-11|2027-10-12|RTM Cumulative Update 14|https://support.microsoft.com/help/4484710
++14|3048|RTM CU13|2018-12-18|2022-10-11|2027-10-12|RTM Cumulative Update 13|https://support.microsoft.com/help/4466404
++14|3045|RTM CU12|2018-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 12|https://support.microsoft.com/help/4464082
++14|3038|RTM CU11|2018-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 11|https://support.microsoft.com/help/4462262
++14|3037|RTM CU10|2018-08-27|2022-10-11|2027-10-12|RTM Cumulative Update 10|https://support.microsoft.com/help/4524334
++14|3030|RTM CU9|2018-07-18|2022-10-11|2027-10-12|RTM Cumulative Update 9|https://support.microsoft.com/help/4515435
++14|3029|RTM CU8|2018-06-21|2022-10-11|2027-10-12|RTM Cumulative Update 8|https://support.microsoft.com/help/4338363
++14|3026|RTM CU7|2018-05-23|2022-10-11|2027-10-12|RTM Cumulative Update 7|https://support.microsoft.com/help/4229789
++14|3025|RTM CU6|2018-04-17|2022-10-11|2027-10-12|RTM Cumulative Update 6|https://support.microsoft.com/help/4101464
++14|3023|RTM CU5|2018-03-20|2022-10-11|2027-10-12|RTM Cumulative Update 5|https://support.microsoft.com/help/4092643
++14|3022|RTM CU4|2018-02-20|2022-10-11|2027-10-12|RTM Cumulative Update 4|https://support.microsoft.com/help/4056498
++14|3015|RTM CU3|2018-01-04|2022-10-11|2027-10-12|RTM Cumulative Update 3|https://support.microsoft.com/help/4052987
++14|3008|RTM CU2|2017-11-28|2022-10-11|2027-10-12|RTM Cumulative Update 2|https://support.microsoft.com/help/4052574
++14|3006|RTM CU1|2017-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 1|https://support.microsoft.com/help/4038634
++14|1000|RTM|2017-10-02|2022-10-11|2027-10-12|RTM|
++13|7055|SP3 Azure Feature Pack GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5058717
++13|7045|SP3 Azure Feature Pack GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5046062
++13|7040|SP3 Azure Feature Pack GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5042209
++13|7037|SP3 Azure Feature Pack GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5040944
++13|7029|SP3 Azure Feature Pack GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5029187
++13|7024|SP3 Azure Feature Pack GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5021128
++13|7016|SP3 Azure Feature Pack GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5015371
++13|7000|SP3 Azure Feature Pack|2022-05-19|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack|https://support.microsoft.com/help/5014242
++13|6490|SP3 GDR|2026-05-12|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5089271
++13|6485|SP3 GDR|2026-04-14|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5084821
++13|6480|SP3 GDR|2026-03-10|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5077474
++13|6475|SP3 GDR|2025-11-11|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5068401
++13|6470|SP3 GDR|2025-09-09|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5065226
++13|6465|SP3 GDR|2025-08-12|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5063762
++13|6460|SP3 GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5058718
++13|6455|SP3 GDR|2024-11-12|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5046855
++13|6450|SP3 GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5046063
++13|6445|SP3 GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5042207
++13|6441|SP3 GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5040946
++13|6435|SP3 GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5029186
++13|6430|SP3 GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5021129
++13|6419|SP3 GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/help/5014355
++13|6404|SP3 GDR|2021-10-27|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/help/5006943
++13|6300|SP3|2021-09-15|2021-07-13|2026-07-14|Service Pack 3|https://support.microsoft.com/help/5003279
++13|5888|SP2 CU17|2021-03-29|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 17|https://support.microsoft.com/help/5001092
++13|5882|SP2 CU16|2021-02-11|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 16|https://support.microsoft.com/help/5000645
++13|5865|SP2 CU15 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15 GDR|https://support.microsoft.com/help/4583461
++13|5850|SP2 CU15|2020-09-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15|https://support.microsoft.com/help/4577775
++13|5830|SP2 CU14|2020-08-06|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 14|https://support.microsoft.com/help/4564903
++13|5820|SP2 CU13|2020-05-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 13|https://support.microsoft.com/help/4549825
++13|5698|SP2 CU12|2020-02-25|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 12|https://support.microsoft.com/help/4536648
++13|5598|SP2 CU11|2019-12-09|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 11|https://support.microsoft.com/help/4527378
++13|5492|SP2 CU10|2019-10-08|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 10|https://support.microsoft.com/help/4505830
++13|5479|SP2 CU9|2019-09-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 9|https://support.microsoft.com/help/4505830
++13|5426|SP2 CU8|2019-07-31|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 8|https://support.microsoft.com/help/4505830
++13|5337|SP2 CU7|2019-05-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 7|https://support.microsoft.com/help/4495256
++13|5292|SP2 CU6|2019-03-19|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 6|https://support.microsoft.com/help/4488536
++13|5264|SP2 CU5|2019-01-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 5|https://support.microsoft.com/help/4475776
++13|5233|SP2 CU4|2018-11-13|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 4|https://support.microsoft.com/help/4464106
++13|5216|SP2 CU3|2018-09-20|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 3|https://support.microsoft.com/help/4458871
++13|5201|SP2 CU2 + Security Update|2018-08-21|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2 + Security Update|https://support.microsoft.com/help/4458621
++13|5153|SP2 CU2|2018-07-16|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2|https://support.microsoft.com/help/4340355
++13|5149|SP2 CU1|2018-05-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 1|https://support.microsoft.com/help/4135048
++13|5103|SP2 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 GDR|https://support.microsoft.com/help/4583460
++13|5026|SP2|2018-04-24|2021-07-13|2026-07-14|Service Pack 2|https://support.microsoft.com/help/4052908
++13|4574|SP1 CU15|2019-05-16|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 15|https://support.microsoft.com/help/4495257
++13|4560|SP1 CU14|2019-03-19|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 14|https://support.microsoft.com/help/4488535
++13|4550|SP1 CU13|2019-01-23|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 13|https://support.microsoft.com/help/4475775
++13|4541|SP1 CU12|2018-11-13|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 12|https://support.microsoft.com/help/4464343
++13|4528|SP1 CU11|2018-09-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 11|https://support.microsoft.com/help/4459676
++13|4514|SP1 CU10|2018-07-16|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10|https://support.microsoft.com/help/4341569
++13|4502|SP1 CU9|2018-05-30|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 9|https://support.microsoft.com/help/4100997
++13|4474|SP1 CU8|2018-03-19|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 8|https://support.microsoft.com/help/4077064
++13|4466|SP1 CU7|2018-01-04|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 7|https://support.microsoft.com/help/4057119
++13|4457|SP1 CU6|2017-11-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 6|https://support.microsoft.com/help/4037354
++13|4451|SP1 CU5|2017-09-18|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 5|https://support.microsoft.com/help/4024305
++13|4446|SP1 CU4|2017-08-08|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 4|https://support.microsoft.com/help/4024305
++13|4435|SP1 CU3|2017-05-15|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 3|https://support.microsoft.com/help/4019916
++13|4422|SP1 CU2|2017-03-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 2|https://support.microsoft.com/help/4013106
++13|4411|SP1 CU1|2017-01-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 1|https://support.microsoft.com/help/3208177
++13|4224|SP1 CU10 + Security Update|2018-08-22|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10 + Security Update|https://support.microsoft.com/help/4458842
++13|4001|SP1|2016-11-16|2019-07-09|2019-07-09|Service Pack 1|https://support.microsoft.com/help/3182545
++13|2216|RTM CU9|2017-11-20|2018-01-09|2018-01-09|RTM Cumulative Update 9|https://support.microsoft.com/help/4037357
++13|2213|RTM CU8|2017-09-18|2018-01-09|2018-01-09|RTM Cumulative Update 8|https://support.microsoft.com/help/4024304
++13|2210|RTM CU7|2017-08-08|2018-01-09|2018-01-09|RTM Cumulative Update 7|https://support.microsoft.com/help/4024304
++13|2204|RTM CU6|2017-05-15|2018-01-09|2018-01-09|RTM Cumulative Update 6|https://support.microsoft.com/help/4019914
++13|2197|RTM CU5|2017-03-20|2018-01-09|2018-01-09|RTM Cumulative Update 5|https://support.microsoft.com/help/4013105
++13|2193|RTM CU4|2017-01-17|2018-01-09|2018-01-09|RTM Cumulative Update 4|https://support.microsoft.com/help/3205052
++13|2186|RTM CU3|2016-11-16|2018-01-09|2018-01-09|RTM Cumulative Update 3|https://support.microsoft.com/help/3205413
++13|2164|RTM CU2|2016-09-22|2018-01-09|2018-01-09|RTM Cumulative Update 2|https://support.microsoft.com/help/3182270
++13|2149|RTM CU1|2016-07-25|2018-01-09|2018-01-09|RTM Cumulative Update 1|https://support.microsoft.com/help/3164674
++13|1601|RTM|2016-06-01|2019-01-09|2019-01-09|RTM|
+ `
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 75f3d046..9153ec04 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -788,7 +788,11 @@ SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v
+      'client timeouts per minute (tools, pgvigil and cancels under 1 ms with no statement left out)', 'per_min', false, 600, 1),
+     ('sqlserver', 'xe', 'Extended Events', 55, 'client_timeouts_left_out_per_min',
+      'attentions left out per minute (SSMS IntelliSense, VS Code metadata, under 1 ms with no statement, Azure Data Studio metadata, pgvigil)',
+-     'per_min', false, 600, 2)
++     'per_min', false, 600, 2),
++    -- task 412 (0152, B19): SQLMonitor's wait seconds per core per minute (mssql_wait_core_points); a point per wait
++    -- read spanning its newest five minutes, so fresh as the per-minute families
++    ('sqlserver', 'waits', 'Waits', 56, 'wait_s_per_core_min',
++     'wait seconds per core per minute (benign waits and SQLMonitor''s per-core list left out)', 's_core_min', false, 600, 1)
+   ) AS x(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)) AS v;
+ 
+ CREATE OR REPLACE FUNCTION pgvigil.metric_points(p_instance_id int, p_family text, p_from timestamptz, p_to timestamptz,
+@@ -992,6 +996,10 @@ BEGIN
+   ELSIF p_family = 'xe' THEN
+     -- task 402 (0153, B24 Fixed 1): a point per done read of the attention capture, PerformanceMonitor's 3-minute rate
+     RETURN QUERY SELECT * FROM pgvigil.mssql_attention_points(p_instance_id, p_from, p_to);
++  ELSIF p_family = 'waits' THEN
++    -- task 412 (0152, B19): a point per stored wait read over its newest five minutes of reads; no scheduler count =
++    -- a point with no value (metric_na_reasons says why)
++    RETURN QUERY SELECT * FROM pgvigil.mssql_wait_core_points(p_instance_id, p_from, p_to);
+   ELSE
+     RAISE EXCEPTION 'metric_points: no metric family %', p_family USING ERRCODE = '22023';
+   END IF;
+diff --git i/internal/web/q_mssql_checks.go w/internal/web/q_mssql_checks.go
+index c745cbc4..d9f8f42e 100644
+--- i/internal/web/q_mssql_checks.go
++++ w/internal/web/q_mssql_checks.go
+@@ -2,9 +2,11 @@ package web
+ 
+ import (
+ 	"encoding/json"
++	"errors"
+ 	"net/http"
+ 
+ 	"github.com/aachaemenes/pgvigil/internal/mssql"
++	"github.com/jackc/pgx/v5"
+ )
+ 
+ // The day-one checks of a SQL Server instance (task 148; migration 0090, collections mssql_checks and
+@@ -110,6 +112,12 @@ func databaseColumnsJSON() (string, error) {
+ 	return string(b), err
+ }
+ 
++// sqlMSSQLChecksBuildDocs: the build's documentation links (task 412), made in Go from the binary's catalogue at serve
++// time and handed in as one jsonb argument (as the columns part); one row, nulls when the catalogue cannot place it
++const sqlMSSQLChecksBuildDocs = `
++SELECT d.build_url, d.build_url_words, d.newest_build, d.newest_url, d.newest_url_words
++  FROM jsonb_to_record($1::jsonb) AS d(build_url text, build_url_words text, newest_build text, newest_url text, newest_url_words text)`
++
+ // MSSQLChecks is GET /api/mssql/checks?instance=N[&part=...]: the state as last read; no window.
+ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
+ 	id, _, _, err := params(r, true)
+@@ -117,6 +125,17 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
+ 		writeErr(w, http.StatusBadRequest, err)
+ 		return
+ 	}
++	// task 412: the version the instance last reported (the first line of @@VERSION), for its build's links (no row: no links)
++	var ver string
++	if err := s.pool.QueryRow(r.Context(), `SELECT coalesce(server_version, '') FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&ver); err != nil && !errors.Is(err, pgx.ErrNoRows) {
++		writeErr(w, http.StatusInternalServerError, err)
++		return
++	}
++	docs, err := json.Marshal(mssql.BuildDocsOf(ver))
++	if err != nil {
++		writeErr(w, http.StatusInternalServerError, err)
++		return
++	}
+ 	cols, err := databaseColumnsJSON()
+ 	if err != nil {
+ 		writeErr(w, http.StatusInternalServerError, err)
+@@ -129,6 +148,7 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
+ 		{"options", sqlMSSQLChecksOptions, []any{id}},
+ 		{"flags", sqlMSSQLChecksFlags, []any{id}},
+ 		{"build", sqlMSSQLChecksBuild, []any{id}},
++		{"build_docs", sqlMSSQLChecksBuildDocs, []any{string(docs)}},
+ 		{"databases", sqlMSSQLChecksDatabases, []any{id}},
+ 		{"columns", sqlMSSQLChecksColumns, []any{cols}},
+ 		{"suspect", sqlMSSQLChecksSuspect, []any{id}},
+diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
+index fee8172f..f2d9f2ee 100644
+--- i/internal/web/q_perfsummary.go
++++ w/internal/web/q_perfsummary.go
+@@ -35,6 +35,9 @@ import (
+ //                    Compilations per 100 Batch Requests over the range from the same reads; NULL under the 'counters'
+ //                    metric compiles_per_100_batches' floor (0152's metric_floors, 5 Batch Requests/s, task 402), with
+ //                    compiles_under_floor true and compiles_floor the floor, judged on the unrounded rate.
++//                    wait_s_core_min (SQL Server only, task 412, SQLMonitor C53): the range's waits not left out (the
++//                    benign ones and SQLMonitor's per-core list) in seconds per scheduler per minute, time-weighted
++//                    (0152's mssql_wait_core_summary); NULL with no scheduler count or under 300 s of wait reads.
+ //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
+ //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
+ //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
+@@ -80,7 +83,7 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
+        NULL::numeric AS signal_pct,
+        NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::boolean AS compiles_under_floor,
+-       NULL::double precision AS compiles_floor, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
++       NULL::double precision AS compiles_floor, NULL::double precision AS wait_s_core_min, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
+        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
+        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
+@@ -197,6 +200,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+        CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL OR t.batch_raw < cf.floor THEN NULL
+             ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
+        t.batch_raw < cf.floor AS compiles_under_floor, cf.floor AS compiles_floor,
++       -- task 412: SQLMonitor's wait seconds per core per minute over the range, time-weighted (0152); NULL with no
++       -- scheduler count or under 300 s of wait reads
++       pgvigil.mssql_wait_core_summary(inst.instance_id, $1, $2) AS wait_s_core_min,
+        m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
+        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
+diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
+index 0f4db5b2..b1515bae 100644
+--- i/web/src/alert_rules.ts
++++ w/web/src/alert_rules.ts
+@@ -29,6 +29,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null
+ const unitWords: Record<string, string> = {
+   count: 'a count', pct: 'percent', secs: 'seconds', xids: 'transaction ids', per_s: 'per second',
+   bytes_per_s: 'bytes per second', ms: 'milliseconds', mb: 'MB', bytes: 'bytes', per_min: 'per minute',
++  s_core_min: 'wait seconds per core per minute',
+ };
+ export const unitWord = (unit: unknown): string => unitWords[String(unit ?? '')] ?? String(unit ?? '');
+ 
+@@ -46,6 +47,7 @@ export function fmtMetric(v: unknown, unit: unknown): string {
+     case 'bytes_per_s': return fmtBytes(n) + '/s';
+     case 'bytes': return fmtBytes(n);
+     case 'mb': return fmtNum(n) + ' MB';
++    case 's_core_min': return fmtNum(n) + ' s/core/min';
+     default: return fmtNum(n);
+   }
+ }
+diff --git i/web/src/blocking_history.ts w/web/src/blocking_history.ts
+index d97eccd1..d6bcf9af 100644
+--- i/web/src/blocking_history.ts
++++ w/web/src/blocking_history.ts
+@@ -14,8 +14,15 @@ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
+ import { Ctx, href, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
++import { waitDocs } from './doclinks';
+ import { sqlCell, whatIsThis } from './sqlview';
+ 
++// a cell's list of wait types (an array, or text with ', ' between), each with its documentation links (task 412)
++const waitList = (v: unknown): HTMLElement | string => {
++  const ts = (Array.isArray(v) ? v.map(String) : String(v ?? '').split(',')).map(t => t.trim()).filter(Boolean);
++  return ts.length ? el('span', {}, ...ts.flatMap((t, i) => [i ? ', ' : '', t, waitDocs(t)])) : '';
++};
++
+ type PgParts = 'meta' | 'summary' | 'episodes' | 'trend' | 'xmin_summary' | 'xmin_pins' | 'xmin_now';
+ type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs';
+ 
+@@ -163,7 +170,7 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'head_session_id', label: 'head of its chain', num: true, fmt: v => v == null ? '' : String(v) },
+         { key: 'snapshots', label: 'snapshots', num: true },
+         { key: 'longest_wait_ms', label: 'longest wait', num: true, fmt: v => v == null ? '' : fmtSecs(Math.floor(Number(v) / 1000)) },
+-        { key: 'wait_types', label: 'wait types' }, { key: 'wait_resources', label: 'resources', wide: true },
++        { key: 'wait_types', label: 'wait types', fmt: v => waitList(v) }, { key: 'wait_resources', label: 'resources', wide: true },
+         { key: 'database_name', label: 'database' }, { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_program', label: 'blocked program' },
+         { key: 'blocking_login', label: 'blocking login' }, { key: 'blocking_program', label: 'blocking program' },
+         { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? '') },
+diff --git i/web/src/darling_waiting.ts w/web/src/darling_waiting.ts
+index 2c087fe1..d63d9846 100644
+--- i/web/src/darling_waiting.ts
++++ w/web/src/darling_waiting.ts
+@@ -11,6 +11,7 @@ import { get, Row, rowsOf, Table } from './api';
+ import { Ctx, href, window_ } from './router';
+ import { hashParam } from './dbinfo';
+ import { Col, el, fmtNum, fmtTime, grid, tile } from './ui';
++import { waitDocs } from './doclinks';
+ 
+ interface WaitingData { snapshots?: Table | null; tasks?: Table | null; bytype?: Table | null; pg?: Table | null; pgbytype?: Table | null }
+ 
+@@ -90,7 +91,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
+   const cols: Col[] = [
+     { key: 'session_id', label: 'session', num: true, fmt: (v, r) => Number(r.tasks_of_session) > 1 ? `${String(v)} (${String(r.tasks_of_session)} tasks)` : String(v ?? '') },
+     { key: 'exec_context_id', label: 'context', num: true, fmt: v => String(v ?? '') },
+-    { key: 'wait_type', label: 'wait', fmt: v => el('a', { href: waitingHref(ctx, 'mssql_waiting', cur, String(v)), title: `the tasks waiting on ${String(v)}` }, String(v)) },
++    { key: 'wait_type', label: 'wait', fmt: v => el('span', {}, el('a', { href: waitingHref(ctx, 'mssql_waiting', cur, String(v)), title: `the tasks waiting on ${String(v)}` }, String(v)), waitDocs(v)) },
+     { key: 'wait_ms', label: 'waited', num: true, fmt: v => ms(v) },
+     { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: (v, r) => v == null ? '' : !byOther(r)
+       ? `own context ${String(r.blocking_exec_context_id ?? '')}`
+@@ -108,7 +109,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
+   sec.append(el('h3', {}, 'Wait types over the range'),
+     el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, counted read by read (a session waiting in two reads counts twice; a session id can go to a later session once its session ends), in how many reads, the longest wait seen and when it was last seen. A wait type opens the read where it was last seen, filtered to it.'),
+     grid(types, [
+-      { key: 'wait_type', label: 'wait', fmt: (v, r) => el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)) },
++      { key: 'wait_type', label: 'wait', fmt: (v, r) => el('span', {}, el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)), waitDocs(v)) },
+       { key: 'tasks', num: true }, { key: 'sessions', num: true }, { key: 'reads', num: true },
+       { key: 'longest_ms', label: 'longest', num: true, fmt: v => ms(v) },
+       { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },
+diff --git i/web/src/mssql_audit.ts w/web/src/mssql_audit.ts
+index 4f6c7f23..aad31510 100644
+--- i/web/src/mssql_audit.ts
++++ w/web/src/mssql_audit.ts
+@@ -10,6 +10,7 @@ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { stripGrid } from './timestrip';
+ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
++import { errorCell } from './doclinks';
+ 
+ // The tab key of the page (the router's entry carries the same key).
+ export const mssqlAuditTab = 'mssqlaudit';
+@@ -115,7 +116,8 @@ const eventCols: Col[] = [
+   { key: 'database_name', label: 'database' },
+   { key: 'object_name', label: 'object', fmt: (v, r) => [text(r.schema_name), text(v)].filter(Boolean).join('.') },
+   { key: 'client_ip', label: 'from' }, { key: 'application' }, { key: 'host' },
+-  { key: 'reason', fmt: (v, r) => prose(r.error_state != null ? `${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})` : reasonOf(v)) },
++  { key: 'reason', fmt: (v, r) => r.error_state != null ? el('span', {}, prose(`${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})`), ' ', errorCell(r.error_number))
++    : prose(reasonOf(v)) },
+   { key: 'statement', wide: true },
+   { key: 'audit_name', label: 'audit' },
+ ];
+diff --git i/web/src/mssql_checks.ts w/web/src/mssql_checks.ts
+index 87e3c0da..1da3190a 100644
+--- i/web/src/mssql_checks.ts
++++ w/web/src/mssql_checks.ts
+@@ -14,12 +14,13 @@ import { get, Row, rowsOf, Table } from './api';
+ import { tagScopeIds, tagWords } from './fleet';
+ import type { Ctx } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
++import { buildDocs, errorCell } from './doclinks';
+ 
+ // The tab key of the instance page and of the fleet page (the router's entries carry the same keys).
+ export const mssqlChecksTab = 'mssqlchecks';
+ export const mssqlChecksFleetTab = 'mssqlrisks';
+ 
+-type Parts = Record<'state' | 'areas' | 'findings' | 'options' | 'flags' | 'build' | 'databases' | 'columns' | 'suspect'
++type Parts = Record<'state' | 'areas' | 'findings' | 'options' | 'flags' | 'build' | 'build_docs' | 'databases' | 'columns' | 'suspect'
+   | 'alerts' | 'operators' | 'alerting' | 'identity' | 'identity_scan', Table | null>;
+ type FleetParts = Record<'risks' | 'cells' | 'options', Table | null>;
+ 
+@@ -81,7 +82,7 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
+     case 'options': sec.append(...optionsView(rowsOf(d.options))); break;
+     case 'databases': sec.append(...databasesView(rowsOf(d.databases), rowsOf(d.columns), q.get('risk') ?? '')); break;
+     case 'flags': sec.append(...flagsView(rowsOf(d.flags))); break;
+-    case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect))); break;
++    case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect), rowsOf(d.build_docs)[0] ?? {})); break;
+     case 'alerts': sec.append(...alertsView(rowsOf(d.alerts), rowsOf(d.operators), rowsOf(d.alerting)[0])); break;
+     case 'identity': sec.append(...identityView(rowsOf(d.identity), rowsOf(d.identity_scan))); break;
+     case 'findings': sec.append(findingsGrid(rowsOf(d.findings))); break;
+@@ -190,13 +191,13 @@ function flagsView(rows: Row[]): HTMLElement[] {
+     grid(rows, cols, 'No trace flag is on globally.')];
+ }
+ 
+-function buildView(b: Row | undefined, suspect: Row[]): HTMLElement[] {
++function buildView(b: Row | undefined, suspect: Row[], docs: Row): HTMLElement[] {
+   const out: HTMLElement[] = [el('h3', {}, 'Build')];
+   if (!b) out.push(el('p', { class: 'empty' }, 'No read yet.'));
+   else {
+     const st = el('span', { class: statusCls(b.status) }, b.known !== true ? 'not weighed' : b.newer === true ? 'newer than the catalogue' : Number(b.behind) === 0 ? 'the newest build' : `${String(b.behind)} build(s) behind, ${String(b.cus_behind)} cumulative update(s)`);
+     out.push(props([
+-      ['version', String(b.product_version ?? '')], ['state', st],
++      ['version', el('span', {}, String(b.product_version ?? ''), ' ', buildDocs(docs))], ['state', st],
+       ['update', [b.branch, b.update_name ? `(${String(b.update_name)})` : ''].filter(Boolean).map(String).join(' ')],
+       ['released', String(b.release_date ?? '')],
+       ['newest of the major', b.newest_build == null ? '' : `${String(b.newest_branch)}, build ${String(b.newest_build)}, released ${String(b.newest_release_date)}`],
+@@ -218,7 +219,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[
+   return [
+     el('h3', {}, 'Alerts'),
+     grid(alerts, [
+-      { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true },
++      { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true, fmt: errorCell },
+       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
+       { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => r.enabled === true && Number(v) === 0 && r.has_job !== true ? 'status warn' : '' },
+       { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },
+diff --git i/web/src/mssql_errorlog.ts w/web/src/mssql_errorlog.ts
+index 00bb0230..8faa6462 100644
+--- i/web/src/mssql_errorlog.ts
++++ w/web/src/mssql_errorlog.ts
+@@ -9,6 +9,7 @@ import { waitingLink } from './darling_waiting';
+ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
++import { errorCell, waitDocs } from './doclinks';
+ 
+ type Part = Table | null;
+ const text = (v: unknown) => v == null ? '' : String(v);
+@@ -64,7 +65,7 @@ function readerNote(t: Part, reader: string): HTMLElement {
+ const lineCols: Col[] = [
+   { key: 'log_at', label: 'when', fmt: fmtTime },
+   { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : '' },
+-  { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) },
++  { key: 'error_number', label: 'error', num: true, fmt: errorCell },
+   { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v) },
+   { key: 'message', label: 'line', wide: true },
+   { key: 'process' },
+@@ -324,7 +325,7 @@ const schedulerCols: Col[] = [
+ ];
+ const waitCols: Col[] = [
+   { key: 'event_at', label: 'when', fmt: fmtTime },
+-  { key: 'wait_type', label: 'wait type', fmt: v => v ? waitingLink(text(v), text(v)) : '' },
++  { key: 'wait_type', label: 'wait type', fmt: v => v ? el('span', {}, waitingLink(text(v), text(v)), waitDocs(v)) : '' },
+   { key: 'duration_ms', label: 'duration', num: true, fmt: ms }, { key: 'signal_duration_ms', label: 'signal duration', num: true, fmt: ms },
+   { key: 'wait_resource', label: 'wait resource', wide: true }, { key: 'session_id', label: 'session', num: true },
+   { key: 'statement', wide: true },
+diff --git i/web/src/mssql_jobs.ts w/web/src/mssql_jobs.ts
+index 48ffc558..508bc2bf 100644
+--- i/web/src/mssql_jobs.ts
++++ w/web/src/mssql_jobs.ts
+@@ -16,6 +16,7 @@ import { get, post, Row, rowsOf, Table } from './api';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { jsonRows, mssqlFindingCols } from './mssql_hadr';
+ import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
++import { errorCell } from './doclinks';
+ import { AckData, ackOn, ackWhy, jobAckCell, jobAcks, loadAckSafe, onDoor, seatWhy } from './ack';
+ import { fleet } from './fleet';
+ import { jobChartSection } from './jobs_chart';
+@@ -89,7 +90,7 @@ const runCols: Col[] = [
+   { key: 'duration_s', label: 'took', num: true, fmt: dur },
+   { key: 'outcome', fmt: outcomeBadge },
+   { key: 'failed_step', label: 'step that failed' },
+-  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
++  { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
+   { key: 'sql_severity', label: 'severity', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
+   { key: 'retries', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+   { key: 'message', fmt: oneLine },
+@@ -418,7 +419,7 @@ const failedCols: Col[] = [
+   { key: 'run_at', label: 'run', fmt: fmtTime }, { key: 'job' },
+   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'step name' },
+   { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs },
+-  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
++  { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
+   { key: 'message', fmt: oneLine },
+ ];
+ 
+diff --git i/web/src/mssql_perf.ts w/web/src/mssql_perf.ts
+index 17056812..eabdc0eb 100644
+--- i/web/src/mssql_perf.ts
++++ w/web/src/mssql_perf.ts
+@@ -6,6 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
+ import { Ctx, href, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
++import { waitDocs } from './doclinks';
+ 
+ // The tab keys of the slice's pages (the router's entries carry the same keys).
+ export const mssqlCpuTab = 'mssqlcpu';
+@@ -504,7 +505,7 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
+     { key: 'is_next_candidate', label: 'next candidate', fmt: yes },
+     { key: 'is_small', label: 'small query', fmt: yes },
+     { key: 'pool_id', label: 'pool', num: true },
+-    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : String(v) + ' ' + ms(r.wait_ms) },
++    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : el('span', {}, String(v) + ' ' + ms(r.wait_ms), waitDocs(v)) },
+     { key: 'statement', label: 'statement', wide: true },
+   ], 'No query held or waited for a memory grant at the newest read.'));
+ 
+diff --git i/web/src/mssql_queries.ts w/web/src/mssql_queries.ts
+index a4f3bbe8..2a638e06 100644
+--- i/web/src/mssql_queries.ts
++++ w/web/src/mssql_queries.ts
+@@ -14,6 +14,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
+ import { sqlCell } from './sqlview';
+ import { rereadStrip, stripOverlay, timeStrip } from './timestrip';
+ import { Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
++import { waitDocs } from './doclinks';
+ 
+ export const mssqlQueriesTab = 'mssqlqueries';
+ const HEAD = 10;   // a section's rows: the head of its full tab's own read
+@@ -285,7 +286,7 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
+     const snaps = rowsOf(d.snapshots), rows = rowsOf(d.rows);
+     const t0 = Date.parse(win.from), t1 = Date.parse(win.to);
+     const headGrid = (rs: Row[], empty = 'No request in the newest snapshot of this range.') => grid(rs.slice(0, HEAD), [
+-      { key: 'session_id', label: 'session', num: true, fmt: v => String(v) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on' },
++      { key: 'session_id', label: 'session', num: true, fmt: v => String(v) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on', fmt: v => v == null ? '' : el('span', {}, String(v), waitDocs(v)) },
+       { key: 'elapsed_ms', label: 'running for', num: true, fmt: dur }, { key: 'database_name', label: 'database' }, { key: 'statement', fmt: stmt },
+     ], empty);
+     // the rows part reads the newest snapshot at or before 'to' with no lower bound: a snapshot older than the range is
+@@ -392,7 +393,7 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
+         + (text(c.latest_clerk_capture) === text(c.latest_capture) ? ' It is in the newest capture\'s top 25.' : ' It has since dropped out of the collector\'s top 25, so the latest figure is its last observed footprint, not its current one.');
+     body.replaceChildren(el('p', { class: 'qs-overhead-line' }, line), el('p', { class: 'qs-memory-line' }, clerk),
+       grid(types, [
+-        { key: 'wait_type', label: 'wait type' }, { key: 'wait_ms_per_hour', label: 'wait ms per hour', num: true },
++        { key: 'wait_type', label: 'wait type', fmt: v => v == null ? '' : el('span', {}, String(v), waitDocs(v)) }, { key: 'wait_ms_per_hour', label: 'wait ms per hour', num: true },
+         { key: 'wait_ms', label: 'wait ms', num: true }, { key: 'waiting_tasks', label: 'waiting tasks', num: true },
+         { key: 'measured_secs', label: 'measured seconds', num: true, fmt: v => fmtNum(Math.round(Number(v))) }, { key: 'rows', num: true },
+         { key: 'last_seen', label: 'last seen', fmt: fmtTime },
+diff --git i/web/src/mssql_running.ts w/web/src/mssql_running.ts
+index 807fcc31..a9b556bb 100644
+--- i/web/src/mssql_running.ts
++++ w/web/src/mssql_running.ts
+@@ -17,6 +17,7 @@
+ import { get, post, Row, rowsOf, Table } from './api';
+ import { Ctx, href, isLive, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
++import { waitDocs } from './doclinks';
+ import { foldedGrid } from './running';
+ import { firstChars, sqlCell, whatIsThis } from './sqlview';
+ import { mssqlBlockingTrend } from './blocking_history';
+@@ -49,7 +50,7 @@ const coord = (v: unknown, r: Row) => v == null ? '' : parallel(r)
+   ? el('span', { title: 'A parallel request: this counter is its coordinator task\'s alone. The sums over its tasks are in the columns "tasks CPU" and "tasks IO".' }, fmtNum(v) + ' (coordinator)')
+   : fmtNum(v);
+ const waitCell = (_v: unknown, r: Row) => r.wait_type == null ? ''
+-  : el('span', {}, String(r.wait_type).startsWith('LCK_') ? badge(String(r.wait_type), 'warn') : String(r.wait_type), ' ' + ms(r.wait_ms));
++  : el('span', {}, String(r.wait_type).startsWith('LCK_') ? badge(String(r.wait_type), 'warn') : String(r.wait_type), ' ' + ms(r.wait_ms), waitDocs(r.wait_type));
+ const sessionWaits = (v: unknown) => {
+   if (typeof v !== 'string' || !v) return '';
+   try {
+diff --git i/web/src/mssql_summary.ts w/web/src/mssql_summary.ts
+index 4ef0f81e..11a686bc 100644
+--- i/web/src/mssql_summary.ts
++++ w/web/src/mssql_summary.ts
+@@ -5,6 +5,7 @@ import { AckData, loadAckSafe } from './ack';
+ import { cellClass, cells, cellText, fleet, groups } from './fleet';
+ import { Ctx, href } from './router';
+ import { badge, el, fmtTime, grid, props, Col } from './ui';
++import { buildDocs } from './doclinks';
+ import { healthCalendar } from './healthcal';
+ 
+ const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+@@ -18,8 +19,10 @@ const findingCols: Col[] = [
+ ];
+ 
+ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
+-  const [f, fi, sn] = await Promise.all([fleet(), get('findings', { instance: ctx.instance }),
+-    loadAckSafe(['seen'], { instance: ctx.instance }) as Promise<AckData & { seen?: Table | null }>]);
++  const [f, fi, sn, bd] = await Promise.all([fleet(), get('findings', { instance: ctx.instance }),
++    loadAckSafe(['seen'], { instance: ctx.instance }) as Promise<AckData & { seen?: Table | null }>,
++    // task 412: the build's documentation links (the checks API's build_docs part; none when it fails)
++    get<{ build_docs?: Table | null }>('mssql/checks', { instance: ctx.instance, part: 'build_docs' }).catch(() => ({ build_docs: null }))]);
+   const seen = new Map(rowsOf(sn.seen ?? null).map(x => [`${String(x.setting ?? '')}\x1f${String(x.value ?? '')}`, x]));
+   const r = f.instances.find(x => Number(x.instance_id) === ctx.instance);
+   if (!r) return el('p', { class: 'empty' }, 'This instance is not in the repository (or no longer active).');
+@@ -42,7 +45,8 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
+   const mem = (v: unknown) => v == null ? '' : `${(Number(v) / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
+   const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
+   sec.append(el('h3', {}, 'Server'), props([
+-    ['version', [s.product_version, s.product_level, s.product_update_level].filter(Boolean).map(String).join(' ') || String(r.server_version ?? '')],
++    ['version', el('span', {}, [s.product_version, s.product_level, s.product_update_level].filter(Boolean).map(String).join(' ') || String(r.server_version ?? ''),
++      ' ', buildDocs(rowsOf(bd.build_docs ?? null)[0] ?? {}))],
+     ['edition', String(s.edition ?? '')],
+     ['server', [s.server_name, s.machine_name && s.machine_name !== s.server_name ? `(machine ${String(s.machine_name)})` : ''].filter(Boolean).map(String).join(' ')],
+     ['started', s.started_at ? `${fmtTime(s.started_at)} (${cellText(c.uptime)})` : ''],
+diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
+index ce3181bc..fd39b552 100644
+--- i/web/src/mssql_xe.ts
++++ w/web/src/mssql_xe.ts
+@@ -9,6 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
++import { errorCell } from './doclinks';
+ import { stripGrid } from './timestrip';
+ 
+ type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'block_findings' | 'block_rollup' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
+@@ -368,7 +369,7 @@ const agCols: Col[] = [
+   { key: 'is_failover', label: 'failover', fmt: v => v === true ? badge('failover', 'crit') : '' },
+   { key: 'event_name', label: 'event' }, { key: 'ag_name', label: 'group' }, { key: 'replica_name', label: 'replica' },
+   { key: 'previous_state', label: 'from' }, { key: 'current_state', label: 'to' },
+-  { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) }, { key: 'family' },
++  { key: 'error_number', label: 'error', num: true, fmt: errorCell }, { key: 'family' },
+   { key: 'ddl_phase', label: 'DDL phase' },
+   { key: 'statement', label: 'DDL', wide: true }, { key: 'message', wide: true },
+ ];
+diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
+index efcfb652..f5bd97ac 100644
+--- i/web/src/perfsummary.ts
++++ w/web/src/perfsummary.ts
+@@ -114,6 +114,11 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+         : r.compiles_under_floor === true ? (w => muted(w, w))(`N/A: too few batch requests/s over the range to judge (${Number(r.batch_s) < Number(r.compiles_floor) ? `${fmtNum(r.batch_s)}/s, ` : 'under '}the floor ${fmtNum(r.compiles_floor)}/s)`)
+         : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
+         : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
++    // task 412: SQLMonitor's figure over the range (its dashboard flags above 180)
++    { key: 'wait_s_core_min', label: 'wait s per core per minute', num: true,
++      fmt: (v, r) => !isMs(r) ? na('a SQL Server figure')
++        : v == null ? absent(r, '', 'no scheduler count (mssql_cpu off, or Azure SQL Database) or under 5 minutes of wait reads in the range')
++        : el('span', { title: 'the waits of the range, benign waits and SQLMonitor\'s per-core list left out, in seconds per scheduler per minute (SQLMonitor flags above 180)' }, fmtNum(v)) },
+     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
+       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
+     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
