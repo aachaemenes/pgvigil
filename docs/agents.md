@@ -10,7 +10,7 @@ question about the fleet, and lets the people on serve's pages read what it foun
    repository itself, never a copy the browser sends: the row the person pressed it on (a setting can hold rows for
    several objects, one per database), named by its value with its numbers aside, so an age that grew since the page
    drew still names it. Earlier reports of that row, not of its setting, ride in the brief.
-2. The site's agent runs `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_agent`. It lists or waits for open
+2. The site's agent runs `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_investigator`. It lists or waits for open
    requests, **claims** one (the first claim wins; the claim holds a 15-minute lease the agent renews), reads with the
    read tools of [mcp.md](mcp.md) and with `run_select` (one read-only SELECT at a time), and **reports**: a verdict,
    a summary, its reasoning, its evidence and the queries that mattered.
@@ -33,15 +33,20 @@ reports_dsn: env:PGVIGIL_REPORTS_DSN   # for Run (configuration.md); without it 
 As the repository's owner, make the agent's login (`pgvigil roles` prints the line):
 
 ```sql
-CREATE ROLE pgvigil_agent_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_agent;
+CREATE ROLE pgvigil_investigator_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_investigator;
 ```
 
+`pgvigil_investigator` is the door's group role, made by migration 0268 (NOLOGIN). The collector's login `pgvigil_agent`
+(`pgvigil roles`) and the MCP reader's login `pgvigil_mcp` ([mcp.md](mcp.md)) are other roles and get none of the door. If a role named
+`pgvigil_investigator` already exists and may log in, `pgvigil migrate` stops at 0268 and says so: a login of that name
+would get the door's grants and pass its check. Rename or drop that login, then migrate again.
+
 `pgvigil mcp` checks it before the first message, on its **session** user (a role set at connect, `options=-c role=`,
-changes nothing; a superuser that sets a reader's role is still refused): a superuser, a member of any role but `pgvigil_reader` and `pgvigil_agent` (`pg_read_all_data`,
+changes nothing; a superuser that sets a reader's role is still refused): a superuser, a member of any role but `pgvigil_reader` and `pgvigil_investigator` (`pg_read_all_data`,
 `pg_read_server_files`, `pg_monitor`, `pgvigil_alerter`, `pgvigil_collector`, `pgvigil_auth`, the database's owner), a
 login that may read the UI's password hashes, a login with CREATE in the schema or a write on a table, and a repository
 in recovery (a standby: the door writes its requests' records and listens for new requests on the primary) are each
-refused, exit 3, the reason on stderr. A login without `pgvigil_agent` gets the reader's door of [mcp.md](mcp.md)
+refused, exit 3, the reason on stderr. A login without `pgvigil_investigator` gets the reader's door of [mcp.md](mcp.md)
 unchanged.
 
 **The boundary.** An answered question's SELECT reads exactly what a custom report on the store reads: the
@@ -51,7 +56,7 @@ reads (the reader's tables and views; never `ui_*`), under the same rule asked a
 
 ## The agent's tools
 
-With `pgvigil_agent`, `pgvigil mcp` serves seven tools beside the reader's nine:
+With `pgvigil_investigator`, `pgvigil mcp` serves seven tools beside the reader's ten:
 
 | Tool | Arguments | What it does |
 |---|---|---|

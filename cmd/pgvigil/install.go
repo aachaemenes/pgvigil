@@ -1257,9 +1257,16 @@ func pgvigilExe(file, name string) bool {
 	return b == "pgvigil" || strings.HasPrefix(b, "pgvigil_")
 }
 
-// pgvigilGroups are the group roles the migrations create (cluster-wide: uninstall -drop-repository drops them only when
-// nothing else uses them).
-var pgvigilGroups = []string{"pgvigil_collector", "pgvigil_reader", "pgvigil_auth", "pgvigil_alerter"}
+// pgvigilGroups are the group roles the migrations create, read from this build's own migration files (repo.GroupRoles:
+// pgvigil_collector, _reader, _auth, _alerter, _requester, _exporter, _investigator; cluster-wide: uninstall
+// -drop-repository drops them only when nothing else uses them).
+func pgvigilGroups() []string {
+	g, err := repo.GroupRoles()
+	if err != nil { // the files are embedded in this binary: unreadable is a broken build
+		panic(fmt.Sprintf("the migrations' group roles: %v", err))
+	}
+	return g
+}
 
 // otherCollectorWait is how long the repository is watched for another collector's write after the local service
 // stopped: the shortest collection interval is a minute.
@@ -1303,7 +1310,7 @@ func decideGroup(f roleFacts) roleStep {
 	s := roleStep{name: f.name}
 	var other []string
 	for _, m := range f.memberOf {
-		if !slices.Contains(pgvigilGroups, m) {
+		if !slices.Contains(pgvigilGroups(), m) {
 			other = append(other, m)
 		}
 	}
@@ -1863,7 +1870,7 @@ func planRoles(ctx context.Context, c *pgx.Conn, p *dropPlan) ([]roleStep, error
 	}
 	var groups []roleStep
 	dropped := map[string]bool{}
-	for _, g := range pgvigilGroups {
+	for _, g := range pgvigilGroups() {
 		f, ok, err := facts(g)
 		if err != nil {
 			return nil, err
@@ -1876,7 +1883,7 @@ func planRoles(ctx context.Context, c *pgx.Conn, p *dropPlan) ([]roleStep, error
 		groups = append(groups, s)
 	}
 	rows, err := c.Query(ctx, `SELECT DISTINCT r.rolname::text FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
-	  JOIN pg_roles g ON g.oid = m.roleid WHERE g.rolname = ANY($1) AND NOT r.rolname = ANY($1)`+inUse+` ORDER BY 1`, pgvigilGroups)
+	  JOIN pg_roles g ON g.oid = m.roleid WHERE g.rolname = ANY($1) AND NOT r.rolname = ANY($1)`+inUse+` ORDER BY 1`, pgvigilGroups())
 	if err != nil {
 		return nil, err
 	}
