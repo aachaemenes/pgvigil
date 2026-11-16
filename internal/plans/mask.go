@@ -13,6 +13,8 @@ var exprKeys = map[string]bool{
 	"Cache Key": true, "Function Call": true, "Table Function Call": true, "Query Text": true, "Query Parameters": true,
 	"Order By": true, "Run Condition": true, "Hash Key": true, "Repeatable Seed": true, "Sampling Parameters": true,
 	"Window": true, "Conflict Filter": true, "Remote SQL": true, "Partial Key": true,
+	// a GROUPING SETS node's sets: an array of key lists per set (read on PostgreSQL 18.6 and 13.23)
+	"Group Keys": true, "Hash Keys": true,
 }
 
 // Mask applies the instance's query-text policy (config query_text) to a plan row, as the collector's text
@@ -72,16 +74,7 @@ func maskValue(v any, normalize func(string) string) {
 	case map[string]any:
 		for k, e := range x {
 			if exprKeys[k] {
-				switch s := e.(type) {
-				case string:
-					x[k] = normalize(s)
-				case []any:
-					for i, it := range s {
-						if str, ok := it.(string); ok {
-							s[i] = normalize(str)
-						}
-					}
-				}
+				x[k] = normalizeAll(e, normalize)
 				continue
 			}
 			maskValue(e, normalize)
@@ -91,4 +84,18 @@ func maskValue(v any, normalize func(string) string) {
 			maskValue(e, normalize)
 		}
 	}
+}
+
+// normalizeAll is an expression property's value with every string in it normalized, at any depth of arrays (a
+// grouping set's "Group Keys" is an array of key lists).
+func normalizeAll(v any, normalize func(string) string) any {
+	switch x := v.(type) {
+	case string:
+		return normalize(x)
+	case []any:
+		for i, e := range x {
+			x[i] = normalizeAll(e, normalize)
+		}
+	}
+	return v
 }
