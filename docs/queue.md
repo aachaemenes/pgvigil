@@ -23,6 +23,7 @@ drops it).
 | Custom reports (save and run) | off |
 | Admin > Instances (add, change, test) | off |
 | Acknowledgements, alert-rule edits, applications | off |
+| Investigations (Investigate, the Ask box, Close, an answered ask's Run) | off: "investigations are not offered in queue mode" |
 | Scheduled report mail | off (serve's log says so at start) |
 
 Every "off" button says why: "off in queue mode (actions.via queue in pgvigil.yaml): this serve holds no login to the

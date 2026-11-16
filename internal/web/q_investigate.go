@@ -54,6 +54,9 @@ func (s *Server) investigationOff() string {
 		return "investigations are not written on a demo server"
 	case s.auth == nil:
 		return "investigations need the UI login: this server runs with -no-login"
+	case s.queue() != nil: // q_requests.go: a queue-mode serve holds no write login to the repository
+		return "investigations are not offered in queue mode (actions.via queue in pgvigil.yaml): this serve holds no " +
+			"write login to the repository, and in this release only the community tools go through the queue to a collector"
 	case s.actions == nil || s.actions.audit == nil:
 		if s.actions != nil && s.actions.off != "" {
 			return "investigations are written through the actions door's audit login, and it is off: " + s.actions.off
