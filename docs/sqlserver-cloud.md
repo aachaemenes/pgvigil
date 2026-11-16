@@ -74,7 +74,7 @@ Eight collections of this table run; the others are skipped by an Azure SQL Data
 | `mssql_activity` | skipped | `sys.dm_os_performance_counters` and the server's sessions there are the host's |
 | `mssql_reports` | skipped | no server roles, SQL logins or service list of its own to read |
 | `mssql_pool` | runs in an elastic pool, else skipped | the pool's figures from `sys.dm_elastic_pool_resource_stats`: [elastic pools](#azure-sql-database-elastic-pools) |
-| `mssql_ag`, `mssql_mirroring`, `mssql_logshipping`, `mssql_replication` | skipped | none of them exists on the service (its geo-replication is not read) |
+| `mssql_ag`, `mssql_mirroring`, `mssql_fci`, `mssql_logshipping`, `mssql_replication` | skipped | none of them exists on the service (its geo-replication is not read) |
 | `mssql_jobs` | skipped | no SQL Server Agent (Elastic Jobs are not read) |
 | `mssql_backups` | skipped | no backup history in msdb: the backups are the service's own |
 | `mssql_versionstore` | skipped | tempdb's version store is not the tenant's |
@@ -135,6 +135,7 @@ The collections run as on a server someone runs, with these differences:
 | collection | on a Managed Instance | why (Microsoft's T-SQL differences page, unless named) |
 | --- | --- | --- |
 | `mssql_mirroring` | skipped | "Database mirroring isn't supported." |
+| `mssql_fci` | skipped | a managed service runs its own failover: there is no failover cluster instance to read |
 | `mssql_logshipping` | skipped | "Differential, log, and file snapshot backups aren't supported": a user takes `COPY_ONLY` full backups to a URL only, so there is no log of the user's own to ship |
 | `mssql_checks`, its alerts area | the operators only | SQL Server Agent: "Alerts aren't yet supported." and "Pager isn't supported.", while email notification is: 'no operator' is judged; the alert findings (severities 19 to 25, corruption errors, disabled alerts) and the fail-safe operator (it serves alert paging) are not. The Summary's alerts cell then counts 0 alerts |
 | `mssql_backups` | runs; master, model and msdb not judged (each with its reason: master is not backed up, model and msdb are kept by the service) | ['Automated backups'](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/automated-backups-overview): "The system databases are automatically backed up (excluding the physical master database), but these backups aren't currently logged in msdb." User databases are judged: ['Monitor backup activity'](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/backup-activity-monitor) says the instance "stores backup information in the msdb database". The collection stays on (DBA Dash skips it) because it also lists the databases for new and dropped databases |
@@ -220,6 +221,7 @@ Detected as `rdssqlserver` by the database `rdsadmin`. Every collection runs as 
 | `mssql_cpu`, `mssql_memory`, `mssql_fileio`, `mssql_tempdb`, `mssql_properties`, `mssql_storage`, `mssql_versionstore` | runs | as on a server |
 | `mssql_waiting_tasks`, `mssql_reports`, `mssql_activity` | runs | as on a server (run on Standard; `mssql_activity`'s rows are not compared by the proof) |
 | `mssql_mirroring`, `mssql_replication` | runs | nothing to read on the instances proven (Express, and Standard in a single AZ: no mirroring, no distributor): stored as none |
+| `mssql_fci` | skipped | a managed service runs its own failover: there is no failover cluster instance to read |
 | `mssql_procstats` | runs | every cached procedure of every database (one server-wide DMV); a database the login has no user in keeps its procedures' ids without their names, and the run says partial |
 | `mssql_indexlocks`, `mssql_querystore` | runs | in the databases the login has a user in; the others are not read (the master user cannot enter `model`, so no user can be made there) |
 | `mssql_backups` | runs | `msdb.dbo.backupset` is readable without a grant there. RDS's automated backups and snapshots are the service's own storage snapshots and are not counted: what msdb holds of the instance's own is the full backups RDS writes to the NUL device while it builds the instance (msdb, model, rdsadmin; never a last full backup, as on any server) and native backups (`msdb.dbo.rds_backup_database`), which count as on a server. The last-backup check speaks of native backups alone |
