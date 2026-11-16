@@ -54,3 +54,37 @@ func TestPurgeTakesTheJoinedRetentionOnAStore(t *testing.T) {
 		}
 	}
 }
+
+// TestPurgeReadsNoMonthFromAnOddHourChild: 0151's two hour tables are purged by hour_purge_0151, which purge() calls
+// (the join's arm): a child whose name ends in six digits that are no month (a table named after an OID past 100,000)
+// is left alone - never 22008 from parsing '_100017' as 1000-17, which would fail the whole purge (0167's fix,
+// 86a9a924, in the same shape).
+func TestPurgeReadsNoMonthFromAnOddHourChild(t *testing.T) {
+	ctx, r, _, _ := throwawayRepo(t)
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var odd []string
+	for _, p := range []string{"cloud_replica_hour", "mssql_georepl_hour"} {
+		name := p + "_odd_100017"
+		if _, err := r.pool.Exec(ctx, `CREATE TABLE `+pgx.Identifier{"pgvigil", name}.Sanitize()+` PARTITION OF `+
+			pgx.Identifier{"pgvigil", p}.Sanitize()+` FOR VALUES FROM ('2201-01-01 00:00+00') TO ('2201-02-01 00:00+00')`); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		odd = append(odd, name)
+	}
+	for _, q := range []string{`SELECT pgvigil.cloud_replica_hour_purge()`, `SELECT pgvigil.mssql_georepl_hour_purge()`, `SELECT pgvigil.purge(30)`} {
+		if _, err := r.pool.Exec(ctx, q); err != nil {
+			t.Errorf("%s with children named %v (six digits, no month): %v", q, odd, err)
+		}
+	}
+	for _, name := range odd {
+		var left bool
+		if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.' || $1) IS NOT NULL`, name).Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+		if !left {
+			t.Errorf("%s was dropped: a name ending in no month", name)
+		}
+	}
+}
