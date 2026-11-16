@@ -15,8 +15,9 @@
 #
 # Expected (written before the first run; job B's numbers, design lines 37 / 58 / 62 / 66):
 #  B0 (the setup, on any tree): the kit installs; an empty database with AUTO_CLOSE on (sp_Blitz 12, a rule the Checks
-#     tab judges too; L1 has a user with SELECT there - sp_Blitz skips a database without SELECT - and its RSV carries
-#     check 12 on it); the server's first minute waited out (sp_Blitz's CheckID 152 divides by the whole minutes since
+#     tab judges too; as L1 - the default grants - sp_Blitz names it in no per-database check: its own read of which
+#     databases it may check, fn_my_permissions(<db>, 'DATABASE') from its database, lists SELECT only through sysadmin;
+#     A and P read pgvigil's note of that: b20-b0diag3 / diag5); the server's first minute waited out (sp_Blitz's CheckID 152 divides by the whole minutes since
 #     the waits were cleared: Msg 8134 inside it until one has passed - review-22 bzproof B2); as the monitoring login
 #     L1 (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, EXECUTE on master.dbo.sp_Blitz only) the RSV
 #     output's rows (CheckID -1 included: the 'Thanks!' and version rows) equal the COUNT read just before or just after
@@ -39,10 +40,13 @@
 #     file's sp_Blitz says, login L1, proc_db master, seconds over 0, findings = its finding rows; the stored count is
 #     sp_Blitz's own COUNT as L1 read just before or just after the run; the stored FindingsGroups and CheckIDs equal
 #     an RSV read as L1 right after (as multisets) without CheckIDs 152, 153 and 185 (wait shares and the minutes since
-#     the waits were cleared: their rows move between two calls - bzproof S4).
+#     the waits were cleared: their rows move between two calls - bzproof S4); the run's FIRST message is pgvigil's
+#     'sp_Blitz's per-database checks ran on no database (0 of <the server's databases>)', naming fn_my_permissions,
+#     the login and that only sysadmin turns them on (the default grants; the lead 05:0x).
 #  H  a second collect in the same week: skipped 'not due yet', still one run; the state 'not due' names the next time.
 #  C  sa (a sysadmin; the collector does not refuse one): the outcome agrees with its stored messages ('done' when none
-#     is of severity 11 or more, else 'done with messages'; job B's 8134 was its first minute, waited out in B0) and
+#     is of severity 11 or more, else 'done with messages'; job B's 8134 was its first minute, waited out in B0), no
+#     per-database note (sysadmin reads every database), and
 #     its findings = sa's own COUNT read just before or just after.
 #  D  L2 (EXECUTE on sp_Blitz, no VIEW SERVER STATE): a run stored 'refused', its error 'The user L2 does not have VIEW
 #     SERVER STATE permissions.', no finding; collect says partial with that message.
@@ -61,11 +65,13 @@
 #  K  GET /api/mssql/blitz?instance=N: the parts state, last, runs, shown, findings, judged; 'shown' is the newest
 #     successful run with the newest run's outcome beside it ('timed out' after J); its findings = the stored rows;
 #     judged holds 12, 13, 14 and 1001 (rules the Checks tab judges), a finding is judged exactly when its CheckID is
-#     in that list, and CheckID 12 (the seeded AUTO_CLOSE) is among the judged findings; the state 'not due' (the timed-out run is this week's).
+#     in that list, and at least one finding is judged (not check 12: L1 - the default grants - never gets a
+#     per-database check, b20-b0diag3); the state 'not due' (the timed-out run is this week's).
 #  M  import_mssql_blitz refuses a PostgreSQL instance; the same payload twice stores one run.
 #  P  the page (admin): #/findings?i=N has the section 'sp_Blitz weekly'; one folding group per FindingsGroup of the
 #     shown run plus All, each summary exactly '<group> (<n>)'; All holds every finding, each URL cell a link when
-#     http(s); the newest successful run's line names the login L1; picking one database leaves All its stored count
+#     http(s); the newest successful run's line names the login L1, and the line p.blitz-dbskip below it says
+#     'sp_Blitz's per-database checks ran on no database ...' (never silent: the lead 05:0x); picking one database leaves All its stored count
 #     of that database; the pages of E's, F's, I's and G's instances say their words (no EXECUTE, no database, timed
 #     out, the site default is off); a judged CheckID a
 #     link to the instance's Checks tab; the database filter lists every DatabaseName of the run; the section holds ONE
@@ -154,9 +160,6 @@ CREATE USER [$L1] FOR LOGIN [$L1]; CREATE USER [$L2] FOR LOGIN [$L2]; GRANT EXEC
 CREATE DATABASE [$DBE];" | sqin || die "B0: the logins"
 # a finding the Checks tab judges too (sp_Blitz 12, AUTO_CLOSE on a user database): K and P read its mark
 sq "ALTER DATABASE [$DBE] SET AUTO_CLOSE ON;" >/dev/null || die "B0: AUTO_CLOSE on $DBE"
-# sp_Blitz 8.34 skips every database where the caller has no SELECT (fn_my_permissions(name, 'DATABASE') into
-# #SkipChecks): L1 gets a user with SELECT there, or its runs never carry check 12 for it (b20-t2g2's K)
-sq "CREATE USER [$L1] FOR LOGIN [$L1]; GRANT SELECT TO [$L1];" "$DBE" >/dev/null || die "B0: $L1's user with SELECT in $DBE"
 # the server's first minute out (CheckID 152's Msg 8134, bzproof B2): DATEDIFF(MINUTE) as sp_Blitz counts it
 for _ in $(seq 1 45); do [[ $(sq "SELECT DATEDIFF(MINUTE, create_date, CURRENT_TIMESTAMP) FROM sys.databases WHERE name = N'tempdb'") -ge 1 ]] && break; sleep 3; done
 [[ $(sq "SELECT DATEDIFF(MINUTE, create_date, CURRENT_TIMESTAMP) FROM sys.databases WHERE name = N'tempdb'") -ge 1 ]] || die "B0: the server's first minute did not pass in 135 s"
@@ -170,9 +173,7 @@ blitzRSV() { as "$1" "$2" "$CALL, @OutputType = 'RSV';" | tr -d '\r' | grep -aE 
 between() { [[ $1 =~ ^[0-9]+$ && ( $1 == "$2" || $1 == "$3" ) ]]; }
 B0N=$(blitzCount "$L1" "$P1"); B0R=$(blitzRSV "$L1" "$P1" | wc -l); B0M=$(blitzCount "$L1" "$P1")
 [[ $B0N =~ ^[0-9]+$ && $B0N -gt 0 ]] && between "$B0R" "$B0N" "$B0M" || die "B0: as $L1 COUNT '$B0N' / '$B0M' and RSV $B0R rows disagree (the proof's parse); the COUNT reply: $(as "$L1" "$P1" "$CALL, @OutputType = 'COUNT';" | tr -d '\r' | grep -av '^[[:space:]]*$' | head -4 | tr '\n' ' ' | cut -c1-300)"
-B0A=$(blitzRSV "$L1" "$P1" | awk -F$'\x1f' -v d="$DBE" '$2 == 12 && $5 == d' | wc -l)
-[[ $B0A == 1 ]] || die "B0: the seeded AUTO_CLOSE (CheckID 12 on $DBE) is in $B0A of $L1's RSV rows, want 1"
-echo "B0: OK (as the monitoring login sp_Blitz counts $B0N findings, RSV prints $B0R rows, CheckID 12 on $DBE among them)"
+echo "B0: OK (as the monitoring login sp_Blitz counts $B0N findings, RSV prints $B0R rows)"
 
 echo "--- S. the store"
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
@@ -277,6 +278,10 @@ awk -F$'\x1f' -v m="^($MOVE)$" '$2 !~ m {print $2}' "$WORK/rsv.txt" | sort -n > 
 LC_ALL=C sort "$WORK/g.db" -o "$WORK/g.db"; LC_ALL=C sort "$WORK/g.rsv" -o "$WORK/g.rsv"
 cmp -s "$WORK/g.db" "$WORK/g.rsv" && cmp -s "$WORK/c.db" "$WORK/c.rsv" && ok "A: the stored FindingsGroups and CheckIDs equal RSV's without 152 / 153 / 185 ($(sort -u "$WORK/g.db" | wc -l) groups, $(wc -l < "$WORK/c.db") rows)" \
   || bad "A: groups / CheckIDs differ: $(diff "$WORK/g.db" "$WORK/g.rsv" | head -5 | tr '\n' ' ') / $(diff "$WORK/c.db" "$WORK/c.rsv" | head -5 | tr '\n' ' ')"
+# the default grants: sp_Blitz's per-database checks name no database, and the run says so first (the lead 05:0x)
+NDB=$(sq "SELECT COUNT(*) FROM sys.databases")
+a1=$(q "select (m->>'proc') || '|' || (m->>'message') from pgvigil.mssql_blitz_run r, jsonb_array_elements(r.messages) with ordinality x(m, i) where r.run_id = ${R1:-0} and x.i = 1")
+[[ $a1 == "pgvigil|sp_Blitz's per-database checks ran on no database (0 of $NDB)"*"fn_my_permissions"*"$L1"*"sysadmin"* ]] && ok "A: the run's first message says the per-database checks ran on no database (0 of $NDB), why, and that only sysadmin turns them on" || bad "A: the first message: ${a1:0:300}"
 row A
 
 echo "--- H. the same week again"
@@ -291,6 +296,7 @@ c1=$(q "select outcome || '|' || findings || '|' || (select count(*) from jsonb_
 cf=$(cut -d'|' -f2 <<<"$c1"); ce=$(cut -d'|' -f3 <<<"$c1"); co=$(cut -d'|' -f1 <<<"$c1")
 if [[ ( $co == done && $ce == 0 ) || ( $co == "done with messages" && $ce -gt 0 ) ]] && between "$cf" "$SAB" "$SAN"; then ok "C: sa: $co with $ce error message(s), $cf findings, sa's COUNT $SAB before / $SAN after"
 else bad "C: sa: $c1 (outcome|findings|errors; COUNT $SAB / $SAN), messages $(q "select messages from pgvigil.mssql_blitz_run where instance_id = $IS")"; fi
+[[ $(q "select count(*) from pgvigil.mssql_blitz_run r, jsonb_array_elements(r.messages) m where r.instance_id = $IS and m->>'proc' = 'pgvigil' and m->>'message' like 'sp_Blitz''s per-database checks%'") == 0 ]] && ok "C: sa's run carries no per-database note (sysadmin: every database read)" || bad "C: sa's run carries the per-database note"
 row C
 
 echo "--- D. no VIEW SERVER STATE"
@@ -352,7 +358,7 @@ def objs(p): t = d[p]; return [dict(zip(t['columns'], r)) for r in t['rows']]
 parts = ','.join(sorted(d.keys()))
 sh = objs('shown'); f = objs('findings'); j = [x['check_id'] for x in objs('judged')]
 okj = all(bool(x['judged']) == (x['check_id'] in j) for x in f)
-print(parts, len(sh) == 1 and sh[0]['run_id'] == r2, sh[0]['newest_outcome'] if sh else None, len(f), all(k in j for k in (12, 13, 14, 1001)), okj and any(x['check_id'] == 12 and x['judged'] for x in f), objs('state')[0]['state'])
+print(parts, len(sh) == 1 and sh[0]['run_id'] == r2, sh[0]['newest_outcome'] if sh else None, len(f), all(k in j for k in (12, 13, 14, 1001)), okj and any(x['judged'] for x in f), objs('state')[0]['state'])
 PY
 ) || kv="unreadable: $(head -c 300 "$WORK/k.json")"
 [[ $kv == "findings,judged,last,runs,shown,state True timed out $R2N True True not due" ]] \
@@ -407,7 +413,8 @@ for (let i = 0; i < 60 && !out; i++) {
     const dbs = [...(sec.querySelector('select.blitz-db')?.options ?? [])].map(o => o.value);
     const save = sec.querySelector('button.blitz-save');
     return { groups, urlCells, judged, dbs, grids: sec.querySelectorAll('table.grid').length,
-      run: sec.querySelector('.blitz-run')?.textContent ?? '', saveOff: save?.getAttribute('aria-disabled') ?? null, text: sec.textContent };
+      run: sec.querySelector('.blitz-run')?.textContent ?? '', dbskip: sec.querySelector('p.blitz-dbskip')?.textContent ?? '',
+      saveOff: save?.getAttribute('aria-disabled') ?? null, text: sec.textContent };
   })()`);
 }
 if (out && pick) {
@@ -443,6 +450,7 @@ if not a['judged'] or not all(('mssqlchecks' in h and ('i=' + inst) in h) for h 
 if sorted(d for d in a['dbs'] if d) != sorted(dbs): bad.append('database filter %s want %s' % (a['dbs'][:6], dbs[:6]))
 if a.get('grids') != 1: bad.append('%s grids in the section with the groups and the runs folded (want 1: All)' % a.get('grids'))
 if l1 not in a.get('run', ''): bad.append('the run line %r names no %s' % (a.get('run', '')[:160], l1))
+if not a.get('dbskip', '').startswith("sp_Blitz's per-database checks ran on no database"): bad.append('no line says the per-database checks ran on no database: %r' % a.get('dbskip', '')[:160])
 if pick and str(a.get('pickRows')) != pickn: bad.append('picking %s leaves %s rows in All (want %s)' % (pick, a.get('pickRows'), pickn))
 if not v: bad.append('viewer: no section')
 elif v['saveOff'] != 'true' or 'changing the weekly sp_Blitz needs the admin role' not in v['text']:
