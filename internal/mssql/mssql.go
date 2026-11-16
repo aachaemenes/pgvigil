@@ -71,6 +71,14 @@ type Timeouter interface {
 	Timeout() time.Duration
 }
 
+// InstanceCollector is a collection whose work depends on the CONFIGURED instance (its name and tags: the custom:
+// checks that reach it, ST6 mssql_custom), not only on the server it detects. Wants is asked before the connect (false
+// = skipped, nothing connected or stored); RunInstance takes the place of Run.
+type InstanceCollector interface {
+	Wants(in config.Instance) (ok bool, why string)
+	RunInstance(ctx context.Context, conn *sql.Conn, info Info, in config.Instance) ([]collect.Row, error)
+}
+
 // runTimeout is the SQL Server side's deadline for one run of a collector.
 func runTimeout(c Collector) time.Duration {
 	if t, ok := c.(Timeouter); ok && t.Timeout() > 0 {
@@ -519,6 +527,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
+	if ic, ok := c.(InstanceCollector); ok {
+		if want, why := ic.Wants(in); !want {
+			return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+		}
+	}
 	limit := runTimeout(c)
 	sctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
@@ -631,7 +644,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
 	var rows []collect.Row
 	cursorFailed := false // the read of the collector's own cursor failed: the repository's side, stage 'import' (0198)
-	if cc, ok := c.(CursorCollector); ok {
+	if ic, ok := c.(InstanceCollector); ok {
+		rows, err = ic.RunInstance(sctx, conn, info, in)
+	} else if cc, ok := c.(CursorCollector); ok {
 		rows, err = cc.RunFrom(sctx, conn, info, func(_ context.Context, source string) (int64, bool, error) {
 			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			defer ccancel()

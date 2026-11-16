@@ -336,6 +336,8 @@ var knownKeys = map[string]bool{
 	"helo": true, "url": true, "format": true, "dir": true, "routing_key": true,
 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
+	// custom: a SQL Server check (ST6): its procedure and its database are masked (a name of the site), its engine is a setting
+	"procedure": true, "database": true,
 	"warning": true, "critical": true,
 	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
 	// tasks 403a / 403b / B24k (alerts.Settings): a channel's digest and checks, Pushover, Zabbix, Azure Monitor, the

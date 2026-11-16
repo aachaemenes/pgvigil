@@ -93,14 +93,15 @@ export const rootGroups: TabGroup[] = [
 // pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
 // page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
 // 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
-// disks, storage, backups, roles, indexes, jobs, custom, DMS, database sizes -, mssql.All for SQL Server's mssql_*), or
+// disks, storage, backups, roles, indexes, jobs, DMS, database sizes -, mssql.All for SQL Server's mssql_*; custom checks
+// are both engines' since ST6: mssql_custom writes the same tables), or
 // the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
 // engine leaves them out, as a strip should; every other page holds both engines.
 export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
   mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver', mssqlerrors: 'sqlserver',
   mssqllogshipping: 'sqlserver', mssqlmirroring: 'sqlserver', mssqlag: 'sqlserver',
   pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
-  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
+  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', disks: 'postgres',
   storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
   // the Imported servers page (Doors) holds SQL Server instances alone (dbadash.ts): a PostgreSQL-only folder has no Doors folder
   dbadash: 'sqlserver',
@@ -127,7 +128,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
-  mssqlqueries: 'Queries',
+  mssqlqueries: 'Queries', custom: 'Custom',
   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
@@ -137,7 +138,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
-  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors'] },
+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors', 'custom'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },

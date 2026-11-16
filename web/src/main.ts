@@ -110,7 +110,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_xewaits: mssqlXEWaits, mssql_xewarnings: mssqlXEWarnings, mssql_xemodules: mssqlXEModules, mssql_xecaptures: mssqlXECaptures, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
-  jobstimeline: jobsTimelineView,
+  jobstimeline: jobsTimelineView, custom: customView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
   mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
