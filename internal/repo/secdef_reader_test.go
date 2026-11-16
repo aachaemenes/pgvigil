@@ -51,7 +51,9 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		// the j16 join file (0300): apply_roles takes the reader's EXECUTE back from the Parquet export's door
 		// (export_run_record, export_off: 0256, scripts/parquet-join-lines.sql 1) and the agent door (the seven
 		// agent_investigation_*: 0268, scripts/agent-join-lines.sql 1) - owner-only there, then granted to pgvigil_exporter
-		// and pgvigil_agent - so the nine left this list
+		// and pgvigil_agent - so the nine left this list; and findings_history_partition (0154: the history's month
+		// partition, DDL as the owner, its guard the alerter or the owner) is on apply_roles' owner-only list there, never
+		// on this one
 	}
 	// the signature without the schema (oidvectortypes: argument types as format_type writes them), whatever the
 	// connection's search_path

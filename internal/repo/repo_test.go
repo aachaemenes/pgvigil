@@ -300,6 +300,13 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 				t.Errorf("putting back %s %s: %v", d.kind, d.name, err)
 			}
 		}
+		// a put-back restores bodies, never grants: the file run a second time ran its own apply_roles(), which grants
+		// the reader EXECUTE on every function its older lists do not name (the agent door's and the export's among
+		// them: TestReaderRunsNoOtherSecurityDefiner saw them after this test on a shared store) - the newest
+		// apply_roles(), put back above, takes those grants back, as Migrate runs it after every file
+		if _, err := r.pool.Exec(c, `SELECT pgvigil.apply_roles()`); err != nil {
+			t.Errorf("apply_roles() after the put-back: %v", err)
+		}
 		if after, err := schemaDefinitions(c, r); err == nil {
 			for _, d := range defs {
 				if a := after[d.name]; a != d.def {
