@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -39,10 +40,12 @@ type memHub struct {
 	order  []string          // "<stream>/<seq>" of each load, in order
 	marks  []Mark
 	loads  []*Bundle
+	retry  map[string]time.Time // a key's open -retry (FOLD 1 B4): its window end
+	fail   map[string]error     // an instance key whose Load fails (FOLD 1 S5)
 }
 
 func newMemHub() *memHub {
-	return &memHub{loaded: map[string]string{}, kinds: map[string]string{}, newest: map[string]Newest{}}
+	return &memHub{loaded: map[string]string{}, kinds: map[string]string{}, newest: map[string]Newest{}, retry: map[string]time.Time{}, fail: map[string]error{}}
 }
 
 func hk(site, coll, key, stream string, seq uint64) string {
@@ -61,8 +64,12 @@ func (h *memHub) Recorded(_ context.Context, site, coll, key, stream string, seq
 }
 
 func (h *memHub) Load(_ context.Context, s Site, b *Bundle) error {
+	if err := h.fail[b.Ref.InstanceKey]; err != nil {
+		return err
+	}
 	m := b.Manifest
 	k := hk(s.Name, m.Collector, b.Ref.InstanceKey, m.Stream, m.Seq)
+	delete(h.retry, k)
 	h.loaded[k], h.kinds[k] = b.Digest, "loaded"
 	n := Newest{Stream: m.Stream, Seq: m.Seq, End: m.WindowTo}
 	for _, nk := range []string{s.Name + "/" + m.Collector + "/" + b.Ref.InstanceKey + "/" + m.Stream, s.Name + "/" + m.Collector + "/" + b.Ref.InstanceKey + "/"} {
@@ -86,6 +93,24 @@ func (h *memHub) Mark(_ context.Context, m Mark) error {
 	return nil
 }
 
+// retryBundle is pgvigil ingest -retry on the hub's side: the bundle's mark cleared and a retry recorded (stream st1)
+func (h *memHub) retryBundle(site, coll string, ref format.Ref) {
+	k := hk(site, coll, ref.InstanceKey, streamIDs["st1"], ref.Seq)
+	h.kinds[k], h.retry[k] = "retry", ref.End
+}
+
+// Retries: the window ends of a key's bundles with an open -retry
+func (h *memHub) Retries(_ context.Context, site, coll, key string) ([]time.Time, error) {
+	var out []time.Time
+	pfx := site + "/" + coll + "/" + key + "/"
+	for k, end := range h.retry {
+		if strings.HasPrefix(k, pfx) {
+			out = append(out, end)
+		}
+	}
+	return out, nil
+}
+
 func (h *memHub) markKinds() []string {
 	var out []string
 	for _, m := range h.marks {
@@ -99,6 +124,7 @@ type drop struct {
 	t    *testing.T
 	root string
 	base time.Time
+	inst string // the instance's name ('HOST\INST' when empty)
 }
 
 func newDrop(t *testing.T) *drop {
@@ -112,7 +138,7 @@ func (d *drop) write(stream string, seq uint64, view string, key ed25519.Private
 	to := d.base.Add(time.Duration(seq) * 5 * time.Minute)
 	b, err := remote.OpenBundle(remote.BundleOptions{Outbox: d.root, Site: "site1", Collector: "c1", Stream: streamIDs[stream], Seq: seq,
 		From: to.Add(-5 * time.Minute), To: to, QueryText: "hash", PgvigilVersion: "v0.4.0", SchemaLevel: "0329_remote", Key: key,
-		Instance: format.Instance{Engine: "sqlserver", Name: `HOST\INST`, Platform: "onprem", ServerVersion: "16.0", VersionNum: 16}})
+		Instance: format.Instance{Engine: "sqlserver", Name: d.instName(), Platform: "onprem", ServerVersion: "16.0", VersionNum: 16}})
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -128,6 +154,13 @@ func (d *drop) write(stream string, seq uint64, view string, key ed25519.Private
 		d.t.Fatal(err)
 	}
 	return ref
+}
+
+func (d *drop) instName() string {
+	if d.inst == "" {
+		return `HOST\INST`
+	}
+	return d.inst
 }
 
 func (d *drop) path(ref format.Ref, file string) string {
@@ -322,4 +355,52 @@ func TestRoundChecks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// FOLD 1 B4: -retry loads a bundle the instance went past - set aside (a checksum), the next one loaded after the gap
+// on the next day; its file put right and retried, the next round lists its own day and loads it, not late
+func TestRoundRetryPastTheNewest(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	d.base = time.Date(2026, 11, 16, 23, 45, 0, 0, time.UTC) // seq 2 ends 23:55 on the 16th, seq 3 00:00 on the 17th
+	d.write("st1", 1, "mssql_activity", nil)
+	r2 := d.write("st1", 2, "mssql_activity", nil)
+	r3 := d.write("st1", 3, "mssql_activity", nil)
+	var good []byte
+	d.edit(r2, "mssql_activity.ndjson.gz", func(b []byte) []byte { good = append([]byte(nil), b...); b[len(b)-9] ^= 0xff; return b })
+	now := r3.End.Add(time.Hour)
+	round(t, d.ingester(h, now, nil))
+	eq(t, "1 and 3 loaded", h.order, []string{"st1/1", "st1/3"})
+	if err := os.WriteFile(d.path(r2, "mssql_activity.ndjson.gz"), good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.retryBundle("site1", "c1", r2)
+	r := round(t, d.ingester(h, now.Add(time.Minute), nil))
+	eq(t, "-retry loads the bundle the instance went past", h.order, []string{"st1/1", "st1/3", "st1/2"})
+	eq(t, "loaded", r.Loaded, 1)
+	eq(t, "late", r.Late, 0)
+}
+
+// FOLD 1 S5: a Load error other than 'owned elsewhere' holds its own instance key while the bundle settles - the other
+// keys load in the same round - and past the settle time marks the bundle 'load' with the error, the round going on
+func TestRoundLoadErrorHoldsItsKeyOnly(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	ra := d.write("st1", 1, "mssql_activity", nil)
+	d.inst = "OTHER"
+	rb := d.write("st1", 1, "mssql_activity", nil)
+	h.fail[ra.InstanceKey] = errors.New("ensure_instance: instance site1/HOST\\INST is already stored as engine postgres, not sqlserver")
+	res, err := d.ingester(h, ra.End.Add(time.Minute), nil).Round(context.Background())
+	if err != nil {
+		t.Fatalf("one key's load error stopped the round: %v", err)
+	}
+	if len(h.loads) != 1 || h.loads[0].Ref.InstanceKey != rb.InstanceKey {
+		t.Errorf("the other key's bundle in the same round: %d loads", len(h.loads))
+	}
+	eq(t, "the failing key waits inside the settle time", res.Waiting, 1)
+	eq(t, "nothing marked yet", h.markKinds(), []string(nil))
+	res = round(t, d.ingester(h, ra.End.Add(16*time.Minute), nil))
+	eq(t, "past the settle time: marked 'load'", h.markKinds(), []string{"st1/1:load"})
+	if len(h.marks) == 1 && !strings.Contains(h.marks[0].Reason, "already stored") {
+		t.Errorf("the mark's reason carries the error: %q", h.marks[0].Reason)
+	}
+	eq(t, "set aside", res.SetAside, 1)
 }
