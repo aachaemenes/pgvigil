@@ -18,7 +18,9 @@
 #                its samples right after (metric-first, read by python); a server named with a quote, a backslash and
 #                a line feed escaped in its labels (and promtool still clean)
 #   P5 values    on every active instance of both engines, metric_grid's fresh 'current' = metrics_newest's value, both
-#                ways (0 differences), after a counter reset seeded on one database; the body's pgvigil_sessions /
+#                ways (0 differences), after a counter reset seeded on one database - the families /metrics does not
+#                export yet (promNotExported, read from internal/web/metrics_prom.go) left out of the grid side, and
+#                metrics_newest returning no key of them (NOT PROVEN for their values); the body's pgvigil_sessions /
 #                pgvigil_requests_blocked / pgvigil_memory_total_bytes / pgvigil_cpu_sql_ratio = metrics_newest
 #                converted; the catalog keys no demo instance produces listed (NOT PROVEN for those)
 #   P6 stale     one instance's sessions rows of the last 15 minutes deleted: after a render its pgvigil_sessions is
@@ -181,18 +183,26 @@ PY
 [[ $bad -eq $b0 ]] && ok "P4 format: promtool rc 0 ($(wc -l < "$WORK/promtool.txt") lint line(s)), Content-Type on both replies, gzip, $LAY metric-first, the odd server escaped"
 
 echo "== P5 values"; b0=$bad
+# the families /metrics does not export yet, read from the product (PROMNAMES' promNotExported): an entry that goes is
+# compared here by itself
+NOEXP=$(sed -n '/^var promNotExported = map\[string\]string{/,/^}/p' internal/web/metrics_prom.go | grep -oE '^[[:space:]]+"[a-z_]+":' | tr -d ' \t":' | sort | tr '\n' ' ')
+[[ -n "$NOEXP" ]] || no "P5: promNotExported's families could not be read from internal/web/metrics_prom.go"
+NOEXPSQL=$(for f in $NOEXP; do printf "'%s'," "$f"; done | sed 's/,$//'); [[ -n "$NOEXPSQL" ]] || NOEXPSQL="''"
+LEAK=$(Q "SELECT coalesce(string_agg(DISTINCT family, ',' ORDER BY family), '') FROM pgvigil.metrics_newest() WHERE family IN ($NOEXPSQL)")
+[[ -z "$LEAK" ]] || no "P5: metrics_newest returns the families promNotExported says /metrics does not export: $LEAK"
 Q "UPDATE pgvigil.dbstats d SET stats_reset = now() FROM (SELECT instance_id, dbid, max(snapshot_at) m FROM pgvigil.dbstats
      WHERE snapshot_at > now() - interval '30 minutes' GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 1) x
    WHERE d.instance_id = x.instance_id AND d.dbid = x.dbid AND d.snapshot_at = x.m" >/dev/null || no "P5: the reset"
 DIFF=$(Q "WITH i AS (SELECT instance_id FROM pgvigil.instances WHERE is_active),
   g AS (SELECT i.instance_id, g.key, g.current_value FROM i CROSS JOIN LATERAL pgvigil.metric_grid(i.instance_id, now() - interval '1 hour', now()) g
-          JOIN pgvigil.metric_catalog c ON c.key = g.key WHERE g.current_value IS NOT NULL AND g.current_at > now() - make_interval(secs => c.fresh_secs)),
+          JOIN pgvigil.metric_catalog c ON c.key = g.key WHERE g.current_value IS NOT NULL AND g.current_at > now() - make_interval(secs => c.fresh_secs)
+           AND split_part(g.key, '.', 1) NOT IN ($NOEXPSQL)),
   n AS (SELECT instance_id, family || '.' || metric AS key, value FROM pgvigil.metrics_newest() WHERE database IS NULL AND metric <> 'cut')
   SELECT count(*) || '|' || coalesce(string_agg(DISTINCT coalesce(g.key, n.key), ',' ), '') FROM g FULL JOIN n USING (instance_id, key)
    WHERE g.key IS NULL OR n.key IS NULL OR abs(g.current_value - n.value) > 1e-9 * greatest(1, abs(g.current_value))")
 [[ ${DIFF%%|*} == 0 ]] || no "P5: $DIFF (count|keys differing between the grid and metrics_newest)"
 NOTPROD=$(Q "SELECT string_agg(c.key, ',' ORDER BY c.key) FROM pgvigil.metric_catalog c
-   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.metrics_newest() n WHERE n.family || '.' || n.metric = c.key)")
+   WHERE split_part(c.key, '.', 1) NOT IN ($NOEXPSQL) AND NOT EXISTS (SELECT 1 FROM pgvigil.metrics_newest() n WHERE n.family || '.' || n.metric = c.key)")
 NK=$(Q "SELECT count(DISTINCT family || '.' || metric) FROM pgvigil.metrics_newest() WHERE metric <> 'cut'")
 sleep 6
 curl -s -H "$(h "$TOK")" -o "$WORK/m5.txt" "$B/metrics"
@@ -223,6 +233,7 @@ print('; '.join(bad[:3]) if bad else 'ok %d values' % n); sys.exit(1 if bad or n
 PY
 [[ $bad -eq $b0 ]] && ok "P5 values: 0 differences with metric_grid on every active instance after a reset; $NK keys produced; the body $(cat "$WORK/p5conv.txt") converted"
 [[ -n "$NOTPROD" ]] && echo "NOT PROVEN P5: catalog keys no demo instance produces: $NOTPROD"
+echo "NOT PROVEN P5: the families /metrics does not export yet (promNotExported), their values not compared: $NOEXP"
 
 echo "== P6 stale"; b0=$bad
 SI=$(Q "SELECT i.name FROM pgvigil.instances i WHERE i.is_active AND i.engine = 'postgres' AND i.name LIKE 'demo-%' ORDER BY i.name LIMIT 1")
