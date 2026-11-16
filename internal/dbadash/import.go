@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
+	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
 // ImportOptions shape one import.
@@ -103,6 +105,8 @@ type ImportCount struct {
 	Inserted  int64  `json:"inserted"`
 	Stored    int64  `json:"stored"`
 	Skipped   string `json:"skipped,omitempty"`
+	// Retries: the batches taken again after PostgreSQL ended them as a deadlock's victim (stored once; N4)
+	Retries int `json:"retries,omitempty"`
 	// Bound is a moved server's: its history is taken up to pgvigil's first read of it, whatever -to says.
 	Bound *time.Time `json:"bound,omitempty"`
 }
@@ -374,7 +378,7 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 						return out, fmt.Errorf("%s %s: the job statistics' defer: %w", tgt.Name, m.Key, err)
 					}
 				}
-				c.Inserted, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
+				c.Inserted, c.Retries, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
 				if m.Key == "jobruns" {
 					if _, berr := pool.Exec(ctx, `SELECT pgvigil.import_job_stats_build($1)`, tgt.ID); berr != nil && err == nil {
 						err = fmt.Errorf("the job statistics' build (the runs are stored; the next write or purge builds the hours): %w", berr)
@@ -593,7 +597,8 @@ SELECT T.TagName, T.TagValue FROM dbo.InstanceIDsTags IT JOIN dbo.Tags T ON T.Ta
 var (
 	importRunFuncs = []string{"pgvigil.import_dbadash_instance(jsonb)", "pgvigil.import_dbadash_cpu(int, jsonb, jsonb)",
 		"pgvigil.import_dbadash_volumes(int, jsonb, jsonb)", "pgvigil.import_dbadash_dbsize(int, jsonb, jsonb)",
-		"pgvigil.import_dbadash_jobruns(int, jsonb, jsonb)", "pgvigil.import_job_stats_defer(int)", "pgvigil.import_job_stats_build(int)"}
+		"pgvigil.import_dbadash_jobruns(int, jsonb, jsonb)", "pgvigil.import_job_stats_defer(int)", "pgvigil.import_job_stats_build(int)",
+		"pgvigil.import_partition_make(text, timestamptz)"} // N4: a batch's months made before it (premake)
 	importReadFuncs = []string{"pgvigil.dbadash_import_target(jsonb)", "pgvigil.dbadash_import_stored(int, text, timestamptz, timestamptz)"}
 )
 
@@ -717,24 +722,26 @@ func versionNum(v string) any {
 // importOne copies one mapping of one instance in batches up to 'to', each batch one call of the mapping's function
 // (one transaction: its months' partitions, the instance's import lock, the rows); onBatch gets the rows inserted so
 // far after each batch.
-func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time, onBatch func(int64) error) (int64, error) {
+func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time, onBatch func(int64) error) (int64, int, error) {
 	rows, err := src.QueryContext(ctx, m.Rows, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to)))
 	if err != nil {
-		return 0, fmt.Errorf("read: %w", err)
+		return 0, 0, fmt.Errorf("read: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	facts, _ := json.Marshal(map[string]any{"linux": in.Linux})
 	var total int64
+	retries := 0 // the batches taken again after a deadlock (N4)
 	batch := make([]map[string]any, 0, opt.Batch)
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
 		}
-		n, _, err := importBatch(ctx, pool, m, pid, batch, string(facts))
+		n, r, err := importBatch(ctx, pool, m, pid, batch, string(facts))
+		retries += r
 		if err != nil {
 			return err
 		}
@@ -752,41 +759,118 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return total, fmt.Errorf("read: %w", err)
+			return total, retries, fmt.Errorf("read: %w", err)
 		}
 		rec := make(map[string]any, len(cols))
 		for i, c := range cols {
 			rec[c] = importValue(vals[i])
 		}
 		if _, ok := vals[0].(time.Time); !ok {
-			return total, fmt.Errorf("read: the row's time is %T, not a date", vals[0])
+			return total, retries, fmt.Errorf("read: the row's time is %T, not a date", vals[0])
 		}
 		batch = append(batch, rec)
 		if len(batch) >= opt.Batch {
 			if err := flush(); err != nil {
-				return total, err
+				return total, retries, err
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return total, fmt.Errorf("read: %w", err)
+		return total, retries, fmt.Errorf("read: %w", err)
 	}
-	return total, flush()
+	err = flush()
+	return total, retries, err
 }
 
-// importBatch is one batch of a mapping into the repository: one call of the mapping's function (one transaction: its
-// months' partitions, the instance's import lock, the rows). It answers the rows inserted and how many times the call
-// was taken again after a deadlock.
+// importBatch is one batch of a mapping into the repository: its months' partitions made first (premake), then one
+// call of the mapping's function (one transaction: the instance's import lock, the rows), taken again when PostgreSQL
+// ends it as a deadlock's victim (it rolled back whole: its rows are stored once, by the call that commits). It
+// answers the rows inserted and how many times the call was taken again.
 func importBatch(ctx context.Context, pool *pgxpool.Pool, m importMapping, pid int, batch []map[string]any, facts string) (int64, int, error) {
 	payload, err := json.Marshal(batch)
 	if err != nil {
 		return 0, 0, err
 	}
-	var n int64
-	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_`+m.Key+`($1, $2::jsonb, $3::jsonb)`, pid, string(payload), facts).Scan(&n); err != nil {
-		return 0, 0, fmt.Errorf("insert: %w", err)
+	if err := premake(ctx, pool, m, batch); err != nil {
+		return 0, 0, err
 	}
-	return n, 0, nil
+	var n int64
+	retries := 0
+	for attempt := 1; ; attempt++ {
+		err = pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_`+m.Key+`($1, $2::jsonb, $3::jsonb)`, pid, string(payload), facts).Scan(&n)
+		if err == nil || attempt == repo.ImportDeadlockTries || !repo.IsDeadlock(err) || ctx.Err() != nil {
+			break
+		}
+		retries++
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
+		}
+	}
+	if err != nil {
+		return 0, retries, fmt.Errorf("insert: %w", err)
+	}
+	return n, retries, nil
+}
+
+// premakeTries is how many times premake asks for a month whose parent was busy (the first ask and 3 more), premakeWait
+// the wait between two asks.
+const (
+	premakeTries = 4
+	premakeWait  = 500 * time.Millisecond
+)
+
+// premake makes the months of the batch's rows in m's table before the batch's transaction (N4): each by
+// import_partition_make, a statement of its own under its short lock_timeout, so the batch's own call finds them and
+// makes no partition while it holds the instance's import lock and its rows. A month answered 'busy' (another session
+// holds the parent) is asked again 3 times 500 ms apart; still busy, the batch is not run and the import ends with an
+// error before its transaction (the next import takes it). The months are read from the rows' 'at' strings, as 0134's
+// dbadash_import_months reads them (importValue wrote them in UTC).
+func premake(ctx context.Context, pool *pgxpool.Pool, m importMapping, batch []map[string]any) error {
+	for _, month := range batchMonths(batch) {
+		for try := 1; ; try++ {
+			var ans string
+			if err := pool.QueryRow(ctx, `SELECT pgvigil.import_partition_make($1, $2)`, m.Table, month).Scan(&ans); err != nil {
+				return fmt.Errorf("the partition of %s %s: %w", m.Table, month.Format("2006-01"), err)
+			}
+			if ans != "busy" {
+				break
+			}
+			if try == premakeTries {
+				return fmt.Errorf("the partition of %s %s was busy: the batch was not run; the next import takes it", m.Table, month.Format("2006-01"))
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(premakeWait):
+			}
+		}
+	}
+	return nil
+}
+
+// batchMonths is the distinct UTC months of a batch's rows, oldest first, from each row's 'at' (a row without a
+// readable time is left to the import function, which skips or refuses it as before).
+func batchMonths(batch []map[string]any) []time.Time {
+	seen := map[time.Time]bool{}
+	var out []time.Time
+	for _, rec := range batch {
+		s, ok := rec["at"].(string)
+		if !ok {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			continue
+		}
+		at = at.UTC()
+		if mo := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC); !seen[mo] {
+			seen[mo] = true
+			out = append(out, mo)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
 }
 
 // importValue makes a DBADash value a JSON value for jsonb_to_recordset: a date as RFC 3339 in UTC (DBADash keeps

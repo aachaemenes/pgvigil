@@ -82,6 +82,9 @@ func ImportCommand(ctx context.Context, log *slog.Logger, out io.Writer, args []
 		if c.Skipped != "" {
 			line += "  skipped: " + c.Skipped
 		}
+		if c.Retries > 0 {
+			line += fmt.Sprintf("  retried %d time(s) after a deadlock (stored once)", c.Retries)
+		}
 		_, _ = fmt.Fprintln(out, line)
 	}
 	mode := "imported"

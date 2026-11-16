@@ -928,6 +928,9 @@ func jobOutcome(got []dbadash.ImportCount, err error) (string, []string) {
 		case c.Skipped != "" && outcome == "ok":
 			outcome = "partial: " + c.Mapping + ": " + c.Skipped
 		}
+		if c.Retries > 0 { // N4: batches PostgreSQL ended as a deadlock's victim, taken again and stored once
+			notes = append(notes, c.Instance+" "+c.Mapping+": retried "+strconv.Itoa(c.Retries)+" time(s) after a deadlock (stored once)")
+		}
 	}
 	if err != nil {
 		outcome = "failed: " + err.Error()

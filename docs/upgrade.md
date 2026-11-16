@@ -75,7 +75,9 @@ what happens in the other order, and what the project's own proof showed (`scrip
   run` every hour, each partition in a short transaction of its own, and `pgvigil demo` makes its whole range first.
   An import still makes a month itself for old or late rows - the SQL Server error log, Extended Events and audit
   readers' first read of an old file: one ended by a deadlock is taken again, up to three times, and the Collector page
-  counts the imports taken again per collection over 24 hours ('retried after a deadlock'). Nothing to do by hand.
+  counts the imports taken again per collection over 24 hours ('retried after a deadlock'). `pgvigil dbadash import`
+  makes each batch's months before the batch and takes a batch ended by a deadlock again (its line and the Migrate
+  page's import result say `retried N time(s) after a deadlock`). Nothing to do by hand.
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.

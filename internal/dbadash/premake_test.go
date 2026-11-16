@@ -231,3 +231,17 @@ func TestImportBatchDeadlockRetried(t *testing.T) {
 		t.Errorf("a batch ended by a deadlock: err %v, %d retries, %d row(s), stored %d; want nil, 1, 2, 2 (taken again once, stored once)", err, retries, n, stored)
 	}
 }
+
+// TestBatchMonths: the batch's distinct UTC months, oldest first, from each row's 'at' as importValue writes it; a row
+// without a readable time is left out (the import function judges it).
+func TestBatchMonths(t *testing.T) {
+	at := func(s string) time.Time { v, _ := time.Parse(time.RFC3339, s); return v }
+	batch := []map[string]any{
+		{"at": importValue(at("2026-09-30T23:59:59Z"))}, {"at": importValue(at("2026-08-01T00:00:00Z"))},
+		{"at": importValue(at("2026-09-01T00:00:00Z"))}, {"at": "not a time"}, {"sql_pct": 3},
+	}
+	got := batchMonths(batch)
+	if len(got) != 2 || !got[0].Equal(at("2026-08-01T00:00:00Z")) || !got[1].Equal(at("2026-09-01T00:00:00Z")) {
+		t.Errorf("batchMonths = %v, want 2026-08-01 and 2026-09-01 (UTC), in order", got)
+	}
+}
