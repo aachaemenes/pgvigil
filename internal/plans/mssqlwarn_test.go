@@ -574,6 +574,20 @@ var anyNodeSeen = []string{"adaptive/1:busy_loops", "cursor_ff/1:busy_loops", "c
 // The capture's oracle rows: 53 cases, a cursor's batch two rows (its DECLARE and its FETCH).
 const oracleRowsAtLeast = 56
 
+// A Warnings element's set flags are named in one order on every read (the words of #18 / #2 are compared and kept):
+// the element's own children in document order, then its flags sorted. No captured plan sets two flags on one element,
+// so the element is built here (a helper's order, not a rule's proof).
+func TestMSSQLWarningKindsOrder(t *testing.T) {
+	w := &xnode{name: "Warnings", attrs: map[string]string{"UnmatchedIndexes": "true", "SpatialGuess": "1", "NoJoinPredicate": "false", "FullUpdateForOnlineIndexBuild": "true"},
+		kids: []*xnode{{name: "SpillToTempDb"}, {name: "ColumnsWithNoStatistics"}, {name: "SpillToTempDb"}}}
+	const want = "SpillToTempDb, ColumnsWithNoStatistics, FullUpdateForOnlineIndexBuild, SpatialGuess, UnmatchedIndexes"
+	for i := 0; i < 50; i++ {
+		if got := warningKinds(w); got != want {
+			t.Fatalf("read %d: %q, want %q", i+1, got, want)
+		}
+	}
+}
+
 func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 	oracle := readOracle(t)
 	ctp := metaCTP(t)
