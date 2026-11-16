@@ -10,7 +10,8 @@ import (
 // dbo.CollectionErrorLogSearch): every run that did not end well, kept in collection_log (0001, its stage 0198), and the
 // service's own failures where they are already stored - an alert send that failed or was refused (alert_log), a report
 // mail that failed or was refused (report_mail_sends), a DBA Dash repository not read (dbadash_repositories, its last
-// attempt only, a configured one). Those are '(the service)' rows: shown at the root and in a folder, never at one
+// attempt only, a configured one), a configured Parquet export failing or more than 3 hours behind (export_service,
+// 0256). Those are '(the service)' rows: shown at the root and in a folder, never at one
 // instance (DBA Dash's '(No instance)'), each with a link to the page where it is handled. One row set feeds every view,
 // so a count always lists the rows it counts. Types: Error, Warning (a run that finished carrying a collector_error
 // row), Skipped (hidden unless asked); pgvigil never retries a run, so there is no Retry. Stages: Connect, Collect,
@@ -61,7 +62,8 @@ WITH scope AS (
   SELECT NULL, d.read_at, NULL, '(the service)', NULL, 'DBA Dash import', 'Error', 'Other',
          'not read: ' || d.repository || coalesce(': ' || d.reason, ''), false, '#/dbadash'
     FROM pgvigil.dbadash_repositories d
-   WHERE $3::int IS NULL AND d.status = 'not read' AND d.is_configured AND d.read_at >= $1 AND d.read_at < $2
+   WHERE $3::int IS NULL AND d.status = 'not read' AND d.is_configured AND d.read_at >= $1 AND d.read_at < $2` +
+	sqlCollectorErrorsExportArm + `
 ), e2 AS (
   SELECT e.*, coalesce(e.note, '') ~* $12::text AS no_right FROM e
 ), f AS (
@@ -70,6 +72,26 @@ WITH scope AS (
      AND ($9::text IS NULL OR lower(e.stage) = lower($9)) AND ($10::text IS NULL OR strpos(lower(e.note), lower($10)) > 0)
      AND ($11 OR e.type <> 'Skipped')
 )`
+
+// sqlCollectorErrorsExportArm is the Parquet export's '(the service)' row (0256). export_service holds a state that
+// stands now, not an event, so the row is dated when its trouble began - the earliest last attempt of a window still
+// failed (export_service's own choice of attempt), else 3 hours after its newest window or its configuration (the
+// view's 'behind') - and it shows in every range that ends after that time. A repository below 0256 has no
+// export_service: CollectorErrors leaves the arm out there.
+const sqlCollectorErrorsExportArm = `
+  UNION ALL
+  SELECT NULL, x.since, NULL, '(the service)', NULL, 'export', 'Error', 'Other', x.detail, false, '#/collector'
+    FROM (SELECT s.detail,
+                 coalesce((SELECT min(l.finished_at)
+                             FROM (SELECT DISTINCT ON (r.window_from) r.outcome, r.finished_at
+                                     FROM pgvigil.export_runs r
+                                    WHERE r.name = s.name
+                                    ORDER BY r.window_from, r.started_at DESC, r.run_id DESC) l
+                            WHERE l.outcome = 'failed'),
+                          coalesce(st.newest_window_to, st.configured_at) + interval '3 hours') AS since
+            FROM pgvigil.export_service s
+            JOIN pgvigil.export_state st ON st.name = s.name) x
+   WHERE $3::int IS NULL AND x.since < $2`
 
 // sqlCollectorErrorsCounts is the counts of a group: each type set and each stage set adds up to total; 0 is NULL, so
 // what is there stands out (DBA Dash's NULLIF).
@@ -249,10 +271,16 @@ func (s *Server) CollectorErrors(w http.ResponseWriter, r *http.Request) {
 	}
 	service := q.Get("service") == "1"
 	skipped := q.Get("skipped") == "1"
+	// a repository below 0256 has no export_service: the page answers without the export's row (q_export.go's test)
+	insights := sqlCollectorErrorsInsights
+	if hv, err := s.query(r.Context(), `SELECT to_regclass('pgvigil.export_service') IS NOT NULL`); err != nil || len(hv.Rows) != 1 || hv.Rows[0][0] != true {
+		rows = strings.Replace(rows, sqlCollectorErrorsExportArm, "", 1)
+		insights = strings.Replace(insights, sqlCollectorErrorsExportArm, "", 1)
+	}
 	args := []any{from, to, inst, folder, tag, service, coll, typ, stage, note, skipped, noPermission}
 	s.multiPart(w, r, []part{
 		{"rows", rows, args},
-		{"insights", sqlCollectorErrorsInsights, args},
+		{"insights", insights, args},
 		{"marks", sqlCollectorErrorsMarks, []any{inst, folder, tag}},
 	})
 }

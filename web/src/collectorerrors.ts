@@ -1,6 +1,6 @@
 // Collector errors (DBA Dash's Checks > DBA Dash ErrorLog): every run of a collection that did not end well, kept 30
 // days, and the service's own failures where they are stored (alert sends, report mails, DBA Dash repositories not
-// read) as '(the service)' rows, at the root and in a folder. Three views over one row set - a row per instance, per
+// read, a Parquet export failing or behind) as '(the service)' rows, at the root and in a folder. Three views over one row set - a row per instance, per
 // collection, per error - each name and count narrowing the page in place (its address carries the filters, so Back
 // goes up and a narrowed view is a link). Types: Error, Warning (the run finished with a part that failed), Skipped
 // (hidden unless shown). Stages: Connect, Collect, Import, Other. Acknowledge (per instance, or every instance in
@@ -64,7 +64,7 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
 
   sec.append(el('p', { class: 'meta' },
     'Every run of a collection that did not end well' + folder + ', kept 30 days, and the service\'s own failures where they are stored '
-    + '(alert sends, report mails, DBA Dash repositories not read) under \'(the service)\'. Types: Error (the run failed), Warning (the run '
+    + '(alert sends, report mails, DBA Dash repositories not read, a Parquet export failing or behind) under \'(the service)\'. Types: Error (the run failed), Warning (the run '
     + 'finished, one of its parts did not), Skipped (the collection did not apply or lacked a right: hidden unless shown). pgvigil never retries '
     + 'a run, so there is no Retry type. Stages: Connect (the server did not answer), Collect (the read on the server), Import (the write into '
     + 'the repository), Other (the service\'s own work). Each name and count narrows the page; Back goes up. Not here: what only the service\'s '

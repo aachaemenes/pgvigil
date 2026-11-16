@@ -17,8 +17,12 @@ is set up on a monitored server.
   'rollup ' is Other, anything else Collect). There is no WMI stage: pgvigil reads nothing through WMI.
 - **(the service)**: the service's own failures where pgvigil already stores them - an alert send that failed or was
   refused (the Alerts page's log; a test send is labelled as one), a report mail that failed or was refused (Report
-  mail), a configured DBA Dash repository that was not read at its last attempt (Imported servers). They show at the
-  root and in a tag folder, never on one instance, each with a link to the page where it is handled.
+  mail), a configured DBA Dash repository that was not read at its last attempt (Imported servers), a configured
+  Parquet export with a window that failed at its last attempt or more than 3 hours behind (the Collector page's
+  Parquet export grid; `pgvigil export -off` ends the row for an export no longer used). The export's row is a state
+  that holds now: it is dated when the trouble began (that window's last attempt, or 3 hours after the newest window)
+  and shows in every range that ends after it. They show at the root and in a tag folder, never on one instance, each
+  with a link to the page where it is handled.
 - **Not here**: what only the service's own log holds (journalctl, or the Windows event log for the service), and a run
   that failed before its instance was recognised (the platform not detected, the instance row not made).
 
