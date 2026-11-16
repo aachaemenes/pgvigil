@@ -12,7 +12,8 @@
 #  (4) every tool answers once, isError false, with its own content: fleet_summary lists the demo's instances,
 #      instance_findings has checks, blocking_chain has a snapshot, top_statements has rows, plan_findings by id has
 #      the plan, table_state has the table, storage_forecast has volumes; statement_everywhere echoes its hash and
-#      answers rows (none when the demo holds no SQL Server statement), find_statements answers its sources;
+#      answers rows (none when the demo holds no SQL Server statement), find_statements answers its sources,
+#      alert_history answers its window (from, to) for 48 hours of the first instance;
 #  (5) a write is refused: a tools/call of a tool that would terminate a backend is a JSON-RPC error naming
 #      read-only, a resources/write method is "not served", and the reader login itself cannot write
 #      (INSERT on pgvigil.instances: permission denied) - the door has no path to a write;
@@ -155,6 +156,11 @@ ok "(4) statement_everywhere 0x1A2B3C4D: $(body <<<"$r" | jq '.rows|length') row
 r=$(tool find_statements '{"text":"select"}'); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) find_statements: $r"
 body <<<"$r" | jq -e '.sources|type == "array"' >/dev/null || fail "(4) find_statements: no sources list: $r"
 ok "(4) find_statements 'select': $(body <<<"$r" | jq '.sources|length') source(s), $(body <<<"$r" | jq '[.sources[]?.rows.rows // [] | length]|add // 0') row(s)"
+
+# task 403b's alert tool, once (review B #7 of the j16 candidate: (3) listed it, (4) never called it)
+r=$(tool alert_history "$(jq -cn --arg i "$INST" '{instance:$i,hours:48}')"); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) alert_history: $r"
+[[ $(body <<<"$r" | jq -r '.from') != null && $(body <<<"$r" | jq -r '.to') != null ]] || fail "(4) alert_history: no window in the reply: $r"
+ok "(4) alert_history $INST 48 h: $(body <<<"$r" | jq '(.alerts // [])|length') alert(s), $(body <<<"$r" | jq '(.findings_history // [])|length') findings history row(s)"
 
 # (7) part a: this process was started without -config; the plan read is one whose stored statement is 40 characters
 # or more (read as the owner: the oracle), not (4)'s, whose statement the demo may leave empty
