@@ -266,6 +266,7 @@ function expectDialog(ctx: Ctx, keys: Row[], tags: Row[], inForce: Row[], preset
       ? `A whole number${k.vmin != null ? ` from ${String(k.vmin)} to ${String(k.vmax)}` : ''}.`
       : isChoice ? `One of the choices.${k.default_on === true ? ' The rule judges by its default until a value is set; off switches it off.' : ''}`
       : k.kind === 'network' && k.key === 'protocols' ? 'A list of the protocols as SQL Server names them, apart by commas: Tcp, Np, Sm.'
+      : k.vtype === 'joblist' ? `A list of the maintenance solution's job names, apart by commas: ${listText(k.choices)}.`
       : k.vtype === 'list' || k.vtype === 'numlist' ? 'A list, its items apart by commas.'
       : k.kind === 'agent' ? 'A name. An operator\'s e-mail address is never stored.' : 'A name.';
     const f = inForce.find(r => r.kind === k.kind && r.key === k.key);
@@ -303,7 +304,7 @@ function expectDialog(ctx: Ctx, keys: Row[], tags: Row[], inForce: Row[], preset
     else if (level.value === 'root') body.level = 'root';
     else { body.level = 'tag'; body.tag = level.value.slice(4); }
     if (op === 'set') {
-      body.value = k.vtype === 'choice' ? choice.value : k.vtype === 'list' || k.vtype === 'numlist' ? items(value.value) : value.value.trim();
+      body.value = k.vtype === 'choice' ? choice.value : k.vtype === 'list' || k.vtype === 'numlist' || k.vtype === 'joblist' ? items(value.value) : value.value.trim();
       if (k.takes_exclusions === true) body.exclusions = items(excl.value);
     }
     try {
