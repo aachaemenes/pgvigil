@@ -64,6 +64,8 @@ SELECT s.schedule_id, to_jsonb(s)->>'kept_by' AS kept_by, s.cron, s.timezone, s.
  WHERE to_jsonb(s)->>'kept_as' = $1 AND s.ended_at IS NULL
  ORDER BY s.schedule_id DESC LIMIT 1`
 	sqlKeptChannel = `SELECT EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = $1 AND c.kind = 'smtp' AND c.is_configured AND c.name NOT LIKE 'contact-%')`
+	// sqlKeptWebhook: a post channel as the sender records it (B20-4)
+	sqlKeptWebhook = `SELECT EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = $1 AND c.kind = 'webhook' AND c.is_configured AND c.name NOT LIKE 'contact-%')`
 	// sqlPostChoices: the webhook channels the sender records, the ones the Daily checks mail may post its counts to (B20-4)
 	sqlPostChoices = `SELECT coalesce(array_agg(c.name ORDER BY c.name), '{}') FROM pgvigil.alert_channels c WHERE c.kind = 'webhook' AND c.is_configured AND c.name NOT LIKE 'contact-%'`
 )
@@ -203,6 +205,16 @@ func (s *Server) applyDailyChecksOnce(ctx context.Context, block *reportmail.Dai
 	}
 	if !known {
 		return fmt.Sprintf("channel: %s is not an smtp channel the sender has recorded (is pgvigil run up, and does its alerts: block name it?)", req.Channel), false
+	}
+	// B20-4 (review-26 B1): each post: channel as the sender knows it, read before the write and tried again each
+	// minute as channel: is - a channel added to alerts: with the block waits for run's first pass, never refused for good
+	for _, name := range req.Post {
+		if err := s.pool.QueryRow(ctx, sqlKeptWebhook, strings.TrimSpace(name)).Scan(&known); err != nil {
+			return "the channels could not be read: " + err.Error(), false
+		}
+		if !known {
+			return fmt.Sprintf("post: %s is not a webhook channel the sender has recorded (is pgvigil run up, and does its alerts: block name it?)", strings.TrimSpace(name)), false
+		}
 	}
 	res, err := s.keptWrite(ctx, "keep", "file", reportmail.DailyChecksFileUser, "serve", pay)
 	return answer(res, err, "kept as the file says")

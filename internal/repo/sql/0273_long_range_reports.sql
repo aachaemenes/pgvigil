@@ -649,8 +649,12 @@ BEGIN
   -- channels and the turn's day in the schedule's zone (one post a schedule a day: report_mail_post_take)
   IF v_kind = 'scheduled' AND v_why IS NULL AND v_rerr IS NULL AND v_sched.kept_as IS NOT NULL AND cardinality(v_sched.post_channels) > 0 THEN
     v_pchan := v_sched.post_channels;
-    v_pday := (p_at AT TIME ZONE v_sched.timezone)::date;
-    IF v_post IS NULL THEN
+    -- the day of the TURN (the claimed next_at, read before the turn moved it on), never the day it was queued: a turn
+    -- mailed past midnight or late after an outage posts under its own day (review-26 S2)
+    v_pday := (coalesce(v_sched.next_at, p_at) AT TIME ZONE v_sched.timezone)::date;
+    IF v_post IS NULL AND jsonb_typeof(p_payload->'post') = 'object' THEN
+      v_perr := 'the drawn page''s counts are over 4 KB: nothing posted';
+    ELSIF v_post IS NULL THEN
       v_perr := 'the drawn page sent no counts: nothing posted';
     END IF;
   END IF;
@@ -688,7 +692,11 @@ BEGIN
          AND cardinality(s.post_channels) > 0
       RETURNING s.post, s.post_channels, s.post_day, s.route;
   EXCEPTION WHEN unique_violation THEN
-    RETURN;   -- the schedule's post of that day was taken already: this turn posts nothing
+    -- the schedule's post of that day was taken already: this turn posts nothing, and its row says why (review-26 N5)
+    UPDATE pgvigil.report_mail_sends s
+       SET post_error = format('the schedule''s post of %s was taken already: this turn posts nothing', s.post_day)
+     WHERE s.send_id = p_send_id AND s.post_taken_at IS NULL AND s.post_error IS NULL;
+    RETURN;
   END;
 END $$;
 

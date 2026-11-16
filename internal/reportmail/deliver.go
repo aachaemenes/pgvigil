@@ -205,6 +205,17 @@ func postFor(ctx context.Context, c conn, chs []namedMailer, o owed, now time.Ti
 	var route string
 	err := c.QueryRow(ctx, `SELECT o_post, o_channels, o_day, o_route FROM pgvigil.report_mail_post_take($1, $2)`, time.Now(), o.id).Scan(&raw, &names, &day, &route)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// nothing to take; a kept turn whose page sent no counts (or counts over 4 KB) has its reason on the row and is
+		// alerted once, here - its mail went, its post cannot (review-26 S3)
+		var why string
+		switch err := c.QueryRow(ctx, `SELECT post_error FROM pgvigil.report_mail_sends WHERE send_id = $1 AND post IS NULL AND post_error IS NOT NULL`, o.id).Scan(&why); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		res.PostFailed++
+		notify(ctx, chs, postFailureAlert(o, why, now), now, res)
 		return nil
 	}
 	if err != nil {
