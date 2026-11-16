@@ -312,7 +312,11 @@ cat > "$TMPD/grids.py" <<'PY'
 import datetime, decimal, glob, json, os, sys, uuid
 import pymssql
 idn, frm, to, snap = int(os.environ["ID"]), os.environ["FROM"][:19], os.environ["TO"][:19], os.environ["SNAP"]
-label, only = os.environ.get("LABEL", "C"), os.environ.get("ONLY", "").split()
+label, only, mode = os.environ.get("LABEL", "C"), os.environ.get("ONLY", "").split(), os.environ.get("MODE", "compare")
+# the pages' text columns and (MODE=compare) the second client's cells of them through the page's own mask: both from
+# the package (TestMaskCells), so this script holds no copy of the mask or of the list
+mask = json.load(open(os.environ["MASK"]))
+textcols = lambda page: set(mask["columns"].get(page.split("@")[0], []))
 ids = f"DECLARE @i dbo.IDs; INSERT @i VALUES ({idn}); "
 st = "@IncludeCritical = 1, @IncludeWarning = 1, @IncludeNA = 1, @IncludeOK = 1"
 calls = {  # DBA Dash GUI's parameters for one instance, every status ticked (DBADashGUI source, 4.24.1)
@@ -362,6 +366,26 @@ def canon_pg(v, typ):  # pgvigil's JSON value with its column type
         d, _, f = v.partition("."); return "H" + d + "." + (f + "000000")[:3]
     return "S" + str(v)
 con = pymssql.connect(server=os.environ["SQLHOST"], user="sa", password=os.environ["SA_PW"], database=os.environ["DDB"], port=1433, tds_version="7.4")
+if only: calls = {p: c for p, c in calls.items() if p in only}
+if mode == "cells":   # the distinct texts of the text columns as a JSON list on stdout, and nothing else
+    seen = {}
+    for page, sqltext in calls.items():
+        tcs = textcols(page)
+        if not tcs: continue
+        cur = con.cursor()
+        cur.execute("SET NOCOUNT ON; " + sqltext)
+        while True:
+            if cur.description:
+                idx = [i for i, c in enumerate(cur.description) if c[0] in tcs]
+                for r in cur.fetchall():
+                    for i in idx:
+                        if isinstance(r[i], str) and r[i]: seen[r[i]] = None
+            if not cur.nextset(): break
+    json.dump(list(seen), sys.stdout); sys.exit(0)
+raw = json.load(open(os.environ["CELLS"]))
+assert len(raw) == len(mask["masked"]), "the mask step answered another number of texts than it was given"
+masked = dict(zip(raw, mask["masked"]))
+UNSEEN = chr(0) + "a text the mask step did not see"
 import re
 DUR = re.compile(r"^S(\d+) (\d\d):(\d\d):(\d\d)$")
 AGE = re.compile(r"^(?!.*(Count|Fails)).*(Age|Days|Mins|Minutes|Hours)$|^(TimeSinceLast(Failed|Succeeded)|Days since Last Occurrence)$")   # Alerts_Get.sql L39: DATEDIFF(d, last_occurrence_utc, GETUTCDATE()), its unit first in the name   # AgentJob7Day.sql L29-30: DATEDIFF(mi, ..., GETUTCDATE()) at the call; a count (FailCount7Days, JobStepFails7Days) is never an age
@@ -387,7 +411,6 @@ assert not near("N2", "N3", "FailCount7Days") and near("N4", "N3", "TimeSinceLas
     and near("N4", "N3", "Days since Last Occurrence") and not near("N2", "N3", "JobStepFails7Days"), "near() self-test"
 clockcells[0] = 0
 print(f"read at {int(datetime.datetime.now(datetime.timezone.utc).timestamp())} (the pymssql side; the doorage review, finding 2: the gap to the page read)", flush=True)
-if only: calls = {p: c for p, c in calls.items() if p in only}
 for page, sqltext in calls.items():
     cur = con.cursor()
     cur.execute("SET NOCOUNT ON; " + sqltext)
@@ -408,7 +431,13 @@ for page, sqltext in calls.items():
         pcols = [c["name"] for c in ps["columns"]]; types = [c["type"] for c in ps["columns"]]
         if cols != pcols: bad.append(f"{page} set {n+1}: columns {cols} vs {pcols}"); continue
         if len(rows) != len(ps["rows"]): bad.append(f"{page} set {n+1}: {len(rows)} rows vs {len(ps['rows'])}"); continue
-        a = sorted(tuple(canon_py(v, t) for v, t in zip(r, types)) for r in rows)
+        tcs = textcols(page)
+        def py(v, t, c):   # the second client's value; a text column's through the mask the page's cell passed
+            if c in tcs and isinstance(v, str) and v: return "S" + masked.get(v, UNSEEN)
+            return canon_py(v, t)
+        # a text cell is never printed: a restored repository's may hold a credential form the mask does not know
+        hide = lambda v, c: v if c not in tcs or v == "NULL" else "<a text of %d characters, not printed>" % (len(v) - 1)
+        a = sorted(tuple(py(v, t, c) for v, t, c in zip(r, types, cols)) for r in rows)
         b = sorted(tuple(canon_pg(v, t) for v, t in zip(r, types)) for r in ps["rows"])
         if a != b:
             # a clock-computed cell is equal within near()'s tolerance (above); every other cell must be equal as it is.
@@ -420,18 +449,19 @@ for page, sqltext in calls.items():
                 # the first pair near() refuses (a pair differing only in accepted clock cells is not it), and only its
                 # cells near() refuses, by column name (the whole pair is long: a cut log loses the cells)
                 diff = next(((x, y) for x, y in zip(a, b) if not (len(x) == len(y) and all(near(p, q, c) for p, q, c in zip(x, y, cols)))), None)
-                cells = [f"{c}: DBA Dash {p} / page {q}" for p, q, c in zip(diff[0], diff[1], cols) if not near(p, q, c)] if diff else []
-                bad.append(f"{page} set {n+1}: the rows differ in {'; '.join(cells) or 'their order'} - first pair: {diff}")
+                cells = [f"{c}: DBA Dash {hide(p, c)} / page {hide(q, c)}" for p, q, c in zip(diff[0], diff[1], cols) if not near(p, q, c)] if diff else []
+                pair = tuple(tuple(hide(v, c) for v, c in zip(side, cols)) for side in diff) if diff else None
+                bad.append(f"{page} set {n+1}: the rows differ in {'; '.join(cells) or 'their order'} - first pair: {pair}")
         rows_seen += len(rows)
     if page == "sessions@snapshot" and rows_seen == 0: bad.append(f"{page}: 0 rows for the snapshot {snap}")
     nonempty += rows_seen > 0
     print(f"ok   {label}: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL {label}: {page}")
 if bad: print("\n".join("FAIL " + x for x in bad)); sys.exit(1)
 if only:
-    print(f"ok   {label}: {len(calls)} page(s) ({', '.join(calls)}) equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+    print(f"ok   {label}: {len(calls)} page(s) ({', '.join(calls)}) equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
     sys.exit(0)
 if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of 9 pages and the snapshot call returned rows"); sys.exit(1)
-print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
 PY
 # the second client's container stays for C and C3 (one install of pymssql) and goes after C3
 docker run -d --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -v "$TMPD:/w:ro" "$IMG_PY" sleep 3600 >/dev/null
@@ -439,9 +469,15 @@ docker exec "$PYC" pip install -q --disable-pip-version-check --root-user-action
 docker exec "$PYC" python -c 'import pymssql' || fail "C: pymssql did not install in the second client's container"
 # grids <label> <the pages' folder under $TMPD> [<pages>]: the second client's call of each page's procedure against the
 # page's reply in that folder (every page and the exact snapshot, or the pages named); its lines in grids-<label>.out
+# The pages' text columns are shown through the credential mask, so the second client's cells of those columns pass the
+# same mask first: TestMaskCells names the columns, the second client's texts of them go to a file of this run's folder
+# (as stored: never printed, gone with the folder), TestMaskCells masks them, and the comparison reads both files.
 grids() {
-  docker exec -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES="/w/$2" -e LABEL="$1" -e ONLY="${3:-}" \
-    "$PYC" python /w/grids.py | tee "$TMPD/grids-$1.out" || true
+  local e=(-e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES="/w/$2" -e LABEL="$1" -e ONLY="${3:-}")
+  PGVIGIL_DBADASH_MASK_OUT="$TMPD/mask-$1-list.json" go test -count=1 -run '^TestMaskCells$' ./internal/dbadash >/dev/null 2>&1 || fail "$1: the pages' text columns (TestMaskCells)"
+  docker exec "${e[@]}" -e MODE=cells -e MASK="/w/mask-$1-list.json" "$PYC" python /w/grids.py > "$TMPD/cells-$1.json" || fail "$1: the second client's read of the text columns"
+  PGVIGIL_DBADASH_MASK_IN="$TMPD/cells-$1.json" PGVIGIL_DBADASH_MASK_OUT="$TMPD/mask-$1.json" go test -count=1 -run '^TestMaskCells$' ./internal/dbadash >/dev/null 2>&1 || fail "$1: the mask over the second client's text cells (TestMaskCells)"
+  docker exec "${e[@]}" -e MODE=compare -e MASK="/w/mask-$1.json" -e CELLS="/w/cells-$1.json" "$PYC" python /w/grids.py | tee "$TMPD/grids-$1.out" || true
 }
 grids C pages
 grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids-C.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
@@ -517,7 +553,7 @@ grids C3 pages-c2 "sessions jobs alerts"
 grep -q "^ok   C3: 3 page(s)" "$TMPD/grids-C3.out" || fail "C3: the seeded pages are not DBA Dash's grids (the lines above)"
 for t in "$C2A" "$C2B" "$C2C" "$C2D"; do ! grep -qF -- "$t" "$TMPD/grids-C3.out" || fail "C3: a line of the comparison holds a seeded token"; done
 docker rm -f "$PYC" >/dev/null
-echo "ok   C3: the sessions, jobs and alerts pages with the seeded credentials equal DBA Dash's own procedure output; no line of the comparison holds a token"
+echo "ok   C3: the sessions, jobs and alerts pages with the seeded credentials equal DBA Dash's own procedure output, the second client's text cells through the page's mask; no line of the comparison holds a token"
 
 echo "== D. the actions, through pgvigil serve =="
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
