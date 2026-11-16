@@ -513,3 +513,7 @@ const textNoneWords = `off: this instance's query_text policy is "none": no stat
 
 // errTextNone is textNoneWords as a refusal.
 var errTextNone = errors.New(textNoneWords)
+
+// storeTextWords: the Custom reports page's line while an instance's policy is not full (the lead's T3: the store
+// report is the admin's own door, docs/security.html).
+const storeTextWords = "A store report reads stored statement text whatever an instance's query_text policy is now: its SQL reads the repository's tables as the reports login (an admin's grant), not through the pages' rule (docs/security.html)."

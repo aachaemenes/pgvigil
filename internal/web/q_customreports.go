@@ -832,6 +832,9 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		// Store is why a report on the store cannot run here (REPORT ROLE: reports_dsn), "" when it can; the page's
 		// Run on a store report is off with these words
 		Store string `json:"store,omitempty"`
+		// StoreText: the lead's T3 (TEXT-NOW) - a store report is the admin's own door: said while any instance's
+		// query_text policy is not full
+		StoreText string `json:"store_text,omitempty"`
 	}
 	why := s.customReportsOff()
 	state := onOff{Enabled: why == "", Reason: why}
@@ -840,6 +843,9 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		state.Store = storeNoKey
 		if s.reports != nil {
 			state.Store = s.reports.state(ctx)
+		}
+		if tr, err := s.textRuleOf(ctx, s.doorsNow()); err == nil && !tr.allFull() {
+			state.StoreText = storeTextWords
 		}
 	}
 	if q := r.URL.Query().Get("report"); q != "" {
