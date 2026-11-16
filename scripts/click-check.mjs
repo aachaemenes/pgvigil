@@ -837,8 +837,11 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
 // folders offer no page that holds PostgreSQL alone (router.ts pageEngine, read from each page's SQL) and still offer
 // SQL Server options
 {
-  // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines')
-  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'backups', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes', 'jobs']);
+  // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines'),
+  // jobs and backups with j16 (25)'s PAGEENGINE (the fleet Jobs page's SQL Agent rows, 4bfd03b0; the root Backups page's
+  // SQL Server section, a606c77d): a SQL Server-only folder offers both (TAGALL: every root page under every tag folder)
+  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes']);
+  const bothEngines = [['backups', 'hadr', 'mssqllogshipping'], ['jobs', 'jobs', 'jobstimeline']];   // [page, its group, a SQL Server page of that group's strip]
   await go('#/summary');
   const tops = await ev(`[...document.querySelectorAll('#tree .folder > .folder-head a')].map(a => new URLSearchParams((a.getAttribute('href') || '').split('?')[1] || '').get('tag')).filter(Boolean)`);
   const carriers = new Map();
@@ -856,12 +859,22 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
         if (box) for (const a of box.querySelectorAll(':scope > div:not(.tree-node) a.inst')) out.push(a.getAttribute('href'));
       }
       return out; })()`, true);
-    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t));
+    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t)), lacks = bothEngines.map(([t]) => t).filter(t => !tabs.includes(t));
     record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: 'engines', engine: 'sqlserver', link: `#/summary?tag=${msTag}`, landed: `${tabs.length} leaves in the root's folders: ${tabs.join(' ')}`.slice(0, 260),
       verdict: tabs.length === 0 ? "FAIL no leaf read in the root's folders"
         : bad.length ? `FAIL page(s) of PostgreSQL alone offered for a SQL Server-only tag: ${bad.join(', ')}`
         : !tabs.includes('mssqlrisks') ? 'FAIL SQL Server options is not offered'
-        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options there)` });
+        : lacks.length ? `FAIL page(s) that list SQL Server rows not offered for a SQL Server-only tag: ${lacks.join(', ')}`
+        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options, ${bothEngines.map(([t]) => t).join(' and ')} there)` });
+    // the strips of those pages' groups, on a SQL Server page of each under that tag: the page is offered (main.ts tagPages)
+    for (const [t, g, on] of bothEngines) {
+      await go(`#/${on}?tag=${encodeURIComponent(msTag)}`);
+      const gs = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+      record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: `strip ${g}`, engine: 'sqlserver', link: `#/${on}?tag=${msTag}`, landed: `the strip: ${gs.join(' ')}`.slice(0, 260),
+        verdict: !gs.includes(on) ? `FAIL the strip does not hold ${on}`
+          : !gs.includes(t) ? `FAIL the ${g} strip does not offer ${t} for a SQL Server-only tag (it lists SQL Server rows)`
+          : `ok (the ${g} strip offers ${t})` });
+    }
     // the Configuration strip on SQL Server options under that tag: no page of PostgreSQL alone (main.ts tagPages)
     await go(`#/mssqlrisks?tag=${encodeURIComponent(msTag)}`);
     const strip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
