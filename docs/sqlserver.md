@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
 
 ## Collections
 
-Forty collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Forty-one collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -96,6 +96,7 @@ Forty collections; `mssql_checks` and `mssql_identity` are on [day-one checks](s
 | `mssql_running_plans` | off (1 min once on) | the plan of a running query past DBA Dash 4.25.0's thresholds (1 s of CPU, 50 MB granted, 10 s running, or two requests on one plan), kept once an hour per plan; off for every instance until an admin ticks its running plans box on Admin > Instances, or an instance of this file names it in `schedules: {mssql_running_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
 | `mssql_live_plans` | off (1 min once on) | the plan with its operator counters of a request past 60 s of CPU or 5 minutes running unblocked, 10 a read at most; SQL Server 2016 SP1, 2017 CU26, 2019 CU12 and later, Managed Instance, Azure SQL Database; before 2019 lightweight profiling needs trace flag 7412; switched on with `schedules: {mssql_live_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
 | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_constraints` | 6 hours | each user database's untrusted foreign keys and check constraints (dbachecks' rules) | VIEW ANY DEFINITION, CONNECT ANY DATABASE | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
 | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |

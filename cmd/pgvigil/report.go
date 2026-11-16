@@ -289,6 +289,7 @@ func osRelease() string {
 // key this list does not know (a new one, a misspelt one) is masked, never shown.
 var keepKeys = map[string]bool{
 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
+	"histogram": true, "index_fragmentation": true,
 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
 	// doors: (the page door's switch, on or off; task 403b K5: the Slack door's switch)
 	"page_instance_reads": true, "slack_actions": true,
@@ -326,6 +327,7 @@ var knownKeys = map[string]bool{
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
 	"gcp": true, "project": true, "instance": true, "credentials_file": true, "replicas": true,
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+	"histogram": true, "stats_dsn": true, "index_fragmentation": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
 	"azure": true, "subscription": true, "resource_group": true, // B24p; "server" and "cloud" are S2's alert channel keys below

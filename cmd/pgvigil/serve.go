@@ -238,6 +238,15 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	srv.SetPlans(pc)
 	// TEXT-NOW: serve's alert sends follow each instance's query_text policy as its doors hold it now (page instances too)
 	alerts.SetTextPolicy(srv.TextPolicy)
+	// task 414: the histogram and fragmentation switches of the file's SQL Server instances (off by default)
+	idc := web.IndexDepthConfig{Gates: map[string]web.IndexDepthGate{}}
+	for _, in := range cfg.Instances {
+		if in.Engine == config.EngineSQLServer {
+			idc.Gates[in.Name] = web.IndexDepthGate{Histogram: in.Histogram, StatsDSN: in.StatsDSN(), StatsConfigured: strings.TrimSpace(in.StatsDSNRaw) != "",
+				Fragmentation: in.IndexFragmentation}
+		}
+	}
+	srv.SetIndexDepth(idc)
 	doors := map[string]mssql.Door{}
 	for _, in := range cfg.Instances {
 		if in.Engine == config.EngineSQLServer {

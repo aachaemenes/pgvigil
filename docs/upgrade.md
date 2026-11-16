@@ -44,6 +44,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
   A change above a user's role is refused with its words, and the pages show its control off with them. Until the
   per-login instance scope lands, every role sees every instance. A `pgvigil serve` of an older version on the
   upgraded repository signs in admins only: upgrade it with the repository ([roles.md](roles.md)).
+- **SQL Server indexes (task 414).** A new collection, `mssql_constraints`, reads each user database's untrusted
+  foreign keys and check constraints every six hours on every SQL Server instance (catalog views only; not on Azure
+  SQL Database); `mssql_indexes` keeps what each read added to the usage counters and the missing-index requests (the
+  first read after the upgrade is each index's baseline). Two findings are new: disabled indexes (info, a warning
+  when a disabled clustered index or a disabled referenced key blocks its table) and untrusted keys and constraints
+  (info). The histogram and the fragmentation read on demand are off on every instance until `histogram: true` and
+  `index_fragmentation: true` name it in `pgvigil.yaml` ([sqlserver-indexes.md](sqlserver-indexes.md)).
 - **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
   index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
   `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that

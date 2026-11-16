@@ -187,6 +187,19 @@ type Instance struct {
 	MSSQLCountersRoot CounterEdits `yaml:"-"`
 	// MSSQLSchema turns the SQL Server schema history on for the databases it names (docs/schema.md, task A26).
 	MSSQLSchema *MSSQLSchema `yaml:"mssql_schema"`
+	// Histogram turns on the Indexes tab's histogram of a statistic for this sqlserver instance (task 414): it shows
+	// the column's real values (each step's key), read when asked, never stored, audited and under query_text full
+	// only; false (the default) = off.
+	Histogram bool `yaml:"histogram"`
+	// StatsDSNRaw is the statistics-only login the histogram reads through (a user with SELECT on the tables whose
+	// statistics it shows, nothing else; docs/sqlserver-indexes.md): the read login keeps its rights, so custom reports
+	// and report mail stay metadata-only. env:NAME or file:/path only; empty = the read login (which then needs that
+	// SELECT itself, or the histogram says so).
+	StatsDSNRaw string `yaml:"stats_dsn"`
+	// IndexFragmentation turns on the Indexes tab's fragmentation read for this sqlserver instance (task 414): it reads
+	// every index and heap of a database (a heap's data pages in full even in LIMITED), when asked, as a job; false (the
+	// default) = off.
+	IndexFragmentation bool `yaml:"index_fragmentation"`
 }
 
 // Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
@@ -474,6 +487,15 @@ func (i Instance) ExplainDSN() string {
 		return ""
 	}
 	return Resolve(strings.TrimSpace(i.ExplainDSNRaw))
+}
+
+// StatsDSN resolves the statistics-only login of a histogram (task 414); "" = none configured (or an unset variable /
+// unreadable file).
+func (i Instance) StatsDSN() string {
+	if strings.TrimSpace(i.StatsDSNRaw) == "" {
+		return ""
+	}
+	return Resolve(strings.TrimSpace(i.StatsDSNRaw))
 }
 
 // PgBouncerDSN resolves the pooler's admin console; "" = none configured (or an unset variable / unreadable file).
@@ -764,7 +786,14 @@ func (c *Config) Validate() error {
 			if len(in.Actions) > 0 && strings.TrimSpace(in.ActionsDSNRaw) == "" {
 				return fmt.Errorf("instance %q: actions: names %s but the instance has no actions_dsn", in.Name, strings.Join(in.Actions, ", "))
 			}
+			if in.Histogram || in.IndexFragmentation || strings.TrimSpace(in.StatsDSNRaw) != "" {
+				return fmt.Errorf("instance %q: histogram, stats_dsn and index_fragmentation are SQL Server's", in.Name)
+			}
 		case EngineSQLServer:
+			// task 414: the statistics login reads table data (a histogram's keys): its password never sits in the file
+			if v := strings.TrimSpace(in.StatsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
+				return fmt.Errorf("instance %q: stats_dsn must be env:NAME or file:/path (the statistics login's password never sits in the file)", in.Name)
+			}
 			switch in.Platform {
 			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
 			default:
