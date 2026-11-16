@@ -216,10 +216,6 @@ END $$;
 -- collection failing now is listed even with no run since p_rate_from - while its last run is within three of its
 -- intervals and at least a day (a collection removed from the configuration while it failed leaves the list then;
 -- B6.1 has no acknowledge). An inactive instance is not listed (DBA Dash's CollectionHealth_Get: IsActive = 1).
--- The j16 join: B24o's acknowledgement of an instance's collector errors (the m CTE's mark) - the failures in a row,
--- the failing minutes' zero and the rate count only the errors and partial runs logged past it (A5, the lead's 11-16
--- 02:5x); consecutive_failures is that count, the run columns (runs, ok, partial, failed, the two per cents) stay the
--- hours' own.
 -- The Summary and the page both read this. p_rate_to (B6.2: a picked range in the past) ends the runs counted
 -- (hours that begin before it; NULL = now); the failures in a row are always now's, as DBA Dash's.
 -- p_instances / p_collection (the review of B6.2, part a #4): the page's scope applied inside, on the hourly scan and on
@@ -410,47 +406,28 @@ LANGUAGE sql STABLE SET jit = off AS $$
     -- the j16 join (the lead's 11-16 call): the instance's acknowledgement of its collector errors on the error log
     -- page (B24o: an 'ack' of check_key 'collector errors', seen_state 'log_id:<n>'): the highest log_id its live rows
     -- cover; a seen_state not of that form is never read (a CASE, so no cast can fail) - the Summary's own rule
-    SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark
+    SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark,
+           max(a.created_at) FILTER (WHERE a.seen_state ~ '^log_id:[0-9]{1,18}$') AS acked_at
       FROM pgvigil.acks a
      WHERE a.kind = 'ack' AND a.check_key = 'collector errors' AND a.instance_id IS NOT NULL
        AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, now())
      GROUP BY a.instance_id
-  ), p AS (
-    -- the lead's 11-16 02:5x call (A5), DBA Dash's count from the acknowledgement: an acknowledged instance's failed and
-    -- partial runs logged PAST its mark in the rate's hours - the only runs of those two kinds its rate counts (an
-    -- older-started run logged after the mark among them: review A #6); 0198's collection_log_instance_idx (its own
-    -- predicate said for the planner)
-    SELECT l.instance_id, l.collection, count(*) FILTER (WHERE l.status = 'error')::int AS failed,
-           count(*) FILTER (WHERE l.status = 'partial')::int AS partial
-      FROM m JOIN pgvigil.collection_log l ON l.instance_id = m.instance_id AND l.log_id > m.mark
-     WHERE m.mark IS NOT NULL AND l.status IN ('error', 'partial') AND l.status <> 'skipped'
-       AND l.snapshot_at >= date_trunc('hour', (p_rate_from AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
-       AND (p_rate_to IS NULL OR date_trunc('hour', l.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' < p_rate_to)
-       AND (p_instances IS NULL OR l.instance_id = ANY (p_instances)) AND (p_collection IS NULL OR l.collection = p_collection)
-     GROUP BY l.instance_id, l.collection
   ), j AS (
-    -- the counts Collection Health judges (A5): with no live mark, the run status's and the hours'; under a mark, the
-    -- failures in a row logged past it (the streak is the newest cf errors since the last success: those past the mark
-    -- are at most cf; collection_log_errors_idx) and the failed and partial runs of p. The errors at or under the mark never
-    -- count again, a newer one starts a new streak; the failing minutes stay the time since the last success.
     SELECT k.*, i.name,
            coalesce((p_expected -> 'instances' -> i.name ->> k.collection)::int, (p_expected -> 'defaults' ->> k.collection)::int, -1) AS iv,
-           e.cf_counted,
-           CASE WHEN e.cf_counted = 0 THEN 0
+           CASE WHEN k.cf = 0 THEN 0
                 WHEN k.last_ok_at IS NOT NULL
                 THEN (extract(epoch FROM date_trunc('minute', k.last_failure_at) - date_trunc('minute', k.last_ok_at)) / 60)::int END AS fm,
            k.ok + k.partial + k.failed AS known,
-           CASE WHEN m.mark IS NULL THEN k.failed ELSE least(coalesce(p.failed, 0), k.failed) END AS failed_counted,
-           CASE WHEN m.mark IS NULL THEN k.partial ELSE least(coalesce(p.partial, 0), k.partial) END AS partial_counted,
-           m.mark IS NOT NULL AS marked
+           -- the newest failure is at or under the instance's mark (its run's row found by instance, collection and time;
+           -- a failure whose row was purged is acknowledged when it ran before the acknowledgement): nothing of this
+           -- collection counts until a newer error, as DBA Dash's 'Acknowledge Errors' clears its Summary column
+           coalesce(k.last_failure_at IS NOT NULL AND m.mark IS NOT NULL
+                    AND coalesce((SELECT max(l.log_id) FROM pgvigil.collection_log l
+                                   WHERE l.instance_id = k.instance_id AND l.collection = k.collection AND l.snapshot_at = k.last_failure_at) <= m.mark,
+                                 k.last_failure_at < m.acked_at), false) AS acked
       FROM k JOIN pgvigil.instances i ON i.instance_id = k.instance_id
       LEFT JOIN m ON m.instance_id = k.instance_id
-      LEFT JOIN p ON p.instance_id = k.instance_id AND p.collection = k.collection
-      CROSS JOIN LATERAL (
-        SELECT CASE WHEN m.mark IS NULL OR k.cf = 0 THEN k.cf
-                    ELSE least(k.cf, (SELECT count(*) FROM pgvigil.collection_log l
-                                       WHERE l.instance_id = k.instance_id AND l.collection = k.collection AND l.status = 'error'
-                                         AND l.snapshot_at > coalesce(k.last_ok_at, '-infinity'::timestamptz) AND l.log_id > m.mark))::int END AS cf_counted) e
      WHERE i.is_active
   ), live AS MATERIALIZED (
     -- B6g-2: the thresholds in force, read once and joined four times (the review of B6g-2 #6: the history table's
@@ -486,14 +463,13 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT th.*,
            format('in a row %s / %s, failing %s / %s min, failed %s / %s %% of %s runs or more', th.wfr, th.cfr, th.wfm, th.cfm,
                   trim_scale(th.wpct), trim_scale(th.cpct), th.mr) AS th_words,
-           CASE WHEN th.cf_counted >= th.cfr AND (th.fm IS NULL OR th.fm >= th.cfm) THEN 2
-                WHEN th.cf_counted >= th.wfr AND (th.fm IS NULL OR th.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
-           CASE WHEN th.known >= th.mr AND th.failed_counted > 0 AND round(100.0 * th.failed_counted / th.known, 2) >= th.cpct AND th.last_status = 'error' THEN 2
-                WHEN th.known >= th.mr AND th.failed_counted + th.partial_counted > 0
-                     AND round(100.0 * (th.failed_counted + th.partial_counted) / th.known, 2) >= th.wpct THEN 1 ELSE 0 END AS rt,
-           th.iv = 0 OR th.dm OR (th.known = 0 AND th.cf = 0) AS na,
-           -- the mark left something out (the reason says so)
-           th.marked AND (th.cf_counted < th.cf OR th.failed_counted < th.failed OR th.partial_counted < th.partial) AS acked
+           CASE WHEN th.acked THEN 0
+                WHEN th.cf >= th.cfr AND (th.fm IS NULL OR th.fm >= th.cfm) THEN 2
+                WHEN th.cf >= th.wfr AND (th.fm IS NULL OR th.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
+           CASE WHEN th.acked THEN 0
+                WHEN th.known >= th.mr AND th.failed > 0 AND round(100.0 * th.failed / th.known, 2) >= th.cpct AND th.last_status = 'error' THEN 2
+                WHEN th.known >= th.mr AND th.failed + th.partial > 0 AND round(100.0 * (th.failed + th.partial) / th.known, 2) >= th.wpct THEN 1 ELSE 0 END AS rt,
+           th.iv = 0 OR th.dm OR (th.known = 0 AND th.cf = 0) AS na
       FROM th
   )
   SELECT t.instance_id, t.collection,
@@ -501,15 +477,14 @@ LANGUAGE sql STABLE SET jit = off AS $$
          CASE WHEN t.iv = 0 THEN 'collection off'
               WHEN t.dm THEN 'not monitored (its Collection Health threshold)'
               WHEN t.na THEN 'no runs (skipped only)'
+              WHEN t.acked AND (t.cf > 0 OR t.failed + t.partial > 0)
+                THEN 'its errors acknowledged on the collector error log (counted again from a newer error)'
               WHEN t.st > 0 AND t.st >= t.rt
-                THEN t.cf_counted || ' failure(s) in a row' || CASE WHEN t.acked THEN ' since its errors were acknowledged' ELSE '' END
-                     || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
+                THEN t.cf || ' failure(s) in a row' || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
               WHEN t.rt > 0
-                THEN trim_scale(round(100.0 * t.failed_counted / t.known, 1)) || ' % failed, ' || trim_scale(round(100.0 * t.partial_counted / t.known, 1)) || ' % partial of ' || t.known || ' runs'   -- one place, as DBA Dash's DECIMAL(5,1) (part a #6: 1 of 300 read '0 %')
-                     || CASE WHEN t.acked THEN ' (its acknowledged errors left out)' ELSE '' END
-              WHEN t.acked THEN 'its errors acknowledged on the collector error log (counted again from a newer error)'
+                THEN trim_scale(round(100.0 * t.failed / t.known, 1)) || ' % failed, ' || trim_scale(round(100.0 * t.partial / t.known, 1)) || ' % partial of ' || t.known || ' runs'   -- one place, as DBA Dash's DECIMAL(5,1) (part a #6: 1 of 300 read '0 %')
               ELSE '' END,
-         t.fm, t.cf_counted, t.runs, t.ok, t.partial, t.failed, t.skipped,
+         t.fm, t.cf, t.runs, t.ok, t.partial, t.failed, t.skipped,
          CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
          CASE WHEN t.known > 0 THEN round(100.0 * (t.failed + t.partial) / t.known, 1) END,
          t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at, t.dur_sum, t.dur_max, t.rows_written,

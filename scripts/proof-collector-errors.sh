@@ -58,8 +58,7 @@
 #     first): the export behind then failing dated at its failure, each row dated at its start (not the range's end), no
 #     'since' in the notes, the export rows not the newest; the rest pass.
 #  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n: the row moved there from the
-#     errors_24h / failing columns B6G-N's Collection Health replaced; counted from the acknowledgement - the errors at
-#     or under its mark never count again, A5): X's 1 / 1 (c2 warning) / detail 'c2: the last
+#     errors_24h / failing columns B6G-N's Collection Health replaced): X's 1 / 1 (c2 warning) / detail 'c2: the last
 #     run failed'; acknowledged up to its newest log_id -> 0 / 0 / no such line, the error view's rows acked; an
 #     older-started run logged after it -> 1 / 1; a second acknowledgement -> 0 / 0; Unacknowledge (every live row
 #     ended) -> 1 / 2 (c2, c3); a live row with seen_state 'x' -> the part still answers, 1 / 2; ack_log holds every add
