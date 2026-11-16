@@ -97,7 +97,7 @@ SELECT category, coalesce(e.listed, 0) AS listed, coalesce(c.counted_over, 0) AS
 const sqlMSSQLAuditEventsFmt = `
 SELECT e.event_at, e.event_key, e.category, e.action, e.action_id, e.class_name, e.succeeded, e.login_name, e.session_login,
        e.target_login, e.target_user, e.database_name, e.schema_name, e.object_name, e.client_ip, e.application, e.host,
-       e.session_id, e.reason, e.error_number, e.error_state, e.statement, e.audit_name
+       e.session_id, e.reason, e.error_number, e.error_state, e.statement AS "statement@stmt", e.audit_name
   FROM pgvigil.mssql_audit_events e
  WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3%s
  ORDER BY e.event_at DESC, e.event_key

@@ -83,7 +83,8 @@ const slowCounts = `
 const sqlSlowGroups = sqlSlowFilter + `
 SELECT e.grp AS value, CASE WHEN count(DISTINCT e.instance_id) = 1 THEN min(e.instance_id) END AS instance_id,
        CASE WHEN count(DISTINCT e.engine) = 1 THEN min(e.engine) END AS engine,
-       left(min(e.statement) FILTER (WHERE e.grp IS NOT NULL), 400) AS example,` + slowCounts + `
+       left((array_agg(e.statement ORDER BY e.statement) FILTER (WHERE e.grp IS NOT NULL AND e.statement IS NOT NULL))[1], 400) AS "example@stmt",
+       (array_agg(e.instance_id ORDER BY e.statement) FILTER (WHERE e.grp IS NOT NULL AND e.statement IS NOT NULL))[1] AS "@inst",` + slowCounts + `
   FROM e
  GROUP BY e.grp
  ORDER BY %s
@@ -117,11 +118,11 @@ cell AS (
 
 const sqlSlowEvents = sqlSlowCell + `,
 top AS (SELECT * FROM cell ORDER BY duration_ms DESC NULLS LAST, at DESC LIMIT 500)
-SELECT t.instance_id, t.instance, t.engine, t.database_name, t.event_type, t.object_name, t.at, t.duration_ms, t.cpu_ms,
+SELECT t.instance_id AS "instance_id@inst", t.instance, t.engine, t.database_name, t.event_type, t.object_name, t.at, t.duration_ms, t.cpu_ms,
        t.logical_reads, t.physical_reads, t.writes, t.row_count, t.user_name, t.client,
        coalesce(t.application, a.application_name) AS application,
        CASE WHEN t.application IS NULL AND a.application_name IS NOT NULL THEN 'sample' END AS application_from,
-       t.result, t.failed, t.session_id, left(t.statement, 4000) AS statement, t.shape_key
+       t.result, t.failed, t.session_id, left(t.statement, 4000) AS "statement@stmt", t.shape_key
   FROM top t
   LEFT JOIN LATERAL (
     SELECT s.application_name

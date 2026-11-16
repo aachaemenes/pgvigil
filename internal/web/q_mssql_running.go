@@ -44,7 +44,7 @@ SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.stat
        q.is_implicit_tran, q.isolation_level, q.cpu_ms, q.reads, q.writes, q.logical_reads, q.granted_memory_kb, q.tempdb_alloc_kb,
        q.tempdb_current_kb, q.dop, q.task_count, q.tasks_cpu_ms, q.tasks_physical_io, q.percent_complete, q.elapsed_ms, q.start_time,
        q.last_request_start, q.last_request_end, q.login_time, q.login_name, q.host_name, q.program_name, q.database_name,
-       q.sql_handle, q.stmt_start, q.stmt_end, left(q.statement, 4000) AS statement, q.full_chars, q.plan_handle, q.query_hash,
+       q.sql_handle, q.stmt_start, q.stmt_end, left(q.statement, 4000) AS "statement@stmt", q.full_chars, q.plan_handle, q.query_hash,
        q.query_plan_hash, q.session_waits::text AS session_waits, q.is_user_process, q.head_session_id, q.chain_depth, q.victims,
        q.longest_victim_wait_ms, q.in_cycle, q.chain_note
   FROM pgvigil.mssql_requests_v q
@@ -57,7 +57,7 @@ SELECT q.snapshot_at, q.server_utc, q.source, q.session_id, q.request_id, q.stat
 const sqlMssqlBlocking = `
 SELECT b.snapshot_at, b.head_session_id, b.victims, b.longest_wait_ms, b.in_snapshot, b.head_status, b.head_wait_type, b.head_open_tran,
        b.head_tran_start, b.head_tran_age_ms, b.head_login, b.head_host, b.head_program, b.head_database,
-       left(t.statement, 4000) AS head_statement, b.note
+       left(t.statement, 4000) AS "head_statement@stmt", b.note
   FROM pgvigil.mssql_blocking b
   LEFT JOIN pgvigil.mssql_statement_text t ON t.text_id = b.head_text_id
  WHERE b.instance_id = $1

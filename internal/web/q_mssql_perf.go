@@ -355,7 +355,7 @@ const (
  GROUP BY 1 ORDER BY 1`
 	sqlMSSQLGrantsNow = `SELECT g.snapshot_at, g.session_id, g.request_id, g.database_name, g.request_at, g.grant_at, g.wait_time_ms,
        g.requested_kb, g.granted_kb, g.used_kb, g.max_used_kb, g.ideal_kb, g.required_kb, g.queue_id, g.wait_order, g.is_next_candidate,
-       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement
+       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement AS "statement@stmt"
   FROM pgvigil.mssql_memory_grant_query g
  WHERE g.instance_id = $1 AND g.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_memory_sample s
                                                 WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3)

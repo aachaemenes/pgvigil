@@ -70,7 +70,7 @@ var shapeKeyRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // sqlPlansList: an instance's plans in the window (or every plan of one statement, any age), with their rule hits.
 const sqlPlansList = `
 SELECT p.plan_id, p.source, p.captured_at, p.first_seen, p.queryid, p.datname, p.usename, p.duration_ms, p.calls, p.total_ms,
-       p.analyzed, p.format, left(coalesce(p.query, st.query, ''), 300) AS query, p.plan_note,
+       p.analyzed, p.format AS "format@pgfmt", left(coalesce(p.query, st.query, ''), 300) AS "query@pgq", p.plan_note,
        (SELECT count(*) FROM pgvigil.plan_rules(p.plan)) AS hits,
        (SELECT string_agg(DISTINCT r.rule, ', ') FROM pgvigil.plan_rules(p.plan) r) AS rules
   FROM pgvigil.plans p
@@ -83,15 +83,15 @@ SELECT p.plan_id, p.source, p.captured_at, p.first_seen, p.queryid, p.datname, p
  LIMIT 200`
 
 const sqlPlanOne = `
-SELECT p.plan_id, p.instance_id, i.name AS instance, p.source, p.captured_at, p.first_seen, p.queryid, p.planid, p.datname, p.usename,
-       coalesce(p.query, (SELECT t.query FROM pgvigil.statement_text t WHERE t.instance_id = p.instance_id AND t.queryid = p.queryid LIMIT 1)) AS query,
-       p.duration_ms, p.calls, p.total_ms, p.analyzed, p.format, p.plan_text, p.plan_note, p.shape_key,
+SELECT p.plan_id, p.instance_id AS "instance_id@inst", i.name AS instance, p.source, p.captured_at, p.first_seen, p.queryid, p.planid, p.datname, p.usename,
+       coalesce(p.query, (SELECT t.query FROM pgvigil.statement_text t WHERE t.instance_id = p.instance_id AND t.queryid = p.queryid LIMIT 1)) AS "query@pgq",
+       p.duration_ms, p.calls, p.total_ms, p.analyzed, p.format AS "format@pgfmt", p.plan_text AS "plan_text@pgplantext", p.plan_note, p.shape_key,
        (p.plan->>'Planning Time')::float8 AS planning_ms, (p.plan->>'Execution Time')::float8 AS execution_ms
   FROM pgvigil.plans p JOIN pgvigil.instances i USING (instance_id)
  WHERE p.plan_id = $1`
 
 const sqlPlanHits = `
-SELECT r.rule, r.severity, r.node_path, r.node_type, r.object, r.value, r.why, r.suggested
+SELECT r.rule, r.severity, r.node_path, r.node_type, r.object, r.value AS "value@doc", r.why, r.suggested, p.instance_id AS "@inst"
   FROM pgvigil.plans p CROSS JOIN LATERAL pgvigil.plan_rules(p.plan) r
  WHERE p.plan_id = $1
  ORDER BY r.severity = 'warning' DESC, r.node_path, r.rule`
@@ -407,6 +407,21 @@ func (s *Server) planForSuggest(ctx context.Context, planID, instance, queryid, 
 		&p.Analyzed, &p.Source, &p.CapturedAt, &p.Plan, &p.Query)
 	if err != nil {
 		return nil, err
+	}
+	// TEXT-NOW: the plan and its query under the instance's policy now (textread.go): none = no plan, as none at the
+	// capture would have stored none; normalized = masked as the plan collector masks it
+	tr, err := s.textRuleOf(ctx, s.doorsNow())
+	if err != nil {
+		return nil, err
+	}
+	v := tr.row(p.InstanceID, []string{"pgq", "pgplan"}, []any{deref0(p.Query), p.Plan})
+	pl, _ := v[1].(string)
+	if pl == "" {
+		return nil, pgx.ErrNoRows
+	}
+	p.Plan = pl
+	if p.Query != nil {
+		p.Query = strOf(v[0])
 	}
 	return &p, nil
 }

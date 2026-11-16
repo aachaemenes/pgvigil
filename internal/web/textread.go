@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -149,32 +150,47 @@ func (s *Server) doorsOf(r *http.Request) *doorSet {
 	return s.doorsNow()
 }
 
-// tablesIn lists the tables a reply value holds: a table, a map of tables, or a map whose values are either.
+// tablesIn lists the tables a reply value holds: a table, or one inside a map, a slice or a struct's exported fields,
+// to a few levels (the replies are a table, a map of tables, or a struct or map beside other values).
 func tablesIn(v any) []*table {
-	switch x := v.(type) {
-	case *table:
-		if x != nil {
-			return []*table{x}
-		}
-	case map[string]*table:
-		out := make([]*table, 0, len(x))
-		for _, t := range x {
-			if t != nil {
-				out = append(out, t)
-			}
-		}
-		return out
-	case map[string]any:
-		var out []*table
-		for _, e := range x {
-			switch y := e.(type) {
-			case *table, map[string]*table:
-				out = append(out, tablesIn(y)...)
-			}
-		}
-		return out
+	var out []*table
+	walkTables(reflect.ValueOf(v), 0, &out)
+	return out
+}
+
+var tableType = reflect.TypeOf(&table{})
+
+func walkTables(v reflect.Value, depth int, out *[]*table) {
+	if !v.IsValid() || depth > 4 {
+		return
 	}
-	return nil
+	if v.Type() == tableType {
+		if !v.IsNil() {
+			*out = append(*out, v.Interface().(*table))
+		}
+		return
+	}
+	switch v.Kind() {
+	case reflect.Interface, reflect.Pointer:
+		if !v.IsNil() {
+			walkTables(v.Elem(), depth+1, out)
+		}
+	case reflect.Map:
+		it := v.MapRange()
+		for it.Next() {
+			walkTables(it.Value(), depth+1, out)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			walkTables(v.Index(i), depth+1, out)
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				walkTables(v.Field(i), depth+1, out)
+			}
+		}
+	}
 }
 
 // tagged reports whether a table has a column tagged with a role.
@@ -257,6 +273,11 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 		for _, c := range cols {
 			switch c.role {
 			case "stmt":
+				// a log event of kind plan: its statement is the plan, kept under full only (applyTextPolicy)
+				if kindS == string(logparse.Plan) && pol != "full" {
+					row[c.i] = nil
+					continue
+				}
 				row[c.i] = tr.stmt(id, known, row[c.i])
 			case "doc":
 				row[c.i] = tr.doc(id, known, row[c.i])
@@ -363,10 +384,18 @@ func (tr *textRule) pgPlan(row []any, roleAt map[string]int, pol string) {
 	if ht && row[it] != nil {
 		row[it] = pr.PlanText
 	}
+	// the plan back in the form it was read in (a text column stays text, a jsonb column a decoded value)
 	if hj && row[ij] != nil && pr.Plan != nil {
-		var v any
-		if err := json.Unmarshal(pr.Plan, &v); err == nil {
-			row[ij] = v
+		switch row[ij].(type) {
+		case string:
+			row[ij] = string(pr.Plan)
+		case []byte:
+			row[ij] = []byte(pr.Plan)
+		default:
+			var v any
+			if err := json.Unmarshal(pr.Plan, &v); err == nil {
+				row[ij] = v
+			}
 		}
 	}
 }
@@ -388,4 +417,23 @@ func instID(v any) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// row applies the rule to one row a handler scanned itself: vals[i] has the role roles[i]; the row is the instance
+// id's. The values come back in the same order.
+func (tr *textRule) row(id int, roles []string, vals []any) []any {
+	t := &table{Columns: make([]string, len(roles)), Rows: [][]any{append([]any(nil), vals...)}}
+	for i, ro := range roles {
+		t.Columns[i] = "c" + strconv.Itoa(i) + textRoleSep + ro
+	}
+	tr.table(t, id, true)
+	return t.Rows[0]
+}
+
+// strOf is a text value back as a *string (nil for NULL or a non-text value).
+func strOf(v any) *string {
+	if s, ok := v.(string); ok {
+		return &s
+	}
+	return nil
 }

@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aachaemenes/pgvigil/internal/logparse"
 )
 
 // pgDlProc is one process of a deadlock in the row shape deadlock_graph.ts's graphFromRows reads.
@@ -394,6 +396,12 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("instance %d is a %s instance: its deadlocks are on the SQL Server Deadlocks tab", id, engine))
 		return
 	}
+	// TEXT-NOW: the statement and the detail (each process's statement) under the instance's policy now (textread.go)
+	tr, err := s.textRuleOf(ctx, s.doorsNow())
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("deadlocks: %w", err))
+		return
+	}
 	rows, err := s.pool.Query(ctx, sqlPgDeadlockEvents, id, from, to)
 	if err != nil {
 		s.reply(w, r, nil, fmt.Errorf("deadlocks: %w", err))
@@ -416,6 +424,8 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 		if pid != nil {
 			vp = *pid
 		}
+		v := tr.row(id, []string{"stmt", "logdetail", "logkind"}, []any{deref(st), deref(dt), string(logparse.Deadlock)})
+		st, dt = strOf(v[0]), strOf(v[1])
 		d := parsePgDeadlock(deref(dt), deref(st), vp)
 		e := &pgDlEvent{At: at, Key: key, PID: pid, User: usr, Database: db, Client: cl, Procs: d.Processes, Res: d.Resources, Parsed: d.Parsed, stmt: deref(st)}
 		if e.Procs == nil {

@@ -46,7 +46,7 @@ SELECT $1::int AS min_ms, $2::timestamptz AS histogram_from,
 
 // sqlSlowRecent is the window's slow statements of one instance, newest first.
 const sqlSlowRecent = `
-SELECT at, duration_ms, pid, datname, usename, client, left(statement, 4000) AS statement, shape_key, reader
+SELECT at, duration_ms, pid, datname, usename, client, left(statement, 4000) AS "statement@stmt", shape_key, reader
   FROM pgvigil.slow_events
  WHERE instance_id = $1 AND at > $2 AND at <= $3 AND duration_ms >= $4
  ORDER BY at DESC

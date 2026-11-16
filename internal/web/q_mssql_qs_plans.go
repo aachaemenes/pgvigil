@@ -303,7 +303,7 @@ SELECT p.database_name AS database, p.query_hash, p.plan_hash, p.stmt_start, p.s
            AND l.plan_hash = p.plan_hash AND l.stmt_start = p.stmt_start AND l.stmt_end = p.stmt_end) AS live_captures,
        (SELECT max(l.live_id) FROM pgvigil.mssql_live_plan l WHERE l.instance_id = p.instance_id AND l.query_hash = p.query_hash
            AND l.plan_hash = p.plan_hash AND l.stmt_start = p.stmt_start AND l.stmt_end = p.stmt_end AND l.live_xml IS NOT NULL) AS live_newest,
-       t.object_name, left(t.query, 400) AS query
+       t.object_name, left(t.query, 400) AS "query@stmt"
   FROM pgvigil.mssql_running_plan p
   LEFT JOIN pgvigil.mssql_pc_text t ON t.instance_id = p.instance_id AND t.query_key = p.query_hash
  WHERE p.instance_id = $1 AND p.last_seen > $2 AND p.first_seen <= $3
