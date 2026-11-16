@@ -25,7 +25,7 @@ func (s *Server) WatchPageIntervals(ctx context.Context, log *slog.Logger, cfg *
 	for _, in := range cfg.Instances {
 		inFile[in.Name] = true
 	}
-	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, every, nil, false,
+	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, every, nil, false,
 		func(all []config.Instance, _ []config.PageInstance, _ int64) {
 			m := pageIntervalMap(all, inFile, intervals)
 			p.Store(&m)
