@@ -58,14 +58,14 @@ type Server struct {
 	mu sync.Mutex // one write to out at a time
 }
 
-// New returns a server over api (the web package's Handler, run without the UI login: the
-// process is the client's own child on its own machine). secrets are scrubbed from every reply.
 // WithAgent adds the agent door's tools (a login holding pgvigil_agent, checked by CheckLogin).
 func (s *Server) WithAgent(d *AgentDoor) *Server {
 	s.agent = d
 	return s
 }
 
+// New returns a server over api (the web package's Handler, run without the UI login: the
+// process is the client's own child on its own machine). secrets are scrubbed from every reply.
 func New(api http.Handler, version string, secrets ...string) *Server {
 	var keep []string
 	for _, s := range secrets {

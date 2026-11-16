@@ -91,7 +91,7 @@ type XECaptureSettings struct {
 	Origin string
 }
 
-// DefaultXECaptureSettings: SQLWATCH's thresholds and exclusions (its waits and long-query sessions, its default
+// DefaultXECaptureSettings returns SQLWATCH's thresholds and exclusions (its waits and long-query sessions, its default
 // exclusions EXC#9 and EXC#12-13), pgvigil's own program name.
 func DefaultXECaptureSettings() XECaptureSettings {
 	return XECaptureSettings{WaitMS: 1000, ModuleMS: 5000,

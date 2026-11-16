@@ -64,7 +64,7 @@ func TimeRoundTrip(instance string, do func() error) {
 	CountRoundTrip(instance, time.Since(t0), err)
 }
 
-// MeasurePgRoundTrip: PostgreSQL's round trip through the PgConn - one 'Q' message, no Parse / Bind (pgx's
+// MeasurePgRoundTrip measures PostgreSQL's round trip through the PgConn - one 'Q' message, no Parse / Bind (pgx's
 // cached-statement mode would prepare first: two round trips)
 func MeasurePgRoundTrip(ctx context.Context, instance string, conn *pgx.Conn) {
 	TimeRoundTrip(instance, func() error {

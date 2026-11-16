@@ -15,15 +15,15 @@ import (
 type Class string
 
 const (
-	// Window: the rows whose own time column is inside the hour. That column is the table's partition key, part of
+	// Window covers the rows whose own time column is inside the hour. That column is the table's partition key, part of
 	// its primary key, or the time of an append-only line - never a column an import rewrites at every read.
 	Window Class = "window"
-	// State: the whole table, in the day's first window. What an import upserts or rebuilds at every read.
+	// State covers the whole table, in the day's first window. What an import upserts or rebuilds at every read.
 	State Class = "state"
-	// Dimension: text keyed by a hash: the rows seen in or after the window's start, and the whole table in the
+	// Dimension covers text keyed by a hash: the rows seen in or after the window's start, and the whole table in the
 	// day's first window.
 	Dimension Class = "dimension"
-	// LeftOut: never exported; Why says why.
+	// LeftOut is never exported; Why says why.
 	LeftOut Class = "left-out"
 )
 

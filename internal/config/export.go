@@ -86,28 +86,41 @@ func (e *Export) DSN() string { return Resolve(strings.TrimSpace(e.DSNRaw)) }
 func (d ExportDestination) ConnectionString() string {
 	return Resolve(strings.TrimSpace(d.ConnectionStringRaw))
 }
+
+// SASURL is the destination's SAS URL as configured, resolved (an env: or file: reference read).
 func (d ExportDestination) SASURL() string { return Resolve(strings.TrimSpace(d.SASURLRaw)) }
 
-// Settle, MaxAge, FinalAfter, PerRun, MaxBytes and Timeout are the knobs with their defaults.
+// Settle is the settle time, 20 minutes by default (Settle, MaxAge, FinalAfter, PerRun, MaxBytes and Timeout are the
+// knobs with their defaults).
 func (e *Export) Settle() time.Duration {
 	if e.SettleMinutes == nil {
 		return 20 * time.Minute
 	}
 	return time.Duration(*e.SettleMinutes) * time.Minute
 }
+
+// MaxAge is the oldest window a run exports, 48 hours by default.
 func (e *Export) MaxAge() time.Duration {
 	return time.Duration(orDefault(e.MaxWindowAgeHours, 48)) * time.Hour
 }
+
+// FinalAfter is the age after which a window is final, 24 hours by default.
 func (e *Export) FinalAfter() time.Duration {
 	return time.Duration(orDefault(e.FinalAfterHours, 24)) * time.Hour
 }
+
+// PerRun is the most windows one run exports, 12 by default.
 func (e *Export) PerRun() int { return orDefault(e.MaxWindowsPerRun, 12) }
+
+// MaxBytes is a snapshot's size limit, 256 MiB by default.
 func (e *Export) MaxBytes() int64 {
 	if e.SnapshotMaxBytes.set {
 		return e.SnapshotMaxBytes.N
 	}
 	return 256 << 20
 }
+
+// Timeout is a statement's timeout, 120 seconds by default.
 func (e *Export) Timeout() time.Duration {
 	if e.StatementTimeout.Duration > 0 {
 		return e.StatementTimeout.Duration

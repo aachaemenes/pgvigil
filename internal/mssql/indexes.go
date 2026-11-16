@@ -622,7 +622,7 @@ func (c constraintsCollector) RunBatches(ctx context.Context, conn *sql.Conn, in
 
 // ---- fragmentation on demand (task 414; SQLWATCH REP#1) ------------------------------------------------------------
 
-// FragMinPages: a row of the fragmentation read is kept from this many pages (SQLWATCH's line; a smaller index is
+// FragMinPages is the page count a row of the fragmentation read is kept from (SQLWATCH's line; a smaller index is
 // counted, not kept).
 const FragMinPages = 1000
 

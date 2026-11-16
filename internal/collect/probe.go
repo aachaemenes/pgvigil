@@ -210,7 +210,7 @@ func (p *prober) loop(ctx context.Context) {
 	}
 }
 
-// NoteRemote: the address (ip:port) an instance's connection just opened to - the probe's target for it (the fold's
+// NoteRemote records the address (ip:port) an instance's connection just opened to - the probe's target for it (the fold's
 // #6b: the address the last opened connection used); a loopback or socket address is not probed ('local')
 func NoteRemote(instance, addr string) {
 	if h := current.Load(); h != nil {

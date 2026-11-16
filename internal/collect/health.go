@@ -23,7 +23,7 @@ const (
 	OutcomeImportFailed = "import failed"
 )
 
-// PartialOutcome: OutcomePartial for a run whose logged status is "partial", "" for any other (the SQL Server
+// PartialOutcome is OutcomePartial for a run whose logged status is "partial", "" for any other (the SQL Server
 // collectors' form of partialOutcome)
 func PartialOutcome(status string) string { return partialOutcome(status) }
 
@@ -256,7 +256,7 @@ type ImportError struct{ Err error }
 func (e *ImportError) Error() string { return e.Err.Error() }
 func (e *ImportError) Unwrap() error { return e.Err }
 
-// EndedAtImport: whether err, the error that ended a batched run, is the import error last handed back to its reader
+// EndedAtImport says whether err, the error that ended a batched run, is the import error last handed back to its reader
 // (lastImport, an *ImportError) - by identity through the chain: every reader wraps what emit returned with %w or
 // returns it as it is. A run whose part was refused and which then ended at a READ did not end at an import.
 func EndedAtImport(err error, lastImport *ImportError) bool {
