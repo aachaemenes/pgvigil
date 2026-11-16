@@ -19,7 +19,7 @@ import (
 // view, re-created whole at the join with scripts/b6g-join-lines.sql's line: until then PGVIGIL_B6G_DRAFT names the
 // draft files applied first in each case's transaction (comma-separated, from the repository root:
 // scripts/b6g-join-draft-arf-base.sql = 0085's view as it is, the red run; scripts/b6g-join-draft-arf.sql = the view with
-// the line, the green run); after the join PGVIGIL_B6G_DRAFT=none reads the store as migrated.
+// the line, the green run); after the join (a store with 0300) the store is read as migrated, unset or 'none'.
 //   - in turn: one instance, collections A and B failing in turn (hours h-3 and h-2 A 10 of 10, B 0; hour h-1 A 0, B 10
 //     of 10) under collection.failed_pct above 50 for 60 minutes with no collection - judged at h-1 + 5 min (its newest
 //     point is hour h-2's: A) and at now (hour h-1's: B): warning both times, the detail names A then B, and the alert's
@@ -32,9 +32,25 @@ func TestCollectionWorstOnAStore(t *testing.T) {
 	if dsn == "" {
 		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
 	draft := os.Getenv("PGVIGIL_B6G_DRAFT")
 	if draft == "" {
-		t.Skip("PGVIGIL_B6G_DRAFT is not set (the draft files until the join, 'none' after it)")
+		// after the join that writes 0300 (and with it scripts/b6g-join-lines.sql's line) the store is read as migrated -
+		// never skipped (the review of B6G-N #2: a join that left the line out would go red here, not pass unseen)
+		var joined bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.schema_version WHERE version >= 300)`).Scan(&joined); err != nil {
+			t.Fatal(err)
+		}
+		if !joined {
+			t.Skip("PGVIGIL_B6G_DRAFT is not set and the store has no 0300 yet (the draft files until the join)")
+		}
+		draft = "none"
 	}
 	var sqls []string
 	if draft != "none" {
@@ -46,13 +62,6 @@ func TestCollectionWorstOnAStore(t *testing.T) {
 			sqls = append(sqls, string(b))
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 	tag := time.Now().UnixNano() % 1000000000
 	base := time.Now().UTC().Truncate(time.Hour)
 	inTx := func(name string, body func(t *testing.T, tx pgx.Tx, exec func(string, ...any))) {
@@ -89,7 +98,8 @@ func TestCollectionWorstOnAStore(t *testing.T) {
 	hour := func(exec func(string, ...any), at time.Time, id int32, coll, collector string, runs, failed int, durSum int) {
 		exec(`INSERT INTO pgvigil.collection_health_hour (hour, instance_id, collection, collector_id, runs, ok, partial, failed, skipped,
 		        rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at)
-		      VALUES ($1, $2, $3, $4, $5, $5 - $6, 0, $6, 0, 0, $7, $7, 0, 0, 60, $1, $1)`, at, id, coll, collector, runs, failed, durSum)
+		      VALUES ($1, $2, $3, $4, $5::int, $5::int - $6::int, 0, $6::int, 0, 0, $7::bigint, $7::int, 0, 0, 60, $1, $1)`,
+			at, id, coll, collector, runs, failed, durSum) // typed: a VALUES row's '$5 - $6' is 'unknown - unknown' (42725, vis-b6gnr)
 	}
 	rule := func(t *testing.T, tx pgx.Tx, name, coll string) {
 		t.Helper()
@@ -258,10 +268,22 @@ func TestCollectionMetricPointsKeptOnAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Now().UTC().Truncate(time.Hour)
-	for k := 1; k <= 5; k++ {
+	// hours base-7h to base around the read below (from base-5h to base + 1 min: the hours in (base-6h, base-59 min]) -
+	// base-6h the edge left out (hour = from - 1 h), base-5h the first hour in (hour = from), base the open hour (no point
+	// yet), base-7h further out; and an hour whose runs were all skipped reads no duration and no failed per cent (the
+	// review of B6G-N #4)
+	for k := 0; k <= 7; k++ {
 		for ci, coll := range []string{"activity", "databases", "jobs"} {
 			for _, col := range []string{"c1", "c2"} {
 				if col == "c2" && (k+ci)%2 == 0 {
+					continue
+				}
+				if k == 3 && coll == "jobs" { // every run skipped: ran = 0
+					if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collection_health_hour (hour, instance_id, collection, collector_id, runs, ok, partial,
+					    failed, skipped, rows_written, dur_ms_sum, dur_ms_max, runs_over_half, runs_over_interval, interval_s, last_ok_at, last_failure_at)
+					  VALUES ($1, $2, $3, $4, 6, 0, 0, 0, 6, 0, 0, 0, 0, 0, 60, NULL, NULL)`, base.Add(-time.Duration(k)*time.Hour), id, coll, col); err != nil {
+						t.Fatal(err)
+					}
 					continue
 				}
 				runs := 10 + k*ci
@@ -311,7 +333,7 @@ func TestCollectionMetricPointsKeptOnAStore(t *testing.T) {
 		}
 		return out
 	}
-	from, to := base.Add(-6*time.Hour), base.Add(time.Minute)
+	from, to := base.Add(-5*time.Hour), base.Add(time.Minute) // points (hour + 1 h) in (from, to]: hours base-5h ... base-1h
 	for _, coll := range []any{nil, "activity", "jobs"} {
 		want := lines(oracle, id, from, to, coll)
 		got := lines(`SELECT x.at, x.metric, x.value FROM pgvigil.metric_points($1, 'collection', $2, $3, interval '1 hour', $4) x ORDER BY 1, 2`, id, from, to, coll)
