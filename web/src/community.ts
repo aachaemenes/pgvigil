@@ -24,6 +24,8 @@ interface Tool {
   id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string;
   installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[];
   state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>; sample?: SampleMark;
+  // KITWATCH K4.3: the version installed here (the server's definition, read daily) beside the one pgvigil was checked against
+  version?: { installed?: string; installed_date?: string; database?: string; readable: boolean; present?: boolean; read_at?: string; checked: string; checked_date: string; newer?: boolean };
 }
 // a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export carries (a demo
 // serve mails nothing)
@@ -32,7 +34,7 @@ interface SampleAnswer extends SampleMark {
   tool: string; name: string; instance: string; database?: string; params: Record<string, string>;
   param_doc: { name: string; type: string; help?: string }[] | null; dropped: string[] | null; cut: string[] | null; scrubbed: string[] | null; sets: ResultSet[];
 }
-interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string }
+interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string; kit_fleet?: string[] }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
 interface Params { installed: boolean; params: ProcParam[]; left_out: string[]; help_sets: ResultSet[]; help_error?: string; static_params?: { name: string; type: string; label?: string; default?: string }[] }
 interface GlennQuery { n: number; name: string; about: string; text: string }
@@ -162,6 +164,20 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     out.replaceChildren(panel);
     inView(out);
   };
+  // KITWATCH K4.3: the fleet's procedures newer than pgvigil was checked against, one line per version
+  if (d.kit_fleet?.length) box.append(el('ul', { class: 'meta' }, ...d.kit_fleet.map(l => el('li', {}, l))));
+  const versionCell = (t: Tool): HTMLElement | string => {
+    const v = t.version;
+    if (!v) return '';
+    const checked = `checked ${v.checked}`;
+    // never read (mssql_kits reads each day) and read but not found are two things, each said
+    if (!v.read_at) return `not read yet (mssql_kits reads each day); ${checked}`;
+    if (!v.present) return `not found at the last read; ${checked}`;
+    if (!v.readable) return el('span', {}, `not readable here (no VIEW DEFINITION); ${checked}`);
+    if (!v.installed) return `no version line; ${checked}`;
+    const here = `${v.installed}${v.database ? ` in ${v.database}` : ''}`;
+    return v.newer ? el('span', {}, `${here}; ${checked} `, badge('newer than checked', 'warn')) : `${here}; ${checked}`;
+  };
   const groups = [...new Set(d.tools.map(t => t.group))];
   for (const g of groups) {
     const tools = d.tools.filter(t => t.group === g);
@@ -171,6 +187,7 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const table = grid(tools as unknown as Row[], [
       { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, d, () => void openTool(r as unknown as Tool), cells.get(String(r.id)), above) },
       { key: 'description', wide: true },
+      { key: 'version', label: 'version', fmt: (_v, r) => versionCell(r as unknown as Tool) },
       { key: 'state', label: 'before it runs', wide: true, fmt: (_v, r) => cells.get(String(r.id)) ?? '' },
     ]);
     for (const t of tools) tables.set(t.id, table);

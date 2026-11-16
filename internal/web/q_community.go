@@ -52,6 +52,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	mssqldb "github.com/microsoft/go-mssqldb"
 
+	"github.com/aachaemenes/pgvigil/internal/community/kits"
 	"github.com/aachaemenes/pgvigil/internal/demo/community"
 )
 
@@ -386,6 +387,83 @@ type toolState struct {
 	Preset map[string]string `json:"preset,omitempty"`
 	// a demo instance only: the tool's stored sample (GET /api/community/sample has its result sets)
 	Sample *sampleMark `json:"sample,omitempty"`
+	// KITWATCH K4.3: the version installed here (mssql_kits' daily read of the definitions; the page's database, else
+	// master) beside the one pgvigil was checked against
+	Version *toolVersion `json:"version,omitempty"`
+}
+
+// toolVersion: a tool's installed version as mssql_kits last read it and the version pgvigil was checked against
+type toolVersion struct {
+	Installed     string     `json:"installed,omitempty"`
+	InstalledDate string     `json:"installed_date,omitempty"`
+	Database      string     `json:"database,omitempty"`
+	Readable      bool       `json:"readable"`
+	Present       bool       `json:"present,omitempty"` // the last read found the procedure (else read_at is that read's, or absent: never read)
+	ReadAt        *time.Time `json:"read_at,omitempty"`
+	Checked       string     `json:"checked"`
+	CheckedDate   string     `json:"checked_date"`
+	Newer         bool       `json:"newer,omitempty"`
+}
+
+// kitVersions fills each SQL Server tool's version (the page's database first, then master) and answers the fleet's
+// lines: one per procedure and version newer than pgvigil was checked against (never a finding per instance: F14)
+func (s *Server) kitVersions(ctx context.Context, id int, db string, tools []toolState) []string {
+	rows, err := s.pool.Query(ctx, `SELECT procedure_name, database_name, version, version_date, readable, read_at
+	  FROM pgvigil.mssql_kit_versions WHERE instance_id = $1 AND database_name IN ($2, 'master') ORDER BY (database_name = $2) DESC`, id, db)
+	if err != nil {
+		s.log.Debug("community: the kits' versions were not read", "err", err)
+		return nil
+	}
+	got := map[string]toolVersion{}
+	for rows.Next() {
+		var proc string
+		var v toolVersion
+		var at time.Time
+		if rows.Scan(&proc, &v.Database, &v.Installed, &v.InstalledDate, &v.Readable, &at) != nil {
+			continue
+		}
+		if _, seen := got[proc]; !seen {
+			v.ReadAt, v.Present = &at, true
+			got[proc] = v
+		}
+	}
+	rows.Close()
+	// the instance's last mssql_kits read: a tool it did not find shows that read's time (not installed then), a tool
+	// never read none (a read with no procedure stores no row, so the rows alone cannot tell the two apart)
+	var lastRead *time.Time
+	var lr time.Time
+	if s.pool.QueryRow(ctx, `SELECT snapshot_at FROM pgvigil.collection_dates WHERE instance_id = $1 AND collection = 'mssql_kits' AND status IN ('ok', 'partial')`, id).Scan(&lr) == nil {
+		lastRead = &lr
+	}
+	for i := range tools {
+		c, ok := kits.Checked(tools[i].Name)
+		if !ok {
+			continue
+		}
+		v, found := got[tools[i].Name]
+		if !found {
+			v.ReadAt = lastRead
+		}
+		v.Checked, v.CheckedDate = c.Version, c.Date
+		v.Newer = kits.NewerThanChecked(tools[i].Name, v.InstalledDate)
+		tools[i].Version = &v
+	}
+	var lines []string
+	fl, err := s.pool.Query(ctx, `SELECT procedure_name, version, version_date, instances FROM pgvigil.kit_versions_fleet ORDER BY procedure_name, version_date`)
+	if err != nil {
+		return nil
+	}
+	defer fl.Close()
+	for fl.Next() {
+		var proc, ver, date string
+		var n int
+		if fl.Scan(&proc, &ver, &date, &n) != nil || !kits.NewerThanChecked(proc, date) {
+			continue
+		}
+		c, _ := kits.Checked(proc)
+		lines = append(lines, fmt.Sprintf("%s %s on %d instance(s) of the fleet: newer than the %s pgvigil was checked against", proc, ver, n, c.Version))
+	}
+	return lines
 }
 
 // sampleMark says what a stored sample is, wherever it is shown: the kit and version that produced it, when and on
@@ -1115,6 +1193,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		// what every tool here lacks before it can run (the server's state, the instance's login), with the way to get it
 		Needs     []toolNeed `json:"needs"`
 		CheckedAt *time.Time `json:"checked_at,omitempty"`
+		// KITWATCH K4.3: the fleet's community procedures newer than pgvigil was checked against, one line per version
+		KitFleet []string `json:"kit_fleet,omitempty"`
 	}{Instance: name, Engine: engine, Tools: []toolState{}, Needs: []toolNeed{}}
 	for _, t := range communityTools {
 		if t.Engine == engine {
@@ -1124,6 +1204,9 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	door, _, no := ds.readLogin(engine, name)
 	if engine == "sqlserver" {
 		out.Database = msDB(db)
+		if !demo {
+			out.KitFleet = s.kitVersions(ctx, id, out.Database, out.Tools)
+		}
 	}
 	var c *communityCheck
 	var platform string
@@ -1318,6 +1401,8 @@ type communityBody struct {
 	TimeoutSecs int               `json:"timeout_secs"`
 	Text        string            `json:"text"`
 	QueryName   string            `json:"query_name"`
+	// ExactTypes: the answer's sets carry the driver's SQL type and nullability too (KITWATCH K4.1, opt-in)
+	ExactTypes bool `json:"exact_types"`
 }
 
 // communityGate is a POST's shared part: the gate, the body, the tool, the instance of the tool's engine.
@@ -1610,7 +1695,7 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		rows, err := conn.QueryContext(rctx, stmt, args...)
 		var sets []resultSet
 		if err == nil {
-			sets, err = readMS(rows, 5000, &sizer{}, rcancel)
+			sets, run.AtSetCap, err = readMSWith(rows, 5000, &sizer{}, rcancel, in.ExactTypes)
 		}
 		rcancel()
 		_ = conn.Close()
