@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -330,5 +331,33 @@ func TestMaskGroupingSets(t *testing.T) {
 	Mask(&r, "normalized", up)
 	if strings.Contains(r.PlanText, "kGlit") {
 		t.Errorf("text form: %s", r.PlanText)
+	}
+}
+
+// TestMaskSampling (TEXT-NOW-L review L2): the text form's tablesample line 'Sampling: <method> (<parameters>)
+// REPEATABLE (<seed>)' is an expression line - its values are masked under normalized (the JSON form's Sampling
+// Parameters / Repeatable Seed were already keys).
+func TestMaskSampling(t *testing.T) {
+	quoted := regexp.MustCompile(`'[^']*'`)
+	norm := func(s string) string { return quoted.ReplaceAllString(s, "?") }
+	txt := "Sample Scan on ts  (cost=0.00..1.00 rows=1 width=4)\n  Sampling: bernoulli ('7.5'::real) REPEATABLE ('4242'::double precision)"
+	r := Build(Explained, time.Unix(0, 0), "", "", "", txt)
+	Mask(&r, "normalized", norm)
+	if strings.Contains(r.PlanText, "7.5") || strings.Contains(r.PlanText, "4242") {
+		t.Errorf("the Sampling line kept its values: %s", r.PlanText)
+	}
+}
+
+// TestNormalizeAllKeeps (TEXT-NOW-L review, the tests): under an expression key every string at any depth is
+// normalized; a number, a bool and an object in the arrays are kept as they are.
+func TestNormalizeAllKeeps(t *testing.T) {
+	v := map[string]any{"Group Keys": []any{[]any{"(a || 'k'::text)", 1.5, true, map[string]any{"x": "y"}}}}
+	maskValue(v, strings.ToUpper)
+	in := v["Group Keys"].([]any)[0].([]any)
+	if in[0] != "(A || 'K'::TEXT)" || in[1] != 1.5 || in[2] != true {
+		t.Errorf("the key list: %v", in)
+	}
+	if m, ok := in[3].(map[string]any); !ok || m["x"] != "y" {
+		t.Errorf("an object in the key list changed: %v", in[3])
 	}
 }

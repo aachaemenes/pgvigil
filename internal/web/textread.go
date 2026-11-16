@@ -220,6 +220,12 @@ func tagged(t *table) bool {
 	return false
 }
 
+// pinDoors - TEXT-NOW-L review L4, the rows first: a stub that pins nothing.
+func pinDoors(r *http.Request, ds *doorSet) *http.Request { return r }
+
+// doorsPinned - the rows first: a stub that finds no pin.
+func doorsPinned(r *http.Request) *doorSet { return nil }
+
 // applyTextNow applies the read rule to every tagged table of a reply value, in place.
 func (s *Server) applyTextNow(r *http.Request, v any) error {
 	var ts []*table

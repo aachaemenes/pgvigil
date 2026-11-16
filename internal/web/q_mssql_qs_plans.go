@@ -707,6 +707,38 @@ func searchShown(t *table, text string, normalized map[int]bool) int {
 	return n
 }
 
+// keepShown - TEXT-NOW-L review M3, the rows first: a stub in the old order (the statement cut first, then matched).
+func keepShown(t *table, text string, normalized map[int]bool, cut int) int {
+	cutStatement(t, cut)
+	return searchShown(t, text, normalized)
+}
+
+// cutStatement cuts each row's statement to its first n characters (as the function's left(statement, 400) does).
+func cutStatement(t *table, n int) {
+	if t == nil {
+		return
+	}
+	si := -1
+	for i, c := range t.Columns {
+		if c == "statement" {
+			si = i
+		}
+	}
+	if si < 0 {
+		return
+	}
+	for _, r := range t.Rows {
+		if s, ok := r[si].(string); ok {
+			if rs := []rune(s); len(rs) > n {
+				r[si] = string(rs[:n])
+			}
+		}
+	}
+}
+
+// mergeSearch - TEXT-NOW-L review M2, the rows first: a stub giving back the full instances' rows alone.
+func mergeSearch(full, norm *table, max int) (*table, string, error) { return full, "", nil }
+
 // ---- the plans of one statement's hashes (SQLWATCH COL#27) ----------------------------------------------------------
 //   GET /api/mssql/plansources?instance=N&db=D&qh=0x..&ph=0x..   the Query Store plan, the running query's kept plan and
 //        the plan cache's entries of a statement, for a slow or long-wait event's Plan button  -> Server.MSSQLPlanSources

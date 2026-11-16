@@ -124,6 +124,12 @@
 #        still come; q=t1.pad (outside the literals) returns sqlfull's rows, each statement shown normalized (no
 #        'pgvf_marker' in it); sqlfull is named under normalized. Set back to full after. Red at the row-first commit:
 #        q=marker%_x returns sqlfull's rows (shown normalized, matched on the stored literal).
+#     F7 (TEXT-NOW-L review M3 / M2; written before its first run) a normalized instance is matched on its whole stored
+#        text, then cut to the 400 characters shown: a statement of about 680 characters (run 3 times on sqlfull, with
+#        the alias pgvf_tail_col past character 550 and the literal 'pgvf_long_x'), sqlfull still read as normalized:
+#        q=pgvf_tail_col returns sqlfull's row(s), each statement at most 400 characters and shown normalized (no
+#        'pgvf_long_x'); q=pgvf_long_x (only inside its literal) returns no row of sqlfull. Red at the fold's row-first
+#        commit: q=pgvf_tail_col returns no row of sqlfull (the function's left(.., 400) is matched, the alias cut off).
 #     Red on f8e89d2: the routes do not exist.
 #  G. the STATISTICS IO / TIME reader (DBA Dash N62-N67, F11, P9): web/src/mssql_statsio.ts compiled by esbuild; its unit
 #     tests (web/src/mssql_statsio.test.mjs: sqlcmd, SSMS and Azure Data Studio shapes, a German text, the
@@ -881,7 +887,7 @@ export PGV_Q_MON2="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT2?database=
 printf '  - name: f2\n    engine: sqlserver\n    dsn: env:PGV_Q_MON2\n    query_text: full\n' >> "$TMPD/m.yaml"
 col sqlfull mssql_plancache; col f2 mssql_instance mssql_plancache
 STF="SELECT COUNT(*) FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.a > 4990 AND t1.pad <> 'pgvf_marker%_x';"
-sqok "F: three runs" "$STF $STF $STF" pgvqs; sqok "F: two runs under Query Store" "$STF $STF EXEC sys.sp_query_store_flush_db;" pgvqs2
+sqok "F: three runs" "$STF $STF $STF" pgvqs; STL="SELECT $(printf 't1.a AS c, %.0s' {1..50})t1.id AS pgvf_tail_col FROM dbo.t t1 JOIN dbo.t t2 ON t2.id = t1.id WHERE t1.a > 4995 AND t2.pad <> 'pgvf_long_x';"; sqok "F7: the long statement, three runs" "$STL $STL $STL" pgvqs; sqok "F: two runs under Query Store" "$STF $STF EXEC sys.sp_query_store_flush_db;" pgvqs2
 sq2 "$STF $STF $STF $STF $STF" pgvqs >/dev/null || fail "F: five runs on f2"
 col sqlfull mssql_plancache mssql_querystore; col f2 mssql_plancache
 HAND1=$(sq "SELECT CONVERT(varchar(40), qs.query_hash, 1) + '|' + CAST(qs.execution_count AS varchar(20)) + '|' + CAST(qs.total_worker_time AS varchar(20)) + '|' + ISNULL(CAST(t.dbid AS varchar(10)), '0')
@@ -991,8 +997,28 @@ print(f"F6 counts: q=marker%_x sqlfull {len(lit)} f2 {len([x for x in rows(a) if
 sys.exit(1 if bad else 0)
 PYEND
 echo "ok   F6: sqlfull read as normalized: q=marker%_x (inside its literal) returns none of its rows, q=t1.pad returns them normalized; f2's rows still come"
+# F7: a normalized instance matched on its whole stored text, then cut to the 400 characters shown (review M3 / M2)
+CODE=$(api "mssql/search?q=pgvf_tail_col" "$TMPD/f7a.json"); CODE2=$(api "mssql/search?q=pgvf_long_x" "$TMPD/f7b.json")
+python3 - "$TMPD/f7a.json" "$TMPD/f7b.json" <<'PYEND' || fail "F7: see above (red at the fold's row-first commit: no row of sqlfull for an alias past character 400)"
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+rows = lambda d: [dict(zip(x['rows']['columns'], r)) for x in d.get('sources', []) if x.get('rows') for r in x['rows']['rows']]
+bad = []
+tail = [x for x in rows(a) if x['instance'] == 'sqlfull']
+if not tail: bad.append("q=pgvf_tail_col: no row of sqlfull (outside the literals, past character 400: it must be found)")
+for x in tail:
+    st = x['statement'] or ''
+    if len(st) > 400: bad.append(f"q=pgvf_tail_col: a statement of {len(st)} characters shown (at most 400)")
+    if 'pgvf_long_x' in st: bad.append("q=pgvf_tail_col: a sqlfull statement shown with its literal")
+lit = [x for x in rows(b) if x['instance'] == 'sqlfull']
+if lit: bad.append(f"q=pgvf_long_x: {len(lit)} row(s) of sqlfull (only inside its literal)")
+for x in bad: print('DIFF F7', x)
+print(f"F7 counts: q=pgvf_tail_col sqlfull {len(tail)} (lengths {[len(x['statement'] or '') for x in tail]}); q=pgvf_long_x sqlfull {len(lit)}")
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   F7: sqlfull read as normalized: q=pgvf_tail_col (past character 400, outside the literals) returns its rows cut to 400 and normalized; q=pgvf_long_x (inside its literal) none"
 set_qt sqlfull full; serve_restart f6back
-echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note; the policy now (F5); the shown text under normalized (F6)"
+echo "ok   F: one statement's executions per instance and source equal the servers' own; the search finds it on both, % and _ as they are, the policies named; the trigram index's state; the PostgreSQL note; the policy now (F5); the shown text under normalized (F6); the whole text matched, then cut (F7)"
 fi
 
 if part G; then
