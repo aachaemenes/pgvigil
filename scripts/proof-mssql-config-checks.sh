@@ -85,6 +85,12 @@
 #     instance's file it is a warning whose finding names 'warning at 50, critical at 80'; with 50 / 55 it is
 #     critical; a warning line not under the critical one is refused when the file is read (the run does not start,
 #     the stored verdict stays); without the two names the default lines judge it again.
+#  C7 BLITZ-GAP (the lead 05:2x / 06:3x): sp_Blitz 55 as a configuration expectation - the key ('database', 'owner',
+#     text, on by default, rule 'sp_Blitz 55'; RED ON THE BASE: no such key) and its rows over each user database's owner
+#     (0090's options): with no scope, sa is expected - a database owned by another login is 'info' ('the owner is <x>;
+#     the expected owner is sa (the default)'), sa's 'ok', and no finding row (info); the instance expecting <x>: the two
+#     swap; 'off': every row off; inherit: back; a database left out: no row. Until joined, scripts/blitzgap-join-draft-
+#     config.sql gives the keys and the checks their lines.
 #  V. the version run: each further image repeats A, the default grid and the recovery, scoped MAXDOP and event
 #     session deviations.
 #  A met expected value for a server option leaves no day-one warning for it: not in the findings, not on the Checks
@@ -692,6 +698,25 @@ eqv "C6 a warning line not under the critical one is refused when the file is re
 eqv "C6 ... and the stored verdict is as it was" "$(idc)" "crit 60 / critical, warning at 50, critical at 55"
 collect mssql_identity || true
 eqv "C6 without the two names: the default lines judge it again" "$(idc)" "ok 60 / no finding"
+
+echo "== C7: sp_Blitz 55 - each user database's owner against an expected owner (BLITZ-GAP; scripts/blitzgap-join-draft-config.sql until lines 2 / 3 are joined)"
+C7ROOT=$(cd "$(dirname "$0")/.." && pwd)
+if [[ $(pq "SELECT count(*) FROM pgvigil.mssql_config_expect_keys() WHERE kind = 'database' AND key = 'owner'") != 1 && -f $C7ROOT/scripts/blitzgap-join-draft-config.sql ]]; then
+  psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$C7ROOT/scripts/blitzgap-join-draft-config.sql" >/dev/null && echo "  the join draft applied (scripts/blitzgap-join-draft-config.sql: lines 2 / 3 are not joined yet)" || bad "C7: the join draft did not apply"
+fi
+eqv "C7 the key 'database owner' (sp_Blitz 55) is in the expected values' list" "$(pq "SELECT kind || ' ' || key || ' ' || vtype || ' ' || default_on || ' ' || rule FROM pgvigil.mssql_config_expect_keys() WHERE kind = 'database' AND key = 'owner'")" "database owner text true sp_Blitz 55"
+sqv "C7 setup: a database owned by sa and one owned by $OWN" "CREATE DATABASE pgv_own_sa; CREATE DATABASE pgv_own_x; ALTER AUTHORIZATION ON DATABASE::pgv_own_x TO [$OWN];"
+collect mssql_checks || bad "C7: collect mssql_checks"
+eqv "C7 the default (sa): the database owned by $OWN is info, sa's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa ok, pgv_own_x info"
+eqv "C7 its words" "$(det 'database owner' pgv_own_x)" "the owner is $OWN; the expected owner is sa (the default)"
+eqv "C7 info makes no finding row" "$(pq "SELECT count(*) FROM pgvigil.mssql_config_check_findings WHERE instance_id = $IID AND check_name = 'database owner'")" 0
+eqv "C7 the expected owner set to $OWN on the instance" "$(exi "\"kind\":\"database\",\"key\":\"owner\",\"value\":\"$OWN\"")" done
+eqv "C7 ... then sa's database is info and $OWN's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa info, pgv_own_x ok"
+eqv "C7 set off: every row off" "$(exi '"kind":"database","key":"owner","value":"off"') $(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "done pgv_own_sa off, pgv_own_x off"
+eqv "C7 back to the default" "$(exn '"kind":"database","key":"owner"') $(st 'database owner' pgv_own_x)" "done pgv_own_x info"
+eqv "C7 a database left out" "$(exi '"kind":"database","key":"owner","value":"sa","exclusions":["pgv_own_x"]') $(st 'database owner' pgv_own_x)" "done no row"
+exn '"kind":"database","key":"owner"' >/dev/null
+sqv "C7 undo" "DROP DATABASE pgv_own_sa; DROP DATABASE pgv_own_x;"
 
 # ---- V: the version run ---------------------------------------------------------------------------------------------
 for img in "${IMAGES[@]:1}"; do
