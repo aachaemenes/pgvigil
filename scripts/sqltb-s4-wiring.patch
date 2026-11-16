@@ -1,0 +1,628 @@
+diff --git i/docs/sqlserver-checks.md w/docs/sqlserver-checks.md
+index 1e6a68be..91e20284 100644
+--- i/docs/sqlserver-checks.md
++++ w/docs/sqlserver-checks.md
+@@ -29,7 +29,131 @@ The trace flags are judged by the same rules but read once, by `mssql_traceflags
+ | Last good CHECKDB | never: critical (a database under seven days old is not raised); past 7 days: warning; past 14 days: critical (dbachecks, sp_Blitz 68), each with half a day's grace so a weekly CHECKDB still running does not raise it. tempdb, read-only databases and snapshots are not judged |
+ | Suspect pages | an 823 / 824 error, a bad checksum or a torn page in `msdb.dbo.suspect_pages`: critical when under 30 days old, else warning (sp_Blitz 90); the table at 900 of its 1,000 rows: warning |
+ | Agent alerts | no enabled operator, no alert for severity 19 to 25, none for errors 823 / 824 / 825: warning (sp_Blitz 31, 61, 96); some severities missing, an alert disabled, one that notifies nobody, one without the error's text, no fail-safe operator: advice. An operator's e-mail address is not stored |
+-| Identity columns | a column at 75 % of its range: warning, 90 %: critical; columns under 10 % are not stored. The range runs from 0 to the type's largest value, or from the seed when it is negative (`IDENTITY(-2147483648, 1)`); a column that counts down is not weighed. The rate per day and the days left once two reads are an hour apart; a reseed starts the rate again. A login that can enter no user database leaves the area not read, with the reason |
++| Identity columns | a column at 75 % of its range: warning, 90 %: critical (the defaults: an instance's `mssql_thresholds` may set `identity_warn_pct` and `identity_crit_pct`, each from 10 to 100 with the warning under the critical, and a finding names the lines in force); columns under 10 % are not stored. The range runs from 0 to the type's largest value, or from the seed when it is negative (`IDENTITY(-2147483648, 1)`); a column that counts down is not weighed. The rate per day and the days left once two reads are an hour apart; a reseed starts the rate again. A login that can enter no user database leaves the area not read, with the reason |
++
++## Configuration checks (task 409)
++
++The instance configuration and database option checks dbachecks names, each judged against an expected value that a
++site sets at the root, on a tag or on one instance (migration 0160; the Checks grid on an instance's Configuration
++tab). Every rule has a row, met or not, with its value, the expected value, where the expectation is set (default,
++root, `tag:<name>`, instance) and its source.
++
++- A rule whose source is a site's policy (**dbachecks policy**) is **off** until a scope sets it - grey, 'set an
++  expectation', no finding: a server option's expected value (dbachecks' Database Mail XPs and remote access are
++  listed whether set or not, any other option once it is set), the recovery model (master, tempdb, model and msdb
++  left out unless the list says otherwise; tempdb is never judged by it), the database-scoped MAXDOP, databases that are RESTORING, read-only or in
++  standby (a mirror, an availability group secondary and a log shipping secondary are never counted), the databases
++  expected to exist (critical when one is missing), Query Store on or off, the event sessions expected stopped,
++  running, allowed to run and to exist, the trace flags expected and not expected, the error log files kept, the
++  Agent's operators, its fail-safe operator and the logins that may or may not own a job (compared without case; an
++  operator's name holding '@' is refused: no e-mail address is stored; a login's name may hold one), the TCP port, the
++  enabled protocols (as SQL Server names them: Tcp, Np, Sm; on Linux a list without Tcp is info) and the Windows
++  processor scheduling. A number has the range the server takes for it (MAXDOP 0 to 32767, 6 to 99 error log files,
++  a TCP port, 0 to 63 for the processor scheduling); names on a list and the databases left out are compared without
++  case.
++- A rule from **Microsoft**'s guidance or a **dbatools formula** is **on** and a scope may set it off: the engine's
++  and the Agent's start mode (Automatic on a standalone instance, Manual on a failover cluster instance),
++  @@SERVERNAME against the server's own name ('a rename not finished'), max server memory against dbatools'
++  Test-DbaMaxMemory for the machine, shared by the monitored instances on it (on Linux only 'under the machine's
++  memory' is judged; Analysis, Reporting and Integration Services are not counted), MAXDOP against dbatools'
++  Test-DbaMaxDop (from 1 up to the advised value is in order), and 'scan for startup procs' on with no startup
++  procedure.
++- **info** is shown amber and raises no finding (max server memory, MAXDOP, the error log files, the port, the
++  protocols, the processor scheduling); **warning** and **critical** rows are findings (source
++  `mssql_config_checks`). **not read** and **not applicable** are grey with the reason beside them and never green:
++  the engine's start mode on Linux (sys.dm_server_services lists no engine service there), the startup procedures
++  for a login without VIEW ANY DEFINITION, the Agent's fail-safe operator for a login that may not run
++  `master.dbo.sp_MSgetalertinfo`, the error log count on a Linux server whose `errorlog.numerrorlogs` is not set (and on
++  Windows where no value is read while the server keeps more files than the default of 6 archives), a database rule
++  with a database it could not read (a database the login cannot enter, a recovery model or Query Store state the
++  server gave none of), a RESTORING, read-only or standby database where the secondaries could not be told apart, the
++  SQL Server Browser (pgvigil has no Windows host door yet), and on Amazon RDS, Azure SQL Managed Instance and Google
++  Cloud SQL every rule about the host ('<service> runs the host').
++- A server option that has an expected value in force is judged by that expectation alone: while it is set, the
++  day-one check's own finding for the option is left out everywhere - the findings, the Checks page's areas and the
++  Summary's cells, and the findings that page lists.
++- Linked servers: the list (provider, data source, who is mapped at each - a local login or every login, with its own
++  credential or a remote login; never a remote login's name or password). Their connection test is off until the
++  instance carries the tag `pgvigil:linkedserver-test`: then `sys.sp_testlinkedserver` runs FROM the monitored
++  server, as the collector's own login maps there, for two servers a run (30 s each at most), each in its turn. A
++  failure is a warning with the error and since when, and stands until the server's next test; error 7416 is 'not
++  tested: the collector's login has no mapping there' and 18456 'the login mapped for the collector's login was
++  refused at the remote server', grey, never a failure of the link; a server of another provider than SQL Server's
++  is left out. A refused login's error text (it names the remote login) is never kept, and a login, user or
++  principal named in any other error is cut out. A login that may not see every linked server (it needs ALTER ANY
++  LINKED SERVER, ALTER ANY LOGIN, VIEW ANY DEFINITION, setupadmin or sysadmin once a server's default login mapping
++  is dropped) gets a short list: the list says so, a server it does not show is kept, and no linked server visible
++  reads 'not read', never 'no linked server'. The test follows the tag in the instance's configuration, the one the
++  collector reads.
++- The expected values are set in the page's editor (the same seat as the threshold writes: a signed-in user on a
++  server with the actions door's audit login); a change ends the live row and writes its successor, so who set what
++  and when stays. `pgvigil.mssql_config_expect_in_force(instance)` gives the value in force per kind and key with
++  where it was set.
++- Not proven: a live Windows server, a managed service, SQL Server 2016 (those rows are proven on rows written into
++  the repository, `scripts/proof-mssql-config-checks.sh`); 'a rename not finished' live (SQL Server on Linux
++  registers the host's name again at its start); a linked server of another provider (SQL Server on Linux refuses to
++  make one; the provider filter is a Go test's); the fail-safe operator read live; the editor's write with a
++  signed-in user. The TCP port, the protocols and the processor scheduling read 'not read' until the properties
++  collection stores them. An Azure SQL Database instance has no configuration checks (one database is the instance).
++
++API: `GET /api/mssql/config_checks?instance=N`, `GET /api/mssql/config_expect?instance=N` and
++`POST /api/mssql/config_expect`.
++
++## Maintenance (task 410)
++
++Ola Hallengren's maintenance solution, judged as dbachecks judges it (migration 0161; the Jobs group's Maintenance
++tab). Every rule has a row, met or not.
++
++- **Installed**: the solution is found by its objects in schema dbo (CommandExecute, DatabaseBackup,
++  DatabaseIntegrityCheck, IndexOptimize, CommandLog) in any database the login can enter; the version is each
++  procedure's own line. A part of it in a database is a warning naming what is missing. A login without VIEW
++  DEFINITION in a database sees none of its procedures: that database reads 'not read', never 'not installed' (nor a
++  part of it: SELECT on dbo.CommandLog shows that table alone). No solution in any database read is one info row, 'not
++  installed' (another tool may do the maintenance), never a warning: it is info for the databases read and names the
++  ones the login cannot enter ('not looked into: model (no access), ...') - a database a login can never enter does
++  not hold the row at 'not read'.
++- **Jobs**: each job the solution makes on the instance's platform (eleven on Windows, ten on Linux - no 'Output File
++  Cleanup' -, six on Azure SQL Managed Instance, three on Amazon RDS) is matched by what its step calls (the
++  procedure with its @Databases and @BackupType in any order, a list with exclusions such as 'USER_DATABASES, -BigDb'
++  taken as its first word - 'ALL_DATABASES' is matched by the job's name only -, the CommandLog clean-up, the two msdb
++  history procedures; those two only where the solution may be), else by the solution's description and its name,
++  else by its name; a renamed job is still matched. The tab's Jobs grid lists the same match, each job with its role
++  and the clean-up age its steps name. Each must be enabled and
++  have an enabled schedule (warning each: the solution makes its jobs without schedules). Its clean-up age: a backup
++  job's @CleanupTime at least 192 hours (absent or NULL: the files are never removed, met; @MirrorCleanupTime is not
++  it), the CommandLog clean-up, the two history clean-ups and Output File Cleanup (Windows) at least 30 days - under
++  it info, a step whose age the
++  parser does not know 'age not read', never met. A job the solution makes that is not there is info 'not present';
++  an expected value of kind job (keys expected and not_expected, on the Configuration tab's Checks) makes it a
++  warning, or 'off'.
++- **History**: the solution's CommandLog (only where CommandExecute is in the same database: an application's own
++  dbo.CommandLog is not read) is read forward from one past the highest ID read, batch by batch until its end, at
++  most 50,000 rows a database a run or the run's deadline - a read that stays behind says how far (info, 'N rows
++  behind'); the rows still running at a read (no EndTime) are read again at the next, from the lowest of them, until
++  they end (after 7 days 'never closed', info, and no longer read again); a table emptied or truncated starts again
++  without losing the rows read. A command is masked whole, then cut at 4,000 characters; a backup's kind (full,
++  differential, log) is read from its whole command on the server - native, LiteSpeed, Red Gate SQL Backup, SQL Safe,
++  Data Domain Boost. Times are converted from the server's own clock to UTC by the offset in force at the read: a
++  row read again after a daylight saving step moves by its hour, and the first read of a database (its last 7 days)
++  takes every older row at the new offset. A command that failed in the last day is a warning naming the database,
++  the object, the command type and the error number (CommandLog keeps no message for some failures - a backup's 3013
++  - and the job's history has it); 1205, 1222 and 5245 are info once a job of the command's own role has run and
++  succeeded since (an index or statistics command: IndexOptimize's job; a DBCC: an integrity check's; a backup: a
++  backup's), else a warning. Without SELECT on dbo.CommandLog the history reads 'not read'; a CommandLog the last read
++  did not reach reads 'not read' too. purge() deletes the rows past the retention. Not caught: a table truncated and
++  refilled past the old cursor between two reads (its new rows under the cursor are not read).
++- **Data purity** (dbachecks Database#11): DBCC DBINFO WITH TABLERESULTS inside every database the login can enter,
++  as its own user there, once a day per database (the flag changes only after a CHECKDB WITH DATA_PURITY; a read
++  between keeps the day's): off only for a database made before SQL Server 2005 (dbi_createVersion under 611) whose
++  dbi_dbccFlags are 0 - a warning. By version, for a monitor login that is not sysadmin: SQL Server 2022 answers it;
++  SQL Server 2017 and 2019 refuse it (error 2571, 'does not have permission to run DBCC DBINFO'), so each database
++  reads 'not read' with that error there, never a verdict. A database the login cannot enter reads 'not read: no
++  access'; a secondary replica of an availability group 'not read: a secondary replica (read on the primary)'.
++- Not proven: SQL Server 2016 (Windows-only, rides task 164's Windows host); Windows (eleven jobs, 'Output File
++  Cleanup' and its age: written rows); Managed Instance and RDS (the expected lists on written rows); a server across a
++  daylight saving step; an availability group's secondary replica; a read cut by the run's deadline.
++
++API: `GET /api/mssql/maintenance?instance=N` (checks, parts, databases, jobs, last, commandlog over from / to, runs).
+ 
+ ## Pages
+ 
+diff --git i/docs/sqlserver-hadr.md w/docs/sqlserver-hadr.md
+index e8fcc23d..e99e3208 100644
+--- i/docs/sqlserver-hadr.md
++++ w/docs/sqlserver-hadr.md
+@@ -163,6 +163,8 @@ instances:
+ 
+ A threshold of 0 turns its finding off.
+ 
++The same block takes the two lines of the identity columns' rule, `identity_warn_pct` and `identity_crit_pct` ([day-one checks](sqlserver-checks.md)): each from 10 to 100, the warning under the critical. They are that collection's own and are not stored with the thresholds above; 0 is refused for them.
++
+ ## One run by hand
+ 
+ ```
+diff --git i/docs/sqlserver-storage.md w/docs/sqlserver-storage.md
+index 1e640767..1713c8b1 100644
+--- i/docs/sqlserver-storage.md
++++ w/docs/sqlserver-storage.md
+@@ -77,6 +77,53 @@ The store's size and the two rates over the chosen range, each chart with its nu
+ 
+ When cleanup stands still and no snapshot transaction was active at the read, the finding says `holder unknown` and names the next read (the oldest open transaction of any kind).
+ 
++## Storage depth (task 407)
++
++What SQLWATCH, SQLMonitor, dbachecks, Telegraf and windows_exporter show of a SQL Server's storage beyond the files'
++sizes, on the Storage and Database files tabs (migration 0158).
++
++- Days until full: each volume's used space over 30 days (at least 7 days of reads) and over 7 days, by regression; the
++  30-day figure judges. 'a volume full within 30 days' is a warning, under 7 days critical: the meaning the host
++  volumes' rule has on PostgreSQL (SQLWATCH warns under 7 days and is critical under 3: not taken, so one rule means
++  one thing on both engines). On Linux the directories that read the same total and free bytes are one file system.
++- The space inside each database (`mssql_storage`'s per-database read, where the login has VIEW SERVER STATE - on
++  SQL Server 2022 VIEW SERVER PERFORMANCE STATE is enough - and VIEW ANY DEFINITION): reserved, data, index and unused
++  pages as sp_spaceused counts them (an XML or full-text index's internal tables as index), the data files' space not
++  reserved yet, the log's size and use. A database whose split was not read keeps its row, grey, with the reason.
++- tempdb (`mssql_versionstore`'s minute read): user objects, internal objects, the version store and the free space.
++  'tempdb data files filling' judges the newest read against tempdb's capacity, taken from the hourly storage read: a
++  file that does not grow counts its size, the files that grow to a max size the smaller of their max sizes and their
++  size plus the volume's free space, a file without limit its size plus that free space (a Linux file system's free
++  space counted once). Growth between two reads does not move it. Over 50 % a warning, over 80 % critical; with tempdb's
++  files not read, or a file without limit on a volume whose free space was not read, the capacity is 'not known'.
++  SQLMonitor also alerts at a fixed 100 GB: not taken (a fixed size is wrong for a small and a large server alike).
++- Every table (`mssql_tables`, every 6 hours, ON by default on a new and an upgraded site): type, compression, partitions,
++  rows and sizes as sp_spaceused counts them (an XML or full-text index's internal tables with the table); a sample is
++  stored only when a table's rows or size changed, so an unchanged table costs nothing after its first read. A server
++  with many tables is stored 20,000 tables an import, and a pass the run's deadline cuts goes on at the next run from
++  the first database it did not reach. A table first seen inside the window, in a database read before it, grew from 0. Store cost: one row per table in `mssql_tables` and one per change in `mssql_table_sample` (about
++  150 bytes with its index). tempdb and model are left out. Switch it off for an instance with
++  `disabled: [mssql_tables]` in its entry of pgvigil.yaml.
++- IO per database and per volume (`mssql_fileio`): every database apart in a grid, a chart of the busiest 5, 10 or
++  20, and the range beside the same window a day or a week before. Each file also gives the resource governor's queued
++  stall and the IOs pending at the read, matched to the file by its handle (Microsoft calls the pending time 'internal
++  use only': it is not kept).
++- The default data and log paths, the fixed drives (free space only: SQL Server gives no drive size) and the data and
++  log files in the instance's folders that no database lists (`mssql_storage_depth`, SQL Server 2017 and later): a
++  folder's own files, never a subfolder's (another instance's files may sit there). The orphan list needs VIEW ANY
++  DEFINITION and says so without it; a folder that cannot be listed keeps the last list. 'SMO and DMO XPs' at 0 turns
++  that read off; pgvigil never switches it on. After ALTER DATABASE tempdb MODIFY FILE the server names the new path at
++  once but runs on the old files until its restart: pgvigil keeps tempdb's paths from its first read after each start
++  and never calls those files orphans. A move made before that first read cannot be told apart: a file named like a
++  tempdb file and written since the server's start then reads 'a tempdb file move may be pending (the files run until
++  the restart)', as info. A file a finished move left behind (not written since the start) is a plain orphan.
++- The log space rule names the transaction that keeps the log from clearing when it waits on ACTIVE_TRANSACTION
++  (session, login, host, program, open since, last statement; a distributed transaction by its unit of work; a local
++  one no session holds by its transaction id), tempdb's log too; a holder that could not be read says 'holder not read'.
++  It never kills it.
++- Not read: the Windows host's disk counters (queue length, latency, IOPS and throughput per logical and physical
++  disk), the volumes' block size and allocation unit. pgvigil has no Windows host door yet.
++
+ ## One run by hand
+ 
+ ```
+diff --git i/docs/sqlserver.md w/docs/sqlserver.md
+index 3ec1c5e4..8e5adbba 100644
+--- i/docs/sqlserver.md
++++ w/docs/sqlserver.md
+@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
+ 
+ ## Collections
+ 
+-Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
++Thirty-nine collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+ 
+ | collection | every | reads | needs | Azure SQL Database | page |
+ | --- | --- | --- | --- | --- | --- |
+@@ -76,6 +76,11 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
+ | `mssql_backups` | 1 hour | every database's last full, differential and log backup | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+ | `mssql_storage` | 1 hour | every database file with its size, growth and volume | VIEW ANY DEFINITION; VIEW SERVER STATE for the volumes | not run yet | [storage and row versions](sqlserver-storage.md) |
+ | `mssql_versionstore` | 1 min | tempdb's version store and the transaction that holds it | VIEW SERVER STATE | not run yet | [storage and row versions](sqlserver-storage.md) |
++| `mssql_storage_depth` | 1 hour | the default data and log paths, the fixed drives, the data and log files no database lists | as `mssql_cpu`; VIEW ANY DEFINITION for the orphaned files; SQL Server 2017 and later for the drives and folders | not run | [storage depth](sqlserver-storage.md#storage-depth-task-407) |
++| `mssql_tables` | 6 hours (on by default; off per instance in its `disabled` list) | every user table: type, compression, partitions, rows and sizes, kept when they change | as `mssql_cpu`; VIEW ANY DEFINITION | not run | [storage depth](sqlserver-storage.md#storage-depth-task-407) |
++| `mssql_confcheck` | 1 hour | what the configuration checks judge and nothing else reads: @@SERVERNAME against the server's name, every server event session and whether it runs, the error log files kept, master's startup procedures, per database its state, recovery model, Query Store, a secondary's role and its database-scoped MAXDOP, the linked servers and who is mapped at each | any login for the names and the databases; VIEW SERVER STATE for the event sessions, the platform and the CPUs; VIEW ANY DEFINITION for the startup procedures (and, with ALTER ANY LINKED SERVER, ALTER ANY LOGIN, setupadmin or sysadmin, to see every linked server); a user in a database for its scoped MAXDOP | not run | [configuration checks](sqlserver-checks.md#configuration-checks-task-409) |
++| `mssql_linkedserver_test` | 1 hour, only on an instance that carries the tag `pgvigil:linkedserver-test` | `sys.sp_testlinkedserver` for each linked server of a SQL Server provider, two a run, each in its turn | as the collector's login maps at each linked server | not run | [configuration checks](sqlserver-checks.md#configuration-checks-task-409) |
++| `mssql_maintenance` | 1 hour | Ola Hallengren's maintenance solution: in every database the login can enter its objects and version and its CommandLog forward from a cursor (at most 50,000 rows a database a run, times in UTC); each database's data purity flag (DBCC DBINFO, once a day) | VIEW DEFINITION (or VIEW ANY DEFINITION) to see the solution's procedures; SELECT on dbo.CommandLog for its history; a user in a database for its purity flag (enough on 2022; 2017 and 2019 refuse a login that is not sysadmin, 2571) | not run | [maintenance](sqlserver-checks.md#maintenance-task-410) |
+ | `mssql_cpu` | 1 min | CPU (the scheduler monitor ring buffer), scheduler pressure, batch requests / compilations / transactions per second | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE is enough) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+ | `mssql_memory` | 1 min | the machine's and the server's memory, the memory clerks, memory grants, Page life expectancy | as `mssql_cpu` | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+ | `mssql_fileio` | 1 min | read and write latency and bytes per database file, as the difference between two reads | as `mssql_cpu`; VIEW ANY DEFINITION for the files' names and types (partial without it) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+diff --git i/internal/mssql/ag.go w/internal/mssql/ag.go
+index f7e82a98..d8b36c0a 100644
+--- i/internal/mssql/ag.go
++++ w/internal/mssql/ag.go
+@@ -70,7 +70,12 @@ var HADRThresholds = map[string]float64{
+ // ThresholdRows turns an instance's thresholds as the configuration gives them (name: number, and backup_exclude:
+ // a list of LIKE patterns of database names whose backups are not judged) into the one-row payload of
+ // pgvigil.import_mssql_hadr_thresholds. An unknown name or a negative number is an error here, before any write.
++// The identity rule's two lines (IdentityThresholds) live in the same block and are the collection's own: checked
++// here with the rest, never written to the threshold store.
+ func ThresholdRows(t map[string]any) ([]collect.Row, error) {
++	if _, _, err := IdentityLimits(t); err != nil {
++		return nil, err
++	}
+ 	row := collect.Row{}
+ 	names := make([]string, 0, len(t))
+ 	for k := range t {
+@@ -87,8 +92,11 @@ func ThresholdRows(t map[string]any) ([]collect.Row, error) {
+ 			row[k] = pats
+ 			continue
+ 		}
++		if _, identity := IdentityThresholds[k]; identity {
++			continue
++		}
+ 		if _, known := HADRThresholds[k]; !known {
+-			return nil, fmt.Errorf("mssql threshold %q is not known; known: %s, backup_exclude", k, strings.Join(thresholdNames(), ", "))
++			return nil, fmt.Errorf("mssql threshold %q is not known; known: %s, backup_exclude, identity_warn_pct, identity_crit_pct", k, strings.Join(thresholdNames(), ", "))
+ 		}
+ 		n, ok := number(v)
+ 		if !ok || n < 0 {
+diff --git i/internal/mssql/detect.go w/internal/mssql/detect.go
+index 70bb2408..779091b3 100644
+--- i/internal/mssql/detect.go
++++ w/internal/mssql/detect.go
+@@ -44,6 +44,13 @@ type Info struct {
+ 	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
+ 	ServiceObjective string
+ 	PoolTag          string
++	// LinkedServerTest: the instance carries the tag pgvigil:linkedserver-test (the runner sets it): its linked
++	// servers' connections are tested (mssql_linkedserver_test, task 409)
++	LinkedServerTest bool
++	// IdentityWarnPct, IdentityCritPct: the identity rule's lines from the instance's mssql_thresholds
++	// (identity_warn_pct, identity_crit_pct; the runner sets them, 0 = the defaults)
++	IdentityWarnPct float64
++	IdentityCritPct float64
+ }
+ 
+ // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
+diff --git i/internal/mssql/mssql.go w/internal/mssql/mssql.go
+index d9e48226..941ff228 100644
+--- i/internal/mssql/mssql.go
++++ w/internal/mssql/mssql.go
+@@ -476,7 +476,13 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+ 		if t.Key == "pool" {
+ 			info.PoolTag = t.Value
+ 		}
++		if t.Key+":"+t.Value == LinkedServerTestTag { // task 409
++			info.LinkedServerTest = true
++		}
+ 	}
++	// the identity rule's lines from the instance's mssql_thresholds (the file was checked when it was read: an error
++	// here leaves the defaults)
++	info.IdentityWarnPct, info.IdentityCritPct, _ = IdentityLimits(in.MSSQLThresholds)
+ 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+ 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+ 	ecancel()
+diff --git i/internal/mssql/platform_db_test.go w/internal/mssql/platform_db_test.go
+index f17ce103..dceab627 100644
+--- i/internal/mssql/platform_db_test.go
++++ w/internal/mssql/platform_db_test.go
+@@ -30,13 +30,13 @@ func TestPlatformOwnDatabase(t *testing.T) {
+ }
+ 
+ // The per-database reads that would count the services' own databases leave them out through platformOwnDatabase:
+-// userDatabases (the indexes and statistics), the identity scan, the Query Store's list and the audit's database
+-// specifications. What this checks: each of those four files holds the call the stated number of times. It does not
++// userDatabases (the indexes and statistics), the identity scan and the configuration checks' read of each database
++// (both in dboptions.go), the Query Store's list and the audit's database specifications. What this checks: each of those four files holds the call the stated number of times. It does not
+ // find a new loop by itself - a per-database loop added in another file, or a second one in these, is not caught
+ // (indexlocks.go, storage.go and reports.go are not in it: they enter only the databases the login can enter, which
+ // leaves gcloud_cloudsqladmin out on Cloud SQL - G1's trial).
+ func TestPlatformOwnDatabaseInEveryDatabaseLoop(t *testing.T) {
+-	for file, want := range map[string]int{"indexes.go": 1, "dboptions.go": 1, "querystore.go": 1, "audit.go": 1} {
++	for file, want := range map[string]int{"indexes.go": 1, "dboptions.go": 2, "querystore.go": 1, "audit.go": 1} {
+ 		b, err := os.ReadFile(file)
+ 		if err != nil {
+ 			t.Fatal(err)
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 40526c28..3ec7b1ad 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -1,6 +1,8 @@
+ -- 0190 the second join file of the release (v0.4.0): what the slices numbered after 0110 leave to the lead's join. It
+ -- sorts after every slice migration of the release (they take 0111-0189) and each later join of the release extends it
+ -- in place, as 0110 was (nothing of either has been released yet).
++--   task 407 (0158): the mssql_storage_depth_findings arm; mssql_database_space and mssql_table_sample among purge()'s
++--     monthly partition parents; purge() deletes mssql_tables and mssql_fixed_drives rows gone past the retention.
+ --   task 177 D02 (0114): pgvigil.findings gains the mssql_blocking_findings arm; nothing for purge() (no table added).
+ --   task 177 D03 (0115): the mssql_waits_findings arm; mssql_memory_pool among purge()'s monthly partition parents.
+ --   task 177 D04 (0116): nothing here (its findings are the Blocked reports tab's own; mssql_blocked_reports is purged).
+@@ -12,6 +14,22 @@
+ --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
+ --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
+ -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
++--   task 409 (0160): pgvigil.mssql_checks_findings (0090's view) leaves out the day-one finding of a server option that
++--     has an expected value in force, met or not (the expectation alone judges it): every reader follows - the
++--     findings arm below, mssql_checks_status (the Checks page's areas and the Summary's cells) and the Checks page's
++--     list. The mssql_config_check_findings arm.
++--   task 410 (0161): the mssql_maintenance_findings arm; purge() deletes mssql_ola_commandlog rows past the retention.
++
++-- 0090's mssql_checks_findings with task 409's anti-join (0160 sorts below this file)
++CREATE OR REPLACE VIEW pgvigil.mssql_checks_findings AS
++SELECT f.instance_id, f.severity, f.check_name, f.object, f.snapshot_at AS at,
++       f.detail || ' [rule: ' || f.rule || coalesce('; value: ' || nullif(f.value, ''), '') || ']' AS detail,
++       f.area, f.rule, f.value, f.first_seen
++  FROM pgvigil.mssql_check_finding f
++  JOIN pgvigil.mssql_check_area a ON a.instance_id = f.instance_id AND a.area = f.area
++ WHERE a.snapshot_at > now() - CASE WHEN f.area = 'identity' THEN interval '18 hours' ELSE interval '3 hours' END
++   AND NOT (f.area = 'config' AND f.check_name = 'server option'
++            AND EXISTS (SELECT 1 FROM pgvigil.mssql_config_expect_now n WHERE n.instance_id = f.instance_id AND n.kind = 'config' AND n.key = lower(f.object)));
+ 
+ CREATE OR REPLACE VIEW pgvigil.findings AS
+ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
+@@ -105,6 +123,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
+     UNION ALL
+     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_storage', at FROM pgvigil.mssql_storage_findings
+     UNION ALL
++    -- task 407 (0158): storage depth - days until a volume is full, tempdb filling, dbachecks' file and path rules
++    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_storage_depth', at FROM pgvigil.mssql_storage_depth_findings
++    UNION ALL
+     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_perf', at FROM pgvigil.mssql_perf_findings
+     UNION ALL
+     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_querystore', at FROM pgvigil.mssql_querystore_findings
+@@ -125,8 +146,15 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
+     UNION ALL
+     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_stats', at FROM pgvigil.mssql_stats_findings
+     UNION ALL
++    -- (task 409: mssql_checks_findings leaves out a server option an expected value judges; above)
+     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_checks', at FROM pgvigil.mssql_checks_findings
+     UNION ALL
++    -- task 409 (0160): the configuration checks against the expected values
++    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_config_checks', at FROM pgvigil.mssql_config_check_findings
++    UNION ALL
++    -- task 410 (0161): Ola Hallengren's maintenance solution, its jobs, its history, data purity
++    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_maintenance', at FROM pgvigil.mssql_maintenance_findings
++    UNION ALL
+     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_readers', at FROM pgvigil.mssql_readers_findings
+     UNION ALL
+     -- task 162 (0103): base backups, log shipping, crash restarts, the statement store, amcheck age
+@@ -178,6 +206,7 @@ BEGIN
+                          'host_sample', 'host_disk_history', 'host_io', 'storage_sample',
+                          'vacuum_sample', 'cloud_io_sample', 'dms_ri_sample', 'backup_sample', 'amcheck_runs', 'wait_sample', 'index_usage_daily', 'pi_load', 'serverless_sample', 'buffercache_sample', 'temp_sample', 'pooler_sample', 'custom_results', 'schema_changes', 'schema_ddl_log', 'alert_log', 'mssql_blocking', 'mssql_wait_sample', 'mssql_deadlocks', 'mssql_blocked_reports', 'mssql_slow_events', 'mssql_attentions', 'mssql_ag_events', 'mssql_ag_sample', 'mssql_job_runs', 'mssql_volume_sample', 'mssql_database_size', 'mssql_versionstore_sample',
+                          'mssql_cpu_sample', 'mssql_sched_sample', 'mssql_memory_sample', 'mssql_memory_clerk', 'mssql_fileio_read', 'mssql_fileio_sample',
++                         'mssql_database_space', 'mssql_table_sample',   -- task 407 (0158)
+                          'table_activity', 'conn_sources', 'pooler_conn_sample',
+                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
+                          'mssql_qs_interval', 'mssql_qs_runtime',
+@@ -232,6 +261,14 @@ BEGIN
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   DELETE FROM pgvigil.storage_state WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  -- task 407 (0158): SQL Server tables and fixed drives no longer present, for longer than the retention
++  DELETE FROM pgvigil.mssql_tables WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
++  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  DELETE FROM pgvigil.mssql_fixed_drives WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
++  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  -- task 410 (0161): Ola's CommandLog rows started before the retention
++  DELETE FROM pgvigil.mssql_ola_commandlog WHERE start_at < now() - make_interval(days => p_days);
++  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   -- vacuum runs last seen before the retention, and the tables and databases no longer present (0024)
+   DELETE FROM pgvigil.vacuum_runs WHERE last_seen < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+diff --git i/internal/web/demodoor.go w/internal/web/demodoor.go
+index 5bd72164..9d24a311 100644
+--- i/internal/web/demodoor.go
++++ w/internal/web/demodoor.go
+@@ -66,6 +66,7 @@ const (
+ 	doorPgThreshold    doorRoute = "pg/thresholds"
+ 	doorJobThreshold   doorRoute = "jobs/thresholds"
+ 	doorJobExclusion   doorRoute = "jobs/exclusions"
++	doorConfigExpect   doorRoute = "mssql/config_expect" // task 409
+ )
+ 
+ // doorRowRef names a stored row an end, an edit, a pause or a resume acts on: acks (ack_id), alert_dismissals
+@@ -127,6 +128,7 @@ var doorLevels = map[doorRoute][]string{
+ 	doorPgThreshold:    {"instance", "database"},
+ 	doorJobThreshold:   {"instance", "job"},
+ 	doorJobExclusion:   {"instance"},
++	doorConfigExpect:   {"instance"},
+ }
+ 
+ func doorWide(what string) string {
+@@ -138,7 +140,7 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
+ 	switch sc.Route {
+ 	// a job's thresholds and the job exclusions came back on with their pages (B7 DONE-3): the page and the route turn
+ 	// on together, so the server never carries a write its page says is off
+-	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion:
++	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion, doorConfigExpect:
+ 	case doorAlertTest:
+ 		return "Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here", nil
+ 	default:
+diff --git i/internal/web/demodoor_test.go w/internal/web/demodoor_test.go
+index 3011c33c..5deb11bd 100644
+--- i/internal/web/demodoor_test.go
++++ w/internal/web/demodoor_test.go
+@@ -178,6 +178,12 @@ func TestDemoDoorScope(t *testing.T) {
+ 		{"an edit that moves the rule to a real instance", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 10}, InstanceID: 3}, "prod-db1 " + notDemo},
+ 		{"an edit that moves a rule on every instance to a seeded instance (it would end the wide rule)", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 12}, InstanceID: 1}, "an every-instance change " + wide},
+ 		{"an edit of a real instance's rule", writeScope{Route: doorMuteChange, Row: &doorRowRef{"acks", 11}, InstanceID: 1}, "prod-db1 " + notDemo},
++		// the Expected values editor (task 409): one seeded instance's own value only
++		{"an expected value on a seeded instance", writeScope{Route: doorConfigExpect, Level: "instance", InstanceID: 1}, ""},
++		{"an expected value at the root", writeScope{Route: doorConfigExpect, Level: "root"}, "a root change " + wide},
++		{"an expected value on a tag", writeScope{Route: doorConfigExpect, Level: "tag", Tag: "demo"}, "a tag 'demo' change " + wide},
++		{"an expected value on a real instance", writeScope{Route: doorConfigExpect, Level: "instance", InstanceID: 3}, "prod-db1 " + notDemo},
++		{"an expected value whose instance level names no instance", writeScope{Route: doorConfigExpect, Level: "instance"}, "a instance " + oneInstance},
+ 		{"Send test", writeScope{Route: doorAlertTest}, "pgvigil demo -serve runs no sender"},
+ 		{"a route the door was never taught", writeScope{Route: "customreports", InstanceID: 1}, "is not made through the demo"},
+ 		{"no route at all", writeScope{InstanceID: 1}, "is not made through the demo"},
+diff --git i/internal/web/q_mssql_summary.go w/internal/web/q_mssql_summary.go
+index 6c902b78..bea7fbe3 100644
+--- i/internal/web/q_mssql_summary.go
++++ w/internal/web/q_mssql_summary.go
+@@ -63,6 +63,8 @@ WITH inst AS (
+                      -- a volume's free space is DBA Dash's Drive Space (task 176); the files and the version store its File Space
+                      -- DBA Dash's % Max Size apart (a file at or within one growth of its max size, task P08)
+                      WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' WHEN setting LIKE '%max size%' THEN 'pctmax' ELSE 'filespace' END
++                     -- task 407: a SQL Server volume full within 30 days is DBA Dash's Drive Space too; no other storage depth arm has a cell
++                     WHEN 'mssql_storage_depth' THEN 'disk'
+                      -- DBA Dash's Backup FULL, DIFF and LOG columns apart (task P08): a log or a differential finding by its
+                      -- name ('backups not judged' by its detail), any other backup finding is FULL's
+                      WHEN 'mssql_jobs' THEN CASE WHEN NOT (setting ILIKE '%backup%' OR value = 'mssql_backups') THEN 'jobs'
+@@ -77,7 +79,8 @@ WITH inst AS (
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_sysevents_findings WHERE check_name = 'the ring buffer output was cut off'
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_hadr' FROM pgvigil.mssql_hadr_findings
+           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_jobs' FROM pgvigil.mssql_jobs_findings
+-          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings) u
++          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings
++          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage_depth' FROM pgvigil.mssql_storage_depth_findings WHERE check_name = 'a volume full within 30 days') u
+    WHERE severity IN ('critical', 'warning')
+ ), started AS (
+   SELECT m.instance_id, m.started_at FROM pgvigil.mssql_instance m JOIN inst USING (instance_id)
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 5def1404..0224a27d 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -315,6 +315,12 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("POST /api/actions/terminate", s.actions.Terminate)
+ 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
+ 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
++	api.HandleFunc("GET /api/mssql/storage_depth", s.MSSQLStorageDepth) // task 407
++	api.HandleFunc("GET /api/mssql/config_checks", s.MSSQLConfigChecks) // task 409
++	api.HandleFunc("GET /api/mssql/config_expect", s.MSSQLConfigExpect) // task 409
++	api.HandleFunc("POST /api/mssql/config_expect", s.MSSQLConfigExpectWrite)
++	api.HandleFunc("GET /api/mssql/maintenance", s.MSSQLMaintenance) // task 410
++	api.HandleFunc("GET /api/mssql/dbio", s.MSSQLDBIO)               // task 407
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+ 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+ 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
+diff --git i/web/src/main.ts w/web/src/main.ts
+index 7fe364d8..09f7e7d9 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -56,6 +56,7 @@ import { mssqlJobs } from './mssql_jobs';
+ import { jobsPgView } from './jobs_pg';
+ import { pgDeadlocksView } from './pg_deadlocks';
+ import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
++import { mssqlMaintenanceView } from './mssql_maintenance';
+ import { mssqlRowVersionsView } from './mssql_rowversions';
+ import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
+ import { mssqlQueryStoreView } from './mssql_querystore';
+@@ -101,7 +102,7 @@ const mssqlPages: Record<string, Render> = {
+   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+   jobstimeline: jobsTimelineView,
+   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
+-  mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
++  mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
+   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlactions: mssqlActionsLogView,
+   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+@@ -115,7 +116,7 @@ const mssqlPages: Record<string, Render> = {
+ // the SQL Server tabs whose own read says nothing when their collection was skipped on the instance (a platform rule
+ // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
+ const mssqlTabRuns: Record<string, string[]> = {
+-  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
++  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'], mssqlmaintenance: ['mssql_maintenance', 'mssql_jobs'],
+   mssqlcpu: ['mssql_cpu'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
+   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
+diff --git i/web/src/mssql_checks.ts w/web/src/mssql_checks.ts
+index 87e3c0da..76dbf95c 100644
+--- i/web/src/mssql_checks.ts
++++ w/web/src/mssql_checks.ts
+@@ -78,7 +78,15 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
+     return sec;
+   }
+   switch (view) {
+-    case 'options': sec.append(...optionsView(rowsOf(d.options))); break;
++    case 'options': {
++      // task 409: where an expected value is in force for an option, the option is judged by it (the Configuration
++      // tab's Checks set it); a server that does not answer the route leaves the day-one verdicts as they are
++      let expect: Row[] = [], expectErr = '';
++      try { expect = rowsOf((await get<Record<'in_force', Table | null>>('mssql/config_expect', { instance: ctx.instance, part: 'in_force' })).in_force).filter(r => r.kind === 'config'); }
++      catch (e) { expect = []; expectErr = e instanceof Error ? e.message : String(e); }
++      sec.append(...optionsView(rowsOf(d.options), expect, expectErr));
++      break;
++    }
+     case 'databases': sec.append(...databasesView(rowsOf(d.databases), rowsOf(d.columns), q.get('risk') ?? '')); break;
+     case 'flags': sec.append(...flagsView(rowsOf(d.flags))); break;
+     case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect))); break;
+@@ -113,24 +121,36 @@ function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
+ }
+ 
+ // every sys.configurations option, worst first: the value in use coloured by its verdict (DBA Dash's Configuration grid)
+-function optionsView(rows: Row[]): HTMLElement[] {
+-  const n = (s: string) => rows.filter(r => r.is_present !== false && r.status === s).length;
++function optionsView(rows: Row[], expect: Row[] = [], expectErr = ''): HTMLElement[] {
++  // task 409: the expected value in force for an option (its name without case), and what it makes of the value in use;
++  // an option the server no longer lists is not read, never judged on its last value
++  const want = new Map(expect.map(e => [String(e.key).toLowerCase(), e]));
++  const exp = (r: Row) => r.is_present === false ? undefined : want.get(String(r.name).toLowerCase());
++  const met = (r: Row) => Number(r.value_in_use) === Number(exp(r)?.value);
++  const expWords = (r: Row) => `${met(r) ? 'as expected' : 'deviates: expected ' + String(exp(r)?.value)} (set at ${String(exp(r)?.set_at)})`;
++  // the verdict that counts: the expectation's where one is in force, else the day-one rule's; worst first
++  const eff = (r: Row): string => r.is_present === false ? 'none' : exp(r) ? (met(r) ? 'ok' : 'warn') : String(r.status ?? 'none');
++  const rank: Record<string, number> = { crit: 0, warn: 1, ok: 2, none: 3 };
++  rows = [...rows].sort((a, b) => (rank[eff(a)] ?? 3) - (rank[eff(b)] ?? 3));
++  const n = (s: string) => rows.filter(r => r.is_present !== false && eff(r) === s).length;
+   const cols: Col[] = [
+     { key: 'name', label: 'option' },
+-    { key: 'value_in_use', label: 'in use', num: true, cls: (_v, r) => statusCls(r.status),
+-      fmt: (v, r) => titled(fmtNum(v), 'best practice: ' + verdict(r.status, r.severity)) },
++    { key: 'value_in_use', label: 'in use', num: true, cls: (_v, r) => r.is_present === false ? '' : statusCls(eff(r)),
++      fmt: (v, r) => titled(fmtNum(v), exp(r) ? 'expected value: ' + expWords(r) : 'best practice: ' + verdict(r.status, r.severity)) },
+     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
+-    { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
+-    { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
++    { key: 'advised', label: 'advised', fmt: (v, r) => exp(r) ? '' : r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
++    { key: 'status', label: 'verdict', fmt: (v, r) => exp(r) ? expWords(r) : verdict(v, r.severity) },
+     { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v) },
+-    { key: 'detail', label: 'why', wide: true },
+-    { key: 'rule' },
++    { key: 'detail', label: 'why', wide: true, fmt: (v, r) => exp(r) ? 'judged by the expected value set on the Configuration tab' : String(v ?? '') },
++    { key: 'rule', fmt: (v, r) => exp(r) ? 'expected value' : String(v ?? '') },
+   ];
+   return [
+     el('p', { class: 'meta' }, `${fmtNum(rows.length)} options: ${fmtNum(n('crit'))} critical, ${fmtNum(n('warn'))} deviate, ${fmtNum(n('ok'))} at their `
+-      + `default or best practice, ${fmtNum(n('none'))} without a known default. Green: at the default or the best practice. Yellow: a `
++      + `default, best practice or expected value, ${fmtNum(n('none'))} without a known default. Green: at the default or the best practice. Yellow: a `
+       + 'warning or an advice rule is broken (a value only off its default is advice). Red: a critical rule is broken. The defaults '
+-      + 'are sp_Blitz\'s table; the rules sp_Blitz\'s, sp_PerfCheck\'s, dbachecks\' and Glenn Berry\'s, each named in its row.'),
++      + 'are sp_Blitz\'s table; the rules sp_Blitz\'s, sp_PerfCheck\'s, dbachecks\' and Glenn Berry\'s, each named in its row. '
++      + 'An option with an expected value in force (the Configuration tab\'s Checks) is judged by that value alone: green when it is met, yellow when not.'),
++    ...(expectErr ? [el('p', { class: 'empty' }, `The expected values were not read (${expectErr}): the verdicts below are the day-one rules', while the findings leave out an option that has an expected value.`)] : []),
+     grid(rows, cols, 'No option read yet.'),
+   ];
+ }
+@@ -239,14 +259,14 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
+   const unscanned = scans.filter(s => s.scanned !== true);
+   return [
+     el('p', { class: 'meta' }, `${fmtNum(scans.length - unscanned.length)} database(s) scanned, ${fmtNum(unscanned.length)} not (each says why below). `
+-      + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from 75 %, red from 90 %: at the limit every insert fails. '
++      + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from the warning line, red from the critical line (75 % and 90 %, or the instance\'s identity_warn_pct and identity_crit_pct; a finding names the lines in force): at the limit every insert fails. '
+       + 'The rate is taken against a read up to seven days back.'
+       + (cols.length >= 500 ? ' The 500 fullest columns are listed; the area cell counts every one.' : '')),
+     grid(cols, [
+       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
+       { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
+       { key: 'pct_used', label: '% used', num: true, cls: (_v, r) => statusCls(r.status), fmt: fmtNum },
+-      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical (90 % and more)' : v === 'warn' ? 'warning (75 % and more)' : 'under 75 %' },
++      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical' : v === 'warn' ? 'warning' : 'under the warning line' },
+       { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
+       { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
+     ], 'No identity column at 10 % of its range or more.'),
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 2e453d10..f709160f 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -125,7 +125,7 @@ export const instanceGroups: TabGroup[] = [
+ // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
+ export const mssqlInstanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
+-  mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
++  mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs', mssqlmaintenance: 'Maintenance',
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+@@ -142,7 +142,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
+   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
+-  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
++  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
+   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
