@@ -76,7 +76,7 @@ export const groups: Group[] = [
   { key: 'agent', label: 'Is Agent Running', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true, dd: true, plain: true },
   { key: 'logship', label: 'Log Shipping', checks: ['log shipping'], tab: 'pgbackups', mssql: ['logship', 'availability', 'Log shipping'], dd: true },
   { key: 'mirroring', label: 'Mirroring', checks: [], tab: 'summary', mssql: ['mirroring', 'availability', 'Mirroring'], mssqlOnly: true, dd: true },
-  { key: 'replication', label: 'Availability Groups', pgLabel: 'Replication', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
+  { key: 'replication', label: 'Availability Groups', pgLabel: 'Replication', checks: ['replication', 'patroni'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
   { key: 'logspace', label: 'Log Space', checks: [], tab: 'summary', mssql: ['logspace', 'dbfiles', 'Log space'], mssqlOnly: true, dd: true },
   { key: 'filespace', label: 'File Space', checks: [], tab: 'summary', mssql: ['filespace', 'dbfiles', 'File space'], mssqlOnly: true, dd: true },
   { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlOnly: true, dd: true },
