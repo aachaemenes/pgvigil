@@ -75,8 +75,12 @@ SELECT 'job' AS kind, 'pgagent' AS scheduler, j.jobid::bigint AS job_id, j.jobna
            FROM pgagent.pga_jobstep st WHERE st.jstjobid = j.jobid), '{}'::jsonb)) AS definition
   FROM pgagent.pga_job j`
 
-// MaskJobText is a job's text with every password it carries replaced by <masked> (the rules: package jobmask).
-func MaskJobText(s string) string { return jobmask.Text(s) }
+// MaskJobText is a job's text with every password it carries replaced by <masked>: MaskCredentials first (textpolicy.go,
+// task 415: the one literal-aware mask of every stored text - a value in doubled quotes inside a literal is one value),
+// then the job rules of package jobmask (S16 / S16b: its forms, CREATE / ALTER ROLE ... PASSWORD among them; the one
+// 0272's Go step in Migrate applies to stored rows). Both are idempotent and write <masked>, so a form either masks
+// stays masked.
+func MaskJobText(s string) string { return jobmask.Text(MaskCredentials(s)) }
 
 // maskTree masks every string of a decoded jsonb value (a job's definition) in place.
 func maskTree(v any) any {
