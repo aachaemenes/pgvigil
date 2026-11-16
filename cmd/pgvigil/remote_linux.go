@@ -192,12 +192,17 @@ func installRemoteService(log *slog.Logger, o installOptions) error {
 	return nil
 }
 
-// makeRemoteFolders makes the outbox (0750) and the state folder (0700), owned by the service account.
+// makeRemoteFolders makes the outbox (0750) and the state folder (0700), owned by the service account; a parent it has
+// to make (/var/lib/pgvigil-remote) is made 0755 so the account reaches its own folders - an existing parent is left
+// as it is.
 func makeRemoteFolders(outbox, stateDir string, uid, gid int) error {
 	for _, d := range []struct {
 		path string
 		mode os.FileMode
 	}{{outbox, 0o750}, {stateDir, 0o700}} {
+		if err := makeParents(filepath.Dir(d.path)); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(d.path, d.mode); err != nil {
 			return err
 		}
@@ -205,6 +210,31 @@ func makeRemoteFolders(outbox, stateDir string, uid, gid int) error {
 			return fmt.Errorf("chown %s: %w", d.path, err)
 		}
 		if err := os.Chmod(d.path, d.mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// makeParents makes each missing folder of dir, outermost first, 0755 whatever the umask; existing ones are untouched.
+func makeParents(dir string) error {
+	var missing []string
+	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
+		if _, err := os.Stat(p); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, p)
+		if filepath.Dir(p) == p {
+			break
+		}
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := os.Chmod(missing[i], 0o755); err != nil {
 			return err
 		}
 	}
