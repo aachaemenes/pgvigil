@@ -42,11 +42,17 @@ func (f *fakeDest) Upload(_ context.Context, key, local string) error {
 	f.uploads[key] = b
 	return nil
 }
-func (f *fakeDest) Put(context.Context, string, []byte, bool) error { return errors.New("the push never Puts") }
-func (f *fakeDest) Get(context.Context, string) ([]byte, error)    { return nil, errors.New("the push never reads") }
-func (f *fakeDest) Delete(context.Context, string) error            { return errors.New("the push never deletes") }
-func (f *fakeDest) List(context.Context, string) ([]string, error)  { return nil, errors.New("the push never lists") }
-func (f *fakeDest) String() string                                  { return "fake" }
+func (f *fakeDest) Put(context.Context, string, []byte, bool) error {
+	return errors.New("the push never Puts")
+}
+func (f *fakeDest) Get(context.Context, string) ([]byte, error) {
+	return nil, errors.New("the push never reads")
+}
+func (f *fakeDest) Delete(context.Context, string) error { return errors.New("the push never deletes") }
+func (f *fakeDest) List(context.Context, string) ([]string, error) {
+	return nil, errors.New("the push never lists")
+}
+func (f *fakeDest) String() string { return "fake" }
 
 var _ export.Destination = (*fakeDest)(nil)
 
