@@ -355,6 +355,15 @@ var knownKeys = map[string]bool{
 	"account_url": true, "container": true, "connection_string": true, "sas_url": true,
 	"settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
 	"snapshot_max_bytes": true, "statement_timeout": true, "carry": true, "tables": true, "exclude": true,
+	// the keys of the slices that met this list at the j16 join (config.Config's own types): the collector's probe
+	// (B24h), the agent door, /metrics (B24d: metrics: and a page door's prometheus_metrics), the request worker (CQ-A:
+	// cq: and an instance's DBA Dash allow-lists community_allow / jobs_allow, ST4), Patroni's REST read (376: its
+	// client certificate's files), the SQL Server counters' edits (401) and the schema read's databases (A26)
+	"probe": true, "probe_every_minute": true, "agents": true,
+	"metrics": true, "cache_seconds": true, "databases": true, "max_databases": true, "include_databases": true, "prometheus_metrics": true,
+	"cq": true, "workers": true, "result_keep": true, "via": true, "community_allow": true, "jobs_allow": true,
+	"patroni": true, "cert_file": true, "key_file": true,
+	"mssql_counters": true, "add": true, "remove": true, "object": true, "counter": true, "mssql_schema": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
