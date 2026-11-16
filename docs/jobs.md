@@ -138,7 +138,7 @@ Red Gate's square brackets (`PASSWORD = [...]`, `]]` inside); `@EncryptionKey` a
 (`@EncryptionKey = mykey`; `NULL`, `DEFAULT` and a `@variable` stay readable); and Red Gate's clean-up `sqbutility
 1032`'s sixth argument (the key). Which quoting a value has is read from where it stands - inside another string or not,
 comments and bracketed names skipped - so an empty password (`''`) never hides the text after it, and a value the text
-never closes (a step's command cut by the read) is masked to the end of the text. Only these
+never closes (a step's command cut by the read, a run's output cut by msdb) is masked to the end of the text. Only these
 names: a parameter that names a key or a certificate (`@ServerCertificate`, `@KeyColumns`, `KEYSIZE`) stays readable.
 Also a `key = value` whose key holds password, passwd, pwd or secret (connection strings, libpq keywords; quoted or not,
 spaces or not); the `user:password@` of a URI; `-P` (sqlcmd, bcp), `-Password`, `-pw`, `-pwd`, and LiteSpeed's

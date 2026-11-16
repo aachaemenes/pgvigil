@@ -244,7 +244,7 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 		if err != nil {
 			return nil, err
 		}
-		return append(append(rows, runs...), collect.Row{"kind": "read", "cursor": false}), nil
+		return maskRunText(append(append(rows, runs...), collect.Row{"kind": "read", "cursor": false})), nil
 	}
 	last, haveLast, err := cursor(ctx, JobsCursorSource)
 	if err != nil {
@@ -281,8 +281,28 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 			break
 		}
 	}
-	return append(rows, collect.Row{"kind": "read", "cursor": true},
-		collect.Row{"kind": "cursor", "last_history_id": next, "mark": nextMark}), nil
+	return maskRunText(append(rows, collect.Row{"kind": "read", "cursor": true},
+		collect.Row{"kind": "cursor", "last_history_id": next, "mark": nextMark})), nil
+}
+
+// maskRunText masks a run's output as a step's command is masked (collect.MaskJobText), so docs/jobs.md's "a run's
+// output" holds for SQL Server too: a history row's message is what the step printed (a command it ran, a
+// connection string), and a job's last outcome message is the Agent's summary of the last run. msdb keeps 4,000
+// characters of each and the Agent cuts a step's output shorter still: a key cut there is masked to the end.
+func maskRunText(rows []collect.Row) []collect.Row {
+	for _, r := range rows {
+		k := ""
+		switch r["kind"] {
+		case "run":
+			k = "message"
+		case "job":
+			k = "last_message"
+		}
+		if t, ok := r[k].(string); ok && k != "" {
+			r[k] = collect.MaskJobText(t)
+		}
+	}
+	return rows
 }
 
 // jobsReadFrom is where a read starts: a little behind the cursor while the row at the cursor is still the row

@@ -28,15 +28,17 @@
 #  rs1 (RESTORE ... PASSWORD = N'...'), rgc (SQLBackupC's -SQL "... PASSWORD = '...'") and for keep1 / keep2 (a
 #  certificate's name, @KeyColumns, @EncryptionKeyPlaceholder, -KeepAlive: readable in the version); 'PROOF FAILED'.
 #  After the fix: every row ok, 'PROOF OK'.
-#  H and hcut (a run's output; NOTE rows, not graded: outside S16's order, asked of the lead): a job whose step PRINTs
-#  a backup command with its key, run once, and one whose printed key msdb's history cuts: their tokens are in
-#  pgvigil.mssql_job_runs (sysjobhistory.message is stored as read, while docs/jobs.md says a run's output is masked on
-#  both engines).
-#  The review's fold (expected written before the red run, on the code before the fold): FAIL for cut1 (a step over
-#  8,000 characters cut by the read inside its key: the key's first characters stored), rg4 (sqbutility 1032's sixth
-#  argument), ls3 (@EncryptionKey as a bare word), cli4 (-K ''...'' inside xp_cmdshell's string), rg5 (PASSWORD =
-#  [..]]..]): 5 FAIL, 'PROOF FAILED: 5' (the red run maskred2 graded hcut too: 6); every older row ok, keep1-keep3 ok
-#  (each stored command equal to the command sent). After the fold: every row ok.
+#  H (a run's output; outside S16's order, its own commit, asked of the lead): a job whose step PRINTs a backup
+#  command with its key, run once. Red run (maskred1, a NOTE then): the token in msdb's history 1, stored in
+#  pgvigil.mssql_job_runs 1, in the step's version 1, the dump 3. Expected after the H commit (maskRunText in
+#  internal/mssql/jobs.go): the history still holds it (1), stored nowhere (mssql_job_runs 0, the step's version 0,
+#  dump 0) and <masked> in the stored run's message: 'ok H'. mssql_jobs.last_message is 0 before and after (the
+#  Agent's job summary does not carry the step's text): this row is no evidence for it - TestMaskRunText is.
+#  The review's fold (expected written before maskred2, on 6216f515's code with these rows): FAIL for cut1 (a step
+#  over 8,000 characters cut by the read inside its key: the key's first characters stored), hcut (a step's printed
+#  key cut by msdb's history inside it: stored), rg4 (sqbutility 1032's sixth argument), ls3 (@EncryptionKey as a bare
+#  word), cli4 (-K ''...'' inside xp_cmdshell's string), rg5 (PASSWORD = [..]]..]): 6 FAIL, 'PROOF FAILED: 6'; every
+#  older row ok, keep1-keep3 ok (each stored command equal to the command sent). After the fold: every row ok.
 set -euo pipefail
 export PATH=$HOME/.local/share/mise/shims:$PATH
 : "${PGVIGIL_ADMIN_DSN:?a superuser keyword DSN of the PostgreSQL, no password, no dbname}"
@@ -180,7 +182,10 @@ while IFS= read -r line; do
       rr=$(q "select count(*) from pgvigil.mssql_job_runs r where r.instance_id=$IS and r::text like '%$tok%'")
       dm=$(grep -c "$tok" "$WORK/dump.sql" || true)
       mr=$(q "select count(*) from pgvigil.mssql_job_runs r join pgvigil.mssql_jobs j on j.instance_id=r.instance_id and j.job_id=r.job_id where r.instance_id=$IS and j.name='$jn' and r.message like '%<masked>'")
-      echo "NOTE hcut (a run's output cut inside its key, not graded): msdb history rows holding the key cut $HCUT; stored: mssql_job_runs $rr, dump $dm; runs ending '<masked>' $mr" ;;
+      line="msdb history rows holding the key cut $HCUT; stored: mssql_job_runs $rr, dump $dm; runs ending '<masked>' $mr"
+      if [ "$HCUT" -lt 1 ]; then echo "FAIL hcut (a run's output cut inside its key): msdb did not cut it, the row proves nothing: $line"; BAD=$((BAD+1))
+      elif [ "$rr$dm" = "00" ] && [ "$mr" -ge 1 ]; then echo "ok hcut (a run's output cut inside its key): $line"
+      else echo "FAIL hcut (a run's output cut inside its key): $line"; BAD=$((BAD+1)); fi ;;
     run)
       tok=S16hist$SUF
       rr=$(q "select count(*) from pgvigil.mssql_job_runs r where r.instance_id=$IS and r::text like '%$tok%'")
@@ -188,7 +193,9 @@ while IFS= read -r line; do
       st=$(q "select count(*) from pgvigil.job_versions v where v.instance_id=$IS and v.job_name='$jn' and v::text like '%$tok%'")
       dm=$(grep -c "$tok" "$WORK/dump.sql" || true)
       mr=$(q "select count(*) from pgvigil.mssql_job_runs r join pgvigil.mssql_jobs j on j.instance_id=r.instance_id and j.job_id=r.job_id where r.instance_id=$IS and j.name='$jn' and r.message like '%<masked>%'")
-      echo "NOTE H (a run's output, not graded): msdb history rows holding the token $HRUN; stored: mssql_job_runs $rr, mssql_jobs.last_message $lm, the step in job_versions $st, dump $dm; runs with <masked> $mr" ;;
+      line="msdb history rows holding the token $HRUN; stored: mssql_job_runs $rr, mssql_jobs.last_message $lm, the step in job_versions $st, dump $dm; runs with <masked> $mr"
+      if [ "$HRUN" -ge 1 ] && [ "$rr$lm$st$dm" = "0000" ] && [ "$mr" -ge 1 ]; then echo "ok H (a run's output): $line"
+      else echo "FAIL H (a run's output): $line"; BAD=$((BAD+1)); fi ;;
   esac
 done < "$WORK/forms.txt"
 if [ "$BAD" = 0 ]; then echo "PROOF OK"; else echo "PROOF FAILED: $BAD"; exit 1; fi
