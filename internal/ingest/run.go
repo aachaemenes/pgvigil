@@ -74,7 +74,7 @@ func Loop(ctx context.Context, pool *pgxpool.Pool, sites []Site, every time.Dura
 			case held:
 				log.Info("remote ingest: another loop holds the site", "site", s.Name)
 			case res != (Result{}):
-				log.Info("remote ingest", "site", s.Name, "loaded", res.Loaded, "set_aside", res.SetAside, "late", res.Late,
+				log.Info("remote ingest", "site", s.Name, "loaded", res.Loaded, "set_aside", res.SetAside, "still_set_aside", res.Kept, "late", res.Late,
 					"conflicts", res.Conflicts, "gaps", res.Gaps, "waiting", res.Waiting)
 			}
 		}
@@ -84,6 +84,6 @@ func Loop(ctx context.Context, pool *pgxpool.Pool, sites []Site, every time.Dura
 
 // Line is one site's round in words.
 func (r Result) Line(site string) string {
-	return fmt.Sprintf("site %s: %d loaded, %d already in, %d set aside, %d late, %d in conflict, %d gaps gone past, %d waiting",
-		site, r.Loaded, r.Skipped, r.SetAside, r.Late, r.Conflicts, r.Gaps, r.Waiting)
+	return fmt.Sprintf("site %s: %d loaded, %d already in, %d set aside, %d still set aside, %d late, %d in conflict, %d gaps gone past, %d waiting",
+		site, r.Loaded, r.Skipped, r.SetAside, r.Kept, r.Late, r.Conflicts, r.Gaps, r.Waiting)
 }

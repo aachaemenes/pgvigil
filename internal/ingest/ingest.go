@@ -112,8 +112,9 @@ type Ingester struct {
 	Log    *slog.Logger
 }
 
-// Result counts one round.
-type Result struct{ Loaded, Skipped, SetAside, Late, Conflicts, Gaps, Waiting int }
+// Result counts one round: Skipped = loaded before, Kept = set aside before and still so (`pgvigil ingest -retry` reads
+// one again), SetAside = set aside in this round.
+type Result struct{ Loaded, Skipped, Kept, SetAside, Late, Conflicts, Gaps, Waiting int }
 
 // ErrOwned is what a Hub's Load returns for an instance whose name another site or the hub's own file holds.
 var ErrOwned = errors.New(KindOwned)
@@ -300,7 +301,7 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 		case kind == "loaded":
 			return false, mark(KindConflict, fmt.Sprintf("seq %d is loaded with manifest %s; this one is %s", c.ref.Seq, short(digest), short(c.digest)))
 		case digest == c.digest && !retryKinds[kind]:
-			res.Skipped++
+			res.Kept++
 			return false, nil
 		}
 	}
