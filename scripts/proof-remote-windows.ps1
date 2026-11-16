@@ -7,7 +7,8 @@
 # authentication for this session's user) is the instance; a SQL login made here (a random password, never printed) is
 # the collector's, as docs/sqlserver.md's least-privilege login, and dropped at the end.
 # Expected (written before its first run):
-#  P  elevated; the hub's binary %ProgramFiles%\pgvigil\pgvigil.exe read (absent, or its SHA-256 kept for B)
+#  P  elevated; the hub's binary %ProgramFiles%\pgvigil\pgvigil.exe read (absent, or its SHA-256 kept for B); the
+#     VM's SQL Server answers on localhost within 180 s (a VM started for the run boots it late), its services named
 #  L  an earlier run's leftovers removed (the service pgvigil-remote, its folders, the login): 'ok L'
 #  Q  the instance takes SQL logins and answers on TCP 127.0.0.1:1433; the login pgvigil_remote_proof made with
 #     docs/sqlserver.md's grants: 'ok Q'
@@ -90,7 +91,16 @@ try {
     if ($fromExe.Count -ne 1) { Fail 'P' "no pgvigil_<v>_windows_amd64.exe in $From" }
     $fromExe = $fromExe[0].FullName
     $hubBefore = Get-FileSha $hubExe
-    Ok 'P' "elevated; the hub's binary $hubExe $hubBefore; the build $fromExe"
+    # a VM started for this run boots its SQL Server after the tunnel answers: wait for localhost to answer
+    $sqlServices = @(Get-Service -Name 'MSSQL*' -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)=$($_.Status)" })
+    $sqlDeadline = (Get-Date).AddSeconds(180); $sqlUp = $false
+    while ((Get-Date) -lt $sqlDeadline) {
+        $res = Invoke-SqlFile 'SET NOCOUNT ON; SELECT @@SERVERNAME;'
+        if ($res.Code -eq 0) { $sqlUp = $true; break }
+        Start-Sleep -Seconds 10
+    }
+    if (-not $sqlUp) { Fail 'P' "SQL Server on localhost did not answer within 180 s (services: $($sqlServices -join ', ')): $($res.Out)" }
+    Ok 'P' "elevated; the hub's binary $hubExe $hubBefore; the build $fromExe; SQL Server answers ($($sqlServices -join ', '))"
 
     # L
     Remove-Leftovers
