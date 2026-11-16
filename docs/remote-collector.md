@@ -33,7 +33,8 @@ The bundle's format is [remote-bundle-format.md](remote-bundle-format.md).
 The release carries `pgvigil-remote-<tag>-linux-amd64.tar.gz` and `pgvigil-remote-<tag>-windows-amd64.zip` beside the
 offline bundles, listed in the signed `SHA256SUMS.offline` ([airgap.md](airgap.md) has the verification: put
 `pgvigil-remote-<tag>-<os>-amd64.<ext>` where its recipe names `pgvigil-offline-*`). Each holds
-the binaries (plain and FIPS), the installer, this page and a sample `pgvigil-remote.yaml`.
+the binaries (plain and FIPS), their SBOM, the installer, this page, [airgap.md](airgap.md) and a sample
+`pgvigil-remote.yaml`.
 
 ```yaml
 # pgvigil-remote.yaml on the site's box
@@ -64,11 +65,12 @@ The remote collector is its own binary, `pgvigil-remote`, and its own service, a
   `/var/lib/pgvigil-remote/state`, read from the file's `remote:` block (no second flag). The unit writes those two
   folders only (`ReadWritePaths=`, `ProtectSystem=strict`, `ProtectHome=yes`): a folder under `/home` is refused at
   install, in words.
-- Windows: `.\install.ps1 -Remote` installs `%ProgramFiles%\pgvigil-remote\pgvigil.exe` (put on the machine's PATH), the
+- Windows: `.\install.ps1 -Remote` installs `%ProgramFiles%\pgvigil-remote\pgvigil-remote.exe` (put on the machine's PATH), the
   service `pgvigil-remote` under `NT SERVICE\pgvigil-remote`, and `C:\ProgramData\pgvigil-remote\pgvigil-remote.yaml`
   with its `outbox` and `state` folders, their ACL SYSTEM, Administrators and the service account only.
 
-Its commands read as that binary's: `pgvigil-remote remote init`, `pgvigil-remote bundle inspect ...`.
+Its commands read as that binary's, on Linux and Windows alike: `pgvigil-remote remote init`,
+`pgvigil-remote bundle inspect ...` (a pgvigil on the same PATH keeps its own name).
 
 `pgvigil-remote bundle inspect [-key ed25519:<public key>]... [-max-mb N] <bundle folder>` prints a bundle's manifest, the
 result of its sums and row counts, and its signature's: checked only against a key given with `-key` (without one a
