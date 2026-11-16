@@ -10,9 +10,11 @@ nothing, N/A where it did not judge it. Two ways pass:
   - the column is on the REVIEWED list below (read one by one: its other cells are empty, or each is a badge whose
     class is a status), and every badge it draws - in its text and in its helpers - has a status class: never ''
     and never 'info' (a badge with no status class is a plain cell beside coloured ones).
-The scan reads that a cls is there, not what it returns: each cls's values are read by review. A status column that
-does neither is a FAIL; a REVIEWED entry that matches no status column is a FAIL too (the list
-follows the source).
+The scan reads that a cls is there, not what it returns: each cls's values are read by review, and a cls on the
+CLS_REVIEWED list is held by its pin (its text and the helpers it names), so an edit of it FAILs until it is read
+again. A status column that does neither is a FAIL; a REVIEWED or CLS_REVIEWED entry that matches no status column is
+a FAIL too (the list follows the source). A column's helpers are the ones its fmt names (fmt: helper, fmt: v =>
+helper(...)) and, for a block-bodied fmt (fmt: (v, r) => { ... }), the ones its block calls.
 Each reviewed entry is its reason and the pin of every Col it covers (pin(): the Col's text and the helpers its
 check reads): an edit of a reviewed column, or a new Col under a reviewed key, FAILs until it is read again and
 its pin written. Known limits (none wrong on today's tree): the bracket reader skips // comments and strings, not
@@ -38,7 +40,7 @@ REVIEWED = {
     ('alert_page.ts', 'status'): 'badges f09c04a0',
     ('alert_rules.ts', 'outcome'): 'badges b39648c8',
     ('alert_rules.ts', 'state'): 'badges 648d21db 169eaada',
-    ('alerts.ts', 'last_outcome'): 'badges 495d4926',
+    ('alerts.ts', 'last_outcome'): 'badges 7ba85e94',
     ('alerts.ts', 'min_severity'): 'badges 21678a64',
     ('alerts.ts', 'outcome'): 'badges b39648c8 d9db3c19',
     ('alerts.ts', 'severity'): 'badges 084d1cd5',
@@ -75,6 +77,7 @@ REVIEWED = {
     ('indexes.ts', 'problems'): 'badges 64ff6f8d',
     ('indexes.ts', 'readable'): 'empty bf2c7132',
     ('indexes.ts', 'severity'): 'badges 084d1cd5',
+    ('investigate.ts', 'investigate'): 'badges 7ab32bd3',
     ('investigate.ts', 'state'): 'badges 6389c105',
     ('io.ts', 'cause'): 'badges fbfeb6f0',
     ('io.ts', 'severity'): 'badges 084d1cd5',
@@ -91,36 +94,53 @@ REVIEWED = {
     ('mssql_checks.ts', 'severity'): 'badges 0c43d441 e90cf8c8',
     ('mssql_deadlocks.ts', 'severity'): 'badges 084d1cd5',
     ('mssql_deadlocks.ts', 'victim'): 'empty 2a3553bb',
+    ('mssql_errorfleet.ts', 'severity'): 'badges 9c6c39c5',
     ('mssql_errorlog.ts', 'severity'): 'badges 0ac11868 b71107f1',
     ('mssql_errorlog.ts', 'state'): 'badges c9052225',
     ('mssql_hadr.ts', 'severity'): 'badges 084d1cd5',
+    ('mssql_indexes.ts', 'is_disabled'): 'empty 43c8d3e9',
+    ('mssql_indexes.ts', 'marked'): 'empty 47827c67',
     ('mssql_indexes.ts', 'rule'): 'badges 703ac9d4 f96a25fa',
     ('mssql_indexes.ts', 'severity'): 'badges fcefaf09',
+    ('mssql_indexes.ts', 'state'): 'badges a0925d27',
     ('mssql_perf.ts', 'severity'): 'badges 084d1cd5',
     ('mssql_plancache.ts', 'severity'): 'badges f3ecc757',
     ('mssql_querystore.ts', 'forced'): 'empty 0826182a 337baa63',
+    ('mssql_querystore.ts', 'paged'): 'badges 17b1728c',
     ('mssql_querystore.ts', 'severity'): 'badges 349be0e1 77d4d69b b71107f1 f4deb268',
     ('mssql_rowversions.ts', 'severity'): 'badges 084d1cd5',
     ('mssql_running.ts', 'implicit'): 'empty bc87cec6',
     ('mssql_running.ts', 'is_implicit_tran'): 'empty 0c2a44f6',
     ('mssql_running.ts', 'victims'): 'empty 4d16c36b 525ab77d f72383ea',
+    ('mssql_security.ts', 'default_severity'): 'badges 048cdd29',
+    ('mssql_security.ts', 'severity'): 'badges b71107f1',
+    ('mssql_security.ts', 'status'): 'badges c9c7eba0',
+    ('mssql_security.ts', 'verdict'): 'badges 1de1e940',
+    ('mssql_statsio.ts', 'change'): 'badges bef4780a',
     ('mssql_storage.ts', 'severity'): 'badges 084d1cd5',
     ('mssql_summary.ts', 'severity'): 'badges 0c43d441',
     ('mssql_waits.ts', 'severity'): 'badges 084d1cd5',
+    ('mssql_xe.ts', 'band'): 'empty 46b7bf3e',
     ('mssql_xe.ts', 'is_failover'): 'empty 35f67166',
     ('mssql_xe.ts', 'severity'): 'badges 084d1cd5',
+    ('mssql_xe.ts', 'state'): 'badges 935653eb',
     ('mssql_xe.ts', 'victim'): 'empty 2a3553bb',
-    ('pages.ts', 'check_name'): 'badges 49e790d8 6c4ba37e 8891a3e4',
+    ('pages.ts', 'check_name'): 'badges 49e790d8 6c4ba37e 8891a3e4 5f1c09ce',
     ('pages.ts', 'kind'): 'badges 70c64dbd ebff03ab',
     ('pages.ts', 'severity'): 'badges ee154bef',
     ('pages.ts', 'status'): 'badges 00b289df 16323a2a',
+    ('pg_backups.ts', 'all_tables'): 'badges eed4fa00',
     ('pg_backups.ts', 'caught_up'): 'badges 86fbbe1f',
     ('pg_backups.ts', 'change'): 'badges 52dd7ead',
+    ('pg_backups.ts', 'enabled'): 'badges d35c892e',
     ('pg_backups.ts', 'ok'): 'badges 7c708bb7',
+    ('pg_backups.ts', 'paused'): 'empty 30610ac5',
+    ('pg_backups.ts', 'pending_restart'): 'empty 093c4df8',
     ('pg_backups.ts', 'replay_paused'): 'empty eb9a5382',
+    ('pg_backups.ts', 'secret_seen'): 'empty d2e805bf',
     ('pg_backups.ts', 'severity'): 'badges 0c43d441',
     ('pg_backups.ts', 'state'): 'badges 5d2a357c f7384f4c',
-    ('pg_backups.ts', 'status'): 'badges 25e18d9e',
+    ('pg_backups.ts', 'status'): 'badges 25e18d9e 3ca3269c',
     ('pg_dboptions.ts', 'severity'): 'badges 0c43d441',
     ('pg_deadlocks.ts', 'victim'): 'empty 2a3553bb',
     ('pgconfig.ts', 'pending_restart'): 'empty 662dbbd1',
@@ -144,6 +164,30 @@ REVIEWED = {
     ('versions.ts', 'severity'): 'badges 084d1cd5',
     ('waits.ts', 'blocked'): 'empty 2996049c',
     ('waits.ts', 'event_type'): 'badges b8833291',
+    ('waits.ts', 'severity'): 'badges d218a0a0',
+}
+
+# (file, key): a badge-drawn status column's cls, read one by one (the join's review 6 #3, the lead's 15:07): OK where the
+# column's check judged the row and found nothing, N/A where it did not judge it, '' on its warning / critical badge and
+# on an empty cell. The pin is the cls as written and the helpers it names (cls_text); a cls not on this list passes on
+# its presence alone, as before.
+CLS_REVIEWED = {
+    ('admin_instances.ts', 'aws'): 'cls 33f56ed4',
+    ('alert_rules.ts', 'holds_now'): 'cls fce08f6e',
+    ('community.ts', 'kit_version'): 'cls 4bda06b9',
+    ('mssql_querystore.ts', 'stale_at_compile'): 'cls 58590af1',
+    ('mssql_security.ts', 'days_until_expiration'): 'cls b870bf51',
+    ('mssql_security.ts', 'expires_at'): 'cls 07363121',
+    ('mssql_security.ts', 'has_login'): 'cls 9292d35f',
+    ('mssql_security.ts', 'public_granted'): 'cls 5b8a8df2',
+    ('mssql_storage.ts', 'days_until_full'): 'cls 72d937bd',
+    ('mssql_storage.ts', 'free_pct'): 'cls b60d873c',
+    ('mssql_storage.ts', 'path'): 'cls 8201c730',
+    ('pg_backups.ts', 'api_ok'): 'cls 42cfc928',
+    ('pg_backups.ts', 'leader'): 'cls db8942cf',
+    ('pg_backups.ts', 'receiver_status'): 'cls 79f3bd4c',
+    ('pg_backups.ts', 'worker_pid'): 'cls 16236e5a',
+    ('schema.ts', 'mssql_state'): 'cls 1816b638',
 }
 
 
@@ -284,6 +328,21 @@ def helpers(text):
         if 'badge(' in body and STATUS.search(body):
             found[name] = body
     return found
+
+
+FMT_ARROW = re.compile(r'fmt:\s*(?:\([^)]*\)|\w+)\s*=>\s*\{')   # a block-bodied fmt: (v, r) => { ... }
+
+
+def fmt_helpers(body, hs):
+    """the helpers of hs a Col's fmt draws with, in the file's order: the one its fmt names (fmt: h, fmt: v => h...),
+    and each one a block-bodied fmt calls (the join's review 6: alerts.ts last_outcome's fmt became a block, and the
+    scan lost its helper)"""
+    used = {h for h in hs if re.search(r'fmt:\s*(?:(?:\([^)]*\)|\w+)\s*=>\s*)?' + h + r'\b', body)}
+    m = FMT_ARROW.search(body)
+    if m:
+        code = re.sub(r"'[^'\\]*'", "''", body[m.end() - 1:close_of(body, m.end() - 1, '{')])   # a name in a string is no call
+        used |= {h for h in hs if re.search(r'\b' + h + r'\s*\(', code)}
+    return [h for h in hs if h in used]
 
 
 COL = re.compile(r"\{\s*key:\s*'([^']+)'")          # a Col literal, on one line or over several
@@ -491,7 +550,7 @@ def wide(src):
             if (key, body) in done:
                 continue
             done.add((key, body))
-            used = [h for h in hs if re.search(r'fmt:\s*(?:(?:\([^)]*\)|\w+)\s*=>\s*)?' + h + r'\b', body)]
+            used = fmt_helpers(body, hs)
             if ('badge(' in body and STATUS.search(body)) or used:
                 continue   # the badge scan's own
             ct = cls_text(body, ha)
@@ -534,22 +593,29 @@ def main():
         print(__doc__)
         return 2
     src = sys.argv[1].rstrip('/')
-    bad, n, seen = 0, 0, set()
+    bad, n, seen, cseen = 0, 0, set(), set()
     for path in sorted(glob.glob(f'{src}/*.ts')):
         name = path.split('/')[-1]
         if '.test.' in name:
             continue
         text = open(path, encoding='utf-8').read()
-        hs = helpers(text)
+        hs, ha = helpers(text), all_helpers(text)
         for m in COL.finditer(text):
             body = text[m.start():close_of(text, m.start(), '{')]
             key = m.group(1)
-            used = [h for h in hs if re.search(r'fmt:\s*(?:(?:\([^)]*\)|\w+)\s*=>\s*)?' + h + r'\b', body)]
+            used = fmt_helpers(body, hs)
             if not (('badge(' in body and STATUS.search(body)) or used):
                 continue
             n += 1
             line = text.count('\n', 0, m.start()) + 1
             if 'cls:' in body:
+                why = CLS_REVIEWED.get((name, key))
+                if why is not None:
+                    cseen.add((name, key))
+                    got = pin(cls_text(body, ha))
+                    if got not in why.split()[1:]:
+                        print(f"FAIL {name}:{line} '{key}' (cls): changed since it was read (pin {got}): read it again, then pin it")
+                        bad += 1
                 continue
             why = REVIEWED.get((name, key))
             if why is None:
@@ -568,6 +634,9 @@ def main():
                 bad += 1
     for k in sorted(set(REVIEWED) - seen):
         print(f"FAIL REVIEWED {k[0]} '{k[1]}': no status column of that key without a cls (the list follows the source)")
+        bad += 1
+    for k in sorted(set(CLS_REVIEWED) - cseen):
+        print(f"FAIL CLS_REVIEWED {k[0]} '{k[1]}': no status column of that key with a cls (the list follows the source)")
         bad += 1
     print(f'{n - bad} of {n} status columns ok' if bad <= n else f'{bad} FAIL')
     return 1 if bad else 0

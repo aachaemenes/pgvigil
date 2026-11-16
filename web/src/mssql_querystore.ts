@@ -543,7 +543,7 @@ function forceFailSection(ctx: Ctx): HTMLElement {
         + 'The finding \'a forced plan fails\' is a warning when one read saw 2 or more failures or two failures were read within 24 hours of each other; with one failure it is held as an info.'),
       grid(rowsOf(d.plans), [
         { key: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
-        { key: 'paged', label: 'judged', fmt: v => v ? badge('pages (warning)', 'warn') : badge('held (info)', 'info') },
+        { key: 'paged', label: 'judged', fmt: v => v ? badge('pages (warning)', 'warn') : badge('held (info)', 'none') },   // X18: held = N/A, a status class
         { key: 'failures', num: true }, { key: 'failure_reads', label: 'reads with a failure', num: true },
         { key: 'first_failure', label: 'first failure read', fmt: fmtTime }, { key: 'last_failure', label: 'last failure read', fmt: fmtTime },
         { key: 'force_failure_reason', label: 'last reason' },
@@ -571,7 +571,8 @@ export function planStatsPanel(ctx: Ctx, key: Record<string, string | number>, t
         + 'or from compatibility level 130 the smaller of that and the square root of 1,000 x rows: a statistic past it was stale at compile '
         + '(AUTO_UPDATE_STATISTICS off, asynchronous updates or NORECOMPUTE).'),
       grid(rows, [
-        { key: 'stale_at_compile', label: 'stale at compile', fmt: (v, r) => v === true ? badge('stale', 'warn') : v === false ? 'no' : String(r.not_judged ?? 'not judged') },
+        { key: 'stale_at_compile', label: 'stale at compile', fmt: (v, r) => v === true ? badge('stale', 'warn') : v === false ? 'no' : String(r.not_judged ?? 'not judged'),
+          cls: v => v === true ? '' : v === false ? 'status ok' : 'status none' },   // X18: no = OK, not judged = N/A
         { key: 'stmt', label: 'statement', num: true }, { key: 'database' }, { key: 'schema' }, { key: 'table' }, { key: 'statistic' },
         { key: 'modification_count', label: 'rows changed', num: true }, { key: 'table_rows', label: 'table rows', num: true },
         { key: 'modified_pct', label: 'modified %', num: true }, { key: 'update_line', label: 'auto-update line', num: true },

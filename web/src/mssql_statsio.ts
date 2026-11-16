@@ -303,7 +303,7 @@ export async function statsioView(name: string, text: string): Promise<HTMLEleme
       const ma = new Map(byTable(a).map(x => [x.table, x.counters['logical reads'] ?? 0]));
       const mb = new Map(byTable(b).map(x => [x.table, x.counters['logical reads'] ?? 0]));
       const tabs = [...new Set([...ma.keys(), ...mb.keys()])].map(tb2 => ({ table: tb2, a: ma.get(tb2) ?? null, b: mb.get(tb2) ?? null, change: change(ma.get(tb2), mb.get(tb2)) }));
-      const ch = { key: 'change', label: 'change %', num: true, fmt: (v: unknown) => v == null ? '' : badge(`${Number(v) > 0 ? '+' : ''}${v} %`, Number(v) > 0 ? 'warn' : Number(v) < 0 ? 'ok' : 'info') };
+      const ch = { key: 'change', label: 'change %', num: true, fmt: (v: unknown) => v == null ? '' : badge(`${Number(v) > 0 ? '+' : ''}${v} %`, Number(v) > 0 ? 'warn' : 'ok') };
       return [grid(rowsT, [{ key: 'what', label: 'total' }, { key: 'a', label: la, num: true }, { key: 'b', label: lb, num: true }, ch]),
         grid(tabs, [{ key: 'table' }, { key: 'a', label: `${la} logical reads`, num: true }, { key: 'b', label: `${lb} logical reads`, num: true }, ch], 'No table I/O on either side.')];
     };

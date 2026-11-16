@@ -337,6 +337,10 @@ var maskCredentialCases = []struct{ name, in, secret, want string }{
 		"EXEC (N'ALTER LOGIN a WITH PASSWORD = ''<masked>''')"},
 	{"Red Gate doubled with an escaped quote", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = ''/b/db1.sqb'' WITH PASSWORD = ''ab''''Rg7secret'', KEYSIZE = 256"'`, "Rg7secret",
 		`EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = ''/b/db1.sqb'' WITH PASSWORD = ''<masked>'', KEYSIZE = 256"'`},
+	// the j16 join's review 6 #4: a bracketed value with a word after its ] (a password opening with '[' and holding a ])
+	// is one value to the stop set, never cut at the ]
+	{"bracketed with a word after its ]", "EXEC xp_cmdshell 'sqlcmd -S . -U app -P [ab]Cl9secret -Q x'", "Cl9secret",
+		"EXEC xp_cmdshell 'sqlcmd -S . -U app -P <masked> -Q x'"},
 	// finding 4: the quote that closes the enclosing literal never starts a value
 	{"closing quote 1", "UPDATE t SET kind = 'password' WHERE id = 5", "", "UPDATE t SET kind = 'password' WHERE id = 5"},
 	{"closing quote 2", "SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'", "",

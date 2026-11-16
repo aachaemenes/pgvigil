@@ -2546,12 +2546,13 @@ BEGIN
     pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_investigator;
 
   -- [#5 81-AGENT 654a9cd5]
-  -- the agent door x the request queue (0268 x 0200): a queue-mode serve writes the asks through pgvigil_requester
-  -- (agent-join-lines.sql 3); apply_roles revokes a function's grants only from PUBLIC and the reader, so this grant stands.
-  -- Not its op run: 0268's import_investigation_event writes run lines for a member of pgvigil_collector only (the
-  -- actions door's audit login; J16-RUNGUARD), and refuses this role 42501
-  GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_request(timestamptz, jsonb),
-    pgvigil.import_investigation_event(timestamptz, jsonb) TO pgvigil_requester;
+  -- the agent door x the request queue (0268 x 0200): agent-join-lines.sql 3 granted the request queue's role
+  -- pgvigil_requester import_investigation_request and import_investigation_event for a queue-mode serve's asks. NOT IN
+  -- j16 (J16-RUNGUARD OP CLOSE, the join's review 6 #2): a queue-mode serve offers no investigations (q_investigate.go
+  -- investigationOff), and with them that role could file asks under any ui_user (the repository's ask limits used up
+  -- for every user) and close another user's ask under any closed_by; a later release grants the queue's ask path with
+  -- guards of its own. 0268's import_investigation_event writes run lines for a member of pgvigil_collector only (the
+  -- actions door's audit login; J16-RUNGUARD).
 
   FOR t IN
     SELECT c.oid::regclass AS rel, c.relname

@@ -11,12 +11,14 @@
 #     SUSPECT, EMERGENCY, OFFLINE and ONLINE, then its next run logged as an error: dbstate = failed|true|2|0| with
 #     the two names in the detail and the run's note in err; filespace (DBA Dash's File Space, the same collection) = failed.
 #     With only the OFFLINE and ONLINE databases on another instance, read now: dbstate = ok|true|0|1|.
-#  D. never: an instance nothing ran on: every one of the twenty-four keys is never, none critical or warning.
+#  D. never: an instance nothing ran on: every one of task P08's twenty-four keys is never (Elastic Pool Storage n/a),
+#     none critical or warning.
 #  E. skipped: mssql_jobs logged as skipped and nothing else: jobs = n/a; blocking = never.
 #  F. clock skew: the server's start time ten minutes AHEAD of the repository: uptime = ok|true|1|0|0 h.
 #  G. one collection of a group fresh and another failed (mssql_ag ok now, mssql_replication error now):
 #     availability = ok.
-#  H. the response carries exactly twenty-four keys per SQL Server instance (qs: Query Store, task 129; audit: SQL Server Audit, task 158; disk: a volume's free space, task 176; task P08, DBA Dash's Summary columns: full / diff / log for backups, filespace and pctmax (% Max Size) for storage, logship and mirroring out of availability, checkdb, logspace, corruption, alerts, identity) and no row for a PostgreSQL instance.
+#  H. the response carries exactly twenty-six keys per SQL Server instance - task P08's twenty-four, Elastic Pool Storage
+#     (elasticpool) and ST6b's Custom checks (custom) - (qs: Query Store, task 129; audit: SQL Server Audit, task 158; disk: a volume's free space, task 176; task P08, DBA Dash's Summary columns: full / diff / log for backups, filespace and pctmax (% Max Size) for storage, logship and mirroring out of availability, checkdb, logspace, corruption, alerts, identity) and no row for a PostgreSQL instance.
 #  I. Memory Dump on the crash threshold (task P08, 0117): instance i with one memory dump written 30 hours ago: with
 #     the default (critical under 48 h, warning under 168) dumps = ok|true|1|0|1 file and its since is that dump; after
 #     a root 'crash' row of critical 24 / warning 168 (import_pg_threshold, what the Summary's Memory Dump Thresholds

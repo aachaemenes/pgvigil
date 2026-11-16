@@ -17,7 +17,7 @@ type Part = 'state' | 'read' | 'context' | 'rules' | 'findings' | 'hits' | 'sett
 type Parts = Record<Part, Table | null> & { writable?: boolean; reason?: string };
 
 const text = (v: unknown) => v == null ? '' : String(v);
-const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');   // X18: a status class on every badge
 const PROSE = 'display:inline-block;min-width:22rem;max-width:40rem;white-space:normal';
 const prose = (v: unknown) => v == null || v === '' ? '' : el('span', { style: PROSE }, text(v));
 const yes = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
@@ -25,13 +25,13 @@ const yes = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
 // a rule's verdict in words and a colour; the word carries the meaning
 function verdictBadge(v: unknown, r: Row): HTMLElement {
   switch (text(v)) {
-    case 'hit': return badge(`${fmtNum(r.hits)} found`, r.is_on === true ? (r.default_severity === 'critical' ? 'crit' : 'warn') : '');
+    case 'hit': return badge(`${fmtNum(r.hits)} found`, r.is_on === true ? (r.default_severity === 'critical' ? 'crit' : 'warn') : 'none');
     case 'ok': return badge('nothing found', 'ok');
-    case 'not read': return badge('not read', '');
-    case 'n/a': return badge('does not apply here', '');
-    case 'not enabled': return badge('not enabled', '');
+    case 'not read': return badge('not read', 'none');   // X18: not judged = N/A, a status class on every badge
+    case 'n/a': return badge('does not apply here', 'none');
+    case 'not enabled': return badge('not enabled', 'none');
   }
-  return badge(text(v), '');
+  return badge(text(v), 'none');
 }
 
 function whereSet(r: Row): string {
@@ -46,7 +46,7 @@ const partWords: Record<string, string> = {
 
 function partBadge(status: unknown): HTMLElement {
   const s = text(status);
-  return badge(s === 'off' ? 'not read: its rules are off' : s, s === 'read' ? 'ok' : s === 'failed' ? 'crit' : s === 'no right' ? 'warn' : '');
+  return badge(s === 'off' ? 'not read: its rules are off' : s, s === 'read' ? 'ok' : s === 'failed' ? 'crit' : s === 'no right' ? 'warn' : 'none');
 }
 
 const readCols: Col[] = [
@@ -76,7 +76,8 @@ const loginCols: Col[] = [
   { key: 'is_expiration_checked', label: 'CHECK_EXPIRATION', fmt: yes },
   { key: 'must_change', label: 'must change', fmt: yes },
   { key: 'days_until_expiration', label: 'password expires in', num: true,
-    fmt: v => v == null ? '' : Number(v) === -1 ? 'never' : Number(v) === 0 ? badge('expired', 'crit') : `${fmtNum(v)} days` },
+    fmt: v => v == null ? '' : Number(v) === -1 ? 'never' : Number(v) === 0 ? badge('expired', 'crit') : `${fmtNum(v)} days`,
+    cls: v => v == null || Number(v) === 0 ? '' : 'status ok' },   // X18: never and N days = OK
   { key: 'has_session', label: 'signed in now', fmt: v => v == null ? 'not read' : yes(v) },
   { key: 'modified_at', label: 'modified', fmt: fmtTime },
 ];
@@ -104,22 +105,26 @@ function daysLeft(v: unknown): string | HTMLElement {
   const d = Math.ceil((new Date(text(v)).getTime() - Date.now()) / 86400000);
   return d <= 0 ? badge(`expired ${fmtTime(v)}`, 'crit') : `${fmtNum(d)} days (${fmtTime(v)})`;
 }
+// X18: days left = OK (an expired one carries its badge)
+const daysLeftCls = (v: unknown): string => v == null || Math.ceil((new Date(text(v)).getTime() - Date.now()) / 86400000) <= 0 ? '' : 'status ok';
 
 const objectCols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'object_kind', label: 'kind', fmt: v => ({ user: 'user', guest_connect: 'guest CONNECT', assembly: 'CLR assembly', certificate: 'certificate', asym_key: 'asymmetric key', sym_key: 'symmetric key' } as Record<string, string>)[text(v)] ?? text(v) },
   { key: 'object_name', label: 'name' },
   { key: 'object_type', label: 'type' },
-  { key: 'has_login', label: 'login with its SID', fmt: (v, r) => r.object_kind !== 'user' ? '' : v == null ? 'not testable' : v === true ? 'yes' : badge('none', 'warn') },
+  { key: 'has_login', label: 'login with its SID', fmt: (v, r) => r.object_kind !== 'user' ? '' : v == null ? 'not testable' : v === true ? 'yes' : badge('none', 'warn'),
+    cls: (v, r) => r.object_kind !== 'user' ? '' : v == null ? 'status none' : v === true ? 'status ok' : '' },   // X18: not testable = N/A, yes = OK
   { key: 'detail', label: 'permission set / algorithm / key protection' },
   { key: 'key_length', label: 'bits', num: true },
-  { key: 'expires_at', label: 'expires', fmt: daysLeft },
+  { key: 'expires_at', label: 'expires', fmt: daysLeft, cls: daysLeftCls },
   { key: 'cert_use', label: 'used for' },
 ];
 
 const proxyCols: Col[] = [
   { key: 'proxy_name', label: 'proxy' }, { key: 'enabled', fmt: yes }, { key: 'credential_name', label: 'credential' },
-  { key: 'public_granted', label: 'msdb public may use it', fmt: v => v === true ? badge('yes', 'warn') : 'no' },
+  { key: 'public_granted', label: 'msdb public may use it', fmt: v => v === true ? badge('yes', 'warn') : v === false ? 'no' : '',
+    cls: v => v === false ? 'status ok' : '' },   // X18: no = OK; not read = an empty cell
 ];
 
 const logCols: Col[] = [

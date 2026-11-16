@@ -14,16 +14,18 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// TestInvestigationRunNeedsTheAuditLoginOnAStore (J16-RUNGUARD, a box row: PGVIGIL_REPO_TEST_DSN, a login that may
-// create a database and roles; run on PostgreSQL 13 and 18): import_investigation_event's op 'run' writes the audit of
+// TestInvestigationRunNeedsTheAuditLoginOnAStore (J16-RUNGUARD, a box row: PGVIGIL_REPO_TEST_DSN, a superuser - its
+// SET SESSION AUTHORIZATION needs one; run on PostgreSQL 13 and 18): import_investigation_event's op 'run' writes the audit of
 // an ask's Run - serve writes it through the actions door's audit login, which holds pgvigil_collector (docs/alerts.md:
 // the collector role is the actions door's audit login; a queue-mode serve offers no investigations, q_investigate.go
-// investigationOff). 0300 also grants the function to pgvigil_requester (for a later release's queue path), and a
-// session of that role could write 'run' lines under any ui_user, with any sql / rows / outcome, and fill the request's
-// 195-row budget of calls so the agent's claim, renew and select are refused. A session that is no member of
-// pgvigil_collector is refused op 'run' (SQLSTATE 42501, the words naming the role) and writes no journal row; a
-// member of pgvigil_collector writes it; the requester's other op (close) is unchanged. The roles are made for the test
-// and dropped after it.
+// investigationOff). A session that may call the function but is no member of pgvigil_collector is refused op 'run'
+// (SQLSTATE 42501, the words naming the role) and writes no journal row - else it could write 'run' lines under any
+// ui_user, with any sql / rows / outcome, and fill the request's 195-row budget of calls so the agent's claim, renew and
+// select are refused; a member of pgvigil_collector writes it. J16-RUNGUARD OP CLOSE (review 6 #2, the lead's 15:07):
+// the request queue's role pgvigil_requester holds neither investigation function in j16 (0300 granted both for a later
+// release's queue path; no j16 path calls them as that role) - its request, its close (which would end another user's
+// ask under any closed_by) and its run are each refused 42501 and change nothing. The roles are made for the test and
+// dropped after it.
 func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -37,10 +39,10 @@ func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = admin.Close(context.Background()) }) // registered first: it runs last
 	n := time.Now().UnixNano() % 1_000_000_000
-	requester, collector := fmt.Sprintf("pgvrg_rq_%d", n), fmt.Sprintf("pgvrg_co_%d", n)
-	// the roles' drop, registered before the fresh database's (it runs after the database is dropped)
+	requester, collector, caller := fmt.Sprintf("pgvrg_rq_%d", n), fmt.Sprintf("pgvrg_co_%d", n), fmt.Sprintf("pgvrg_ex_%d", n)
+	// the roles' drop, registered before the fresh database's (it runs after the database is dropped, its grants with it)
 	t.Cleanup(func() {
-		for _, r := range []string{requester, collector} {
+		for _, r := range []string{requester, collector, caller} {
 			_, _ = admin.Exec(context.Background(), `DROP ROLE IF EXISTS `+pgx.Identifier{r}.Sanitize())
 		}
 	})
@@ -49,6 +51,13 @@ func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 		if _, err := admin.Exec(ctx, `CREATE ROLE `+pgx.Identifier{x.role}.Sanitize()+` NOLOGIN IN ROLE `+pgx.Identifier{x.group}.Sanitize()); err != nil {
 			t.Fatalf("make %s IN ROLE %s: %v", x.role, x.group, err)
 		}
+	}
+	// caller: may call import_investigation_event (its own grant, in the fresh database) and is in no pgvigil group
+	if _, err := admin.Exec(ctx, `CREATE ROLE `+pgx.Identifier{caller}.Sanitize()+` NOLOGIN`); err != nil {
+		t.Fatalf("make %s: %v", caller, err)
+	}
+	if _, err := st.pool.Exec(ctx, `GRANT USAGE ON SCHEMA pgvigil TO `+pgx.Identifier{caller}.Sanitize()+`; GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_event(timestamptz, jsonb) TO `+pgx.Identifier{caller}.Sanitize()); err != nil {
+		t.Fatalf("grant %s the event function: %v", caller, err)
 	}
 	ask := func(who string) int64 {
 		t.Helper()
@@ -71,8 +80,8 @@ func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Database = st.pool.Config().ConnConfig.Database
-	// event calls import_investigation_event in a session as role (SET SESSION AUTHORIZATION: session_user is the role)
-	event := func(role string, payload string) (string, error) {
+	// call runs one investigation import function in a session as role (SET SESSION AUTHORIZATION: session_user is the role)
+	call := func(role, fn, payload string) (string, error) {
 		c, err := pgx.ConnectConfig(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -82,8 +91,25 @@ func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out string
-		err = c.QueryRow(ctx, `SELECT pgvigil.import_investigation_event(now(), $1::jsonb)::text`, payload).Scan(&out)
+		err = c.QueryRow(ctx, `SELECT pgvigil.`+fn+`(now(), $1::jsonb)::text`, payload).Scan(&out)
 		return out, err
+	}
+	event := func(role, payload string) (string, error) { return call(role, "import_investigation_event", payload) }
+	refused := func(what string, err error, out string) {
+		t.Helper()
+		var pe *pgconn.PgError
+		if err == nil {
+			t.Errorf("%s: %s - want it refused (SQLSTATE 42501: the role holds no grant of the function in j16)", what, out)
+		} else if !errors.As(err, &pe) || pe.Code != "42501" {
+			t.Errorf("%s: %v - want SQLSTATE 42501", what, err)
+		}
+	}
+	state := func(id int64) (st8 string) {
+		t.Helper()
+		if err := st.pool.QueryRow(ctx, `SELECT state FROM pgvigil.investigations WHERE id = $1`, id).Scan(&st8); err != nil {
+			t.Fatal(err)
+		}
+		return st8
 	}
 	runs := func(id int64) (n int) {
 		t.Helper()
@@ -97,17 +123,21 @@ func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 	}
 
 	id := ask("u1")
-	// the requester's run: refused in words naming the role, and nothing written
-	out, err := event(requester, run(id, "someone-else"))
+	// a caller that may call the function and is no member of pgvigil_collector: its run refused in words naming the
+	// role (the guard), and nothing written
+	out, err := event(caller, run(id, "someone-else"))
 	var pe *pgconn.PgError
 	switch {
 	case err == nil:
-		t.Errorf("a session as %s (IN ROLE pgvigil_requester) wrote a run line: %s - want it refused (SQLSTATE 42501)", requester, out)
+		t.Errorf("a session as %s (EXECUTE, no pgvigil_collector) wrote a run line: %s - want it refused (SQLSTATE 42501)", caller, out)
 	case !errors.As(err, &pe) || pe.Code != "42501" || !strings.Contains(pe.Message, "pgvigil_collector"):
-		t.Errorf("a session as %s: %v - want SQLSTATE 42501 with words naming pgvigil_collector", requester, err)
+		t.Errorf("a session as %s: %v - want SQLSTATE 42501 with words naming pgvigil_collector", caller, err)
 	}
+	// the requester's run: refused (it holds no grant of the function), and nothing written
+	out, err = event(requester, run(id, "someone-else"))
+	refused(fmt.Sprintf("a session as %s (IN ROLE pgvigil_requester) asking a run line", requester), err, out)
 	if got := runs(id); got != 0 {
-		t.Errorf("after the requester's refused run: %d run line(s) on investigation %d, want 0", got, id)
+		t.Errorf("after the refused runs: %d run line(s) on investigation %d, want 0", got, id)
 	}
 	// the audit login's run (a member of pgvigil_collector): written
 	out, err = event(collector, run(id, "u1"))
@@ -117,10 +147,24 @@ func TestInvestigationRunNeedsTheAuditLoginOnAStore(t *testing.T) {
 	if got := runs(id); got != 1 {
 		t.Errorf("after the audit login's run: %d run line(s) on investigation %d, want 1", got, id)
 	}
-	// the requester's other op: close, unchanged
+	// the requester's close of another user's ask (any closed_by): refused, the ask still open
 	id2 := ask("u2")
-	out, err = event(requester, fmt.Sprintf(`{"op": "close", "id": %d, "ui_user": "u2", "reason": "the runguard row"}`, id2))
-	if err != nil || !strings.Contains(out, `"outcome": "done"`) {
-		t.Errorf("the requester's close: %s, %v - want outcome done (op close unchanged)", out, err)
+	out, err = event(requester, fmt.Sprintf(`{"op": "close", "id": %d, "ui_user": "someone-else", "reason": "the runguard row"}`, id2))
+	refused(fmt.Sprintf("a session as %s (IN ROLE pgvigil_requester) closing u2's ask", requester), err, out)
+	if got := state(id2); got != "open" {
+		t.Errorf("u2's ask after the requester's refused close: state %q, want open", got)
+	}
+	// the requester's request (an ask under any ui_user): refused, nothing filed
+	var before, after int
+	if err := st.pool.QueryRow(ctx, `SELECT count(*)::int FROM pgvigil.investigations`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	out, err = call(requester, "import_investigation_request", `{"ui_user": "someone-else", "kind": "ask", "question": "which sessions block now?"}`)
+	refused(fmt.Sprintf("a session as %s (IN ROLE pgvigil_requester) filing an ask", requester), err, out)
+	if err := st.pool.QueryRow(ctx, `SELECT count(*)::int FROM pgvigil.investigations`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Errorf("investigations after the requester's refused request: %d, want %d", after, before)
 	}
 }
