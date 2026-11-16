@@ -104,7 +104,14 @@ func (s *Server) Indexes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
 		return
 	}
+	// the index advisor's button: off with adviseOff's words before a click (a remote instance, a page instance, no door)
+	adviseWhy := ""
+	var name string
+	if err := s.pool.QueryRow(r.Context(), `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name); err == nil {
+		adviseWhy = s.adviseOff(s.doorsNow(), name)
+	}
 	parts := []part{
+		{"advise", `SELECT nullif($1::text, '') AS off`, []any{adviseWhy}},
 		{"state", sqlIndexesState, []any{id}},
 		{"databases", sqlIndexesDatabases, []any{id}},
 		{"indexes", sqlIndexesList, []any{id}},
