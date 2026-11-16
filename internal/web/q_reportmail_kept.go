@@ -186,7 +186,7 @@ func (s *Server) applyDailyChecksOnce(ctx context.Context, block *reportmail.Dai
 	if s.auth == nil {
 		return "report mail is behind the UI login", true
 	}
-	hash, err := s.auth.lookup(ctx, req.As)
+	hash, _, err := s.auth.lookup(ctx, req.As)
 	if err != nil {
 		return fmt.Sprintf("the user %s could not be read: %v", req.As, err), false
 	}
@@ -240,7 +240,7 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 		}
 		// the user the page is drawn as: one who can no longer sign in fails every turn (alerted), and the page says so
 		if s.auth != nil {
-			if hash, err := s.auth.lookup(ctx, live.owner); err == nil && hash == "" {
+			if hash, _, err := s.auth.lookup(ctx, live.owner); err == nil && hash == "" {
 				out["as_off"] = fmt.Sprintf("the user %s can no longer sign in (disabled or removed): each day's mail fails, and is alerted, until that user is enabled or the mail is kept as another", live.owner)
 			}
 		}
