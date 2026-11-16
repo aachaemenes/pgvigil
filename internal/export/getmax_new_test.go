@@ -193,7 +193,8 @@ func TestCloudGetMax(t *testing.T) {
 		name := "s3"
 		if azure {
 			name = "azure_blob"
-			d, err = NewAzureBlob(BlobOptions{SASURL: srv.URL + "/c?sv=2024-01-01&sig=x", Container: "c", Prefix: "drop"})
+			// sas_url is the storage account's address with the SAS token (docs/remote-collector.md): the container follows
+			d, err = NewAzureBlob(BlobOptions{SASURL: srv.URL + "/?sv=2024-01-01&sig=x", Container: "c", Prefix: "drop"})
 		} else {
 			d, err = NewS3(ctx, S3Options{Endpoint: srv.URL, Bucket: "b", Prefix: "drop"})
 		}
