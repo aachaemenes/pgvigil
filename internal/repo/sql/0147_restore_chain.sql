@@ -158,12 +158,13 @@ BEGIN
 
   -- what this read no longer lists: a candidate goes; a log goes when it lies below the lowest log the read sent for
   -- its database (the range moved on), or when the read sent no log of the database at all; any set goes whose recovery
-  -- fork no set of the read's for the database names (a restore over the database left that fork)
+  -- fork no set of the read's for the database names (a restore over the database left that fork). No log sent: the
+  -- fallback s.last_lsn + 1 (PostgreSQL 13 has no numeric infinity); a log with no last_lsn stays NULL here, so it is kept
   DELETE FROM pgvigil.mssql_restore_sets s
    WHERE s.instance_id = p_instance_id AND EXISTS (SELECT 1 FROM pgv_rc_db d WHERE d.database_name = s.database_name)
      AND NOT EXISTS (SELECT 1 FROM pgv_rc_set x WHERE x.uuid = s.backup_set_uuid)
      AND (s.role <> 'log'
-          OR s.last_lsn < coalesce((SELECT min(x.last_lsn) FROM pgv_rc_set x WHERE x.database_name = s.database_name AND x.role = 'log'), 'infinity'::numeric)
+          OR s.last_lsn < coalesce((SELECT min(x.last_lsn) FROM pgv_rc_set x WHERE x.database_name = s.database_name AND x.role = 'log'), s.last_lsn + 1)
           OR (s.last_recovery_fork_guid IS NOT NULL
               AND EXISTS (SELECT 1 FROM pgv_rc_set x WHERE x.database_name = s.database_name)
               AND NOT EXISTS (SELECT 1 FROM pgv_rc_set x WHERE x.database_name = s.database_name
