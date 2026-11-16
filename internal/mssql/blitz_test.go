@@ -205,19 +205,32 @@ func TestBlitzNoteFirst(t *testing.T) {
 	}
 }
 
-// TestBlitzDBSkipNote: the words for none and for some databases read.
-func TestBlitzDBSkipNote(t *testing.T) {
-	none, some := blitzDBSkipNote(5, 0, "mon"), blitzDBSkipNote(5, 2, "mon")
-	for _, c := range []struct{ got, want string }{
-		{none, "sp_Blitz's per-database checks ran on no database (0 of 5): "},
-		{some, "sp_Blitz's per-database checks left out 3 of 5 databases: "},
+// TestBlitzDBNote: the words for each state - none, some and every database read (review-23 B1 / S1 / N4 / N6, the
+// lead 05:5x: the run names its state in both states, never 'only sysadmin').
+func TestBlitzDBNote(t *testing.T) {
+	none, some, every := blitzDBNote(5, 0, "mon", "[master]"), blitzDBNote(5, 2, "mon", "[master]"), blitzDBNote(5, 5, "mon", "[dba]")
+	for _, c := range []struct {
+		got, prefix string
+		has, lacks  []string
+	}{
+		{none, "sp_Blitz's per-database checks ran on no database (0 of 5) - ",
+			[]string{"still ran", "fn_my_permissions", "run in [master]", "the login mon holds no SELECT in [master]",
+				"a database-level SELECT for the login's user in [master]", "every table and view in [master]", "Backups tab", "an owner that maps to no login"},
+			[]string{"sysadmin", "SELECT ALL USER SECURABLES", "only through a server right"}},
+		{some, "sp_Blitz's per-database checks could read 2 of 5 databases: ", []string{"fn_my_permissions", "the login mon on 2"}, []string{"sysadmin", "left out 3"}},
+		{every, "sp_Blitz's per-database checks ran on every database (5 of 5): ", []string{"run in [dba]", "the login mon holds SELECT in [dba]", "CONTROL SERVER"}, nil},
 	} {
-		if !strings.HasPrefix(c.got, c.want) {
-			t.Errorf("%q does not start %q", c.got, c.want)
+		if !strings.HasPrefix(c.got, c.prefix) {
+			t.Errorf("%q does not start %q", c.got, c.prefix)
 		}
-		for _, w := range []string{"fn_my_permissions", "the login mon", "SELECT ALL USER SECURABLES", "sysadmin"} {
+		for _, w := range c.has {
 			if !strings.Contains(c.got, w) {
 				t.Errorf("%q lacks %q", c.got, w)
+			}
+		}
+		for _, w := range c.lacks {
+			if strings.Contains(c.got, w) {
+				t.Errorf("%q holds %q", c.got, w)
 			}
 		}
 	}
