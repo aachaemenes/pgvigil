@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssql"
 )
 
 // The page's side of an instance's schedules (Admin > Instances' Settings, the ServiceConfig takes' ST5a): which
@@ -91,5 +92,47 @@ func CheckPageSettings(engine string, ps config.PageSettings) error {
 			return fmt.Errorf("%s never runs on an instance added here: %s", n, why)
 		}
 	}
+	// ST5b: a paused collection's own interval (kept for Resume) is the engine's and its schedule is off
+	paused := make([]string, 0, len(ps.Paused))
+	for n := range ps.Paused {
+		paused = append(paused, n)
+	}
+	sort.Strings(paused)
+	for _, n := range paused {
+		if err := CheckCollection(engine, n); err != nil {
+			return err
+		}
+		if d, ok := ps.Schedules[n]; !ok || d != 0 {
+			return fmt.Errorf("paused %s: its schedule is not off", n)
+		}
+	}
+	// ST5b: thresholds are a SQL Server instance's, judged by the collector's own rule (mssql.ThresholdRows' words)
+	if len(ps.Thresholds) > 0 {
+		if engine != config.EngineSQLServer {
+			return fmt.Errorf("thresholds are a SQL Server instance's (mssql_thresholds); this instance is %s", engine)
+		}
+		if _, err := mssql.ThresholdRows(ps.Thresholds); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// ThresholdEntry is one threshold as the panel lists it: its name and the collector's default (backup_exclude: a list
+// of LIKE patterns, no default).
+type ThresholdEntry struct {
+	Name     string
+	Default  float64
+	Patterns bool
+}
+
+// ThresholdCatalogue lists a SQL Server instance's thresholds from mssql.HADRThresholds itself, sorted, then
+// backup_exclude.
+func ThresholdCatalogue() []ThresholdEntry {
+	out := make([]ThresholdEntry, 0, len(mssql.HADRThresholds)+1)
+	for n, d := range mssql.HADRThresholds {
+		out = append(out, ThresholdEntry{Name: n, Default: d})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return append(out, ThresholdEntry{Name: "backup_exclude", Patterns: true})
 }

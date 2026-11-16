@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssql"
 )
 
 // The page's judgement of a page instance's settings (ST5a): a collection of the instance's engine, not the running
@@ -60,5 +61,59 @@ func TestPageSettingsCheck(t *testing.T) {
 	}
 	if _, ok := pg["mssql_activity"]; ok {
 		t.Error("the PostgreSQL catalogue lists a SQL Server collection")
+	}
+}
+
+// TestPageSettingsThresholdsCheck (ST5b): serve's judgement of a page instance's thresholds and paused intervals - a
+// SQL Server instance's only, each name one of mssql.ThresholdRows' (its own words), paused only for a collection of
+// the engine whose schedule is off; and a stored row read by Merge reaches mssql.ThresholdRows whole (the design
+// pass's F2: json.Number refused there).
+func TestPageSettingsThresholdsCheck(t *testing.T) {
+	for _, c := range []struct{ engine, raw, want string }{
+		{config.EngineSQLServer, `{"thresholds": {"redo_queue_kb": 1, "backup_exclude": ["Sales%"]}}`, ""},
+		{config.EngineSQLServer, `{"schedules": {"mssql_jobs": 0}, "paused": {"mssql_jobs": 600}}`, ""},
+		{config.EnginePostgres, `{"thresholds": {"redo_queue_kb": 1}}`, "thresholds are a SQL Server instance's (mssql_thresholds); this instance is postgres"},
+		{config.EngineSQLServer, `{"thresholds": {"nope": 1}}`, `mssql threshold "nope" is not known; known: `},
+		{config.EngineSQLServer, `{"paused": {"mssql_jobs": 600}}`, "paused mssql_jobs: its schedule is not off"},
+		{config.EngineSQLServer, `{"schedules": {"activity": 0}, "paused": {"activity": 600}}`, `"activity" is a postgres collection and the instance's engine is sqlserver`},
+	} {
+		ps, err := config.ParsePageSettings([]byte(c.raw))
+		if err != nil {
+			t.Errorf("%s: %v", c.raw, err)
+			continue
+		}
+		got := ""
+		if err := CheckPageSettings(c.engine, ps); err != nil {
+			got = err.Error()
+		}
+		if c.want == "" && got != "" || c.want != "" && !strings.HasPrefix(got, c.want) {
+			t.Errorf("%s %s: %q, want %q", c.engine, c.raw, got, c.want)
+		}
+	}
+	all, skipped := config.Merge(nil, []config.PageInstance{{Name: "m1", Engine: config.EngineSQLServer, DSNRef: "file:/etc/pgvigil/m1",
+		SettingsRaw: []byte(`{"thresholds": {"redo_queue_kb": 512000, "backup_exclude": ["Sales%"]}}`)}}, "full")
+	if len(all) != 1 || len(skipped) != 0 {
+		t.Fatalf("merged %d, skipped %v", len(all), skipped)
+	}
+	rows, err := mssql.ThresholdRows(all[0].MSSQLThresholds)
+	if err != nil || len(rows) != 1 || rows[0]["redo_queue_kb"] != float64(512000) {
+		t.Errorf("mssql.ThresholdRows of the merged instance: %v (%v)", rows, err)
+	}
+}
+
+// TestThresholdCatalogue (ST5b): the panel's thresholds are mssql.HADRThresholds' with their defaults, then
+// backup_exclude - the same names, in the same order, as 0266's c_known list (a change of one without the other fails
+// here: TestAdminInstanceThresholdsOnAStore names the SQL side's list).
+func TestThresholdCatalogue(t *testing.T) {
+	var names []string
+	for _, e := range ThresholdCatalogue() {
+		names = append(names, e.Name)
+		if e.Name != "backup_exclude" && e.Default != mssql.HADRThresholds[e.Name] {
+			t.Errorf("%s: default %v, want %v", e.Name, e.Default, mssql.HADRThresholds[e.Name])
+		}
+	}
+	want := "diff_backup_hours,full_backup_hours,job_failed_hours,job_long_factor,job_long_min_seconds,log_backup_minutes,log_send_queue_kb,new_database_hours,nul_backup_days,redo_queue_kb,repl_undistributed_commands,backup_exclude"
+	if got := strings.Join(names, ","); got != want {
+		t.Errorf("the catalogue: %s\nwant %s", got, want)
 	}
 }

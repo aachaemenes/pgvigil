@@ -111,7 +111,7 @@ func TestAdminInstanceSettingsOnAStore(t *testing.T) {
 		{fmt.Sprintf("iset-none-%d", tag), `{}`, nil, fmt.Sprintf("no instance iset-none-%d was added here", tag)},
 		{name, ``, nil, "settings must be an object"},
 		{name, `[]`, nil, "settings must be an object"},
-		{name, `{"schedules": {}, "disabled": ["x"]}`, nil, "settings hold schedules and query_text only"},
+		{name, `{"schedules": {}, "disabled": ["x"]}`, nil, "settings hold schedules, query_text, thresholds and paused only"}, // 0266 (ST5b) widened the keys
 		{name, `{"schedules": ["statements"]}`, nil, "schedules must be an object of a collection and its seconds"},
 		{name, `{"schedules": {"statements": -5}}`, nil, "each schedule must be whole seconds from 0 (off) to 2592000 (30 days)"},
 		{name, `{"schedules": {"statements": 1.5}}`, nil, "each schedule must be whole seconds from 0 (off) to 2592000 (30 days)"},

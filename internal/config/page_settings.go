@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -22,10 +23,15 @@ const PageScheduleFloor = time.Minute
 // PageScheduleCeiling is the longest one (0263's own check of the stored shape says the same 30 days).
 const PageScheduleCeiling = 30 * 24 * time.Hour
 
-// PageSettings is admin_instances.settings read: Schedules per collection (0 = off); QueryText "" = pgvigil.yaml's.
+// PageSettings is admin_instances.settings read: Schedules per collection (0 = off); QueryText "" = pgvigil.yaml's;
+// Thresholds a SQL Server instance's own mssql_thresholds (0266, ST5b: each number a float64, backup_exclude a
+// []string - what mssql.ThresholdRows takes); Paused the own interval of a collection Pause Collections set off, kept
+// for its Resume (no schedule: the collection stays off).
 type PageSettings struct {
-	Schedules map[string]time.Duration
-	QueryText string
+	Schedules  map[string]time.Duration
+	QueryText  string
+	Thresholds map[string]any
+	Paused     map[string]time.Duration
 }
 
 // ParsePageSettings reads admin_instances.settings ({"schedules": {"<collection>": <seconds>}, "query_text": "..."});
@@ -36,8 +42,10 @@ func ParsePageSettings(raw []byte) (PageSettings, error) {
 		return ps, nil
 	}
 	var v struct {
-		Schedules map[string]json.Number `json:"schedules"`
-		QueryText *string                `json:"query_text"`
+		Schedules  map[string]json.Number     `json:"schedules"`
+		QueryText  *string                    `json:"query_text"`
+		Thresholds map[string]json.RawMessage `json:"thresholds"`
+		Paused     map[string]json.Number     `json:"paused"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -56,6 +64,19 @@ func ParsePageSettings(raw []byte) (PageSettings, error) {
 		}
 		ps.Schedules[k] = time.Duration(sec) * time.Second
 	}
+	for k, n := range v.Paused {
+		sec, err := n.Int64()
+		if err != nil || sec < int64(PageScheduleFloor/time.Second) || sec > int64(PageScheduleCeiling/time.Second) {
+			return PageSettings{}, fmt.Errorf("its settings in Admin > Instances give paused %s %s: not whole seconds from 60 to 30 days", k, n)
+		}
+		if ps.Paused == nil {
+			ps.Paused = map[string]time.Duration{}
+		}
+		ps.Paused[k] = time.Duration(sec) * time.Second
+	}
+	if err := ps.readThresholds(v.Thresholds); err != nil {
+		return PageSettings{}, err
+	}
 	if v.QueryText != nil {
 		if !validQueryText(*v.QueryText) {
 			return PageSettings{}, fmt.Errorf("its settings in Admin > Instances give query_text %q: not full, normalized or none", *v.QueryText)
@@ -63,6 +84,35 @@ func ParsePageSettings(raw []byte) (PageSettings, error) {
 		ps.QueryText = *v.QueryText
 	}
 	return ps, nil
+}
+
+// readThresholds reads the stored thresholds: a number of 0 or more each, backup_exclude a list of non-blank patterns
+// (the names are serve's and 0266's to judge: config cannot import mssql).
+func (ps *PageSettings) readThresholds(raw map[string]json.RawMessage) error {
+	for k, r := range raw {
+		if ps.Thresholds == nil {
+			ps.Thresholds = map[string]any{}
+		}
+		if k == "backup_exclude" {
+			var pats []string
+			if err := json.Unmarshal(r, &pats); err != nil || pats == nil {
+				return fmt.Errorf("its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank")
+			}
+			for _, p := range pats {
+				if strings.TrimSpace(p) == "" {
+					return fmt.Errorf("its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank")
+				}
+			}
+			ps.Thresholds[k] = pats
+			continue
+		}
+		var n float64
+		if err := json.Unmarshal(r, &n); err != nil || n < 0 || string(bytes.TrimSpace(r)) == "null" {
+			return fmt.Errorf("its settings in Admin > Instances give threshold %s %s: not a number of 0 or more", k, bytes.TrimSpace(r))
+		}
+		ps.Thresholds[k] = n
+	}
+	return nil
 }
 
 // Stored is the settings as admin_instances.settings holds them (whole seconds; a key left out = the default).
@@ -77,6 +127,20 @@ func (ps PageSettings) Stored() map[string]any {
 	}
 	if ps.QueryText != "" {
 		out["query_text"] = ps.QueryText
+	}
+	if len(ps.Thresholds) > 0 {
+		th := map[string]any{}
+		for k, v := range ps.Thresholds {
+			th[k] = v
+		}
+		out["thresholds"] = th
+	}
+	if len(ps.Paused) > 0 {
+		pa := map[string]int64{}
+		for k, d := range ps.Paused {
+			pa[k] = int64(d / time.Second)
+		}
+		out["paused"] = pa
 	}
 	return out
 }
@@ -101,5 +165,11 @@ func (ps PageSettings) apply(in *Instance) {
 	}
 	if ps.QueryText != "" {
 		in.QueryText = ps.QueryText
+	}
+	if len(ps.Thresholds) > 0 {
+		in.MSSQLThresholds = map[string]any{}
+		for k, v := range ps.Thresholds {
+			in.MSSQLThresholds[k] = v
+		}
 	}
 }

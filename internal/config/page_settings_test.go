@@ -21,6 +21,13 @@ func TestPageSettings(t *testing.T) {
 		{`{"schedules": {"statements": 2592001}}`, "its settings in Admin > Instances give statements 2592001: not whole seconds from 0 (off) to 30 days"},
 		{`{"schedules": {"statements": 18446744134}}`, "its settings in Admin > Instances give statements 18446744134: not whole seconds from 0 (off) to 30 days"},
 		{`{"query_text": "raw"}`, `its settings in Admin > Instances give query_text "raw": not full, normalized or none`},
+		// ST5b (0266): thresholds and a paused collection's own interval
+		{`{"thresholds": {"redo_queue_kb": 512000, "job_long_factor": 2.5, "backup_exclude": ["Sales%"]}, "paused": {"mssql_jobs": 600}}`, ""},
+		{`{"thresholds": {"redo_queue_kb": -1}}`, "its settings in Admin > Instances give threshold redo_queue_kb -1: not a number of 0 or more"},
+		{`{"thresholds": {"redo_queue_kb": "5"}}`, `its settings in Admin > Instances give threshold redo_queue_kb "5": not a number of 0 or more`},
+		{`{"thresholds": {"backup_exclude": "Sales"}}`, "its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank"},
+		{`{"thresholds": {"backup_exclude": ["Sales", " "]}}`, "its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank"},
+		{`{"paused": {"mssql_jobs": 30}}`, "its settings in Admin > Instances give paused mssql_jobs 30: not whole seconds from 60 to 30 days"},
 		{`{"disabled": ["x"]}`, `its settings in Admin > Instances do not parse: json: unknown field "disabled"`},
 		{`[]`, "its settings in Admin > Instances do not parse: json: cannot unmarshal array"},
 	} {
@@ -81,5 +88,34 @@ func TestPageSettings(t *testing.T) {
 	ps2.apply(&again)
 	if Fingerprint(again) == Fingerprint(p1) {
 		t.Error("the fingerprint did not move with the settings")
+	}
+}
+
+// TestPageSettingsThresholds (ST5b): a page instance's thresholds reach the instance as mssql_thresholds would from the
+// file - numbers as float64 (never json.Number: mssql.ThresholdRows takes float64), backup_exclude as []string - and are
+// stored back as read; paused is kept for the resume and is no schedule (the fingerprint: TestFingerprintThresholds,
+// inventory_test.go).
+func TestPageSettingsThresholds(t *testing.T) {
+	ps, err := ParsePageSettings([]byte(`{"schedules": {"mssql_jobs": 0}, "paused": {"mssql_jobs": 600}, "thresholds": {"redo_queue_kb": 512000, "job_long_factor": 2.5, "backup_exclude": ["Sales%", "tmp_%"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := Instance{Name: "m1", Engine: EngineSQLServer}
+	ps.apply(&in)
+	if v, ok := in.MSSQLThresholds["redo_queue_kb"].(float64); !ok || v != 512000 {
+		t.Errorf("redo_queue_kb: %#v", in.MSSQLThresholds["redo_queue_kb"])
+	}
+	if v, ok := in.MSSQLThresholds["job_long_factor"].(float64); !ok || v != 2.5 {
+		t.Errorf("job_long_factor: %#v", in.MSSQLThresholds["job_long_factor"])
+	}
+	if v, ok := in.MSSQLThresholds["backup_exclude"].([]string); !ok || strings.Join(v, ",") != "Sales%,tmp_%" {
+		t.Errorf("backup_exclude: %#v", in.MSSQLThresholds["backup_exclude"])
+	}
+	if strings.Join(in.Disabled, ",") != "mssql_jobs" || len(in.Schedules) != 0 {
+		t.Errorf("paused is no schedule: disabled %v, schedules %v", in.Disabled, in.Schedules)
+	}
+	b, _ := json.Marshal(ps.Stored())
+	if string(b) != `{"paused":{"mssql_jobs":600},"schedules":{"mssql_jobs":0},"thresholds":{"backup_exclude":["Sales%","tmp_%"],"job_long_factor":2.5,"redo_queue_kb":512000}}` {
+		t.Errorf("Stored: %s", b)
 	}
 }
