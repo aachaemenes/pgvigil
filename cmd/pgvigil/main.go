@@ -31,6 +31,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
@@ -267,6 +268,11 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	// partitions ahead (0271, N4), as the scheduler does at its start: this run's imports make no partition in the
+	// normal path
+	if res, err := r.PartitionsAhead(ctx, time.Now()); err != nil {
+		log.Warn("partitions ahead: not all made", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
+	}
 	failed := 0
 	for _, in := range targets {
 		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
