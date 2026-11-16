@@ -1,0 +1,38 @@
+-- A26-PG (migration 0275, above 0190): the lines for the next join's own file 0300_join_release3.sql (the 03:3x rule).
+-- Not a migration of its own; the record of what the join places.
+--
+-- WHEN: A26-PG joins in the SAME join file as A26's 0267 (or that file is numbered above both). 'pgvigil migrate'
+-- applies every missing file in name order: a repository already at 0300 that later received 0275 would run it after
+-- 0300 (0275's import_schema, 0267's plus this arm, replacing 0300's), and a fresh repository would run 0275 before
+-- 0300 (0300's replacing 0275's, the arm lost) - two import_schema bodies in the field.
+--
+-- import_schema (0058's; re-created WHOLE in 0267 with A26's 'end' arm, and again in 0275): 0300 carries BOTH arms.
+--
+-- (1) the payload column, in pgv_schema_in's SELECT list, after def_hash:
+--
+--         r->>'def_hash' AS def_hash, r->>'hash_prev' AS hash_prev
+--
+-- (2) the arm, the FIRST statement inside IF NOT v_base THEN (before TRUNCATE pgv_schema_diff and the 'added'
+--     INSERT):
+--
+--       UPDATE pgvigil.schema_objects o SET definition = i.definition, hash = i.hash, def_hash = i.def_hash
+--         FROM pgv_schema_in i
+--        WHERE o.instance_id = p_instance_id AND o.dbid = d.dbid AND o.is_present
+--          AND i.dbid = o.dbid AND i.kind = o.kind AND i.identity = o.identity
+--          AND i.hash_prev IS NOT NULL AND o.hash = i.hash_prev AND o.hash <> i.hash;
+--
+--     Its shape: an UPDATE of schema_objects (not a filter on the diff), so the upsert after the diff sees
+--     o.hash = EXCLUDED.hash and keeps last_changed (EXCLUDED carries no hash_prev). Its aliases are o and i, never d:
+--     d is import_schema's own loop record (as A26's arm uses sd).
+--
+-- Why (the lead's 17:1x, A26's finding): the schema collection took a PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC,
+-- RETURN) from prosrc, which is empty for it, so its changes were never recorded; it now reads pg_get_function_sqlbody
+-- and sends hash_prev (the old code's hash of the same row) beside each such body, and this arm makes the upgrade's
+-- first read the body's baseline instead of one false 'changed' row per such function.
+--
+-- The payload contract: hash_prev (64 hex) rides on PostgreSQL function rows whose body is SQL-standard only. SQL
+-- Server's rows (import_mssql_schema calls import_schema) carry none: the arm is inert for them.
+--
+-- Nothing else joined changes: schema_findings, schema_changes_window, diff_schema / diff_schema_snapshots (0086),
+-- purge (0190) and apply_roles are untouched; no new object, no CHECK widened (the baseline is silent, the lead's G4).
+-- Not read here: whether relw4-s1's B20 migrations 0273 / 0274 re-create import_schema too - the join's check.
