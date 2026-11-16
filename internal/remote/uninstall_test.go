@@ -68,14 +68,30 @@ func TestPurgeOutbox(t *testing.T) {
 		t.Errorf("the outbox is still there (%v)", err)
 	}
 
+	// a shared folder (W review B3): someone else's file, an empty folder whose name could be a site's (a PostgreSQL
+	// data directory's pg_tblspc) and a folder named x.part outside the layout all stay, named
 	other := filepath.Join(root, "shared")
 	putBundle(t, other, 1, t0, false)
 	if err := os.WriteFile(filepath.Join(other, "notes.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, d := range []string{"pg_tblspc", "x.part"} {
+		if err := os.MkdirAll(filepath.Join(other, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(other, "x.part", "file"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	removed, kept, err = PurgeOutbox(other)
-	if err != nil || removed != 1 || !slices.Equal(kept, []string{filepath.Join(other, "notes.txt")}) {
-		t.Errorf("a shared folder: removed %d, kept %v, %v", removed, kept, err)
+	wantKept := []string{filepath.Join(other, "notes.txt"), filepath.Join(other, "pg_tblspc"), filepath.Join(other, "x.part", "file")}
+	if err != nil || removed != 1 || !slices.Equal(kept, wantKept) {
+		t.Errorf("a shared folder: removed %d, kept %v (want %v), %v", removed, kept, wantKept, err)
+	}
+	for _, p := range wantKept {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("someone else's %s went: %v", p, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(other, "notes.txt")); err != nil {
 		t.Errorf("someone else's file went: %v", err)
@@ -115,5 +131,56 @@ func TestPurgeState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "state.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("state.json is still there (%v)", err)
+	}
+}
+
+// An outbox the uninstall cannot read is an error, never a count of 0 (W review S1); an outbox or a state folder that
+// is a link is refused, its target untouched (N3).
+func TestOutboxUnreadableOrLinked(t *testing.T) {
+	root := t.TempDir()
+	t0 := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	outbox := filepath.Join(root, "outbox")
+	putBundle(t, outbox, 1, t0, false)
+	if os.Getuid() != 0 {
+		site := filepath.Join(outbox, "site1")
+		if err := os.Chmod(site, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if n, _, err := OutboxHolds(outbox); err == nil {
+			t.Errorf("an unreadable outbox counted %d with no error", n)
+		}
+		if err := os.Chmod(site, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outbox, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := OutboxHolds(link); err == nil {
+		t.Errorf("OutboxHolds took a linked outbox")
+	}
+	if _, _, err := PurgeOutbox(link); err == nil {
+		t.Errorf("PurgeOutbox took a linked outbox")
+	}
+	state := filepath.Join(root, "state")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	slink := filepath.Join(root, "slink")
+	if err := os.Symlink(state, slink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PurgeState(slink); err == nil {
+		t.Errorf("PurgeState took a linked state folder")
+	}
+	if n, _, err := OutboxHolds(outbox); err != nil || n != 1 {
+		t.Errorf("the link's target changed: %d %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "state.json")); err != nil {
+		t.Errorf("the state link's target lost state.json: %v", err)
 	}
 }

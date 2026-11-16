@@ -359,6 +359,9 @@ var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn"
 // folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold
 // nothing but the installer's files: a flat /etc/pgvigil.yaml would hand /etc to the service account
 // and a C:\pgvigil.yaml would rewrite the ACL of C:\.
+// dedicatedFolderOwn is dedicatedFolder for an installer whose own folder is named own (the remote's pgvigil-remote).
+func dedicatedFolderOwn(dir, cfgName, own string) error { return dedicatedFolder(dir, cfgName) }
+
 func dedicatedFolder(dir, cfgName string) error {
 	// a folder named for the hub's or the remote collector's install is that installer's own: install -remote again
 	// over a new binary finds its env file (Linux) or its outbox and state folder (Windows) there

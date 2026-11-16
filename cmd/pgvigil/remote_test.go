@@ -263,8 +263,23 @@ func TestRemoteInstallAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := dedicatedFolder(own, "pgvigil-remote.yaml"); err != nil {
+	if err := dedicatedFolderOwn(own, "pgvigil-remote.yaml", "pgvigil-remote"); err != nil {
 		t.Errorf("install -remote again over the first install's folder: %v", err)
+	}
+	// each installer takes only its own folder's name (W review S3): the hub's install never takes the remote's
+	// folder (it would chown it to the hub's account), the remote's never the hub's
+	if err := dedicatedFolder(own, "pgvigil.yaml"); err == nil || !strings.Contains(err.Error(), "holds other files") {
+		t.Errorf("the hub's installer took the remote's folder: %v", err)
+	}
+	hubDir := filepath.Join(root, "pgvigil")
+	if err := os.MkdirAll(hubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hubDir, "pgvigil.env"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := dedicatedFolderOwn(hubDir, "pgvigil-remote.yaml", "pgvigil-remote"); err == nil || !strings.Contains(err.Error(), "holds other files") {
+		t.Errorf("the remote's installer took the hub's folder: %v", err)
 	}
 	other := filepath.Join(root, "srv")
 	if err := os.MkdirAll(other, 0o755); err != nil {
@@ -273,7 +288,7 @@ func TestRemoteInstallAgain(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(other, "hosts"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := dedicatedFolder(other, "pgvigil-remote.yaml"); err == nil || !strings.Contains(err.Error(), "hosts") {
+	if err := dedicatedFolderOwn(other, "pgvigil-remote.yaml", "pgvigil-remote"); err == nil || !strings.Contains(err.Error(), "hosts") {
 		t.Errorf("a shared folder was accepted for the remote config: %v", err)
 	}
 }
@@ -351,5 +366,146 @@ func TestRemoteWiring(t *testing.T) {
 	}
 	if code := run([]string{"remote"}); code != 2 {
 		t.Errorf("remote with no subcommand: exit %d, want 2", code)
+	}
+}
+
+// fakeRemoteOps stands in for the service manager: its stop may write a bundle (the collector's final close at
+// shutdown), every step is recorded.
+type fakeRemoteOps struct {
+	calls  []string
+	onStop func()
+}
+
+func (f *fakeRemoteOps) use(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	saved, savedOut := remoteOps, remoteOut
+	remoteOps = remoteServiceOps{
+		stop: func(*slog.Logger) (bool, error) {
+			f.calls = append(f.calls, "stop")
+			if f.onStop != nil {
+				f.onStop()
+			}
+			return true, nil
+		},
+		start:  func(*slog.Logger) error { f.calls = append(f.calls, "start"); return nil },
+		remove: func(_ *slog.Logger, account string) error { f.calls = append(f.calls, "remove "+account); return nil },
+	}
+	var out bytes.Buffer
+	remoteOut = &out
+	t.Cleanup(func() { remoteOps, remoteOut = saved, savedOut })
+	return &out
+}
+
+func remotePurgeConfig(t *testing.T, dir string) (cfgPath, outbox string) {
+	t.Helper()
+	outbox = filepath.Join(dir, "outbox")
+	cfgPath = filepath.Join(dir, "pgvigil-remote.yaml")
+	cfg := strings.Replace(remoteConfigTemplate(outbox, filepath.Join(dir, "state")), `site: ""`, `site: plant1`, 1)
+	cfg = strings.Replace(cfg, `collector: ""`, `collector: box1`, 1)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath, outbox
+}
+
+func putRemoteBundle(t *testing.T, outbox string, seq uint64, pushed bool) {
+	t.Helper()
+	end := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC).Add(time.Duration(seq) * 5 * time.Minute)
+	b := filepath.Join(outbox, filepath.FromSlash(format.Ref{Site: "plant1", Collector: "box1", InstanceKey: format.InstanceKey("SQL01"), Seq: seq, End: end}.Dir()))
+	if err := os.MkdirAll(b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, format.ManifestFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		if err := os.WriteFile(b+".pushed", []byte(end.Format(time.RFC3339)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// W review B1: the stop writes a bundle (the collector's final close is never pushed), so the guard counts after the
+// stop: every earlier bundle pushed, the final one not -> plain -purge refuses, starts the service again and removes
+// nothing; -force removes it and says so; a plain -purge with nothing unsent says nothing of -force.
+func TestUninstallRemoteGuardAfterStop(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	p, outbox := remotePurgeConfig(t, dir)
+	putRemoteBundle(t, outbox, 1, true)
+	f := &fakeRemoteOps{onStop: func() { putRemoteBundle(t, outbox, 2, false) }}
+	out := f.use(t)
+	o := installOptions{Remote: true, Purge: true, Config: p, Bin: filepath.Join(dir, "bin", "pgvigil-remote"), User: "pgvigil-remote"}
+	err := uninstallRemote(log, o)
+	if err == nil || !strings.Contains(err.Error(), "1 bundle(s) not pushed") {
+		t.Errorf("the final bundle written by the stop: %v", err)
+	}
+	if strings.Join(f.calls, ",") != "stop,start" {
+		t.Errorf("steps %v (want stop, start: nothing removed)", f.calls)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Errorf("the refusal removed the config: %v", err)
+	}
+	f.calls = nil
+	o.Force = true
+	if err := uninstallRemote(log, o); err != nil {
+		t.Errorf("-force: %v", err)
+	}
+	if strings.Join(f.calls, ",") != "stop,remove pgvigil-remote" {
+		t.Errorf("-force steps %v", f.calls)
+	}
+	if !strings.Contains(out.String(), "removed with -force: 1 bundle(s)") {
+		t.Errorf("-force did not name the bundle: %q", out.String())
+	}
+	dir2 := t.TempDir()
+	p2, outbox2 := remotePurgeConfig(t, dir2)
+	putRemoteBundle(t, outbox2, 1, true)
+	f2 := &fakeRemoteOps{}
+	out2 := f2.use(t)
+	if err := uninstallRemote(log, installOptions{Remote: true, Purge: true, Config: p2, Bin: filepath.Join(dir2, "pgvigil-remote"), User: "pgvigil-remote"}); err != nil {
+		t.Errorf("a pushed-only outbox: %v", err)
+	}
+	if strings.Contains(out2.String(), "-force") {
+		t.Errorf("a plain -purge spoke of -force: %q", out2.String())
+	}
+}
+
+// W review B2 / S2: -purge removes only what is the remote's - never with the hub's config or binary, never on a
+// config that is gone, cannot be read or has no remote: block (the folders would be guessed); nothing is touched.
+func TestUninstallRemotePurgeRefusesWhatIsNotItsOwn(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	p, _ := remotePurgeConfig(t, dir)
+	broken := filepath.Join(dir, "broken", "pgvigil-remote.yaml")
+	hubish := filepath.Join(dir, "hubish", "pgvigil-remote.yaml")
+	for _, f := range []struct{ path, body string }{{broken, "remote: [\n"}, {hubish, "instances: []\n"}} {
+		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.path, []byte(f.body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hub := defaultInstallOptions()
+	bin := filepath.Join(dir, "pgvigil-remote")
+	for _, c := range []struct{ name, cfg, bin, want string }{
+		{"the hub's config", hub.Config, bin, "the hub's"},
+		{"the hub's binary", p, hub.Bin, "the hub's"},
+		{"a config that is gone", filepath.Join(dir, "none.yaml"), bin, "cannot be read"},
+		{"a config that does not load", broken, bin, "cannot be read"},
+		{"a config with no remote: block", hubish, bin, "no remote: block"},
+	} {
+		f := &fakeRemoteOps{}
+		f.use(t)
+		err := uninstallRemote(log, installOptions{Remote: true, Purge: true, Config: c.cfg, Bin: c.bin, User: "pgvigil-remote"})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want %q in %v", c.name, c.want, err)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("%s: the service was touched: %v", c.name, f.calls)
+		}
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Errorf("a refusal removed a config: %v", err)
 	}
 }

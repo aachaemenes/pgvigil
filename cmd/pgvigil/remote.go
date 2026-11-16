@@ -162,6 +162,23 @@ func removeRemoteParent(log *slog.Logger, outbox, stateDir string) {
 	}
 }
 
+// remoteServiceOps are the service manager's steps uninstall -remote takes (the system's own; a test's stand-in):
+// stop (and whether it was running), start again, and remove the service / unit for good.
+type remoteServiceOps struct {
+	stop   func(*slog.Logger) (bool, error)
+	start  func(*slog.Logger) error
+	remove func(log *slog.Logger, account string) error
+}
+
+var remoteOps = remoteServiceOps{
+	stop:   func(*slog.Logger) (bool, error) { return false, nil },
+	start:  func(*slog.Logger) error { return nil },
+	remove: func(log *slog.Logger, _ string) error { return removeRemoteService(log) },
+}
+
+// remoteOut takes uninstall -remote's lines for the operator.
+var remoteOut io.Writer = os.Stdout
+
 // uninstallRemote is `pgvigil uninstall -remote [-purge [-force]]` (the lead's 12:2x): the remote collector's service
 // stopped and removed - never the hub's; with -purge its outbox, its state folder, its config folder's own files and
 // its binary, each folder removed once empty and anything else in them kept and named.
