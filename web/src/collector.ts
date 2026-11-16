@@ -110,7 +110,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       tile('Slowest p95', worst ? fmtNum(worst.p95_ms) : '-', '', { unit: worst ? 'ms' : undefined, sub: worst ? String(worst.collection) : undefined }),
       tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' }),
       // N4: an import PostgreSQL ended as a deadlock's victim and pgvigil took again (stored once); shown when above 0
-      ...(retried ? [tile('Retried after a deadlock', fmtNum(retried), 'warn', { sub: 'imports taken again and stored: none lost' })] : [])),
+      ...(retried ? [tile('Retried after a deadlock', fmtNum(retried), 'warn', { sub: 'imports taken again; one that failed every try counts in Failures' })] : [])),
     minutes.length >= 2
       ? lineChart('Runs and failures per minute', minutes,
           [{ key: 'runs', label: 'runs' }, { key: 'failures', label: 'failures' }, { key: 'rows_written', label: 'rows written' }],

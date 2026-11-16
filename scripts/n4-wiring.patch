@@ -23,7 +23,7 @@ index be6b258c..59a0189b 100644
  	for _, in := range targets {
  		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
 diff --git i/internal/repo/repo.go w/internal/repo/repo.go
-index 272569c5..ab85b2cd 100644
+index 272569c5..85d7e9b4 100644
 --- i/internal/repo/repo.go
 +++ w/internal/repo/repo.go
 @@ -75,8 +75,19 @@ const migrateLockKey int64 = 7265471133001
@@ -47,15 +47,17 @@ index 272569c5..ab85b2cd 100644
  	c, err := r.pool.Acquire(ctx)
  	if err != nil {
  		return 0, fmt.Errorf("migrate: %w", err)
-@@ -459,6 +470,7 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
- 		// with 40P01 and rolls it back whole, so taking it again is safe and stores it once.
- 		r.logger().Warn("an import was ended by a deadlock; taking it again", "collection", collection,
- 			"instance_id", instanceID, "snapshot_at", snapshotAt, "attempt", attempt)
-+		countRetry(ctx) // the run's counter (retries.go): collector_runs.retries (N4)
- 		select {
- 		case <-ctx.Done():
+@@ -450,6 +461,9 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
+ 	}
+ 	q := fmt.Sprintf(`SELECT pgvigil.import_%s($1, $2, $3::jsonb)`, collection)
+ 	for attempt := 1; ; attempt++ {
++		if attempt > 1 {
++			countRetry(ctx) // the run's counter (retries.go): collector_runs.retries (N4); not counted when a cancel cut the pause
++		}
+ 		_, err = r.pool.Exec(ctx, q, instanceID, snapshotAt, string(payload))
+ 		if err == nil || attempt == ImportDeadlockTries || !IsDeadlock(err) || ctx.Err() != nil {
  			return err
-@@ -629,7 +641,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
+@@ -629,7 +643,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
  // by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
  // (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
  // It takes every partitioned series in the schema, so a series the function does not yet name
@@ -66,7 +68,7 @@ index 272569c5..ab85b2cd 100644
  func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
  	var have bool
  	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
-@@ -651,8 +665,9 @@ SELECT c.relname
+@@ -651,8 +667,9 @@ SELECT c.relname
    JOIN pg_class p ON p.oid = i.inhparent
    JOIN pg_namespace ns ON ns.oid = p.relnamespace
   WHERE ns.nspname = 'pgvigil'

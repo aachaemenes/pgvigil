@@ -108,8 +108,9 @@ ALTER TABLE pgvigil.collector_runs ADD COLUMN IF NOT EXISTS retries int NOT NULL
 
 -- A stalled pass, seen before the rollover: partitions_missing_next(p_at) - the month-ranged parents whose partition of
 -- the month after p_at's (UTC) is missing; partitions_ahead_finding(p_at) - the collector's finding 'partitions ahead
--- missing' inside a month's last three days (UTC) while one is missing and an instance is active (a stopped pgvigil
--- run, a parent busy at every pass). collector_findings (0121) names it through a join line (scripts/n4-join-lines.sql
+-- missing' inside a month's last three days (UTC) while one is missing and an active instance logged a collection in
+-- the last day - the imports that could deadlock at the month line (a store fed only by DBA Dash's history import logs
+-- no collection: no finding) - a stopped pgvigil run, a parent busy at every pass. collector_findings (0121) names it through a join line (scripts/n4-join-lines.sql
 -- (4)) and a stub there (the view is made before this file). Read only and neither import_: apply_roles grants both
 -- to the reader (the Collector page reads the view).
 CREATE OR REPLACE FUNCTION pgvigil.partitions_missing_next(p_at timestamptz)
@@ -138,5 +139,6 @@ RETURNS TABLE (instance_id int, severity text, setting text, value text, is_set 
                          FROM (SELECT x.parent FROM pgvigil.partitions_missing_next(p_at) x ORDER BY 1 LIMIT 6) y) AS names
                  FROM pgvigil.partitions_missing_next(p_at)) m
    WHERE p_at >= w.starts AND m.n > 0
-     AND EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.is_active)
+     AND EXISTS (SELECT 1 FROM pgvigil.collection_dates d JOIN pgvigil.instances i ON i.instance_id = d.instance_id
+                  WHERE i.is_active AND d.snapshot_at > least(p_at, now()) - interval '1 day')
 $$;

@@ -80,6 +80,10 @@ func TestPartitionsStartAndLoop(t *testing.T) {
 	if _, err := r.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// every partition made first, so each pass below makes only the one this test drops (an unwired Migrate makes none)
+	if _, err := r.PartitionsAhead(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	c, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)

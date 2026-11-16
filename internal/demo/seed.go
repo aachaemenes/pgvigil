@@ -387,13 +387,15 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 		// the collection names are this package's own constants: a fixed set, never input
 		q := `SELECT pgvigil.import_` + b.Collection + `($1, $2, $3::jsonb)`
 		for attempt := 1; ; attempt++ {
+			if attempt > 1 {
+				m.retries++ // counted when the import is taken again, not when a cancel cuts the pause before it
+			}
 			_, err = m.pool.Exec(ctx, q, id, b.At, string(payload))
 			// the seed's workers cross a month line side by side: a new month's partition and a shared query_text
 			// row can deadlock two imports, and PostgreSQL rolls the victim back whole (repo.Import's rule)
 			if err == nil || attempt == repo.ImportDeadlockTries || !repo.IsDeadlock(err) || ctx.Err() != nil {
 				break
 			}
-			m.retries++
 			select {
 			case <-ctx.Done():
 			case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):

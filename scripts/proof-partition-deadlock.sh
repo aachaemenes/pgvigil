@@ -7,7 +7,8 @@
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a SUPERUSER (the proof creates pgvigil_proof_pd_<n>, an
 #                      event trigger and a login there, reads the server log with pg_read_file, drops all at the end);
 #                      the cluster runs with logging_collector = on and deadlock_timeout = 1s (the default)
-#   PGVIGIL_BIN        the pgvigil binary (default bin/pgvigil)
+#   PGVIGIL_BIN        the pgvigil binary (default bin/pgvigil), built with scripts/n4-wiring.patch applied: Migrate's
+#                      pass (R3) and the beat's retries arm (R6 / R14) are the patch's; an unwired binary fails them
 #   PD_SEEDS           demo seeds over a month boundary for R8 (default 1)
 #
 # Before any row: R10's read - the relation locks a partition make holds while its transaction is open, for a parent
@@ -365,7 +366,7 @@ if [[ $HAVEFIX == t ]]; then
   }
   refuse 22023 "a non-parent" "select pgvigil.import_partition_make('instances', now())"
   refuse 22023 "a NULL time" "select pgvigil.import_partition_make('activity_sample', null)"
-  refuse 22023 "a start over 62 days ahead" "select pgvigil.import_partition_make('activity_sample', date_trunc('month', now() at time zone 'utc') at time zone 'utc' + interval '3 months')"
+  refuse 22023 "a start over 62 days ahead" "select pgvigil.import_partition_make('activity_sample', date_trunc('month', now() at time zone 'utc') at time zone 'utc' + interval '4 months')"
   refuse 22023 "a span over 400 days" "select count(*) from pgvigil.import_partitions_due(now(), now() + interval '401 days')"
   refuse 42501 "an earlier month of alert_log" "select pgvigil.import_partition_make('alert_log', now() - interval '45 days')"
   due=$(cq "select count(*) from pgvigil.import_partitions_due(now(), now() + interval '31 days')") && [[ $due =~ ^[0-9]+$ ]] || r12+="a lawful due list failed [$due]; "

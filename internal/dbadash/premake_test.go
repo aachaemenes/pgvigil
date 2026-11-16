@@ -191,10 +191,18 @@ func TestImportBatchBusyEndsFirst(t *testing.T) {
 
 // TestImportBatchDeadlockRetried: a batch PostgreSQL ends as a deadlock's victim is taken again and its rows stored
 // once. The cycle is made on the batch's own two locks (0134: the instance's import lock, then the CPU lock): a holder
-// takes the CPU lock, the batch takes the import lock and waits, the holder then waits on the import lock; the batch
-// waited first, so its deadlock check runs first and it is the victim. Red on today's seam: no retry.
+// takes the CPU lock, the batch takes the import lock and waits (seen in pg_blocking_pids), and only then the holder
+// asks for the import lock. The holder's own deadlock_timeout is 10 s (a superuser's setting: the test skips with that
+// reason otherwise), so the batch's check runs first and the batch is the victim. Red on today's seam: no retry.
 func TestImportBatchDeadlockRetried(t *testing.T) {
 	ctx, pool, id := premakeStore(t)
+	var super bool
+	if err := pool.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super); err != nil {
+		t.Fatal(err)
+	}
+	if !super {
+		t.Skip("the cycle's holder sets its own deadlock_timeout, a superuser's setting (the box's store runs this test)")
+	}
 	month := monthsAgo(1, 2)
 	// the month made first, so that the batch's only waits are the two locks of the cycle
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.ensure_month_partition('mssql_cpu_sample', $1)`, month); err != nil {
@@ -205,6 +213,13 @@ func TestImportBatchDeadlockRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = hold.Rollback(context.Background()) }()
+	var hpid int
+	if err := hold.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&hpid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(ctx, `SET LOCAL deadlock_timeout = '10s'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := hold.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_cpu'), $1)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +228,22 @@ func TestImportBatchDeadlockRetried(t *testing.T) {
 	var herr error
 	go func() {
 		defer wg.Done()
-		time.Sleep(500 * time.Millisecond) // the batch holds the import lock and waits on the CPU lock by now
+		// the batch holds the import lock and waits on the CPU lock: a session blocked by the holder (10 s at most)
+		seen := false
+		for i := 0; i < 200 && !seen; i++ {
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid))`, hpid).Scan(&n); err != nil {
+				herr = err
+				return
+			}
+			if seen = n > 0; !seen {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		if !seen {
+			herr = fmt.Errorf("no session waited on the holder within 10 s: the batch never reached the CPU lock")
+			return
+		}
 		if _, herr = hold.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('pgvigil.dbadash_import'), $1)`, id); herr == nil {
 			herr = hold.Commit(ctx)
 		}

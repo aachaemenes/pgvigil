@@ -110,6 +110,7 @@ func TestMigrateOnOneConnection(t *testing.T) {
 	if _, err := r1.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	skipUnwiredMigrate(ctx, t, r1.pool)
 	_, monthsTo, _ := AheadWindow(time.Now())
 	var made bool
 	if err := r1.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "pgvigil.activity_sample_"+monthsTo.Format("200601")).Scan(&made); err != nil {
@@ -127,6 +128,10 @@ func TestMigrateOnOneConnection(t *testing.T) {
 func TestPartitionsAheadOneTransactionEach(t *testing.T) {
 	ctx, r, _, dsn := throwawayRepo(t)
 	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// every partition made first, so the pass below has only the two it is about (on an unwired tree Migrate makes none)
+	if _, err := r.PartitionsAhead(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

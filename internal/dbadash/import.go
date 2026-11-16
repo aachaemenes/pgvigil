@@ -379,6 +379,8 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 					}
 				}
 				c.Inserted, c.Retries, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
+				// left as it is (N4): the build makes job_stats_hourly's months inside its own transaction under its own
+				// instance lock; it writes no shared row, so it can stall that table's other writers, never close a cycle
 				if m.Key == "jobruns" {
 					if _, berr := pool.Exec(ctx, `SELECT pgvigil.import_job_stats_build($1)`, tgt.ID); berr != nil && err == nil {
 						err = fmt.Errorf("the job statistics' build (the runs are stored; the next write or purge builds the hours): %w", berr)
@@ -392,6 +394,9 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 				case err != nil:
 					// what was committed before the failure stays on the record (the batches before it are stored)
 					run.imported[m.Key] = map[string]any{"source": c.Source, "inserted": c.Inserted, "failed": err.Error()}
+					if c.Retries > 0 { // N4: the batches taken again before the failure are said with it
+						return out, fmt.Errorf("%s %s (retried %d time(s) after a deadlock): %w", tgt.Name, m.Key, c.Retries, err)
+					}
 					return out, fmt.Errorf("%s %s: %w", tgt.Name, m.Key, err)
 				}
 			}
@@ -649,7 +654,7 @@ func importRights(ctx context.Context, pool *pgxpool.Pool, dry bool) error {
 		if dry {
 			return fmt.Errorf("this login may not read what the import reads (%s): run 'pgvigil migrate' (0134); then the owner's dsn or a login in role pgvigil_collector or pgvigil_reader may", strings.Join(missing, ", "))
 		}
-		return fmt.Errorf("this login may not write what the import writes (%s): run it with a login in role pgvigil_collector (the collector's) or the repository owner's dsn, after 'pgvigil migrate' (0134)", strings.Join(missing, ", "))
+		return fmt.Errorf("this login may not write what the import writes (%s): run it with a login in role pgvigil_collector (the collector's) or the repository owner's dsn, after 'pgvigil migrate'", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -797,11 +802,13 @@ func importBatch(ctx context.Context, pool *pgxpool.Pool, m importMapping, pid i
 	var n int64
 	retries := 0
 	for attempt := 1; ; attempt++ {
+		if attempt > 1 {
+			retries++ // counted when the call is taken again, not when a cancel cuts the pause before it
+		}
 		err = pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_`+m.Key+`($1, $2::jsonb, $3::jsonb)`, pid, string(payload), facts).Scan(&n)
 		if err == nil || attempt == repo.ImportDeadlockTries || !repo.IsDeadlock(err) || ctx.Err() != nil {
 			break
 		}
-		retries++
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):

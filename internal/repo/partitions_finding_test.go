@@ -8,13 +8,19 @@ import (
 
 // TestPartitionsAheadFinding (N4): partitions_missing_next names the month-ranged parents whose next month is missing;
 // partitions_ahead_finding raises 'partitions ahead missing' inside a month's last three days (UTC) only, while one is
-// missing and an instance is active, and the reader may call both. On a database of its own (throwawayRepo).
+// missing and an active instance logged a collection in the last day, and the reader may call both. On a database of
+// its own (throwawayRepo).
 func TestPartitionsAheadFinding(t *testing.T) {
 	ctx, r, pool, _ := throwawayRepo(t)
 	if _, err := r.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.EnsureInstanceEngine(ctx, "postgres", "n4-finding", "linux", "18.0", 180000, false, nil); err != nil {
+	iid, err := r.EnsureInstanceEngine(ctx, "postgres", "n4-finding", "linux", "18.0", 180000, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a collection logged now, as a collector's run does (collection_dates)
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.log_collection($1, 'activity', now(), 10, 'ok', NULL)`, iid); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -78,6 +84,16 @@ func TestPartitionsAheadFinding(t *testing.T) {
 		t.Errorf("no active instance: %d finding(s), want 0", n)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE pgvigil.instances SET is_active = true`); err != nil {
+		t.Fatal(err)
+	}
+	// no collection logged in the last day (a store fed only by DBA Dash's history import): no finding
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.collection_dates SET snapshot_at = now() - interval '2 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, _ := finding(lastDay); n != 0 {
+		t.Errorf("no collection in the last day: %d finding(s), want 0", n)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.collection_dates SET snapshot_at = now()`); err != nil {
 		t.Fatal(err)
 	}
 	// made again by a pass: no finding
