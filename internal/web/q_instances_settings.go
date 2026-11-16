@@ -157,7 +157,12 @@ func (s *Server) instanceSettings(w http.ResponseWriter, r *http.Request, user s
 		// the collector reads the change within its poll (15 s) and restarts this instance's loops alone; this
 		// serve's stale check follows as soon as its watcher has read it
 		extra["takes_effect"] = "the collector takes the change within 15 s and restarts this instance's collections alone"
-		if len(ps.Thresholds) > 0 {
+		// the thresholds' words only where 0266 says the save changed them (the build review's m4: a schedule-only
+		// save keeps them as they were; a save that takes them all away waits for the same read)
+		var changed struct {
+			Thresholds bool `json:"thresholds_changed"`
+		}
+		if json.Unmarshal(rawAns, &changed) == nil && changed.Thresholds {
 			extra["takes_effect"] = extra["takes_effect"].(string) + "; its thresholds are stored at the instance's next HA/DR, jobs or backups read"
 		}
 		s.nudgeDoors()

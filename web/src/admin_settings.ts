@@ -128,6 +128,9 @@ export function instanceSettings(deps: Deps) {
       if (!res.ok) { deps.say(`Settings of ${name} not saved: ${deps.why(res.body)}`, true); return; }
       deps.say(`${String(res.body.detail ?? 'saved')}. ${String(res.body.takes_effect ?? '')}`);
       await deps.draw();
+      // the panel opens again from the page's fresh read: its next Save names this write as its read (the build
+      // review's M1: the first read's expect refused a second Save in the same open panel)
+      show(name, engine);
     });
     const close = el('button', { type: 'button', class: 'link', 'aria-label': `Close the settings of ${name}` }, 'Close');
     // Close hands focus back to the row's Settings button (the page may have drawn the row again since: found by name)

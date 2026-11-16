@@ -15,7 +15,13 @@
 #      150 s mssql_hadr_limits holds new_database_hours 0 for m-a and st5b's full_status is 'ok' (40 minutes under the
 #      default 168 h); Thresholds in force marks new_database_hours 'page' with value 0 and full_backup_hours 'default' 168, no
 #      pending. (c) {new_database_hours: 0, full_backup_hours: 0.5}: within 150 s full_backup_hours 0.5 and st5b 'late' - the
-#      page's value judges it, not the default; the collector's pid kept through (a)-(c).
+#      page's value judges it, not the default; the collector's pid kept through (a)-(c). (d) full_backup_hours taken
+#      away (the build review's M3): Thresholds in force reads it 'default' at once with 'back to the default at the
+#      next HA/DR, jobs or backups read (in force now: 0.5)', then 'default|168|' within 150 s and st5b 'ok'; put back.
+#  U   (Node, after the web build) web/src/settings_model.test.mjs on the compiled model: a dialog's pause and resume
+#      keep thresholds, query_text and every schedule they do not touch; a file-global-off collection resumes at its
+#      built-in interval (also when it is off here too); a pause of a paused collection keeps its own interval; offOf
+#      reads the stored value before serve's interval - all rows ok.
 #  T2  refusals, each 409 with its words and one audit row: thresholds on p-a (a PostgreSQL instance), a threshold no
 #      collector knows (nope), a negative number, backup_exclude not a list, paused for a collection not off, a write
 #      whose expect is not the stored settings ('changed since they were read: read them again').
@@ -26,7 +32,8 @@
 #      {mssql_jobs: 600}) stored with the words 'paused mssql_jobs (its own 600 s kept)'; resumed ({mssql_jobs: 600}, no
 #      paused key) stored; each with the read as its expect.
 #  P   (the page, light and dark, signed in) Settings of m-a: its Thresholds table shows full_backup_hours '0.5'; in light
-#      redo_queue_kb set to 2048 and saved through the page (stored 2048, the other thresholds kept); Alerts > Rules'
+#      redo_queue_kb set to 2048 and saved through the page, then 4096 saved again in the same open panel (the
+#      build review's M1: stored 4096, the other thresholds kept); Alerts > Rules'
 #      Thresholds in force shows m-a's full_backup_hours from 'Admin > Instances' with a link to its Settings; the
 #      tree's Pause/Resume Collections on m-a draws its rows with a Save and no pgvigil.yaml lines, on f-ms the lines;
 #      Configure Schedule on m-a refuses '30s' in its own words; no error box; axe-core 4.14.0 (WCAG 2.1 A and AA) 0
@@ -40,7 +47,9 @@
 #
 # NOT PROVEN HERE: an HA/DR finding at a page instance's own value on an availability group (the backups row stands
 # for the six collections that store the thresholds); the dialogs' Save clicked in the browser (P draws them, D2 sends
-# what they send).
+# what they send); the running plans row drawn in the dialogs (a collection with no stored read is not drawn, and m-a's
+# running plans box is not ticked here: D1 proves the catalogue marks it the box's); a file-global-off collection's
+# resume through serve (U proves the model's decision; this proof's pgvigil.yaml has no global schedules: line).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -186,6 +195,11 @@ for _ in $(seq 1 60); do [[ -n "$(iid m-a)" && -n "$(iid f-ms)" ]] && break; sle
 RUN1=$RUNPID
 ok "B: the collector (pid $RUN1) reads m-a and f-ms"
 
+echo "== U. the settings model (Node) =="
+"$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/settings_model.ts" --format=esm --outfile="$TMPD/settings_model.mjs" --log-level=warning || fail "U: settings_model.ts did not compile"
+node "$GSRC/web/src/settings_model.test.mjs" "$TMPD/settings_model.mjs" > "$TMPD/u.out" 2>&1 || { cat "$TMPD/u.out"; fail "U: the model's unit tests"; }
+ok "U: the settings model's unit tests: $(tail -1 "$TMPD/u.out")"
+
 echo "== T1. a SQL Server page instance's own thresholds =="
 code=$(settings m-a '{"schedules": {"mssql_backups": 60}}' '{}')
 [[ "$code" == 200 && "$(ans outcome)" == done ]] || fail "T1a: the schedule write: $code $(cat "$TMPD/ans.json")"
@@ -206,6 +220,15 @@ FBH=$(until_is 150 "limit m-a full_backup_hours" 0.5); ST=$(until_is 90 "fullsta
 [[ "$FBH" == 0.5 && "$ST" == late ]] || fail "T1c: after 150 s m-a's full_backup_hours $FBH (want 0.5), st5b's full_status '$ST' (want late: about 45 minutes over the page's 30)"
 kill -0 "$RUN1" 2>/dev/null || fail "T1: the collector exited"
 ok "T1c: full_backup_hours 0.5 from the page judges st5b 'late' (its full backup about 45 minutes old); the collector's pid kept ($RUN1)"
+code=$(settings m-a '{"schedules": {"mssql_backups": 60}, "thresholds": {"new_database_hours": 0}}' "$(stored m-a)")
+[[ "$code" == 200 && "$(ans outcome)" == done ]] || fail "T1d: full_backup_hours taken away: $code $(cat "$TMPD/ans.json")"
+IF3=$(inforce m-a full_backup_hours)
+[[ "$IF3" == "default|0.5|back to the default at the next HA/DR, jobs or backups read (in force now: 0.5)" ]] || fail "T1d: Thresholds in force at once: '$IF3' (want default|0.5|back to the default at the next HA/DR, jobs or backups read (in force now: 0.5))"
+IF4=$(until_is 150 "inforce m-a full_backup_hours" "default|168|"); ST=$(until_is 90 "fullstatus m-a" ok)
+[[ "$IF4" == "default|168|" && "$ST" == ok ]] || fail "T1d: after 150 s Thresholds in force '$IF4' (want default|168|), st5b '$ST' (want ok)"
+code=$(settings m-a '{"schedules": {"mssql_backups": 60}, "thresholds": {"new_database_hours": 0, "full_backup_hours": 0.5}}' "$(stored m-a)")
+[[ "$code" == 200 && "$(ans outcome)" == done ]] || fail "T1d: full_backup_hours 0.5 put back: $code $(cat "$TMPD/ans.json")"
+ok "T1d: full_backup_hours taken away reads '$IF3' at once, then '$IF4' and st5b '$ST'; put back at 0.5"
 
 echo "== T2. refusals =="
 before=$(pq "SELECT count(*) FROM pgvigil.admin_audit WHERE op = 'instance settings' AND outcome = 'refused'")
@@ -291,6 +314,12 @@ for (const theme of ['light', 'dark']) {
     await until(`/saved/.test(document.querySelector('.admin-instances p[role=status]')?.textContent ?? '')`, 20);
     r.status = await ev(`document.querySelector('.admin-instances p[role=status]')?.textContent ?? ''`);
     await sleep(500);
+    // the build review's M1: a second Save in the same open panel (no reopen) names the first write as its read
+    r.set2 = await ev(`(() => { const i = document.querySelector('#admin-instance-settings input[aria-label^="redo_queue_kb: threshold"]'); if (!i) return false; i.value = '4096'; return true; })()`);
+    r.saved2 = await clickPrefix('Save the settings of m-a');
+    await until(`/redo_queue_kb 4096|not saved/.test(document.querySelector('.admin-instances p[role=status]')?.textContent ?? '')`, 20);
+    r.status2 = await ev(`document.querySelector('.admin-instances p[role=status]')?.textContent ?? ''`);
+    await sleep(500);
     await clickPrefix('Settings of m-a');
     await until(`!!document.querySelector('#admin-instance-settings table')`, 20);
   }
@@ -344,10 +373,11 @@ for theme in ("light", "dark"):
         if n: bad.append(f"{theme}: {k}: {n} axe violation node(s): {r[k]}")
 l = d["light"]
 if not l.get("set") or not l.get("saved") or "saved" not in (l.get("status") or ""): bad.append(f"light: redo_queue_kb set {l.get('set')}, Save {l.get('saved')}, the status {l.get('status')!r}")
-if os.environ["RQ"] != "2048|0.5": bad.append(f"the thresholds stored after the page's save: {os.environ['RQ']} (want 2048|0.5)")
+if not l.get("set2") or not l.get("saved2") or "redo_queue_kb 4096" not in (l.get("status2") or ""): bad.append(f"light: the second Save in the open panel: set {l.get('set2')}, Save {l.get('saved2')}, the status {l.get('status2')!r}")
+if os.environ["RQ"] != "4096|0.5": bad.append(f"the thresholds stored after the page's two saves: {os.environ['RQ']} (want 4096|0.5)")
 if "an interval set here is 1m or more" not in (l.get("cs") or ""): bad.append(f"light: Configure Schedule's answer to 30s {l.get('cs')!r}")
 if bad: print("\n".join(bad)); sys.exit(1)
-print(f"ok   P: light and dark: m-a's Thresholds table shows full_backup_hours 0.5; the page's save of redo_queue_kb 2048 stored (full_backup_hours kept); Thresholds in force from Admin > Instances with its Settings link; Pause/Resume on m-a with a Save and no yaml, on f-ms the yaml; Configure Schedule refuses 30s ({l['cs']!r}); 0 axe violation nodes")
+print(f"ok   P: light and dark: m-a's Thresholds table shows full_backup_hours 0.5; the page's saves of redo_queue_kb 2048 then 4096 in one open panel stored (full_backup_hours kept); Thresholds in force from Admin > Instances with its Settings link; Pause/Resume on m-a with a Save and no yaml, on f-ms the yaml; Configure Schedule refuses 30s ({l['cs']!r}); 0 axe violation nodes")
 PY
 else
   notproven "P: chromium or node is not on this machine (the pages were not opened)"

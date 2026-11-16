@@ -58,7 +58,9 @@ BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_admin_instance_settings: no ui_user' USING ERRCODE = '22023';
   END IF;
-  SELECT * INTO v_have FROM pgvigil.admin_instances WHERE name = v_name;
+  -- FOR UPDATE (the build review's M4): a second editor's write with the same expect waits here for the first and
+  -- then reads its settings, so the expect check refuses it - never a write over another unseen
+  SELECT * INTO v_have FROM pgvigil.admin_instances WHERE name = v_name FOR UPDATE;
   v_th := CASE WHEN jsonb_typeof(v_set) = 'object' THEN v_set->'thresholds' END;
   IF coalesce(p_payload->>'op', '') <> 'settings' THEN
     v_why := 'op must be settings';
@@ -101,7 +103,7 @@ BEGIN
     IF v_k IS NOT NULL THEN
       v_why := format('each threshold must be a number of 0 or more (%s %s)', v_k, v_v::text);
     ELSIF v_th ? 'backup_exclude' AND (jsonb_typeof(v_th->'backup_exclude') <> 'array'
-          OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_th->'backup_exclude') x WHERE jsonb_typeof(x) <> 'string' OR btrim(x #>> '{}') = '')) THEN
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_th->'backup_exclude') x WHERE jsonb_typeof(x) <> 'string' OR btrim(x #>> '{}', E' \t\n\x0B\f\r') = '')) THEN
       v_why := 'backup_exclude must be a list of database name patterns, none blank';
     END IF;
   END IF;
@@ -114,12 +116,14 @@ BEGIN
   END IF;
   IF v_have.settings = v_set THEN
     PERFORM pgvigil.admin_log(v_user, v_cli, 'instance settings', v_name, 'done', 'unchanged: ' || pgvigil.admin_settings_words(v_set));
-    RETURN jsonb_build_object('outcome', 'done', 'detail', format('the settings of %s are unchanged', v_name));
+    RETURN jsonb_build_object('outcome', 'done', 'detail', format('the settings of %s are unchanged', v_name), 'thresholds_changed', false);
   END IF;
   UPDATE pgvigil.admin_instances SET settings = v_set, updated_at = p_at, updated_by = v_user WHERE name = v_name;
   v_gen := pgvigil.admin_bump();
   PERFORM pgvigil.admin_log(v_user, v_cli, 'instance settings', v_name, 'done', pgvigil.admin_settings_words(v_set));
-  RETURN jsonb_build_object('outcome', 'done', 'detail', format('settings of %s saved: %s', v_name, pgvigil.admin_settings_words(v_set)), 'generation', v_gen);
+  -- thresholds_changed: serve says the thresholds wait for the next HA/DR, jobs or backups read only when they changed
+  RETURN jsonb_build_object('outcome', 'done', 'detail', format('settings of %s saved: %s', v_name, pgvigil.admin_settings_words(v_set)), 'generation', v_gen,
+                            'thresholds_changed', (v_have.settings -> 'thresholds') IS DISTINCT FROM (v_set -> 'thresholds'));
 END $$;
 
 SELECT pgvigil.apply_roles();

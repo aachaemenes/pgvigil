@@ -86,6 +86,10 @@ func ParsePageSettings(raw []byte) (PageSettings, error) {
 	return ps, nil
 }
 
+// patternBlank is what a blank backup_exclude pattern holds only: 0266's btrim set exactly (the build review's m3:
+// strings.TrimSpace also trims Unicode spaces, which 0266 would keep - one set on both sides)
+const patternBlank = " \t\n\v\f\r"
+
 // readThresholds reads the stored thresholds: a number of 0 or more each, backup_exclude a list of non-blank patterns
 // (the names are serve's and 0266's to judge: config cannot import mssql).
 func (ps *PageSettings) readThresholds(raw map[string]json.RawMessage) error {
@@ -99,7 +103,7 @@ func (ps *PageSettings) readThresholds(raw map[string]json.RawMessage) error {
 				return fmt.Errorf("its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank")
 			}
 			for _, p := range pats {
-				if strings.TrimSpace(p) == "" {
+				if strings.Trim(p, patternBlank) == "" {
 					return fmt.Errorf("its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank")
 				}
 			}

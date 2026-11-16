@@ -180,4 +180,15 @@ func TestInstanceSettingsThresholdsOnAStore(t *testing.T) {
 	if p := s.collectionsSettingsParts(ctx, "sthr-none", config.EngineSQLServer); len(p) != 1 || p["source"] != "file" {
 		t.Errorf("a name not added here: %v", p)
 	}
+	// the review's m4: the thresholds' words only where the save changed them - a schedule-only save keeping them has
+	// none; a save that takes every threshold away waits for the same read and says so
+	words := "its thresholds are stored at the instance's next HA/DR, jobs or backups read"
+	keep := map[string]any{"schedules": map[string]any{"mssql_jobs": float64(600)}, "thresholds": set["thresholds"]}
+	if got := write(keep, set); fmt.Sprint(got["outcome"]) != "done" || strings.Contains(fmt.Sprint(got["takes_effect"]), words) {
+		t.Errorf("a schedule-only save: %v (want done, no thresholds words)", got)
+	}
+	gone := map[string]any{"schedules": map[string]any{"mssql_jobs": float64(600)}}
+	if got := write(gone, keep); fmt.Sprint(got["outcome"]) != "done" || !strings.Contains(fmt.Sprint(got["takes_effect"]), words) {
+		t.Errorf("a save that takes every threshold away: %v (want done, the thresholds words)", got)
+	}
 }

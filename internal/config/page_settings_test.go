@@ -27,6 +27,10 @@ func TestPageSettings(t *testing.T) {
 		{`{"thresholds": {"redo_queue_kb": "5"}}`, `its settings in Admin > Instances give threshold redo_queue_kb "5": not a number of 0 or more`},
 		{`{"thresholds": {"backup_exclude": "Sales"}}`, "its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank"},
 		{`{"thresholds": {"backup_exclude": ["Sales", " "]}}`, "its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank"},
+		// the review's m3: blank is one explicit set on both sides (0266's btrim set): space, tab, newline, vertical tab,
+		// form feed, carriage return - a no-break space is a pattern on both
+		{`{"thresholds": {"backup_exclude": ["\t\u000b"]}}`, "its settings in Admin > Instances give backup_exclude: not a list of database name patterns, none blank"},
+		{`{"thresholds": {"backup_exclude": ["\u00a0"]}}`, ""},
 		{`{"paused": {"mssql_jobs": 30}}`, "its settings in Admin > Instances give paused mssql_jobs 30: not whole seconds from 60 to 30 days"},
 		{`{"disabled": ["x"]}`, `its settings in Admin > Instances do not parse: json: unknown field "disabled"`},
 		{`[]`, "its settings in Admin > Instances do not parse: json: cannot unmarshal array"},

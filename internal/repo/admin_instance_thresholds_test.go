@@ -107,6 +107,7 @@ func TestAdminInstanceThresholdsOnAStore(t *testing.T) {
 		{ms, `{"thresholds": ["redo_queue_kb"]}`, "thresholds must be an object of a threshold and its number"},
 		{ms, `{"thresholds": {"backup_exclude": "Sales"}}`, "backup_exclude must be a list of database name patterns, none blank"},
 		{ms, `{"thresholds": {"backup_exclude": ["Sales", " "]}}`, "backup_exclude must be a list of database name patterns, none blank"},
+		{ms, `{"thresholds": {"backup_exclude": ["Sales", "\t\u000b"]}}`, "backup_exclude must be a list of database name patterns, none blank"},
 		{ms, `{"paused": {"mssql_jobs": 30}}`, "each paused interval must be whole seconds from 60 to 2592000 (30 days)"},
 		{ms, `{"paused": ["mssql_jobs"]}`, "paused must be an object of a collection and its seconds"},
 		{ms, `{"disabled": ["x"]}`, "settings hold schedules, query_text, thresholds and paused only"},
@@ -115,8 +116,8 @@ func TestAdminInstanceThresholdsOnAStore(t *testing.T) {
 			t.Errorf("%s %s: %s, want refused|%s", c.target, c.settings, got, c.want)
 		}
 	}
-	if got := one(`SELECT count(*)::text FROM pgvigil.admin_audit WHERE ui_user = $1 AND op = 'instance settings' AND outcome = 'refused'`, user); got != "11" {
-		t.Errorf("refused audit rows: %s, want 11", got)
+	if got := one(`SELECT count(*)::text FROM pgvigil.admin_audit WHERE ui_user = $1 AND op = 'instance settings' AND outcome = 'refused'`, user); got != "12" {
+		t.Errorf("refused audit rows: %s, want 12", got)
 	}
 	if got := stored(ms); got != before {
 		t.Errorf("a refusal changed the settings: %s, was %s", got, before)
@@ -124,5 +125,76 @@ func TestAdminInstanceThresholdsOnAStore(t *testing.T) {
 	// back to the defaults, the expect matching
 	if got := call(ms, `{}`, map[string]any{"expect": json.RawMessage(before)}); got != "done|settings of "+ms+" saved: every setting at its default" {
 		t.Errorf("the defaults: %s", got)
+	}
+}
+
+// TestAdminInstanceSettingsExpectRace (the ST5b review's M4): two editors save with the same expect at once - A's write
+// uncommitted in a transaction, B's on another connection. B waits for A's row and then sees A's settings: refused
+// 'changed since they were read', never A's write overwritten unseen; and a no-break space is a pattern (m3).
+func TestAdminInstanceSettingsExpectRace(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tag := time.Now().UnixNano() % 1000000000
+	ms, user := fmt.Sprintf("irace-ms-%d", tag), fmt.Sprintf("irace-user-%d", tag)
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = $1`, ms)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_audit WHERE ui_user = $1`, user)
+	}()
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.admin_instances (name, engine, dsn_ref, auth, host, created_by, updated_by)
+	                             VALUES ($1, 'sqlserver', 'file:/nonexistent/irace', 'sql', '192.0.2.9', $2, $2)`, ms, user); err != nil {
+		t.Fatal(err)
+	}
+	pay := func(settings string) string {
+		b, _ := json.Marshal(map[string]any{"op": "settings", "ui_user": user, "client": "192.0.2.7", "name": ms, "file_names": []string{},
+			"settings": json.RawMessage(settings), "expect": json.RawMessage(`{}`)})
+		return string(b)
+	}
+	const q = `SELECT (r->>'outcome') || '|' || (r->>'detail') FROM pgvigil.import_admin_instance_settings($1, $2::jsonb) r`
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var a string
+	if err := tx.QueryRow(ctx, q, time.Now().UTC(), pay(`{"thresholds": {"redo_queue_kb": 1}}`)).Scan(&a); err != nil || a[:5] != "done|" {
+		t.Fatalf("A: %s (%v)", a, err)
+	}
+	bDone := make(chan string, 1)
+	go func() {
+		var b string
+		if err := pool.QueryRow(ctx, q, time.Now().UTC(), pay(`{"thresholds": {"redo_queue_kb": 2}}`)).Scan(&b); err != nil {
+			b = "error|" + err.Error()
+		}
+		bDone <- b
+	}()
+	select {
+	case b := <-bDone:
+		t.Fatalf("B ended while A's write was open: %s", b)
+	case <-time.After(2 * time.Second):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b := <-bDone; b != "refused|the settings of "+ms+" changed since they were read: read them again" {
+		t.Errorf("B after A's commit: %s (want refused: changed since they were read)", b)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT s.settings::text FROM pgvigil.admin_instance_settings() s WHERE s.name = $1`, ms).Scan(&stored); err != nil || stored != `{"thresholds": {"redo_queue_kb": 1}}` {
+		t.Errorf("stored after both: %s (%v), want A's", stored, err)
+	}
+	b, _ := json.Marshal(map[string]any{"op": "settings", "ui_user": user, "client": "192.0.2.7", "name": ms, "file_names": []string{},
+		"settings": json.RawMessage(`{"thresholds": {"backup_exclude": ["\u00a0"]}}`)})
+	var nb string
+	if err := pool.QueryRow(ctx, q, time.Now().UTC(), string(b)).Scan(&nb); err != nil || nb[:5] != "done|" {
+		t.Errorf("a no-break space pattern: %s (%v), want done (not blank on either side)", nb, err)
 	}
 }

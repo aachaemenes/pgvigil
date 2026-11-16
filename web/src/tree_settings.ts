@@ -5,7 +5,7 @@
 // draws an instance of pgvigil.yaml as before (the lines to copy) and hands a page instance to these two.
 import { Row, rowsOf, Table } from './api';
 import { badge, el, fmtNum, fmtSecs, fmtTime } from './ui';
-import { checkEvery, everyWords, parseEvery, pausedOf, postAdmin, resumedOf, saveSettings, Stored, withSchedule } from './settings_model';
+import { checkEvery, everyWords, fileOffOf, offOf, parseEvery, pauseResumeOf, postAdmin, saveSettings, Stored, withSchedule } from './settings_model';
 
 interface CatalogueEntry { name: string; default_s: number; builtin_s: number; box: boolean; never: string }
 export interface PageCollections {
@@ -48,7 +48,8 @@ export function pagePauseResume(body: HTMLElement, d: PageCollections): void {
   const have = d.settings ?? {};
   const cat = d.catalogue ?? {};
   const optIn = (r: Row) => r.default_s != null && Number(r.default_s) === 0;
-  const isOff = (r: Row) => r.interval_s != null && Number(r.interval_s) === 0;
+  // off: the instance's own stored value first, else the interval in force (the build review's m1)
+  const isOff = (r: Row) => offOf(have, String(r.collection), r.interval_s == null ? null : Number(r.interval_s));
   const runs = new Map<string, boolean>();
   const status = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const t = el('table', { class: 'grid' }, el('thead', {}, el('tr', {}, ...['Runs', 'Collection', 'Every', 'Last read', 'Status', 'Errors (24 h)'].map(h => el('th', { scope: 'col' }, h)))),
@@ -63,7 +64,7 @@ export function pagePauseResume(body: HTMLElement, d: PageCollections): void {
         tick.disabled = true; note = `never here: ${cat[c].never}`;
       } else if (optIn(r)) {
         tick.disabled = true; note = 'opt-in: Configure Schedule gives it an interval';
-      } else if (isOff(r) && have.schedules?.[c] === undefined) {
+      } else if (isOff(r) && fileOffOf(cat[c])) {
         note = 'off for every instance in pgvigil.yaml: ticking it gives this instance its own interval ' + everyWords(Number(cat[c]?.builtin_s ?? r.default_s ?? 0));
       } else if (have.paused?.[c] !== undefined) {
         note = `paused here; resumes at its own ${everyWords(have.paused?.[c] ?? 0)}`;
@@ -74,16 +75,9 @@ export function pagePauseResume(body: HTMLElement, d: PageCollections): void {
       return el('tr', {}, el('td', {}, tick), el('td', {}, c, note ? el('div', { class: 'meta' }, note) : ''), el('td', {}, every(r.interval_s)), el('td', {}, fmtTime(r.snapshot_at)),
         el('td', {}, statusCell(r)), el('td', { class: 'num' }, fmtNum(r.errors_24h)));
     })));
-  const next = (): Stored => {
-    let s: Stored = have;
-    for (const r of rows) {
-      const c = String(r.collection);
-      const want = runs.get(c);
-      if (want === undefined || want === !isOff(r)) continue;
-      s = want ? resumedOf(s, c, have.schedules?.[c] === undefined && isOff(r), Number(cat[c]?.builtin_s ?? r.default_s ?? 0)) : pausedOf(s, c);
-    }
-    return s;
-  };
+  // the Save: the model's decision (settings_model.test.mjs) on the ticks that changed
+  const next = (): Stored => pauseResumeOf(have, Object.fromEntries(runs), cat,
+    Object.fromEntries(rows.map(r => [String(r.collection), r.interval_s == null ? null : Number(r.interval_s)])));
   body.replaceChildren(el('p', {}, `The collections of ${d.instance} that have stored a read. ${d.instance} was added in Admin > Instances: an unticked collection is off for it, and a ticked one runs again (at the interval of its own it had, else its default). Save writes its settings; the collector takes them within 15 s.`),
     rows.length ? el('div', { class: 'grid-wrap', tabindex: '0' }, t) : el('p', { class: 'empty' }, 'No collection has stored a read for this instance yet.'),
     d.writable ? el('div', {}, saveButton(d, status, next)) : readOnlyNote(d), status);

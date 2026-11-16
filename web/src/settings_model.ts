@@ -60,11 +60,41 @@ export function withSchedule(s: Stored, name: string, secs: number | undefined):
   return out;
 }
 
-// paused: the object with the collection off, its own interval (when it had one) kept for the resume
+// paused: the object with the collection off, its own interval (when it had one) kept for the resume; a collection
+// already paused keeps the interval it kept (the build review's m1)
 export function pausedOf(s: Stored, name: string): Stored {
   const own = s.schedules?.[name];
+  const kept = own !== undefined && own > 0 ? own : s.paused?.[name];
   const out = withSchedule(s, name, 0);
-  if (own !== undefined && own > 0) out.paused = { ...(out.paused ?? {}), [name]: own };
+  if (kept !== undefined) out.paused = { ...(out.paused ?? {}), [name]: kept };
+  return out;
+}
+
+// offOf: whether a collection is off for a page instance - its own stored value first (0 = off), else the interval in
+// force (serve's, which may lag a write made through another serve: the build review's m1)
+export function offOf(s: Stored, name: string, interval: number | null | undefined): boolean {
+  const own = s.schedules?.[name];
+  if (own !== undefined) return own === 0;
+  return interval != null && Number(interval) === 0;
+}
+
+// fileOffOf: whether pgvigil.yaml's global schedules: turns the collection off for every instance - its default here 0
+// while it has a built-in interval (an opt-in collection has none); the build review's m2
+export interface CatalogueTimes { default_s: number; builtin_s: number }
+export function fileOffOf(e: CatalogueTimes | undefined): boolean {
+  return e != null && Number(e.default_s) === 0 && Number(e.builtin_s) > 0;
+}
+
+// pauseResumeOf: Pause/Resume Collections' Save - each collection whose tick changed paused (its own interval kept) or
+// resumed (the kept interval, else the built-in one where the file turns it off, else its default); everything else of
+// the object (thresholds, query_text, every other schedule) as it was read
+export function pauseResumeOf(s: Stored, runs: Record<string, boolean>, cat: Record<string, CatalogueTimes | undefined>,
+  intervals: Record<string, number | null | undefined>): Stored {
+  let out = copyOf(s);
+  for (const [name, want] of Object.entries(runs)) {
+    if (want === !offOf(s, name, intervals[name])) continue;
+    out = want ? resumedOf(out, name, fileOffOf(cat[name]), Number(cat[name]?.builtin_s ?? 0)) : pausedOf(out, name);
+  }
   return out;
 }
 
