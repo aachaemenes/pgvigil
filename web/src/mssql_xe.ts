@@ -363,6 +363,8 @@ const attentionCols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'interrupt_us', label: 'interrupt took (microseconds)', num: true },
   { key: 'statement', label: 'the cancelled statement', wide: true },
+  // task 402 (B24 Fixed 1): why an attention is not in the client timeouts rate (0153's mssql_attention_left_out); blank = it counts
+  { key: 'left_out', label: 'left out', fmt: v => v == null ? '' : String(v) },
 ];
 
 async function openShape(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
@@ -413,7 +415,10 @@ export async function mssqlSlow(ctx: Ctx): Promise<HTMLElement> {
 
     const att = el('section', {}, el('h3', {}, 'Attentions'), captureNote(d, 'attention', 'attention'),
       el('p', { class: 'meta' }, 'An attention is a client cancelling its request: a command timeout in the application, or a user pressing cancel. '
-        + 'The statement is what was running; the time shown is how long the interrupt itself took, not how long the request had run.'),
+        + 'The statement is what was running; the time shown is how long the interrupt itself took, not how long the request had run. '
+        + '\'left out\' names why an attention is not in the client timeouts rate (Metrics, Extended Events): SSMS IntelliSense, the VS Code '
+        + 'mssql metadata connections, a cancel under 1 ms that came with no statement (a command that had already finished), Azure Data Studio\'s '
+        + 'metadata statements, pgvigil\'s own reads; a blank one counts. A real timeout usually takes under 1 ms to interrupt too: it counts when the server sent its statement (recorded even when none is stored).'),
       grid(rowsOf(d.attentions), attentionCols, 'No attention in this window.'));
     sec.append(att);
   } catch (e) {

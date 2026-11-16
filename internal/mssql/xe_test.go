@@ -373,6 +373,26 @@ func TestParseRingAndAttention(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", k, row[k], v)
 		}
 	}
+	if row["has_text"] != true {
+		t.Errorf("has_text = %#v, want true", row["has_text"])
+	}
+	// task 402 (the F1 floor): under query_text none the statement goes and the flag stays; an event with no sql_text
+	// action, or a blank one, reads false
+	rows := []collect.Row{parseAttention(e, fullCtx)}
+	collect.ApplyTextPolicy(rows, "none")
+	if rows[0]["statement"] != nil || rows[0]["has_text"] != true {
+		t.Errorf("under none: statement %#v, has_text %#v (want nil, true)", rows[0]["statement"], rows[0]["has_text"])
+	}
+	for _, x := range []string{strings.Replace(fixAttention, "<![CDATA[WAITFOR DELAY '00:00:09']]>", "<![CDATA[   ]]>", 1),
+		strings.Replace(fixAttention, `<action name="sql_text" package="sqlserver"><type name="unicode_string" package="package0"></type><value><![CDATA[WAITFOR DELAY '00:00:09']]></value></action>`, "", 1)} {
+		r, err := parseRing(x)
+		if err != nil || len(r.Events) != 1 {
+			t.Fatalf("a ring with no text: %v", err)
+		}
+		if got := parseAttention(&r.Events[0], fullCtx)["has_text"]; got != false {
+			t.Errorf("no text sent: has_text = %#v, want false", got)
+		}
+	}
 	if empty, err := parseRing(""); err != nil || len(empty.Events) != 0 {
 		t.Errorf("an empty ring: %v", err)
 	}

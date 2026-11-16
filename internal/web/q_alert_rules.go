@@ -38,6 +38,7 @@ WITH sc AS (
          count(*) FILTER (WHERE s.state IN ('warning', 'critical')) AS firing,
          count(*) FILTER (WHERE s.state = 'pending') AS pending,
          count(*) FILTER (WHERE s.state = 'nodata') AS nodata,
+         count(*) FILTER (WHERE s.state = 'na') AS na,   -- task 402: not judged (under the metric's floor, or its own reason in metric_na_reasons)
          string_agg(i.name || CASE WHEN s.database <> '' THEN ' [' || s.database || ']' ELSE '' END, ', ' ORDER BY i.name, s.database)
            FILTER (WHERE s.state IN ('warning', 'critical')) AS firing_on,
          max(s.evaluated_at) AS evaluated_at
@@ -48,7 +49,7 @@ SELECT r.rule_id, r.name, r.metric, c.family_label, c.label, c.unit, c.engine, c
        r.op, r.warning, r.critical, r.for_minutes, r.scope, r.tag, r.instance_name, r.instance_id, r.database, r.note,
        r.enabled, r.replaces, r.created_by, r.created_at, r.client, r.ended_by, r.ended_at, r.ended_at IS NULL AS live,
        coalesce(sc.covers, 0) AS covers, coalesce(ef.in_force, 0) AS in_force,
-       coalesce(st.firing, 0) AS firing, coalesce(st.pending, 0) AS pending, coalesce(st.nodata, 0) AS nodata,
+       coalesce(st.firing, 0) AS firing, coalesce(st.pending, 0) AS pending, coalesce(st.nodata, 0) AS nodata, coalesce(st.na, 0) AS na,
        st.firing_on, st.evaluated_at, f.last_fired_at, f.last_instance, f.fired
   FROM pgvigil.alert_rules r
   LEFT JOIN pgvigil.metric_catalog c ON c.key = r.metric
@@ -65,12 +66,18 @@ SELECT r.rule_id, r.name, r.metric, c.family_label, c.label, c.unit, c.engine, c
 const sqlAlertRuleState = `
 SELECT s.instance_id, i.name AS instance, s.metric, c.family_label, c.label, c.unit, nullif(s.database, '') AS database,
        s.rule_id, r.name AS rule_name, r.op, r.for_minutes, r.scope, coalesce(r.tag, r.instance_name) AS target,
-       s.state, s.held, s.value, s.threshold, s.sample_at, s.beyond_since, s.since, s.evaluated_at
+       s.state, s.held, s.value, s.threshold, s.sample_at, s.beyond_since, s.since, s.evaluated_at,
+       -- task 402: an 'na' row's value and threshold are its floor's input and floor (0152's metric_floors), in its unit
+       fl.unit AS floor_unit,
+       -- a metric not judged under a condition of its own (0152's metric_na_reasons): its words
+       nr.why AS na_why
   FROM pgvigil.alert_rule_state s
   JOIN pgvigil.instances i USING (instance_id)
   JOIN pgvigil.alert_rules r USING (rule_id)
   LEFT JOIN pgvigil.metric_catalog c ON c.key = s.metric
- ORDER BY CASE s.state WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'pending' THEN 2 WHEN 'nodata' THEN 3 ELSE 4 END,
+  LEFT JOIN pgvigil.metric_floors fl ON fl.key = s.metric
+  LEFT JOIN pgvigil.metric_na_reasons nr ON nr.key = s.metric
+ ORDER BY CASE s.state WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'pending' THEN 2 WHEN 'nodata' THEN 3 WHEN 'na' THEN 4 ELSE 5 END,
           i.name, s.metric, s.database
  LIMIT 5000`
 

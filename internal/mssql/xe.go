@@ -800,7 +800,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
 		return items[i].seq < items[j].seq
 	})
 	wanted := nameSet(events)
-	state["new_events"] = len(items)
+	// new_events (and scanned_events) go into the state after the batches below: a read whose batch failed to import
+	// has none, so it is no done read (0153's mssql_attention_reads) and the cursor takes its events again next run
+	var newEvents any = len(items)
+	var scanned any
 	if c.source != "product" {
 		var n int64
 		for _, it := range items {
@@ -808,7 +811,7 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
 				n++
 			}
 		}
-		state["new_events"], state["scanned_events"] = n, int64(len(items))
+		newEvents, scanned = n, int64(len(items))
 	}
 	var notes []string
 	if cur.Found && !oldest.IsZero() && oldest.After(cur.LastEventAt) {
@@ -831,6 +834,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
 		if err := r.emit(batch); err != nil {
 			return fmt.Errorf("import a batch of %s: %w", source, err)
 		}
+	}
+	state["new_events"] = newEvents
+	if scanned != nil {
+		state["scanned_events"] = scanned
 	}
 	state["unknown_events"] = unknown
 	if old > 0 {

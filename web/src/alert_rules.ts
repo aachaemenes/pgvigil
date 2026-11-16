@@ -28,7 +28,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null 
 // what a rule's values are counted in, as the dialog and the grids say it
 const unitWords: Record<string, string> = {
   count: 'a count', pct: 'percent', secs: 'seconds', xids: 'transaction ids', per_s: 'per second',
-  bytes_per_s: 'bytes per second', ms: 'milliseconds', mb: 'MB', bytes: 'bytes',
+  bytes_per_s: 'bytes per second', ms: 'milliseconds', mb: 'MB', bytes: 'bytes', per_min: 'per minute',
 };
 export const unitWord = (unit: unknown): string => unitWords[String(unit ?? '')] ?? String(unit ?? '');
 
@@ -42,6 +42,7 @@ export function fmtMetric(v: unknown, unit: unknown): string {
     case 'secs': return Math.abs(n) < 60 ? fmtNum(n) + ' s' : fmtSecs(n);
     case 'ms': return fmtNum(n) + ' ms';
     case 'per_s': return fmtNum(n) + '/s';
+    case 'per_min': return fmtNum(n) + '/min';
     case 'bytes_per_s': return fmtBytes(n) + '/s';
     case 'bytes': return fmtBytes(n);
     case 'mb': return fmtNum(n) + ' MB';
@@ -100,11 +101,14 @@ export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = fa
     + (narrower ? ', each where no narrower rule on the same metric overrides it (an instance rule over a tag rule over a fleet rule).' : '.');
 }
 
-export const stateBadge = (v: unknown, held?: unknown): HTMLElement | string => {
+export const stateBadge = (v: unknown, held?: unknown, naWhy?: unknown): HTMLElement | string => {
   if (v == null) return '';
   const s = String(v);
   const kind = s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : '';
-  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)' : s;
+  // task 402: 'na' is grey (no kind), never OK: under the metric's floor, too few to judge - or the metric's own reason
+  // (0152's metric_na_reasons: never a bare N/A)
+  const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)'
+    : s === 'na' ? (naWhy != null && String(naWhy) !== '' ? `N/A (${String(naWhy)})` : 'N/A (too few to judge)') : s;
   return badge(held ? `${words}, held (no fresh sample)` : words, kind);
 };
 
@@ -485,7 +489,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
         : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
         : r.evaluated_at == null ? 'not judged yet'
         : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
-        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
+        : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : '',
+           // 'na' is a floor or a reason of the metric's own (0152's metric_na_reasons): the count names neither
+           Number(r.na) ? `${fmtNum(r.na)} not judged (N/A: State per instance says why)` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
       { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
       { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
@@ -505,13 +511,14 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   }
 
   const stateCols: Col[] = [
-    { key: 'state', fmt: (v, r) => stateBadge(v, r.held) },
+    { key: 'state', fmt: (v, r) => stateBadge(v, r.held, r.na_why) },
     { key: 'instance' },
     { key: 'metric', fmt: (v, r) => r.label == null ? String(v) : `${String(r.family_label)}: ${String(r.label)}` },
     { key: 'database', fmt: v => String(v ?? '') },
-    { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => fmtMetric(v, r.unit) },
-    { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
-    { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' ? '' : fmtTime(v) },
+    // task 402: an 'na' row carries its floor's input (in the floor's unit a second) and the floor
+    { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => r.state === 'na' ? (v == null ? '' : `${fmtNum(Math.floor(100 * Number(v)) / 100)} ${String(r.floor_unit ?? '')}/s`) : fmtMetric(v, r.unit) },
+    { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : r.state === 'na' ? `the floor ${fmtNum(v)}/s` : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
+    { key: 'beyond_since', label: 'beyond since', fmt: (v, r) => r.state === 'ok' || r.state === 'nodata' || r.state === 'na' ? '' : fmtTime(v) },
     { key: 'sample_at', label: 'sample', fmt: fmtTime },
     { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(r.scope, r.target)})` },
     { key: 'since', label: 'in this state since', fmt: fmtTime },

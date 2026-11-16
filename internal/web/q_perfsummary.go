@@ -32,8 +32,9 @@ import (
 //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
 //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
 //                    temp_bytes_s are NULL. compiles_per_100 (SQL Server only, task 401 D6 / PBI#2): SQL
-//                    Compilations per 100 Batch Requests over the range from the same reads, 0 under 1 batch/s (the
-//                    'counters' metric compiles_per_100_batches' floor).
+//                    Compilations per 100 Batch Requests over the range from the same reads; NULL under the 'counters'
+//                    metric compiles_per_100_batches' floor (0152's metric_floors, 5 Batch Requests/s, task 402), with
+//                    compiles_under_floor true and compiles_floor the floor, judged on the unrounded rate.
 //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
 //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
 //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
@@ -78,7 +79,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        NULL::numeric AS signal_pct,
-       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::boolean AS compiles_under_floor,
+       NULL::double precision AS compiles_floor, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
@@ -192,8 +194,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
        h.cpu_sql_avg, h.cpu_source, t.batch_s,
-       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_raw < 1 THEN 0
+       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL OR t.batch_raw < cf.floor THEN NULL
             ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
+       t.batch_raw < cf.floor AS compiles_under_floor, cf.floor AS compiles_floor,
        m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
@@ -237,6 +240,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
            (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
       FROM pgvigil.mssql_sched_sample x
      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
+  -- task 402: the floor of compilations per 100 batches (0152's metric_floors; none = never under)
+  LEFT JOIN LATERAL (SELECT coalesce((SELECT f.floor FROM pgvigil.metric_floors f WHERE f.key = 'counters.compiles_per_100_batches'),
+                                     '-infinity'::double precision) AS floor) cf ON true
   LEFT JOIN LATERAL (
     SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
            (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,

@@ -12,10 +12,10 @@ One row per counter, over the time range picked in the header:
 |---|---|
 | counter | The counter's name; its key (`sessions.idle_in_txn`) and unit are in the cell's title. |
 | max, min, avg | The highest, lowest and average sample of the range. |
-| current | The newest sample of the range; *last sample* says when it was taken. |
+| current | The newest sample of the range; *last sample* says when it was taken. A ratio under its floor (too few batch requests or full scans a second to judge) has no value: the cell reads *N/A* in grey with the words, the input's rate and the floor. |
 | samples | How many samples the range holds. 0 = nothing was collected in the range (the figures are empty). |
 | warning, critical | The thresholds in force for the row, with their direction (`above 80 %`). |
-| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, or *not judged yet*. |
+| rule | For how long the value must hold, what the rule covers, and what the alert sender last made of it: ok, pending, warning, critical, no data, *N/A* with its reason in words (*too few to judge* under a floor, or the metric's own reason), or *not judged yet*. |
 | threshold | *New threshold* where none is in force; *Edit* for the rule in force; *Override here* to give this instance its own rule over a wider one. |
 | chart | Draws the row over the range, with its thresholds as flat lines. *Chart every row* draws the family. |
 
@@ -36,6 +36,7 @@ The families:
 | SQL Server | CPU | SQL Server's, the other processes' and the machine's CPU. |
 | SQL Server | Scheduler | Batch requests, transactions, compilations and recompilations per second; runnable tasks, the work queue, pending IO, workers. |
 | SQL Server | Memory | Page life expectancy, memory grants pending and outstanding, total and target server memory, the buffer pool, the plan cache, stolen and available memory, physical memory used. |
+| SQL Server | Extended Events | The attention capture of `mssql_xe` (pgvigil's own session): client timeouts per minute over the newest 3 minutes of reads (PerformanceMonitor 3.13.0's rule: the reads back to 3 minutes, the attentions they stored over that span, at least a minute), without SSMS IntelliSense, the VS Code mssql metadata connections, cancels under 1 ms that came with no statement (a cancel of a command that had already finished; whether the server sent a statement is recorded before the text policy, so under `query_text: none` a real timeout still counts), Azure Data Studio's metadata statements and pgvigil's own reads; those are their own metric, and the XE page's Attentions grid names each one's reason. A read the run did not finish gives no point (the next read's span covers it); a ring buffer that dropped events between reads undercounts; an `mssql_xe` interval over 10 minutes gives no fresh point; with `query_text: none` no statement is stored, so Azure Data Studio's metadata reads count (as in PerformanceMonitor). The seeded rule (off) warns at 10 a minute and pages at 60; a firing alert whose capture stops is held, where PerformanceMonitor resolves it after 30 minutes. pgvigil's own reads are left out by the collector's app name `pgvigil` (a DSN that sets its own app name is not recognised). |
 | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
 
 A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was

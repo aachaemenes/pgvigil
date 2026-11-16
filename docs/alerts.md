@@ -325,6 +325,26 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
   stores. A level is reached when the newest sample is beyond its value **and** the unbroken run of samples beyond
   it spans the rule's minutes, measured from the run's first sample to its newest: a single late sample never fires
   a rule by the clock alone. Until then the rule is *pending*. With 0 minutes the first sample beyond the value fires.
+- **Too few to judge (N/A).** A ratio over a small divisor says nothing: SQL Server's compilations, page splits and
+  page lookups per batch are judged only at 5 batch requests a second or more, full scans per index search only at 1
+  full scan a second or more. Under its floor the metric has no value, and a rule on it reads *N/A* (`na`), grey,
+  with the words "too few batch requests/s to judge (3.2/s, the floor 5/s)": never OK, never a warning, and no
+  finding. A rule that was firing and goes under the floor resolves with its normal *resolved* message after the
+  destination's clear delay; one that was not firing changes nothing. A read under the floor also breaks the run of
+  samples beyond the value. A rule that flaps across the floor resolves and fires again (one *resolved* and one
+  *firing* message) only when it stays under the floor or judged below its value longer than the destination's clear
+  delay; a dip shorter than the clear delay keeps the alert open and sends nothing. The new firing comes only after
+  its minutes of judged samples. A bursty server that crosses the floor every few
+  minutes may never hold a run long enough to fire: on such a server give the rule fewer minutes (0 to 3), so a
+  short run beyond the value is enough.
+- **Client timeouts and the 1 ms floor.** SQL Server's attention event carries a duration: the time the interrupt
+  itself took, not how long the request had run. PerformanceMonitor 3.13.0 (#7061) leaves out every attention under
+  1 ms as a cancel of a command that had already finished. On a test box 30 real client timeouts (a 2 s timeout on a
+  10 s wait) each took 255 to 713 microseconds to interrupt, so that rule would leave every one of them out. pgvigil
+  applies the floor only to an attention that came with no statement, the noise PerformanceMonitor describes; one with
+  its statement counts at any duration. Whether the server sent a statement is recorded as `has_text` before the
+  instance's `query_text` policy runs, so under `none` (no text stored) a real timeout still counts, and the flag
+  holds no text.
 - **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
   15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
   no fresh sample came: the collector may be down, or the instance. When the samples come back still beyond the
@@ -671,7 +691,7 @@ tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and ex
 | `pgvigil.metric_catalog` | Every metric a rule may name (`family.metric`): engine, label, unit, whether it has a per-database series, how old its newest sample may be. |
 | `pgvigil.alert_rules` | The rules; an edit ends a row and writes its successor (`replaces`), so the table is its own history. |
 | `pgvigil.alert_rule_log` | Every attempt from the UI, done or refused: who, from where, what. Not purged, like the acknowledge log. |
-| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical` or `nodata`, held or not, the newest sample, since when. |
+| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical`, `nodata` or `na` (not judged: under a metric's floor, or for a reason of the metric's own), held or not, the newest sample, since when. |
 | `pgvigil.alert_rule_fired` | Per rule: when it last began to fire, on which instance, how often. |
 | `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
 | `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |

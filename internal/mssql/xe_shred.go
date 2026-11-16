@@ -907,6 +907,11 @@ func parseAttention(e *xeEvent, c xeContext) collect.Row {
 	// the event's duration is the time the interrupt itself took (microseconds), not how long the request ran
 	row["interrupt_us"] = e.num("duration")
 	row["statement"] = e.act("sql_text")
+	// task 402 (B24 Fixed 1, the lead's 11-15 F1 FLOOR): whether the server sent the statement, recorded before the
+	// instance's text policy runs, so a real timeout under query_text none (no text stored) is told from a cancel of a
+	// command that had already finished (no text sent); the flag holds no text
+	text, _ := row["statement"].(string)
+	row["has_text"] = strings.TrimSpace(text) != ""
 	row["login_name"] = e.act("server_principal_name")
 	if row["login_name"] == nil {
 		row["login_name"] = e.act("username")

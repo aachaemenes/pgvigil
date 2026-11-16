@@ -138,7 +138,8 @@ SELECT e.event_at, e.event_name, e.duration_ms, e.cpu_ms, e.logical_reads, e.phy
  LIMIT 500`
 
 const sqlMSSQLXEAttentions = `
-SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.database_name, a.interrupt_us, a.statement
+SELECT a.event_at, a.session_id, a.login_name, a.host_name, a.program_name, a.database_name, a.interrupt_us, a.statement,
+       pgvigil.mssql_attention_left_out(a.program_name, a.statement, a.interrupt_us, a.has_text) AS left_out
   FROM pgvigil.mssql_attentions a
  WHERE a.instance_id = $1 AND a.event_at > $2 AND a.event_at <= $3
  ORDER BY a.event_at DESC

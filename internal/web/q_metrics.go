@@ -26,8 +26,17 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
        pgvigil.metric_status(g.op, g.avg_value, g.warning, g.critical) AS avg_status,
        pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
        g.rule_id, g.rule_name, g.op, g.warning, g.critical, g.for_minutes, g.rule_scope, g.rule_target, g.rule_database,
-       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at
+       s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at,
+       -- task 402: a seeded rule colours while off (the join file's metric_rule); the page says it sends nothing
+       ar.enabled AS rule_enabled,
+       -- task 402: a floored metric's floor, so the page says N/A with its words whatever the rule's state (or none)
+       fl.input_key AS floor_input, fl.unit AS floor_unit, fl.floor AS floor,
+       -- a metric not judged under a condition of its own (0152's metric_na_reasons): the N/A cell's words
+       nr.why AS na_why
   FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5, $6) g
+  LEFT JOIN pgvigil.alert_rules ar ON ar.rule_id = g.rule_id
+  LEFT JOIN pgvigil.metric_floors fl ON fl.key = g.key
+  LEFT JOIN pgvigil.metric_na_reasons nr ON nr.key = g.key
   LEFT JOIN pgvigil.alert_rule_state s
     ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
  ORDER BY g.family_sort, g.sort`
