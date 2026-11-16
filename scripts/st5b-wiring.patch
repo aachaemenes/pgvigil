@@ -1,3 +1,21 @@
+diff --git c/docs/alerts.md i/docs/alerts.md
+index e9a2dd5..55fd025 100644
+--- c/docs/alerts.md
++++ i/docs/alerts.md
+@@ -426,7 +426,12 @@ A channel of this file may not be named `contact-...`. The whole: [applications.
+ - **Thresholds in force** (the Alert rules page): every threshold each active instance is judged by. Per metric the
+   alert rule in force on it (an instance's rule over a tag's over the fleet's) with the wider rules it overrides there;
+   on a SQL Server instance the HA/DR, jobs and backups thresholds, marked *configuration file* where `mssql_thresholds`
+-  sets them and *default* where it does not (read only: the file is their source). Click a rule's line for an
++  sets them, *Admin > Instances* where an instance added there has its own in its Settings (a link opens them), and
++  *default* where neither does (read only here: the file or the Settings are their source). A value the collector has
++  not stored yet says so: *waits for the next HA/DR, jobs or backups read*, or *back to the default at the next ...*
++  for one taken away; until then the one in force is named. A repository before `pgvigil migrate`, or a serve login
++  that may not call `pgvigil.admin_instance_settings()`, reads this list without the Admin > Instances source and says
++  so above it. Click a rule's line for an
+   override that would be in force: on a fleet rule, **for this instance** or **for one of its tags**; on a tag rule,
+   for this instance; an instance's own rule opens to be edited. The rule form opens with the metric and the numbers
+   filled. The built-in findings' own limits (the setting rules, vacuum, storage ...) are not listed here; they are in
 diff --git c/docs/menus.md i/docs/menus.md
 index 38434c3..56d902d 100644
 --- c/docs/menus.md
@@ -13,6 +31,19 @@ index 38434c3..56d902d 100644
    - *Pause/Resume Collections...* lists each collection that has stored a read on the instance with its interval,
      last read, status and errors in the last 24 hours; an unticked collection goes into the instance's `disabled:` list
      (paused), a ticked one comes out of it. An opt-in collection (off until a schedule gives it an interval) cannot be
+diff --git c/docs/sqlserver-hadr.md i/docs/sqlserver-hadr.md
+index e69ae2f..37264fb 100644
+--- c/docs/sqlserver-hadr.md
++++ i/docs/sqlserver-hadr.md
+@@ -104,7 +104,7 @@ Per database: state, recovery model, and the last full, differential and log bac
+ - **Not judged**: tempdb, a database that is not online, a database snapshot, a standby database, a database younger than `new_database_hours`, a name matching `backup_exclude`. The log backup is judged only under the full or bulk-logged recovery model, after a first full backup, and not for `model` or a read-only database.
+ - **Every age is the age at the read.** The collection is hourly; a page opened 50 minutes later does not add 50 minutes to a log backup's age.
+ 
+-**The fleet's Backups page** holds, below PostgreSQL's sections, DBA Dash's two root grids: one row per SQL Server instance in view (a server whose backups were never read has its row, saying so) and one row per database. The databases grid starts on Problems when the view holds more than one SQL Server instance (a backup late or never taken, or a backup to the NUL device inside `nul_backup_days`) and on All for one. An instance opens its Backups tab; a database opens that tab with its row first. Sizes and rates count only the backups that ran on the row's own server: a full backup taken on another replica of an availability group is counted on that replica's row. Backup thresholds are each instance's `mssql_thresholds` in `pgvigil.yaml`; the page's Configure says so and does nothing. Not read by pgvigil: backup checksums, encryption, password protection, the compression algorithm, damaged and partial or filegroup backups, the partner replica's backups, and a history of backups (pgvigil keeps the newest backup of each type per database).
++**The fleet's Backups page** holds, below PostgreSQL's sections, DBA Dash's two root grids: one row per SQL Server instance in view (a server whose backups were never read has its row, saying so) and one row per database. The databases grid starts on Problems when the view holds more than one SQL Server instance (a backup late or never taken, or a backup to the NUL device inside `nul_backup_days`) and on All for one. An instance opens its Backups tab; a database opens that tab with its row first. Sizes and rates count only the backups that ran on the row's own server: a full backup taken on another replica of an availability group is counted on that replica's row. Backup thresholds are each instance's `mssql_thresholds` in `pgvigil.yaml`, or for an instance added in Admin > Instances its Settings there (docs/instance-settings.md); the page's Configure says so and does nothing. Not read by pgvigil: backup checksums, encryption, password protection, the compression algorithm, damaged and partial or filegroup backups, the partner replica's backups, and a history of backups (pgvigil keeps the newest backup of each type per database).
+ 
+ ## Findings
+ 
 diff --git c/internal/config/inventory.go i/internal/config/inventory.go
 index 3965991..5dbb37c 100644
 --- c/internal/config/inventory.go
@@ -99,23 +130,35 @@ index 0000000..587c623
 +	}
 +}
 diff --git c/internal/web/q_alert_rules.go i/internal/web/q_alert_rules.go
-index 5ce8225..4327dac 100644
+index 5ce8225..801d1ce 100644
 --- c/internal/web/q_alert_rules.go
 +++ i/internal/web/q_alert_rules.go
-@@ -102,7 +102,11 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
+@@ -22,6 +22,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgconn"
+ 
+ 	"github.com/aachaemenes/pgvigil/internal/alerts"
+ )
+@@ -102,8 +103,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
  // judges each metric's series by (alert_rules_effective: an instance's rule over a tag's over the fleet's), with the
  // rules it overrides on that instance - and, on a SQL Server instance, the HA/DR, jobs and backups thresholds of
  // mssql_hadr_limits (0066), each marked 'file' where the configuration sets it (mssql_thresholds) and 'default'
 -// where it does not: those are read only here, the file is their source.
+-const sqlThresholdsInForce = `
 +// where it does not: those are read only here, the file is their source. An instance added in Admin > Instances (no
 +// pgvigil.yaml entry of its name, $1, and not disabled) has no file source (ST5b's design pass F3): a key its settings
 +// set is 'page' with the settings' value, any other 'default'; pending says where the collector has not stored it yet
 +// (it stores the set at the instance's next HA/DR, jobs or backups read). The settings are read through
 +// admin_inventory() and admin_instance_settings(), the reader's grants.
- const sqlThresholdsInForce = `
++var sqlThresholdsInForce = sqlThresholdsInForceHead + inforcePageJoin + sqlThresholdsInForceTail
++
++const sqlThresholdsInForceHead = `
  SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
         e.database, e.rule_id, e.name AS rule_name, e.scope, coalesce(e.tag, e.instance_name) AS target, e.op,
-@@ -112,20 +116,29 @@ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric A
+        e.warning, e.critical, e.for_minutes, NULL::text AS value,
+@@ -112,24 +119,66 @@ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric A
            FROM pgvigil.alert_rule_scope o
           WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
             AND o.rule_id <> e.rule_id) AS overrides,
@@ -142,13 +185,50 @@ index 5ce8225..4327dac 100644
    CROSS JOIN LATERAL jsonb_each_text(to_jsonb(h) - 'instance_id') l
    LEFT JOIN LATERAL (SELECT to_jsonb(x) -> l.key AS value FROM pgvigil.mssql_hadr_thresholds x
                        WHERE x.instance_id = h.instance_id AND to_jsonb(x) -> l.key <> 'null'::jsonb) f ON true
-+  LEFT JOIN LATERAL (SELECT a.name, st.settings FROM pgvigil.admin_inventory() a JOIN pgvigil.admin_instance_settings() st USING (name)
++`
++
++// inforcePageJoin reads the Admin > Instances source: admin_inventory() and admin_instance_settings() (0263).
++const inforcePageJoin = `  LEFT JOIN LATERAL (SELECT a.name, st.settings FROM pgvigil.admin_inventory() a JOIN pgvigil.admin_instance_settings() st USING (name)
 +                      WHERE a.name = i.name AND NOT a.disabled AND NOT (a.name = ANY ($1::text[]))) pg ON true
-+  LEFT JOIN LATERAL (SELECT pg.settings -> 'thresholds' -> l.key AS value WHERE pg.settings -> 'thresholds' ? l.key) pv ON true
++`
++
++const sqlThresholdsInForceTail = `  LEFT JOIN LATERAL (SELECT pg.settings -> 'thresholds' -> l.key AS value WHERE pg.settings -> 'thresholds' ? l.key) pv ON true
    LEFT JOIN pgvigil.instance_tags_merged t ON t.instance_id = i.instance_id
   ORDER BY 2, 4 DESC, 5, 9 NULLS FIRST
   LIMIT 5000`
-@@ -144,7 +157,7 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
+ 
++// inforcePageJoinNone stands in for inforcePageJoin where those functions cannot be called (the build review's M2): no
++// instance has an Admin > Instances source; $1 stays named, so the call's argument count is the same.
++const inforcePageJoinNone = `  LEFT JOIN LATERAL (SELECT NULL::text AS name, NULL::jsonb AS settings WHERE false AND $1::text[] IS NOT NULL) pg ON true
++`
++
++// sqlThresholdsInForceNoPage is Thresholds in force without the Admin > Instances source.
++var sqlThresholdsInForceNoPage = sqlThresholdsInForceHead + inforcePageJoinNone + sqlThresholdsInForceTail
++
++// inforceNoPage says why the inforce part is read without the Admin > Instances source ("" = it is not): a store
++// before 'pgvigil migrate' has no admin_instance_settings() (42883), a serve login may lack EXECUTE on it (42501).
++// Any other error stays the whole answer's.
++func inforceNoPage(err error) string {
++	var pe *pgconn.PgError
++	if !errors.As(err, &pe) {
++		return ""
++	}
++	why := ""
++	switch pe.Code {
++	case "42883":
++		why = "this repository has no pgvigil.admin_instance_settings() yet (run 'pgvigil migrate' as the repository owner)"
++	case "42501":
++		why = "this serve's login may not call pgvigil.admin_instance_settings()"
++	default:
++		return ""
++	}
++	return "Admin > Instances is not read here: " + why + "; a threshold an instance's Settings there set reads 'configuration file' until it is"
++}
++
+ // AlertRules is GET /api/alertrules: the rules, their state, the window's attempts, the metric catalogue and the
+ // sender's line; whether writes are on, and why not.
+ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
+@@ -144,7 +193,7 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
  		{"log", sqlAlertRuleLog, []any{from, to}},
  		{"catalog", sqlAlertRuleCatalog, nil},
  		{"sender", sqlAlertRuleSender, nil},
@@ -157,6 +237,101 @@ index 5ce8225..4327dac 100644
  	})
  	if err != nil {
  		writeErr(w, http.StatusBadRequest, err)
+@@ -154,6 +203,11 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
+ 	s.alertRulesDoor(r, out)
+ 	for _, p := range ps {
+ 		t, err := s.query(r.Context(), p.sql, p.args...)
++		if note := inforceNoPage(err); note != "" && p.name == "inforce" {
++			// the part read alone without the page's source, said in its note (never the whole answer lost)
++			out["inforce_note"] = note
++			t, err = s.query(r.Context(), sqlThresholdsInForceNoPage, p.args...)
++		}
+ 		if err != nil {
+ 			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
+ 			return
+diff --git c/internal/web/q_alert_rules_inforce_test.go i/internal/web/q_alert_rules_inforce_test.go
+new file mode 100644
+index 0000000..6a1b4be
+--- /dev/null
++++ i/internal/web/q_alert_rules_inforce_test.go
+@@ -0,0 +1,77 @@
++package web
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/jackc/pgx/v5/pgconn"
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++// TestThresholdsInForceFallbackOnAStore (ST5b, the build review's M2): Thresholds in force reads the Admin > Instances
++// source through admin_instance_settings(); where that cannot be called (a store before 'pgvigil migrate', 42883, or a
++// serve login without EXECUTE, 42501) the inforce part alone is read without it and says so in inforce_note - the
++// rest of GET /api/alertrules is answered as before. Any other error stays the whole answer's.
++func TestThresholdsInForceFallbackOnAStore(t *testing.T) {
++	for code, want := range map[string]bool{"42883": true, "42501": true, "XX000": false, "42P01": false} {
++		if got := inforceNoPage(&pgconn.PgError{Code: code}) != ""; got != want {
++			t.Errorf("SQLSTATE %s: a fallback %v, want %v", code, got, want)
++		}
++	}
++	if inforceNoPage(nil) != "" || inforceNoPage(errors.New("connection reset")) != "" {
++		t.Error("a nil or a non-SQL error takes the fallback")
++	}
++	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
++	if dsn == "" {
++		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	pool, err := pgxpool.New(ctx, dsn)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer pool.Close()
++	s := &Server{pool: pool, log: discardLog()}
++	for name, q := range map[string]string{"with the page's source": sqlThresholdsInForce, "without it": sqlThresholdsInForceNoPage} {
++		if _, err := s.query(ctx, q, []string{}); err != nil {
++			t.Errorf("Thresholds in force %s on the store: %v", name, err)
++		}
++	}
++	get := func() (int, map[string]any) {
++		t.Helper()
++		w := httptest.NewRecorder()
++		s.AlertRules(w, httptest.NewRequest(http.MethodGet, "/api/alertrules", nil))
++		var out map[string]any
++		_ = json.Unmarshal(w.Body.Bytes(), &out)
++		return w.Code, out
++	}
++	// the page's source read through a function this store does not have: the 42883 of a store before 0263
++	was := sqlThresholdsInForce
++	t.Cleanup(func() { sqlThresholdsInForce = was })
++	sqlThresholdsInForce = sqlThresholdsInForceHead +
++		strings.Replace(inforcePageJoin, "pgvigil.admin_instance_settings()", "pgvigil.admin_instance_settings_st5b_none()", 1) + sqlThresholdsInForceTail
++	code, out := get()
++	if code != http.StatusOK {
++		t.Fatalf("GET alertrules without the page's function: %d %v", code, out)
++	}
++	for _, k := range []string{"rules", "state", "log", "catalog", "sender", "inforce"} {
++		if _, ok := out[k]; !ok {
++			t.Errorf("part %s missing: %v", k, out)
++		}
++	}
++	if note, _ := out["inforce_note"].(string); !strings.HasPrefix(note, "Admin > Instances is not read here: this repository has no pgvigil.admin_instance_settings() yet") {
++		t.Errorf("inforce_note: %q", note)
++	}
++	sqlThresholdsInForce = was
++	if code, out := get(); code != http.StatusOK || out["inforce_note"] != nil {
++		t.Errorf("GET alertrules on a migrated store: %d, note %v (want 200, no note)", code, out["inforce_note"])
++	}
++}
 diff --git c/internal/web/q_retention.go i/internal/web/q_retention.go
 index ca2a027..76c7bf3 100644
 --- c/internal/web/q_retention.go
@@ -202,10 +377,37 @@ index 340b78f..325feb1 100644
  
    // why this server cannot write ('' = it can). A grid draws its rows again at each sort, filter and 'Show more',
 diff --git c/web/src/alert_rules.ts i/web/src/alert_rules.ts
-index ded972a..b4ad2ce 100644
+index ded972a..cece3d7 100644
 --- c/web/src/alert_rules.ts
 +++ i/web/src/alert_rules.ts
-@@ -476,23 +476,31 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
+@@ -21,7 +21,7 @@ import { offBeside } from './ack';
+ export interface RulesDoor { writable: boolean; reason?: string; user: string; note?: HTMLElement }
+ interface RulesData extends RulesDoor {
+   rules?: Table | null; state?: Table | null; log?: Table | null; catalog?: Table | null; sender?: Table | null;
+-  inforce?: Table | null;
++  inforce?: Table | null; inforce_note?: string;
+ }
+ interface RuleResult { outcome: string; detail: string; rule_id?: number | null }
+ 
+@@ -431,7 +431,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+     { key: 'detail', wide: true },
+   ];
+   sec.append(el('h3', {}, `Rule log ${rangeLabel(ctx)}`), grid(log, logCols, 'No rule was made, edited, switched or ended in the time range.'));
+-  sec.append(inForceView(d, inforce, all));
++  sec.append(inForceView(d, inforce, all, d.inforce_note));
+   return sec;
+ }
+ 
+@@ -447,7 +447,7 @@ export function thresholdLine(r: Row): string {
+ // override for this instance, an override for one of its tags, or the rule itself. Only an override that would be in
+ // force is offered: an instance rule beats a tag rule and a tag rule beats the fleet's (0085), so a tag override is
+ // offered over a fleet rule only, and an instance's own rule is edited, not overridden.
+-function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
++function inForceView(door: RulesDoor, rows: Row[], rules: Row[], note?: string): HTMLElement {
+   const insts = [...new Set(rows.map(r => String(r.instance)))].sort();
+   const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'every instance'), ...insts.map(n => el('option', { value: n }, n)));
+   const wrap = el('div', {});
+@@ -476,23 +476,33 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
    };
    const cols: Col[] = [
      { key: 'instance' },
@@ -239,6 +441,8 @@ index ded972a..b4ad2ce 100644
    draw();
 -  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, else the default; read only here). Click a rule\'s line for an override: on a fleet rule, for this instance or one of its tags; on a tag rule, for this instance; an instance\'s own rule is edited. The override is a narrower rule, made in the rule form.', 'Thresholds in force')),
 +  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, or for an instance added in Admin > Instances by its Settings there, else the default; read only here). Click a rule\'s line for an override: on a fleet rule, for this instance or one of its tags; on a tag rule, for this instance; an instance\'s own rule is edited. The override is a narrower rule, made in the rule form.', 'Thresholds in force')),
++    // the build review's M2: read without the Admin > Instances source, said here (the rest of the page as before)
++    note ? el('p', { class: 'meta', role: 'note' }, note) : '',
      el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel)), wrap);
  }
 diff --git c/web/src/mssql_backups.ts i/web/src/mssql_backups.ts
@@ -258,18 +462,19 @@ index a2558a6..7079e6a 100644
  const byInstanceCols = (ctx: Ctx): Col[] => [
    { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
 diff --git c/web/src/treemenu.ts i/web/src/treemenu.ts
-index 91b5d34..ee10bcc 100644
+index 91b5d34..bcdcad5 100644
 --- c/web/src/treemenu.ts
 +++ i/web/src/treemenu.ts
-@@ -27,6 +27,7 @@ import { reloadTree } from './tree';
+@@ -27,6 +27,8 @@ import { reloadTree } from './tree';
  import { loadThresholds, thresholdsDialog } from './mssql_jobs';
  import { confirmJobAction, runningState } from './jobs_running';
  import { ackDialog, ackWhy, loadAckSafe } from './ack';
 +import { pageConfigureSchedule, pagePauseResume, PageCollections } from './tree_settings';
++import { goDuration } from './settings_model'; // pgvigil.yaml's units: s, m and h (never d)
  
  // ---- a menu with submenus ------------------------------------------------------------------------------------
  
-@@ -311,7 +312,8 @@ function addConnections(back: HTMLElement | null) {
+@@ -311,13 +313,9 @@ function addConnections(back: HTMLElement | null) {
  
  // ---- Instance Actions ---------------------------------------------------------------------------------------------
  
@@ -277,9 +482,15 @@ index 91b5d34..ee10bcc 100644
 +// a page instance's answer carries its settings too (ST5b): its two dialogs write them (tree_settings.ts)
 +type Collections = PageCollections;
  const every = (s: unknown) => s == null ? 'not known to this server' : Number(s) === 0 ? 'disabled' : fmtSecs(s);
- function goDuration(s: number): string {
-   if (s % 3600 === 0) return `${s / 3600}h`;
-@@ -325,6 +327,7 @@ function pauseResume(id: number, back: HTMLElement | null) {
+-function goDuration(s: number): string {
+-  if (s % 3600 === 0) return `${s / 3600}h`;
+-  if (s % 60 === 0) return `${s / 60}m`;
+-  return `${s}s`;
+-}
+ 
+ async function collectionsOf(id: number): Promise<Collections> { return get<Collections>('instance/collections', { instance: id }); }
+ 
+@@ -325,6 +323,7 @@ function pauseResume(id: number, back: HTMLElement | null) {
    const { body } = dialog('Pause/Resume Collections', back, true);
    body.append(el('p', { class: 'meta', role: 'status' }, 'Reading the instance\'s collections...'));
    void collectionsOf(id).then(d => {
@@ -287,7 +498,7 @@ index 91b5d34..ee10bcc 100644
      const rows = rowsOf(d.collections);
      // an opt-in collection (its default interval 0) runs only with a schedule: it is never paused or resumed by disabled:
      const optIn = (r: Row) => r.default_s != null && Number(r.default_s) === 0;
-@@ -359,6 +362,7 @@ function configureSchedule(id: number, back: HTMLElement | null) {
+@@ -359,6 +358,7 @@ function configureSchedule(id: number, back: HTMLElement | null) {
    const { body } = dialog('Configure Schedule', back, true);
    body.append(el('p', { class: 'meta', role: 'status' }, 'Reading the instance\'s collections...'));
    void collectionsOf(id).then(d => {
