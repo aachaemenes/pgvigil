@@ -52,6 +52,18 @@
   <figure class="shot"><a href="img/summary.png"><img src="img/summary.png" width="1600" height="900" alt="The Summary: the servers that need attention first, then every check counted across the fleet as OK, warning, critical and not applicable"></a></figure>
 </div>
 
+<section class="plain"><div class="wrap">
+  <h2>Coming in v0.4.0: servers pgvigil cannot reach</h2>
+  <p>Some networks will not let any outside server connect to their databases. For them pgvigil v0.4.0 will add a remote collector: the same signed program in a collector-only mode, run on one Linux or Windows box inside that network. It will read PostgreSQL and SQL Server with the same read-only logins as any pgvigil, and every few minutes write what it read as a bundle of files. Your pgvigil will take each bundle in once, check it, and show those servers beside the rest of the fleet.</p>
+  <ul class="list">
+    <li>Bundles of plain files: one gzip-compressed NDJSON file per view, a manifest (the instance, versions, the time window, the row count of every file, how each read ended) and SHA256 sums. A security team can open any bundle with gunzip and jq before it leaves.</li>
+    <li>Any way out the site allows: the collector writing straight into an Azure Blob container that pgvigil polls (an Event Grid queue as a later option), or an S3 or GCS bucket, a file share, SFTP, or a one-way copy or USB for a closed network. Filebeat can carry the same files where a log pipeline is the only way out.</li>
+    <li>Every 5 minutes by default, set shorter or longer per site. Statement text will be hashed or left out, by a setting on the site's side.</li>
+    <li>The collector package on GitHub releases, signed, next to the offline bundle, with its setup guide.</li>
+  </ul>
+  <p>Those servers will show "as of the last bundle": history, analysis and alerts as fresh as the interval, a site that goes quiet raised as an alert, and actions that need a live connection (ending a session, starting a job, EXPLAIN) off with the reason shown. Not built yet: this describes the plan for v0.4.0.</p>
+</div></section>
+
 <div class="wrap">
   <div class="row">
     <div class="row-text"><h2>The whole fleet on one page</h2>
