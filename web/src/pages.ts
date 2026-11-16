@@ -516,8 +516,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', replication: 'pgreplication', custom: 'custom',
     dbstate: 'mssqlrisks', activity: 'running', dms: 'dms', tables: 'tablesize', roles: 'roles', indexes: 'indexes', version: 'versions',
   };
+  // on a scope that holds a SQL Server instance the three HA tests open DBA Dash's HA/DR pages (task 383); a
+  // PostgreSQL-only scope keeps Replication on the PostgreSQL page - the same test the column labels use (labelOf)
+  const mssqlTabOf: Record<string, string> = { replication: 'mssqlag', logship: 'mssqllogshipping', mirroring: 'mssqlmirroring' };
+  const scopeHasSqlServer = insts.some(r => isMssql(r.engine));
+  const tabOfTest = (key: string) => (scopeHasSqlServer && mssqlTabOf[key]) || rootTabOf[key];
   const testLink = (r: Row, text: string): HTMLElement => {
-    const tab = rootTabOf[String(r.key)];
+    const tab = tabOfTest(String(r.key));
     if (tab) return el('a', { class: 'cell-link', href: href(ctx, { tab, instance: undefined }) }, text);
     const b = el('button', { type: 'button', class: 'cell-link link', 'aria-label': `${text}: show the instances where it is a warning or a critical` }, text);
     b.addEventListener('click', () => {
