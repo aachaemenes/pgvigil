@@ -62,7 +62,9 @@ scrape_configs:
 - Gauges, plus one counter (`pgvigil_metrics_refused_total`), no explicit timestamps: the newest collected value of each metric, in base units. A value older than
   its freshness (10 minutes; IO 30 minutes; host 15 minutes) is left out, so an alert on a missing series fires;
   `pgvigil_sample_timestamp_seconds{server, family}` gives the newest sample's Unix time of each family, fresh or stale,
-  however old (alert on `time() - pgvigil_sample_timestamp_seconds > 900`: an instance silent for days keeps firing).
+  however old (alert on `time() - pgvigil_sample_timestamp_seconds{family!="collection"} > 900`: an instance silent for
+  days keeps firing; the collection family's sample is the end of its newest ENDED hour, so up to two hours old by
+  design - alert on it past 7200 s).
 - Labels: `server` (pgvigil's instance name) on every instance series; `engine` on the figures and on
   `pgvigil_instance_info`; `family`, `severity` and `database` on their own series; the endpoint's own four series have
   none.
