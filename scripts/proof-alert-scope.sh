@@ -9,7 +9,10 @@
 #                      pgvigil_reader, pgvigil_alerter, pgvigil_auth).
 #   The proof builds two binaries from a copy of this tree (go build): BIN with scripts/proof-alert-scope-wiring.patch
 #   applied (the lead's lines in 0190 and web.go; skipped when the tree already holds them), and BIN0, the same tree
-#   without 0154, for part M's second store.
+#   without 0154, for part M's second store. A tree that holds the wiring in a join's own words (the j16 join: POST
+#   /api/alertwindows through s.post, 0300 re-creating alert_due whole after 0154; one line of each of the patch's 12
+#   hunks is looked for) builds BIN as it is and no BIN0: part M's store 2 is then NOT PROVEN, because such a tree
+#   without 0154 is not the unwired tree and no store meets 0154 after the join file (both arrive with v0.4.0).
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on the base 6178b52 the build has no 0154 and part M fails):
@@ -148,17 +151,38 @@ TREE=$WORK/tree; TREE0=$WORK/tree0; mkdir -p "$TREE" "$TREE0"
 tar --exclude=./.git --exclude=./web/node_modules --exclude=./bin -cf - . | tar -xf - -C "$TREE"
 (cd "$TREE" && tar -cf - .) | tar -xf - -C "$TREE0"   # BIN0: the tree as the branch holds it (unwired), without 0154
 rm -f "$TREE0/internal/repo/sql/0154_alert_scope.sql"
+# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the j16 join's B24F-JOIN-WIRING routes POST
+# /api/alertwindows through s.post, so the patch neither applies nor reverses there): one line of each hunk, as text
+joined_wiring() { local f s
+  while read -r f s; do grep -qF -- "$s" "$1/$f" || return 1; done <<'EOF'
+cmd/pgvigil/report.go "page_instance_reads": true, "slack_actions": true,
+cmd/pgvigil/report.go "team_id": true, "enterprise_id": true, "signing_secret": true, "users": true,
+cmd/pgvigil/serve.go // task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default.
+docs/mcp.md | `alert_history` | `instance`, `from`, `to`, `hours` |
+internal/config/pagedoor.go SlackActions bool `yaml:"slack_actions"`
+internal/mcp/applications_test.go {"alert_history", `{"instance":"beta","hours":48}`}, // task 403b
+internal/mcp/mcp_test.go if len(list) != 10 { // task 403b: alert_history beside the nine
+internal/mcp/tools.go }, alertTools()...) // task 403b: alert_history (tools_alerts.go)
+internal/web/q_alert_rules.go AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
+internal/web/web.go api.HandleFunc("GET /api/alertscope", s.AlertScope)
+internal/web/web.go s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite)
+internal/web/web.go mux.HandleFunc("POST /api/slack/actions", s.slackActions)
+EOF
+}
+JOINED=
 if (cd "$TREE" && git apply --check "$ROOT/scripts/proof-alert-scope-wiring.patch" 2>/dev/null); then
   (cd "$TREE" && git apply "$ROOT/scripts/proof-alert-scope-wiring.patch") || fail "the wiring patch"
   ok "wiring patch applied to the build's copy"
 elif (cd "$TREE" && git apply -R --check "$ROOT/scripts/proof-alert-scope-wiring.patch" 2>/dev/null); then
   ok "the tree already holds the wiring"
+elif joined_wiring "$TREE"; then
+  JOINED=1; ok "the tree holds the wiring in a join's own words (a line of each of the patch's 12 hunks found)"
 else
   fail "the wiring patch neither applies nor is applied"
 fi
 BIN=$WORK/pgvigil; BIN0=$WORK/pgvigil0
 (cd "$TREE" && go build -o "$BIN" ./cmd/pgvigil) || fail "go build"
-(cd "$TREE0" && go build -o "$BIN0" ./cmd/pgvigil) || fail "go build (no 0154)"
+if [[ -z $JOINED ]]; then (cd "$TREE0" && go build -o "$BIN0" ./cmd/pgvigil) || fail "go build (no 0154)"; fi
 
 # ---- M: migration order ------------------------------------------------------------------------------------------------
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO" -c "create database $REPO2" >/dev/null
@@ -186,19 +210,29 @@ d=$(fdef q alert_due)
 [[ $d == *"alert_hold("* && $d == *"alert_checks_match("* && $d != *"ack_hold("* ]] || fail "M: store 1's alert_due is not the wired one"
 d=$(fdef q purge)
 [[ $d == *"findings_history"* && $d == *"greatest(p_days, 90)"* ]] || fail "M: store 1's purge lacks the history's or the alert log's days"
-"$BIN0" migrate -config "$WORK/cfg2.yaml" >"$WORK/m2a.log" 2>&1 || fail "migrate store 2 without 0154: $(tail -3 "$WORK/m2a.log")"
-[[ $(q2 "select count(*) from pgvigil.schema_version where version = '0154_alert_scope.sql'") == 0 ]] || fail "M: store 2 holds 0154 before BIN"
-"$BIN" migrate -config "$WORK/cfg2.yaml" >"$WORK/m2b.log" 2>&1 || fail "migrate store 2 with 0154 last: $(tail -3 "$WORK/m2b.log")"
-[[ $(order q2) == "0190_join_release2.sql 0154_alert_scope.sql" ]] || fail "M: store 2's order: $(order q2)"
-[[ $(fdef q2 alert_due) != *"alert_hold("* ]] || fail "M: store 2's alert_due is wired: BIN0 was not built from the unwired tree"
-for f in q q2; do
+STORES="q q2"
+if [[ -z $JOINED ]]; then
+  "$BIN0" migrate -config "$WORK/cfg2.yaml" >"$WORK/m2a.log" 2>&1 || fail "migrate store 2 without 0154: $(tail -3 "$WORK/m2a.log")"
+  [[ $(q2 "select count(*) from pgvigil.schema_version where version = '0154_alert_scope.sql'") == 0 ]] || fail "M: store 2 holds 0154 before BIN"
+  "$BIN" migrate -config "$WORK/cfg2.yaml" >"$WORK/m2b.log" 2>&1 || fail "migrate store 2 with 0154 last: $(tail -3 "$WORK/m2b.log")"
+  [[ $(order q2) == "0190_join_release2.sql 0154_alert_scope.sql" ]] || fail "M: store 2's order: $(order q2)"
+  [[ $(fdef q2 alert_due) != *"alert_hold("* ]] || fail "M: store 2's alert_due is wired: BIN0 was not built from the unwired tree"
+else
+  STORES="q"
+  echo "NOT PROVEN M2: store 2 (0154 after the join file) - on a tree whose wiring is in its join file the tree without 0154 is not the unwired tree, and no store meets 0154 after it (both arrive with v0.4.0)"
+fi
+for f in $STORES; do
   [[ $($f "select pgvigil.alert_hold(now(), 'c', 'i', '{}', 'k', 's', 'x', 'v', 'warning') is null") == t ]] || fail "M ($f): alert_hold on nothing is not NULL"
   [[ $($f "select count(*) from information_schema.columns where table_schema = 'pgvigil' and table_name = 'alert_rule_findings' and column_name = 'op_family'") == 1 ]] || fail "M ($f): no op_family"
   $f "select count(*) from pgvigil.alert_findings" >/dev/null || fail "M ($f): alert_findings"
   $f "select count(*) from pgvigil.alert_rules_effective" >/dev/null || fail "M ($f): alert_rules_effective"
   [[ $($f "select (to_regclass('pgvigil.alert_rules_live_uq') is null)::text || (to_regclass('pgvigil.alert_rules_live_family_uq') is not null)::text") == truetrue ]] || fail "M ($f): the rule index"
 done
-ok "M: a fresh store holds 0154 then the wired 0190 (alert_due through alert_hold, purge's days); 0154 applies on a store at 0190"
+if [[ -z $JOINED ]]; then
+  ok "M: a fresh store holds 0154 then the wired 0190 (alert_due through alert_hold, purge's days); 0154 applies on a store at 0190"
+else
+  ok "M: a fresh store holds 0154 then 0190, its alert_due through alert_hold and its purge with the history's days (the join file's)"
+fi
 
 # ---- R: the role contract ----------------------------------------------------------------------------------------------
 dsn() { echo "$PGVIGIL_ADMIN_DSN dbname=$REPO user=$1 password=$PW"; }

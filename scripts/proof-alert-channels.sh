@@ -9,7 +9,8 @@
 #                      database and two logins, all named pgvigil_s2chan_*_<random>, and drops them at the end. Not
 #                      dropped: the cluster-wide group roles `pgvigil migrate` makes.
 #   The proof builds BIN from a copy of this tree (go build) with scripts/proof-alert-scope-wiring.patch applied (the
-#   lead's lines in 0190, web.go, q_alert_rules.go, tools.go; skipped when the tree already holds them).
+#   lead's lines in 0190, web.go, q_alert_rules.go, tools.go; skipped when the tree already holds them, or holds them in a
+#   join's own words: the j16 join routes POST /api/alertwindows through s.post; one line of each of the 12 hunks).
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on 5e53c86 the build has no alert_channel_failing, part M fails):
@@ -264,11 +265,31 @@ for t in psql curl python3 ss go tar git; do command -v $t >/dev/null || fail "$
 # ---- the binary -------------------------------------------------------------------------------------------------------
 TREE=$WORK/tree; mkdir -p "$TREE"
 tar --exclude=./.git --exclude=./web/node_modules --exclude=./bin -cf - . | tar -xf - -C "$TREE"
+# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the j16 join's B24F-JOIN-WIRING routes POST
+# /api/alertwindows through s.post, so the patch neither applies nor reverses there): one line of each hunk, as text
+joined_wiring() { local f s
+  while read -r f s; do grep -qF -- "$s" "$1/$f" || return 1; done <<'EOF'
+cmd/pgvigil/report.go "page_instance_reads": true, "slack_actions": true,
+cmd/pgvigil/report.go "team_id": true, "enterprise_id": true, "signing_secret": true, "users": true,
+cmd/pgvigil/serve.go // task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default.
+docs/mcp.md | `alert_history` | `instance`, `from`, `to`, `hours` |
+internal/config/pagedoor.go SlackActions bool `yaml:"slack_actions"`
+internal/mcp/applications_test.go {"alert_history", `{"instance":"beta","hours":48}`}, // task 403b
+internal/mcp/mcp_test.go if len(list) != 10 { // task 403b: alert_history beside the nine
+internal/mcp/tools.go }, alertTools()...) // task 403b: alert_history (tools_alerts.go)
+internal/web/q_alert_rules.go AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
+internal/web/web.go api.HandleFunc("GET /api/alertscope", s.AlertScope)
+internal/web/web.go s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite)
+internal/web/web.go mux.HandleFunc("POST /api/slack/actions", s.slackActions)
+EOF
+}
 if (cd "$TREE" && git apply --check "$ROOT/scripts/proof-alert-scope-wiring.patch" 2>/dev/null); then
   (cd "$TREE" && git apply "$ROOT/scripts/proof-alert-scope-wiring.patch") || fail "the wiring patch"
   ok "wiring patch applied to the build's copy"
 elif (cd "$TREE" && git apply -R --check "$ROOT/scripts/proof-alert-scope-wiring.patch" 2>/dev/null); then
   ok "the tree already holds the wiring"
+elif joined_wiring "$TREE"; then
+  ok "the tree holds the wiring in a join's own words (a line of each of the patch's 12 hunks found)"
 else
   fail "the wiring patch neither applies nor is applied"
 fi
