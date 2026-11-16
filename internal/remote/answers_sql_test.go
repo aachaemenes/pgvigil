@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
@@ -136,5 +137,59 @@ func TestAnswersAgainstSQL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The schema due against 0267's import_mssql_schema_due: the same steps imported into a store (the hub's functions) and
+// into the remote store (the rules), each due asked of both - equal at every step, and equal to what the steps expect.
+func TestSchemaDueAgainstSQL(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r, err := repo.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id, err := r.EnsureInstanceEngine(ctx, "sqlserver", "schemadue-"+time.Now().Format("150405.000000"), "onprem", "16.0", 16, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestStore(t, t.TempDir(), t.TempDir(), &clock{t: t0})
+	mid, _ := s.EnsureInstanceEngine(ctx, "sqlserver", inst.Name, "onprem", "16.0", 16, false, nil)
+	for i, st := range schemaSteps() {
+		if st.view != "" {
+			if err := r.Import(ctx, id, st.view, st.at, st.rows); err != nil {
+				t.Fatalf("step %d: the hub's import %s (the fixture, not the rule): %v", i, st.view, err)
+			}
+			if err := s.Import(ctx, mid, st.view, st.at, st.rows); err != nil {
+				t.Fatalf("step %d: the remote import %s: %v", i, st.view, err)
+			}
+			continue
+		}
+		b, _ := json.Marshal(st.payload)
+		hubRaw, err := r.MSSQLSchemaDue(ctx, id, st.at, b)
+		if err != nil {
+			t.Fatalf("step %d: the hub: %v", i, err)
+		}
+		mineRaw, err := s.MSSQLSchemaDue(ctx, mid, st.at, b)
+		if err != nil {
+			t.Fatalf("step %d: the remote: %v", i, err)
+		}
+		var hub, mine schemaAnswer
+		if err := json.Unmarshal(hubRaw, &hub); err != nil {
+			t.Fatalf("step %d: %v: %s", i, err, hubRaw)
+		}
+		if err := json.Unmarshal(mineRaw, &mine); err != nil {
+			t.Fatalf("step %d: %v: %s", i, err, mineRaw)
+		}
+		sameAnswer(t, fmt.Sprintf("step %d, the remote against the hub", i), mine, hub)
+		sameAnswer(t, fmt.Sprintf("step %d, the hub against the steps' expectation", i), hub, *st.want)
 	}
 }
