@@ -220,8 +220,8 @@ func sqlTextArray(ss []string) string {
 }
 
 // endsWithSemicolon: the file's last statement ends with ';' once trailing blank lines and whole-line '--' comments are
-// set aside (a block comment or a comment after the semicolon on the last line is not looked into: such a file fails
-// closed).
+// set aside. On the last line the text before its first '--' decides, so '...; -- a note' is ended (the version row
+// starts on the next line, after the comment's end); a block comment is not looked into: such a file fails closed.
 func endsWithSemicolon(b []byte) bool {
 	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -229,7 +229,13 @@ func endsWithSemicolon(b []byte) bool {
 		if l == "" || strings.HasPrefix(l, "--") {
 			continue
 		}
-		return strings.HasSuffix(l, ";")
+		if strings.HasSuffix(l, ";") {
+			return true
+		}
+		if j := strings.Index(l, "--"); j > 0 {
+			return strings.HasSuffix(strings.TrimSpace(l[:j]), ";")
+		}
+		return false
 	}
 	return false
 }
