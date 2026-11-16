@@ -236,14 +236,16 @@ async function cachedPlans(ctx: Ctx, row: Row, box: HTMLElement) {
     if (evictOff) {
       b.style.opacity = '.55';
       b.style.cursor = 'not-allowed';
-      return offControl(b, evictOff, evictNote) as HTMLButtonElement;
+      // the button stays, drawn off and named by the note (B3 offControl); offControl returns the note, not the button
+      offControl(b, evictOff, evictNote);
+      return b;
     }
     b.addEventListener('click', () => { void evictDialog(ctx, String(e.plan_handle), b, () => { void cachedPlans(ctx, row, box); }); });
     return b;
   };
   const act = (e: Row, label: string, batch: boolean, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${String(e.plan_handle)} at ${String(e.stmt_start)}` }, label) as HTMLButtonElement;
-    if (d.fetch_off) return offControl(b, d.fetch_off, fetchOffNote) as HTMLButtonElement;
+    if (d.fetch_off) { offControl(b, d.fetch_off, fetchOffNote); return b; }
     b.addEventListener('click', async () => {
       status.textContent = 'Reading the plan on demand ...';
       try {
@@ -464,7 +466,7 @@ async function planSources(ctx: Ctx, db: string, qh: string, ph: string, box: HT
   const btn = (label: string, r: Row, open: boolean) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: the ${String(r.source)} plan` }, label) as HTMLButtonElement;
     const off = r.source === 'plan cache' ? d.fetch_off : r.source === 'running' ? d.running_off : '';
-    if (off) return offControl(b, off, offNote);
+    if (off) { offControl(b, off, offNote); return b; }
     b.addEventListener('click', () => { void show(b, r, open); });
     return b;
   };
