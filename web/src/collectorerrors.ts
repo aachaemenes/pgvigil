@@ -188,7 +188,7 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'at', label: 'time', fmt: (v, r) => el('span', { class: r.acked ? 'muted' : '' }, fmtTime(v)) },
       ...(ctx.instance ? [] : [{ key: 'instance', fmt: (_v: unknown, r: Row) => nameLink(r) } as Col]),
       { key: 'collection', fmt: v => el('a', { href: to({ coll: String(v) }) }, String(v ?? '')) },
-      { key: 'type', fmt: v => badge(String(v ?? ''), v === 'Error' ? 'crit' : v === 'Warning' ? 'warn' : '') },
+      { key: 'type', fmt: v => badge(String(v ?? ''), v === 'Error' ? 'crit' : v === 'Warning' ? 'warn' : 'none') },
       { key: 'stage', fmt: v => el('a', { href: to({ stage: String(v) }) }, String(v ?? '')) },
       { key: 'note', wide: true, fmt: (v, r) => el('span', { class: r.acked ? 'muted' : '' }, String(v ?? ''), r.acked ? ' (acknowledged)' : '') },
       { key: 'link', label: 'handled on', fmt: v => v ? el('a', { href: href(ctx, { tab: String(v).replace('#/', ''), instance: undefined }) }, String(v).replace('#/', '')) : '' },

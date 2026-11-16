@@ -345,7 +345,9 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       });
       return lock(el('label', {}, cb, ' each minute'));
     } },
-    { key: 'aws', label: 'cloud', fmt: (_v, r) => cloudCell(r, cloudNotes[String(r.name)]) },
+    // X18: a configured cloud the door uses (no note) is OK; the 'not used' row carries its warning badge
+    { key: 'aws', label: 'cloud', fmt: (_v, r) => cloudCell(r, cloudNotes[String(r.name)]),
+      cls: (_v, r) => (asObj<CloudAWS>(r.aws) || asObj<CloudAzure>(r.azure)) && !cloudNotes[String(r.name)] ? 'status ok' : '' },
     { key: 'tested_ok', label: 'last test', fmt: (_v, r) => checks.lastTest(String(r.name)) },
     { key: 'last_collected', label: 'last collected', fmt: (_v, r) => checks.lastCollected(String(r.name)) },
     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? ''), cls: (v, r) => r.gone_source || v == null || v === '' ? '' : 'status ok' },
