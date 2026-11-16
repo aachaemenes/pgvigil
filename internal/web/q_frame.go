@@ -16,7 +16,8 @@ import (
 //       window (newest first, at most frameEventCap of each kind): 'setting' (a setting's value changed: PostgreSQL's
 //       instance_setting_history, SQL Server's mssql_config_history past its first read), 'restart' (the instance's
 //       start as its newest read names it: postmaster_start, SQL Server's started_at), 'failover' (an availability
-//       group's new primary, mssql_ag_failovers) and 'deadlock' (PostgreSQL's server log, SQL Server's deadlock
+//       group's new primary, mssql_ag_failovers), task 404's events (0155's instance_event_list: every 'restart',
+//       'failover', 'crash restart' and 'build' change seen between two reads) and 'deadlock' (PostgreSQL's server log, SQL Server's deadlock
 //       events); each with the tab of the page that holds its rows and of_kind, the window's count of its kind (above
 //       the cap the page says 'the newest 200 of n'). limits: the server limits a chart may draw as a line, by name
 //       (max_connections), as the newest read before the window's end holds them.
@@ -116,13 +117,29 @@ SELECT at, kind, label, tab, of_kind FROM (
       LEFT JOIN pgvigil.mssql_config_history p ON p.instance_id = h.instance_id AND p.name = h.name AND p.valid_to = h.valid_from
      WHERE h.instance_id = $1 AND NOT h.first_read AND h.valid_from > $2 AND h.valid_from <= $3
     UNION ALL
+    -- the newest start where no restart or failover of 0155 was seen since it (an instance first read after it started;
+    -- a failover onto a node up for days is dated at the read, its node's start is not marked again: 404 review A, 1 and 3;
+    -- 120 s below the start, as 0155's tolerance, so a clock step after a quick read does not mark it again: review B, 10)
     SELECT st.postmaster_start, 'restart', 'PostgreSQL started', 'summary'
       FROM pgvigil.instance_state st
      WHERE st.instance_id = $1 AND st.postmaster_start > $2 AND st.postmaster_start <= $3
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= st.postmaster_start - interval '120 seconds')
     UNION ALL
     SELECT m.started_at, 'restart', 'SQL Server started', 'summary'
       FROM pgvigil.mssql_instance m
      WHERE m.instance_id = $1 AND m.started_at > $2 AND m.started_at <= $3
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.instance_events e WHERE e.instance_id = $1 AND e.kind IN ('restart', 'failover') AND e.seen_at >= m.started_at - interval '120 seconds')
+    UNION ALL
+    -- task 404 (0155): each restart, failover, crash restart and build change seen between two reads
+    -- a PostgreSQL build is the Versions tab's (version_history); an availability group's failover is marked once, by
+    -- mssql_ag_failovers (its hadr read may come up to 15 minutes after the instance read that saw the new node)
+    SELECT e.at, e.kind, pgvigil.instance_event_words(e.kind, i.engine, e.old_value, e.new_value),
+           CASE WHEN e.kind = 'build' AND i.engine = 'postgres' THEN 'versions' ELSE 'summary' END
+      FROM pgvigil.instance_event_list e
+      JOIN pgvigil.instances i ON i.instance_id = e.instance_id
+     WHERE e.instance_id = $1 AND e.at > $2 AND e.at <= $3
+       AND NOT (e.kind = 'failover' AND EXISTS (SELECT 1 FROM pgvigil.mssql_ag_failovers f WHERE f.instance_id = $1
+                  AND f.at > coalesce(e.prev_at, e.seen_at - interval '1 hour') AND f.at <= e.seen_at + interval '15 minutes'))
     UNION ALL
     SELECT f.at, 'failover', f.group_name || ': ' || f.old_primary || ' -> ' || f.new_primary, 'availability'
       FROM pgvigil.mssql_ag_failovers f

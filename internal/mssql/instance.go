@@ -22,6 +22,8 @@ func (instanceCollector) Applies(Info) (bool, string)    { return true, "" }
 const serverSQL = `SELECT
   'server' AS kind,
   CAST(SERVERPROPERTY('MachineName') AS nvarchar(128)) AS machine_name,
+  -- task 404 (0155): the node the instance runs on; a failover cluster's MachineName is its virtual name on every node
+  CAST(SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS nvarchar(128)) AS physical_machine,
   CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS server_name,
   CAST(SERVERPROPERTY('InstanceName') AS nvarchar(128)) AS instance_name,
   CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition,
@@ -40,10 +42,15 @@ const configSQL = `SELECT 'config' AS kind, CAST(name AS nvarchar(128)) AS name,
   CAST(is_dynamic AS int) AS is_dynamic, CAST(is_advanced AS int) AS is_advanced
 FROM sys.configurations ORDER BY name`
 
-// the start time is the server's local clock in the DMV: moved to UTC by the server's own offset at the read
+// the start time: the server's UTC clock less the ticks since the start (sqlserver_start_time_ms_ticks, in seconds and
+// milliseconds so no DATEADD argument passes an int). The DMV's sqlserver_start_time is local: moved to UTC by today's
+// offset it was an hour off after every daylight-saving change, a false restart to 0155's events (task 404, F5).
 const sysinfoSQL = `SELECT 'sysinfo' AS kind, cpu_count, hyperthread_ratio, physical_memory_kb, committed_target_kb,
   max_workers_count, scheduler_count, CAST(virtual_machine_type_desc AS nvarchar(60)) AS virtual_machine_type,
-  CONVERT(varchar(33), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), sqlserver_start_time), 126) + 'Z' AS started_at_utc
+  CONVERT(varchar(33), DATEADD(MILLISECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) % 1000 AS int),
+    DATEADD(SECOND, -CAST((ms_ticks - sqlserver_start_time_ms_ticks) / 1000 AS int), SYSUTCDATETIME())), 126) + 'Z' AS started_at_utc,
+  -- task 404 (0155): the server's own clock at this read, the read 0155 compares the next start with
+  CONVERT(varchar(33), SYSUTCDATETIME(), 126) + 'Z' AS server_utc
 FROM sys.dm_os_sys_info`
 
 func (instanceCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {

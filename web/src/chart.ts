@@ -90,9 +90,10 @@ function chartWindow(xs: number[]): { from: number; to: number } {
   const to = Math.ceil(b / minute) * minute;
   return { from: Math.max(Math.floor(a / minute) * minute, to - MAX_RANGE_MS), to };
 }
-const markWords: Record<string, string> = { setting: 'Setting change', restart: 'Restart', failover: 'Failover', deadlock: 'Deadlock' };
-const markPlural: Record<string, string> = { setting: 'setting changes', restart: 'restarts', failover: 'failovers', deadlock: 'deadlocks' };
-const markColour = (kind: string) => { const p = seriesColors(); return ({ setting: p[3], restart: p[7], failover: p[6], deadlock: p[1] } as Record<string, string>)[kind] ?? neutralColor(); };
+// task 404 (0155): 'crash restart' and 'build' beside the restarts and failovers it now reads between two reads
+const markWords: Record<string, string> = { setting: 'Setting change', restart: 'Restart', failover: 'Failover', deadlock: 'Deadlock', 'crash restart': 'Crash restart', build: 'Build change' };
+const markPlural: Record<string, string> = { setting: 'setting changes', restart: 'restarts', failover: 'failovers', deadlock: 'deadlocks', 'crash restart': 'crash restarts', build: 'build changes' };
+const markColour = (kind: string) => { const p = seriesColors(); return ({ setting: p[3], restart: p[7], failover: p[6], deadlock: p[1], 'crash restart': p[4], build: p[5] } as Record<string, string>)[kind] ?? neutralColor(); };
 // a mark's link: its rows' page over ten minutes around it (a deadlock opens the log's deadlocks)
 function markHref(m: FrameMark): string {
   const ctx = parse();
