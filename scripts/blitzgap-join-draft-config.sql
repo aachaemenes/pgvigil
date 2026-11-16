@@ -470,31 +470,38 @@ SELECT b.rule, b.label, '', NULL, NULL, NULL, 'dbachecks policy',
        x.cc_at
   FROM x CROSS JOIN (VALUES ('Instance#75', 'SQL Server Browser state'), ('Instance#76', 'SQL Server Browser start mode')) b(rule, label)
 UNION ALL
--- line 3b of scripts/blitzgap-join-lines.sql: sp_Blitz 55 (BLITZ-GAP) - each user database's owner (0090's options, the
+-- line 3b of scripts/blitzgap-join-lines.sql: sp_Blitz 55 (BLITZ-GAP) - each database's owner (0090's options, the
 -- mssql_checks collection) against the expected owner: the original sa (sid 0x01, 0159's logins: a renamed sa keeps its
--- place) unless a scope names another, 'sa' while the logins are not read; 'off' (any case) turns it off; info, so no
--- finding row; an owner whose SID maps to no login is sp_Blitz 213's (the Checks tab); rdsadmin and gcloud_cloudsqladmin
--- are the cloud's (as dboptions.go's user()); no database read yet = one 'not read' row (review-24 S3, N1-N3)
+-- place) unless a scope names another, 'sa' while the logins are not read; master, model, msdb and tempdb against the
+-- original sa always, a scope's owner never (sp_Blitz 8.35 L3831); 'off' (any case) turns it off and exclusions leave a
+-- database out, system ones too; info, so no finding row; an owner whose SID maps to no login is sp_Blitz 213's (the
+-- Checks tab); rdsadmin and gcloud_cloudsqladmin are the cloud's (as dboptions.go's user()); none on Azure SQL Managed
+-- Instance (sp_Blitz 8.35 L870: sa is disabled there and the admin named at its creation); no database read yet = one
+-- 'not read' row (review-24 S3, N1-N3; FOLD-55)
 SELECT 'sp_Blitz 55', 'database owner', o.database_name, o.options ->> 'owner', CASE WHEN want.off THEN NULL ELSE want.v END,
-       coalesce(ex.set_at, 'default'), 'sp_Blitz',
+       CASE WHEN o.is_system AND NOT want.off THEN 'default' ELSE coalesce(ex.set_at, 'default') END, 'sp_Blitz',
        CASE WHEN want.off THEN 'off'
             WHEN o.options ->> 'owner' IS NULL THEN 'not applicable'
             WHEN lower(o.options ->> 'owner') = lower(want.v) THEN 'ok' ELSE 'info' END,
        CASE WHEN want.off THEN format('turned off (set at %s)', ex.set_at)
             WHEN o.options ->> 'owner' IS NULL THEN 'the owner''s SID maps to no login on this server (sp_Blitz 213 on the Checks tab)'
-            WHEN lower(o.options ->> 'owner') = lower(want.v) THEN format('owned by %s, as expected (%s)', want.v, coalesce('set at ' || ex.set_at, 'the default'))
-            ELSE format('the owner is %s; the expected owner is %s (%s)', o.options ->> 'owner', want.v, coalesce('set at ' || ex.set_at, 'the default')) END,
+            WHEN lower(o.options ->> 'owner') = lower(want.v) THEN format('owned by %s, as expected (%s)', want.v, want.why)
+            ELSE format('the owner is %s; the expected owner is %s (%s)', o.options ->> 'owner', want.v, want.why) END,
        o.snapshot_at
   FROM x
-  JOIN pgvigil.mssql_database_option o ON o.instance_id = x.instance_id AND o.is_present AND NOT o.is_system AND NOT o.is_snapshot
+  JOIN pgvigil.mssql_database_option o ON o.instance_id = x.instance_id AND o.is_present AND NOT o.is_snapshot
                                       AND lower(o.database_name) NOT IN ('rdsadmin', 'gcloud_cloudsqladmin')
   LEFT JOIN e ex ON ex.kind = 'database' AND ex.key = 'owner'
   CROSS JOIN LATERAL (SELECT lower(ex.value #>> '{}') = 'off' AS off,
-                             coalesce(CASE WHEN lower(ex.value #>> '{}') = 'off' THEN NULL ELSE ex.value #>> '{}' END,
-                                      (SELECT l.login_name FROM pgvigil.mssql_security_logins l
-                                        WHERE l.instance_id = x.instance_id AND l.is_original_sa AND l.is_present LIMIT 1), 'sa') AS v) want0
-  CROSS JOIN LATERAL (SELECT coalesce(want0.off, false) AS off, want0.v) want
- WHERE NOT pgvigil.mssql_cc_in(coalesce(ex.exclusions, '[]'::jsonb), o.database_name)
+                             (SELECT l.login_name FROM pgvigil.mssql_security_logins l
+                               WHERE l.instance_id = x.instance_id AND l.is_original_sa AND l.is_present LIMIT 1) AS sa0) want0
+  CROSS JOIN LATERAL (SELECT coalesce(want0.off, false) AS off,
+                             CASE WHEN o.is_system THEN coalesce(want0.sa0, 'sa')
+                                  ELSE coalesce(CASE WHEN want0.off THEN NULL ELSE ex.value #>> '{}' END, want0.sa0, 'sa') END AS v,
+                             CASE WHEN o.is_system THEN 'a system database: always the original sa'
+                                  ELSE coalesce('set at ' || ex.set_at, 'the default') END AS why) want
+ WHERE x.platform IS DISTINCT FROM 'azuresqlmi'
+   AND NOT pgvigil.mssql_cc_in(coalesce(ex.exclusions, '[]'::jsonb), o.database_name)
 UNION ALL
 SELECT 'sp_Blitz 55', 'database owner', '', NULL, NULL, coalesce(ex.set_at, 'default'), 'sp_Blitz',
        CASE WHEN lower(ex.value #>> '{}') = 'off' THEN 'off' ELSE 'not read' END,
@@ -502,5 +509,6 @@ SELECT 'sp_Blitz 55', 'database owner', '', NULL, NULL, coalesce(ex.set_at, 'def
        x.cc_at
   FROM x
   LEFT JOIN e ex ON ex.kind = 'database' AND ex.key = 'owner'
- WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_database_option o WHERE o.instance_id = x.instance_id AND o.is_present)
+ WHERE x.platform IS DISTINCT FROM 'azuresqlmi'
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_database_option o WHERE o.instance_id = x.instance_id AND o.is_present)
 $$;
