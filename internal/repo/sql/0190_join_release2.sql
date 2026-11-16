@@ -28,6 +28,7 @@
 --     (0150) beside 0139's. No line, on purpose: mssql_logship_foreign_logs and mssql_logship_errors (current rows of
 --     24 hours, replaced by each read), replication_hourly_dirty (working ranges a heal removes). The threshold
 --     keys' unit check and import_pg_threshold: at their lines below.
+--   HA join, 376 (0144): the pg_patroni_findings arm of the findings view (0144 L19-20 leaves it to this file).
 --   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
 --     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
 --     (backup_cluster_holders, new: the cluster keyed by its ARN, backup_state.arn; import_backups is 0022's with it),
@@ -155,6 +156,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 162 (0103): base backups, log shipping, crash restarts, the statement store, amcheck age
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_backups_findings
+    UNION ALL
+    -- task 376 (0144): Patroni - no leader, a member down, paused, a pending restart, the DCS not reached, the API
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_patroni_findings
     UNION ALL
     -- task 177 D02 (0114): an implicit transaction blocking, sessions in implicit transactions, a lead blocker's share
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_blocking', at FROM pgvigil.mssql_blocking_findings
