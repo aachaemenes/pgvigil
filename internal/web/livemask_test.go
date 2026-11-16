@@ -154,7 +154,9 @@ func TestMaskRunTimeOnABigReply(t *testing.T) {
 	if s, _ := run.Sets[0].Rows[0][2].(string); strings.Contains(s, lmPW) || strings.Contains(run.Sets[0].Rows[0][1].(string), lmPW) {
 		t.Fatalf("the big reply still holds the password")
 	}
-	if took > 5*time.Second {
-		t.Fatalf("maskRun took %s over a 24 MB reply: over the 5 s serve's write timeout leaves after a full run and its audit", took)
+	// 13 s: about twice mb01's median for this plan-XML reply (6.56 s over 5 runs, 6.42-8.39 s, on dba-lab-box at a
+	// 1-minute load of 16 to 21 on 16 CPUs, 2026-11-16); CQ-MASKBUDGET bounds it by its maskAllowance instead
+	if took > 13*time.Second {
+		t.Fatalf("maskRun took %s over a 24 MB reply: over 13 s, about twice mb01's median for this reply", took)
 	}
 }
