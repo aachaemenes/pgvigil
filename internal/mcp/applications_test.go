@@ -47,6 +47,7 @@ var toolCalls = []struct{ name, args string }{
 	{"statement_everywhere", `{"query_hash":"0x1A2B","hours":6}`},
 	{"find_statements", `{"text":"orders"}`},
 	{"find_statements", `{"text":"orders","instance":"Alpha"}`},
+	{"alert_history", `{"instance":"beta","hours":48}`}, // task 403b
 }
 
 func allTools(t *testing.T, h http.Handler) string {

@@ -21,6 +21,9 @@ type Doors struct {
 	// PageInstanceReads turns on Community tools and custom reports for the instances added in Admin > Instances.
 	// Off by default.
 	PageInstanceReads bool `yaml:"page_instance_reads"`
+	// SlackActions turns on the Slack door (task 403b K5): Acknowledge and Mute 1 h on a Slack bot's posts, POST
+	// /api/slack/actions outside the UI login, for the apps listed under slack_apps:. Off by default.
+	SlackActions bool `yaml:"slack_actions"`
 }
 
 // PageReadsOff is the refusal while the switch is off.

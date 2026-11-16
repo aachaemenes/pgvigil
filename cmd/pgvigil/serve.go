@@ -176,6 +176,20 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if why := srv.StoreReportsOff(ctx); why != "" {
 		log.Warn("custom reports on the store are off", "reason", why)
 	}
+	// task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default. serve reads only
+	// the door's part of the file and its apps' signing secrets (never the channels, whose tokens are not on serve);
+	// with the switch on, a fault there stops serve with its reason, and the door needs the UI login's users
+	door, derr := alerts.LoadSlackDoor(*path)
+	if derr != nil {
+		return derr
+	}
+	if door != nil {
+		if *noLogin {
+			return errors.New("doors.slack_actions needs the UI login (a click writes as the pgvigil user its Slack user maps to): serve without -no-login, or turn the door off")
+		}
+		web.SetSlackDoor(door)
+		log.Info("the Slack door is on", "path", alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
+	}
 	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
 		pc.Gates[in.Name] = actions.ExplainGate{Enabled: in.ExplainAnalyze, DSN: in.ExplainDSN(),

@@ -263,6 +263,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
 	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
 	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
+	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
+	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
 	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
 	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
 	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)
@@ -437,6 +439,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/session", s.sessionInfo)
+	// task 403b K5: the Slack door, outside the UI login (the signature is its authentication); 404 while it is off
+	mux.HandleFunc("POST /api/slack/actions", s.slackActions)
 	mux.Handle("/api/", s.requireLogin(withReadWindow(api)))
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {

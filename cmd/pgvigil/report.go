@@ -290,8 +290,10 @@ func osRelease() string {
 var keepKeys = map[string]bool{
 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
-	// doors: (the page door's switch, on or off)
-	"page_instance_reads": true,
+	// doors: (the page door's switch, on or off; task 403b K5: the Slack door's switch)
+	"page_instance_reads": true, "slack_actions": true,
+	// tasks 403a / B24k: a channel's digest hour, the Zabbix mode and plain opt-in, the Azure cloud
+	"digest_hour": true, "mode": true, "allow_plain": true, "cloud": true,
 	// alerts:
 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
 	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -327,6 +329,14 @@ var knownKeys = map[string]bool{
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
 	"warning": true, "critical": true,
 	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
+	// tasks 403a / 403b / B24k (alerts.Settings): a channel's digest and checks, Pushover, Zabbix, Azure Monitor, the
+	// Slack bot and the Slack door's apps (a token, a secret or an address under them is shown as its env: name only)
+	"digest_hour": true, "checks": true, "pushover": true, "token": true, "user": true, "device": true, "zabbix": true,
+	"mode": true, "server": true, "key": true, "tls_ca": true, "tls_cert": true, "tls_key": true, "tls_server_issuer": true,
+	"tls_server_subject": true, "allow_plain": true, "azuremonitor": true, "endpoint": true, "dcr_id": true, "stream": true,
+	"tenant": true, "client_id": true, "client_secret": true, "cloud": true, "login_url": true, "slack": true,
+	"bot_token": true, "api_url": true, "app_id": true, "slack_actions": true, "slack_apps": true,
+	"team_id": true, "enterprise_id": true, "signing_secret": true, "users": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another

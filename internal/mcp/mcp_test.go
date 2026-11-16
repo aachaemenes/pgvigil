@@ -131,8 +131,8 @@ func TestProtocol(t *testing.T) {
 		t.Errorf("an unknown version gets the newest: got %v", v)
 	}
 	list := got["3"]["result"].(map[string]any)["tools"].([]any)
-	if len(list) != 9 {
-		t.Errorf("tools = %d, want 9", len(list))
+	if len(list) != 10 { // task 403b: alert_history beside the nine
+		t.Errorf("tools = %d, want 10", len(list))
 	}
 	for _, x := range list {
 		a := x.(map[string]any)["annotations"].(map[string]any)

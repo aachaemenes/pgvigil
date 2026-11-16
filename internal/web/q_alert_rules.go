@@ -105,12 +105,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
 // where it does not: those are read only here, the file is their source.
 const sqlThresholdsInForce = `
 SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
-       e.database, e.rule_id, e.name AS rule_name, e.scope, coalesce(e.tag, e.instance_name) AS target, e.op,
+       e.database, e.rule_id, e.name AS rule_name, e.scope,
+       coalesce(e.tag, e.instance_name, pgvigil.alert_scope_text(e.scope_tags)) AS target, e.op,   -- task 403a: a tag list's words
        e.warning, e.critical, e.for_minutes, NULL::text AS value,
        (SELECT string_agg('rule ' || o.rule_id || ' (' || o.scope || coalesce(' ' || coalesce(o.tag, o.instance_name), '') || ')', ', '
                           ORDER BY o.level DESC, o.rule_id DESC)
           FROM pgvigil.alert_rule_scope o
          WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
+           AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
            AND o.rule_id <> e.rule_id) AS overrides,
        coalesce(t.tags, '{}'::text[]) AS tags
   FROM pgvigil.alert_rules_effective e
