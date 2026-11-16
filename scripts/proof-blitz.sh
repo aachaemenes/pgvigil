@@ -132,9 +132,11 @@ sq() {
   o=$(docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1" 2>&1) || { printf 'sqlcmd failed: %s\n' "$o" >&2; return 1; }
   [ -z "$o" ] || printf '%s\n' "$o"
 }
-# as <login> <password> <sql>: the call as that login (-y 0: whole values; -y and -W do not go together)
+# as <login> <password> <sql>: the call as that login (-y 0: whole values; sqlcmd refuses -y 0 beside -W and beside -h,
+# so the column header and its dashes line stay and the readers below skip them: b20-t2red's B0 read only 'The -h and
+# the -y 0 options are mutually exclusive')
 # (the password through the client's environment by name: never in a process's arguments)
-as() { SQLCMDPASSWORD="$2" docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -I -y 0 -h -1 -U "$1" -d master -Q "SET NOCOUNT ON; $3" 2>&1; }
+as() { SQLCMDPASSWORD="$2" docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -I -y 0 -U "$1" -d master -Q "SET NOCOUNT ON; $3" 2>&1; }
 # sqin: a batch as sa from stdin (a statement holding a password never goes into sqlcmd's arguments)
 sqin() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -d master -i /dev/stdin > "$WORK/sqin.log" 2>&1 || { cat "$WORK/sqin.log" >&2; return 1; }; }
 for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
@@ -162,7 +164,7 @@ blitzRSV() { as "$1" "$2" "$CALL, @OutputType = 'RSV';" | tr -d '\r' | grep -aE 
 # a count between two COUNTs: n equals the one read before or the one read after
 between() { [[ $1 =~ ^[0-9]+$ && ( $1 == "$2" || $1 == "$3" ) ]]; }
 B0N=$(blitzCount "$L1" "$P1"); B0R=$(blitzRSV "$L1" "$P1" | wc -l); B0M=$(blitzCount "$L1" "$P1")
-[[ $B0N =~ ^[0-9]+$ && $B0N -gt 0 ]] && between "$B0R" "$B0N" "$B0M" || die "B0: as $L1 COUNT '$B0N' / '$B0M' and RSV $B0R rows disagree (the proof's parse)"
+[[ $B0N =~ ^[0-9]+$ && $B0N -gt 0 ]] && between "$B0R" "$B0N" "$B0M" || die "B0: as $L1 COUNT '$B0N' / '$B0M' and RSV $B0R rows disagree (the proof's parse); the COUNT reply: $(as "$L1" "$P1" "$CALL, @OutputType = 'COUNT';" | tr -d '\r' | grep -av '^[[:space:]]*$' | head -4 | tr '\n' ' ' | cut -c1-300)"
 echo "B0: OK (as the monitoring login sp_Blitz counts $B0N findings, RSV prints $B0R rows)"
 
 echo "--- S. the store"
