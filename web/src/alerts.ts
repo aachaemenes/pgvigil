@@ -517,6 +517,9 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
 // door: a demo serve's dialog - insts are the door's instances, and 'any instance' is not offered (the first one is picked)
 interface MuteDialog { kind: 'mute' | 'noise'; insts: Row[]; door?: boolean; rule?: Row; after: () => void }
 
+// CLOCK_MARGIN_MS: how far short of the server's 7-day ceiling the dialogs keep an end (ack.ts): a browser clock up to
+// 10 minutes ahead of the server's still saves
+const CLOCK_MARGIN_MS = 600e3;
 const untilHours: [string, number][] = [['no expiry', 0], ['1 hour after the start', 1], ['4 hours after the start', 4], ['1 day after the start', 24], ['7 days after the start', 168], ['a time ...', -1]];
 
 // muteDialog: a new mute rule or known pattern, or the edit of one (its successor: the server ends the old rule in the
@@ -568,7 +571,8 @@ function muteDialog(o: MuteDialog) {
     const h = Number(untilSel.value);
     if (h === 0) return null;
     if (h < 0) return fromInput(untilAt.value);
-    return new Date(startAt().getTime() + h * 3600e3);
+    // the 7-day choice ends 10 minutes short of 168 h (review-21 S1): the server measures the ceiling by its own clock
+    return new Date(startAt().getTime() + h * 3600e3 - (h >= 168 ? CLOCK_MARGIN_MS : 0));
   };
   const invalid = (): string => {
     if (!check.value.trim() && !tag.value.trim() && !match.value.trim() && !inst.value && r?.finding_key == null) return 'a check, an instance, a tag or a text (a rule matching every alert is refused)';
@@ -579,7 +583,7 @@ function muteDialog(o: MuteDialog) {
     // one alert (a rule that names its finding) is one scope; an end more than 7 days after the start is open-ended
     // (the lead 13:3x; q_ack.go openEnded)
     if (wideWhy && ((inst.value === '' && r?.finding_key == null) || tag.value.trim() || !u
-      || u.getTime() - Math.max(Date.now(), startAt().getTime()) > 7 * 86400e3)) return `one instance, no tag and an end within 7 days (${wideWhy})`;
+      || u.getTime() - Math.max(Date.now(), startAt().getTime()) > 7 * 86400e3 - CLOCK_MARGIN_MS)) return `one instance, no tag and an end within 7 days (${wideWhy})`;
     if (u && (isNaN(u.getTime()) || u.getTime() <= Math.max(Date.now(), startAt().getTime()))) return 'an end after the start and after now';
     return '';
   };
