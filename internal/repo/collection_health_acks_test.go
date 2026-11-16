@@ -25,7 +25,7 @@ import (
 func TestCollectionHealthHonoursAcksOnAFreshStore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	r := haJoinFreshStore(t, ctx)
+	r := haJoinFreshStore(ctx, t)
 	inst := func(tag string) (int, string) {
 		t.Helper()
 		name := fmt.Sprintf("chack%s-%d", tag, time.Now().UnixNano()%1_000_000)

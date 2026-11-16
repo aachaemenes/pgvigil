@@ -45,7 +45,7 @@ func f9Store(t *testing.T) (context.Context, pgx.Tx, string, int64) {
 }
 
 // f9Instance adds an instance whose load rows (minutes back, opened) name host as its target.
-func f9Instance(t *testing.T, ctx context.Context, tx pgx.Tx, col, name, host string, loads map[int]int) int {
+func f9Instance(ctx context.Context, t *testing.T, tx pgx.Tx, col, name, host string, loads map[int]int) int {
 	t.Helper()
 	var id int
 	if err := tx.QueryRow(ctx, `INSERT INTO pgvigil.instances (name, platform) VALUES ($1, 'self-managed') RETURNING instance_id`, name).Scan(&id); err != nil {
@@ -61,7 +61,7 @@ func f9Instance(t *testing.T, ctx context.Context, tx pgx.Tx, col, name, host st
 }
 
 // f9Probe adds a per-minute probe row of host at addr, minutes back, answered (0 or 1) in ms.
-func f9Probe(t *testing.T, ctx context.Context, tx pgx.Tx, col, host, addr string, minute, answered, ms int) {
+func f9Probe(ctx context.Context, t *testing.T, tx pgx.Tx, col, host, addr string, minute, answered, ms int) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_probe (minute, collector_id, host, address, method, sent, answered, ms_sum, ms_max, scheduled)
 		VALUES (date_trunc('minute', now()) - make_interval(mins => $1), $2, $3, $4, 'tcp', 1, $5, $6::bigint, $6::int, true)`, minute, col, host, addr, answered, ms); err != nil {
@@ -70,7 +70,7 @@ func f9Probe(t *testing.T, ctx context.Context, tx pgx.Tx, col, host, addr strin
 }
 
 // f9Judged reads the judged view's ping slow | not answering for an instance ('not listed' when absent).
-func f9Judged(t *testing.T, ctx context.Context, tx pgx.Tx, col string, id int) string {
+func f9Judged(ctx context.Context, t *testing.T, tx pgx.Tx, col string, id int) string {
 	t.Helper()
 	var v string
 	if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT j.ping_slow::text || '|' || j.not_answering::text FROM pgvigil.collector_probe_judged j
@@ -86,14 +86,14 @@ func f9Judged(t *testing.T, ctx context.Context, tx pgx.Tx, col string, id int) 
 func TestProbeJudgedNewestAddressOnAStore(t *testing.T) {
 	ctx, tx, col, sfx := f9Store(t)
 	host := fmt.Sprintf("moved-%d", sfx)
-	id := f9Instance(t, ctx, tx, col, "f9-moved-"+fmt.Sprint(sfx), host, map[int]int{1: 1, 2: 1, 3: 1})
+	id := f9Instance(ctx, t, tx, col, "f9-moved-"+fmt.Sprint(sfx), host, map[int]int{1: 1, 2: 1, 3: 1})
 	for m := 8; m <= 12; m++ {
-		f9Probe(t, ctx, tx, col, host, "10.7.0.1:5432", m, 1, 30)
+		f9Probe(ctx, t, tx, col, host, "10.7.0.1:5432", m, 1, 30)
 	}
 	for m := 1; m <= 5; m++ {
-		f9Probe(t, ctx, tx, col, host, "10.7.0.2:5432", m, 1, 30)
+		f9Probe(ctx, t, tx, col, host, "10.7.0.2:5432", m, 1, 30)
 	}
-	if got := f9Judged(t, ctx, tx, col, id); got != "true|false" {
+	if got := f9Judged(ctx, t, tx, col, id); got != "true|false" {
 		t.Errorf("a host whose address moved: ping slow | not answering = %q, want 'true|false' (its newest address speaks)", got)
 	}
 }
@@ -105,16 +105,16 @@ func TestProbeJudgedNewestAddressOnAStore(t *testing.T) {
 func TestProbeOpenedPerHostOnAStore(t *testing.T) {
 	ctx, tx, col, sfx := f9Store(t)
 	shared, early := fmt.Sprintf("shared-%d", sfx), fmt.Sprintf("early-%d", sfx)
-	slow := f9Instance(t, ctx, tx, col, "f9-slow-"+fmt.Sprint(sfx), shared, map[int]int{4: 1, 9: 1})
-	fast := f9Instance(t, ctx, tx, col, "f9-fast-"+fmt.Sprint(sfx), shared, map[int]int{1: 1, 2: 1, 3: 1, 4: 1})
-	before := f9Instance(t, ctx, tx, col, "f9-early-"+fmt.Sprint(sfx), early, map[int]int{5: 1, 6: 0, 7: 0})
+	slow := f9Instance(ctx, t, tx, col, "f9-slow-"+fmt.Sprint(sfx), shared, map[int]int{4: 1, 9: 1})
+	fast := f9Instance(ctx, t, tx, col, "f9-fast-"+fmt.Sprint(sfx), shared, map[int]int{1: 1, 2: 1, 3: 1, 4: 1})
+	before := f9Instance(ctx, t, tx, col, "f9-early-"+fmt.Sprint(sfx), early, map[int]int{5: 1, 6: 0, 7: 0})
 	for _, h := range [][2]string{{shared, "10.7.1.1:5432"}, {early, "10.7.1.2:5432"}} {
 		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_probe_host (collector_id, host, address, first_probed, last_answered, last_method)
 			VALUES ($1, $2, $3, now() - interval '1 hour', now() - interval '30 minutes', 'tcp')`, col, h[0], h[1]); err != nil {
 			t.Fatal(err)
 		}
 		for m := 1; m <= 3; m++ {
-			f9Probe(t, ctx, tx, col, h[0], h[1], m, 0, 0)
+			f9Probe(ctx, t, tx, col, h[0], h[1], m, 0, 0)
 		}
 	}
 	for name, c := range map[string]struct {
@@ -122,7 +122,7 @@ func TestProbeOpenedPerHostOnAStore(t *testing.T) {
 		want string
 	}{"the 5-minute instance on a host answering a connection": {slow, "false|false"}, "the host's instance that opened": {fast, "false|false"},
 		"a connection opened before the silence": {before, "false|true"}} {
-		if got := f9Judged(t, ctx, tx, col, c.id); got != c.want {
+		if got := f9Judged(ctx, t, tx, col, c.id); got != c.want {
 			t.Errorf("%s: ping slow | not answering = %q, want %q", name, got, c.want)
 		}
 	}
@@ -140,7 +140,7 @@ func TestProbeFormingHostsOnAStore(t *testing.T) {
 			var want []string
 			for k := 1; k <= crossing+2; k++ {
 				host := fmt.Sprintf("fh%d-%d-%d", k, crossing, sfx)
-				f9Instance(t, ctx, tx, col, "f9-"+host, host, map[int]int{1: 1, 2: 1, 3: 1})
+				f9Instance(ctx, t, tx, col, "f9-"+host, host, map[int]int{1: 1, 2: 1, 3: 1})
 				kind := map[bool]string{true: "cross", false: ""}[k <= crossing]
 				if k == crossing+1 {
 					kind = "both"
@@ -155,7 +155,7 @@ func TestProbeFormingHostsOnAStore(t *testing.T) {
 					case kind == "both":
 						ms = 30
 					}
-					f9Probe(t, ctx, tx, col, host, fmt.Sprintf("10.7.2.%d:5432", k), m, 1, ms)
+					f9Probe(ctx, t, tx, col, host, fmt.Sprintf("10.7.2.%d:5432", k), m, 1, ms)
 				}
 				if kind == "cross" && crossing >= 3 {
 					want = append(want, host)
