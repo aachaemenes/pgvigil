@@ -74,6 +74,7 @@ type installOptions struct {
 	Config  string // the config file
 	User    string // the service account (Linux: a system user; Windows: fixed to the virtual account)
 	NoStart bool   // write everything, start nothing
+	Remote  bool   // install: the remote collector's service (R14: its own names, the outbox and the state folder)
 	Purge   bool   // uninstall: remove the config folder and the binary too
 
 	Upgrade      bool   // install: upgrade the installed collector (stop, dump, migrate, swap, start)
@@ -102,6 +103,7 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	if name == "install" {
 		fs.BoolVar(&o.NoStart, "no-start", false, "install and enable, but do not start the service")
 		fs.BoolVar(&o.Upgrade, "upgrade", false, "upgrade the installed collector: stop, dump, migrate, swap, start (docs/upgrade.md)")
+		fs.BoolVar(&o.Remote, "remote", false, "install the remote collector's service (no repository; its outbox and state folder from the config's remote: block; docs/remote-collector.md)")
 	} else {
 		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
@@ -148,6 +150,17 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	if o.set["owner-dsn-file"] && o.set["owner-dsn-env"] {
 		return o, errors.New("-owner-dsn-file and -owner-dsn-env both name the owner's connection string: give one")
 	}
+	if o.Remote {
+		if o.Upgrade {
+			return o, errors.New("-remote does not go with -upgrade: a remote collector has no repository to migrate (install -remote again over the new binary)")
+		}
+		if !o.set["config"] {
+			o.Config = remoteConfigDefault()
+		}
+		if !o.set["user"] {
+			o.User = remoteAccountDefault()
+		}
+	}
 	if o.User == "" {
 		return o, errors.New("-user must name an account")
 	}
@@ -161,6 +174,9 @@ func runInstall(log *slog.Logger, args []string) error {
 	}
 	if o.Upgrade {
 		return runUpgrade(log, o)
+	}
+	if o.Remote {
+		return installRemoteService(log, o)
 	}
 	_, _, err = installService(log, o)
 	return err

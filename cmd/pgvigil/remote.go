@@ -70,6 +70,43 @@ func checkRemoteFolders(outbox, stateDir string) error {
 	return nil
 }
 
+// remoteConfigTemplate is the remote collector's first config (the installer writes it when there is none): no
+// repository, a remote: block whose site and collector the site fills in, no instance yet - the service is enabled and
+// waits until they are filled in (remoteReady).
+func remoteConfigTemplate(outbox, stateDir string) string {
+	return fmt.Sprintf(`# pgvigil remote collector: writes interval bundles of its instances for a pgvigil hub (docs/remote-collector.md).
+# No repository here: fill in remote.site and remote.collector (the hub's remote_sites: names them) and list the instances.
+remote:
+  site: ""          # this site's name on the hub: a-z 0-9 _ . - (up to 63)
+  collector: ""     # this box's name within the site
+  interval: 5m      # how long a bundle covers (1m to 60m)
+  outbox: %q
+  state_dir: %q
+  keep_days: 7      # a bundle is kept this long after it was pushed (or written, without a push)
+  max_mb: 2048      # the outbox's cap: past it the oldest bundle goes first, logged ERROR
+  sign: false       # true: each manifest signed with this box's key (pgvigil remote init)
+query_text: hash    # hash (a statement's fingerprint) or none: no statement text leaves this box
+instances: []
+`, outbox, stateDir)
+}
+
+// remoteReady says whether a remote collector's config can run: it loads, has its remote: block with a site and a
+// collector, and lists an instance.
+func remoteReady(path string) (bool, string) {
+	cfg, err := config.Load(path)
+	switch {
+	case err != nil:
+		return false, err.Error()
+	case cfg.Remote == nil:
+		return false, path + " has no remote: block"
+	case cfg.Remote.Site == "" || cfg.Remote.Collector == "":
+		return false, "remote.site and remote.collector are not set yet in " + path
+	case len(cfg.Instances) == 0:
+		return false, "no instance is listed yet in " + path
+	}
+	return true, ""
+}
+
 func sweepOutbox(outbox string, keepDays, maxMB int, now time.Time) int {
 	aged, capped := remote.SweepOutbox(outbox, keepDays, maxMB, now)
 	return aged + capped
