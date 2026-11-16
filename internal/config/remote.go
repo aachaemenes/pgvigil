@@ -140,6 +140,10 @@ func (c *Config) validateRemote() error {
 		if err := checkDestination("remote.push", *r.Push); err != nil {
 			return err
 		}
+		// the hub reads a container drop only under its prefix (a folder of its own): the push names the same folder
+		if strings.Trim(r.Push.Prefix, "/") == "" {
+			return fmt.Errorf("remote.push: a prefix: is needed - the folder of the container the bundles land in, the same as the hub's drop (at the container's root they would mix with anything else kept there)")
+		}
 	}
 	if c.QueryText == "" {
 		c.QueryText = "hash"
