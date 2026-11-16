@@ -14,7 +14,8 @@
 # never printed), the repository database pgvigil_bz_<n>, a serve on a free loopback port, a headless Chromium.
 #
 # Expected (written before the first run; job B's numbers, design lines 37 / 58 / 62 / 66):
-#  B0 (the setup, on any tree): the kit installs; as the monitoring login L1 (VIEW SERVER STATE, VIEW ANY DEFINITION,
+#  B0 (the setup, on any tree): the kit installs; an empty database with AUTO_CLOSE on (sp_Blitz 12, a rule the Checks
+#     tab judges too); as the monitoring login L1 (VIEW SERVER STATE, VIEW ANY DEFINITION,
 #     CONNECT ANY DATABASE, EXECUTE on master.dbo.sp_Blitz only) sp_Blitz @OutputType = 'COUNT' answers a number n
 #     over 0 and @OutputType = 'RSV' prints n rows; a mismatch is the proof's own parse and stops it.
 #  S  migrate holds the B20-2 store: pgvigil.mssql_blitz_site (one row, off), mssql_blitz_setting, mssql_blitz_run,
@@ -49,8 +50,8 @@
 #     newest successful run and its findings (13 rows: the newest 12 plus it).
 #  K  GET /api/mssql/blitz?instance=N: the parts state, last, runs, shown, findings, judged; 'shown' is the newest
 #     successful run with the newest run's outcome beside it ('timed out' after J); its findings = the stored rows;
-#     judged holds 12, 13, 14 and 1001 (rules the Checks tab judges) and a finding is judged exactly when its CheckID is
-#     in that list; the state 'not due' (the timed-out run is this week's).
+#     judged holds 12, 13, 14 and 1001 (rules the Checks tab judges), a finding is judged exactly when its CheckID is
+#     in that list, and CheckID 12 (the seeded AUTO_CLOSE) is among the judged findings; the state 'not due' (the timed-out run is this week's).
 #  M  import_mssql_blitz refuses a PostgreSQL instance; the same payload twice stores one run.
 #  P  the page (admin): #/findings?i=N has the section 'sp_Blitz weekly'; one folding group per FindingsGroup of the
 #     shown run plus All, each summary naming its group and count; every http(s) URL cell a link; a judged CheckID a
@@ -130,6 +131,8 @@ GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1]; GRANT CONN
 GRANT VIEW SERVER STATE TO [$L3]; GRANT VIEW ANY DEFINITION TO [$L3]; GRANT CONNECT ANY DATABASE TO [$L3];
 CREATE USER [$L1] FOR LOGIN [$L1]; CREATE USER [$L2] FOR LOGIN [$L2]; GRANT EXECUTE ON dbo.sp_Blitz TO [$L1]; GRANT EXECUTE ON dbo.sp_Blitz TO [$L2];
 CREATE DATABASE [$DBE];" >/dev/null || die "B0: the logins"
+# a finding the Checks tab judges too (sp_Blitz 12, AUTO_CLOSE on a user database): K and P read its mark
+sq "ALTER DATABASE [$DBE] SET AUTO_CLOSE ON;" >/dev/null || die "B0: AUTO_CLOSE on $DBE"
 CALL="EXEC dbo.sp_Blitz @CheckServerInfo = 1, @CheckUserDatabaseObjects = 0"
 blitzCount() { as "$1" "$2" "$CALL, @OutputType = 'COUNT';" | grep -E '^[[:space:]]*[0-9]+[[:space:]]*$' | tail -1 | tr -d ' \r'; }
 # RSV: one line per finding, CHAR(31) between Priority, CheckID, FindingsGroup, Finding, DatabaseName, URL, Details (a
@@ -304,7 +307,7 @@ def objs(p): t = d[p]; return [dict(zip(t['columns'], r)) for r in t['rows']]
 parts = ','.join(sorted(d.keys()))
 sh = objs('shown'); f = objs('findings'); j = [x['check_id'] for x in objs('judged')]
 okj = all(bool(x['judged']) == (x['check_id'] in j) for x in f)
-print(parts, len(sh) == 1 and sh[0]['run_id'] == r2, sh[0]['newest_outcome'] if sh else None, len(f), all(k in j for k in (12, 13, 14, 1001)), okj, objs('state')[0]['state'])
+print(parts, len(sh) == 1 and sh[0]['run_id'] == r2, sh[0]['newest_outcome'] if sh else None, len(f), all(k in j for k in (12, 13, 14, 1001)), okj and any(x['check_id'] == 12 and x['judged'] for x in f), objs('state')[0]['state'])
 PY
 ) || kv="unreadable: $(head -c 300 "$WORK/k.json")"
 [[ $kv == "findings,judged,last,runs,shown,state True timed out $R2N True True not due" ]] \
@@ -350,7 +353,7 @@ for (let i = 0; i < 60 && !out; i++) {
     const groups = [...sec.querySelectorAll('details.blitz-group')].map(d => ({ group: d.dataset.group, summary: d.querySelector('summary')?.textContent.trim() ?? '' }));
     const all = sec.querySelector('details.blitz-group[data-group="All"]');
     const links = all ? [...all.querySelectorAll('td a')].map(a => a.getAttribute('href') ?? '') : [];
-    const urlCells = all ? [...all.querySelectorAll('td[data-key="url"]')].map(td => ({ text: td.textContent.trim(), a: !!td.querySelector('a') })) : [];
+    const urlCells = all ? [...all.querySelectorAll('.blitz-url')].map(x => ({ text: x.textContent.trim(), a: x.tagName === 'A' })) : [];
     const judged = all ? [...all.querySelectorAll('a.blitz-judged')].map(a => a.getAttribute('href') ?? '') : [];
     const dbs = [...(sec.querySelector('select.blitz-db')?.options ?? [])].map(o => o.value);
     const save = sec.querySelector('button.blitz-save');
@@ -383,7 +386,7 @@ if 'All' in got and n not in got['All']: bad.append('All says %r (want %s)' % (g
 for u in a['urlCells']:
     if u['text'].startswith(('http://', 'https://')) and not u['a']: bad.append('url not a link: ' + u['text'][:80])
 if not a['judged'] or not all(('mssqlchecks' in h and ('i=' + inst) in h) for h in a['judged']): bad.append('judged links %s' % a['judged'][:3])
-if [d for d in a['dbs'] if d] != dbs: bad.append('database filter %s want %s' % (a['dbs'][:6], dbs[:6]))
+if sorted(d for d in a['dbs'] if d) != sorted(dbs): bad.append('database filter %s want %s' % (a['dbs'][:6], dbs[:6]))
 if not v: bad.append('viewer: no section')
 elif v['saveOff'] != 'true' or 'changing the weekly sp_Blitz needs the admin role' not in v['text']: bad.append('viewer Save %s, words %s' % (v['saveOff'], 'changing the weekly sp_Blitz needs the admin role' in v['text']))
 print('ok %d groups + All, %d url cells, %d judged links, %d databases' % (len(want), len(a['urlCells']), len(a['judged']), len(dbs)) if not bad else 'BAD ' + '; '.join(bad))
