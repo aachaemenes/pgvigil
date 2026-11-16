@@ -362,13 +362,21 @@ tm() { local s e; s=$(date +%s%N); pq "$1" >/dev/null || fail "B6: $2"; e=$(date
 T1=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); T2=$(date -u -d '-1 hours' +%Y-%m-%dT%H:%M:%SZ)
 pq "SELECT pgvigil.import_mssql_indexes($IBIG, '$T1', ($(big_sql "$IBIG" "$T1" 0)))" >/dev/null || fail "B6: the first big batch"
 pq "SELECT pgvigil.import_mssql_indexes_0092($IBIG2, '$T1', ($(big_sql "$IBIG2" "$T1" 0)))" >/dev/null || fail "B6: the first big batch (0092)"
-[[ "$HAS164" == t ]] && { pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T1', ($(big_sql "$IBIG3" "$T1" 0)))" >/dev/null || fail "B6: the first big batch (0164)"; }
 MSW=$(tm "SELECT pgvigil.import_mssql_indexes($IBIG, '$T2', ($(big_sql "$IBIG" "$T2" 1)))" "the wrapper")
 MSO=$(tm "SELECT pgvigil.import_mssql_indexes_0092($IBIG2, '$T2', ($(big_sql "$IBIG2" "$T2" 1)))" "0092's import")
-MS164="no import_mssql_indexes_0164 on this tree"
-[[ "$HAS164" == t ]] && MS164="$(tm "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T2', ($(big_sql "$IBIG3" "$T2" 1)))" "0164's layer") ms"
 BPR=$(pq "SELECT round(avg(pg_column_size(u.*))) FROM pgvigil.mssql_index_usage_read u WHERE u.instance_id = $IBIG AND u.snapshot_at = '$T2'")
 NB=$(pq "SELECT count(*) FROM pgvigil.mssql_index_usage_read u WHERE u.instance_id = $IBIG AND u.snapshot_at = '$T2'")
+# the diagnostic third figure, after the graded figures and their reads (their conditions stay the first run's), never
+# graded: a failure of its own prints in its line and stops nothing (set -e does not reach an if's condition)
+MS164="no import_mssql_indexes_0164 on this tree"
+if [[ "$HAS164" == t ]]; then
+  if pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T1', ($(big_sql "$IBIG3" "$T1" 0)))" >/dev/null 2>&1; then
+    s164=$(date +%s%N)
+    if pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T2', ($(big_sql "$IBIG3" "$T2" 1)))" >/dev/null 2>&1; then
+      MS164="$(( ($(date +%s%N) - s164) / 1000000 )) ms"
+    else MS164="its timed batch failed"; fi
+  else MS164="its first batch failed"; fi
+fi
 echo "MEASURE B6: a 20,000-index batch: the wrapper $MSW ms ($NB history rows), 0092's import alone $MSO ms; $BPR bytes per usage row (pg_column_size, mean)"
 echo "DIAG B6: the same batch through import_mssql_indexes_0164 alone (0164's layer over 0092's; the wrapper adds 0169's): $MS164 (printed, not graded)"
 [[ "$NB" == 20000 && $MSW -lt $(( 3 * MSO + 500 )) ]] || fail "B6: $NB history rows, the wrapper $MSW ms against $MSO ms"

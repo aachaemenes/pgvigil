@@ -120,6 +120,7 @@ export function investigateCol(list: InvList, offNote?: HTMLElement | null): Col
   }
   return {
     key: 'investigate', label: 'agent',
+    cls: (_v, row) => latest.has(findingKey(row.instance_id, row.source, row.setting, row.value)) ? '' : 'status none',   // X18: a cell with an investigation keeps its badge's class; the button alone = N/A
     fmt: (_v, row) => {
       const r = latest.get(findingKey(row.instance_id, row.source, row.setting, row.value));
       if (r && live(r.state)) return invLink(r.id, stateBadge(r));
