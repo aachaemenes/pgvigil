@@ -34,6 +34,13 @@ SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
   FROM pgvigil.pg_backups_checks c JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND c.check_group = '` + g + `'`})
 	}
+	// task 376 (0144): Patroni's checks - no leader, a member down, paused, a pending restart, the DCS not reached, the
+	// REST API not answering - on the instance that judges the cluster (pg_patroni_clusters); the Summary's Replication
+	// column
+	overviewChecks = append(overviewChecks, struct{ name, sql string }{"patroni", `
+SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
+  FROM pgvigil.pg_patroni_checks c JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active`})
 }
 
 // sqlPgThresholdsFor is the value in force for each key an instance takes (a database level is the amcheck part's).
@@ -137,10 +144,28 @@ const sqlPgAmcheckAge = `
 SELECT datname, last_ok_at, age_days, last_run_at, last_status, amcheck_runs_any, warn_days, crit_days, threshold_level
   FROM pgvigil.pg_amcheck_age WHERE instance_id = $1 ORDER BY age_days DESC NULLS FIRST, datname`
 
+// sqlPgPatroniOf: the instance's Patroni read and its members - those listed now, and those down (gone from the
+// cluster or not running) seen in the last 7 days (0144).
 const sqlPgPatroniOf = `
-SELECT m.member, m.scope, m.role, m.state, m.host, m.port, m.timeline, m.lag_bytes, m.lag_text, m.api_url, m.snapshot_at, p.url, p.ok, p.message
-  FROM pgvigil.pg_patroni_read p LEFT JOIN pgvigil.pg_patroni_members m ON m.instance_id = p.instance_id AND m.is_present
- WHERE p.instance_id = $1 ORDER BY m.member`
+SELECT m.member, m.scope, m.role, m.state, m.host, m.port, m.timeline, m.lag_bytes, m.lag_text, m.api_url, m.snapshot_at, m.is_present,
+       m.pending_restart, m.pending_restart_reason, m.pending_restart_since, m.dcs_last_seen,
+       round(extract(epoch FROM m.snapshot_at - m.dcs_last_seen))::bigint AS dcs_age_s, m.failsafe_active, m.paused AS member_paused,
+       m.api_ok, m.api_message, m.version, m.down_since, m.down_reason,
+       p.url, p.ok, p.message, p.configured, p.cluster_ok, p.paused, p.paused_since, p.leader, p.no_leader_since, p.last_ok_at, p.snapshot_at AS read_at
+  FROM pgvigil.pg_patroni_read p
+  LEFT JOIN pgvigil.pg_patroni_members m ON m.instance_id = p.instance_id
+        AND (m.is_present OR (m.down_since IS NOT NULL AND m.snapshot_at > now() - interval '7 days'))
+ WHERE p.instance_id = $1 ORDER BY m.is_present DESC, m.member`
+
+// sqlPgPatroniChecksFor: the Patroni checks of the instance's cluster, wherever the cluster is judged.
+const sqlPgPatroniChecksFor = `
+SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
+  FROM pgvigil.pg_patroni_checks c
+ WHERE c.instance_id = $1
+    OR c.instance_id IN (SELECT k.instance_id FROM pgvigil.pg_patroni_clusters k
+                           JOIN pgvigil.pg_patroni_read p ON p.instance_id = $1 AND coalesce(k.scope, '') = coalesce(p.scope, '')
+                                                         AND coalesce(k.system_identifier, '') = coalesce(p.system_identifier, ''))
+ ORDER BY CASE c.severity WHEN 'critical' THEN 0 ELSE 1 END, c.check_name, c.object`
 
 // PgState is one instance's server state (the Server state tab).
 func (s *Server) PgState(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +183,7 @@ func (s *Server) PgState(w http.ResponseWriter, r *http.Request) {
 		{"uptime", sqlPgUptime, []any{id}},
 		{"amcheck", sqlPgAmcheckAge, []any{id}},
 		{"patroni", sqlPgPatroniOf, []any{id}},
+		{"patroni_checks", sqlPgPatroniChecksFor, []any{id}},
 		{"checks", sqlPgChecksFor, []any{id, []string{"crashes", "statement store", "uptime", "amcheck age"}}},
 		{"thresholds", sqlPgThresholdsFor, []any{id, []string{"uptime", "crash", "amcheck_age"}}},
 	})
@@ -171,10 +197,16 @@ SELECT system_identifier, cluster, instance_id, instance, role, timeline_id, rol
  ORDER BY system_identifier NULLS LAST, role, instance`
 
 const sqlPgPatroniFleet = `
-SELECT p.instance_id, i.name AS instance, p.url, p.ok, p.message, p.scope, p.members, p.snapshot_at,
+SELECT p.instance_id, i.name AS instance, p.url, p.ok, p.message, p.scope, p.members, p.snapshot_at, p.configured, p.cluster_ok, p.paused,
+       p.paused_since, p.leader, p.no_leader_since,
+       EXISTS (SELECT 1 FROM pgvigil.pg_patroni_clusters k WHERE k.instance_id = p.instance_id) AS judges,
        (SELECT json_agg(json_build_object('member', m.member, 'role', m.role, 'state', m.state, 'host', m.host, 'port', m.port, 'timeline', m.timeline,
-                                          'lag_bytes', m.lag_bytes, 'lag_text', m.lag_text) ORDER BY m.member)
-          FROM pgvigil.pg_patroni_members m WHERE m.instance_id = p.instance_id AND m.is_present) AS member_list
+                                          'lag_bytes', m.lag_bytes, 'lag_text', m.lag_text, 'is_present', m.is_present, 'down_since', m.down_since,
+                                          'down_reason', m.down_reason, 'pending_restart', m.pending_restart, 'pending_restart_reason', m.pending_restart_reason,
+                                          'dcs_age_s', round(extract(epoch FROM m.snapshot_at - m.dcs_last_seen))::bigint, 'failsafe_active', m.failsafe_active,
+                                          'api_ok', m.api_ok, 'version', m.version) ORDER BY m.is_present DESC, m.member)
+          FROM pgvigil.pg_patroni_members m WHERE m.instance_id = p.instance_id
+           AND (m.is_present OR (m.down_since IS NOT NULL AND m.snapshot_at > now() - interval '7 days'))) AS member_list
   FROM pgvigil.pg_patroni_read p JOIN pgvigil.instances i ON i.instance_id = p.instance_id AND i.is_active
  ORDER BY p.scope NULLS LAST, i.name`
 
