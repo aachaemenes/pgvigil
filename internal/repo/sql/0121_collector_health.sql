@@ -103,10 +103,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
 -- an instance's rows in time order (collector_server_down_at: the row before a spell, rows between two minutes)
 CREATE INDEX IF NOT EXISTS collector_load_instance ON pgvigil.collector_load (instance_id, minute);
 
--- the trim mark of each minute-led table the beats trim (collector_load, collector_runs; collector_probe in 0254): every
--- row before trimmed_to is gone. A beat trims from the first row at or after the mark - never 'minute < now() - 8
--- days' over the whole key, whose estimate counts every row deleted since the last analyze as still there (BJf8L: on
--- statistics 10 hours old, collector_load's trim read its 6.2 GB by a Seq Scan, 3.2 s a beat at 2,124 instances)
+-- the trim mark of each minute-led table the beats trim (collector_load, collector_runs; collector_probe in 0254): the
+-- trims have reached every row before trimmed_to. A beat trims from the mark - never 'minute < now() - 8 days' over
+-- the whole key, whose estimate counts every row deleted since the last analyze as still there (BJf8L: on statistics
+-- 10 hours old, collector_load's trim read its 6.2 GB by a Seq Scan, 3.2 s a beat at 2,124 instances). A row is
+-- written once per table (collector_trim, at the table's first trim)
 CREATE TABLE IF NOT EXISTS pgvigil.collector_trim_mark (
   tbl         text PRIMARY KEY,
   trimmed_to  timestamptz NOT NULL
@@ -258,11 +259,16 @@ $$;
 
 -- collector_trim: one beat's trim of a minute-led table past 8 days, by its mark (collector_trim_mark). The first row
 -- at or after the mark is read on the key (an empty stretch - a store whose collectors stopped - is passed in one read,
--- and the dead entries below the mark are never walked); from it, an hour at most, never past now() - 8 days, is
--- deleted, planned with its two bounds each time (EXECUTE), so the estimate is that hour at most; the mark moves to the
--- hour's end in the same transaction (a beat that fails after it leaves the rows and the mark as they were). No mark
--- yet (the first beat after the upgrade): from the table's first row, an hour a beat. A beat that finds the mark taken
--- by another beat's trim of the same table skips its own (that beat trims). Returns the rows deleted.
+-- and the executor never walks the dead entries below the mark); from the mark to 10 minutes past that row at most,
+-- never past now() - 8 days, is deleted, planned with its bounds each time (EXECUTE), so the estimate is those minutes
+-- at most (the review of TRIMMARK #6: 10 minutes, not an hour - a backlog's step must end inside the beat's 30 s at
+-- many collectors; a 13-hour backlog is 78 beats); the mark moves to the step's end in the same transaction (a beat
+-- that fails after it leaves the rows and the mark as they were). No mark yet - '-infinity', or no row (the first trim
+-- of the table): from its first row, 10 minutes a beat. A beat that finds the mark held by another beat's trim -
+-- locked or already moved, not committed - skips its own without waiting (that beat trims): the plain read sees the
+-- committed row (the review #4: an INSERT ... ON CONFLICT here waited on a moved mark). Returns the rows deleted.
+-- On a server older than 16 the planner's own read of the key's low end (get_actual_variable_range) may still walk the
+-- dead entries once per plan (the review #7: not measured; the box runs 18, which caps that read).
 CREATE OR REPLACE FUNCTION pgvigil.collector_trim(p_tbl text)
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
@@ -275,17 +281,27 @@ BEGIN
   IF p_tbl IS NULL OR p_tbl NOT IN ('collector_load', 'collector_runs', 'collector_probe') THEN
     RAISE EXCEPTION 'collector_trim: % is not a minute-led table the beats trim', p_tbl;
   END IF;
-  INSERT INTO pgvigil.collector_trim_mark (tbl, trimmed_to) VALUES (p_tbl, '-infinity') ON CONFLICT (tbl) DO NOTHING;
   SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
   IF NOT FOUND THEN
-    RETURN 0;
+    IF EXISTS (SELECT 1 FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl) THEN
+      RETURN 0;
+    END IF;
+    INSERT INTO pgvigil.collector_trim_mark (tbl, trimmed_to) VALUES (p_tbl, '-infinity') ON CONFLICT (tbl) DO NOTHING;
+    SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
+    IF NOT FOUND THEN
+      RETURN 0;
+    END IF;
   END IF;
   EXECUTE format('SELECT min(minute) FROM pgvigil.%I WHERE minute >= $1', p_tbl) INTO v_lo USING v_mark;
   IF v_lo IS NULL OR v_lo >= v_cut THEN
     RETURN 0;
   END IF;
-  v_hi := least(v_cut, v_lo + interval '1 hour');
-  EXECUTE format('DELETE FROM pgvigil.%I WHERE minute >= $1 AND minute < $2', p_tbl) USING v_lo, v_hi;
+  v_hi := least(v_cut, v_lo + interval '10 minutes');
+  -- from the mark itself when it is a time (the review #5: a row committed between the read and the delete with a
+  -- minute between the mark and v_lo is not left below the new mark); from v_lo at '-infinity' (the first trim: the
+  -- whole key's low end would bring back the estimate the mark is for)
+  EXECUTE format('DELETE FROM pgvigil.%I WHERE minute >= $1 AND minute < $2', p_tbl)
+    USING CASE WHEN isfinite(v_mark) THEN v_mark ELSE v_lo END, v_hi;
   GET DIAGNOSTICS v_n = ROW_COUNT;
   UPDATE pgvigil.collector_trim_mark SET trimmed_to = v_hi WHERE tbl = p_tbl;
   RETURN v_n;

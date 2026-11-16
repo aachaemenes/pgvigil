@@ -15,7 +15,10 @@ import (
 //   - an address a connection opened to (the beat's 'opened') is the host's last answer, probed or not (part a #1, the
 //     lead's 12:4x (a): 'never answered' never stands for a server a connection reached);
 //   - a probe row keeps its mode ('scheduled': a round of probe_every_minute, part b #7);
-//   - a probe row older than 8 days goes at the next import (part b #9: no purge() until the join);
+//   - a probe row older than 8 days goes at the next import (part b #9: no purge() until the join) - the trim reads from
+//     the table's mark (TRIMMARK), so the transaction first clears the probe rows older than 7 days and sets the mark to
+//     '-infinity' (a store with a committed mark would otherwise leave a row planted below it: the review of TRIMMARK
+//     #3; no import writes one there);
 //   - collector_target_host files a SQL Server named instance under its box ('mssql:sql01\a:0' -> 'sql01', part b #6) and
 //     a bare IPv6 literal without its port (part a #4's SQL half).
 func TestProbeImportFoldOnAStore(t *testing.T) {
@@ -37,6 +40,13 @@ func TestProbeImportFoldOnAStore(t *testing.T) {
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	col := fmt.Sprintf("pf-%d", time.Now().UnixNano()%1000000000)
 	now := time.Now().UTC().Truncate(time.Minute)
+	if _, err := tx.Exec(ctx, `DELETE FROM pgvigil.collector_probe WHERE minute < now() - interval '7 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `DO $m$ BEGIN IF to_regclass('pgvigil.collector_trim_mark') IS NOT NULL THEN
+	    UPDATE pgvigil.collector_trim_mark SET trimmed_to = '-infinity' WHERE tbl = 'collector_probe'; END IF; END $m$`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_probe (minute, collector_id, host, address, method, sent, answered, ms_sum, ms_max)
 	                           VALUES ($1, $2, 'old', '10.9.9.7:5432', 'tcp', 1, 1, 2, 2)`, now.Add(-9*24*time.Hour), col); err != nil {
 		t.Fatalf("the old probe row: %v", err)

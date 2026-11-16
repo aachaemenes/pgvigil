@@ -92,9 +92,16 @@ BEGIN
      SET first_probed = least(h.first_probed, EXCLUDED.first_probed),
          last_answered = greatest(h.last_answered, EXCLUDED.last_answered), host = EXCLUDED.host;
   -- the probe rows are kept 8 days, trimmed here (the review of B24h-1 part b #9: until the join's purge() line, a
-  -- store under probe_every_minute grew without end) by the table's mark (0121's collector_trim: an hour at most a
-  -- beat from the first row at or after the mark; TRIMMARK, the lead's 11-15 17:4x (a))
-  PERFORM pgvigil.collector_trim('collector_probe');
+  -- store under probe_every_minute grew without end) by the table's mark (0121's collector_trim: 10 minutes at most a
+  -- beat from the mark; TRIMMARK, the lead's 11-15 17:4x (a)). A store whose 0121 was applied before the mark existed
+  -- (first migrated by an untagged build: migrate skips the edited 0121, and such a store is made fresh - the lead's
+  -- B6F4 #1 rule) has no collector_trim: the old whole-key trim, so the import never fails there on a missing function
+  -- (the review of TRIMMARK #2: heartbeat.go reads that 42883 as 'no 0254' and stops sending the probes)
+  IF to_regprocedure('pgvigil.collector_trim(text)') IS NOT NULL THEN
+    PERFORM pgvigil.collector_trim('collector_probe');
+  ELSE
+    DELETE FROM pgvigil.collector_probe WHERE minute < now() - interval '8 days';
+  END IF;
 END
 $$;
 
