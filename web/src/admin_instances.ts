@@ -10,6 +10,7 @@ import { Ctx } from './router';
 import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
 import { moveSection } from './migrate';
+import { instanceChecks } from './admin_checks';
 
 // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
 // described by that sentence (its id), so the reason is words on the page for each of them
@@ -32,6 +33,7 @@ interface AdminData {
   // B24p: whether this install uses page instances' cloud blocks (doors.page_cloud_blocks), its words when off, and
   // each row whose block the collector will not use, with why
   cloud_blocks?: { on: boolean; off_words: string; notes: Record<string, string> };
+  checks?: Table | null; // ST1 (Check all): admin_checks.ts
 }
 
 // B24p: a row's cloud blocks as the store keeps them (0193)
@@ -100,6 +102,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     notRun.replaceChildren(el('details', { open: '' }, el('summary', {}, `Will not run here: ${rows.length} of ${String(b.collections)} collections`),
       ...(b.list_note ? [el('p', { class: 'meta' }, String(b.list_note))] : []), rows.length ? list : el('p', { class: 'meta' }, 'Every collection runs here.')));
   };
+  // ST1 and ST2: Check all, the last test and last collected cells of both tables, the Rights read (admin_checks.ts)
+  const checks = instanceChecks({ send, say, draw: () => draw(), lock: c => lock(c), why });
 
   let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
   async function draw(): Promise<void> {
@@ -115,6 +119,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     const page = pageAll.filter(inFolder), file = fileAll.filter(inFolder), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
     whyNot = d.writable ? '' : String(d.why_not ?? '');
     cloudNotes = d.cloud_blocks?.notes ?? {};
+    checks.set(d);
     root.replaceChildren(
       el('h2', {}, 'Instances' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
@@ -127,6 +132,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       d.writable ? '' : el('p', { class: 'meta', role: 'note', id: READ_ONLY_ID }, `Read only: ${d.why_not}.`),
       status, notRun,
       instanceForm(d),
+      checks.control(page, file),
       el('h3', {}, 'Instances added here'),
       // task 406: what the running plans box collects, in words, beside the grid that holds it (only where a SQL Server
       // instance was added here: a PostgreSQL-only list names no SQL Server collection)
@@ -137,7 +143,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       grid(page, pageCols, 'No instance was added here yet.'),
       el('h3', {}, 'Instances from pgvigil.yaml'),
       el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
-      grid(file, [{ key: 'name' }, { key: 'engine' }, { key: 'platform' }, { key: 'tags', wide: true }, { key: 'source' }], 'pgvigil.yaml lists no instance.'),
+      grid(file, checks.fileCols(), 'pgvigil.yaml lists no instance.'),
+      checks.rightsBox,
       el('h3', {}, 'Sync sources'),
       el('p', { class: 'meta' }, 'A source never adds or removes an instance by itself: its new servers are proposed below, a server gone from it is marked gone.'),
       grid(sources, sourceCols, 'No sync source yet.'),
@@ -317,8 +324,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       return lock(el('label', {}, cb, ' each minute'));
     } },
     { key: 'aws', label: 'cloud', fmt: (_v, r) => cloudCell(r, cloudNotes[String(r.name)]) },
-    { key: 'tested_ok', label: 'last test', fmt: (v, r) => r.tested_at == null ? 'not tested' : `${v ? 'connected' : 'failed'} ${fmtTime(r.tested_at)}` },
-    { key: 'last_collected', label: 'last collected', fmt: fmtTime },
+    { key: 'tested_ok', label: 'last test', fmt: (_v, r) => checks.lastTest(String(r.name)) },
+    { key: 'last_collected', label: 'last collected', fmt: (_v, r) => checks.lastCollected(String(r.name)) },
     { key: 'source', fmt: (v, r) => r.gone_source ? el('span', {}, String(v ?? ''), ' ', badge(`gone from ${String(r.gone_source)} since ${fmtTime(r.gone_since)}`, 'warn')) : String(v ?? ''), cls: (v, r) => r.gone_source || v == null || v === '' ? '' : 'status ok' },
     { key: 'actions', fmt: (_v, r) => {
       const n = String(r.name);
@@ -333,7 +340,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.disabled ? 'Enable' : 'Disable'} ${n}` }, r.disabled ? 'Enable' : 'Disable');
       toggle.addEventListener('click', () => { void act('admin/instances', { op: r.disabled ? 'enable' : 'disable', name: n }, r.disabled ? `${n} enabled: collected again within 15 seconds.` : `${n} disabled: its collections stop within 15 seconds.`); });
       const rm = removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); });
-      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm));
+      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm, ' ', checks.rightsButton(n)));
     } },
   ];
 

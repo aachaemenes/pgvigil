@@ -266,6 +266,11 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		}
 		out[p.k] = t
 	}
+	// ST1 (Check all): every instance's last test, last collection and failing collection (q_instances_checks.go)
+	if err := s.instanceChecks(ctx, a, out); err != nil {
+		s.reply(w, r, nil, fmt.Errorf("checks: %w", err))
+		return
+	}
 	var gen int64
 	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
 		s.reply(w, r, nil, err)
@@ -595,7 +600,17 @@ func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user str
 	ctx := r.Context()
 	op, name := str(in, "op"), str(in, "name")
 	pay := map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "name": name, "file_names": a.fileNames()}
+	if op == "rights" {
+		// ST2: which of the rights pgvigil needs the instance's monitoring login holds, and the script of the
+		// missing ones, printed (q_instances_rights.go)
+		s.instanceRights(w, r, user, in)
+		return
+	}
 	if op == "test" {
+		// ST1 (Check all): an instance of pgvigil.yaml is tested as the file's own dsn (q_instances_checks.go)
+		if s.fileInstanceTest(w, r, user, in) {
+			return
+		}
 		s.instanceTest(w, r, user, in)
 		return
 	}
