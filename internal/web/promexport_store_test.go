@@ -216,21 +216,39 @@ func TestPromExportOnAStore(t *testing.T) {
 	}
 	body := render(MetricsConfig{})
 	lab := func(n string) string { return `{server="` + n + `",engine="sqlserver"` }
-	missing := []string{}
-	for _, p := range promNames {
-		f := strings.SplitN(p.key, ".", 2)[0]
-		switch f {
-		case "counters", "xe", "waits":
-			if !strings.Contains(body, "\n"+p.name+lab(a)+"} ") {
-				missing = append(missing, p.name)
+	// the exported names from the store's catalog by the name rule (never from promNames itself, so the row reads the
+	// table it checks): 51 keys, the collection's under each of the three collections
+	crows, err := pool.Query(ctx, `SELECT family, metric, unit FROM pgvigil.metric_catalog
+	                                WHERE family IN ('counters', 'xe', 'waits', 'collection') AND key <> 'counters.percent_log_used' ORDER BY 1, 2`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing, nkeys := []string{}, 0
+	for crows.Next() {
+		var f, m, u string
+		if err := crows.Scan(&f, &m, &u); err != nil {
+			t.Fatal(err)
+		}
+		nkeys++
+		name, frozen := promRuleExceptions[f+"."+m]
+		if !frozen {
+			name = promRuleName(f, m, u)
+		}
+		if f != "collection" {
+			if !strings.Contains(body, "\n"+name+lab(a)+"} ") {
+				missing = append(missing, name)
 			}
-		case "collection":
-			for _, coll := range []string{"activity", "databases", "jobs"} {
-				if !strings.Contains(body, "\n"+p.name+lab(a)+`,collection="`+coll+`"} `) {
-					missing = append(missing, p.name+"/"+coll)
-				}
+			continue
+		}
+		for _, coll := range []string{"activity", "databases", "jobs"} {
+			if !strings.Contains(body, "\n"+name+lab(a)+`,collection="`+coll+`"} `) {
+				missing = append(missing, name+"/"+coll)
 			}
 		}
+	}
+	crows.Close()
+	if nkeys != 51 {
+		t.Errorf("the store's catalog: %d keys of the four families but percent_log_used, want 51", nkeys)
 	}
 	if len(missing) > 0 {
 		t.Errorf("pex-a: no sample of %d exported names: %s\n%s", len(missing), strings.Join(missing, ", "), grepLines(body, a))
