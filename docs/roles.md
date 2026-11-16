@@ -129,6 +129,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/alertrules/end` | admin | end an alert rule |
 | `POST /api/drives/thresholds` | admin | a drive threshold |
 | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
+| `POST /api/mssql/blitz/settings` | admin | the weekly sp_Blitz: the site default (on or off, the day, the hour, the zone, the timeout) and an instance's switch and sp_Blitz database |
 | `POST /api/jobs/thresholds` | admin | a job threshold |
 | `POST /api/jobs/exclusions` | admin | a job exclusion |
 | `POST /api/customreports` | admin | a custom report or folder (SQL run against servers, a view others share) |
