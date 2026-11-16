@@ -713,6 +713,10 @@ if want SV; then
   sv_claim=$(q "SELECT coalesce(max(regexp_replace(pgvigil.collector_claim(detail), ' from [0-9-]+ [0-9:]+ UTC\$', ' from <t>')), '-') FROM pgvigil.collector_findings WHERE setting = 'collector or network'")
   sv_why=$(q "SELECT coalesce(string_agg(why, ','), '-') FROM pgvigil.collector_parent")
   sv_held=$(q "SELECT coalesce(string_agg(i.name, ' ' ORDER BY i.name), '-') FROM pgvigil.collector_held_instances h JOIN pgvigil.instances i USING (instance_id)")
+  # the store's state while the parent should stand, printed with a red SV (j15k's red left none behind): t16-t18's
+  # written minutes (attempts / opened / no answer), their spells, the servers not answering
+  sv_state="rows $(q "SELECT coalesce(string_agg(format('%s %s a%s o%s n%s', i.name, to_char(l.minute, 'HH24:MI'), l.attempts, l.opened, l.noanswer), '; ' ORDER BY i.name, l.minute), '-') FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name IN ('t16','t17','t18') AND l.minute > now() - interval '9 minutes'")"
+  sv_state="$sv_state | spells $(q "SELECT coalesce(string_agg(format('%s %s %s-%s%s', i.name, s.kind, to_char(s.since, 'HH24:MI'), to_char(s.last, 'HH24:MI'), CASE WHEN s.ended_at IS NULL THEN '' ELSE ' ended' END), '; ' ORDER BY i.name, s.kind, s.since), '-') FROM pgvigil.collector_spells s JOIN pgvigil.instances i USING (instance_id) WHERE i.name IN ('t16','t17','t18') AND s.last > now() - interval '15 minutes'") | down $(q "SELECT coalesce(string_agg(format('%s %s %s', target, to_char(since, 'HH24:MI'), cardinality(instances)), '; '), '-') FROM pgvigil.collector_server_down")"
   sleep 130   # two alert passes: nothing more of t16-t18 may go out while the parent stands
   sv_n=$(cnt "$WORK/spool" firing "$PAR" ""); sv_su=$(cnt "$WORK/spool" firing "server unreachable|collection failing" "t16|t17|t18")
   docker start "$TGT2" >/dev/null; waitfor 480 "$NOPARENT" || true
@@ -724,7 +728,7 @@ if want SV; then
   if [[ "$sv_ok" == 1 && "$sv_tp" -ge 0 && "$sv_n" == 1 && "$sv_claim" == "server postgres:target2:5432 not answering from <t>" && "$sv_why" == "server not answering" && "$sv_held" == "t16 t17 t18" && "$sv_su" == 0 && "$sv_r" == 1 && "$sv_after" == 0 ]]; then
     ok "SV: target2 (t16-t18) stopped - 'collector or network' $sv_tp s after, once on U, claiming '$sv_claim'; held $sv_held, none of their own alerts; t1-t12 not held; started again: resolved once, none of their own alerts after it"
   else
-    fail "SV: t16-t18 read through target2 first $sv_ok (want 1); parent $sv_tp s after the stop (want 0-300), sent $sv_n (want 1), claim '$sv_claim' (want 'server postgres:target2:5432 not answering from <t>'), why '$sv_why', held '$sv_held' (want 't16 t17 t18'), their own alerts $sv_su (want 0), resolved $sv_r (want 1), their own alerts after the resolve $sv_after (want 0): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500)"
+    fail "SV: t16-t18 read through target2 first $sv_ok (want 1); parent $sv_tp s after the stop (want 0-300), sent $sv_n (want 1), claim '$sv_claim' (want 'server postgres:target2:5432 not answering from <t>'), why '$sv_why', held '$sv_held' (want 't16 t17 t18'), their own alerts $sv_su (want 0), resolved $sv_r (want 1), their own alerts after the resolve $sv_after (want 0): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-500) | the state at the parent's wait: $sv_state"
   fi
   docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc12.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
 fi

@@ -24,6 +24,8 @@ import (
 //   - 'stop at the minute's edge' (the control): the three down from M alike - one row on both.
 //   - 'a fourth answers' (the guard): a fourth instance on the target, never down, answers at M+1 - no row on both (an
 //     answer from an instance not in the down set at or after the anchor is the server answering).
+//   - 'a member answers after the anchor' (the guard): one member down at M, answered at M+1, down again from M+2 - no
+//     row on both (only the anchor minute's answers of the down set are ambiguous: an answer after it is the server's).
 func TestServerDownStopMinuteOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -33,11 +35,13 @@ func TestServerDownStopMinuteOnAStore(t *testing.T) {
 		name    string
 		mixedM  bool // one member answered 1 of 6 at M (before the stop)
 		fourth  bool // a fourth instance on the target answers at every minute
+		flap    bool // the second member answers at M+1
 		wantRow bool
 	}{
-		{"stop inside the minute", true, false, true},
-		{"stop at the minute's edge", false, false, true},
-		{"a fourth answers", true, true, false},
+		{"stop inside the minute", true, false, false, true},
+		{"stop at the minute's edge", false, false, false, true},
+		{"a fourth answers", true, true, false, false},
+		{"a member answers after the anchor", false, false, true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -78,6 +82,8 @@ func TestServerDownStopMinuteOnAStore(t *testing.T) {
 					return 6, 0
 				case off == 0 && i == 1 && c.mixedM:
 					return 1, 5 // answered before the stop
+				case off == 1 && i == 1 && c.flap:
+					return 6, 0 // answered after the anchor
 				default:
 					return 0, 6
 				}

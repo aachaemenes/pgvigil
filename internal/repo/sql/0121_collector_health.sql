@@ -508,7 +508,10 @@ SELECT c.host, c.s0 AS since, c.began, c.ran, c.members,
 --     anchor and that start: an instance read every 5 or 60 minutes could not fail earlier); the ANCHOR (since) = the
 --     earliest new down spell's start that gives a quorum.
 --   no instance on the target ANSWERED a connect (attempts > noanswer) at or after the anchor (a row before the outage,
---     or one with no connect, is no evidence).
+--     or one with no connect, is no evidence; nor a down member's own row OF the anchor minute: the stop can fall
+--     inside that minute, after the member's last answer - SV in j15k: target2 stopped at :02, one member answered
+--     before it and its spell began a minute later; a minute's row cannot tell the answer's side of the stop. An
+--     answer after the anchor minute, or any instance's outside the down set, is the server answering).
 --   instances = every down instance on the target: a standing or never-answered member is held with them, never counted.
 CREATE OR REPLACE FUNCTION pgvigil.collector_server_down_at(p_host text, p_minute timestamptz)
 RETURNS TABLE (target text, since timestamptz, instances int[]) LANGUAGE sql STABLE AS $$
@@ -549,7 +552,8 @@ RETURNS TABLE (target text, since timestamptz, instances int[]) LANGUAGE sql STA
   SELECT p.target, p.s0, ARRAY(SELECT d.instance_id FROM dn d WHERE d.target = p.target ORDER BY 1)
     FROM pick p
    WHERE NOT EXISTS (SELECT 1 FROM tgt t JOIN rws r ON r.instance_id = t.instance_id
-                      WHERE t.target = p.target AND r.target = p.target AND r.minute >= p.s0 AND r.attempts > r.noanswer)
+                      WHERE t.target = p.target AND r.target = p.target AND r.minute >= p.s0 AND r.attempts > r.noanswer
+                        AND NOT (r.minute = p.s0 AND EXISTS (SELECT 1 FROM dn m WHERE m.target = p.target AND m.instance_id = r.instance_id)))
 $$;
 
 -- collector_server_down: the servers not answering now - collector_server_down_at of each collector's (host's) newest
