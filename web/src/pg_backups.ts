@@ -150,6 +150,27 @@ const backupCols: Col[] = [
 
 const checkCols: Col[] = [{ key: 'severity', fmt: sev }, { key: 'check_name', label: 'check' }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime }];
 
+// Patroni (task 376, 0144): the read's line, a member's columns and its one-line form on the fleet page. A member that
+// is down (gone from the cluster, or listed in a state that does not serve) stays listed for 7 days, marked down.
+function patroniLine(p: Row): string {
+  if (p.ok !== true) return `${String(p.url)}: ${String(p.message ?? 'no answer')}`;
+  const parts = [`${String(p.url)}${p.configured === true ? ' (the patroni: block)' : ''}`, `leader ${p.leader == null ? 'none' : String(p.leader)}`];
+  if (p.paused === true) parts.push(`paused since ${fmtTime(p.paused_since)}`);
+  if (p.cluster_ok === false) parts.push(`${String(p.message ?? '/cluster failed')}: this member's own state only`);
+  return parts.join(', ');
+}
+const patroniDown = (r: Row) => r.down_since != null ? badge(`down: ${String(r.down_reason ?? '')}`, 'crit') : '';
+const patroniMemberCols: Col[] = [{ key: 'member' }, { key: 'role' }, { key: 'state', fmt: (v, r) => r.down_since != null ? patroniDown(r) : String(v ?? '') },
+  { key: 'host' }, { key: 'port', num: true }, { key: 'timeline', num: true },
+  { key: 'lag_bytes', label: 'lag', num: true, fmt: (v, r) => v == null ? String(r.lag_text ?? '') : fmtBytes(v) },
+  { key: 'pending_restart', label: 'pending restart', fmt: (v, r) => v === true ? badge(String(r.pending_restart_reason ?? 'yes'), 'warn') : '' },
+  { key: 'dcs_age_s', label: 'DCS last seen', num: true, fmt: (v, r) => v == null ? '' : `${fmtSecs(v)} before the read${r.failsafe_active === true ? ' (failsafe mode holds the leader)' : ''}` },
+  { key: 'api_ok', label: 'own API', fmt: (v, r) => v == null ? '' : v === true ? String(r.version ?? 'ok') : badge(String(r.api_message ?? 'no answer'), 'warn') },
+  { key: 'snapshot_at', label: 'seen', fmt: fmtTime }];
+const patroniMemberText = (m: Row): string => [String(m.member), String(m.role ?? ''), m.down_since != null ? `DOWN (${String(m.down_reason ?? '')})` : String(m.state ?? ''),
+  m.lag_bytes != null ? `lag ${fmtBytes(m.lag_bytes)}` : '', m.pending_restart === true ? 'pending restart' : '',
+  m.dcs_age_s != null && Number(m.dcs_age_s) > 60 ? `DCS ${fmtSecs(m.dcs_age_s)} ago` : '', m.failsafe_active === true ? 'failsafe' : ''].filter(x => x).join(' ');
+
 export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
   const id = ctx.instance!;
   const box = el('div');
@@ -235,7 +256,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
   const box = el('div');
   const draw = async () => {
     const [d, ad, f] = await Promise.all([
-      get<Parts<'role' | 'changes' | 'crashes' | 'crash_state' | 'stmt' | 'uptime' | 'amcheck' | 'patroni' | 'checks' | 'thresholds'>>('pg/state', { instance: id }),
+      get<Parts<'role' | 'changes' | 'crashes' | 'crash_state' | 'stmt' | 'uptime' | 'amcheck' | 'patroni' | 'patroni_checks' | 'checks' | 'thresholds'>>('pg/state', { instance: id }),
       loadAckSafe(['acks']), fleet()]);
     const name = String(f.instances.find(r => Number(r.instance_id) === id)?.name ?? id);
     const role = rowsOf(d.role)[0], cs = rowsOf(d.crash_state)[0], st = rowsOf(d.stmt)[0], up = rowsOf(d.uptime)[0];
@@ -256,10 +277,10 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     out.push(el('section', {}, el('h3', {}, `Role changes (${ch.length})`), grid(ch, changeCols(ctx, false), 'No role change seen since pgvigil first read the server.')));
     const pat = rowsOf(d.patroni).filter(r => r.member != null);
     if (rowsOf(d.patroni).length) {
-      const p0 = rowsOf(d.patroni)[0];
-      out.push(el('section', {}, el('h3', {}, 'Patroni'), el('p', { class: 'meta' }, p0.ok ? `${String(p0.url)}: scope ${String(pat[0]?.scope ?? '')}` : `${String(p0.url)}: ${String(p0.message ?? 'no answer')}`),
-        grid(pat, [{ key: 'member' }, { key: 'role' }, { key: 'state' }, { key: 'host' }, { key: 'port', num: true }, { key: 'timeline', num: true },
-          { key: 'lag_bytes', label: 'lag', num: true, fmt: (v, r) => v == null ? String(r.lag_text ?? '') : fmtBytes(v) }], 'No member listed.')));
+      const p0 = rowsOf(d.patroni)[0], pchk = rowsOf(d.patroni_checks);
+      out.push(el('section', {}, el('h3', {}, 'Patroni'), el('p', { class: 'meta' }, patroniLine(p0)),
+        pchk.length ? grid(pchk, checkCols) : null,
+        grid(pat, patroniMemberCols, 'No member listed.')));
     }
     // crashes
     const crashes = rowsOf(d.crashes);
@@ -388,7 +409,10 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   }
   if (pat.length) out.push(el('section', {}, el('h3', {}, 'Patroni'),
     grid(pat, [{ key: 'scope' }, { key: 'instance', label: 'read through', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgstate') }, { key: 'ok', label: 'answered', fmt: v => yes(v) },
-      { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => `${String(m.member)} ${String(m.role)} ${String(m.state)}${m.lag_bytes != null ? ` lag ${fmtBytes(m.lag_bytes)}` : ''}`).join('; ') : '' },
+      { key: 'leader', fmt: (v, r) => r.ok !== true ? '' : v == null ? badge('none', 'crit') : String(v) },
+      { key: 'paused', fmt: v => v === true ? badge('paused', 'warn') : '' },
+      { key: 'judges', label: 'checks', fmt: v => v === true ? 'judged here' : '' },
+      { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => patroniMemberText(m)).join('; ') : '' },
       { key: 'message', wide: true }, { key: 'snapshot_at', label: 'read', fmt: fmtTime }])));
   out.push(el('section', {}, el('h3', {}, `Role changes (${ch.length})`), grid(ch, changeCols(ctx, true), 'No role change seen in the fleet.')));
   return el('div', {}, ...out);
