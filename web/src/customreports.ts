@@ -179,7 +179,11 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
     // refused = pgvigil sent nothing (a login, a right, a setting it knows); declined = the procedure's own no: their
     // words as a plain note; failed = the call broke: an error box
     if (run.error) box.append(plain ? el('p', { class: 'meta refused', role: 'note' }, run.error) : errorBox(run.error));
-    for (const s of run.sets) if (s.cards) box.append(cardList(s.cards, `${many ? run.instance + ': ' : ''}insights`) ?? '');
+    for (const s of run.sets) {
+      if (!s.cards) continue;
+      box.append(cardList(s.cards, `${many ? run.instance + ': ' : ''}insights`) ?? '');
+      if (s.truncated) box.append(el('p', { class: 'meta' }, `Cut at ${fmtNum(s.rows.length)} rows (the report's row cap, or the run's 24 MB).`));
+    }
     grids.forEach(({ s, i }, n) => {
       if (grids.length > 1) box.append(el('h3', {}, `${many ? run.instance + ': ' : ''}result set ${n + 1}`));
       if (s.truncated) box.append(el('p', { class: 'meta' }, `Cut at ${fmtNum(s.rows.length)} rows (the report's row cap, or the run's 24 MB).`));
@@ -548,13 +552,13 @@ async function editorPage(ctx: Ctx, id: number, folder = ''): Promise<HTMLElemen
     return { cells: [a, t, l, dv, rq], read: () => ({ name: a.value.trim(), type: t.value, label: l.value.trim() || undefined, default: dv.value.trim() || undefined, required: rq.checked || undefined }) };
   }, { type: 'text' });
   const columns = rowsEditor<ColFmt>('Column formats', ['result set', 'column', 'label', 'format', 'decimals', 'hidden'], def.columns, (x, n) => {
-    const s = inp(`Format ${n} result set (1 = the first)`, (x.set ?? 0) + 1, { size: '3', inputmode: 'numeric' }), c = inp(`Format ${n} column`, x.column),
+    const s = inp(`Format ${n} result set (1 = the first the run returns, an insight card set counted)`, (x.set ?? 0) + 1, { size: '3', inputmode: 'numeric' }), c = inp(`Format ${n} column`, x.column),
       l = inp(`Format ${n} label`, x.label), f = sel(`Format ${n} format`, formatNames, x.format ?? ''), dd = inp(`Format ${n} decimals`, x.decimals, { size: '3', inputmode: 'numeric' }),
       h = check(`Format ${n} hidden`, x.hidden);
     return { cells: [s, c, l, f, dd, h], read: () => ({ set: Math.max(0, Number(s.value || 1) - 1), column: c.value.trim(), label: l.value.trim() || undefined, format: f.value || undefined, decimals: dd.value.trim() === '' ? undefined : Number(dd.value), hidden: h.checked || undefined }) };
   }, { set: 0 });
   const rules = rowsEditor<Rule>('Colour rules (the first that matches colours the cell)', ['result set', 'colour the column', 'judged on (empty = the same)', 'when', 'value', 'and', 'status', 'case-sensitive'], def.rules, (x, n) => {
-    const s = inp(`Rule ${n} result set (1 = the first)`, (x.set ?? 0) + 1, { size: '3', inputmode: 'numeric' }), c = inp(`Rule ${n} column it colours`, x.column),
+    const s = inp(`Rule ${n} result set (1 = the first the run returns, an insight card set counted)`, (x.set ?? 0) + 1, { size: '3', inputmode: 'numeric' }), c = inp(`Rule ${n} column it colours`, x.column),
       e = inp(`Rule ${n} column judged`, x.eval), k = sel(`Rule ${n} condition`, condNames, x.cond ?? 'gt'), v1 = inp(`Rule ${n} value`, x.value1, { size: '10' }),
       v2 = inp(`Rule ${n} second value (between)`, x.value2, { size: '10' }), st = sel(`Rule ${n} status`, statusNames, x.status ?? 'warn'), cs = check(`Rule ${n} case-sensitive`, x.case_sensitive);
     return { cells: [s, c, e, k, v1, v2, st, cs], read: () => ({ set: Math.max(0, Number(s.value || 1) - 1), column: c.value.trim(), eval: e.value.trim() || undefined, cond: k.value, value1: v1.value || undefined, value2: v2.value || undefined, status: st.value, case_sensitive: cs.checked || undefined }) };
