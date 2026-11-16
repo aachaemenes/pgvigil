@@ -164,7 +164,9 @@ SELECT c.bucket AS snapshot_at, r.event_type, 'mssql_wait_sample'::text AS sourc
 // 15-second samples and its per-sample maximum the step's (DBA Dash's SQLCPU.sql reads sys.dm_db_resource_stats there);
 // azure says which source the rows came from (the page's title and words follow it).
 const sqlPerfMSSQLCPU = `
-SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
+WITH p AS (SELECT CASE WHEN $3::timestamptz - $2::timestamptz > interval '1 day' AND (SELECT i.platform FROM pgvigil.instances i WHERE i.instance_id = $1) = 'azuresqldb'
+                         THEN ceil($4::numeric / 3600) * 3600 ELSE $4::numeric END AS step)
+SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / p.step) * p.step) AS snapshot_at,
        round(sum(s.total * s.w) / nullif(sum(s.w) FILTER (WHERE s.total IS NOT NULL), 0), 1) AS cpu_avg, max(s.total_max) AS cpu_max,
        round(sum(s.sql_pct * s.w) / nullif(sum(s.w) FILTER (WHERE s.sql_pct IS NOT NULL), 0), 1) AS sql_avg,
        round(avg(s.other_pct), 1) AS other_avg, bool_or(s.machine) AS machine_read, bool_or(s.azure) AS azure
@@ -172,9 +174,15 @@ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snaps
                c.sql_pct::numeric AS sql_pct, c.other_pct, c.idle_pct IS NOT NULL AS machine, false AS azure, 1 AS w
           FROM pgvigil.mssql_cpu_sample c WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
         UNION ALL
-        -- Azure SQL Database's minutes by DBA Dash's window (a minute that starts in it: q_azuredb.go)
+        -- Azure SQL Database's window (DBA Dash's: a minute that starts in it): up to a day its minutes; past a day its
+        -- built hours and edge minutes (pgvigil.mssql_azuredb_window, 0167) at a whole-hour step (an hour row lands whole
+        -- in one step)
         SELECT a.snapshot_at, a.avg_cpu_percent, a.max_cpu_percent, a.avg_cpu_percent, NULL, false, true, a.samples
-          FROM pgvigil.mssql_azuredb_minute a WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3) s
+          FROM pgvigil.mssql_azuredb_minute a
+         WHERE $3::timestamptz - $2::timestamptz <= interval '1 day' AND a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3
+        UNION ALL
+        SELECT a.snapshot_at, a.cpu_total / nullif(a.cpu_counted, 0), a.max_cpu_percent, a.cpu_total / nullif(a.cpu_counted, 0), NULL, false, true, coalesce(a.cpu_counted, 0)
+          FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a WHERE $3::timestamptz - $2::timestamptz > interval '1 day') s, p
  GROUP BY 1 ORDER BY 1`
 
 // sqlPerfMSSQLIO: every file's interval summed per read, then per step: latency = stall over operations, MB/s = bytes

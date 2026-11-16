@@ -781,3 +781,73 @@ func (r *Repo) ReplicationHourlyHeal(ctx context.Context) (instances int, hourRo
 	}
 	return instances, hourRows, failed, nil
 }
+
+// AzureDBHourMonths makes this month's and the next month's partition of the Azure SQL Database hours (0167) for
+// 'pgvigil purge', whether or not an instance waits for a heal, in one transaction under lock_timeout 5 s: a CREATE
+// ... PARTITION OF takes ACCESS EXCLUSIVE on the hours' parent, so it is made here, never by an import's trigger
+// waiting behind a long reader (the review's finding 5). A month not made now (the error, for the caller's warning)
+// is made by a later run - a month ahead leaves about 30 - or, failing every run, by the trigger itself. A store
+// without 0167 makes nothing.
+func (r *Repo) AzureDBHourMonths(ctx context.Context) error {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.mssql_azuredb_hour_partition(timestamp with time zone)') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_partition(now()), pgvigil.mssql_azuredb_hour_partition(now() + interval '1 month')`); err != nil {
+		return fmt.Errorf("azure hours' months: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// AzureDBHoursHeal builds the hours of Azure SQL Database's resource minutes (0167, task B2a-N2) of every instance
+// still waiting - the first build after the upgrade (minutes stored before 0167), a failed rollup
+// (pgvigil.mssql_azuredb_hour_pending) - each instance in its own statement and transaction
+// (mssql_azuredb_hour_heal_one), never all in one, so no import waits on one long transaction. It returns the
+// instances built, their hour rows and the instances that failed (they stay for the next run, recorded as a trigger's
+// failure is). A store without 0167 heals nothing.
+func (r *Repo) AzureDBHoursHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.mssql_azuredb_hour_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return 0, 0, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT i FROM pgvigil.mssql_azuredb_hour_pending() i`)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+	}
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, fmt.Errorf("azure hours pending: %w", err)
+	}
+	for _, id := range ids {
+		var n int64
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.mssql_azuredb_hour_heal_one($1)`, id).Scan(&n); err != nil {
+			if ctx.Err() != nil {
+				return instances, hourRows, failed, ctx.Err()
+			}
+			failed++
+			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_failed($1, coalesce(d.from_at, '-infinity'), coalesce(d.to_at, 'infinity'), 'in pgvigil purge: ' || $2)
+			                           FROM (SELECT 1) one LEFT JOIN pgvigil.mssql_azuredb_hour_dirty d ON d.instance_id = $1`, id, err.Error())
+			continue
+		}
+		instances++
+		hourRows += n
+	}
+	return instances, hourRows, failed, nil
+}

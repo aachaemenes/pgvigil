@@ -198,7 +198,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        n.now_at, n.longest_stmt_secs AS now_longest_stmt_secs, n.oldest_xact_secs AS now_oldest_xact_secs, n.blocked AS now_blocked
   FROM inst
   LEFT JOIN LATERAL (
-    -- the source with samples: SQL Server's scheduler monitor, or on Azure SQL Database (B2a) mssql_azuredb_minute -
+    -- the source with samples: SQL Server's scheduler monitor, or on Azure SQL Database (B2a) its window's hours and edge
+    -- minutes (pgvigil.mssql_azuredb_window, 0167) -
     -- DBA Dash's Azure Summary arithmetic: the 15-second samples' average CPU, their largest, their ten buckets summed in
     -- one pass, the minutes that start in the window (DBA Dash's window, as q_azuredb.go); cpu_source names the source
     SELECT u.cpu_samples, u.cpu_avg, u.cpu_max, u.cpu_sql_avg, u.cpu_hist, CASE WHEN u.pri = 0 THEN 'azure' ELSE 'scheduler' END AS cpu_source FROM (
@@ -215,13 +216,13 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
      WHERE s.instance_id = inst.instance_id AND s.snapshot_at > $1 AND s.snapshot_at <= $2
     ) x
     UNION ALL
-    SELECT 0, sum(a.samples)::bigint, round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 1),
-           max(a.max_cpu_percent), round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 1),
+    SELECT 0, sum(a.samples)::bigint, round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 1),
+           max(a.max_cpu_percent), round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 1),
            ARRAY[coalesce(sum(a.cpu_buckets[1]), 0), coalesce(sum(a.cpu_buckets[2]), 0), coalesce(sum(a.cpu_buckets[3]), 0), coalesce(sum(a.cpu_buckets[4]), 0),
                  coalesce(sum(a.cpu_buckets[5]), 0), coalesce(sum(a.cpu_buckets[6]), 0), coalesce(sum(a.cpu_buckets[7]), 0), coalesce(sum(a.cpu_buckets[8]), 0),
                  coalesce(sum(a.cpu_buckets[9]), 0), coalesce(sum(a.cpu_buckets[10]), 0)]::int[]
-      FROM pgvigil.mssql_azuredb_minute a
-     WHERE a.instance_id = inst.instance_id AND a.snapshot_at >= $1 AND a.snapshot_at < $2
+      FROM pgvigil.mssql_azuredb_window(ARRAY[inst.instance_id], $1, $2) a
+     WHERE inst.platform = 'azuresqldb'
     ) u ORDER BY (coalesce(u.cpu_samples, 0) > 0) DESC, u.pri DESC LIMIT 1) h ON true
   LEFT JOIN LATERAL (
     SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,

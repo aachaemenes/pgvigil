@@ -17,26 +17,28 @@ import (
 // 20) ... [80, 90), >= 90: AzureDBResourceStats_Raw).
 //
 // The window is DBA Dash's: the minutes that start at or after its start and before its end (end_time >= @FromDate AND
-// end_time < @ToDate); the CPU readers take Azure SQL Database's minutes the same way. DBA Dash reads hourly rows for
-// a window over a day (Use60MIN); pgvigil has no hourly rollup yet (task B21) and reads the minutes for every window.
+// end_time < @ToDate). A window reads its built whole hours from mssql_azuredb_hour and only its two edge parts (and
+// any hour not built yet) from the minutes (pgvigil.mssql_azuredb_window, 0167): the same numbers as the minutes at any
+// length - a departure from DBA Dash, which rounds a window over a day to its hours (Use60MIN).
 
-// azdbWindowCols: the window's figures of one database (alias a = mssql_azuredb_minute), DBA Dash's columns, in one
-// pass over the minutes: the four histograms sum each bucket of the minutes' counts, and the 'hot' shares are the
-// samples at 70 % and over of those counted (as the Performance summary's)
+// azdbWindowCols: the window's figures of one database (alias a = pgvigil.mssql_azuredb_window's rows: built hours and
+// minutes in the hour shape, 0167, task B2a-N2), DBA Dash's columns, in one pass: an average is the sum of the totals
+// over the sum of the counted samples (exactly the minutes' weighted average), the four histograms sum each bucket,
+// and the 'hot' shares are the samples at 70 % and over of those counted (as the Performance summary's)
 var azdbWindowCols = `
-       sum(a.samples)::bigint AS samples, count(*) AS minutes,
-       round(sum(a.avg_cpu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_cpu_percent IS NOT NULL), 0), 2) AS avg_cpu_percent,
+       sum(a.samples)::bigint AS samples, coalesce(sum(a.minutes), 0)::bigint AS minutes,
+       round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 2) AS avg_cpu_percent,
        max(a.max_cpu_percent) AS max_cpu_percent,
-       round(sum(a.avg_data_io_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_data_io_percent IS NOT NULL), 0), 2) AS avg_data_io_percent,
+       round(sum(a.data_io_total) / nullif(sum(a.data_io_counted), 0), 2) AS avg_data_io_percent,
        max(a.max_data_io_percent) AS max_data_io_percent,
-       round(sum(a.avg_log_write_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_log_write_percent IS NOT NULL), 0), 2) AS avg_log_write_percent,
+       round(sum(a.log_write_total) / nullif(sum(a.log_write_counted), 0), 2) AS avg_log_write_percent,
        max(a.max_log_write_percent) AS max_log_write_percent,
-       round(sum(a.avg_dtu_percent * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_dtu_percent IS NOT NULL), 0), 2) AS avg_dtu_percent,
+       round(sum(a.dtu_percent_total) / nullif(sum(a.dtu_percent_counted), 0), 2) AS avg_dtu_percent,
        max(a.max_dtu_percent) AS max_dtu_percent,
-       round(sum(a.avg_dtu * a.samples) / nullif(sum(a.samples) FILTER (WHERE a.avg_dtu IS NOT NULL), 0), 2) AS avg_dtu,
-       max(a.max_dtu) AS max_dtu, min(a.dtu_limit) AS min_dtu_limit, max(a.dtu_limit) AS max_dtu_limit,
-       max(a.dtu_limit) - max(a.max_dtu) AS unused_dtu,
-       min(a.cpu_limit) AS min_cpu_limit, max(a.cpu_limit) AS max_cpu_limit,
+       round(sum(a.dtu_total) / nullif(sum(a.dtu_counted), 0), 2) AS avg_dtu,
+       max(a.max_dtu) AS max_dtu, min(a.min_dtu_limit) AS min_dtu_limit, max(a.max_dtu_limit) AS max_dtu_limit,
+       max(a.max_dtu_limit) - max(a.max_dtu) AS unused_dtu,
+       min(a.min_cpu_limit) AS min_cpu_limit, max(a.max_cpu_limit) AS max_cpu_limit,
        ` + azdbHist("cpu") + ` AS cpu_hist, ` + azdbHist("data") + ` AS data_hist, ` + azdbHist("log") + ` AS log_hist, ` + azdbHist("dtu") + ` AS dtu_hist,
        ` + azdbHot("cpu") + ` AS cpu_hot_pct, ` + azdbHot("data") + ` AS data_hot_pct, ` + azdbHot("log") + ` AS log_hot_pct, ` + azdbHot("dtu") + ` AS dtu_hot_pct`
 
@@ -73,8 +75,7 @@ SELECT g.snapshot_at AS tier_read_at, g.since AS tier_since, g.edition, g.servic
 // the window's one row of the database (DBA Dash's Azure Summary row) with its four histograms; $1 id, $2 from, $3 to
 var sqlAzureDBSummary = `
 SELECT ` + azdbWindowCols + `
-  FROM pgvigil.mssql_azuredb_minute a
- WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3`
+  FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a`
 
 // the window's minutes, newest first (at most a day of them)
 const sqlAzureDBMinutes = `
@@ -85,6 +86,24 @@ SELECT a.snapshot_at AS minute, a.snapshot_at, a.samples, a.avg_cpu_percent, a.m
  WHERE a.instance_id = $1 AND a.snapshot_at >= $2 AND a.snapshot_at < $3
  ORDER BY a.snapshot_at DESC
  LIMIT 1440`
+
+// the window's hours, newest first, through the same split as the summary (pgvigil.mssql_azuredb_window): a built hour
+// whole, an edge or unbuilt hour from its minutes, its minutes counted (partial: fewer than 60 minutes in the window);
+// the page lists them for a window over a day and draws its charts from them (snapshot_at: the chart's x) (B2a-N2)
+const sqlAzureDBHours = `
+SELECT date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour,
+       date_trunc('hour', a.snapshot_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS snapshot_at, sum(a.minutes)::int AS minutes, sum(a.samples)::bigint AS samples,
+       round(sum(a.cpu_total) / nullif(sum(a.cpu_counted), 0), 2) AS avg_cpu_percent, max(a.max_cpu_percent) AS max_cpu_percent,
+       round(sum(a.data_io_total) / nullif(sum(a.data_io_counted), 0), 2) AS avg_data_io_percent, max(a.max_data_io_percent) AS max_data_io_percent,
+       round(sum(a.log_write_total) / nullif(sum(a.log_write_counted), 0), 2) AS avg_log_write_percent, max(a.max_log_write_percent) AS max_log_write_percent,
+       round(sum(a.memory_usage_total) / nullif(sum(a.memory_usage_counted), 0), 2) AS avg_memory_usage_percent,
+       round(sum(a.dtu_percent_total) / nullif(sum(a.dtu_percent_counted), 0), 2) AS avg_dtu_percent, max(a.max_dtu_percent) AS max_dtu_percent,
+       max(a.max_worker_percent) AS max_worker_percent, max(a.max_session_percent) AS max_session_percent,
+       sum(a.minutes) < 60 AS partial
+  FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a
+ GROUP BY 1
+ ORDER BY 1 DESC
+ LIMIT 8784`
 
 // the gaps that touch the window: minutes the store does not have because the view no longer held them
 const sqlAzureDBGaps = `
@@ -105,13 +124,14 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 		{"tier", sqlAzureDBTier, []any{id}},
 		{"summary", sqlAzureDBSummary, []any{id, from, to}},
 		{"minutes", sqlAzureDBMinutes, []any{id, from, to}},
+		{"hours", sqlAzureDBHours, []any{id, from, to}},
 		{"gaps", sqlAzureDBGaps, []any{id, from, to}},
 	})
 }
 
 // the fleet's Azure SQL Databases over the window (DBA Dash's Azure Summary grid): the tier (its limits from the minutes
 // when the tier is not read: mssql_azuredb_governance needs ##MS_ServerStateReader## on Basic, S0, S1 and in a pool),
-// the window's figures, histograms and hot shares in one GROUP BY over the window's minutes, the gaps in the window, and
+// the window's figures, histograms and hot shares in one GROUP BY over the window's hours and edge minutes, the gaps, and
 // the PRIMARY data files as mssql_storage last read them (DBA Dash's AzureDBInfo: allocated and used against the summed
 // max size, none when a file is unlimited) with the % Max Size status of 0145's arm computed here from the same read:
 // over 90 % critical, over 80 % warning (a strict 'over'), 'stale' when the files were read over 3 hours ago (the
@@ -119,8 +139,7 @@ func (s *Server) MSSQLAzureDB(w http.ResponseWriter, r *http.Request) {
 // $2 to, $3 'sqlserver', $4 the tag scope (sqlPerfScope's rule).
 var sqlAzureDBFleet = sqlPerfScope + `, w AS (
   SELECT a.instance_id, ` + azdbWindowCols + `
-    FROM pgvigil.mssql_azuredb_minute a
-   WHERE a.instance_id IN (SELECT instance_id FROM inst WHERE platform = 'azuresqldb') AND a.snapshot_at >= $1 AND a.snapshot_at < $2
+    FROM pgvigil.mssql_azuredb_window(ARRAY(SELECT instance_id FROM inst WHERE platform = 'azuresqldb'), $1, $2) a
    GROUP BY a.instance_id
 )
 SELECT inst.instance_id, inst.instance, g.edition, g.service_objective, g.pool,
