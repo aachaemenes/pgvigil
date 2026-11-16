@@ -130,9 +130,11 @@ OUTER APPLY (SELECT COUNT(*) AS schedules, SUM(CAST(s.enabled AS int)) AS enable
 ORDER BY j.name`
 
 // jobStepsSQL: one row per step. The command is read for the job's definition (its versions, task 110) and masked
-// before it leaves the collector (collect.MaskJobText): a step's command can hold a password.
+// before it leaves the collector (collect.MaskJobText): a step's command can hold a password. Twice the kept
+// length is read, masked, then cut (jobStepCommandMax): a key across the kept length is masked whole, never cut
+// first; one across the read's own end is masked to the end of the text read.
 var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_name AS nvarchar(128)) AS step_name,
-  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, CAST(DATALENGTH(st.command) / 2 AS int) AS command_chars, st.flags, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
+  CAST(LEFT(st.command, 16000) AS nvarchar(max)) AS command, CAST(DATALENGTH(st.command) / 2 AS int) AS command_chars, st.flags, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
   st.retry_attempts, st.retry_interval, CAST(st.output_file_name AS nvarchar(260)) AS output_file, CAST(px.name AS nvarchar(128)) AS proxy,
   CAST(st.subsystem AS nvarchar(40)) AS subsystem, CAST(st.database_name AS nvarchar(128)) AS database_name,
   st.last_run_outcome AS last_outcome,
@@ -151,6 +153,9 @@ var jobSchedulesSQL = `SELECT 'schedule' AS kind, x.job_id, s.schedule_id, CAST(
 FROM msdb.dbo.sysjobschedules x
 JOIN msdb.dbo.sysschedules s ON s.schedule_id = x.schedule_id
 ORDER BY x.job_id, s.name, s.schedule_id`
+
+// jobStepCommandMax is how much of a step's command is kept (the script says when a command is longer).
+const jobStepCommandMax = 8000
 
 // jobHistoryMark is the mark of a sysjobhistory row (h).
 const jobHistoryMark = `CAST(CHECKSUM(CAST(h.job_id AS nvarchar(36)), h.step_id, h.run_date, h.run_time) AS bigint)`
@@ -210,7 +215,7 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 	}
 	for _, st := range steps {
 		if c, ok := st["command"].(string); ok {
-			st["command"] = collect.MaskJobText(c)
+			st["command"] = cutRunes(collect.MaskJobText(c), jobStepCommandMax)
 		}
 	}
 	schedules, err := QueryRows(ctx, conn, jobSchedulesSQL)

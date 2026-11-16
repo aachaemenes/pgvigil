@@ -128,12 +128,25 @@ On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_sto
 
 A step's command, a connection string and a run's output can carry a password. Before a job row leaves the collector
 (both engines; `MaskJobText` in internal/collect/jobs.go) the value of each of these is replaced by `<masked>`:
-`PASSWORD = '...'` and `SECRET = '...'`; any `@...password`, `@passwd`, `@...pwd` or `@...secret` parameter
-(`sp_addlinkedsrvlogin`, `sp_addlogin`); a `key = value` whose key holds password, passwd, pwd or secret (connection
-strings, libpq keywords; quoted or not, spaces or not); the `user:password@` of a URI; `-P` (sqlcmd, bcp), `-Password`,
-`-pw`, `-pwd`; the string given to `ConvertTo-SecureString`; the password of `net use \\host\share <password>`;
-dtexec's `/DE` and `/Decrypt`. The command is stored masked (in the job row and in every version). A password in any
-other form is stored as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
+`PASSWORD = '...'`, `MEDIAPASSWORD = '...'` (RESTORE's media set password) and `SECRET = '...'`; any `@...password`,
+`@passwd`, `@...pwd` or `@...secret` parameter (`sp_addlinkedsrvlogin`, `sp_addlogin`, Idera SQL Safe's
+`@encryptedbackuppassword`); the backup products' key parameters by name: `@EncryptionKey` (Ola Hallengren's
+`DatabaseBackup`, LiteSpeed's `xp_backup_database`, `xp_backup_log` and `xp_restore_*`) and LiteSpeed's `@jobp` (its
+encrypted key). A value is masked as a literal (`'...'` or `N'...'`), with its quotes doubled inside another string (Red
+Gate SQL Backup's `master..sqlbackup '-SQL "... WITH PASSWORD = ''...''"'`, a `PASSWORD` inside `EXEC (N'...')`) or in
+Red Gate's square brackets (`PASSWORD = [...]`, `]]` inside); `@EncryptionKey` and `@jobp` also as a bare word
+(`@EncryptionKey = mykey`; `NULL`, `DEFAULT` and a `@variable` stay readable); and Red Gate's clean-up `sqbutility
+1032`'s sixth argument (the key). Which quoting a value has is read from where it stands - inside another string or not,
+comments and bracketed names skipped - so an empty password (`''`) never hides the text after it, and a value the text
+never closes (a step's command cut by the read) is masked to the end of the text. Only these
+names: a parameter that names a key or a certificate (`@ServerCertificate`, `@KeyColumns`, `KEYSIZE`) stays readable.
+Also a `key = value` whose key holds password, passwd, pwd or secret (connection strings, libpq keywords; quoted or not,
+spaces or not); the `user:password@` of a URI; `-P` (sqlcmd, bcp), `-Password`, `-pw`, `-pwd`, and LiteSpeed's
+command-line tools' `-K` / `--Key`, `--TgtKey`, `--JobP` / `-jobp` and `-BackupKey` (so sqlcmd's own `-K ReadOnly` reads
+`-K <masked>`); the string given to `ConvertTo-SecureString` (each of these values bare, quoted, or with its quotes
+doubled inside another string such as `xp_cmdshell`'s); the password of `net use \\host\share <password>`; dtexec's
+`/DE` and `/Decrypt`. The command is stored masked (in the job row and in every version). A password in any other form
+is stored as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
 
 ### Known limits
 
