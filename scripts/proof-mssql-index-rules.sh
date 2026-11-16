@@ -54,7 +54,9 @@
 #     FOREIGN KEY (y, x)); fk_fc_dis (NOCHECK) absent.
 #     Red on the base: no table pgvigil.mssql_fk_columns.
 #  X6 FILTER COLUMNS AND COLUMNSTORE SEGMENTS on mssql_index: filter_columns of each filtered index equal to sa's read of
-#     sys.sql_expression_dependencies (class 7 -> 1), by name; ix_f's [b],[c] (WHERE b > 0 AND c IS NOT NULL);
+#     sys.sql_expression_dependencies (class 7 -> 1), by name - the product reads them another way (the bracketed names
+#     in filter_definition, sp_IndexCleanup's: the read login may not read the dependencies, Msg 229 in run d404-g1), so
+#     the two are independent; ix_f's [b],[c] (WHERE b > 0 AND c IS NOT NULL);
 #     cs_rebuild_columns of each columnstore index equal to sa's read of BI's L3011-3034 test (an empty list on 2022, where
 #     a new segment keeps its deep data); NULL on every rowstore index.
 #     Red on the base: mssql_index has no column filter_columns.
@@ -233,15 +235,17 @@ same() { sort "$3" > "$3.s"; sort "$4" > "$4.s"
   if diff "$3.s" "$4.s" > "$TMPD/$1.diff"; then return 0; fi
   bad "$1: $2 differ from sa's read ($(grep -c '^<' "$TMPD/$1.diff") sa line(s) not matched, $(grep -c '^>' "$TMPD/$1.diff") stored line(s) not matched):"
   head -n 12 "$TMPD/$1.diff" | cut -c1-300 | sed 's/^/       /'; return 1; }
+# a catalog name beside the database's own strings in one CONCAT_WS: the database's collation (else Msg 451, run d404-g1)
+DD="COLLATE DATABASE_DEFAULT"
 # the stored text of a value: NULL as '~', booleans as 1 / 0
 N="coalesce(%s::text, '~')"
 nv() { printf "$N" "$1"; }
 
 echo "== X1. heaps =="
 if ! has mssql_heap; then bad "X1: no table pgvigil.mssql_heap"; else
-  sq "SELECT CONCAT_WS('|', s.name, o.name, ps.rc, ps.kb, ISNULL(us.user_seeks, 0), ISNULL(us.user_scans, 0), ISNULL(us.user_lookups, 0), ISNULL(us.user_updates, 0),
-      ISNULL(CAST(os.ff AS varchar(20)), '~'), ISNULL(CAST(os.ld AS varchar(20)), '~'), CONVERT(varchar(19), o.create_date, 126), ds.name, ds.type_desc,
-      ISNULL(pc.name, '~'), pt.n, pt.comp, pt.unc)
+  sq "SELECT CONCAT_WS('|', s.name $DD, o.name $DD, ps.rc, ps.kb, ISNULL(us.user_seeks, 0), ISNULL(us.user_scans, 0), ISNULL(us.user_lookups, 0), ISNULL(us.user_updates, 0),
+      ISNULL(CAST(os.ff AS varchar(20)), '~'), ISNULL(CAST(os.ld AS varchar(20)), '~'), CONVERT(varchar(19), o.create_date, 126), ds.name $DD, ds.type_desc $DD,
+      ISNULL(pc.name $DD, '~'), pt.n, pt.comp $DD, pt.unc)
     FROM sys.indexes i JOIN sys.objects o ON o.object_id = i.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id
     JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     CROSS APPLY (SELECT SUM(p.row_count) AS rc, SUM(p.reserved_page_count) * 8 AS kb FROM sys.dm_db_partition_stats p WHERE p.object_id = i.object_id AND p.index_id = 0) ps
@@ -297,7 +301,7 @@ SHAPE_SA="FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id LEF
                   WHERE ic.object_id = o.object_id AND ic.index_id = 1 AND ic.key_ordinal > 0 HAVING COUNT(*) > 0) k
    WHERE $BASE AND (o.type = 'U' OR EXISTS (SELECT 1 FROM sys.indexes iv WHERE iv.object_id = o.object_id AND iv.index_id = 1))"
 if ! has mssql_table_shape; then bad "X2: no table pgvigil.mssql_table_shape"; else
-  sq "SELECT CONCAT_WS('|', s.name, o.name, RTRIM(o.type), c.n, c.nonlob, c.lob, c.str, c.sp, c.ti, ISNULL(CAST(k.kb AS varchar(20)), '~'), ISNULL(CAST(k.kc AS varchar(20)), '~')) $SHAPE_SA" pgvr > "$TMPD/x2.sa"
+  sq "SELECT CONCAT_WS('|', s.name $DD, o.name $DD, RTRIM(o.type) $DD, c.n, c.nonlob, c.lob, c.str, c.sp, c.ti, ISNULL(CAST(k.kb AS varchar(20)), '~'), ISNULL(CAST(k.kc AS varchar(20)), '~')) $SHAPE_SA" pgvr > "$TMPD/x2.sa"
   pq "SELECT concat_ws('|', schema_name, table_name, object_type, $(nv total_columns), $(nv nonlob_bytes), $(nv lob_columns), $(nv string_columns), $(nv 'has_sparse::int'),
       $(nv 'has_text_image::int'), $(nv cx_key_bytes), $(nv cx_key_columns)) FROM pgvigil.mssql_table_shape WHERE instance_id = $I AND database_name = 'pgvr'" > "$TMPD/x2.pg" 2>"$TMPD/x2.err" \
     || bad "X2: the stored read: $(head -c 300 "$TMPD/x2.err")"

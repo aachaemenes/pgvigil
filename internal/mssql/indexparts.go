@@ -22,8 +22,11 @@ import (
 //	          'RANGE RIGHT FOR VALUES (...)'), the partitioning column, whether any partition is uncompressed, the
 //	          operational counters summed over the partitions (sys.dm_db_index_operational_stats: row and page lock
 //	          waits, page latch and page I/O latch waits, forwarded fetches, leaf deletes - counted since the object's
-//	          metadata entered the cache, not since the server's start) and a filtered index's filter columns (by
-//	          dependency, sys.sql_expression_dependencies, as sp_BlitzIndex reads them). Merged into the index rows.
+//	          metadata entered the cache, not since the server's start) and a filtered index's filter columns: the
+//	          table's columns whose bracketed name the server's filter_definition holds (sp_IndexCleanup's way, IC
+//	          L8180; the server writes every column of a filter bracketed). sp_BlitzIndex reads them from
+//	          sys.sql_expression_dependencies (BI L2907-2925), which only db_owner may read by default (Learn): the read
+//	          login gets Msg 229 there (box run d404-g1). Merged into the index rows.
 //	segments  per columnstore index: its columns of sp_BlitzIndex's types (char / varchar / nchar / nvarchar / binary /
 //	          varbinary not (max), uniqueidentifier, datetimeoffset of scale over 2) with a compressed segment that keeps
 //	          no min / max deep data - such an index was built before SQL Server 2022 and gains string segment
@@ -86,9 +89,8 @@ LEFT JOIN (SELECT z.object_id, z.index_id, SUM(z.row_lock_wait_count) AS rlc, SU
 // ixExtraSQL: per index of indexesSQL's set, what the index read does not carry.
 var ixExtraSQL = `SELECT CAST(i.object_id AS bigint) AS object_id, CAST(i.index_id AS int) AS index_id, CAST(RTRIM(o.type) AS nvarchar(2)) AS object_type,
   ` + ixSpaceCols + `,
-  CASE WHEN i.has_filter = 1 THEN ISNULL((SELECT c.name AS n FROM sys.sql_expression_dependencies d
-          JOIN sys.columns c ON c.object_id = d.referenced_id AND c.column_id = d.referenced_minor_id
-         WHERE d.referencing_class = 7 AND d.referenced_class = 1 AND d.referenced_id = i.object_id AND d.referencing_minor_id = i.index_id
+  CASE WHEN i.has_filter = 1 THEN ISNULL((SELECT c.name AS n FROM sys.columns c
+         WHERE c.object_id = i.object_id AND CHARINDEX(QUOTENAME(c.name), i.filter_definition) > 0
          ORDER BY c.name FOR JSON PATH), N'[]') END AS filter_json
 FROM sys.indexes i
 JOIN sys.objects o ON o.object_id = i.object_id
