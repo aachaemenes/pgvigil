@@ -164,8 +164,18 @@ post() { code -b "${3:-$JAR}" -H 'X-Pgvigil: 1' -H 'Content-Type: application/js
 getc() { code -b "${2:-$JAR}" "${3:-$U}/api/$1"; }
 js() { python3 -c "import json,sys; d=json.load(open('$WORK/body')); print($1)"; }
 isid() { [[ $1 =~ ^[0-9]+$ ]] || fail "not a request id: '$1'"; }
-PGID=$(rq "select instance_id from pgvigil.instances where name = 'cq-pg'"); MSID=""; [[ -n "$MS" ]] && MSID=$(rq "select instance_id from pgvigil.instances where name = 'cq-ms'")
-[[ -n "$PGID" ]] || fail "cq-pg is not registered (the collector's first read): $(tail -5 "$WORK/run1.log")"
+# the collector registers an instance at its first read, which the scheduler's first-start spread (sched.go
+# firstStart: a random offset up to a collection's interval, 5 min at most) can put seconds after its start - waited
+# for, never read once (r06: read about 4 s after the collector's start, cq-pg not registered yet)
+PGID=""; MSID=""
+for _ in $(seq 1 120); do
+  PGID=$(rq "select instance_id from pgvigil.instances where name = 'cq-pg'")
+  [[ -n "$MS" ]] && MSID=$(rq "select instance_id from pgvigil.instances where name = 'cq-ms'")
+  [[ -n "$PGID" && ( -z "$MS" || -n "$MSID" ) ]] && break
+  sleep 1
+done
+[[ -n "$PGID" ]] || fail "cq-pg is not registered within 120 s (the collector's first read): $(tail -5 "$WORK/run1.log")"
+[[ -z "$MS" || -n "$MSID" ]] || fail "cq-ms is not registered within 120 s (the collector's first read): $(tail -5 "$WORK/run1.log")"
 
 # ---- N: serve reaches the repository and not the targets ----------------------------------------------------------
 GW=$(docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$NET")
