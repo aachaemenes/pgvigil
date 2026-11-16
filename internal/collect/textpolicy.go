@@ -1,6 +1,8 @@
 package collect
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"github.com/aachaemenes/pgvigil/internal/logparse"
 	"hash/fnv"
 	"html"
@@ -875,9 +877,14 @@ func applyTextPolicy(rows []Row, mode string) {
 		if _, has := r["message"]; has && mode == "none" && r["kind"] == "event" {
 			r["message"] = nil
 		}
+		// hash (a remote collector's): the message by the hex SHA-256 of its shape - it still groups, no word leaves
+		if m, isStr := r["message"].(string); isStr && mode == "hash" && r["kind"] == "event" {
+			r["message"] = hexHash(logparse.MessageShape(m))
+		}
 		if kind == "error" && mode == "normalized" {
 			r["detail"] = nil
 		}
+		normQuery, haveQuery := "", false // hash: the query's normalized form, for query_hash
 		for _, k := range textPolicyKeys {
 			if k == "detail" && logparse.DetailIsMessage(logparse.Kind(kind)) {
 				continue
@@ -895,6 +902,12 @@ func applyTextPolicy(rows []Row, mode string) {
 				r[k] = nil
 			case "normalized":
 				r[k] = normalizeSQL(s)
+			case "hash":
+				n := normalizeSQL(s)
+				if k == "query" {
+					normQuery, haveQuery = n, true
+				}
+				r[k] = hexHash(n)
 			}
 		}
 		if _, has := r["query_hash"]; has {
@@ -907,6 +920,12 @@ func applyTextPolicy(rows []Row, mode string) {
 				} else {
 					r["query_hash"] = nil
 				}
+			case "hash":
+				if haveQuery && normQuery != "" {
+					r["query_hash"] = textHash(normQuery)
+				} else {
+					r["query_hash"] = nil
+				}
 			}
 		}
 	}
@@ -915,6 +934,12 @@ func applyTextPolicy(rows []Row, mode string) {
 // NormalizeSQL is the collector's normalizer for the web's read rule (TEXT-NOW, internal/web/textread.go): a text
 // stored under full and read while the instance's policy is normalized is shown as the collector would have stored it.
 func NormalizeSQL(s string) string { return normalizeSQL(s) }
+
+// hexHash is query_text hash's fingerprint of a text: the hex SHA-256 of its normalized form (R5).
+func hexHash(n string) string {
+	h := sha256.Sum256([]byte(n))
+	return hex.EncodeToString(h[:])
+}
 
 // textHash keys normalized text: FNV-64a as a signed 64-bit value (the column is bigint). It differs
 // from the server-side hashtextextended used under full, so a repository that switches modes keeps two

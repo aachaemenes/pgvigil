@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
 	"github.com/aachaemenes/pgvigil/internal/store"
 )
@@ -122,12 +123,17 @@ func (s *Store) cursorLocked(name, source string) (format.Cursor, bool) {
 	return s.st.Cursor(name, source)
 }
 
-// Import writes one batch into the instance's open bundle and moves its cursors as the hub's import of it would.
+// Import writes one batch into the instance's open bundle and moves its cursors as the hub's import of it would. The
+// remote text rule runs first (collect.RemoteDeny, R5: deny by default), so the bundle and the cursor rules see the same
+// rows and no statement text reaches either; a view with no text list is refused in words.
 func (s *Store) Import(_ context.Context, instanceID int, collection string, snapshotAt time.Time, rows []map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name, err := s.name(instanceID)
 	if err != nil {
+		return err
+	}
+	if err := collect.RemoteDeny(collection, rows, s.o.QueryText); err != nil {
 		return err
 	}
 	ob, err := s.bundle(name)
