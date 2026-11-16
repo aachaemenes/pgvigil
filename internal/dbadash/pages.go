@@ -28,6 +28,7 @@ import (
 
 	mssql "github.com/microsoft/go-mssqldb"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
@@ -276,11 +277,66 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 	return out, nil
 }
 
-// maskPage is the text step of a page's reply before it leaves the package.
-func maskPage(out *PageReply) {}
+// pageText names, per page, the columns that carry text a person or an application wrote, by the name DBADash's
+// procedure gives the column (4.24.1 and 4.25.0): true marks a statement's text (the sessions page's batch and its
+// statement, dbo.QueryText's text), false an owner's own words (a job's description, an alert's notification
+// message). Every other column of every page is a figure, a status, a name, a path or DBADash's own words, and is shown
+// as DBADash holds it. A page added to Pages names its text columns here.
+var pageText = map[string]map[string]bool{
+	"sessions": {"batch_text": true, "text": true},
+	"jobs":     {"description": false},
+	"alerts":   {"Notification Message": false},
+}
 
-// Statements calls f on each statement text of the reply.
-func (r *PageReply) Statements(f func(s string) any) {}
+// eachText gives f every non-empty text cell of the reply's text columns (the statement columns alone when
+// statements) and shows what f answers in its place.
+func (r *PageReply) eachText(statements bool, f func(s string) any) {
+	cols := pageText[r.Page]
+	if len(cols) == 0 {
+		return
+	}
+	for i := range r.Results {
+		rs := &r.Results[i]
+		for c, col := range rs.Columns {
+			stmt, listed := cols[col.Name]
+			if !listed || (statements && !stmt) {
+				continue
+			}
+			for _, row := range rs.Rows {
+				if s, ok := row[c].(string); ok && s != "" {
+					row[c] = f(s)
+				}
+			}
+		}
+	}
+}
+
+// maskPage passes the reply's text columns through the credential mask the collection runs over a stored text
+// (collect.MaskCredentials, under every query_text mode) before the reply leaves the package: a password shown is the
+// leak a password stored is. Each listed column is a text, none an XML document, so the text mask runs over it whole
+// (a statement that only looks like one - a processing instruction's shape - is masked as the text it is).
+func maskPage(out *PageReply) {
+	out.eachText(false, func(s string) any { return collect.MaskCredentials(s) })
+}
+
+// HasStatements reports whether the reply's page shows statement text.
+func (r *PageReply) HasStatements() bool {
+	for _, stmt := range pageText[r.Page] {
+		if stmt {
+			return true
+		}
+	}
+	return false
+}
+
+// Statements gives f each statement text of the reply (already through the credential mask) and shows what f answers
+// in its place: the caller's rule for the instance's query_text at read (the web's: its words under none, the
+// collector's normalized form under normalized). A nil f changes nothing.
+func (r *PageReply) Statements(f func(s string) any) {
+	if f != nil {
+		r.eachText(true, f)
+	}
+}
 
 func orNone(v string) string {
 	if strings.TrimSpace(v) == "" {
