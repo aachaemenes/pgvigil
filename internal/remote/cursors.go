@@ -106,10 +106,16 @@ func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(stri
 	if view == "amcheck" && hasRun {
 		logMove("amcheck", at)
 	}
-	if view == "schema" {
+	if view == "schema" || view == "mssql_schema" { // both call import_schema (0300 L2316-2322)
 		for db, t := range ddl {
 			logMove("schema_ddl:"+db, t)
 		}
+	}
+	switch view {
+	case "mssql_errorlog", "mssql_defaulttrace", "mssql_syshealth": // import_mssql_readers: the schema due's inputs
+		readersMoves(at, rows, cur, out)
+	case "mssql_schema":
+		mssqlSchemaMoves(at, rows, cur, out)
 	}
 	return sorted(out)
 }

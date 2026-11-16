@@ -69,6 +69,13 @@ var otherWriters = map[string]string{
 	"mssql_index_depth_purge": "the retention purge of the constraint guard rows: as mssql_plancache_purge",
 }
 
+// answerWriters write what an answer reads (the schema due's inputs), each with the rule that keeps it remotely;
+// import_mssql_readers_base (a row writer) and import_schema (schema_ddl's) feed those rules too.
+var answerWriters = map[string]string{
+	"import_mssql_schema":    "mssql_schema_dbs and schema_databases' is_present: mssqlSchemaMoves (answers_schema.go)",
+	"mssql_schema_trace_gap": "the default trace's gap (0267's trigger on mssql_reader_state): readersMoves (answers_schema.go)",
+}
+
 // sourceRule is the table's entry for a source a collector asks (an exact name, else the longest prefix).
 func sourceRule(source string) (cursorSource, bool) {
 	best, found := cursorSource{}, false

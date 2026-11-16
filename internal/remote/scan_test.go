@@ -481,7 +481,14 @@ func TestSourcesCoverTheCode(t *testing.T) {
 	if len(writers) < 15 {
 		t.Fatalf("only %d cursor-table writers found: the scan reads nothing", len(writers))
 	}
-	for _, p := range checkSQLWriters(writers, cursorSources, rowWriters, otherWriters) {
+	named := map[string]string{}
+	for f, why := range otherWriters {
+		named[f] = why
+	}
+	for f, why := range answerWriters {
+		named[f] = why
+	}
+	for _, p := range checkSQLWriters(writers, cursorSources, rowWriters, named) {
 		t.Error(p)
 	}
 	if t.Failed() {

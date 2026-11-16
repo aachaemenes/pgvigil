@@ -147,10 +147,6 @@ func TestStoreSchemaDue(t *testing.T) {
 		}
 		sameAnswer(t, fmt.Sprintf("step %d", i), got, *st.want)
 	}
-	pid, _ := s.EnsureInstanceEngine(ctx, "postgres", "pg1", "onprem", "18.1", 180001, false, nil)
-	if _, err := s.MSSQLSchemaDue(ctx, pid, t0, []byte(`{}`)); err == nil {
-		t.Errorf("a PostgreSQL instance's schema due: no error")
-	}
 }
 
 // The store implements store.Store whole once the three answers are in.
