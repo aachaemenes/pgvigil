@@ -41,3 +41,13 @@
 --       ON CONFLICT ... SET gains   retries = collector_runs.retries + EXCLUDED.retries,
 --     and the function's header comment names runs[].retries (absent = 0, an older collector). The column itself is
 --     0271's (ALTER TABLE ... ADD COLUMN IF NOT EXISTS retries int NOT NULL DEFAULT 0).
+
+-- (4) N4 T9 (the stalled pass): 0121_collector_health.sql, pgvigil.collector_findings - one arm after the 'purge not
+--     run in 2 days' arm:
+--       UNION ALL
+--       SELECT * FROM pgvigil.partitions_ahead_finding(now())
+--     and, before the view, a DO block making a stub pgvigil.partitions_ahead_finding(timestamptz) (same signature and
+--     result columns, no rows) only where the function is absent: the view is made before 0271, which gives the
+--     function its body (rel-b6g's collection_dont_monitor stub is the same form). A join line, not a CREATE OR REPLACE
+--     VIEW in 0271: rel-b6g edits this view in place too (collection_dont_monitor). The functions themselves are 0271's
+--     (partitions_missing_next, partitions_ahead_finding).

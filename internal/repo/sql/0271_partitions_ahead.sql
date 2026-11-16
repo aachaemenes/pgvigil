@@ -105,3 +105,38 @@ END $$;
 -- shows it per collection over 24 h. The beat's arm is a join line (scripts/n4-join-lines.sql (3): another slice edits
 -- import_collector_beat in place), placed for the proofs by scripts/n4-wiring.patch.
 ALTER TABLE pgvigil.collector_runs ADD COLUMN IF NOT EXISTS retries int NOT NULL DEFAULT 0;
+
+-- A stalled pass, seen before the rollover: partitions_missing_next(p_at) - the month-ranged parents whose partition of
+-- the month after p_at's (UTC) is missing; partitions_ahead_finding(p_at) - the collector's finding 'partitions ahead
+-- missing' inside a month's last three days (UTC) while one is missing and an instance is active (a stopped pgvigil
+-- run, a parent busy at every pass). collector_findings (0121) names it through a join line (scripts/n4-join-lines.sql
+-- (4)) and a stub there (the view is made before this file). Read only and neither import_: apply_roles grants both
+-- to the reader (the Collector page reads the view).
+CREATE OR REPLACE FUNCTION pgvigil.partitions_missing_next(p_at timestamptz)
+RETURNS TABLE (parent text) LANGUAGE sql STABLE AS $$
+  SELECT p.parent
+    FROM pgvigil.partition_parents() p
+   WHERE p.unit = 'month'
+     AND to_regclass('pgvigil.' || quote_ident(p.parent || '_'
+           || to_char(date_trunc('month', p_at AT TIME ZONE 'UTC') + interval '1 month', 'YYYYMM'))) IS NULL
+   ORDER BY 1
+$$;
+
+CREATE OR REPLACE FUNCTION pgvigil.partitions_ahead_finding(p_at timestamptz)
+RETURNS TABLE (instance_id int, severity text, setting text, value text, is_set boolean, suggested text, platforms text,
+               detail text, source text, at timestamptz) LANGUAGE sql STABLE AS $$
+  SELECT NULL::int, 'warning'::text, 'partitions ahead missing'::text, m.n || ' parent(s)', true,
+         'pgvigil run making next month''s partitions (its start and hourly pass)'::text, 'all'::text,
+         'next month''s partitions missing: ' || m.n || ' parent(s) (' || m.names
+           || CASE WHEN m.n > 6 THEN ' and ' || (m.n - 6) || ' more' ELSE '' END
+           || '); at the month''s first minute the imports would make them inside their own transactions, where two can '
+           || 'deadlock: is pgvigil run up, or is a parent busy at every pass?',
+         'pgvigil repository'::text, w.starts
+    FROM (SELECT (date_trunc('month', p_at AT TIME ZONE 'UTC') + interval '1 month' - interval '3 days') AT TIME ZONE 'UTC' AS starts) w
+   CROSS JOIN (SELECT count(*) AS n,
+                      (SELECT string_agg(y.parent, ', ' ORDER BY y.parent)
+                         FROM (SELECT x.parent FROM pgvigil.partitions_missing_next(p_at) x ORDER BY 1 LIMIT 6) y) AS names
+                 FROM pgvigil.partitions_missing_next(p_at)) m
+   WHERE p_at >= w.starts AND m.n > 0
+     AND EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.is_active)
+$$;

@@ -93,7 +93,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: v => badge(sevWord[String(v)] ?? String(v), sevKind[String(v)] ?? '') },
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'setting', label: 'check' }, { key: 'value' },
       { key: 'detail', wide: true }, { key: 'at', label: 'since', fmt: fmtTime },
-    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'),
+    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days, and in a month\'s last three days next month\'s partitions are made.'),
     // a forming wait that ended without a parent (task 201 DONE-2 N7): only while no parent stands on that host
     ...waits.map(r => el('p', { class: 'state' }, `The wait for a shared cause ended on ${r.host} at ${fmtTime(r.ended_at)} without one: new alerts of its ${fmtNum(r.instances)} failing instance(s) are sent as they come.`)));
 
