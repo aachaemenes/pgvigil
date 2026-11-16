@@ -16,7 +16,7 @@
 #   MSSQL_IMAGE, PG_IMAGE   the SQL Server image (M) and the PostgreSQL image of R's primary and standby.
 #   Needs: psql, curl, jq, python3, docker (M's SQL Server, R's standby), chromium, node, npm (U, axe-core 4.14.0).
 #
-# Expected (written before the first run; the base rel-j15 75c72186 is RED on every part: no tables, no tools, no routes).
+# Expected (written before the first run; the base 75c72186 is RED on every part: no tables, no tools, no routes).
 #  A. off: a serve without the agents: section answers GET and POST /api/investigations 404 with 'agents.enabled is
 #     off'; a plain reader login's `pgvigil mcp` lists the nine read tools only and a claim_investigation call is
 #     unknown (-32602).
@@ -96,6 +96,19 @@
 #     saying the outcome is unknown. S15. a function the agent may EXECUTE that writes (a claim of another request), run
 #     through run_select: refused 'read-only transaction'. S5 reads pg_locks by a later call while the agent runs.
 #  R2 superuser_by_role: the superuser connecting with options=-c role=<the plain reader> refused 'superuser'.
+#  Q6. a setting with rows for two objects (two databases' xid age): the request names its row by value, numbers aside
+#     ('agtb: 400000123' names 'agtb: 400000000'), and its snapshot is that row, not the more severe one. B3. the brief
+#     of the second object's request carries no earlier report of the first object's.
+#  C14. the third claim released: the request reads expired, off the agent's open list. C15. a renew of a lapsed claim
+#     while another session holds the request's row (3 s): refused 'not your claim' - the lapse is settled under the
+#     row's lock, never read from the stored state.
+#  S16. an agent's 200 run_selects: 193 run, the rest refused 'the request's record is full' (the record keeps its last
+#     5 rows for the request's end), then its report accepted and a person's close too. S8's filler is 193 rows.
+#  J4. a refused run whose server words quote the statement ('LEAK<suffix>'): the record's outcome says 'refused', the
+#     plain reader reads no LEAK in it, a signed-in user reads the words on serve's request (its detail).
+#  U5. Close's prompt cancelled: the request stays open. U6. Run of 'SELECT 1 AS n, 2 AS n': the grid's first row reads
+#     1, 2. U3 also: no Investigations tab on the serve without agents. U7. a serve with agents on and -no-login: the
+#     findings say once, above the grid, why Investigate is off.
 #  P6. a finding's report carrying sql refused 'only an ask'; a finding reported 'answered' refused "a finding's
 #     verdict"; an evidence entry that is not an object refused 'evidence entry 1'; a queries_run entry that is not a
 #     statement refused 'queries_run entry 1'; the claim still holds: a good report accepted.
@@ -198,14 +211,14 @@ NINST=$(q "select count(*) from pgvigil.instances")
 # ---- the serves ------------------------------------------------------------------------------------------------------
 grep -v -E '^agents:|^  enabled:' "$CFG" > "$WORK/cfg-off.yaml"
 grep -v '^reports_dsn:' "$CFG" > "$WORK/cfg-norep.yaml"
-start_serve() { # start_serve <cfg> -> prints the URL
+start_serve() { # start_serve <cfg> [-no-login] -> prints the URL
   local port; port=$(freeport)
-  "$BIN" serve -config "$1" -dsn env:UI_DSN -listen "127.0.0.1:$port" >"$WORK/serve-$port.log" 2>&1 &
+  "$BIN" serve -config "$1" -dsn env:UI_DSN -listen "127.0.0.1:$port" ${2:-} >"$WORK/serve-$port.log" 2>&1 &
   echo $! > "$WORK/serve-$port.pid"   # a $(...) subshell: the caller adds the pid to SRVS
   for n in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.5; done
   echo "http://127.0.0.1:$port"
 }
-S1=$(start_serve "$CFG"); S2=$(start_serve "$WORK/cfg-off.yaml"); S3=$(start_serve "$WORK/cfg-norep.yaml")
+S1=$(start_serve "$CFG"); S2=$(start_serve "$WORK/cfg-off.yaml"); S3=$(start_serve "$WORK/cfg-norep.yaml"); S4=$(start_serve "$CFG" -no-login)
 for f in "$WORK"/serve-*.pid; do SRVS+=("$(cat "$f")"); done
 curl -sf -o /dev/null "$S1/" || die "serve did not answer: $(tail -3 "$WORK"/serve-*.log)"
 login() { printf '{"username":"%s","password":"%s"}' "$3" "$UIPW" | curl -s -c "$WORK/jar-$2-$3" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d @- "$1/api/login" >/dev/null; }
@@ -296,6 +309,12 @@ row=$(q "select kind||'|'||state||'|'||asked_by from pgvigil.investigations wher
 jr=$(q "select string_agg(event, ',' order by id) from pgvigil.investigation_journal where investigation_id = ${Q1:-0}")
 sn=$(q "select (d.snapshot->>'setting') || '|' || (d.snapshot ? 'forged')::text || '|' || d.note from pgvigil.ui_investigation_data d where d.investigation_id = ${Q1:-0}")
 [[ $c == 200 && $row == "finding|open|$U1" && $jr == asked && $sn == "$FSET|false|Q note" ]] && ok "Q2 a request: 200, row '$row', journal '$jr', the snapshot serve's read of $FSET (no forged key)" || bad "Q2 the request: http $c id '${Q1:-}' row '$row' journal '$jr' snapshot '$sn' ($(head -c 200 "$WORK/body"))"
+# Q6: two databases' xid age on one instance: the request names its row by value
+q "insert into pgvigil.databases (instance_id, dbid, datname, snapshot_at, first_seen, is_present, is_template, conn_limit, xid_age) values ($FIID, 990001, 'agta$SUF', now(), now(), true, false, 0, 1200000000), ($FIID, 990002, 'agtb$SUF', now(), now(), true, false, 0, 400000000)" >/dev/null
+XSET="database xid age"
+c=$(api "$S1" s1 "$U2" POST investigations "$(jq -cn --argjson i "$FIID" --arg s "$XSET" --arg v "agtb$SUF: 400000123" '{kind:"finding",instance_id:$i,setting:$s,value:$v,source:"pg-collector"}')"); Q6=$(B '.id // empty')
+sn=$(q "select d.snapshot->>'value' from pgvigil.ui_investigation_data d where d.investigation_id = ${Q6:-0}")
+[[ $c == 200 && $sn == "agtb$SUF: 400000000" ]] && ok "Q6 a setting with rows for two objects: the request's snapshot is the row it named ('$sn')" || bad "Q6 the named row: http $c, snapshot value '$sn' (want agtb$SUF: 400000000) ($(head -c 160 "$WORK/body"))"
 for n in $(seq 2 10); do ask_q "q$n" >/dev/null; done
 c=$(api "$S1" s1 "$U1" POST investigations '{"kind":"ask","question":"the eleventh"}')
 [[ $c == 409 && $(cat "$WORK/body") == *"already has 10 open"* ]] && ok "Q3 the 11th open request of a user: 409 'already has 10 open'" || bad "Q3 the 11th: $c $(head -c 200 "$WORK/body")"
@@ -398,6 +417,23 @@ calls c_dr "$(tc claim_investigation "{\"id\":${C9:-0},\"agent\":\"agent-dr\"}")
 mc AGP_DSN c_dr; f=$(pxn "fired drop agent_investigation_claim("); n=$(pxn "seen agent_investigation_claim("); px
 cl=$(q "select count(*) from pgvigil.investigation_journal where investigation_id = ${C9:-0} and event = 'claimed'"); b=$(Rr c_dr 0 '.body')
 [[ $f == 1 && $n == 1 && $cl == 1 && $(Rr c_dr 0 '.isError') == true && $b == *"unknown"* && $(Rr c_dr 1 '.isError') == false ]] && ok "C13 the claim's answer lost after its commit: sent once, one claim row, '${b:0:100}'; the next call answers" || bad "C13 the lost claim answer: fired $f, sent $n time(s), $cl claim row(s), reply isError '$(Rr c_dr 0 '.isError')' '${b:0:160}', the next call isError '$(Rr c_dr 1 '.isError')'"
+# C14: the third claim released reads expired
+reset_inv; C10R=$(ask_q "three claims, then a release")
+for k in 1 2; do calls c_3$k "$(tc claim_investigation "{\"id\":${C10R:-0},\"agent\":\"agent-3\"}")"; mc AG1_DSN c_3$k; lapse "${C10R:-0}"; done
+calls c_33 "$(tc claim_investigation "{\"id\":${C10R:-0},\"agent\":\"agent-3\"}")" "$(tc release_investigation "{\"id\":${C10R:-0},\"claim_id\":\"\$claim\",\"reason\":\"r\"}")" "$(tc list_investigations '{"state":"open","limit":100}')"
+mc AG1_DSN c_33
+st=$(q "select state from pgvigil.investigations_now where id = ${C10R:-0}"); inl=$(Rr c_33 2 "[.body.investigations[]? | select(.id == ${C10R:-0})] | length")
+[[ $(Rr c_33 1 '.isError') == false && $st == expired && $inl == 0 ]] && ok "C14 the third claim released: expired, off the open list" || bad "C14 the third claim released: release $(R c_33 1 '.body' | cut -c1-80), state '$st', on the open list $inl"
+# C15: a renew of a lapsed claim while another session holds the row
+reset_inv; C11R=$(ask_q "a lapsed claim under another lock"); rm -f "$WORK/w6" "$WORK/w7"
+calls c_lk "$(tc claim_investigation "{\"id\":${C11R:-0},\"agent\":\"agent-lk\"}")" '{"touch":"'"$WORK"'/w6"}' '{"barrier":"'"$WORK"'/w7"}' "$(tc renew_investigation "{\"id\":${C11R:-0},\"claim_id\":\"\$claim\"}")"
+mc AG1_DSN c_lk & pk2=$!
+for _ in $(seq 1 100); do [[ -f "$WORK/w6" ]] && break; sleep 0.1; done
+lapse "${C11R:-0}"
+psql "$PGVIGIL_REPO_DSN" -XAtq -c "begin" -c "select 1 from pgvigil.investigations where id = ${C11R:-0} for update" -c "select pg_sleep(3)" -c "commit" >/dev/null 2>&1 & pp2=$!
+sleep 0.5; touch "$WORK/w7"; wait $pk2 $pp2
+b=$(Rr c_lk 3 '.body')
+[[ $(Rr c_lk 0 '.isError') == false && $(Rr c_lk 3 '.isError') == true && $b == *"not your claim"* ]] && ok "C15 a renew of a lapsed claim while another session holds the row: '${b:0:100}'" || bad "C15 the renew under another lock: isError '$(Rr c_lk 3 '.isError')' '${b:0:160}'"
 
 echo "--- B. the brief"
 reset_inv
@@ -412,6 +448,15 @@ B2=$(ask_finding "again")
 calls b_2 "$(tc claim_investigation "{\"id\":${B2:-0},\"agent\":\"agent-b\"}")"; mc AG1_DSN b_2
 er=$(Rr b_2 0 '.body.brief.earlier_reports[0] | "\(.id)|\(.unreviewed)"')
 [[ $er == "${B1:-x}|true" ]] && ok "B2 a second request of the same finding: earlier_reports[0] = $B1, unreviewed" || bad "B2 earlier reports: '$er' (want ${B1:-?}|true)"
+xreq() { api "$S1" s1 "$U3" POST investigations "$(jq -cn --argjson i "$FIID" --arg s "$XSET" --arg v "$1" '{kind:"finding",instance_id:$i,setting:$s,value:$v,source:"pg-collector"}')" >/dev/null; B '.id // empty'; }
+B3A=$(xreq "agta$SUF: 1200000000")
+calls b_3a "$(tc claim_investigation "{\"id\":${B3A:-0},\"agent\":\"agent-b3\"}")" "$(tc report_investigation "{\"id\":${B3A:-0},\"claim_id\":\"\$claim\",\"verdict\":\"real\",\"summary\":\"the a database\",\"body\":\"b\"}")"
+mc AG1_DSN b_3a
+B3B=$(xreq "agtb$SUF: 400000000")
+calls b_3b "$(tc claim_investigation "{\"id\":${B3B:-0},\"agent\":\"agent-b3\"}")"; mc AG1_DSN b_3b
+er=$(Rr b_3b 0 '[.body.brief.earlier_reports[]?.id | tostring] | join(",")')
+[[ $(Rr b_3a 1 '.isError') == false && $(Rr b_3b 0 '.isError') == false && -z $er ]] && ok "B3 the other object's request: no earlier report of the first object's" || bad "B3 earlier reports across objects: '$er' (the first's report $(R b_3a 1 '.body' | cut -c1-80), the claim $(R b_3b 0 '.isError'))"
+q "delete from pgvigil.databases where instance_id = $FIID and dbid in (990001, 990002)" >/dev/null
 
 echo "--- S. run_select / J. the record"
 reset_inv
@@ -460,12 +505,13 @@ a=$(as "$(L rd)" -c "select count(*) from pgvigil.investigation_journal"); b=$(a
 [[ $a =~ ^[0-9]+$ && $b == *"permission denied"* ]] && ok "J2 the plain reader reads the journal ($a rows), not its texts" || bad "J2 the plain reader: journal '${a:0:80}', texts '${b:0:120}'"
 api "$S1" s1 "$U2" GET "investigations?id=${S1R:-0}" >/dev/null
 [[ $(B '[.journal[]? | select(.event == "select") | .text] | map(select(. != null)) | length') == 12 && $(B '[.journal[]? | .text] | any(. == "SELECT count(*) AS n FROM pgvigil.instances")') == true ]] && ok "J3 serve shows a signed-in user each statement's text" || bad "J3 serve's journal: $(head -c 240 "$WORK/body")"
-# filled to 198: the lapse the claim settles writes row 199, the claim row 200, the run's would be the 201st
-q "insert into pgvigil.investigation_journal (investigation_id, at, event, login, outcome) select ${S1R:-0}, now(), 'select', 'proof', 'filler' from generate_series(1, greatest(0, 198 - (select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0})))" >/dev/null
+# filled to 193: the lapse the claim settles writes row 194, the claim row 195, the run would be the 196th (an agent's
+# and a person's calls stop at 195 rows: the last 5 are kept for the request's end)
+q "insert into pgvigil.investigation_journal (investigation_id, at, event, login, outcome) select ${S1R:-0}, now(), 'select', 'proof', 'filler' from generate_series(1, greatest(0, 193 - (select count(*) from pgvigil.investigation_journal where investigation_id = ${S1R:-0})))" >/dev/null
 calls s_3 "$(tc claim_investigation "{\"id\":${S1R:-0},\"agent\":\"agent-s\"}")" "$(sel "SELECT 1")"
 q "update pgvigil.investigations set lease_until = now() - interval '1 second' where id = ${S1R:-0}" >/dev/null
 mc AG1_DSN s_3
-[[ $(Rr s_3 0 '.isError') == false && $(Rr s_3 1 '.isError') == true && $(Rr s_3 1 '.body') == *"the request's record is full"* ]] && ok "S8 a request whose record holds 200 rows refuses the next run" || bad "S8 the full record: $(R s_3 1 '.body' | cut -c1-200) (claim: $(R s_3 0 '.body' | cut -c1-100))"
+[[ $(Rr s_3 0 '.isError') == false && $(Rr s_3 1 '.isError') == true && $(Rr s_3 1 '.body') == *"the request's record is full"* ]] && ok "S8 a request whose record holds 195 rows refuses the next run" || bad "S8 the full record: $(R s_3 1 '.body' | cut -c1-200) (claim: $(R s_3 0 '.body' | cut -c1-100))"
 # S9-S15: S9 / S11 the proxy holds a statement, S10 / S14 it loses a committed write's answer
 xsel() { tc run_select "$(jq -cn --argjson i "$1" --arg s "$2" '{id:$i,claim_id:"$claim",sql:$s}')"; }
 xclaim() { tc claim_investigation "{\"id\":${1:-0},\"agent\":\"agent-x\"}"; }
@@ -497,6 +543,22 @@ calls s_14 "$(xclaim "$S14R")" "$(xsel "${S14R:-0}" "SELECT 1 AS one")"
 mc AGP_DSN s_14; f=$(pxn "fired drop agent_investigation_journal_done("); n=$(pxn "seen agent_investigation_journal_done("); px
 rc=$(Rr s_14 1 '.body.record // empty')
 [[ $f == 1 && $n == 1 && $(Rr s_14 1 '.isError') == false && $(Rr s_14 1 '.body.row_count') == 1 && $rc == *"unknown"* ]] && ok "S14 the outcome write's answer lost: the rows answer with the record line '${rc:0:100}'" || bad "S14 the lost outcome answer: fired $f, sent $n time(s), reply $(R s_14 1 '.body' | cut -c1-200)"
+# J4: a refused run's server words, which quote the statement, kept from the plain reader
+J4R=$(ask_q "server words")
+calls j_4 "$(xclaim "$J4R")" "$(xsel "${J4R:-0}" "SELECT 'LEAK$SUF'::int AS n")"
+mc AG1_DSN j_4
+a=$(as "$(L rd)" -c "select string_agg(outcome, '|') from pgvigil.investigation_journal where investigation_id = ${J4R:-0} and event = 'select'")
+api "$S1" s1 "$U2" GET "investigations?id=${J4R:-0}" >/dev/null; det=$(B '[.journal[]? | select(.event == "select") | .detail] | first // empty')
+[[ $(Rr j_4 1 '.isError') == true && $a == refused && $det == *"LEAK$SUF"* ]] && ok "J4 a refused run: the record's outcome 'refused' for every reader, the server's words for a signed-in user" || bad "J4 the server's words: the plain reader reads '${a:0:160}', serve's detail '${det:0:120}'"
+# S16: an agent's 200 run_selects, then its report and a person's close
+S16R=$(ask_q "two hundred selects")
+{ xclaim "$S16R"; for _ in $(seq 1 200); do xsel "${S16R:-0}" "SELECT 1"; done
+  tc report_investigation "{\"id\":${S16R:-0},\"claim_id\":\"\$claim\",\"verdict\":\"needs_person\",\"summary\":\"too many calls\",\"body\":\"b\"}"; } > "$WORK/s_16.calls"
+mc AG1_DSN s_16
+nok=$(jq -s '[.[] | select(.call.tool == "run_select" and .isError == false)] | length' "$WORK/s_16.out")
+full=$(jq -s '[.[] | select(.call.tool == "run_select" and .isError == true and ((.body | tostring) | contains("record is full")))] | length' "$WORK/s_16.out")
+c=$(api "$S1" s1 "$U1" POST investigations/close "{\"id\":${S16R:-0},\"reason\":\"x\"}")
+[[ $nok == 193 && $full == 7 && $(Rr s_16 201 '.isError') == false && $c == 200 ]] && ok "S16 an agent's 200 run_selects: 193 run, 7 refused 'record is full'; its report and a person's close accepted" || bad "S16 the record's end: $nok run, $full refused full, the report $(R s_16 201 '.body' | cut -c1-100), close http $c ($(head -c 120 "$WORK/body"))"
 
 echo "--- P. the report"
 reset_inv
@@ -645,15 +707,29 @@ const ev = async e => (await cmd('Runtime.evaluate', { returnByValue: true, awai
 await cmd('Network.enable'); await cmd('Page.enable');
 await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: base });
 if (theme) await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+const act = process.env.PGAGT_ACT || '';
+// a prompt answered Cancel (U5): the dialog event dismissed as it opens
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (d.method === 'Page.javascriptDialogOpening') cmd('Page.handleJavaScriptDialog', { accept: false }); });
 await cmd('Page.navigate', { url: base + hash });
 await sleep(4000);
+const click = async label => ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (b) b.click(); return !!b; })()`);
+let clicked = null;
+if (act === 'close-cancel') { clicked = await click('Close the request'); await sleep(2500); }
+if (act === 'run') { clicked = await click('Run'); await sleep(3000); }
 const out = await ev(`(() => {
   const btns = [...document.querySelectorAll('main button')].map(b => b.textContent.trim());
+  const h = [...document.querySelectorAll('main h4')].find(x => x.textContent.trim() === "The answer's SELECT");
+  let runOut = h; for (let k = 0; k < 4 && runOut; k++) runOut = runOut.nextElementSibling;
+  const first = runOut ? runOut.querySelector('tbody tr') : null;
   return { investigate: btns.filter(x => x === 'Investigate').length,
            ask: !!document.querySelector('main textarea[aria-label="Ask"], main textarea[name="ask"]'),
            rows: document.querySelectorAll('main table tbody tr').length,
-           unreviewed: /unreviewed/i.test(document.querySelector('main')?.textContent || '') };
+           unreviewed: /unreviewed/i.test(document.querySelector('main')?.textContent || ''),
+           invTab: [...(document.getElementById('tabs')?.querySelectorAll('a') || [])].some(a => a.textContent.trim() === 'Investigations'),
+           offWords: (document.querySelector('main')?.textContent.match(/Investigate is off here/g) || []).length,
+           runCells: first ? [...first.children].map(c => c.textContent.trim()) : null };
 })()`);
+out.clicked = clicked;
 if (axePath) {
   const src = (await import('node:fs')).readFileSync(axePath, 'utf8');
   await ev(src + '; true');
@@ -668,7 +744,17 @@ JS
   f=$(pg "$S1" "$CK1" "#/findings"); i=$(pg "$S1" "$CK1" "#/investigations?id=${U1R:-0}"); off=$(pg "$S2" "$CK2" "#/findings")
   [[ $(jq -r '.investigate' <<<"$f" 2>/dev/null) -ge 1 ]] && ok "U1 #/findings: an Investigate button on a finding row" || bad "U1 #/findings: $f"
   [[ $(jq -r '[.ask, (.rows >= 1), .unreviewed] | all' <<<"$i" 2>/dev/null) == true ]] && ok "U2 #/investigations: the Ask box, the grid, the report's 'unreviewed' line" || bad "U2 #/investigations: $i"
-  [[ $(jq -r '(.investigate == 0) and (.rows >= 1)' <<<"$off" 2>/dev/null) == true ]] && ok "U3 the serve without agents: the findings drawn, no Investigate button" || bad "U3 the serve without agents: $off"
+  [[ $(jq -r '(.investigate == 0) and (.rows >= 1) and (.invTab == false)' <<<"$off" 2>/dev/null) == true ]] && ok "U3 the serve without agents: the findings drawn, no Investigate button, no Investigations tab" || bad "U3 the serve without agents: $off"
+  # U5: Close's prompt cancelled; U6: Run's grid with two columns of one name; U7: the off words on a -no-login serve
+  U5R=$(ask_q "keep me open")
+  r=$(PGAGT_ACT=close-cancel pg "$S1" "$CK1" "#/investigations?id=${U5R:-0}"); st=$(q "select state from pgvigil.investigations where id = ${U5R:-0}")
+  [[ $(jq -r '.clicked' <<<"$r" 2>/dev/null) == true && $st == open ]] && ok "U5 Close's prompt cancelled: the request stays open" || bad "U5 Close cancelled: clicked $(jq -r '.clicked' <<<"$r" 2>/dev/null), state '$st'"
+  U6R=$(ask_q "two of one name")
+  calls u_6 "$(tc claim_investigation "{\"id\":${U6R:-0},\"agent\":\"agent-u\"}")" "$(tc report_investigation "$(jq -cn --argjson i "${U6R:-0}" '{id:$i,claim_id:"$claim",verdict:"answered",summary:"s",body:"b",sql:"SELECT 1 AS n, 2 AS n"}')")"; mc AG1_DSN u_6
+  r=$(PGAGT_ACT=run pg "$S1" "$CK1" "#/investigations?id=${U6R:-0}")
+  [[ $(Rr u_6 1 '.isError') == false && $(jq -r '.runCells | join(",")' <<<"$r" 2>/dev/null) == "1,2" ]] && ok "U6 Run's grid with two columns named n: 1, 2" || bad "U6 Run's grid: $(jq -c '.runCells' <<<"$r" 2>/dev/null) (report $(R u_6 1 '.isError'))"
+  r=$(pg "$S4" "" "#/findings")
+  [[ $(jq -r '(.offWords == 1) and (.investigate >= 1)' <<<"$r" 2>/dev/null) == true ]] && ok "U7 a -no-login serve with agents on: the findings say once why Investigate is off" || bad "U7 the off words: $r"
   for th in light dark; do a=$(pg "$S1" "$CK1" "#/investigations?id=${U1R:-0}" "$WORK/node_modules/axe-core/axe.min.js" "$th")
     [[ $(jq -r '.axeNodes' <<<"$a" 2>/dev/null) == 0 ]] && ok "U4 axe-core on #/investigations ($th): 0 violation nodes" || bad "U4 axe-core ($th): $a"; done
 fi
