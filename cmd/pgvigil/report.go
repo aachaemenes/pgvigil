@@ -309,7 +309,7 @@ var keepKeys = map[string]bool{
 	"type": true, "settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
 	"snapshot_max_bytes": true, "statement_timeout": true,
 	// remote: and remote_sites: (config/remote.go): the knobs; the names, folders, drops and keys are masked, and so
-	// is sign: (secretKey reads a key with "sign" in it as a secret's)
+	// is sign: (secretKey reads a key holding "sig" as a secret's)
 	"keep_days": true, "max_mb": true, "expected_every": true, "gap_wait": true,
 }
 
