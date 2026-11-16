@@ -14,6 +14,12 @@
 //   W9 sp_WhoIsActive @filter_type 'bogus' (the procedure's own RAISERROR): the status line's end is its words, closed
 //       before ' Request <n>.'; the panel: badge 'failed' and the procedure's words in the panel (r10's W6 shot: a
 //       queued end's '' refusal hid every failed run's words)
+//   G3 / G5 / G6 / G9 (CQ-RUNSGRID) the page's 'Runs on this instance' grid after that row's request ends, with no
+//       reload: one row more than just before the Run click, the newest that run's (tool, outcome; G9 the procedure's
+//       words in its detail; G6 the outcome as the audit row stores a run cancelled while it ran); waits up to 10 s
+//   S3 (CQ-RUNSGRID) the shot overlay: W3's full-page shot is taken where the run left the page scrolled; a viewport
+//       shot there (S3-viewport), then window.scrollTo(0, 0) and the full-page shot again (S3-top); at scroll 0 the
+//       sticky header must end above the page's instance line (the page draws no overlap)
 // A run's result counts only as the panel's own result section (section.report-result): its badge 'done' and a table
 // with rows (the form's parameter table is not a result). An off control counts only with its words (title and the
 // note a person reads); W2 wants one at least (the walk's SQL Server has no Darling Data installed).
@@ -41,8 +47,8 @@ const until = async (expr, ms = 20000) => {
 };
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1100, deviceScaleFactor: 1, mobile: false });
-const shot = async (name) => {
-  const d = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+const shot = async (name, full = true) => {
+  const d = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: full });
   if (d.result?.data) fs.writeFileSync(`${out}/${name}.png`, Buffer.from(d.result.data, 'base64'));
 };
 const go = async (hash) => {
@@ -67,6 +73,25 @@ const tools = async (inst) => (await ev(`fetch('/api/community?instance=${inst}'
 // panel: the tool's own section - its h3 a direct child and a 'Run <name>' button in it (the page's first group heading
 // can carry the tool's name too: sp_WhoIsActive's group is 'sp_WhoIsActive', so the page's own section, whose first h3
 // it is, matched before the tool's panel had drawn - r08's W6)
+// runsGrid: the 'Runs on this instance' grid as drawn - its data rows and its newest row by the grid's own column
+// labels (the box after the heading: the grid itself, or a box holding it; an empty grid has no table.grid)
+const runsGrid = () => ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => x.textContent === 'Runs on this instance');
+  const b = h?.nextElementSibling; if (!b) return null;
+  const t = b.matches('table.grid') ? b : b.querySelector('table.grid');
+  if (!t) return { n: 0, first: null, said: b.textContent.trim().slice(0, 200) };
+  const heads = [...t.querySelectorAll('thead th')].map(th => (th.querySelector('.th-label')?.textContent ?? th.textContent).trim());
+  const trs = t.querySelectorAll('tbody tr'); const c = trs[0] ? [...trs[0].children].map(td => td.textContent.trim()) : [];
+  return { n: trs.length, first: Object.fromEntries(heads.map((k, i) => [k, c[i] ?? ''])), said: b.querySelector('.error')?.textContent ?? '' }; })()`);
+// gridRow: the grid after a run's end (CQ-RUNSGRID) - it redraws by itself: one row more than before the Run click,
+// the newest that run's tool with an outcome in outcomes and good(newest); up to 10 s, no reload
+const gridRow = async (g, page, r, tool, outcomes, good = () => true) => {
+  const before = r.before?.n ?? -1; let now = null; const t0 = Date.now();
+  while (Date.now() - t0 < 10000) { now = await runsGrid(); if (now && now.n > before && now.first?.tool === tool.id) break; await sleep(200); }
+  const f = now?.first;
+  row(g, page, `the 'Runs on this instance' grid after Request ${r.id}'s end, no reload`,
+    `${before} row(s) just before the Run click, ${now?.n ?? 'no grid'} now; newest: ${f ? `${f.what} ${f.tool} ${f.outcome}, rows ${f.rows}, detail '${f.detail}'` : 'none'}${now?.said ? '; the grid says: ' + now.said : ''}`,
+    !!(now && before >= 0 && now.n === before + 1 && f?.tool === tool.id && outcomes.includes(f?.outcome) && good(f)));
+};
 const panel = (name) => `[...document.querySelectorAll('main section')].find(s => s.querySelector(':scope > h3')?.textContent === ${JSON.stringify(name)}
   && [...s.querySelectorAll('button')].some(b => b.textContent === ${JSON.stringify('Run ' + name)}))`;
 
@@ -85,6 +110,7 @@ const runTool = async (r, page, tool, inputs = {}, cancelWhenRunning = false) =>
     }
   }
   const runWords = 'Run ' + tool.name;
+  const before = await runsGrid();   // the runs grid just before the click (G rows)
   const clicked = await ev(`(() => { const b = [...(${panel(tool.name)}).querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(runWords)});
     if (!b || b.getAttribute('aria-disabled') === 'true') return b ? 'off: ' + (b.title || '') : null; b.click(); return 'clicked'; })()`);
   if (clicked !== 'clicked') { row(r, page, runWords, clicked ?? 'no Run button', false); return null; }
@@ -110,7 +136,7 @@ const runTool = async (r, page, tool, inputs = {}, cancelWhenRunning = false) =>
       err: [...x.querySelectorAll('.error')].map(e => e.textContent).join(' | ').slice(0, 300),
       note: [...x.querySelectorAll('p.empty, p.refused')].map(e => e.textContent).join(' | ').slice(0, 300) }; })()`);
   await shot(`${r}-${tool.id}`);
-  return { seen, end, id, res, cancelled };
+  return { seen, end, id, res, cancelled, before };
 };
 
 // fenced: a row that throws is a FAIL row with the error's words, and the walk goes on
@@ -150,6 +176,18 @@ for (const [rl, rr, inst, toolId, engine, needOff] of enginePages) {
     if (!r) return;
     const good = r.id > 0 && /^Ran on /.test(r.end) && r.res.badge === 'done' && r.res.tables > 0 && r.res.rows.some(n => n > 0) && !r.res.err;
     row(rr, page, `${tool.name} -> Run ${tool.name}`, `status: ${r.seen.join(' -> ')}; result: badge '${r.res.badge}', ${r.res.tables} table(s), rows ${JSON.stringify(r.res.rows)}${r.res.err ? '; error: ' + r.res.err : ''}${r.res.note ? '; note: ' + r.res.note : ''}`, good);
+    await gridRow('G' + rr.slice(1), page, r, tool, ['done']);
+    if (rr !== 'W3') return;
+    // S3: the shot overlay - W3's full-page shot was taken at the scroll the run left; the viewport there, then the top
+    const y = await ev('window.scrollY');
+    await shot('S3-viewport', false);
+    await ev('window.scrollTo(0, 0)'); await sleep(400);
+    await shot('S3-top');
+    const m = await ev(`(() => { const h = document.querySelector('header')?.getBoundingClientRect(); const i = document.querySelector('main .community-intro')?.getBoundingClientRect();
+      return h && i ? { hb: Math.round(h.bottom), it: Math.round(i.top), y: window.scrollY } : null; })()`);
+    row('S3', page, 'the shot overlay: the viewport at the run\'s scroll, then window.scrollTo(0, 0) and the full-page shot',
+      m ? `W3's full-page shot was taken at scrollY ${y}; at scrollY ${m.y} the sticky header ends at ${m.hb} px and the instance line starts at ${m.it} px` : 'no header or no instance line on the page',
+      !!m && m.y === 0 && m.it >= m.hb - 1);
   });
 }
 
@@ -164,6 +202,8 @@ await fenced('W6', `#/community?i=${msId} (SQL Server)`, async () => {
     `status: ${r.seen.join(' -> ')}; result: badge '${r.res.badge}'${r.res.err ? '; error: ' + r.res.err : ''}${r.res.note ? '; note: ' + r.res.note : ''}`,
     r.cancelled && r.id > 0 && !/^Ran on /.test(r.end) && /cancel/i.test(r.end) && /[.!?] Request \d+\.$/.test(r.end.trim())
       && r.res.badge === 'cancelled' && /cancel/i.test(r.res.note) && !r.res.err);
+  // the audit row of a run cancelled while it ran: its outcome as stored (r11's audit: 'failed'), the row there
+  if (r) await gridRow('G6', page, r, tool, ['failed', 'cancelled']);
 });
 
 // W9 a run that fails through the queue: sp_WhoIsActive's own refusal of a filter type it does not know
@@ -176,6 +216,7 @@ await fenced('W9', `#/community?i=${msId} (SQL Server)`, async () => {
   if (r) row('W9', page, `sp_WhoIsActive @filter_type bogus -> Run`,
     `status: ${r.seen.join(' -> ')}; result: badge '${r.res.badge}'${r.res.err ? '; error: ' + r.res.err : ''}${r.res.note ? '; note: ' + r.res.note : ''}`,
     r.id > 0 && /Valid filter types/.test(r.end) && /[.!?] Request \d+\.$/.test(r.end.trim()) && r.res.badge === 'failed' && /Valid filter types/.test(r.res.err));
+  if (r) await gridRow('G9', page, r, tool, ['failed'], f => /Valid filter types/.test(f.detail));
 });
 
 // W7 / W8 the Running pages: the action doors in queue mode
