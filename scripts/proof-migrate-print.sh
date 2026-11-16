@@ -102,7 +102,7 @@ rc=0; psql "$ADMIN dbname=$FRESH" -X -q -f "$WORK/fresh.sql" > "$WORK/c.out" 2>&
 [ "$(q "$FRESH" "select count(*) from pgvigil.schema_version")" = "$NFILES" ] || fail "C: schema_version does not hold $NFILES files"
 for db in "$REF" "$FRESH"; do [ "$(jitof "$db")" = "jit=off" ] || fail "C: $db's jit setting is '$(jitof "$db")', not jit=off"; done
 dumps "$FRESH" > "$WORK/fresh.dump"
-diff -q "$WORK/ref.dump" "$WORK/fresh.dump" >/dev/null || { diff "$WORK/ref.dump" "$WORK/fresh.dump" | head -20 >&2; fail "C: pg_dump -s differs"; }
+diff -q "$WORK/ref.dump" "$WORK/fresh.dump" >/dev/null || { diff "$WORK/ref.dump" "$WORK/fresh.dump" > "$WORK/c.diff" || true; head -20 "$WORK/c.diff" >&2; fail "C: pg_dump -s differs"; }
 [ "$(counts "$FRESH")" = "$REFCOUNTS" ] || fail "C: the row counts differ: ref $REFCOUNTS / fresh $(counts "$FRESH")"
 ok "C apply: psql exit 0, $NFILES files, jit=off on both, pg_dump -s the same ($(wc -l < "$WORK/ref.dump") lines), row counts the same"
 
@@ -177,7 +177,7 @@ rc=0; psql "$ADMIN dbname=$PARTIAL" -X -q -f "$WORK/rest.sql" > "$WORK/i2.out" 2
 [ "$rc" = 0 ] || { tail -20 "$WORK/i2.out" >&2; fail "I: the rest: psql exit $rc"; }
 [ "$(q "$PARTIAL" "select count(*) from pgvigil.schema_version")" = "$NFILES" ] || fail "I: schema_version does not hold $NFILES files"
 dumps "$PARTIAL" > "$WORK/part.dump"
-diff -q "$WORK/ref.dump" "$WORK/part.dump" >/dev/null || { diff "$WORK/ref.dump" "$WORK/part.dump" | head -20 >&2; fail "I: pg_dump -s differs"; }
+diff -q "$WORK/ref.dump" "$WORK/part.dump" >/dev/null || { diff "$WORK/ref.dump" "$WORK/part.dump" > "$WORK/i.diff" || true; head -20 "$WORK/i.diff" >&2; fail "I: pg_dump -s differs"; }
 [ "$(counts "$PARTIAL")" = "$REFCOUNTS" ] || fail "I: the row counts differ from ref's"
 [ "$(jitof "$PARTIAL")" = "jit=on" ] || fail "I: the database's own jit is '$(jitof "$PARTIAL")', not kept at jit=on"
 grep -q 'left alone' "$WORK/i1.out" || fail "I: no 'left alone' notice in psql's output"
