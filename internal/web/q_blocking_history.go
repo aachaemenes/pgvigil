@@ -157,7 +157,7 @@ SELECT b.head_session_id, b.head_tran_start AS tran_start, min(b.snapshot_at) AS
        (array_agg(b.head_login ORDER BY b.snapshot_at DESC))[1] AS head_login,
        (array_agg(b.head_program ORDER BY b.snapshot_at DESC))[1] AS head_program,
        (array_agg(b.head_database ORDER BY b.snapshot_at DESC))[1] AS head_database,
-       left((array_agg(t.statement ORDER BY b.snapshot_at DESC))[1], 500) AS statement
+       left((array_agg(t.statement ORDER BY b.snapshot_at DESC))[1], 500) AS "statement@stmt"
   FROM n b
   LEFT JOIN pgvigil.mssql_statement_text t ON t.text_id = b.head_text_id
  GROUP BY b.head_session_id, b.head_tran_start, b.stretch

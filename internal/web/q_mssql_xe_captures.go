@@ -71,7 +71,7 @@ const sqlXCWaits = `SELECT event_at, event_name, wait_type, category, duration_m
   FROM pgvigil.mssql_xe_waits WHERE instance_id = $1 AND event_at > $2 AND event_at <= $3
  ORDER BY event_at DESC LIMIT 500`
 
-const sqlXCPlanText = `SELECT x.source, x.statement, x.event_at FROM (
+const sqlXCPlanText = `SELECT x.source, x.statement AS "statement@stmt", x.event_at FROM (
   SELECT 'waits' AS source, statement, event_at FROM pgvigil.mssql_xe_waits
    WHERE instance_id = $1 AND query_plan_hash = $2 AND statement IS NOT NULL
   UNION ALL

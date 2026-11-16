@@ -20,8 +20,8 @@ import (
 //        slow top over a long window loses only the top list: multi answers a whole reply with one part's error):
 //          top         the top requests per measure (CPU, logical reads, tempdb, memory grant, duration) from
 //                      mssql_requests over the newest historyMaxWindow (7 days) of the window, n each (5 by default; 10
-//                      or 25), the statement only under the instance's query_text policy 'full' or 'normalized' (as
-//                      stored), none under 'none'
+//                      or 25), the statement only under the instance's query_text policy 'full' or 'normalized', by
+//                      that policy now (TEXT-NOW's stmt rule at read), none under 'none'
 //          top_window  the window the top read and whether a longer one was cut to its newest 7 days
 //          policy      as above
 //        One user / system rule on every part: sys.dm_exec_sessions.is_user_process over all sessions (the lead 11-15).
@@ -30,7 +30,7 @@ import (
 const sqlMSSQLSessionsTop = `
 SELECT t.measure, t.rank, t.value, t.session_id, t.request_id, t.start_time, t.first_seen, t.last_seen, t.login_name,
        t.program_name, t.host_name, t.database_name,
-       CASE WHEN $5 THEN left(st.statement, 4000) END AS statement, CASE WHEN $5 THEN st.full_chars END AS full_chars
+       CASE WHEN $5 THEN left(st.statement, 4000) END AS "statement@stmt", CASE WHEN $5 THEN st.full_chars END AS full_chars
   FROM pgvigil.mssql_requests_top($1, $2, $3, $4) t
   LEFT JOIN pgvigil.mssql_statement_text st ON st.text_id = t.text_id
  ORDER BY t.measure, t.rank`
