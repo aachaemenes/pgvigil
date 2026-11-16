@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,5 +183,37 @@ func TestRemoteServiceLog(t *testing.T) {
 	}
 	if _, ok := remoteServiceLog(hub); ok {
 		t.Errorf("a hub config took the remote log place")
+	}
+}
+
+// THE WIRING (task 15, W's lines): `pgvigil run` with a remote: block goes to the remote collector (here with no
+// instance and a context already ended: it takes the lock, writes its state, closes nothing and returns), never to the
+// repository's 'dsn resolves to nothing'; `pgvigil remote init` is dispatched; `pgvigil remote` alone is usage (2).
+func TestRemoteWiring(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pgvigil-remote.yaml")
+	cfg := strings.Replace(remoteConfigTemplate(filepath.Join(dir, "outbox"), filepath.Join(dir, "state")), `site: ""`, `site: plant1`, 1)
+	cfg = strings.Replace(cfg, `collector: ""`, `collector: box1`, 1)
+	if err := os.WriteFile(p, []byte(cfg), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runScheduler(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), []string{"-config", p}); err != nil {
+		t.Fatalf("run with a remote: block: %v", err)
+	}
+	for _, f := range []string{"pgvigil.lock", "state.json"} {
+		if _, err := os.Stat(filepath.Join(dir, "state", f)); err != nil {
+			t.Errorf("the remote run left no %s: %v", f, err)
+		}
+	}
+	if code := run([]string{"remote", "init", "-config", p}); code != 0 {
+		t.Errorf("remote init through the dispatch: exit %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", signingKeyFile)); err != nil {
+		t.Errorf("remote init made no key: %v", err)
+	}
+	if code := run([]string{"remote"}); code != 2 {
+		t.Errorf("remote with no subcommand: exit %d, want 2", code)
 	}
 }
