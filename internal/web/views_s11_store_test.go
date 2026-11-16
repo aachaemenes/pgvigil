@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestViewWritesLogEveryRefusalOnAStore (j16d1's views S11): the store is the one judge of a shared write and the one
+// TestViewWritesLogEveryRefusalOnAStore: the store is the one judge of a shared write and the one
 // writer of ui_view_log - every write attempt that reaches it leaves one row, a refusal too. Below admin, a save that
 // makes a view shared, an edit of the shared view and its delete are answered 403 in the role's words (B24f's text)
 // AND leave exactly one 'forbidden' row each; an admin's shared save is done; a personal view's refusals keep the

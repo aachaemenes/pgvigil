@@ -63,7 +63,7 @@ func TestSecAuthOwnSQLNeedsNoRight(t *testing.T) {
 	}
 }
 
-// TestSecurityRegistryOffWhereHostOnly (the j16 join review's #5): on a platform that runs the host - Azure SQL
+// TestSecurityRegistryOffWhereHostOnly: on a platform that runs the host - Azure SQL
 // Database, Managed Instance, Amazon RDS, Google Cloud SQL - the security read never calls xp_instance_regread and never
 // prints a GRANT for it; the rights page says the same there (hostOnly). A server someone runs reads it.
 func TestSecurityRegistryOffWhereHostOnly(t *testing.T) {

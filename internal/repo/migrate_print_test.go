@@ -195,7 +195,7 @@ func TestMigratePrintRefuses(t *testing.T) {
 	}
 }
 
-// TestMigratePrintMakesThePartitionsAhead (j16d1's migrateprint red): 'migrate -print' is the locked-down site's
+// TestMigratePrintMakesThePartitionsAhead: 'migrate -print' is the locked-down site's
 // install path, so the store its script builds must equal a migrated one - the script ends with migrate's own
 // partitions-ahead pass (0271: the window of AheadWindow, read when the script runs), after the last file and before
 // the unlock, each partition made by import_partition_make in a statement of its own (psql's \gexec), a failed make a

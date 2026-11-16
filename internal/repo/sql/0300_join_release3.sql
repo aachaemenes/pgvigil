@@ -1185,7 +1185,7 @@ END $$;
 --   #10 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L20-23 (line 2) - beside the other self-trimming tables
 --   #11 H CQ-A 322675cc: scripts/cq-join-lines.sql L9-17 - before the hours tables (0139's block)
 --   #12 H the join 0300 --------: the 18 tests: TestRetentionRowsOfTheHAJoin - no bracket in a comment inside the parent list (the Retention page reads the list up to its first closing bracket)
---   #13 H the join 0300 --------: j16d1's purge red: TestPurgeTakesTheJoinedRetentionOnAStore - 0151's and 0162's retention: four partition parents, 0151's events, 0162's warning tables, 0151's two hour purges
+--   #13 H the join 0300 --------: the purge proof's red: TestPurgeTakesTheJoinedRetentionOnAStore - 0151's and 0162's retention: four partition parents, 0151's events, 0162's warning tables, 0151's two hour purges
 --   merge conflict at arm #1 (B2a-N2), block 1, resolved by hand: both blocks: the replication hours' (0150), then B2a-N2's mssql_azuredb_hour (0167)
 --   merge conflict at arm #2 (413), block 1, resolved by hand: parents list = the union (mssql_index_usage_read added)
 --   merge conflict at arm #2 (413), block 2, resolved by hand: both lines: the current text's, then 413's
