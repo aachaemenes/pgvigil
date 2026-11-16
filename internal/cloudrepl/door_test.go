@@ -19,7 +19,7 @@ import (
 // (one call, never again by the run's other instances; then read again).
 func TestDoorRows(t *testing.T) {
 	// the reason fits what the instance holds: its aws: block is there and only the switch is off, so the words name
-	// the key (aws.replicas is off) and never read as a missing block (no 'aws:' - j16's TestNotRunningOnTheConfig)
+	// the key (aws.replicas is off) and never read as a missing block (no 'aws:' - internal/engines' TestNotRunningOnTheConfig)
 	if p, why := Which(config.Instance{AWS: &config.AWS{Region: "us-east-2", DBInstance: "db1"}}); p != "" || !strings.Contains(why, "aws.replicas is off") || strings.Contains(why, "aws:") {
 		t.Errorf("an aws: block without replicas: %q %q, want no door and 'aws.replicas is off' without 'aws:'", p, why)
 	}

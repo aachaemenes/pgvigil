@@ -111,7 +111,7 @@ func TestCollectionPerfScaleJ5(t *testing.T) {
 	}
 }
 
-// slowNodes: a plan's nodes whose actual total time is min ms or more, outermost first, with their rows and what they
+// slowNodes: a plan's nodes whose actual total time is floor ms or more, outermost first, with their rows and what they
 // spilled or sorted (the J5 rows read at the root over every collection: 124.7 s in vis-scale3, the cause unread)
 func slowNodes(n map[string]any, floor float64, out *[]string) {
 	// a node's time and rows are per loop: times its loops (the review of the B6g-4 fold #7 - an inner node of a nested

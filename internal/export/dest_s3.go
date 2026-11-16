@@ -45,7 +45,7 @@ type s3Dest struct {
 // (internal/collect/aws_partition_test.go, awsExceptions).
 const s3CompatibleRegion = "us-east-1"
 
-// awsHost says whether an endpoint is one of AWS's own hosts, in any partition (China's domain carries one label
+// awsHost says whether an endpoint is one of AWS's own hosts, in the aws, aws-cn and aws-us-gov partitions (China's domain carries one label
 // more): such a host is never signed with s3CompatibleRegion. The scan's other listed exception.
 func awsHost(endpoint string) bool {
 	host := endpoint
