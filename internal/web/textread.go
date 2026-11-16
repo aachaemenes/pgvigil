@@ -220,11 +220,20 @@ func tagged(t *table) bool {
 	return false
 }
 
-// pinDoors - TEXT-NOW-L review L4, the rows first: a stub that pins nothing.
-func pinDoors(r *http.Request, ds *doorSet) *http.Request { return r }
+// doorsPin is the request context's key of a handler's door set (pinDoors).
+type doorsPin struct{}
 
-// doorsPinned - the rows first: a stub that finds no pin.
-func doorsPinned(r *http.Request) *doorSet { return nil }
+// pinDoors keeps a handler's door set on its request, so the reply's rule (applyTextNow) reads the same policies the
+// handler judged its rows by, not a newer generation the watcher stored meanwhile (TEXT-NOW-L review L4).
+func pinDoors(r *http.Request, ds *doorSet) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), doorsPin{}, ds))
+}
+
+// doorsPinned is the door set a handler pinned on the request, or nil.
+func doorsPinned(r *http.Request) *doorSet {
+	ds, _ := r.Context().Value(doorsPin{}).(*doorSet)
+	return ds
+}
 
 // applyTextNow applies the read rule to every tagged table of a reply value, in place.
 func (s *Server) applyTextNow(r *http.Request, v any) error {
@@ -237,9 +246,14 @@ func (s *Server) applyTextNow(r *http.Request, v any) error {
 	if len(ts) == 0 {
 		return nil
 	}
-	// the door set as reply reads it now: a handler that read its own a moment before reads the same policies while the
-	// serve runs (the file's, page instances the file's default), so the two reads agree
-	tr, err := s.textRuleOf(r.Context(), s.doorsNow())
+	// the door set a handler judged its rows by (pinDoors), else the one the reply reads now: a page instance's policy
+	// can change while the serve runs (the watcher stores a new generation), so a handler that drops rows by policy
+	// pins its set and both reads agree
+	ds := doorsPinned(r)
+	if ds == nil {
+		ds = s.doorsNow()
+	}
+	tr, err := s.textRuleOf(r.Context(), ds)
 	if err != nil {
 		return err
 	}

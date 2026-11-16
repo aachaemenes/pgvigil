@@ -15,6 +15,8 @@ var exprKeys = map[string]bool{
 	"Window": true, "Conflict Filter": true, "Remote SQL": true, "Partial Key": true,
 	// a GROUPING SETS node's sets: an array of key lists per set (read on PostgreSQL 18.6 and 13.23)
 	"Group Keys": true, "Hash Keys": true,
+	// the text form's tablesample line ('Sampling: bernoulli (..) REPEATABLE (..)'; TEXT-NOW-L review L2)
+	"Sampling": true,
 }
 
 // Mask applies the instance's query-text policy (config query_text) to a plan row, as the collector's text
