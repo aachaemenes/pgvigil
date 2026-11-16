@@ -126,6 +126,9 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	var imp collect.Result
 	var lastImport *collect.ImportError // the import error last handed back to the reader: the run ended at it, or went on
 	opt := BatchOptions{QueryText: in.QueryText, AuditText: in.AuditText, Deadline: start.Add(limit - batchMargin)}
+	if in.MSSQLSchema != nil {
+		opt.SchemaDatabases = in.MSSQLSchema.Databases
+	}
 	if dl, ok := sctx.Deadline(); ok && dl.Add(-batchMargin).Before(opt.Deadline) {
 		opt.Deadline = dl.Add(-batchMargin)
 	}

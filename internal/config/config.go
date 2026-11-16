@@ -175,6 +175,8 @@ type Instance struct {
 	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
 	// MSSQLCountersRoot is the file's root mssql_counters, copied here by Validate (the runner reads one instance).
 	MSSQLCountersRoot CounterEdits `yaml:"-"`
+	// MSSQLSchema turns the SQL Server schema history on for the databases it names (docs/schema.md, task A26).
+	MSSQLSchema *MSSQLSchema `yaml:"mssql_schema"`
 }
 
 // Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
