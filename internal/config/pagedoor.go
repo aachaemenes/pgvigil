@@ -32,6 +32,11 @@ type Doors struct {
 	// PageAWSProfiles are the AWS profiles a page block may name (a discovered instance's source profile: the lead's
 	// Q5); empty (the default) = none, the host's default chain only.
 	PageAWSProfiles []string `yaml:"page_aws_profiles"`
+	// PrometheusMetrics turns on GET /metrics on serve (B24d): every active instance's newest figures in the Prometheus
+	// text format, read with a signed-in session or metrics.token. Off by default; off, /metrics answers 404 with
+	// web.MetricsOff. What it opens: server names, engines, platforms, versions, every figure (tags and database names
+	// when metrics.tags / metrics.databases are on), to everyone who reads that Prometheus and its remote_write targets.
+	PrometheusMetrics bool `yaml:"prometheus_metrics"`
 }
 
 // PageReadsOff is the refusal while the switch is off.

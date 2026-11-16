@@ -467,6 +467,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/session", s.sessionInfo)
 	// task 403b K5: the Slack door, outside the UI login (the signature is its authentication); 404 while it is off
 	mux.HandleFunc("POST /api/slack/actions", s.slackActions)
+	// B24d: Prometheus' /metrics, its own gate (a session or metrics.token), registered when off too (404 with its line;
+	// the '/' catch-all below would answer 200 with the page shell)
+	mux.HandleFunc("GET /metrics", s.PromMetrics)
 	mux.Handle("/api/", s.requireLogin(withReadWindow(api)))
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {

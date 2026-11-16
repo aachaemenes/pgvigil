@@ -54,6 +54,9 @@ type Config struct {
 	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
 	// where this file's off still wins (file off > profile > page).
 	Doors Doors `yaml:"doors"`
+	// Metrics tunes serve's Prometheus endpoint (metrics.go): token, cache_seconds, databases, max_databases,
+	// include_databases, tags; nothing while doors.prometheus_metrics is off.
+	Metrics MetricsBlock `yaml:"metrics"`
 	// ReportsDSNRaw is the login a custom report on the store (the repository) runs as: IN ROLE pgvigil_reader alone
 	// ('pgvigil roles' prints it), on the repository the repository dsn names; env:NAME or file:/path like every dsn.
 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store

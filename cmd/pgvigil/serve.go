@@ -124,6 +124,21 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if *noLogin {
 		log.Warn("serve runs without the UI login: anyone who reaches this loopback port reads the repository", "listen", *listen)
 	}
+	// B24d: doors.prometheus_metrics - the start checks (a token under 32 bytes or none under -no-login ends serve) and
+	// one WARN naming what is open, as -no-login does, until the site profile (task 330) lists the door
+	var promCfg *web.MetricsConfig
+	if cfg.Doors.PrometheusMetrics {
+		m := cfg.Metrics
+		promCfg = &web.MetricsConfig{Token: m.Token, CacheSeconds: m.CacheSeconds, Databases: m.Databases, MaxDatabases: m.MaxDatabases,
+			IncludeDatabases: m.IncludeDatabases, Tags: m.Tags}
+		warns, err := web.CheckMetricsToken(promCfg, !*noLogin)
+		for _, w := range warns {
+			log.Warn(w)
+		}
+		if err != nil {
+			return &configError{err} // exit 3: a unit with RestartPreventExitStatus=3 does not loop on it
+		}
+	}
 	// bind first: the accepted Host values follow the bound port (-listen 127.0.0.1:0 picks one, as demo does)
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -188,6 +203,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
+	srv.EnableMetrics(promCfg)
 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
 	// check); serve starts either way and the page says the same words
 	if why := srv.StoreReportsOff(ctx); why != "" {
