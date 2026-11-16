@@ -998,7 +998,8 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
      AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_health h WHERE h.standby_id = r.instance_id AND h.sending_id IS NOT NULL)
   UNION ALL
   -- a logical slot's sender behind in time: a one-read rule, so its words are the lag and the tier, not a count of reads
-  SELECT l.instance_id, l.snapshot_at, 'replay lag', l.key, l.lag_secs::bigint, 'seconds behind', 'over ' || trim_scale(l.over) || ' s', l.severity
+  -- floor, not a cast: a cast rounds, and 299.7 s (a warning under 300) would read '300 seconds behind'
+  SELECT l.instance_id, l.snapshot_at, 'replay lag', l.key, floor(l.lag_secs)::bigint, 'seconds behind', 'over ' || trim_scale(l.over) || ' s', l.severity
     FROM pgvigil.pg_logical_sender_lag l
   UNION ALL
   -- a read that failed is a check of its own: an unreadable slot list must not look healthy
