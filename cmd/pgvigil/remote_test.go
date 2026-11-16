@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aachaemenes/pgvigil/internal/remote/format"
 )
 
 // One remote collector per state folder: a second lock on the same folder is refused in words while the first holds
@@ -75,5 +80,43 @@ func TestRemoteRetention(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "site1/coll1/pg1/2026-11-16/0000000004-20261116T001000Z.part")); err != nil {
 		t.Errorf("a .part folder went: %v", err)
+	}
+}
+
+// pgvigil remote init (the docs' line): the collector's Ed25519 key made once in the state folder (mode 0600, never
+// printed), its public key printed as 'ed25519:<base64>' for the hub's keys:; a second run keeps the key and prints the
+// same line; a manifest signed with it verifies with the printed key.
+func TestRemoteInit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	var out strings.Builder
+	line, err := remoteInit(dir, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(dir, signingKeyFile))
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the key file: %v %v", fi, err)
+	}
+	key, err := readSigningKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(line, "ed25519:"))
+	if !strings.HasPrefix(line, "ed25519:") || err != nil || !bytes.Equal(pub, key.Public().(ed25519.PublicKey)) {
+		t.Errorf("the printed line %q is not the key's public key", line)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, signingKeyFile))
+	if strings.Contains(out.String(), strings.TrimSpace(string(raw))) || !strings.Contains(out.String(), line) {
+		t.Errorf("the output prints the private key or lacks the public line: %s", out.String())
+	}
+	var again strings.Builder
+	line2, err := remoteInit(dir, &again)
+	raw2, _ := os.ReadFile(filepath.Join(dir, signingKeyFile))
+	if err != nil || line2 != line || !bytes.Equal(raw, raw2) {
+		t.Errorf("a second run: %q %v (the key changed: %v)", line2, err, !bytes.Equal(raw, raw2))
+	}
+	man := []byte(`{"format": 1}`)
+	if err := format.VerifySignature([][]byte{pub}, man, format.SignManifest(key, man)); err != nil {
+		t.Errorf("a manifest signed with the key: %v", err)
 	}
 }
