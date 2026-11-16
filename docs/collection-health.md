@@ -22,7 +22,29 @@ rate. A skip is not a run, but a skip after failures ends the failures in a row.
 that connected and failed before pgvigil read the server's version, is a failed run. A collection failing now is
 listed even when the range holds none of its runs, while its last run is within three of its intervals (a day at
 least). An instance that is not active is not listed. The failures in a row are always now's; the rates are over
-the picked range. **Failed % 24hrs** is the rate the Summary judges (24 hours from the next whole hour).
+the picked range. **Failed % 24hrs** is the rate the Summary judges (24 hours from the next whole hour, or from the
+acknowledgement below if that is later).
+
+### Acknowledged errors
+
+An instance's collector errors are acknowledged on the **Collector errors** page (Acknowledge, per instance or every
+instance in view; Unacknowledge takes it back). As DBA Dash's Acknowledge Errors, it changes the Summary only:
+
+- The Summary's Collection Health cell counts a collection's failures in a row again once a failure newer than the
+  acknowledgement comes, and then all of them (3 failures, an acknowledgement, one more failure: 4 in a row). Newer
+  means a failed run logged after the acknowledgement's newest error, in the order the repository logged them: a run
+  that started earlier but was logged later counts. When the newest failure's log row has been purged (after 30 days),
+  its time is compared with the acknowledgement's instead.
+- The Summary's rate, and **Failed % 24hrs** on this page, count the hours from the acknowledgement's next whole hour (24
+  hours at most), so the runs in the hour the acknowledgement was made are not counted.
+- This page keeps its Status, Failures In A Row, Runs and Failed as they are. A row whose failures in a row the Summary
+  leaves out says `acknowledged at <time> by <user>: n in a row before it` in its Status Reason.
+- An acknowledged collection with no run since is OK on the Summary, never N/A; Don't monitor still makes it N/A.
+- The 'collection failing' alert, the Instances list, the instance header and the Collector page do not change: the
+  alert has its own acknowledgement on the Alerts page.
+
+DBA Dash's acknowledgement covers every instance at once; pgvigil's is per instance (the page writes one per instance
+when every instance in view is acknowledged).
 
 The rates come from the hourly totals `pgvigil run` sends with its heartbeat once a minute. An instance read only by
 a scheduled `pgvigil collect` has no heartbeat: it is judged by its failures in a row alone.

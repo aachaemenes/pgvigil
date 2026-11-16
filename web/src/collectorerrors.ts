@@ -124,7 +124,7 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
   };
   const ackButton = (r: Row, name: string): HTMLElement => writeButton(ad, 'Acknowledge', `Acknowledge the collector errors of ${name}`, () => ackDialog({
     title: `Acknowledge the collector errors of ${name}`,
-    what: 'Its errors up to the newest (every one of them, in this range or before it) leave the Summary\'s error count and its failing collections until a newer one comes. Who and when are kept; Unacknowledge brings them back.',
+    what: 'Its errors up to the newest (every one of them, in this range or before it) leave the Summary\'s failing collections until a newer one comes, and its Collection Health cell is judged from the next failure on (then all of its failures in a row; its rate from the next whole hour). The Collection Health page keeps its Status and counts; the collection failing alert keeps its own acknowledgement. Who and when are kept; Unacknowledge brings them back.',
     body: ackBody(r), expiry: false, noteField: 'optional', after: redraw,
   }), { instance: Number(r.instance_id), name });
   // an instance with nothing new since its mark gets no second row
@@ -199,7 +199,7 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
     const all = rows.filter(r => r.instance_id != null && ackable(r));
     if (all.length) out.push(el('div', { class: 'toolbar' }, writeButton(ad, `Acknowledge all ${fmtNum(all.length)} in view`, `Acknowledge all ${fmtNum(all.length)} in view: the collector errors of every instance in view`, () => ackDialog({
       title: `Acknowledge the collector errors of ${fmtNum(all.length)} instance(s)`,
-      what: 'Each instance\'s errors up to its newest shown leave the Summary\'s counts until a newer one comes: one write per instance, the answer says which were refused.',
+      what: 'Each instance\'s errors up to its newest shown leave the Summary\'s counts until a newer one comes, its Collection Health cell judged from the next failure on: one write per instance, the answer says which were refused.',
       body: all.map(ackBody), expiry: false, noteField: 'optional', after: redraw,
     }), { instance: 'any' })));
   }

@@ -270,12 +270,13 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'runs', label: 'Runs', num: true, fmt: (v, r) => perfLink(r, fmtNum(v), 'perf-runs', grain === 'instance') },
       { key: 'succeeded_pct', label: 'Succeeded %', num: true, fmt: pct },
       { key: 'failed_pct', label: 'Failed %', num: true, fmt: pct },
-      // DBA Dash's own words (CollectionHealthView.cs FailedPct24Hrs) without its 'since errors were acknowledged' (pgvigil's
-      // summary rates a fixed 24 hours), and over which instances it is counted (the lead's 00:5x call on the review's #9a)
+      // DBA Dash's own words (CollectionHealthView.cs FailedPct24Hrs), the acknowledgement's place and scope (pgvigil's is
+      // per instance), and over which instances it is counted (the lead's 00:5x call on the review's #9a)
       { key: 'failed_pct_24h', label: 'Failed % 24hrs', num: true, fmt: pct,
-        title: 'Runs that failed over the period the summary rates - the last 24hrs, from the start of the next hour.  The summary\'s status is from this '
-          + 'rate and the failures in a row now, whatever period is selected here.  Over the instances of a collection (a row per collection), the runs '
-          + 'are counted on the instances with a failed or a partial run in that period, as DBA Dash counts them.' },
+        title: 'Runs that failed over the period the summary rates - the last 24hrs, or since errors were acknowledged if that\'s sooner, from the start of '
+          + 'the next hour.  The summary\'s status is from this rate and the failures in a row now, whatever period is selected here.  Errors are '
+          + 'acknowledged per instance on the Collector errors page.  Over the instances of a collection (a row per collection), the runs are counted on '
+          + 'the instances with a failed or a partial run in that period, as DBA Dash counts them.' },
       { key: 'succeeded', label: 'Succeeded', num: true, fmt: fmtNum },
       { key: 'partial', label: 'Partial', num: true, fmt: fmtNum },
       // Failed opens the window it counts (the hours from the one holding the range's start to the end of the one holding
@@ -348,7 +349,11 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} row(s)${folder}${onlyColl ? `, collection ${onlyColl}` : ''}: ${n('critical')} critical, ${n('warning')} warning, ${n('n/a')} N/A, ${n('ok')} OK. `
         // the rule in docs/collection-health.md's words (0166; the review of B6.2, part b #10)
         + ruleWords(rows)
-        + 'Failed % 24hrs is the Summary\'s rate. Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
+        + 'Failed % 24hrs is the Summary\'s rate. '
+        + 'An acknowledgement of an instance\'s errors (on Collector errors) changes only the Summary\'s cell and Failed % 24hrs: the Summary counts a '
+        + 'collection\'s failures in a row again once a newer failure comes, then all of them, and its rate from the next whole hour; this page keeps its '
+        + 'Status and counts, and a row whose failures in a row the Summary leaves out says so. '
+        + 'Avg Duration includes the import; Avg and Max Import are the write into the repository alone. '
         + 'CPU and Logical Reads are the run\'s own session\'s on SQL Server, read at the run\'s end (a run cut by its own timeout is not read); a PostgreSQL row says not read by pgvigil. '
         + 'Not shown, as pgvigil has no source for them: Warnings, Retried, No Status, the import\'s own CPU and reads (and the Cost chart\'s Import CPU line), the highest logical reads of one run; '
         + 'no Steps (pgvigil has no run steps). Collection, Runs, Avg and Max Duration, Avg and Total CPU and Avg Import open the Collection Performance report over this range; '
