@@ -85,6 +85,12 @@ what happens in the other order, and what the project's own proof showed (`scrip
   instances, the slowest 38,343 job outcomes into 12,330 hour rows), so an instance of that size is built by its first
   import. Until then the fleet Jobs page's 7-day columns of that instance read `being built`; its status grid does not
   depend on them.
+- **`0150_hadr_trends.sql` adds the replication samples' hourly rollup and builds it after the upgrade, not during it.**
+  The file creates `replication_hourly` and the triggers on `replication_sample` and writes no stored row. Each
+  instance's hours are built by `pgvigil purge` (its month partitions in a transaction of their own, then the instance
+  in one transaction, the newest hours first); the imports go on meanwhile. Until an instance is built its Replication
+  charts read the samples. Measured on the lab box: a first build of 30 days over 300 databases (13 million samples)
+  took about 9 to 11 minutes beside the running imports. The hours are kept 730 days.
 
 Two rules follow from how the binary checks the schema:
 

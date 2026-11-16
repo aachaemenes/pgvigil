@@ -82,6 +82,26 @@ Patroni's GET endpoints take no password (restapi.authentication guards the unsa
 
 A Patroni session with no answer at the default endpoint and no `patroni:` block is an info finding, `patroni API not found`. A member removed for good drops out of the checks 7 days after it was last seen.
 
+## Streaming replication, slots and logical replication
+
+The `replication` and `logical` collections feed these rules (migrations 0141 and 0150). Each is a row of the instance's **Replication** tab, of the fleet **Replication** page and of Findings; its numbers are the thresholds below. On a managed platform (RDS, Aurora, Azure, Cloud SQL, AlloyDB) the link rules are left to the provider.
+
+- **A link** is one sending server and one physical consumer of its WAL (a standby, `pg_receivewal`, Barman), named by its slot when the sender holds a physical one, else by its application name and address; a base backup's or `pg_rewind`'s sender, a logical slot's sender and a sender on a temporary slot are no link. A link is read from both of its sides and gets ONE finding, the first that holds of:
+  - `receiver down` (on the standby): in recovery, `primary_conninfo` set and no WAL receiver for 2 reads in a row. A warning while replay still advances through `restore_command`; critical when it has not moved since the receiver went down, or for `restore_stall`.
+  - `standby gone` (on the sending server): a physical link it sent to in the last 7 days with no sender for 2 reads in a row, while the standby's own read cannot speak (not monitored, stale or unreachable). Critical.
+  - `replay paused` (on the standby): for 2 reads. Critical.
+  - `standby lag`: the bytes not yet replayed against `standby_lag_bytes`, and the primary's `replay_lag` beyond the standby's `recovery_min_apply_delay` against `standby_replay_lag`, each held for 2 reads in a row.
+- **Synchronous standbys**: `synchronous commits waiting` when fewer standbys are in `sync` or `quorum` state than `synchronous_standby_names` asks for - critical at once, a warning when `synchronous_commit` is off or local at the server; `synchronous standby absent` (warning) when a named standby is not connected and the number asked for still holds.
+- **Slots**, one finding per slot: `slot invalidated` (critical: an invalidation reason, or `wal_status` lost); `slot WAL near its limit` (`safe_wal_size` under `slot_safe_wal`: a warning; `wal_status` unreserved: critical); `slot WAL growing` (the retained WAL up by `slot_growth` or more in the last full hour: a warning).
+- **Logical replication** (the `logical` collection, which opens one connection per database that holds a subscription or a logical slot): one finding per subscription - apply errors, the worker down, the subscription disabled, sync errors, PostgreSQL 18's conflicts, a table's initial sync not finished (`table_sync_age`), no message from the publisher (`subscription_silent`).
+- **An Aurora reader** is judged by `aurora_replica_status` alone: `Aurora replica lag` on the writer at the `standby_replay_lag` tiers; no receiver rule and no link row for a reader.
+- **Across the members of one cluster** (one system identifier; managed platforms out), from the roles read every minute:
+  - `two primaries`: critical on each of two primaries of one cluster when the second was promoted after the first's role began, both were read as primary 55 seconds or more after the collector saw the promotion, and the two are one topology (a link between them in the last 7 days, a common upstream that sent to both, or one `cluster` tag value on both). A promoted copy that never streamed, and a switchover whose old primary is stopped, raise nothing.
+  - `cluster without a primary`: critical, one finding on the member last seen as primary, when no member read in the last 3 minutes is primary, every such standby has had its receiver down for 2 reads or more (or is cascaded behind one that has) and a member was read as primary in the last 7 days. Never where a Patroni read covers a member (`patroni no leader` says it).
+  - `standby queries cancelled`: a warning on a standby, one per database, when its recovery-conflict counters rose by `standby_conflicts` or more over 10 minutes.
+
+**The trends.** The replication samples are also kept as hourly minimum, mean and maximum for 730 days (`replication_hourly`; its own age in `pgvigil.hours_retention`, not the purge's `-days`). A chart over 2 days or less reads the samples, a longer one the hours.
+
 ## Crashes (the Memory Dump column)
 
 A crash restart is read from the server log's crash events (the [log reader](logs.md): a backend killed by a signal, the restart of the others, the kernel's kill -9 of a backend): one row per restart, the first event with no other in the minute before it, its signal and message. The Summary cell is critical while the newest crash not acknowledged is within 48 hours, warning within 168 (the `crash` thresholds), and OK after. **Acknowledge** (the Server state tab, or the Summary's own) clears every crash up to then; a newer crash colours the cell again. Without the log reader nothing is seen: the cell then says OK with nothing read, the Logs tab says why.
@@ -115,6 +135,14 @@ Every rule above takes its numbers from the thresholds store (the uptime and cra
 | `patroni_paused` | minutes | over | critical 15 |
 | `patroni_pending_restart` | minutes | over | warning 30 |
 | `patroni_dcs_last_seen` | minutes | over | warning 5, critical 30 |
+| `restore_stall` | minutes | over | critical 5 (a standby whose receiver is down and whose replay through `restore_command` has stopped) |
+| `standby_lag_bytes` | MB | over | warning 50, critical 100 (WAL not yet replayed, 2 reads in a row) |
+| `standby_replay_lag` | seconds | over | warning 30, critical 300 (the primary's `replay_lag` beyond `recovery_min_apply_delay`, 2 reads in a row; an Aurora reader's lag too) |
+| `slot_safe_wal` | MB | under | warning 1024, or half of `max_slot_wal_keep_size` when that is smaller |
+| `slot_growth` | MB | over | warning 1024 (a slot's retained WAL grown in the last full hour) |
+| `subscription_silent` | minutes | over | warning 5 (no message from the publisher) |
+| `table_sync_age` | minutes | over | warning 60 (a table's initial sync not finished) |
+| `standby_conflicts` | count | over | warning 3 (recovery-conflict cancellations of one database in 10 minutes) |
 
 A level may set a warning, a critical or both: a rule fires past whichever is set (a critical alone fires only past it); since 0117 an uptime or crash level may set neither (Enabled off: that level judges nothing). `archive_age` takes whole minutes from 1 (0022's rule keeps minutes as a whole number). A threshold set in the UI at any level wins over the config file's `archive_warn_minutes`. The Thresholds page (Configuration) sets the root, a tag, an instance or a database; the Base backups and Server state tabs set their instance's, and each database's amcheck threshold. A write needs the UI login and goes through the actions door's audit login (`pgvigil.import_pg_threshold`): an edit ends the level's row and writes its successor with who and when, **Inherit** ends it so the level above applies, and a refused value (a word, a critical on the wrong side of the warning, a key at a level it does not take) writes nothing and says why.
 
