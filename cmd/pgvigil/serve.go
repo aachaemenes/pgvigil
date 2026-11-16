@@ -223,6 +223,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 	}
 	srv.SetMSSQLActions(doors)
+	// task 301b: verify_backup's bound, and the verifies a stopped serve left with no end row (now, then hourly)
+	srv.SetVerifyTimeout(cfg.VerifyTimeout.Duration)
+	if err := srv.SweepVerifies(ctx); err != nil {
+		log.Warn("actions: the verifies left by a stopped serve were not swept", "err", err)
+	}
+	go srv.VerifySweepsHourly(ctx)
 	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
 	pgJobs := map[string][]string{}
@@ -263,6 +269,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	select {
 	case <-ctx.Done():
+		srv.StopVerifies(30 * time.Second) // task 301b: a running verify's end row ('cut by shutdown') before serve goes
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return hs.Shutdown(sctx)

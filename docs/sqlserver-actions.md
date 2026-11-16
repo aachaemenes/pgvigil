@@ -112,6 +112,40 @@ Both connections are open and the actions login is checked before the last read 
 
 A kill rolls the session's open transaction back. A long transaction takes about as long to roll back as it took to run, and the session stays visible in that state until it is done.
 
+## verify_backup (task 301b)
+
+RESTORE VERIFYONLY of one backup set from the backup history's grid (a set's Verify, in its right-click menu): it
+reads the backup file(s) and checks the set can be restored, with CHECKSUM where the set has checksums. Off unless
+the instance's `actions:` list names `verify_backup` - and on the site's switch list it says what it opens: **it gives
+the actions login CREATE DATABASE: it can restore a copy of any database whose backup file the SQL Server service
+account can read** (as that login, under a new name, owned by it). RESTORE VERIFYONLY itself creates no database and
+writes no restorehistory row.
+
+The grant, in master only (the narrower of the two forms that work; never dbcreator, never ALTER ANY DATABASE -
+pgvigil refuses a login that holds either, as it refuses sysadmin and CONTROL SERVER):
+
+    USE master;
+    CREATE USER pgvigil_actions FOR LOGIN pgvigil_actions;
+    GRANT CREATE DATABASE TO pgvigil_actions;
+
+How it runs: the request carries the set's backup_set_uuid and what Preview showed; the read login reads the set
+again (its database, type, finish, disk files, position, checksums, size) and any difference refuses; RESTORE HEADERONLY of the file and
+position (on the actions login) must name the set's uuid, else the file now holds another backup set; then RESTORE
+VERIFYONLY with the paths and the position as parameters (the audit keeps the statement with no path in it). The
+verify runs detached from the request, bounded by `verify_timeout` (top level, default 2h), one per instance; the
+audit writes `started`, then `done` or `failed` with the server's own words ('The backup set on file 1 is valid.'),
+`cut by shutdown` when serve stops under it, and `ended unknown` for a verify that has no end while no verify holds
+its instance's lock (serve was killed under it: its session, and the lock, are gone) - looked for at serve's start
+and every hour, whatever the row's age. One verify per instance is a session advisory lock on the repository,
+held on a connection of its own for the run: behind a connection pooler in transaction mode (PgBouncer
+`pool_mode = transaction`) a session lock does not hold, so serve's repository DSN names the server or a session-mode
+pool. Where the read login holds VIEW SERVER STATE, it looks every minute for the verify's session: when the
+session no longer runs the RESTORE twice in a row (the server restarted, failed over or ended it), the verify ends
+`failed` with those words; without that right a lost connection is seen only at `verify_timeout`. A refused attempt
+(a second click while one runs, the wrong typed name) writes `refused` and sends nothing; the grid's last verify
+shows the newest verify that was sent. While serve stops, a new verify is refused ('serve is stopping').
+Not offered: a URL, tape, virtual-device or NUL backup, password-protected media, an encrypted backup.
+
 ## The log
 
 Actions run only on an instance of `pgvigil.yaml` (its `dsn`, `actions_dsn` and `actions:`); on an instance added in Admin > Instances every action is off with 'actions run only on an instance of pgvigil.yaml (dsn, actions_dsn, actions:); move it there and remove it from Admin > Instances', so `pgvigil.actions_log` keeps no door column.

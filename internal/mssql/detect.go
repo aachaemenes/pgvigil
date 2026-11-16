@@ -51,6 +51,12 @@ type Info struct {
 	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
 	ServiceObjective string
 	PoolTag          string
+	// task 301b (the runner sets them from the instance's configuration): the two opt-ins of mssql_backup_checks, and
+	// the file check's own pool (openBackupFilePool; never the collection's, which Connect caps at one connection),
+	// from which it takes its short-lived connections
+	ReadAutoCloseDatabases bool
+	CheckBackupFiles       bool
+	BackupFilePool         *sql.DB
 }
 
 // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right

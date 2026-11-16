@@ -294,6 +294,7 @@ var keepKeys = map[string]bool{
 	"page_instance_reads": true, "slack_actions": true,
 	// tasks 403a / B24k: a channel's digest hour, the Zabbix mode and plain opt-in, the Azure cloud
 	"digest_hour": true, "mode": true, "allow_plain": true, "cloud": true,
+	"backup_files": true, "auto_close_databases": true, "verify_timeout": true,
 	// alerts:
 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
 	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -320,7 +321,8 @@ var knownKeys = map[string]bool{
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
-	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "import": true, "gmsa": true,
+	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "backup_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
+	"import": true, "gmsa": true,
 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,

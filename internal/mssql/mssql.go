@@ -508,6 +508,16 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			info.PoolTag = t.Value
 		}
 	}
+	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
+	info.CheckBackupFiles = in.Reads != nil && in.Reads.BackupFiles
+	if info.CheckBackupFiles && name == Prefix+"backup_checks" {
+		// the file check's own pool (run 301bp4: the collection's is capped at its one connection); a pool that does
+		// not open leaves it nil, and the read says 'not judged: no connection for the file check'
+		if fp, ferr := openBackupFilePool(in); ferr == nil {
+			info.BackupFilePool = fp
+			defer func() { _ = fp.Close() }()
+		}
+	}
 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
 	ecancel()

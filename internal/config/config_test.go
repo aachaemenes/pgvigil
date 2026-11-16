@@ -189,7 +189,10 @@ func TestEngine(t *testing.T) {
 	}}
 	ok.Instances = append(ok.Instances,
 		Instance{Name: "ms-act", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "job_start", "job_stop"}},
-		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"})
+		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"},
+		// task 301b: RESTORE VERIFYONLY through the door (off unless named here)
+		Instance{Name: "ms-verify", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "verify_backup"},
+			Reads: &Reads{AutoCloseDatabases: true, BackupFiles: true}})
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("a valid two-engine config was rejected: %v", err)
 	}

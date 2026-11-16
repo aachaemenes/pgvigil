@@ -33,6 +33,8 @@ type Config struct {
 	// certificate function, a private key block); a password held as an ordinary value stays under full only.
 	// An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
+	// VerifyTimeout bounds one verify_backup (task 301b: RESTORE VERIFYONLY of a large backup runs for hours); 0 = 2h.
+	VerifyTimeout Duration `yaml:"verify_timeout"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
 	UI UI `yaml:"ui"`
 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
@@ -108,13 +110,15 @@ type Instance struct {
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
-	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, plan_evict; on PostgreSQL job_stop and
+	// Actions is the actions door's allow list: on SQL Server kill, job_start, job_stop, plan_evict, verify_backup; on PostgreSQL job_stop and
 	// job_start (task 161: Stop a pg_cron / pgAgent run, pgAgent's Run now). An action not named here is off even with
 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
 	// alone turns them on.
 	Actions []string `yaml:"actions"`
 	// Backups tunes the backups collection's rules; nil = the defaults.
 	Backups *Backups `yaml:"backups"`
+	// Reads holds the opt-ins of reads with a side effect on the server (task 301b); nil = all off.
+	Reads *Reads `yaml:"reads"`
 	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
 	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
 	ExplainAnalyze bool `yaml:"explain_analyze"`
@@ -413,6 +417,17 @@ type Backups struct {
 	ReadTools bool `yaml:"read_tools"`
 }
 
+// Reads holds the opt-ins of reads that have a side effect on the monitored server; nil = all off.
+type Reads struct {
+	// AutoCloseDatabases lets mssql_backup_checks read an AUTO_CLOSE database's recovery status (task 301b: the read
+	// opens a closed AUTO_CLOSE database - off by default, the database is then 'not read').
+	AutoCloseDatabases bool `yaml:"auto_close_databases"`
+	// BackupFiles lets mssql_backup_checks ask SQL Server whether the newest backups' files are still where msdb says
+	// they were written (task 301b, Database#7: off by default - the SQL Server service account then touches every
+	// backup destination once an hour).
+	BackupFiles bool `yaml:"backup_files"`
+}
+
 // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
 func (b *Backups) ArchiveWarn() int {
 	if b == nil || b.ArchiveWarnMinutes <= 0 {
@@ -583,9 +598,9 @@ func (c *Config) Validate() error {
 			seen := map[string]bool{}
 			for _, a := range in.Actions {
 				switch a {
-				case "kill", "job_start", "job_stop", "plan_evict":
+				case "kill", "job_start", "job_stop", "plan_evict", "verify_backup":
 				default:
-					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, plan_evict)", in.Name, a)
+					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop, plan_evict, verify_backup)", in.Name, a)
 				}
 				if seen[a] {
 					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)

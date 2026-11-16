@@ -50,7 +50,7 @@ const (
 )
 
 // ActionKinds lists every action, in the order the documentation gives them.
-var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop, ActionPlanEvict}
+var ActionKinds = []ActionKind{ActionKill, ActionJobStart, ActionJobStop, ActionPlanEvict, ActionVerifyBackup}
 
 // ValidAction says whether s names an action (the config's validation of an actions: list).
 func ValidAction(s string) bool {
