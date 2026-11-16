@@ -128,7 +128,8 @@ func migrateScript(w io.Writer, meta migratePrintMeta, names, applied []string, 
 	s.WriteString("-- printed for the repository as read now: the guard below stops the script before any file on any other state of it.\n")
 	s.WriteString("-- run it with psql as the repository owner (the owner of schema pgvigil; SET ROLE to it first otherwise):\n")
 	s.WriteString("--   psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f <this file>\n")
-	s.WriteString("-- (each file commits on its own, as migrate commits them: a failure stops at that file, the ones before it stay applied)\n\n")
+	s.WriteString("-- (each file commits on its own, as migrate commits them: a failure stops at that file, the ones before it stay applied)\n")
+	s.WriteString("-- not in this script: migrate's partitions-ahead pass after its files (this month's and the next month's partitions); pgvigil run and pgvigil collect make them at their start, pgvigil run every hour\n\n")
 
 	// psql only, and the first statement: a run without ON_ERROR_STOP would go on past a failed file (and leave a gap a
 	// later migrate fills out of order); a tool that is not psql fails on this line before anything runs
