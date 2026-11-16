@@ -94,12 +94,14 @@ SELECT i.instance_id, i.name AS instance, x.full_checksums, x.diff_checksums, x.
 // mssql_backup_history keeps, newest first: DBA Dash's Last Backup columns that msdb's history holds, in its order,
 // then pgvigil's own; last_verify = the newest verify_backup of the set in the actions log that was sent (target_id =
 // its uuid; a 'refused' row sent nothing and never hides a run's row; 0191's actions_log_verify_idx).
+// mb_s and write_mb_s are cast to numeric before round: PostgreSQL 13's extract() is double precision, and 13 has no
+// round(double precision, integer)
 const sqlMSSQLBackupHistory = `
 SELECT h.database_name, h.recovery_model, CASE h.backup_type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' ELSE 'log' END AS backup_type,
        h.start_at, h.finish_at, extract(epoch FROM h.finish_at - h.start_at)::bigint AS duration_s, h.size_bytes,
-       round(h.size_bytes / nullif(extract(epoch FROM h.finish_at - h.start_at), 0) / 1048576.0, 1) AS mb_s, h.compressed_bytes,
+       round((h.size_bytes / nullif(extract(epoch FROM h.finish_at - h.start_at), 0) / 1048576.0)::numeric, 1) AS mb_s, h.compressed_bytes,
        round((1 - h.compressed_bytes::numeric / nullif(h.size_bytes, 0)) * 100, 1) AS saving_pct,
-       round(h.compressed_bytes / nullif(extract(epoch FROM h.finish_at - h.start_at), 0) / 1048576.0, 1) AS write_mb_s,
+       round((h.compressed_bytes / nullif(extract(epoch FROM h.finish_at - h.start_at), 0) / 1048576.0)::numeric, 1) AS write_mb_s,
        h.is_damaged, h.has_checksums,
        (h.compressed_bytes IS NOT NULL AND h.size_bytes IS NOT NULL AND h.compressed_bytes < h.size_bytes) AS is_compressed,
        h.is_password_protected, (h.key_algorithm IS NOT NULL AND h.key_algorithm <> 'NO_Encryption') AS is_encrypted,
