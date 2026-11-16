@@ -200,6 +200,25 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
 			}},
 		}, map[string]string{"ct:app": "mssql", "ct:crm": "mssql", "ct:new": "mssql", "ct_dbs": "rows", "constraint_dbs": "dbtimes"}},
+		// import_mssql_indexes (0169 -> 0164 -> 0092): ix:<db> as ct:<db>
+		{"mssql indexes", "sqlserver", []sqlBatch{
+			{"mssql_indexes", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "state", "server_utc": t0.Add(-time.Hour)},
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
+				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
+			}},
+			{"mssql_indexes", t0, []map[string]any{
+				{"kind": "state", "server_utc": t0},
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": false},
+				{"kind": "db", "database_name": "new", "database_id": 7, "read": true},
+				{"kind": "databases", "names": []any{"app"}},
+			}},
+			{"mssql_indexes", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "state", "server_utc": t0.Add(-30 * time.Minute)},
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
+				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
+			}},
+		}, map[string]string{"ix:app": "mssql", "ix:crm": "mssql", "ix:new": "mssql", "ix_dbs": "rows", "index_dbs": "dbtimes"}},
 		// import_mssql_querystore (0083 L271-470 under 0126 / 0157): qs_since:<db> the greatest ended interval of a
 		// database with a forced_read marker where its store row is; a batch with store rows drops the older ones
 		{"mssql querystore", "sqlserver", []sqlBatch{
@@ -297,6 +316,8 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 						"backup_sets_unlisted": `SELECT array_to_string(ARRAY(SELECT u FROM unnest(unlisted) u ORDER BY u COLLATE "C"), ',') FROM pgvigil.mssql_backup_files_cursor WHERE instance_id = $1`,
 						"backup_history_dbs":   `SELECT string_agg(database_name, ',' ORDER BY database_name COLLATE "C") FROM pgvigil.mssql_backup_history_dbs WHERE instance_id = $1 HAVING count(*) > 0`,
 						"ct_dbs":               `SELECT string_agg(substr(source, 4), ',' ORDER BY substr(source, 4) COLLATE "C") FROM pgvigil.mssql_cursor WHERE instance_id = $1 AND source LIKE 'ct:%' HAVING count(*) > 0`,
+						"ix_dbs":               `SELECT string_agg(substr(source, 4), ',' ORDER BY substr(source, 4) COLLATE "C") FROM pgvigil.mssql_cursor WHERE instance_id = $1 AND source LIKE 'ix:%' HAVING count(*) > 0`,
+						"index_dbs":            dbtimes("mssql_index_db"),
 						"stats_dbs":            dbtimes("mssql_stats_db"),
 						"constraint_dbs":       dbtimes("mssql_constraint_db"),
 						"qs_stores":            dbtimes("mssql_qs_store"),

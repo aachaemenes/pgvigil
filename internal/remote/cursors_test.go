@@ -496,3 +496,29 @@ func TestCursorMovesQSPlan(t *testing.T) {
 		t.Errorf("an older batch moved: %+v", got)
 	}
 }
+
+// import_mssql_indexes (0169 -> 0164 -> 0092 L544-640, each wrapper calling its base unchanged): ix:<db> exactly as
+// ct:<db> - the state-row check, the per-database guard (mssql_index_db, kept as 'index_dbs'), a read database's
+// cursor (kept as 'ix_dbs'), the 'databases' row dropping unnamed ix: cursors and older unnamed guard rows.
+func TestCursorMovesIndexes(t *testing.T) {
+	state := map[string]any{"kind": "state", "server_utc": t0}
+	db := func(n string, read bool) map[string]any {
+		return map[string]any{"kind": "db", "database_name": n, "read": read}
+	}
+	if got := moves(t, "mssql_indexes", t0, []map[string]any{db("app", true)}, nil); len(got) != 0 {
+		t.Errorf("no state row: %+v", got)
+	}
+	s := overlay(nil, moves(t, "mssql_indexes", t0, []map[string]any{state, db("app", true), db("crm", true)}, nil))
+	if !lastAt(s["ix:app"]).Equal(t0) || !lastAt(s["ix:crm"]).Equal(t0) || names(s["ix_dbs"]) != "app,crm" {
+		t.Fatalf("the first read: %+v", s)
+	}
+	b := t0.Add(time.Minute)
+	s = overlay(s, moves(t, "mssql_indexes", b, []map[string]any{state, db("app", false), db("new", true), {"kind": "databases", "names": []any{"app"}}}, s))
+	if !lastAt(s["ix:app"]).Equal(t0) || s["ix:crm"].Kind != "null" || s["ix:new"].Kind != "null" || names(s["ix_dbs"]) != "app" ||
+		dbsOf(s["index_dbs"]) != "app="+um(b)+",new="+um(b) {
+		t.Fatalf("crm and new not named: %+v", s)
+	}
+	if _, moved := s["ct:app"]; moved {
+		t.Errorf("an index read moved a constraint cursor: %+v", s)
+	}
+}
