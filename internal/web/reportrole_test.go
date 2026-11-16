@@ -168,8 +168,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		case c.want != "" && !strings.Contains(got, "IN ROLE pgvigil_reader alone") && !strings.Contains(got, "GRANT pgvigil_reader") && !strings.Contains(got, "another server"):
 			t.Errorf("%s: the words do not say what to do: %q", c.key, got)
 		}
-		// noinh is a member of the owner, so of pg_database_owner too (the owner owns the database): the words name
-		// every role it is a member of, in name order (reportrole-g2: 'is a member of pg_database_owner, postgres')
+		// noinh is a member of the owner (and from PostgreSQL 14 of pg_database_owner too: the owner owns the database):
+		// the words name every role it is a member of, in name order (reportrole-g2: 'is a member of pg_database_owner,
+		// postgres' on 14+; the owner alone on 13)
 		if c.key == "noinh" && !memberNamed(got, owner) {
 			t.Errorf("noinh: %q, want %s among the roles it is a member of", got, owner)
 		}
