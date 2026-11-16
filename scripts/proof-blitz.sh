@@ -48,7 +48,9 @@
 #  E  L3 (VIEW SERVER STATE, VIEW ANY DEFINITION, no EXECUTE): skipped 'no EXECUTE on [master].[dbo].[sp_Blitz] for
 #     the login L3', no run stored, the state's 'last' note the same words.
 #  F  sp_Blitz's database set to an empty database: skipped 'sp_Blitz is not in [<db>].[dbo]', no run; set to a
-#     database that does not exist: skipped 'no database <db> on this server', no run.
+#     database that does not exist: skipped 'no database <db> on this server', no run; L2's instance (no CONNECT ANY
+#     DATABASE, no user in the empty database) set to the empty database: skipped 'the login L2 has no access to the
+#     database [<db>]', no new run (a three-part name there is Msg 916: review-22 bzcoll S2).
 #  I  the site timeout 1 s: a run stored 'timed out', its error naming the 1 s timeout, no finding; collect says
 #     partial; the timeout back to 600 s.
 #  J  13 runs leave 12: 11 older runs seeded into the store, run A's moved back a week, a real run: 12 runs left, the
@@ -298,6 +300,8 @@ on "$II" true "$DBE"; collect "$NI" >/dev/null
 [[ $(cat "$OUT") == *"skipped: sp_Blitz is not in [$DBE].[dbo]"* && $(runs "$II") == 0 ]] && ok "F: an empty database: not installed, no run" || bad "F: $(cat "$OUT") runs $(runs "$II")"
 on "$II" true "nosuch_$SUF"; collect "$NI" >/dev/null
 [[ $(cat "$OUT") == *"skipped: no database nosuch_$SUF on this server"* && $(runs "$II") == 0 ]] && ok "F: a database that does not exist: said, no run" || bad "F: $(cat "$OUT") runs $(runs "$II")"
+r0=$(runs "$IV"); on "$IV" true "$DBE"; collect "$NV" >/dev/null
+[[ $(cat "$OUT") == *"skipped: the login $L2 has no access to the database [$DBE]"* && $(runs "$IV") == "$r0" ]] && ok "F: a database the login has no user in: no access, said, no run" || bad "F: no access: $(cat "$OUT") runs $r0 -> $(runs "$IV")"
 row F
 
 echo "--- I. a forced timeout"
