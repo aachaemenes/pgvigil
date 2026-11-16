@@ -26,7 +26,8 @@
 #                    tag, note, hits (lines it hides in the window)
 #     part cannot  - error_number, why: a listed number pgvigil keeps no row of (said, not collected)
 #     part agstate - instance_id, instance, state: an instance whose AlwaysOn_health capture was not read
-#   GET /api/mssql/summary?part=collect - errors_24h, failing and detail after the instance's 'collector errors' mark
+#   GET /api/mssql/summary?part=collect - Collection Health's cell (ch_level, ch_n: B6G-N's, honouring the mark: the j16
+#     join) and detail after the instance's 'collector errors' mark
 #
 # Rows (expected; RED = on main ebf9a9c's build):
 #  A. real runs on the target: activity with its import refused (error, Import), schema with ONE database's part refused
@@ -40,10 +41,12 @@
 #  C. the service rows: a failed and a refused alert send, a failed test send (its note starts 'test send'), a failed
 #     and a refused report mail, a configured repository not read - and not the unconfigured one, not a sent alert; none
 #     at instance=; the reads write nothing (acks, ack_log, collection_log, collection_dates unchanged). RED: no route.
-#  D. the acknowledgement: X's errors_24h 3 / failing 1 / detail 'c2: the last run failed'; acknowledged up to its newest
-#     log_id -> 0 / 0 / no such line, the error view's rows acked; an older-started run logged after it -> 1 / 1; a second
-#     acknowledgement -> 0 / 0; Unacknowledge (every live row ended) -> 4 / 2; a live row with seen_state 'x' -> the part
-#     still answers, 4 / 2; ack_log holds every add and end. RED: errors_24h stays 3 after the acknowledgement.
+#  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n: the j16 join moved the row there from the
+#     errors_24h / failing columns B6G-N's Collection Health replaced): X's 1 / 1 (c2 warning) / detail 'c2: the last
+#     run failed'; acknowledged up to its newest log_id -> 0 / 0 / no such line, the error view's rows acked; an
+#     older-started run logged after it -> 1 / 1; a second acknowledgement -> 0 / 0; Unacknowledge (every live row
+#     ended) -> 1 / 2 (c2, c3); a live row with seen_state 'x' -> the part still answers, 1 / 2; ack_log holds every add
+#     and end. RED (the join's): the cell stays 1 / 1 after the acknowledgement on a Collection Health that reads no ack.
 #  E. a skip only with skipped=1; no Retry anywhere (no 'retries' column). RED: no route.
 #  F. the stream, own seeded rows: 824 (sev 24, page (1:178064), database ID 5 -> 'database ID 5 (now inv)'), 9002 on
 #     two instances ('salesdb', 'hr'), 823 (no database: empty), 1480 from AlwaysOn_health (sev 10, a listed number:
@@ -271,24 +274,24 @@ post() { curl -s -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json'
 X=$(syn ack postgres)
 lc "$X" c1 30 error "c1 failed"; lc "$X" c2 20 error "c2 failed"; lc "$X" c2 10 error "c2 failed again"
 q "select pgvigil.log_collection($X, 'c1', now() - interval '5 minutes', 10, 'ok', NULL)" >/dev/null
-summ() { curl -s "$U2/api/mssql/summary?part=collect" > "$WORK/r.json"; py "'|'.join(str(one(T('collect'), instance_id=$X).get(k)) for k in ('errors_24h','failing'))"; }
+summ() { curl -s "$U2/api/mssql/summary?part=collect" > "$WORK/r.json"; py "'|'.join(str(one(T('collect'), instance_id=$X).get(k)) for k in ('ch_level','ch_n'))"; }
 dline() { curl -s "$U2/api/mssql/summary?part=collect" > "$WORK/r.json"; py "any('c2: the last run failed' in s for s in (one(T('collect'), instance_id=$X).get('detail') or []))"; }
-check "$(summ)|$(dline)" "3|1|True" "D: before - 3 errors in 24 h, c2 failing, its detail line"
+check "$(summ)|$(dline)" "1|1|True" "D: before - Collection Health warning, one collection (c2: two failures in a row), its detail line"
 L0=$(q "select count(*) from pgvigil.ack_log")
 M=$(q "select max(log_id) from pgvigil.collection_log where instance_id = $X")
 A1=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"log_id:$M\",\"until_change\":true}" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("ack_id"))' 2>/dev/null || echo none)
-check "$(summ)|$(dline)" "0|0|False" "D: acknowledged up to log_id $M - nothing counted, c2 not failing, no detail line"
+check "$(summ)|$(dline)" "0|0|False" "D: acknowledged up to log_id $M - Collection Health counts nothing, no detail line"
 get "/api/collectorerrors?view=error&instance=$X&$W"
 check "$(py "all(r['acked'] for r in T('rows'))")|$(py "len(T('rows'))")" "True|3" "D: the error view marks the acknowledged rows (all three)"
 q "select pgvigil.log_collection($X, 'c3', now() - interval '40 minutes', 10, 'error', 'c3 started before the others, logged after the acknowledgement')" >/dev/null
-check "$(summ)" "1|1" "D: a run that started earlier but was logged after the mark still counts"
+check "$(summ)" "1|1" "D: a run that started earlier but was logged after the mark still counts (c3 warning)"
 M2=$(q "select max(log_id) from pgvigil.collection_log where instance_id = $X")
 A2=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"log_id:$M2\",\"until_change\":true}" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("ack_id"))' 2>/dev/null || echo none)
 check "$(summ)" "0|0" "D: a second acknowledgement"
 for a in $A1 $A2; do post /api/ack/end "{\"ack_id\":$a}" >/dev/null; done
-check "$(summ)" "4|2" "D: Unacknowledge (every live row ended) brings all four back"
+check "$(summ)" "1|2" "D: Unacknowledge (every live row ended) brings c2 and c3 back"
 AX=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"x\",\"until_change\":true}" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("outcome"))' 2>/dev/null || echo none)
-check "$AX|$(summ)" "done|4|2" "D: a malformed mark (saved) leaves the part answering and counts nothing away"
+check "$AX|$(summ)" "done|1|2" "D: a malformed mark (saved) leaves the part answering and counts nothing away"
 check "$(( $(q "select count(*) from pgvigil.ack_log") - L0 ))" "5" "D: ack_log holds the three adds and the two ends"
 
 echo "--- F. the fleet's SQL Server error stream"
