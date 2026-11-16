@@ -396,6 +396,11 @@ done
 ok "K14: a block with 'enable:' for enabled (named with line $KBADLINE of its file), and one without its channel, each stop serve at start (a refusal's exit code, the refusal's own words)"
 
 # ---- K15-K21: B20-4, the daily fleet health (worst first, the post through the alert channels, the role) ---------------
+# PGVIGIL_KROWS_GO=1 (a red run): a failed row of K15-K21 prints FAIL and the next row runs; the block fails at its end
+KBAD=0
+kfail() { if [[ ${PGVIGIL_KROWS_GO:-0} == 1 ]]; then echo "FAIL $*"; KBAD=$((KBAD + 1)); else fail "$@"; fi; }
+KROW=0
+kok() { if (( KBAD == KROW )); then ok "$@"; else echo "FAIL ${1%%:*}: the row ended with $((KBAD - KROW)) failed check(s) above"; fi; }
 # the webhook sink: every POST's body one file in $WORK/hook
 HOOKP=$(freeport); DEADHOOKP=$(freeport); mkdir -p "$WORK/hook"
 cat > "$WORK/hook.py" <<'PY'
@@ -443,16 +448,17 @@ print(n)
 PY
 }
 ksender   # records hook and deadhook (alert_channels)
-[[ $(q "select count(*) from pgvigil.alert_channels where is_configured and kind = 'webhook' and name in ('hook', 'deadhook')") == 2 ]] || fail "K15: the sender did not record the webhook channels: $(tail -3 "$WORK/ksender.log")"
+[[ $(q "select count(*) from pgvigil.alert_channels where is_configured and kind = 'webhook' and name in ('hook', 'deadhook')") == 2 ]] || kfail "K15: the sender did not record the webhook channels: $(tail -3 "$WORK/ksender.log")"
 
 # ---- K15: the order on the screen ----------------------------------------------------------------------------------------
+KROW=$KBAD
 KA=$(as "$COL" -c "select pgvigil.ensure_instance('k15-aaa', 'onprem', '16.0', 160000, false, '{}'::text[])")
 KZ=$(as "$COL" -c "select pgvigil.ensure_instance('k15-zzz', 'onprem', '16.0', 160000, false, '{}'::text[])")
-[[ $KA =~ ^[0-9]+$ && $KZ =~ ^[0-9]+$ ]] || fail "K15: the two proof instances: $KA / $KZ"
+[[ $KA =~ ^[0-9]+$ && $KZ =~ ^[0-9]+$ ]] || kfail "K15: the two proof instances: $KA / $KZ"
 for x in "$KA k15_fail1 error 0" "$KZ k15_fail1 error 0" "$KZ k15_fail2 error 0" "$KA k15_old1 ok 3" "$KA k15_old2 ok 3" "$KA k15_old3 ok 3"; do
   read -r i c st d <<<"$x"
   out=$(as "$COL" -c "select pgvigil.log_collection($i, '$c', now() - interval '$d days', 1, '$st', 'seeded by the proof (K15)')")
-  [[ $out != *ERROR* ]] || fail "K15: the seed $x: $out"
+  [[ $out != *ERROR* ]] || kfail "K15: the seed $x: $out"
 done
 cat > "$WORK/kord.mjs" <<'JS'
 // the Daily checks page as drawn: its tiles, the checks grid's (severity, instance) cells in order, the section's data-daily-post
@@ -504,12 +510,12 @@ want = sorted(cnt, key=lambda i: (-cnt[i][0], -cnt[i][1], i))
 if seq != want: sys.exit(f'instances in the order {seq[:6]}, worst first is {want[:6]}')
 PY
 }
-node "$WORK/kord.mjs" "$CDP" "$U" "$TOKEN" '#/checks?w=24h' > "$WORK/kord.json" || fail "K15: the driver: $(cat "$WORK/kord.json")"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d["rows"], open(sys.argv[2], "w"))' "$WORK/kord.json" "$WORK/kord-rows.json" || fail "K15: no checks grid on the page: $(head -c 400 "$WORK/kord.json")"
+node "$WORK/kord.mjs" "$CDP" "$U" "$TOKEN" '#/checks?w=24h' > "$WORK/kord.json" || kfail "K15: the driver: $(cat "$WORK/kord.json")"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d["rows"], open(sys.argv[2], "w"))' "$WORK/kord.json" "$WORK/kord-rows.json" || kfail "K15: no checks grid on the page: $(head -c 400 "$WORK/kord.json")"
 KSEEN=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(" ".join(sorted({i for _, i in r if i.startswith("k15-")})))' "$WORK/kord-rows.json")
-[[ $KSEEN == "k15-aaa k15-zzz" ]] || fail "K15: the seeded instances on the page: '$KSEEN' (the seed did not reach the page: the row would test nothing)"
-why=$(kwf "$WORK/kord-rows.json" 2>&1) || fail "K15: the Daily checks page is not worst first: $why"
-python3 - "$WORK/kord.json" <<'PY' || fail "K15: the section's post numbers: $(head -c 600 "$WORK/kord.json")"
+[[ $KSEEN == "k15-aaa k15-zzz" ]] || kfail "K15: the seeded instances on the page: '$KSEEN' (the seed did not reach the page: the row would test nothing)"
+why=$(kwf "$WORK/kord-rows.json" 2>&1) || kfail "K15: the Daily checks page is not worst first: $why"
+python3 - "$WORK/kord.json" <<'PY' || kfail "K15: the section's post numbers: $(head -c 600 "$WORK/kord.json")"
 import json, sys
 d = json.load(open(sys.argv[1])); p = json.loads(d['post'] or 'null')
 if p is None: sys.exit('no data-daily-post on the section')
@@ -523,28 +529,30 @@ got = {k: p.get(k) for k in want}
 if got != want or int(t['Critical']) != crit: sys.exit(f'the post {got}, the page {want}, the Critical tile {t["Critical"]}')
 if [w['name'] for w in p.get('worst', [])] != seq[:3]: sys.exit(f"the worst three {[w['name'] for w in p.get('worst', [])]}, the page's {seq[:3]}")
 PY
-ok "K15: the Daily checks page draws worst first (k15-zzz's two critical before k15-aaa's one, each instance's rows together, by the screen's own rows); its section carries the post's numbers equal to its tiles"
+kok "K15: the Daily checks page draws worst first (k15-zzz's two critical before k15-aaa's one, each instance's rows together, by the screen's own rows); its section carries the post's numbers equal to its tiles"
 
 # ---- K16: a failed mail posts nothing -----------------------------------------------------------------------------------
+KROW=$KBAD
 c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"badmail","post":["hook"]}')
-[[ $c == 200 && $(jget "d['outcome']") == done && $(klive "post_channels") == "{hook}" && $(klive channel) == badmail ]] || fail "K16: the keep with post [hook]: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
+[[ $c == 200 && $(jget "d['outcome']") == done && $(klive "post_channels") == "{hook}" && $(klive channel) == badmail ]] || kfail "K16: the keep with post [hook]: $c $(cat "$WORK/body"); post_channels $(klive "post_channels")"
 KID=$(klive schedule_id); P0=$(nposts)
-SEND=$(kturn "$KID" q) || fail "K16: no serve queued the turn in 3 minutes"
-kwaitsent "$SEND" || fail "K16: mail $SEND not answered in 3 minutes"
+SEND=$(kturn "$KID" q) || kfail "K16: no serve queued the turn in 3 minutes"
+kwaitsent "$SEND" || kfail "K16: mail $SEND not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND") == failed && $(nposts) == "$P0" \
    && $(q "select (post_taken_at is null and posted_at is null)::text from pgvigil.report_mail_sends where send_id = $SEND") == true ]] \
-  || fail "K16: the failed mail $SEND: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND"); posts $(nposts) (before $P0)"
-ok "K16: the kept row with post [hook] and the channel badmail: its turn (mail $SEND) failed and posted nothing"
+  || kfail "K16: the failed mail $SEND: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND"); posts $(nposts) (before $P0)"
+kok "K16: the kept row with post [hook] and the channel badmail: its turn (mail $SEND) failed and posted nothing"
 
 # ---- K17: the post --------------------------------------------------------------------------------------------------------
+KROW=$KBAD
 c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["hook"]}')
-[[ $c == 200 && $(klive schedule_id) == "$KID" && $(klive channel) == mail && $(klive "post_channels") == "{hook}" ]] || fail "K17: the keep with the channel mail: $c $(cat "$WORK/body")"
-[[ $(kget "$U") == 200 && $(jget "sorted(d['daily']['post_choices'])") == "['deadhook', 'hook']" && $(jget "d['daily']['post']") == "['hook']" ]] || fail "K17: the page's state: $(cat "$WORK/body")"
+[[ $c == 200 && $(klive schedule_id) == "$KID" && $(klive channel) == mail && $(klive "post_channels") == "{hook}" ]] || kfail "K17: the keep with the channel mail: $c $(cat "$WORK/body")"
+[[ $(kget "$U") == 200 && $(jget "sorted(d['daily']['post_choices'])") == "['deadhook', 'hook']" && $(jget "d['daily']['post']") == "['hook']" ]] || kfail "K17: the page's state: $(cat "$WORK/body")"
 P0=$(nposts)
-SEND=$(kturn "$KID" q) || fail "K17: no serve queued the turn in 3 minutes"
-kwaitsent "$SEND" || fail "K17: mail $SEND not answered in 3 minutes"
-[[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND") == sent ]] || fail "K17: mail $SEND: $(q "select outcome, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND")"
-python3 - "$WORK/sink" post@pgvigil.test "$WORK/kmail-rows.json" <<'PY' || fail "K17: the mail's checks grid: $(cat "$WORK/kmail-rows.json" 2>/dev/null | head -c 300)"
+SEND=$(kturn "$KID" q) || kfail "K17: no serve queued the turn in 3 minutes"
+kwaitsent "$SEND" || kfail "K17: mail $SEND not answered in 3 minutes"
+[[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND") == sent ]] || kfail "K17: mail $SEND: $(q "select outcome, coalesce(error, render_error) from pgvigil.report_mail_sends where send_id = $SEND")"
+python3 - "$WORK/sink" post@pgvigil.test "$WORK/kmail-rows.json" <<'PY' || kfail "K17: the mail's checks grid: $(cat "$WORK/kmail-rows.json" 2>/dev/null | head -c 300)"
 import email, glob, json, re, sys
 from email import policy
 from html.parser import HTMLParser
@@ -572,9 +580,9 @@ g = next((g for g in p.grids if g['head'][:3] == ['severity', 'instance', 'check
 if g is None: sys.exit('no checks grid in the mail')
 json.dump([r[:2] for r in g['rows']], open(out, 'w'))
 PY
-why=$(kwf "$WORK/kmail-rows.json" 2>&1) || fail "K17: the mail's checks grid is not worst first: $why"
-[[ $(nposts) == $((P0 + 1)) ]] || fail "K17: the sink holds $(($(nposts) - P0)) post(s) of this turn, want 1: $(tail -3 "$WORK/ksender.log")"
-python3 - "$WORK/hook" "$WORK/kmail-rows.json" "$WORK/kord.json" <<'PY' || fail "K17: the post's body"
+why=$(kwf "$WORK/kmail-rows.json" 2>&1) || kfail "K17: the mail's checks grid is not worst first: $why"
+[[ $(nposts) == $((P0 + 1)) ]] || kfail "K17: the sink holds $(($(nposts) - P0)) post(s) of this turn, want 1: $(tail -3 "$WORK/ksender.log")"
+python3 - "$WORK/hook" "$WORK/kmail-rows.json" "$WORK/kord.json" <<'PY' || kfail "K17: the post's body"
 import glob, json, os, sys
 posts = []
 for f in sorted(glob.glob(sys.argv[1] + '/*.json'), key=os.path.getmtime):
@@ -594,53 +602,58 @@ for w in [str(crit) + ' critical', 'http://pgvigil.test/#/checks?w=24h'] + seq[:
     if w not in b.get('text', ''): sys.exit(f'the text has no {w!r}: {b.get("text")!r}')
 print(b.get('text', '').splitlines()[0])
 PY
-[[ $(q "select (posted_at is not null and post_error is null)::text from pgvigil.report_mail_sends where send_id = $SEND") == true ]] || fail "K17: the send's post state: $(q "select post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
-ok "K17: the turn (mail $SEND, sent): the mail's checks grid worst first; one post to hook with that mail's counts, the page's instance count, the worst three in order and the link; posted_at set"
+[[ $(q "select (posted_at is not null and post_error is null)::text from pgvigil.report_mail_sends where send_id = $SEND") == true ]] || kfail "K17: the send's post state: $(q "select post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
+kok "K17: the turn (mail $SEND, sent): the mail's checks grid worst first; one post to hook with that mail's counts, the page's instance count, the worst three in order and the link; posted_at set"
 
 # ---- K18: a second turn the same day posts nothing ------------------------------------------------------------------------
+KROW=$KBAD
 P0=$(nposts)
-SEND2=$(kturn "$KID" q) || fail "K18: no serve queued the second turn in 3 minutes"
-kwaitsent "$SEND2" || fail "K18: mail $SEND2 not answered in 3 minutes"
+SEND2=$(kturn "$KID" q) || kfail "K18: no serve queued the second turn in 3 minutes"
+kwaitsent "$SEND2" || kfail "K18: mail $SEND2 not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND2") == sent && $(nposts) == "$P0" \
    && $(q "select (post_taken_at is null and posted_at is null)::text from pgvigil.report_mail_sends where send_id = $SEND2") == true ]] \
-  || fail "K18: the second turn $SEND2: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND2"); posts $(nposts) (before $P0)"
-ok "K18: a second turn the same day (mail $SEND2) was mailed and posted nothing"
+  || kfail "K18: the second turn $SEND2: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND2"); posts $(nposts) (before $P0)"
+kok "K18: a second turn the same day (mail $SEND2) was mailed and posted nothing"
 
 # ---- K19: a failed post is alerted ------------------------------------------------------------------------------------------
-c=$(postj reportmail '{"op":"daily_drop"}'); [[ $c == 200 && $(nlive) == 0 ]] || fail "K19: the drop: $c $(cat "$WORK/body")"
+KROW=$KBAD
+c=$(postj reportmail '{"op":"daily_drop"}'); [[ $c == 200 && $(nlive) == 0 ]] || kfail "K19: the drop: $c $(cat "$WORK/body")"
 c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["post@pgvigil.test"],"channel":"mail","post":["deadhook"]}')
-[[ $c == 200 && $(klive "post_channels") == "{deadhook}" && $(klive schedule_id) != "$KID" ]] || fail "K19: the keep with post [deadhook]: $c $(cat "$WORK/body")"
+[[ $c == 200 && $(klive "post_channels") == "{deadhook}" && $(klive schedule_id) != "$KID" ]] || kfail "K19: the keep with post [deadhook]: $c $(cat "$WORK/body")"
 KID=$(klive schedule_id); D0=$(grep -rl 'daily checks post failed' "$WORK/drop" 2>/dev/null | wc -l)
-SEND=$(kturn "$KID" q) || fail "K19: no serve queued the turn in 3 minutes"
-kwaitsent "$SEND" || fail "K19: mail $SEND not answered in 3 minutes"
+SEND=$(kturn "$KID" q) || kfail "K19: no serve queued the turn in 3 minutes"
+kwaitsent "$SEND" || kfail "K19: mail $SEND not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND") == sent \
    && $(q "select (posted_at is null and post_error like '%127.0.0.1%')::text from pgvigil.report_mail_sends where send_id = $SEND") == true ]] \
-  || fail "K19: mail $SEND's post: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
-[[ $(grep -rl 'daily checks post failed' "$WORK/drop" 2>/dev/null | wc -l) -gt $D0 && $(grep -rh 'daily checks post failed' "$WORK/drop" | tail -1) == *"$SEND"* ]] || fail "K19: no 'daily checks post failed' notice naming mail $SEND in the file drop"
-ok "K19: a post to deadhook failed (mail $SEND sent; post_error names 127.0.0.1) and a 'daily checks post failed' notice reached the file drop"
+  || kfail "K19: mail $SEND's post: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
+[[ $(grep -rl 'daily checks post failed' "$WORK/drop" 2>/dev/null | wc -l) -gt $D0 && $(grep -rh 'daily checks post failed' "$WORK/drop" | tail -1) == *"$SEND"* ]] || kfail "K19: no 'daily checks post failed' notice naming mail $SEND in the file drop"
+kok "K19: a post to deadhook failed (mail $SEND sent; post_error names 127.0.0.1) and a 'daily checks post failed' notice reached the file drop"
+
+# ---- K21: the role ------------------------------------------------------------------------------------------------------------
+KROW=$KBAD
+KVUSER=proofview; KVPW=$(openssl rand -hex 12)
+PGVIGIL_PASSWORD=$KVPW "$BIN" user add -config "$CFG" -role viewer $KVUSER >/dev/null 2>&1 || kfail "K21: user add -role viewer"
+login "$WORK/jarv" "$KVUSER" "$KVPW"
+L4=$(nlog); N4=$(nlive)
+[[ $(kget "$U" "$WORK/jarv") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"changing the Daily checks mail needs the admin role: $KVUSER is a viewer"* ]] || kfail "K21: a viewer's part=daily: $(cat "$WORK/body")"
+c=$(code -b "$WORK/jarv" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["v@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
+[[ $c == 403 && $(jget "d['error']") == *"needs the admin role: $KVUSER is a viewer"* && $(nlog) == "$L4" && $(nlive) == "$N4" ]] || kfail "K21: a viewer's daily_keep: $c $(cat "$WORK/body")"
+kok "K21: a viewer's Daily checks mail is read only with the role's words (part=daily writable false; daily_keep 403); nothing kept"
 
 # ---- K20: the block's post: list ----------------------------------------------------------------------------------------------
+KROW=$KBAD
 kpcfg() { { cat "$WORK/cfg-kpost.yaml"; printf 'reports:\n  daily_checks:\n%b' "$2"; } > "$1"; }
 kpcfg "$WORK/cfg-kpon.yaml" "    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [post@pgvigil.test]\n    as: $UIUSER\n    channel: mail\n    post: [hook]\n"
 kpcfg "$WORK/cfg-kpbad.yaml" "    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [post@pgvigil.test]\n    as: $UIUSER\n    channel: mail\n    post: [mail]\n"
 PK=$(freeport); UK="http://127.0.0.1:$PK"
 kserve "$WORK/cfg-kpon.yaml" "$PK" servekpost.log; SK=$KPID
-kwait 30 filekept || fail "K20: the serve did not keep the row in 30 s: $(klive "kept_by || ' ' || coalesce(post_channels::text, '-')"); $(grep -i 'daily checks' "$WORK/servekpost.log" | tail -2)"
-[[ $(klive "post_channels") == "{hook}" ]] || fail "K20: the block's post: $(klive "post_channels")"
+kwait 30 filekept || kfail "K20: the serve did not keep the row in 30 s: $(klive "kept_by || ' ' || coalesce(post_channels::text, '-')"); $(grep -i 'daily checks' "$WORK/servekpost.log" | tail -2)"
+[[ $(klive "post_channels") == "{hook}" ]] || kfail "K20: the block's post: $(klive "post_channels")"
 kstop "$SK"
 rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/cfg-kpbad.yaml" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
-[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: mail is not a webhook channel of alerts:"* ]] || fail "K20: post: [mail] (exit $rc): $(tail -2 <<<"$out")"
-ok "K20: the block's post: [hook] kept post_channels {hook} (kept_by file); post: [mail] stopped serve at start in words"
-
-# ---- K21: the role ------------------------------------------------------------------------------------------------------------
-KVUSER=proofview; KVPW=$(openssl rand -hex 12)
-PGVIGIL_PASSWORD=$KVPW "$BIN" user add -config "$CFG" -role viewer $KVUSER >/dev/null 2>&1 || fail "K21: user add -role viewer"
-login "$WORK/jarv" "$KVUSER" "$KVPW"
-L4=$(nlog); N4=$(nlive)
-[[ $(kget "$U" "$WORK/jarv") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"changing the Daily checks mail needs the admin role: $KVUSER is a viewer"* ]] || fail "K21: a viewer's part=daily: $(cat "$WORK/body")"
-c=$(code -b "$WORK/jarv" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["v@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
-[[ $c == 403 && $(jget "d['error']") == *"needs the admin role: $KVUSER is a viewer"* && $(nlog) == "$L4" && $(nlive) == "$N4" ]] || fail "K21: a viewer's daily_keep: $c $(cat "$WORK/body")"
-ok "K21: a viewer's Daily checks mail is read only with the role's words (part=daily writable false; daily_keep 403); nothing kept"
+[[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: mail is not a webhook channel of alerts:"* ]] || kfail "K20: post: [mail] (exit $rc): $(tail -2 <<<"$out")"
+kok "K20: the block's post: [hook] kept post_channels {hook} (kept_by file); post: [mail] stopped serve at start in words"
+(( KBAD == 0 )) || fail "K15-K21: $KBAD row check(s) failed (PGVIGIL_KROWS_GO=1)"
 
 # ---- G: the green day, on a repository migrated and never seeded ------------------------------------------------------
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO2" >/dev/null
