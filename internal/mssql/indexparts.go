@@ -70,7 +70,7 @@ OUTER APPLY (SELECT f.name, f.fanout, f.boundary_value_on_right AS on_right,
                       WHEN TYPE_NAME(pp.system_type_id) IN ('decimal', 'numeric') THEN '(' + CAST(pp.precision AS varchar(3)) + ',' + CAST(pp.scale AS varchar(3)) + ')'
                       WHEN TYPE_NAME(pp.system_type_id) IN ('datetime2', 'time', 'datetimeoffset') THEN '(' + CAST(pp.scale AS varchar(3)) + ')'
                       ELSE '' END AS arg_type,
-                    (SELECT CAST(v.value AS nvarchar(4000)) AS v FROM sys.partition_range_values v
+                    (SELECT ` + pfValueText + ` AS v FROM sys.partition_range_values v
                       WHERE v.function_id = f.function_id ORDER BY v.boundary_id FOR JSON PATH) AS values_json
                FROM sys.partition_schemes sch JOIN sys.partition_functions f ON f.function_id = sch.function_id
                JOIN sys.partition_parameters pp ON pp.function_id = f.function_id AND pp.parameter_id = 1
@@ -85,6 +85,20 @@ LEFT JOIN (SELECT z.object_id, z.index_id, SUM(z.row_lock_wait_count) AS rlc, SU
                   SUM(z.leaf_delete_count) AS ld
              FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) z GROUP BY z.object_id, z.index_id) os
        ON os.object_id = i.object_id AND os.index_id = i.index_id`
+
+// pfValueText is a partition boundary (a sql_variant) as text with nothing lost: a sql_variant cast to nvarchar takes
+// style 0, so a datetime2 reads 'Jan  1 2026 12:00AM' (its seconds and fractions gone; box run d404-g3), money keeps 2
+// decimals and float 6 digits - two functions that differ there would read 'essentially the same'. The date and time
+// types at 7 digits (style 121), money at 4 decimals (style 2), float and real at 17 digits (style 3, SQL Server 2016
+// and later), binary as 0x hex (style 1); every other type as it casts.
+const pfValueText = `CASE
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('datetime', 'smalldatetime', 'datetime2') THEN CONVERT(nvarchar(4000), CAST(v.value AS datetime2(7)), 121)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') = 'datetimeoffset' THEN CONVERT(nvarchar(4000), CAST(v.value AS datetimeoffset(7)), 121)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') = 'time' THEN CONVERT(nvarchar(4000), CAST(v.value AS time(7)), 114)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('money', 'smallmoney') THEN CONVERT(nvarchar(4000), CAST(v.value AS money), 2)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('float', 'real') THEN CONVERT(nvarchar(4000), CAST(v.value AS float), 3)
+  WHEN SQL_VARIANT_PROPERTY(v.value, 'BaseType') IN ('binary', 'varbinary') THEN CONVERT(nvarchar(4000), CAST(v.value AS varbinary(8000)), 1)
+  ELSE CAST(v.value AS nvarchar(4000)) END`
 
 // ixExtraSQL: per index of indexesSQL's set, what the index read does not carry.
 var ixExtraSQL = `SELECT CAST(i.object_id AS bigint) AS object_id, CAST(i.index_id AS int) AS index_id, CAST(RTRIM(o.type) AS nvarchar(2)) AS object_type,

@@ -44,7 +44,10 @@
 #     and type_desc, the partition function's name, argument type, partition count and range ('RANGE RIGHT FOR VALUES
 #     (100, 200)'), the partitioning column, any partition uncompressed; fixed: ix_pt_fg ROWS_FILEGROUP [PRIMARY];
 #     ix_pt_eq on ps_b (pf_b, the same range as pf_a); cx_pt MIXED with any_uncompressed (partition 1 PAGE);
-#     pd's clustered index argument type datetime2(3), RANGE LEFT; cx_v_iv object type V.
+#     pd's clustered index argument type datetime2(3), RANGE LEFT, its boundary '2026-01-01 00:00:00.0000000' (the first
+#     expected said '...00.000': run d404-g3 read the product's 'Jan  1 2026 12:00AM' - a sql_variant cast to nvarchar
+#     takes style 0 - a product fault, fixed); pm's function on money with its boundary whole (1.2345, not 1.23);
+#     cx_v_iv object type V.
 #     Red on the base: mssql_index has no column object_type.
 #  X4 TEMPORAL on mssql_table_shape: temporal_type and history_table_id equal to sys.tables for every table of pgvr (NULL
 #     for a view); tt 2 with tt_hist's object id, tt_hist 1, the rest 0.
@@ -139,7 +142,9 @@ sqok "A: the partition functions and schemes" "CREATE PARTITION FUNCTION pf_a (i
   CREATE PARTITION FUNCTION pf_c (int) AS RANGE RIGHT FOR VALUES (150);
   CREATE PARTITION SCHEME ps_c AS PARTITION pf_c ALL TO ([PRIMARY]);
   CREATE PARTITION FUNCTION pf_d (datetime2(3)) AS RANGE LEFT FOR VALUES ('2026-01-01');
-  CREATE PARTITION SCHEME ps_d AS PARTITION pf_d ALL TO ([PRIMARY]);" pgvr
+  CREATE PARTITION SCHEME ps_d AS PARTITION pf_d ALL TO ([PRIMARY]);
+  CREATE PARTITION FUNCTION pf_m (money) AS RANGE RIGHT FOR VALUES (1.2345);
+  CREATE PARTITION SCHEME ps_m AS PARTITION pf_m ALL TO ([PRIMARY]);" pgvr
 sqok "A: the heaps" "DECLARE @n int = 2000;
   CREATE TABLE dbo.h_fwd (id int NOT NULL, v varchar(4000) NULL);
   INSERT dbo.h_fwd (id, v) SELECT n, 'x' FROM $NUMS;
@@ -186,7 +191,9 @@ sqok "A: the partitioned tables" "CREATE TABLE dbo.pt (k int NOT NULL, j int NOT
   DECLARE @n int = 300; INSERT dbo.pt (k, j, v) SELECT n, n % 250, n FROM $NUMS;
   ALTER INDEX cx_pt ON dbo.pt REBUILD PARTITION = 1 WITH (DATA_COMPRESSION = PAGE);
   CREATE TABLE dbo.pd (d datetime2(3) NOT NULL, v int NOT NULL);
-  CREATE CLUSTERED INDEX cx_pd ON dbo.pd (d) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_d (d);" pgvr
+  CREATE CLUSTERED INDEX cx_pd ON dbo.pd (d) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_d (d);
+  CREATE TABLE dbo.pm (m money NOT NULL, v int NOT NULL);
+  CREATE CLUSTERED INDEX cx_pm ON dbo.pm (m) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE) ON ps_m (m);" pgvr
 # X4: a system-versioned table and its history table with a nonclustered index of its own
 sqok "A: the temporal table" "CREATE TABLE dbo.tt (id int NOT NULL CONSTRAINT pk_tt PRIMARY KEY CLUSTERED, v int NOT NULL,
     vf datetime2 GENERATED ALWAYS AS ROW START NOT NULL, vt datetime2 GENERATED ALWAYS AS ROW END NOT NULL, PERIOD FOR SYSTEM_TIME (vf, vt))
@@ -327,7 +334,9 @@ if ! has mssql_index object_type; then bad "X3: mssql_index has no column object
     OUTER APPLY (SELECT f.name, f.fanout,
                         TYPE_NAME(pp.user_type_id) + CASE WHEN TYPE_NAME(pp.system_type_id) IN ('datetime2', 'time', 'datetimeoffset') THEN '(' + CAST(pp.scale AS varchar(3)) + ')' ELSE '' END AS t,
                         'RANGE ' + CASE WHEN f.boundary_value_on_right = 1 THEN 'RIGHT' ELSE 'LEFT' END + ' FOR VALUES ('
-                          + (SELECT STRING_AGG(CAST(CAST(v.value AS nvarchar(4000)) AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY v.boundary_id) FROM sys.partition_range_values v WHERE v.function_id = f.function_id) + ')' AS r
+                          + (SELECT STRING_AGG(CAST(CASE SQL_VARIANT_PROPERTY(v.value, 'BaseType') WHEN 'datetime2' THEN CONVERT(nvarchar(40), CAST(v.value AS datetime2(7)), 121)
+                                                         WHEN 'money' THEN CONVERT(nvarchar(40), CAST(v.value AS money), 2) ELSE CAST(v.value AS nvarchar(4000)) END AS nvarchar(max)), N', ')
+                                      WITHIN GROUP (ORDER BY v.boundary_id) FROM sys.partition_range_values v WHERE v.function_id = f.function_id) + ')' AS r
                    FROM sys.partition_schemes sch JOIN sys.partition_functions f ON f.function_id = sch.function_id
                    JOIN sys.partition_parameters pp ON pp.function_id = f.function_id AND pp.parameter_id = 1 WHERE sch.data_space_id = i.data_space_id) pf
     OUTER APPLY (SELECT QUOTENAME(c.name) AS name FROM sys.index_columns ic JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
@@ -339,8 +348,8 @@ if ! has mssql_index object_type; then bad "X3: mssql_index has no column object
     > "$TMPD/x3.pg" 2>"$TMPD/x3.err" || bad "X3: the stored read: $(head -c 300 "$TMPD/x3.err")"
   if same X3 "the data spaces" "$TMPD/x3.sa" "$TMPD/x3.pg"; then
     w=$(pq "SELECT string_agg(concat_ws(':', index_name, object_type, data_space_name, data_space_type, partition_function, pf_type, pf_range, compression, any_uncompressed::int), ' ' ORDER BY index_name)
-              FROM pgvigil.mssql_index WHERE instance_id = $I AND database_name = 'pgvr' AND index_name IN ('ix_pt_fg', 'ix_pt_eq', 'cx_pt', 'cx_pd', 'cx_v_iv')")
-    want="cx_pd:U:ps_d:PARTITION_SCHEME:pf_d:datetime2(3):RANGE LEFT FOR VALUES (2026-01-01 00:00:00.000):NONE:1 cx_pt:U:ps_a:PARTITION_SCHEME:pf_a:int:RANGE RIGHT FOR VALUES (100, 200):MIXED:1 cx_v_iv:V:PRIMARY:ROWS_FILEGROUP:NONE:1 ix_pt_eq:U:ps_b:PARTITION_SCHEME:pf_b:int:RANGE RIGHT FOR VALUES (100, 200):NONE:1 ix_pt_fg:U:PRIMARY:ROWS_FILEGROUP:NONE:1"
+              FROM pgvigil.mssql_index WHERE instance_id = $I AND database_name = 'pgvr' AND index_name IN ('ix_pt_fg', 'ix_pt_eq', 'cx_pt', 'cx_pd', 'cx_pm', 'cx_v_iv')")
+    want="cx_pd:U:ps_d:PARTITION_SCHEME:pf_d:datetime2(3):RANGE LEFT FOR VALUES (2026-01-01 00:00:00.0000000):NONE:1 cx_pm:U:ps_m:PARTITION_SCHEME:pf_m:money:RANGE RIGHT FOR VALUES (1.2345):NONE:1 cx_pt:U:ps_a:PARTITION_SCHEME:pf_a:int:RANGE RIGHT FOR VALUES (100, 200):MIXED:1 cx_v_iv:V:PRIMARY:ROWS_FILEGROUP:NONE:1 ix_pt_eq:U:ps_b:PARTITION_SCHEME:pf_b:int:RANGE RIGHT FOR VALUES (100, 200):NONE:1 ix_pt_fg:U:PRIMARY:ROWS_FILEGROUP:NONE:1"
     if [[ "$w" == "$want" ]]; then ok "X3: $(wc -l < "$TMPD/x3.pg") indexes' data spaces equal to sa's read; the fixed rows as wanted"
     else bad "X3: the fixed rows read '$w'"; echo "       wanted '$want'"; fi
   fi
