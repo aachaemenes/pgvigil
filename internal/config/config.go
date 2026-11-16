@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Config is the whole file.
@@ -101,6 +103,11 @@ type Instance struct {
 	// PageDefaults are an instance's intervals that Admin > Instances gives it (task 406: its running plans
 	// switch); never read from the file. Interval reads them after the file's schedules:, its own and the global.
 	PageDefaults map[string]Duration `yaml:"-"`
+	// PageAWSHost is the page row's host when the instance's aws: block came from Admin > Instances (task B24p); never
+	// read from the file. The collector checks such a block against the provider's own answer for that host before its
+	// first read (collect.pageAWSVerdict): the block names a resource in the collector host's account, the host was
+	// typed by a page user.
+	PageAWSHost string `yaml:"-"`
 	// Disabled lists collections that never run on this instance.
 	Disabled []string `yaml:"disabled"`
 	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
@@ -108,6 +115,12 @@ type Instance struct {
 	QueryText string `yaml:"query_text"`
 	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
 	AWS *AWS `yaml:"aws"`
+	// Azure names an Azure SQL Database's logical server in Azure Resource Manager for the failover group read
+	// (mssql_failover_groups, task 390a); nil = no Azure door (no call to Resource Manager). SQL Server only.
+	Azure *Azure `yaml:"azure"`
+	// PasswordSecret reads the read login's password from AWS Secrets Manager at connect (task B24e); nil = the dsn
+	// holds the sign-in as today. Configuration-file instances only.
+	PasswordSecret *PasswordSecret `yaml:"password_secret"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
 	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
@@ -455,6 +468,33 @@ type AWS struct {
 	DMS *DMS `yaml:"dms"`
 }
 
+// Azure is an instance's door to Azure Resource Manager (task 390a): the logical server whose failover groups are read.
+// The token comes from the instance's own Entra identity when its dsn signs in with one (fedauth service principal,
+// with its tenant named, or a managed identity), else from azidentity's default chain (the environment, a workload
+// identity, a managed identity, the Azure CLI's sign-in); nothing is stored here. The identity needs
+// Microsoft.Sql/servers/failoverGroups/read on the server (Reader, or a custom role with that action).
+type Azure struct {
+	Subscription  string `yaml:"subscription"`
+	ResourceGroup string `yaml:"resource_group"`
+	Server        string `yaml:"server"` // the logical server's name (not its host name)
+	// Cloud is public (the default), usgov or china: its Resource Manager host and token audience
+	Cloud string `yaml:"cloud"`
+}
+
+// ServerKey names the logical server once, whichever database's instance reads it.
+func (a Azure) ServerKey() string {
+	return strings.ToLower(a.Subscription + "/" + a.ResourceGroup + "/" + a.Server)
+}
+
+// PasswordSecret is an instance's password in AWS Secrets Manager (task B24e): the reference
+// aws-secretsmanager:<name or ARN>[#key], its region (an ARN's own wins) and the profile of the SDK's chain. Its own
+// region and profile, never the aws: block's (that block turns CloudWatch reads on).
+type PasswordSecret struct {
+	Ref     string `yaml:"ref"`
+	Region  string `yaml:"region"`
+	Profile string `yaml:"profile"`
+}
+
 // DMS is the AWS DMS part of an instance's AWS door: which replication tasks to read and the latency
 // threshold the overview check applies to them.
 type DMS struct {
@@ -554,6 +594,7 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	SetPageCloud(c.Doors) // the page's cloud blocks follow this file's doors (B24p): every Merge of the process reads them
 	return &c, nil
 }
 
@@ -688,8 +729,6 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: explain_dsn, explain_analyze and hypo_index are PostgreSQL's", in.Name)
 			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
-			case in.AWS != nil:
-				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
 			case in.Backups != nil:
 				return fmt.Errorf("instance %q: the backups: block is PostgreSQL's", in.Name)
 			case in.Patroni != nil:
@@ -706,6 +745,12 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("instance %q: %w", in.Name, err)
 			}
 		}
+		if err := validateCloud(*in); err != nil {
+			return err
+		}
+		if err := validatePasswordSecret(*in); err != nil {
+			return err
+		}
 		if v := strings.TrimSpace(in.ActionsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: actions_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
@@ -715,15 +760,32 @@ func (c *Config) Validate() error {
 		if v := strings.TrimSpace(in.ExplainDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: explain_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
-		if in.AWS != nil && in.AWS.DMS != nil {
-			for _, t := range in.AWS.DMS.Tasks {
-				if strings.TrimSpace(t) == "" {
-					return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
-				}
+	}
+	return nil
+}
+
+// validateCloud is the aws: and azure: blocks' rules, one function for pgvigil.yaml's instances (Validate) and the
+// page's (Merge, after PageCloudShape: task B24p's fold 6): the azure: block is SQL Server's with its three names and a
+// known cloud, the aws: block PostgreSQL's (on SQL Server it waits for 390b), DMS's task names.
+func validateCloud(in Instance) error {
+	switch {
+	case in.Engine == EnginePostgres && in.Azure != nil:
+		return fmt.Errorf("instance %q: the azure: block is SQL Server's (an Azure SQL Database's failover groups)", in.Name)
+	case in.Engine == EngineSQLServer && in.AWS != nil:
+		return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
+	case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
+		return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
+	case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
+		return fmt.Errorf("instance %q: azure.cloud is public, usgov or china, not %q", in.Name, in.Azure.Cloud)
+	}
+	if in.AWS != nil && in.AWS.DMS != nil {
+		for _, t := range in.AWS.DMS.Tasks {
+			if strings.TrimSpace(t) == "" {
+				return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
 			}
-			if in.AWS.DMS.LatencyWarnSecs < 0 {
-				return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
-			}
+		}
+		if in.AWS.DMS.LatencyWarnSecs < 0 {
+			return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
 		}
 	}
 	return nil
@@ -824,4 +886,81 @@ func (p *Patroni) validate() error {
 		return fmt.Errorf("patroni.url %q is http: ca_file, cert_file and key_file are for https", raw)
 	}
 	return nil
+}
+
+// validAzureCloud: the clouds the Azure door knows (internal/discover's map: public, usgov, china).
+func validAzureCloud(c string) bool {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "", "public", "usgov", "china":
+		return true
+	}
+	return false
+}
+
+// validatePasswordSecret: the reference as secrets.ParseRef reads it (its region, an ARN's form); a dsn that carries a
+// password, or an Entra / Windows sign-in (fedauth=, authenticator=, integrated security / trusted_connection),
+// refused beside it - the dsn is read for the check as the collector reads it (env:, file:). A DOMAIN\user login is
+// refused at connect, where the string is parsed (a backslash here may be a named instance's host\instance).
+func validatePasswordSecret(in Instance) error {
+	ps := in.PasswordSecret
+	if ps == nil {
+		return nil
+	}
+	if _, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile); err != nil {
+		var re *secrets.ReadError
+		if errors.As(err, &re) {
+			return fmt.Errorf("instance %q: password_secret.ref %s: %s", in.Name, re.Secret, re.Message)
+		}
+		return fmt.Errorf("instance %q: password_secret: %w", in.Name, err)
+	}
+	dsn := in.DSN()
+	if inlinePassword(dsn) || keywordPassword(dsn) {
+		return fmt.Errorf("instance %q: password_secret and a dsn that carries a password: the password comes from one place", in.Name)
+	}
+	l := strings.ToLower(dsn)
+	if strings.Contains(l, "fedauth=") || strings.Contains(l, "authenticator=") {
+		return fmt.Errorf("instance %q: password_secret is a SQL or PostgreSQL login's password: not with fedauth= or authenticator= in the dsn", in.Name)
+	}
+	if in.Engine == EngineSQLServer {
+		for _, k := range []string{"integrated security", "integratedsecurity", "trusted_connection", "trusted connection"} {
+			if strings.Contains(l, k) {
+				return fmt.Errorf("instance %q: password_secret is a SQL login's password: not with %s in the dsn (a Windows sign-in)", in.Name, k)
+			}
+		}
+	}
+	return nil
+}
+
+// keywordPassword: a libpq keyword/value string (host=h user=u password=p, spaces around '=' too) that sets a password
+func keywordPassword(v string) bool {
+	if strings.Contains(v, "://") {
+		return false // a URL: inlinePassword reads it (an ADO string's ';' segments too)
+	}
+	m, err := secrets.PGSettings(v)
+	if err != nil {
+		// not libpq's form: the word itself, as before
+		for _, f := range strings.Fields(v) {
+			if k, _, ok := strings.Cut(f, "="); ok && strings.EqualFold(strings.TrimSpace(k), "password") {
+				return true
+			}
+		}
+		return false
+	}
+	_, has := m["password"]
+	return has
+}
+
+// SecretRef is the instance's password_secret as the reader takes it (nil = none). Load's Validate refused a block
+// that does not parse, so an error here is a configuration built past Validate: it rides on the reference
+// (secrets.Ref.Invalid) and every read refuses it - never a connect without the password.
+func (i Instance) SecretRef() *secrets.Ref {
+	ps := i.PasswordSecret
+	if ps == nil {
+		return nil
+	}
+	r, err := secrets.ParseRef(ps.Ref, ps.Region, ps.Profile)
+	if err != nil {
+		return &secrets.Ref{ID: strings.TrimSpace(ps.Ref), Invalid: err.Error()}
+	}
+	return &r
 }

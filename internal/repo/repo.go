@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 //go:embed sql/*.sql
@@ -369,51 +370,16 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
 	return g, err
 }
 
-// Inventory is the page's instance list and its generation, read in one statement (0157's admin_inventory(),
-// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
+// Inventory is the page's instance list and its generation, read in one statement (0193's admin_inventory(),
+// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty) and
+// one scan shared with serve's reader (config.InventorySQL / ScanInventory: B24p's fold 5).
 func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans FROM pgvigil.admin_inventory()`)
+	rows, err := r.pool.Query(ctx, config.InventorySQL)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []config.PageInstance
-	var gen int64
-	for rows.Next() {
-		var name, engine, platform, ref, auth, options *string
-		var tags []string
-		var disabled, runningPlans *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans); err != nil {
-			return nil, 0, err
-		}
-		if name == nil {
-			continue
-		}
-		p := config.PageInstance{Name: *name, Tags: tags}
-		if engine != nil {
-			p.Engine = *engine
-		}
-		if platform != nil {
-			p.Platform = *platform
-		}
-		if ref != nil {
-			p.DSNRef = *ref
-		}
-		if disabled != nil {
-			p.Disabled = *disabled
-		}
-		if auth != nil {
-			p.Auth = *auth
-		}
-		if options != nil {
-			p.Options = *options
-		}
-		if runningPlans != nil {
-			p.RunningPlans = *runningPlans
-		}
-		out = append(out, p)
-	}
-	return out, gen, rows.Err()
+	return config.ScanInventory(rows)
 }
 
 // EnsureInstance upserts the instance row and returns its id.
@@ -582,6 +548,33 @@ func (r *Repo) LogConnectFailure(ctx context.Context, name, engine, platform str
 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_connect_failure($1, $2, $3, $4, $5, $6, $7, $8)`, name, collection, at, int(d.Milliseconds()), cause.Error(),
 		engine, platform, tags)
 	return err
+}
+
+// LogSecretFailure records a run whose login's password could not be read from AWS Secrets Manager, or whose secret
+// the connect's rule refused (task B24e): the collection's error on the instance (made first when it has no row
+// yet), never a connect failure - the server was not asked, so 'server unreachable' must not count it. The note is
+// 'secret: ' and the *secrets.ReadError's own words (review 5: never the connect's 'connect <name>:' wrapping, which
+// 0192's view would cut wrongly).
+func (r *Repo) LogSecretFailure(ctx context.Context, name, engine, platform string, tags []string, collection string, at time.Time, d time.Duration, cause error) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	if platform == "" {
+		platform = "auto"
+	}
+	note := cause.Error()
+	var se *secrets.ReadError
+	if errors.As(cause, &se) {
+		note = se.Error()
+	}
+	var id int
+	err := r.pool.QueryRow(ctx, `SELECT instance_id FROM pgvigil.instances WHERE name = $1`, name).Scan(&id)
+	if err != nil {
+		if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, NULL::text, NULL::int, false, $3::text[], $4)`, name, platform, tags, engine).Scan(&id); err != nil {
+			return err
+		}
+	}
+	return r.LogCollection(ctx, id, collection, at, d, "error", "secret: "+note)
 }
 
 func nullIfEmpty(s string) any {

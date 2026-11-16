@@ -27,6 +27,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // RunsAs says how the process runs when set before StartHeartbeat (the Windows service handler sets "windows
@@ -329,12 +332,16 @@ func withConnectTimeout(cfg *pgx.ConnConfig) {
 
 // connectCounted is pgx.ConnectConfig counted for the instance's load, under DefaultConnectTimeout where the DSN set
 // no connect_timeout.
-func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+func connectCounted(ctx context.Context, in config.Instance, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
 	withConnectTimeout(cfg)
-	InstanceTarget(instance, PgTarget(cfg))
 	t0 := time.Now()
-	conn, err := pgx.ConnectConfig(ctx, cfg)
-	CountConnectTimed(instance, err, connTook(t0)) // the slow-connect tier times the per-database connects too (#6)
+	conn, err := dialWithSecret(ctx, in, cfg, func() { InstanceTarget(in.Name, PgTarget(cfg)); t0 = time.Now() },
+		func(c *pgx.ConnConfig) (*pgx.Conn, error) { return pgx.ConnectConfig(ctx, c) })
+	var se *secrets.ReadError
+	if errors.As(err, &se) {
+		return nil, err // the secret, not the server: not counted as a connect (B24e)
+	}
+	CountConnectTimed(in.Name, err, connTook(t0)) // the slow-connect tier times the per-database connects too (#6)
 	return conn, err
 }
 
@@ -415,6 +422,11 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	a.hist[bucket(res.Duration)]++
 	if ce := (*connectError)(nil); failed && errors.As(res.Err, &ce) {
 		return // the instance's own connect failed: its connect streak and 'authentication failing' speak for it
+	}
+	if se := (*secrets.ReadError)(nil); failed && errors.As(res.Err, &se) {
+		// the login's password could not be read from AWS Secrets Manager (B24e, the lead's Q7): 0192's one finding
+		// speaks for the instance, never a 'collection failing' streak per collection
+		return
 	}
 	sk := [2]string{instance, collection}
 	s := h.streaks[sk]

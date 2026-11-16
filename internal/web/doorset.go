@@ -147,15 +147,19 @@ func noDoorWords(name string) string {
 // none and what opens it. engine is 'sqlserver' or a PostgreSQL one.
 func (ds *doorSet) readLogin(engine, name string) (dsn, kind string, no noDoor) {
 	var monitor string
-	var ok, page bool
+	var ok, page, secret bool
 	if engine == config.EngineSQLServer {
 		d, has := ds.MS[name]
-		monitor, ok, page = d.Monitor, has, d.Page
+		monitor, ok, page, secret = d.Monitor, has, d.Page, d.Secret != nil
 	} else {
 		d, has := ds.PG[name]
-		monitor, ok, page = d.Monitor, has, d.Page
+		monitor, ok, page, secret = d.Monitor, has, d.Page, d.Secret != nil
 	}
 	switch {
+	case secret:
+		// B24e: these readers take the login as a string; an instance whose password is in AWS Secrets Manager is
+		// refused in words here rather than connecting without its password (a NOT PROVEN line of B24e's DONE)
+		return "", "", noDoor{"instance " + name + ": its read login's password comes from AWS Secrets Manager (password_secret): custom reports, the community tools and Query Store plans do not read it yet", howFile}
 	case ds.NoDoor[name].Why != "":
 		return "", "", ds.NoDoor[name]
 	case !ok && ds.Unread:
@@ -324,7 +328,7 @@ func pageDSNRefusal(name, engine, dsn string) string {
 	return ""
 }
 
-// poolInventory reads Admin > Instances' list on serve's own pool (repo.go Inventory's statement; 0131 lets
+// poolInventory reads Admin > Instances' list on serve's own pool (config.InventorySQL, as repo.Inventory; 0131 lets
 // pgvigil_reader call admin_inventory()).
 type poolInventory struct{ pool *pgxpool.Pool }
 
@@ -335,38 +339,12 @@ func (p poolInventory) InventoryGeneration(ctx context.Context) (int64, error) {
 }
 
 func (p poolInventory) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
-	rows, err := p.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation FROM pgvigil.admin_inventory()`)
+	rows, err := p.pool.Query(ctx, config.InventorySQL) // the collector's statement and scan (B24p's fold 5)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []config.PageInstance
-	var gen int64
-	for rows.Next() {
-		var name, engine, platform, ref, auth, options *string
-		var tags []string
-		var disabled *bool
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen); err != nil {
-			return nil, 0, err
-		}
-		if name == nil {
-			continue
-		}
-		pi := config.PageInstance{Name: *name, Tags: tags}
-		for _, f := range []struct {
-			to   *string
-			from *string
-		}{{&pi.Engine, engine}, {&pi.Platform, platform}, {&pi.DSNRef, ref}, {&pi.Auth, auth}, {&pi.Options, options}} {
-			if f.from != nil {
-				*f.to = *f.from
-			}
-		}
-		if disabled != nil {
-			pi.Disabled = *disabled
-		}
-		out = append(out, pi)
-	}
-	return out, gen, rows.Err()
+	return config.ScanInventory(rows)
 }
 
 // DoorEvery is how often serve's watcher reads the inventory's generation (another serve's write reaches this one
@@ -380,12 +358,17 @@ const doorWait = 5 * time.Second
 // doorWake: serve's watcher's wake channel per server (InstancesAdminWrite signals it after a write)
 var doorWake sync.Map // *Server -> chan struct{}
 
+// schedCfg: serve's loaded configuration per server (WatchDoors keeps it): the Connection Test's list of what will
+// not run reads it as the scheduler does (B24e review 11)
+var schedCfg sync.Map // *Server -> *config.Config
+
 // WatchDoors runs serve's watcher: pgvigil.yaml's set at once, then a new set on each generation of Admin >
 // Instances (at once after this serve's own write, within every of another serve's), each stored whole. Serve
 // alone calls it (demo and mcp keep pgvigil.yaml's doors).
 func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.Config, every time.Duration) {
 	wake := make(chan struct{}, 1)
 	doorWake.Store(s.self(), wake)
+	schedCfg.Store(s.self(), cfg) // the Connection Test's list reads the loaded configuration (B24e review 11)
 	c := pageDoorsConfig{file: cfg.Instances, queryText: cfg.QueryText, reads: cfg.Doors.PageInstanceReads}
 	file := s.fileDoors()
 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread

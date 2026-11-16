@@ -282,14 +282,14 @@ func TestExplainFoldOnAStore(t *testing.T) {
 	}
 	mon := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s", cfg.Host, cfg.Port, cfg.Database, login, pw)
 	stmt := fmt.Sprintf(`SELECT 1 FROM pg_class c WHERE c.relname = (pgvigil.ui_password_hash('%s')::int)::text`, user)
-	_, err = plans.Explain(ctx, mon, "", stmt, nil)
+	_, err = plans.Explain(ctx, mon, nil, "", stmt, nil)
 	switch {
 	case err != nil && strings.Contains(err.Error(), "argon2id"):
 		t.Logf("without a check (the old behaviour) the fold READ the hash: %.120s", err.Error())
 	default:
 		t.Logf("without a check the fold did not read the hash here: %v", err)
 	}
-	_, err = plans.Explain(ctx, mon, "", stmt, pgRefusal)
+	_, err = plans.Explain(ctx, mon, nil, "", stmt, pgRefusal)
 	if err == nil || !strings.Contains(err.Error(), "the login is a member of pgvigil_auth") || strings.Contains(err.Error(), "argon2id") {
 		t.Errorf("with pgRefusal: %v; want refused naming pgvigil_auth, no hash", err)
 	}

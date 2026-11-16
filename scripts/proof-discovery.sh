@@ -10,6 +10,10 @@
 #   scripts/proof-discovery.sh creds <out>   (the same machine) writes the box run's short-lived credentials, mode
 #        0600: AWS keys from `aws configure export-credentials` (an hour), an Azure access token (an hour); GCP reads
 #        with the box's own Compute Engine account (nothing of the signed-in user's leaves this machine)
+#   scripts/proof-discovery.sh pagecloud     (where the AWS CLI is signed in; task B24p) an approved AWS proposal's
+#        page block and the collector's provider check of it, live on the lab's Aurora PostgreSQL cluster - its own
+#        expected block stands at the stage (PGVIGIL_LAB_AWS_PROFILE, PGVIGIL_LAB_AWS_CLUSTER, PGVIGIL_ADMIN_DSN,
+#        PGVIGIL_BIN)
 #   scripts/proof-discovery.sh run           (the box) builds pgvigil, adds the three sources through the API (aws
 #        through the page's form, clicked in a headless Chromium), and compares their proposals with the hand read
 #        (PGVIGIL_DISCOVER_HAND, PGVIGIL_DISCOVER_CREDS)
@@ -154,8 +158,147 @@ creds)
     printf 'AWS_REGION=%s\n' "$SEED"; } > "$OUT"  # the box's configuration region: the sweep starts from it
   chmod 600 "$OUT"; grep -q '^AWS_SESSION_TOKEN=' "$OUT" && grep -q '^AZ_TOKEN=.' "$OUT" || fail "creds: the AWS keys or the Azure token are missing"
   echo "creds: written to $OUT (mode 600; they expire within an hour)"; exit 0 ;;
+pagecloud)
+  # Task B24p: a page instance's aws: block against RDS's own answer. Runs where the AWS CLI is signed in - no key or
+  # token leaves this machine: pgvigil serve and one collector run here on PGVIGIL_BIN, their repository a database
+  # made for the run on PGVIGIL_ADMIN_DSN and dropped, the monitored server the lab's Aurora PostgreSQL cluster
+  # PGVIGIL_LAB_AWS_CLUSTER, opened with an IAM database token (15 minutes; it lives in this run's 0700 folder and in
+  # serve's 0600 credential files, all removed at the end). Read-only in the lab: describe calls, one token, SQL reads.
+  # Expected (written before the first run, 2026-11-15):
+  #  1 the source reads the profile's region and proposes the cluster's writer by its own endpoint; approved, its
+  #    page block is the hand read's {region, cluster, db_instance} with the source's profile (serve runs with
+  #    doors.page_cloud_blocks on and the profile listed in doors.page_aws_profiles).
+  #  2 the collector (the same switches) keeps that block: its line 'a page instance's aws: block matches its host'
+  #    names the instance and the endpoint; the instance's io row is not the block's skip (the row is printed).
+  #  3 a second page instance on the same endpoint whose block names a cluster the DB instance is not in: the page
+  #    takes it (the endpoint names its db_instance; the other name is the provider's to confirm) and the collector
+  #    refuses it on RDS's answer - its line 'aws: block is not used' names the typed cluster and the real one, the
+  #    instance's io row is skipped in those words, the instance itself is collected (its activity row ok).
+  #  NOT PROVEN here: the same block on another host refused by the provider (within one account every host that
+  #  passes the name rule is the block's own endpoint: the Go case TestPageAWSCheck); the Azure approve's block (the
+  #  lab holds no Azure SQL server: the Go case on a recorded proposal); the collector reading with the block's own
+  #  profile (the collector's default chain is that same profile here - review 094955 finding 1, added before the
+  #  first run).
+  : "${PGVIGIL_ADMIN_DSN:?a superuser connection to a PostgreSQL in keyword form, no dbname}" "${PGVIGIL_BIN:?a built pgvigil}"
+  CL=${PGVIGIL_LAB_AWS_CLUSTER:?the Aurora PostgreSQL cluster of the lab}
+  [[ -n "$AWS_PROFILE_LAB" && -n "$SEED" ]] || fail "pagecloud: PGVIGIL_LAB_AWS_PROFILE (a profile with a region) is required"
+  for t in psql curl python3 aws; do command -v "$t" >/dev/null || fail "pagecloud: needs $t"; done
+  aw() { aws --profile "$AWS_PROFILE_LAB" --region "$SEED" "$@"; }
+  writer() { aw rds describe-db-clusters --db-cluster-identifier "$CL" --query 'DBClusters[0].DBClusterMembers[?IsClusterWriter]|[0].DBInstanceIdentifier' --output text; }
+  WR=$(writer) || fail "pagecloud: the cluster $CL was not read with this sign-in"
+  [[ -n "$WR" && "$WR" != None ]] || fail "pagecloud: the cluster $CL names no writer"
+  # the endpoint from the writer, the master user from the cluster (an Aurora member may answer none: review 094955
+  # finding 5); text output prints a null as None
+  HEP=$(aw rds describe-db-instances --db-instance-identifier "$WR" --query 'DBInstances[0].Endpoint.Address' --output text) || fail "pagecloud: the writer $WR was not read"
+  MU=$(aw rds describe-db-clusters --db-cluster-identifier "$CL" --query 'DBClusters[0].MasterUsername' --output text) || fail "pagecloud: the cluster's master user was not read"
+  [[ "$HEP" == "${WR,,}."* && -n "$MU" && "$MU" != None ]] || fail "pagecloud: the writer's endpoint or the cluster's master user was not read ('$HEP' '$MU')"
+  SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n'); PGDB=pgv_pcloud_$SUF; USR=proofdba$SUF
+  umask 077
+  TMPD=$(mktemp -d); SRVPID=; RUNPID=
+  UPW=$(printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')")
+  ADMIN="$PGVIGIL_ADMIN_DSN dbname=postgres"; PGDSN="$PGVIGIL_ADMIN_DSN dbname=$PGDB"
+  cleanup() {
+    [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
+    [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
+    wait 2>/dev/null || true
+    psql "$ADMIN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
+    rm -rf -- "${TMPD:?}"
+  }
+  trap cleanup EXIT
+  pq() { psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
+  api() { local c; printf '%s' "$2" > "$TMPD/body.json"; c=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/body.json" "$U/api/$1"); echo "$c"; }
+  # jb k=v ...: a JSON body; @NAME takes the value from the environment (the token is never on a command line), true /
+  # false and a value that opens with { are JSON
+  jb() { python3 -c 'import json, os, sys
+d = {}
+for a in sys.argv[1:]:
+    k, v = a.split("=", 1)
+    if v.startswith("@"):
+        v = os.environ[v[1:]]
+    elif v in ("true", "false") or v[:1] == "{":
+        v = json.loads(v)
+    d[k] = v
+print(json.dumps(d))' "$@"; }
+  row() { pq "SELECT coalesce((SELECT d.status || '|' || coalesce(d.note, '') FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.collection = '$2'), 'none')"; }
+  # waitrow: a failed repository read (psql inside $() runs without set -e) gives '' - no row, asked again (finding 2)
+  waitrow() { local v=none; for _ in $(seq 1 "$3"); do v=$(row "$1" "$2"); [[ -n "$v" && "$v" != none ]] && { echo "$v"; return 0; }; sleep 2; done; echo "${v:-none (the last read failed)}"; return 1; }
+  # tok: a fresh IAM token (15 minutes) into TOKEN, made right before each use that stores it (finding 3)
+  tok() { TOKEN=$(aw rds generate-db-auth-token --hostname "$HEP" --port 5432 --username "$MU") || fail "pagecloud: no IAM token"; TOKAT=$(date +%s); export TOKEN; }
+  tokage() { echo "the token made $(( $(date +%s) - TOKAT )) s ago (it lives 900 s)"; }
+  # waitline <pattern> <tries>: the collector's log holds the line (asked every 2 s; given up when the collector is gone)
+  waitline() { for _ in $(seq 1 "$2"); do grep -qiE "$1" "$TMPD/run.log" && return 0; kill -0 "$RUNPID" 2>/dev/null || return 1; sleep 2; done; return 1; }
+  saylog() { grep -E 'instances: |level=(WARN|ERROR)' "$TMPD/run.log" | tail -15 >&2 || true; }
+
+  echo "== pagecloud 0. the repository, serve, the token =="
+  psql "$ADMIN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
+  CFGD=$TMPD/etc; mkdir -p "$CFGD"
+  printf 'repository:\n  dsn: "%s"\ninstances: []\ndoors:\n  page_cloud_blocks: on\n  page_aws_profiles: [%s]\nschedules:\n  io: 20s\n' "$PGDSN" "$AWS_PROFILE_LAB" > "$CFGD/pgvigil.yaml"
+  "$PGVIGIL_BIN" migrate -config "$CFGD/pgvigil.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "0: migrate"; }
+  PGVIGIL_PASSWORD="$UPW" "$PGVIGIL_BIN" user add -config "$CFGD/pgvigil.yaml" "$USR" >/dev/null 2>&1 || fail "0: user add"
+  PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); U="http://127.0.0.1:$PORT"
+  (umask 022; exec "$PGVIGIL_BIN" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORT") >"$TMPD/serve.log" 2>&1 & SRVPID=$!
+  for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
+  kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.log" >&2; fail "0: serve exited"; }
+  printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "0: the UI login"
+  tok
+  # the hand read through the token itself: the door works, and a paused cluster is awake before pgvigil dials it
+  HV=$(PGPASSWORD="$TOKEN" psql "host=$HEP port=5432 user=$MU dbname=postgres sslmode=require connect_timeout=90" -XAtqc "select current_setting('server_version_num')") \
+    || fail "0: the IAM token did not open $HEP as $MU"
+  echo "ok   pagecloud 0: serve on $PORT, the repository $PGDB; by hand: the cluster's writer $WR at $HEP (server_version_num $HV), master user $MU"
+
+  echo "== pagecloud 1. the approved proposal's block =="
+  code=$(api admin/sources "$(jb op=add kind=aws name=aws1 aws_profile="$AWS_PROFILE_LAB" aws_regions="$SEED" every_s=3600)")
+  [[ "$code" == 200 ]] || fail "1: the source: $code $(head -c 300 "$TMPD/ans.json")"
+  api admin/sources "$(jb op=sync name=aws1)" >/dev/null   # 200, or 409 while the add's own read runs
+  PID=; for _ in $(seq 1 60); do PID=$(pq "SELECT proposal_id FROM pgvigil.admin_proposals WHERE source = 'aws1' AND NOT gone AND lower(host) = lower('$HEP') LIMIT 1"); [[ -n "$PID" ]] && break; sleep 2; done
+  [[ -n "$PID" ]] || fail "1: no proposal of $HEP in 120 s (the source says: $(pq "SELECT coalesce(last_notes, '') || ' ' || coalesce(last_error, '') FROM pgvigil.admin_sources WHERE name = 'aws1'" | head -c 400))"
+  tok   # the approve stores it: fresh for row 2's reads
+  code=$(api admin/proposals "$(jb op=approve proposal_id="$PID" name=lab-writer login="$MU" password=@TOKEN confirm_master=true confirm_autopause=true)")
+  [[ "$code" == 200 ]] || fail "1: the approve: $code $(head -c 300 "$TMPD/ans.json")"
+  B1=$(pq "SELECT coalesce(aws->>'region', '') || '|' || coalesce(aws->>'cluster', '') || '|' || coalesce(aws->>'db_instance', '') || '|' || coalesce(aws->>'profile', '') FROM pgvigil.admin_instance_cloud WHERE name = 'lab-writer'")
+  WANT="$SEED|$CL|$WR|$AWS_PROFILE_LAB"
+  [[ "${B1,,}" == "${WANT,,}" ]] || fail "1: lab-writer's block is '$B1' (want $WANT)"
+  read -r PLAT OPT DBN < <(pq "SELECT platform || ' ' || coalesce(options, '-') || ' ' || coalesce(dbname, '-') FROM pgvigil.admin_instances WHERE name = 'lab-writer'")
+  echo "ok   pagecloud 1: aws1 (profile $AWS_PROFILE_LAB, region $SEED) proposed $HEP; approved as lab-writer (platform $PLAT, options $OPT) with the block $B1 = the hand read's and the source's profile"
+
+  echo "== pagecloud 2. the collector keeps the block on RDS's own answer =="
+  # the collector host's default chain is the lab profile here (a block typed on the page carries no profile: row 3
+  # reads with the default chain; row 1's approved block names the profile itself)
+  env -u TOKEN AWS_PROFILE="$AWS_PROFILE_LAB" "$PGVIGIL_BIN" run -config "$CFGD/pgvigil.yaml" >"$TMPD/run.log" 2>&1 & RUNPID=$!
+  waitline "aws: block matches its host.*instance=lab-writer .*host=$HEP" 90 || { saylog; fail "2: the collector did not log lab-writer's block as matching $HEP in 180 s"; }
+  IO=$(waitrow lab-writer io 90) || { saylog; fail "2: lab-writer's io has no row in 180 s ($(tokage))"; }
+  [[ "$IO" != *"block is not used"* ]] || fail "2: lab-writer's io row is the block's skip: $IO"
+  echo "ok   pagecloud 2: the collector's line 'a page instance's aws: block matches its host' for lab-writer at $HEP; its io row '${IO:0:200}'"
+
+  echo "== pagecloud 3. a block whose cluster is not the DB instance's: refused on RDS's answer =="
+  XCL="pgvproof-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+  aw rds describe-db-clusters --db-cluster-identifier "$XCL" >/dev/null 2>&1 && fail "3: a cluster $XCL exists (a random name must not)"
+  [[ "$OPT" == "-" ]] && OPT=; [[ "$DBN" == "-" ]] && DBN=postgres
+  # the approve stores no options (its DSN file asks for TLS itself): the add asks for it, or pgx's prefer could send
+  # the token in plain text (finding 4)
+  [[ "$OPT" == *sslmode=* ]] || OPT="${OPT:+$OPT }sslmode=require"
+  tok   # the add stores it: fresh for row 3's reads
+  code=$(api admin/instances "$(jb op=add name=lab-writer-x engine=postgres platform="$PLAT" host="$HEP" port=5432 dbname="$DBN" auth=password login="$MU" password=@TOKEN options="$OPT" \
+    cloud="{\"aws\":{\"region\":\"$SEED\",\"db_instance\":\"$WR\",\"cluster\":\"$XCL\"}}")")
+  [[ "$code" == 200 ]] || fail "3: add lab-writer-x with its block: $code $(head -c 300 "$TMPD/ans.json")"
+  waitline "aws: block is not used.*instance=lab-writer-x .*names the cluster $XCL.*is in $CL " 90 || { saylog; fail "3: the collector did not refuse lab-writer-x's block naming $XCL and $CL in 180 s"; }
+  IOX=$(waitrow lab-writer-x io 90) || { saylog; fail "3: lab-writer-x's io has no row in 180 s"; }
+  [[ "$IOX" == "skipped|the page's aws: block is not used: the aws: block names the cluster $XCL"* ]] || fail "3: lab-writer-x's io row is not the block's skip: '$IOX'"
+  ACT=$(waitrow lab-writer-x activity 90) || { saylog; fail "3: lab-writer-x's activity has no row in 180 s ($(tokage))"; }
+  [[ "$ACT" == ok* ]] || fail "3: lab-writer-x itself is not collected: activity '$ACT' ($(tokage))"
+  grep -qE "aws: block is not used.*instance=lab-writer " "$TMPD/run.log" && fail "3: lab-writer's own block was refused too"
+  kill -0 "$RUNPID" 2>/dev/null || fail "3: the collector stopped"
+  kill -0 "$SRVPID" 2>/dev/null || { tail -20 "$TMPD/serve.log" >&2; fail "3: serve stopped"; }
+  [[ "$(writer)" == "$WR" ]] || fail "3: the cluster's writer is not $WR any more (the hand read after the run)"
+  echo "ok   pagecloud 3: lab-writer-x on the same endpoint with a block naming the cluster $XCL: taken by the page, refused by the collector on RDS's answer (its line names $XCL and $CL), io '${IOX:0:160}', the instance collected (activity ${ACT%%|*}); lab-writer's block still used"
+  echo "NOT PROVEN: the same block on another host refused by the provider (within one account every host that passes the name rule is the block's own endpoint): the Go case TestPageAWSCheck"
+  echo "NOT PROVEN: the collector reading with the block's own profile (its default chain is that same profile here: AWS_PROFILE; row 1 proves the profile is stored, row 2 that the check kept the block)"
+  echo "NOT PROVEN: the Azure approve's block (the lab holds no Azure SQL server): the Go case on a recorded proposal"
+  echo "proof-discovery pagecloud: OK (an approved AWS proposal's page block stored with the source's profile; the collector's provider check kept it on RDS's own answer and refused a block naming another cluster; nothing made in the lab)"
+  exit 0 ;;
 run) ;;
-*) fail "usage: proof-discovery.sh hand <out> | creds <out> | run" ;;
+*) fail "usage: proof-discovery.sh hand <out> | creds <out> | pagecloud | run" ;;
 esac
 
 # ---- run (the box) ----

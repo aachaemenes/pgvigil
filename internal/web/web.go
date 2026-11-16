@@ -375,6 +375,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/pool", s.MSSQLPool)
 	api.HandleFunc("GET /api/mssql/azuredb", s.MSSQLAzureDB)
 	api.HandleFunc("GET /api/azuredb/summary", s.AzureDBSummary)
+	api.HandleFunc("GET /api/mssql/georepl", s.MSSQLGeoRepl)
 	api.HandleFunc("GET /api/mssql/properties", s.MSSQLProperties)
 	api.HandleFunc("GET /api/mssql/state", s.MSSQLState)
 	api.HandleFunc("GET /api/mssql/checks", s.MSSQLChecks)

@@ -183,7 +183,9 @@ connects in a row over a minute or more, and a refused login is *authentication 
 not yet a server down (a restart, a failover or a network blip ends inside a minute), and the Collection dates page
 shows the failed read at once. At the default intervals a server that stops answering (its port refuses) is reported
 1 to about 4 minutes later, 2 and a half on average: up to a minute until the instance's next collection, the rule's
-own minute, then the collector's beat and the alert pass, each up to a minute. A host that drops packets instead
+own minute, then the collector's beat and the alert pass, each up to a minute. On a SQL Server instance where no
+collection applies (an Azure SQL Database whose login lacks VIEW DATABASE STATE) a run opens no connection while the
+instance's last detect is under 2 minutes old, so its next connect, and the report, come up to 2 minutes later still. A host that drops packets instead
 takes up to 10 seconds more per attempt: the collector ends an instance connect whose DSN sets no `connect_timeout`
 after 10 seconds (a DSN's own `connect_timeout` is kept; `connect_timeout=0` is read as none set), a SQL Server
 instance's too (its DSN's own `connection timeout` is kept - the SQL Server driver then applies it to every read of

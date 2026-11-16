@@ -218,7 +218,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	doors := map[string]mssql.Door{}
 	for _, in := range cfg.Instances {
 		if in.Engine == config.EngineSQLServer {
-			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions,
+			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Secret: in.SecretRef(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions,
 				Platform: in.Platform} // task 406: plan_evict is not offered on Azure SQL Database
 		}
 	}

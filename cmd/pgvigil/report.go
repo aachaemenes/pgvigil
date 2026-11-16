@@ -316,11 +316,14 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
 var knownKeys = map[string]bool{
 	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+	"password_secret": true, "ref": true,
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
+	"page_cloud_blocks": true, "page_aws_profiles": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
+	"azure": true, "subscription": true, "resource_group": true, // B24p; "server" and "cloud" are S2's alert channel keys below
 	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "backup_files": true, "reads": true, "auto_close_databases": true, "verify_timeout": true,
 	"import": true, "gmsa": true,
 	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,

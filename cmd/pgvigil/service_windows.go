@@ -19,6 +19,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
@@ -385,6 +386,7 @@ func maybeRunAsService(args []string) (bool, int) {
 		w = f
 	}
 	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	secrets.Default.SetLog(log) // B24e review 10
 	log.Info("service starting", "version", version)
 	if err := svc.Run(serviceName, &pgvigilService{args: args[1:], log: log}); err != nil {
 		log.Error("service run failed", "err", err)

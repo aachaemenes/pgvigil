@@ -28,6 +28,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/actions"
 	"github.com/aachaemenes/pgvigil/internal/platform"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 type jobStepsCollector struct{}
@@ -149,9 +150,12 @@ func jobRefused(format string, a ...any) JobActionResult {
 
 // jobConn opens a short-lived connection that cannot hang on a busy server; read-only for every connection but the one
 // that writes pgAgent's jobnextrun, which sets it off explicitly (a role or database default of on would win otherwise).
-func jobConn(ctx context.Context, dsn, app string, readOnly bool) (*pgx.Conn, error) {
+func jobConn(ctx context.Context, dsn string, sec *secrets.Ref, app string, readOnly bool) (*pgx.Conn, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
+		return nil, err
+	}
+	if err := secrets.FillPG(ctx, cfg, dsn, sec); err != nil { // the monitoring login's password_secret (B24e)
 		return nil, err
 	}
 	if cfg.ConnectTimeout == 0 || cfg.ConnectTimeout > 10*time.Second {
@@ -181,7 +185,7 @@ func ExecuteJobAction(ctx context.Context, d actions.Door, r JobActionRequest) J
 	if d.Monitor == "" {
 		return jobRefused("instance %s: the monitoring dsn resolved to an empty string", r.Instance)
 	}
-	mon, err := jobConn(ctx, d.Monitor, "pgvigil-actions-check", true)
+	mon, err := jobConn(ctx, d.Monitor, d.Secret, "pgvigil-actions-check", true)
 	if err != nil {
 		return jobRefused("the monitoring login could not connect to check the target: %v", err)
 	}
@@ -474,7 +478,7 @@ SELECT j.jobname, j.jobenabled, j.jobagentid, j.jobhostagent,
 // actionsLogin connects the actions login and checks it: the same server as the monitoring login, no superuser, and
 // for a stop pg_signal_backend. A non-nil result is the refusal or failure to return.
 func actionsLogin(ctx context.Context, mon *pgx.Conn, d actions.Door, write bool) (*pgx.Conn, *JobActionResult) {
-	act, err := jobConn(ctx, d.Actions, "pgvigil-actions", !write)
+	act, err := jobConn(ctx, d.Actions, nil, "pgvigil-actions", !write)
 	if err != nil {
 		return nil, &JobActionResult{Outcome: actions.Failed, Detail: fmt.Sprintf("the actions login could not connect: %v", err)}
 	}

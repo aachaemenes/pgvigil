@@ -22,6 +22,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/platform"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
 // Row is one collected record, column name to value.
@@ -131,10 +132,16 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	var conn *pgx.Conn
 	var took time.Duration
 	if err == nil {
-		InstanceTarget(in.Name, PgTarget(cfg)) // task 201 DONE-2 N8: the dial target on the beat
 		withConnectTimeout(cfg)
 		t0 := time.Now()
-		conn, err = pgx.ConnectConfig(ctx, cfg)
+		// the password from AWS Secrets Manager first (B24e): the target is recorded right before the dial, and a
+		// secret that cannot be read is not the server's failure, so it is not reported as a connect
+		conn, err = dialWithSecret(ctx, in, cfg, func() { InstanceTarget(in.Name, PgTarget(cfg)); t0 = time.Now() }, // task 201 DONE-2 N8
+			func(c *pgx.ConnConfig) (*pgx.Conn, error) { return pgx.ConnectConfig(ctx, c) })
+		var se *secrets.ReadError
+		if errors.As(err, &se) {
+			return nil, fmt.Errorf("connect %s: %w", in.Name, err)
+		}
 		took = connTook(t0) // the slow-connect tier: the connect itself, the session setup after it not counted
 	}
 	err = InstanceConnectTimed(in.Name, err, took)
@@ -162,6 +169,14 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
 		// pgvigil's own shutdown (ctx cancelled) is not the server's failure and is not recorded
+		var se *secrets.ReadError
+		if errors.As(err, &se) && ctx.Err() == nil {
+			// the password could not be read from AWS Secrets Manager (B24e): the collection's error, not the server's
+			if lerr := r.LogSecretFailure(ctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
+				log.Warn("the secret's failure was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			return Result{Err: err, Duration: time.Since(start)}
+		}
 		if ctx.Err() == nil {
 			if lerr := r.LogConnectFailure(ctx, in.Name, config.EnginePostgres, in.Platform, in.Tags, name, start, time.Since(start), err); lerr != nil {
 				log.Warn("the failed connect was not recorded", "instance", in.Name, "collection", name, "err", lerr)
@@ -178,6 +193,18 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	instanceID, err := r.EnsureInstance(ctx, in.Name, string(info.Kind), info.ServerVersion, info.ServerVersionNum, info.IsReplica, in.Tags)
 	if err != nil {
 		return Result{Err: err, Duration: time.Since(start)}
+	}
+	// a page instance's aws: block (B24p): checked against the provider's own answer for this host before its first
+	// read (pagecloud.go); refused = the instance collects without it, and a collection that needs it says why
+	if in.AWS != nil && in.PageAWSHost != "" {
+		if why := pageAWSVerdict(ctx, log, in, time.Now()); why != "" {
+			in.AWS = nil
+			if skip, _ := Gated(c, in); skip {
+				why = "the page's aws: block is not used: " + why
+				_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+				return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+			}
+		}
 	}
 	if ok, why := c.Applies(info); !ok {
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
