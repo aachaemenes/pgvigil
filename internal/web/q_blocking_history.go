@@ -53,7 +53,7 @@ SELECT p.pid, p.backend_start, p.samples, p.pinned_samples, p.peak_xmin_age, p.p
   FROM pgvigil.xmin_pins($1, $2, $3) p`
 
 const sqlPgXminNow = `
-SELECT h.snapshot_at, h.holder, h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, left(h.detail, 400) AS "detail@stmt"
+SELECT h.snapshot_at, h.holder AS "holder@holder", h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, left(h.detail, 400) AS "detail@holderdetail"
   FROM pgvigil.vacuum_xmin_holders h
  WHERE h.instance_id = $1
  ORDER BY greatest(coalesce(h.xmin_age, 0), coalesce(h.catalog_xmin_age, 0)) DESC

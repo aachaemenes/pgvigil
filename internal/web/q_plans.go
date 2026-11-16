@@ -511,6 +511,9 @@ func (s *Server) hypoButtonOn(ds *doorSet, name string) (bool, string) {
 	if !ds.Hypo[name] {
 		return false, fmt.Sprintf("the planner check is off on instance %s: it is turned on per instance in the config (hypo_index: true), off by default", name)
 	}
+	if ds.planPolicy(name) == "normalized" {
+		return false, textNormalizedHypoWords
+	}
 	return true, ""
 }
 

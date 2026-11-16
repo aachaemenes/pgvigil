@@ -54,7 +54,7 @@ SELECT w.datname, w.allow_conn, w.xid_age, w.xid_freeze_pct, w.mxid_age, w.mxid_
  ORDER BY w.xid_age DESC NULLS LAST, w.datname`
 
 const sqlVacuumHolders = `
-SELECT h.holder, h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, h.detail AS "detail@stmt", h.snapshot_at
+SELECT h.holder AS "holder@holder", h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, h.detail AS "detail@holderdetail", h.snapshot_at
   FROM pgvigil.vacuum_xmin_holders h
  WHERE h.instance_id = $1
  ORDER BY greatest(h.xmin_age, h.catalog_xmin_age) DESC NULLS LAST

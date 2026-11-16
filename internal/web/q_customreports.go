@@ -844,7 +844,8 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		if s.reports != nil {
 			state.Store = s.reports.state(ctx)
 		}
-		if tr, err := s.textRuleOf(ctx, s.doorsNow()); err == nil && !tr.allFull() {
+		// the words fail closed: a policy read that fails says them too
+		if tr, err := s.textRuleOf(ctx, s.doorsNow()); err != nil || !tr.allFull() {
 			state.StoreText = storeTextWords
 		}
 	}

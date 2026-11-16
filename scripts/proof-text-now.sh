@@ -40,6 +40,17 @@
 # (Running fleet, Alerts, the ack's open alerts) answers every instance's rows to a call naming erp01 or sql01, so a
 # row that carries its instance_id is judged by that instance, as the fleet's rows are; Z - a text plan's figures
 # (cost, rows, time) are not literals: a plan's literals are judged on its expression lines only (plans.Mask's exprKeys).
+# Review 2's three (the expectations unchanged): a reply string that holds a stored text ANYWHERE is that text shown
+# (a finding's detail, a Summary line, an alert's detail quote one after their own words), not only one that starts
+# with it; the sites are TestStoredTextTagged's storedText (every log detail that is not the server's own message, the
+# log message - judged under none only: the capture keeps it under normalized -, a deadlock's every process, the
+# session SET text, the version store holder, Performance Insights' text, the waiting tasks, a session xmin holder's
+# detail), not the findings views (a check that quotes no statement is shown whole under every policy: the statement
+# a check quotes is a site of its own); under mixed a fleet string whose stored texts are erp01's / sql01's only is
+# theirs, whatever columns its table has; the expression keys are a fixed copy (the code under test does not excuse).
+# After review 2's red run: a log message of a server-message kind is not a site (its detail - the same words - is kept
+# by rule); under normalized a hit is judged on the part of the stored text the reply shows (a finding quotes a
+# statement cut short, before its literal); a route that answers under full and 5xx under another policy fails.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -77,20 +88,33 @@ MSI=$(q "select instance_id from pgvigil.instances where name = 'demo-onprem-sql
 echo "== the stored texts (every site of TestStoredTextTagged's list the seed filled)"
 python3 - "$WORK/sites.sql" <<'EOF'
 import sys
-sites = {"query_text": ["query"], "statement_text": ["query"], "log_events": ["statement", "detail"], "slow_events": ["statement"],
+sites = {"query_text": ["query"], "statement_text": ["query"], "log_events": ["statement", "detail", "message"], "slow_events": ["statement"],
   "plans": ["query", "plan_text"], "vacuum_running": ["query"], "schema_ddl_log": ["statement"], "pgaudit_events": ["statement", "parameters"],
   "mssql_qs_query": ["query_text"], "mssql_qs_plan": ["plan_xml"], "mssql_pc_text": ["query"], "mssql_requests": ["statement"],
   "mssql_deadlocks": ["victim_statement", "graph"], "mssql_blocked_reports": ["blocking_statement", "blocked_statement", "report"],
   "mssql_slow_events": ["statement"], "mssql_attentions": ["statement"], "mssql_ag_events": ["statement"], "mssql_trace_events": ["statement"],
   "mssql_audit_events": ["statement"], "mssql_memory_grant_query": ["statement"], "mssql_running_plan": ["plan_xml"], "mssql_live_plan": ["plan_xml"],
-  "mssql_statement_text": ["statement"]}
+  "mssql_statement_text": ["statement"], "mssql_waiting_tasks": ["statement"], "mssql_versionstore_sample": ["holder_statement"],
+  "pi_sql": ["digest", "full_text"], "session_sets": ["query"], "vacuum_xmin_holders": ["detail"]}
+# the kinds whose detail is the server's own message (logparse.DetailIsMessage: corruption, checkpoint and the pganalyze
+# classes' kinds - a fixed copy): kept under every policy, not a site
+msg_kinds = ("corruption checkpoint connection_limit connection_lost timeout canceled autovacuum_cancel vacuum_skipped wraparound "
+             "checkpoint_frequent crash out_of_memory archive_failed standby_conflict serialization_failure temp_file").split()
+where_of = {("log_events", "detail"): " AND x.kind NOT IN (" + ", ".join(f"'{k}'" for k in msg_kinds) + ")",
+            ("log_events", "message"): " AND x.kind NOT IN (" + ", ".join(f"'{k}'" for k in msg_kinds) + ")",
+            ("vacuum_xmin_holders", "detail"): " AND x.holder = 'session'"}
 parts = []
 for t, cols in sites.items():
     for c in cols:
         inst = "x.instance_id" if t not in ("query_text", "mssql_statement_text") else "NULL::int"
-        where = " AND x.kind = 'deadlock'" if (t, c) == ("log_events", "detail") else ""
         parts.append(f"SELECT DISTINCT '{t}.{c}' AS site, {inst} AS instance_id, x.{c}::text AS t FROM pgvigil.{t} x "
-                     f"WHERE to_regclass('pgvigil.{t}') IS NOT NULL AND length(x.{c}::text) >= 24 AND x.{c}::text ~ ' '{where}")
+                     f"WHERE to_regclass('pgvigil.{t}') IS NOT NULL AND length(x.{c}::text) >= 24 AND x.{c}::text ~ ' '{where_of.get((t, c), '')}")
+# a deadlock's every process's statement; a custom (non-planner) session SET's value
+parts.append("SELECT DISTINCT 'mssql_deadlocks.processes' AS site, x.instance_id, p->>'statement' AS t FROM pgvigil.mssql_deadlocks x "
+             "CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(x.processes::jsonb) = 'array' THEN x.processes::jsonb ELSE '[]' END) p "
+             "WHERE length(p->>'statement') >= 24 AND p->>'statement' ~ ' '")
+parts.append("SELECT DISTINCT 'session_sets.value' AS site, x.instance_id, x.value AS t FROM pgvigil.session_sets x "
+             "WHERE NOT x.planner AND length(x.value) >= 24 AND x.value ~ ' '")
 open(sys.argv[1], "w").write("\nUNION ALL\n".join(parts))
 EOF
 # a site whose table this tree lacks is left out by name (to_regclass cannot guard a column list): each read apart
@@ -250,7 +274,10 @@ by = collections.defaultdict(list)
 for t in texts: by[t[2][:24]].append(t)
 lit = re.compile(r"'[^']+'|(?<![\w$])\d+(?![\w])")
 # a plan's expression keys (internal/plans/mask.go exprKeys): only these carry the statement's literals
-ek = set(re.findall(r'"([A-Za-z -]+)": true', re.search(r"var exprKeys = map\[string\]bool\{(.*?)\n\}", open("internal/plans/mask.go").read(), re.S).group(1)))
+ek = {"Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond", "Join Filter", "TID Cond", "One-Time Filter", "Output",
+      "Sort Key", "Presorted Key", "Group Key", "Cache Key", "Function Call", "Table Function Call", "Query Text", "Query Parameters",
+      "Order By", "Run Condition", "Hash Key", "Repeatable Seed", "Sampling Parameters", "Window", "Conflict Filter", "Remote SQL",
+      "Partial Key"}   # a fixed copy of internal/plans/mask.go's exprKeys at this proof's writing (review 2 L4)
 def exprs(v, acc):
     if isinstance(v, dict):
         for k, x in v.items():
@@ -260,15 +287,23 @@ def exprs(v, acc):
         for x in v: exprs(x, acc)
     return acc
 def has_lit(site, t):
+    if site == "log_events.message": return None   # the capture keeps a log message under normalized (judged under none)
+    if site == "vacuum_xmin_holders.detail": t = t.split(": ", 1)[-1]   # the session's words before its query
     if site == "plans.plan_text":
         try: t = "\n".join(exprs(json.loads(t), []))
         except ValueError:
             t = "\n".join(l.strip().split(": ", 1)[1] for l in t.split("\n") if l.strip().split(": ", 1)[0] in ek and ": " in l)
     return lit.search(t)
 walk = json.load(open(f"{work}/walk-{pol}.json"))
+def hits_at(s):
+    # every stored text the string holds, at any place, or that the string ends inside of (a reply's cut quote)
+    out = []
+    for i in range(len(s) - 23):
+        for t in by.get(s[i:i + 24], ()):
+            if s.startswith(t[2], i) or t[2].startswith(s[i:]): out.append((t, i))
+    return out
 def hits(s):
-    if len(s) < 24: return []
-    return [t for t in by.get(s[:24], []) if t[2].startswith(s) or s.startswith(t[2])]
+    return [t for t, _ in hits_at(s)]
 def tables(v, acc):
     if isinstance(v, dict):
         if "columns" in v and "rows" in v: acc.append(v)
@@ -284,7 +319,7 @@ def strs(v, acc):
     elif isinstance(v, list):
         for x in v: strs(x, acc)
     return acc
-shown, leaks, qmarks, placed = collections.Counter(), [], 0, 0
+shown, leaks, qmarks, placed, embedded = collections.Counter(), [], 0, 0, collections.Counter()
 for c in walk["calls"]:
     ss = c.get("strings", [])
     if pol == "mixed" and c["who"] in ("pg", "ms") and "json" in c:
@@ -300,13 +335,19 @@ for c in walk["calls"]:
         ss = list(kept.elements())
     for s in ss:
         if "?" in s and re.search(r"\b(SELECT|UPDATE|INSERT|DELETE)\b", s, re.I): qmarks += 1
-        for site, inst, t in hits(s):
+        ha = hits_at(s)
+        if any(i > 0 for _, i in ha): embedded[c["path"]] += 1
+        for (site, inst, t), i in ha:
             shown[site] += 1
+            ov = t if s.startswith(t, i) else s[i:]   # the part of the stored text this string shows
             # mixed: erp01's and sql01's own routes show no stored text at all; the fleet's rows are judged by their instance below
-            if pol == "none" or (pol == "normalized" and has_lit(site, t)) or (pol == "mixed" and c["who"] in ("pg", "ms")):
+            if pol == "none" or (pol == "normalized" and has_lit(site, ov)) or (pol == "mixed" and c["who"] in ("pg", "ms")):
                 leaks.append(f"{c['path']} [{c['who']}] shows {site} of instance {inst or '?'}: {t[:80]!r}")
 print(f"== {pol}: {sum(shown.values())} reply strings are stored texts; sites shown: {dict(shown)}")
+print(f"   strings holding a stored text after their own words (findings, Summary lines, alert details): {sum(embedded.values())} on {dict(embedded.most_common(8))}")
 print(f"   skipped (4xx): {len(walk['skipped'])}; downloads: {walk['downloads']}")
+five = sorted(x for x in walk["skipped"] if re.search(r"\] 5\d\d$", x))
+print(f"   answered 5xx (not judged): {five}")
 bad = sorted(set(leaks))
 # every leaking route once, with its sites and how many strings (the whole list: the inventory the walk measured)
 per = collections.defaultdict(lambda: [0, set()])
@@ -328,6 +369,14 @@ planner = [r for r in (pr.get("sets") or []) if r.get("planner") is True]
 print(f"   J1: JSON plan {'read' if pr.get('jsonplan') else 'NOT FOUND'}, text {'none' if ptxt is None else repr(ptxt[:90])}; S1: {len(custom)} custom SET row(s), values {[r.get('value') for r in custom][:4]}; L4: {len(walk.get('atcols', []))} '@' column(s)")
 for c in sorted(set(walk.get("atcols", [])))[:10]: bad.append(f"L4: {c}")
 undecided = []
+# a route that answers under full and 5xx here: the rule broke its reply
+if pol != "full":
+    try:
+        full5 = {x.rsplit(" ", 1)[0] for x in json.load(open(f"{work}/walk-full.json"))["skipped"]}
+        for x in five:
+            if x.rsplit(" ", 1)[0] not in full5: bad.append(f"5xx under {pol}, answered under full: {x}")
+    except (OSError, ValueError, KeyError):
+        bad.append("walk-full.json unreadable: the 5xx compare did not run")
 if pol == "full":
     if not ptxt or "acme" not in ptxt.lower(): undecided.append("J1: no JSON plan text with its literal under full")
     if not any(r.get("value") is not None for r in custom): undecided.append("S1: no custom SET value shown under full")
@@ -363,6 +412,12 @@ if pol == "mixed":
                     if isinstance(cell, str) and hits(cell):
                         if mine: bad.append(f"{c['path']} [fleet] row of instance {r[ii]} shows {hits(cell)[0][0]}: {cell[:80]!r}")
                         else: others += 1
+    # a fleet string whose stored texts are erp01's / sql01's only is theirs, whatever columns its table has (review 2 M3)
+    for c in walk["calls"]:
+        if c["who"] != "fleet": continue
+        for s in c.get("strings", []):
+            insts = {inst for _, inst, _ in hits(s) if inst}
+            if insts and insts <= {pgi, msi}: bad.append(f"{c['path']} [fleet] shows a text only erp01 / sql01 hold: {s[:80]!r}")
     print(f"   fleet rows of other instances showing their stored text: {others}")
     if others == 0: bad.append("the fleet routes show no other instance's text (hidden for every instance?)")
 print(f"   {pol}: {'PASS' if not bad else 'FAIL (' + str(len(bad)) + ')'}")

@@ -36,6 +36,9 @@ import (
 //	setval    a session SET's value: kept for a planner setting (the row's planner column), else under full only - the
 //	          capture's rule (collect's sessionsets.go: a custom setting can carry an application's data)
 //	planner   whether the row's setting is a planner one (kept)
+//	holderdetail  an xmin holder's detail (vacuum_xmin_holders): a session's is "<user / application, state, type>:
+//	          <query>" - the words kept, the query by stmt's rule; a slot's or a prepared transaction's holds no statement
+//	holder    the holder's kind (kept): session, slot, prepared
 //	fcheck    a finding's check (its setting or check_name); fdetail, fvalue, ffix its detail, value and fix: for a check
 //	          that quotes a statement (findText), the text from the quote on follows the rule, the words before it stay;
 //	          fsummary the Summary's cell lines ("<check>: <value> - <detail>"), each by its check
@@ -350,6 +353,18 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 						row[c.i] = nil
 					}
 				}
+			case "holderdetail":
+				if h, _ := at(row, "holder"); h == "session" {
+					if d, ok := row[c.i].(string); ok {
+						if words, query, found := strings.Cut(d, ": "); found {
+							if q, ok := tr.stmt(id, known, query).(string); ok {
+								row[c.i] = words + ": " + q
+							} else {
+								row[c.i] = words
+							}
+						}
+					}
+				}
 			case "logmsg":
 				if pol == "none" {
 					row[c.i] = nil
@@ -544,6 +559,10 @@ func (s *Server) TextPolicy(name string) string { return s.doorsNow().planPolicy
 // textNoneWords: why EXPLAIN, EXPLAIN ANALYZE, the index suggestion and its planner check are off for an instance
 // whose policy is none now (the lead's T4): they would show or use a statement's text, the text stored before included.
 const textNoneWords = `off: this instance's query_text policy is "none": no statement text is shown or used, the text stored before included (EXPLAIN, EXPLAIN ANALYZE and the index suggestion read it)`
+
+// textNormalizedHypoWords: why the planner check (a hypothetical index) is off under normalized: the statement it
+// would plan is read with its literals replaced, which the server cannot plan (review 2 L2).
+const textNormalizedHypoWords = `off: this instance's query_text policy is "normalized": the stored statement is read with its literals replaced, so the planner check cannot run it`
 
 // errTextNone is textNoneWords as a refusal.
 var errTextNone = errors.New(textNoneWords)

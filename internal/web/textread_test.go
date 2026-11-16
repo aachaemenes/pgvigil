@@ -23,12 +23,17 @@ var storedText = map[string][]string{
 	"mssql_blocked_reports": {"blocking_statement", "blocked_statement", "report"}, "mssql_slow_events": {"statement", "shape"},
 	"mssql_attentions": {"statement"}, "mssql_ag_events": {"statement"}, "mssql_trace_events": {"statement"},
 	"mssql_audit_events": {"statement"}, "mssql_memory_grant_query": {"statement"}, "mssql_running_plan": {"plan_xml"},
-	"mssql_live_plan": {"plan_xml"}, "mssql_statement_text": {"statement"},
-	// a session SET's value: a custom setting's can carry an application's data (kept under full only, as captured)
-	"session_sets": {"value"},
-	// a finding's value and detail: the checks that quote a statement (internal/textnow's findText) carry stored text
+	"mssql_live_plan": {"plan_xml"}, "mssql_statement_text": {"statement"}, "mssql_waiting_tasks": {"statement"},
+	"mssql_versionstore_latest": {"holder_statement"}, "mssql_versionstore_sample": {"holder_statement"},
+	"vacuum_xmin_holders": {"detail"}, "pi_sql": {"digest", "full_text"},
+	// a session SET's text and value: a custom setting's value can carry an application's data (full only, as captured)
+	"session_sets": {"query", "value"},
+	// a finding's value and detail: the checks that quote a statement (internal/textnow's findText) carry stored text,
+	// in the views that hold those checks (TestChecksInMigrations ties the names to the migrations)
 	"alert_state": {"value"}, "ack_suppressed": {"value"}, "alert_occurrences": {"value"}, "alert_sent": {"value"},
 	"findings": {"detail", "value"}, "alert_findings": {"detail", "value"}, "findings_alerts": {"detail", "value"},
+	"memory_findings": {"detail"}, "mssql_running_findings": {"detail"}, "mssql_xe_findings": {"detail", "object"},
+	"mssql_storage_findings": {"detail"}, "mssql_blocking_findings": {"detail"}, "mssql_cpu_findings": {"detail"},
 }
 
 // textReadAllowed: a SQL text that names a stored text column without returning it, by its constant's name: why.
@@ -44,6 +49,10 @@ var textReadAllowed = map[string]string{
 	"sqlPgDeadlockEvents":     "scanned by PgDeadlocks through textRule.row",
 	"sqlPlanForSuggest":       "scanned by planForSuggest through textRule.row",
 	"sqlPoolerConnTrace":      "counts over pgvigil.pooler_conns; returns no text",
+	"sqlPoolerConnClients":    "the client rows of pgvigil.pooler_conns: head_query and backend_query are not selected",
+	"sqlIOFindings":           "pgvigil.findings filtered to track_io_timing (a setting rule; it quotes no statement)",
+	"sqlPoolerFindings":       "memory_findings filtered to the two pooler checks (they quote no statement)",
+	"sqlMSSQLStorageChecks":   "mssql_storage_findings without the version store checks (the only ones of the view that quote a statement)",
 }
 
 // textFuncAllowed: a repository function whose body names a stored text column but whose result carries none: why.
@@ -51,26 +60,98 @@ var textFuncAllowed = map[string]string{
 	"mssql_plan_sources": "returns has_plan, never the plan",
 }
 
-var sqlTableRE = regexp.MustCompile(`pgvigil\.(\w+)\s+(?:AS\s+)?([a-z][a-z0-9_]*)\b`)
+var (
+	// a table's read: its name, and its alias when it has one (an un-aliased read names its columns bare)
+	sqlTableRE = regexp.MustCompile(`pgvigil\.(\w+)(?:\s+(?:AS\s+)?([a-z][a-z0-9_]*))?`)
+	// a function's read, whatever columns the SQL takes from it
+	sqlCallRE = regexp.MustCompile(`pgvigil\.(\w+)\(`)
+	textTagRE = regexp.MustCompile(`"[a-z_]*@[a-z]+"`)
+)
 
-// TestStoredTextTagged: every SQL text of the package that reads a stored-text table and names one of its text
-// columns through the table's alias carries a role tag ('"<name>@<role>"', textread.go), so its reply follows the
-// instance's query_text policy NOW; a text that only filters on the column is listed in textReadAllowed with why.
-func TestStoredTextTagged(t *testing.T) {
+// textTagged: a SQL text carries a role tag or the text marker (the rule then applies to every tagged column it returns).
+func textTagged(sql string) bool { return textTagRE.MatchString(sql) || textMarkRE.MatchString(sql) }
+
+// readsStoredText lists the storedText columns a SQL text names: through a table's alias, or bare beside an
+// un-aliased table.
+func readsStoredText(sql string) []string {
+	var out []string
+	for _, m := range sqlTableRE.FindAllStringSubmatch(sql, -1) {
+		for _, c := range storedText[m[1]] {
+			pat := `\b` + m[2] + `\.` + c + `\b`
+			if m[2] == "" {
+				pat = `(?:^|[^.\w"])` + c + `\b`
+			}
+			if regexp.MustCompile(pat).MatchString(sql) {
+				out = append(out, "pgvigil."+m[1]+"."+c)
+			}
+		}
+	}
+	return out
+}
+
+// textFunc is a function a SQL text reads and the stored text column its body names.
+type textFunc struct{ fn, col string }
+
+// funcsReadingText lists the functions a SQL text reads whose body (their last definition) returns stored text; an
+// import_* function is a write and returns none to a page.
+func funcsReadingText(sql string, body map[string]string) []textFunc {
+	var out []textFunc
+	for _, m := range sqlCallRE.FindAllStringSubmatch(sql, -1) {
+		b, ok := body[m[1]]
+		if !ok || strings.HasPrefix(m[1], "import_") {
+			continue
+		}
+		if cols := readsStoredText(b); len(cols) > 0 {
+			out = append(out, textFunc{m[1], cols[0]})
+		}
+	}
+	return out
+}
+
+// funcBodies: each repository function's last definition in the migrations (Glob's order is the name order, the
+// order they apply in).
+func funcBodies(t *testing.T) map[string]string {
+	migrations, err := filepath.Glob(filepath.Join("..", "repo", "sql", "*.sql"))
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("the migrations: %v", err)
+	}
+	defRE := regexp.MustCompile(`CREATE (?:OR REPLACE )?FUNCTION pgvigil\.(\w+)\s*\(`)
+	endRE := regexp.MustCompile(`\n(?:CREATE|DROP|ALTER|GRANT|REVOKE|COMMENT|DO )`)
+	body := map[string]string{}
+	for _, f := range migrations {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		for _, m := range defRE.FindAllStringSubmatchIndex(src, -1) {
+			rest := src[m[1]:]
+			end := len(rest)
+			if e := endRE.FindStringIndex(rest); e != nil {
+				end = e[0]
+			}
+			body[src[m[2]:m[3]]] = src[m[0] : m[1]+end]
+		}
+	}
+	return body
+}
+
+// packageSQL calls f with every string literal of the package's non-test files that holds a SELECT, with its position
+// and the name it is bound to (the const / var it starts, else the function it sits in).
+func packageSQL(t *testing.T, f func(pos token.Position, name, sql string)) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("the package's files: %v", err)
 	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
 			continue
 		}
-		af, err := parser.ParseFile(fset, f, nil, 0)
+		af, err := parser.ParseFile(fset, file, nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// the name a literal is bound to: the const / var it starts, else the function it sits in
 		name := map[*ast.BasicLit]string{}
 		ast.Inspect(af, func(n ast.Node) bool {
 			switch x := n.(type) {
@@ -102,137 +183,87 @@ func TestStoredTextTagged(t *testing.T) {
 			if !ok || bl.Kind != token.STRING {
 				return true
 			}
-			sql, err := strconv.Unquote(bl.Value)
-			if err != nil || !strings.Contains(sql, "SELECT") {
-				return true
-			}
-			if strings.Contains(sql, textRoleSep) && regexp.MustCompile(`"[a-z_]*@[a-z]+"`).MatchString(sql) || textMarkRE.MatchString(sql) {
-				return true
-			}
-			for _, m := range sqlTableRE.FindAllStringSubmatch(sql, -1) {
-				cols, ok := storedText[m[1]]
-				if !ok {
-					continue
-				}
-				for _, c := range cols {
-					if regexp.MustCompile(`\b` + m[2] + `\.` + c + `\b`).MatchString(sql) {
-						if _, ok := textReadAllowed[name[bl]]; !ok {
-							t.Errorf("%s: %s reads pgvigil.%s.%s with no role tag: tag the column (textread.go) or list it in textReadAllowed with why",
-								fset.Position(bl.Pos()), name[bl], m[1], c)
-						}
-					}
-				}
+			if sql, err := strconv.Unquote(bl.Value); err == nil && strings.Contains(sql, "SELECT") {
+				f(fset.Position(bl.Pos()), name[bl], sql)
 			}
 			return true
 		})
 	}
 }
 
-// TestStoredTextFuncsMarked: a 'SELECT * FROM pgvigil.<function>(' whose function (its last definition in the
-// migrations) returns stored statement text - its body names a storedText column through a table's alias - carries
-// the text marker ('/* text: col=role */', textread.go) or a role tag, else it is listed with why (textFuncAllowed by
-// function, textReadAllowed by constant). web.go's three reads get their markers from the WIRING patch
-// (scripts/textnow-wiring.patch): without it this test fails on them. A function that reads the text through another
-// function is not seen here (the proof's walk is the check of those).
-func TestStoredTextFuncsMarked(t *testing.T) {
-	migrations, err := filepath.Glob(filepath.Join("..", "repo", "sql", "*.sql"))
-	if err != nil || len(migrations) == 0 {
-		t.Fatalf("the migrations: %v", err)
-	}
-	defRE := regexp.MustCompile(`CREATE (?:OR REPLACE )?FUNCTION pgvigil\.(\w+)\s*\(`)
-	endRE := regexp.MustCompile(`\n(?:CREATE|DROP|ALTER|GRANT|REVOKE|COMMENT|DO )`)
-	body := map[string]string{}
-	for _, f := range migrations { // Glob's order is the name order, the order they apply in
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		src := string(b)
-		for _, m := range defRE.FindAllStringSubmatchIndex(src, -1) {
-			rest := src[m[1]:]
-			end := len(rest)
-			if e := endRE.FindStringIndex(rest); e != nil {
-				end = e[0]
-			}
-			body[src[m[2]:m[3]]] = src[m[0] : m[1]+end]
-		}
-	}
-	readsText := func(b string) string {
-		for _, m := range sqlTableRE.FindAllStringSubmatch(b, -1) {
-			for _, c := range storedText[m[1]] {
-				if regexp.MustCompile(`\b` + m[2] + `\.` + c + `\b`).MatchString(b) {
-					return m[1] + "." + c
-				}
-			}
-		}
-		return ""
-	}
-	callRE := regexp.MustCompile(`SELECT (?:[a-z]\.)?\* FROM pgvigil\.(\w+)\(`)
-	tagRE := regexp.MustCompile(`"[a-z_]*@[a-z]+"`)
-	fset := token.NewFileSet()
-	files, err := filepath.Glob("*.go")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("the package's files: %v", err)
-	}
+// TestStoredTextTagged: every SQL text of the package that names a stored text column (through a table's alias, or
+// bare beside an un-aliased table) carries a role tag ('"<name>@<role>"') or the text marker (textread.go), so its
+// reply follows the instance's query_text policy NOW; a text that only filters on the column, or returns none of it,
+// is listed in textReadAllowed with why. A tag anywhere in a text covers it whole (a column-by-column check reads a
+// CTE's or a subquery's column as returned: review 2 M2's scan, not taken).
+func TestStoredTextTagged(t *testing.T) {
 	seen := 0
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
+	packageSQL(t, func(pos token.Position, name, sql string) {
+		cols := readsStoredText(sql)
+		if len(cols) == 0 {
+			return
 		}
-		af, err := parser.ParseFile(fset, f, nil, 0)
-		if err != nil {
-			t.Fatal(err)
+		seen++
+		if textTagged(sql) {
+			return
 		}
-		name := map[*ast.BasicLit]string{}
-		ast.Inspect(af, func(n ast.Node) bool {
-			if x, ok := n.(*ast.ValueSpec); ok && len(x.Names) > 0 {
-				for _, v := range x.Values {
-					ast.Inspect(v, func(m ast.Node) bool {
-						if bl, ok := m.(*ast.BasicLit); ok {
-							name[bl] = x.Names[0].Name
-						}
-						return true
-					})
-				}
-			}
-			return true
-		})
-		ast.Inspect(af, func(n ast.Node) bool {
-			bl, ok := n.(*ast.BasicLit)
-			if !ok || bl.Kind != token.STRING {
-				return true
-			}
-			sql, err := strconv.Unquote(bl.Value)
-			if err != nil {
-				return true
-			}
-			for _, m := range callRE.FindAllStringSubmatch(sql, -1) {
-				b, ok := body[m[1]]
-				if !ok {
-					continue
-				}
-				col := readsText(b)
-				if col == "" {
-					continue
-				}
-				seen++
-				if textMarkRE.MatchString(sql) || tagRE.MatchString(sql) {
-					continue
-				}
-				if _, ok := textFuncAllowed[m[1]]; ok {
-					continue
-				}
-				if _, ok := textReadAllowed[name[bl]]; ok {
-					continue
-				}
-				t.Errorf("%s: %s reads pgvigil.%s(), which returns %s, with no text marker: add '/* text: <col>=<role> */' (textread.go), or list it with why (web.go: apply scripts/textnow-wiring.patch)",
-					fset.Position(bl.Pos()), name[bl], m[1], col)
-			}
-			return true
-		})
+		if _, ok := textReadAllowed[name]; ok {
+			return
+		}
+		t.Errorf("%s: %s reads %s with no role tag: tag the column (textread.go) or list it in textReadAllowed with why", pos, name, strings.Join(cols, ", "))
+	})
+	if seen < 50 {
+		t.Errorf("only %d SQL texts read a stored text column: the test reads too little (its patterns?)", seen)
 	}
-	if seen == 0 {
-		t.Error("no read of a function that returns stored text was found: the test reads nothing (the migrations' path?)")
+}
+
+// TestStoredTextFuncsMarked: a SQL text that reads a repository function whose last definition returns stored
+// statement text (its body names a storedText column) carries the text marker ('/* text: col=role */') or a role tag,
+// else it is listed with why (textFuncAllowed by function, textReadAllowed by constant). web.go's three reads get
+// their markers from the WIRING patch (scripts/textnow-wiring.patch): without it this test fails on them. A function
+// that reads the text through another function is not seen here (the proof's walk is the check of those).
+func TestStoredTextFuncsMarked(t *testing.T) {
+	body := funcBodies(t)
+	seen := 0
+	packageSQL(t, func(pos token.Position, name, sql string) {
+		for _, fn := range funcsReadingText(sql, body) {
+			seen++
+			if textTagged(sql) {
+				continue
+			}
+			if _, ok := textFuncAllowed[fn.fn]; ok {
+				continue
+			}
+			if _, ok := textReadAllowed[name]; ok {
+				continue
+			}
+			t.Errorf("%s: %s reads pgvigil.%s(), which returns %s, with no text marker: add '/* text: <col>=<role> */' (textread.go), or list it with why (web.go: apply scripts/textnow-wiring.patch)", pos, name, fn.fn, fn.col)
+		}
+	})
+	if seen < 10 {
+		t.Errorf("only %d reads of a function that returns stored text were found: the test reads too little (the migrations' path?)", seen)
+	}
+}
+
+// TestTextGuardsFlag: the read shapes the two guards missed before review 2 (an un-aliased table's bare column,
+// explicit columns over a function, a table added since) are flagged; their tagged forms pass.
+func TestTextGuardsFlag(t *testing.T) {
+	body := funcBodies(t)
+	for _, sql := range []string{
+		"SELECT snapshot_at AS at, usename, detail\n  FROM pgvigil.log_events\n WHERE kind = 'auth_fail'",
+		"SELECT x.setting, x.value FROM pgvigil.session_sets x WHERE x.instance_id = $1",
+		"SELECT m.detail FROM pgvigil.mssql_running_findings m",
+	} {
+		if len(readsStoredText(sql)) == 0 || textTagged(sql) {
+			t.Errorf("not flagged: %q", sql)
+		}
+	}
+	fn := "SELECT f.check_name, f.detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3) f"
+	if len(funcsReadingText(fn, body)) == 0 || textTagged(fn) {
+		t.Errorf("not flagged: %q", fn)
+	}
+	if ok := "SELECT snapshot_at AS at, detail AS \"detail@logdetail\", kind AS \"@logkind\"\n  FROM pgvigil.log_events\n WHERE kind = 'auth_fail'"; !textTagged(ok) {
+		t.Errorf("a tagged read not seen as tagged: %q", ok)
 	}
 }
 
@@ -343,6 +374,18 @@ func TestTextRule(t *testing.T) {
 		if tb.Rows[0][1] != want || tb.Rows[1][1] != "off" || tb.Columns[1] != "value" || tb.Columns[2] != "planner" {
 			t.Errorf("session SETs under %s: %v %v", tr.byID[id], tb.Columns, tb.Rows)
 		}
+	}
+	// an xmin holder's detail: a session's words kept, its query by the rule; a slot's kept whole (review 2 L1)
+	tb = &table{Columns: []string{"holder@holder", "detail@holderdetail"},
+		Rows: [][]any{{"session", "app_erp / erp-api, idle in transaction, client backend: UPDATE t SET a = 'secret-9'"}, {"slot", "logical slot s1 on erp: 3 h behind"}}}
+	tr.table(tb, 3, true)
+	if tb.Rows[0][1] != "app_erp / erp-api, idle in transaction, client backend" || tb.Rows[1][1] != "logical slot s1 on erp: 3 h behind" || tb.Columns[0] != "holder" {
+		t.Errorf("xmin holders under none: %v %v", tb.Columns, tb.Rows)
+	}
+	tb = &table{Columns: []string{"holder@holder", "detail@holderdetail"}, Rows: [][]any{{"session", "u / a, active, client backend: UPDATE t SET a = 'secret-9'"}}}
+	tr.table(tb, 2, true)
+	if d, _ := tb.Rows[0][1].(string); !strings.HasPrefix(d, "u / a, active, client backend: UPDATE") || strings.Contains(d, "secret-9") {
+		t.Errorf("an xmin holder under normalized: %v", tb.Rows)
 	}
 	// the door set alone says every policy is full (no instance read)
 	if !doorsAllFull(&doorSet{QueryText: map[string]string{"a": "full", "b": ""}, DefaultQT: ""}) ||

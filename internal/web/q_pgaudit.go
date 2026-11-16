@@ -65,7 +65,7 @@ SELECT snapshot_at AS at, usename, datname, client, class, command, object_type,
  LIMIT 1000`
 
 const sqlPgAuditSignins = `
-SELECT snapshot_at AS at, usename, datname, client, detail
+SELECT snapshot_at AS at, usename, datname, client, detail AS "detail@logdetail", kind AS "@logkind"
   FROM pgvigil.log_events
  WHERE instance_id = $1 AND kind = 'auth_fail' AND snapshot_at > $2 AND snapshot_at <= $3
  ORDER BY snapshot_at DESC
