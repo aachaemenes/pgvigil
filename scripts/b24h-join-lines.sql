@@ -34,12 +34,8 @@
 -- 4. import_pg_threshold (0190): a SQL Server instance's own level takes B24h's keys too
 --    AND (i.engine = 'postgres' OR (v_key IN ('uptime', 'connect_time', 'round_trip_time', 'ping_time') AND v_level = 'instance'))
 
--- 5. purge() (0190): collector_probe's 8 days (the B24h-1 fold part b #9: a store under probe_every_minute grew without
---    end) - here, not in import_collector_probe: a per-beat DELETE cost 3.5-4.1 s a beat at 2,124 addresses (BJf8, the
---    review of the fold's bar 50 ms); a daily purge deletes a day (about 3 M rows at 2,124 addresses) once - and the
---    collector_probe_host rows of a retired collector with its heartbeat row
---    DELETE FROM pgvigil.collector_probe WHERE minute < now() - interval '8 days';
---    GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+-- 5. purge() (0190): collector_probe_host rows of a retired collector with its heartbeat row (collector_probe's 8 days are
+--    import_collector_probe's own trim since the B24h-1 fold, part b #9)
 --    DELETE FROM pgvigil.collector_probe_host ph WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat h WHERE h.collector_id = ph.collector_id);
 
 -- 6. the parents' words (the fold's #7): 'server unreachable' (0121's collector_findings) and 'server not answering'
