@@ -73,7 +73,7 @@
 #     mssql_identity is skipped naming VIEW ANY DEFINITION. A login with VIEW ANY DEFINITION and no right to enter
 #     a user database: mssql_identity says partial and the identity area is not read, its note naming CONNECT ANY
 #     DATABASE (the run would otherwise read as '0 of 0 columns', green).
-#  L. the API: GET /api/mssql/checks?instance=N answers the fourteen parts; the databases part's deviations for the
+#  L. the API: GET /api/mssql/checks?instance=N answers the fifteen parts (build_docs since 412's wiring, 7eaa0a1e); the databases part's deviations for the
 #     auto-close database say 'warn' while it is seeded; the options part's cross db ownership chaining row says
 #     the status the table holds; the fleet's options part holds every instance's options.
 #  M. the imports refuse a PostgreSQL instance; an older payload after a newer one changes nothing.
@@ -232,7 +232,7 @@ for r in "mssql/checks?instance=$I" "mssql/checks/fleet"; do
   [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/$r")" = 200 ] || fail "L: /api/$r does not answer 200 (the lead's wiring in web.go)"
 done
 curl -fs "$U/mssql/checks?instance=$I" > "$WORK/checks.json"
-[ "$(jq -r 'keys | length' "$WORK/checks.json")" = 14 ] || fail "L: parts $(jq -r 'keys | join(",")' "$WORK/checks.json")"
+[ "$(jq -r 'keys | length' "$WORK/checks.json")" = 15 ] || fail "L: parts $(jq -r 'keys | join(",")' "$WORK/checks.json")"
 objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
 [ "$(objs "$WORK/checks.json" databases | jq -r --arg d "$DB" '.[] | select(.database_name == $d) | .deviations.auto_close.status')" = warn ] || fail "L: the API's auto-close cell"
 [ "$(objs "$WORK/checks.json" columns | jq -r 'length')" -ge 30 ] || fail "L: the grid's columns"
