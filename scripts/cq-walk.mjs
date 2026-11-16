@@ -53,18 +53,25 @@ const offs = () => ev(`[...document.querySelectorAll('main [aria-disabled="true"
   const n = c.getAttribute('aria-describedby'); const w = c.title || (n && document.getElementById(n)?.textContent) || '';
   return (c.getAttribute('aria-label') || c.textContent || '').trim().slice(0, 60) + ': ' + w.trim(); })`);
 const tools = async (inst) => (await ev(`fetch('/api/community?instance=${inst}', {credentials: 'same-origin'}).then(r => r.json())`))?.tools ?? [];
-const panel = (name) => `[...document.querySelectorAll('main section')].find(s => s.querySelector('h3')?.textContent === ${JSON.stringify(name)})`;
+// panel: the tool's own section - its h3 a direct child and a 'Run <name>' button in it (the page's first group heading
+// can carry the tool's name too: sp_WhoIsActive's group is 'sp_WhoIsActive', so the page's own section, whose first h3
+// it is, matched before the tool's panel had drawn - r08's W6)
+const panel = (name) => `[...document.querySelectorAll('main section')].find(s => s.querySelector(':scope > h3')?.textContent === ${JSON.stringify(name)}
+  && [...s.querySelectorAll('button')].some(b => b.textContent === ${JSON.stringify('Run ' + name)}))`;
 
 // runTool: open the tool's panel by its name, set its inputs, Run, follow the status line to its end
 const runTool = async (r, page, tool, inputs = {}, cancelWhenRunning = false) => {
   const opened = await ev(`(() => { const b = [...document.querySelectorAll('main button.link')].find(b => b.textContent === ${JSON.stringify(tool.name)});
     if (!b || b.getAttribute('aria-disabled') === 'true') return false; b.click(); return true; })()`);
   if (!opened) { row(r, page, `the tool ${tool.name}`, 'no clickable tool of that name on the page', false); return null; }
-  if (!await until(`!!(${panel(tool.name)})?.querySelector('button')`)) { row(r, page, tool.name, 'its panel never drew', false); return null; }
+  if (!await until(`!!(${panel(tool.name)})`)) { row(r, page, tool.name, 'its panel never drew', false); await shot(`${r}-no-panel`); return null; }
   for (const [k, v] of Object.entries(inputs)) {
     const set = await ev(`(() => { const i = [...(${panel(tool.name)}).querySelectorAll('input')].find(i => (i.getAttribute('aria-label') ?? '').toLowerCase().includes(${JSON.stringify(k)}));
       if (!i) return false; i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()`);
-    if (!set) { row(r, page, `${tool.name} input ${k}`, 'no such input in the panel', false); return null; }
+    if (!set) {
+      const labels = await ev(`[...(${panel(tool.name)}).querySelectorAll('input')].map(i => i.getAttribute('aria-label')).slice(0, 40).join(', ')`);
+      row(r, page, `${tool.name} input ${k}`, `no such input in the panel (its inputs: ${labels})`, false); await shot(`${r}-no-input`); return null;
+    }
   }
   const runWords = 'Run ' + tool.name;
   const clicked = await ev(`(() => { const b = [...(${panel(tool.name)}).querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(runWords)});
