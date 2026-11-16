@@ -26,7 +26,7 @@ export const reportTabs: Record<string, string> = {
   rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions',
   rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions',
   rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
-  rp_recycle: 'Recycle Bin',
+  rp_recycle: 'Recycle Bin', rp_trend: 'Trend',
 };
 const text = (v: unknown) => v == null ? '' : String(v);
 const lsGet = (k: string) => { try { return localStorage.getItem('pgvigil.rp.' + k); } catch { return null; } };
@@ -696,8 +696,66 @@ const recycleView: Render = ctx => page(ctx, 'rp_recycle', [], async (_v, s, out
   'The recycle bin is empty: every instance is active and collected.')));
 });
 
+// ---- Trend (task B20-1; SQLMonitor's long-range trends, both engines): one metric over the range, a statistic inside
+// each hour or day bucket, one line per instance (the top N by the statistic over every sample of the range), or per
+// database of one SQL Server instance; GET /api/trend (q_trend.go, 0273's trend_series) says in words what it reads
+interface TrendPoint { at: string; v: number; n: number }
+interface TrendSeries { instance_id: number; name: string; engine: string; database?: string; rank: number | null; reach: string | null; points: TrendPoint[] }
+interface TrendAnswer { metric: string; label: string; bucket: string; stat: string; from: string; to: string; top: number; shown: number; of: number;
+  words: string[]; series: TrendSeries[]; none: { instance_id: number; name: string; engine: string; why: string }[] }
+const trendMetrics: [string, string][] = [['os_cpu', 'OS CPU %'], ['sql_cpu', 'SQL CPU % (SQL Server)'], ['latency', 'Disk latency (ms)'],
+  ['active', 'Active sessions / requests'], ['free_memory', 'Free memory %'], ['connections', 'Connections']];
+const trendHigh: [string, string][] = [['p95', 'p95'], ['p50', 'p50'], ['p98', 'p98'], ['p99', 'p99'], ['max', 'max']];
+// free memory ranks lowest first: each high statistic has its low twin (p95 -> p5, max -> min)
+const trendLow: Record<string, string> = { p95: 'p5', p50: 'p50', p98: 'p2', p99: 'p1', max: 'min' };
+const trendView: Render = ctx => page(ctx, 'rp_trend', [
+  { key: 'tr_metric', label: 'Metric', def: 'os_cpu', options: trendMetrics },
+  { key: 'tr_stat', label: 'Statistic', def: 'p95', options: trendHigh },
+  { key: 'tr_bucket', label: 'Bucket', def: 'hour', options: [['hour', 'hourly'], ['day', 'daily']] },
+  { key: 'tr_hour', label: 'Hour of day', def: '', options: [['', 'every hour'], ...Array.from({ length: 24 }, (_x, h) => [String(h), `${String(h).padStart(2, '0')}:00`] as [string, string])] },
+  { key: 'tr_top', label: 'Top', def: '5', options: [['5', '5'], ['10', '10'], ['20', '20'], ['1', '1']] },
+  { key: 'tr_engine', label: 'Engine', def: 'both', options: [['both', 'both'], ['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server']] },
+  ...(ctx.instance ? [{ key: 'tr_by', label: 'Disk latency', def: '', options: [['', 'by instance'], ['database', 'by database']] as [string, string][] }] : []),
+], async (v, s, out) => {
+  const metric = v.tr_metric;
+  const stat = metric === 'free_memory' ? trendLow[v.tr_stat] ?? 'p5' : v.tr_stat;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const q: Record<string, string> = { metric, stat, bucket: v.tr_bucket, top: v.tr_top, engine: v.tr_engine, tz, ...window_(ctx) };
+  if (v.tr_hour !== '') q.hour = v.tr_hour;
+  if (ctx.instance) q.instance = String(ctx.instance);
+  if (ctx.instance && v.tr_by === 'database' && metric === 'latency') q.by = 'database';
+  const d = await get<TrendAnswer>('trend', q);
+  // a tag folder shows its own instances (the reader ranks the fleet; the page keeps the folder's)
+  const series = (d.series ?? []).filter(x => !s.ids || s.ids.has(Number(x.instance_id)));
+  const keyOf = (x: TrendSeries) => `i${x.instance_id}` + (x.database ? `_${x.database}` : '');
+  const labelOf = (x: TrendSeries) => x.database ? `${x.name}: ${x.database}` : x.name;
+  const pts = new Map<string, Row>();
+  for (const x of series) for (const p of x.points) {
+    const r = pts.get(p.at) ?? { snapshot_at: p.at };
+    r[keyOf(x)] = p.v;
+    pts.set(p.at, r);
+  }
+  const rows = [...pts.values()].sort((a, b) => String(a.snapshot_at).localeCompare(String(b.snapshot_at)));
+  const unit = metric === 'latency' ? ' ms' : metric.endsWith('cpu') || metric === 'free_memory' ? ' %' : '';
+  const f = (x: number) => fmtNum(Math.round(x * 100) / 100) + unit;
+  out.append(el('p', { class: 'meta' }, `${rangeLabel(ctx)}: ${d.label}, the ${d.stat} of each ${d.bucket === 'day' ? 'day' : 'hour'}`
+    + `${v.tr_hour !== '' ? ` at ${String(v.tr_hour).padStart(2, '0')}:00 (${tz})` : ''}; ${series.length} of ${d.of} instance${d.of === 1 ? '' : 's'} drawn`
+    + `${d.shown < d.of && !q.by ? `, the top ${d.top} by the ${d.stat} over the range${metric === 'latency' ? ' within each engine' : ''}` : ''}.`),
+  ...(d.words ?? []).map(w => el('p', { class: 'meta' }, w.charAt(0).toUpperCase() + w.slice(1) + '.')),
+  el('div', { class: 'charts' }, lineChart(`${d.label} (${d.stat})`, rows, series.map(x => ({ key: keyOf(x), label: labelOf(x) })), f, { marks: false })),
+  ...section('Series', grid(series.map(x => ({ instance_id: x.instance_id, instance: x.name, engine: x.engine, database: x.database ?? '', rank: x.rank,
+      reach: x.reach, points: x.points.length })), [
+    { key: 'instance', label: 'Instance' }, { key: 'engine', label: 'Engine' }, ...(q.by ? [{ key: 'database', label: 'Database' }] : []),
+    { key: 'rank', label: `${d.stat} over the range`, num: true, fmt: x => x == null ? '' : f(Number(x)) },
+    { key: 'reach', label: 'Oldest point', fmt: fmtTime }, { key: 'points', label: 'Points', num: true }],
+    'No instance has a sample of this metric in the range.')),
+  ...((d.none ?? []).length ? section('Not drawn', grid(d.none.filter(x => !s.ids || s.ids.has(Number(x.instance_id))).map(x => ({ instance: x.name, engine: x.engine, why: x.why })),
+    [{ key: 'instance', label: 'Instance' }, { key: 'engine', label: 'Engine' }, { key: 'why', label: 'Why', wide: true }])) : []));
+});
+
 // every report page by its route: the root, an instance (main.ts's rootPages, instancePages and mssqlPages)
 export const reportPages: Record<string, Render> = {
+  rp_trend: trendView,
   rp_props: propsView, rp_finder: finderView, rp_dlcharts: deadlockChartsView, rp_deadlocks: deadlocksView,
   rp_dbdeleted: dbChangesReport('rp_dbdeleted'), rp_failed: failedView, rp_flushed: flushedView, rp_killed: killedView,
   rp_dbnew: dbChangesReport('rp_dbnew'), rp_qscharts: qsChartsView, rp_qs: qsView, rp_actions: actionsView,
