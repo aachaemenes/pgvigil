@@ -1,0 +1,307 @@
+B24f's join wiring, section rel-viewsb (VIEWS slices A-C: saved views, dashboards, composed panels; rel-views-a's files
+are the same blobs; the lead 11-15 16:3x).
+Apply on the joined tree that holds rel-roles and rel-viewsb (its proof-views-wiring and proof-views-b-wiring patches applied):
+  git apply -3 scripts/b24f-join-wiring-rel-viewsb.patch
+Built on a pre-join copy of each file: rel-roles f421753c x rel-viewsb 4db89778 + those wiring patches' web.go hunks (local commit
+f66f7ff7, ref jw-pre-views; web.go's alert / views lines merged by hand), so -3 merges it onto the join's own resolution.
+What it does:
+- s.post with needViewer for POST /api/views, /api/views/delete (a personal view changes nothing others live with) and
+  /api/compose/run (a read of the repository: read before its row, as the lead asked); their words in roles_wiring_views.go;
+  docs/roles.md rows, and the viewer and admin lines of its role table (own views; shared views).
+- A shared view's save, rename or delete needs admin (Q2): viewRole refuses below admin a save that makes a view shared,
+  and a save or a delete of one that is shared now (read through ui_view_get; a read error refuses, never open); the
+  store's shared_ok is the admin role; the views list's shared_off is the role's words; 0259's two refusals say the role.
+- pgvigil.yaml views.shared_editors is read and no longer decides (0259's plan). Its removal - the config key, the serve
+  call in proof-views-wiring.patch, SetViewEditors / viewEditor and q_views_test.go L70-78 - is the views owner's follow-up.
+- proof-views.sh and proof-views-b.sh: u1 and u3 added with -role admin, u2 with -role viewer (B24f: a user added after the
+  first is a viewer), no shared_editors key; S2's refusal checks 'needs the admin role'.
+Proof: the four role checks on the joined tree; proof-views and proof-views-b there; tsc there.
+
+diff --git a/docs/roles.md b/docs/roles.md
+index 118b5eee..fabdd977 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -5,9 +5,9 @@ page.
+ 
+ | Role | What it may do |
+ |---|---|
+-| viewer | read every page, export, copy, run a stored custom report; change nothing |
++| viewer | read every page, export, copy, run a stored custom report, save, rename and delete their own views; change nothing others live with |
+ | operator | what a viewer may, and act on a monitored server - cancel a query, end a session, KILL, start or stop a job, evict a plan, EXPLAIN and EXPLAIN ANALYZE, try a hypothetical index, run the index advisor, run a community tool, send a report by mail - and acknowledge, note, dismiss, mute one instance with an end |
+-| admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job thresholds, job exclusions, custom reports and their folders, report mail schedules, a mute or blackout over every instance, a tag, or with no end |
++| admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job thresholds, job exclusions, custom reports and their folders, report mail schedules, shared views, a mute or blackout over every instance, a tag, or with no end |
+ 
+ Each action still needs what it needed before the roles: an instance's own opt-in (`actions:`, `explain_analyze`,
+ `hypo_index`), a typed confirmation, the actions door's audit login. The server checks the route's role first, then those;
+@@ -99,6 +99,9 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/community/params` | viewer | read a tool's parameters (@help) |
+ | `POST /api/customreports/run` | viewer | run a stored custom report (on the reports login or the instance's read login) |
+ | `POST /api/reportmail/rendered` | viewer | the mailed report's drawing step (the render's own user) |
++| `POST /api/views` | viewer | save or rename one's own view or dashboard (a shared one: admin) |
++| `POST /api/views/delete` | viewer | delete one's own view (a shared one: admin) |
++| `POST /api/compose/run` | viewer | read a dashboard's composed panel (a read of the repository) |
+ | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
+ | `POST /api/actions/terminate` | operator | end a PostgreSQL session |
+ | `POST /api/mssql/actions/run` | operator | KILL, job start / stop, plan evict on SQL Server |
+diff --git a/internal/repo/sql/0259_views.sql b/internal/repo/sql/0259_views.sql
+index abf6fef3..3161c683 100644
+--- a/internal/repo/sql/0259_views.sql
++++ b/internal/repo/sql/0259_views.sql
+@@ -13,7 +13,7 @@
+ -- Reads go through ui_view_list / ui_view_get (SECURITY DEFINER, the UI's door pgvigil_auth, on serve's read-only
+ -- pool); writes through import_view_save / import_view_delete on the actions door's audit login (serve's read pool is
+ -- read-only: a write there fails), the session's user and client in the payload, as import_alert_rule (0085) does.
+--- A shared write needs serve's shared_ok (pgvigil.yaml views.shared_editors until B24f's 'change shared views' right).
++-- A shared write needs serve's shared_ok: the admin role (B24f's 'change shared views' right; serve refuses first in the role's words).
+ -- A removed user's personal views go with it (UIUserRemove deletes them first, in its transaction); a shared view stays
+ -- with no owner (ON DELETE SET NULL; the CHECK refuses a personal view without one, so a bare DELETE of a user who still
+ -- owns personal views fails rather than leaving them ownerless).
+@@ -157,7 +157,7 @@ BEGIN
+   ELSIF octet_length(v_state::text) > 65536 THEN
+     v_out := 'refused'; v_why := format('the view''s state is %s KB: a view holds at most 64 KB', octet_length(v_state::text) / 1024);
+   ELSIF v_shared AND NOT v_ok THEN
+-    v_out := 'forbidden'; v_why := 'shared views are written by the users named in pgvigil.yaml views.shared_editors';
++    v_out := 'forbidden'; v_why := 'changing a shared view needs the admin role';
+   END IF;
+   IF v_out IS NULL AND p_payload->>'view_id' IS NOT NULL THEN
+     IF p_payload->>'view_id' ~ '^[0-9]{1,18}$' THEN
+@@ -169,7 +169,7 @@ BEGIN
+     ELSIF v_old.kind <> v_kind THEN
+       v_out := 'refused'; v_why := format('view %s is a %s view: a view keeps its kind', v_id, v_old.kind);
+     ELSIF v_old.shared AND NOT v_ok THEN
+-      v_out := 'forbidden'; v_why := 'shared views are changed by the users named in pgvigil.yaml views.shared_editors';
++      v_out := 'forbidden'; v_why := 'changing a shared view needs the admin role';
+     ELSIF NOT v_old.shared AND v_old.owner_user_id IS DISTINCT FROM v_uid THEN
+       v_out := 'forbidden'; v_why := 'only its owner changes a personal view';
+     ELSIF (CASE WHEN coalesce(p_payload->>'version', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'version')::int END) IS DISTINCT FROM v_old.version THEN
+diff --git a/internal/web/q_views.go b/internal/web/q_views.go
+index 9b7ba6da..e90c96d4 100644
+--- a/internal/web/q_views.go
++++ b/internal/web/q_views.go
+@@ -27,8 +27,8 @@ import (
+ // range is kept apart in state.range. Reads: pgvigil.ui_view_list / ui_view_get on the read pool. Writes:
+ // import_view_save / import_view_delete on the actions door's audit pool (the read pool is read-only) with the
+ // session's user and client, one ui_view_log row per attempt: done 200, refused 400, forbidden 403, conflict 409 (a
+-// stale version names the stored one; a taken name), each refusal in words. Shared writes: the users SetViewEditors
+-// names (pgvigil.yaml views.shared_editors; none = nobody, until B24f's 'change shared views' right replaces it).
++// stale version names the stored one; a taken name), each refusal in words. Shared writes: an admin's (B24f's 'change
++// shared views' right, roles_wiring_views.go viewRole; pgvigil.yaml views.shared_editors is read and no longer decides).
+ //                                                                     -> Server.Views, Server.ViewSave, Server.ViewDelete
+ 
+ // viewBodyMax: a request body; the store refuses a state over 64 KB in words (and logs it), so the body may hold more.
+@@ -124,8 +124,8 @@ func (s *Server) Views(w http.ResponseWriter, r *http.Request) {
+ 	switch {
+ 	case off != "":
+ 		sharedOff = off
+-	case !viewEditor(user):
+-		sharedOff = "shared views are written by the users named in pgvigil.yaml views.shared_editors"
++	default:
++		sharedOff = s.sharedViewWhy(r)
+ 	}
+ 	s.reply(w, r, map[string]any{"views": t, "writable": off == "", "shared_writable": sharedOff == "", "off": off,
+ 		"shared_off": sharedOff, "user": user}, err)
+@@ -165,7 +165,10 @@ func (s *Server) viewWrite(w http.ResponseWriter, r *http.Request, op string) {
+ 		writeErr(w, http.StatusBadRequest, err)
+ 		return
+ 	}
+-	pay["ui_user"], pay["client"], pay["shared_ok"] = user, clientIP(r), viewEditor(user)
++	if !s.viewRole(w, r, user, pay) {
++		return
++	}
++	pay["ui_user"], pay["client"], pay["shared_ok"] = user, clientIP(r), s.roleCan(r)["admin"]
+ 	b, _ := json.Marshal(pay)
+ 	fn := "import_view_save"
+ 	if op == "delete" {
+diff --git a/internal/web/roles_wiring_views.go b/internal/web/roles_wiring_views.go
+new file mode 100644
+index 00000000..49e09807
+--- /dev/null
++++ b/internal/web/roles_wiring_views.go
+@@ -0,0 +1,58 @@
++package web
++
++import (
++	"errors"
++	"fmt"
++	"net/http"
++	"regexp"
++
++	"github.com/jackc/pgx/v5"
++)
++
++// B24f's join wiring for rel-viewsb (the lead 11-15 16:3x): its writes' refusal words beside roles.go's routeWhat, and
++// the shared view's admin rule. A personal view is its owner's at any role (it changes nothing others live with: viewer);
++// a shared view's save, rename or delete needs admin (Q2: 'change shared views'), in place of pgvigil.yaml
++// views.shared_editors as 0259 planned. compose/run reads the repository only: viewer.
++func init() {
++	routeWhat["POST /api/views"] = "saving a view"
++	routeWhat["POST /api/views/delete"] = "deleting a view"
++	routeWhat["POST /api/compose/run"] = "reading a dashboard panel"
++}
++
++const sharedViewWhat = "changing a shared view"
++
++var viewIDDigits = regexp.MustCompile(`^[0-9]{1,18}$`) // the store's own test of a view_id (0259 import_view_save)
++
++// sharedViewWhy: "" when the request's user may write shared views, else the role's words (the views list's shared_off)
++func (s *Server) sharedViewWhy(r *http.Request) string {
++	if s.roleCan(r)["admin"] {
++		return ""
++	}
++	wh, ok := whoOf(r)
++	if !ok {
++		wh = s.sessionWho(r)
++	}
++	return roleWords(sharedViewWhat, needAdmin, wh)
++}
++
++// viewRole refuses, below admin, a save that makes a view shared and a save or a delete of one that is shared now -
++// read here through ui_view_get (a read error refuses: the check never fails open); the store refuses the same through
++// shared_ok. The body's shared and view_id are read as the store reads them (a JSON string "true" or "12" too).
++// true = go on.
++func (s *Server) viewRole(w http.ResponseWriter, r *http.Request, user string, pay map[string]any) bool {
++	if s.roleCan(r)["admin"] {
++		return true
++	}
++	shared := fmt.Sprint(pay["shared"]) == "true"
++	if v, ok := pay["view_id"]; ok && !shared {
++		if id := fmt.Sprint(v); viewIDDigits.MatchString(id) {
++			err := s.pool.QueryRow(r.Context(), `SELECT shared FROM pgvigil.ui_view_get($1, $2::bigint)`, user, id).Scan(&shared)
++			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
++				s.log.Warn("view: the role check could not read the view", "view_id", id, "err", err)
++				writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("view %s could not be read to check the role: %v", id, err))
++				return false
++			}
++		}
++	}
++	return !shared || s.roleOK(w, r, needAdmin, sharedViewWhat)
++}
+diff --git a/internal/web/web.go b/internal/web/web.go
+index eabd8eb3..da76bfa9 100644
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -277,10 +277,10 @@ func (s *Server) Handler() http.Handler {
+ 	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
+ 	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
+ 	api.HandleFunc("GET /api/views", s.Views)
+-	api.HandleFunc("POST /api/views", s.ViewSave)
+-	api.HandleFunc("POST /api/views/delete", s.ViewDelete)
++	s.post(api, "POST /api/views", needViewer, s.ViewSave)          // a shared view: admin, in viewRole (B24f)
++	s.post(api, "POST /api/views/delete", needViewer, s.ViewDelete) // the same
+ 	// a dashboard's composed panel, compiled and read (VIEWS slice C; compose.go, q_compose.go)
+-	api.HandleFunc("POST /api/compose/run", s.ComposeRun)
++	s.post(api, "POST /api/compose/run", needViewer, s.ComposeRun) // a read of the repository
+ 	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
+ 	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
+ 	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)
+diff --git a/scripts/proof-views-b.sh b/scripts/proof-views-b.sh
+index 44b6e873..3b874db6 100644
+--- a/scripts/proof-views-b.sh
++++ b/scripts/proof-views-b.sh
+@@ -10,7 +10,7 @@
+ # The tree is copied into the proof's folder first; the wiring patches (slice A's, B24 OWN's, this slice's docs) and the web bundle
+ # are applied and built THERE, never in this checkout (the FOLD P3).
+ #
+-# Expected (written before the first run; u1 and u3 are views.shared_editors, u2 is not):
++# Expected (written before the first run; u1 and u3 are admins, u2 a viewer - B24f: a shared view needs the admin role):
+ #  T  slow/groups (curl, u1): top=1000 answers 200 at fleet scope; top=all answers at most 5,000 groups and says when the
+ #     cap cut; top=1001 -> 400 in words. The ALL read at fleet scope over the 7 seeded days is TIMED and printed (the
+ #     lead 14:2x: over 2 s = said as a finding, not a failure) with its payload's bytes.
+@@ -104,11 +104,12 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO" >/dev
+ export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO"
+ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
+ "$BIN" demo -dsn "$PGVIGIL_REPO_DSN" -days 7 > "$WORK/demo.log" 2>&1 || { tail -5 "$WORK/demo.log" >&2; fail "the demo seed"; }
+-printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\nviews:\n  shared_editors: [%s, %s]\n' "$U1" "$U3" > "$WORK/cfg.yaml"
++printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/cfg.yaml"
+ CFG=$WORK/cfg.yaml
+ "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { tail -5 "$WORK/migrate.out" >&2; fail "migrate"; }
+-for u in "$U1:$U1PW" "$U2:$U2PW" "$U3:$U3PW"; do
+-  PGVIGIL_PASSWORD=${u#*:} "$BIN" user add -config "$CFG" "${u%%:*}" >/dev/null 2>&1 || fail "user add ${u%%:*}"
++for u in "$U1:$U1PW:admin" "$U2:$U2PW:viewer" "$U3:$U3PW:admin"; do
++  IFS=: read -r un upw urole <<< "$u"
++  PGVIGIL_PASSWORD=$upw "$BIN" user add -config "$CFG" -role "$urole" "$un" >/dev/null 2>&1 || fail "user add $un"
+ done
+ PORT=$(freeport); U="http://127.0.0.1:$PORT"
+ "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 &
+@@ -120,7 +121,7 @@ J=$WORK/j1
+ NI=$(q "select count(*) from pgvigil.instances")
+ (( NI > 0 )) || fail "setup: the demo seeded no instance"
+ TAG=$(q "select t from (select unnest(tags) t from pgvigil.instances) x group by t order by count(*) desc, t limit 1" 2>/dev/null || true)
+-ok "setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), the demo fleet ($NI instances, 7 days), users $U1 and $U3 (shared editors) and $U2; a tag '${TAG:-none}'"
++ok "setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), the demo fleet ($NI instances, 7 days), users $U1 and $U3 (admins) and $U2 (a viewer); a tag '${TAG:-none}'"
+ 
+ # T: slow/groups' top (a T failure is counted and the browser cases still run: the red shows every row's reason)
+ TF=0; tfail() { echo "FAIL T: $*"; TF=1; }
+diff --git a/scripts/proof-views.sh b/scripts/proof-views.sh
+index 393d5287..32569095 100755
+--- a/scripts/proof-views.sh
++++ b/scripts/proof-views.sh
+@@ -13,10 +13,10 @@
+ #     alone (a store custom report's or a Grafana reader's) has no SELECT on either and no EXECUTE on ui_view_list,
+ #     ui_view_get, import_view_save or import_view_delete - its SELECT of ui_views is refused 'permission denied'; the
+ #     four functions are SECURITY DEFINER.
+-#  A  the API (serve with the UI login; u1 and u3 are in pgvigil.yaml views.shared_editors, u2 is not):
++#  A  the API (serve with the UI login; u1 and u3 are admins, u2 a viewer - B24f: a shared view needs the admin role):
+ #     S1 u1 saves a personal page view on root:fleet -> 200, version 1; u1's list has it ('mine'); u2's list does not;
+ #        u2's GET of its id -> 404 in words.
+-#     S2 u2 saves a shared view -> 403 in words naming views.shared_editors, nothing stored; u1 saves the shared 'team'
++#     S2 u2 saves a shared view -> 403 in words naming the admin role, nothing stored; u1 saves the shared 'team'
+ #        -> 200; u2's list shows it, not 'mine'; u2's edit of it -> 403.
+ #     S2b [review fold] the owner check: u2 saves its personal 'u2mine' -> 200; u2's save and delete of u1's personal
+ #        'mine' -> 403 ('only its owner'), 'mine' unchanged; editor u1's save of u2's 'u2mine' -> 403.
+@@ -84,19 +84,16 @@ go build -o "$BIN" ./cmd/pgvigil || fail "go build"
+ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO" >/dev/null || fail "create database"
+ export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO"
+ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
+-{ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n'
+-  # the key is new with the store: a tree before it is given no such key (its red is the missing table and route)
+-  [[ $HAVE == 1 ]] && printf 'views:\n  shared_editors: [%s, %s]\n' "$U1" "$U3"
+-} > "$WORK/cfg.yaml"
++printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$WORK/cfg.yaml"
+ CFG=$WORK/cfg.yaml
+ "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { tail -5 "$WORK/migrate.out" >&2; fail "migrate"; }
+ "$BIN" migrate -config "$CFG" > "$WORK/migrate2.out" 2>&1 || { tail -5 "$WORK/migrate2.out" >&2; fail "migrate twice"; }
+ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create role $RDR login password '$PW' in role pgvigil_reader" >/dev/null || fail "the reader login"
+ as_rdr() { psql "$PGVIGIL_ADMIN_DSN dbname=$REPO user=$RDR password=$PW" -XAt -c "$1" 2>&1 || true; }
+-PGVIGIL_PASSWORD=$U1PW "$BIN" user add -config "$CFG" "$U1" >/dev/null 2>&1 || fail "user add $U1"
+-PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" "$U2" >/dev/null 2>&1 || fail "user add $U2"
+-PGVIGIL_PASSWORD=$U3PW "$BIN" user add -config "$CFG" "$U3" >/dev/null 2>&1 || fail "user add $U3"
+-echo "ok   setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), users $U1 and $U3 (shared editors) and $U2"
++PGVIGIL_PASSWORD=$U1PW "$BIN" user add -config "$CFG" -role admin "$U1" >/dev/null 2>&1 || fail "user add $U1"
++PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" -role viewer "$U2" >/dev/null 2>&1 || fail "user add $U2"
++PGVIGIL_PASSWORD=$U3PW "$BIN" user add -config "$CFG" -role admin "$U3" >/dev/null 2>&1 || fail "user add $U3"
++echo "ok   setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), users $U1 and $U3 (admins) and $U2 (a viewer)"
+ 
+ if part S; then
+   [[ $(q "select to_regclass('pgvigil.ui_views') is not null and to_regclass('pgvigil.ui_view_log') is not null") == t ]] || fail "S: no table pgvigil.ui_views / ui_view_log (red before 0259)"
+@@ -147,7 +144,7 @@ if part A; then
+   ok "S1: a personal view: u1 lists and reads it, u2 neither lists nor reads it (404 in words: $(js "d.get('error')"))"
+   # S2
+   c=$(call "$J2" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"u2shared","shared":true,"state":{"params":{}}}')")
+-  expect "$c" 403 "S2: u2's shared save"; [[ $(js "d.get('error', '')") == *shared_editors* ]] || fail "S2: the refusal does not name views.shared_editors: $(js "d")"
++  expect "$c" 403 "S2: u2's shared save"; [[ $(js "d.get('error', '')") == *"needs the admin role"* ]] || fail "S2: the refusal does not name the admin role: $(js "d")"
+   [[ $(q "select count(*) from pgvigil.ui_views where name = 'u2shared'") == 0 ]] || fail "S2: u2's shared view stored"
+   c=$(call "$J1" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"team","shared":true,"state":{"params":{"focus":"0"}}}')")
+   expect "$c" 200 "S2: u1's shared save"; TEAM=$(js "d['view_id']")
+@@ -155,7 +152,7 @@ if part A; then
+   [[ $(js "[(v['shared'], v['mine']) for v in rows(d['views']) if v['name'] == 'team']") == "[(True, False)]" ]] || fail "S2: u2's list of 'team': $(head -c 300 "$WORK/out.json")"
+   c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$TEAM,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"team\",\"shared\":true,\"state\":{\"params\":{\"focus\":\"1\"}}}")")
+   expect "$c" 403 "S2: u2's edit of the shared view"
+-  ok "S2: shared writes only by views.shared_editors (u2 refused in words: create and edit); u2 reads 'team'"
++  ok "S2: shared writes only by an admin (u2, a viewer, refused in words: create and edit); u2 reads 'team'"
+   J3=$WORK/j3; login "$J3" "$U3" "$U3PW"
+   c=$(call "$J2" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"u2mine","state":{"params":{}}}')"); expect "$c" 200 "S2b: u2's personal save"; U2MINE=$(js "d['view_id']")
+   c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$MINE,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"taken\",\"state\":{\"params\":{}}}")")
+diff --git a/web/src/views.ts b/web/src/views.ts
+index 50cb328e..b0ce9200 100644
+--- a/web/src/views.ts
++++ b/web/src/views.ts
+@@ -11,7 +11,7 @@
+ //
+ // viewControl is the page's 'View: <name>' button and its lines: the page's own items, {None}, the shared views and
+ // the user's own, the loaded one ticked; Save, Save as..., Rename..., Delete... - each off with the server's reason
+-// when this user may not (saving off: demo, -no-login, no audit login; a shared view without views.shared_editors).
++// when this user may not (saving off: demo, -no-login, no audit login; a shared view below the admin role: B24f).
+ import { Table, rowsOf } from './api';
+ import { Layout, layerState, layoutsOf, setLayer } from './gridtools';
+ import { Ctx, hashKeys, href, noteAddress, pageKeyOf, viewPageKeys } from './router';
