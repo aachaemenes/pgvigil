@@ -112,7 +112,9 @@ if ($From) {
         } else {
             Write-Host "signature not verified here: the checksums prove the files are the ones SHA256SUMS names, not where they came from; verify the signature on the connected side, or pass -TrustRoot <the site's own trust root> (docs/airgap.md)"
         }
-        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='pgvigil'" -ErrorAction SilentlyContinue
+        # -Remote keeps the remote collector's own flavour (its own service and binary), never the hub's
+        $svcName = if ($Remote) { 'pgvigil-remote' } else { 'pgvigil' }
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$svcName'" -ErrorAction SilentlyContinue
         $installed = $null
         if ($svc -and $svc.PathName -match '^\s*"([^"]+)"|^\s*(\S+)') { $installed = if ($Matches[1]) { $Matches[1] } else { $Matches[2] } }
         $was = $null

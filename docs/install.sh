@@ -107,6 +107,8 @@ if [ -n "$FROM" ]; then
     say "signature not verified here: the checksums prove the files are the ones SHA256SUMS names, not where they came from; verify the signature on the connected side, or pass --trust-root <the site's own trust root> (docs/airgap.md)"
   fi
   UNIT=/etc/systemd/system/pgvigil.service
+  # --remote keeps the remote collector's own flavour (its own unit and binary), never the hub's
+  [ "$REMOTE" = 1 ] && UNIT=/etc/systemd/system/pgvigil-remote.service
   INSTALLED=""
   if [ -f "$UNIT" ]; then INSTALLED=$(sed -n 's/^ExecStart=\([^ ]*\) run .*/\1/p' "$UNIT" | head -n 1); fi
   if [ -z "$FLAVOUR" ]; then

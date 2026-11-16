@@ -25,12 +25,14 @@
 #     read 'ran'; 'pgvigil bundle inspect' says checks ok; the service log is state\pgvigil-remote.log and the config
 #     folder holds nothing but the config, the dsn file, outbox and state
 #  R  install.ps1 -From -Remote again over the running install: exit 0, the service Running again (eaf80b4f)
-#  G  uninstall -remote -purge with bundles in the outbox: refused (exit not 0) naming the bundles, 'lost' and -force;
-#     the service still there and Running
-#  U  uninstall -remote -purge -force: the service gone, 'removed with -force: N' equal to the purge's count (no push
+#  G  the installed pgvigil-remote.exe uninstall -remote -purge with bundles in the outbox: refused (exit not 0) naming
+#     the bundles, 'lost' and -force; the service still there and Running (stopped, guarded again, started again)
+#  U  the installed pgvigil-remote.exe uninstall -remote -purge -force (the operator's path, W review S6): the service gone, 'removed with -force: N' equal to the purge's count (no push
 #     here; run 2 of 4491579d said 2 against 3: the count was read while the service still wrote), the outbox and the state folder gone,
-#     Program Files\pgvigil-remote gone; ProgramData\pgvigil-remote KEPT holding only sqlw.dsn (the site's own file),
-#     named in a 'folder kept' line; the hub's binary path as at P
+#     the running exe either removed with its folder, or kept alone in Program Files\pgvigil-remote with the line
+#     'delete it by hand' (Windows may refuse to delete a running image: either outcome named, never a silent leftover);
+#     the PATH entry named; ProgramData\pgvigil-remote KEPT holding only sqlw.dsn (the site's own file), named in a
+#     'folder kept' line; the hub's binary path as at P
 #  X  the login dropped, the PATH entry removed; the last line 'proof-remote-windows: PASS' (or FAIL <letter> first)
 param(
     [string]$From = 'C:\pgvigil-remote-proof\from',
@@ -61,7 +63,7 @@ $stateDir = Join-Path $dataDir 'state'
 $cfgPath = Join-Path $dataDir 'pgvigil-remote.yaml'
 $dsnPath = Join-Path $dataDir 'sqlw.dsn'
 $remoteBinDir = Join-Path $env:ProgramFiles 'pgvigil-remote'
-$remoteExe = Join-Path $remoteBinDir 'pgvigil.exe'
+$remoteExe = Join-Path $remoteBinDir 'pgvigil-remote.exe'
 $hubExe = Join-Path (Join-Path $env:ProgramFiles 'pgvigil') 'pgvigil.exe'
 $login = 'pgvigil_remote_proof'
 $fromExe = $null
@@ -227,14 +229,14 @@ instances:
     Ok 'R' 'install.ps1 -From -Remote again over itself: exit 0, Running'
 
     # G
-    $res = Invoke-Native { & $fromExe uninstall -remote -purge }
+    $res = Invoke-Native { & $remoteExe uninstall -remote -purge }
     if ($res.Code -eq 0) { Fail 'G' "uninstall -remote -purge with bundles in the outbox was not refused: $($res.Out)" }
     foreach ($want in @('bundle(s) not pushed', 'lost', '-force')) { if ($res.Out -notlike "*$want*") { Fail 'G' "the refusal lacks '$want': $($res.Out)" } }
     if ((Get-Service -Name $svcName -ErrorAction SilentlyContinue).Status -ne 'Running') { Fail 'G' "$svcName is not Running after the refusal" }
     Ok 'G' "refused: $((($res.Out -split "`n") | Where-Object { $_ -like '*not pushed*' } | Select-Object -First 1))"
 
     # U
-    $res = Invoke-Native { & $fromExe uninstall -remote -purge -force }
+    $res = Invoke-Native { & $remoteExe uninstall -remote -purge -force }
     Write-Host $res.Out
     if ($res.Code -ne 0) { Fail 'U' "uninstall -remote -purge -force exited $($res.Code)" }
     if ($res.Out -notmatch 'removed with -force: (\d+) bundle') { Fail 'U' "the output does not name the bundles removed with -force" }
@@ -242,12 +244,18 @@ instances:
     if ($res.Out -notmatch 'outbox purged.*bundles=(\d+)') { Fail 'U' "the output does not count the bundles purged" }
     if ([int]$Matches[1] -ne $forced) { Fail 'U' "'removed with -force' says $forced bundle(s), the purge removed $($Matches[1]) (no push here: the two counts are equal)" }
     if (Get-Service -Name $svcName -ErrorAction SilentlyContinue) { Fail 'U' "$svcName is still there" }
-    foreach ($dir in @($outbox, $stateDir, $remoteBinDir)) { if (Test-Path -LiteralPath $dir) { Fail 'U' "$dir is still there: $((Get-ChildItem -LiteralPath $dir -Recurse -Force | ForEach-Object { $_.FullName }) -join ', ')" } }
+    foreach ($dir in @($outbox, $stateDir)) { if (Test-Path -LiteralPath $dir) { Fail 'U' "$dir is still there: $((Get-ChildItem -LiteralPath $dir -Recurse -Force | ForEach-Object { $_.FullName }) -join ', ')" } }
+    $selfKept = $res.Out -like '*could not be removed*delete it by hand*'
+    $binLeft = @(Get-ChildItem -LiteralPath $remoteBinDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    if ($selfKept -and (($binLeft -join ',') -ne 'pgvigil-remote.exe')) { Fail 'U' "'delete it by hand' said, but $remoteBinDir holds: $($binLeft -join ', ')" }
+    if (-not $selfKept -and (Test-Path -LiteralPath $remoteBinDir)) { Fail 'U' "$remoteBinDir is still there with no 'delete it by hand' line: $($binLeft -join ', ')" }
+    if ($res.Out -notlike "*PATH entry*$remoteBinDir*") { Fail 'U' 'the PATH entry left is not named' }
+    $binWord = if ($selfKept) { 'the running exe kept alone with its delete-by-hand line' } else { 'the running exe and its folder removed' }
     $left = @(Get-ChildItem -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     if (($left -join ',') -ne 'sqlw.dsn') { Fail 'U' "$dataDir should hold only sqlw.dsn, holds: $($left -join ', ')" }
     if ($res.Out -notlike '*folder kept*' -or $res.Out -notlike '*sqlw.dsn*') { Fail 'U' "the kept config folder and its sqlw.dsn are not named" }
     if ((Get-FileSha $hubExe) -ne $hubBefore) { Fail 'U' "the hub's binary changed" }
-    Ok 'U' 'uninstall -remote -purge -force: the service, the outbox, the state folder and Program Files\pgvigil-remote gone; the config folder kept with only the site''s sqlw.dsn, named; the hub path as it was'
+    Ok 'U' "the installed exe's uninstall -remote -purge -force: the service, the outbox and the state folder gone; $binWord; the PATH entry named; the config folder kept with only the site's sqlw.dsn, named; the hub path as it was"
 }
 catch {
     if (-not $script:failed) { Write-Host "FAIL ? $($_.Exception.Message)"; $script:failed = $true }

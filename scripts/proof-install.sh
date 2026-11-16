@@ -16,7 +16,8 @@
 # 90 s; the remote collector beside it (task 11 / 14 rows): `install.sh --remote` with a remote config in place
 # installs /usr/local/bin/pgvigil-remote and pgvigil-remote.service (active as pgvigil-remote, ExecStart naming its own
 # binary), a bundle lands in /var/lib/pgvigil-remote/outbox within 150 s, and the hub's binary, unit, config and env
-# file stay byte for byte with the hub active; `install.sh --remote` again succeeds over itself; `uninstall -remote
+# file stay byte for byte, its process the same (never restarted), /etc/pgvigil's owner and mode and its account as
+# they were; `install.sh --remote` again succeeds over itself; `uninstall -remote
 # -purge` is refused while the outbox holds bundles (the words 'not pushed', 'lost', '-force'; the remote still active),
 # `-purge -force` removes the unit, /etc/pgvigil-remote, /var/lib/pgvigil-remote and the binary and keeps and names the
 # account, the hub's files still byte for byte and active; `pgvigil uninstall` removes the unit and keeps the config
@@ -135,19 +136,22 @@ echo "ok   upgrade path kept the config, service active as pgvigil, $n activity 
 
 echo "== the remote collector beside the hub: install.sh --remote (its own binary, unit, account, config and folders) =="
 HUBFILES="/usr/local/bin/pgvigil /etc/systemd/system/pgvigil.service /etc/pgvigil/pgvigil.yaml /etc/pgvigil/pgvigil.env"
-hub_before=$(insys sha256sum $HUBFILES)
+# the hub untouched = its files byte for byte, the same running process (never restarted), its folder's owner and mode
+# and its account (W review S7)
+hubstate() { insys sh -c "sha256sum $HUBFILES; systemctl show -p MainPID -p ActiveEnterTimestampMonotonic pgvigil; stat -c '%U:%G %a' /etc/pgvigil; id pgvigil"; }
+hub_before=$(hubstate)
 insys sh -c "mkdir -p /etc/pgvigil-remote && printf 'remote:\n  site: lab11\n  collector: c1\n  interval: 1m\n  outbox: /var/lib/pgvigil-remote/outbox\n  state_dir: /var/lib/pgvigil-remote/state\nquery_text: hash\ninstances:\n  - name: pg-remote\n    dsn: env:REMOTE_PG_DSN\n' > /etc/pgvigil-remote/pgvigil-remote.yaml && printf 'REMOTE_PG_DSN=host=$REPO port=5432 user=postgres password=$PW dbname=postgres sslmode=disable\n' > /etc/pgvigil-remote/pgvigil-remote.env"
 insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh -s -- --remote" >"$WORK/r1.out" 2>&1 || fail "install.sh --remote: $(cat "$WORK/r1.out")"
 grep -q 'remote collector is installed and running' "$WORK/r1.out" || fail "install.sh --remote did not end with 'installed and running': $(cat "$WORK/r1.out")"
 [[ "$(insys /usr/local/bin/pgvigil-remote version)" == "pgvigil $V ("* ]] || fail "the remote binary: $(insys /usr/local/bin/pgvigil-remote version 2>&1)"
-[[ "$(insys sha256sum $HUBFILES)" == "$hub_before" ]] || fail "install -remote changed the hub's files: $(insys sha256sum $HUBFILES)"
+[[ "$(hubstate)" == "$hub_before" ]] || fail "install -remote changed the hub (files, process, folder or account): $(diff <(echo "$hub_before") <(hubstate))"
 [[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "the hub's service is not active after install -remote"
 [[ "$(insys systemctl is-active pgvigil-remote)" == active ]] || fail "pgvigil-remote is not active: $(insys journalctl -u pgvigil-remote --no-pager -n 20)"
 [[ "$(insys systemctl show -p User --value pgvigil-remote)" == pgvigil-remote ]] || fail "pgvigil-remote does not run as pgvigil-remote"
 insys systemctl show -p ExecStart --value pgvigil-remote | grep -q '/usr/local/bin/pgvigil-remote' || fail "the remote unit's ExecStart: $(insys systemctl show -p ExecStart --value pgvigil-remote)"
 nb=0; for _ in $(seq 1 150); do nb=$(insys sh -c "find /var/lib/pgvigil-remote/outbox -name manifest.json -not -path '*.part/*' | wc -l"); [[ "$nb" -ge 1 ]] && break; sleep 1; done
 [[ "$nb" -ge 1 ]] || fail "no finished bundle in 150 s: $(insys journalctl -u pgvigil-remote --no-pager -n 20)"
-echo "ok   install.sh --remote beside the hub: /usr/local/bin/pgvigil-remote $V, active as pgvigil-remote, $nb bundle(s); the hub's binary, unit, config and env byte for byte, the hub active"
+echo "ok   install.sh --remote beside the hub: /usr/local/bin/pgvigil-remote $V, active as pgvigil-remote, $nb bundle(s); the hub's binary, unit, config and env byte for byte, its process, folder and account the same"
 
 echo "== install.sh --remote again over itself (its env file in /etc/pgvigil-remote) =="
 insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh -s -- --remote" >"$WORK/r2.out" 2>&1 || fail "the second install.sh --remote: $(cat "$WORK/r2.out")"
@@ -163,9 +167,9 @@ grep -q 'removed with -force' "$WORK/r4.out" || fail "the bundles removed with -
 for p in /etc/systemd/system/pgvigil-remote.service /etc/pgvigil-remote /var/lib/pgvigil-remote /usr/local/bin/pgvigil-remote; do insys test ! -e "$p" || fail "$p is still there: $(cat "$WORK/r4.out")"; done
 insys id -u pgvigil-remote >/dev/null || fail "the account pgvigil-remote went (uninstall keeps it)"
 grep -q 'userdel pgvigil-remote' "$WORK/r4.out" || fail "the kept account is not named"
-[[ "$(insys sha256sum $HUBFILES)" == "$hub_before" ]] || fail "uninstall -remote changed the hub's files"
+[[ "$(hubstate)" == "$hub_before" ]] || fail "uninstall -remote changed the hub (files, process, folder or account): $(diff <(echo "$hub_before") <(hubstate))"
 [[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "the hub's service is not active after uninstall -remote"
-echo "ok   uninstall -remote -purge refused with bundles; -force removed the unit, /etc/pgvigil-remote, /var/lib/pgvigil-remote and the binary, kept and named the account; the hub byte for byte and active"
+echo "ok   uninstall -remote -purge refused with bundles; -force removed the unit, /etc/pgvigil-remote, /var/lib/pgvigil-remote and the binary, kept and named the account; the hub's files, process, folder and account the same"
 
 echo "== uninstall =="
 insys /usr/local/bin/pgvigil uninstall >"$WORK/u1.out" 2>&1 || fail "uninstall: $(cat "$WORK/u1.out")"
