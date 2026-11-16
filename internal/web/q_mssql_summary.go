@@ -252,8 +252,8 @@ WITH inst AS (
    WHERE st.key = 'custom'
    GROUP BY st.instance_id
 )
-SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
-       c.value, c.detail, st.read_at, st.err, c.since
+SELECT c.instance_id AS "instance_id@inst", c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
+       c.value, c.detail AS "detail@fsummary", st.read_at, st.err, c.since
   FROM cell c JOIN st USING (instance_id, key)
  ORDER BY 1, 2`
 

@@ -53,7 +53,7 @@ SELECT c.name, c.kind, c.destination, c.min_severity, c.instances, c.tags, c.qui
  ORDER BY c.is_configured DESC, c.name`
 
 const sqlAlertOpen = `
-SELECT s.channel, s.instance_id, s.instance_name AS instance, s.severity, s.source, s.setting, s.value, s.first_sent_at,
+SELECT s.channel, s.instance_id AS "instance_id@inst", s.instance_name AS instance, s.severity, s.source, s.setting AS "setting@fcheck", s.value AS "value@fvalue", s.first_sent_at,
        s.last_sent_at, s.send_count, s.finding_key
   FROM pgvigil.alert_state s
  WHERE s.cleared_at IS NULL
@@ -76,7 +76,7 @@ const alertThreshold = `CASE WHEN o.source = 'alert rule' THEN substring(o.value
 // sqlAlertHistory: every firing open at some point of the window [$1, $2), newest first; a finding's suggested value
 // (its threshold while it stands) comes with the fixes part, so the findings view is not read here
 const sqlAlertHistory = `
-SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source, o.setting, o.value,
+SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id AS "instance_id@inst", o.instance, o.source, o.setting AS "setting@fcheck", o.value AS "value@fvalue",
        ` + alertThreshold + ` AS threshold, o.channels, o.sends, o.occurrence, o.finding_key, o.missing_since,
        d.dismiss_id IS NOT NULL AS dismissed
   FROM pgvigil.alert_occurrences o
@@ -128,14 +128,14 @@ SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key
 const sqlAlertFixes = `
 WITH k AS (SELECT DISTINCT s.finding_key FROM pgvigil.alert_state s),
 fx AS MATERIALIZED (
-  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested,
+  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested, y.instance_id, y.setting,
          pgvigil.finding_fix(i.engine, y.source, y.instance_id, y.setting, y.is_set, y.suggested, y.detail) AS fix,
          pgvigil.severity_rank(y.severity) AS sev
     FROM pgvigil.findings y
     LEFT JOIN pgvigil.instances i ON i.instance_id = y.instance_id
    WHERE i.is_active OR y.source = 'pgvigil repository'
 )
-SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix, fx.suggested
+SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix AS "fix@ffix", fx.suggested, fx.instance_id AS "@inst", fx.setting AS "@fcheck"
   FROM fx JOIN k ON k.finding_key = fx.finding_key
  WHERE fx.fix IS NOT NULL OR fx.suggested IS NOT NULL
  ORDER BY fx.finding_key, fx.sev DESC`
@@ -151,8 +151,8 @@ WITH f AS MATERIALIZED (
          r.setting, r.value, r.suggested, r.detail, r.at, r.is_set
     FROM pgvigil.alert_rule_findings r
 )
-SELECT f.finding_key, f.instance_id, coalesce(i.name, 'pgvigil') AS instance, f.severity, f.source, f.setting, f.value, f.suggested, f.detail,
-       f.at, i.engine, f.is_set, pgvigil.finding_fix(i.engine, f.source, f.instance_id, f.setting, f.is_set, f.suggested, f.detail) AS fix,
+SELECT f.finding_key, f.instance_id AS "instance_id@inst", coalesce(i.name, 'pgvigil') AS instance, f.severity, f.source, f.setting AS "setting@fcheck", f.value AS "value@fvalue", f.suggested, f.detail AS "detail@fdetail",
+       f.at, i.engine, f.is_set, pgvigil.finding_fix(i.engine, f.source, f.instance_id, f.setting, f.is_set, f.suggested, f.detail) AS "fix@ffix",
        CASE WHEN f.source = 'alert rule' THEN substring(f.value FROM '^((?:above|below) [^ ]+)') ELSE f.suggested END AS threshold
   FROM f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
@@ -162,8 +162,8 @@ SELECT f.finding_key, f.instance_id, coalesce(i.name, 'pgvigil') AS instance, f.
 
 // every firing of the alert, newest first, with the open one's per-channel state
 const sqlAlertOccurrences = `
-SELECT o.occurrence, o.fired_at, o.last_sent_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source,
-       o.setting, o.value, CASE WHEN o.source = 'alert rule' THEN substring(o.value FROM '^((?:above|below) [^ ]+)') END AS threshold,
+SELECT o.occurrence, o.fired_at, o.last_sent_at, o.cleared_at, o.status, o.severity, o.instance_id AS "instance_id@inst", o.instance, o.source,
+       o.setting AS "setting@fcheck", o.value AS "value@fvalue", CASE WHEN o.source = 'alert rule' THEN substring(o.value FROM '^((?:above|below) [^ ]+)') END AS threshold,
        o.channels, o.sends, o.missing_since, i.engine, i.is_active
   FROM pgvigil.alert_occurrences o
   LEFT JOIN pgvigil.instances i ON i.instance_id = o.instance_id

@@ -51,7 +51,7 @@ const schemaChangeCut = `left(w.before, 400) AS before, left(w.after, 400) AS af
 const sqlSchemaChanges = `
 SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
        ` + schemaChangeCut + `, w.statement, w.statement_role, w.statement_at, w.statement_tag, w.ddl_log
-  FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint) w`
+  FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint) w /* text: statement=stmt */`
 
 const sqlMSSQLSchemaChanges = `
 SELECT w.snapshot_at, w.prev_at, w.dbid, w.datname, w.kind, w.identity, w.schema_name, w.object_name, w.parent, w.change, w.attribute,
@@ -87,7 +87,7 @@ SELECT c.snapshot_at, c.prev_at, c.datname, c.kind, c.identity, c.change, c.attr
  LIMIT 1`
 
 const sqlSchemaDDL = `
-SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_type, l.object_identity, l.role_name, l.statement
+SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_type, l.object_identity, l.role_name, l.statement AS "statement@stmt"
   FROM pgvigil.schema_ddl_log l
  WHERE l.instance_id = $1 AND l.snapshot_at > $2 AND l.snapshot_at <= $3 AND ($4::bigint IS NULL OR l.dbid = $4)
  ORDER BY l.snapshot_at DESC, l.log_id DESC

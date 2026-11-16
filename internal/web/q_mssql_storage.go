@@ -115,7 +115,7 @@ func (s *Server) MSSQLStorage(w http.ResponseWriter, r *http.Request) {
 const sqlMSSQLVersionLatest = `
 SELECT snapshot_at, store_bytes, reserved_bytes, tempdb_data_bytes, round(100.0 * reserved_bytes / nullif(tempdb_data_bytes, 0), 1) AS tempdb_pct,
        generation_kb_s, cleanup_kb_s, snapshot_tx_count, holder_session_id, holder_login, holder_host, holder_program, holder_database,
-       holder_is_snapshot, holder_started_at, holder_elapsed_s, holder_statement
+       holder_is_snapshot, holder_started_at, holder_elapsed_s, holder_statement AS "holder_statement@stmt"
   FROM pgvigil.mssql_versionstore_latest WHERE instance_id = $1`
 
 // sqlMSSQLVersionSeries: the store's size and the two rates over the window, per $4-second bucket.
@@ -133,7 +133,7 @@ const sqlMSSQLVersionHolders = `
 SELECT s.holder_session_id AS session_id, s.holder_login AS login_name, s.holder_host AS host_name, s.holder_program AS program_name,
        s.holder_database AS database_name, bool_or(s.holder_is_snapshot) AS is_snapshot, s.holder_started_at AS started_at,
        max(s.holder_elapsed_s) AS elapsed_s, min(s.snapshot_at) AS first_seen, max(s.snapshot_at) AS last_seen, count(*) AS reads,
-       (array_agg(s.holder_statement ORDER BY s.snapshot_at DESC))[1] AS statement
+       (array_agg(s.holder_statement ORDER BY s.snapshot_at DESC))[1] AS "statement@stmt"
   FROM pgvigil.mssql_versionstore_sample s
  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.holder_session_id IS NOT NULL
  GROUP BY s.holder_session_id, s.holder_login, s.holder_host, s.holder_program, s.holder_database, s.holder_started_at
@@ -141,7 +141,7 @@ SELECT s.holder_session_id AS session_id, s.holder_login AS login_name, s.holder
  LIMIT 50`
 
 const sqlMSSQLVersionChecks = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_storage_findings
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM pgvigil.mssql_storage_findings
  WHERE instance_id = $1 AND check_name LIKE '%version store%'
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 

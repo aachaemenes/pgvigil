@@ -27,6 +27,7 @@ func runAlerts(ctx context.Context, log *slog.Logger, args []string) error {
 	if dsn == "" {
 		dsn = cfg.Repository.DSN()
 	}
+	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	res, err := alerts.Once(ctx, dsn, chs)
 	if err != nil {
 		return err

@@ -1,0 +1,152 @@
+diff --git i/README.md w/README.md
+index 745968cf..589e4c12 100644
+--- i/README.md
++++ w/README.md
+@@ -175,7 +175,7 @@ Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvig
+ 
+ ## The AI door (optional)
+ 
+-`pgvigil mcp` serves the Model Context Protocol on its standard input and output ([docs/mcp.md](docs/mcp.md)), so an AI client on the same machine (a desktop assistant, an IDE or command-line agent) can read the repository through nine read-only tools: the fleet summary, an instance's findings, the blocking chain at a time, the top statements over a window, a plan's findings, a table's state, the storage forecast and, for SQL Server, one statement on every instance and the statements found by their text. Each is answered by the JSON API's own handler in process, under the UI's read-only session with its timeouts, with the same `query_text` policy. It takes a login IN ROLE `pgvigil_reader` alone and refuses (exit 3) the owner and any login that could write (`scripts/proof-mcp.sh`), and by the same check a superuser, the collector or `pgvigil_auth` (not proven by a run); it opens no port and makes no connection beyond the repository; the login's password and any password-shaped value are scrubbed from every reply. `scripts/proof-mcp.sh` drives a scripted client against the demo repository.
++`pgvigil mcp` serves the Model Context Protocol on its standard input and output ([docs/mcp.md](docs/mcp.md)), so an AI client on the same machine (a desktop assistant, an IDE or command-line agent) can read the repository through nine read-only tools: the fleet summary, an instance's findings, the blocking chain at a time, the top statements over a window, a plan's findings, a table's state, the storage forecast and, for SQL Server, one statement on every instance and the statements found by their text. Each is answered by the JSON API's own handler in process, under the UI's read-only session with its timeouts, with the same `query_text` policy as the configuration file given with `-config` states it (without `-config`, every instance is read as `none`: no statement text, plan or deadlock graph). It takes a login IN ROLE `pgvigil_reader` alone and refuses (exit 3) the owner and any login that could write (`scripts/proof-mcp.sh`), and by the same check a superuser, the collector or `pgvigil_auth` (not proven by a run); it opens no port and makes no connection beyond the repository; the login's password and any password-shaped value are scrubbed from every reply. `scripts/proof-mcp.sh` drives a scripted client against the demo repository.
+ 
+ The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
+ 
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index f350bb33..049b41bc 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -118,6 +118,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	// never delays serve, and an empty connection string never reaches a connect (without an alerts_dsn it is the
+ 	// repository serve itself reads, -dsn included: checked above). A failing channel is backed off as the collector's
+ 	// own alert loop backs it off (collect.ChannelBackoff).
++	// TEXT-NOW: the watchdog's alert sends follow the file's query_text policies from their first pass (srv.TextPolicy,
++	// which adds the page instances, replaces this once the web server is open)
++	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
+ 	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
+ 		adsn := ast.DSN()
+ 		if adsn == "" {
+@@ -184,6 +187,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		pc.Hypo[in.Name] = in.HypoIndex
+ 	}
+ 	srv.SetPlans(pc)
++	// TEXT-NOW: serve's alert sends follow each instance's query_text policy as its doors hold it now (page instances too)
++	alerts.SetTextPolicy(srv.TextPolicy)
+ 	doors := map[string]mssql.Door{}
+ 	for _, in := range cfg.Instances {
+ 		if in.Engine == config.EngineSQLServer {
+diff --git i/docs/customreports.md w/docs/customreports.md
+index a95ad255..32c5e127 100644
+--- i/docs/customreports.md
++++ w/docs/customreports.md
+@@ -110,6 +110,13 @@ the page does not run it when it opens, and a mailed report carries the same wor
+ start and starts anyway. Behind PgBouncer, the reports login's startup settings are the UI login's (the README's
+ `track_extra_parameters` line).
+ 
++A report on the repository is the admin's own door to the stored statement text: its SQL reads the text as it was
++kept, whatever an instance's `query_text` setting is now. The pages, the exports, the report mails, the alerts and the
++MCP door apply the setting as it stands when they read; a report's own SQL cannot. While any instance's setting is not
++`full`, the Custom reports page says so: 'A store report reads stored statement text whatever an instance's query_text
++policy is now: its SQL reads the repository's tables as the reports login (an admin's grant), not through the pages'
++rule (docs/security.html).'
++
+ SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
+ [the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`) and no
+ more, never sysadmin: a run on a login that is a member of sysadmin is refused before anything is sent. The rollback
+diff --git i/docs/mcp.md w/docs/mcp.md
+index d89462d1..a556aa8e 100644
+--- i/docs/mcp.md
++++ w/docs/mcp.md
+@@ -7,7 +7,7 @@
+ - Read only. Nine tools, each a read of the repository; none writes, cancels, terminates, runs EXPLAIN or takes SQL. A call to any other tool name, or to any method beyond `initialize`, `ping`, `tools/list` and `tools/call` (the empty `resources/list`, `resources/templates/list` and `prompts/list` answer too), is refused with a JSON-RPC error.
+ - The same SQL as the web UI's JSON API. Every tool is answered by the API's own handler, called inside the process: the parameter checks, the queries and the results are the API's. The session is the UI's read-only one (`default_transaction_read_only`, a 15 s statement timeout, a 2 s lock timeout).
+ - A reader login only. Before it reads a message, `pgvigil mcp` checks its login and refuses (exit 3) a superuser, the schema's owner or any login with CREATE on it, a login that may change a repository table, the collector (`pgvigil_collector`) and the UI's password door (`pgvigil_auth`). The login is IN ROLE `pgvigil_reader` and nothing else.
+-- The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep; the door never reads a monitored server.
++- The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep, under the setting as `-config` states it now; started without `-config`, the door knows no setting and reads every instance as `none` (no statement text, plan or deadlock graph); the door never reads a monitored server.
+ - No credential in any output. The login's password is scrubbed from every reply, and any `password=` value or URL password that would appear in an error message with it; the repository holds no other credential the reader can see.
+ - Nothing outbound. No port is opened: the client starts `pgvigil mcp` as its own child process and talks over the pipe. The only connection the process makes is to the repository database; no telemetry, no update check (not proven: the proof looks for a listening socket, not for outbound connections).
+ 
+@@ -53,7 +53,7 @@ An instance is named by its name (as `fleet_summary` lists it) or its `instance_
+    }
+    ```
+ 
+-   On Windows the command is `C:\\Program Files\\pgvigil\\pgvigil.exe` (each backslash doubled inside the JSON). The password goes in the login's `~/.pgpass` (`%APPDATA%\postgresql\pgpass.conf` on Windows), which libpq-style connection strings read, or in a `file:` DSN, rather than in the client's configuration file. `-config` is optional: it gives the stale-collection check each instance's own intervals, as `serve` has them; without it the defaults apply.
++   On Windows the command is `C:\\Program Files\\pgvigil\\pgvigil.exe` (each backslash doubled inside the JSON). The password goes in the login's `~/.pgpass` (`%APPDATA%\postgresql\pgpass.conf` on Windows), which libpq-style connection strings read, or in a `file:` DSN, rather than in the client's configuration file. `-config` gives the stale-collection check each instance's own intervals and each instance's `query_text` setting, as `serve` has them. Without it the interval defaults apply and every instance is read as `query_text: none`: no statement text, plan or deadlock graph is returned, and the log says so. Give it the file `serve` reads to return what each instance's setting allows.
+ 
+    A command-line agent takes the same command and environment through its own `mcp add` form.
+ 
+@@ -65,8 +65,8 @@ Newline-delimited JSON-RPC 2.0 on stdin and stdout; logs on stderr. Protocol rev
+ 
+ ## What an AI client sees, and who decides
+ 
+-The tools return what the web UI shows a reader: instance names, settings, check results, sizes, and statement text as the query_text policy keeps it. Whether that may go to a model hosted elsewhere is the site's decision, made in the client: pgvigil sends nothing anywhere itself (not proven: see Nothing outbound above). A site that may not send statement text to a hosted model sets `query_text: normalized` or `none` for the instances concerned, or uses a model that runs on its own machines.
++The tools return what the web UI shows a reader: instance names, settings, check results, sizes, and statement text as the query_text policy keeps it - with `-config`; started without it, the door reads every instance as `none` and returns no statement text, plan or deadlock graph. Whether that may go to a model hosted elsewhere is the site's decision, made in the client: pgvigil sends nothing anywhere itself (not proven: see Nothing outbound above). A site that may not send statement text to a hosted model sets `query_text: normalized` or `none` for the instances concerned, or uses a model that runs on its own machines.
+ 
+ ## The proof
+ 
+-`scripts/proof-mcp.sh` seeds a demo repository, makes a reader login, and drives one `pgvigil mcp` process with a scripted client: the owner's login refused, `initialize`, `tools/list`, every tool once, a write refused three ways (a tool that would terminate a backend, a write method, and the reader login's own INSERT), the password in no output, no listening socket, and a clean exit when the input closes.
++`scripts/proof-mcp.sh` seeds a demo repository, makes a reader login, and drives a `pgvigil mcp` process with a scripted client: the owner's login refused, `initialize`, `tools/list`, every tool once, a write refused three ways (a tool that would terminate a backend, a write method, and the reader login's own INSERT), the password in no output, no listening socket, and a clean exit when the input closes; then, without `-config` against a second process given a configuration file, no statement text, head statement or plan text returned without it and each of them with it.
+diff --git i/docs/security.html w/docs/security.html
+index ed70ca82..20fffa00 100644
+--- i/docs/security.html
++++ w/docs/security.html
+@@ -50,6 +50,7 @@
+   <h2>The data it keeps</h2>
+   <ul class="list">
+     <li>Passwords can stay out of the config file (an inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login). You choose whether statement text is kept as is, with every literal replaced, or not at all. Whichever you choose, on SQL Server and on PostgreSQL, the password-shaped parts of the statements, plans and Extended Events reports it keeps are masked before they are stored: a PASSWORD, SECRET, KEY_SOURCE, IDENTITY_VALUE or IDENTIFIED BY value; a password parameter by name, and every value of a call of sp_addlogin, sp_password, sp_addlinkedsrvlogin or the application-role procedures by position; a connection string's or a URL's password; the -P of a sqlcmd, bcp, osql or isql command line; a key, passphrase or password given to pgcrypto or to SQL Server's passphrase, certificate and asymmetric-key functions; a private key block; a plan's value of a password parameter. A password kept as an ordinary value in a table's data is a literal like any other: only the setting that replaces every literal, or keeps no text, takes it out.</li>
++    <li>The statement-text setting applies when the text is read, not only when it is collected: a page, an export, a report mail, an alert or the MCP door started with the configuration file (<code>pgvigil mcp -config</code>) shows the text an instance's setting allows now, so an instance moved to keep no text stops showing the text kept before, and one moved to replace every literal shows the old text with its literals replaced. Without <code>-config</code> the MCP door knows no setting and reads every instance as keeping no text: it returns no statement text, plan or deadlock graph (its log says so and names <code>-config</code>). Two are the admin's own: a custom report on the store runs its own SQL as the reports login and reads the stored text as it was kept (the Custom reports page says so while any instance keeps less than the full text), and a report mail rendered before a change is sent as it was rendered.</li>
+     <li>Its own database gives each part its own role: the collector adds data only through its import functions, the web page reads (and records each action it runs), the alert sender holds a login of its own, and the sign-in check runs through one function nobody else can call.</li>
+     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
+   </ul>
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 9e87cd1d..26d8651e 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -526,6 +526,7 @@ func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, er
+ 		t.Rows = append(t.Rows, v)
+ 	}
+ 	markRead(ctx, t, args)
++	markText(sql, t)
+ 	return t, rows.Err()
+ }
+ 
+@@ -535,6 +536,13 @@ func (s *Server) reply(w http.ResponseWriter, r *http.Request, v any, err error)
+ 		writeErr(w, http.StatusInternalServerError, err)
+ 		return
+ 	}
++	// TEXT-NOW: stored statement text follows the instance's query_text policy as this request's doors hold it now
++	// (textread.go); a tagged column gets its name back here
++	if err := s.applyTextNow(r, v); err != nil {
++		s.log.Warn("api text policy read failed", "path", r.URL.Path, "err", err)
++		writeErr(w, http.StatusInternalServerError, err)
++		return
++	}
+ 	w.Header().Set("Content-Type", "application/json")
+ 	w.Header().Set("Cache-Control", "no-store")
+ 	// a window cut to a part's reach: the reply says what was read (the page's line, the exports, the mail, MCP)
+@@ -775,7 +783,7 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
+ 		s.reply(w, r, nil, err)
+ 		return
+ 	}
+-	out.Chains, err = s.query(ctx, `SELECT * FROM pgvigil.blocking_chains($1, $2) ORDER BY head_pid, depth, pid`, id, *snap)
++	out.Chains, err = s.query(ctx, `SELECT * FROM pgvigil.blocking_chains($1, $2) ORDER BY head_pid, depth, pid /* text: head_query=stmt, waiter_query=stmt */`, id, *snap)
+ 	s.reply(w, r, out, err)
+ }
+ 
+@@ -857,7 +865,7 @@ func (s *Server) statements(w http.ResponseWriter, r *http.Request) {
+ 		writeErr(w, http.StatusBadRequest, errors.New("order must be time, calls, io, mean, rows, temp or wal"))
+ 		return
+ 	}
+-	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, $4, $5)`, id, from, to, order, limit)
++	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, $4, $5) /* text: query=stmt */`, id, from, to, order, limit)
+ 	s.reply(w, r, t, err)
+ }
+ 
+@@ -936,7 +944,7 @@ func (s *Server) slow(w http.ResponseWriter, r *http.Request) {
+ 			*f.dst = &val
+ 		}
+ 	}
+-	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, $5, $6, $7, $8, 200)`,
++	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, $5, $6, $7, $8, 200) /* text: query=stmt */`,
+ 		id, from, to, minSecs, state, user, db, app)
+ 	s.reply(w, r, t, err)
+ }

@@ -371,6 +371,8 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 			log.Warn("dbadash door stopped", "err", err)
 		}
 	}()
+	// TEXT-NOW: the alert sends follow each instance's query_text policy as the file states it now
+	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	go func() {
 		if err := alerts.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
 			log.Warn("alert loop stopped", "err", err)
@@ -401,4 +403,13 @@ func logSecretEndpoints(ctx context.Context, log *slog.Logger, cfg *config.Confi
 		}
 		log.Info("password_secret", "instance", in.Name, "secret", ref.ID, "region", ref.Region, "endpoint", ep)
 	}
+}
+
+// queryTextByName is the file's instances' query_text policies, by name (TEXT-NOW: the alert sends follow them).
+func queryTextByName(cfg *config.Config) map[string]string {
+	m := map[string]string{}
+	for _, in := range cfg.Instances {
+		m[in.Name] = in.QueryText
+	}
+	return m
 }

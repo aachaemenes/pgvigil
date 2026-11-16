@@ -112,7 +112,7 @@ WITH g AS (
    WHERE ` + fmt.Sprintf(qsWindow, "r") + `
    GROUP BY r.database_name, r.query_id, r.query_hash
 )
-SELECT g.database_name, g.query_id, g.query_hash, q.object_name, q.query_text AS query,
+SELECT g.database_name, g.query_id, g.query_hash, q.object_name, q.query_text AS "query@stmt",
        g.executions, g.failed,
        round(g.duration_us / 1000.0, 1) AS duration_ms, round(g.duration_us / 1000.0 / nullif(g.executions, 0), 3) AS avg_duration_ms,
        round(g.max_duration_us / 1000.0, 1) AS max_duration_ms,
@@ -308,7 +308,7 @@ var sqlMSSQLQSRegressed = qsRegBase + `, pd AS (
 ), slots AS (
   SELECT greatest(least(max(failure_total), 200 / 3), least(max(failure_total), 200 - max(slower_total))) AS failure_slots FROM ranked
 )
-SELECT r.database_name, r.query_id, r.query_hash, qq.object_name, qq.query_text AS query,
+SELECT r.database_name, r.query_id, r.query_hash, qq.object_name, qq.query_text AS "query@stmt",
        CASE r.sev WHEN 4 THEN 'CRITICAL' WHEN 3 THEN 'HIGH' WHEN 2 THEN 'MEDIUM' ELSE 'LOW' END AS severity,
        array_to_string(array_remove(ARRAY[CASE WHEN r.is_duration THEN 'duration' END, CASE WHEN r.is_cost THEN 'cost' END,
                                           CASE WHEN r.is_timeouts THEN 'timeouts' END, CASE WHEN r.is_errors THEN 'errors' END], NULL), ', ') AS raised_by,
@@ -419,7 +419,7 @@ WITH cur AS (
    WHERE q.instance_id = $1
    ORDER BY q.database_name, q.query_hash, q.last_execution DESC NULLS LAST, q.query_id DESC
 )
-SELECT o.database_name, o.query_hash, t.object_name, t.query_text AS query, o.status, o.first_compile,
+SELECT o.database_name, o.query_hash, t.object_name, t.query_text AS "query@stmt", o.status, o.first_compile,
        o.now_e AS executions, o.bef_e AS before_executions,
        round(o.now_d / 1000.0, 1) AS duration_ms, round(o.bef_d / 1000.0, 1) AS before_duration_ms,
        round(o.now_d / 1000.0 / nullif(o.now_e, 0), 3) AS avg_duration_ms, round(o.bef_d / 1000.0 / nullif(o.bef_e, 0), 3) AS before_avg_duration_ms,
@@ -467,7 +467,7 @@ SELECT w.now_from, w.now_to, w.before_from, w.before_to, $5::float8 < extract(ep
 
 // sqlMSSQLQSForced: every forced plan of the databases the last read listed ($2 the database, NULL = all).
 const sqlMSSQLQSForced = `
-SELECT p.database_name, p.query_id, p.plan_id, q.object_name, q.query_text AS query, p.forcing_type, p.force_failure_count,
+SELECT p.database_name, p.query_id, p.plan_id, q.object_name, q.query_text AS "query@stmt", p.forcing_type, p.force_failure_count,
        p.force_failure_reason, q.plan_count, p.last_execution AS plan_last_execution, q.last_execution AS query_last_execution,
        p.last_compile, p.query_hash, p.plan_hash, p.is_parallel, p.forced_seen, p.xml_state, p.snapshot_at
   FROM pgvigil.mssql_qs_plan p
@@ -483,7 +483,7 @@ SELECT p.database_name, p.query_id, p.plan_id, q.object_name, q.query_text AS qu
 const sqlMSSQLQSTuning = `
 SELECT t.database_name, t.rec_name, t.rec_type, t.reason, t.rec_state, t.state_reason, t.score, t.valid_since, t.last_refresh,
        t.is_executable, t.is_revertable, t.executed_at, t.executed_by, t.reverted_at, t.reverted_by, t.query_id,
-       t.regressed_plan_id, t.recommended_plan_id, q.object_name, q.query_text AS query, t.script,
+       t.regressed_plan_id, t.recommended_plan_id, q.object_name, q.query_text AS "query@stmt", t.script,
        t.is_present, t.first_seen, t.snapshot_at
   FROM pgvigil.mssql_qs_tuning t
   LEFT JOIN pgvigil.mssql_qs_query q ON q.instance_id = t.instance_id AND q.database_name = t.database_name AND q.query_id = t.query_id
@@ -555,7 +555,7 @@ SELECT (SELECT count(*) FROM cap) AS captures, (SELECT max(cap.snapshot_at) FROM
 
 // one query ($2 the database, $3 the query id, $4 its hash: a cleared store gives the id to another statement)
 const sqlMSSQLQSQueryOne = `
-SELECT q.database_name, q.query_id, q.query_hash, q.object_name, q.query_text AS query, q.parameterization, q.plan_count,
+SELECT q.database_name, q.query_id, q.query_hash, q.object_name, q.query_text AS "query@stmt", q.parameterization, q.plan_count,
        q.last_execution, q.first_seen, q.snapshot_at
   FROM pgvigil.mssql_qs_query q
  WHERE q.instance_id = $1 AND q.database_name = $2 AND q.query_id = $3 AND q.query_hash = $4`
@@ -832,6 +832,11 @@ func (s *Server) MSSQLQueryStorePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	if xml == nil || *xml == "" {
 		writeErr(w, http.StatusNotFound, errors.New("no plan XML is stored for this plan"))
+		return
+	}
+	// TEXT-NOW: the policy as the doors hold it now, not as the plan was stored under (textread.go)
+	if qt := s.doorsNow().planPolicy(deref(name)); qt != "full" {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("not shown: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", qt))
 		return
 	}
 	var qid int64

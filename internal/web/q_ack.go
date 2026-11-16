@@ -46,7 +46,7 @@ SELECT l.at, l.ui_user, l.client, l.op, l.kind, l.ack_id, l.instance_name AS ins
 
 // sqlAckSuppressed: the sends a mute, silence or blackout held, last held in the window
 const sqlAckSuppressed = `
-SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_id, x.instance_name AS instance, x.severity, x.source, x.setting, x.value,
+SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_id AS "instance_id@inst", x.instance_name AS instance, x.severity, x.source, x.setting AS "setting@fcheck", x.value AS "value@fvalue",
        x.ack_id, a.kind AS held_by, a.created_by, coalesce(a.match_text, a.check_key, a.tag, a.instance_name) AS rule
   FROM pgvigil.ack_suppressed x
   JOIN pgvigil.acks a USING (ack_id)
@@ -95,7 +95,7 @@ SELECT o.*, coalesce(t.tags, '{}'::text[]) AS tags,
   LEFT JOIN LATERAL (SELECT a.kind, a.ack_id FROM pgvigil.acks a
                       WHERE a.ack_id = pgvigil.ack_hold($1, o.instance, coalesce(t.tags, '{}'), o.finding_key, o.source, o.setting, o.value)) h ON true
  ORDER BY CASE o.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, o.first_sent_at DESC
- LIMIT 500`
+ LIMIT 500 /* text: instance_id=inst, setting=fcheck, value=fvalue */`
 
 // sqlAckAttention: per active instance, the last 15 minutes before $1: blocking (PostgreSQL: distinct sessions seen
 // waiting on a lock; SQL Server: blocked process reports), deadlocks (PostgreSQL: pg_stat_database's counter risen;
@@ -266,7 +266,7 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // one channel - a channel in quiet hours or with a higher minimum sends one episode later, under its own first send -
 // the most of any channel) and the sends. A finding never sent (no channel, or below every rule) has no row.
 const sqlAckSeen = `
-SELECT c.source, c.setting, c.value, min(c.first_seen) AS first_seen, max(c.last_seen) AS last_seen,
+SELECT c.source, c.setting AS "setting@fcheck", c.value AS "value@fvalue", min(c.first_seen) AS first_seen, max(c.last_seen) AS last_seen,
        max(c.episodes) AS occurrences, sum(c.sends)::bigint AS sends
   FROM (SELECT s.channel, s.source, s.setting, s.value, min(s.first_sent_at) AS first_seen, max(s.last_sent_at) AS last_seen,
                count(*) AS episodes, sum(s.send_count) AS sends

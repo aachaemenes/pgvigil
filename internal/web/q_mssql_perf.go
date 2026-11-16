@@ -271,7 +271,7 @@ func (s *Server) MSSQLCPU(w http.ResponseWriter, r *http.Request) {
 
 // sqlMSSQLCPUFindings: 0124's findings of one instance; $2 picks them by the start of the check's name.
 const sqlMSSQLCPUFindings = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_cpu_findings
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM pgvigil.mssql_cpu_findings
  WHERE instance_id = $1 AND check_name ~ $2
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 
@@ -339,7 +339,7 @@ func seriesIDs(v string) ([]int32, error) {
 
 // sqlMSSQLMemoryChecks: 0074's memory checks (as they stand) and 0119's memory findings over the range.
 const sqlMSSQLMemoryChecks = `
-SELECT severity, check_name, object, at, detail FROM (
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM (
   SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_perf_findings WHERE instance_id = $1 AND check_name ~ 'memory'
   UNION ALL
   SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3)) f
@@ -376,7 +376,7 @@ const (
  GROUP BY 1 ORDER BY 1`
 	sqlMSSQLGrantsNow = `SELECT g.snapshot_at, g.session_id, g.request_id, g.database_name, g.request_at, g.grant_at, g.wait_time_ms,
        g.requested_kb, g.granted_kb, g.used_kb, g.max_used_kb, g.ideal_kb, g.required_kb, g.queue_id, g.wait_order, g.is_next_candidate,
-       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement
+       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement AS "statement@stmt"
   FROM pgvigil.mssql_memory_grant_query g
  WHERE g.instance_id = $1 AND g.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_memory_sample s
                                                 WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3)

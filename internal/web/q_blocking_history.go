@@ -40,7 +40,7 @@ const sqlPgHistorySummary = `SELECT * FROM pgvigil.blocking_history_summary($1, 
 const sqlPgHistoryEpisodes = `
 SELECT e.head_pid, e.head_backend_start, e.head_xact_start, e.first_at, e.last_at, e.samples, e.states, e.idle_in_txn_samples,
        e.last_state, e.head_backend_type, e.head_usename, e.head_datname, e.head_application, e.victims, e.direct, e.depth,
-       e.longest_blocked_secs, e.xact_secs, left(e.head_query, 4000) AS head_query
+       e.longest_blocked_secs, e.xact_secs, left(e.head_query, 4000) AS "head_query@stmt"
   FROM pgvigil.blocking_history_episodes($1, $2, $3) e`
 
 const sqlPgHistoryTrend = `SELECT * FROM pgvigil.blocking_history_trend($1, $2, $3, $4)`
@@ -49,11 +49,11 @@ const sqlPgXminSummary = `SELECT * FROM pgvigil.xmin_pins_summary($1, $2, $3)`
 
 const sqlPgXminPins = `
 SELECT p.pid, p.backend_start, p.samples, p.pinned_samples, p.peak_xmin_age, p.peak_at, p.state_at_peak, p.xact_secs_at_peak,
-       p.backend_type, p.usename, p.datname, p.application_name, p.client, p.first_at, p.last_at, left(p.query_at_peak, 4000) AS query_at_peak
+       p.backend_type, p.usename, p.datname, p.application_name, p.client, p.first_at, p.last_at, left(p.query_at_peak, 4000) AS "query_at_peak@stmt"
   FROM pgvigil.xmin_pins($1, $2, $3) p`
 
 const sqlPgXminNow = `
-SELECT h.snapshot_at, h.holder, h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, left(h.detail, 400) AS detail
+SELECT h.snapshot_at, h.holder AS "holder@holder", h.name, h.datname, h.xmin_age, h.catalog_xmin_age, h.active, h.since, left(h.detail, 400) AS "detail@holderdetail"
   FROM pgvigil.vacuum_xmin_holders h
  WHERE h.instance_id = $1
  ORDER BY greatest(coalesce(h.xmin_age, 0), coalesce(h.catalog_xmin_age, 0)) DESC

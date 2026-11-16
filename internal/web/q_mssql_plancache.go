@@ -94,7 +94,7 @@ WITH hh AS (
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ` + pcScope + `
    GROUP BY s.database_id, s.query_key
 )
-SELECT p.database_id, coalesce(p.database_name, 'database ' || p.database_id) AS database, p.query_key, t.object_name, t.query,
+SELECT p.database_id, coalesce(p.database_name, 'database ' || p.database_id) AS database, p.query_key, t.object_name, t.query AS "query@stmt",
        q.query_store_on, p.executions, round(p.cpu_us / 1000.0, 1) AS cpu_ms, round(p.cpu_us / 1000.0 / nullif(p.executions, 0), 3) AS avg_cpu_ms,
        round(p.duration_us / 1000.0, 1) AS duration_ms, round(p.duration_us / 1000.0 / nullif(p.executions, 0), 3) AS avg_duration_ms,
        p.logical_reads, round(p.logical_reads::numeric / nullif(p.executions, 0), 1) AS avg_logical_reads, p.physical_reads,
@@ -154,7 +154,7 @@ WITH cur AS (
          count(*) FILTER (WHERE k.status IN ('gone', 'not kept now')) OVER () AS n_gone
     FROM k
 )
-SELECT o.database_id, coalesce(o.database_name, 'database ' || o.database_id) AS database, o.query_key, t.object_name, t.query, o.status,
+SELECT o.database_id, coalesce(o.database_name, 'database ' || o.database_id) AS database, o.query_key, t.object_name, t.query AS "query@stmt", o.status,
        o.now_e AS executions, o.bef_e AS before_executions,
        round(o.now_d / 1000.0, 1) AS duration_ms, round(o.bef_d / 1000.0, 1) AS before_duration_ms,
        round(o.now_d / 1000.0 / nullif(o.now_e, 0), 3) AS avg_duration_ms, round(o.bef_d / 1000.0 / nullif(o.bef_e, 0), 3) AS before_avg_duration_ms,
@@ -233,7 +233,7 @@ SELECT h.database_id, coalesce(h.database_name, 'database ' || h.database_id) AS
 
 const sqlMSSQLPCList = `
 SELECT l.ord, l.database_id, coalesce(l.database_name, 'database ' || l.database_id) AS database, l.plan_kind, round(l.size_bytes / 1024.0, 1) AS size_kb,
-       l.query_hash, l.plans, l.statements, l.executions, l.query, l.snapshot_at
+       l.query_hash, l.plans, l.statements, l.executions, l.query AS "query@stmt", l.snapshot_at
   FROM pgvigil.mssql_pc_list l
  WHERE l.instance_id = $1 AND l.list = $2
  ORDER BY l.ord`
@@ -302,7 +302,7 @@ WITH r AS (
 SELECT k.time_bin, k.bucket, k.queries, k.executions::bigint AS executions, k.n_cells::bigint AS n_cells, k.bins_cut, k.drawn_from,
        $6::int AS bin_minutes,
        k.database_id, coalesce(d.database_name, 'database ' || k.database_id) AS database, k.query_key,
-       k.top_executions::bigint AS top_executions, left(x.query, 80) AS top_query
+       k.top_executions::bigint AS top_executions, left(x.query, 80) AS "top_query@stmt"
   FROM k
   LEFT JOIN pgvigil.mssql_pc_database d ON d.instance_id = $1 AND d.database_id = k.database_id
   LEFT JOIN pgvigil.mssql_pc_text x ON x.instance_id = $1 AND x.query_key = k.query_key

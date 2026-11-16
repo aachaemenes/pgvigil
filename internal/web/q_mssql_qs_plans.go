@@ -32,6 +32,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// sqlMSSQLSearch: the statements of one source whose text holds the pattern; a 'none' instance is skipped ($4), each
+// row's statement under its instance's policy now (the marker; reply applies it)
+const sqlMSSQLSearch = `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4) /* text: statement=stmt, instance_id=inst */`
+
 // planReadBudget bounds one read on demand: the connection, the two statements and the transfer of the XML.
 const planReadBudget = 30 * time.Second
 
@@ -303,7 +307,7 @@ SELECT p.database_name AS database, p.query_hash, p.plan_hash, p.stmt_start, p.s
            AND l.plan_hash = p.plan_hash AND l.stmt_start = p.stmt_start AND l.stmt_end = p.stmt_end) AS live_captures,
        (SELECT max(l.live_id) FROM pgvigil.mssql_live_plan l WHERE l.instance_id = p.instance_id AND l.query_hash = p.query_hash
            AND l.plan_hash = p.plan_hash AND l.stmt_start = p.stmt_start AND l.stmt_end = p.stmt_end AND l.live_xml IS NOT NULL) AS live_newest,
-       t.object_name, left(t.query, 400) AS query
+       t.object_name, left(t.query, 400) AS "query@stmt"
   FROM pgvigil.mssql_running_plan p
   LEFT JOIN pgvigil.mssql_pc_text t ON t.instance_id = p.instance_id AND t.query_key = p.query_hash
  WHERE p.instance_id = $1 AND p.last_seen > $2 AND p.first_seen <= $3
@@ -608,7 +612,7 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		_, err = tx.Exec(ctx, "SET LOCAL statement_timeout = '"+searchBudget+"'")
 		if err == nil {
 			var rows pgx.Rows
-			rows, err = tx.Query(ctx, `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4)`, pattern, name, inst, skip)
+			rows, err = tx.Query(ctx, sqlMSSQLSearch, pattern, name, inst, skip)
 			if err == nil {
 				t := &table{Rows: [][]any{}}
 				for _, f := range rows.FieldDescriptions() {
@@ -626,6 +630,7 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					err = rows.Err()
 				}
+				markText(sqlMSSQLSearch, t) // TEXT-NOW: a normalized instance's statements shown normalized (textread.go)
 				one.Rows = t
 			}
 		}

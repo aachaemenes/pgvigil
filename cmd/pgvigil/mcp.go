@@ -22,14 +22,16 @@ import (
 //	pgvigil mcp [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]
 //
 // -dsn is the repository login, IN ROLE pgvigil_reader alone (checked before the first message:
-// a superuser, the owner, a writer, the collector or pgvigil_auth is refused). -config is optional:
-// it gives the stale check each instance's collection intervals, as serve has them. Every tool is
+// a superuser, the owner, a writer, the collector or pgvigil_auth is refused). -config gives the
+// stale check each instance's collection intervals and each instance's query_text policy, as serve has
+// them; without it no policy is known and every instance is read as 'none' (no statement text, plan or
+// deadlock graph is returned: the locked-down default, which an admin relaxes by giving -config). Every tool is
 // read-only and answered by the JSON API's own handler in process; no port is opened and nothing
 // is sent anywhere but the client's pipe. Logs go to stderr (stdout is the protocol).
 func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	dsnFlag := fs.String("dsn", "env:PGVIGIL_MCP_DSN", "the reader login's connection string (or env:NAME / file:path)")
-	path := fs.String("config", "", "configuration file for the instances' collection intervals (optional)")
+	path := fs.String("config", "", "configuration file for the instances' collection intervals and query_text policies (without it every instance is read as 'none': no statement text, plan or deadlock graph is returned)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,6 +73,20 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	defer srv.Close()
 	// a page instance's own intervals for the stale check, as serve's (ST5a's review F1); mcp's doors stay the file's
 	go srv.WatchPageIntervals(ctx, log, cfg, web.DoorEvery, func(in config.Instance) map[string]int { return instanceIntervals(cfg, in) })
+	// TEXT-NOW: the statement text a tool returns follows each instance's query_text policy as the file states it now
+	// (internal/web/textread.go), as serve's pages do. With no file no policy is known and the door fails closed:
+	// every instance is read as 'none' (an instance the file does not name takes the file's default, as in serve;
+	// with no file the default is 'none'), said in its log
+	pc := web.PlansConfig{QueryText: map[string]string{}, DefaultQueryText: "none"}
+	if cfg != nil {
+		pc.DefaultQueryText = cfg.QueryText
+		for _, in := range cfg.Instances {
+			pc.QueryText[in.Name] = in.QueryText
+		}
+	} else {
+		log.Warn("pgvigil mcp without -config: no instance's query_text policy is known, so every instance is read as 'none' (no statement text, plan or deadlock graph is returned); give -config with the file serve reads to return what each instance's policy allows")
+	}
+	srv.SetPlans(pc)
 	log.Info("pgvigil mcp ready on stdio", "login", user, "version", version)
 	return mcp.New(srv.Handler(), version, secret).Serve(ctx, os.Stdin, os.Stdout)
 }

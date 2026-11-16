@@ -27,7 +27,7 @@ export interface InstanceRun { instance_id?: number; instance: string; engine: s
 // store: why a report on the store cannot run here (REPORT ROLE: reports_dsn, a login IN ROLE pgvigil_reader alone),
 // absent when it can
 // can: what the session's role may do (B24f): a run is open to every role, a save, move or delete needs admin
-interface State { enabled: boolean; reason?: string; store?: string; can?: Can | null }
+interface State { enabled: boolean; reason?: string; store?: string; store_text?: string; can?: Can | null }
 
 const engineName: Record<string, string> = { store: 'the repository', postgres: 'PostgreSQL instances', sqlserver: 'SQL Server instances' };
 export const condNames: Record<string, string> = {
@@ -262,6 +262,8 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   // reason first, then the role (B24f: a report is a shared view written against servers; changing one needs admin)
   const off = d.state.enabled ? (routeWhy('customreports', d.state.can) ?? '') : (d.state.reason || 'Saving or running a report is off on this server.');
   const offNote = el('p', { class: 'meta off-reason' }, off);
+  // TEXT-NOW (the lead's T3): a store report reads stored statement text as stored, whatever an instance's policy is now
+  const storeText = d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   if (off) for (const b of [newBtn, folderBtn]) offControl(b, off, offNote);
   newBtn.addEventListener('click', () => go({ new: '1' }));
   const folderIn = el('input', { type: 'text', 'aria-label': 'New folder path (parts joined by /)', placeholder: 'Ops/Daily' }) as HTMLInputElement;
@@ -271,6 +273,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   });
   sec.append(el('div', { class: 'toolbar' }, newBtn, el('span', {}, folderIn, ' ', folderBtn)), msg);
   if (off) sec.append(offNote);
+  if (storeText) sec.append(storeText);
   sec.append(el('p', { class: 'meta' }, 'Each report is the DBA\'s own SQL (or a procedure) with its parameters, column formats and colour rules, in folders every user shares. '
     + 'A report on the repository reads pgvigil\'s own tables; a PostgreSQL or SQL Server report runs read-only on a chosen instance or on a tag\'s instances, '
     + 'under its timeout and a 2 s lock timeout, and every run is audited (the log below).'));
@@ -415,6 +418,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   // 'said': report mail carries this paragraph's words (reportmail.ts notesOf) - a run that is not made says why
   const runOff = el('p', { class: 'meta off-reason said' }, runWhy);
   if (runWhy) offControl(runBtn, runWhy, runOff);
+  const storeTextRun = def.engine === 'store' && d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}${tagQ(ctx) ? '&' + tagQ(ctx) : ''}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
@@ -422,6 +426,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
   if (folderTag) sec.append(el('p', { class: 'meta' }, `Opened from ${folderWords(folderTag)}: a run from here goes to its instances`
     + (runTag ? '.' : ', one at a time (the folder is no tag a run can name).')));
   if (runWhy) sec.append(runOff);
+  if (storeTextRun) sec.append(storeTextRun);
   if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, folderTag ? `No active instance in ${folderWords(folderTag)}.` : 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});

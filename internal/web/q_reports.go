@@ -134,8 +134,8 @@ SELECT i.instance_id, i.name AS instance, coalesce(i.engine, 'postgres') AS engi
  LIMIT $4`
 
 const sqlRepDeadlocks = `
-SELECT d.instance_id, i.name AS instance, d.event_at, d.event_key, d.source, d.process_count, d.victim_count, d.victim_spid,
-       d.victim_login, d.victim_program, d.victim_statement, d.database_names, d.object_names, d.processes, d.resources,
+SELECT d.instance_id AS "instance_id@inst", i.name AS instance, d.event_at, d.event_key, d.source, d.process_count, d.victim_count, d.victim_spid,
+       d.victim_login, d.victim_program, d.victim_statement AS "victim_statement@stmt", d.database_names, d.object_names, d.processes AS "processes@stmtjson", d.resources,
        (d.graph IS NOT NULL) AS has_graph
   FROM pgvigil.mssql_deadlocks d JOIN pgvigil.instances i ON i.instance_id = d.instance_id
  WHERE ` + repScope + ` AND i.engine = 'sqlserver' AND d.event_at > $2 AND d.event_at <= $3
@@ -156,12 +156,12 @@ SELECT i.instance_id, i.name AS instance, count(*) AS deadlocks
 const repFailedCTE = `
 WITH f AS (
   SELECT i.instance_id, i.name AS instance, 'sqlserver' AS engine, f.logged_at AS at, f.login_name, f.client,
-         NULL::text AS database_name, f.reason, f.message
+         NULL::text AS database_name, f.reason, f.message, NULL::text AS kind
     FROM pgvigil.mssql_failed_logins f JOIN pgvigil.instances i ON i.instance_id = f.instance_id
    WHERE ` + repScope + ` AND i.engine = 'sqlserver' AND f.logged_at > now() - make_interval(days => $2)
   UNION ALL
   SELECT i.instance_id, i.name, 'postgres', l.snapshot_at, l.usename, l.client, l.datname,
-         nullif(regexp_replace(coalesce(l.detail, ''), '"[^"]*"', '"..."', 'g'), ''), l.detail
+         nullif(regexp_replace(coalesce(l.detail, ''), '"[^"]*"', '"..."', 'g'), ''), l.detail, l.kind
     FROM pgvigil.log_events l JOIN pgvigil.instances i ON i.instance_id = l.instance_id
    WHERE ` + repScope + ` AND coalesce(i.engine, 'postgres') = 'postgres' AND l.kind = 'auth_fail'
      AND l.snapshot_at > now() - make_interval(days => $2)
@@ -187,25 +187,35 @@ SELECT i.instance_id, i.name AS instance, coalesce(i.engine, 'postgres') AS engi
 
 // the Login, Client and Message summaries (over the whole scope, as DBA Dash's) and the Detail (the newest 5,000)
 func sqlRepFailedBy(col string) string {
+	// TEXT-NOW: a reason is a PostgreSQL auth_fail event's detail (the log events' rule, textread.go), placed by the
+	// group's one instance and kind (a group of several instances: the strictest rule)
+	tag := ""
+	if col == "reason" {
+		tag = "@logdetail"
+	}
 	return repFailedCTE + `
-SELECT ` + col + ` AS value, count(*) AS failed_logins, count(DISTINCT instance_id) AS instances, min(at) AS first_failed, max(at) AS last_failed
+SELECT ` + col + ` AS "value` + tag + `", count(*) AS failed_logins, count(DISTINCT instance_id) AS instances, min(at) AS first_failed, max(at) AS last_failed,
+       CASE WHEN count(DISTINCT instance_id) = 1 THEN min(instance_id) END AS "@inst",
+       CASE WHEN count(DISTINCT kind) = 1 THEN min(kind) END AS "@logkind"
   FROM f GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 5000`
 }
 
 const sqlRepFailedDetail = repFailedCTE + `
-SELECT * FROM f ORDER BY at DESC LIMIT 5000`
+SELECT f.instance_id AS "instance_id@inst", f.instance, f.engine, f.at, f.login_name, f.client, f.database_name,
+       f.reason AS "reason@logdetail", f.message AS "message@logdetail", f.kind AS "@logkind"
+  FROM f ORDER BY at DESC LIMIT 5000`
 
 const sqlRepFlushed = `
 SELECT * FROM (
-  SELECT i.instance_id, i.name AS instance, t.event_at AS at, t.login_name, t.host_name, t.program_name, t.session_id,
-         t.database_name, coalesce(t.sub, 'DBCC') AS command, t.statement AS text, 'default trace' AS source
+  SELECT i.instance_id AS "instance_id@inst", i.name AS instance, t.event_at AS at, t.login_name, t.host_name, t.program_name, t.session_id,
+         t.database_name, coalesce(t.sub, 'DBCC') AS command, t.statement AS "text@stmt", 'default trace' AS source, false AS "@keep"
     FROM pgvigil.mssql_trace_events t JOIN pgvigil.instances i ON i.instance_id = t.instance_id
    WHERE ` + repScope + ` AND t.kind = 'dbcc' AND t.event_at > now() - make_interval(days => $2)
      AND (t.sub ~* '(FREEPROCCACHE|FREESYSTEMCACHE|FLUSHPROCINDB)'
           -- the command's own name only: the default trace reader names it in sub, 'DBCC' when it could not
           OR (t.sub = 'DBCC' AND t.statement ~* '^\s*DBCC\s+(FREEPROCCACHE|FREESYSTEMCACHE|FLUSHPROCINDB)'))
   UNION ALL
-  SELECT i.instance_id, i.name, e.log_at, NULL, NULL, NULL, NULL, NULL, 'cachestore flush', e.message, 'error log'
+  SELECT i.instance_id, i.name, e.log_at, NULL, NULL, NULL, NULL, NULL, 'cachestore flush', e.message, 'error log', true
     FROM pgvigil.mssql_errorlog e JOIN pgvigil.instances i ON i.instance_id = e.instance_id
    WHERE ` + repScope + ` AND e.log_at > now() - make_interval(days => $2) AND e.message ILIKE '%cachestore flush%'
 ) f
@@ -231,8 +241,8 @@ const sqlRepActions = sqlRepActionsCols + `
  LIMIT 5000`
 
 const sqlRepAudit = `
-SELECT i.instance_id, i.name AS instance, e.snapshot_at AS at, e.usename, e.datname, e.client, e.class, e.command,
-       e.object_type, e.object_name, e.target_role, e.statement
+SELECT i.instance_id AS "instance_id@inst", i.name AS instance, e.snapshot_at AS at, e.usename, e.datname, e.client, e.class, e.command,
+       e.object_type, e.object_name, e.target_role, e.statement AS "statement@stmt"
   FROM pgvigil.pgaudit_events e JOIN pgvigil.instances i ON i.instance_id = e.instance_id
  WHERE ` + repScope + ` AND e.class IN ('ROLE', 'DDL') AND e.snapshot_at > now() - make_interval(days => $2)
  ORDER BY e.snapshot_at DESC
@@ -374,11 +384,11 @@ WITH ms AS (
          pg.executions, NULL, pg.duration_ms, pg.logical_reads, pg.physical_reads, pg.writes, pg.row_count, NULL, NULL
     FROM pg LEFT JOIN pgvigil.statement_text st ON st.instance_id = pg.instance_id AND st.queryid = pg.queryid
 )
-SELECT q.instance_id, i.name AS instance, q.engine,
+SELECT q.instance_id AS "instance_id@inst", i.name AS instance, q.engine,
        CASE WHEN $4 <> 'instance' THEN q.database_name END AS database_name,
        CASE WHEN $4 IN ('query', 'object') THEN q.object_name END AS object_name,
        CASE WHEN $4 = 'query' THEN q.query_key END AS query_key,
-       CASE WHEN $4 = 'query' THEN left(q.query_text, 4000) END AS query_text,
+       CASE WHEN $4 = 'query' THEN left(q.query_text, 4000) END AS "query_text@stmt",
        sum(q.executions) AS executions,
        round(sum(q.executions) / greatest(extract(epoch FROM $3::timestamptz - $2::timestamptz) / 60, 1)::numeric, 2) AS executions_per_min,
        sum(q.cpu_ms) AS cpu_ms, sum(q.cpu_ms) / nullif(sum(q.executions), 0) AS avg_cpu_ms,

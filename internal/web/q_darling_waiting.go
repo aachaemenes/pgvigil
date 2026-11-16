@@ -56,9 +56,9 @@ func (s *Server) Waiting(w http.ResponseWriter, r *http.Request) {
 	own := r.URL.Query().Get("own") == "1"
 	s.multiPart(w, r, []part{
 		{"snapshots", `SELECT * FROM pgvigil.mssql_waiting_snapshots($1, $2, $3)`, []any{id, from, to}},
-		{"tasks", `SELECT * FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide`, []any{id, at, wait, own}},
+		{"tasks", `SELECT * FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide /* text: statement=stmt */`, []any{id, at, wait, own}},
 		{"bytype", `SELECT * FROM pgvigil.mssql_waiting_by_type($1, $2, $3, $4)`, []any{id, from, to, own}},
-		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide`, []any{id, at, wait, own}},
+		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide /* text: query=stmt */`, []any{id, at, wait, own}},
 		{"pgbytype", `SELECT * FROM pgvigil.pg_waiting_by_type($1, $2, $3, $4)`, []any{id, from, to, own}},
 		// own_hidden: the tasks / backends the default hid; the read's own tasks in all (the tiles' 'includes n of
 		// pgvigil's own'); since: when the repository began to mark them (a read before it marks none)

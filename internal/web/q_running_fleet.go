@@ -44,11 +44,11 @@ import (
 
 // sqlRunningFleet: both engines in one read, the instances with the most blocked sessions first.
 const sqlRunningFleet = `
-SELECT i.instance_id, i.name AS instance, i.engine, a.snapshot_at,
+SELECT i.instance_id AS "instance_id@inst", i.name AS instance, i.engine, a.snapshot_at,
        extract(epoch FROM now() - a.snapshot_at)::bigint AS age_secs,
        a.total::bigint AS sessions, a.active::bigint AS active, a.idle_in_txn::bigint AS idle_in_txn,
        x.blocked::bigint AS blocked, h.heads::bigint AS heads, x.longest_wait_secs::bigint AS longest_wait_secs,
-       l.secs::bigint AS longest_stmt_secs, l.session AS longest_stmt_session, l.statement AS longest_stmt,
+       l.secs::bigint AS longest_stmt_secs, l.session AS longest_stmt_session, l.statement AS "longest_stmt@stmt",
        x.oldest_txn_secs::bigint AS oldest_txn_secs,
        NULL::bigint AS max_grant_kb, NULL::bigint AS sum_grant_kb, NULL::bigint AS tempdb_waits, NULL::bigint AS tempdb_wait_ms,
        NULL::bigint AS tempdb_alloc_waits, NULL::bigint AS tempdb_alloc_wait_ms

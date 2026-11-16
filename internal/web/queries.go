@@ -103,7 +103,7 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
        extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
        extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,
        extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
-       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query
+       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query AS "query@stmt"
   FROM pgvigil.activity_sample s
   LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
  WHERE s.instance_id = $1 AND s.snapshot_at = $2
@@ -312,8 +312,8 @@ SELECT kind, count(*) AS events, max(snapshot_at) AS last_at
 // sqlLogEvents are the window's log events ($4 = one kind or NULL), newest first; the checkpoint lines (two per
 // checkpoint, 0079) only on their own sub-tab, so 'all' keeps its 1000 rows for the events.
 const sqlLogEvents = `
-SELECT snapshot_at AS at, kind, pid, datname, usename, client, duration_ms,
-       left(statement, 2000) AS statement, left(detail, 1000) AS detail, source
+SELECT snapshot_at AS at, kind AS "kind@logkind", pid, datname, usename, client, duration_ms,
+       left(statement, 2000) AS "statement@stmt", left(detail, 1000) AS "detail@logdetail", source
   FROM pgvigil.log_events
  WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
    AND (kind = $4 OR ($4::text IS NULL AND kind <> 'checkpoint'))
@@ -395,8 +395,8 @@ SELECT d.datname, d.user_tables, d.never_vacuumed, d.never_analyzed, d.big_table
 
 // sqlFindings lists the findings of every instance ($1 NULL) or one, the most severe first.
 const sqlFindings = `
-SELECT f.instance_id, i.name AS instance, i.platform, f.severity, f.setting, f.value, f.is_set, f.suggested, f.platforms,
-       f.detail, f.source, f.at, f.alert_first_sent, f.alert_last_sent, f.alert_sends, f.alert_channels
+SELECT f.instance_id AS "instance_id@inst", i.name AS instance, i.platform, f.severity, f.setting AS "setting@fcheck", f.value AS "value@fvalue", f.is_set, f.suggested, f.platforms,
+       f.detail AS "detail@fdetail", f.source, f.at, f.alert_first_sent, f.alert_last_sent, f.alert_sends, f.alert_channels
   FROM pgvigil.findings_alerts f JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND ($1::int IS NULL OR f.instance_id = $1)
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, i.name, f.setting`

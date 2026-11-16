@@ -90,7 +90,7 @@ const sqlWaitsQueries = sqlWaitsBase + `
    GROUP BY queryid, qh
 )
 SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
-       left(coalesce(st.query, qt.query), 2000) AS query
+       left(coalesce(st.query, qt.query), 2000) AS "query@stmt"
   FROM q
   LEFT JOIN pgvigil.statement_text st ON st.instance_id = $1 AND st.queryid = q.queryid AND q.queryid <> 0
   LEFT JOIN pgvigil.query_text qt ON qt.query_hash = q.query_hash
@@ -115,7 +115,7 @@ SELECT c.status, c.note, c.snapshot_at
 // sqlWaitsLockTree: the blocking tree of the newest activity snapshot at or before the window's end.
 const sqlWaitsLockTree = `
 SELECT l.snapshot_at, l.top_blocker, l.level, l.pid, l.blocked_by, l.blocked, l.state, l.wait, l.xact_start, l.query_start,
-       l.state_change, l.datname, l.usename, l.application_name, left(qt.query, 1000) AS query
+       l.state_change, l.datname, l.usename, l.application_name, left(qt.query, 1000) AS "query@stmt"
   FROM pgvigil.lock_tree($1, $2) l
   LEFT JOIN pgvigil.query_text qt ON qt.query_hash = l.query_hash
  ORDER BY l.top_blocker, l.path`
