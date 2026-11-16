@@ -182,7 +182,11 @@ psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $PGDB" >/dev/null
 PGDSN="$ADMIN_DSN"; PGDSN="${PGDSN/dbname=postgres/dbname=$PGDB}"; [[ "$PGDSN" == *"dbname=$PGDB"* ]] || PGDSN="$PGDSN dbname=$PGDB"
 CFGD=$TMPD/etc; mkdir -p "$CFGD"
 export PGV_FILE_DSN="host=127.0.0.1 port=$PA user=postgres password=$PG_PW dbname=postgres"
-export PGV_COL_DSN="host=127.0.0.1 port=5432 user=$COL password=$COL_PW dbname=$PGDB"
+# the collector's login on the server ADMIN_DSN names (its database and roles are made there; a driver's own PostgreSQL
+# may listen on another port than 5432)
+dsnkey() { sed -n "s/.*\b$1=\([^ ]*\).*/\1/p" <<<"$ADMIN_DSN" | head -1; }
+ADM_HOST=$(dsnkey host); ADM_PORT=$(dsnkey port)
+export PGV_COL_DSN="host=${ADM_HOST:-127.0.0.1} port=${ADM_PORT:-5432} user=$COL password=$COL_PW dbname=$PGDB"
 cat > "$CFGD/pgvigil.yaml" <<EOF
 repository:
   dsn: "$PGDSN"
@@ -637,7 +641,7 @@ echo "ok   L: on -no-login the page lists the instances read only: the note 'Rea
 # L2: the actions door's audit login off: serve on the UI's read-only repository login (docs/app.md), the UI login on
 # (the walk signs in by fetch, then loads the page anew: a hash change alone does not redraw the sign-in form)
 printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_reader, pgvigil_auth;\n" "$RDL" "$RDL_PW" | psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 >/dev/null || fail "L2: the read-only login"
-export PGV_RD_DSN="host=127.0.0.1 port=5432 user=$RDL password=$RDL_PW dbname=$PGDB"
+export PGV_RD_DSN="host=${ADM_HOST:-127.0.0.1} port=${ADM_PORT:-5432} user=$RDL password=$RDL_PW dbname=$PGDB"
 sed "s|dsn: \"$PGDSN\"|dsn: env:PGV_RD_DSN|" "$CFGD/pgvigil.yaml" > "$CFGD/reader.yaml"
 PORTR=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); UR="http://127.0.0.1:$PORTR"
 (umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/reader.yaml" -listen "127.0.0.1:$PORTR") >"$TMPD/serve-rd.log" 2>&1 & SRVRPID=$!
