@@ -39,6 +39,7 @@ func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config
 	lock := newPageLease(cfg.Repository.DSN(), log)
 	defer lock.release()
 	go lock.keep(ctx)
+	go blockHourly(ctx, log, r) // the blocking rollup's hourly call, every engine (migration 0165)
 	s := newScheduler(log, oldLoopsWait, func(ictx context.Context, in config.Instance, wg *sync.WaitGroup) int {
 		return startInstance(ictx, log, r, cfg, in, wg)
 	})

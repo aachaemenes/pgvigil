@@ -227,6 +227,58 @@ async function openHead(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel
   }
 }
 
+// chainTimeline (the chains of the range, Power BI's blocking timeline): one bar per chain - a head and its transaction,
+// from its first to its last snapshot - coloured by its longest wait as 'a blocking chain' judges one (over 5 min
+// critical, over 30 s warning), the head's login, program and statement in its title and in the grid under it
+const chainCols: Col[] = [
+  { key: 'head_session_id', label: 'head session', num: true, fmt: v => String(v ?? '') },
+  { key: 'first_at', label: 'first seen', fmt: fmtTime }, { key: 'last_at', label: 'last seen', fmt: fmtTime },
+  { key: 'snapshots', num: true }, { key: 'longest_wait_ms', label: 'longest wait', num: true, fmt: secs },
+  // the bar's colour as a word: the band 'a blocking chain' judges its longest wait in
+  { key: 'band', label: 'as a blocking chain', fmt: v => v === 'crit' ? badge('critical', 'crit') : v === 'warn' ? badge('warning', 'warn') : '' },
+  { key: 'victims_max', label: 'most victims', num: true },
+  { key: 'head_login', label: 'head login' }, { key: 'head_program', label: 'head program' }, { key: 'head_database', label: 'database' },
+  { key: 'statement', label: 'head statement (its last)', wide: true, fmt: v => text(v) },
+];
+// the band of a chain's longest wait as 'a blocking chain' judges one (over 5 min critical, over 30 s warning)
+const chainBand = (ms: number) => ms > 300000 ? 'crit' : ms > 30000 ? 'warn' : 'none';
+function chainTimeline(rows: Row[], from: string, to: string): Element {
+  // a time axis on top (five ticks), then one bar per chain; drawn at the page's width (the viewBox scales with it, the
+  // bars keep their height whatever their number) inside a box that scrolls past 24rem
+  const t0 = Date.parse(from), t1 = Date.parse(to), W = 800, H = 14, G = 4, A = 22, ns = 'http://www.w3.org/2000/svg';
+  const x = (t: number) => Math.max(0, Math.min(W, (t - t0) / Math.max(1, t1 - t0) * W));
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'chain-timeline');
+  svg.setAttribute('viewBox', `0 0 ${W} ${A + rows.length * (H + G) + G}`);
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', `${rows.length} blocking chain(s) over the range, one bar each from its first to its last snapshot; the grid below lists them`);
+  for (let k = 0; k <= 4; k++) {
+    const tx = k * W / 4, at = new Date(t0 + (t1 - t0) * k / 4).toISOString();
+    const tick = document.createElementNS(ns, 'line');
+    tick.setAttribute('class', 'chain-tick');
+    tick.setAttribute('x1', String(tx)); tick.setAttribute('x2', String(tx)); tick.setAttribute('y1', String(A - 6)); tick.setAttribute('y2', String(A + rows.length * (H + G)));
+    const label = document.createElementNS(ns, 'text');
+    label.setAttribute('class', 'chain-tick-label');
+    label.setAttribute('x', String(tx)); label.setAttribute('y', String(A - 9));
+    label.setAttribute('text-anchor', k === 0 ? 'start' : k === 4 ? 'end' : 'middle');
+    label.textContent = fmtTime(at);
+    svg.append(tick, label);
+  }
+  rows.forEach((r, i) => {
+    const a = x(Date.parse(String(r.first_at))), b = x(Date.parse(String(r.last_at)));
+    const bar = document.createElementNS(ns, 'rect');
+    bar.setAttribute('class', `chain-bar ${chainBand(Number(r.longest_wait_ms ?? 0))}`);
+    bar.setAttribute('x', String(a)); bar.setAttribute('y', String(A + G + i * (H + G)));
+    bar.setAttribute('width', String(Math.max(3, b - a))); bar.setAttribute('height', String(H));
+    const title = document.createElementNS(ns, 'title');
+    title.textContent = `session ${String(r.head_session_id)}: login ${String(r.head_login ?? '?')}, program ${String(r.head_program ?? '?')}, `
+      + `the longest wait ${secs(r.longest_wait_ms)}; ${text(r.statement).slice(0, 200)}`;
+    bar.append(title);
+    svg.append(bar);
+  });
+  return el('div', { class: 'chain-scroll' }, svg as unknown as HTMLElement);
+}
+
 export async function mssqlBlocked(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Blocked reports (${rangeLabel(ctx)})`));
   try {
@@ -251,6 +303,14 @@ export async function mssqlBlocked(ctx: Ctx): Promise<HTMLElement> {
       { key: 'first_at', label: 'first report', fmt: fmtTime }, { key: 'last_at', label: 'last report', fmt: fmtTime },
     ];
     sec.append(grid(rows, cols, 'No blocked-process report in this window.'), panel.box);
+    // the chains of the range from the minute snapshots (every edition, no threshold needed)
+    const w = window_(ctx);
+    const chains = rowsOf((await get<Record<string, Table | null>>('blocking/history', { instance: ctx.instance, ...w, part: 'chains' })).chains)
+      .map(r => ({ ...r, band: chainBand(Number(r.longest_wait_ms ?? 0)) }));
+    sec.append(el('h3', {}, 'Chains over the range'),
+      el('p', { class: 'meta' }, 'One bar per blocking chain the Running queries snapshots saw: a head session and its transaction, from its first to its last snapshot, '
+        + 'red where its longest wait passed 5 minutes, amber past 30 seconds (as the finding \'a blocking chain\' judges). A chain shorter than a minute can fall between two snapshots.'),
+      chains.length ? chainTimeline(chains, w.from, w.to) : '', grid(chains, chainCols, 'No snapshot of this window saw a blocking chain.'));
     sec.append(el('h3', {}, 'Findings over the range'),
       el('p', { class: 'meta' }, 'sp_HumanEventsBlockViewer\'s findings (Erik Darling, MIT), made from the stored reports with its rules: '
         + 'each report counts as its blocked side and its blocking side, and a count is of blocked transactions. '

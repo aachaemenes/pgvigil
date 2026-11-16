@@ -69,6 +69,33 @@ range's activity samples of the instance once (the sample tables carry no index;
 The deadlocks come from the Extended Events reader (docs/sqlserver-xe.md): pgvigil's own deadlock session where the
 DBA created it, else system_health.
 
+## Counted in waits (both engines)
+
+The health calendar, the live chips and the hour finding count **waits**, not reports or samples (PerformanceMonitor
+3.13's rule, as DBA Dash and PerformanceMonitor count): a wait is one blocked session behind one blocking session over
+one stretch of time. SQL Server writes a blocked-process report every threshold seconds while a session stays blocked,
+so one 65 s wait at the 5 s threshold is one wait, not about 12. A report belongs to its pair's current wait when its
+start (the report's time less its wait) is within 2 s of the previous report's start; a session blocked by itself is
+no wait. An hour with no report at all (the capture stopped, or never installed) is read from the blocked rows of the
+minute requests snapshots by the same rule. PostgreSQL: a session's Lock waits under one statement in the activity
+samples, split where the samples leave a gap longer than two sample intervals. The calendar's unit is 'waits/hr';
+days before this change may show a different colour, since they were counted in reports.
+
+| Finding | Severity |
+|---|---|
+| blocking events in the last hour: 3 or more waits with the longest 15 s or more, or one of 60 s or more (SQL Server and PostgreSQL); held while 'a blocking chain' stands for the instance | warning |
+| blocking at 3x this hour's usual: one of the last 4 hours at 3 times the mean of the same weekday and hour over the last 4 weeks, 5 waits at least; with under 4 weeks of that hour's history it fires on the floor alone and says 'no usual yet' | warning |
+| deadlocks at 3x this hour's usual: the same, 3 deadlocks at least | warning |
+| PostgreSQL: a deadlock between a new pair of statements (the two statements of the log's DETAIL, not seen together in the 30 days before) | warning |
+| PostgreSQL: deadlocks in the last hour (5 or more, from the log) | warning |
+
+The usual comes from an hourly rollup (`mssql_block_hourly`: waits and deadlocks per instance and finished hour,
+written once, at most 7 days back from an instance's first sight): a store kept under 28 days rides on the floor alone.
+
+A deadlock whose every victim ran under the collector's own application name (read with `SELECT APP_NAME()` and stored
+in `mssql_monitor_app`) was pgvigil's read losing, not the workload's: it stays stored and drawn on the Deadlocks page
+and leaves the counts (the finding, the calendar, the live chips). One with a user's session among its victims counts.
+
 ## API
 
 `GET /api/blocking/history?instance=<id>[&from=&to=][&part=]`, read only. The window is cut to its newest seven days

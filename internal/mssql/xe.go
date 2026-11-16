@@ -16,6 +16,9 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
+// driverDefaultApp is the application name go-mssqldb gives a connection whose string names none (msdsn: "go-mssqldb")
+const driverDefaultApp = "go-mssqldb"
+
 // mssql_xe: Extended Events, read where a DBA installed the sessions and reported as "not installed" where not.
 //
 // pgvigil's read login never creates, alters, starts, stops or drops an event session. XEScript writes the DDL of
@@ -537,6 +540,18 @@ func (xeCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, op
 	var tail []collect.Row // state rows and source errors: one last import
 	fail := func(source string, err error) {
 		tail = append(tail, collect.Row{"kind": "collector_error", "source": source, "message": err.Error()})
+	}
+	// the application name this connection runs under, as SQL Server writes it into a deadlock's victim list: a
+	// deadlock whose every victim ran under it was the monitor's own read losing (stored, left out of the counts). The
+	// driver's default name (a connection string naming none, as an odbc: one: go-mssqldb's msdsn) is shared by every
+	// program on that driver: sent empty, so the repository keeps no name and no deadlock leaves the counts by it
+	var app sql.NullString
+	if err := conn.QueryRowContext(ctx, "SELECT APP_NAME()").Scan(&app); err == nil && app.Valid && app.String != "" {
+		name := app.String
+		if name == driverDefaultApp {
+			name = ""
+		}
+		tail = append(tail, collect.Row{"kind": "monitor_app", "app_name": name})
 	}
 	for _, capture := range xeCaptures {
 		s := xePick(sessions, capture)
