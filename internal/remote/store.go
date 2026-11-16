@@ -10,7 +10,11 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
+	"github.com/aachaemenes/pgvigil/internal/store"
 )
+
+// the remote store is a whole store.Store: every collector entry point takes it as it takes the repository
+var _ store.Store = (*Store)(nil)
 
 // StoreOptions are what a remote collector's store needs beside its state.
 type StoreOptions struct {
