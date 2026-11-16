@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Proof of pgvigil on macOS (GitHub's macos-15 = Apple silicon and macos-15-intel = x86_64 runners, or a Mac by hand):
 # the binary built from this tree, PostgreSQL 18 from Homebrew as both the repository and one monitored instance,
 # install, the collections, serve, every page's API read, the UI in the machine's Google Chrome, the collector under
@@ -6,8 +6,10 @@
 # is made here for this run. Run from the tree's root: scripts/proof-macos.sh [<shots folder>]
 #
 # Needs: go (the tree's go.mod), Homebrew, python3, curl, node 22+ (the UI walk; none = that row is NOT PROVEN), sudo
-# without a password (install, launchd, uninstall: a GitHub runner has it). Leaves nothing: the PostgreSQL data folder,
-# the LaunchDaemon and the installed files are removed on every exit.
+# without a password (install, launchd, uninstall: a GitHub runner has it). Refuses a Mac where pgvigil is installed
+# (/usr/local/bin/pgvigil or /usr/local/etc/pgvigil present: M8 removes both). Leaves nothing of its own: the PostgreSQL
+# data folder, the LaunchDaemon and the installed files are removed on every exit, and postgresql@18 too when this run
+# installed it.
 #
 # Expected (written before the first run, 2026-11-15):
 #   M1 build    CGO_ENABLED=0 go build -trimpath: a Mach-O binary of this machine's CPU; 'pgvigil version' says darwin
@@ -16,9 +18,10 @@
 #   M3 install  'sudo pgvigil install' as cmd/pgvigil/service_other.go does it: /usr/local/bin/pgvigil (this build's
 #               sha256) and /usr/local/etc/pgvigil/pgvigil.yaml (0640), the line 'no service manager is wired on this
 #               system', exit 0; then the installed binary: migrate (twice: nothing to apply the second time), a UI user
-#   M4 collect  the cluster as one instance through a pg_monitor login (a generated password): 'collect' once, then
-#               'run' for 4 minutes; every collection's last status ok or skipped (each skip with its note printed),
-#               NO error, at least 20 ok
+#   M4 collect  the cluster as one instance through a pg_monitor login (a generated password): 'collect -once instance',
+#               then 'run' for 4 minutes; every collection's last status ok or skipped (each skip with its note printed),
+#               NO error (an error is this run's finding, never allowed as 'one a single local node cannot have'), at
+#               least 20 ok
 #   M5 serve    'serve' on loopback, the UI login 200; every GET route of internal/web without a path parameter, with
 #               ?instance=<the instance>: no 5xx and none unanswered, every body that says application/json parses (any
 #               other answer listed: a 4xx of a route needing another parameter, a SQL Server download's XML);
@@ -29,7 +32,10 @@
 #               'pgvigil run' as this user: launchctl says running, a collection round lands newer than before it,
 #               booted out and gone
 #   M8 remove   'sudo pgvigil uninstall -purge': the binary and the config folder gone; the cluster stopped and removed
-# NOT PROVEN here: SQL Server targets from a Mac (no Docker on the runners, no lab); a long run (minutes, not days); a
+#               (-drop-repository goes with -all only, documented for Linux and Windows: the repository goes with the
+#               cluster)
+# NOT PROVEN here: SQL Server targets from a Mac (no SQL Server reachable from the runner: no Docker on GitHub's macOS
+# runners); a long run (minutes, not days); the accessibility and click checks of the pages (M6 renders and reads); a
 # launchd service shipped by pgvigil (none: README, the binary and the config template only); Gatekeeper and
 # notarization of a downloaded release asset (the binary is built here, never quarantined); the release's own
 # cross-compiled darwin assets (a native CGO_ENABLED=0 build of the same tree); macOS 14 and 26; 'serve -open' on a
@@ -40,9 +46,10 @@ SHOTS=${1:-}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 [ "$(uname -s)" = Darwin ] || fail "not macOS ($(uname -s))"
+for f in /usr/local/bin/pgvigil /usr/local/etc/pgvigil; do [ ! -e "$f" ] || fail "$f exists: pgvigil is installed on this Mac, and M8 would remove it"; done
 for t in go brew python3 curl shasum; do command -v "$t" >/dev/null || fail "needs $t"; done
 W=$(mktemp -d "${TMPDIR:-/tmp}/pgvmac.XXXXXX"); PLIST=/Library/LaunchDaemons/com.pgvigil.proof.plist
-SRV=; RUNP=; PGD=; CHR=; INSTALLED=
+SRV=; RUNP=; PGD=; CHR=; INSTALLED=; BREWED=
 cleanup() {
   [ -n "$CHR" ] && kill "$CHR" 2>/dev/null || true
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null || true
@@ -50,6 +57,7 @@ cleanup() {
   if [ -e "$PLIST" ]; then sudo launchctl bootout system/com.pgvigil.proof 2>/dev/null || true; sudo rm -f "$PLIST"; fi
   [ -n "$INSTALLED" ] && [ -e /usr/local/bin/pgvigil ] && { sudo /usr/local/bin/pgvigil uninstall -purge >/dev/null 2>&1 || true; }
   [ -n "$PGD" ] && { "$PGBIN/pg_ctl" -D "$PGD" -m immediate stop >/dev/null 2>&1 || true; }
+  [ -n "$BREWED" ] && { HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall postgresql@18 >/dev/null 2>&1 || true; }
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -57,7 +65,7 @@ gen() { python3 -c 'import secrets; print("Pv9" + secrets.token_hex(12))'; }
 mask() { [ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::$1" || true; }
 freeport() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 
-echo "== M1. build ($(uname -m), macOS $(sw_vers -productVersion))"
+echo "== M1. build ($(uname -m), macOS $(sw_vers -productVersion), bash $BASH_VERSION)"
 CGO_ENABLED=0 go build -trimpath -o "$W/pgvigil" ./cmd/pgvigil || fail "M1: go build"
 ARCH=$(uname -m); FILE=$(file -b "$W/pgvigil")
 case $ARCH:$FILE in arm64:*"Mach-O 64-bit executable arm64"* | x86_64:*"Mach-O 64-bit executable x86_64"*) ;; *) fail "M1: $ARCH, but the binary is: $FILE" ;; esac
@@ -67,7 +75,16 @@ SHA=$(shasum -a 256 "$W/pgvigil" | cut -c1-64)
 ok "M1: $FILE; $VER; sha256 $SHA"
 
 echo "== M2. PostgreSQL 18 from Homebrew"
-brew list postgresql@18 >/dev/null 2>&1 || HOMEBREW_NO_AUTO_UPDATE=1 brew install postgresql@18 >"$W/brew.log" 2>&1 || { tail -20 "$W/brew.log"; fail "M2: brew install postgresql@18"; }
+if ! brew list postgresql@18 >/dev/null 2>&1; then
+  BF=; [ "$(uname -m)" = x86_64 ] && BF=--force-bottle   # Intel macOS is Homebrew's Tier 3: a bottle or nothing, never a source build
+  if ! HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew install $BF postgresql@18 >"$W/brew.log" 2>&1; then
+    tail -20 "$W/brew.log"
+    [ -n "$BF" ] && { echo "NOT PROVEN: M2-M8 on $(uname -m): Homebrew has no bottle of postgresql@18 here (a source build is not this proof's)"; exit 2; }
+    fail "M2: brew install postgresql@18"
+  fi
+  BREWED=1
+  grep -q 'Pouring' "$W/brew.log" && BREW="poured a bottle" || BREW="built (no bottle poured)"
+else BREW="already installed"; fi
 PGBIN="$(brew --prefix postgresql@18)/bin"; export PATH="$PGBIN:$PATH"
 PGV=$("$PGBIN/postgres" --version)
 SUPW=$(gen); mask "$SUPW"; printf '%s\n' "$SUPW" > "$W/supw"; chmod 600 "$W/supw"
@@ -77,7 +94,7 @@ PGD=$W/pgdata; PGPORT_=$(freeport)
 export PGPASSWORD="$SUPW"
 ADMIN="host=127.0.0.1 port=$PGPORT_ user=postgres dbname=postgres"
 psql "$ADMIN" -XAtqc "CREATE EXTENSION pg_stat_statements" >/dev/null
-ok "M2: $PGV on 127.0.0.1:$PGPORT_ ($(psql "$ADMIN" -XAtc 'show server_version'))"
+ok "M2: $PGV ($BREW) on 127.0.0.1:$PGPORT_ ($(psql "$ADMIN" -XAtc 'show server_version'))"
 
 echo "== M3. install, migrate, a UI user"
 # shellcheck disable=SC2024 # the output goes to this run's own file, written as this user
@@ -97,24 +114,27 @@ CFG=$W/pgvigil.yaml
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: mac-pg\n    dsn: env:PGVIGIL_MAC_DSN\n    tags: [macos]\n' > "$CFG"; chmod 600 "$CFG"
 "$BIN" migrate -config "$CFG" >"$W/migrate1.out" 2>&1 || { tail -20 "$W/migrate1.out"; fail "M3: migrate"; }
 "$BIN" migrate -config "$CFG" >"$W/migrate2.out" 2>&1 || { tail -20 "$W/migrate2.out"; fail "M3: the second migrate"; }
+grep -q 'applied=0' "$W/migrate2.out" || { tail -5 "$W/migrate2.out"; fail "M3: the second migrate applied something (want applied=0)"; }
 UIPW=$(gen); mask "$UIPW"
 PGVIGIL_PASSWORD="$UIPW" "$BIN" user add -config "$CFG" proofmac >/dev/null 2>&1 || fail "M3: user add"
 q() { psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 ok "M3: installed (/usr/local/bin/pgvigil = this build, the template 0640, 'no service manager is wired'); migrated twice; UI user proofmac"
 
 echo "== M4. the collections"
-"$BIN" collect -config "$CFG" >"$W/collect.out" 2>&1 || { tail -30 "$W/collect.out"; fail "M4: collect"; }
+"$BIN" collect -config "$CFG" -once instance >"$W/collect.out" 2>&1 || { tail -30 "$W/collect.out"; fail "M4: collect -once instance"; }
 IID=$(q "SELECT instance_id FROM pgvigil.instances WHERE name = 'mac-pg'")
 [ -n "$IID" ] || fail "M4: no instance row for mac-pg"
 "$BIN" run -config "$CFG" >"$W/run.out" 2>&1 & RUNP=$!
 sleep 240
 kill "$RUNP" 2>/dev/null || true; wait "$RUNP" 2>/dev/null || true; RUNP=
-q "SELECT collection || '|' || status || '|' || coalesce(note, '') FROM pgvigil.collection_dates WHERE instance_id = $IID ORDER BY collection" > "$W/status.txt"
-NOK=$(grep -c '|ok|' "$W/status.txt" || true); NSK=$(grep -c '|skipped|' "$W/status.txt" || true)
-grep '|skipped|' "$W/status.txt" | sed 's/^/  skipped: /' || true
-if grep -vE '\|(ok|skipped)\|' "$W/status.txt" | grep -q .; then grep -vE '\|(ok|skipped)\|' "$W/status.txt" | sed 's/^/  NOT ok: /'; fail "M4: a collection ended other than ok or skipped (above)"; fi
+st() { q "SELECT collection || ': ' || replace(replace(coalesce(note, ''), E'\\n', ' '), E'\\r', ' ') FROM pgvigil.collection_dates WHERE instance_id = $IID AND $1 ORDER BY collection"; }
+NOK=$(q "SELECT count(*) FROM pgvigil.collection_dates WHERE instance_id = $IID AND status = 'ok'")
+NSK=$(q "SELECT count(*) FROM pgvigil.collection_dates WHERE instance_id = $IID AND status = 'skipped'")
+st "status = 'skipped'" | sed 's/^/  skipped: /'
+NBAD=$(q "SELECT count(*) FROM pgvigil.collection_dates WHERE instance_id = $IID AND status NOT IN ('ok', 'skipped')")
+if [ "$NBAD" != 0 ]; then q "SELECT collection || ' ' || status || ': ' || replace(coalesce(note, ''), E'\\n', ' ') FROM pgvigil.collection_dates WHERE instance_id = $IID AND status NOT IN ('ok', 'skipped') ORDER BY collection" | sed 's/^/  NOT ok: /'; fail "M4: $NBAD collection(s) ended other than ok or skipped (the 'NOT ok' lines)"; fi
 [ "$NOK" -ge 20 ] || fail "M4: only $NOK collections ok"
-ok "M4: $NOK collections ok, $NSK skipped (each above with its note), none in error ($(wc -l < "$W/status.txt" | tr -d ' ') read)"
+ok "M4: $NOK collections ok, $NSK skipped (each with its note in a 'skipped' line), none in error"
 
 echo "== M5. serve, every page's API read, the report"
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
@@ -132,9 +152,9 @@ while read -r r; do
   if [ "$ct" = application/json ]; then j=$(python3 -c 'import json, sys; json.load(open(sys.argv[1])); print("json")' "$W/body" 2>/dev/null || echo "BAD-json"); else j=$ct; fi
   echo "$c $j $r" >> "$W/api.txt"
 done < "$W/routes.txt"
-awk '{print $1}' "$W/api.txt" | sort | uniq -c | sed 's/^/  status /'
-if grep -E '^(5[0-9][0-9]|000) ' "$W/api.txt"; then fail "M5: a route answered 5xx or nothing (above)"; fi
-if grep -E ' BAD-json ' "$W/api.txt"; then fail "M5: a body that says application/json does not parse (above)"; fi
+awk '{print $1}' "$W/api.txt" | sort | uniq -c | awk '{print "  status: " $2 " x " $1}'
+if grep -qE '^(5[0-9][0-9]|000) ' "$W/api.txt"; then grep -E '^(5[0-9][0-9]|000) ' "$W/api.txt" | sed 's/^/  5xx: /'; fail "M5: a route answered 5xx or nothing (the '5xx' lines)"; fi
+if grep -q ' BAD-json ' "$W/api.txt"; then grep ' BAD-json ' "$W/api.txt" | sed 's/^/  bad json: /'; fail "M5: a body that says application/json does not parse (the 'bad json' lines)"; fi
 grep -vE '^200 json ' "$W/api.txt" | sed 's/^/  not 200 json: /' || true
 (cd "$W" && "$BIN" report -config "$CFG" -out "$W/report.zip" >/dev/null 2>&1) || fail "M5: report"
 RMODE=$(stat -f '%Lp' "$W/report.zip"); [ "$RMODE" = 600 ] || fail "M5: the report zip's mode $RMODE (want 600)"
@@ -151,6 +171,7 @@ else
   mkdir -p "${SHOTS:-$W/shots}"
   cat > "$W/walk.mjs" <<'JS'
 const [port, U, iid, shots] = process.argv.slice(2);
+setTimeout(() => { console.log('walk timed out (10 min)'); process.exit(4); }, 600000).unref();
 const fs = await import('node:fs');
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
@@ -176,7 +197,7 @@ for (const p of pages) {
   await cmd('Page.navigate', { url: U + p }); const r = await settled();
   const errs = await ev(`document.querySelectorAll('main .error:not([role=status])').length`);
   const off = api.filter(([s]) => s < 200 || s > 299);
-  if (!r || errs > 0 || off.length) { bad++; console.log(`page ${p} rendered=${r} errors=${errs} api-off=${JSON.stringify(off.slice(0, 3))}`); }
+  if (!r || errs > 0 || off.length) { bad++; console.log(`  page: ${p} rendered=${r} errors=${errs} api-off=${JSON.stringify(off.slice(0, 3))}`); }
 }
 for (const theme of ['light', 'dark']) {
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
@@ -216,19 +237,26 @@ printf 'repository:\n  dsn: "%s"\ninstances:\n  - name: mac-pg\n    dsn: "%s"\n 
 plutil -lint "$W/plist" >/dev/null || fail "M7: the plist does not lint"
 sudo cp "$W/plist" "$PLIST"; sudo chown root:wheel "$PLIST"; sudo chmod 644 "$PLIST"
 sudo launchctl bootstrap system "$PLIST" || fail "M7: launchctl bootstrap"
-STATE=; NEWER=
+STATE=; NEWER=; DPID=; DUSER=
 for _ in $(seq 1 36); do
   sleep 5
-  STATE=$(sudo launchctl print system/com.pgvigil.proof 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -1)
+  # shellcheck disable=SC2024 # the output goes to this run's own file, written as this user
+  sudo launchctl print system/com.pgvigil.proof > "$W/lprint.txt" 2>/dev/null || true
+  STATE=$(sed -n 's/^[[:space:]]*state = //p' "$W/lprint.txt" | head -1)
+  DPID=$(sed -n 's/^[[:space:]]*pid = //p' "$W/lprint.txt" | head -1)
   NEWER=$(q "SELECT count(*) FROM pgvigil.collection_dates WHERE instance_id = $IID AND snapshot_at > '$B4'::timestamptz")
-  [ "$STATE" = running ] && [ "${NEWER:-0}" -ge 1 ] && break
+  [ "$STATE" = running ] && [ -n "$DPID" ] && [ "${NEWER:-0}" -ge 1 ] && break
 done
 [ "$STATE" = running ] || { tail -20 "$W/launchd.log" 2>/dev/null; fail "M7: launchd state '$STATE' (want running)"; }
 [ "${NEWER:-0}" -ge 1 ] || { tail -20 "$W/launchd.log" 2>/dev/null; fail "M7: no collection newer than $B4 under launchd"; }
-sudo launchctl bootout system/com.pgvigil.proof || fail "M7: launchctl bootout"
-sudo rm -f "$PLIST"; sleep 2
-! sudo launchctl print system/com.pgvigil.proof >/dev/null 2>&1 || fail "M7: the daemon is still loaded after the bootout"
-ok "M7: launchd ran 'pgvigil run' as $(id -un) (state running; $NEWER collection(s) newer than before it); booted out, the plist removed"
+DUSER=$(ps -o user= -p "$DPID" 2>/dev/null | tr -d ' ')
+[ "$DUSER" = "$(id -un)" ] || fail "M7: the daemon's process $DPID runs as '$DUSER' (want $(id -un))"
+sudo launchctl bootout system/com.pgvigil.proof || echo "  launchd: bootout answered $? (a job slow to stop): polled below"
+GONE=
+for _ in $(seq 1 25); do sudo launchctl print system/com.pgvigil.proof >/dev/null 2>&1 || { GONE=1; break; }; sleep 1; done
+[ -n "$GONE" ] || fail "M7: the daemon is still loaded 25 s after the bootout"
+sudo rm -f "$PLIST"
+ok "M7: launchd ran 'pgvigil run' as $DUSER (pid $DPID, state running; $NEWER collection(s) newer than before it); booted out, the plist removed"
 
 echo "== M8. uninstall"
 # shellcheck disable=SC2024 # the output goes to this run's own file, written as this user
@@ -238,5 +266,5 @@ sudo "$BIN" uninstall -purge >"$W/uninstall.out" 2>&1 || { cat "$W/uninstall.out
 INSTALLED=
 "$PGBIN/pg_ctl" -D "$PGD" -m fast stop >/dev/null || fail "M8: pg_ctl stop"; PGD=
 ok "M8: uninstall -purge removed the binary and the config folder; the cluster stopped (its folder goes with this run's)"
-echo "NOT PROVEN (no lab, or nothing to run here): SQL Server targets from a Mac; a long run; a launchd service shipped by pgvigil (none); Gatekeeper and notarization of a downloaded release asset; the release's cross-compiled darwin assets themselves; macOS 14 and 26; serve -open on a desktop; Kerberos; uninstall -all on macOS (documented for Linux and Windows only)"
+echo "NOT PROVEN (nothing to run it against here): SQL Server targets from a Mac (no SQL Server reachable from the runner); a long run; the pages' accessibility and click checks; a launchd service shipped by pgvigil (none); Gatekeeper and notarization of a downloaded release asset; the release's cross-compiled darwin assets themselves; macOS 14 and 26; serve -open on a desktop; Kerberos; uninstall -all on macOS (documented for Linux and Windows only)"
 echo "proof-macos: OK ($ARCH)"

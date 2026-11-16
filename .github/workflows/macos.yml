@@ -49,9 +49,12 @@ jobs:
           {
             echo "### proof-macos on ${{ matrix.os }}"
             echo '```'
-            grep -E '^(== |ok   |  (skipped|status|not 200 json|NOT ok): |NOT PROVEN|FAIL|proof-macos:)' proof-macos.log || echo "no proof lines (the job stopped before the proof)"
+            grep -E '^(== |ok   |  (skipped|status|not 200 json|NOT ok|5xx|bad json|page|launchd): |NOT PROVEN|FAIL|walk timed out|proof-macos:)' proof-macos.log || echo "no proof lines (the job stopped before the proof)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: drop the mask lines from the log (each run's generated passwords)
+        if: always()
+        run: if [ -f proof-macos.log ]; then sed -i '' '/^::add-mask::/d' proof-macos.log; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
