@@ -158,7 +158,7 @@ func (s *Server) slackClick(d *alerts.SlackDoor, c *alerts.SlackClick) {
 		refuse("Your Slack id is not mapped to a pgvigil user (an admin adds it under slack_apps users in pgvigil.yaml).")
 		return
 	}
-	if hash, err := s.auth.lookup(ctx, c.User); err != nil || hash == "" {
+	if hash, _, err := s.auth.lookup(ctx, c.User); err != nil || hash == "" {
 		refuse("The pgvigil user mapped to you is disabled or gone.")
 		return
 	}
