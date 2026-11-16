@@ -1,0 +1,51 @@
+B20-1's WIRING (the lead's router.ts): the Trend page (reports.ts rp_trend) in the Reports tree of the root, a PostgreSQL
+instance and a SQL Server instance, after Table Size; its label beside the instance tabs' report labels.
+Apply on rel-b20 (or the join that holds it): git apply -3 scripts/b20-wiring-router.patch
+
+--- a/web/src/router.ts
++++ b/web/src/router.ts
+@@ -64,7 +64,7 @@
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', pgbackups: 'Base backups', pgstate: 'Server state', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', waiting: 'Waiting backends', pg_deadlocks: 'Deadlocks', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
+   // the instance's Reports folder (reports.ts)
+-  rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
++  rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_trend: 'Trend',
+   customreports: 'Custom reports', community: 'Community tools',
+   drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', pgtemp: 'Temp',
+ };
+@@ -84,7 +84,7 @@
+   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+   { key: 'admin', name: 'Admin', tabs: ['admin_instances', 'admin_applications', 'admin'] },
+   // DBA Dash's Reports folder (reports.ts, task 169) and its Recycle Bin, then the custom reports, community tools and report mail
+-  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
++  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dlcharts', 'rp_deadlocks', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_qscharts', 'rp_qs', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_trend', 'rp_recycle', 'customreports', 'community', 'reportmail'] },
+ ];
+ // rootOnly: the fleet pages a tag folder does not carry (TAGTREE), DBA Dash's rule for its group Reports - what returns
+ // the same result in every folder stays at the root (CustomReports.cs L19-23), its Recycle Bin root only (Main.cs L210):
+@@ -119,7 +119,7 @@
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'pgtemp', 'tables', 'driveperf', 'storage', 'dbinfo', 'dbchanges'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport', 'jobstimeline'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
+-  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
++  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_pwage', 'rp_tables', 'rp_trend', 'customreports', 'community'] },
+ ];
+ // A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
+ // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
+@@ -132,7 +132,7 @@
+   mssqlqueries: 'Queries',
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+   // the instance's Reports folder (reports.ts)
+-  rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
++  rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_trend: 'Trend',
+   customreports: 'Custom reports', community: 'Community tools',
+   drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates',
+ };
+@@ -145,7 +145,7 @@
+   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
+-  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
++  { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'rp_trend', 'customreports', 'community'] },
+ ];
+ export const isMssql = (engine: unknown) => engine === 'sqlserver';
+ export const tabsFor = (engine: unknown) => isMssql(engine) ? mssqlInstanceTabs : instanceTabs;
