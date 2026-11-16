@@ -367,12 +367,13 @@ MSO=$(tm "SELECT pgvigil.import_mssql_indexes_0092($IBIG2, '$T2', ($(big_sql "$I
 BPR=$(pq "SELECT round(avg(pg_column_size(u.*))) FROM pgvigil.mssql_index_usage_read u WHERE u.instance_id = $IBIG AND u.snapshot_at = '$T2'")
 NB=$(pq "SELECT count(*) FROM pgvigil.mssql_index_usage_read u WHERE u.instance_id = $IBIG AND u.snapshot_at = '$T2'")
 # the diagnostic third figure, after the graded figures and their reads (their conditions stay the first run's), never
-# graded: a failure of its own prints in its line and stops nothing (set -e does not reach an if's condition)
+# graded: a failure of its own prints in its line (psql's error on stderr, into the log) and stops nothing (set -e
+# does not reach an if's condition)
 MS164="no import_mssql_indexes_0164 on this tree"
 if [[ "$HAS164" == t ]]; then
-  if pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T1', ($(big_sql "$IBIG3" "$T1" 0)))" >/dev/null 2>&1; then
+  if pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T1', ($(big_sql "$IBIG3" "$T1" 0)))" >/dev/null; then
     s164=$(date +%s%N)
-    if pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T2', ($(big_sql "$IBIG3" "$T2" 1)))" >/dev/null 2>&1; then
+    if pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T2', ($(big_sql "$IBIG3" "$T2" 1)))" >/dev/null; then
       MS164="$(( ($(date +%s%N) - s164) / 1000000 )) ms"
     else MS164="its timed batch failed"; fi
   else MS164="its first batch failed"; fi
