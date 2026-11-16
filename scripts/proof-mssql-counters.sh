@@ -394,9 +394,11 @@ python3 - "$PGDSN" "$SB" "$1" <<'PY' || return 1
 import subprocess, sys
 dsn, sb = sys.argv[1], sys.argv[2]
 q = lambda s: subprocess.run(['psql', dsn, '-XAtq', '-v', 'ON_ERROR_STOP=1', '-F', '|', '-c', s], capture_output=True, text=True, check=True).stdout
-reads = q(f"SELECT snapshot_at, server_utc, extract(epoch FROM server_utc)::text FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 2").split('\n')
+# the interval in SQL, as the import divides by it (extract(epoch FROM p_now - l.server_utc), exact): two absolute
+# epochs near 1.8e9 s subtracted as floats carry about 2e-7 s each, which moved a 0.320 s pair's rate at 12651/s by 0.002
+reads = q(f"SELECT snapshot_at, server_utc, extract(epoch FROM server_utc - lead(server_utc) OVER (ORDER BY snapshot_at DESC))::text FROM pgvigil.mssql_counter_read WHERE instance_id = {sb} AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 2").split('\n')
 (at1, _, e1), (at0, _, e0) = [r.split('|') for r in reads[:2]]
-secs = float(e1) - float(e0)
+secs = float(e1)
 rows = q(f"""SELECT k.series_id, k.kind, s1.value, s1.base, s1.dvalue, s1.dbase, s1.rate, s0.value, s0.base,
                     (SELECT figure FROM pgvigil.mssql_counter_newest({sb}, now() - interval '1 hour', now()) n WHERE n.series_id = k.series_id)
                FROM pgvigil.mssql_counter_series k
