@@ -537,9 +537,16 @@ func (w *Worker) runOne(ctx context.Context, r Request, raw []byte) End {
 }
 
 // endBody is a run's end as import_action_finish (0200) reads it: its state, words, rows, time, the keep and the result.
+// An empty outcome or refusal is left out, so 0200 stores NULL, never an empty string: a reader's coalesce(outcome,
+// refusal) then shows a refusal's words (CQ-LIVEMASK).
 func endBody(end End, took time.Duration, keep string) map[string]any {
-	body := map[string]any{"state": end.State, "outcome": end.Outcome, "refusal": end.Refusal, "rows": end.Rows,
-		"duration_ms": took.Milliseconds(), "keep": keep}
+	body := map[string]any{"state": end.State, "rows": end.Rows, "duration_ms": took.Milliseconds(), "keep": keep}
+	if end.Outcome != "" {
+		body["outcome"] = end.Outcome
+	}
+	if end.Refusal != "" {
+		body["refusal"] = end.Refusal
+	}
 	if end.Result != nil {
 		body["result"] = end.Result
 	}
