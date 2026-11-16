@@ -12,6 +12,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/logparse"
 	"github.com/aachaemenes/pgvigil/internal/plans"
+	"github.com/aachaemenes/pgvigil/internal/textnow"
 )
 
 // The statement-text policy AT READ (TEXT-NOW). An instance's query_text policy (full | normalized | none) is applied
@@ -31,6 +32,9 @@ import (
 //	          detail is gone under normalized); logmsg its message (gone under none)
 //	inst      the row's instance_id (kept when named, dropped when the tag has no name: "@inst")
 //	keep      true on a row that holds no stored statement text (a union's other branch): its columns stay as read
+//	fcheck    a finding's check (its setting or check_name); fdetail, fvalue, ffix its detail, value and fix: for a check
+//	          that quotes a statement (findText), the text from the quote on follows the rule, the words before it stay;
+//	          fsummary the Summary's cell lines ("<check>: <value> - <detail>"), each by its check
 //
 // A reply column is tagged in its SQL by its alias, "<name>@<role>"; reply (web.go) applies the rule to every table
 // it sends and gives each column back its name, so the pages read the same keys. A row with no instance to place it
@@ -298,6 +302,36 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 						row[c.i] = nil
 					}
 				}
+			case "fdetail", "fvalue", "ffix":
+				// a finding's text: only the checks that quote a statement (findText), from the quote on
+				ck, _ := at(row, "fcheck")
+				cks, _ := ck.(string)
+				str, isStr := row[c.i].(string)
+				if !textnow.Listed(cks) || !isStr || pol == "full" {
+					break
+				}
+				switch c.role {
+				case "fdetail":
+					_, row[c.i] = textnow.Finding(cks, "", str, pol)
+				case "fvalue":
+					row[c.i], _ = textnow.Finding(cks, str, "", pol)
+				case "ffix":
+					row[c.i] = tr.stmt(id, known, str)
+				}
+			case "fsummary":
+				// the Summary's cell lines, "<check>: <value> - <detail>" each
+				switch lines := row[c.i].(type) {
+				case []any:
+					for k, l := range lines {
+						if ls, ok := l.(string); ok {
+							lines[k] = textnow.SummaryLine(ls, pol)
+						}
+					}
+				case []string:
+					for k, l := range lines {
+						lines[k] = textnow.SummaryLine(l, pol)
+					}
+				}
 			case "logmsg":
 				if pol == "none" {
 					row[c.i] = nil
@@ -467,3 +501,7 @@ func markText(sql string, t *table) {
 		}
 	}
 }
+
+// TextPolicy is an instance's query_text policy as this server's doors hold it now (serve gives it to the alert sends:
+// alerts.SetTextPolicy).
+func (s *Server) TextPolicy(name string) string { return s.doorsNow().planPolicy(name) }

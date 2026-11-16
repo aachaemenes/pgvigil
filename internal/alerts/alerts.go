@@ -68,6 +68,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -77,6 +78,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/textnow"
 )
 
 // Channel is one entry of the alerts: list.
@@ -810,6 +812,9 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 			return res, nil, err
 		}
 		a.Instance, a.Source, a.Setting, a.Value, a.Detail, a.Suggested = str(inst), str(src), str(set), str(val), str(det), str(sug)
+		// TEXT-NOW: a finding that quotes a statement is sent under its instance's query_text policy now, not as the text
+		// was stored (internal/textnow); the record keeps what was sent
+		a.Value, a.Detail = textnow.Finding(a.Setting, a.Value, a.Detail, policyOf(a.Instance))
 		a.FindingAt, a.FirstSentAt = utc(a.FindingAt), utc(a.FirstSentAt)
 		if _, ok := owed[ch]; !ok {
 			order = append(order, ch)
@@ -1000,6 +1005,34 @@ func record[T any](ctx context.Context, exec func(context.Context, string, ...an
 	pay, _ := json.Marshal(a)
 	_, err := exec(ctx, `SELECT pgvigil.alert_record($1, $2::jsonb)`, at, string(pay))
 	return err
+}
+
+// textPolicy is each instance's query_text policy now, by its name (TEXT-NOW): the process that sends sets it - serve
+// from its doors, `pgvigil run` and `pgvigil alerts` from the configuration file; unset = the text as stored.
+var textPolicy atomic.Pointer[func(string) string]
+
+// SetTextPolicy sets the policy the sends follow.
+func SetTextPolicy(f func(instance string) string) { textPolicy.Store(&f) }
+
+// PolicyOfConfig is a configuration file's policies: an instance's own query_text, else the file's (an instance the
+// file does not name - one added in Admin > Instances - takes the file's), else full.
+func PolicyOfConfig(def string, byName map[string]string) func(string) string {
+	return func(name string) string {
+		if p := byName[name]; p != "" {
+			return p
+		}
+		if def != "" {
+			return def
+		}
+		return "full"
+	}
+}
+
+func policyOf(name string) string {
+	if p := textPolicy.Load(); p != nil {
+		return (*p)(name)
+	}
+	return "full"
 }
 
 // ---- the commands ---------------------------------------------------------------------------------------------

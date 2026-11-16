@@ -141,7 +141,7 @@ SELECT s.holder_session_id AS session_id, s.holder_login AS login_name, s.holder
  LIMIT 50`
 
 const sqlMSSQLVersionChecks = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_storage_findings
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM pgvigil.mssql_storage_findings
  WHERE instance_id = $1 AND check_name LIKE '%version store%'
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 

@@ -51,3 +51,16 @@ index 9e87cd1d..26d8651e 100644
  		id, from, to, minSecs, state, user, db, app)
  	s.reply(w, r, t, err)
  }
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index f350bb33..49f41106 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -184,6 +184,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		pc.Hypo[in.Name] = in.HypoIndex
+ 	}
+ 	srv.SetPlans(pc)
++	// TEXT-NOW: serve's alert sends follow each instance's query_text policy as its doors hold it now (page instances too)
++	alerts.SetTextPolicy(srv.TextPolicy)
+ 	doors := map[string]mssql.Door{}
+ 	for _, in := range cfg.Instances {
+ 		if in.Engine == config.EngineSQLServer {

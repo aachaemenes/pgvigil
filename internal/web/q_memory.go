@@ -72,7 +72,7 @@ SELECT datname, sum(temp_files)::bigint AS temp_files, sum(temp_bytes)::bigint A
  ORDER BY sum(temp_bytes) DESC NULLS LAST`
 
 const sqlMemoryFindings = `
-SELECT severity, setting, value, suggested, detail, at FROM pgvigil.memory_findings
+SELECT severity, setting AS "setting@fcheck", value, suggested, detail AS "detail@fdetail", at FROM pgvigil.memory_findings
  WHERE instance_id = $1 AND setting NOT IN ('clients waiting on the pooler', 'a pool at its size')
  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, at DESC`
 

@@ -32,7 +32,7 @@ SELECT s.capture, s.state, s.state_since, s.reads_in_state, s.source, s.session_
  ORDER BY CASE s.capture WHEN 'deadlocks' THEN 0 WHEN 'blocked' THEN 1 WHEN 'slow' THEN 2 WHEN 'attention' THEN 3 ELSE 4 END`
 
 const sqlMSSQLXEFindings = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_xe_findings
+SELECT severity, check_name AS "check_name@fcheck", object AS "object@fvalue", at, detail AS "detail@fdetail" FROM pgvigil.mssql_xe_findings
  WHERE instance_id = $1
  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, at DESC`
 

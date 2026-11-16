@@ -250,7 +250,7 @@ func (s *Server) MSSQLCPU(w http.ResponseWriter, r *http.Request) {
 
 // sqlMSSQLCPUFindings: 0124's findings of one instance; $2 picks them by the start of the check's name.
 const sqlMSSQLCPUFindings = `
-SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_cpu_findings
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM pgvigil.mssql_cpu_findings
  WHERE instance_id = $1 AND check_name ~ $2
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 
@@ -318,7 +318,7 @@ func seriesIDs(v string) ([]int32, error) {
 
 // sqlMSSQLMemoryChecks: 0074's memory checks (as they stand) and 0119's memory findings over the range.
 const sqlMSSQLMemoryChecks = `
-SELECT severity, check_name, object, at, detail FROM (
+SELECT severity, check_name AS "check_name@fcheck", object, at, detail AS "detail@fdetail" FROM (
   SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_perf_findings WHERE instance_id = $1 AND check_name ~ 'memory'
   UNION ALL
   SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3)) f

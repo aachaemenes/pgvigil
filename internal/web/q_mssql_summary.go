@@ -222,8 +222,8 @@ WITH inst AS (
          ps.minute
     FROM inst i LEFT JOIN LATERAL pgvigil.mssql_pool_storage_status(i.instance_id) ps ON true
 )
-SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
-       c.value, c.detail, st.read_at, st.err, c.since
+SELECT c.instance_id AS "instance_id@inst", c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
+       c.value, c.detail AS "detail@fsummary", st.read_at, st.err, c.since
   FROM cell c JOIN st USING (instance_id, key)
  ORDER BY 1, 2`
 
