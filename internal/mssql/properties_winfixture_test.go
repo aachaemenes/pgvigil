@@ -120,7 +120,7 @@ func TestNetRowsOnWindowsFixture(t *testing.T) {
 		keyTCPDynamic:     "no | ",
 		keyListenAll:      "yes | ",
 		keyForceEnc:       "no | ",
-		keyForceStrictEnc: " | not set (strict encryption off unless it is set)",
+		keyForceStrictEnc: " | not set: the key holds no ForceStrict value",
 		keyProtocols:      "Shared Memory, TCP/IP | ",
 		keyPrioritySep:    "2 | ",
 	}
@@ -224,7 +224,7 @@ func TestNetRowsOnWindowsFixtureOtherAnswers(t *testing.T) {
 	// is asked, and its NULL is 'not set'; without the right the row names it
 	withEnc := append(append([]collect.Row{}, view...), viewRow("", "ForceEncryption", "0"))
 	got, _, calls = fixtureNet(t, withEnc, 16, gate, func() ([]collect.Row, error) { return []collect.Row{reg}, nil })
-	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not set (strict encryption off unless it is set)" || calls != 1 {
+	if got[keyForceEnc] != "no | " || got[keyForceStrictEnc] != " | not set: the key holds no ForceStrict value" || calls != 1 {
 		t.Errorf("ForceEncryption alone in the view: force %q, strict %q, %d call(s)", got[keyForceEnc], got[keyForceStrictEnc], calls)
 	}
 	got, _, calls = fixtureNet(t, withEnc, 16, noRight, nil)

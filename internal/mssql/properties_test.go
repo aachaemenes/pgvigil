@@ -92,7 +92,7 @@ func TestNetworkRows(t *testing.T) {
 		}(), map[string]string{keyTCPPort: " | not read: ListenOnAllIPs is off and the IPn entries need sys.dm_server_registry (VIEW SERVER STATE)",
 			keyTCPDynamic: " | not read: ListenOnAllIPs is off and the IPn entries need sys.dm_server_registry (VIEW SERVER STATE)",
 			keyForceEnc:   "yes | ", keyProtocols: "Named Pipes, TCP/IP | ", keyPrioritySep: "38 | ",
-			keyForceStrictEnc: " | not set (strict encryption off unless it is set)"}},
+			keyForceStrictEnc: " | not set: the key holds no ForceStrict value"}},
 		{"Linux, mssql-conf through the registry", func() netRowsInput {
 			f := netFactsFromRegread(collect.Row{"force_encryption": int64(1), "listen_all": int64(1), "np_enabled": int64(0), "ipall_port": "1500"})
 			return netRowsInput{kind: KindServer, major: 16, platform: "Linux", gate: gate, facts: &f}

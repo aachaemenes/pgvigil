@@ -511,9 +511,9 @@ func pctText(part, whole int64) string {
 //     SuperSocketNetLib rows with the IPn entries; where the view is refused or empty, xp_instance_regread for the
 //     instance's values - without the view the IPn entries cannot be listed; where the view lacks ForceEncryption or
 //     (from 2022) ForceStrict (301c N5: the lab's 2022 VM holds no row of the bare key), xp_instance_regread for the
-//     two encryption values. Its answer with ForceEncryption and without ForceStrict on 2022 and later = 'not set'
-//     (strict encryption off unless it is set; no Microsoft page gives its default). Win32PrioritySeparation, never in the view, through
-//     xp_regread.
+//     two encryption values. Its answer with ForceEncryption and without ForceStrict on 2022 and later = 'not set: the
+//     key holds no ForceStrict value' (what was read; no Microsoft page gives the setting's default, so the row claims
+//     none). Win32PrioritySeparation, never in the view, through xp_regread.
 //   - Linux: the view is empty there; xp_instance_regread answers from SQL Server on Linux's own registry, which
 //     follows mssql-conf (network.tcpport, network.forceencryption: read back on 2022 after a restart). The
 //     protocols are TCP only; ListenOnAllIPs and Win32PrioritySeparation are Windows settings ('not on Linux').
@@ -525,9 +525,9 @@ func pctText(part, whole int64) string {
 // On Linux the protocols ('met: Linux serves TCP only') and ListenOnAllIPs ('not on Linux') need no registry read and
 // keep their words whatever the read gave.
 
-// notSetStrict: the strict row's words where the bare key answered without ForceStrict (no Microsoft page gives the
-// setting's default, so none is claimed; the page does not count it 'not read').
-const notSetStrict = "not set (strict encryption off unless it is set)"
+// notSetStrict: the strict row's words where the key answered without ForceStrict - what was read, no default claimed
+// (no Microsoft page gives the setting's default; the lead's 16:0x call); the page does not count it 'not read'.
+const notSetStrict = "not set: the key holds no ForceStrict value"
 
 // netKeys are the seven rows' keys, fixed for the checks that judge them.
 const (
