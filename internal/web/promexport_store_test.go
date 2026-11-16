@@ -174,12 +174,14 @@ func TestPromExportOnAStore(t *testing.T) {
 	   CROSS JOIN (VALUES ('activity', 1), ('databases', 2), ('jobs', 3)) AS c(coll, ci)`, ids, t0)
 
 	// PARITY with the Metrics grid, both ways, over the four families' keys
-	parity := func(label, grid, newest string, args ...any) {
+	// families: the grid's side is cut to them (the instance's: counters, xe, waits - its collection keys are the
+	// instance's worst collection, no series of its own; a collection's own: collection)
+	parity := func(label, families, grid, newest string, args ...any) {
 		t.Helper()
 		rows, err := pool.Query(ctx, `
 		  WITH g AS (SELECT g.key, g.current_value FROM `+grid+` g JOIN pgvigil.metric_catalog c ON c.key = g.key
 		             WHERE g.current_value IS NOT NULL AND g.current_at > now() - make_interval(secs => c.fresh_secs)
-		               AND c.family IN ('counters', 'xe', 'waits', 'collection')),
+		               AND c.family IN (`+families+`)),
 		       n AS (`+newest+`)
 		  SELECT coalesce(g.key, n.key), g.current_value, n.value FROM g FULL JOIN n ON n.key = g.key
 		   WHERE g.key IS NULL OR n.key IS NULL OR abs(g.current_value - n.value) > 1e-9 * greatest(1, abs(g.current_value))`, args...)
@@ -196,12 +198,11 @@ func TestPromExportOnAStore(t *testing.T) {
 			t.Errorf("parity %s %s: the grid's current %v, metrics_newest %v", label, key, promDeref(g), promDeref(n))
 		}
 	}
-	// the instance's worst collection (the grid's collection keys without a collection) is no series: left out of this side
-	parity("pex-a", `pgvigil.metric_grid($1::int, now() - interval '1 hour', now())`,
+	parity("pex-a", `'counters', 'xe', 'waits'`, `pgvigil.metric_grid($1::int, now() - interval '1 hour', now())`,
 		`SELECT family || '.' || metric AS key, value FROM pgvigil.metrics_newest(ARRAY[$1::int])
 		  WHERE family IN ('counters', 'xe', 'waits') AND database IS NULL`, ids[0])
 	for _, coll := range []string{"activity", "databases", "jobs"} {
-		parity("pex-a "+coll, `pgvigil.metric_grid($1::int, now() - interval '3 hours', now(), interval '15 minutes', $2::text, 'collection')`,
+		parity("pex-a "+coll, `'collection'`, `pgvigil.metric_grid($1::int, now() - interval '3 hours', now(), interval '15 minutes', $2::text, 'collection')`,
 			`SELECT family || '.' || metric AS key, value FROM pgvigil.metrics_newest(ARRAY[$1::int]) WHERE family = 'collection' AND database = $2::text`, ids[0], coll)
 	}
 

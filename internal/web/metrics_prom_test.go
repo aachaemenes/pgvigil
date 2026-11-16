@@ -323,7 +323,9 @@ func promCatalog(dir string) (cat, base map[string]promKey, err error) {
 	return cat, base, err
 }
 
-// promNewestReads is the text of metrics_newest's newest definition in dir (from its CREATE to its body's end), or the empty string.
+// promNewestReads is the text of metrics_newest's newest definition in dir (from its CREATE to its body's end), or the
+// empty string. Only a CREATE [OR REPLACE] FUNCTION starts a definition: a COMMENT ON FUNCTION after the body names the
+// function too (0323's does) and has no body.
 func promNewestReads(dir string) (string, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.sql"))
 	if err != nil {
@@ -337,17 +339,19 @@ func promNewestReads(dir string) (string, error) {
 			return "", err
 		}
 		src := promStripComments(string(b))
-		for i := strings.Index(src, "FUNCTION pgvigil.metrics_newest("); i >= 0; {
+		def := regexp.MustCompile(`(?i)\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+pgvigil\.metrics_newest\(`)
+		for loc := def.FindStringIndex(src); loc != nil; {
+			i := loc[0]
 			e := strings.Index(src[i:], "$$;")
 			if e < 0 {
 				return "", fmt.Errorf("%s: metrics_newest has no body's end", filepath.Base(f))
 			}
 			text = src[i : i+e]
-			j := strings.Index(src[i+e:], "FUNCTION pgvigil.metrics_newest(")
-			if j < 0 {
+			next := def.FindStringIndex(src[i+e:])
+			if next == nil {
 				break
 			}
-			i += e + j
+			loc = []int{i + e + next[0], i + e + next[1]}
 		}
 	}
 	return text, nil
@@ -397,6 +401,26 @@ func TestPromCatalogReadsEveryForm(t *testing.T) {
 			t.Fatalf("a full definition after a comment quoting the append: keys %v, %v (want f.c alone)", cat, err)
 		}
 	})
+}
+
+// TestPromNewestReadsTheDefinition (PROMEXPORT peg-red1: 0323's COMMENT ON FUNCTION pgvigil.metrics_newest(...) after
+// its body was read as a definition with no body's end): promNewestReads gives the newest CREATE's body, a COMMENT ON
+// FUNCTION after it read as nothing.
+func TestPromNewestReadsTheDefinition(t *testing.T) {
+	dir := t.TempDir()
+	for n, body := range map[string]string{
+		"0001_a.sql": "CREATE OR REPLACE FUNCTION pgvigil.metrics_newest(p int[]) RETURNS int LANGUAGE sql AS $$ SELECT 'old' $$;\n",
+		"0002_b.sql": "CREATE OR REPLACE FUNCTION pgvigil.metrics_newest(p int[]) RETURNS int LANGUAGE sql AS $$ SELECT 'counters' $$;\n" +
+			"COMMENT ON FUNCTION pgvigil.metrics_newest(int[]) IS 'the newest point';\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads, err := promNewestReads(dir)
+	if err != nil || !strings.Contains(reads, "'counters'") || strings.Contains(reads, "'old'") {
+		t.Fatalf("promNewestReads: %q, %v (want 0002's body, its COMMENT ON FUNCTION not a definition)", reads, err)
+	}
 }
 
 func TestPromValueAndEscape(t *testing.T) {
