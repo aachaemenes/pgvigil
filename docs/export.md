@@ -250,8 +250,10 @@ no spreadsheet library is in the bundle, so no third-party code or licence is ad
 of the bundle. The grid helper in
 `web/src/ui.ts` keeps each rendered grid's columns and its rows in the shown order beside the table, so the
 export writes raw values, not the formatted text, and knows each column by its key (the carried colours go by
-it). The grid tools read the page as the export does and change only how a grid is drawn; their lines come
-into the grid's menu on the `pgvigil:gridmenu` event the grid sends before it shows the menu.
+it). The grid tools read the page as the export does and change only how a grid is drawn; the grid sends the
+`pgvigil:gridmenu` event on a right-click and the grid tools build its menu from it. A page adds its own lines to
+the end of that menu by pushing `[label, action]` pairs into the event's `extra` from a listener on an element
+around its grid (the Backup history grid's 'Verify this backup...').
 
 ## Proof
 
