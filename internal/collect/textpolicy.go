@@ -193,7 +193,10 @@ func maskXML(s string, inPlan bool) string {
 // credential there can stay; a cell cut after such a "?>" the same; a document with text right after an instruction
 // (mixed content) ends it at a later "?>" that markup follows, and what stands between is masked raw; a document
 // that opens with an instruction other than the declaration and ends with one is taken for one cell. None of the
-// stored kinds (a showplan, a deadlock graph, a blocked process report) has one of these shapes.
+// stored kinds (a showplan, a deadlock graph, a blocked process report) has one of these shapes, and no further end
+// rule is added for a shape nothing stores: code that comes to store a document with a statement's instruction
+// inside it owes the narrower end for that shape first (sp_WhoIsActive's own: a line end and then "--?>"). The docs
+// say the four (security.html, 'Known limits of that mask').
 func piEnd(s string, opens bool, noEnd *bool) int {
 	first := strings.Index(s[2:], "?>")
 	if first < 0 {
