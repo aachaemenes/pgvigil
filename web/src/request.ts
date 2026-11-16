@@ -49,9 +49,10 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((done, fail
 });
 
 // waitRequest waits for a queued request to end, saying each state and the request's id in status, with a Cancel
-// button while it waits or runs; it returns the end (its result, for the asker). It stops (an AbortError) when status
-// leaves the page.
-export async function waitRequest(q: Queued, status: HTMLElement): Promise<RequestEnd> {
+// button while it waits or runs; it returns the end (its result, for the asker). It stops (an AbortError) when alive
+// leaves the page - status itself unless the caller names an element that outlives it (the community page's runs
+// grid, so a run whose panel another tool replaced is still followed to its end).
+export async function waitRequest(q: Queued, status: HTMLElement, alive: HTMLElement = status): Promise<RequestEnd> {
   const cancel = needControl(el('button', { type: 'button', class: 'link' }, 'Cancel'), 'requests/{id}/cancel');   // the role (B24f)
   const words = el('span', {}, 'Waiting for the collector to take it.');
   const said = el('span', { class: 'meta' }, ` Request ${q.request_id}.`);
@@ -67,7 +68,7 @@ export async function waitRequest(q: Queued, status: HTMLElement): Promise<Reque
     }
   });
   const ac = new AbortController();
-  const leave = window.setInterval(() => { if (!status.isConnected) ac.abort(); }, 2000);
+  const leave = window.setInterval(() => { if (!alive.isConnected) ac.abort(); }, 2000);
   let back = 1000;
   try {
     for (;;) {
