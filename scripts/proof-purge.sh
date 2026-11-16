@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Proof of `pgvigil purge` on a throwaway repository database. One import_dbstats call dated 100 days
-# back makes the dbstats, serverstats and iostats partitions of that month; one dated now makes this
-# month's three.
+# back makes the dbstats, serverstats and iostats partitions of that month; this month's three and the
+# next month's three are there before any import: `pgvigil migrate` makes them ahead (0271, its pass after the files).
 #
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
 #                      (the proof creates pgvigil_proof_purge_<n> there and drops it at the end)
 #
-# Expected: `purge -days 0` exits 2 and drops nothing (6 partitions before and after); `purge -dry-run`
-# names exactly the three old partitions (dbstats_, iostats_, serverstats_ of the month 100 days back)
-# and leaves 6; `purge -days 30` prints "3 partitions and rows removed" (no row-level series holds a row
-# older than 30 days here) and leaves the three current-month partitions; a second run removes 0.
+# Expected: the setup row finds exactly 9 partitions (the old month's, this month's, the next month's; a build whose
+# migrate makes none ahead fails it by its words: 'setup partitions: ...'); `purge -days 0` exits 2 and drops nothing
+# (9 before and after); `purge -dry-run` names exactly the three old partitions (dbstats_, iostats_, serverstats_ of the
+# month 100 days back) and leaves 9; `purge -days 30` prints "3 partitions and rows removed" (no row-level series holds
+# a row older than 30 days here) and leaves this month's and the next month's six; a second run removes 0.
 # Then Query Store's retention (0088): 'ok   Query Store retention: plans 1,3 | queries 1,3,4 | recommendation T1 kept,
 # the rest gone' (the cases in the script). Then the whole list: no partitioned parent of the schema unnamed by purge() (or mssql_running_purge(), the day
 # partitions of mssql_requests, or an hours table of pgvigil.hours_retention, 0139, which its own function drops at its
@@ -40,12 +41,14 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 iid=$(q "select pgvigil.ensure_instance('proof-purge', 'onprem', '18.0', 180000, false, '{}'::text[])")
 old=$(q "select to_char((now() - interval '100 days') at time zone 'utc', 'YYYYMM')")
 cur=$(q "select to_char(now() at time zone 'utc', 'YYYYMM')")
+nxt=$(q "select to_char(date_trunc('month', now() at time zone 'utc') + interval '1 month', 'YYYYMM')")
 [ "$old" != "$cur" ] || fail "setup: the old month equals the current one"
 q "select pgvigil.import_dbstats($iid, now() - interval '100 days', '[{\"kind\":\"server\",\"checkpoints_timed\":1}]'::jsonb)" >/dev/null
 q "select pgvigil.import_dbstats($iid, now(), '[{\"kind\":\"server\",\"checkpoints_timed\":2}]'::jsonb)" >/dev/null
 parts() { q "select string_agg(c.relname, ',' order by c.relname) from pg_inherits i join pg_class c on c.oid=i.inhrelid join pg_class p on p.oid=i.inhparent join pg_namespace n on n.oid=p.relnamespace where n.nspname='pgvigil' and p.relname in ('dbstats','serverstats','iostats')"; }
 before=$(parts)
-[ "$before" = "dbstats_$old,dbstats_$cur,iostats_$old,iostats_$cur,serverstats_$old,serverstats_$cur" ] || fail "setup partitions: $before"
+# the next month's three come from migrate's pass alone (no import here is dated there): purge must leave them
+[ "$before" = "dbstats_$old,dbstats_$cur,dbstats_$nxt,iostats_$old,iostats_$cur,iostats_$nxt,serverstats_$old,serverstats_$cur,serverstats_$nxt" ] || fail "setup partitions: $before (want the month 100 days back, this month and the next month migrate makes ahead: $old, $cur, $nxt)"
 
 set +e; "$BIN" purge -config "$CFG" -days 0 >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" = "2" ] || fail "purge -days 0 exited $rc, want 2"
@@ -60,7 +63,7 @@ out=$("$BIN" purge -config "$CFG" -days 30)
 echo "$out"
 case "$out" in "purge -days 30: 3 partitions and rows removed in "*) ;; *) fail "purge output: $out" ;; esac
 after=$(parts)
-[ "$after" = "dbstats_$cur,iostats_$cur,serverstats_$cur" ] || fail "partitions after the purge: $after"
+[ "$after" = "dbstats_$cur,dbstats_$nxt,iostats_$cur,iostats_$nxt,serverstats_$cur,serverstats_$nxt" ] || fail "partitions after the purge: $after (want this month's and the next month's: $cur, $nxt)"
 out2=$("$BIN" purge -config "$CFG" -days 30)
 case "$out2" in "purge -days 30: 0 partitions and rows removed in "*) ;; *) fail "second purge output: $out2" ;; esac
 # Query Store retention (0088): database qsdb has a store row (in ERROR: the collector no longer reads it), database gone
@@ -164,4 +167,4 @@ done
 for g in $plan_off; do q "alter database $DB reset $g" >/dev/null; done
 [ "$bad" = 0 ] || fail "a name ending in no month ($names; OID counter $lo)$res"
 echo "ok   a name ending in no month ($names; OID counter $lo): under the database's plan and under hash joins and scans only, purge -dry-run named dbstats_$old and purge -days 30 removed it, rc 0 each"
-echo "proof-purge: OK (old month $old dropped, current month $cur kept)"
+echo "proof-purge: OK (old month $old dropped, this month $cur and the next month $nxt kept)"
