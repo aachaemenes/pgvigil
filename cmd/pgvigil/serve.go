@@ -196,10 +196,27 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if loopback {
 		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
 	}
+	// task CQ (487): actions.via queue - serve connects to no monitored server: every instance's dsn, actions_dsn and
+	// explain_dsn is blanked before anything reads them (no door, plan gate or admin door resolves one), Admin >
+	// Instances' credentials are not resolved either (doors.page_instance_reads off here: the collector's), serve keeps
+	// no audit login (the collector that runs a request writes its audit), and SetQueue below refuses a collector login
+	logDSN := cfg.Repository.DSN()
+	if cfg.Actions.Queue() {
+		qcfg := *cfg
+		qcfg.Instances = make([]config.Instance, len(cfg.Instances))
+		for i, in := range cfg.Instances {
+			in.DSNRaw, in.ActionsDSNRaw, in.ExplainDSNRaw = "", "", ""
+			qcfg.Instances[i] = in
+		}
+		qcfg.Doors.PageInstanceReads = false
+		cfg, logDSN = &qcfg, ""
+		log.Info("serve sends its actions and community runs through the repository (actions.via queue): it connects to no monitored server")
+		log.Warn("queue mode: serve holds no write login to the repository, so acknowledgements, alert-rule edits, applications, Admin > Instances, custom reports and scheduled report mail are off (docs/queue.md)")
+	}
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
 		ReadyzWithoutLogin: cfg.Web.ReadyzWithoutLogin, // B6.4: the probes (web/probes.go)
 		SessionTTL:         time.Duration(*sessionHours) * time.Hour,
-		Actions:            &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
+		Actions:            &web.ActionsConfig{LogDSN: logDSN, Doors: actions.DoorsFromConfig(cfg)},
 		Tags:               web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine(),
 		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}, Agents: cfg.Agents.Enabled})
 	if err != nil {
@@ -209,6 +226,12 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	defer srv.Close()
 	srv.EnableMetrics(promCfg)
 	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
+	if cfg.Actions.Queue() {
+		if err := srv.SetQueue(ctx, d); err != nil { // serve's own login (-dsn when given), the one its UI pool uses
+			_ = ln.Close()
+			return &configError{err}
+		}
+	}
 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
 	// check); serve starts either way and the page says the same words
 	if why := srv.StoreReportsOff(ctx); why != "" {

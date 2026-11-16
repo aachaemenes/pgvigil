@@ -79,6 +79,12 @@ type Config struct {
 	Export *Export `yaml:"export"`
 	// Agents is the agents: block: the agent door on serve's pages (agents.go; off unless enabled).
 	Agents AgentsConfig `yaml:"agents"`
+	// CQ is the request queue's collector side (cq.go): cq: enabled: true lets this collector take the requests of the
+	// instances it holds. Off by default.
+	CQ CQ `yaml:"cq"`
+	// Actions is serve's side of the queue (cq.go): actions: via: queue sends every action and community run through
+	// the repository; direct (the default) runs them in serve as before.
+	Actions ActionsVia `yaml:"actions"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -152,6 +158,11 @@ type Instance struct {
 	// an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate need no list: its actions_dsn
 	// alone turns them on.
 	Actions []string `yaml:"actions"`
+	// CommunityAllow and JobsAllow are DBA Dash's allow-lists (ServiceConfigTool row ST4, cq.go): which community tools
+	// and which jobs this instance's doors offer - all, none or a list (jobs: also '*' and '-name' exclusions). Unset =
+	// as today for community tools; the jobs list unset = every job the actions: list's kinds allow.
+	CommunityAllow []string `yaml:"community_allow"`
+	JobsAllow      []string `yaml:"jobs_allow"`
 	// Backups tunes the backups collection's rules; nil = the defaults.
 	Backups *Backups `yaml:"backups"`
 	// Reads holds the opt-ins of reads with a side effect on the server (task 301b); nil = all off.
@@ -688,6 +699,9 @@ func (c *Config) Validate() error {
 	}
 	if c.QueryText == "" {
 		c.QueryText = "full"
+	}
+	if err := c.validateCQ(); err != nil {
+		return err
 	}
 	if !validQueryText(c.QueryText) {
 		return fmt.Errorf("query_text must be full, normalized or none (got %q)", c.QueryText)

@@ -428,6 +428,9 @@ func keys(m map[string]string) []string {
 // can, in the page's own words: its writes ride the actions door's audit login and the UI login, as acknowledgements
 // do (ackOff), but an acknowledgement's wording would be wrong here (the join's w9c: proof-upgrade, proof-darling-alerts C).
 func (s *Server) instancesOff() string {
+	if s.queue() != nil { // queue mode (q_requests.go): the credential files live on the collector's host
+		return queueNotYet
+	}
 	switch {
 	case s.demo != nil:
 		return "adding and changing instances writes connection secrets and connects to servers: it needs pgvigil serve with a signed-in user (this is pgvigil demo -serve)"

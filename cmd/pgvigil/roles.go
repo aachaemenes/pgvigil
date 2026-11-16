@@ -34,6 +34,10 @@ CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
 -- pgvigil_exporter is pgvigil_reader plus the one door that records the export's windows for the Collector page.
 -- A login that could write anything else is refused by 'pgvigil export'.
 -- CREATE ROLE pgvigil_export LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_exporter;
+-- optional: serve's login in queue mode (actions: via: queue, docs/queue.md) - the UI's roles and pgvigil_requester,
+-- which may only write a request and cancel its own; never the collector's login. (Or GRANT pgvigil_requester to the
+-- UI's login above.)
+-- CREATE ROLE pgvigil_ui_queue LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth, pgvigil_requester;
 -- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
 -- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
 -- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;

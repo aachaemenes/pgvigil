@@ -216,6 +216,10 @@ back to before them).
 3. Have the repository owner's connection string at hand (the login that ran the first `pgvigil migrate`). The
    service's own env file holds the collector's login, which cannot migrate.
 
+Migration 0200 (the request queue) makes the group role `pgvigil_requester`; the repository owner's `pgvigil migrate`
+makes it as it made the others. Nothing changes until a site turns the queue on ([queue.md](queue.md)): a serve with
+`actions: via: queue` needs a login IN ROLE `pgvigil_reader, pgvigil_auth, pgvigil_requester`, never the collector's.
+
 ## The steps (Linux, the systemd service)
 
 As root on the host that runs the collector. `OWNER_DSN` is the owner's connection string.

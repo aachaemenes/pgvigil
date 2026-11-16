@@ -813,6 +813,9 @@ func runMSWith(ctx context.Context, dsn, stmt string, args []any, timeout time.D
 
 // customReportsOff is why reports cannot be saved or run on this server; "" = they can.
 func (s *Server) customReportsOff() string {
+	if s.queue() != nil { // queue mode (q_requests.go): custom reports do not go through the queue in this release
+		return queueNotYet
+	}
 	if w := s.serverOff(); w != "" {
 		return "Saving or running a report needs " + w + "."
 	}
