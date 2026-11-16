@@ -1,34 +1,7 @@
-B24f's join wiring, section rel-viewsb (VIEWS slices A-C: saved views, dashboards, composed panels; rel-views-a's files
-are the same blobs; the lead 11-15 16:3x).
-Apply on the joined tree that holds rel-roles and rel-viewsb (its proof-views-wiring and proof-views-b-wiring patches applied):
-  git apply -3 scripts/b24f-join-wiring-rel-viewsb.patch
-Built on a pre-join copy of each file: rel-roles f421753c x rel-viewsb 4db89778 + those wiring patches' web.go hunks and their docs
-hunks (docs/configuration.md, docs/menus.md) (local commit 309f5833, ref jw-pre-views; web.go's alert / views lines merged
-by hand), so -3 merges it onto the join's own resolution.
-What it does:
-- s.post with needViewer for POST /api/views, /api/views/delete (a personal view changes nothing others live with) and
-  /api/compose/run (a read of the repository: read before its row, as the lead asked); their words in roles_wiring_views.go;
-  docs/roles.md rows, and its role table's lines: own views (viewer), shared views (admin), and the writes of the other
-  j16 sections (verify a backup, a histogram or fragmentation read, an alert window: operator; Collection Health and
-  per-database backup thresholds, counter lists, security and XE capture settings, backup destinations, the Daily checks
-  mail: admin) in this one section, so no two sections change one line; a sentence names *The routes* the full list
-  (review-20 jw2 N3, jw1 N6).
-- A shared view's save, rename or delete needs admin (Q2): viewRole refuses below admin a save that makes a view shared,
-  and a save or a delete of one that is shared now (read through ui_view_get; a read error refuses, never open); the
-  store's shared_ok is the admin role; the views list's shared_off is the role's words (the role_error words when the role
-  could not be read); 0259's three refusals (save, change, delete) say the role.
-- pgvigil.yaml views.shared_editors is read and no longer decides (0259's plan); docs/configuration.md and docs/menus.md
-  say so (review-20 jw2 S2). Its removal - the config key, the serve
-  call in proof-views-wiring.patch, SetViewEditors / viewEditor and q_views_test.go L70-78 - is the views owner's follow-up.
-- proof-views.sh and proof-views-b.sh: u1 and u3 added with -role admin, u2 with -role viewer (B24f: a user added after the
-  first is a viewer), u2 named in views.shared_editors so S2 and W3 prove the key no longer decides (jw2 S3); S2's refusal
-  checks 'needs the admin role'; views-b-check.mjs's user words.
-Proof: the four role checks on the joined tree; proof-views and proof-views-b there; tsc there.
-
-diff --git a/docs/configuration.md b/docs/configuration.md
-index 6bd3c688..e57882f7 100644
---- a/docs/configuration.md
-+++ b/docs/configuration.md
+diff --git c/docs/configuration.md i/docs/configuration.md
+index ac13103f..5234f8cd 100644
+--- c/docs/configuration.md
++++ i/docs/configuration.md
 @@ -133,18 +133,19 @@ file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily che
  
  ```yaml
@@ -53,11 +26,11 @@ index 6bd3c688..e57882f7 100644
  
  ## Instances added in the page
  
-diff --git a/docs/menus.md b/docs/menus.md
-index 475fa17f..8c7977a4 100644
---- a/docs/menus.md
-+++ b/docs/menus.md
-@@ -119,8 +119,8 @@ The menu lists the page's own items first (the Summary's Focused View and Show T
+diff --git c/docs/menus.md i/docs/menus.md
+index 4bde0897..5b2e2965 100644
+--- c/docs/menus.md
++++ i/docs/menus.md
+@@ -121,8 +121,8 @@ The menu lists the page's own items first (the Summary's Focused View and Show T
  Columns), then `{None}`, the shared views and the user's own (`(shared)` or `(mine)`, `- default` on the one that loads
  by default, a tick on the loaded one), then **Save**, **Save as...**, **Rename...** and **Delete...**. An item the user
  may not use is off with its reason beside it: saving is off under `-no-login`, on `pgvigil demo -serve` and without
@@ -68,10 +41,10 @@ index 475fa17f..8c7977a4 100644
  Everyone), whether it loads by default on this page, a folder, and whether to keep the time range.
  
  - **Loading**: a view lives in the page's address (`view=<id>` beside the page's picks, which Save as and opening a
-diff --git a/docs/roles.md b/docs/roles.md
-index 118b5eee..1611471a 100644
---- a/docs/roles.md
-+++ b/docs/roles.md
+diff --git c/docs/roles.md i/docs/roles.md
+index 12f02d1f..3e639f10 100644
+--- c/docs/roles.md
++++ i/docs/roles.md
 @@ -5,9 +5,12 @@ page.
  
  | Role | What it may do |
@@ -98,10 +71,10 @@ index 118b5eee..1611471a 100644
  | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
  | `POST /api/actions/terminate` | operator | end a PostgreSQL session |
  | `POST /api/mssql/actions/run` | operator | KILL, job start / stop, plan evict on SQL Server |
-diff --git a/internal/repo/sql/0259_views.sql b/internal/repo/sql/0259_views.sql
+diff --git c/internal/repo/sql/0259_views.sql i/internal/repo/sql/0259_views.sql
 index abf6fef3..73aaeb86 100644
---- a/internal/repo/sql/0259_views.sql
-+++ b/internal/repo/sql/0259_views.sql
+--- c/internal/repo/sql/0259_views.sql
++++ i/internal/repo/sql/0259_views.sql
 @@ -13,7 +13,7 @@
  -- Reads go through ui_view_list / ui_view_get (SECURITY DEFINER, the UI's door pgvigil_auth, on serve's read-only
  -- pool); writes through import_view_save / import_view_delete on the actions door's audit login (serve's read pool is
@@ -138,10 +111,10 @@ index abf6fef3..73aaeb86 100644
    ELSIF NOT v_old.shared AND v_old.owner_user_id IS DISTINCT FROM v_uid THEN
      v_out := 'forbidden'; v_why := 'only its owner deletes a personal view';
    ELSIF (CASE WHEN coalesce(p_payload->>'version', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'version')::int END) IS DISTINCT FROM v_old.version THEN
-diff --git a/internal/web/q_views.go b/internal/web/q_views.go
+diff --git c/internal/web/q_views.go i/internal/web/q_views.go
 index 9b7ba6da..e90c96d4 100644
---- a/internal/web/q_views.go
-+++ b/internal/web/q_views.go
+--- c/internal/web/q_views.go
++++ i/internal/web/q_views.go
 @@ -27,8 +27,8 @@ import (
  // range is kept apart in state.range. Reads: pgvigil.ui_view_list / ui_view_get on the read pool. Writes:
  // import_view_save / import_view_delete on the actions door's audit pool (the read pool is read-only) with the
@@ -176,11 +149,11 @@ index 9b7ba6da..e90c96d4 100644
  	b, _ := json.Marshal(pay)
  	fn := "import_view_save"
  	if op == "delete" {
-diff --git a/internal/web/roles_wiring_views.go b/internal/web/roles_wiring_views.go
+diff --git c/internal/web/roles_wiring_views.go i/internal/web/roles_wiring_views.go
 new file mode 100644
 index 00000000..c3c1f5d4
 --- /dev/null
-+++ b/internal/web/roles_wiring_views.go
++++ i/internal/web/roles_wiring_views.go
 @@ -0,0 +1,63 @@
 +package web
 +
@@ -245,12 +218,12 @@ index 00000000..c3c1f5d4
 +	}
 +	return !shared || s.roleOK(w, r, needAdmin, sharedViewWhat)
 +}
-diff --git a/internal/web/web.go b/internal/web/web.go
-index eabd8eb3..da76bfa9 100644
---- a/internal/web/web.go
-+++ b/internal/web/web.go
-@@ -277,10 +277,10 @@ func (s *Server) Handler() http.Handler {
- 	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 4d14c87d..f7b94b72 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -299,10 +299,10 @@ func (s *Server) Handler() http.Handler {
+ 	s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator; wide or open-ended: admin, in its handler)
  	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
  	api.HandleFunc("GET /api/views", s.Views)
 -	api.HandleFunc("POST /api/views", s.ViewSave)
@@ -263,10 +236,10 @@ index eabd8eb3..da76bfa9 100644
  	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
  	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
  	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)
-diff --git a/scripts/proof-views-b.sh b/scripts/proof-views-b.sh
+diff --git c/scripts/proof-views-b.sh i/scripts/proof-views-b.sh
 index 44b6e873..5f893ab6 100644
---- a/scripts/proof-views-b.sh
-+++ b/scripts/proof-views-b.sh
+--- c/scripts/proof-views-b.sh
++++ i/scripts/proof-views-b.sh
 @@ -10,7 +10,8 @@
  # The tree is copied into the proof's folder first; the wiring patches (slice A's, B24 OWN's, this slice's docs) and the web bundle
  # are applied and built THERE, never in this checkout (the FOLD P3).
@@ -302,10 +275,10 @@ index 44b6e873..5f893ab6 100644
  
  # T: slow/groups' top (a T failure is counted and the browser cases still run: the red shows every row's reason)
  TF=0; tfail() { echo "FAIL T: $*"; TF=1; }
-diff --git a/scripts/proof-views.sh b/scripts/proof-views.sh
+diff --git c/scripts/proof-views.sh i/scripts/proof-views.sh
 index 393d5287..0f680dae 100755
---- a/scripts/proof-views.sh
-+++ b/scripts/proof-views.sh
+--- c/scripts/proof-views.sh
++++ i/scripts/proof-views.sh
 @@ -13,10 +13,11 @@
  #     alone (a store custom report's or a Grafana reader's) has no SELECT on either and no EXECUTE on ui_view_list,
  #     ui_view_get, import_view_save or import_view_delete - its SELECT of ui_views is refused 'permission denied'; the
@@ -364,10 +337,10 @@ index 393d5287..0f680dae 100755
    J3=$WORK/j3; login "$J3" "$U3" "$U3PW"
    c=$(call "$J2" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"u2mine","state":{"params":{}}}')"); expect "$c" 200 "S2b: u2's personal save"; U2MINE=$(js "d['view_id']")
    c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$MINE,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"taken\",\"state\":{\"params\":{}}}")")
-diff --git a/scripts/views-b-check.mjs b/scripts/views-b-check.mjs
+diff --git c/scripts/views-b-check.mjs i/scripts/views-b-check.mjs
 index c2af3a47..b51fe2c7 100644
---- a/scripts/views-b-check.mjs
-+++ b/scripts/views-b-check.mjs
+--- c/scripts/views-b-check.mjs
++++ i/scripts/views-b-check.mjs
 @@ -1,7 +1,7 @@
  // VIEWS slice B in the browser (proof-views-b.sh): the View control on the Summary, the Performance Summary and Slow
  // Queries - save, load, the default on entering, {None}, the layouts layer, the shared views, the conflict, the time
@@ -377,10 +350,10 @@ index c2af3a47..b51fe2c7 100644
  //   instance id), VB_PG (a PostgreSQL instance id, for SHOTS), VB_CASES (space-separated case names; empty = all),
  //   VB_SHOTS (a folder: the SHOTS case saves the five pages' pictures there; unset = no SHOTS case)
  //   node scripts/views-b-check.mjs <cdp port> <base url/>
-diff --git a/web/src/views.ts b/web/src/views.ts
+diff --git c/web/src/views.ts i/web/src/views.ts
 index 50cb328e..b0ce9200 100644
---- a/web/src/views.ts
-+++ b/web/src/views.ts
+--- c/web/src/views.ts
++++ i/web/src/views.ts
 @@ -11,7 +11,7 @@
  //
  // viewControl is the page's 'View: <name>' button and its lines: the page's own items, {None}, the shared views and
