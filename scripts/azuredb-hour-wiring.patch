@@ -1,8 +1,8 @@
-diff --git c/internal/repo/azuredb_hour_wiring_test.go w/internal/repo/azuredb_hour_wiring_test.go
+diff --git a/internal/repo/azuredb_hour_wiring_test.go b/internal/repo/azuredb_hour_wiring_test.go
 new file mode 100644
 index 00000000..57af7272
 --- /dev/null
-+++ w/internal/repo/azuredb_hour_wiring_test.go
++++ b/internal/repo/azuredb_hour_wiring_test.go
 @@ -0,0 +1,62 @@
 +package repo
 +
@@ -66,49 +66,3 @@ index 00000000..57af7272
 +		}
 +	}
 +}
-diff --git c/internal/repo/sql/0110_join_release.sql w/internal/repo/sql/0110_join_release.sql
-index dc6e79e2..db3f7b75 100644
---- c/internal/repo/sql/0110_join_release.sql
-+++ w/internal/repo/sql/0110_join_release.sql
-@@ -427,7 +427,11 @@ BEGIN
-     ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
-                         'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
-                         -- task 406, 0157: they delete or write for the imports, and the reader never calls them
--                        'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop') THEN
-+                        'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop',
-+                        -- B2a-N2, 0167: the Azure SQL Database hours' writers (the import's trigger and 'pgvigil purge' run them as the owner)
-+                        'mssql_azuredb_hour_partition', 'mssql_azuredb_hour_recompute', 'mssql_azuredb_hour_rebuild', 'mssql_azuredb_hour_heal',
-+                        'mssql_azuredb_hour_failed', 'mssql_azuredb_hour_pending', 'mssql_azuredb_hour_heal_one', 'mssql_azuredb_hour_tg',
-+                        'mssql_azuredb_hour_purge') THEN
-       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
-       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
-     ELSE
-diff --git c/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 9dbcf660..24cd4c91 100644
---- c/internal/repo/sql/0190_join_release2.sql
-+++ w/internal/repo/sql/0190_join_release2.sql
-@@ -19,6 +19,10 @@
- --   task 304 (0147): the mssql_restore_findings arm; nothing for purge() (its tables are current state, cascaded).
- --   SLOW-CONNECT (0121): alert_due's slow-connect terms; the 'connect_time' threshold key (and 'seconds' in
- --     pg_threshold_keys' unit check); import_pg_threshold is 0117's with connect_time taken at a SQL Server instance.
-+--   B2a-N2 (0167): purge()'s last block drops mssql_azuredb_hour's months older than its hours_retention row (730 days)
-+--     after job_stats_hourly_purge, the months joining the run's partitions_dropped; apply_roles()' owner-only list (in
-+--     0110 itself) gains 0167's writers (mssql_azuredb_hour_partition / _recompute / _rebuild / _heal / _failed /
-+--     _pending / _heal_one / _tg / _purge); the readers' mssql_azuredb_window and mssql_azuredb_hour_built stay the reader's.
- -- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
- -- (0110's, its owner-only list extended in 0110 itself).
- --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
-@@ -443,6 +447,13 @@ BEGIN
-     v_dropped := v_dropped || pgvigil.job_stats_hourly_purge();
-     n := n + cardinality(v_dropped);
-   END IF;
-+  -- B2a-N2 (0167): the Azure SQL Database hours by their own age (its heals and the month ahead are 'pgvigil purge''s,
-+  -- after this: AzureDBHourMonths, AzureDBHoursHeal)
-+  IF to_regprocedure('pgvigil.mssql_azuredb_hour_purge()') IS NOT NULL THEN
-+    n := n - cardinality(v_dropped);
-+    v_dropped := v_dropped || pgvigil.mssql_azuredb_hour_purge();
-+    n := n + cardinality(v_dropped);
-+  END IF;
-   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
-   INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
-   VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
