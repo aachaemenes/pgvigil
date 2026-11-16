@@ -98,9 +98,12 @@ func TestRemoteTextCoversTheImports(t *testing.T) {
 		}
 		keys := map[string]map[string]bool{}
 		importKeys(bodies, "import_"+v, map[string]bool{}, keys)
-		if len(keys) == 0 {
-			t.Errorf("%s: pgvigil.import_%s reads no payload key (or does not exist)", v, v)
+		if _, exists := bodies["import_"+v]; !exists {
+			t.Errorf("%s: no pgvigil.import_%s", v, v)
 			continue
+		}
+		if len(keys) == 0 && len(pass) > 0 {
+			t.Errorf("%s: pgvigil.import_%s reads no payload key, so its list passes nothing: it lists %v", v, v, pass)
 		}
 		listed := map[string]bool{}
 		for _, k := range pass {
