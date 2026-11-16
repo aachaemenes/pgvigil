@@ -955,8 +955,8 @@ if (await ev(`(() => { const b = [...document.querySelectorAll('#bar button')].f
   await ev(`(() => { for (const d of document.querySelectorAll('dialog[open]')) { d.close(); d.remove(); } })()`);
 }
 await page('three', `#/customreports?report=${c3}`);
-await page('tag', `#/customreports?report=${cpg}&tag=env:pgcr`);
-if (cms) await page('ms', `#/customreports?report=${cms}&i=${mrid}`);
+await page('tag', `#/customreports?report=${cpg}&tag=env:pgcr&run=1`);   // a report on instances runs on open with run=1
+if (cms) await page('ms', `#/customreports?report=${cms}&i=${mrid}&run=1`);
 console.log(JSON.stringify(out));
 await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
 process.exit(0);
