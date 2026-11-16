@@ -783,9 +783,9 @@ func cutStatement(t *table, n int) {
 }
 
 // mergeSearch merges a source's full instances' rows (the function's read, its LIMIT over them alone) and its
-// normalized instances' kept rows (read apart, judged before any cut), full rows first, and cuts at max with a note
+// normalized instances' kept rows (read apart, judged before any cut), full rows first, and cuts at limit with a note
 // that counts shown rows only (TEXT-NOW-L review M2).
-func mergeSearch(full, norm *table, max int) (*table, string, error) {
+func mergeSearch(full, norm *table, limit int) (*table, string, error) {
 	if norm != nil && len(norm.Columns) > 0 && strings.Join(full.Columns, ",") != strings.Join(norm.Columns, ",") {
 		return nil, "", fmt.Errorf("the statement search's two reads differ in their columns: %v and %v", full.Columns, norm.Columns)
 	}
@@ -793,11 +793,11 @@ func mergeSearch(full, norm *table, max int) (*table, string, error) {
 	if norm != nil {
 		out.Rows = append(out.Rows, norm.Rows...)
 	}
-	if len(out.Rows) <= max {
+	if len(out.Rows) <= limit {
 		return out, "", nil
 	}
-	out.Rows = out.Rows[:max]
-	return out, fmt.Sprintf("the first %d statements are shown: name an instance or search a longer text to narrow it", max), nil
+	out.Rows = out.Rows[:limit]
+	return out, fmt.Sprintf("the first %d statements are shown: name an instance or search a longer text to narrow it", limit), nil
 }
 
 // ---- the plans of one statement's hashes (SQLWATCH COL#27) ----------------------------------------------------------
