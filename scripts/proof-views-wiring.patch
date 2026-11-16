@@ -1,0 +1,98 @@
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index a7afc66f..7a8f3fa8 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -312,7 +312,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
+ // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
+ // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
+ var knownKeys = map[string]bool{
+-	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
++	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+ 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
+ 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
+ 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
+diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
+index f350bb33..6b103ca9 100644
+--- c/cmd/pgvigil/serve.go
++++ i/cmd/pgvigil/serve.go
+@@ -171,6 +171,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	defer srv.Close()
++	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
+ 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
+ 	// check); serve starts either way and the page says the same words
+ 	if why := srv.StoreReportsOff(ctx); why != "" {
+diff --git c/docs/configuration.md i/docs/configuration.md
+index 264b71f0..6bd3c688 100644
+--- c/docs/configuration.md
++++ i/docs/configuration.md
+@@ -129,6 +129,23 @@ key read as what they stand for. `pgvigil serve` reads the block once, at its st
+ file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
+ (`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
+ 
++## Saved views: who writes shared ones (views.shared_editors)
++
++```yaml
++views:
++  shared_editors: [ann, bob]   # UI users; none named = nobody writes shared views
++```
++
++Every signed-in user saves personal views (a page's state, a dashboard) and reads the shared ones; a shared view is
++created, changed, deleted or made a page's shared default only by the users named here. A personal view is its owner's
++alone, and removing a user (`pgvigil user remove`) deletes that user's personal views; a shared one stays. Views are
++saved through the actions door's audit login, so saving is off under `-no-login` and on `pgvigil demo -serve`; every
++attempt that reaches the store is kept in `ui_view_log` (a request serve refuses before it - no X-Pgvigil header, a
++body over 256 KB - is not). These rules are serve's: like alert rules, the store's write functions
++(`import_view_save`, `import_view_delete`) are the collector's door, so a login of the collector's role can write any
++view as any user - keep the collector's login on the hosts you trust. When the per-user roles arrive, their 'change
++shared views' right replaces this list.
++
+ ## Instances added in the page
+ 
+ Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
+diff --git c/internal/config/config.go i/internal/config/config.go
+index ce855797..2edcdbb1 100644
+--- c/internal/config/config.go
++++ i/internal/config/config.go
+@@ -33,6 +33,8 @@ type Config struct {
+ 	QueryText string `yaml:"query_text"`
+ 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
+ 	UI UI `yaml:"ui"`
++	// Views: the saved views' one setting (0259; web/q_views.go): who may write shared views.
++	Views Views `yaml:"views"`
+ 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
+ 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
+ 	// collects nothing from SQL Server itself.
+@@ -253,6 +255,13 @@ func (c *Config) validateDBADash() error {
+ 	return nil
+ }
+ 
++// Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
++type Views struct {
++	// SharedEditors: the UI users who may create, change, delete and set the default of shared views; none = nobody
++	// (every signed-in user still saves personal views and reads the shared ones).
++	SharedEditors []string `yaml:"shared_editors"`
++}
++
+ // UI is the ui: block: the tree's folder levels and the order of the values in them.
+ type UI struct {
+ 	// GroupBy lists tag keys, one folder level each, in order (e.g. [env, team]); empty = one folder per tag.
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 9e87cd1d..9569d5d9 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -261,6 +261,13 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
+ 	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
+ 	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
++	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
++	api.HandleFunc("GET /api/views", s.Views)
++	api.HandleFunc("POST /api/views", s.ViewSave)
++	api.HandleFunc("POST /api/views/delete", s.ViewDelete)
++	// a dashboard's composed panel, compiled and read (VIEWS slice C; compose.go, q_compose.go)
++	api.HandleFunc("POST /api/compose/run", s.ComposeRun)
++	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
+ 	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
+ 	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
+ 	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)

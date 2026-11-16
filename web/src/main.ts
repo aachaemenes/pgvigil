@@ -40,7 +40,8 @@ import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { closeRange, rangePicker } from './rangepicker';
 import { fmt, fmtClock } from './tz';
-import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
+import { groupOf, groupsFor, href, isLive, isMssql, onAddressNoted, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, tagPages, window_, drillHome } from './router';
+import { resolveView, setMailRender } from './views';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
 import { runningFleet } from './running_fleet';
@@ -424,7 +425,7 @@ async function render(force = false) {
   timer = undefined;
   const gen = ++generation;
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
-  const ctx = parse();
+  let ctx = parse();
   // the cut reads said under the range bar are this draw's, of this window's length (api.ts)
   const w0 = window_(ctx);
   startReads(Date.parse(w0.to) - Date.parse(w0.from));
@@ -469,6 +470,14 @@ async function render(force = false) {
     ctx.tab = 'summary';
     history.replaceState(null, '', href(ctx, { tab: 'summary' }));   // the address says the page shown, so a reload does not repeat the fallback
   }
+  // a saved view (views.ts, VIEWS slice B), before the page draws: view= loads its layouts; on entering a page (another
+  // tab, instance or tag before it, or the first render) with no view= and none of its keys, the user's default view is
+  // written into the address and read again here, so the page draws once, as the view says
+  try {
+    // gen === generation: a render the reader left while its view reads were out writes nothing (review B1)
+    if (await resolveView(ctx, `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}` !== shownPath, () => gen === generation)) { ctx = parse(); shownPage = location.hash; }
+  } catch { /* the view store failed: the page draws from its address alone */ }
+  if (gen !== generation) return;
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
@@ -564,6 +573,7 @@ async function render(force = false) {
   // page keeps the place
   const path = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
   if (path !== shownPath) { shownPath = path; window.scrollTo(0, 0); }
+  window.dispatchEvent(new CustomEvent('pgvigil:drawn'));   // the View control counts a view's layouts that found no grid
   void statusLine(ctx, livePage);
   const live = ctx.instance ? liveInstance : liveRoot;
   if (live.has(ctx.tab) && isLive(ctx) && !ctx.at && refreshSecs() > 0) {
@@ -577,6 +587,8 @@ installFileDrop();
 setTreeHidden(treeHiddenSaved());
 $('show-tree').addEventListener('click', () => setTreeHidden(false));
 window.addEventListener('hashchange', () => { if (!loginShown) void render(); });
+// a page that writes its own keys (router.ts noteAddress) stays the page on screen: no 'Loading...' at the next refresh
+onAddressNoted(() => { shownPage = location.hash; });
 // the tab row sticks under the header: the header's height and the tab row's (each wraps on a narrow window) are kept
 // in --head-h and --tabs-h, so the row sits under the header and a focused control is scrolled clear of both
 const headEl = document.querySelector('header'), tabsEl = document.getElementById('tabs');
@@ -590,7 +602,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && ti
 // a hidden tab's mark: the fleet's status every 60 s (task 191); none on the sign-in form or with auto refresh Off
 watchHiddenTab(() => loginShown || refreshSecs() === 0);
 // a schedule's headless render (task 171): the render key leaves the address before the first render
-mailRenderBoot();
+setMailRender(mailRenderBoot());   // and a render takes no saved view (views.ts): the schedule's address alone
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
   try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }

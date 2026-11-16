@@ -197,6 +197,9 @@ func slowFilterOf(r *http.Request) (slowFilter, error) {
 	return f, nil
 }
 
+// slowGroupsAll: the most groups Top ALL reads (web/src/slow.ts ALL_CAP)
+const slowGroupsAll = 5000
+
 // SlowGroups serves the Group By grid of the Slow queries pages (an instance, or the fleet without ?instance=).
 func (s *Server) SlowGroups(w http.ResponseWriter, r *http.Request) {
 	f, err := slowFilterOf(r)
@@ -204,10 +207,13 @@ func (s *Server) SlowGroups(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// top: 1..1000 groups, or all = at most slowGroupsAll (D26's Top ALL; the page says when that cap cut)
 	top := 50
-	if v := r.URL.Query().Get("top"); v != "" {
-		if top, err = strconv.Atoi(v); err != nil || top < 1 || top > 500 {
-			writeErr(w, http.StatusBadRequest, errors.New("top must be 1..500"))
+	if v := r.URL.Query().Get("top"); v == "all" {
+		top = slowGroupsAll
+	} else if v != "" {
+		if top, err = strconv.Atoi(v); err != nil || top < 1 || top > 1000 {
+			writeErr(w, http.StatusBadRequest, errors.New("top must be 1..1000, or all"))
 			return
 		}
 	}

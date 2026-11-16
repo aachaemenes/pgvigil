@@ -18,6 +18,7 @@ import { fmtMetric } from './alert_rules';
 import { exportButtons } from './export';
 import { loadAckSafe, AckData, offBeside, writeButton } from './ack';
 import { whatIsThis } from './sqlview';
+import { withMark } from './own';
 
 interface AlertPageData { card: Table | null; occurrences: Table | null; sends: Table | null; notes: Table | null }
 
@@ -67,11 +68,12 @@ function instanceLinks(ctx: Ctx, instanceId: number, engine: unknown, win: { fro
   const range = win ? { from: win.from, to: win.to } : { preset: '1h' };
   const mk = (tab: string, label: string, over: Partial<Ctx> = {}) => el('a', { href: href(ctx, { tab, instance: instanceId, range, ...over }) }, label);
   const links: HTMLElement[] = [mk('summary', 'Summary'), mk('findings', 'Findings'), mk('counters', 'Metrics'), mk('performance', 'Performance')];
-  if (engine === 'sqlserver') links.push(mk('mssql_running', 'Running queries'), mk('mssql_waits', 'Waits'), mk('mssql_blocked', 'Blocked reports'));
+  // Running queries opens with pgvigil's own sessions shown (B24 OWN): the session an alert names is never hidden one click later
+  if (engine === 'sqlserver') links.push(mk('mssql_running', 'Running queries', { own: true }), mk('mssql_waits', 'Waits'), mk('mssql_blocked', 'Blocked reports'));
   else {
     // the running queries at the firing: the activity snapshot nearest the first send
     const at = win && firedAt != null ? { at: new Date(Date.parse(String(firedAt))).toISOString() } : {};
-    links.push(mk('activity', 'Running queries', at), mk('waits', 'Waits'), mk('logs', 'Logs'));
+    links.push(mk('activity', 'Running queries', { ...at, own: true }), mk('waits', 'Waits'), mk('logs', 'Logs'));
     if (String(source ?? '').includes('vacuum') || String(source ?? '') === 'pg_gather') links.push(mk('vacuum', 'Vacuum'), mk('config', 'Configuration'));
   }
   const out = el('p', { class: 'meta' }, win ? 'The instance at the firing: ' : 'The instance now: ');
@@ -135,7 +137,9 @@ const msCols = ['session_id', 'blocking_session_id', 'head_session_id', 'status'
 function liveGrid(rows: Row[], keys: string[], empty: string, idleLast: boolean): HTMLElement {
   if (idleLast) rows = [...rows.filter(r => r.state !== 'idle'), ...rows.filter(r => r.state === 'idle')];
   const have = keys.filter(k => rows.some(r => k in r));
-  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}) }));
+  // the session id carries the 'pgvigil' mark on pgvigil's own rows (the reads ask own=1: review part 2 L4)
+  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}),
+    ...(k === 'pid' || k === 'session_id' ? { fmt: (v: unknown, r: Row) => withMark(String(v ?? ''), r) } : {}) }));
   const g = grid(rows.slice(0, 20), cols, empty);
   return rows.length > 20 ? el('div', {}, g, el('p', { class: 'meta' }, `${rows.length - 20} more not shown: the instance's running queries page at that time holds them all.`)) : g;
 }
@@ -186,8 +190,9 @@ function evidence(instanceId: number, engine: unknown, win: { from: string; to: 
     return el('p', { class: 'meta' }, `The snapshot of ${fmtTime(snap)}` + (at ? (Math.abs(gap) > 15 ? `, ${gap} minutes before the first send: the activity collection read nothing nearer (the snapshot may say little of the firing).` : `, ${gap} minute(s) before the first send.`) : '.'));
   };
   (ms
-    ? get<{ rows: Table | null }>('mssql/running', { instance: instanceId, at }).then(d => { const rows = rowsOf(d.rows); return el('div', {}, said(rows[0]?.snapshot_at), liveGrid(rows, msCols, 'No request was running in that snapshot.', false)); })
-    : get<{ sessions: Table | null; snapshot_at?: unknown }>('activity', { instance: instanceId, at }).then(d => el('div', {}, said(d.snapshot_at), liveGrid(rowsOf(d.sessions), pgCols, 'No session in that snapshot.', true))))
+    // own=1 (B24 OWN): an alert's evidence shows every session, pgvigil's own included
+    ? get<{ rows: Table | null }>('mssql/running', { instance: instanceId, at, own: 1 }).then(d => { const rows = rowsOf(d.rows); return el('div', {}, said(rows[0]?.snapshot_at), liveGrid(rows, msCols, 'No request was running in that snapshot.', false)); })
+    : get<{ sessions: Table | null; snapshot_at?: unknown }>('activity', { instance: instanceId, at, own: 1 }).then(d => el('div', {}, said(d.snapshot_at), liveGrid(rowsOf(d.sessions), pgCols, 'No session in that snapshot.', true))))
     .then(g => live.replaceChildren(title, g))
     .catch((e: unknown) => live.replaceChildren(title, errorBox(e)));
   return box;

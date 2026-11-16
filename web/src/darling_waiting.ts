@@ -12,8 +12,11 @@ import { Ctx, href, window_ } from './router';
 import { hashParam } from './dbinfo';
 import { Col, el, fmtNum, fmtTime, grid, tile } from './ui';
 import { waitDocs } from './doclinks';
+import { ownBar, ownOf, ownParam, withMark } from './own';
 
-interface WaitingData { snapshots?: Table | null; tasks?: Table | null; bytype?: Table | null; pg?: Table | null; pgbytype?: Table | null }
+interface WaitingData { snapshots?: Table | null; tasks?: Table | null; bytype?: Table | null; pg?: Table | null; pgbytype?: Table | null; own_hidden?: Table | null }
+// pgvigil's own tasks and backends (B24 OWN) are left out of the wait-type tables unless the switch is on (no count there)
+const ownLeftOut = (ctx: Ctx, what: string) => ctx.own ? '' : ` pgvigil's own ${what} are left out unless the switch is on.`;
 
 // the tab's own link: one read (at) and one wait (wt), the range kept
 function waitingHref(ctx: Ctx, tab: string, at?: string, wt?: string): string {
@@ -66,7 +69,7 @@ export function waitingLink(waitType: string, inner: Node | string): HTMLElement
 // mssqlWaitingView: a SQL Server instance's Waiting tasks tab
 export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   const w = window_(ctx), at = hashParam('at'), wt = hashParam('wt');
-  const d = await get<WaitingData>('waiting', { instance: ctx.instance, from: w.from, to: w.to, ...(at ? { at } : {}), ...(wt ? { wait: wt } : {}) });
+  const d = await get<WaitingData>('waiting', { instance: ctx.instance, from: w.from, to: w.to, ...(at ? { at } : {}), ...(wt ? { wait: wt } : {}), own: ownParam(ctx) });
   const snaps = rowsOf(d.snapshots), tasks = rowsOf(d.tasks), types = rowsOf(d.bytype);
   const reads = snaps.map(r => iso(r.snapshot_at));
   const cur = tasks.length ? iso(tasks[0].snapshot_at) : at && reads.includes(at) ? at : reads.length && !at ? reads[reads.length - 1] : undefined;
@@ -79,17 +82,26 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   }
   const blocked = tasks.filter(byOther).length;
   const sessions = new Set(tasks.map(r => r.session_id)).size;
+  const hiddenTasks = Number(ownOf(d.own_hidden).tasks ?? 0);
+  const shownLongest = tasks.reduce<number | null>((m, r) => r.wait_ms == null ? m : Math.max(m ?? 0, Number(r.wait_ms)), null);
+  const ownLongest = !ctx.own && hiddenTasks > 0 ? shownLongest : snap?.longest_ms == null ? null : Number(snap.longest_ms);
   sec.append(el('div', { class: 'tiles' },
     tile(wt ? `Tasks waiting on ${wt}` : 'Tasks waiting', fmtNum(wt ? tasks.length : Number(snap?.tasks ?? tasks.length))),
     tile('Sessions', fmtNum(wt ? sessions : Number(snap?.sessions ?? sessions))),
     tile('Blocked by a session', fmtNum(blocked), blocked ? 'warn' : 'ok'),
     tile('THREADPOOL waiters', fmtNum(Number(snap?.threadpool ?? 0)), Number(snap?.threadpool ?? 0) ? 'crit' : 'ok'),
-    tile('Longest wait', snap?.longest_ms == null ? 'none' : ms(snap.longest_ms))),
+    // with pgvigil's own tasks hidden the tile is the shown tasks' longest (the design's figure table: it follows the switch)
+    tile('Longest wait', ownLongest == null ? 'none' : ms(ownLongest))),
     readNav(ctx, 'mssql_waiting', reads, cur, wt, 'Read at'), filterLine(ctx, 'mssql_waiting', cur, wt, 'tasks'));
+  // pgvigil's own sessions (B24 OWN): Tasks waiting and Sessions without a wait type are the read's own count of every
+  // task; with one, and the grid, they follow the switch
+  const oh = ownOf(d.own_hidden);
+  sec.append(ownBar(ctx, { hidden: Number(oh.tasks ?? 0), includes: wt ? 0 : Number(oh.own_tasks ?? 0), includesWhat: 'the waiting tasks above',
+    snapshotAt: cur, since: oh.since }).bar);
   if (snap && Number(snap.stored) < Number(snap.tasks)) sec.append(el('p', { class: 'meta' }, `The ${fmtNum(Number(snap.stored))} longest of ${fmtNum(Number(snap.tasks))} waiting tasks are kept for this read.`));
   if (snap?.decode_note) sec.append(el('p', { class: 'meta' }, `Not every resource was named: ${String(snap.decode_note)}.`));
   const cols: Col[] = [
-    { key: 'session_id', label: 'session', num: true, fmt: (v, r) => Number(r.tasks_of_session) > 1 ? `${String(v)} (${String(r.tasks_of_session)} tasks)` : String(v ?? '') },
+    { key: 'session_id', label: 'session', num: true, fmt: (v, r) => withMark(Number(r.tasks_of_session) > 1 ? `${String(v)} (${String(r.tasks_of_session)} tasks)` : String(v ?? ''), r) },
     { key: 'exec_context_id', label: 'context', num: true, fmt: v => String(v ?? '') },
     { key: 'wait_type', label: 'wait', fmt: v => el('span', {}, el('a', { href: waitingHref(ctx, 'mssql_waiting', cur, String(v)), title: `the tasks waiting on ${String(v)}` }, String(v)), waitDocs(v)) },
     { key: 'wait_ms', label: 'waited', num: true, fmt: v => ms(v) },
@@ -107,7 +119,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   ];
   sec.append(el('h3', {}, 'The tasks of this read'), grid(tasks, cols, wt ? `No task waited on ${wt} in this read.` : 'No task waited in this read (beyond the benign waits).'));
   sec.append(el('h3', {}, 'Wait types over the range'),
-    el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, counted read by read (a session waiting in two reads counts twice; a session id can go to a later session once its session ends), in how many reads, the longest wait seen and when it was last seen. A wait type opens the read where it was last seen, filtered to it.'),
+    el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, counted read by read (a session waiting in two reads counts twice; a session id can go to a later session once its session ends), in how many reads, the longest wait seen and when it was last seen. A wait type opens the read where it was last seen, filtered to it.' + ownLeftOut(ctx, 'tasks')),
     grid(types, [
       { key: 'wait_type', label: 'wait', fmt: (v, r) => el('span', {}, el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)), waitDocs(v)) },
       { key: 'tasks', num: true }, { key: 'sessions', num: true }, { key: 'reads', num: true },
@@ -120,7 +132,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
 // pgWaitingView: the PostgreSQL twin over the running-queries samples
 export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
   const w = window_(ctx), at = hashParam('at'), wt = hashParam('wt');
-  const d = await get<WaitingData>('waiting', { instance: ctx.instance, from: w.from, to: w.to, ...(at ? { at } : {}), ...(wt ? { wait: wt } : {}) });
+  const d = await get<WaitingData>('waiting', { instance: ctx.instance, from: w.from, to: w.to, ...(at ? { at } : {}), ...(wt ? { wait: wt } : {}), own: ownParam(ctx) });
   const rows = rowsOf(d.pg), types = rowsOf(d.pgbytype);
   const cur = rows.length ? iso(rows[0].snapshot_at) : at;
   const sec = el('section', {}, el('h2', {}, 'Waiting backends'),
@@ -131,9 +143,12 @@ export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
     tile('Lock waits', fmtNum(locks), locks ? 'warn' : 'ok')),
     el('p', { class: 'meta' }, `Sample ${cur ? fmtTime(cur) : '(the newest)'}: `, el('a', { href: waitingHref(ctx, 'waiting', undefined, wt) }, 'Latest')),
     filterLine(ctx, 'waiting', cur, wt, 'backends'));
+  // pgvigil's own backends (B24 OWN): both tiles count the rows below, so they follow the switch
+  const oh = ownOf(d.own_hidden);
+  sec.append(ownBar(ctx, { hidden: Number(oh.pg ?? 0), snapshotAt: cur, since: oh.since }).bar);
   const key = (r: Row) => `${String(r.wait_event_type)}:${String(r.wait_event)}`;
   sec.append(el('h3', {}, 'The backends of this sample'), grid(rows, [
-    { key: 'pid', num: true, fmt: v => String(v ?? '') },
+    { key: 'pid', num: true, fmt: (v, r) => withMark(String(v ?? ''), r) },
     { key: 'leader_pid', label: 'leader', num: true, fmt: (v, r) => v == null || v === r.pid ? '' : String(v) },
     { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', cur, key(r)), title: `the backends waiting on ${key(r)}` }, key(r)) },
     { key: 'in_state_s', label: 'in this state', num: true, fmt: v => v == null ? '' : `${String(v)} s` },
@@ -143,7 +158,7 @@ export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'query', fmt: v => oneLine(v) },
   ], wt ? `No backend waited on ${wt} in this sample.` : 'No backend waited in the newest sample of this range (or no sample was taken in it).'));
   sec.append(el('h3', {}, 'Wait events over the range'),
-    el('p', { class: 'meta' }, 'From the stored samples: how many sampled backends (client backends, and the processes that block a lock waiter) waited on each, counted sample by sample (a backend waiting in two samples counts twice; a pid can come back for a later backend), in how many samples, and when it was last seen. A wait event opens the sample where it was last seen, filtered to it.'),
+    el('p', { class: 'meta' }, 'From the stored samples: how many sampled backends (client backends, and the processes that block a lock waiter) waited on each, counted sample by sample (a backend waiting in two samples counts twice; a pid can come back for a later backend), in how many samples, and when it was last seen. A wait event opens the sample where it was last seen, filtered to it.' + ownLeftOut(ctx, 'backends')),
     grid(types, [
       { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', iso(r.last_seen), key(r)), title: `the sample where ${key(r)} was last seen` }, key(r)) },
       { key: 'backends', num: true }, { key: 'samples', num: true }, { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },

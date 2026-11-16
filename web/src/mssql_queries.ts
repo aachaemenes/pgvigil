@@ -15,6 +15,7 @@ import { sqlCell } from './sqlview';
 import { rereadStrip, stripOverlay, timeStrip } from './timestrip';
 import { Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 import { waitDocs } from './doclinks';
+import { ownOf, ownParam, withMark } from './own';
 
 export const mssqlQueriesTab = 'mssqlqueries';
 const HEAD = 10;   // a section's rows: the head of its full tab's own read
@@ -283,11 +284,11 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
   const pcSeries = () => (pc ??= get<Record<string, Table | null>>('mssql/plancache', { ...q, part: 'series' }));
 
   sec.append(part('active', 'Active queries', [href(ctx, { tab: 'mssql_running' }), 'Running queries'], async body => {
-    const d = await get<Record<string, Table | null>>('mssql/running', q);
+    const d = await get<Record<string, Table | null>>('mssql/running', { ...q, own: ownParam(ctx) });
     const snaps = rowsOf(d.snapshots), rows = rowsOf(d.rows);
     const t0 = Date.parse(win.from), t1 = Date.parse(win.to);
     const headGrid = (rs: Row[], empty = 'No request in the newest snapshot of this range.') => grid(rs.slice(0, HEAD), [
-      { key: 'session_id', label: 'session', num: true, fmt: v => String(v) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on', fmt: v => v == null ? '' : el('span', {}, String(v), waitDocs(v)) },
+      { key: 'session_id', label: 'session', num: true, fmt: (v, r) => withMark(String(v), r) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on', fmt: v => v == null ? '' : el('span', {}, String(v), waitDocs(v)) },
       { key: 'elapsed_ms', label: 'running for', num: true, fmt: dur }, { key: 'database_name', label: 'database' }, { key: 'statement', fmt: stmt },
     ], empty);
     // the rows part reads the newest snapshot at or before 'to' with no lower bound: a snapshot older than the range is
@@ -295,14 +296,16 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
     const ofRange = (rs: Row[]) => rs.length && Date.parse(text(rs[0].snapshot_at)) >= t0 ? rs : [];
     const NONE = 'No Running snapshot was taken in this range.';
     const g = el('div', {}, snaps.length ? headGrid(ofRange(rows)) : headGrid([], NONE));
-    const at = el('p', { class: 'meta' }, snaps.length ? `The newest snapshot of the range, ${fmtTime(snaps[0].snapshot_at)}: its first ${HEAD} requests.` : '');
+    // pgvigil's own sessions (B24 OWN) the read hid, said after the line; the Running queries page has the switch
+    const hid = (x: Record<string, Table | null>) => { const n = Number(ownOf(x.own_hidden).sessions ?? 0); return n && !ctx.own ? ` pgvigil's own sessions (${n} hidden): the Running queries page's switch shows them.` : ''; };
+    const at = el('p', { class: 'meta' }, snaps.length ? `The newest snapshot of the range, ${fmtTime(snaps[0].snapshot_at)}: its first ${HEAD} requests.${hid(d)}` : '');
     let asked = 0;   // a newer drag's answer wins: an older, slower one is dropped
-    const strip = timeStrip('Requests per snapshot', t0, t1, snaps.map(s => Date.parse(text(s.snapshot_at))), (_a, b) => {
+    const strip = timeStrip('Requests per snapshot (every session, pgvigil\'s own included)', t0, t1, snaps.map(s => Date.parse(text(s.snapshot_at))), (_a, b) => {
       const when = b === undefined ? undefined : iso(Math.min(b, t1)), mine = ++asked;
-      void get<Record<string, Table | null>>('mssql/running', { ...q, at: when }).then(x => {
+      void get<Record<string, Table | null>>('mssql/running', { ...q, at: when, own: ownParam(ctx) }).then(x => {
         if (mine !== asked) return;
         const s = ofRange(rowsOf(x.rows));
-        at.textContent = when ? `The snapshot at or before ${fmtTime(when)}: its first ${HEAD} requests.` : `The newest snapshot of the range: its first ${HEAD} requests.`;
+        at.textContent = (when ? `The snapshot at or before ${fmtTime(when)}: its first ${HEAD} requests.` : `The newest snapshot of the range: its first ${HEAD} requests.`) + hid(x);
         g.replaceChildren(headGrid(s, when ? `No Running snapshot of this range is at or before ${fmtTime(when)}.` : NONE));
       }).catch(e => { if (mine === asked) g.replaceChildren(errorBox(e)); });
     }, snaps.length >= 1500 ? `The newest 1,500 snapshot times of the range (the Running page's own list).` : '',

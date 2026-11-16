@@ -261,8 +261,8 @@ for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && b
 kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.log" >&2; fail "D: serve exited"; }
 printf '{"username":"%s","password":"%s"}' "$USR" "$UPW" > "$TMPD/login.json"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' -c "$TMPD/cj" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/login.json" "$U/api/login")" == 200 ]] || fail "D: the UI login"
-curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$SB" > "$TMPD/api.json"
-curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$PGI" > "$TMPD/apipg.json"
+curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$SB&own=1" > "$TMPD/api.json"
+curl -s -b "$TMPD/cj" "$U/api/waiting?instance=$PGI&own=1" > "$TMPD/apipg.json"
 api=$(python3 - "$TMPD/api.json" "$TMPD/apipg.json" "$WP" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1])); g = json.load(open(sys.argv[2]))

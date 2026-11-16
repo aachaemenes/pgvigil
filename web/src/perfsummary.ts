@@ -6,6 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { Col, el, fmtBytes, fmtNum, fmtSecs, grid } from './ui';
 import { tagWords } from './fleet';
+import { viewControl } from './views';
 
 interface Data { pg: Table | null; mssql: Table | null }
 
@@ -89,7 +90,10 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only'),
     el('li', {}, 'Azure SQL Database: CPU is the database\'s share of its limit from sys.dm_db_resource_stats (mssql_azuredb_resources, VIEW DATABASE STATE), the minutes weighed by their 15-second samples')));
-  sec.append(th);
+  // DBA Dash's View drop-down (D23): {None} and the saved views - this page's state is its grid's layout (and, when a
+  // view is saved with it, the time range)
+  const vc = viewControl(ctx, { read: () => ({}) });
+  sec.append(el('div', { class: 'toolbar', style: 'display:flex;gap:.4rem;align-items:center' }, vc.button), vc.notes, th);
   const link = (r: Row, tab: string) => el('a', { href: href(ctx, { tab, instance: Number(r.instance_id), tag: undefined }) }, String(r.instance));
   const notRead = (r: Row) => r.platform === 'azuresqldb' ? muted('not read', 'no mssql_azuredb_resources read in the range (VIEW DATABASE STATE)')
     : muted('not read', 'no mssql_cpu read in the range (VIEW SERVER STATE)');
@@ -146,6 +150,8 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'now_blocked', label: 'blocked now', num: true, fmt: (v, r) => nowCell(v, r, fmtNum) },
   ];
   sec.append(el('p', { class: 'meta' }, `${rows.length} instance(s); * = Lock wait estimated from the activity samples`));
-  sec.append(grid(rows, cols, 'No instance in this scope.'));
+  const g = grid(rows, cols, 'No instance in this scope.');
+  g.querySelector('table.grid')?.setAttribute('data-grid-name', 'Performance summary');   // its name in a saved view
+  sec.append(g);
   return sec;
 }

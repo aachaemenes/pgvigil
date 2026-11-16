@@ -78,6 +78,7 @@ SELECT i.instance_id, i.name AS instance, i.engine, a.snapshot_at,
                       WHERE s.instance_id = i.instance_id AND s.snapshot_at = a.snapshot_at
                         AND s.state = 'active' AND s.query_start IS NOT NULL
                         AND coalesce(s.backend_type, 'client backend') = 'client backend'
+                        AND NOT (` + ownHidePg + `)   -- B24 OWN: never a row the instance page hides
                       ORDER BY s.query_start, s.pid LIMIT 1) l ON a.snapshot_at IS NOT NULL
  WHERE i.is_active AND i.engine <> 'sqlserver'
 UNION ALL
@@ -108,9 +109,10 @@ SELECT i.instance_id, i.name, i.engine, m.snapshot_at,
                       CROSS JOIN LATERAL (SELECT CASE WHEN q.wait_type LIKE 'PAGELATCH%' THEN pgvigil.mssql_tempdb_page_kind(q.wait_type, q.wait_resource) END AS kind) k
                       WHERE q.instance_id = i.instance_id AND q.snapshot_at = m.snapshot_at) r ON m.snapshot_at IS NOT NULL
   LEFT JOIN LATERAL (SELECT q.elapsed_ms, q.session_id, left(q.statement, 4000) AS statement
-                       FROM pgvigil.mssql_requests_v q
+                       FROM pgvigil.mssql_requests_v q` + ownLateralMssql + `
                       WHERE q.instance_id = i.instance_id AND q.snapshot_at = m.snapshot_at
                         AND q.request_id IS NOT NULL AND NOT q.wait_is_benign AND q.elapsed_ms IS NOT NULL
+                        AND NOT (` + ownHideMssql + `)   -- B24 OWN: never a row the instance page hides
                       ORDER BY q.elapsed_ms DESC, q.session_id LIMIT 1) l ON m.snapshot_at IS NOT NULL
  WHERE i.is_active AND i.engine = 'sqlserver'
  ORDER BY 9 DESC NULLS LAST, 11 DESC NULLS LAST, 2

@@ -51,11 +51,19 @@ func (s *Server) Waiting(w http.ResponseWriter, r *http.Request) {
 	} else {
 		at = &to // no read named: the newest read of the range, never one after it
 	}
+	// own=1 shows pgvigil's own sessions (B24 OWN, 0265: is_own decided by the collector); by default they are hidden
+	// unless a reason shows them (the functions' hide); own_hidden counts what the default hid, per engine
+	own := r.URL.Query().Get("own") == "1"
 	s.multiPart(w, r, []part{
 		{"snapshots", `SELECT * FROM pgvigil.mssql_waiting_snapshots($1, $2, $3)`, []any{id, from, to}},
-		{"tasks", `SELECT * FROM pgvigil.mssql_waiting_at($1, $2, $3)`, []any{id, at, wait}},
-		{"bytype", `SELECT * FROM pgvigil.mssql_waiting_by_type($1, $2, $3)`, []any{id, from, to}},
-		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3)`, []any{id, at, wait}},
-		{"pgbytype", `SELECT * FROM pgvigil.pg_waiting_by_type($1, $2, $3)`, []any{id, from, to}},
+		{"tasks", `SELECT * FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide`, []any{id, at, wait, own}},
+		{"bytype", `SELECT * FROM pgvigil.mssql_waiting_by_type($1, $2, $3, $4)`, []any{id, from, to, own}},
+		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide`, []any{id, at, wait, own}},
+		{"pgbytype", `SELECT * FROM pgvigil.pg_waiting_by_type($1, $2, $3, $4)`, []any{id, from, to, own}},
+		// own_hidden: the tasks / backends the default hid; the read's own tasks in all (the tiles' 'includes n of
+		// pgvigil's own'); since: when the repository began to mark them (a read before it marks none)
+		{"own_hidden", `SELECT (SELECT count(*) FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE w.hide AND NOT $4::boolean) AS tasks,
+       (SELECT count(*) FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE w.hide AND NOT $4::boolean) AS pg,
+       (SELECT count(*) FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE w.is_own) AS own_tasks, ` + ownSince + ` AS since`, []any{id, at, wait, own}},
 	})
 }

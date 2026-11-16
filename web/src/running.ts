@@ -28,6 +28,7 @@ import { pgBlockingHistory } from './blocking_history';
 import { sqlCell, whatIsThis } from './sqlview';
 import { poolerConns, poolerKnown, STALE_MS } from './pooler';
 import { fromInput, toInput } from './tz';
+import { ownBar, ownOf, ownParam, withMark } from './own';
 
 const TAB = 'activity';
 const idleNote = 'This session is idle in a transaction: the text is the LAST statement it ran, not one running now.';
@@ -227,7 +228,7 @@ function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElemen
 export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   if (!ctx.instance) return el('p', { class: 'empty' }, 'Pick an instance in the tree on the left.');
   const at = ctx.at ?? (isLive(ctx) ? undefined : window_(ctx).to);
-  const [a, act] = await Promise.all([get<Activity>('activity', { instance: ctx.instance, at }), actionsState(ctx.instance)]);
+  const [a, act] = await Promise.all([get<Activity>('activity', { instance: ctx.instance, at, own: ownParam(ctx) }), actionsState(ctx.instance)]);
   // the steps around the snapshot the activity read chose, read after it (two parallel reads of 'the newest' can
   // straddle a new minute's snapshot); a convenience: a server without the endpoint leaves the buttons off
   const stepsT = a.snapshot_at
@@ -256,6 +257,11 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
     el('span', { class: ch.blocked ? 'crit' : '' }, `Blocked sessions: ${fmtNum(ch.blocked)}` + (ch.blocked ? ` behind ${ch.heads.length} head(s), longest blocked ${fmtSecs(longestWait) || '0s'}` : '')),
     `; sessions ${fmtNum(sum.total)}, active ${fmtNum(sum.active)}, idle in transaction ${fmtNum(sum.idle_in_txn)}`,
     `; longest statement ${longestStmt == null ? '-' : fmtSecs(longestStmt)}, oldest transaction ${oldestTxn == null ? '-' : fmtSecs(oldestTxn)}`));
+  // pgvigil's own sessions (B24 OWN): the switch; the sessions / active / idle counts above are the server's own count of
+  // every backend, pgvigil's included (the longest statement and the oldest transaction follow the switch)
+  const oh = ownOf(a.own_hidden);
+  sec.append(ownBar(ctx, { hidden: Number(oh.sessions ?? 0), includes: Number(oh.own_sessions ?? 0), includesWhat: 'the sessions above',
+    snapshotAt: a.snapshot_at, since: oh.since }).bar);
   if (pc && rowsOf(pc.read).length) {
     const trace = rowsOf(pc.trace);
     const waiting = trace.reduce((n, t) => n + Number(t.clients_waiting ?? 0), 0);
@@ -293,7 +299,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
 
   if (ch.tree.length) {
     const treeCols: Col[] = [
-      { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${Number(r._depth) * 1.2}em` }, (Number(r._depth) > 0 ? '└ ' : '') + String(v)) },
+      { key: 'pid', fmt: (v, r) => el('span', { style: `padding-left:${Number(r._depth) * 1.2}em` }, withMark((Number(r._depth) > 0 ? '└ ' : '') + String(v), r)) },
       { key: '_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? ''), cls: v => v && v !== 'head' ? 'status none' : '' },
       { key: '_behind', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
       { key: 'state', fmt: (v, r) => r._absent ? el('span', { class: 'meta', title: 'The head\'s own row is not in this sample (a background worker, or a session gone by the read).' }, String(v ?? '')) : String(v ?? '') },
@@ -319,7 +325,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
       _behind: ch.behind.get(pid) ?? 0, _wait: r.wait_event_type == null ? '' : `${String(r.wait_event_type)}: ${String(r.wait_event ?? '')}` };
   });
   const cols: Col[] = [
-    { key: 'pid', num: true, fmt: v => String(v) },
+    { key: 'pid', num: true, fmt: (v, r) => withMark(String(v), r) },
     { key: 'state' },
     { key: '_wait', label: 'wait', fmt: waitCell, cls: waitCls },
     { key: '_blockedby', label: 'blocked by' },
