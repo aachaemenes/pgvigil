@@ -24,7 +24,8 @@
 #  W  the switch's route POST /api/mssql/blitz/settings: an operator and a viewer get 403 'changing the weekly
 #     sp_Blitz needs the admin role' and nothing is written; the admin writes (200 'done', an admin_audit row
 #     op mssql_blitz_instance outcome done); run_hour 25 and the zone 'Mars/Olympus' are 409 refused with words, an
-#     admin_audit row each outcome refused, the site row unchanged.
+#     admin_audit row each outcome refused, the site row unchanged; an instance write without 'enabled' is 400 'names its
+#     switch' and writes nothing (review-22 bzweb SF1).
 #  G  off by default: a fresh instance's state is 'off' with the words 'the site default is off'; collect -once
 #     mssql_blitz says skipped with those words and stores no run; its collection_dates note holds them. The site
 #     default on: an instance with no row of its own is 'due' and runs; its own switch off wins over the site's on
@@ -55,7 +56,8 @@
 #  M  import_mssql_blitz refuses a PostgreSQL instance; the same payload twice stores one run.
 #  P  the page (admin): #/findings?i=N has the section 'sp_Blitz weekly'; one folding group per FindingsGroup of the
 #     shown run plus All, each summary naming its group and count; every http(s) URL cell a link; a judged CheckID a
-#     link to the instance's Checks tab; the database filter lists every DatabaseName of the run. As the viewer: the
+#     link to the instance's Checks tab; the database filter lists every DatabaseName of the run; the section holds ONE
+#     grid while the groups and the runs are folded (the page's export takes every grid: review-22 bzweb SF2). As the viewer: the
 #     instance's Save is off (aria-disabled) and the page says 'changing the weekly sp_Blitz needs the admin role'.
 #  The last line 'PASS proof-blitz (W G A H C D E F I J K M P)' and exit 0; any row's FAIL prints and the end is
 #  'FAIL: proof-blitz: <n> row(s)' and exit 1.
@@ -197,6 +199,8 @@ for who in bzop$SUF bzview$SUF; do
   c=$(post "$who" "{\"op\":\"instance\",\"instance_id\":$I,\"enabled\":true}")
   [[ $c == 403 && $(cat "$WORK/post.body") == *"changing the weekly sp_Blitz needs the admin role"* ]] && ok "W: $who refused 403 in the admin words" || bad "W: $who: $c $(cat "$WORK/post.body")"
 done
+c=$(post $A "{\"op\":\"instance\",\"instance_id\":$I,\"proc_db\":\"master\"}")
+[[ $c == 400 && $(cat "$WORK/post.body") == *"names its switch"* ]] && ok "W: an instance write without its switch refused 400" || bad "W: an instance write without enabled: $c $(cat "$WORK/post.body")"
 [[ $(q "select count(*) from pgvigil.mssql_blitz_setting") == 0 && $(q "select count(*) from pgvigil.admin_audit") == "$aud0" ]] && ok "W: the refused writes wrote nothing" || bad "W: a refused write wrote a row"
 c=$(post $A '{"op":"site","run_hour":25}'); [[ $c == 409 && $(cat "$WORK/post.body") == *hour* ]] && ok "W: run_hour 25 refused 409 ($(cat "$WORK/post.body"))" || bad "W: run_hour 25: $c $(cat "$WORK/post.body")"
 c=$(post $A '{"op":"site","run_tz":"Mars/Olympus"}'); [[ $c == 409 && $(cat "$WORK/post.body") == *"time zone"* ]] && ok "W: the zone Mars/Olympus refused 409" || bad "W: the zone: $c $(cat "$WORK/post.body")"
@@ -357,7 +361,8 @@ for (let i = 0; i < 60 && !out; i++) {
     const judged = all ? [...all.querySelectorAll('a.blitz-judged')].map(a => a.getAttribute('href') ?? '') : [];
     const dbs = [...(sec.querySelector('select.blitz-db')?.options ?? [])].map(o => o.value);
     const save = sec.querySelector('button.blitz-save');
-    return { groups, urlCells, links, judged, dbs, saveOff: save?.getAttribute('aria-disabled') ?? null, text: sec.textContent };
+    const grids = sec.querySelectorAll('table.grid').length;
+    return { groups, urlCells, links, judged, dbs, grids, saveOff: save?.getAttribute('aria-disabled') ?? null, text: sec.textContent };
   })()` });
   out = r.result?.result?.value ?? null;
 }
@@ -387,6 +392,7 @@ for u in a['urlCells']:
     if u['text'].startswith(('http://', 'https://')) and not u['a']: bad.append('url not a link: ' + u['text'][:80])
 if not a['judged'] or not all(('mssqlchecks' in h and ('i=' + inst) in h) for h in a['judged']): bad.append('judged links %s' % a['judged'][:3])
 if sorted(d for d in a['dbs'] if d) != sorted(dbs): bad.append('database filter %s want %s' % (a['dbs'][:6], dbs[:6]))
+if a.get('grids') != 1: bad.append('%s grids in the section with the groups and the runs folded (want 1: All)' % a.get('grids'))
 if not v: bad.append('viewer: no section')
 elif v['saveOff'] != 'true' or 'changing the weekly sp_Blitz needs the admin role' not in v['text']: bad.append('viewer Save %s, words %s' % (v['saveOff'], 'changing the weekly sp_Blitz needs the admin role' in v['text']))
 print('ok %d groups + All, %d url cells, %d judged links, %d databases' % (len(want), len(a['urlCells']), len(a['judged']), len(dbs)) if not bad else 'BAD ' + '; '.join(bad))
