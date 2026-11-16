@@ -31,6 +31,17 @@ One line per job:
 The PostgreSQL page adds the scheduler, database, user and command, a link to the job's own page, and every run of
 the range under the grid.
 
+### The range's runs: tiles and top 5
+
+Above the grid, from the hourly statistics (the job's own outcome rows of EVERY whole hour the page's range touches,
+named in the heading: a range of 23:21 to 00:21 reads the hours 23:00 to now, a range of 10:15 to 10:45 the 10:00
+hour): tiles for the runs that failed or were cancelled (a cancel is a failure, as in DBA Dash), that succeeded, and
+the retries attempted (SQL Server: the step rows msdb recorded as a retry in those hours, the job's Stats grid's
+'retry'; pg_cron and pgAgent do not retry a run); then the five longest jobs (by their longest run), the five most
+frequent and the five most failed (a job dropped since is named by its newest name in its versions). While the
+instance's hours are being built (after an upgrade, an import or a late read) the section says so and no count is
+given.
+
 ## History
 
 For the picked job, the runs that started in the range (the newest 1,000 listed; the counts above them cover every run): start, duration, outcome, the
@@ -109,6 +120,24 @@ when succeeded; failures red above 0 (not acknowledged) and green at 0; a step's
 On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_stop_job`) through the actions door
 ([sqlserver-actions](sqlserver-actions.md)): disabled, with the reason, where the instance has no actions login.
 
+## The fleet's Job status
+
+The fleet's Jobs page lists every job of the instances in view (DBA Dash's root Jobs) with its status, its last failure
+and success, the 24-hour and 7-day counts, and:
+
+| Column | What it shows |
+|---|---|
+| running now | the job runs now, since when (SQL Agent: the newest read of msdb; pg_cron and pgAgent: the job's newest run, when it has no end and the newest read of the job still saw it - neither runs a job beside itself) |
+| last run took | the last finished run's time |
+| failure rate 7 days | the failed runs (a cancel a failure) over the finished runs of the hours that started in the last 7 days; `reading...` until the hourly statistics answer, `being built` while the instance's hours are, `not read: <why>` when the read failed - never 0 for a rate not read |
+
+**Show** picks the rows: critical, warning and acknowledged (the default with more than one instance), all, the last
+run failed or cancelled, the last run succeeded, running now, a failure rate over 50 % (7 days), disabled.
+
+**Jobs by instance**, above the grid, counts per instance the jobs whose last run failed or was cancelled, whose last
+run succeeded, that run now and whose failure rate is over 50 %; each count opens those jobs in the grid (Show and the
+instance set, 'every instance' to go back).
+
 ## Configuration history
 
 - **Change log, both engines:** every value that was replaced, with valid from / to. SQL Server keeps every value of
@@ -177,7 +206,9 @@ own transaction).
 ## API
 
 `GET /api/jobs/history?engine=pg|mssql&instance=<id>&from=&to=` is the grid; with `&scheduler=<pg_cron|pgagent|sqlagent>&job=<id>`
-also the job's `runs`, `counts` and `changes` (each version with its `script`).
+also the job's `runs`, `counts` and `changes` (each version with its `script`); without a job, `&part=cards` and
+`&part=top` are the range's tiles and top 5 lists over every whole hour the range touches (read only by name; `cards` names those hours in `hours_from` / `hours_to` and gives every count NULL while `building`). `GET /api/jobsreport?part=status&ids=` and
+`?part=stats&ids=` are the fleet's Job status grid (`running_since`, `last_secs`; `failed_7d` beside the stats).
 `GET /api/jobs/thresholds?instance=` the levels and each job's status; `POST /api/jobs/thresholds` sets a level or
 makes it inherit. `GET /api/config/changes[?instance=]`, `GET /api/mssql/config/fleet`, `GET /api/mssql/traceflags[?instance=]`.
 
