@@ -1257,10 +1257,15 @@ func pgvigilExe(file, name string) bool {
 	return b == "pgvigil" || strings.HasPrefix(b, "pgvigil_")
 }
 
-// pgvigilGroups are the group roles the migrations create (cluster-wide: uninstall -drop-repository drops them only when
-// nothing else uses them).
+// pgvigilGroups are the group roles the migrations create, read from this build's own migration files (repo.GroupRoles:
+// pgvigil_collector, _reader, _auth, _alerter, _requester, _exporter, _investigator; cluster-wide: uninstall
+// -drop-repository drops them only when nothing else uses them).
 func pgvigilGroups() []string {
-	return []string{"pgvigil_collector", "pgvigil_reader", "pgvigil_auth", "pgvigil_alerter"}
+	g, err := repo.GroupRoles()
+	if err != nil { // the files are embedded in this binary: unreadable is a broken build
+		panic(fmt.Sprintf("the migrations' group roles: %v", err))
+	}
+	return g
 }
 
 // otherCollectorWait is how long the repository is watched for another collector's write after the local service
