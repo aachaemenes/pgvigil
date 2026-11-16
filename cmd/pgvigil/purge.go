@@ -27,8 +27,9 @@ import (
 // (0139) and the replication hours (0150) of every instance still waiting, one instance per transaction; a purge
 // scheduled as SQL alone (SELECT pgvigil.purge(N) from pg_cron) does not: schedule beside it
 // SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1 (one instance a run), and for the
-// replication hours, as two statements, SELECT pgvigil.replication_hourly_months(i) FROM
-// pgvigil.replication_hourly_pending() i LIMIT 1 and then SELECT pgvigil.replication_hourly_heal_one(i) for it.
+// replication hours TWO jobs of their own, so that an instance's month partitions are committed before its build
+// starts: SELECT pgvigil.replication_hourly_months(i) FROM pgvigil.replication_hourly_pending() i LIMIT 1, and
+// SELECT pgvigil.replication_hourly_heal_one(i) FROM pgvigil.replication_hourly_pending() i LIMIT 1.
 func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("pgvigil purge", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

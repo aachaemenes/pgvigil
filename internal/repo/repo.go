@@ -764,7 +764,8 @@ func (r *Repo) ReplicationHourlyHeal(ctx context.Context) (instances int, hourRo
 			failed++
 			// recorded as a trigger's failure is (0150's replication_hourly_failed: merged into the instance's 'mark'
 			// range, a 'rollup failed' row at most once an hour); an instance whose first build failed has no range
-			// yet: the range of its stored samples is marked
+			// yet: the range of its stored samples is marked (the next run then builds that range as the first build
+			// and once more as this mark - accepted: a second pass costs time only, and a failed first build is rare)
 			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.replication_hourly_failed($1, s.from_at, s.to_at, 'in pgvigil purge: ' || $2)
 			                           FROM (SELECT d.from_at, d.to_at FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1
 			                                 UNION ALL
