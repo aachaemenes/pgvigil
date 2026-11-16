@@ -215,7 +215,7 @@ func TestEveryMigrationTableIsClassed(t *testing.T) {
 	}
 }
 
-// Columns read to hold a statement's or a server's words, a login's name for an action or a credential: none leaves
+// Columns read to hold a statement's or a server's words, a login, a client host or address, or a credential: none leaves
 // by default - each is on the text or audit list, dropped, under the table's audit-rows predicate, or its table leaves
 // only with a carry. And a table an import rewrites after its row's hour is state: a window's final pass is at 24 h.
 func TestHeldByDefault(t *testing.T) {
@@ -225,6 +225,38 @@ func TestHeldByDefault(t *testing.T) {
 		"mssql_replication_state": {"status_text", "error_text"},                        // the agents' history and error words
 		"mssql_xe_modules":        {"login_name", "host_name"},                          // who ran a module, from where
 		"pg_patroni_members":      {"api_url", "api_message", "pending_restart_reason"}, // the address as held; settings' values unmasked
+		// a session's, a request's, an event's or a chain's login, its client host and its client address, and an
+		// owner's or a role's name: held unless the audit carry is on
+		"activity_sample":           {"usename", "client"},
+		"conn_sources":              {"usename", "client"},
+		"databases":                 {"owner"},
+		"export_runs":               {"login"},
+		"instance_state":            {"connected_user"},
+		"log_events":                {"usename", "client"},
+		"mssql_attentions":          {"login_name", "host_name"},
+		"mssql_blocked_reports":     {"blocked_login", "blocked_host", "blocking_login", "blocking_host"},
+		"mssql_blocking":            {"head_login", "head_host"},
+		"mssql_deadlocks":           {"victim_login"},
+		"mssql_jobs":                {"owner"},
+		"mssql_requests":            {"login_name", "host_name"},
+		"mssql_security_auth":       {"client_address"},
+		"mssql_service":             {"service_account"},
+		"mssql_session_tempdb":      {"login_name", "host_name"},
+		"mssql_slow_events":         {"login_name", "host_name"},
+		"mssql_trace_events":        {"login_name", "host_name"},
+		"mssql_versionstore_sample": {"holder_login", "holder_host"},
+		"mssql_xe_waits":            {"login_name", "host_name"},
+		"mssql_xe_warning_samples":  {"login_name", "host_name"},
+		"pg_db_role_settings":       {"rolname"},
+		"pg_repl_link_seen":         {"client_addr"},
+		"pgaudit_settings":          {"rolname"},
+		"pgaudit_state":             {"forged_by"},
+		"pooler_conn_sample":        {"addr"},
+		"role_state":                {"login_name"},
+		"schema_objects":            {"owner"},
+		"session_sets":              {"rolname"},
+		"statements_delta":          {"usename"},
+		"temp_sample":               {"usename"},
 	}
 	rows := map[string]string{"mssql_session_by": "dimension IN ('login', 'address')"}
 	rewritten := []string{"instance_events", "investigations", "mssql_ola_commandlog"}
