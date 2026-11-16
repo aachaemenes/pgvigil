@@ -111,6 +111,13 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     instance carries the warning 'replication hours not rolled up' in pgvigil.findings (source 'pgvigil collector',
 //     its value the samples' table), as the job statistics' hours do under their own name. Driven by 0150's own
 //     writers, so a change of their notes shows here.
+//  10. The rollup of the replication hours works under the COLLECTOR's role. The proofs run as the store's owner; the
+//     collector's login holds no right on any table and reaches the store only through the import functions
+//     (apply_roles: SECURITY DEFINER). Under SET LOCAL ROLE pgvigil_collector an instance is made and two reads are
+//     imported - one 70 days back, in a month that has no partition of the hours yet (the month's first read makes
+//     it, inside the trigger), one now: both hours are stored, nothing is left as a range to rebuild and no 'rollup
+//     failed' row is written. A right the trigger's path lacks would not fail the import (0150 catches it): it would
+//     show here as no hour, a range and a failed row.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -398,4 +405,42 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	exec(`SELECT pgvigil.replication_hourly_heal_one($1)`, roll)
 	want("0150's 'rollup healed' row in collection_log (the control)", logRows("ok", "rollup healed: the hours %"), "1")
 	want("the finding after the heal", notRolledUp(), "none")
+
+	// 10. the rollup trigger under the collector's role (the store's login must be able to SET ROLE to it)
+	colTx, err := r.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = colTx.Rollback(context.Background()) }()
+	if _, err := colTx.Exec(ctx, `SET LOCAL ROLE pgvigil_collector`); err != nil {
+		t.Fatalf("the store's login cannot take the collector's role (it needs membership or superuser): %v", err)
+	}
+	var who string
+	var col int
+	if err := colTx.QueryRow(ctx, `SELECT current_user::text`).Scan(&who); err != nil {
+		t.Fatal(err)
+	}
+	want("the role the two reads are imported under", who, "pgvigil_collector")
+	if err := colTx.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '18.0', 180000, false, '{}'::text[], 'postgres')`,
+		fmt.Sprintf("hajoin-col-%d", sfx)).Scan(&col); err != nil {
+		t.Fatalf("ensure_instance under the collector's role: %v", err)
+	}
+	slot := `[{"kind":"slot","slot_name":"hajoin_cslot","slot_type":"physical","wal_status":"reserved","retained_bytes":1048576,"active":true}]`
+	for _, ago := range []string{"70 days", "0 seconds"} {
+		if _, err := colTx.Exec(ctx, `SELECT pgvigil.import_replication($1, now() - $2::interval, $3::jsonb)`, col, ago, slot); err != nil {
+			t.Fatalf("import_replication under the collector's role (the read of %s ago): %v", ago, err)
+		}
+	}
+	if err := colTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want("the collector's own right to write the hours table (none: it writes through the import alone)",
+		str(`SELECT has_table_privilege('pgvigil_collector', 'pgvigil.replication_hourly', 'INSERT')::text`), "false")
+	want("the month of the old read: its partition of the hours, made by the trigger",
+		str(`SELECT (to_regclass('pgvigil.replication_hourly_' || to_char((now() - interval '70 days') AT TIME ZONE 'UTC', 'YYYYMM')) IS NOT NULL)::text`), "true")
+	want("under the collector's role: the slot's hours stored / ranges left to rebuild / 'rollup failed' rows",
+		str(`SELECT (SELECT count(*) FROM pgvigil.replication_hourly h WHERE h.instance_id = $1 AND h.kind = 'slot' AND h.key = 'hajoin_cslot')::text || ' / ' ||
+		            (SELECT count(*) FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1)::text || ' / ' ||
+		            (SELECT count(*) FROM pgvigil.collection_log l WHERE l.instance_id = $1 AND l.collection = 'replication_hourly' AND l.status = 'error')::text`, col),
+		"2 / 0 / 0")
 }
