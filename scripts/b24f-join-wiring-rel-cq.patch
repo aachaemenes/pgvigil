@@ -22,7 +22,7 @@ index 118b5eee..f72e3a96 100644
  | `POST /api/reportmail/send` | operator | send a report by mail now |
  | `POST /api/reportmail/test` | operator | send a schedule's test mail |
 diff --git a/internal/web/roles_test.go b/internal/web/roles_test.go
-index a0f67487..1ccb9a1e 100644
+index a0f67487..0f605599 100644
 --- a/internal/web/roles_test.go
 +++ b/internal/web/roles_test.go
 @@ -173,7 +173,7 @@ func TestRolesDocMatches(t *testing.T) {
@@ -34,14 +34,14 @@ index a0f67487..1ccb9a1e 100644
  
  // pageNeeds reads the table: route (as api.post names it) -> need, what
  func pageNeeds(t *testing.T) map[string][2]string {
-@@ -246,6 +246,7 @@ var (
+@@ -242,6 +242,7 @@ var (
+ 		"plan.ts":            {"plans/explain", "plans/analyze"},
+ 		"admin_instances.ts": {"admin/instances", "admin/sources", "admin/proposals"},
+ 		"migrate.ts":         {"admin/dbadash_moves"},
++		"request.ts":         {"requests/{id}/cancel"},
+ 		"applications.ts":    {"admin/applications", "admin/applications/contacts", "admin/applications/assign", "admin/applications/routes"},
  		"app_import.ts":      {"admin/applications/import"},
  		"uptimedialog.ts":    {"pg/thresholds"},
- 		"pg_backups.ts":      {"pg/thresholds"},
-+		"request.ts":         {"requests/{id}/cancel"},
- 	}
- )
- 
 diff --git a/internal/web/roles_wiring_cq.go b/internal/web/roles_wiring_cq.go
 new file mode 100644
 index 00000000..df000c87
