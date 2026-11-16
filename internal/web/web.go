@@ -283,6 +283,13 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
 	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
 	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
+	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
+	api.HandleFunc("GET /api/views", s.Views)
+	api.HandleFunc("POST /api/views", s.ViewSave)
+	api.HandleFunc("POST /api/views/delete", s.ViewDelete)
+	// a dashboard's composed panel, compiled and read (VIEWS slice C; compose.go, q_compose.go)
+	api.HandleFunc("POST /api/compose/run", s.ComposeRun)
+	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
 	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
 	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
 	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)

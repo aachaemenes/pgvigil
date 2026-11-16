@@ -318,7 +318,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
 // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
 var knownKeys = map[string]bool{
-	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
 	"password_secret": true, "ref": true,
 	"web": true, "readyz_without_login": true, // B6.4: the probes
 	"doors": true, "page_instance_reads": true, "reports_dsn": true,

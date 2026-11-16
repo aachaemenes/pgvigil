@@ -129,6 +129,23 @@ key read as what they stand for. `pgvigil serve` reads the block once, at its st
 file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily checks mail*. In a support report
 (`pgvigil report`) the switch, the hour and the zone are shown; the addresses, the user and the channel are masked.
 
+## Saved views: who writes shared ones (views.shared_editors)
+
+```yaml
+views:
+  shared_editors: [ann, bob]   # UI users; none named = nobody writes shared views
+```
+
+Every signed-in user saves personal views (a page's state, a dashboard) and reads the shared ones; a shared view is
+created, changed, deleted or made a page's shared default only by the users named here. A personal view is its owner's
+alone, and removing a user (`pgvigil user remove`) deletes that user's personal views; a shared one stays. Views are
+saved through the actions door's audit login, so saving is off under `-no-login` and on `pgvigil demo -serve`; every
+attempt that reaches the store is kept in `ui_view_log` (a request serve refuses before it - no X-Pgvigil header, a
+body over 256 KB - is not). These rules are serve's: like alert rules, the store's write functions
+(`import_view_save`, `import_view_delete`) are the collector's door, so a login of the collector's role can write any
+view as any user - keep the collector's login on the hosts you trust. When the per-user roles arrive, their 'change
+shared views' right replaces this list.
+
 ## Instances added in the page
 
 Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click

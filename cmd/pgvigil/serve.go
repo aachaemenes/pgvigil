@@ -205,6 +205,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	defer srv.Close()
 	srv.EnableMetrics(promCfg)
+	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
 	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
 	// check); serve starts either way and the page says the same words
 	if why := srv.StoreReportsOff(ctx); why != "" {

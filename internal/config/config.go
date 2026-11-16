@@ -41,6 +41,8 @@ type Config struct {
 	UI UI `yaml:"ui"`
 	// Web is the web: block (B6.4: serve's probes)
 	Web Web `yaml:"web"`
+	// Views: the saved views' one setting (0259; web/q_views.go): who may write shared views.
+	Views Views `yaml:"views"`
 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
 	// collects nothing from SQL Server itself.
@@ -369,6 +371,13 @@ func (c *Config) validateDBADash() error {
 // default. /livez is always open; /readyz is always open with the login off.
 type Web struct {
 	ReadyzWithoutLogin bool `yaml:"readyz_without_login"`
+}
+
+// Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
+type Views struct {
+	// SharedEditors: the UI users who may create, change, delete and set the default of shared views; none = nobody
+	// (every signed-in user still saves personal views and reads the shared ones).
+	SharedEditors []string `yaml:"shared_editors"`
 }
 
 // UI is the ui: block: the tree's folder levels and the order of the values in them.
