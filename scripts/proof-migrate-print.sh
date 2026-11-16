@@ -90,9 +90,10 @@ ok "T $(tail -1 "$WORK/t.out")"
 psql "$ADMIN" -XAtq -v ON_ERROR_STOP=1 -c "create database $REF" -c "create database $FRESH" -c "create database $PARTIAL" >/dev/null
 
 echo "== A migrate =="
+REFMONTH=$(date -u +%Y%m)   # read BEFORE the migrate makes ref's months ahead: a month turned during it is a turn too
 PGVIGIL_REPO_DSN="$ADMIN dbname=$REF" "$BIN" migrate -config "$CFG" 2> "$WORK/a.err" || { cat "$WORK/a.err" >&2; fail "A: migrate"; }
 [ "$(q "$REF" "select count(*) from pgvigil.schema_version")" = "$NFILES" ] || fail "A: schema_version does not hold the tree's $NFILES files"
-dumps "$REF" > "$WORK/ref.dump"; REFCOUNTS=$(counts "$REF"); REFMONTH=$(date -u +%Y%m)
+dumps "$REF" > "$WORK/ref.dump"; REFCOUNTS=$(counts "$REF")
 ok "A migrate: $NFILES files"
 
 echo "== B print (fresh) =="
