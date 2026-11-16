@@ -131,8 +131,10 @@ func TestMaskAuditRow(t *testing.T) {
 }
 
 // review N9: the direct reply's mask runs after a run that may have used its whole budget (serve's write timeout 75 s
-// = runBudget 62 s + auditBudget 8 s + 5 s): the mask over a 24 MB reply (maxRunBytes) of plan XML - the costliest
-// cells, MaskXML - must fit the 5 s left. A timing row: the time and the rate are logged either way.
+// = runBudget 62 s + auditBudget 8 s + 5 s). This row bounds the mask over a 24 MB reply (maxRunBytes) of plan XML by
+// 13 s, about twice its measured median; that does NOT prove the reply fits the 5 s the write timeout leaves, and at a
+// 1-minute load of 16 to 21 on 16 CPUs it does not (6.42-8.39 s): a later change gives the mask its own time. A
+// timing row: the time and the rate are logged either way.
 func TestMaskRunTimeOnABigReply(t *testing.T) {
 	var op strings.Builder
 	for i := range 400 {
@@ -154,9 +156,9 @@ func TestMaskRunTimeOnABigReply(t *testing.T) {
 	if s, _ := run.Sets[0].Rows[0][2].(string); strings.Contains(s, lmPW) || strings.Contains(run.Sets[0].Rows[0][1].(string), lmPW) {
 		t.Fatalf("the big reply still holds the password")
 	}
-	// 13 s: about twice mb01's median for this plan-XML reply (6.56 s over 5 runs, 6.42-8.39 s, on dba-lab-box at a
-	// 1-minute load of 16 to 21 on 16 CPUs, 2026-11-16); CQ-MASKBUDGET bounds it by its maskAllowance instead
+	// 13 s: about twice the measured median for this reply (6.56 s over 5 runs, 6.42-8.39 s, at a 1-minute load of 16
+	// to 21 on 16 CPUs)
 	if took > 13*time.Second {
-		t.Fatalf("maskRun took %s over a 24 MB reply: over 13 s, about twice mb01's median for this reply", took)
+		t.Fatalf("maskRun took %s over a 24 MB reply: over 13 s, about twice the measured median for this reply", took)
 	}
 }
