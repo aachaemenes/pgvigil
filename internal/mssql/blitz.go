@@ -126,6 +126,9 @@ func (blitzCollector) RunPlanned(ctx context.Context, conn *sql.Conn, _ Info, pl
 	case canExec != 1:
 		return nil, fmt.Errorf("no EXECUTE on %s for the login %s (GRANT EXECUTE ON dbo.sp_Blitz in %s to its user there): %w", obj, login, bracket(db), collect.ErrSkip)
 	}
+	// which databases sp_Blitz's per-database checks will read: its own @db_perms read (fn_my_permissions(<db>,
+	// 'DATABASE') for SELECT), run in its database as it runs it; a database without that SELECT is in its #SkipChecks
+	dbAll, dbSel, permErr := blitzDBPerms(ctx, conn, db)
 	var ver, verDate sql.NullString
 	verErr := conn.QueryRowContext(ctx, `DECLARE @v varchar(30), @d datetime;
 EXEC `+obj+` @Version = @v OUTPUT, @VersionDate = @d OUTPUT, @VersionCheckMode = 1;
@@ -145,6 +148,12 @@ SELECT @v, CONVERT(char(8), @d, 112);`).Scan(&ver, &verDate)
 	}
 	if rd.cut {
 		rd.note(fmt.Sprintf("the run's findings were cut at %d rows", blitzRowsMax))
+	}
+	switch {
+	case permErr != nil:
+		rd.note("which databases sp_Blitz's per-database checks read was not read: " + permErr.Error())
+	case dbSel < dbAll:
+		rd.noteFirst(blitzDBSkipNote(dbAll, dbSel, login))
 	}
 	outcome, why := blitzOutcome(rd, err, timedOut, int(timeout/time.Second))
 	run := collect.Row{"kind": "run", "outcome": outcome, "seconds": secs, "login": login, "proc_db": db,
@@ -307,6 +316,51 @@ func (rd *blitzRead) note(s string) {
 	if len(rd.msgs) < blitzMsgsMax {
 		rd.msgs = append(rd.msgs, blitzMsg{proc: "pgvigil", text: cutText(s)})
 	}
+}
+
+// noteFirst is pgvigil's own line at the head of a run's messages, kept over the cap: a full list gives up its newest
+// notice of the server's (else its newest message) for it.
+func (rd *blitzRead) noteFirst(s string) {
+	rd.msgs = append([]blitzMsg{{proc: "pgvigil", text: cutText(s)}}, rd.msgs...)
+	if len(rd.msgs) <= blitzMsgsMax {
+		return
+	}
+	drop := len(rd.msgs) - 1
+	for i := len(rd.msgs) - 1; i > 0; i-- {
+		if rd.msgs[i].class < 11 && rd.msgs[i].proc != "pgvigil" {
+			drop = i
+			break
+		}
+	}
+	rd.msgs = append(rd.msgs[:drop], rd.msgs[drop+1:]...)
+}
+
+// blitzDBPermsSQL is sp_Blitz 8.34's own @db_perms read (its lines 'Databases where we don't have read permissions'):
+// every database, and those where fn_my_permissions(<db>, 'DATABASE') lists SELECT. Read from sp_Blitz's database,
+// that function lists only what a server right implies (b20-b0diag3: a SELECT granted to the login's user inside a
+// database does not count; diag5: SELECT ALL USER SECURABLES does not either), so the default grants read none.
+const blitzDBPermsSQL = `SELECT (SELECT COUNT(*) FROM sys.databases),
+  (SELECT COUNT(DISTINCT d.database_id) FROM sys.databases AS d CROSS APPLY fn_my_permissions(d.name, N'DATABASE') AS fmp
+    WHERE fmp.permission_name = N'SELECT')`
+
+// blitzDBPerms runs blitzDBPermsSQL in the database db (sp_executesql there), as sp_Blitz runs its own read.
+func blitzDBPerms(ctx context.Context, conn *sql.Conn, db string) (all, sel int, err error) {
+	err = conn.QueryRowContext(ctx, "EXEC "+bracket(db)+".sys.sp_executesql @stmt", sql.Named("stmt", blitzDBPermsSQL)).Scan(&all, &sel)
+	return all, sel, err
+}
+
+// blitzDBSkipNote is the run's note when sp_Blitz's per-database checks leave databases out (the lead 05:0x: the
+// page never stays silent about it).
+func blitzDBSkipNote(all, sel int, login string) string {
+	what := fmt.Sprintf("ran on no database (0 of %d)", all)
+	if sel > 0 {
+		what = fmt.Sprintf("left out %d of %d databases", all-sel, all)
+	}
+	return "sp_Blitz's per-database checks " + what + ": sp_Blitz reads which databases it may check with " +
+		"fn_my_permissions(<database>, 'DATABASE') from its own database, and that read lists SELECT for the login " + login +
+		" only through a server right - a SELECT granted inside a database does not count, and SELECT ALL USER SECURABLES " +
+		"does not change it; only sysadmin does, which pgvigil never asks for. The Checks tab judges the database " +
+		"options on its own (auto-close, auto-shrink, page verify, the statistics options, the owner, the last good DBCC CHECKDB)."
 }
 
 // joined is the text of the messages at severity min or more, in their order.
