@@ -331,7 +331,7 @@ var part1 = []string{"implicit_conversions", "blitz_implicit_conversion", "is_ke
 	"is_spool_more_rows", "is_table_spool_expensive", "is_table_spool_more_rows", "is_sort_expensive",
 	"is_remote_query_expensive", "is_big_spills"}
 
-const builtParts = 1
+const builtParts = 2
 
 func checked(code string) bool {
 	return builtParts >= 2 || slices.Contains(part1, code)
