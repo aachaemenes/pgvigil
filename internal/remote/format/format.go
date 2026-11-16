@@ -244,16 +244,34 @@ type Failure struct {
 }
 
 // Cursor is how far a source was read when the bundle closed: a log cursor (At), a SQL Server file cursor
-// (FileName, FileOffset, LastEventAt, LastSeq) or a one-number cursor (Seq).
+// (FileName, FileOffset, LastEventAt, LastSeq), a one-number cursor (Seq), a list a SQL function keeps beside its
+// cursor (Names: backup_history's database list, backup_files' unlisted databases and the sets it holds) or a source
+// the store holds as NULL (null: its reader answers not found).
 type Cursor struct {
 	Source      string     `json:"source"`
-	Kind        string     `json:"kind"` // log | mssql | seq
+	Kind        string     `json:"kind"` // log | mssql | seq | list | null
 	At          *time.Time `json:"at,omitempty"`
 	FileName    string     `json:"file_name,omitempty"`
 	FileOffset  int64      `json:"file_offset,omitempty"`
 	LastEventAt *time.Time `json:"last_event_at,omitempty"`
 	LastSeq     int64      `json:"last_seq,omitempty"`
 	Seq         int64      `json:"seq,omitempty"`
+	Names       []string   `json:"names,omitempty"`
+}
+
+// check holds a cursor to its kind: a known kind with a source, no names but on a list, no value on a null.
+func (c Cursor) check() error {
+	switch {
+	case c.Source == "":
+		return fmt.Errorf("a cursor of kind %q without its source", c.Kind)
+	case c.Kind != "log" && c.Kind != "mssql" && c.Kind != "seq" && c.Kind != "list" && c.Kind != "null":
+		return fmt.Errorf("cursor %q of kind %q (log, mssql, seq, list or null)", c.Source, c.Kind)
+	case c.Kind != "list" && c.Names != nil:
+		return fmt.Errorf("cursor %q of kind %s carries names", c.Source, c.Kind)
+	case c.Kind == "null" && (c.At != nil || c.FileName != "" || c.FileOffset != 0 || c.LastEventAt != nil || c.LastSeq != 0 || c.Seq != 0):
+		return fmt.Errorf("cursor %q of kind null carries a value", c.Source)
+	}
+	return nil
 }
 
 // Heartbeat is the collector's own state when the bundle closed.
@@ -340,8 +358,8 @@ func (m *Manifest) check() error {
 		}
 	}
 	for _, c := range m.Cursors {
-		if c.Source == "" || (c.Kind != "log" && c.Kind != "mssql" && c.Kind != "seq") {
-			return fmt.Errorf("cursor %q of kind %q (log, mssql or seq)", c.Source, c.Kind)
+		if err := c.check(); err != nil {
+			return err
 		}
 	}
 	return nil

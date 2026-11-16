@@ -19,14 +19,25 @@ import (
 //     0053 L113-116, 0100 L284-287);
 //   - an explicit SQL Server row (mssql.Cursor.Row: file_name, file_offset, last_event_at, last_seq): the batch's
 //     last row of the source (0065, 0158, 0160, 0161, 0162: DISTINCT ON (source) ... ORDER BY n DESC);
-//   - the one-number families as mssql_hadr_cursor answers them (0300 L1682-1705): jobs / jobs_mark from
-//     last_history_id / mark (0094 L218-222), backup_sets / backup_sets_mark from last_set_id / mark (0140
-//     L495-499), backup_history and restore_history with their marks from source, last_id, mark (0191 L252-262);
+//   - the one-number families as mssql_hadr_cursor answers them (0300 L1682-1705), each by its view's own rule
+//     (cursors_mssql.go) behind mssql_hadr_read's guard: mssql_jobs (0094), mssql_backup_files (0140) and
+//     mssql_backup_history (0191);
 //   - amcheck: the batch's time when it holds a 'run' row, never back (0023 L51-56);
 //   - schema_ddl:<database>: the newest ddl logged_at or ddl_cursor read_to per database, forward only (0300
 //     L2316-2322).
 func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(string) (format.Cursor, bool)) []format.Cursor {
 	out := map[string]format.Cursor{}
+	switch view {
+	case "mssql_jobs":
+		jobsMoves(at, rows, cur, out)
+		return sorted(out)
+	case "mssql_backup_files":
+		backupFilesMoves(at, rows, cur, out)
+		return sorted(out)
+	case "mssql_backup_history":
+		backupHistoryMoves(at, rows, cur, out)
+		return sorted(out)
+	}
 	logMove := func(source string, t time.Time) {
 		if prev, ok := out[source]; ok && prev.At != nil && prev.At.After(t) {
 			return
@@ -36,11 +47,6 @@ func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(stri
 		}
 		tt := t.UTC()
 		out[source] = format.Cursor{Source: source, Kind: "log", At: &tt}
-	}
-	seq := func(source string, v any) {
-		if n, ok := toInt64(v); ok {
-			out[source] = format.Cursor{Source: source, Kind: "seq", Seq: n}
-		}
 	}
 	hasRun := false
 	ddl := map[string]time.Time{}
@@ -54,9 +60,6 @@ func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(stri
 				if t, ok := toTime(r["read_to"]); ok {
 					logMove(source, t)
 				}
-			case source != "" && hasKey(r, "last_id"):
-				seq(source, r["last_id"])
-				seq(source+"_mark", r["mark"])
 			case source != "" && (hasKey(r, "last_seq") || hasKey(r, "file_name") || hasKey(r, "last_event_at")):
 				c := format.Cursor{Source: source, Kind: "mssql"}
 				c.FileName, _ = r["file_name"].(string)
@@ -67,12 +70,6 @@ func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(stri
 				}
 				c.LastSeq, _ = toInt64(r["last_seq"])
 				out[source] = c
-			case source == "" && hasKey(r, "last_history_id"):
-				seq("jobs", r["last_history_id"])
-				seq("jobs_mark", r["mark"])
-			case source == "" && hasKey(r, "last_set_id"):
-				seq("backup_sets", r["last_set_id"])
-				seq("backup_sets_mark", r["mark"])
 			}
 		case "run":
 			hasRun = true
@@ -97,6 +94,11 @@ func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(stri
 			logMove("schema_ddl:"+db, t)
 		}
 	}
+	return sorted(out)
+}
+
+// sorted lists the moved cursors by source.
+func sorted(out map[string]format.Cursor) []format.Cursor {
 	moved := make([]format.Cursor, 0, len(out))
 	for _, c := range out {
 		moved = append(moved, c)

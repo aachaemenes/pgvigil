@@ -62,7 +62,7 @@ sum of SHA256SUMS itself.
 | `reads` | every collection of the instance's schedule: `status` `ran`, `failed` (`runs`, `failed` count them) or `skipped` (`reason`: `off`, `not_due`, `not_applicable`, `running`), and `interval_secs`, the collection's interval on the collector (the hub judges the collection's staleness by it) |
 | `runs` | every run: `collection`, `at`, `ms`, `status`, `note`, `stage` |
 | `failures` | every run that never reached its rows: `kind` (`connect`, `secret`, `run`), `collection`, `at`, `ms`, `cause` |
-| `cursors` | how far each source was read when the bundle closed: `kind` `log` (`at`), `mssql` (`file_name`, `file_offset`, `last_event_at`, `last_seq`) or `seq` (`seq`) |
+| `cursors` | how far each source was read when the bundle closed: `kind` `log` (`at`), `mssql` (`file_name`, `file_offset`, `last_event_at`, `last_seq`), `seq` (`seq`), `list` (`names`: a list the store's import keeps beside a cursor - backup history's database list, backup files' unlisted databases and the sets it holds) or `null` (a source the store holds as NULL; nothing else) |
 | `heartbeat` | the collector's `host`, `started`, `at`, `instances`, `fail_streak` |
 
 A key the reader does not know, or a value outside its set, is refused.
