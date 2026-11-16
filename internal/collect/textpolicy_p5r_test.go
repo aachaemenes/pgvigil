@@ -3,6 +3,7 @@ package collect
 import (
 	"encoding/xml"
 	"errors"
+	"html"
 	"io"
 	"os"
 	"runtime"
@@ -141,6 +142,12 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 	// mt is a StatementText as the tag pass writes it (MaskCredentials, escaped where it changed): no row depends on how
 	// that older rule writes a pair
 	mt := func(text string) string { return xmlAttrEscape(MaskCredentials(text)) }
+	mtx := func(esc string) string {
+		if dec := html.UnescapeString(esc); MaskCredentials(dec) != dec {
+			return xmlAttrEscape(MaskCredentials(dec))
+		}
+		return esc
+	}
 	stmt := func(text, body string) string {
 		return `<StmtSimple StatementText="` + text + `" StatementId="1" StatementType="SELECT"><QueryPlan>` + body + `</QueryPlan></StmtSimple>`
 	}
@@ -190,6 +197,21 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 	tShort := pre + strings.Repeat("x", 3998-len(pre))               // 3,998: not at the cut
 	tWide := pre + strings.Repeat("x", 3997-len(pre)) + "\U0001F600" // 3,998 runes, 3,999 UTF-16 code units
 	paramsI := `<ParameterList><ColumnReference Column="@i" ParameterDataType="int" ParameterCompiledValue="(42)" /></ParameterList>`
+	// M2 (read on 16.0.4325.4, sqltb-s3-p5r-obs2): Query Store stores an auto-parameterized statement's own text as
+	// parameterized ('... WHERE [password]=@1'; forced: '... where pwd_hash = @0') with no ParameterizedText, and the
+	// literal's value only in the ParameterList's @1 / @0; a statement whose text holds a credential word has those values
+	// masked, its expression literals too
+	plist := func(col, v string) string {
+		return `<ParameterList><ColumnReference Column="` + col + `" ParameterDataType="nvarchar(4000)" ParameterCompiledValue="` + v + `" /></ParameterList>`
+	}
+	const (
+		tAuto   = "SELECT [id] [pm2_marker] FROM [dbo].[U] WHERE [password]=@1"
+		tForced = "select id , pwd_hash as m from dbo . U where pwd_hash = @0"
+		tLit    = "SELECT id FROM dbo.U WHERE password = N&apos;hunter2&apos; AND id &gt; 0"
+		tPlain  = "SELECT [id] FROM [dbo].[T] WHERE [id]=@1"
+		tUmlaut = "SELECT id FROM dbo.T WHERE name = @m\u00f6tpassword OPTION (RECOMPILE)"
+		tListed = "SELECT id FROM dbo.T WHERE name = @password\u00c4"
+	)
 	for _, c := range []struct {
 		name, in, want string
 		gone           []string
@@ -216,6 +238,17 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 			head + stmt(mt(tCut), seek(mlit)) + stmt(mt(tI), seek("(7)")+paramsI) + tail, []string{"hunter2"}},
 		{"M3 a cut statement that lists a parameter", head + stmt(tCut, seek("(7)")+paramsI) + tail, head + stmt(mt(tCut), seek("(7)")+paramsI) + tail, nil},
 		{"M3 one character under the cut", head + stmt(tShort, seek("(7)")) + tail, head + stmt(mt(tShort), seek("(7)")) + tail, nil},
+		{"M2 simple parameterization's @1 on a password column", head + stmt(tAuto, seek("[@1]")+plist("@1", val)) + tail,
+			head + stmt(mt(tAuto), seek("[@1]")+plist("@1", mlit)) + tail, []string{"hunter2"}},
+		{"M2 forced parameterization's @0", head + stmt(tForced, seek("[@0]")+plist("@0", val)) + tail,
+			head + stmt(mt(tForced), seek("[@0]")+plist("@0", mlit)) + tail, []string{"hunter2"}},
+		{"M2 a password column against a literal, not parameterized", head + stmt(tLit, pred("[dbo].[U].[password]="+val+" AND [dbo].[U].[id]&gt;(0)")) + tail,
+			head + stmt(mtx(tLit), pred("[dbo].[U].[password]="+mlit+" AND [dbo].[U].[id]&gt;("+mnum+")")) + tail, []string{"hunter2"}},
+		{"M2 an auto-parameter with no credential word kept", head + stmt(tPlain, seek("[@1]")+plist("@1", "(42)")) + tail,
+			head + stmt(mt(tPlain), seek("[@1]")+plist("@1", "(42)")) + tail, nil},
+		{"a non-ASCII letter before the word", head + stmt(tUmlaut, seek(val)) + tail, head + stmt(mt(tUmlaut), seek(mlit)) + tail, []string{"hunter2"}},
+		{"a non-ASCII letter after the word, listed", head + stmt(tListed, seek("[@password\u00c4]")+plist("@password\u00c4", val)) + tail,
+			head + stmt(mt(tListed), seek("[@password\u00c4]")+plist("@password\u00c4", mlit)) + tail, []string{"hunter2"}},
 	} {
 		got := MaskXML(c.in)
 		if got != c.want {
