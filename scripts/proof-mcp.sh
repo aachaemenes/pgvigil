@@ -17,6 +17,12 @@
 #      read-only, a resources/write method is "not served", and the reader login itself cannot write
 #      (INSERT on pgvigil.instances: permission denied) - the door has no path to a write;
 #  (6) the reader login's password appears nowhere in stdout or stderr; the process holds no listening socket.
+#  (7) TEXT-NOW-M (the lead 19:4x, Q15: fail closed): without -config no instance's query_text policy is known and every
+#      instance is read as 'none': top_statements returns no statement text (every query null), plan_findings by id
+#      holds no part of the plan's stored statement (the repository's own row, read as the owner, is the oracle), and
+#      the log says every instance is read as 'none' and names -config; a second process given -config (a file with the
+#      repository and no instance: the file's default, full) returns the text for the same calls (decisive both ways).
+#      Red at b127f68f: (7) FAIL (the text returned without -config).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}; BIN=$(readlink -f "$BIN")
 : "${PGVIGIL_REPO_DSN:?}"
@@ -146,6 +152,10 @@ r=$(tool find_statements '{"text":"select"}'); [[ $(jq -r '.result.isError' <<<"
 body <<<"$r" | jq -e '.sources|type == "array"' >/dev/null || fail "(4) find_statements: no sources list: $r"
 ok "(4) find_statements 'select': $(body <<<"$r" | jq '.sources|length') source(s), $(body <<<"$r" | jq '[.sources[]?.rows.rows // [] | length]|add // 0') row(s)"
 
+# (7) part a: this process was started without -config
+A_TOP=$(tool top_statements "$(jq -cn --arg i "$INST" '{instance:$i,hours:24,limit:5}')"); [[ $(jq -r '.result.isError' <<<"$A_TOP") == false ]] || fail "(7) top_statements: $A_TOP"
+A_PLAN=$(tool plan_findings "{\"plan_id\":$PID}"); [[ $(jq -r '.result.isError' <<<"$A_PLAN") == false ]] || fail "(7) plan_findings: $A_PLAN"
+
 # (5) a refused write, three ways
 r=$(tool terminate_backend '{"pid":1}')
 jq -e '.error.code == -32602 and (.error.message|test("read-only"))' <<<"$r" >/dev/null || fail "(5) a write tool was not refused: $r"
@@ -168,4 +178,30 @@ for _ in $(seq 50); do kill -0 "$MPID" 2>/dev/null || break; sleep 0.1; done
 kill -0 "$MPID" 2>/dev/null && fail "pgvigil mcp did not exit when its stdin closed"
 wait "$MPID" || fail "pgvigil mcp exit $? after stdin closed"; MPID=""
 ok "stdin closed: pgvigil mcp exited 0"
+
+# (7) part b: the same reads through a process given -config (the repository, no instance: the file's default, full)
+printf 'repository:\n  dsn: env:PGVIGIL_MCP_DSN\n' > "$WORK/mcp.yaml"
+rm -f "$WORK/in" "$WORK/out.jsonl"; mkfifo "$WORK/in"
+PGVIGIL_MCP_DSN="$READER_DSN" "$BIN" mcp -config "$WORK/mcp.yaml" <"$WORK/in" >"$WORK/out.jsonl" 2>"$WORK/mcp2.err" & MPID=$!
+exec 3>"$WORK/in"
+r=$(rpc 1 initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"proof-mcp","version":"1"}}')
+send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+B_TOP=$(tool top_statements "$(jq -cn --arg i "$INST" '{instance:$i,hours:24,limit:5}')"); [[ $(jq -r '.result.isError' <<<"$B_TOP") == false ]] || fail "(7) -config top_statements: $B_TOP"
+B_PLAN=$(tool plan_findings "{\"plan_id\":$PID}"); [[ $(jq -r '.result.isError' <<<"$B_PLAN") == false ]] || fail "(7) -config plan_findings: $B_PLAN"
+exec 3>&-
+for _ in $(seq 50); do kill -0 "$MPID" 2>/dev/null || break; sleep 0.1; done
+wait "$MPID" || fail "(7) pgvigil mcp -config exit $?"; MPID=""
+grep -qF "$PW" "$WORK/out.jsonl" "$WORK/mcp2.err" && fail "(6) the reader's password reached the -config run's output"
+# the plan's stored statement, read as the owner, whitespace folded: the oracle for plan_findings
+PQ=$(psql "$OWNER_DSN" -XAt -c "select left(regexp_replace(query, '\\s+', ' ', 'g'), 40) from pgvigil.plans where plan_id = $PID")
+[[ ${#PQ} -ge 12 ]] || fail "(7) plan $PID holds no stored statement to look for ('$PQ')"
+holds() { body <<<"$1" | jq --arg p "$PQ" '[.. | strings | gsub("\\s+"; " ") | select(contains($p))] | length'; }
+na=$(body <<<"$A_TOP" | jq '[.statements[] | .query | select(. != null and . != "")] | length')
+nb=$(body <<<"$B_TOP" | jq '[.statements[] | .query | select(. != null and . != "")] | length')
+pa=$(holds "$A_PLAN"); pb=$(holds "$B_PLAN")
+(( nb > 0 && pb > 0 )) || fail "(7) not decisive: with -config top_statements returned $nb text(s), plan_findings $pb string(s) holding the stored statement"
+[[ $na == 0 ]] || fail "(7) without -config top_statements returned $na statement text(s)"
+[[ $pa == 0 ]] || fail "(7) without -config plan_findings returned the plan's stored statement ($pa string(s))"
+grep -q "read as 'none'" "$WORK/mcp.err" && grep -q -- "-config" "$WORK/mcp.err" || { cat "$WORK/mcp.err" >&2; fail "(7) no log line saying every instance is read as 'none' and naming -config"; }
+ok "(7) without -config: top_statements 0 texts (with -config $nb), plan $PID's statement in 0 strings (with -config $pb); the log: $(grep -o "without -config[^\"]*'none'" "$WORK/mcp.err" | head -1)"
 echo "PASS proof-mcp"

@@ -39,15 +39,37 @@ index a95ad255..32c5e127 100644
  SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
  [the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`) and no
  more, never sysadmin: a run on a login that is a member of sysadmin is refused before anything is sent. The rollback
+diff --git i/docs/mcp.md w/docs/mcp.md
+index d89462d1..31a0925d 100644
+--- i/docs/mcp.md
++++ w/docs/mcp.md
+@@ -7,7 +7,7 @@
+ - Read only. Nine tools, each a read of the repository; none writes, cancels, terminates, runs EXPLAIN or takes SQL. A call to any other tool name, or to any method beyond `initialize`, `ping`, `tools/list` and `tools/call` (the empty `resources/list`, `resources/templates/list` and `prompts/list` answer too), is refused with a JSON-RPC error.
+ - The same SQL as the web UI's JSON API. Every tool is answered by the API's own handler, called inside the process: the parameter checks, the queries and the results are the API's. The session is the UI's read-only one (`default_transaction_read_only`, a 15 s statement timeout, a 2 s lock timeout).
+ - A reader login only. Before it reads a message, `pgvigil mcp` checks its login and refuses (exit 3) a superuser, the schema's owner or any login with CREATE on it, a login that may change a repository table, the collector (`pgvigil_collector`) and the UI's password door (`pgvigil_auth`). The login is IN ROLE `pgvigil_reader` and nothing else.
+-- The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep; the door never reads a monitored server.
++- The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep, under the setting as `-config` states it now; started without `-config`, the door knows no setting and reads every instance as `none` (no statement text, plan or deadlock graph); the door never reads a monitored server.
+ - No credential in any output. The login's password is scrubbed from every reply, and any `password=` value or URL password that would appear in an error message with it; the repository holds no other credential the reader can see.
+ - Nothing outbound. No port is opened: the client starts `pgvigil mcp` as its own child process and talks over the pipe. The only connection the process makes is to the repository database; no telemetry, no update check (not proven: the proof looks for a listening socket, not for outbound connections).
+ 
+@@ -53,7 +53,7 @@ An instance is named by its name (as `fleet_summary` lists it) or its `instance_
+    }
+    ```
+ 
+-   On Windows the command is `C:\\Program Files\\pgvigil\\pgvigil.exe` (each backslash doubled inside the JSON). The password goes in the login's `~/.pgpass` (`%APPDATA%\postgresql\pgpass.conf` on Windows), which libpq-style connection strings read, or in a `file:` DSN, rather than in the client's configuration file. `-config` is optional: it gives the stale-collection check each instance's own intervals, as `serve` has them; without it the defaults apply.
++   On Windows the command is `C:\\Program Files\\pgvigil\\pgvigil.exe` (each backslash doubled inside the JSON). The password goes in the login's `~/.pgpass` (`%APPDATA%\postgresql\pgpass.conf` on Windows), which libpq-style connection strings read, or in a `file:` DSN, rather than in the client's configuration file. `-config` gives the stale-collection check each instance's own intervals and each instance's `query_text` setting, as `serve` has them. Without it the interval defaults apply and every instance is read as `query_text: none`: no statement text, plan or deadlock graph is returned, and the log says so. Give it the file `serve` reads to return what each instance's setting allows.
+ 
+    A command-line agent takes the same command and environment through its own `mcp add` form.
+ 
 diff --git i/docs/security.html w/docs/security.html
-index ed70ca82..45f9cac9 100644
+index ed70ca82..20fffa00 100644
 --- i/docs/security.html
 +++ w/docs/security.html
 @@ -50,6 +50,7 @@
    <h2>The data it keeps</h2>
    <ul class="list">
      <li>Passwords can stay out of the config file (an inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login). You choose whether statement text is kept as is, with every literal replaced, or not at all. Whichever you choose, on SQL Server and on PostgreSQL, the password-shaped parts of the statements, plans and Extended Events reports it keeps are masked before they are stored: a PASSWORD, SECRET, KEY_SOURCE, IDENTITY_VALUE or IDENTIFIED BY value; a password parameter by name, and every value of a call of sp_addlogin, sp_password, sp_addlinkedsrvlogin or the application-role procedures by position; a connection string's or a URL's password; the -P of a sqlcmd, bcp, osql or isql command line; a key, passphrase or password given to pgcrypto or to SQL Server's passphrase, certificate and asymmetric-key functions; a private key block; a plan's value of a password parameter. A password kept as an ordinary value in a table's data is a literal like any other: only the setting that replaces every literal, or keeps no text, takes it out.</li>
-+    <li>The statement-text setting applies when the text is read, not only when it is collected: a page, an export, a report mail, an alert or the MCP door started with the configuration file (<code>pgvigil mcp -config</code>) shows the text an instance's setting allows now, so an instance moved to keep no text stops showing the text kept before, and one moved to replace every literal shows the old text with its literals replaced. Without <code>-config</code> the MCP door knows no setting and returns the text as it was kept (it says so in its log). Two are the admin's own: a custom report on the store runs its own SQL as the reports login and reads the stored text as it was kept (the Custom reports page says so while any instance keeps less than the full text), and a report mail rendered before a change is sent as it was rendered.</li>
++    <li>The statement-text setting applies when the text is read, not only when it is collected: a page, an export, a report mail, an alert or the MCP door started with the configuration file (<code>pgvigil mcp -config</code>) shows the text an instance's setting allows now, so an instance moved to keep no text stops showing the text kept before, and one moved to replace every literal shows the old text with its literals replaced. Without <code>-config</code> the MCP door knows no setting and reads every instance as keeping no text: it returns no statement text, plan or deadlock graph (its log says so and names <code>-config</code>). Two are the admin's own: a custom report on the store runs its own SQL as the reports login and reads the stored text as it was kept (the Custom reports page says so while any instance keeps less than the full text), and a report mail rendered before a change is sent as it was rendered.</li>
      <li>Its own database gives each part its own role: the collector adds data only through its import functions, the web page reads (and records each action it runs), the alert sender holds a login of its own, and the sign-in check runs through one function nobody else can call.</li>
      <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
    </ul>
