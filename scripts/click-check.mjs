@@ -896,7 +896,7 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     await ev(`(() => { [...document.querySelectorAll('main table a')].find(a => a.getAttribute('href') === ${JSON.stringify(link)})?.click(); })()`);
     await sleep(500); await settled();
     const got = await landing();
-    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !b.disabled : null; })()`);
+    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !(b.disabled || b.getAttribute('aria-disabled') === 'true') : null; })()`);
     let backTo = '';
     if (back) { await ev(`(() => { [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back')?.click(); })()`); await sleep(500); await settled(); backTo = (await landing()).hash; }
     record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link, landed: `${got.hash}; Back ${back === null ? 'absent' : back ? 'on' : 'off'}${backTo ? ' -> ' + backTo : ''}`,
