@@ -145,8 +145,12 @@ password-named `@` parameter, a connection string's or a URI's password, `Conver
 written `<masked>`. A value that is an XML document (a plan, a deadlock graph, a blocked process report) is masked
 inside its attribute values, text and processing instructions (sp_WhoIsActive writes its query text as one) and stays
 XML. A cell, a column name, a message and the run's own words are all masked, and so are the request's outcome and
-refusal, which the Grafana login can read. The direct run is not stored and its reply shows the tool's output as the tool returned it, so
-the same run can show a secret in direct mode and `<masked>` in queue mode.
+refusal, which the Grafana login can read. A request's outcome or refusal that a state does not have is stored as NULL,
+never as an empty text.
+
+The direct run (serve connects itself) takes the same mask before its reply: every text cell, every string inside a
+JSON cell, every column name and the run's error words. One tool run shows the same text in direct mode and in queue
+mode. A custom report's own cells are not masked: they are shown as the server returns them.
 
 ## Audit
 
@@ -154,3 +158,7 @@ Every request is its own record of the ask and its end. The collector also write
 writes (the custom report log's `community_run` and `community_help`, and `community_form` for a help refused before
 it ran), with the instance's id, and `via: queue`, the request's id and the collector in their parameters, in the same
 transaction as the end: a run whose audit row fails ends with neither. The community page's run log lists them.
+
+On both paths an audit row's detail and statement take the same mask before they are written, because the run log
+shows them: the audit records the masked words (`-P <masked>`), not the server's own. Rows written before this
+release keep their words as they were written (the log is never purged).

@@ -16,8 +16,8 @@ export interface RequestEnd {
 // collector's words carry none: 'cancelled by its asker while it ran').
 const sentence = (s: string) => /[.!?]$/.test(s.trim()) ? s.trim() : s.trim() + '.';
 
-// stateWords: what the page says while a request waits or runs, and when it ended without a result. The repository
-// stores '' for words a state does not have (a done run's refusal), so the fallbacks are by ||, never ??.
+// stateWords: what the page says while a request waits or runs, and when it ended without a result. The fallbacks are
+// by ||, never ??: a row written before CQ-LIVEMASK holds '' for words its state does not have (NULL since).
 export function stateWords(e: RequestEnd): string {
   switch (e.state) {
     case 'waiting': return 'Waiting for the collector to take it' + (e.asked_at ? ` (asked ${fmtTime(e.asked_at)})` : '') + '.';

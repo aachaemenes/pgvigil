@@ -90,6 +90,7 @@ func cqCommunityDoors(env *cq.Env) []cq.Door {
 // auditRun does); the queue's own names ride in params. The instance's id is resolved by its name in the same
 // transaction (a queue run knows only the name), so the community page's run log, read by instance id, lists it.
 func cqAuditRow(row map[string]any) func(context.Context, pgx.Tx) error {
+	maskAudit(row) // CQ-LIVEMASK: its detail and statement masked before the write (the run log shows them)
 	return func(ctx context.Context, tx pgx.Tx) error {
 		delete(row, "instance_id")
 		if name, _ := row["instance"].(string); name != "" {

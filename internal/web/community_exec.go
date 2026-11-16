@@ -172,5 +172,8 @@ func communityExec(ctx context.Context, t *communityTool, in *communityBody, nam
 			run.Error = fmt.Sprintf("%s declined: %s (msg %d, severity %d)", t.Name, strings.TrimSpace(me.Message), me.Number, me.Class)
 		}
 	}
+	// CQ-LIVEMASK: the run's cells, column names and error words through the queue's stored-result mask, here where
+	// both paths pass, so one tool run shows the same text on serve's direct path as through the queue (livemask.go)
+	maskRun(&run)
 	return run, stmt, nil
 }

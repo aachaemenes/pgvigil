@@ -1147,6 +1147,7 @@ const (
 // auditRun writes one run's row; the run's rows are withheld when it fails. ctx bounds it: the caller's audit budget,
 // never the run's own context (it may be spent).
 func (s *Server) auditRun(ctx context.Context, row map[string]any) error {
+	maskAudit(row) // CQ-LIVEMASK: its detail and statement masked before the write (the run log shows them)
 	b, err := json.Marshal(row)
 	if err != nil {
 		return err
