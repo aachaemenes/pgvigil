@@ -1,23 +1,24 @@
-# D401 WIRING (the lead's at the join; never applied by the slice): the notices row on the release's tree, the three
+# D401 WIRING (the lead's at the join; never applied by the slice): the notices row on the release's tree, the eight
 # KITWATCH pin rows on rel-kitwatch's internal/community/kits/ports.json (sha256 and items computed as kitshape pin does,
-# from sp_BlitzCache.sql 8.34 at tag 20260708; the lead's re-baseline recomputes them).
+# from sp_BlitzCache.sql 8.34 at tag 20260708; the lead's re-baseline recomputes them). The notices row names part 1's
+# rule families only: D402's wiring patch widens it to part 2's.
 diff --git a/THIRD-PARTY-NOTICES.md b/THIRD-PARTY-NOTICES.md
-index 43f36e2..67e9bfa 100644
+index 43f36e2..d4e6935 100644
 --- a/THIRD-PARTY-NOTICES.md
 +++ b/THIRD-PARTY-NOTICES.md
 @@ -112,6 +112,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
  | The wait list grouped by what it points at, as data | DarlingData 6.11, sp_PressureDetector.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/waits.go (waitCategories) |
  | The default of every sys.configurations option (the #ConfigurationDefaults table) and sp_Blitz's CheckIDs, as data; the database options its #DatabaseDefaults table holds off, as rules; the notes on global trace flags (CheckID 74), in this project's words | SQL Server First Responder Kit 8.34, sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited; portions of sp_Blitz Copyright Microsoft (tigertoolbox, MIT) | internal/mssql/checks.go (configDefaultList, traceFlagNotes), internal/mssql/dboptions.go (databaseRules) |
  | The catalogue of SQL Server builds 2016-2025 with their release and support end dates, as data | SQL Server First Responder Kit 8.34, SqlServerVersions.sql (the script by Josh Darnell, SqlServerVersionScript, MIT) | MIT, Copyright (c) 2022 Brent Ozar Unlimited; Copyright for SqlServerVersionScript held by Josh Darnell | internal/mssql/checks.go (buildCatalogue) |
-+| The SQL Server plan-warning rules' thresholds and words (the cost, runtime and plan checks of the plan cache's warnings: implicit conversions, lookups, missing indexes, UDFs, multi-statement TVFs, table variables, cursors, nearly parallel plans, forced serialization, spools, sorts, remote queries, spills, row goals, estimates, adaptive joins, scans, forced indexes, columnstore row mode, index operations, DDL, CPU, writes, stale statistics, trace flags, compile time and timeouts, non-SARGable predicates, parameterization, operator warnings) and sp_Blitz's plan checks 63, 65, 67 and 118, read and written anew in Go (no SQL of theirs is used) | SQL Server First Responder Kit 8.34, sp_BlitzCache.sql and sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited (portions of sp_Blitz Microsoft's, tigertoolbox, MIT) | internal/plans/mssqlwarn.go |
++| The SQL Server plan-warning rules' thresholds and words (the cost, runtime and plan checks of the plan cache's warnings: implicit conversions, lookups, missing indexes, UDFs, multi-statement TVFs and function joins, table variables, cursors, nearly parallel plans, forced serialization, spools, sorts, remote queries, spills) and sp_Blitz's plan checks 63, 65, 67 and 118, read and written anew in Go (no SQL of theirs is used) | SQL Server First Responder Kit 8.34, sp_BlitzCache.sql and sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited (portions of sp_Blitz Microsoft's, tigertoolbox, MIT) | internal/plans/mssqlwarn.go |
  | The error log's match list and noise list (the search strings of its @custom_message_only = 0 run less 'Microsoft SQL Server' and 'Server name is', and the line patterns it deletes after the search), as data | DarlingData (darlingdata-20261101), sp_LogHunter.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/errorlog.go (errorLogMatches, errorLogNoise*) |
  | The waiting-tasks read (its query and WHERE: sessions 50 and up, not the collector's own, a wait type, not PerformanceMonitor's own database; the collector's own session dropped as a blocker) and the ignored-wait list (IgnoredWaitDefaults.All, 126 types), as data; THREADPOOL waiters counted with no filter as sp_PressureDetector reads them | PerformanceMonitor 3.12.0, PerformanceMonitor.Collectors/WaitingTasksCollector.cs and IgnoredWaitDefaults.cs; DarlingData (darlingdata-20261101), sp_PressureDetector.sql | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/darling_waiting.go (waitingSQL, pmIgnoredWaits, threadpoolSQL), internal/repo/sql/0108_darling_waiting_tasks.sql |
  | The blocking findings' rules and words (an implicit transaction blocking, sessions in implicit transactions, a lead blocker's share of the blocked wait at 10 %), the wait findings' thresholds and words (wait share, signal wait ratio, SOS_SCHEDULER_YIELD, tempdb page latch, forced grants, poison waits, range locks, CMEMTHREAD on NUMA), and the blocked-process reports' checks 1-10, 1000 and 1001 with the lead walk, ported from the procedures' text | DarlingData (darlingdata-20261101): sp_HumanEventsBlockViewer 5.11 (checks 1-10, 1000, 1001), sp_PerfCheck 2.11 (6001, 6101, 6102, 2010, 4101), sp_HealthParser 3.11 (system_health's blockingTasks); SQL Server First Responder Kit 8.34: sp_BlitzFirst (30, 37), sp_Blitz (117, 121, 162, 215) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/repo/sql/0114_darling_blocking.sql, 0115_darling_waits.sql, 0116_darling_blocking_history.sql, internal/mssql/xe_shred.go (blockingTasks) |
 diff --git a/internal/community/kits/ports.json b/internal/community/kits/ports.json
-index 5c7395d..e07c101 100644
+index 5c7395d..c6f2646 100644
 --- a/internal/community/kits/ports.json
 +++ b/internal/community/kits/ports.json
-@@ -1670,5 +1670,59 @@
+@@ -1670,5 +1670,109 @@
      "begin": "return \"\\nCREATE EVENT SESSION [\" + sessionName + \"]\\n\"",
      "end": "+ \");\\n\";",
      "sha256": "01bc11377ea1cac2e62e99a9f534d8986d8755b55f5eaa18880a79841667ad20"
@@ -27,7 +28,7 @@ index 5c7395d..e07c101 100644
 +    "go_file": "internal/plans/mssqlwarn.go",
 +    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
 +    "path": "sp_BlitzCache.sql",
-+    "follows": "8.34 (20260702), sp_BlitzCache's cost and runtime warning thresholds (D401's and D402's low cost high CPU and row estimate mismatch)",
++    "follows": "8.34 (20260702), sp_BlitzCache's cost and runtime warning thresholds (the plan warnings' rules)",
 +    "begin": "near_parallel = CASE WHEN",
 +    "end": "is_big_spills = CASE WHEN (AvgSpills / 128.) \u003e 499. THEN 1 END",
 +    "sha256": "5cced7efc92b4b34f8a9d3387126d9d47d5e60fe544e69532326c49750b8d859",
@@ -75,5 +76,55 @@ index 5c7395d..e07c101 100644
 +    "items": [
 +      "10"
 +    ]
++  },
++  {
++    "name": "blitzCacheKeyLookupCost",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's key lookup cost (the costliest lookup's subtree)",
++    "begin": "SET key_lookup_cost = x.key_lookup_cost",
++    "end": "WHERE [relop].exist('/p:RelOp/p:IndexScan[(@Lookup[.=\"1\"])]') = 1",
++    "sha256": "172599f18dbad63b5164d030999135c12a05eeab71608d09b00ad3d50b6c1421"
++  },
++  {
++    "name": "blitzCacheRemoteQueryCost",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's remote query cost (the costliest remote operator's subtree)",
++    "begin": "SET remote_query_cost = x.remote_query_cost",
++    "end": "WHERE [relop].exist('/p:RelOp[(@PhysicalOp[contains(., \"Remote\")])]') = 1",
++    "sha256": "ba8eaa67e69049204288bd9183ba17131a5f6841378081cdf49b3790e5ea43a6"
++  },
++  {
++    "name": "blitzCacheSortCost",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's sort cost (the costliest sort's IO + CPU)",
++    "begin": "SET sort_cost = y.max_sort_cost",
++    "end": "WHERE [relop].exist('/p:RelOp[(@PhysicalOp[.=\"Sort\"])]') = 1",
++    "sha256": "459a5c8ae72d1606b437daba370a31a2ee5e3fd8713e2942182b2db44ff737d0"
++  },
++  {
++    "name": "blitzCacheIndexSpoolCost",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's eager index spool rows and cost (IO * CPU * rebinds, at least 1)",
++    "begin": "SET b.index_spool_rows = sp.estimated_rows,",
++    "end": "ELSE sp.estimated_rebinds END)",
++    "sha256": "df0badd2cadc9d1a0fb0028cfe86f13a0f9629d8636a34626b7071ae3a1cb39b"
++  },
++  {
++    "name": "blitzCacheTableSpoolCost",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's lazy table spool rows (rows * rebinds) and cost (IO * CPU * rows * rebinds, at least 1)",
++    "begin": "SET b.table_spool_rows = (sp.estimated_rows * sp.estimated_rebinds),",
++    "end": "ELSE sp.estimated_rebinds END)",
++    "sha256": "d6885be6602432f99d73ae56b11a5022cb660349ed8adcb5f27d958338b98389"
    }
  ]

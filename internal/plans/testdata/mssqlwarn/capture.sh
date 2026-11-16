@@ -10,7 +10,7 @@
 # the QueryHash of the marked statement in the estimated plan. Then sp_BlitzCache @ExpertMode = 1 over warnlab, and in
 # the same session the raw flag and number columns of ##BlitzCacheProcs' Statement rows (never its formatted output).
 #
-# Box only (docker, curl, python3, sha256sum). Nothing from a client; nothing here is part of a proof.
+# Needs docker, curl, python3 and sha256sum. Nothing from a client; nothing here is part of a proof.
 #   MSSQL_IMAGE      the SQL Server image (default: the pinned 2022-CU27-GDR2-ubuntu-22.04, 16.0.4315.2)
 #   FRK_BLITZCACHE   a local copy of sp_BlitzCache.sql 8.34 (default: fetched at the First Responder Kit tag 20260708);
 #                    either way its sha256 must be the 8.34 file's
@@ -116,6 +116,9 @@ SERVER=$(printf '%s\n' "SET NOCOUNT ON; SELECT CONCAT('SRV ', CAST(SERVERPROPERT
   | sqi master 60 | tr -d '\r' | sed -n 's/^SRV //p' | tail -1)
 read -r MSV CPUS MAXDOP CTP LQPS <<< "$SERVER"
 [[ $MSV == 16.* ]] || fail "the image is not SQL Server 2022 (ProductVersion '$MSV')"
+# the cases' thresholds are written for this server (the test reads ctp from capture-meta.tsv)
+[[ $CTP == 5 && $MAXDOP =~ ^[0-9]+$ && $MAXDOP != 1 && $CPUS =~ ^[0-9]+$ ]] && ((CPUS >= 2)) \
+  || fail "the server is not the cases' (ctp '$CTP' must be 5, maxdop '$MAXDOP' not 1, cpus '$CPUS' at least 2)"
 TFS=$(printf '%s\n' "SET NOCOUNT ON; CREATE TABLE #wl_tf (TraceFlag int, Status int, Global int, Session int); INSERT #wl_tf EXEC (N'DBCC TRACESTATUS (-1) WITH NO_INFOMSGS'); SELECT CONCAT('TF ', TraceFlag) FROM #wl_tf;" \
   | sqi master 60 | tr -d '\r' | sed -n 's/^TF //p' | paste -sd, -)
 echo "server $MSV cpus $CPUS maxdop $MAXDOP ctp $CTP lqps $LQPS global-flags ${TFS:-none}"
@@ -148,13 +151,19 @@ for e in stmts:   # the LAST marked statement with its own QueryHash: a procedur
 print("%s %d" % (h, len(stmts)))
 PY
 }
+plan_ok() {   # plan_ok <raw output> <plan file> <case>: plan_of, a failed or silent python said as 'unparsed:' (never an empty hash)
+  local out
+  out=$(plan_of "$@") || out="unparsed:plan_of_exit_$?"
+  [[ -n $out ]] || out="unparsed:no_output"
+  printf '%s\n' "$out"
+}
 NCASE=0; NEST=0; NCACHE=0; NQS=0
 while read -r name runs to; do
   NCASE=$((NCASE + 1))
   pre=$WORK/cases/$name.pre.sql; body=$WORK/cases/$name.sql
   { printf 'SET NOCOUNT ON;\nGO\n'; cat "$pre"; printf 'SET SHOWPLAN_XML ON;\nGO\n'; cat "$body"; } \
     | sqi warnlab "$to" > "$WORK/est.raw" 2>&1 || true
-  read -r hash nstmt <<< "$(plan_of "$WORK/est.raw" "$OUT/$name.est.sqlplan" "$name")"
+  read -r hash nstmt <<< "$(plan_ok "$WORK/est.raw" "$OUT/$name.est.sqlplan" "$name")"
   if [[ $hash == none || $hash == unparsed:* ]]; then
     est="FAIL ($hash: $(tr -d '\r' < "$WORK/est.raw" | grep -m1 -E 'Msg|rror' | cut -c1-160))"; hash=nohash; nstmt=0
   else est=ok; NEST=$((NEST + 1)); fi
@@ -168,11 +177,11 @@ while read -r name runs to; do
   if [[ $hash == 0x* ]]; then
     printf '%s\n' "SET NOCOUNT ON; SELECT TOP (1) tqp.query_plan FROM sys.dm_exec_query_stats AS qs CROSS APPLY sys.dm_exec_text_query_plan(qs.plan_handle, DEFAULT, DEFAULT) AS tqp WHERE qs.query_hash = $hash ORDER BY qs.last_execution_time DESC;" \
       | sqi warnlab 120 > "$WORK/cache.raw" 2>&1 || true
-    read -r h2 _ <<< "$(plan_of "$WORK/cache.raw" "$OUT/$name.cache.sqlplan" "$name")"
+    read -r h2 _ <<< "$(plan_ok "$WORK/cache.raw" "$OUT/$name.cache.sqlplan" "$name")"
     [[ $h2 == none || $h2 == unparsed:* ]] || { cache=ok; NCACHE=$((NCACHE + 1)); }
     printf '%s\n' "SET NOCOUNT ON; SELECT TOP (1) p.query_plan FROM sys.query_store_plan AS p JOIN sys.query_store_query AS q ON q.query_id = p.query_id WHERE q.query_hash = $hash ORDER BY p.last_execution_time DESC;" \
       | sqi warnlab 120 > "$WORK/qs.raw" 2>&1 || true
-    read -r h3 _ <<< "$(plan_of "$WORK/qs.raw" "$OUT/$name.qs.sqlplan" "$name")"
+    read -r h3 _ <<< "$(plan_ok "$WORK/qs.raw" "$OUT/$name.qs.sqlplan" "$name")"
     [[ $h3 == none || $h3 == unparsed:* ]] || { qs=ok; NQS=$((NQS + 1)); }
   fi
   ph=-
@@ -183,7 +192,7 @@ while read -r name runs to; do
       ph=${fb%% *}; dh=${fb##* }
       printf '%s\n' "SET NOCOUNT ON; SELECT query_plan FROM sys.dm_exec_text_query_plan($ph, DEFAULT, DEFAULT);" \
         | sqi warnlab 120 > "$WORK/cache.raw" 2>&1 || true
-      read -r h2 _ <<< "$(plan_of "$WORK/cache.raw" "$OUT/$name.cache.sqlplan" "$name")"
+      read -r h2 _ <<< "$(plan_ok "$WORK/cache.raw" "$OUT/$name.cache.sqlplan" "$name")"
       [[ $h2 == none || $h2 == unparsed:* ]] || { cache="ok (by text)"; NCACHE=$((NCACHE + 1)); }
       [[ $hash == 0x* ]] || hash=$dh
     fi
@@ -191,7 +200,7 @@ while read -r name runs to; do
   if [[ $qs == none ]]; then
     printf '%s\n' "SET NOCOUNT ON; SELECT TOP (1) p.query_plan FROM sys.query_store_plan AS p JOIN sys.query_store_query AS q ON q.query_id = p.query_id JOIN sys.query_store_query_text AS t ON t.query_text_id = q.query_text_id WHERE t.query_sql_text LIKE N'%case' + N':$name */%' ORDER BY p.last_execution_time DESC;" \
       | sqi warnlab 120 > "$WORK/qs.raw" 2>&1 || true
-    read -r h3 _ <<< "$(plan_of "$WORK/qs.raw" "$OUT/$name.qs.sqlplan" "$name")"
+    read -r h3 _ <<< "$(plan_ok "$WORK/qs.raw" "$OUT/$name.qs.sqlplan" "$name")"
     [[ $h3 == none || $h3 == unparsed:* ]] || { qs="ok (by text)"; NQS=$((NQS + 1)); }
   fi
   echo "case $name: est $est, statements $nstmt, hash $hash, handle ${ph:0:24}, exec $ex x$runs, cache $cache, qs $qs"
