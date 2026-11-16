@@ -82,7 +82,7 @@ const planStmtCut = 3999
 // the text ends inside ends the pass. One pass and no list of tags (a statement at the cut reads ahead to the next
 // statement once); s itself comes back when nothing is masked. Idempotent: a masked literal reads back as itself.
 func maskPlanCredStatements(s string) string {
-	if !strings.Contains(s, "StatementText=") {
+	if !strings.Contains(s, "<Stmt") { // a showplan's statements; a live plan's carry no StatementText
 		return s
 	}
 	var b strings.Builder
