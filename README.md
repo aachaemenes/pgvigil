@@ -196,7 +196,7 @@ SQL Server is an engine of its own: an instance says `engine: sqlserver`, a leas
 | mssql_waits | 1 min | sys.dm_os_wait_stats (Azure SQL Database: sys.dm_db_wait_stats, not proven: task 165) as the difference between two reads | [running](docs/sqlserver-running.md) |
 | mssql_xe | 1 min | Extended Events sessions the DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, attentions, AlwaysOn_health | [xe](docs/sqlserver-xe.md) |
 | mssql_ag, mssql_mirroring | 1 min | availability groups, database mirroring (not proven on a real mirrored database: the sandbox has none) | [hadr](docs/sqlserver-hadr.md) |
-| mssql_logshipping, mssql_replication, mssql_jobs | 5 min | msdb's log shipping monitor, the distribution database (neither proven on a real log shipping pair or distributor: the sandbox has none), SQL Server Agent | [hadr](docs/sqlserver-hadr.md) |
+| mssql_logshipping, mssql_replication, mssql_jobs | 5 min | msdb's log shipping monitor (not proven on a real log shipping pair: the sandbox has none), replication from both sides - each published database and, on a distributor, its agents, jobs, errors and latency (proven on a real publisher, remote distributor and subscriber: [replication](docs/sqlserver-replication.md)), SQL Server Agent | [hadr](docs/sqlserver-hadr.md) |
 | mssql_backups | hourly | msdb.dbo.backupset, judged across an availability group's replicas | [hadr](docs/sqlserver-hadr.md) |
 | mssql_storage | hourly | sys.master_files and the volumes | [storage](docs/sqlserver-storage.md) |
 | mssql_versionstore | 1 min | tempdb's version store and its holder | [storage](docs/sqlserver-storage.md) |

@@ -71,7 +71,7 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
 | `mssql_ag` | 1 min | Always On availability groups | Always On enabled, VIEW SERVER STATE, VIEW ANY DEFINITION | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_mirroring` | 1 min | database mirroring | VIEW SERVER STATE for the queues | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_logshipping` | 5 min | msdb's log shipping monitor tables | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
-| `mssql_replication` | 5 min | the distribution database, on a distributor | a user in the distribution database with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_replication` | 5 min | each published database (every server); the distribution database and the agents' jobs, on a distributor | VIEW SERVER STATE; a user in the distribution database and in msdb with db_datareader | not run | [replication](sqlserver-replication.md) |
 | `mssql_jobs` | 5 min | SQL Server Agent: jobs, steps, schedules, what runs now, the history | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_backups` | 1 hour | every database's last full, differential and log backup | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_storage` | 1 hour | every database file with its size, growth and volume | VIEW ANY DEFINITION; VIEW SERVER STATE for the volumes | not run yet | [storage and row versions](sqlserver-storage.md) |
