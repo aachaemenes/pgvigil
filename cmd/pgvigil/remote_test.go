@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -165,6 +166,40 @@ func TestUninstallRemoteArgs(t *testing.T) {
 		if _, err := parseInstallArgs("uninstall", bad, defaultInstallOptions()); err == nil {
 			t.Errorf("uninstall %v: no error", bad)
 		}
+	}
+}
+
+// -purge leaves no empty /var/lib/pgvigil-remote behind: the two folders' parent goes when it is named pgvigil-remote
+// and empty; a parent of another name, or one still holding a file, stays.
+func TestRemoveRemoteParent(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	root := t.TempDir()
+	own := filepath.Join(root, "pgvigil-remote")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removeRemoteParent(log, filepath.Join(own, "outbox"), filepath.Join(own, "state"))
+	if _, err := os.Stat(own); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the empty pgvigil-remote parent is still there (%v)", err)
+	}
+	other := filepath.Join(root, "data")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removeRemoteParent(log, filepath.Join(other, "outbox"), filepath.Join(other, "state"))
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("a parent of another name went: %v", err)
+	}
+	held := filepath.Join(root, "x", "pgvigil-remote")
+	if err := os.MkdirAll(held, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(held, "keep.me"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removeRemoteParent(log, filepath.Join(held, "outbox"), filepath.Join(held, "state"))
+	if _, err := os.Stat(filepath.Join(held, "keep.me")); err != nil {
+		t.Errorf("a pgvigil-remote parent holding a file lost it: %v", err)
 	}
 }
 

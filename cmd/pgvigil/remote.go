@@ -149,6 +149,11 @@ func remotePurgeGuard(o installOptions) error {
 		outbox, n, newest.UTC().Format("2006-01-02 15:04:05 UTC"))
 }
 
+// removeRemoteParent removes the outbox's and the state folder's shared parent once both are gone, only when it is
+// named pgvigil-remote and empty (Linux's /var/lib/pgvigil-remote; on Windows the parent is the config folder, which
+// purgeFolder handles); any other parent is never touched.
+func removeRemoteParent(log *slog.Logger, outbox, stateDir string) {}
+
 // uninstallRemote is `pgvigil uninstall -remote [-purge [-force]]` (the lead's 12:2x): the remote collector's service
 // stopped and removed - never the hub's; with -purge its outbox, its state folder, its config folder's own files and
 // its binary, each folder removed once empty and anything else in them kept and named.
