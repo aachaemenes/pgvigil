@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -298,5 +299,65 @@ func TestMaskMoreKeys(t *testing.T) {
 	Mask(&r, "normalized", up)
 	if !strings.Contains(r.PlanText, "Window: #W1 AS") {
 		t.Errorf("text window not passed through the normalizer: %s", r.PlanText)
+	}
+}
+
+// TestMaskGroupingSets (TEXT-NOW-L row 2, review 3 L2): PostgreSQL writes a GROUPING SETS key's expression in a JSON
+// plan as an array of arrays under each set - "Group Keys" for a sorted set, "Hash Keys" for a hashed one (read on
+// PostgreSQL 18.6 and 13.23: the plans in testdata/mask/groupingsets_*.json are PostgreSQL 18.6's EXPLAIN (FORMAT JSON) of a
+// statement of this row's own, SELECT a || 'kGlit' ... GROUP BY GROUPING SETS ((a || 'kGlit'), (b), ()), captured on a
+// scratch container). Under normalized the literal is gone from the stored JSON and its text; the text form's
+// 'Group Key:' / 'Hash Key:' lines are masked as before.
+func TestMaskGroupingSets(t *testing.T) {
+	up := func(s string) string { return "#" + strings.ToUpper(s) + "#" }
+	for _, f := range []string{"groupingsets_sorted.json", "groupingsets_hashed.json"} {
+		b, err := os.ReadFile("testdata/mask/" + f) // not testdata/*.json: TestTextMatchesJSON pairs those with a text plan
+		if err != nil || !strings.Contains(string(b), "kGlit") {
+			t.Fatalf("%s: not the capture this row reads (%v)", f, err)
+		}
+		r := Build(Explained, time.Unix(0, 0), "", "", "", string(b))
+		if !Mask(&r, "normalized", up) {
+			t.Fatalf("%s: normalized dropped the row", f)
+		}
+		if strings.Contains(string(r.Plan), "kGlit") || strings.Contains(r.PlanText, "kGlit") {
+			t.Errorf("%s: a grouping set key's literal left in the masked plan: %s", f, r.Plan)
+		}
+		if !strings.Contains(string(r.Plan), "'KGLIT'::TEXT") {
+			t.Errorf("%s: the grouping set keys were not passed through the normalizer: %s", f, r.Plan)
+		}
+	}
+	txt := "MixedAggregate  (cost=0.00..1.00 rows=1 width=4)\n  Hash Key: (a || 'kGlit'::text)\n  Group Key: ()\n  ->  Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"
+	r := Build(Explained, time.Unix(0, 0), "", "", "", txt)
+	Mask(&r, "normalized", up)
+	if strings.Contains(r.PlanText, "kGlit") {
+		t.Errorf("text form: %s", r.PlanText)
+	}
+}
+
+// TestMaskSampling (TEXT-NOW-L review L2): the text form's tablesample line 'Sampling: <method> (<parameters>)
+// REPEATABLE (<seed>)' is an expression line - its values are masked under normalized (the JSON form's Sampling
+// Parameters / Repeatable Seed were already keys).
+func TestMaskSampling(t *testing.T) {
+	quoted := regexp.MustCompile(`'[^']*'`)
+	norm := func(s string) string { return quoted.ReplaceAllString(s, "?") }
+	txt := "Sample Scan on ts  (cost=0.00..1.00 rows=1 width=4)\n  Sampling: bernoulli ('7.5'::real) REPEATABLE ('4242'::double precision)"
+	r := Build(Explained, time.Unix(0, 0), "", "", "", txt)
+	Mask(&r, "normalized", norm)
+	if strings.Contains(r.PlanText, "7.5") || strings.Contains(r.PlanText, "4242") {
+		t.Errorf("the Sampling line kept its values: %s", r.PlanText)
+	}
+}
+
+// TestNormalizeAllKeeps (TEXT-NOW-L review, the tests): under an expression key every string at any depth is
+// normalized; a number, a bool and an object in the arrays are kept as they are.
+func TestNormalizeAllKeeps(t *testing.T) {
+	v := map[string]any{"Group Keys": []any{[]any{"(a || 'k'::text)", 1.5, true, map[string]any{"x": "y"}}}}
+	maskValue(v, strings.ToUpper)
+	in := v["Group Keys"].([]any)[0].([]any)
+	if in[0] != "(A || 'K'::TEXT)" || in[1] != 1.5 || in[2] != true {
+		t.Errorf("the key list: %v", in)
+	}
+	if m, ok := in[3].(map[string]any); !ok || m["x"] != "y" {
+		t.Errorf("an object in the key list changed: %v", in[3])
 	}
 }
