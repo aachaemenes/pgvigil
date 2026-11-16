@@ -26,7 +26,8 @@
 #       today and the next two days); each ahead-made partition's index definitions equal those of a partition the
 #       parent's own maker makes for a month three months back
 #  R4   the maker pgvigil.partition_parents() names for each parent equals the maker the migrations call for it (the
-#       static map: literal table names, and the VALUES lists of the event imports)
+#       static map: literal table names, the VALUES lists of the event imports, and the hour tables' own makers -
+#       0151's hour_partition_0151, 0167's mssql_azuredb_hour_partition)
 #  R5   with an open transaction holding ROW EXCLUSIVE on activity_sample, import_partition_make of a missing month
 #       answers 'busy' in 0.4 to 1.0 s; an insert into activity_sample started meanwhile ends within 1.0 s; after the
 #       holder commits the make answers 'made'
@@ -221,10 +222,14 @@ import re, sys, glob, os
 d = sys.argv[1]; m = {}
 for f in sorted(glob.glob(os.path.join(d, '*.sql'))):
     s = re.sub(r'--[^\n]*', '', open(f).read())
+    # the hour tables' own makers (partition_parents' 'hour_0151' and 'azuredb_hour'): 0151's takes its table by name,
+    # 0167's makes mssql_azuredb_hour only
     for fn, mk in (('ensure_month_partition', 'month'), ('dbadash_import_months', 'month'), ('mssql_ensure_day_partition', 'day'),
-                   ('mssql_event_partition', 'event')):
+                   ('mssql_event_partition', 'event'), ('hour_partition_0151', 'hour_0151')):
         for x in re.finditer(fn + r"\s*\(\s*'(\w+)'", s):
             m.setdefault(x.group(1), set()).add(mk)
+    if re.search(r'mssql_azuredb_hour_partition\s*\(\s*\w', s):
+        m.setdefault('mssql_azuredb_hour', set()).add('azuredb_hour')
     # a table passed as a variable: the VALUES list of the loop that calls the event maker with v_t.tbl
     for body in re.finditer(r'AS \$\$(.*?)\$\$', s, re.S):
         b = body.group(1)
