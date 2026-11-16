@@ -14,6 +14,12 @@
 # the rest gone' (the cases in the script). Then the whole list: no partitioned parent of the schema unnamed by purge() (or mssql_running_purge(), the day
 # partitions of mssql_requests); an old-month partition made for every other parent, all dropped by purge -days 30; the
 # reader holds EXECUTE on none of the eight owner-only functions: 'ok   every partitioned parent named by purge(); ...'.
+# Last, past OID 100,000 (the 22008 fault of 2026-11-14): the cluster's OID counter is pushed past 100,000 (large objects
+# made and removed at once) and a table is made whose TOAST table is named pg_toast_<six digits> ending in no month
+# (13-99 or 00); twice - under the plan the database picks, then with the database set to hash joins and scans only -
+# an old dbstats month is made again, 'purge -dry-run' must name exactly dbstats_<old> and 'purge -days 30' must remove
+# it, each ending 0: 'ok   past OID 100,000: pg_toast_<n> ...'. Without the month guard: 'date/time field value out of
+# range' (SQLSTATE 22008) - PurgeCandidates under either plan (t-pd-p1b), purge() under the forced one.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -97,4 +103,38 @@ found=$(q "select count(distinct proname) from pg_proc p join pg_namespace n on 
 granted=$(q "select coalesce(string_agg(distinct proname, ','), '') from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ($owner_only) and has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE')")
 [ -z "$granted" ] || fail "the reader may execute owner-only functions: $granted"
 echo "ok   every partitioned parent named by purge(); $nparents old-month partitions made and dropped; the reader holds none of the 8 owner-only functions"
+
+# past OID 100,000: a TOAST table pg_toast_<six digits> whose last two digits are no month must never reach a month parse
+lo=$(q "select lo_create(0)"); q "select lo_unlink($lo)" >/dev/null
+# a commit every 1,000: each lo_unlink holds a lock until its transaction ends (one statement for all ran out of shared memory)
+if [ "$lo" -lt 100000 ]; then q "do \$\$ begin for k in 1..$((100000 - lo)) loop perform lo_unlink(lo_create(0)); if k % 1000 = 0 then commit; end if; end loop; end \$\$" >/dev/null; fi
+lo2=$(q "select lo_create(0)"); q "select lo_unlink($lo2)" >/dev/null
+[ "$lo2" -ge 100000 ] || fail "setup: the OID counter at $lo2 after the push from $lo, want 100,000 or more"
+toast=""; t=""
+for k in $(seq 1 40); do
+  q "create table public.proof_purge_toast_$k (t text)" >/dev/null
+  t=$(q "select coalesce(c.reltoastrelid::regclass::text, '') from pg_class c where c.oid = 'public.proof_purge_toast_$k'::regclass")
+  t=${t#pg_toast.}
+  if [[ $t =~ ^pg_toast_[0-9]{6}$ ]]; then mm=${t: -2}; if [ "$((10#$mm))" -ge 13 ] || [ "$mm" = "00" ]; then toast=$t; break; fi; fi
+done
+[ -n "$toast" ] || fail "setup: no TOAST table named pg_toast_<six digits> ending in no month (the last: '$t', OID counter from $lo)"
+# both under the plan the database picks, then under hash joins and scans only (no evaluation order is promised for a
+# WHERE's tests: the forced plan makes every pg_class row meet the month test before the join to pg_inherits)
+plan_off="enable_nestloop enable_mergejoin enable_indexscan enable_indexonlyscan enable_bitmapscan"
+res=""; bad=0
+for plan in natural forced; do
+  if [ "$plan" = forced ]; then for g in $plan_off; do q "alter database $DB set $g = off" >/dev/null; done; fi
+  q "select pgvigil.ensure_month_partition('dbstats', now() - interval '100 days')" >/dev/null
+  set +e
+  dr=$("$BIN" purge -config "$CFG" -dry-run 2>&1); drc=$?
+  pr=$("$BIN" purge -config "$CFG" -days 30 2>&1); prc=$?
+  set -e
+  dr=${dr##*$'\n'}; pr=${pr##*$'\n'}   # the last line: the answer (purge -days 30 logs its INFO line before it)
+  [ "$drc" = 0 ] && [ "$dr" = "purge -days 30 would drop 1 partition(s): dbstats_$old" ] || bad=1
+  [ "$prc" = 0 ] && case "$pr" in "purge -days 30: 1 partitions and rows removed in "*) true ;; *) false ;; esac || bad=1
+  res="$res | $plan: purge -dry-run rc $drc: $dr ; purge -days 30 rc $prc: $pr"
+done
+q "alter database $DB reset all" >/dev/null
+[ "$bad" = 0 ] || fail "past OID 100,000 ($toast)$res"
+echo "ok   past OID 100,000: $toast in the database; under the database's plan and under hash joins and scans only, purge -dry-run named dbstats_$old and purge -days 30 removed it, rc 0 each"
 echo "proof-purge: OK (old month $old dropped, current month $cur kept)"
