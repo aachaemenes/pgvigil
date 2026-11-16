@@ -10,6 +10,7 @@
 #                        random suffix and drops it at the end)
 #   PGVIGIL_BIN          the build to prove (its embedded pages are the ones read); default bin/pgvigil
 #   PGVIGIL_DEMO_WAIT_S  the seed's time limit, default 600
+#   PGVIGIL_PAGES_ONLY   'week': the 7-day row alone (no R4 walk of the three roles)
 #
 # This serve: the repository's own dsn and no instance in its file, so acknowledgements, thresholds, alert rules and
 # applications are written here (the role's words show on their controls), and the seeded instances have no actions
@@ -33,6 +34,11 @@
 #     new mail schedule (openers that need admin: off for the viewer and the operator with the role's words, a click
 #     opens nothing; the admin's opens the dialog, no control off for the role).
 #     'PASS: proof-uiroles-pages'.
+#   The 7-day row (the lead 11-15 19:3x; written before its first run; scripts/roles-mute-week.mjs): as the operator,
+#     the page's clock 60 s ahead of the server's, the Silence of one PostgreSQL instance (not roles-check's) with
+#     '7 days' picked in its dialog and saved - on rel-roles f421753c (the dialog's 7 days = 168 h, past the server's
+#     ceiling by the clock's lead): 'FAIL week: ... 403 {"error":"a fleet-wide or open-ended mute needs the admin
+#     role: ..."}'; with the dialog's 7 days ending 10 minutes short of 168 h: 'ok   week: ... done (200 ...)'.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -87,12 +93,18 @@ CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || die "chromium's CDP port never answered"
 
-BADROLES=0
+BADROLES=0; WEEKBAD=0
+[[ ${PGVIGIL_PAGES_ONLY:-} == week ]] && echo "note: PGVIGIL_PAGES_ONLY=week - no R4 walk"
 for role in viewer operator admin; do
+  [[ ${PGVIGIL_PAGES_ONLY:-} == week ]] && break
   echo "== R4 as ${USER[$role]} ($role)"
   timeout 1500 node scripts/roles-check.mjs "$CDP" "$U/" "${USER[$role]}" "$(PW "${USER[$role]}")" "$role"; rc=$?
   (( rc == 0 )) || { BADROLES=$((BADROLES + 1)); echo "FAIL roles-check $role: rc $rc"; }
 done
 echo "== the load at the end: $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo unknown); role refusals in serve's log: $(grep -c 'role refused' "$WORK/serve.log")"
-if (( BADROLES )); then echo "proof-uiroles-pages: $BADROLES role(s) FAIL"; exit 1; fi
+# the 7-day end: an operator's Silence with '7 days' picked, the page's clock ahead of the server's
+echo "== week as ${USER[operator]} (operator)"
+timeout 300 node scripts/roles-mute-week.mjs "$CDP" "$U/" "${USER[operator]}" "$(PW "${USER[operator]}")"; rc=$?
+(( rc == 0 )) || { WEEKBAD=1; echo "FAIL roles-mute-week: rc $rc"; }
+if (( BADROLES || WEEKBAD )); then echo "proof-uiroles-pages: $BADROLES role(s) FAIL, the 7-day row $( (( WEEKBAD )) && echo FAIL || echo ok)"; exit 1; fi
 echo "PASS: proof-uiroles-pages"
