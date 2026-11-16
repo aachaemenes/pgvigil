@@ -11,7 +11,7 @@
 -- (1) 0190_join_release2.sql, pgvigil.purge(): the two lines
 --       AND c.relname ~ '_[0-9]{6}$'
 --       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
---     become:
+--     become (three comment lines, three code lines):
        -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
        -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
        -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
@@ -20,9 +20,13 @@
             + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
 
 -- (2) 0139_job_stats_hourly.sql, pgvigil.job_stats_hourly_purge() (purge()'s last block calls it): the same two lines
---     with v_days for p_days become the same five, with v_days.
+--     with v_days for p_days become the same six (three comment lines, three code lines), with v_days.
 
--- Read and left (no line): internal/web/q_retention.go's month / day parses sit in a CTE's select list over rows
--- already joined to a pgvigil parent (sqlRetentionTables' and sqlStored's p, each read more than once, so not
--- inlined) or in an aggregate's FILTER after a join (sqlRetentionHours) [inferred from the query shapes; not proven
--- past OID 100,000]; the older purge() bodies (0002-0110) are replaced by 0190's.
+-- Read and left (no line): the older purge() bodies (0002-0110), replaced by 0190's; 0064's mssql_running_purge() (its
+-- last body), whose day parse is anchored to '^mssql_requests_[0-9]{8}$' (a TOAST name never matches; a table of that
+-- name with eight digits that are no date would); scripts/menu-check.mjs L626 / L628 and scripts/proof-range.sh L136-137
+-- (the walks' and the range proof's own reads, on fresh containers far below OID 100,000).
+-- Changed in Go beside these lines (not join lines): repo.go's PurgeCandidates (the WIRING patch, repo.go is shared)
+-- and internal/web/q_retention.go - its CTEs MATERIALIZED with the strict month and day patterns, the hours read's
+-- FILTER guarded by the CASE (today's shapes passed on PostgreSQL 18.6 under a forced plan in the code review's probe;
+-- a CTE read once with a month test outside it failed with 22008 there, so the safety is made explicit).

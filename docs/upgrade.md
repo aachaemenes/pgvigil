@@ -62,12 +62,12 @@ what happens in the other order, and what the project's own proof showed (`scrip
 - **Plans of running queries are off on every instance.** `mssql_running_plans` and `mssql_live_plans` are new and off
   by default; an instance added on Admin > Instances has a running plans box, unticked, and an instance of the file
   takes `schedules:` ([plans of running queries](sqlserver-indexes.md#plans-of-running-queries)).
-- **A purge fault of v0.3.0, fixed.** v0.3.0's `pgvigil purge` and `pgvigil purge -dry-run` fail with 'date/time field
-  value out of range' (SQLSTATE 22008) once the repository's database holds a TOAST table whose name ends in six digits
-  that are no month (`pg_toast_100017`: the cluster has given out more than 100,000 object identifiers, as its tables,
-  partitions and temporary tables use them up; until it passes 999,999): their test of a partition's month could read
-  that table's name. The upgrade replaces `pgvigil.purge()` and the hours tables' `pgvigil.job_stats_hourly_purge()`,
-  and the new binary's dry run reads a month only from a name ending in one; nothing to do by hand.
+- **A purge fault of v0.3.0, fixed.** v0.3.0's `pgvigil purge` and `pgvigil purge -dry-run` can fail with 'date/time
+  field value out of range' (SQLSTATE 22008) once the repository's database holds a table whose name ends in six digits
+  that are no month - a TOAST table named after an object identifier between 100,000 and 999,999, `pg_toast_100017`
+  (the name stays while the table does): their test of a partition's month could read that name. The upgrade replaces
+  `pgvigil.purge()`; the new hours tables' function is made with the same guard; the new binary's dry run reads a month
+  only from a name ending in one. Nothing to do by hand.
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.
