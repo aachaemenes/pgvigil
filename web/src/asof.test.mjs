@@ -49,4 +49,18 @@ eq("the header's freshness: a pgvigil.yaml instance 5 min after its newest colle
 eq("the header's freshness: no collection ever is awaiting", headerFreshness({ coll_stale: 0 }, now), 'awaiting');
 eq("an instance whose collector is not known yet: 'a remote collector of site <s>'", asOfLine(remote(5, 6, { collector: null })),
   `as of ${clock(ago(5))} (a remote collector of site site1, a bundle every 5 min)`);
+// review C S4: the silence is the hub's clock - when it last LOADED a bundle (loaded_at) - never the site's as_of: a site
+// clock 3 h behind whose bundle the hub loaded 5 minutes ago is not quiet
+eq('a site clock 3 h behind, its bundle loaded 5 min ago: online, not quiet',
+  freshness(remote(180, 185, { loaded_at: ago(5) }), now), 'online');
+eq('and no silence line', quietLine(remote(180, 185, { loaded_at: ago(5) }), now), '');
+eq('a bundle loaded 3 h ago on an hourly site: quiet', freshness(remote(185, 190, { loaded_at: ago(180) }), now), 'offline');
+// review C N4: the silence counts the bundle interval too: an hourly bundle on a site whose expected_every says 5 min is
+// quiet only past 2 x 60 min
+eq('an hourly bundle (expected_every 5 min) loaded 50 min ago: not quiet',
+  freshness(remote(50, 55, { loaded_at: ago(50), interval_secs: 3600, expected_every_secs: 300 }), now), 'online');
+// review C S5: an 'as of' that is not today names its day
+const yesterday = new Date(now - 20 * 3600000);
+const dayWords = yesterday.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+eq("an 'as of' 20 h back names its day", asOfLine(remote(20 * 60, 20 * 60 + 5, { loaded_at: ago(5) }), now).includes(dayWords), true);
 process.exit(bad ? 1 : 0);

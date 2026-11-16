@@ -312,3 +312,48 @@ func TestRemoteBeforeTheQueue(t *testing.T) {
 		t.Errorf("CommunityRun / CommunityParams not found: %v", seen)
 	}
 }
+
+// review C B1 (contract 3): a remote instance's statement-text policy is its bundles' - 'hash' when none says - never
+// the hub's default ('full' here); the set withRemote was given keeps its own policies
+func TestRemotePolicyIsTheBundles(t *testing.T) {
+	r := remoteDoor{Site: "s", Collector: "c1"}
+	in := &doorSet{PG: map[string]actions.Door{}, MS: map[string]mssql.Door{}, Remote: map[string]remoteDoor{}, QueryText: map[string]string{"f": "normalized"}, DefaultQT: "full"}
+	out := withRemote(in, []remoteRow{{Name: "s/pg", Engine: "postgres", Door: r}}, discardLog())
+	if qt := out.planPolicy("s/pg"); qt != "hash" {
+		t.Errorf("a remote instance's policy: %q, want hash (its bundles' fingerprints)", qt)
+	}
+	if _, ok := in.QueryText["s/pg"]; ok || in.QueryText["f"] != "normalized" {
+		t.Errorf("the given set's policies changed: %v", in.QueryText)
+	}
+}
+
+// review C B1: under 'hash' a stored statement is its fingerprint - shown as one, never as the statement's text
+func TestTextHashIsAFingerprint(t *testing.T) {
+	tr := &textRule{byID: map[int]string{7: "hash"}, def: "full"}
+	hex := strings.Repeat("ab", 32)
+	if got := tr.stmt(7, true, hex); got != "fingerprint "+hex {
+		t.Errorf("a hash-policy statement: %v, want 'fingerprint <hex>'", got)
+	}
+	if got := tr.stmt(7, true, "select 1"); got != nil {
+		t.Errorf("a hash-policy statement that is no fingerprint: %v, want none shown", got)
+	}
+}
+
+// review C S2: the index advisor's button is off with the actions door's own words when actions are off
+func TestAdviseOffReadsActionsOff(t *testing.T) {
+	s := &Server{log: discardLog()}
+	s.actions = &Actions{s: s, off: "the actions door is off on this server: no actions_dsn"}
+	ds, _ := remoteSet()
+	if why := s.adviseOff(ds, "f"); why != s.actions.off {
+		t.Errorf("the advisor on a pgvigil.yaml instance with actions off: %q, want %q", why, s.actions.off)
+	}
+}
+
+// review C S3: a job button of a remote instance says R13's words before the server's own (actions off here)
+func TestPgJobRemoteFirst(t *testing.T) {
+	s := &Server{log: discardLog()}
+	ds, r := remoteSet()
+	if why := s.pgJobOff(ds, "site1/pg01", collect.JobStart, ""); why != actions.RemoteOff("site1/pg01", r.from()) {
+		t.Errorf("a remote instance's job action with actions off: %q", why)
+	}
+}
