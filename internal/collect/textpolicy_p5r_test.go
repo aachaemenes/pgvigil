@@ -270,10 +270,10 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 }
 
 // TestMaskPlanCredStatementsNoCopy: a plan the statement pass masks nothing in comes back as the same string, not a
-// copy of it (a stored plan is up to 4 MB): p2 names no credential; p5 names one, but its expressions hold no literal.
+// copy of it (a stored plan is up to 4 MB): p2 names no credential; p5 once masked (a stored plan read again: since M2
+// the pass masks p5's listed value itself, so p5 as captured is no longer a 'nothing' case) has nothing left to mask.
 func TestMaskPlanCredStatementsNoCopy(t *testing.T) {
-	for _, name := range []string{"p2", "p5"} {
-		in := readPlanFixture(t, name)
+	for name, in := range map[string]string{"p2": readPlanFixture(t, "p2"), "p5 masked once": MaskXML(readPlanFixture(t, "p5"))} {
 		if out := maskPlanCredStatements(in); out != in || unsafe.StringData(out) != unsafe.StringData(in) {
 			t.Errorf("%s: masked nothing, yet came back as a copy (%d bytes)", name, len(out))
 		}

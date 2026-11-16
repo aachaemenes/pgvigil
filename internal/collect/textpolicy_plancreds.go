@@ -7,23 +7,28 @@ import (
 )
 
 // A showplan's ParameterList names each parameter's compiled value, and MaskXML masks a credential-named one's there
-// (maskPlanParmRE). Under OPTION (RECOMPILE), or for a local variable a statement compiles with its value, the value is
-// compiled into the plan as a constant of the statement's expressions (a seek's ScalarString and ConstValue, a
-// conversion warning's Expression, the statement a linked server is sent as its RemoteQuery), where nothing names the
-// parameter it came from - and a live plan may list the parameter and carry the constant too. So a statement whose own
-// text names a credential-named @parameter has every literal of those expression attributes masked - its strings,
-// numbers and binary values alike (a number may be the secret), the constants a reader can no longer tell apart -
-// whether or not its plan lists the parameter. The statement's text, every other attribute, and every other statement
-// of the plan keep their bytes. The names are read from the document as it came in, before the tag pass masks it: that
-// pass writes 'PasswordHash = @PasswordHash' as 'PasswordHash = <masked>', which names no parameter.
+// (maskPlanParmRE). Elsewhere a credential's value is in a plan where nothing names it: under OPTION (RECOMPILE), or for a
+// local variable, the value is compiled in as a constant of the statement's expressions (a seek's ScalarString and
+// ConstValue, a conversion warning's Expression, the statement a linked server is sent as its RemoteQuery); a literal
+// compared with a password column stays in the plan's expressions ('[password]=N'...'', where the text mask's pair rule
+// stops at the bracket); and simple or forced parameterization lists the literal as an auto-parameter (@1, @0: the
+// stored StatementText is then the parameterized text, read on SQL Server 2022 16.0.4325.4). So a statement whose own
+// text holds a credential word - password, passwd, pwd or secret, in any name: a parameter, a column - has every literal
+// of those expression attributes masked (strings, numbers and binary values alike: a number may be the secret) and the
+// listed values of its auto-parameters and of its credential-named parameters (one with a non-ASCII letter in its name
+// too), whether or not its plan lists the parameter (a live plan may carry both); and so does a statement whose text is
+// cut at the plan's length and that lists no parameter (planStmtCut). The statement's text, every other attribute, and
+// every other statement of the plan keep their bytes. The words are read from the document as it came in, before the
+// tag pass masks it: that pass writes 'PasswordHash = @PasswordHash' as 'PasswordHash = <masked>'.
 //
-// The rule goes by the name in the statement's own text: a value copied into a variable or a parameter of another name,
-// or a name with a non-ASCII letter before the word, keeps its constants (docs/security.html, 'Known limits of that
-// mask').
+// The rule goes by the words in the statement's own text: a value copied into a variable or a parameter of a statement
+// that holds none of them keeps its constants (docs/security.html, 'Known limits of that mask').
 
 var (
-	// planCredParamRE: a credential-named parameter or variable, the names MaskCredentials' parameter form knows
-	planCredParamRE = regexp.MustCompile(`(?i)@\w*(?:password|passwd|pwd|secret)\w*`)
+	// planCredWordRE: a credential word anywhere in a statement's text (the words MaskCredentials' parameter form knows)
+	planCredWordRE = regexp.MustCompile(`(?i)password|passwd|pwd|secret`)
+	// planParamColRE: a ColumnReference's Column that is an auto-parameter (@0, @1, ...) or holds a credential word
+	planParamColRE = regexp.MustCompile(`(?i)\sColumn\s*=\s*["']@(?:\d+["']|[^"']*(?:password|passwd|pwd|secret))`)
 	// planExprAttrs: the attributes of a showplan that hold an expression with its constants (a Remote operator's
 	// RemoteSource names the linked server and holds none)
 	planExprAttrs = map[string]bool{"ScalarString": true, "ConstValue": true, "Expression": true, "RemoteQuery": true}
@@ -68,10 +73,10 @@ func hasPlanExprAttr(tag string) bool {
 const planStmtCut = 3999
 
 // maskPlanCredStatements is the statement pass of MaskXML, run over the document as it came in, before the tag pass:
-// each showplan statement (a Stmt... start tag, up to the next one) whose StatementText names a credential-named
-// @parameter - or whose StatementText is at the showplan's cut (planStmtCut) and which lists no parameter, the shape a
-// credential compiled in past the cut leaves (the lead 11-16 04:2x: locked down by default, Q15) - has its expression
-// attributes' literals masked (maskPlanLiterals). The start tags are read as maskXML reads them (nextPlanTag); a tag
+// each showplan statement (a Stmt... start tag, up to the next one) whose StatementText holds a credential word - or is
+// at the showplan's cut (planStmtCut) and which lists no parameter, the shape a credential compiled in past the cut
+// leaves (the lead 11-16 04:2x: locked down by default, Q15) - has its expression attributes' literals masked
+// (maskPlanLiterals) and the listed values of its auto-parameters and credential-named parameters. The start tags are read as maskXML reads them (nextPlanTag); a tag
 // the text ends inside ends the pass. One pass and no list of tags (a statement at the cut reads ahead to the next
 // statement once); s itself comes back when nothing is masked. Idempotent: a masked literal reads back as itself.
 func maskPlanCredStatements(s string) string {
@@ -79,7 +84,7 @@ func maskPlanCredStatements(s string) string {
 		return s
 	}
 	var b strings.Builder
-	pos, in, changed := 0, false, false // pos: s is written up to here; in: the tags read belong to a statement masked
+	pos, in, changed := 0, false, false // pos: s is written up to here; in: the tags read belong to a masked statement
 	opens, noEnd := len(s)-len(strings.TrimLeft(s, " \t\r\n")), false
 	for i := 0; ; {
 		at, e, ok := nextPlanTag(s, i, opens, &noEnd)
@@ -89,10 +94,17 @@ func maskPlanCredStatements(s string) string {
 		tag := s[at : at+e]
 		if strings.HasPrefix(tag, "<Stmt") {
 			text, _ := planAttr(tag, "StatementText")
-			in = planCredParamRE.MatchString(text) || utf16Len(text) >= planStmtCut && !planListsParams(s, at+e, opens, noEnd)
+			in = planCredWordRE.MatchString(text) || utf16Len(text) >= planStmtCut && !planListsParams(s, at+e, opens, noEnd)
 		}
-		if in && hasPlanExprAttr(tag) {
-			if m := maskPlanExprAttrs(tag); m != tag {
+		if in {
+			m := tag
+			if hasPlanExprAttr(tag) {
+				m = maskPlanExprAttrs(tag)
+			}
+			if strings.HasPrefix(tag, "<ColumnReference") && planParamColRE.MatchString(tag) {
+				m = maskPlanValRE.ReplaceAllString(m, "${1}"+xmlAttrEscape("'"+masked+"'")+"${2}")
+			}
+			if m != tag {
 				if !changed {
 					b.Grow(len(s) + len(s)/8)
 					changed = true
