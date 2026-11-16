@@ -110,6 +110,13 @@ the page does not run it when it opens, and a mailed report carries the same wor
 start and starts anyway. Behind PgBouncer, the reports login's startup settings are the UI login's (the README's
 `track_extra_parameters` line).
 
+A report on the repository is the admin's own door to the stored statement text: its SQL reads the text as it was
+kept, whatever an instance's `query_text` setting is now. The pages, the exports, the report mails, the alerts and the
+MCP door apply the setting as it stands when they read; a report's own SQL cannot. While any instance's setting is not
+`full`, the Custom reports page says so: 'A store report reads stored statement text whatever an instance's query_text
+policy is now: its SQL reads the repository's tables as the reports login (an admin's grant), not through the pages'
+rule (docs/security.html).'
+
 SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
 [the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`, `ALTER
 TRACE`) and no more. Before anything is sent, a run reads the login's rights and is refused, naming each one, when the

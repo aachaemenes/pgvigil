@@ -150,6 +150,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	// never delays serve, and an empty connection string never reaches a connect (without an alerts_dsn it is the
 	// repository serve itself reads, -dsn included: checked above). A failing channel is backed off as the collector's
 	// own alert loop backs it off (collect.ChannelBackoff).
+	// TEXT-NOW: the watchdog's alert sends follow the file's query_text policies from their first pass (srv.TextPolicy,
+	// which adds the page instances, replaces this once the web server is open)
+	alerts.SetTextPolicy(alerts.PolicyOfConfig(cfg.QueryText, queryTextByName(cfg)))
 	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
 		adsn := ast.DSN()
 		if adsn == "" {
@@ -233,6 +236,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		pc.Hypo[in.Name] = in.HypoIndex
 	}
 	srv.SetPlans(pc)
+	// TEXT-NOW: serve's alert sends follow each instance's query_text policy as its doors hold it now (page instances too)
+	alerts.SetTextPolicy(srv.TextPolicy)
 	doors := map[string]mssql.Door{}
 	for _, in := range cfg.Instances {
 		if in.Engine == config.EngineSQLServer {
