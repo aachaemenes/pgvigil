@@ -10,7 +10,14 @@
 # and drops them at the end, on every exit path. It changes no server setting. Its version store part holds one
 # snapshot transaction open for 50 seconds in its own database and writes about 150 MB of row versions to tempdb.
 #
-# Expected (written before the first run):
+# Expected (written before the first run; Z added by BLITZ-GAP, the lead 05:2x / 06:3x):
+#  Z. 0322's pgvigil.mssql_file_place_findings exists (RED ON THE BASE: 'FAIL: Z: no pgvigil.mssql_file_place_findings')
+#     and, until its line is joined, scripts/blitzgap-join-draft.sql gives mssql_storage_findings its arm. A database
+#     made on the server with C:\ file names (SQL Server on Linux keeps them as given): two findings 'a user database
+#     file on the C: drive' (warning, sp_Blitz 26), one per file, and none on a /var/opt path. Imported rows on an
+#     instance of their own: a UNC path -> 'a database file on a network share' (info, 148), an https blob URL -> 'a
+#     database file in Azure blob storage' (info, 149), tempdb on C:\ -> nothing (26 is user databases). NOT PROVEN
+#     HERE: a real share or blob file on a server, and Azure SQL Managed Instance's exclusion.
 #  A. as the login with VIEW SERVER STATE and VIEW ANY DEFINITION and a user in the proof's database: `collect -once
 #     mssql_storage` stores the database's three files with the size, the used space, the maximum, the growth (a
 #     size on two files, 10 per cent on one) and the filegroup sa reads in that database, used_read true; each
@@ -59,14 +66,14 @@ CT=${PGVIGIL_MSSQL_CONTAINER:-mssql-sandbox}; ADDR=${PGVIGIL_MSSQL_ADDR:-localho
 ADMIN_DSN=$PGVIGIL_REPO_DSN
 SUF=$RANDOM
 REPO_DB=pgvigil_mssqlstorage_$SUF
-L1=pgv_stor_$SUF; L2=pgv_storbare_$SUF; DB=pgvproof_stor_$SUF; DBC=${DB}_closed
+L1=pgv_stor_$SUF; L2=pgv_storbare_$SUF; DB=pgvproof_stor_$SUF; DBC=${DB}_closed; DBZ=${DB}_cdrive
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw)
 CFG=$(mktemp); OUT=$(mktemp)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # the sa password reaches sqlcmd through the environment, by name: never on a command line another user can list
 export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
-MADE_REPO=; MADE_L1=; MADE_L2=; MADE_DB=; MADE_DBC=; BG=()
+MADE_REPO=; MADE_L1=; MADE_L2=; MADE_DB=; MADE_DBC=; MADE_DBZ=; BG=()
 sqlcmd_() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -W -h -1 -s '|' "$@"; }
 sq() { sqlcmd_ -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
 # as the proof's own login (its password through the environment, by name)
@@ -75,7 +82,7 @@ cleanup() {
   rc=$?
   for p in "${BG[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   # only what THIS run created: a name that existed before the run stays
-  for d in "$DB:$MADE_DB" "$DBC:$MADE_DBC"; do
+  for d in "$DB:$MADE_DB" "$DBC:$MADE_DBC" "$DBZ:$MADE_DBZ"; do
     if [ -n "${d#*:}" ]; then
       sq "IF DB_ID('${d%%:*}') IS NOT NULL BEGIN ALTER DATABASE [${d%%:*}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [${d%%:*}]; END" >/dev/null 2>&1 || echo "CLEANUP: database ${d%%:*} not dropped" >&2
     fi
@@ -372,4 +379,33 @@ YE=$(cat "$YA" "$YB" | grep -c ERROR || true); YD=$(cat "$YA" "$YB" | grep ERROR
 echo "Y: OK"
 
 echo "NOT PROVEN: Windows volumes, SQL Server 2016-2019, Managed Instance, RDS, thousands of databases, a FILESTREAM container"
-echo "proof-mssql-storage: PASS (A-H, V, W, X, Y)"
+echo "--- Z. BLITZ-GAP: sp_Blitz 26, 148 and 149 over the file list (0322; scripts/blitzgap-join-draft.sql until line 1 is joined)"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+[[ $(q "select to_regclass('pgvigil.mssql_file_place_findings') is not null") == t ]] || fail "Z: no pgvigil.mssql_file_place_findings (0322): sp_Blitz 26 / 148 / 149 are judged nowhere"
+if [[ $(q "select pg_get_viewdef('pgvigil.mssql_storage_findings'::regclass) like '%mssql_file_place_findings%'") != t ]]; then
+  psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -f "$ROOT/scripts/blitzgap-join-draft.sql" >/dev/null || fail "Z: the join draft did not apply"
+  echo "  the join draft applied (scripts/blitzgap-join-draft.sql: line 1 is not joined yet)"
+fi
+# 26 on the server itself: SQL Server on Linux keeps a C:\ file name as given (C:\ is its /)
+sq "CREATE DATABASE [$DBZ] ON (NAME = pvz_data, FILENAME = 'C:\var\opt\mssql\data\\${DBZ}.mdf') LOG ON (NAME = pvz_log, FILENAME = 'C:\var\opt\mssql\data\\${DBZ}_log.ldf');"; MADE_DBZ=1
+[ "$(sq "SELECT COUNT(*) FROM sys.master_files WHERE database_id = DB_ID('$DBZ') AND physical_name LIKE 'C:\%'")" = 2 ] || fail "Z: the server did not keep the C:\ names: $(sq "SELECT physical_name FROM sys.master_files WHERE database_id = DB_ID('$DBZ')")"
+collect mssql_storage >/dev/null
+GOT_Z=$(q "select f.severity || '|' || f.check_name || '|' || f.object from pgvigil.mssql_storage_findings f where f.instance_id = $iid and f.check_name like '%C: drive%' order by 3")
+WANT_Z="warning|a user database file on the C: drive|$DBZ: pvz_data
+warning|a user database file on the C: drive|$DBZ: pvz_log"
+[ "$GOT_Z" = "$WANT_Z" ] || { echo "$GOT_Z"; fail "Z: 26 on the server's C: database"; }
+[ "$(q "select count(*) from pgvigil.mssql_storage_findings where instance_id = $iid and check_name like '%C: drive%' and object not like '$DBZ: %'")" = 0 ] || fail "Z: a /var/opt path judged as C:"
+echo "  26: $(q "select detail from pgvigil.mssql_storage_findings where instance_id = $iid and object = '$DBZ: pvz_data' and check_name like '%C: drive%'")"
+# 148 and 149: paths a container cannot hold, on imported rows (NOT PROVEN on a server: a share and a blob)
+zid=$(q "select pgvigil.ensure_instance('proof-mssql-place-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+q "select pgvigil.import_mssql_storage($zid, now(), '[
+  {\"kind\":\"file\",\"database_id\":7,\"database_name\":\"onshare\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"onshare_data\",\"type_desc\":\"ROWS\",\"physical_name\":\"\\\\\\\\fs01\\\\sql\\\\onshare.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0},
+  {\"kind\":\"file\",\"database_id\":8,\"database_name\":\"inblob\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"inblob_data\",\"type_desc\":\"ROWS\",\"physical_name\":\"https://acct.blob.core.windows.net/data/inblob.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0},
+  {\"kind\":\"file\",\"database_id\":2,\"database_name\":\"tempdb\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"tempdev\",\"type_desc\":\"ROWS\",\"physical_name\":\"C:\\\\tempdb.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0}
+ ]'::jsonb)" >/dev/null
+GOT_P=$(q "select severity || '|' || check_name || '|' || object || '|' || detail from pgvigil.mssql_storage_findings where instance_id = $zid order by 3")
+WANT_P='info|a database file in Azure blob storage|inblob: inblob_data|https://acct.blob.core.windows.net/data/inblob.mdf: in Azure blob storage - its latency and throttling are the storage account'"'"'s
+info|a database file on a network share|onshare: onshare_data|\\fs01\sql\onshare.mdf: on a network share - every read and write crosses the network, and an outage of the share is the database'"'"'s'
+[ "$GOT_P" = "$WANT_P" ] || { echo "$GOT_P"; fail "Z: 148 / 149 on imported rows (and tempdb on C: is not 26's)"; }
+echo "Z: OK"
+echo "proof-mssql-storage: PASS (A-H, V, W, X, Y, Z)"
