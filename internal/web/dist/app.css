@@ -517,3 +517,5 @@ a.verdict-link:hover .verdict-sentence, a.verdict-link:focus-visible .verdict-se
 .insight-card { background: var(--surface-card); border-left: 4px solid var(--line); border-radius: var(--r-sm); padding: var(--sp-2) var(--sp-3); }
 .insight-card.warn { border-left-color: var(--warn); } .insight-card.crit { border-left-color: var(--crit); }
 .insight-card .insight-text { overflow-wrap: anywhere; }
+/* the weekly sp_Blitz's per-database note (B20-2, review-23 N5): a warning line under the run */
+p.blitz-dbskip { background: var(--warn-bg); border-left: 3px solid var(--warn); padding: .4rem .6rem; }
