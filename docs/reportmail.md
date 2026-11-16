@@ -57,6 +57,7 @@ one (the repository holds it to one live schedule):
       to: [dba@example.org]       # 1 to 50 addresses
       as: alice                   # the UI user the page is drawn as
       channel: mail               # an smtp channel of the alerts: block
+      post: [team-chat]           # optional: webhook channels of the alerts: block the counts are posted to
   ```
 
   The block is absent or whole: `enabled` is required when the block is there, every other key is required when it is
@@ -65,8 +66,10 @@ one (the repository holds it to one live schedule):
   the mail shows what that user's session shows; a user who can no longer sign in fails each day's mail, which is
   alerted like any failed report mail, and the Daily checks page says why. `channel` is never picked for you.
 - **the Daily checks page**, when the file has no such block: the line under the page's heading says `Mail daily:
-  off` and **Mail daily...** asks for the hour, the zone, the addresses and the smtp channel; the mail is then drawn
-  as the admin who turned it on. **Change...** edits it and **Turn off** ends it.
+  off` and **Mail daily...** asks for the hour, the zone, the addresses, the smtp channel and, when the sender records
+  any, the webhook channels to post the counts to; the mail is then drawn as the admin who turned it on.
+  **Change...** edits it and **Turn off** ends it. Below the admin role the line is read only and says so in the
+  role's words (`changing the Daily checks mail needs the admin role: ...`); the server refuses the change the same.
 
 The file wins. While the block is in the file the page's line shows the mail's state and its next send, and its
 buttons are off with the reason beside them (`kept by pgvigil.yaml` or `turned off in pgvigil.yaml`): `enabled: true`
@@ -96,6 +99,33 @@ The mail goes out every day, also on a day every check passes: its body then hol
 `Window` lines of the mail read `last 24h` over a list that is "now". On the **Report mail** page the kept schedule
 is listed with the others, with `kept by ...` in place of Edit, Turn off and End (the repository refuses those for
 it); **Send test** works on it as on any schedule.
+
+### Worst first, and the post
+
+The Daily checks page lists the worst instance first: a check that could not run (it names no instance) on top, then
+each instance's rows together, the instances by their critical rows, then their warnings, then their name; an
+instance's own rows keep their order (critical first, then the check and the object). The mail draws the page, so it
+has the same order.
+
+With `post:` (or the dialog's webhook channels) each day's mail, once it is **sent**, also posts a short text through
+those webhook channels of the `alerts:` block (Slack, Teams, Discord, Google Chat or json): the counts the drawn page
+showed, the worst three instances and a link to the page (`alerts_base_url` + `/#/checks?w=24h`; no
+`alerts_base_url`, no link). For example:
+
+    Daily checks 2026-11-16: 3 critical, 12 warnings on 41 instances
+    1. sql01: 2 critical
+    2. pg-orders: 1 critical, 4 warnings
+    3. sql07: 3 warnings
+    https://pgvigil.example.org/#/checks?w=24h
+
+The json format carries the same numbers as keys (`kind: daily checks`, `instances`, `critical`, `warnings`, `worst`,
+`day`, `link`) for a program. The text is the page's own numbers as that turn drew them, never read again. A mail that
+failed posts nothing; the post goes once a day per schedule (a second turn of the same day in the schedule's zone - a
+schedule brought due by hand, a test - posts nothing, and nothing is posted for a day the mail missed); a post that
+fails is recorded on the send (`post_error`) and alerted on every channel as `daily checks post failed`, the mail
+itself having gone. A `post:` name that is not a webhook channel of the same file's `alerts:` stops `pgvigil serve` at
+its start (`reports.daily_checks: post: <name> is not a webhook channel of alerts:`); the page's dialog offers only the
+webhook channels the sender records.
 
 ## How the mail equals the window
 

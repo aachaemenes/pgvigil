@@ -351,6 +351,8 @@ type mailRequest struct {
 	Grids      int      `json:"grids"`
 	Rows       int      `json:"rows"`
 	Error      string   `json:"error"` // a render's page that could not build its mail says why
+	// Post: the Daily checks page's numbers (B20-4), carried onto a kept schedule's turn for its post
+	Post *reportmail.DailyPost `json:"post"`
 }
 
 // check is a mail's own checks before it is queued (the repository checks them again)
@@ -625,6 +627,13 @@ func (s *Server) ReportMailRendered(w http.ResponseWriter, r *http.Request) {
 	} else if _, err := in.check(); err != nil {
 		got.err = err
 	} else {
+		if in.Post != nil {
+			if perr := in.Post.Check(); perr != nil {
+				// the mail goes; its post does not (the send row says the page sent no counts)
+				s.log.Warn("report mail: the page's post numbers were refused", "err", perr)
+				in.Post = nil
+			}
+		}
 		got.mail = in
 	}
 	c, err := r.Cookie(sessionCookie)
@@ -671,6 +680,9 @@ func (s *Server) renderAndQueue(ctx context.Context, sc dueSchedule, kind, user,
 			subj = subj[:200]
 		}
 		pay["subject"], pay["html"], pay["grids"], pay["rows"], pay["xlsx_name"] = subj, m.HTML, m.Grids, m.Rows, m.XLSXName
+		if m.Post != nil {
+			pay["post"] = m.Post // stored only on a kept schedule's turn that has post channels (0273)
+		}
 		if sc.xlsx && m.XLSX != "" {
 			pay["xlsx"] = m.XLSX
 		}

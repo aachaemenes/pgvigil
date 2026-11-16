@@ -379,4 +379,326 @@ BEGIN
   RETURN jsonb_build_object('outcome', CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END, 'detail', coalesce(v_why, v_detail));
 END $$;
 
+-- ---- B20-4 the daily fleet health (the lead 11-15 16:3x D5 (a)): the Daily checks mail also posts its counts --------
+-- The kept schedule names webhook channels (post_channels: pgvigil.yaml's reports.daily_checks post: list, or the Daily
+-- checks page's dialog). Its scheduled turn carries the drawn page's numbers (the render's post: web/src/checksorder.ts
+-- dailyPost) onto the send row; the sender, after the mail is recorded sent, takes the post once (report_mail_post_take:
+-- a failed mail is never taken; the second turn of the same day in the schedule's zone is refused by the index) and
+-- records its answer (report_mail_post_record: posted_at, or post_error and a 'daily checks post failed' notice).
+-- import_report_mail_kept (0258's) and import_report_mail_send (0107's) are re-created whole with the lines marked B20-4.
+ALTER TABLE pgvigil.report_mail_schedules ADD COLUMN IF NOT EXISTS post_channels text[];
+ALTER TABLE pgvigil.report_mail_sends
+  ADD COLUMN IF NOT EXISTS post jsonb CHECK (post IS NULL OR octet_length(post::text) <= 4096),
+  ADD COLUMN IF NOT EXISTS post_channels text[],
+  ADD COLUMN IF NOT EXISTS post_day date,
+  ADD COLUMN IF NOT EXISTS post_taken_at timestamptz,
+  ADD COLUMN IF NOT EXISTS posted_at timestamptz,
+  ADD COLUMN IF NOT EXISTS post_error text;
+CREATE UNIQUE INDEX IF NOT EXISTS report_mail_sends_post_day_idx ON pgvigil.report_mail_sends (schedule_id, post_day)
+  WHERE post_taken_at IS NOT NULL;
+GRANT UPDATE (post_taken_at, posted_at, post_error) ON pgvigil.report_mail_sends TO pgvigil_alerter;
+
+-- import_report_mail_kept: 0258's, whole, with B20-4's post_channels (payload post_channels: a list of names; each a
+-- configured webhook channel of alert_channels, refused in words otherwise; part of 'unchanged')
+CREATE OR REPLACE FUNCTION pgvigil.import_report_mail_kept(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_op      text := p_payload->>'op';
+  v_by      text := p_payload->>'by';
+  v_user    text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_client  text := nullif(p_payload->>'client', '');
+  v_kept    text := coalesce(nullif(p_payload->>'kept_as', ''), 'daily_checks');
+  v_as      text := lower(nullif(btrim(coalesce(p_payload->>'as', '')), ''));
+  v_chan    text := nullif(btrim(coalesce(p_payload->>'channel', '')), '');
+  v_cron    text := btrim(coalesce(p_payload->>'cron', ''));
+  v_tz      text := nullif(btrim(coalesce(p_payload->>'timezone', '')), '');
+  v_xlsx    boolean := coalesce((p_payload->>'attach_xlsx')::boolean, true);
+  v_name    text;
+  v_route   text;
+  v_rcpt    text[];
+  v_next    timestamptz;
+  v_id      bigint;
+  v_old     pgvigil.report_mail_schedules;
+  v_why     text;
+  v_done    text;
+  v_moved   boolean;
+  v_post    text[];   -- B20-4: the webhook channels the counts are posted to ('{}' = no post)
+  v_bad     text;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_report_mail_kept: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  v_name := pgvigil.report_mail_kept_name(v_kept);
+  v_route := pgvigil.report_mail_kept_route(v_kept);
+  IF jsonb_typeof(p_payload->'recipients') = 'array' THEN
+    SELECT array_agg(lower(btrim(r)) ORDER BY o) INTO v_rcpt FROM jsonb_array_elements_text(p_payload->'recipients') WITH ORDINALITY AS a(r, o);
+  END IF;
+  IF jsonb_typeof(p_payload->'post_channels') = 'array' THEN
+    SELECT coalesce(array_agg(DISTINCT btrim(r) ORDER BY btrim(r)) FILTER (WHERE btrim(r) <> ''), '{}') INTO v_post
+      FROM jsonb_array_elements_text(p_payload->'post_channels') AS a(r);
+  END IF;
+  v_post := coalesce(v_post, '{}');
+  IF coalesce(p_payload->>'next_at', '') <> '' THEN
+    BEGIN
+      v_next := (p_payload->>'next_at')::timestamptz;
+    EXCEPTION WHEN others THEN
+      v_why := 'next_at is not a time';
+    END;
+  END IF;
+
+  IF v_why IS NOT NULL THEN
+    NULL;
+  ELSIF v_name IS NULL THEN
+    v_why := format('%s is not a kept schedule (daily_checks)', v_kept);
+  ELSIF v_op NOT IN ('keep', 'drop') OR v_op IS NULL THEN
+    v_why := format('op %s is not keep or drop', coalesce(v_op, '(none)'));
+  ELSIF v_by NOT IN ('file', 'page') OR v_by IS NULL THEN
+    v_why := format('by %s is not file or page', coalesce(v_by, '(none)'));
+  END IF;
+
+  IF v_why IS NULL THEN
+    -- one writer at a time per kept schedule: the second waits and then reads what the first wrote
+    PERFORM pg_advisory_xact_lock(hashtextextended('pgvigil.report_mail_kept:' || v_kept, 0));
+    SELECT * INTO v_old FROM pgvigil.report_mail_schedules WHERE kept_as = v_kept AND ended_at IS NULL FOR UPDATE;
+    v_id := v_old.schedule_id;
+    IF v_by = 'page' AND v_old.kept_by = 'file' THEN
+      v_why := 'the Daily checks mail is kept by pgvigil.yaml (reports.daily_checks): change it there';
+    ELSIF v_op = 'drop' THEN
+      IF v_old.schedule_id IS NULL THEN
+        RETURN jsonb_build_object('outcome', 'unchanged', 'detail', 'no Daily checks mail is kept', 'schedule_id', NULL);
+      END IF;
+      UPDATE pgvigil.report_mail_schedules
+         SET enabled = false, claimed_until = NULL, claim_token = NULL, ended_by = left(v_user, 200), ended_at = p_at
+       WHERE schedule_id = v_id;
+      v_done := format('schedule %s ended: the Daily checks mail is off', v_id);
+    ELSE
+      IF v_as IS NULL THEN
+        v_why := 'the Daily checks mail needs the UI user its page is drawn as';
+      ELSE
+        v_why := pgvigil.report_mail_why(v_name, v_route, v_rcpt, v_chan, v_tz);
+      END IF;
+      IF v_why IS NULL AND v_tz IS NULL THEN
+        v_why := 'the Daily checks mail needs its time zone';
+      ELSIF v_why IS NULL AND v_cron !~ '^([0-9]|[1-5][0-9]) ([0-9]|1[0-9]|2[0-3]) [*] [*] [*]$' THEN
+        -- a minute 0-59 and an hour 0-23 as the server writes them (no leading zero): equal settings compare equal
+        v_why := 'the Daily checks mail is sent once a day: its cron line is M H * * * (a minute 0-59, an hour 0-23)';
+      END IF;
+      -- B20-4: each post channel is a webhook channel the sender records (alert_channels), never an application's route
+      IF v_why IS NULL THEN
+        SELECT min(p) INTO v_bad FROM unnest(v_post) AS p
+         WHERE NOT EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = p AND c.kind = 'webhook' AND c.is_configured AND c.name NOT LIKE 'contact-%');
+        IF v_bad IS NOT NULL THEN
+          v_why := format('post: %s is not a webhook channel the sender records (alerts:): the counts could not be posted there', v_bad);
+        END IF;
+      END IF;
+      IF v_why IS NULL AND v_old.schedule_id IS NOT NULL
+         AND v_old.recipients = v_rcpt AND v_old.channel = v_chan AND v_old.cron = v_cron AND v_old.timezone = v_tz
+         AND v_old.created_by = v_as AND v_old.kept_by = v_by AND v_old.attach_xlsx = v_xlsx AND v_old.enabled
+         AND v_old.route = v_route AND v_old.name = v_name AND coalesce(v_old.post_channels, '{}') = v_post THEN
+        RETURN jsonb_build_object('outcome', 'unchanged',
+                                  'detail', format('schedule %s is as asked, next send %s', v_id, v_old.next_at), 'schedule_id', v_id);
+      END IF;
+      -- the next send moves only with the hour or the zone (or on a row that has none): other changes keep the turn
+      v_moved := v_old.schedule_id IS NULL OR v_old.next_at IS NULL OR NOT v_old.enabled
+                 OR v_old.cron IS DISTINCT FROM v_cron OR v_old.timezone IS DISTINCT FROM v_tz;
+      IF v_why IS NULL AND v_moved AND (v_next IS NULL OR v_next <= p_at) THEN
+        v_why := 'the next send must be in the future';
+      END IF;
+      IF v_why IS NULL AND v_old.schedule_id IS NULL THEN
+        BEGIN
+          INSERT INTO pgvigil.report_mail_schedules (name, route, page, recipients, channel, cadence, cron, timezone, attach_xlsx,
+                                                     enabled, next_at, created_by, created_at, client, kept_as, kept_by, post_channels)
+          VALUES (v_name, v_route, v_name, v_rcpt, v_chan, 'daily', v_cron, v_tz, v_xlsx, true, v_next,
+                  left(v_as, 200), p_at, left(v_client, 100), v_kept, v_by, nullif(v_post, '{}'))
+          RETURNING schedule_id INTO v_id;
+          v_done := format('schedule %s kept: %s, drawn as %s, next send %s', v_id, v_name, v_as, v_next);
+        EXCEPTION WHEN unique_violation THEN
+          v_why := 'another live Daily checks mail exists: nothing was written';
+        END;
+      ELSIF v_why IS NULL THEN
+        UPDATE pgvigil.report_mail_schedules
+           SET name = v_name, route = v_route, page = v_name, recipients = v_rcpt, channel = v_chan, cadence = 'daily', cron = v_cron,
+               timezone = v_tz, attach_xlsx = v_xlsx, enabled = true, next_at = CASE WHEN v_moved THEN v_next ELSE next_at END,
+               created_by = left(v_as, 200), kept_by = v_by, claimed_until = NULL, claim_token = NULL, post_channels = nullif(v_post, '{}'),
+               changed_by = left(v_user, 200), changed_at = p_at
+         WHERE schedule_id = v_id;
+        v_done := format('schedule %s changed: drawn as %s, next send %s', v_id, v_as,
+                         CASE WHEN v_moved THEN v_next ELSE v_old.next_at END);
+      END IF;
+    END IF;
+  END IF;
+  INSERT INTO pgvigil.report_mail_log (at, ui_user, client, op, schedule_id, outcome, detail, payload)
+  VALUES (p_at, left(v_user, 200), left(v_client, 100), left(coalesce(v_op, ''), 20), v_id,
+          CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END, left(coalesce(v_why, v_done), 2000),
+          p_payload - 'ui_user' - 'client');
+  RETURN jsonb_build_object('outcome', CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
+                            'detail', coalesce(v_why, v_done), 'schedule_id', v_id);
+END $$;
+
+-- import_report_mail_send: 0107's, whole, with B20-4's post (payload post: the drawn page's numbers, an object of at
+-- most 4 KB) stored on a kept schedule's scheduled turn that has post channels
+CREATE OR REPLACE FUNCTION pgvigil.import_report_mail_send(p_at timestamptz, p_payload jsonb)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE
+  v_user    text := nullif(btrim(coalesce(p_payload->>'ui_user', '')), '');
+  v_client  text := nullif(p_payload->>'client', '');
+  v_kind    text := p_payload->>'kind';
+  v_name    text := btrim(coalesce(p_payload->>'name', ''));
+  v_route   text := p_payload->>'route';
+  v_chan    text := nullif(btrim(coalesce(p_payload->>'channel', '')), '');
+  v_subject text := btrim(coalesce(p_payload->>'subject', ''));
+  v_html    text := p_payload->>'html';
+  v_b64     text := nullif(p_payload->>'xlsx', '');
+  v_xname   text := left(nullif(btrim(coalesce(p_payload->>'xlsx_name', '')), ''), 200);
+  v_rerr    text := left(nullif(btrim(coalesce(p_payload->>'render_error', '')), ''), 2000);
+  v_grids   int;
+  v_rows    int;
+  v_xlsx    bytea;
+  v_rcpt    text[];
+  v_next    timestamptz;
+  v_sid     bigint;
+  v_sched   pgvigil.report_mail_schedules;
+  v_why     text;
+  v_id      bigint;
+  v_n       int;
+  v_moved   boolean := false;
+  v_post    jsonb := CASE WHEN jsonb_typeof(p_payload->'post') = 'object' AND octet_length((p_payload->'post')::text) <= 4096 THEN p_payload->'post' END;
+  v_pchan   text[];   -- B20-4: the kept schedule's post channels, copied onto its turn
+  v_pday    date;
+  v_perr    text;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'import_report_mail_send: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  IF jsonb_typeof(p_payload->'recipients') = 'array' THEN
+    SELECT array_agg(lower(btrim(r)) ORDER BY o) INTO v_rcpt FROM jsonb_array_elements_text(p_payload->'recipients') WITH ORDINALITY AS a(r, o);
+  END IF;
+  IF coalesce(p_payload->>'grids', '') ~ '^[0-9]{1,6}$' THEN v_grids := (p_payload->>'grids')::int; END IF;
+  IF coalesce(p_payload->>'rows', '') ~ '^[0-9]{1,9}$' THEN v_rows := (p_payload->>'rows')::int; END IF;
+  IF coalesce(p_payload->>'schedule_id', '') ~ '^[0-9]{1,18}$' THEN
+    v_sid := (p_payload->>'schedule_id')::bigint;
+    SELECT * INTO v_sched FROM pgvigil.report_mail_schedules WHERE schedule_id = v_sid FOR UPDATE;
+  END IF;
+  IF coalesce(p_payload->>'next_at', '') <> '' THEN
+    BEGIN
+      v_next := (p_payload->>'next_at')::timestamptz;
+    EXCEPTION WHEN others THEN
+      v_why := 'next_at is not a time';
+    END;
+  END IF;
+  IF v_b64 IS NOT NULL THEN
+    BEGIN
+      v_xlsx := decode(v_b64, 'base64');
+    EXCEPTION WHEN others THEN
+      v_why := coalesce(v_why, 'the workbook is not base64');
+    END;
+  END IF;
+
+  IF v_why IS NOT NULL THEN
+    NULL;
+  ELSIF v_kind IS NULL OR v_kind NOT IN ('now', 'scheduled', 'test') THEN
+    v_why := format('kind %s is not now, scheduled or test', coalesce(v_kind, '(none)'));
+  ELSIF v_kind <> 'now' AND v_sched.schedule_id IS NULL THEN
+    v_why := format('no schedule %s', coalesce(p_payload->>'schedule_id', '(none)'));
+  ELSIF v_kind <> 'now' AND v_sched.ended_at IS NOT NULL THEN
+    v_why := format('schedule %s was ended by %s at %s', v_sid, v_sched.ended_by, v_sched.ended_at);
+  ELSIF v_kind = 'scheduled' AND (v_sched.claim_token IS NULL OR v_sched.claim_token IS DISTINCT FROM nullif(p_payload->>'claim', '') OR NOT v_sched.enabled) THEN
+    v_why := format('schedule %s''s turn was no longer this server''s (changed, turned off or claimed again while its page was drawn): not mailed', v_sid);
+  ELSIF v_kind = 'scheduled' AND (v_next IS NULL OR v_next <= p_at) THEN
+    v_why := 'a scheduled send names the turn after it (next_at, in the future)';
+  END IF;
+  IF v_why IS NULL AND v_kind = 'scheduled' THEN
+    -- a turn is mailed or refused once: the schedule moves on either way
+    UPDATE pgvigil.report_mail_schedules SET next_at = v_next, claimed_until = NULL, claim_token = NULL WHERE schedule_id = v_sid;
+    v_moved := true;
+  END IF;
+  IF v_why IS NULL THEN
+    v_why := pgvigil.report_mail_why(v_name, v_route, v_rcpt, v_chan, NULL);
+  END IF;
+  IF v_why IS NULL AND v_rerr IS NULL THEN
+    IF length(v_subject) NOT BETWEEN 1 AND 200 OR v_subject ~ '[\r\n]' THEN
+      v_why := 'a subject of 1 to 200 characters on one line is required';
+    ELSIF v_html IS NULL OR length(v_html) < 20 THEN
+      v_why := 'the mail has no body: the page drew no grid';
+    ELSIF octet_length(v_html) > 4194304 THEN
+      v_why := format('the page''s grids make a mail body of %s MB, over the 4 MB a mail carries: narrow the window or filter the grid', round(octet_length(v_html) / 1048576.0, 1));
+    ELSIF v_html ~* '<\s*(script|iframe|object|embed|form|link|style|base|svg|math|img|a|meta\s+http-equiv)\M' OR v_html ~* '<[^>]*[\s/"'']on[a-z]+\s*=' OR v_html ~* '<[^>]*(java|vb)\s*script' OR v_html ~* '<[^>]*&#' THEN
+      v_why := 'the mail body holds active content (a script, a frame, a form or an event attribute): refused';
+    ELSIF v_xlsx IS NOT NULL AND octet_length(v_xlsx) > 8388608 THEN
+      v_why := format('the workbook is %s MB, over the 8 MB a mail carries', round(octet_length(v_xlsx) / 1048576.0, 1));
+    ELSIF v_xlsx IS NOT NULL AND substr(v_xlsx, 1, 4) <> '\x504b0304'::bytea THEN
+      v_why := 'the workbook is not a zip (.xlsx)';
+    END IF;
+  END IF;
+  -- a scheduled turn the checks refuse is queued as a failed render: the sender records it failed and alerts
+  IF v_moved AND v_why IS NOT NULL THEN
+    v_rerr := left(coalesce(v_rerr || '; ', '') || v_why, 2000);
+    v_why := NULL;
+  END IF;
+  IF v_why IS NULL AND v_kind IN ('now', 'test') THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('pgvigil.report_mail_sends:' || v_user, 0));
+    SELECT count(*) INTO v_n FROM pgvigil.report_mail_sends s
+     WHERE s.requested_by = v_user AND s.kind IN ('now', 'test') AND s.outcome IS DISTINCT FROM 'refused'
+       AND s.requested_at > p_at - interval '1 hour';
+    IF v_n >= pgvigil.report_mail_hourly_cap() THEN
+      v_why := format('%s asked %s mails in the last hour: at most %s an hour', v_user, v_n, pgvigil.report_mail_hourly_cap());
+    END IF;
+  END IF;
+
+  -- B20-4: a kept schedule's scheduled turn, queued to be mailed, carries its post: the drawn page's numbers, the
+  -- channels and the turn's day in the schedule's zone (one post a schedule a day: report_mail_post_take)
+  IF v_kind = 'scheduled' AND v_why IS NULL AND v_rerr IS NULL AND v_sched.kept_as IS NOT NULL AND cardinality(v_sched.post_channels) > 0 THEN
+    v_pchan := v_sched.post_channels;
+    v_pday := (p_at AT TIME ZONE v_sched.timezone)::date;
+    IF v_post IS NULL THEN
+      v_perr := 'the drawn page sent no counts: nothing posted';
+    END IF;
+  END IF;
+  INSERT INTO pgvigil.report_mail_sends (schedule_id, kind, name, route, requested_by, requested_at, client, channel,
+                                         recipients, subject, html, xlsx, xlsx_name, grids, rows, html_bytes, xlsx_bytes,
+                                         render_error, done_at, outcome, error, post, post_channels, post_day, post_error)
+  VALUES (v_sid, coalesce(v_kind, 'now'), left(coalesce(nullif(v_name, ''), '(no name)'), 120), left(coalesce(v_route, ''), 500),
+          left(v_user, 200), p_at, left(v_client, 100), left(coalesce(v_chan, ''), 63), coalesce(v_rcpt, '{}'),
+          left(coalesce(nullif(v_subject, ''), v_name, ''), 200),
+          CASE WHEN v_why IS NULL AND v_rerr IS NULL THEN v_html END, CASE WHEN v_why IS NULL AND v_rerr IS NULL THEN v_xlsx END,
+          v_xname, v_grids, v_rows, octet_length(v_html), octet_length(v_xlsx), v_rerr,
+          CASE WHEN v_why IS NOT NULL THEN p_at END, CASE WHEN v_why IS NOT NULL THEN 'refused' END, v_why,
+          CASE WHEN v_pchan IS NOT NULL THEN v_post END, v_pchan, v_pday, v_perr)
+  RETURNING send_id INTO v_id;
+  INSERT INTO pgvigil.report_mail_log (at, ui_user, client, op, schedule_id, send_id, outcome, detail, payload)
+  VALUES (p_at, left(v_user, 200), left(v_client, 100), 'send ' || left(coalesce(v_kind, ''), 12), v_sid, v_id,
+          CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
+          left(coalesce(v_why, format('mail %s queued for %s: the sender''s next pass mails it', v_id, array_to_string(v_rcpt, ', '))), 2000),
+          p_payload - 'ui_user' - 'client' - 'html' - 'xlsx' - 'post');
+  RETURN jsonb_build_object('outcome', CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
+                            'detail', coalesce(v_why, format('mail %s queued: the sender''s next pass mails it (within a minute while pgvigil run is up)', v_id)),
+                            'send_id', v_id);
+END $$;
+
+-- report_mail_post_take: the post of a sent mail, taken once (post_taken_at): nothing when the mail was not sent, has no
+-- post or was taken, or when the schedule took a post on that day already (the index: one post a schedule a day)
+CREATE OR REPLACE FUNCTION pgvigil.report_mail_post_take(p_at timestamptz, p_send_id bigint)
+RETURNS TABLE (o_post jsonb, o_channels text[], o_day date, o_route text)
+LANGUAGE plpgsql AS $$
+BEGIN
+  BEGIN
+    RETURN QUERY
+      UPDATE pgvigil.report_mail_sends s SET post_taken_at = p_at
+       WHERE s.send_id = p_send_id AND s.outcome = 'sent' AND s.post IS NOT NULL AND s.post_taken_at IS NULL
+         AND cardinality(s.post_channels) > 0
+      RETURNING s.post, s.post_channels, s.post_day, s.route;
+  EXCEPTION WHEN unique_violation THEN
+    RETURN;   -- the schedule's post of that day was taken already: this turn posts nothing
+  END;
+END $$;
+
+-- report_mail_post_record: a taken post's answer - posted_at, or the error (the sender alerts it)
+CREATE OR REPLACE FUNCTION pgvigil.report_mail_post_record(p_at timestamptz, p_send_id bigint, p_error text)
+RETURNS void LANGUAGE sql AS $$
+  UPDATE pgvigil.report_mail_sends
+     SET posted_at = CASE WHEN nullif(p_error, '') IS NULL THEN p_at END, post_error = left(nullif(p_error, ''), 2000)
+   WHERE send_id = p_send_id AND post_taken_at IS NOT NULL AND posted_at IS NULL AND post_error IS NULL
+$$;
+GRANT EXECUTE ON FUNCTION pgvigil.report_mail_post_take(timestamptz, bigint), pgvigil.report_mail_post_record(timestamptz, bigint, text) TO pgvigil_alerter;
+
 SELECT pgvigil.apply_roles();

@@ -115,6 +115,11 @@ func (s *webhookSender) send(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
+	return s.do(ctx, body)
+}
+
+// do posts one body to the configured URL (an alert message or a Post): a redirect is refused, the error names the host
+func (s *webhookSender) do(ctx context.Context, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.u.String(), bytes.NewReader(body))
 	if err != nil {
 		return err

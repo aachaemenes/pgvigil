@@ -30,6 +30,8 @@ interface WriteResult { outcome: string; detail: string; send_id?: number | null
 // MailBody: what a page's mail is, as the server takes it
 export interface MailBody {
   name: string; route: string; subject: string; window: string; html: string; xlsx: string; xlsx_name: string; grids: number; rows: number;
+  // the Daily checks page's numbers (B20-4: its section's data-daily-post): the kept mail's post says them
+  post?: unknown;
 }
 
 const KEY = /([?&])mailrender=([0-9a-f]{48})(&|$)/;
@@ -152,6 +154,13 @@ function bodySections(root: ParentNode, fallback: string): { secs: Section[]; nu
   return { secs, nums, words };
 }
 
+// postOf: the numbers a page drew for its post (the Daily checks page's section, B20-4); none on any other page
+function postOf(root: HTMLElement | null): unknown {
+  const raw = root?.querySelector<HTMLElement>('[data-daily-post]')?.dataset.dailyPost;
+  if (!raw) return undefined;
+  try { return JSON.parse(raw) as unknown; } catch { return undefined; }
+}
+
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
   const pb = await pageBook(ctx, root, m.tab), book = pb.items.map(f => f.sec);
@@ -166,6 +175,7 @@ export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<Mai
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
     html: mailHtml(m, body.secs, body.nums, title, notesOf(root!, m.tab), body.words), xlsx, xlsx_name: exportName(m, 'xlsx'),
     grids: grids.length, rows: grids.reduce((n, f) => n + f.sec.rows.length, 0),   // the page's grids, as before: no tiles, cards' or charts' rows
+    post: postOf(root),
   };
 }
 
@@ -449,6 +459,8 @@ interface DailyState {
   kept: boolean; owner: string; writable: boolean; reason?: string; user?: string; kept_by?: string; schedule_id?: number;
   at?: string; cron?: string; timezone?: string; recipients?: string[]; channel?: string; as?: string; next_at?: string; attach_xlsx?: boolean;
   as_off?: string; browser_note?: string;
+  // B20-4: the webhook channels the mail's counts are posted to, and the ones the repository records (the choices)
+  post?: string[]; post_choices?: string[];
 }
 
 // dailyMailControl: one line on the Daily checks page (the root scope only: null under a tag) - whether the page is
@@ -467,7 +479,8 @@ export async function dailyMailControl(ctx: Ctx): Promise<HTMLElement | null> {
   const n = d.recipients?.length ?? 0;
   line.append(d.kept ? badge('on', 'ok') : badge('off', 'none'), ' ',
     d.kept ? `Mail daily: on, next send ${d.next_at ? fmtTime(d.next_at) : 'not set'} (${d.at || d.cron || ''} ${d.timezone ?? ''}) to ${n} address${n === 1 ? '' : 'es'}, drawn as ${d.as ?? ''}. `
-      : 'Mail daily: off. ');
+      : 'Mail daily: off. ',
+    d.kept && d.post?.length ? `Its counts are posted to ${d.post.join(', ')}. ` : '');
   const why = el('span', { class: 'off-reason' });
   const off = d.writable ? null : (d.reason || 'the Daily checks mail cannot be changed here');
   if (off) why.textContent = off;
@@ -505,14 +518,22 @@ async function dailyMailDialog(d: DailyState) {
   const chan = channelSelect(md, d.channel ?? '');
   const attach = el('input', { type: 'checkbox' });
   attach.checked = d.attach_xlsx !== false;
+  // B20-4: the counts, the worst three and the page's link posted through webhook channels of alerts: with each mail
+  const posts = (d.post_choices ?? []).map(name => {
+    const box = el('input', { type: 'checkbox', value: name });
+    box.checked = (d.post ?? []).includes(name);
+    return box;
+  });
   const fields = [el('label', {}, 'At ', at), el('label', {}, 'Time zone ', tz),
     el('label', {}, `To (one or more addresses, at most ${md.door.max_recipients}) `, to), el('label', {}, 'Channel (the alerts: smtp relay) ', chan),
-    el('label', {}, attach, ' attach the workbook (.xlsx)')];
+    el('label', {}, attach, ' attach the workbook (.xlsx)'),
+    ...posts.map(b => el('label', {}, b, ` post the counts to ${b.value} (a webhook channel of alerts:)`))];
   const invalid = () => !/^\d\d:\d\d$/.test(at.value) ? 'the hour' : !addrList(to.value).length ? 'an address' : !chan.value ? 'an smtp channel' : '';
   const what = `The Daily checks page is drawn on the server in a headless browser as you (${d.user || md.door.user}) once a day at this hour and mailed: its grid in its colours, 'All checks pass' on a day nothing fails, and its workbook.`
     + (md.door.browser ? '' : ` ${md.door.browser_reason ?? 'This server has no headless browser'}.`);
   dialog(d.kept ? 'Change the daily mail' : 'Mail the Daily checks every day', what, d.kept ? 'Save' : 'Mail daily', fields, async () => {
-    const res = await post<WriteResult>('reportmail', { op: 'daily_keep', at: at.value, timezone: tz.value, recipients: addrList(to.value), channel: chan.value, attach_xlsx: attach.checked });
+    const res = await post<WriteResult>('reportmail', { op: 'daily_keep', at: at.value, timezone: tz.value, recipients: addrList(to.value), channel: chan.value, attach_xlsx: attach.checked,
+      post: posts.filter(b => b.checked).map(b => b.value) });
     return res.detail;
   }, invalid, [], redraw);
 }

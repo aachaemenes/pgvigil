@@ -58,11 +58,14 @@ const (
 	sqlKeptMigrated = `SELECT to_regprocedure('pgvigil.import_report_mail_kept(timestamp with time zone, jsonb)') IS NOT NULL`
 	// the live kept row; to_jsonb reads the 0258 columns, so the statement runs on a repository not migrated yet (no row)
 	sqlKeptLive = `
-SELECT s.schedule_id, to_jsonb(s)->>'kept_by' AS kept_by, s.cron, s.timezone, s.recipients, s.channel, s.created_by, s.next_at, s.attach_xlsx
+SELECT s.schedule_id, to_jsonb(s)->>'kept_by' AS kept_by, s.cron, s.timezone, s.recipients, s.channel, s.created_by, s.next_at, s.attach_xlsx,
+       CASE WHEN jsonb_typeof(to_jsonb(s)->'post_channels') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(to_jsonb(s)->'post_channels')) ELSE '{}' END
   FROM pgvigil.report_mail_schedules s
  WHERE to_jsonb(s)->>'kept_as' = $1 AND s.ended_at IS NULL
  ORDER BY s.schedule_id DESC LIMIT 1`
 	sqlKeptChannel = `SELECT EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = $1 AND c.kind = 'smtp' AND c.is_configured AND c.name NOT LIKE 'contact-%')`
+	// sqlPostChoices: the webhook channels the sender records, the ones the Daily checks mail may post its counts to (B20-4)
+	sqlPostChoices = `SELECT coalesce(array_agg(c.name ORDER BY c.name), '{}') FROM pgvigil.alert_channels c WHERE c.kind = 'webhook' AND c.is_configured AND c.name NOT LIKE 'contact-%'`
 )
 
 const dailyNotMigrated = "this repository is not migrated for the Daily checks mail yet (pgvigil migrate)"
@@ -78,12 +81,13 @@ type keptRow struct {
 	owner   string
 	next    *time.Time
 	xlsx    bool
+	post    []string // B20-4: the webhook channels its counts are posted to
 }
 
 func (s *Server) keptLive(ctx context.Context) (keptRow, error) {
 	var k keptRow
 	var by *string
-	err := s.pool.QueryRow(ctx, sqlKeptLive, reportmail.KeptDailyChecks).Scan(&k.id, &by, &k.cron, &k.tz, &k.to, &k.channel, &k.owner, &k.next, &k.xlsx)
+	err := s.pool.QueryRow(ctx, sqlKeptLive, reportmail.KeptDailyChecks).Scan(&k.id, &by, &k.cron, &k.tz, &k.to, &k.channel, &k.owner, &k.next, &k.xlsx, &k.post)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return keptRow{}, nil
 	}
@@ -235,6 +239,7 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 	if live.id != 0 {
 		out["kept"], out["schedule_id"], out["kept_by"], out["cron"] = true, live.id, live.by, live.cron
 		out["at"], out["timezone"], out["recipients"], out["channel"], out["as"], out["attach_xlsx"] = reportmail.AtOfCron(live.cron), live.tz, live.to, live.channel, live.owner, live.xlsx
+		out["post"] = live.post
 		if live.next != nil {
 			out["next_at"] = live.next.UTC().Format(time.RFC3339)
 		}
@@ -249,6 +254,11 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.alert_channels c WHERE c.kind = 'smtp' AND c.is_configured AND c.name NOT LIKE 'contact-%'`).Scan(&channels); err != nil {
 		return nil, err
 	}
+	var choices []string
+	if err := s.pool.QueryRow(ctx, sqlPostChoices).Scan(&choices); err != nil {
+		return nil, err
+	}
+	out["post_choices"] = choices
 	switch {
 	case reason != "":
 	case !migrated:
@@ -273,6 +283,17 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 	case channels == 0 && live.id == 0:
 		reason = "Mailing the Daily checks needs an smtp channel: the sender has recorded none (the alerts: block of pgvigil.yaml, and pgvigil run)."
 	}
+	// the role (B24f, the lead's DAILYMAIL line): below admin the control is read only with the role's words, after the
+	// server's own reason; the POST is refused the same (POST /api/reportmail needs admin)
+	if reason == "" && s.auth != nil && s.demo == nil {
+		wh, ok := whoOf(r)
+		if !ok {
+			wh = s.sessionWho(r)
+		}
+		if wh.err == nil && roleRank(wh.role) < needAdmin {
+			reason = roleWords("changing the Daily checks mail", needAdmin, wh)
+		}
+	}
 	out["writable"], out["reason"] = reason == "", reason
 	if reportmail.FindBrowser() == "" {
 		out["browser_note"] = "no Chromium-family browser on this server (PGVIGIL_BROWSER names one): the daily mail cannot be drawn here, and each turn is a failed mail"
@@ -295,6 +316,7 @@ type dailyRequest struct {
 	Recipients []string `json:"recipients"`
 	Channel    string   `json:"channel"`
 	AttachXLSX *bool    `json:"attach_xlsx"`
+	Post       []string `json:"post"` // B20-4: the webhook channels its counts are posted to
 }
 
 // reportMailDaily is POST /api/reportmail with op daily_keep / daily_drop: the Daily checks page's control. user is
@@ -328,7 +350,7 @@ func (s *Server) reportMailDaily(w http.ResponseWriter, r *http.Request, user st
 	switch in.Op {
 	case "daily_keep":
 		req := reportmail.KeptRequest{At: in.At, TZ: strings.TrimSpace(in.Timezone), As: user, Channel: strings.TrimSpace(in.Channel), To: in.Recipients,
-			AttachXLSX: in.AttachXLSX == nil || *in.AttachXLSX}
+			AttachXLSX: in.AttachXLSX == nil || *in.AttachXLSX, Post: in.Post}
 		pay, _, perr := req.Payload(time.Now())
 		if perr != nil {
 			writeErr(w, http.StatusBadRequest, perr)

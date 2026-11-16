@@ -2,6 +2,8 @@ package reportmail
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -38,10 +40,15 @@ const sendTimeout = 2 * time.Minute
 // Result counts one pass.
 type Result struct {
 	Sent, Failed, Notices, NoticeFailed int
+	Posted, PostFailed                  int // B20-4: the Daily checks mail's posts
 }
 
 func (r Result) String() string {
-	return fmt.Sprintf("%d sent, %d failed, %d failure notices (%d of them not delivered)", r.Sent, r.Failed, r.Notices, r.NoticeFailed)
+	out := fmt.Sprintf("%d sent, %d failed, %d failure notices (%d of them not delivered)", r.Sent, r.Failed, r.Notices, r.NoticeFailed)
+	if r.Posted+r.PostFailed > 0 {
+		out += fmt.Sprintf(", %d posted, %d posts failed", r.Posted, r.PostFailed)
+	}
+	return out
 }
 
 // conn is what Pass calls: a pooled connection, a fake in the tests.
@@ -68,6 +75,7 @@ type mailer interface {
 	MailFrom() string
 	Mail(ctx context.Context, to []string, msg []byte) error
 	Notify(ctx context.Context, items []alerts.Alert, now time.Time) error
+	Post(ctx context.Context, p alerts.Post) error
 }
 
 // Pass mails what is owed at now through chs. nil error and an empty Result when the repository predates 0107.
@@ -92,6 +100,10 @@ func pass(ctx context.Context, c conn, chs []namedMailer, now time.Time) (Result
 	}
 	if !have {
 		return res, nil
+	}
+	var posts bool // B20-4: a repository with the Daily checks mail's post (0273)
+	if err := c.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.report_mail_post_take(timestamp with time zone, bigint)') IS NOT NULL`).Scan(&posts); err != nil {
+		return res, err
 	}
 	rows, err := c.Query(ctx, `SELECT send_id, kind, name, channel, recipients, subject, coalesce(xlsx_name, ''), coalesce(render_error, ''),
 	                                  requested_by, requested_at, route
@@ -149,6 +161,11 @@ func pass(ctx context.Context, c conn, chs []namedMailer, now time.Time) (Result
 		}
 		if serr != nil {
 			notify(ctx, chs, failureAlert(o, msg, now), now, &res)
+		} else if posts {
+			// a sent mail of the kept schedule posts its counts (a failed one never does)
+			if err := postFor(ctx, c, chs, o, now, &res); err != nil {
+				return res, err
+			}
 		}
 	}
 	// what no sender took in the window, or took and never answered
@@ -176,6 +193,79 @@ func pass(ctx context.Context, c conn, chs []namedMailer, now time.Time) (Result
 		notify(ctx, chs, failureAlert(o, why[i], now), now, &res)
 	}
 	return res, nil
+}
+
+// postFor takes and sends the post of a sent mail (B20-4): nothing when the send has none, or when its schedule's post
+// of that day was taken already; each named webhook channel of this configuration gets it, and the answer is recorded
+// (posted_at, or the errors joined: a 'daily checks post failed' notice on every channel)
+func postFor(ctx context.Context, c conn, chs []namedMailer, o owed, now time.Time, res *Result) error {
+	var raw []byte
+	var names []string
+	var day time.Time
+	var route string
+	err := c.QueryRow(ctx, `SELECT o_post, o_channels, o_day, o_route FROM pgvigil.report_mail_post_take($1, $2)`, time.Now(), o.id).Scan(&raw, &names, &day, &route)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var p DailyPost
+	var perr error
+	if err := json.Unmarshal(raw, &p); err != nil {
+		perr = fmt.Errorf("the post's numbers cannot be read: %w", err)
+	} else if err := p.Check(); err != nil {
+		perr = err
+	}
+	if perr == nil {
+		post := p.Post(day.Format("2006-01-02"))
+		if route != "" {
+			post.Route = route
+		}
+		byName := map[string]namedMailer{}
+		for _, m := range chs {
+			byName[m.name] = m
+		}
+		var bad []string
+		for _, n := range names {
+			ch, ok := byName[n]
+			if !ok {
+				bad = append(bad, n+": not a channel of this sender's configuration")
+				continue
+			}
+			pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			if err := ch.m.Post(pctx, post); err != nil {
+				bad = append(bad, n+": "+err.Error())
+			}
+			cancel()
+		}
+		if len(bad) > 0 {
+			perr = errors.New(strings.Join(bad, "; "))
+		}
+	}
+	msg := ""
+	if perr != nil {
+		msg = perr.Error()
+	}
+	if _, err := c.Exec(context.WithoutCancel(ctx), `SELECT pgvigil.report_mail_post_record($1, $2, $3)`, time.Now(), o.id, msg); err != nil {
+		return err // taken: never posted again
+	}
+	if perr != nil {
+		res.PostFailed++
+		notify(ctx, chs, postFailureAlert(o, msg, now), now, res)
+	} else {
+		res.Posted++
+	}
+	return nil
+}
+
+// postFailureAlert is the notice of a post that did not go: a warning in the alert line every channel writes
+func postFailureAlert(o owed, why string, now time.Time) alerts.Alert {
+	at := now.UTC()
+	return alerts.Alert{Event: "firing", FindingKey: fmt.Sprintf("report-mail-post-%d", o.id), Instance: "pgvigil", Severity: "warning",
+		Source: "report mail", Setting: "daily checks post failed",
+		Value:  fmt.Sprintf("%s (%s mail %d, sent): %s", o.name, o.kind, o.id, why),
+		Detail: "the mail was sent; its counts were not posted (the send's post_error in report_mail_sends holds why)", FindingAt: &at}
 }
 
 // notify sends one failure notice on every channel
