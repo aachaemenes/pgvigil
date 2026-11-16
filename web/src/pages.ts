@@ -746,7 +746,7 @@ export async function replication(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<Record<'latest' | 'checks' | 'series' | 'series_meta', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
   const sec = el('section', {}, el('h2', {}, 'Replication'));
   const checkCols: Col[] = [
-    { key: 'check_name', label: 'check', fmt: v => badge(String(v), String(v).startsWith('slot WAL status') ? 'crit' : 'warn') },
+    { key: 'check_name', label: 'check', fmt: (v, r) => badge(String(v), r.severity === 'critical' || String(v).startsWith('slot WAL status') ? 'crit' : 'warn') },
     { key: 'object' }, { key: 'value', num: true }, { key: 'unit' }, { key: 'state' }, { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
   ];
   sec.append(el('h3', {}, 'Checks'), grid(rowsOf(d.checks), checkCols, 'No replication problems in the newest snapshot.'));

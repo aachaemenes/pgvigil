@@ -52,7 +52,7 @@ SELECT instance_id, 'warning', 'collection stale', collection, snapshot_at,
  WHERE coalesce(iv, -1) <> 0
    AND now() - snapshot_at > make_interval(secs => CASE WHEN iv IS NULL THEN $2::int ELSE greatest(300, 3 * iv) END)`},
 	{"replication", `
-SELECT r.instance_id, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'critical' ELSE 'warning' END,
+SELECT r.instance_id, coalesce(r.severity, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'critical' ELSE 'warning' END),
        r.check_name, r.object, r.snapshot_at,
        r.value::text || ' ' || r.unit || coalesce(' (' || r.state || ')', '')
   FROM pgvigil.replication_checks r JOIN pgvigil.instances i USING (instance_id)
@@ -204,7 +204,7 @@ SELECT kind, key, state, lag_bytes, lag_secs, active, snapshot_at, detail
 
 // sqlReplChecks are the replication daily checks of one instance.
 const sqlReplChecks = `
-SELECT check_name, object, value, unit, state, snapshot_at
+SELECT check_name, object, value, unit, state, snapshot_at, severity
   FROM pgvigil.replication_checks
  WHERE instance_id = $1
  ORDER BY check_name, object`
