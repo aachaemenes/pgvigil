@@ -51,9 +51,12 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 	}
 	t.Cleanup(pool.Close)
 	r := &Repo{pool: pool}
-	if n, err := r.Migrate(ctx); err != nil {
+	start := time.Now()
+	n, err := r.Migrate(ctx)
+	if err != nil {
 		t.Fatalf("a fresh migrate of the joined tree stopped after %d file(s): %v", n, err)
 	}
+	t.Logf("the fresh migrate of %s: %d files in %s", name, n, time.Since(start).Round(time.Second))
 	return r
 }
 
@@ -73,9 +76,12 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     go with purge()'s other sample parents; the role changes of a mirrored database, the owner changes of a failover
 //     cluster instance and the seeding rows no read has replaced go by their time, as mssql_ag_failovers does; and
 //     replication_hourly's months go by their own age through replication_hourly_purge() in purge()'s last block
-//     (0150), named among the run's dropped partitions. A row or a month inside the age stays.
+//     (0150), named among the run's dropped partitions. A row or a month inside the age stays. mssql_repl_hourly
+//     (0142) keeps a year of hours: its import trims a live instance's, purge() the rest of one no longer read.
 func TestHAJoinOnAFreshStore(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
+	// and drops the database (a package timeout would leave pgvha_<n> behind)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	r := haJoinFreshStore(t, ctx)
 	str := func(sql string, args ...any) string {
@@ -165,6 +171,9 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	      VALUES ($1, now() - interval '400 days', 'n1', 'n2'), ($1, now() - interval '1 day', 'n2', 'n1')`, ms)
 	exec(`INSERT INTO pgvigil.mssql_ag_seeding (instance_id, group_id, database_name, remote_replica, snapshot_at, group_name)
 	      VALUES ($1, 'g-old', 'db1', '', now() - interval '400 days', 'ag1'), ($1, 'g-new', 'db1', '', now() - interval '1 day', 'ag1')`, ms)
+	exec(`INSERT INTO pgvigil.mssql_repl_hourly (instance_id, hour, series, kind, reads)
+	      VALUES ($1, date_trunc('hour', now() - interval '800 days'), 's1', 'subscription', 1),
+	             ($1, date_trunc('hour', now() - interval '300 days'), 's1', 'subscription', 1)`, ms)
 	exec(`SELECT pgvigil.purge(30)`)
 	dropped := str(`SELECT coalesce(array_to_string(partitions_dropped, ' '), '') FROM pgvigil.purge_runs ORDER BY finished_at DESC LIMIT 1`)
 	for _, p := range parents {
@@ -178,4 +187,8 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 			str(fmt.Sprintf(`SELECT count(*) || ' / ' || count(*) FILTER (WHERE %s > now() - interval '30 days') FROM pgvigil.%s WHERE instance_id = $1`,
 				c[1], c[0]), ms), "1 / 1")
 	}
+	// an instance no import reaches any more: its hours past the year go with purge (the import's own trim never runs)
+	want("the hours of mssql_repl_hourly after purge(30) (all / inside the year)",
+		str(`SELECT count(*) || ' / ' || count(*) FILTER (WHERE hour > now() - interval '366 days') FROM pgvigil.mssql_repl_hourly WHERE instance_id = $1`, ms),
+		"1 / 1")
 }
