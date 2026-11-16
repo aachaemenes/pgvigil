@@ -941,9 +941,10 @@ export type { Fleet };
 // each row linking to its instance's Findings tab.
 export async function findings(ctx: Ctx): Promise<HTMLElement> {
   if (ctx.instance) {
-    // a SQL Server instance's tab also holds its stored weekly sp_Blitz (B20-2, blitz.ts)
-    const [view, f] = await Promise.all([findingsView(ctx.instance), fleet()]);
-    const me = f.instances.find(r => Number(r.instance_id) === ctx.instance);
+    // a SQL Server instance's tab also holds its stored weekly sp_Blitz (B20-2, blitz.ts); a failed fleet read costs
+    // that section only, never the tab's own findings
+    const [view, f] = await Promise.all([findingsView(ctx.instance), fleet().catch(() => null)]);
+    const me = f?.instances.find(r => Number(r.instance_id) === ctx.instance);
     return me && isMssql(me.engine) ? el('div', {}, view, await blitzSection(ctx, ctx.instance)) : view;
   }
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;

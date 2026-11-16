@@ -20,13 +20,14 @@ import (
 //	GET  /api/mssql/blitz?instance=N[&part=...]   state (the due rule now: on or off and whose switch, due or not and
 //	     why, the site's weekly slot and timeout, the database sp_Blitz is looked for in), last (the collection's last
 //	     tick: a skip's words - not installed, no EXECUTE, off, not due), runs (the stored runs, newest first), shown
-//	     (the newest successful run, with the newest run's outcome beside it), findings (the shown run's rows, each
+//	     (the newest successful run - done or done with messages - with the newest run's outcome beside it), findings (the shown run's rows, each
 //	     marked judged when the Checks tab judges its CheckID), judged (those CheckIDs: mssql.ChecksJudged).
 //	POST /api/mssql/blitz/settings   the admin's switch (needAdmin, through s.post): {op: 'site', enabled, run_dow,
 //	     run_hour, run_tz, timeout_s} (a key left out keeps its value) or {op: 'instance', instance_id, enabled (true,
-//	     false, or null / left out = the site default), proc_db (left out = kept)}; written through
-//	     import_mssql_blitz_setting on the actions door's audit login, every attempt in admin_audit; a refused value is
-//	     409 with its words. Not through the demo's door (it names no such route).
+//	     false, or null = the site default; required), proc_db (left out = kept)}; written through
+//	     import_mssql_blitz_setting on the actions door's audit login, every attempt the store receives in admin_audit
+//	     (a refused value included; a body refused here with 400, or a role refused with 403, writes none); a refused
+//	     value is 409 with its words. Not through the demo's door (it names no such route).
 
 const doorBlitzSetting doorRoute = "mssql/blitz/settings"
 
@@ -162,6 +163,11 @@ func blitzSettingBody(raw []byte) (map[string]any, error) {
 	}
 	if _, ok := out["instance_id"]; op == "instance" && !ok {
 		return nil, errors.New("instance_id names the instance")
+	}
+	// an instance's write names its switch every time (null = the site default): a write that only moves sp_Blitz's
+	// database never turns an instance's own 'off' back to the site default's 'on' (review-22 bzweb SF1)
+	if _, ok := out["enabled"]; op == "instance" && !ok {
+		return nil, errors.New("enabled is true, false or null (the site default): an instance's write names its switch")
 	}
 	return out, nil
 }
