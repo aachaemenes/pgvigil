@@ -797,8 +797,8 @@ SELECT g.instance_id, 'warning', 'cloud door failing', CASE g.provider WHEN 'aws
 -- with a newer read's value; mssql_georepl_sample: INSERT, ON CONFLICT DO NOTHING) - per key its own lock in its own
 -- statement under lock_timeout 5 s, the key's dirty range healed under 200 ms, then the touched hours RECOMPUTED from
 -- the stored samples (never added to); a failure never fails the import (the hours merged into the key's dirty range,
--- one 'rollup failed' row in collection_log an hour at most, healed by the next trigger call of the key or by 'pgvigil
--- purge'); partitions by month without a second index (fillfactor 80), made by the trigger only when purge has not;
+-- one 'rollup failed' row in collection_log an hour at most, healed by the next trigger calls of the key); partitions
+-- by month without a second index (fillfactor 80), made by the trigger only when purge has not;
 -- 730 days by their own hours_retention rows. Departure from 0167: no first build - 0151 makes the sample tables and the
 -- hour tables together, so no stored sample predates the trigger. WIRING (as B2a-N2's patch): purge()'s last block
 -- calls cloud_replica_hour_purge and mssql_georepl_hour_purge (the join's arm); a pending key is not healed by 'pgvigil
