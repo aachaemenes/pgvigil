@@ -9,6 +9,7 @@
 // The page (admin_instances.ts) owns the tables, the status line and the read-only lock; it hands them in (Deps).
 import { Row, rowsOf, Table } from './api';
 import { el } from './ui';
+import { checkEvery, copyOf, everyWords, parseEvery, patternsOf, saveSettings, Stored, withSchedule, withThresholds } from './settings_model';
 
 type Answer = { ok: boolean; body: Record<string, unknown> };
 export interface Deps {
@@ -20,29 +21,15 @@ export interface Deps {
 }
 
 interface Collection { name: string; default_s: number; builtin_s: number; box: boolean; never: string }
-interface Stored { schedules?: Record<string, number>; query_text?: string }
+interface Threshold { name: string; default: number; patterns: boolean }
+const CEILING = 2592000; // 30 days, config.PageScheduleCeiling
 
-// everyWords: seconds as the panel writes an interval ('5m', '1h', '90s', '2d'; 0 = 'off')
-export function everyWords(secs: number): string {
-  if (secs <= 0) return 'off';
-  for (const [n, u] of [[86400, 'd'], [3600, 'h'], [60, 'm']] as const) if (secs % n === 0) return `${secs / n}${u}`;
-  return `${secs}s`;
-}
-
-// parseEvery reads what an admin typed: '' = the default, 'off' (or 0) = off, else a number with s, m, h or d
-// (a bare number is minutes, as nothing else would be meant); null = not an interval
-export function parseEvery(text: string): number | '' | null {
-  const t = text.trim().toLowerCase();
-  if (t === '') return '';
-  if (t === 'off' || t === '0') return 0;
-  const m = /^(\d+)\s*(s|m|h|d)?$/.exec(t);
-  if (!m) return null;
-  return Number(m[1]) * { s: 1, m: 60, h: 3600, d: 86400 }[(m[2] ?? 'm') as 's' | 'm' | 'h' | 'd'];
-}
+export { everyWords, parseEvery } from './settings_model';
 
 export function instanceSettings(deps: Deps) {
   let stored = new Map<string, Stored>();
   let catalogue: Record<string, Collection[]> = {};
+  let thresholds: Threshold[] = [];
   let floor = 60, defaultQT = '', readError = '';
   const box = el('div', { id: 'admin-instance-settings' });
 
@@ -55,6 +42,7 @@ export function instanceSettings(deps: Deps) {
     }));
     catalogue = (d.settings_catalogue ?? {}) as Record<string, Collection[]>;
     floor = Number(d.settings_floor_s ?? 60);
+    thresholds = (d.settings_thresholds ?? []) as Threshold[];
     defaultQT = String(d.settings_default_qt ?? '');
     readError = String(d.settings_error ?? '');
   }
@@ -63,7 +51,8 @@ export function instanceSettings(deps: Deps) {
   function summary(name: string): string {
     const s = stored.get(name) ?? {};
     const sch = Object.entries(s.schedules ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k} ${everyWords(v)}`);
-    const parts = [sch.join(', '), s.query_text ? `query_text ${s.query_text}` : ''].filter(Boolean);
+    const th = Object.keys(s.thresholds ?? {}).length;
+    const parts = [sch.join(', '), s.query_text ? `query_text ${s.query_text}` : '', th ? `${th} threshold(s) of its own` : ''].filter(Boolean);
     return parts.length ? parts.join('; ') : 'defaults';
   }
 
@@ -100,19 +89,42 @@ export function instanceSettings(deps: Deps) {
       ...['full', 'normalized', 'none'].map(v => el('option', { value: v }, v)));
     qt.value = have.query_text ?? '';
     const save = deps.lock(el('button', { type: 'button', 'aria-label': `Save the settings of ${name}` }, 'Save the settings'));
+    // ST5b: a SQL Server instance's own thresholds (mssql_thresholds), each empty = the collector's default
+    const thInputs = new Map<string, HTMLInputElement>();
+    const thRows = engine !== 'sqlserver' ? [] : thresholds.map(t => {
+      const own = have.thresholds?.[t.name];
+      const input = el('input', { type: 'text', size: t.patterns ? '24' : '10', 'aria-label': `${t.name}: threshold for ${name}`, placeholder: 'default' });
+      input.value = own === undefined ? '' : Array.isArray(own) ? own.join(', ') : String(own);
+      thInputs.set(t.name, input);
+      return el('tr', {}, el('td', {}, t.name), el('td', {}, t.patterns ? 'none' : String(t.default)), el('td', {}, input),
+        el('td', { class: 'meta' }, t.patterns ? 'database name patterns, comma-separated (LIKE: _ and % match any character)' : 'a number of 0 or more'));
+    });
     save.addEventListener('click', async () => {
-      const schedules: Record<string, number> = {};
+      // the whole object from the one read (its paused intervals and anything this panel does not draw kept)
+      let settings: Stored = copyOf(have);
       for (const [k, input] of inputs) {
         const v = parseEvery(input.value);
         if (v === null) { deps.say(`${k}: '${input.value}' is not an interval (5m, 1h, 2d or off)`, true); input.focus(); return; }
-        if (v === '') continue;
-        if (v > 0 && v < floor) { deps.say(`${k}: an interval set here is ${everyWords(floor)} or more`, true); input.focus(); return; }
-        schedules[k] = v;
+        const was = have.schedules?.[k];
+        if (v === '' ? was === undefined : v === was) continue; // unchanged: a pause stays a pause
+        if (v !== '') { const why = checkEvery(v, floor, CEILING); if (why) { deps.say(`${k}: ${why}`, true); input.focus(); return; } }
+        settings = withSchedule(settings, k, v === '' ? undefined : v);
       }
-      const settings: Stored = { schedules };
-      if (qt.value) settings.query_text = qt.value;
+      if (qt.value) settings.query_text = qt.value; else delete settings.query_text;
+      if (thRows.length) {
+        const th: Record<string, number | string[]> = {};
+        for (const [k, input] of thInputs) {
+          const t = input.value.trim();
+          if (t === '') continue;
+          if (k === 'backup_exclude') { const p = patternsOf(t); if (p.length) th[k] = p; continue; }
+          const n = Number(t);
+          if (!/^\d+(\.\d+)?$/.test(t) || !Number.isFinite(n)) { deps.say(`${k}: '${t}' is not a number of 0 or more`, true); input.focus(); return; }
+          th[k] = n;
+        }
+        settings = withThresholds(settings, th);
+      }
       deps.say(`Saving the settings of ${name}…`);
-      const res = await deps.send('admin/instances', { op: 'settings', name, settings });
+      const res = await saveSettings(deps.send, name, settings, have);
       if (!res.ok) { deps.say(`Settings of ${name} not saved: ${deps.why(res.body)}`, true); return; }
       deps.say(`${String(res.body.detail ?? 'saved')}. ${String(res.body.takes_effect ?? '')}`);
       await deps.draw();
@@ -134,6 +146,11 @@ export function instanceSettings(deps: Deps) {
       el('table', { class: 'grid', 'aria-labelledby': 'admin-instance-settings-title' },
         el('thead', {}, el('tr', {}, ...['collection', 'by default', 'this instance', 'note'].map(h => el('th', { scope: 'col' }, h)))),
         el('tbody', {}, ...rows)),
+      ...(thRows.length ? [el('h4', { id: 'admin-instance-thresholds-title' }, 'Thresholds (mssql_thresholds: HA/DR, jobs and backups)'),
+        el('p', { class: 'meta' }, 'Each threshold is the collector\'s default unless a value is set here; the collector stores a change at the instance\'s next HA/DR, jobs or backups read.'),
+        el('table', { class: 'grid', 'aria-labelledby': 'admin-instance-thresholds-title' },
+          el('thead', {}, el('tr', {}, ...['threshold', 'by default', 'this instance', 'note'].map(h => el('th', { scope: 'col' }, h)))),
+          el('tbody', {}, ...thRows))] : []),
       el('div', {}, save, ' ', close));
     box.scrollIntoView({ block: 'nearest' });
     title.focus(); // a screen reader hears the panel open (ST5a's review F5)
@@ -147,5 +164,5 @@ export function instanceSettings(deps: Deps) {
     return b;
   };
 
-  return { set, summary, settingsButton, box };
+  return { set, summary, settingsButton, box, open: show };
 }

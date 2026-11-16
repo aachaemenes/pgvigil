@@ -19,11 +19,14 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/jackc/pgx/v5"
 )
 
 // PageSettingsConfig is what cmd/ hands serve for the Settings (web does not import the engines).
@@ -37,6 +40,16 @@ type PageSettingsConfig struct {
 	Intervals func(in config.Instance) map[string]int
 	// FloorS is config.PageScheduleFloor in seconds
 	FloorS int
+	// Thresholds: a SQL Server instance's thresholds as the panel lists them (engines.ThresholdCatalogue, ST5b)
+	Thresholds []PageThresholdView
+}
+
+// PageThresholdView is one threshold as the panel lists it: the collector's default; Patterns = backup_exclude (a list
+// of LIKE patterns, no default).
+type PageThresholdView struct {
+	Name     string  `json:"name"`
+	Default  float64 `json:"default"`
+	Patterns bool    `json:"patterns"`
 }
 
 // pageSettingsOf holds each server's config (serve's SetPageSettings; demo and mcp set none): a registry, as the door
@@ -74,6 +87,7 @@ type PageCollectionView struct {
 func (s *Server) instanceSettingsView(ctx context.Context, out map[string]any) {
 	if ps := s.settingsConfig(); ps != nil {
 		out["settings_catalogue"], out["settings_floor_s"] = ps.Catalogue, ps.FloorS
+		out["settings_thresholds"] = ps.Thresholds
 	}
 	// the statement-text policy an instance with none of its own follows (pgvigil.yaml's query_text:)
 	out["settings_default_qt"] = s.doorsNow().DefaultQT
@@ -119,6 +133,10 @@ func (s *Server) instanceSettings(w http.ResponseWriter, r *http.Request, user s
 			}
 		}
 	}
+	// the settings as the editor read them (ST5b): 0266 refuses a write over a change made since
+	if exp, ok := in["expect"].(map[string]any); ok {
+		pay["expect"] = exp
+	}
 	if verdict == "" {
 		pay["settings"] = ps.Stored()
 	} else {
@@ -139,6 +157,9 @@ func (s *Server) instanceSettings(w http.ResponseWriter, r *http.Request, user s
 		// the collector reads the change within its poll (15 s) and restarts this instance's loops alone; this
 		// serve's stale check follows as soon as its watcher has read it
 		extra["takes_effect"] = "the collector takes the change within 15 s and restarts this instance's collections alone"
+		if len(ps.Thresholds) > 0 {
+			extra["takes_effect"] = extra["takes_effect"].(string) + "; its thresholds are stored at the instance's next HA/DR, jobs or backups read"
+		}
 		s.nudgeDoors()
 	}
 	s.answer(w, ans, rawAns, extra)
@@ -152,4 +173,44 @@ func (s *Server) nudgeDoors() {
 		default: // a wake is already pending
 		}
 	}
+}
+
+// collectionsSettingsParts is what the tree's two dialogs need beside /api/instance/collections' rows (ST5b, the design
+// pass's F4): "source" ("file", or "page" for an instance added in Admin > Instances that no pgvigil.yaml entry
+// shadows); for a page instance its stored settings (read through admin_instance_settings(), the reader's grant), the
+// catalogue entry of each of its engine's collections (box, never), the floor and the 30-day ceiling, and writable /
+// why_not (the dialogs' Save is the panel's op).
+func (s *Server) collectionsSettingsParts(ctx context.Context, name, engine string) map[string]any {
+	out := map[string]any{"source": "file"}
+	if a := s.instAdmin(); a != nil && slicesContains(a.fileNames(), name) {
+		return out
+	}
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `SELECT s.settings FROM pgvigil.admin_instance_settings() s WHERE s.name = $1`, name).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out
+	}
+	out["source"] = "page"
+	why := s.instancesOff()
+	ps := s.settingsConfig()
+	if why == "" && ps == nil {
+		why = "this server does not set an instance's settings (pgvigil serve does)"
+	}
+	if err != nil {
+		s.log.Warn("instance collections: the settings were not read", "instance", name, "err", err)
+		why, raw = "this server could not read the instance's settings: "+err.Error(), nil
+	}
+	out["writable"], out["why_not"] = why == "", why
+	if raw != nil {
+		out["settings"] = json.RawMessage(raw)
+	}
+	if ps != nil {
+		cat := map[string]PageCollectionView{}
+		for _, c := range ps.Catalogue[engine] {
+			cat[c.Name] = c
+		}
+		out["catalogue"], out["settings_floor_s"] = cat, ps.FloorS
+	}
+	out["settings_ceiling_s"] = int(config.PageScheduleCeiling / time.Second)
+	return out
 }

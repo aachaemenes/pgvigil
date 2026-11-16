@@ -25,7 +25,11 @@ func pageSettingsConfig(cfg *config.Config) *web.PageSettingsConfig {
 				BuiltinS: int(c.Default / time.Second), Box: c.Box, Never: c.Never})
 		}
 	}
-	return &web.PageSettingsConfig{Check: engines.CheckPageSettings, Catalogue: cat, FloorS: int(config.PageScheduleFloor / time.Second),
+	var th []web.PageThresholdView
+	for _, e := range engines.ThresholdCatalogue() {
+		th = append(th, web.PageThresholdView{Name: e.Name, Default: e.Default, Patterns: e.Patterns})
+	}
+	return &web.PageSettingsConfig{Check: engines.CheckPageSettings, Catalogue: cat, FloorS: int(config.PageScheduleFloor / time.Second), Thresholds: th,
 		Intervals: func(in config.Instance) map[string]int { return instanceIntervals(cfg, in) }}
 }
 

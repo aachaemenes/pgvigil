@@ -28,5 +28,16 @@ seconds for the same judgement (its read doors stay `pgvigil.yaml`'s).
 
 Every save is one row in *Changes* (`instance settings`), with what was set; a refusal is one too, with its reason: a
 collection of another engine or of no engine, an interval under a minute or over 30 days, the running plans box's
-collection, an instance of `pgvigil.yaml` (changed in the file). An instance's thresholds (`mssql_thresholds`) and
-the tree's Pause/Resume Collections and Configure Schedule for an instance added here are the next step (ST5b).
+collection, an instance of `pgvigil.yaml` (changed in the file).
+
+- **Thresholds** (SQL Server): the HA/DR, jobs and backups thresholds that `mssql_thresholds:` sets for an instance of
+  `pgvigil.yaml` - each of the eleven numbers (0 or more), and `backup_exclude`, database name patterns (LIKE: `_` and
+  `%` match any character). The collector stores a change at the instance's next HA/DR, jobs or backups read; until
+  then Alerts > Rules' *Thresholds in force* shows the instance's value marked `Admin > Instances` with the words
+  'waits for the next HA/DR, jobs or backups read' and the value in force now.
+- **The tree's Pause/Resume Collections and Configure Schedule** save the same settings for an instance added here:
+  a pause keeps the instance's own interval and Resume writes it back; a collection off for every instance by
+  `pgvigil.yaml`'s global `schedules:` is shown so, and ticking it gives this instance its own interval. The running
+  plans box's collection and one that never runs here are read only in both.
+- Every editor sends the settings as it read them: a save over a change made meanwhile elsewhere is refused ('changed
+  since they were read: read them again'), never written over unseen.

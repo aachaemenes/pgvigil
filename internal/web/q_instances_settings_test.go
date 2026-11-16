@@ -108,3 +108,76 @@ func TestInstanceSettingsOnAStore(t *testing.T) {
 		t.Errorf("no PageSettings: %s", got)
 	}
 }
+
+// TestInstanceSettingsThresholdsOnAStore (ST5b): op 'settings' carries a SQL Server page instance's thresholds and
+// paused intervals to 0266 and says when the thresholds take effect; 'expect' reaches the import, which refuses a write
+// over a change made since; the dialogs' answer (collectionsSettingsParts) holds the page instance's source, stored
+// settings, catalogue, floor, ceiling and why it cannot be written here, and says 'file' for a name not added here.
+func TestInstanceSettingsThresholdsOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tag := time.Now().UnixNano() % 1000000000
+	name := fmt.Sprintf("sthr-ms-%d", tag)
+	user := fmt.Sprintf("sthr-user-%d", tag)
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_instances WHERE name = $1`, name)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_audit WHERE ui_user = $1`, user)
+	}()
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.admin_instances (name, engine, dsn_ref, auth, host, created_by, updated_by)
+	                             VALUES ($1, 'sqlserver', 'file:/nonexistent/sthr', 'sql', '192.0.2.8', $2, $2)`, name, user); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &PageSettingsConfig{FloorS: 60, Catalogue: map[string][]PageCollectionView{config.EngineSQLServer: {{Name: "mssql_jobs", DefaultS: 300, BuiltinS: 300},
+		{Name: "mssql_running_plans", Box: true}}}, Thresholds: []PageThresholdView{{Name: "redo_queue_kb", Default: 512000}},
+		Check: func(string, config.PageSettings) error { return nil }}
+	s := &Server{pool: pool, log: discardLog(), actions: &Actions{audit: pool}}
+	s.SetPageSettings(cfg)
+	t.Cleanup(func() { pageSettingsOf.Delete(s) })
+	write := func(settings, expect any) map[string]any {
+		t.Helper()
+		in := map[string]any{"op": "settings", "name": name, "settings": settings}
+		if expect != nil {
+			in["expect"] = expect
+		}
+		pay := map[string]any{"op": "settings", "ui_user": user, "client": "192.0.2.7", "name": name, "file_names": []string{"sthr-file"}}
+		rec := httptest.NewRecorder()
+		s.instanceSettings(rec, httptest.NewRequest(http.MethodPost, "/api/admin/instances", nil), user, in, pay)
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s (%v)", rec.Body.String(), err)
+		}
+		return out
+	}
+	set := map[string]any{"schedules": map[string]any{"mssql_jobs": float64(0)}, "paused": map[string]any{"mssql_jobs": float64(600)},
+		"thresholds": map[string]any{"redo_queue_kb": float64(1024), "backup_exclude": []any{"tmp%"}}}
+	got := write(set, map[string]any{})
+	if fmt.Sprint(got["outcome"]) != "done" || !strings.Contains(fmt.Sprint(got["detail"]), "thresholds redo_queue_kb 1024; backup_exclude tmp%; paused mssql_jobs (its own 600 s kept)") ||
+		!strings.HasSuffix(fmt.Sprint(got["takes_effect"]), "; its thresholds are stored at the instance's next HA/DR, jobs or backups read") {
+		t.Errorf("thresholds and paused: %v", got)
+	}
+	if got := write(map[string]any{}, map[string]any{}); fmt.Sprint(got["outcome"])+"|"+fmt.Sprint(got["detail"]) != "refused|the settings of "+name+" changed since they were read: read them again" {
+		t.Errorf("a stale expect: %v", got)
+	}
+	parts := s.collectionsSettingsParts(ctx, name, config.EngineSQLServer)
+	b, _ := json.Marshal(parts)
+	var p map[string]any
+	_ = json.Unmarshal(b, &p)
+	cat, _ := p["catalogue"].(map[string]any)
+	box, _ := cat["mssql_running_plans"].(map[string]any)
+	if p["source"] != "page" || !strings.Contains(string(b), `"redo_queue_kb":1024`) || box["box"] != true || p["settings_floor_s"] != float64(60) ||
+		p["settings_ceiling_s"] != float64(2592000) || p["writable"] != false || !strings.HasPrefix(fmt.Sprint(p["why_not"]), "adding and changing instances needs the UI login") {
+		t.Errorf("the dialogs' parts of a page instance: %s", b)
+	}
+	if p := s.collectionsSettingsParts(ctx, "sthr-none", config.EngineSQLServer); len(p) != 1 || p["source"] != "file" {
+		t.Errorf("a name not added here: %v", p)
+	}
+}
