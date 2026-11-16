@@ -33,6 +33,13 @@ func TestNormalizeSQL(t *testing.T) {
 		{"select 'unterminated and the rest is literal; select secret", "select ?"},
 		{"select e from t where $2 = e", "select e from t where $2 = e"},
 		{"select \"a\"\"b\" from \"we're\"", "select \"a\"\"b\" from \"we're\""},
+		// TEXT-NOW-L row 1 (TEXT-NOW review 1 L5, D411 review 2 L2): a T-SQL binary literal and money, the hint forms,
+		// PostgreSQL 16's integer forms; a name holding 0x and a PostgreSQL parameter stay
+		{"SELECT 0xDEADBEEF, 0X2a00 FROM t WHERE b = 0x", "SELECT ?, ? FROM t WHERE b = ?"},
+		{"SELECT a FROM t OPTION (OPTIMIZE FOR (@p = $5.00, @q = 0x2A00))", "SELECT a FROM t OPTION (OPTIMIZE FOR (@p = ?, @q = ?))"},
+		{"select $12.50 * qty, -$3.25, $0.5 from o", "select ? * qty, -?, ? from o"},
+		{"select 0o17, 0b101, 1_000_000, 0x1F_FF from t", "select ?, ?, ?, ? from t"},
+		{"select col_0x1, t0xab, x0b1 from t where a = $1 and b = $12 and c = $1.name", "select col_0x1, t0xab, x0b1 from t where a = $1 and b = $12 and c = $1.name"},
 	}
 	for _, c := range cases {
 		if got := normalizeSQL(c.in); got != c.want {
