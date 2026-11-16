@@ -22,9 +22,34 @@ func ImportOn(repo string) (on, ok bool) {
 	return r.Import, ok
 }
 
+var (
+	serveModeMu sync.RWMutex
+	serveMode   func(name string) string
+)
+
+// SetQueryText gives the serve process the query_text mode of each pgvigil instance (ConfigTextMode of its
+// configuration) for the history import it runs (ImportFrom); without it that import stores under full, the
+// credential mask alone. serve calls it beside SetRepositories.
+func SetQueryText(f func(name string) string) {
+	serveModeMu.Lock()
+	serveMode = f
+	serveModeMu.Unlock()
+}
+
+// withServeMode is opt with serve's query_text modes when its caller gave none.
+func withServeMode(opt ImportOptions) ImportOptions {
+	if opt.QueryText == nil {
+		serveModeMu.RLock()
+		opt.QueryText = serveMode
+		serveModeMu.RUnlock()
+	}
+	return opt
+}
+
 // ImportFrom runs Import from a configured repository by its name: serve's way (the page's Count and Import), into
-// opt.Store (required: serve's own pool).
+// opt.Store (required: serve's own pool), under serve's query_text modes (SetQueryText) when opt names none.
 func ImportFrom(ctx context.Context, log *slog.Logger, repo string, opt ImportOptions) ([]ImportCount, error) {
+	opt = withServeMode(opt)
 	r, ok := repository(repo)
 	if !ok {
 		return nil, endRun(ctx, log, opt, ErrNoRepository)

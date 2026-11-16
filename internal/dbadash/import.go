@@ -16,6 +16,8 @@ package dbadash
 //   - volumes  dbo.DriveSnapshot + dbo.Drives            -> mssql_volume_sample
 //   - dbsize   dbo.DBFileSnapshot + DBFiles + Databases  -> mssql_database_size (one row per snapshot and database)
 //   - jobruns  dbo.JobHistory + dbo.Jobs                 -> mssql_job_runs
+// Every text a batch carries passes the masks a collected row's text passes (maskBatch: collect.ApplyTextPolicy under
+// the pgvigil instance's query_text) before it is stored; names and tags are kept as DBADash holds them.
 // Idempotent and resumable: a row already stored (the same instance, time and key) is skipped, every batch commits on
 // its own, so a run cut short is run again and goes on where it stopped; a dry run reads the counts only. Each mapping
 // reports the DBADash rows of the window, the rows inserted now and the rows pgvigil holds for the window after.
@@ -35,6 +37,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/repo"
@@ -66,6 +69,9 @@ type ImportOptions struct {
 	// Run is a moved server's run its caller has marked already (serve's page takes the mark before it answers): Import
 	// carries that run, beats it and ends it, whatever ends the run (an error, a panic); nil = Import marks its own.
 	Run *MoveRun
+	// QueryText is the query_text mode of a pgvigil instance by its name (the command's: ConfigTextMode of its
+	// configuration; serve's: the one SetQueryText gave it); nil or an empty answer = full, the credential mask alone.
+	QueryText func(name string) string
 }
 
 // MoveRun is a run mark taken on a moved server's move (0134's import_dbadash_move run): the server's pgvigil name and
@@ -378,7 +384,7 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 						return out, fmt.Errorf("%s %s: the job statistics' defer: %w", tgt.Name, m.Key, err)
 					}
 				}
-				c.Inserted, c.Retries, err = importOne(ctx, src, pool, m, in, tgt.ID, opt, to, onBatch)
+				c.Inserted, c.Retries, err = importOne(ctx, src, pool, m, in, tgt.ID, textMode(opt, tgt.Name), opt, to, onBatch)
 				// left as it is (N4): the build makes job_stats_hourly's months inside its own transaction under its own
 				// instance lock; it writes no shared row, so it can stall that table's other writers, never close a cycle
 				if m.Key == "jobruns" {
@@ -726,8 +732,8 @@ func versionNum(v string) any {
 
 // importOne copies one mapping of one instance in batches up to 'to', each batch one call of the mapping's function
 // (one transaction: its months' partitions, the instance's import lock, the rows); onBatch gets the rows inserted so
-// far after each batch.
-func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, opt ImportOptions, to time.Time, onBatch func(int64) error) (int64, int, error) {
+// far after each batch. mode is the pgvigil instance's query_text: every batch passes maskBatch under it.
+func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importMapping, in srcInstance, pid int, mode string, opt ImportOptions, to time.Time, onBatch func(int64) error) (int64, int, error) {
 	rows, err := src.QueryContext(ctx, m.Rows, sql.Named("id", in.ID), sql.Named("from", utc2(opt.From)), sql.Named("to", utc2(to)))
 	if err != nil {
 		return 0, 0, fmt.Errorf("read: %w", err)
@@ -745,6 +751,7 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		if len(batch) == 0 {
 			return nil
 		}
+		maskBatch(batch, mode)
 		n, r, err := importBatch(ctx, pool, m, pid, batch, string(facts))
 		retries += r
 		if err != nil {
@@ -878,6 +885,26 @@ func batchMonths(batch []map[string]any) []time.Time {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
 	return out
+}
+
+// maskBatch passes one batch through the text policy a collected row passes before it is stored (collect.ApplyTextPolicy,
+// the call the SQL Server collector makes on its rows): the credential mask over the collection's text keys under every
+// mode - of the mappings, a job run's message, a step's output that can quote a password - then the query_text rewrite
+// of the keys it names under normalized and none. The names (instance, job, step, database, drive) are kept as DBADash
+// holds them, as the collector keeps its own.
+func maskBatch(batch []map[string]any, mode string) {
+	collect.ApplyTextPolicy(batch, mode)
+}
+
+// textMode is the query_text mode Import stores a pgvigil instance's rows under: opt.QueryText's answer for the name,
+// full when it has none.
+func textMode(opt ImportOptions, name string) string {
+	if opt.QueryText != nil {
+		if m := opt.QueryText(name); m != "" {
+			return m
+		}
+	}
+	return "full"
 }
 
 // importValue makes a DBADash value a JSON value for jsonb_to_recordset: a date as RFC 3339 in UTC (DBADash keeps

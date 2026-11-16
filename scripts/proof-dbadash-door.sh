@@ -90,6 +90,11 @@
 #     'progress' line per batch of 2 (ceil(source / 2) for each mapping, the last at inserted = source) and one final
 #     line per mapping at inserted = source; the pool answers after the import (Import leaves it open); the second run
 #     goes through the dsn as before; a pgvigil_reader login's pool is refused ('may not write') as its dsn is.
+#     E3 (the import's texts pass collection's masks) before the dry run, as sa, the instance's first dbo.JobHistory row
+#     gets a message holding three credential forms with tokens made at run time (a sqlcmd command line's password
+#     switch, a connection string's password pair, a ConvertTo-SecureString string; an UPDATE, so E's counts stay);
+#     after the import pgvigil.mssql_job_runs holds that run (its history_id) once, its message with none of the
+#     tokens and each form's '<masked>', the text around them kept, its job_name and step_name equal to DBA Dash's.
 #  F. the version pin: with a newer version row '9.9.9' in the repository, every page answers ok with proven=false and
 #     the note 'not proven on source version 9.9.9'; the row is removed again.
 #  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with the join's wiring
@@ -590,6 +595,14 @@ imp() { PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$1"
   PGVIGIL_DBADASH_IMPORT_STORE="${3:-0}" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep -E '^(import |progress |store open after: )' || true; }
 declare -A want=([cpu]=$n_cpu [volumes]=$n_vol [dbsize]=$n_dbs [jobruns]=$n_job)
 field() { echo "$1" | grep "^import $ID [0-9]* $2 " | sed -n "s/.* $3=\([0-9]*\).*/\1/p"; }
+# E3: one run's message carries three credential forms (tokens made now)
+HID=$(sq "SELECT TOP (1) CAST(instance_id AS bigint) FROM dbo.JobHistory WHERE InstanceID = $ID ORDER BY RunDateTime, instance_id" "$DDB")
+[[ "$HID" =~ ^[0-9]+$ ]] || fail "E3: no dbo.JobHistory row of instance $ID: '$HID'"
+E3A="tk$RANDOM$RANDOM"; E3B="tk$RANDOM$RANDOM"; E3C="tk$RANDOM$RANDOM"
+E3MSG="Executed as user: proof. sqlcmd -S db1 -U agent -P $E3A -Q \"EXEC dbo.load\" then Server=db1;Database=app;User Id=agent;Password=$E3B; then \$p = ConvertTo-SecureString ''$E3C'' -AsPlainText -Force. The step succeeded."
+sqok "E3: the message" "UPDATE dbo.JobHistory SET message = N'$E3MSG' WHERE InstanceID = $ID AND instance_id = $HID" "$DDB"
+[[ "$(sq "SELECT COUNT(*) FROM dbo.JobHistory WHERE InstanceID = $ID AND message LIKE N'%$E3C%'" "$DDB")" == 1 ]] || fail "E3: the seeded message is not on exactly one row"
+E3NAMES=$(sq "SELECT ISNULL(J.name, N'') + N'|' + ISNULL(H.step_name, N'') FROM dbo.JobHistory H LEFT JOIN dbo.Jobs J ON J.InstanceID = H.InstanceID AND J.job_id = H.job_id WHERE H.InstanceID = $ID AND H.instance_id = $HID" "$DDB")
 dry=$(imp "$PGDSN" 1); echo "$dry"
 for m in cpu volumes dbsize jobruns; do
   [[ "$(field "$dry" "$m" source)" == "${want[$m]}" && "$(field "$dry" "$m" inserted)" == 0 ]] || fail "E: the dry run of $m: $(echo "$dry" | grep " $m ") (want source=${want[$m]} inserted=0)"
@@ -618,6 +631,14 @@ got=$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_cpu_sample WHERE instance_i
 [[ "$got" == "${want[cpu]} ${want[volumes]} ${want[dbsize]} ${want[jobruns]}" ]] || fail "E: pgvigil's tables hold $got for the instance (want ${want[cpu]} ${want[volumes]} ${want[dbsize]} ${want[jobruns]})"
 row=$(pq "SELECT name || '|' || engine || '|' || array_to_string(tags, ',') FROM pgvigil.instances WHERE instance_id = $PID_IMP")
 [[ "$row" == "$DISP|sqlserver|"* && ",${row##*|}," == *",env:proof,"* && "${row##*|}" != *"{"* ]] || fail "E: the imported instance: $row"
+[[ "$(pq "SELECT count(*) FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID")" == 1 ]] || fail "E3: pgvigil holds run $HID $(pq "SELECT count(*) FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID") time(s) (want 1)"
+E3GOT=$(pq "SELECT message FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID")
+for tk in "$E3A" "$E3B" "$E3C"; do [[ "$E3GOT" != *"$tk"* ]] || fail "E3: a credential token is stored: $E3GOT"; done
+for w in '-P <masked> -Q' 'Password=<masked>;' 'ConvertTo-SecureString <masked>' 'Database=app' 'The step succeeded.'; do
+  [[ "$E3GOT" == *"$w"* ]] || fail "E3: the stored message has no '$w': $E3GOT"
+done
+[[ "$(pq "SELECT coalesce(job_name, '') || '|' || coalesce(step_name, '') FROM pgvigil.mssql_job_runs WHERE instance_id = $PID_IMP AND history_id = $HID")" == "$E3NAMES" ]] || fail "E3: the run's names changed: want '$E3NAMES'"
+echo "ok   E3: run $HID's message stored with its three credentials masked and the text around them kept: $E3GOT; names '$E3NAMES' as DBA Dash's"
 psql "$ADMIN_DSN" -Xqc "CREATE ROLE $PGRO LOGIN IN ROLE pgvigil_reader" >/dev/null
 ROPG="$PGDSN user=$PGRO"; ROPG="${ROPG/user=postgres /}"
 bad=$(PGVIGIL_DBADASH_IMPORT_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_IMPORT_REPO="$ROPG" go test -count=1 -run '^TestLiveImport$' -v ./internal/dbadash 2>&1 | grep '^import error' || true)
