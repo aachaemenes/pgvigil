@@ -191,6 +191,29 @@ to 429,545 rows in the three runs below) the 39 files from v0.3.0 to the build m
 (PostgreSQL 18, 16, 13: 2,237, 2,997 and 3,079 ms); a release with more files is measured again before its figure is
 given here, and a migration that rewrites a large table would say so in its release notes.
 
+## A change-controlled site: the schema printed, not applied
+
+Where a schema change goes through a review before anyone runs it, step 4 can be a script the site's DBA reads and
+runs instead of `pgvigil migrate`:
+
+```sh
+./pgvigil migrate -config /etc/pgvigil/pgvigil.yaml -print > pgvigil-migrate-vX.Y.Z.sql
+# reviewed, then run by the repository owner
+psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f pgvigil-migrate-vX.Y.Z.sql
+```
+
+`-print` only reads the repository (one read-only transaction: its database, its server version and the versions
+`pgvigil.schema_version` holds), so any login that can read `pgvigil.schema_version` may print it; it applies nothing,
+takes no lock and sets no jit. The script does what `pgvigil migrate` would do to that repository, in its order: the
+advisory lock, the `pgvigil.schema_version` bootstrap, the jit step (run as the owner it sets `jit = off` when the
+database has no jit setting of its own; refused, it is a WARNING naming the statement, as migrate warns), then each file
+the repository does not hold yet - a fresh repository gets every file - in its own transaction with its
+`schema_version` row and the `apply_roles()` re-apply, as migrate commits them. Its header names the build, the
+repository, how many files are applied and pending, and any version a newer pgvigil recorded. A guard before the first
+file stops the script when one of its files was applied after it was printed (print it again). With nothing pending the
+script is its header alone. `-print` exits 0 when the script is written, 1 when the repository cannot be read (nothing
+on stdout), 3 on a configuration error.
+
 ## The way back
 
 Stop the collector, restore the dump into a new, empty database that the owner owns, make that database the

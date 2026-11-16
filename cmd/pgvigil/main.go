@@ -4,6 +4,7 @@
 //	pgvigil run      -config pgvigil.yaml            run every scheduled collection until stopped
 //	pgvigil collect  -config pgvigil.yaml -once instance [-instance name]
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
+//	pgvigil migrate  -config pgvigil.yaml -print     print the statements migrate would run (read only: nothing applied)
 //	pgvigil alerts   -config pgvigil.yaml            one pass of the alert channels (the alerts: list)
 //	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
 //	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
@@ -165,16 +166,27 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, err
 	}
-	cfg, err := config.Load(*path)
+	cfg, err := loadConfigAt(*path, needInstance)
 	if err != nil {
-		return nil, nil, &configError{err}
+		return nil, nil, err
+	}
+	cfg.Flags.Once = *once
+	cfg.Flags.Instance = *inst
+	return cfg, fs, nil
+}
+
+// loadConfigAt reads and checks the configuration file at path (loadConfig's checks, for a command with its own flags).
+func loadConfigAt(path string, needInstance bool) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, &configError{err}
 	}
 	mssqlopen.RequireGMSA(cfg.GMSA) // a Windows sign-in only as the gMSA gmsa: names (task 206)
 	if needInstance && len(cfg.Instances) == 0 {
-		return nil, nil, &configError{fmt.Errorf("config %s: at least one instance is required", *path)}
+		return nil, &configError{fmt.Errorf("config %s: at least one instance is required", path)}
 	}
 	if err := checkCollectionNames(cfg); err != nil {
-		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
+		return nil, &configError{fmt.Errorf("config %s: %w", path, err)}
 	}
 	// mssql_thresholds: the names and values are the SQL Server engine's (config cannot import it), a sqlserver instance's only
 	for _, in := range cfg.Instances {
@@ -182,23 +194,31 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 			continue
 		}
 		if in.Engine != config.EngineSQLServer {
-			return nil, nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds belongs to an engine: sqlserver instance", *path, in.Name)}
+			return nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds belongs to an engine: sqlserver instance", path, in.Name)}
 		}
 		if _, err := mssql.ThresholdRows(in.MSSQLThresholds); err != nil {
-			return nil, nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds: %w", *path, in.Name, err)}
+			return nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds: %w", path, in.Name, err)}
 		}
 	}
 	// the custom: list (task 61): read from the same file, validated against the instances, the list the custom collection runs
-	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
-		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
+	if err := collect.LoadCustomChecks(path, cfg.Instances); err != nil {
+		return nil, &configError{fmt.Errorf("config %s: %w", path, err)}
 	}
-	cfg.Flags.Once = *once
-	cfg.Flags.Instance = *inst
-	return cfg, fs, nil
+	return cfg, nil
 }
 
+// runMigrate applies the repository schema, or with -print (ST7, a change-controlled site) writes to stdout the
+// statements it would run on this repository and applies nothing (the repository is only read).
 func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, _, err := loadConfig(args, false)
+	fs := flag.NewFlagSet("pgvigil migrate", flag.ContinueOnError)
+	path := fs.String("config", "pgvigil.yaml", "path to the configuration file")
+	doPrint := fs.Bool("print", false, "print the statements migrate would run on the repository to stdout; nothing is applied")
+	fs.String("once", "", "not used by migrate (accepted as before)")
+	fs.String("instance", "", "not used by migrate (accepted as before)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfigAt(*path, false)
 	if err != nil {
 		return err
 	}
@@ -207,6 +227,13 @@ func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
+	if *doPrint {
+		if err := r.MigrateScript(ctx, os.Stdout, versionLine()); err != nil {
+			return err
+		}
+		log.Info("migrate -print: the script is on stdout; nothing was applied")
+		return nil
+	}
 	r.SetLog(log)
 	n, err := r.Migrate(ctx)
 	if err != nil {
