@@ -3,6 +3,7 @@ package remote
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -258,6 +259,7 @@ func queryStoreMoves(at time.Time, rows []map[string]any, cur func(string) (form
 	if now := encodeDBTimes("qs_stores", stores); !sameNames(now, was) {
 		out["qs_stores"] = now
 	}
+	qsPlanMoves(at, rows, cur, out)
 }
 
 // azureDBMoves is import_mssql_azuredb_resources (0145 L135-185): 'azdb_since' is the greatest stored minute
@@ -281,4 +283,142 @@ func azureDBMoves(rows []map[string]any, cur func(string) (format.Cursor, bool),
 		return
 	}
 	out["azdb_since"] = format.Cursor{Source: "azdb_since", Kind: "seq", Seq: v}
+}
+
+// qsPlanState is a plan's row of pgvigil.mssql_qs_plan as qs_plan:<id>:<db> needs it, kept as the one name of the list
+// 'qs_plan_state:<id>:<db>' (JSON). Listed is the read time of its last plan row (the row's snapshot_at).
+type qsPlanState struct {
+	Hash    *int64     `json:"hash"`
+	QueryID *int64     `json:"query_id"`
+	QHash   *string    `json:"query_hash"`
+	XML     string     `json:"xml_state,omitempty"` // "" = NULL; stored | policy | too large
+	Checked *time.Time `json:"checked_at,omitempty"`
+	HasXML  bool       `json:"has_xml,omitempty"`
+	Listed  time.Time  `json:"listed"`
+}
+
+// qsPlanDay is how long a plan's state counts after its last plan row: the hub's purge keeps a plan at least a day
+// (pgvigil purge -days is at least 1), so a state younger than this is one the hub still holds (or holds with a newer
+// row); an older one counts as absent - the remote then reads the plan's XML once more where the hub might not need
+// it, never the other way round. With a transfer delay and a hub purging at -days 1, the hub can drop a plan the remote
+// still holds; the remote then skips one policy look within the day (a remote sends no plan XML: TestRemotePlanXMLNeverKept).
+const qsPlanDay = 24 * time.Hour
+
+func decodeQSPlan(c format.Cursor, ok bool) (qsPlanState, bool) {
+	var st qsPlanState
+	if !ok || c.Kind != "list" || len(c.Names) != 1 || json.Unmarshal([]byte(c.Names[0]), &st) != nil {
+		return qsPlanState{}, false
+	}
+	return st, true
+}
+
+func encodeQSPlan(source string, st qsPlanState) format.Cursor {
+	b, _ := json.Marshal(st)
+	return format.Cursor{Source: source, Kind: "list", Names: []string{string(b)}}
+}
+
+// qsPlanAnswer is mssql_hadr_cursor's qs_plan arm (0300 L1688-1693) over a kept plan state at now: the hash when the
+// XML is stored, or was looked at under the text policy within 24 h; nothing for a state over qsPlanDay old.
+func qsPlanAnswer(c format.Cursor, now time.Time) (int64, bool) {
+	st, ok := decodeQSPlan(c, true)
+	if !ok || st.Hash == nil || now.Sub(st.Listed) > qsPlanDay {
+		return 0, false
+	}
+	if st.XML == "stored" || (st.XML == "policy" && st.Checked != nil && st.Checked.After(now.Add(-24*time.Hour))) {
+		return *st.Hash, true
+	}
+	return 0, false
+}
+
+func sameInt(a, b *int64) bool  { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+func sameStr(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+func intPtr(v any) *int64 {
+	n, ok := toInt64(v)
+	if !ok {
+		return nil
+	}
+	return &n
+}
+
+// qsPlanMoves is 0083 L369-424's plan writes, after the store part of the same import: each plan row (a name, a plan
+// id and a query id; the first per plan) upserts its plan - a changed hash, query id or query hash clears the XML, its
+// state and its check time; an xml_note marks it 'too large' (the next plain row clears that); then each plan_xml row
+// (the first per plan) of a plan that has a row stores its XML ('stored') or none ('policy', an empty statement is
+// none) at the read's time. The forced_read policy update (L410-413) clears XML a plan holds: no remote plan holds any.
+func qsPlanMoves(at time.Time, rows []map[string]any, cur func(string) (format.Cursor, bool), out map[string]format.Cursor) {
+	batch := map[string]qsPlanState{}
+	load := func(src string) (qsPlanState, bool) {
+		if st, ok := batch[src]; ok {
+			return st, true
+		}
+		c, ok := cur(src)
+		st, ok := decodeQSPlan(c, ok)
+		if !ok || at.Sub(st.Listed) > qsPlanDay {
+			return qsPlanState{}, false
+		}
+		return st, true
+	}
+	key := func(r map[string]any) (string, bool) {
+		db, named := r["database_name"].(string)
+		id, isNum := toInt64(r["plan_id"])
+		if !named || !isNum {
+			return "", false
+		}
+		return "qs_plan_state:" + strconv.FormatInt(id, 10) + ":" + db, true
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		k, _ := r["kind"].(string)
+		src, ok := key(r)
+		if k != "plan" || !ok || r["query_id"] == nil || seen[src] {
+			continue
+		}
+		seen[src] = true
+		next := qsPlanState{Hash: intPtr(r["plan_hash_n"]), QueryID: intPtr(r["query_id"]), Listed: at}
+		if qh, isStr := r["query_hash_hex"].(string); isStr {
+			next.QHash = &qh
+		}
+		tooLarge := r["xml_note"] != nil
+		if tooLarge {
+			next.XML = "too large"
+		}
+		if prev, there := load(src); there {
+			changed := !sameInt(prev.Hash, next.Hash) || !sameInt(prev.QueryID, next.QueryID) || !sameStr(prev.QHash, next.QHash)
+			if !changed && !tooLarge {
+				next.HasXML = prev.HasXML
+			}
+			if !tooLarge && !changed && prev.XML != "too large" {
+				next.XML = prev.XML
+			}
+			if !changed {
+				next.Checked = prev.Checked
+			}
+		}
+		batch[src] = next
+	}
+	seen = map[string]bool{}
+	for _, r := range rows {
+		k, _ := r["kind"].(string)
+		src, ok := key(r)
+		if k != "plan_xml" || !ok || seen[src] {
+			continue
+		}
+		seen[src] = true
+		st, there := load(src)
+		if !there {
+			continue
+		}
+		stmt, _ := r["statement"].(string)
+		st.HasXML = stmt != ""
+		st.XML = "policy"
+		if st.HasXML {
+			st.XML = "stored"
+		}
+		checked := at
+		st.Checked = &checked
+		batch[src] = st
+	}
+	for src, st := range batch {
+		out[src] = encodeQSPlan(src, st)
+	}
 }
