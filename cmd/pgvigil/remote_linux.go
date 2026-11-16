@@ -153,19 +153,8 @@ func installRemoteService(log *slog.Logger, o installOptions) error {
 	if err := checkRemoteFolders(outbox, stateDir); err != nil {
 		return err
 	}
-	for _, d := range []struct {
-		path string
-		mode os.FileMode
-	}{{outbox, 0o750}, {stateDir, 0o700}} {
-		if err := os.MkdirAll(d.path, d.mode); err != nil {
-			return err
-		}
-		if err := os.Chown(d.path, uid, gid); err != nil {
-			return fmt.Errorf("chown %s: %w", d.path, err)
-		}
-		if err := os.Chmod(d.path, d.mode); err != nil {
-			return err
-		}
+	if err := makeRemoteFolders(outbox, stateDir, uid, gid); err != nil {
+		return err
 	}
 	if err := writeFile(remoteUnitPath, renderRemoteUnit(o.Bin, o.Config, envFile, o.User, outbox, stateDir), 0o644); err != nil {
 		return err
@@ -200,5 +189,24 @@ func installRemoteService(log *slog.Logger, o installOptions) error {
 		}
 	}
 	fmt.Printf("the pgvigil remote collector is installed and running (systemctl status %s; journalctl -u %s -f).\n", unit, unit)
+	return nil
+}
+
+// makeRemoteFolders makes the outbox (0750) and the state folder (0700), owned by the service account.
+func makeRemoteFolders(outbox, stateDir string, uid, gid int) error {
+	for _, d := range []struct {
+		path string
+		mode os.FileMode
+	}{{outbox, 0o750}, {stateDir, 0o700}} {
+		if err := os.MkdirAll(d.path, d.mode); err != nil {
+			return err
+		}
+		if err := os.Chown(d.path, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", d.path, err)
+		}
+		if err := os.Chmod(d.path, d.mode); err != nil {
+			return err
+		}
+	}
 	return nil
 }

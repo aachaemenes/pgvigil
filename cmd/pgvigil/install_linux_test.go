@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,36 @@ func TestRemoteUnitMatchesDeployFile(t *testing.T) {
 	}
 	if remoteUnitPath == unitPath || remoteAccount == defaultInstallOptions().User || remoteBin == defaultInstallOptions().Bin {
 		t.Errorf("the remote unit shares the hub collector's name, account or binary")
+	}
+}
+
+// install -remote's folders: a parent it has to make (/var/lib/pgvigil-remote) is traversable by the service account
+// (0755) - made with the outbox's 0750 and owned by root it locked the account out of its own folders and the collector
+// exited 1 at start (proof-install's --remote run); the two folders keep their modes; an existing parent keeps its own.
+func TestRemoteFolderParents(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "var", "lib", "pgvigil-remote")
+	outbox, state := filepath.Join(parent, "outbox"), filepath.Join(parent, "state")
+	if err := makeRemoteFolders(outbox, state, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		path string
+		mode os.FileMode
+	}{{filepath.Join(root, "var"), 0o755}, {filepath.Dir(parent), 0o755}, {parent, 0o755}, {outbox, 0o750}, {state, 0o700}} {
+		if fi, err := os.Stat(c.path); err != nil || fi.Mode().Perm() != c.mode {
+			t.Errorf("%s: mode %v, %v (want %v)", c.path, fi.Mode().Perm(), err, c.mode)
+		}
+	}
+	shared := filepath.Join(root, "srv")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeRemoteFolders(filepath.Join(shared, "outbox"), filepath.Join(shared, "state"), os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(shared); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("an existing parent's mode changed: %v %v", fi.Mode().Perm(), err)
 	}
 }
 

@@ -33,7 +33,7 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-fail() { FAILED=1; echo "FAIL: $*" >&2; docker exec "$SYS" journalctl -u pgvigil --no-pager -n 20 2>/dev/null | sed 's/^/  journal: /' >&2 || true; exit 1; }
+fail() { FAILED=1; echo "FAIL: $*" >&2; docker exec "$SYS" journalctl -u pgvigil --no-pager -n 20 2>/dev/null | sed 's/^/  journal: /' >&2 || true; docker exec "$SYS" journalctl -u pgvigil-remote --no-pager -n 20 2>/dev/null | sed 's/^/  remote journal: /' >&2 || true; exit 1; }
 insys() { docker exec "$SYS" "$@"; }
 rq() { docker exec "$REPO" psql -U postgres -XAt -c "$1"; }
 
