@@ -45,6 +45,8 @@ type DailyChecks struct {
 	To      []string `yaml:"to"`
 	As      string   `yaml:"as"`
 	Channel string   `yaml:"channel"`
+	// Post: the webhook channels of the same file's alerts: block the mail's counts are posted to (B20-4); none = no post
+	Post []string `yaml:"post"`
 }
 
 // dailyKeys are the block's keys in the order the docs list them, each with what its value is (the words of a refusal)
@@ -55,6 +57,7 @@ var dailyKeys = []struct{ key, is string }{
 	{"to", "a list of mail addresses, as [dba@example.org]"},
 	{"as", "the name of a UI user (one value)"},
 	{"channel", "the name of an smtp channel of the alerts: block (one value)"},
+	{"post", "a list of webhook channel names of the alerts: block, as [team-chat]"},
 }
 
 // On says whether the block turns the mail on.
@@ -135,6 +138,8 @@ func ParseDailyChecks(raw []byte) (*DailyChecks, error) {
 			d.As, good = oneValue(v)
 		case "channel":
 			d.Channel, good = oneValue(v)
+		case "post":
+			d.Post, good = valueList(v)
 		}
 		if !good {
 			return nil, fmt.Errorf("%s: %s is %s (line %d of the file)", DailyChecksKey, k.key, k.is, v.Line)
@@ -143,7 +148,37 @@ func ParseDailyChecks(raw []byte) (*DailyChecks, error) {
 	if err := d.Check(); err != nil {
 		return nil, err
 	}
+	if err := d.checkPost(raw); err != nil {
+		return nil, err
+	}
 	return d, nil
+}
+
+// checkPost: each name of an enabled block's post: list is a webhook channel of the same file's alerts: block (the
+// channel's own keys are the alerts package's to check; here only its name and kind are read)
+func (d *DailyChecks) checkPost(raw []byte) error {
+	if !d.On() || len(d.Post) == 0 {
+		return nil
+	}
+	var file struct {
+		Alerts []struct {
+			Name string `yaml:"name"`
+			Kind string `yaml:"kind"`
+		} `yaml:"alerts"`
+	}
+	if err := yaml.Unmarshal(raw, &file); err != nil {
+		return fmt.Errorf("%s: post: the alerts: block cannot be read: %w", DailyChecksKey, err)
+	}
+	kinds := map[string]string{}
+	for _, c := range file.Alerts {
+		kinds[strings.TrimSpace(c.Name)] = c.Kind
+	}
+	for _, name := range d.Post {
+		if n := strings.TrimSpace(name); kinds[n] != "webhook" {
+			return fmt.Errorf("%s: post: %s is not a webhook channel of alerts:", DailyChecksKey, n)
+		}
+	}
+	return nil
 }
 
 // aliased is the node an alias stands for (the node itself when it is none)
@@ -292,11 +327,13 @@ type KeptRequest struct {
 	At, TZ, As, Channel string
 	To                  []string
 	AttachXLSX          bool
+	// Post: the webhook channels the counts are posted to (B20-4); the repository checks each is one it records
+	Post []string
 }
 
 // Request is the block as a keep.
 func (d *DailyChecks) Request() KeptRequest {
-	return KeptRequest{At: d.At, TZ: strings.TrimSpace(d.TZ), As: strings.ToLower(strings.TrimSpace(d.As)), Channel: strings.TrimSpace(d.Channel), To: d.To, AttachXLSX: true}
+	return KeptRequest{At: d.At, TZ: strings.TrimSpace(d.TZ), As: strings.ToLower(strings.TrimSpace(d.As)), Channel: strings.TrimSpace(d.Channel), To: d.To, AttachXLSX: true, Post: d.Post}
 }
 
 // Payload is the keep's payload for import_report_mail_kept (without op, by, ui_user and client, the caller's) and
@@ -324,9 +361,15 @@ func (k KeptRequest) Payload(now time.Time) (map[string]any, string, error) {
 		return nil, "", err
 	}
 	as := strings.ToLower(strings.TrimSpace(k.As))
-	key := strings.Join([]string{line, k.TZ, as, strings.TrimSpace(k.Channel), strings.Join(rcpt, ","), fmt.Sprint(k.AttachXLSX)}, "|")
+	post := []string{}
+	for _, p := range k.Post {
+		if p = strings.TrimSpace(p); p != "" {
+			post = append(post, p)
+		}
+	}
+	key := strings.Join([]string{line, k.TZ, as, strings.TrimSpace(k.Channel), strings.Join(rcpt, ","), fmt.Sprint(k.AttachXLSX), strings.Join(post, ",")}, "|")
 	return map[string]any{"kept_as": KeptDailyChecks, "as": as, "recipients": rcpt, "channel": strings.TrimSpace(k.Channel), "cron": line,
-		"timezone": k.TZ, "attach_xlsx": k.AttachXLSX, "next_at": next.Format(time.RFC3339)}, key, nil
+		"timezone": k.TZ, "attach_xlsx": k.AttachXLSX, "next_at": next.Format(time.RFC3339), "post_channels": post}, key, nil
 }
 
 // AtOfCron is the HH:MM of a daily line ('5 7 * * *' is 07:05), "" for any other line.

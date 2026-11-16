@@ -36,6 +36,7 @@ import type { AttentionBox } from './export';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
 import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
+import { dailyPost, worstFirst } from './checksorder';
 import { bandClass, cellState, Chip, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
 export type { Ctx };
@@ -58,8 +59,9 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
   const f = await fleet();
   const insts = inTag(ctx, f.instances);
   const ids = new Set(insts.map(r => Number(r.instance_id)));
-  // a check that could not run names no instance: it shows under every scope
-  const rows = f.checks.filter(r => r.instance_id == null || ids.has(Number(r.instance_id)));
+  // a check that could not run names no instance: it shows under every scope; the rows worst first (B20-4: the rows
+  // naming no instance, then each instance's rows together by critical count, warning count, name) - the mail too
+  const rows = worstFirst(f.checks.filter(r => r.instance_id == null || ids.has(Number(r.instance_id))));
   const crit = rows.filter(r => r.severity === 'critical').length;
   const warn = rows.length - crit;
   const tiles = el('div', { class: 'tiles' },
@@ -75,7 +77,9 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
     { key: 'at', label: 'when', fmt: fmtTime },
     { key: 'detail', wide: true },
   ];
-  return el('section', {}, el('h2', {}, 'Daily checks' + scopeLabel(ctx)), el('p', { class: 'meta' }, 'The state now; the time range applies to the instance tabs.'),
+  // the mail's post (B20-4) says the drawn page's numbers: the section carries them for the mail builder (reportmail.ts)
+  return el('section', { 'data-daily-post': JSON.stringify(dailyPost(rows, insts.length)) }, el('h2', {}, 'Daily checks' + scopeLabel(ctx)),
+    el('p', { class: 'meta' }, 'The state now, the worst instance first; the time range applies to the instance tabs.'),
     await dailyMailControl(ctx), tiles,
     grid(rows, cols, 'All checks pass: no failing or stale collections, replication problems, failed jobs, deadlocks or checksum failures.'));
 }
