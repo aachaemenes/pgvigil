@@ -62,13 +62,23 @@
 #       worst three = the first three instances of the mail's grid in order, the link http://pgvigil.test/#/checks?w=24h;
 #       the send's posted_at set, post_error NULL; GET part=daily lists post_choices [deadhook, hook] (the repository's
 #       configured webhook channels) and post [hook].
-#   K18 a second turn the same day is mailed (sent) and posts nothing: the sink unchanged, its post_taken_at NULL.
+#   K18 a second turn the same day is mailed (sent) and posts nothing: the sink unchanged, its post_taken_at NULL, its
+#       post_error 'the schedule's post of <day> was taken already' (review-26 N5; written 15:5x before its first run).
+#   K18b a turn due yesterday and mailed today posts ONCE under its due day: post_day and the post's day / summary are
+#       yesterday's (review-26 S2: the day of the turn, never the day it was queued; written 15:5x before its first run).
 #   K19 a failed post is alerted: the row dropped and kept anew (a new schedule) with post [deadhook]; its turn is sent,
 #       the post fails - post_error names 127.0.0.1, posted_at NULL - and a 'daily checks post failed' notice naming the
-#       mail reaches the file drop.
+#       mail reaches the file drop. K17 also: the reader's and the collector's calls of report_mail_post_take /
+#       report_mail_post_record are refused (permission denied).
+#   K19b a sent mail whose page sent no counts (its send row as the server stores it: post NULL, post_error 'the drawn
+#       page sent no counts') is alerted: a 'daily checks post failed' notice naming the mail and 'sent no counts'
+#       (review-26 S3; written 15:5x before its first run).
 #   K20 the block's post: list: a serve whose block says post: [hook] keeps post_channels {hook} (kept_by file); a block
 #       with post: [mail] (an smtp channel) stops serve at start with 'reports.daily_checks: post: mail is not a webhook
 #       channel of alerts:'.
+#   K20b a block whose post: names a webhook channel the sender has not recorded yet keeps nothing at first (serve's log
+#       says 'post: newhook is not a webhook channel the sender ...') and keeps {newhook} within 75 s of a sender pass
+#       that records it, with no restart (review-26 B1: tried again each minute, as channel: is; written 15:5x).
 #   K21 THE ROLE (the lead 11-15 12:0x, DAILYMAIL's line): a viewer's GET part=daily answers writable false with the
 #       role's words ('changing the Daily checks mail needs the admin role: proofview is a viewer'); its daily_keep 403
 #       with the role's words; nothing kept.
@@ -254,11 +264,12 @@ KID=$(klive schedule_id)
 ok "K7: the Daily checks page's control: '$KLINE' with Change... and Turn off; none under a tag; Turn off's dialog ended it and the line said off; Mail daily...'s dialog (every field labelled) kept schedule $KID"
 
 # ---- K8: the turn ------------------------------------------------------------------------------------------------------
-# kturn <schedule> <query function> <sender function>: the schedule brought due; its one scheduled mail's id once a serve queued it
+# kturn <schedule> <query function> [<how long ago it was due>]: the schedule brought due (a second ago by default); its
+# one scheduled mail's id once a serve queued it
 kturn() {
-  local sid=$1 qf=$2 n before
+  local sid=$1 qf=$2 ago=${3:-1 second} n before
   before=$($qf "select coalesce(max(send_id), 0) from pgvigil.report_mail_sends")   # an earlier turn's mail is not this one
-  $qf "update pgvigil.report_mail_schedules set next_at = now() - interval '1 second' where schedule_id = $sid" >/dev/null
+  $qf "update pgvigil.report_mail_schedules set next_at = now() - interval '$ago' where schedule_id = $sid" >/dev/null
   for _ in $(seq 1 90); do
     n=$($qf "select coalesce(max(send_id), 0) from pgvigil.report_mail_sends where schedule_id = $sid and kind = 'scheduled' and outcome is distinct from 'refused' and send_id > $before")
     [[ $n != 0 ]] && { echo "$n"; return 0; }
@@ -603,7 +614,13 @@ for w in [str(crit) + ' critical', 'http://pgvigil.test/#/checks?w=24h'] + seq[:
 print(b.get('text', '').splitlines()[0])
 PY
 [[ $(q "select (posted_at is not null and post_error is null)::text from pgvigil.report_mail_sends where send_id = $SEND") == true ]] || kfail "K17: the send's post state: $(q "select post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
-kok "K17: the turn (mail $SEND, sent): the mail's checks grid worst first; one post to hook with that mail's counts, the page's instance count, the worst three in order and the link; posted_at set"
+for who in "$RDR" "$COL"; do
+  for f in "report_mail_post_take(now(), $SEND)" "report_mail_post_record(now(), $SEND, '')"; do
+    out=$(as "$who" -c "select * from pgvigil.$f")
+    [[ $out == *"permission denied"* ]] || kfail "K17: $who called $f: $out"
+  done
+done
+kok "K17: the turn (mail $SEND, sent): the mail's checks grid worst first; one post to hook with that mail's counts, the page's instance count, the worst three in order and the link; posted_at set; the reader and the collector may not take or record a post"
 
 # ---- K18: a second turn the same day posts nothing ------------------------------------------------------------------------
 KROW=$KBAD
@@ -611,9 +628,25 @@ P0=$(nposts)
 SEND2=$(kturn "$KID" q) || kfail "K18: no serve queued the second turn in 3 minutes"
 kwaitsent "$SEND2" || kfail "K18: mail $SEND2 not answered in 3 minutes"
 [[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND2") == sent && $(nposts) == "$P0" \
-   && $(q "select (post_taken_at is null and posted_at is null)::text from pgvigil.report_mail_sends where send_id = $SEND2") == true ]] \
+   && $(q "select (post_taken_at is null and posted_at is null and post_error like '%post of % was taken already%')::text from pgvigil.report_mail_sends where send_id = $SEND2") == true ]] \
   || kfail "K18: the second turn $SEND2: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND2"); posts $(nposts) (before $P0)"
-kok "K18: a second turn the same day (mail $SEND2) was mailed and posted nothing"
+kok "K18: a second turn the same day (mail $SEND2) was mailed and posted nothing; its post_error says the day's post was taken already"
+
+# ---- K18b: a late turn posts under its due day (review-26 sql S2) ------------------------------------------------------------
+KROW=$KBAD
+P0=$(nposts); KYDAY=$(date -u -d '-1 day' +%Y-%m-%d)
+SEND3=$(kturn "$KID" q '1 day') || kfail "K18b: no serve queued yesterday's turn in 3 minutes"
+kwaitsent "$SEND3" || kfail "K18b: mail $SEND3 not answered in 3 minutes"
+[[ $(q "select outcome || ' ' || post_day::text from pgvigil.report_mail_sends where send_id = $SEND3") == "sent $KYDAY" && $(nposts) == $((P0 + 1)) \
+   && $(q "select (posted_at is not null)::text from pgvigil.report_mail_sends where send_id = $SEND3") == true ]] \
+  || kfail "K18b: yesterday's turn (mail $SEND3): $(q "select outcome, post_day, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND3"); posts $(nposts) (before $P0)"
+python3 - "$WORK/hook" "$KYDAY" <<'PY' || kfail "K18b: the late post's day"
+import glob, json, os, sys
+posts = [json.load(open(f)) for f in sorted(glob.glob(sys.argv[1] + '/*.json'), key=os.path.getmtime)]
+posts = [b for b in posts if isinstance(b, dict) and b.get('kind') == 'daily checks']
+if posts[-1].get('day') != sys.argv[2] or sys.argv[2] not in posts[-1].get('summary', ''): sys.exit(f"the post says {posts[-1].get('day')!r} / {posts[-1].get('summary')!r}, its turn was due {sys.argv[2]}")
+PY
+kok "K18b: a turn due yesterday and mailed today (mail $SEND3) posted once under its due day $KYDAY"
 
 # ---- K19: a failed post is alerted ------------------------------------------------------------------------------------------
 KROW=$KBAD
@@ -628,6 +661,17 @@ kwaitsent "$SEND" || kfail "K19: mail $SEND not answered in 3 minutes"
   || kfail "K19: mail $SEND's post: $(q "select outcome, post_taken_at, posted_at, post_error from pgvigil.report_mail_sends where send_id = $SEND")"
 [[ $(grep -rl 'daily checks post failed' "$WORK/drop" 2>/dev/null | wc -l) -gt $D0 && $(grep -rh 'daily checks post failed' "$WORK/drop" | tail -1) == *"$SEND"* ]] || kfail "K19: no 'daily checks post failed' notice naming mail $SEND in the file drop"
 kok "K19: a post to deadhook failed (mail $SEND sent; post_error names 127.0.0.1) and a 'daily checks post failed' notice reached the file drop"
+
+# ---- K19b: a sent mail whose page sent no counts is alerted (review-26 sql S3) ------------------------------------------------
+KROW=$KBAD
+D1=$(grep -rl 'sent no counts' "$WORK/drop" 2>/dev/null | wc -l)
+SEND4=$(kturn "$KID" q '2 days') || kfail "K19b: no serve queued the turn in 3 minutes"
+# the page that sent no counts, as the server stores it (the render's post refused, or none): no sender runs before kwaitsent
+q "update pgvigil.report_mail_sends set post = null, post_error = 'the drawn page sent no counts: nothing posted' where send_id = $SEND4" >/dev/null
+kwaitsent "$SEND4" || kfail "K19b: mail $SEND4 not answered in 3 minutes"
+[[ $(q "select outcome from pgvigil.report_mail_sends where send_id = $SEND4") == sent && $(grep -rl 'sent no counts' "$WORK/drop" 2>/dev/null | wc -l) -gt $D1 \
+   && $(grep -rh 'sent no counts' "$WORK/drop" | tail -1) == *"$SEND4"* ]] || kfail "K19b: no 'daily checks post failed' notice naming mail $SEND4 and 'sent no counts' in the file drop"
+kok "K19b: a sent mail whose page sent no counts (mail $SEND4) was alerted ('daily checks post failed')"
 
 # ---- K21: the role ------------------------------------------------------------------------------------------------------------
 KROW=$KBAD
@@ -653,6 +697,29 @@ kstop "$SK"
 rc=0; out=$(timeout 20 "$BIN" serve -config "$WORK/cfg-kpbad.yaml" -listen "127.0.0.1:$(freeport)" 2>&1) || rc=$?
 [[ $rc != 0 && $rc != 124 && $out == *"reports.daily_checks: post: mail is not a webhook channel of alerts:"* ]] || kfail "K20: post: [mail] (exit $rc): $(tail -2 <<<"$out")"
 kok "K20: the block's post: [hook] kept post_channels {hook} (kept_by file); post: [mail] stopped serve at start in words"
+
+# ---- K20b: a post: channel the sender has not recorded yet is waited for, never refused for good (review-26 sql B1) ----------
+KROW=$KBAD
+python3 - "$WORK/cfg-kpost.yaml" "$WORK/cfg-kpost2.yaml" <<'PY'
+import sys
+out = []
+for l in open(sys.argv[1]).read().splitlines():
+    out.append(l)
+    if l.startswith('alerts:'):
+        out.append('  - {name: newhook, kind: webhook, min_severity: critical, instances: [proof-none], webhook: {url: env:PGV_HOOK_URL, format: json}}')
+open(sys.argv[2], 'w').write('\n'.join(out) + '\n')
+PY
+{ cat "$WORK/cfg-kpost2.yaml"; printf 'reports:\n  daily_checks:\n    enabled: true\n    at: 06:30\n    tz: UTC\n    to: [post@pgvigil.test]\n    as: %s\n    channel: mail\n    post: [newhook]\n' "$UIUSER"; } > "$WORK/cfg-kpnew.yaml"
+[[ $(q "select count(*) from pgvigil.alert_channels where name = 'newhook'") == 0 ]] || kfail "K20b: newhook was recorded before the row"
+PK=$(freeport); UK="http://127.0.0.1:$PK"
+kserve "$WORK/cfg-kpnew.yaml" "$PK" servekpnew.log; SK=$KPID
+sleep 10
+[[ $(klive "post_channels") != "{newhook}" ]] && grep -q 'post: newhook is not a webhook channel the sender' "$WORK/servekpnew.log" || kfail "K20b: before the sender recorded newhook: $(klive "post_channels"); $(grep -i 'daily checks' "$WORK/servekpnew.log" | tail -2)"
+"$BIN" alerts -config "$WORK/cfg-kpost2.yaml" >> "$WORK/ksender.log" 2>&1 || true   # a sender that names newhook records it
+newkept() { [[ $(klive "post_channels") == "{newhook}" ]] && echo y || echo n; }
+kwait 75 newkept || kfail "K20b: the row after the sender recorded newhook: $(klive "post_channels"); $(grep -i 'daily checks' "$WORK/servekpnew.log" | tail -3)"
+kstop "$SK"
+kok "K20b: post: [newhook] before the sender recorded it: nothing kept, the serve's log says why; kept with {newhook} within 75 s of the sender's pass, no restart"
 (( KBAD == 0 )) || fail "K15-K21: $KBAD row check(s) failed (PGVIGIL_KROWS_GO=1)"
 
 # ---- G: the green day, on a repository migrated and never seeded ------------------------------------------------------
