@@ -364,7 +364,8 @@ func TestMaskXMLProcessingInstruction(t *testing.T) {
 		{"sp_WhoIsActive sql_command, ALTER LOGIN", "<?query --\nALTER LOGIN app WITH PASSWORD = 'Pi2secret'\n--?>", "Pi2secret",
 			"<?query --\nALTER LOGIN app WITH PASSWORD = '<masked>'\n--?>"},
 		{"an instruction inside a document", "<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = N'Pi3secret';\n--?></sql_text><login_name>app</login_name></row>", "Pi3secret",
-			"<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = N'<masked>';\n--?></sql_text><login_name>app</login_name></row>"},
+			// the mask writes a masked literal without its N prefix, as it does in a statement (the 'tsql login' case)
+			"<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = '<masked>';\n--?></sql_text><login_name>app</login_name></row>"},
 		{"a connection string in an instruction", "<?query --\nSELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=s2;UID=u;PWD=Pi4secret;', 'SELECT 1')\n--?>", "Pi4secret", ""},
 		{"no credential: its bytes kept", "<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>", "",
 			"<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>"},
