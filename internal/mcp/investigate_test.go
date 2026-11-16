@@ -117,7 +117,7 @@ func TestUnsent(t *testing.T) {
 func TestUnknownToolWithTheDoor(t *testing.T) {
 	a := New(nil, "test").WithAgent(&AgentDoor{})
 	_, e := a.call(context.Background(), json.RawMessage(`{"name":"drop_everything","arguments":{}}`))
-	if e == nil || strings.Contains(e.Message, "read-only") || !strings.Contains(e.Message, "run_select runs one read-only SELECT") {
+	if e == nil || strings.Contains(e.Message, "pgvigil mcp is read-only") || !strings.Contains(e.Message, "run_select runs one read-only SELECT") {
 		t.Fatalf("the agent door's unknown tool: %+v", e)
 	}
 }
