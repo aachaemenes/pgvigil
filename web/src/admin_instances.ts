@@ -109,6 +109,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   const settings = instanceSettings({ send, say, draw: () => draw(), lock: c => lock(c), why });
 
   let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
+  let openedFromLink = '';
   async function draw(): Promise<void> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
@@ -162,6 +163,14 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? 'ok' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
     );
     readOnly(d);
+    // ST5b: a link to an instance's Settings (#/admin_instances?settings=<name>, Alerts > Rules' 'Admin > Instances')
+    // opens its panel once, on the first draw after the link
+    const want = new URLSearchParams(location.hash.split('?')[1] ?? '').get('settings');
+    if (want && want !== openedFromLink) {
+      openedFromLink = want;
+      const row = pageAll.find(r => String(r.name) === want);
+      if (row) settings.open(want, String(row.engine));
+    }
   }
 
   // why this server cannot write ('' = it can). A grid draws its rows again at each sort, filter and 'Show more',

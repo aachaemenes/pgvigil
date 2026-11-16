@@ -530,8 +530,9 @@ const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : 
 // a rate under a header that names its unit ('full MB/s'): the cell is the number, so the export keeps a number (X7)
 const rate = (v: unknown) => v == null ? '' : fmtNum(v);
 // where the thresholds are set, for the Configure control that cannot act here
-const configureWhy = 'Backup thresholds are not set from this page: they are each instance\'s mssql_thresholds in pgvigil.yaml '
-  + '(full_backup_hours, diff_backup_hours, log_backup_minutes, new_database_hours, nul_backup_days, backup_exclude) and reach the repository with the collector.';
+const configureWhy = 'Backup thresholds are not set from this page: they are each instance\'s mssql_thresholds in pgvigil.yaml, or for an instance '
+  + 'added in Admin > Instances its Settings there (full_backup_hours, diff_backup_hours, log_backup_minutes, new_database_hours, nul_backup_days, backup_exclude), '
+  + 'and reach the repository with the collector.';
 
 const byInstanceCols = (ctx: Ctx): Col[] => [
   { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },

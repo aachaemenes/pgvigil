@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -166,7 +167,15 @@ func Fingerprint(in Instance) string {
 	if a := in.Azure; a != nil {
 		cloud += ";azure:" + a.ServerKey() + "/" + a.Cloud
 	}
-	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), cloud}, "\x1f")
+	// a SQL Server instance's thresholds too (ST5b's design pass F1: the collector reads them only at its loops' start);
+	// encoding/json writes a map's keys sorted, so an equal set in another order gives the same text
+	th := ""
+	if len(in.MSSQLThresholds) > 0 {
+		if b, err := json.Marshal(in.MSSQLThresholds); err == nil {
+			th = string(b)
+		}
+	}
+	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), cloud, th}, "\x1f")
 }
 
 // Diff names the instances to stop (gone or changed) and to start (new or changed), by name, each sorted.

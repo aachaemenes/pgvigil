@@ -27,6 +27,8 @@ import { reloadTree } from './tree';
 import { loadThresholds, thresholdsDialog } from './mssql_jobs';
 import { confirmJobAction, runningState } from './jobs_running';
 import { ackDialog, ackWhy, loadAckSafe } from './ack';
+import { pageConfigureSchedule, pagePauseResume, PageCollections } from './tree_settings';
+import { goDuration } from './settings_model'; // pgvigil.yaml's units: s, m and h (never d)
 
 // ---- a menu with submenus ------------------------------------------------------------------------------------
 
@@ -320,13 +322,9 @@ function addConnections(back: HTMLElement | null) {
 
 // ---- Instance Actions ---------------------------------------------------------------------------------------------
 
-interface Collections { instance: string; engine: string; collections: Table | null }
+// a page instance's answer carries its settings too (ST5b): its two dialogs write them (tree_settings.ts)
+type Collections = PageCollections;
 const every = (s: unknown) => s == null ? 'not known to this server' : Number(s) === 0 ? 'disabled' : fmtSecs(s);
-function goDuration(s: number): string {
-  if (s % 3600 === 0) return `${s / 3600}h`;
-  if (s % 60 === 0) return `${s / 60}m`;
-  return `${s}s`;
-}
 
 async function collectionsOf(id: number): Promise<Collections> { return get<Collections>('instance/collections', { instance: id }); }
 
@@ -334,6 +332,7 @@ function pauseResume(id: number, back: HTMLElement | null) {
   const { body } = dialog('Pause/Resume Collections', back, true);
   body.append(el('p', { class: 'meta', role: 'status' }, 'Reading the instance\'s collections...'));
   void collectionsOf(id).then(d => {
+    if (d.source === 'page') { pagePauseResume(body, d); return; }
     const rows = rowsOf(d.collections);
     // an opt-in collection (its default interval 0) runs only with a schedule: it is never paused or resumed by disabled:
     const optIn = (r: Row) => r.default_s != null && Number(r.default_s) === 0;
@@ -368,6 +367,7 @@ function configureSchedule(id: number, back: HTMLElement | null) {
   const { body } = dialog('Configure Schedule', back, true);
   body.append(el('p', { class: 'meta', role: 'status' }, 'Reading the instance\'s collections...'));
   void collectionsOf(id).then(d => {
+    if (d.source === 'page') { pageConfigureSchedule(body, d); return; }
     // the running collections, and the opt-in ones (off until a schedule gives them an interval: here is where they get one)
     const rows = rowsOf(d.collections).filter(r => r.interval_s == null || Number(r.interval_s) > 0 || (r.default_s != null && Number(r.default_s) === 0));
     const want = new Map<string, string>();

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 )
@@ -109,8 +110,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
 // judges each metric's series by (alert_rules_effective: an instance's rule over a tag's over the fleet's), with the
 // rules it overrides on that instance - and, on a SQL Server instance, the HA/DR, jobs and backups thresholds of
 // mssql_hadr_limits (0066), each marked 'file' where the configuration sets it (mssql_thresholds) and 'default'
-// where it does not: those are read only here, the file is their source.
-const sqlThresholdsInForce = `
+// where it does not: those are read only here, the file is their source. An instance added in Admin > Instances (no
+// pgvigil.yaml entry of its name, $1, and not disabled) has no file source (ST5b's design pass F3): a key its settings
+// set is 'page' with the settings' value, any other 'default'; pending says where the collector has not stored it yet
+// (it stores the set at the instance's next HA/DR, jobs or backups read). The settings are read through
+// admin_inventory() and admin_instance_settings(), the reader's grants.
+var sqlThresholdsInForce = sqlThresholdsInForceHead + inforcePageJoin + sqlThresholdsInForceTail
+
+const sqlThresholdsInForceHead = `
 SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
        e.database, e.rule_id, e.name AS rule_name, e.scope,
        coalesce(e.tag, e.instance_name, pgvigil.alert_scope_text(e.scope_tags)) AS target, e.op,   -- task 403a: a tag list's words
@@ -121,23 +128,65 @@ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric A
          WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
            AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
            AND o.rule_id <> e.rule_id) AS overrides,
-       coalesce(t.tags, '{}'::text[]) AS tags
+       coalesce(t.tags, '{}'::text[]) AS tags, NULL::text AS pending
   FROM pgvigil.alert_rules_effective e
   JOIN pgvigil.instances i ON i.instance_id = e.instance_id
   LEFT JOIN pgvigil.metric_catalog c ON c.key = e.metric
   LEFT JOIN pgvigil.instance_tags_merged t ON t.instance_id = i.instance_id
 UNION ALL
-SELECT i.instance_id, i.name, i.engine, CASE WHEN f.value IS NOT NULL THEN 'file' ELSE 'default' END, 'mssql.' || l.key,
+SELECT i.instance_id, i.name, i.engine,
+       CASE WHEN pg.name IS NOT NULL THEN CASE WHEN pv.value IS NOT NULL THEN 'page' ELSE 'default' END
+            WHEN f.value IS NOT NULL THEN 'file' ELSE 'default' END, 'mssql.' || l.key,
        'SQL Server HA/DR, jobs and backups', l.key, NULL, NULL, NULL, NULL, 'instance', i.name, NULL, NULL, NULL, NULL,
-       l.value, NULL, coalesce(t.tags, '{}'::text[])
+       CASE WHEN pv.value IS NOT NULL THEN pv.value #>> '{}' ELSE l.value END, NULL, coalesce(t.tags, '{}'::text[]),
+       CASE WHEN pv.value IS NOT NULL AND pv.value IS DISTINCT FROM to_jsonb(h) -> l.key
+              THEN 'waits for the next HA/DR, jobs or backups read (in force now: ' || l.value || ')'
+            WHEN pg.name IS NOT NULL AND pv.value IS NULL AND f.value IS NOT NULL
+              THEN 'back to the default at the next HA/DR, jobs or backups read (in force now: ' || l.value || ')' END
   FROM pgvigil.mssql_hadr_limits h
   JOIN pgvigil.instances i ON i.instance_id = h.instance_id AND i.is_active
   CROSS JOIN LATERAL jsonb_each_text(to_jsonb(h) - 'instance_id') l
   LEFT JOIN LATERAL (SELECT to_jsonb(x) -> l.key AS value FROM pgvigil.mssql_hadr_thresholds x
                       WHERE x.instance_id = h.instance_id AND to_jsonb(x) -> l.key <> 'null'::jsonb) f ON true
+`
+
+// inforcePageJoin reads the Admin > Instances source: admin_inventory() and admin_instance_settings() (0263).
+const inforcePageJoin = `  LEFT JOIN LATERAL (SELECT a.name, st.settings FROM pgvigil.admin_inventory() a JOIN pgvigil.admin_instance_settings() st USING (name)
+                      WHERE a.name = i.name AND NOT a.disabled AND NOT (a.name = ANY ($1::text[]))) pg ON true
+`
+
+const sqlThresholdsInForceTail = `  LEFT JOIN LATERAL (SELECT pg.settings -> 'thresholds' -> l.key AS value WHERE pg.settings -> 'thresholds' ? l.key) pv ON true
   LEFT JOIN pgvigil.instance_tags_merged t ON t.instance_id = i.instance_id
  ORDER BY 2, 4 DESC, 5, 9 NULLS FIRST
  LIMIT 5000`
+
+// inforcePageJoinNone stands in for inforcePageJoin where those functions cannot be called (the build review's M2): no
+// instance has an Admin > Instances source; $1 stays named, so the call's argument count is the same.
+const inforcePageJoinNone = `  LEFT JOIN LATERAL (SELECT NULL::text AS name, NULL::jsonb AS settings WHERE false AND $1::text[] IS NOT NULL) pg ON true
+`
+
+// sqlThresholdsInForceNoPage is Thresholds in force without the Admin > Instances source.
+var sqlThresholdsInForceNoPage = sqlThresholdsInForceHead + inforcePageJoinNone + sqlThresholdsInForceTail
+
+// inforceNoPage says why the inforce part is read without the Admin > Instances source ("" = it is not): a store
+// before 'pgvigil migrate' has no admin_instance_settings() (42883), a serve login may lack EXECUTE on it (42501).
+// Any other error stays the whole answer's.
+func inforceNoPage(err error) string {
+	var pe *pgconn.PgError
+	if !errors.As(err, &pe) {
+		return ""
+	}
+	why := ""
+	switch pe.Code {
+	case "42883":
+		why = "this repository has no pgvigil.admin_instance_settings() yet (run 'pgvigil migrate' as the repository owner)"
+	case "42501":
+		why = "this serve's login may not call pgvigil.admin_instance_settings()"
+	default:
+		return ""
+	}
+	return "Admin > Instances is not read here: " + why + "; a threshold an instance's Settings there set reads 'configuration file' until it is"
+}
 
 // AlertRules is GET /api/alertrules: the rules, their state, the window's attempts, the metric catalogue and the
 // sender's line; whether writes are on, and why not.
@@ -153,7 +202,7 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
 		{"log", sqlAlertRuleLog, []any{from, to}},
 		{"catalog", sqlAlertRuleCatalog, nil},
 		{"sender", sqlAlertRuleSender, nil},
-		{"inforce", sqlThresholdsInForce, nil},
+		{"inforce", sqlThresholdsInForce, []any{s.instAdmin().fileNames()}},
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -163,6 +212,11 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
 	s.alertRulesDoor(r, out)
 	for _, p := range ps {
 		t, err := s.query(r.Context(), p.sql, p.args...)
+		if note := inforceNoPage(err); note != "" && p.name == "inforce" {
+			// the part read alone without the page's source, said in its note (never the whole answer lost)
+			out["inforce_note"] = note
+			t, err = s.query(r.Context(), sqlThresholdsInForceNoPage, p.args...)
+		}
 		if err != nil {
 			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
 			return

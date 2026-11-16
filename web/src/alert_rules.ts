@@ -21,7 +21,7 @@ import { offBeside } from './ack';
 export interface RulesDoor { writable: boolean; reason?: string; user: string; note?: HTMLElement }
 interface RulesData extends RulesDoor {
   rules?: Table | null; state?: Table | null; log?: Table | null; catalog?: Table | null; sender?: Table | null;
-  inforce?: Table | null;
+  inforce?: Table | null; inforce_note?: string;
 }
 interface RuleResult { outcome: string; detail: string; rule_id?: number | null }
 
@@ -542,7 +542,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'detail', wide: true },
   ];
   sec.append(el('h3', {}, `Rule log ${rangeLabel(ctx)}`), grid(log, logCols, 'No rule was made, edited, switched or ended in the time range.'));
-  sec.append(inForceView(d, inforce, all));
+  sec.append(inForceView(d, inforce, all, d.inforce_note));
   sec.append(await windowsView(d, ctx));
   sec.append(timelineView(ctx));
   return sec;
@@ -727,7 +727,7 @@ export function thresholdLine(r: Row): string {
 // override for this instance, an override for one of its tags, or the rule itself. Only an override that would be in
 // force is offered: an instance rule beats a tag rule and a tag rule beats the fleet's (0085), so a tag override is
 // offered over a fleet rule only, and an instance's own rule is edited, not overridden.
-function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
+function inForceView(door: RulesDoor, rows: Row[], rules: Row[], note?: string): HTMLElement {
   const insts = [...new Set(rows.map(r => String(r.instance)))].sort();
   const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'every instance'), ...insts.map(n => el('option', { value: n }, n)));
   const wrap = el('div', {});
@@ -756,23 +756,33 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
   };
   const cols: Col[] = [
     { key: 'instance' },
-    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : 'none') },
+    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : v === 'page' ? 'Admin > Instances' : 'default', v === 'rule' ? 'ok' : 'none') },
     { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
     { key: 'database', fmt: v => String(v ?? '') },
     { key: 'op', label: 'rule', fmt: (_v, r) => {
       const line = thresholdLine(r);
-      if (r.source !== 'rule') return el('span', { title: 'read only: mssql_thresholds in the configuration file sets it (docs/sqlserver-hadr.md)' }, line);
+      if (r.source !== 'rule') return el('span', { title: r.source === 'page' ? 'read only here: the instance\'s Settings in Admin > Instances set it'
+        : r.source === 'file' ? 'read only: mssql_thresholds in the configuration file sets it (docs/sqlserver-hadr.md)'
+        : 'read only: the built-in default; mssql_thresholds in the configuration file, or an instance\'s Settings in Admin > Instances, sets another' }, line);
       const b = el('button', { type: 'button', class: 'link', 'aria-haspopup': 'menu', 'aria-label': `${line}: override for this instance or a tag` }, line);
       b.addEventListener('click', () => menu(r, b));
       return b;
     } },
-    { key: 'scope', label: 'in force by', fmt: (v, r) => r.source === 'rule' ? `rule ${String(r.rule_id)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(v, r.target)})` : r.source === 'file' ? 'mssql_thresholds' : 'built in' },
+    { key: 'scope', label: 'in force by', fmt: (v, r) => {
+      if (r.source === 'rule') return `rule ${String(r.rule_id)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(v, r.target)})`;
+      const pending = r.pending ? ` - ${String(r.pending)}` : '';
+      // ST5b: an instance added in Admin > Instances: its Settings set it, the link opens them
+      if (r.source === 'page') return el('span', {}, el('a', { href: '#/admin_instances?' + new URLSearchParams({ settings: String(r.instance) }).toString() }, `the Settings of ${String(r.instance)}`), pending);
+      return (r.source === 'file' ? 'mssql_thresholds' : 'built in') + pending;
+    } },
     { key: 'overrides', label: 'overrides here', wide: true, fmt: v => String(v ?? '') },
   ];
   const draw = () => wrap.replaceChildren(grid(rows.filter(r => !sel.value || r.instance === sel.value), cols,
     'No threshold in force: no alert rule covers an active instance, and no SQL Server instance is in the fleet.'));
   sel.addEventListener('change', draw);
   draw();
-  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, else the default; read only here). Click a rule\'s line for an override: on a fleet rule, for this instance or one of its tags; on a tag rule, for this instance; an instance\'s own rule is edited. The override is a narrower rule, made in the rule form.', 'Thresholds in force')),
+  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, or for an instance added in Admin > Instances by its Settings there, else the default; read only here). Click a rule\'s line for an override: on a fleet rule, for this instance or one of its tags; on a tag rule, for this instance; an instance\'s own rule is edited. The override is a narrower rule, made in the rule form.', 'Thresholds in force')),
+    // the build review's M2: read without the Admin > Instances source, said here (the rest of the page as before)
+    note ? el('p', { class: 'meta', role: 'note' }, note) : '',
     el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel)), wrap);
 }

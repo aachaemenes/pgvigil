@@ -580,3 +580,20 @@ func TestMergePageSettings(t *testing.T) {
 		t.Errorf("p2: %+v", all[1])
 	}
 }
+
+// TestFingerprintThresholds (ST5b's design pass F1): a thresholds-only change of a page instance moves its fingerprint,
+// so its loops restart and the collector stores the new set; an equal set in another order does not.
+func TestFingerprintThresholds(t *testing.T) {
+	base := Instance{Name: "m1", Engine: EngineSQLServer}
+	one, two := base, base
+	pa, _ := ParsePageSettings([]byte(`{"thresholds": {"redo_queue_kb": 1, "full_backup_hours": 2}}`))
+	pb, _ := ParsePageSettings([]byte(`{"thresholds": {"full_backup_hours": 2, "redo_queue_kb": 1}}`))
+	pa.apply(&one)
+	pb.apply(&two)
+	if Fingerprint(one) == Fingerprint(base) {
+		t.Error("a thresholds-only change did not move the fingerprint")
+	}
+	if Fingerprint(one) != Fingerprint(two) {
+		t.Error("an equal set of thresholds in another order moved the fingerprint")
+	}
+}

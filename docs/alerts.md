@@ -660,7 +660,12 @@ A channel of this file may not be named `contact-...`. The whole: [applications.
 - **Thresholds in force** (the Alert rules page): every threshold each active instance is judged by. Per metric the
   alert rule in force on it (an instance's rule over a tag's over the fleet's) with the wider rules it overrides there;
   on a SQL Server instance the HA/DR, jobs and backups thresholds, marked *configuration file* where `mssql_thresholds`
-  sets them and *default* where it does not (read only: the file is their source). Click a rule's line for an
+  sets them, *Admin > Instances* where an instance added there has its own in its Settings (a link opens them), and
+  *default* where neither does (read only here: the file or the Settings are their source). A value the collector has
+  not stored yet says so: *waits for the next HA/DR, jobs or backups read*, or *back to the default at the next ...*
+  for one taken away; until then the one in force is named. A repository before `pgvigil migrate`, or a serve login
+  that may not call `pgvigil.admin_instance_settings()`, reads this list without the Admin > Instances source and says
+  so above it. Click a rule's line for an
   override that would be in force: on a fleet rule, **for this instance** or **for one of its tags**; on a tag rule,
   for this instance; an instance's own rule opens to be edited. The rule form opens with the metric and the numbers
   filled. The built-in findings' own limits (the setting rules, vacuum, storage ...) are not listed here; they are in

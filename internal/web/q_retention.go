@@ -433,7 +433,11 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 		c, _ := row[0].(string)
 		out.Rows = append(out.Rows, append([]any{interval(c), def(c)}, row...))
 	}
-	s.reply(w, r, map[string]any{"instance": name, "engine": engine, "collections": out}, nil)
+	ans := map[string]any{"instance": name, "engine": engine, "collections": out}
+	for k, v := range s.collectionsSettingsParts(ctx, name, engine) { // ST5b: a page instance's settings for the dialogs
+		ans[k] = v
+	}
+	s.reply(w, r, ans, nil)
 }
 
 // sqlStored is GET /api/stored: the last purge run (its age and end, for the words) and the oldest partitions held. A

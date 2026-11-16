@@ -48,7 +48,9 @@ Jobs, then Performance (and Logs on SQL Server), then Reports.
 - **Add Connections...** builds the `instances:` lines of `pgvigil.yaml` for a new instance (name, engine, platform,
   tags, the environment variable that holds its connection string) to copy. pgvigil reads the file when the collector
   starts: add the lines, then restart the service.
-- **Instance Actions** shows the instance as the server knows it and writes the config lines that change it:
+- **Instance Actions** shows the instance as the server knows it and writes the config lines that change it (for an
+  instance added in Admin > Instances, Pause/Resume Collections and Configure Schedule save its Settings there instead,
+  with no config line: see docs/instance-settings.md):
   - *Pause/Resume Collections...* lists each collection that has stored a read on the instance with its interval,
     last read, status and errors in the last 24 hours; an unticked collection goes into the instance's `disabled:` list
     (paused), a ticked one comes out of it. An opt-in collection (off until a schedule gives it an interval) cannot be
