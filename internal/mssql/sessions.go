@@ -115,13 +115,13 @@ func sessionsWaiting(rows []collect.Row) (int64, int64) {
 		if benignWaits[w] {
 			continue
 		}
-		tasks += asInt64(r["tasks"])
-		longest = max(longest, asInt64(r["longest_ms"]))
+		tasks += sessionInt64(r["tasks"])
+		longest = max(longest, sessionInt64(r["longest_ms"]))
 	}
 	return tasks, longest
 }
 
-func asInt64(v any) int64 {
+func sessionInt64(v any) int64 {
 	switch x := v.(type) {
 	case int64:
 		return x
