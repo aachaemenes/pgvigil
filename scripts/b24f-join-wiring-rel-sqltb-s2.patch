@@ -1,32 +1,7 @@
-B24f's join wiring, section rel-sqltb-s2 (403a / 403b, the SQL Server security and XE capture settings; the lead 11-15 16:3x).
-Apply on the joined tree that holds rel-roles and rel-sqltb-s2 (its three wiring patches applied):
-  git apply -3 scripts/b24f-join-wiring-rel-sqltb-s2.patch
-Built on a pre-join copy of each file it touches: rel-roles f421753c x rel-sqltb-s2 a326eea2 + proof-alert-scope-wiring,
-proof-mssql-security-wiring and proof-mssql-xe-captures-wiring's web.go hunks (local commits 6e421b3e +
-ee4e6011, ref jw-pre-sqltb: web.go's alert lines and alert_rules.ts's rule dialog call merged by hand; scripts/proof-uiroles.sh
-rel-roles f421753c's alone), so -3 merges it onto the join's own resolution.
-What it does:
-- s.post for POST /api/alertwindows (operator), /api/mssql/security/config and /api/mssql/xecaptures/config (admin);
-  their words in roles_wiring_sqltb_s2.go (an init beside routeWhat: no line another section touches), needs.ts and docs/roles.md rows.
-- AlertWindowWrite: add / edit over one instance ending at most 7 days after now or its start = operator; every instance, a
-  tag, no end, a later end, or a from_rule_id copy without a scope (fail closed) = admin ('a fleet-wide, tag-wide or
-  open-ended alert window'); end open to an operator (the lead's ALERTWINDOWS (a)).
-- The window dialog: an Ends choice (1 day, 7 days - 10 minutes short of 168 h, so a browser clock ahead of the server's
-  still passes the server's ceiling (review-20 jw1 S1) - no end; an edit keeps its end); below admin 'no end', every instance
-  and a tag are off, and Save says the admin words; the window buttons and Save carry the 'alertwindows' need.
-- The security and XE capture settings pages: the role folded into the page's one off sentence; each write control marked.
-- POST /api/slack/actions stays on mux: roles_test.go's outsideRoles exempts it with its reason; docs/roles.md says a Slack
-  button acts without a pgvigil role. TestRolesDocMatches checks each outsideRoles route: registered once, and in
-  docs/roles.md in backticks (review-20 jw1 N3).
-- proof-uiroles.sh part S5w (review-20 jw1 S2): the window rule's rows as an operator and an admin (add, edit, end), the
-  ceiling's edge by the server's clock (168 h + 5 s refused, 167 h done); skipped with a line on a tree without the route.
-Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there;
-proof-uiroles.sh (S5w) there.
-
-diff --git a/docs/roles.md b/docs/roles.md
+diff --git c/docs/roles.md i/docs/roles.md
 index 118b5eee..2c06fb0f 100644
---- a/docs/roles.md
-+++ b/docs/roles.md
+--- c/docs/roles.md
++++ i/docs/roles.md
 @@ -109,6 +109,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/alerts/dismiss` | operator | dismiss an alert |
  | `POST /api/alerts/mute` | operator | pause, resume or edit a mute rule (an edit to every instance, a tag or no end: admin) |
@@ -48,10 +23,10 @@ index 118b5eee..2c06fb0f 100644
 +buttons on a Slack bot's posts. Slack signs each press, so it carries no pgvigil session: a Slack button acts without a
 +pgvigil role, as whoever may press it in that Slack channel. The door is off unless `doors.slack_actions` is on in
 +the site's file.
-diff --git a/internal/web/q_alert_scope.go b/internal/web/q_alert_scope.go
+diff --git c/internal/web/q_alert_scope.go i/internal/web/q_alert_scope.go
 index 56582f75..31ae7f78 100644
---- a/internal/web/q_alert_scope.go
-+++ b/internal/web/q_alert_scope.go
+--- c/internal/web/q_alert_scope.go
++++ i/internal/web/q_alert_scope.go
 @@ -170,6 +170,15 @@ func (s *Server) AlertScope(w http.ResponseWriter, r *http.Request) {
  	s.reply(w, r, out, nil)
  }
@@ -83,10 +58,10 @@ index 56582f75..31ae7f78 100644
  	pay["ui_user"], pay["client"] = user, clientIP(r)
  	b, _ := json.Marshal(pay)
  	var res struct {
-diff --git a/internal/web/roles_test.go b/internal/web/roles_test.go
+diff --git c/internal/web/roles_test.go i/internal/web/roles_test.go
 index a0f67487..26c719da 100644
---- a/internal/web/roles_test.go
-+++ b/internal/web/roles_test.go
+--- c/internal/web/roles_test.go
++++ i/internal/web/roles_test.go
 @@ -16,6 +16,15 @@ import (
  // operator, admin), and docs/roles.md's table is the same list. Both checks read the source, so a route added
  // without a need fails here, not on a box.
@@ -140,11 +115,11 @@ index a0f67487..26c719da 100644
  }
  
  // ---- the pages (review-16 S6 / S8): a write control carries its route's need and is off below it with the server's
-diff --git a/internal/web/roles_wiring_sqltb_s2.go b/internal/web/roles_wiring_sqltb_s2.go
+diff --git c/internal/web/roles_wiring_sqltb_s2.go i/internal/web/roles_wiring_sqltb_s2.go
 new file mode 100644
 index 00000000..aa62b6c6
 --- /dev/null
-+++ b/internal/web/roles_wiring_sqltb_s2.go
++++ i/internal/web/roles_wiring_sqltb_s2.go
 @@ -0,0 +1,9 @@
 +package web
 +
@@ -155,22 +130,22 @@ index 00000000..aa62b6c6
 +	routeWhat["POST /api/mssql/security/config"] = "changing a SQL Server security setting"
 +	routeWhat["POST /api/mssql/xecaptures/config"] = "changing an XE capture setting"
 +}
-diff --git a/internal/web/web.go b/internal/web/web.go
-index 783b97dc..5131aea6 100644
---- a/internal/web/web.go
-+++ b/internal/web/web.go
-@@ -275,8 +275,8 @@ func (s *Server) Handler() http.Handler {
- 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
- 	s.post(api, "POST /api/alertrules", needAdmin, s.AlertRuleWrite)
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 88f3fee6..27eb015c 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -295,8 +295,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
+ 	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
  	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
 -	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
 -	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
 +	api.HandleFunc("GET /api/alertscope", s.AlertScope)                     // task 403a: windows, held sends, flapping, overrides, history, digests
 +	s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator; wide or open-ended: admin, in its handler)
- 	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
- 	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)
- 	s.post(api, "POST /api/alerts/mute", needOperator, s.AlertMute)
-@@ -293,9 +293,9 @@ func (s *Server) Handler() http.Handler {
+ 	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
+ 	api.HandleFunc("GET /api/views", s.Views)
+ 	api.HandleFunc("POST /api/views", s.ViewSave)
+@@ -320,9 +320,9 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/memory", s.Memory)
  	api.HandleFunc("GET /api/mssql/audit", s.MSSQLAudit)
  	api.HandleFunc("GET /api/mssql/security", s.MSSQLSecurity)
@@ -182,10 +157,10 @@ index 783b97dc..5131aea6 100644
  	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
  	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
  	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)
-diff --git a/scripts/proof-uiroles.sh b/scripts/proof-uiroles.sh
-index c9475970..c58328c6 100644
---- a/scripts/proof-uiroles.sh
-+++ b/scripts/proof-uiroles.sh
+diff --git c/scripts/proof-uiroles.sh i/scripts/proof-uiroles.sh
+index c9475970..c58328c6 100755
+--- c/scripts/proof-uiroles.sh
++++ i/scripts/proof-uiroles.sh
 @@ -52,6 +52,14 @@
  #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
  #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
@@ -249,14 +224,14 @@ index c9475970..c58328c6 100644
  # ---- S9 --------------------------------------------------------------------------------------------------------------
  aud0=$(q "select count(*) from pgvigil.admin_audit"); ack0=$(q "select count(*) from pgvigil.acks")
  c=$(curl -s -o "$WORK/h.body" -w '%{http_code}' -b "$WORK/a$SUF.jar" -H 'Content-Type: application/json' --data '{"kind":"note","note":"x"}' "$U/api/ack")
-diff --git a/web/src/alert_rules.ts b/web/src/alert_rules.ts
-index d052d3e1..5eb97242 100644
---- a/web/src/alert_rules.ts
-+++ b/web/src/alert_rules.ts
-@@ -15,7 +15,13 @@ import { Ctx, rangeLabel, window_ } from './router';
- import { whatIsThis } from './sqlview';
+diff --git c/web/src/alert_rules.ts i/web/src/alert_rules.ts
+index 2242e42c..a40bc447 100644
+--- c/web/src/alert_rules.ts
++++ i/web/src/alert_rules.ts
+@@ -16,7 +16,13 @@ import { whatIsThis } from './sqlview';
  import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, showMenu } from './ui';
  import { offBeside } from './ack';
+ import { subNoun } from './metricfam';
 -import { Can, markNeed, needControl, routeWhy } from './needs';
 +import { Can, markNeed, needControl, roleWhy, routeWhy } from './needs';
 +
@@ -268,7 +243,7 @@ index d052d3e1..5eb97242 100644
  
  // note: the page's one visible sentence where rules cannot be written here - every off control of the page shares that
  // reason and points at it (the page that draws the sentence sets it); without one an off control says the reason beside itself
-@@ -160,7 +166,7 @@ function starterButton(door: RulesDoor, after: () => void): HTMLElement {
+@@ -168,7 +174,7 @@ function starterButton(door: RulesDoor, after: () => void, tag?: string): HTMLEl
  
  // ruleButton: a button that opens the rule dialog; where rules cannot be written here it is off with the reason in
  // words on the page (the page's sentence, door.note, or beside itself)
@@ -277,7 +252,7 @@ index d052d3e1..5eb97242 100644
    const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
    if (!door.writable) offBeside(b, door.reason || 'alert rules are read only here', door.note);
    else b.addEventListener('click', open);
-@@ -327,7 +333,7 @@ export async function ruleDialog(o: RuleDialog) {
+@@ -341,7 +347,7 @@ export async function ruleDialog(o: RuleDialog) {
  // invalid() then comes first): below admin Save is off the B7 way with the role's words (review-18 b24f2 S5)
  function formDialog(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void,
    fields: HTMLElement[] = [], invalid: () => string = () => '', watch: HTMLElement[] = [],
@@ -286,7 +261,7 @@ index d052d3e1..5eb97242 100644
    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
    const ok = markNeed(el('button', { type: 'submit' }, go), at.route ?? 'alertrules');
    const role = at.serverOff ? null : routeWhy(at.route ?? 'alertrules', at.can);
-@@ -372,7 +378,7 @@ function formDialog(title: string, what: string, go: string, run: () => Promise<
+@@ -386,7 +392,7 @@ function formDialog(title: string, what: string, go: string, run: () => Promise<
  }
  
  // confirmWrite: a write with no field (end a rule, switch it on or off)
@@ -295,7 +270,7 @@ index d052d3e1..5eb97242 100644
    formDialog(title, what, go, run, after, [], () => '', [], { route });
  }
  
-@@ -532,7 +538,7 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
+@@ -584,7 +590,7 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
    let rows: Row[] = [];
    try { rows = rowsOf((await get<{ windows?: Table | null }>('alertscope', { ...window_(ctx), part: 'windows' })).windows); }
    catch (e) { box.append(errorBox(e)); return box; }
@@ -304,7 +279,7 @@ index d052d3e1..5eb97242 100644
    const cols: Col[] = [
      { key: 'holds_now', label: 'now', fmt: (v, w) => !w.live ? 'ended' : v ? badge('holding', 'warn') : 'not now' },
      { key: 'window_id', label: 'window', num: true },
-@@ -544,10 +550,10 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
+@@ -596,10 +602,10 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
      { key: 'created_at', label: 'made', fmt: (v, w) => `${fmtTime(v)} by ${String(w.created_by)}` + (w.replaces != null ? ` (replaces window ${String(w.replaces)})` : '') },
      { key: 'note', wide: true },
      { key: '_edit', label: '', fmt: (_v, w) => !w.live ? '' : el('span', { style: 'white-space:nowrap' },
@@ -317,7 +292,7 @@ index d052d3e1..5eb97242 100644
    ];
    box.append(grid(rows, cols, 'No window. A window holds alerts on weekdays during a daily span (a maintenance blackout, a nightly mute, a digest).'));
    return box;
-@@ -564,7 +570,11 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -616,7 +622,11 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
    ceiling.value = String(w?.severity_ceiling ?? 'warning');
    const ceilBox = el('label', {}, 'Holds ', ceiling, ' (a critical always pages at once)');
    const scope = el('select', {}, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tags' }, 'a tag list'), el('option', { value: 'instance' }, 'one instance'));
@@ -330,7 +305,7 @@ index d052d3e1..5eb97242 100644
    const instSel = el('select', {}, ...insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
    if (w?.instance_name != null) {
      const m = insts.find(i => i.name === w.instance_name);
-@@ -604,6 +614,18 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -656,6 +666,18 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
    const zone = el('input', { type: 'text', maxlength: '64', style: 'width:14em', value: String(w?.zone ?? browserZone) });
    const note = el('textarea', { rows: '2', maxlength: '500', style: 'width:100%' });
    note.value = String(w?.note ?? '');
@@ -349,7 +324,7 @@ index d052d3e1..5eb97242 100644
    const sync = () => {
      ceilBox.hidden = action.value !== 'digest'; tagsBox.hidden = scope.value !== 'tags'; instBox.hidden = scope.value !== 'instance';
      start.disabled = end.disabled = wholeDay.checked;
-@@ -615,6 +637,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -667,6 +689,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
      el('span', {}, ...days.map(x => x.label)),
      el('span', {}, el('label', {}, wholeDay, ' the whole day'), ' ', el('label', {}, 'from ', start), ' ', el('label', {}, 'to ', end), ' ', el('label', {}, 'in ', zone)),
      el('p', { class: 'meta' }, 'An end before the start runs across midnight, as part of the day it starts; an end of 00:00 runs to midnight. A digest window holds alerts only on channels that have a daily digest (digest_hour).'),
@@ -358,7 +333,7 @@ index d052d3e1..5eb97242 100644
      el('label', {}, 'Name (optional) ', name),
      el('label', {}, 'Note (optional)', el('br'), note),
    ];
-@@ -624,6 +648,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -676,6 +700,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
      zone.value.trim() === '' ? 'a time zone' : '',
      scope.value === 'tags' && picked.size === 0 ? 'at least one tag' : '',
      scope.value === 'instance' && instSel.value === '' ? 'an instance' : '',
@@ -367,7 +342,7 @@ index d052d3e1..5eb97242 100644
    ].filter(Boolean).join(', ');
    const body = () => ({
      op: w ? 'edit' : 'add', window_id: w ? Number(w.window_id) : undefined,
-@@ -636,7 +662,7 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -688,7 +714,7 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
      note: note.value.trim() || undefined,
      // an edit keeps what the form does not show: its start, its end date and the rule its scope came from
      starts_at: w?.starts_at != null ? String(w.starts_at) : undefined,
@@ -376,7 +351,7 @@ index d052d3e1..5eb97242 100644
      from_rule_id: w?.from_rule_id != null ? Number(w.from_rule_id) : undefined,
    });
    formDialog(w ? `Edit window ${String(w.window_id)}` : 'New window',
-@@ -644,7 +670,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -696,7 +722,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
        : 'The alert sender reads the window from its next pass. Held sends are logged; the Alerts page says why each was held.',
      'Save', () => post<WindowResult>('alertwindows', body()) as Promise<RuleResult>, after, fields,
      () => door.writable ? invalid() : `a server where alert windows can be written (${door.reason ?? 'read only here'})`,
@@ -386,10 +361,10 @@ index d052d3e1..5eb97242 100644
  }
  
  // ---- the findings history (0154; ENG#7, OVW#137, PBI#3): one instance's timeline -----------------------------------
-diff --git a/web/src/mssql_security.ts b/web/src/mssql_security.ts
+diff --git c/web/src/mssql_security.ts i/web/src/mssql_security.ts
 index 5031cbad..963fb607 100644
---- a/web/src/mssql_security.ts
-+++ b/web/src/mssql_security.ts
+--- c/web/src/mssql_security.ts
++++ i/web/src/mssql_security.ts
 @@ -8,6 +8,7 @@
  import { get, post, Row, rowsOf, Table } from './api';
  import { Ctx, href } from './router';
@@ -441,19 +416,19 @@ index 5031cbad..963fb607 100644
            clear.addEventListener('click', () => send({ op: 'end', config_id: Number(r.config_id) }, editNote));
            box.append(' ', clear);
          }
-diff --git a/web/src/mssql_xe.ts b/web/src/mssql_xe.ts
-index ed6b10b5..9865a561 100644
---- a/web/src/mssql_xe.ts
-+++ b/web/src/mssql_xe.ts
-@@ -9,6 +9,7 @@ import { get, post, Row, rowsOf, Table } from './api';
- import { lineChart } from './chart';
+diff --git c/web/src/mssql_xe.ts i/web/src/mssql_xe.ts
+index fadf8828..cdf58815 100644
+--- c/web/src/mssql_xe.ts
++++ i/web/src/mssql_xe.ts
+@@ -10,6 +10,7 @@ import { lineChart } from './chart';
  import { Ctx, href, rangeLabel, window_ } from './router';
  import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl, props, tile } from './ui';
+ import { errorCell } from './doclinks';
 +import { markNeed, routeWhy } from './needs';
  import { stripGrid } from './timestrip';
  import { planSourcesCol } from './mssql_plancache';
  
-@@ -551,7 +552,8 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
+@@ -617,7 +618,8 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
          ? 'This instance keeps no statement text (query_text none): the script never captures it.'
          : `This instance's statement-text policy is ${policy}: the script starts there.`;
        textSel.setAttribute('aria-describedby', 'xc-text-note');
@@ -463,7 +438,7 @@ index ed6b10b5..9865a561 100644
        const offNote = el('p', { id: 'xc-off-note', class: 'meta off-reason' }, `Editing is off here: ${why}.`);
        const editNote = el('div', { 'aria-live': 'polite' });
        const send = async (payload: Record<string, unknown>) => {
-@@ -568,7 +570,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
+@@ -634,7 +636,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
            const input = r.value_kind === 'list'
              ? el('textarea', { rows: '4', cols: '40', 'aria-label': `New value of ${text(r.label)}, one entry a line` }, listEntries(r.value).join('\n'))
              : el('input', { type: 'text', size: '30', 'aria-label': `New value of ${text(r.label)}`, placeholder: 'ms' });
@@ -472,7 +447,7 @@ index ed6b10b5..9865a561 100644
            const box = el('span', {}, input, ' ', save);
            if (why) { offControl(save, why, offNote); input.disabled = true; input.setAttribute('aria-describedby', 'xc-off-note'); return box; }
            save.addEventListener('click', () => {
-@@ -577,7 +579,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
+@@ -643,7 +645,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
              void send({ op: 'add', scope: 'instance', instance_id: Number(ctx.instance), key: text(r.key), value });
            });
            if (r.config_id != null && r.set_at !== 'default') {
@@ -481,10 +456,10 @@ index ed6b10b5..9865a561 100644
              clear.addEventListener('click', () => { void send({ op: 'end', config_id: Number(r.config_id) }); });
              box.append(' ', clear);
            }
-diff --git a/web/src/needs.ts b/web/src/needs.ts
+diff --git c/web/src/needs.ts i/web/src/needs.ts
 index f3a5ff8c..c41fc09e 100644
---- a/web/src/needs.ts
-+++ b/web/src/needs.ts
+--- c/web/src/needs.ts
++++ i/web/src/needs.ts
 @@ -43,10 +43,13 @@ export const routeNeeds = {
    'admin/applications/import': ['admin', 'importing the applications inventory file'],
    'alertrules': ['admin', 'changing an alert rule'],
