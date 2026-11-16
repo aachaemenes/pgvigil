@@ -33,6 +33,9 @@
 #  S1 (review 1 H2, added before its first run): erp01's session SETs (PostgreSQL 16: values kept): under full a
 #     custom (non-planner) setting's value is shown (decisive); under normalized, none and mixed every custom value is
 #     NULL (the capture's rule), a planner setting's value kept.
+#  P1 (review 2 M1, added before its first run): /api/pgaudit's signins for a PostgreSQL instance that holds auth_fail
+#     log events (the demo's erp01 has no log collection): under full a detail 'password authentication failed ...'
+#     is shown (decisive); under none every signin's detail is NULL.
 #  L4 (review 1 L4, added before its first run): under every policy no reply carries a column name with '@' in it (a
 #     tagged column the rule did not reach).
 #  Red on d04bc70a (rel-j15dl): N, Z, M and A (none) fail - the routes and the sends return the texts stored under full.
@@ -50,7 +53,8 @@
 # theirs, whatever columns its table has; the expression keys are a fixed copy (the code under test does not excuse).
 # After review 2's red run: a log message of a server-message kind is not a site (its detail - the same words - is kept
 # by rule); under normalized a hit is judged on the part of the stored text the reply shows (a finding quotes a
-# statement cut short, before its literal); a route that answers under full and 5xx under another policy fails.
+# statement cut short, before its literal); a route that answers under full and 5xx under another policy fails; a
+# session xmin holder's site is its query (the part after ': '): its own words before it are kept by rule.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -84,6 +88,7 @@ q() { psql "$DSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 PGI=$(q "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
 MSI=$(q "select instance_id from pgvigil.instances where name = 'demo-onprem-sql01'")
 [[ -n "$PGI" && -n "$MSI" ]] || fail "the demo has no demo-onprem-erp01 or demo-onprem-sql01"
+AFI=$(q "select instance_id from pgvigil.log_events where kind = 'auth_fail' order by instance_id limit 1")   # P1's instance
 
 echo "== the stored texts (every site of TestStoredTextTagged's list the seed filled)"
 python3 - "$WORK/sites.sql" <<'EOF'
@@ -95,14 +100,14 @@ sites = {"query_text": ["query"], "statement_text": ["query"], "log_events": ["s
   "mssql_slow_events": ["statement"], "mssql_attentions": ["statement"], "mssql_ag_events": ["statement"], "mssql_trace_events": ["statement"],
   "mssql_audit_events": ["statement"], "mssql_memory_grant_query": ["statement"], "mssql_running_plan": ["plan_xml"], "mssql_live_plan": ["plan_xml"],
   "mssql_statement_text": ["statement"], "mssql_waiting_tasks": ["statement"], "mssql_versionstore_sample": ["holder_statement"],
-  "pi_sql": ["digest", "full_text"], "session_sets": ["query"], "vacuum_xmin_holders": ["detail"]}
+  "pi_sql": ["digest", "full_text"], "session_sets": ["query"]}
 # the kinds whose detail is the server's own message (logparse.DetailIsMessage: corruption, checkpoint and the pganalyze
 # classes' kinds - a fixed copy): kept under every policy, not a site
 msg_kinds = ("corruption checkpoint connection_limit connection_lost timeout canceled autovacuum_cancel vacuum_skipped wraparound "
              "checkpoint_frequent crash out_of_memory archive_failed standby_conflict serialization_failure temp_file").split()
 where_of = {("log_events", "detail"): " AND x.kind NOT IN (" + ", ".join(f"'{k}'" for k in msg_kinds) + ")",
             ("log_events", "message"): " AND x.kind NOT IN (" + ", ".join(f"'{k}'" for k in msg_kinds) + ")",
-            ("vacuum_xmin_holders", "detail"): " AND x.holder = 'session'"}
+            }
 parts = []
 for t, cols in sites.items():
     for c in cols:
@@ -113,6 +118,10 @@ for t, cols in sites.items():
 parts.append("SELECT DISTINCT 'mssql_deadlocks.processes' AS site, x.instance_id, p->>'statement' AS t FROM pgvigil.mssql_deadlocks x "
              "CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(x.processes::jsonb) = 'array' THEN x.processes::jsonb ELSE '[]' END) p "
              "WHERE length(p->>'statement') >= 24 AND p->>'statement' ~ ' '")
+# a session xmin holder's query (its detail after the session's own words: '<user / application, state, type>: <query>')
+parts.append("SELECT DISTINCT 'vacuum_xmin_holders.detail' AS site, x.instance_id, substr(x.detail, strpos(x.detail, ': ') + 2) AS t "
+             "FROM pgvigil.vacuum_xmin_holders x WHERE x.holder = 'session' AND strpos(x.detail, ': ') > 0 "
+             "AND length(substr(x.detail, strpos(x.detail, ': ') + 2)) >= 24 AND substr(x.detail, strpos(x.detail, ': ') + 2) ~ ' '")
 parts.append("SELECT DISTINCT 'session_sets.value' AS site, x.instance_id, x.value AS t FROM pgvigil.session_sets x "
              "WHERE NOT x.planner AND length(x.value) >= 24 AND x.value ~ ' '")
 open(sys.argv[1], "w").write("\nUNION ALL\n".join(parts))
@@ -146,9 +155,9 @@ grep -oE '"GET /api/[^" ]+"' internal/web/web.go | tr -d '"' | sed 's/^GET //' |
 echo "routes: $(wc -l < "$WORK/routes.txt")"
 
 walk() {   # $1 = the policy name: writes $WORK/walk-$1.json
-  python3 - "$1" "http://127.0.0.1:$PORT" "$PGI" "$MSI" "$FROM" "$TO" "$WORK" <<'EOF'
+  python3 - "$1" "http://127.0.0.1:$PORT" "$PGI" "$MSI" "$FROM" "$TO" "$WORK" "$AFI" <<'EOF'
 import json, sys, urllib.request, urllib.parse, urllib.error
-pol, base, pgi, msi, frm, to, work = sys.argv[1:8]
+pol, base, pgi, msi, frm, to, work, afi = sys.argv[1:9]
 routes = [l.strip() for l in open(f"{work}/routes.txt") if l.strip() and "{" not in l]
 out = {"calls": [], "skipped": [], "downloads": {}, "probes": {}, "atcols": []}
 def get(path, params):
@@ -232,6 +241,10 @@ if jp and jp.get("plan_id"):
 # S1: erp01's session SETs
 ss = next((rec for rec in out["calls"] if rec["path"] == "/api/sessionsets" and rec["who"] == "pg" and rec["status"] == 200), None)
 if ss: out["probes"]["sets"] = rows(ss, "sets")
+# P1: the signins of an instance that holds auth_fail events
+if afi:
+    rec = call("/api/pgaudit", {**win, "instance": afi, "part": "signins"}, "afi")
+    out["probes"]["signins"] = rows(rec, "signins") if rec["status"] == 200 else None
 pl = first("/api/plans", "plans", "pg")
 if pl and pl.get("plan_id"):
     call("/api/plan", {"id": pl["plan_id"]}, "pg")
@@ -288,7 +301,6 @@ def exprs(v, acc):
     return acc
 def has_lit(site, t):
     if site == "log_events.message": return None   # the capture keeps a log message under normalized (judged under none)
-    if site == "vacuum_xmin_holders.detail": t = t.split(": ", 1)[-1]   # the session's words before its query
     if site == "plans.plan_text":
         try: t = "\n".join(exprs(json.loads(t), []))
         except ValueError:
@@ -365,6 +377,9 @@ ptxt = None
 for t in tables((pr.get("jsonplan") or {}).get("json"), []):
     if "plan_text" in t["columns"] and t["rows"]: ptxt = t["rows"][0][t["columns"].index("plan_text")]
 custom = [r for r in (pr.get("sets") or []) if r.get("planner") is False]
+signins = pr.get("signins")
+print(f"   P1: {'no instance with auth_fail events' if signins is None else str(len(signins)) + ' signin row(s), details ' + repr([r.get('detail') for r in signins][:2])}")
+if pol == "none" and signins and any(r.get("detail") is not None for r in signins): bad.append(f"P1: a signin's detail shown under none: {[r.get('detail') for r in signins if r.get('detail')][:2]}")
 planner = [r for r in (pr.get("sets") or []) if r.get("planner") is True]
 print(f"   J1: JSON plan {'read' if pr.get('jsonplan') else 'NOT FOUND'}, text {'none' if ptxt is None else repr(ptxt[:90])}; S1: {len(custom)} custom SET row(s), values {[r.get('value') for r in custom][:4]}; L4: {len(walk.get('atcols', []))} '@' column(s)")
 for c in sorted(set(walk.get("atcols", [])))[:10]: bad.append(f"L4: {c}")
@@ -380,6 +395,7 @@ if pol != "full":
 if pol == "full":
     if not ptxt or "acme" not in ptxt.lower(): undecided.append("J1: no JSON plan text with its literal under full")
     if not any(r.get("value") is not None for r in custom): undecided.append("S1: no custom SET value shown under full")
+    if not signins or not any("password authentication failed" in (r.get("detail") or "") for r in signins): undecided.append("P1: no signin detail shown under full")
 elif pol == "normalized":
     if not ptxt: bad.append("J1: the JSON plan's text is empty under normalized (blanked, not masked)")
     elif "acme" in ptxt.lower(): bad.append("J1: the JSON plan keeps its literal under normalized")
