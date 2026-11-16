@@ -88,9 +88,9 @@ BEGIN
   ON CONFLICT (collector_id, address) DO UPDATE
      SET first_probed = least(h.first_probed, EXCLUDED.first_probed),
          last_answered = greatest(h.last_answered, EXCLUDED.last_answered), host = EXCLUDED.host;
-  -- the probe rows are kept 8 days, trimmed here (the review of B24h-1 part b #9: until the join's purge() line, a
-  -- store under probe_every_minute grew without end); the key's leading minute serves the delete
-  DELETE FROM pgvigil.collector_probe WHERE minute < now() - interval '8 days';
+  -- the probe rows' 8 days are purge()'s (scripts/b24h-join-lines.sql line 5, at the next join), not this beat's: the
+  -- trim here cost 3.5-4.1 s a beat at 2,124 addresses (BJf8 on the box; the review of the B24h-1 fold's bar 50 ms). A
+  -- store purge() never runs on keeps every probe row, as it keeps every other series
 END
 $$;
 
