@@ -117,6 +117,46 @@ RETURNS void LANGUAGE sql AS $$
     gap_wait_secs = EXCLUDED.gap_wait_secs, synced_at = now()
 $$;
 
+-- ensure_instance (0063's, whole, with one guard first): the hub's own configuration - pgvigil.yaml, Admin > Instances,
+-- the demo, DBA Dash - never takes a name a remote site owns (it would write live rows into the site's instance).
+-- import_remote_ensure marks its own call (pgvigil.remote_site, transaction-local) and passes. The 6-argument form
+-- calls this one, so both refuse.
+CREATE OR REPLACE FUNCTION pgvigil.ensure_instance(
+  p_name text, p_platform text, p_server_version text, p_version_num int, p_is_replica boolean, p_tags text[], p_engine text)
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE v_id int; v_have text; v_owner text;
+BEGIN
+  SELECT engine, owner INTO v_have, v_owner FROM pgvigil.instances WHERE name = p_name;
+  IF v_owner IS NOT NULL AND v_owner IS DISTINCT FROM nullif(current_setting('pgvigil.remote_site', true), '') THEN
+    RAISE EXCEPTION 'ensure_instance: instance % is read by remote site % (remote_sites:): this hub''s own configuration cannot hold that name; give the server another name', p_name, v_owner;
+  END IF;
+  IF p_engine IS NULL OR p_engine NOT IN ('postgres', 'sqlserver') THEN
+    RAISE EXCEPTION 'ensure_instance: unknown engine %', coalesce(p_engine, '(null)');
+  END IF;
+  IF v_have IS NOT NULL AND v_have <> p_engine THEN
+    RAISE EXCEPTION 'ensure_instance: instance % is already stored as engine %, not %; give the other server its own name', p_name, v_have, p_engine;
+  END IF;
+  INSERT INTO pgvigil.instances AS i (name, platform, server_version, server_version_num, is_replica, tags, engine)
+  VALUES (p_name, p_platform, p_server_version, p_version_num, p_is_replica, coalesce(p_tags, '{}'), p_engine)
+  ON CONFLICT (name) DO UPDATE
+     SET platform = EXCLUDED.platform,
+         server_version = EXCLUDED.server_version,
+         server_version_num = EXCLUDED.server_version_num,
+         is_replica = EXCLUDED.is_replica,
+         tags = EXCLUDED.tags,
+         last_seen = now(),
+         is_active = true
+   -- the read above is for the clear message; this is the guard: two first calls of one new name under two
+   -- engines both pass the read, and the second one's update then matches no row instead of the other engine's
+   WHERE i.engine = p_engine
+  RETURNING instance_id INTO v_id;
+  IF v_id IS NULL THEN
+    RAISE EXCEPTION 'ensure_instance: instance % is already stored as engine %, not %; give the other server its own name',
+      p_name, (SELECT engine FROM pgvigil.instances WHERE name = p_name), p_engine;
+  END IF;
+  RETURN v_id;
+END $$;
+
 -- import_remote_ensure: the instance a site's bundle names, '<site>/<name>', owned by the site; its tags the manifest's
 -- and the site's. A name another site or the hub's own configuration holds is refused; an instance an admin disabled
 -- stays disabled (its id is returned, nothing of it changes).
@@ -139,7 +179,9 @@ BEGIN
     RETURN v_id;
   END IF;
   v_tags := ARRAY(SELECT DISTINCT t FROM unnest(coalesce(p_tags, '{}') || coalesce((SELECT s.tags FROM pgvigil.remote_sites s WHERE s.name = p_site), '{}')) AS t ORDER BY 1);
+  PERFORM set_config('pgvigil.remote_site', p_site, true);
   v_id := pgvigil.ensure_instance(v_full, p_platform, p_server_version, p_version_num, p_is_replica, v_tags, p_engine);
+  PERFORM set_config('pgvigil.remote_site', '', true);
   UPDATE pgvigil.instances SET owner = p_site WHERE instance_id = v_id AND owner IS DISTINCT FROM p_site;
   RETURN v_id;
 END $$;
@@ -251,12 +293,15 @@ $$;
 
 -- the three views the hub's pages read (contract 2)
 CREATE OR REPLACE VIEW pgvigil.remote_instance_state AS
-SELECT i.instance_id, i.name, i.engine, i.owner AS site, b.collector, i.as_of,
+SELECT i.instance_id, i.name, i.engine, i.owner AS site, coalesce(b.collector, n.collector) AS collector, i.as_of,
        extract(epoch FROM b.window_to - b.window_from)::int AS interval_secs, s.expected_every_secs, b.loaded_at
   FROM pgvigil.instances i
   LEFT JOIN LATERAL (SELECT x.collector, x.window_from, x.window_to, x.loaded_at FROM pgvigil.remote_bundles x
                       WHERE x.instance_id = i.instance_id AND x.state = 'loaded'
                       ORDER BY x.window_to DESC, x.bundle_id DESC LIMIT 1) b ON true
+  -- the collector of an instance whose bundles are all still loading (its newest bundle of any state)
+  LEFT JOIN LATERAL (SELECT x.collector FROM pgvigil.remote_bundles x WHERE x.instance_id = i.instance_id
+                      ORDER BY x.bundle_id DESC LIMIT 1) n ON true
   LEFT JOIN pgvigil.remote_sites s ON s.name = i.owner
  WHERE i.owner IS NOT NULL;
 
@@ -269,13 +314,15 @@ SELECT k.site, k.collector, c.pgvigil_version, c.host, c.heartbeat_at, c.instanc
          WHERE x.site = k.site AND x.collector = k.collector AND x.cleared_at IS NULL AND x.kind NOT IN ('gap', 'late', 'conflict', 'audit gap')
          ORDER BY x.marked_at DESC, x.mark_id DESC LIMIT 1) AS newest_set_aside_reason,
        count(m.mark_id) FILTER (WHERE m.kind = 'late')::int AS late,
-       count(m.mark_id) FILTER (WHERE m.kind = 'conflict')::int AS conflicts
+       count(m.mark_id) FILTER (WHERE m.kind = 'conflict')::int AS conflicts,
+       s.expected_every_secs
   FROM (SELECT site, collector FROM pgvigil.remote_collectors
         UNION SELECT site, collector FROM pgvigil.remote_bundles
         UNION SELECT site, collector FROM pgvigil.remote_marks) k
   LEFT JOIN pgvigil.remote_collectors c ON c.site = k.site AND c.collector = k.collector
   LEFT JOIN pgvigil.remote_marks m ON m.site = k.site AND m.collector = k.collector AND m.cleared_at IS NULL
- GROUP BY k.site, k.collector, c.pgvigil_version, c.host, c.heartbeat_at, c.instances, c.fail_streak;
+  LEFT JOIN pgvigil.remote_sites s ON s.name = k.site
+ GROUP BY k.site, k.collector, c.pgvigil_version, c.host, c.heartbeat_at, c.instances, c.fail_streak, s.expected_every_secs;
 
 CREATE OR REPLACE VIEW pgvigil.remote_collection_interval AS
 SELECT instance_id, collection, interval_secs FROM pgvigil.remote_intervals;
