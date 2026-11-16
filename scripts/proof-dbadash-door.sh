@@ -497,8 +497,8 @@ if bad: print("\n".join("FAIL " + x for x in bad)); sys.exit(1)
 if only:
     print(f"ok   {label}: {len(calls)} page(s) ({', '.join(calls)}) equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
     sys.exit(0)
-if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of 9 pages and the snapshot call returned rows"); sys.exit(1)
-print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of {len(calls) - 1} pages and the snapshot call returned rows"); sys.exit(1)
+print(f"ok   C: {len(calls) - 1} pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql, {len(raw)} text cell(s) of it through the page's mask; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
 PY
 # the second client's container stays for C and C3 (one install of pymssql) and goes after C3
 docker run -d --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -v "$TMPD:/w:ro" "$IMG_PY" sleep 3600 >/dev/null
@@ -510,14 +510,15 @@ docker exec "$PYC" python -c 'import pymssql' || fail "C: pymssql did not instal
 # same mask first: TestMaskCells names the columns, the second client's texts of them go to a file of this run's folder
 # (as stored: never printed, gone with the folder), TestMaskCells masks them, and the comparison reads both files.
 grids() {
-  local e=(-e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES="/w/$2" -e LABEL="$1" -e ONLY="${3:-}")
+  local e=(-e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e DDV="$DDV" -e PAGES="/w/$2" -e LABEL="$1" -e ONLY="${3:-}")
   PGVIGIL_DBADASH_MASK_OUT="$TMPD/mask-$1-list.json" go test -count=1 -run '^TestMaskCells$' ./internal/dbadash >/dev/null 2>&1 || fail "$1: the pages' text columns (TestMaskCells)"
   docker exec "${e[@]}" -e MODE=cells -e MASK="/w/mask-$1-list.json" "$PYC" python /w/grids.py > "$TMPD/cells-$1.json" || fail "$1: the second client's read of the text columns"
   PGVIGIL_DBADASH_MASK_IN="$TMPD/cells-$1.json" PGVIGIL_DBADASH_MASK_OUT="$TMPD/mask-$1.json" go test -count=1 -run '^TestMaskCells$' ./internal/dbadash >/dev/null 2>&1 || fail "$1: the mask over the second client's text cells (TestMaskCells)"
   docker exec "${e[@]}" -e MODE=compare -e MASK="/w/mask-$1.json" -e CELLS="/w/cells-$1.json" "$PYC" python /w/grids.py | tee "$TMPD/grids-$1.out" || true
 }
 grids C pages
-grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids-C.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
+NPG=9; [[ "$DDV" == 4.25.0 ]] && NPG=10   # DBA Dash 4.25.0 adds the Collection Health page (CollectionHealth_Get)
+grep -q "^ok   C: $NPG pages and the exact snapshot" "$TMPD/grids-C.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
 # C2: the text a page shows passes the collection's credential mask (the seeds after the comparison; tokens made now)
 C2A="tk$RANDOM$RANDOM"; C2B="tk$RANDOM$RANDOM"; C2C="tk$RANDOM$RANDOM"; C2D="tk$RANDOM$RANDOM"
 C2SNAP=$(sq "SELECT CONVERT(varchar(33), MAX(SnapshotDateUTC), 126) FROM dbo.RunningQueries WHERE InstanceID = $ID" "$DDB")
