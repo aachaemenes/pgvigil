@@ -1670,5 +1670,109 @@
     "begin": "return \"\\nCREATE EVENT SESSION [\" + sessionName + \"]\\n\"",
     "end": "+ \");\\n\";",
     "sha256": "01bc11377ea1cac2e62e99a9f534d8986d8755b55f5eaa18880a79841667ad20"
+  },
+  {
+    "name": "blitzCacheCostThresholds",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's cost and runtime warning thresholds (the plan warnings' rules)",
+    "begin": "near_parallel = CASE WHEN",
+    "end": "is_big_spills = CASE WHEN (AvgSpills / 128.) \u003e 499. THEN 1 END",
+    "sha256": "5cced7efc92b4b34f8a9d3387126d9d47d5e60fe544e69532326c49750b8d859",
+    "item_re": "(?m)^\\s*(\\w+ = CASE WHEN [^\\r\\n]*? THEN 1 END)",
+    "items": [
+      "near_parallel = CASE WHEN is_parallel \u003c\u003e 1 AND QueryPlanCost BETWEEN @ctp * (1 - (@ctp_threshold_pct / 100.0)) AND @ctp THEN 1 END",
+      "is_key_lookup_expensive = CASE WHEN QueryPlanCost \u003e= (@ctp / 2) AND key_lookup_cost \u003e= QueryPlanCost * .5 THEN 1 END",
+      "is_sort_expensive = CASE WHEN QueryPlanCost \u003e= (@ctp / 2) AND sort_cost \u003e= QueryPlanCost * .5 THEN 1 END",
+      "is_remote_query_expensive = CASE WHEN remote_query_cost \u003e= QueryPlanCost * .05 THEN 1 END",
+      "is_unused_grant = CASE WHEN PercentMemoryGrantUsed \u003c= @memory_grant_warning_percent AND MinGrantKB \u003e @MinMemoryPerQuery THEN 1 END",
+      "long_running_low_cpu = CASE WHEN AverageDuration \u003e AverageCPU * 4 AND AverageCPU \u003c 500. THEN 1 END",
+      "low_cost_high_cpu = CASE WHEN QueryPlanCost \u003c= 10 AND AverageCPU \u003e 5000. THEN 1 END",
+      "is_spool_expensive = CASE WHEN QueryPlanCost \u003e (@ctp / 5) AND index_spool_cost \u003e= QueryPlanCost * .1 THEN 1 END",
+      "is_spool_more_rows = CASE WHEN index_spool_rows \u003e= (AverageReturnedRows / ISNULL(NULLIF(ExecutionCount, 0), 1)) THEN 1 END",
+      "is_table_spool_expensive = CASE WHEN QueryPlanCost \u003e (@ctp / 5) AND table_spool_cost \u003e= QueryPlanCost / 4 THEN 1 END",
+      "is_table_spool_more_rows = CASE WHEN table_spool_rows \u003e= (AverageReturnedRows / ISNULL(NULLIF(ExecutionCount, 0), 1)) THEN 1 END",
+      "is_bad_estimate = CASE WHEN AverageReturnedRows \u003e 0 AND (estimated_rows * 1000 \u003c AverageReturnedRows OR estimated_rows \u003e AverageReturnedRows * 1000) THEN 1 END",
+      "is_big_spills = CASE WHEN (AvgSpills / 128.) \u003e 499. THEN 1 END"
+    ]
+  },
+  {
+    "name": "blitzCacheMSTVFEstimate",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's fixed MSTVF estimates",
+    "begin": "SET b.is_mstvf = 1",
+    "end": "OPTION (RECOMPILE);",
+    "sha256": "401b7d7cf585b523c763227acb158ca866e0a49d13e981cc617381a07790b1cd",
+    "item_re": "(@EstimateRows=\\\"[0-9]+\\\" or @EstimateRows=\\\"[0-9]+\\\")",
+    "items": [
+      "@EstimateRows=\"100\" or @EstimateRows=\"1\""
+    ]
+  },
+  {
+    "name": "blitzCacheNearParallelPct",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's nearly-parallel band",
+    "begin": "@ctp_threshold_pct TINYINT = ",
+    "end": ",",
+    "sha256": "a83959f03adec06f992aa46f567928a2d2247f95266fb25129d07b5cc2811de2",
+    "item_re": "TINYINT = ([0-9]+)",
+    "items": [
+      "10"
+    ]
+  },
+  {
+    "name": "blitzCacheKeyLookupCost",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's key lookup cost (the costliest lookup's subtree)",
+    "begin": "SET key_lookup_cost = x.key_lookup_cost",
+    "end": "WHERE [relop].exist('/p:RelOp/p:IndexScan[(@Lookup[.=\"1\"])]') = 1",
+    "sha256": "172599f18dbad63b5164d030999135c12a05eeab71608d09b00ad3d50b6c1421"
+  },
+  {
+    "name": "blitzCacheRemoteQueryCost",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's remote query cost (the costliest remote operator's subtree)",
+    "begin": "SET remote_query_cost = x.remote_query_cost",
+    "end": "WHERE [relop].exist('/p:RelOp[(@PhysicalOp[contains(., \"Remote\")])]') = 1",
+    "sha256": "ba8eaa67e69049204288bd9183ba17131a5f6841378081cdf49b3790e5ea43a6"
+  },
+  {
+    "name": "blitzCacheSortCost",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's sort cost (the costliest sort's IO + CPU)",
+    "begin": "SET sort_cost = y.max_sort_cost",
+    "end": "WHERE [relop].exist('/p:RelOp[(@PhysicalOp[.=\"Sort\"])]') = 1",
+    "sha256": "459a5c8ae72d1606b437daba370a31a2ee5e3fd8713e2942182b2db44ff737d0"
+  },
+  {
+    "name": "blitzCacheIndexSpoolCost",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's eager index spool rows and cost (IO * CPU * rebinds, at least 1)",
+    "begin": "SET b.index_spool_rows = sp.estimated_rows,",
+    "end": "ELSE sp.estimated_rebinds END)",
+    "sha256": "df0badd2cadc9d1a0fb0028cfe86f13a0f9629d8636a34626b7071ae3a1cb39b"
+  },
+  {
+    "name": "blitzCacheTableSpoolCost",
+    "go_file": "internal/plans/mssqlwarn.go",
+    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
+    "path": "sp_BlitzCache.sql",
+    "follows": "8.34 (20260702), sp_BlitzCache's lazy table spool rows (rows * rebinds) and cost (IO * CPU * rows * rebinds, at least 1)",
+    "begin": "SET b.table_spool_rows = (sp.estimated_rows * sp.estimated_rebinds),",
+    "end": "ELSE sp.estimated_rebinds END)",
+    "sha256": "d6885be6602432f99d73ae56b11a5022cb660349ed8adcb5f27d958338b98389"
   }
 ]
