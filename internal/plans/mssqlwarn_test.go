@@ -564,13 +564,15 @@ var oneOf = map[string]func(*mstmt) int{
 
 // anyNodeSeen are the one-way compares where pgvigil fires and sp_BlitzCache's kept operator did not, each read: a
 // statement where some operator meets the rule and sp_BlitzCache's UPDATE kept another's 0 (the busy loop's inner
-// side, a heap's Table Scan under a spool or a function). A new one fails until it is read and named here.
+// side, a heap's Table Scan under a spool or a function; win_spool's three lazy spools, of which capture 3's
+// sp_BlitzCache kept NodeId 2 - 500 rows, no rebind - where capture 2's kept NodeId 10). A new one fails until it is
+// read and named here.
 var anyNodeSeen = []string{"adaptive/1:busy_loops", "cursor_ff/1:busy_loops", "cursor_ff/2:busy_loops",
 	"forced_ix/1:busy_loops", "idx_spool/1:is_table_scan", "lookup_cheap/1:busy_loops", "mstvf_interleaved/1:is_table_scan",
-	"tspool_hit/1:is_table_scan", "win_spool/1:busy_loops"}
+	"tspool_hit/1:is_table_scan", "win_spool/1:busy_loops", "win_spool/1:is_table_spool_more_rows"}
 
-// The capture's oracle rows: 49 cases, a cursor's batch two rows (its DECLARE and its FETCH).
-const oracleRowsAtLeast = 52
+// The capture's oracle rows: 53 cases, a cursor's batch two rows (its DECLARE and its FETCH).
+const oracleRowsAtLeast = 56
 
 func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 	oracle := readOracle(t)
