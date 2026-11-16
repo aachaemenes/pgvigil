@@ -1,7 +1,10 @@
 // The Backups tab and the fleet Backups root (task 33): the WAL archiver (pg_stat_archiver: archived and failed
 // files, the last of each, the archive lag, the trend), and through the AWS door on RDS and Aurora the backup
 // retention, the latest restorable time and the snapshots; the four rules (the archiver failing, the last archive
-// older than the threshold, retention under 7 days, no snapshot in 24 h). pgBackRest and barman are not read.
+// older than the threshold, retention under 7 days, no snapshot in 24 h; on Aurora the last two once per cluster, on
+// the instance that holds its backups - a stable member, the lowest id read in the last hour, not necessarily the
+// writer - and the other instances' cells name it: cluster_backups_on).
+// pgBackRest and barman are not read.
 // Data from /api/backups and /api/backups/fleet.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
@@ -13,6 +16,8 @@ const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const ageTxt = (v: unknown) => v == null ? '' : fmtSecs(v) + ' ago';
 const snapAge = (v: unknown) => v == null ? '' : Number(v) > 86400 ? badge(ageTxt(v), 'warn') : ageTxt(v);
 const retTxt = (v: unknown) => v == null ? '' : Number(v) === 0 ? badge('off (0 days)', 'crit') : Number(v) < 7 ? badge(fmtNum(v) + ' days', 'warn') : fmtNum(v) + ' days';
+// heldOn is the text of an Aurora instance's backups cell when the cluster's backups are judged on another instance.
+const heldOn = (r: Row) => r.cluster_backups_on == null ? null : `the cluster's backups: read on ${String(r.cluster_backups_on)}`;
 
 // archiverState is the archiver's one-word state for a tile and the fleet grid.
 function archiverState(s: Row): [string, string] {
@@ -34,12 +39,12 @@ export async function backupsView(ctx: Ctx): Promise<HTMLElement> {
     return sec;
   }
   const [state, kind] = archiverState(s);
-  const cloud = s.cloud_resource != null;
+  const cloud = s.cloud_resource != null, held = heldOn(s);
   sec.append(el('div', { class: 'tiles' },
     tile('WAL archiver', state, kind),
     tile('last archived', s.archive_age_s == null ? '-' : fmtSecs(s.archive_age_s) + ' ago'),
     tile('archive lag', s.archive_lag_bytes == null ? '-' : fmtBytes(s.archive_lag_bytes)),
-    ...(cloud ? [
+    ...(cloud && held ? [tile('retention and snapshots', held)] : cloud ? [
       tile('retention', s.retention_days == null ? '-' : fmtNum(s.retention_days) + ' days',
         s.retention_days == null ? '' : Number(s.retention_days) === 0 ? 'crit' : Number(s.retention_days) < 7 ? 'warn' : 'ok'),
       tile('newest snapshot', s.newest_snapshot_age_s == null ? 'none' : fmtSecs(s.newest_snapshot_age_s) + ' ago',
@@ -74,6 +79,7 @@ export async function backupsView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, s.resource_kind === 'cluster' ? 'Aurora cluster backups' : 'RDS backups'),
       props([
         [s.resource_kind === 'cluster' ? 'cluster' : 'DB instance', String(s.cloud_resource)],
+        ...(held ? [['findings', `${held}: its retention and snapshot findings are raised there`] as [string, string]] : []),
         ['backup retention', retTxt(s.retention_days)],
         ['backup window (UTC)', String(s.backup_window ?? '-')],
         ['latest restorable time', s.latest_restorable_time == null ? 'none' : `${fmtTime(s.latest_restorable_time)} (${ageTxt(s.restorable_age_s)})`],
@@ -111,8 +117,9 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
   let rows = rowsOf(d.instances);
   if (keep) rows = rows.filter(keep);
   const failing = rows.filter(r => r.archiver_failing).length;
-  const short = rows.filter(r => r.retention_days != null && Number(r.retention_days) < 7).length;
-  const stale = rows.filter(r => r.retention_days != null && (r.newest_snapshot_age_s == null || Number(r.newest_snapshot_age_s) > 86400)).length;
+  const own = rows.filter(r => heldOn(r) == null);   // an Aurora cluster counts once: on the instance that holds its backups
+  const short = own.filter(r => r.retention_days != null && Number(r.retention_days) < 7).length;
+  const stale = own.filter(r => r.retention_days != null && (r.newest_snapshot_age_s == null || Number(r.newest_snapshot_age_s) > 86400)).length;
   return el('section', {}, el('h2', {}, 'Backups'),
     el('div', { class: 'tiles' },
       instTile(rows.length),
@@ -127,9 +134,11 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
       { key: 'failed_count', label: 'failed', num: true },
-      { key: 'retention_days', label: 'retention', num: true, fmt: retTxt, cls: v => v == null ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },
+      { key: 'retention_days', label: 'retention', num: true, fmt: (v, r) => heldOn(r) ?? retTxt(v),
+        cls: (v, r) => v == null || heldOn(r) ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },
       { key: 'restorable_age_s', label: 'restorable', num: true, fmt: ageTxt },
-      { key: 'newest_snapshot_age_s', label: 'newest snapshot', num: true, fmt: snapAge, cls: v => v == null ? '' : Number(v) > 86400 ? 'warn' : 'ok' },
+      { key: 'newest_snapshot_age_s', label: 'newest snapshot', num: true, fmt: (v, r) => heldOn(r) ? '' : snapAge(v),
+        cls: (v, r) => v == null || heldOn(r) ? '' : Number(v) > 86400 ? 'warn' : 'ok' },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ], 'No backups read yet.'));
 }

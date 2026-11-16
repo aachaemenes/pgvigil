@@ -166,7 +166,7 @@ type backupSnap struct {
 // backupsCloudRows reads the platform's backups: on RDS the instance's retention and restorable time and its
 // snapshots; on Aurora the cluster's (the cluster from the config, else from the instance). Rows:
 // {kind:'cloud', name:<resource id>, resource_kind:'instance'|'cluster', retention_days, latest_restorable_time,
-// earliest_restorable_time, backup_window} and {kind:'snapshot', name:<snapshot id>, snapshot_type, status,
+// earliest_restorable_time, backup_window, arn (a cluster's DBClusterArn: its instances' rows name one cluster)} and {kind:'snapshot', name:<snapshot id>, snapshot_type, status,
 // created_at, allocated_gib, encrypted}, the newest backupSnapshotsKept per type; a failed call is a
 // collector_error row and the parts that answered still land.
 func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, id, cluster string) []Row {
@@ -198,7 +198,7 @@ func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, i
 			c := dc.DBClusters[0]
 			out = append(out, Row{"kind": "cloud", "name": cluster, "resource_kind": "cluster", "retention_days": c.BackupRetentionPeriod,
 				"latest_restorable_time": utcPtr(c.LatestRestorableTime), "earliest_restorable_time": utcPtr(c.EarliestRestorableTime),
-				"backup_window": nilIfEmpty(aws.ToString(c.PreferredBackupWindow))})
+				"backup_window": nilIfEmpty(aws.ToString(c.PreferredBackupWindow)), "arn": nilIfEmpty(aws.ToString(c.DBClusterArn))})
 		}
 		p := rds.NewDescribeDBClusterSnapshotsPaginator(api, &rds.DescribeDBClusterSnapshotsInput{DBClusterIdentifier: aws.String(cluster)})
 		for p.HasMorePages() {

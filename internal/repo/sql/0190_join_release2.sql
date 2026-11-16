@@ -27,6 +27,10 @@
 --     on purpose: mssql_repl_hourly (its import keeps a year of an instance's hours), mssql_logship_foreign_logs and
 --     mssql_logship_errors (current rows of 24 hours, replaced by each read), replication_hourly_dirty (working
 --     ranges a heal removes). The threshold keys' unit check and import_pg_threshold: at their lines below.
+--   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
+--     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
+--     (backup_cluster_holders, new: the cluster keyed by its ARN, backup_state.arn; import_backups is 0022's with it),
+--     at the end of this file.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
 -- (0110's, its owner-only list extended in 0110 itself).
 --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
@@ -892,3 +896,159 @@ BEGIN
   RETURN jsonb_build_object('outcome', 'done', 'detail', 'set', 'threshold_id', v_new);
 END $$;
 
+-- An Aurora cluster's backups are the cluster's: every instance with an aws: block reads the same cluster (its
+-- retention and snapshots), so 0103's two cloud rules fired on the writer and again on each reader; now once, on the
+-- cluster's holder (a stable member: backup_cluster_holders). backup_status is
+-- 0103's with cluster_backups_on at the end: the instance that holds the cluster's backups when it is another one
+-- (NULL: not a cluster, or this instance holds them); backup_rule_hits is 0103's with the two cloud arms held to the
+-- holder (backup_cluster_holders). A cluster's key is its lower-cased DBClusterArn (backup_state.arn, read since this
+-- file); a row with no ARN (a collector before it, one read after the upgrade) takes the one ARN its identifier carries
+-- among the rows, else keeps its identifier: two clusters of one name, neither read with an ARN, read as one. One
+-- holder per key, so a mix of rows never silences a cluster (it may raise twice until the next read). import_backups
+-- is 0022's with arn stored.
+ALTER TABLE pgvigil.backup_state ADD COLUMN IF NOT EXISTS arn text;   -- cloud: a cluster's DBClusterArn
+
+CREATE OR REPLACE FUNCTION pgvigil.import_backups(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_backups'), p_instance_id);
+  PERFORM pgvigil.ensure_month_partition('backup_sample', p_snapshot_at);
+
+  INSERT INTO pgvigil.backup_state AS s (instance_id, kind, name, snapshot_at, archive_mode, archive_timeout, archive_set, archived_count,
+                                         last_archived_wal, last_archived_time, failed_count, last_failed_wal, last_failed_time, stats_reset,
+                                         is_replica, wal_segment_bytes, current_lsn, archive_lag_bytes, archive_warn_minutes, resource_kind,
+                                         retention_days, latest_restorable_time, earliest_restorable_time, backup_window, snapshot_type,
+                                         status, created_at, allocated_gib, encrypted, first_seen, is_present, arn)
+  SELECT p_instance_id, r->>'kind', r->>'name', p_snapshot_at, r->>'archive_mode', r->>'archive_timeout', (r->>'archive_set')::boolean,
+         (r->>'archived_count')::bigint, r->>'last_archived_wal', (r->>'last_archived_time')::timestamptz, (r->>'failed_count')::bigint,
+         r->>'last_failed_wal', (r->>'last_failed_time')::timestamptz, (r->>'stats_reset')::timestamptz, (r->>'is_replica')::boolean,
+         (r->>'wal_segment_bytes')::bigint, r->>'current_lsn', (r->>'archive_lag_bytes')::bigint,
+         coalesce((r->>'archive_warn_minutes')::int, CASE WHEN r->>'kind' = 'archiver' THEN 60 END), r->>'resource_kind',
+         (r->>'retention_days')::int, (r->>'latest_restorable_time')::timestamptz, (r->>'earliest_restorable_time')::timestamptz,
+         r->>'backup_window', r->>'snapshot_type', r->>'status', (r->>'created_at')::timestamptz, (r->>'allocated_gib')::int,
+         (r->>'encrypted')::boolean, p_snapshot_at, true, nullif(r->>'arn', '')
+    FROM (SELECT DISTINCT ON (r->>'kind', r->>'name') r FROM jsonb_array_elements(p_payload) r
+           WHERE r->>'kind' IN ('archiver', 'cloud', 'snapshot') AND r->>'name' IS NOT NULL) x
+  ON CONFLICT (instance_id, kind, name) DO UPDATE SET
+    snapshot_at = EXCLUDED.snapshot_at, archive_mode = EXCLUDED.archive_mode, archive_timeout = EXCLUDED.archive_timeout,
+    archive_set = EXCLUDED.archive_set, archived_count = EXCLUDED.archived_count, last_archived_wal = EXCLUDED.last_archived_wal,
+    last_archived_time = EXCLUDED.last_archived_time, failed_count = EXCLUDED.failed_count, last_failed_wal = EXCLUDED.last_failed_wal,
+    last_failed_time = EXCLUDED.last_failed_time, stats_reset = EXCLUDED.stats_reset, is_replica = EXCLUDED.is_replica,
+    wal_segment_bytes = EXCLUDED.wal_segment_bytes, current_lsn = EXCLUDED.current_lsn, archive_lag_bytes = EXCLUDED.archive_lag_bytes,
+    archive_warn_minutes = EXCLUDED.archive_warn_minutes, resource_kind = EXCLUDED.resource_kind, retention_days = EXCLUDED.retention_days,
+    latest_restorable_time = EXCLUDED.latest_restorable_time, earliest_restorable_time = EXCLUDED.earliest_restorable_time,
+    backup_window = EXCLUDED.backup_window, snapshot_type = EXCLUDED.snapshot_type, status = EXCLUDED.status,
+    created_at = EXCLUDED.created_at, allocated_gib = EXCLUDED.allocated_gib, encrypted = EXCLUDED.encrypted, is_present = true,
+    arn = EXCLUDED.arn;
+
+  -- absence: a cloud resource no longer named (the config moved to another), a snapshot no longer listed by a
+  -- list that was read in full this run
+  UPDATE pgvigil.backup_state s SET is_present = false
+   WHERE s.instance_id = p_instance_id AND s.is_present AND s.kind IN ('cloud', 'archiver')
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = s.kind)
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = s.kind AND r->>'name' = s.name);
+  UPDATE pgvigil.backup_state s SET is_present = false
+   WHERE s.instance_id = p_instance_id AND s.is_present AND s.kind = 'snapshot'
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'snapshots_read')
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'snapshot' AND r->>'name' = s.name);
+
+  INSERT INTO pgvigil.backup_sample (instance_id, snapshot_at, archived_count, failed_count, archive_lag_bytes, last_archived_time, restorable_age_s)
+  SELECT p_instance_id, p_snapshot_at, (a->>'archived_count')::bigint, (a->>'failed_count')::bigint, (a->>'archive_lag_bytes')::bigint,
+         (a->>'last_archived_time')::timestamptz,
+         round(extract(epoch FROM p_snapshot_at - (c->>'latest_restorable_time')::timestamptz)::numeric, 0)
+    FROM (SELECT (SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'archiver' LIMIT 1) AS a,
+                 (SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'cloud' LIMIT 1) AS c) x
+   WHERE x.a IS NOT NULL OR x.c IS NOT NULL;
+END $$;
+
+-- backup_cluster_holders: per active instance with a cluster cloud row, the instance that holds its cluster's backups -
+-- a STABLE member (the lead's call): the lowest instance id among the cluster's active instances read in the last hour
+-- (the lowest id when none is), not necessarily the writer, so a failover neither moves, resolves nor reopens the
+-- cluster's findings; cluster_backups_on is the holder's name when it is another instance (backup_status and the
+-- Summary's row).
+CREATE OR REPLACE VIEW pgvigil.backup_cluster_holders AS
+WITH cl AS (
+  SELECT c.instance_id, lower(c.name) AS cname, lower(c.arn) AS arn, c.snapshot_at > now() - interval '1 hour' AS fresh
+    FROM pgvigil.backup_state c
+    JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
+   WHERE c.kind = 'cloud' AND c.is_present AND c.resource_kind = 'cluster'
+), ck AS (
+  SELECT cl.*, coalesce(cl.arn, n.arn, 'id:' || cl.cname) AS ckey
+    FROM cl LEFT JOIN (SELECT cname, min(arn) AS arn FROM cl GROUP BY cname HAVING count(DISTINCT arn) = 1) n USING (cname)
+), hold AS (
+  SELECT DISTINCT ON (ckey) ckey, instance_id AS holder_id FROM ck ORDER BY ckey, fresh DESC, instance_id
+)
+SELECT ck.instance_id, ck.ckey AS cluster_key, h.holder_id, hi.name AS holder,
+       CASE WHEN h.holder_id <> ck.instance_id THEN hi.name END AS cluster_backups_on
+  FROM ck JOIN hold h USING (ckey) JOIN pgvigil.instances hi ON hi.instance_id = h.holder_id;
+
+CREATE OR REPLACE VIEW pgvigil.backup_status AS
+WITH snap AS (
+  SELECT instance_id,
+         max(created_at) FILTER (WHERE snapshot_type = 'automated' AND status = 'available') AS newest_automated_at,
+         max(created_at) FILTER (WHERE snapshot_type = 'manual' AND status = 'available') AS newest_manual_at,
+         max(created_at) FILTER (WHERE status = 'available') AS newest_snapshot_at,
+         count(*) FILTER (WHERE snapshot_type = 'automated') AS automated_count,
+         count(*) FILTER (WHERE snapshot_type = 'manual') AS manual_count
+    FROM pgvigil.backup_state WHERE kind = 'snapshot' AND is_present GROUP BY instance_id
+)
+SELECT i.instance_id, i.name AS instance, i.platform,
+       a.archive_mode, a.archive_set, a.is_replica,
+       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))) AS archiving,
+       a.archived_count, a.failed_count, a.last_archived_wal, a.last_archived_time, a.last_failed_wal, a.last_failed_time,
+       a.stats_reset, a.archive_lag_bytes, a.wal_segment_bytes,
+       CASE WHEN aw.level <> 'default' AND aw.warn IS NOT NULL THEN aw.warn::int ELSE a.archive_warn_minutes END AS archive_warn_minutes,
+       round(extract(epoch FROM a.snapshot_at - a.last_archived_time)::numeric, 0) AS archive_age_s,
+       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))
+        AND a.last_failed_time IS NOT NULL AND (a.last_archived_time IS NULL OR a.last_failed_time > a.last_archived_time)) AS archiver_failing,
+       (a.archive_lag_bytes > a.wal_segment_bytes) AS wal_waiting,
+       a.snapshot_at AS archiver_read_at,
+       c.name AS cloud_resource, c.resource_kind, c.retention_days, c.latest_restorable_time, c.earliest_restorable_time, c.backup_window,
+       round(extract(epoch FROM c.snapshot_at - c.latest_restorable_time)::numeric, 0) AS restorable_age_s,
+       c.snapshot_at AS cloud_read_at,
+       s.newest_automated_at, s.newest_manual_at, s.newest_snapshot_at,
+       round(extract(epoch FROM c.snapshot_at - s.newest_snapshot_at)::numeric, 0) AS newest_snapshot_age_s,
+       coalesce(s.automated_count, 0) AS automated_count, coalesce(s.manual_count, 0) AS manual_count,
+       h.cluster_backups_on
+  FROM pgvigil.instances i
+  LEFT JOIN pgvigil.backup_state a ON a.instance_id = i.instance_id AND a.kind = 'archiver' AND a.is_present
+  LEFT JOIN pgvigil.backup_state c ON c.instance_id = i.instance_id AND c.kind = 'cloud' AND c.is_present
+  LEFT JOIN snap s ON s.instance_id = i.instance_id
+  LEFT JOIN pgvigil.backup_cluster_holders h ON h.instance_id = i.instance_id
+  CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'archive_age') aw
+ WHERE i.is_active AND (a.instance_id IS NOT NULL OR c.instance_id IS NOT NULL);
+
+
+CREATE OR REPLACE VIEW pgvigil.backup_rule_hits AS
+SELECT b.instance_id, 'critical' AS severity, 'archiver failing' AS check_name, coalesce(b.last_failed_wal, 'pg_stat_archiver') AS object,
+       b.archiver_read_at AS at,
+       'archive of ' || coalesce(b.last_failed_wal, '?') || ' failed at ' || to_char(b.last_failed_time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'
+       || coalesce(', after the last success at ' || to_char(b.last_archived_time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', ', no success since the stats reset')
+       || ' (' || b.failed_count || ' failed, ' || b.archived_count || ' archived)' AS detail
+  FROM pgvigil.backup_status b
+ WHERE b.archiver_failing AND b.platform <> 'aurora'
+UNION ALL
+SELECT b.instance_id, 'warning', 'last archive older than ' || b.archive_warn_minutes || ' min', coalesce(b.last_archived_wal, 'pg_stat_archiver'), b.archiver_read_at,
+       coalesce('last archived ' || round(b.archive_age_s / 60) || ' min before the read', 'nothing archived since the stats reset')
+       || '; ' || pg_size_pretty(b.archive_lag_bytes) || ' of WAL waiting'
+  FROM pgvigil.backup_status b
+ WHERE b.archiving AND b.wal_waiting AND b.platform <> 'aurora'
+   AND (b.last_archived_time IS NULL OR b.archive_age_s > b.archive_warn_minutes * 60)
+UNION ALL
+SELECT b.instance_id, CASE WHEN r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days THEN 'critical' ELSE 'warning' END,
+       CASE WHEN r.warn_days IS NOT NULL THEN 'retention under ' || trim_scale(r.warn_days) || ' days'
+            ELSE 'retention at or under ' || trim_scale(r.crit_days) || ' days' END, b.cloud_resource, b.cloud_read_at,
+       CASE WHEN b.retention_days = 0 THEN 'automated backups are off (retention 0 days)'
+            ELSE 'backup retention ' || b.retention_days || ' days' END
+  FROM pgvigil.backup_status b JOIN pgvigil.backup_retention r USING (instance_id)
+ WHERE ((r.warn_days IS NOT NULL AND b.retention_days < r.warn_days) OR (r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days))
+   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
+   AND b.cluster_backups_on IS NULL
+UNION ALL
+SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.cloud_read_at,
+       coalesce('newest snapshot ' || to_char(b.newest_snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC, '
+                || round(b.newest_snapshot_age_s / 3600) || ' h before the read', 'no available snapshot listed')
+  FROM pgvigil.backup_status b
+ WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400)
+   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
+   AND b.cluster_backups_on IS NULL;

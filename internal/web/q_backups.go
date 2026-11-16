@@ -13,13 +13,14 @@ SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
  WHERE i.is_active`})
 }
 
-// sqlBackupsStatus is the instance's one status row: the archiver, the cloud side, the newest snapshots.
+// sqlBackupsStatus is the instance's one status row: the archiver, the cloud side, the newest snapshots (on an Aurora
+// instance that does not hold its cluster's backups, cluster_backups_on names the one that holds and judges them).
 const sqlBackupsStatus = `
 SELECT archive_mode, archive_set, is_replica, archiving, archived_count, failed_count, last_archived_wal, last_archived_time,
        last_failed_wal, last_failed_time, stats_reset, archive_lag_bytes, wal_segment_bytes, archive_warn_minutes, archive_age_s,
        archiver_failing, wal_waiting, archiver_read_at, cloud_resource, resource_kind, retention_days, latest_restorable_time,
        earliest_restorable_time, backup_window, restorable_age_s, cloud_read_at, newest_automated_at, newest_manual_at,
-       newest_snapshot_at, newest_snapshot_age_s, automated_count, manual_count
+       newest_snapshot_at, newest_snapshot_age_s, automated_count, manual_count, cluster_backups_on
   FROM pgvigil.backup_status
  WHERE instance_id = $1`
 
@@ -59,7 +60,7 @@ SELECT severity, setting, value, suggested, detail, at
 // sqlBackupsFleet is every active instance's status row with its count of rule hits, the failing first.
 const sqlBackupsFleet = `
 SELECT b.instance_id, b.instance, b.platform, b.archive_mode, b.is_replica, b.archiving, b.wal_waiting, b.archive_warn_minutes, b.archived_count, b.failed_count, b.last_archived_time, b.archive_age_s,
-       b.archive_lag_bytes, b.archiver_failing, b.retention_days, b.restorable_age_s, b.newest_snapshot_at, b.newest_snapshot_age_s,
+       b.archive_lag_bytes, b.archiver_failing, b.retention_days, b.restorable_age_s, b.newest_snapshot_at, b.newest_snapshot_age_s, b.cluster_backups_on,
        (SELECT count(*) FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS findings,
        (SELECT CASE WHEN bool_or(h.severity = 'critical') THEN 'critical' WHEN count(*) > 0 THEN 'warning' END
           FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS worst,

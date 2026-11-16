@@ -297,6 +297,8 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
       ...(g.key === 'dumps' && hit.length ? { since: hit.map(c => String(c.at ?? '')).filter(Boolean).sort().pop() } : {}),
       detail: hit.map(c => `${checkLabel(c.check_name)}: ${c.object ?? ''} ${c.detail ?? ''}`.trim()),
     };
+    // an Aurora instance that does not hold its cluster's backups: Backup FULL says where they are read and judged
+    if (g.key === 'full' && r.cluster_backups_on != null) out[g.key].detail.push(`the cluster's backups: read on ${String(r.cluster_backups_on)}`);
   }
   return out;
 }

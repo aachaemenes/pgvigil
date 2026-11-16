@@ -1,6 +1,7 @@
 package web
 
-// sqlInstances lists the active instances with their state and the latest session summary.
+// sqlInstances lists the active instances with their state and the latest session summary (cluster_backups_on: on an
+// Aurora instance that does not hold its cluster's backups, the one that does - the Summary's Backup FULL cell names it).
 // $1 = the stale check's expectations: a collection disabled or gated off for an instance (0) is not
 // counted as failing there, so an error row an earlier build left behind does not alarm for ever.
 // A row never read (no server_version: an instance added on Admin > Instances whose server has not answered yet)
@@ -11,7 +12,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
        CASE WHEN i.server_version IS NULL THEN i.first_seen END AS added_at,
        i.engine, st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
-       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,
+       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at, cb.cluster_backups_on,
        (SELECT count(*) FROM pgvigil.collection_dates c
          WHERE c.instance_id = i.instance_id AND c.status = 'error'
            AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
@@ -20,6 +21,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
   LEFT JOIN pgvigil.instance_tags_merged tm ON tm.instance_id = i.instance_id
   LEFT JOIN pgvigil.host_state h ON h.instance_id = i.instance_id
+  LEFT JOIN pgvigil.backup_cluster_holders cb ON cb.instance_id = i.instance_id
   LEFT JOIN LATERAL (SELECT * FROM pgvigil.activity_summary x
                       WHERE x.instance_id = i.instance_id
                       ORDER BY x.snapshot_at DESC LIMIT 1) a ON true

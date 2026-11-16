@@ -156,6 +156,9 @@ func TestBackupsAuroraCluster(t *testing.T) {
 			if c["backup_window"] != "07:22-07:52" {
 				t.Errorf("backup_window = %v", c["backup_window"])
 			}
+			if c["arn"] != "arn:aws:rds:us-east-1:123456789012:cluster:dba-lab-pg" {
+				t.Errorf("arn = %v", c["arn"])
+			}
 			want := []string{"before-upgrade", "rds:dba-lab-pg-2026-11-09-07-30", "rds:dba-lab-pg-2026-11-08-07-31"}
 			if got := snapNames(k["snapshot"]); fmt.Sprint(got) != fmt.Sprint(want) {
 				t.Errorf("snapshots = %v, want %v (the newest first)", got, want)
