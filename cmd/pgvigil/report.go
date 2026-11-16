@@ -355,7 +355,7 @@ var knownKeys = map[string]bool{
 	"account_url": true, "container": true, "connection_string": true, "sas_url": true,
 	"settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
 	"snapshot_max_bytes": true, "statement_timeout": true, "carry": true, "tables": true, "exclude": true,
-	// the keys of the slices that met this list at the j16 join (config.Config's own types): the collector's probe
+	// the keys of config.Config's later blocks: the collector's probe
 	// (B24h), the agent door, /metrics (B24d: metrics: and a page door's prometheus_metrics), the request worker (CQ-A:
 	// cq: and an instance's DBA Dash allow-lists community_allow / jobs_allow, ST4), Patroni's REST read (376: its
 	// client certificate's files), the SQL Server counters' edits (401) and the schema read's databases (A26)
