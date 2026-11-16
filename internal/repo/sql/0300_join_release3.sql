@@ -2547,7 +2547,9 @@ BEGIN
 
   -- [#5 81-AGENT 654a9cd5]
   -- the agent door x the request queue (0268 x 0200): a queue-mode serve writes the asks through pgvigil_requester
-  -- (agent-join-lines.sql 3); apply_roles revokes a function's grants only from PUBLIC and the reader, so this grant stands
+  -- (agent-join-lines.sql 3); apply_roles revokes a function's grants only from PUBLIC and the reader, so this grant stands.
+  -- Not its op run: 0268's import_investigation_event writes run lines for a member of pgvigil_collector only (the
+  -- actions door's audit login; J16-RUNGUARD), and refuses this role 42501
   GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_request(timestamptz, jsonb),
     pgvigil.import_investigation_event(timestamptz, jsonb) TO pgvigil_requester;
 
