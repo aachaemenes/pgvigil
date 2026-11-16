@@ -83,8 +83,11 @@ func (ds *doorSet) planPolicy(name string) string {
 
 // planFetchOff is why a plan cannot be read on demand for the instance on this door set, or "".
 func (ds *doorSet) planFetchOff(name string) string {
+	if why := ds.remoteWhy(name); why != "" { // R13's words before the policy's (review B N1)
+		return "not read: " + why
+	}
 	if qt := ds.planPolicy(name); qt != "full" {
-		return fmt.Sprintf("not read: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled parameter values, so plans are read under \"full\" only", qt)
+		return fmt.Sprintf("not read: %s, and a plan carries the statement's text and its compiled parameter values, so plans are read under \"full\" only", textPolicyWords(qt))
 	}
 	if _, _, no := ds.readLogin("sqlserver", name); no.Why != "" {
 		return "not read: " + no.Why
@@ -403,7 +406,7 @@ func (s *Server) MSSQLRunningPlan(w http.ResponseWriter, r *http.Request) {
 	// the policy as this serve reads it now: a plan kept under 'full' is not served once the policy is narrower (the
 	// collectors' policy row then drops what is kept, at their next run)
 	if qt := s.doorsNow().planPolicy(name); qt != "full" {
-		s.reply(w, r, map[string]any{"state": "none", "words": fmt.Sprintf("not shown: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", qt)}, nil)
+		s.reply(w, r, map[string]any{"state": "none", "words": fmt.Sprintf("not shown: %s, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", textPolicyWords(qt))}, nil)
 		return
 	}
 	err = s.pool.QueryRow(r.Context(), query, args...).Scan(&xml, &state, &db, &inst, &note)
@@ -612,7 +615,7 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch ds.planPolicy(n) {
-		case "none":
+		case "none", "hash": // hash: fingerprints only, nothing to search (review C B1)
 			skip = append(skip, id)
 			if inst == nil || inst == id {
 				noText = append(noText, n)
@@ -832,7 +835,7 @@ func (s *Server) MSSQLPlanSources(w http.ResponseWriter, r *http.Request) {
 	// a kept running plan is shown under the policy full only
 	runningOff := ""
 	if qt := ds.planPolicy(name); qt != "full" {
-		runningOff = fmt.Sprintf("not shown: this instance's query_text policy is %q", qt)
+		runningOff = fmt.Sprintf("not shown: %s", textPolicyWords(qt))
 	}
 	s.reply(w, r, map[string]any{"sources": t, "fetch_off": s.planReadOff(r.Context(), ds, name), "running_off": runningOff}, nil)
 }

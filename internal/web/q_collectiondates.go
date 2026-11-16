@@ -19,17 +19,21 @@ import (
 const sqlCollectionDates = `
 WITH c AS (
   SELECT c.instance_id, i.name AS instance, i.engine, c.collection, c.status AS last_status, c.snapshot_at, c.duration_ms, c.note,
-         coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS interval_secs
+         coalesce(x.interval_secs, CASE WHEN r.instance_id IS NULL THEN ($1::jsonb -> 'instances' -> i.name ->> c.collection)::int END,
+                  CASE WHEN r.instance_id IS NULL THEN ($1::jsonb -> 'defaults' ->> c.collection)::int END) AS interval_secs,
+         coalesce(r.as_of, now()) AS ref_at, r.as_of
     FROM pgvigil.collection_dates c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
+    LEFT JOIN pgvigil.remote_instance_state r ON r.instance_id = c.instance_id
+    LEFT JOIN pgvigil.remote_collection_interval x ON x.instance_id = c.instance_id AND x.collection = c.collection
    WHERE ($3::int = 0 OR c.instance_id = $3) AND ($4::int[] IS NULL OR c.instance_id = ANY ($4))
 )
 SELECT c.instance_id, c.instance, c.engine, c.collection,
        CASE WHEN c.interval_secs = 0 THEN 'disabled'
             WHEN c.last_status = 'error' THEN 'critical'
-            WHEN now() - c.snapshot_at > make_interval(secs => CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END) THEN 'warning'
+            WHEN c.ref_at - c.snapshot_at > make_interval(secs => CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END) THEN 'warning'
             ELSE 'ok' END AS status,
-       c.last_status, c.snapshot_at, greatest(0, extract(epoch FROM now() - c.snapshot_at))::bigint AS age_secs,
+       c.last_status, c.snapshot_at, greatest(0, extract(epoch FROM now() - c.snapshot_at))::bigint AS age_secs, c.as_of,
        c.interval_secs, CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END AS stale_secs,
        CASE WHEN c.interval_secs > 0 THEN c.snapshot_at + make_interval(secs => c.interval_secs) END AS next_run,
        CASE WHEN c.last_status = 'ok' THEN c.snapshot_at END AS last_success,
@@ -40,7 +44,7 @@ SELECT c.instance_id, c.instance, c.engine, c.collection,
               WHERE l.status = 'error' AND ($3::int = 0 OR l.instance_id = $3) AND ($4::int[] IS NULL OR l.instance_id = ANY ($4))
               GROUP BY l.instance_id, l.collection) e ON e.instance_id = c.instance_id AND e.collection = c.collection
  ORDER BY CASE WHEN c.interval_secs = 0 THEN 4 WHEN c.last_status = 'error' THEN 1
-               WHEN now() - c.snapshot_at > make_interval(secs => CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END) THEN 2
+               WHEN c.ref_at - c.snapshot_at > make_interval(secs => CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END) THEN 2
                ELSE 3 END, c.instance, c.collection`
 
 // CollectionDates is GET /api/collectiondates[?instance=N|?instances=..].

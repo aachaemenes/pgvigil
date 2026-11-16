@@ -6,12 +6,12 @@
 import { indexLink } from './drill';
 import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
-import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, offControl, props, tile } from './ui';
 import { needControl } from './needs';
 import { whatIsThis } from './sqlview';
 import { depthError } from './statements';
 
-interface IndexesData { state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null }
+interface IndexesData { advise?: Table | null; state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null }
 interface InventoryData { inventory: Table | null; inventory_total: Table | null }
 interface IndexesFleetData { fleet: Table | null; unused: Table | null; duplicates: Table | null }
 
@@ -105,10 +105,13 @@ function inventorySection(instance: number, dbs: Row[], ctx?: Ctx): HTMLElement 
 }
 
 // adviseBox: the advisor button for one database and its report.
-function adviseBox(instance: number, dbs: string[]): HTMLElement {
+function adviseBox(instance: number, dbs: string[], off: string | null): HTMLElement {
   const pick = el('select', { 'aria-label': 'database to advise on' }, ...dbs.map(d => el('option', { value: d }, d)));
-  // the advisor runs hypopg and EXPLAIN on the monitored server: it needs operator, as plans/hypo (the lead 13:3x)
-  const run = needControl(el('button', { type: 'button' }, 'Test the suggested indexes'), 'indexes/advise');
+  // the server's own reason first (a remote instance, a page instance, no door: adviseOff), then the role's: the advisor
+  // runs hypopg and EXPLAIN on the monitored server, so it needs operator, as plans/hypo (the lead 13:3x)
+  const btn = el('button', { type: 'button' }, 'Test the suggested indexes');
+  const why = off ? offControl(btn, off) : null;
+  const run = needControl(btn, 'indexes/advise');
   const out = el('div');
   run.addEventListener('click', async () => {
     run.setAttribute('disabled', '');
@@ -127,7 +130,7 @@ function adviseBox(instance: number, dbs: string[]): HTMLElement {
       + 'predicates it sampled; each is created as a HYPOTHETICAL index in the advisor\'s own session (HypoPG: the planner sees it, '
       + 'nothing is written), the statements that would use it are planned with EXPLAIN (not executed) before and after, and the cost difference is the gain. '
       + 'No index is created: a suggestion is for a person to review. EXPLAIN needs SELECT on the tables (pg_read_all_data or a grant).'),
-    el('p', {}, 'Database ', pick, ' ', run), out);
+    el('p', {}, 'Database ', pick, ' ', run, ...(why ? [' ', why] : [])), out);
 }
 
 export function adviceView(rep: AdvReport): HTMLElement {
@@ -275,7 +278,8 @@ export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElem
     + 'its i5 pattern. Run a DO line alone, outside a transaction, in a session where lock_timeout and statement_timeout are 0 '
     + '(DROP INDEX CONCURRENTLY waits for every older transaction). An unused index that covers a redundant or duplicate one is '
     + 'not listed as unused: drop one of a pair, never both.'));
-  sec.append(adviseBox(instance, dbs.map(r => String(r.datname))));
+  const adviseOff = rowsOf(d.advise ?? null)[0]?.off;
+  sec.append(adviseBox(instance, dbs.map(r => String(r.datname)), adviseOff == null ? null : String(adviseOff)));
   return sec;
 }
 

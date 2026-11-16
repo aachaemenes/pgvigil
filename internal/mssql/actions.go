@@ -101,6 +101,9 @@ type Door struct {
 	Allow []string
 	// Page: an instance added in Admin > Instances (serve's page door: its read login only, never an action)
 	Page bool
+	// Remote: an instance a remote collector reads ('remote collector <c> of site <s>'): the hub never connects to it,
+	// so no login and no action; "" = not remote
+	Remote string
 	// Platform is the instance's platform as its config names it ("" or "auto" = not named): plan_evict is not
 	// offered on Azure SQL Database (task 406)
 	Platform string
@@ -116,6 +119,12 @@ func (d Door) Allows(k ActionKind) bool {
 	return false
 }
 
+// RemoteOff is the words of every live door on an instance a remote collector reads (actions.RemoteOff's own; a web
+// test holds the two equal).
+func RemoteOff(instance, from string) string {
+	return fmt.Sprintf("instance %s is read from %s: no live connection reaches it", instance, from)
+}
+
 // PageOff is the words of an action on an instance added in Admin > Instances (actions.PageOff's own; a web test
 // holds the two equal).
 func PageOff(instance string) string {
@@ -125,6 +134,8 @@ func PageOff(instance string) string {
 // Off is the reason the door cannot do k on the instance, or "" when it can.
 func (d Door) Off(instance string, k ActionKind) string {
 	switch {
+	case d.Remote != "":
+		return RemoteOff(instance, d.Remote)
 	case d.Page:
 		return PageOff(instance)
 	case d.Actions == "" && d.Configured:

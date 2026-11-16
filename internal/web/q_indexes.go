@@ -104,7 +104,14 @@ func (s *Server) Indexes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
 		return
 	}
+	// the index advisor's button: off with adviseOff's words before a click (a remote instance, a page instance, no door)
+	adviseWhy := ""
+	var name string
+	if err := s.pool.QueryRow(r.Context(), `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name); err == nil {
+		adviseWhy = s.adviseOff(s.doorsNow(), name)
+	}
 	parts := []part{
+		{"advise", `SELECT nullif($1::text, '') AS off`, []any{adviseWhy}},
 		{"state", sqlIndexesState, []any{id}},
 		{"databases", sqlIndexesDatabases, []any{id}},
 		{"indexes", sqlIndexesList, []any{id}},
@@ -128,6 +135,25 @@ var dbNameRE = regexp.MustCompile(`^[^\x00]{1,63}$`)
 
 // runAdvisor is the advisor call, a variable so the handler's tests can stand in for a server.
 var runAdvisor = advisor.Run
+
+// adviseOff is why the index advisor cannot run on the instance with this door set, or "": the page's Advise button
+// carries it, so the button is off with these words before a click (the handler says the same).
+func (s *Server) adviseOff(ds *doorSet, name string) string {
+	door, ok := ds.PG[name]
+	switch {
+	case ds.remoteWhy(name) != "": // R13's words before the server's own (review B N1)
+		return ds.remoteWhy(name)
+	case s.actions == nil:
+		return "the index advisor needs the actions door, which is off on this server"
+	case s.actions.off != "": // review C S2: the door's own words when it is off
+		return s.actions.off
+	case ok && door.Page:
+		return fileOnly(name) // the index advisor stays on pgvigil.yaml's instances
+	case !ok || strings.TrimSpace(door.Monitor) == "":
+		return fmt.Sprintf("instance %s is not in this server's configuration", name)
+	}
+	return ""
+}
 
 // IndexAdvisor serves POST /api/indexes/advise {instance_id, database}.
 func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
@@ -169,16 +195,11 @@ func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ds := s.doorsNow()
-	door, ok := ds.PG[name]
-	switch {
-	case ok && door.Page:
-		// the index advisor stays on pgvigil.yaml's instances
-		writeErr(w, http.StatusConflict, errors.New(fileOnly(name)))
-		return
-	case !ok || strings.TrimSpace(door.Monitor) == "":
-		writeErr(w, http.StatusConflict, fmt.Errorf("instance %s is not in this server's configuration", name))
+	if why := s.adviseOff(ds, name); why != "" {
+		writeErr(w, http.StatusConflict, errors.New(why))
 		return
 	}
+	door := ds.PG[name]
 	rep, err := runAdvisor(ctx, door.Monitor, door.Secret, in.Database, advisor.Options{}) // its password_secret too (B24e review 3)
 	s.log.Info("index advisor", "instance", name, "database", in.Database, "user", user, "suggestions", len(rep.Suggestions),
 		"skipped", rep.Skipped, "err", err)

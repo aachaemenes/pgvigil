@@ -796,6 +796,10 @@ func slicesContains(l []string, v string) bool {
 func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user string, in map[string]any) {
 	ctx := r.Context()
 	name := str(in, "name")
+	if why := s.doorsNow().remoteWhy(name); why != "" { // R13's words before any page instance or form (review B N1)
+		s.reply(w, r, map[string]any{"ok": false, "detail": why}, nil)
+		return
+	}
 	var engine, dsn string
 	have, err := s.pageInstance(ctx, name)
 	if err != nil {
@@ -1924,9 +1928,9 @@ func (s *Server) testConfigured(ctx context.Context, name string) (testResult, b
 	}
 	engine, dsn := "", ""
 	var sec *secrets.Ref
-	if d, ok := ds.MS[name]; ok && !d.Page {
+	if d, ok := ds.MS[name]; ok && !d.Page && d.Remote == "" { // a remote instance is never dialed (remote.go)
 		engine, dsn, sec = config.EngineSQLServer, d.Monitor, d.Secret
-	} else if d, ok := ds.PG[name]; ok && !d.Page {
+	} else if d, ok := ds.PG[name]; ok && !d.Page && d.Remote == "" {
 		engine, dsn, sec = config.EnginePostgres, d.Monitor, d.Secret
 	} else {
 		return testResult{}, false

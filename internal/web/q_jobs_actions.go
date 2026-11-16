@@ -100,6 +100,8 @@ func toggleAuditOff(ctx context.Context, q rowQuerier, pg bool) string {
 func (s *Server) pgJobOff(ds *doorSet, instance, kind, auditOff string) string {
 	a := s.actions
 	switch {
+	case ds.remoteWhy(instance) != "": // R13's words before the server's own (review C S3)
+		return ds.remoteWhy(instance)
 	case a == nil:
 		return "actions are off on this server"
 	case a.off != "":
@@ -280,6 +282,9 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 	would := collect.JobStatement(kind, in.Scheduler, in.JobID, in.PID)
 	ds := s.doorsNow() // the request's one door set
 	switch {
+	case ds.remoteWhy(name) != "":
+		// an instance a remote collector reads: no connection of any kind
+		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: ds.remoteWhy(name)}
 	case ds.PG[name].Page:
 		// an instance added in Admin > Instances: no action of any kind
 		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: actions.PageOff(name)}

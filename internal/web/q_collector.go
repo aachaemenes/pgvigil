@@ -20,6 +20,27 @@ SELECT s.collector_id, s.host, s.os, s.runs_as, s.version, s.pid, s.started_at, 
   FROM pgvigil.collector_status s
  ORDER BY CASE s.state WHEN 'up' THEN 1 WHEN 'not seen' THEN 2 WHEN 'retired' THEN 4 ELSE 3 END, s.beat_at DESC`
 
+// sqlCollectorRemote: the remote collectors (docs/remote-collector.md; migration 0329's remote_collector_state) - each
+// one's heartbeat as its newest bundle carried it, the bundles' gaps, set-asides (the newest reason), late ones and
+// conflicts, and its site's silence by the hub's newest LOAD of its bundles (review C S4: the hub's clock, never the
+// site's) - none for 2 x max(expected_every, the bundle interval) a warning, 6 x critical (the silence finding's
+// rule; expected_every is its SITE's, as ingest synced remote_sites: - on the view's row, so a collector with no
+// instance row is judged by it too (review B S6); 300 s only when the site was never synced)
+const sqlCollectorRemote = `
+SELECT c.site, c.collector, c.pgvigil_version, c.host, c.heartbeat_at, c.instances, c.fail_streak, c.newest_bundle_at,
+       c.gaps, c.set_aside, c.newest_set_aside_reason, c.late, c.conflicts, coalesce(c.expected_every_secs, 300) AS expected_every_secs,
+       c.newest_loaded_at,
+       CASE WHEN c.configured IS FALSE THEN 'not in remote_sites:'
+            WHEN coalesce(c.newest_loaded_at, c.newest_bundle_at) IS NULL THEN 'no bundle yet'
+            WHEN now() - coalesce(c.newest_loaded_at, c.newest_bundle_at) > make_interval(secs => 6 * e.every) THEN 'critical'
+            WHEN now() - coalesce(c.newest_loaded_at, c.newest_bundle_at) > make_interval(secs => 2 * e.every) THEN 'warning'
+            ELSE 'ok' END AS silence
+  FROM pgvigil.remote_collector_state c
+  -- the silence's span (review C N4): 2 x max(expected_every, the bundle interval of the collector's instances)
+  CROSS JOIN LATERAL (SELECT greatest(coalesce(c.expected_every_secs, 300),
+                                      coalesce((SELECT max(r.interval_secs) FROM pgvigil.remote_instance_state r WHERE r.site = c.site AND r.collector = c.collector), 0)) AS every) e
+ ORDER BY c.site, c.collector`
+
 // sqlWatchdog: serve's watchdog ($1: on, off: <why>; empty outside serve)
 const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 
@@ -275,7 +296,8 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 			part{"repository", sqlCollectorRepository, nil},
 			part{"tables", sqlCollectorTables, nil},
 			part{"connections", sqlCollectorConns, nil},
-			part{"purges", sqlCollectorPurges, nil})
+			part{"purges", sqlCollectorPurges, nil},
+			part{"remote", sqlCollectorRemote, nil})
 	}
 	s.multiPart(w, r, parts)
 }

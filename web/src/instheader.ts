@@ -26,6 +26,8 @@ import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, load
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href } from './router';
 import { verdict, verdictCard } from './verdict';
+import { asOfLine, freshness, OFFLINE_MIN, quietLine, type Freshness } from './asof';
+export { freshness, OFFLINE_MIN, type Freshness };
 import { el, fmtTime, pill } from './ui';
 
 export type Band = 'crit' | 'warn' | 'ok' | 'unknown';
@@ -35,7 +37,6 @@ type Live = AckData & { live?: Table | null };
 // PerformanceMonitor's constants (ServerHealthBands.cs): offline past 30 minutes without a collection, the newest
 // collection searched over 48 hours, CPU 80 / 95 %, blocking 5 / 20 an hour and 10 / 60 seconds of wait, deadlocks 5 /
 // 20 an hour, a failing share of collectors over 20 % critical, threads short under 10 % free or 20 waiting for a CPU
-export const OFFLINE_MIN = 30;
 // the repository's clock at the live read (its live_at), never the browser's: a jump box's clock 30 minutes off would
 // show every instance offline or hide one that is
 export const serverNow = (live: Row | undefined): number => { const t = Date.parse(String(live?.live_at ?? '')); return isNaN(t) ? Date.now() : t; };
@@ -76,14 +77,8 @@ export function relTime(at: unknown, now = Date.now()): string {
   return day <= 30 ? `${day}d ago` : fmtTime(at);
 }
 
-export type Freshness = 'online' | 'stale' | 'offline' | 'awaiting';
-// online, stale (a collection past its interval: the footer's rule), offline (no healthy collection for 30 minutes),
-// awaiting (no collection ever)
-export function freshness(r: Row | undefined, now = Date.now()): Freshness {
-  if (!r || r.last_collect_at == null) return 'awaiting';
-  if (now - Date.parse(String(r.last_collect_at)) > OFFLINE_MIN * 60000) return 'offline';
-  return Number(r.coll_stale ?? 0) > 0 ? 'stale' : 'online';
-}
+// freshness (online, stale, offline, awaiting; a remote instance by its newest bundle and its site's cadence) is
+// asof.ts's, re-exported above: DOM-free, so its unit test runs this header's own rule
 // PerformanceMonitor's 'last collect <clock>' (its localClock: hours and minutes)
 export const clockOf = (at: unknown) => new Date(String(at)).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 export const statusWord: Record<Freshness, string> = { online: 'Online', stale: 'Warning', offline: 'Offline', awaiting: 'Awaiting first collection' };
@@ -261,7 +256,7 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
   const [n, m] = measured(chips);
   const fr = freshness(live, now);
   const status = fr === 'awaiting' ? statusWord.awaiting
-    : `${statusWord[fr]} · ${fr === 'offline' ? lastCollected(live, now) : `last collect ${clockOf(live?.last_collect_at)}`}${n < m ? ` · ${n} of ${m} measured` : ''}`;
+    : `${statusWord[fr]} · ${fr === 'offline' ? (quietLine(live, now) || lastCollected(live, now)) : (asOfLine(live) || `last collect ${clockOf(live?.last_collect_at)}`)}${n < m ? ` · ${n} of ${m} measured` : ''}`;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   // data-groups: the band's items in order (an offline band 'offline' first): the verdict card's reasons are these
   const word = el('span', { class: `badge band-word ${b.cls}`, 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);

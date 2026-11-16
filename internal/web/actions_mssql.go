@@ -178,7 +178,7 @@ func (m *MSSQLActions) Preview(w http.ResponseWriter, r *http.Request) {
 		// the batch's text follows the instance's query_text policy, as a plan does (full only)
 		if qt := ds.planPolicy(name); qt != "full" {
 			out.Target.PlanBatch = ""
-			out.Note = fmt.Sprintf("the batch's text is not shown: this instance's query_text policy is %q", qt)
+			out.Note = fmt.Sprintf("the batch's text is not shown: %s", textPolicyWords(qt))
 		}
 	}
 	m.a.s.reply(w, r, out, nil)

@@ -153,18 +153,25 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // $5 narrows it to one instance (the instance header's read); 0 = every active instance (the Summary's).
 const sqlAckLive = `
 WITH i AS (
-  SELECT instance_id, name, engine FROM pgvigil.instances WHERE is_active AND ($5::int = 0 OR instance_id = $5)
+  SELECT i.instance_id, i.name, i.engine, r.as_of AS r_as_of, r.site AS r_site, r.collector AS r_collector,
+         r.interval_secs AS r_interval_secs, r.expected_every_secs AS r_expected_every_secs, r.loaded_at AS r_loaded_at,
+         r.instance_id IS NOT NULL AS r_remote
+    FROM pgvigil.instances i LEFT JOIN pgvigil.remote_instance_state r ON r.instance_id = i.instance_id
+   WHERE i.is_active AND ($5::int = 0 OR i.instance_id = $5)
 ), c AS (
   SELECT c.instance_id, c.snapshot_at, c.status,
          CASE WHEN c.status <> 'ok' AND coalesce(c.note, '') ~* $4 THEN 'no_permission'
               WHEN c.status = 'error' THEN 'failing'
               WHEN c.status <> 'ok' THEN 'not_collected'
-              WHEN $1::timestamptz - c.snapshot_at > make_interval(secs => CASE WHEN e.iv IS NULL THEN $3::int ELSE greatest(300, 3 * e.iv) END) THEN 'stale'
+              WHEN coalesce(i.r_as_of, $1::timestamptz) - c.snapshot_at > make_interval(secs => CASE WHEN e.iv IS NULL THEN $3::int ELSE greatest(300, 3 * e.iv) END) THEN 'stale'
               ELSE 'healthy' END AS state
     FROM pgvigil.collection_dates c
     JOIN i USING (instance_id)
-    CROSS JOIN LATERAL (SELECT coalesce(($2::jsonb -> 'instances' -> i.name ->> c.collection)::int,
-                                        ($2::jsonb -> 'defaults' ->> c.collection)::int) AS iv) e
+    -- a remote instance's collection with no interval from its collector takes the default age, never this hub's own
+    -- schedule for it (review C N3)
+    CROSS JOIN LATERAL (SELECT coalesce((SELECT x.interval_secs FROM pgvigil.remote_collection_interval x WHERE x.instance_id = i.instance_id AND x.collection = c.collection),
+                                        CASE WHEN NOT i.r_remote THEN ($2::jsonb -> 'instances' -> i.name ->> c.collection)::int END,
+                                        CASE WHEN NOT i.r_remote THEN ($2::jsonb -> 'defaults' ->> c.collection)::int END) AS iv) e
    WHERE coalesce(e.iv, -1) <> 0
 ), k AS (
   SELECT instance_id,
@@ -190,6 +197,8 @@ SELECT i.instance_id, i.name AS instance, i.engine,
                   AND d.collection = CASE i.engine WHEN 'postgres' THEN 'dbstats' ELSE 'mssql_xe' END
                   AND d.snapshot_at > $1::timestamptz - interval '1 hour') AS deadlocks_read,
        $1::timestamptz AS live_at, 15 AS window_minutes, 60 AS recent_minutes,
+       i.r_as_of AS as_of, i.r_site AS site, i.r_collector AS collector, i.r_interval_secs AS interval_secs, i.r_expected_every_secs AS expected_every_secs,
+       i.r_loaded_at AS loaded_at,
        sl.ack_id AS silence_id, sl.created_by AS silenced_by, sl.until AS silenced_until
   FROM i
   LEFT JOIN k USING (instance_id)

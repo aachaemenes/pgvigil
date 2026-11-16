@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -57,7 +58,7 @@ type textRule struct {
 	def  string
 }
 
-// policy is the instance's policy NOW: full, normalized or none (an unknown instance: none).
+// policy is the instance's policy NOW: full, normalized, none or hash (a remote collector's; an unknown instance: none).
 func (tr *textRule) policy(id int, known bool) string {
 	if !known {
 		return "none"
@@ -68,7 +69,20 @@ func (tr *textRule) policy(id int, known bool) string {
 	return "none"
 }
 
-// stmt is a stored statement text as the policy shows it now.
+// textPolicyWords: why a statement's text (or a plan, a graph, a batch) is not shown under this policy - 'hash' (a
+// remote collector's) has its own: the stored columns are fingerprints (review C B1)
+func textPolicyWords(qt string) string {
+	if qt == "hash" {
+		return `this instance's query_text policy is "hash" (a remote collector's): each statement text arrives as the SHA-256 fingerprint of its normalized form, and no plan, graph or batch text is kept`
+	}
+	return fmt.Sprintf("this instance's query_text policy is %q", qt)
+}
+
+// fingerprint: a 64-hex SHA-256, as a remote collector's 'hash' stores a statement
+var fingerprint = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// stmt is a stored statement text as the policy shows it now; under 'hash' a fingerprint is shown as one
+// ('fingerprint <hex>'), anything else as nothing.
 func (tr *textRule) stmt(id int, known bool, v any) any {
 	s, ok := v.(string)
 	if !ok || s == "" {
@@ -76,6 +90,11 @@ func (tr *textRule) stmt(id int, known bool, v any) any {
 	}
 	switch tr.policy(id, known) {
 	case "none":
+		return nil
+	case "hash":
+		if fingerprint.MatchString(s) {
+			return "fingerprint " + s
+		}
 		return nil
 	case "normalized":
 		return collect.NormalizeSQL(s)
@@ -329,7 +348,7 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 			case "stmtjson":
 				row[c.i] = tr.stmtJSON(id, known, row[c.i])
 			case "shape":
-				if pol == "none" && row[c.i] != nil {
+				if (pol == "none" || pol == "hash") && row[c.i] != nil {
 					obj, _ := at(row, "obj")
 					if o, ok := obj.(string); !ok || o == "" || o != row[c.i] {
 						row[c.i] = nil
@@ -386,14 +405,14 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 					}
 				}
 			case "logmsg":
-				if pol == "none" {
+				if pol == "none" || pol == "hash" {
 					row[c.i] = nil
 				}
 			case "logdetail":
 				switch {
 				// no kind: not a log event's detail (a union's other engine); a message kind: the server's own words
 				case row[c.i] == nil || kindS == "" || logparse.DetailIsMessage(logparse.Kind(kindS)):
-				case pol == "none", pol == "normalized" && kindS == "error":
+				case pol == "none", pol == "hash", pol == "normalized" && kindS == "error":
 					row[c.i] = nil
 				case pol == "normalized":
 					if s, ok := row[c.i].(string); ok {
@@ -447,7 +466,7 @@ func (tr *textRule) pgPlan(row []any, roleAt map[string]int, pol string) {
 	// row, normalized the query normalized (plans.Mask's own step for the query)
 	if !hj && !ht {
 		if q, ok := row[iq].(string); ok && q != "" {
-			if pol == "none" {
+			if pol == "none" || pol == "hash" {
 				row[iq] = nil
 			} else {
 				row[iq] = collect.NormalizeSQL(q)

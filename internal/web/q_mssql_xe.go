@@ -258,7 +258,7 @@ func (s *Server) MSSQLXEDeadlockXDL(w http.ResponseWriter, r *http.Request) {
 	}
 	// TEXT-NOW: a graph carries every process's statement whole: shown under the policy "full" NOW only (textread.go)
 	if qt := s.doorsNow().planPolicy(deref(name)); qt != "full" {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("not shown: this instance's query_text policy is %q, and a deadlock graph carries each process's statement text, so graphs are shown under \"full\" only", qt))
+		writeErr(w, http.StatusNotFound, fmt.Errorf("not shown: %s, and a deadlock graph carries each process's statement text, so graphs are shown under \"full\" only", textPolicyWords(qt)))
 		return
 	}
 	file := fmt.Sprintf("deadlock-%s-%s.xdl", safeFileName(deref(name)), at.UTC().Format("20060102-150405"))

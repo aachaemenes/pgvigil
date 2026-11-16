@@ -66,11 +66,16 @@ type Door struct {
 	Configured bool
 	// Page: an instance added in Admin > Instances (serve's page door: its read login only, never an action)
 	Page bool
+	// Remote: an instance a remote collector reads ('remote collector <c> of site <s>'): the hub never connects to it,
+	// so no login and no action; "" = not remote
+	Remote string
 }
 
 // Off is the reason a door cannot act, or "" when it can.
 func (d Door) Off(instance string) string {
 	switch {
+	case d.Remote != "":
+		return RemoteOff(instance, d.Remote)
 	case d.Page:
 		return PageOff(instance)
 	case d.Actions != "":
@@ -79,6 +84,12 @@ func (d Door) Off(instance string) string {
 		return fmt.Sprintf("instance %s: actions_dsn is configured but resolved to an empty string (an unset variable or an unreadable file)", instance)
 	}
 	return fmt.Sprintf("instance %s has no actions_dsn: cancel and terminate are off there (pgvigil roles prints the login to create)", instance)
+}
+
+// RemoteOff is the words of every live door on an instance a remote collector reads (from: 'remote collector <c> of
+// site <s>'); mssql.RemoteOff's own (a web test holds the two equal).
+func RemoteOff(instance, from string) string {
+	return fmt.Sprintf("instance %s is read from %s: no live connection reaches it", instance, from)
 }
 
 // PageOff is the words of an action on an instance added in Admin > Instances.

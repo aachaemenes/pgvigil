@@ -5,6 +5,7 @@
 // Problem (Critical and Offline: the header's badge keeps its own words) and 'pgvigil has not read <name> yet' (no
 // collection ever, or no live read answered); a collection that is late (the header's 'Warning' status) is named.
 import { Row } from './api';
+import { quietLine } from './asof';
 import { Cell, cellText, groups, humanize, labelOf } from './fleet';
 import type { BandItem, Freshness, InstBand } from './instheader';
 import { Ctx, href } from './router';
@@ -92,9 +93,10 @@ export function verdict(r: Row, live: Row | undefined, now: number, b: InstBand,
   let state: VerdictState, sentence: string;
   if (b.offline) {
     const at = Date.parse(String(live?.last_collect_at ?? ''));
+    const quiet = quietLine(live, now); // a remote instance Offline because its site went quiet says that (review C N1)
     state = 'problem';
-    sentence = `pgvigil has not read ${name} for ${isNaN(at) ? 'over 30 minutes' : humanize((now - at) / 1000, 1, 'minute', 'year')}.`;
-    reasons.unshift({ key: 'offline', phrase: 'no collection of it ran well in the last 30 minutes', level: 2, target: { tab: 'collectiondates' } });
+    sentence = quiet ? `${quiet}.` : `pgvigil has not read ${name} for ${isNaN(at) ? 'over 30 minutes' : humanize((now - at) / 1000, 1, 'minute', 'year')}.`;
+    reasons.unshift({ key: 'offline', phrase: quiet || 'no collection of it ran well in the last 30 minutes', level: 2, target: { tab: 'collectiondates' } });
   } else if (fr === 'awaiting' && b.level === 0) {
     state = 'unread';
     sentence = live ? `pgvigil has not read ${name} yet.` : `pgvigil has not read ${name} yet: no live read of it answered.`;

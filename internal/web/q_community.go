@@ -1505,6 +1505,26 @@ func (s *Server) communityGate(w http.ResponseWriter, r *http.Request) (in commu
 	return in, user, name, t, true
 }
 
+// queuedRemoteRefused: in queue mode a remote instance's run, @help or form never becomes an ask - no collector holds a
+// door to it, and the page would wait for the ask's expiry -: it is refused here with R13's words and audited as the
+// direct path refuses it (review B S4); false for any other instance.
+func (s *Server) queuedRemoteRefused(w http.ResponseWriter, r *http.Request, op, user, name string, in communityBody, t *communityTool) bool {
+	ds := s.doorsNow()
+	why := ds.remoteWhy(name)
+	if why == "" {
+		return false
+	}
+	if s.actions == nil || s.actions.audit == nil {
+		writeErr(w, http.StatusForbidden, errors.New(why))
+		return true
+	}
+	_, kind, _ := ds.readLogin(t.Engine, name)
+	s.refuseRunStatus(w, r, map[string]any{"op": op, "ui_user": user, "client": clientIP(r), "tool": t.ID,
+		"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database},
+		"door": kind, "door_generation": ds.Gen}, errors.New(why), http.StatusForbidden)
+	return true
+}
+
 // CommunityParams is POST /api/community/params: an installed procedure's form.
 func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 	in, user, name, t, ok := s.communityGate(w, r)
@@ -1512,6 +1532,9 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.queue() != nil { // queue mode: the form from the live collector's published list (q_requests.go)
+		if s.queuedRemoteRefused(w, r, "community_form", user, name, in, t) {
+			return
+		}
 		s.queuedCommunityParams(w, r, t, name)
 		return
 	}
@@ -1608,6 +1631,13 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if q := s.queue(); q != nil { // queue mode: an ask the collector runs (?help=1: the procedure's @help) (q_requests.go)
+		op := "community_run"
+		if r.URL.Query().Get("help") == "1" {
+			op = "community_help"
+		}
+		if s.queuedRemoteRefused(w, r, op, user, name, in, t) {
+			return
+		}
 		if r.URL.Query().Get("help") == "1" {
 			s.queuedCommunityHelp(w, r, q, in, user, name, t)
 		} else {

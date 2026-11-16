@@ -106,13 +106,15 @@ const (
 func (s *Server) histogramOff(ctx context.Context, ds *doorSet, name string) string {
 	g := s.indexDepthGate(name)
 	switch {
+	case ds.remoteWhy(name) != "":
+		return "off: " + ds.remoteWhy(name)
 	case ds.isPage("sqlserver", name):
 		return "off: a histogram is read only on an instance of pgvigil.yaml (histogram: true there)"
 	case !g.Histogram:
 		return histogramOffWords
 	}
 	if qt := ds.planPolicy(name); qt != "full" {
-		return fmt.Sprintf("off: this instance's query_text policy is %q, and a histogram's keys are the column's real values, so it is read under \"full\" only", qt)
+		return fmt.Sprintf("off: %s, and a histogram's keys are the column's real values, so it is read under \"full\" only", textPolicyWords(qt))
 	}
 	if g.StatsConfigured && strings.TrimSpace(g.StatsDSN) == "" {
 		return "off: the statistics login's dsn (stats_dsn) resolved to an empty string on this server"
@@ -136,6 +138,8 @@ func (s *Server) histogramOff(ctx context.Context, ds *doorSet, name string) str
 // fragOff is why a fragmentation read cannot start for the instance here, or "".
 func (s *Server) fragOff(ds *doorSet, name string) string {
 	switch {
+	case ds.remoteWhy(name) != "":
+		return "off: " + ds.remoteWhy(name)
 	case ds.isPage("sqlserver", name):
 		return "off: a fragmentation read runs only on an instance of pgvigil.yaml (index_fragmentation: true there)"
 	case !s.indexDepthGate(name).Fragmentation:

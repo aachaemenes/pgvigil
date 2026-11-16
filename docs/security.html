@@ -63,6 +63,7 @@
     <li>No telemetry and no call home. The collector connects only to the servers you name and, for RDS and Aurora, to the AWS region you set.</li>
     <li>The Windows app looks for a newer release on GitHub once a day and only shows a notice; an administrator can turn that off for every user.</li>
     <li>Alerts go out only through the channels you configure.</li>
+    <li>A network no outside server may connect into can run a remote collector inside it: it reads with the same read-only logins, writes plain bundle files (no statement text: hashed or left out), and connects out only to the one storage container you choose, if any (and, for RDS or Aurora, to the AWS region you set; under an Azure managed identity, to the VM's own metadata endpoint for its token). Your pgvigil reads those bundles with a read-only key and never connects to that network's servers (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/remote-collector.md">how it works</a>).</li>
   </ul>
 </div></section>
 
