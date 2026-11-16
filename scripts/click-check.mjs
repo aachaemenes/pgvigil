@@ -41,9 +41,10 @@ const dbadash = {
   'Backup LOG':          { postgres: ['backups'], sqlserver: ['mssqlbackups'], dd: 'Backup LOG -> HA/DR > Backups' },
   'Drive Space':         { postgres: ['drives'], sqlserver: ['drives'], dd: 'Drive Space -> Storage > Drives' },
   'Agent Jobs':          { postgres: ['jobsreport', 'jobs'], sqlserver: ['mssqljobs'], dd: 'Agent Jobs -> Jobs > Job Status' },
-  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['availability'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
-  'Mirroring':           { sqlserver: ['availability'], dd: 'Mirroring -> HA/DR > Mirroring' },
-  'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
+  // task 383: SQL Server's three HA cells land on the HA/DR folder's pages in DBA Dash's shape (the instance's own tab)
+  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['mssqllogshipping'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
+  'Mirroring':           { sqlserver: ['mssqlmirroring'], dd: 'Mirroring -> HA/DR > Mirroring' },
+  'Availability Groups': { postgres: ['replication'], sqlserver: ['mssqlag'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
   // PostgreSQL's own names of five of DBA Dash's columns (B7 DONE-3, the pgLabel item: web/src/fleet.ts labelOf): a
@@ -75,7 +76,8 @@ const dialogColumns = new Set(['Instance Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
   'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
-  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
+  // task 383: a scope with SQL Server names this column 'Availability Groups' (a PostgreSQL-only one 'Replication', below)
+  'Availability Groups': 'mssqlag', 'Mirroring': 'mssqlmirroring', 'Log Shipping': 'mssqllogshipping', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
   // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
   'Last amcheck': 'corruption', 'WAL archive': 'backups', 'Jobs': 'jobs', 'Replication': 'pgreplication' };
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
@@ -850,6 +852,77 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
       verdict: !strip.includes('mssqlrisks') ? 'FAIL the strip does not hold SQL Server options'
         : sbad.length ? `FAIL the strip offers page(s) of PostgreSQL alone for a SQL Server-only tag: ${sbad.join(', ')}`
         : 'ok (the Configuration strip holds no page of PostgreSQL alone)' });
+  }
+}
+
+// (e) task 383, the HA/DR folder's pages (design section 8; the router's strips are the join's W9): a folder page's
+// Instance link lands on the same page at that instance with Back on, and Back returns to the folder; a SQL Server
+// instance's HA/DR strip holds DBA Dash's four tabs in its order; a PostgreSQL instance's strip none of the three
+{
+  const haOrder = ['mssqlbackups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag'];
+  for (const t of ['mssqlag', 'mssqlmirroring', 'mssqllogshipping']) {
+    await go(`#/${t}`);
+    const link = await ev(`(() => { const x = [...document.querySelectorAll('main table a')].find(a => /[?&]i=\\d+/.test(a.getAttribute('href') || '')); return x ? x.getAttribute('href') : null; })()`);
+    if (!link) {
+      record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link: `#/${t}`, landed: 'no row with an Instance link',
+        verdict: t === 'mssqlmirroring' ? 'not proven: no Mirroring row with an Instance link in this data (its links are in Role Changes)' : 'FAIL the folder page has no Instance link' });
+      continue;
+    }
+    await ev(`(() => { [...document.querySelectorAll('main table a')].find(a => a.getAttribute('href') === ${JSON.stringify(link)})?.click(); })()`);
+    await sleep(500); await settled();
+    const got = await landing();
+    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !b.disabled : null; })()`);
+    let backTo = '';
+    if (back) { await ev(`(() => { [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back')?.click(); })()`); await sleep(500); await settled(); backTo = (await landing()).hash; }
+    record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link, landed: `${got.hash}; Back ${back === null ? 'absent' : back ? 'on' : 'off'}${backTo ? ' -> ' + backTo : ''}`,
+      verdict: tabOf(got.hash) !== t || !paramsOf(got.hash).get('i') ? `FAIL want ${t} at the instance, got ${got.hash}`
+        : got.err.length ? `FAIL the landing shows an error: ${got.err[0]}`
+        : back !== true ? 'FAIL Back is not on after the drill'
+        : tabOf(backTo) !== t || paramsOf(backTo).get('i') ? `FAIL Back went to ${backTo}, want the folder's ${t}`
+        : 'ok (DBA Dash: Instance -> the same page at that instance; Navigate Back -> the folder)' });
+  }
+  await go(`#/mssqlag?i=${ms.instance_id}`);
+  const msStrip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf).filter(t => haOrder.includes(t));
+  record({ scope: `instance ${ms.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'sqlserver', link: `#/mssqlag?i=${ms.instance_id}`, landed: msStrip.join(' '),
+    verdict: msStrip.join(' ') === haOrder.join(' ') ? 'ok (DBA Dash: Backups, Log Shipping, Mirroring, Availability Groups)' : `FAIL want ${haOrder.join(' ')}` });
+  await go(`#/backups?i=${pg.instance_id}`);
+  const pgStrip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+  const pgBad = pgStrip.filter(t => haOrder.slice(1).includes(t));
+  record({ scope: `instance ${pg.name}`, kind: 'hadr', column: 'HA/DR strip', engine: 'postgres', link: `#/backups?i=${pg.instance_id}`, landed: pgStrip.join(' ').slice(0, 200),
+    verdict: pgBad.length ? `FAIL a PostgreSQL instance's strip offers ${pgBad.join(', ')}` : 'ok (none of the three SQL Server pages)' });
+}
+// task LSX: the Log Shipping Detail's Database button narrows pgvigil's own panel below DBA Dash's grids (the jobs, the
+// agents' messages, the log backups outside log shipping) to that database: the panel's Database box takes the name and
+// the panel draws its three grids with no error box. A demo with no log shipping Detail row cannot show it: said so.
+{
+  await go('#/mssqllogshipping');
+  const pick = await ev(`(() => { const b = [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '')); return b ? b.textContent : null; })()`);
+  if (pick == null) {
+    record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: '#/mssqllogshipping', landed: 'no Detail row with a Database button',
+      verdict: 'not proven: no log shipping Detail row in this data' });
+  } else {
+    // the box before the click (it must read every database, or the click proves nothing), then the click, then every
+    // Database cell of the panel's three grids: each the clicked name (ignoring case), or the grid empty
+    const before = await ev(`(() => document.querySelector('main .mssql-hadr-logship-config select')?.value ?? null)()`);
+    await ev(`(() => { [...document.querySelectorAll('main table button.link')].find(x => /^Show log shipping's jobs/.test(x.getAttribute('aria-label') || '') && x.textContent === ${JSON.stringify(pick)})?.click(); })()`);
+    await sleep(300); await settled();
+    const st = await ev(`(() => { const p = document.querySelector('main .mssql-hadr-logship-config'); if (!p) return null;
+      const want = ${JSON.stringify(pick)}.toLowerCase(); let rows = 0; const other = [];
+      for (const t of p.querySelectorAll('table:not(.grid-empty)')) {
+        const i = [...t.querySelectorAll('thead th')].map(h => (h.querySelector('.th-label')?.textContent ?? h.textContent).trim()).indexOf('Database');
+        if (i < 0) continue;
+        for (const tr of t.querySelectorAll('tbody tr')) { const c = tr.children[i]; if (!c) continue; rows++; const v = c.textContent.trim(); if (v.toLowerCase() !== want) other.push(v); }
+      }
+      return { value: p.querySelector('select')?.value ?? null, grids: p.querySelectorAll('h4').length, err: p.querySelectorAll('.error').length, rows, other: other.slice(0, 5) }; })()`);
+    record({ scope: 'root', kind: 'hadr', column: 'Log Shipping panel', engine: 'sqlserver', link: `#/mssqllogshipping Database ${pick}`,
+      landed: st ? `before the click ${before === '' ? 'every database' : before}; Database box ${st.value}; ${st.grids} grids, ${st.rows} rows; ${st.err} error boxes` : 'no panel',
+      verdict: pick === '' ? 'FAIL the Detail\'s Database button has no name'
+        : !st ? 'FAIL the page has no log shipping panel'
+        : before !== '' ? `FAIL the Database box read ${before} before the click (want every database)`
+        : String(st.value).toLowerCase() !== pick.toLowerCase() ? `FAIL the Database box reads ${st.value}, want ${pick}`
+        : st.grids !== 3 || st.err ? `FAIL ${st.grids} grids (want 3), ${st.err} error boxes`
+        : st.other.length ? `FAIL the panel still lists other databases after the click: ${st.other.join(', ')}`
+        : `ok (pgvigil's own: the panel narrowed to the clicked database, ${st.rows} row${st.rows === 1 ? '' : 's'} of it)` });
   }
 }
 
