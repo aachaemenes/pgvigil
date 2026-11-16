@@ -27,8 +27,9 @@ import (
 //
 // Off unless the config's agents.enabled: the four answer 404 with agentsOff. The writes ride the acknowledgements'
 // path: the UI login's session user, the X-Pgvigil header, the actions door's audit login, one import function that
-// writes the row and its journal line. With the request queue (migrations 0200-0209): a queue-mode serve writes through
-// pgvigil_requester (scripts/agent-join-lines.sql 3) and keeps Run off, as customReportsOff keeps custom reports off.
+// writes the row and its journal line. With the request queue (migrations 0200-0209): investigations are not offered in
+// queue mode (investigationOff), as a queue-mode serve holds no write login to the repository; writing them through
+// pgvigil_requester (scripts/agent-join-lines.sql 3) is for a later release.
 
 // agentsOff is the words of the door when the config leaves it off (docs/agents.md quotes them).
 const agentsOff = "agents.enabled is off: the agent door (the Investigate button, the Ask box and the Investigations page) is turned on in serve's pgvigil.yaml with agents: {enabled: true} (docs/agents.md)"

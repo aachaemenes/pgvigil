@@ -170,7 +170,8 @@ async function detail(id: number, after: () => void): Promise<HTMLElement> {
       const out = el('div', {});
       const run = el('button', { type: 'button' }, 'Run');
       const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-      if (!d.run.enabled || !d.writable) { const why = d.run.enabled ? d.said : d.run.said; offControl(run, why, said); said.textContent = why; }
+      // the door's words first, as POST investigations/run answers them first (a queue-mode serve, the demo, -no-login)
+      if (!d.run.enabled || !d.writable) { const why = d.writable ? d.run.said : d.said; offControl(run, why, said); said.textContent = why; }
       else run.addEventListener('click', async () => {
         run.disabled = true;
         said.textContent = 'Running...';
