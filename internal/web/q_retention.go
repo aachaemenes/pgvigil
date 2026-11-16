@@ -60,10 +60,13 @@ WITH t AS (
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-), p AS (
+), p AS MATERIALIZED (
+  -- MATERIALIZED with the strict patterns: the parses then meet only the joined rows (a pgvigil parent's partitions);
+  -- inlined, a month test outside could reach every pg_class row, and a TOAST table pg_toast_<six digits> ending in no
+  -- month (a database past OID 100,000) failed with 22008 (N4-P10, purge()'s fault)
   SELECT i.inhparent AS parent, k.relname, pg_total_relation_size(k.oid) AS bytes, k.reltuples,
-         CASE WHEN k.relname ~ '_[0-9]{6}$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
-         CASE WHEN k.relname ~ '_[0-9]{8}$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
+         CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
+         CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
     FROM pg_inherits i
     JOIN pg_class k ON k.oid = i.inhrelid
    WHERE i.inhparent IN (SELECT oid FROM t)
@@ -91,13 +94,15 @@ SELECT t.relname AS table_name, t.relkind = 'p' AS partitioned,
 // (collection_health_hour, 0166: import_collection_health).
 const sqlRetentionHours = `
 SELECT h.table_name, h.days,
-       count(c.oid) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
-       coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
+       count(c.oid) FILTER (WHERE (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+                                   + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
+       coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+                                                                  + interval '1 month') AT TIME ZONE 'UTC'
                                                              < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes,
        coalesce((SELECT k.relkind = 'p' FROM pg_class k WHERE k.oid = to_regclass('pgvigil.' || h.table_name)), false) AS partitioned
   FROM pgvigil.hours_retention h
   LEFT JOIN pg_inherits i ON i.inhparent = to_regclass('pgvigil.' || h.table_name)
-  LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{6}$'
+  LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
  GROUP BY h.table_name, h.days`
 
 // del is one DELETE of the purge functions: the time column it compares with the age, whether it takes only the rows
@@ -525,9 +530,10 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 // oldest day. No purge run yet: no rows_from.
 const sqlStored = `
 WITH pr AS (SELECT days, finished_at FROM pgvigil.purge_runs ORDER BY run_id DESC LIMIT 1),
-p AS (
-  SELECT CASE WHEN k.relname ~ '_[0-9]{6}$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
-         CASE WHEN k.relname ~ '_[0-9]{8}$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
+p AS MATERIALIZED (
+  -- MATERIALIZED with the strict patterns, as sqlRetentionTables' p (N4-P10)
+  SELECT CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(k.relname, 6) || '01', 'YYYYMMDD') END AS month,
+         CASE WHEN k.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$' THEN to_date(right(k.relname, 8), 'YYYYMMDD') END AS day
     FROM pg_inherits i
     JOIN pg_class k ON k.oid = i.inhrelid
     JOIN pg_class t ON t.oid = i.inhparent

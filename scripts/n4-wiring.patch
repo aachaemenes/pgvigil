@@ -1,0 +1,184 @@
+diff --git i/cmd/pgvigil/main.go w/cmd/pgvigil/main.go
+index be6b258c..59a0189b 100644
+--- i/cmd/pgvigil/main.go
++++ w/cmd/pgvigil/main.go
+@@ -31,6 +31,7 @@ import (
+ 	"os/signal"
+ 	"strings"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/aachaemenes/pgvigil/internal/alerts"
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+@@ -242,6 +243,11 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	defer r.Close()
++	// partitions ahead (0271, N4), as the scheduler does at its start: this run's imports make no partition in the
++	// normal path
++	if res, err := r.PartitionsAhead(ctx, time.Now()); err != nil {
++		log.Warn("partitions ahead: not all made", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
++	}
+ 	failed := 0
+ 	for _, in := range targets {
+ 		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
+diff --git i/internal/repo/repo.go w/internal/repo/repo.go
+index 272569c5..85d7e9b4 100644
+--- i/internal/repo/repo.go
++++ w/internal/repo/repo.go
+@@ -75,8 +75,19 @@ const migrateLockKey int64 = 7265471133001
+ 
+ // Migrate applies pending migration files in name order; returns how many ran.
+ // The whole run holds a session advisory lock on one dedicated connection, so a
+-// second migrate waits and then finds nothing to do.
++// second migrate waits and then finds nothing to do. Then the partitions ahead (0271, N4),
++// once that connection is back in the pool (a one-connection pool needs it).
+ func (r *Repo) Migrate(ctx context.Context) (int, error) {
++	applied, err := r.migrateFiles(ctx)
++	if err != nil {
++		return applied, err
++	}
++	r.aheadAfterMigrate(ctx)
++	return applied, nil
++}
++
++// migrateFiles is Migrate's files under its lock, on one connection it releases on return.
++func (r *Repo) migrateFiles(ctx context.Context) (int, error) {
+ 	c, err := r.pool.Acquire(ctx)
+ 	if err != nil {
+ 		return 0, fmt.Errorf("migrate: %w", err)
+@@ -450,6 +461,9 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
+ 	}
+ 	q := fmt.Sprintf(`SELECT pgvigil.import_%s($1, $2, $3::jsonb)`, collection)
+ 	for attempt := 1; ; attempt++ {
++		if attempt > 1 {
++			countRetry(ctx) // the run's counter (retries.go): collector_runs.retries (N4); not counted when a cancel cut the pause
++		}
+ 		_, err = r.pool.Exec(ctx, q, instanceID, snapshotAt, string(payload))
+ 		if err == nil || attempt == ImportDeadlockTries || !IsDeadlock(err) || ctx.Err() != nil {
+ 			return err
+@@ -629,7 +643,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
+ // by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
+ // (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
+ // It takes every partitioned series in the schema, so a series the function does not yet name
+-// would be listed though kept.
++// would be listed though kept. The month is parsed only from a name that ends in one, inside a CASE: the server may test
++// a WHERE's conditions on every pg_class row before the join, in any order, and a TOAST table pg_toast_<six digits>
++// ending in no month (the database past OID 100,000) failed the whole list with 22008 (proof-purge's OID row).
+ func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
+ 	var have bool
+ 	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
+@@ -651,8 +667,9 @@ SELECT c.relname
+   JOIN pg_class p ON p.oid = i.inhparent
+   JOIN pg_namespace ns ON ns.oid = p.relnamespace
+  WHERE ns.nspname = 'pgvigil'
+-   AND c.relname ~ '_[0-9]{6}$'
+-   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
++   AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
++   AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
++        + interval '1 month') AT TIME ZONE 'UTC'
+        < now() - make_interval(days => `+age+`)
+    AND cardinality($2::text[]) = cardinality($3::int[])
+  ORDER BY c.relname`, days, names, ages)
+diff --git i/internal/repo/sql/0121_collector_health.sql w/internal/repo/sql/0121_collector_health.sql
+index 6ff25302..e64ef60d 100644
+--- i/internal/repo/sql/0121_collector_health.sql
++++ w/internal/repo/sql/0121_collector_health.sql
+@@ -248,7 +248,8 @@ RETURNS void LANGUAGE sql AS $$
+ $$;
+ 
+ -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
+---   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
++--   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints], retries}],  (retries: the runs'
++--         imports taken again after a deadlock, absent when none - 0271's collector_runs.retries, N4)
+ --   load: [{instance, attempts, opened, runs, failures, auth, interval_s}],  (interval_s: the fastest configured interval, absent when not known)
+ --   streaks: [{instance, collection, fails, error, at, since}]}  (instances by name; an unknown name is skipped; since =
+ --   the streak's first failure, absent when the collector carried the count from the repository)
+@@ -275,13 +276,15 @@ BEGIN
+          -- one and must not undo its uninstall's retire
+          retired_at = CASE WHEN retired_at < now() - interval '2 minutes' THEN NULL ELSE retired_at END
+    WHERE collector_id = p_id;
+-  INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist)
++  INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist,
++                                      retries)
+   SELECT p_minute, p_id, coalesce(nullif(r.engine, ''), 'postgres'), r.collection, r.runs, r.failures, r.rows, r.dur_sum, r.dur_max,
+-         ARRAY(SELECT jsonb_array_elements_text(r.hist)::int)
++         ARRAY(SELECT jsonb_array_elements_text(r.hist)::int), greatest(coalesce(r.retries, 0), 0)
+     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(engine text, collection text, runs int, failures int, rows bigint,
+-                                                                  dur_sum bigint, dur_max int, hist jsonb)
++                                                                  dur_sum bigint, dur_max int, hist jsonb, retries int)
+   ON CONFLICT (minute, collector_id, engine, collection) DO UPDATE
+      SET runs = collector_runs.runs + EXCLUDED.runs, failures = collector_runs.failures + EXCLUDED.failures,
++         retries = collector_runs.retries + EXCLUDED.retries,
+          rows_written = collector_runs.rows_written + EXCLUDED.rows_written, dur_ms_sum = collector_runs.dur_ms_sum + EXCLUDED.dur_ms_sum,
+          dur_ms_max = greatest(collector_runs.dur_ms_max, EXCLUDED.dur_ms_max),
+          dur_hist = ARRAY(SELECT coalesce(a, 0) + coalesce(b, 0) FROM unnest(collector_runs.dur_hist, EXCLUDED.dur_hist) AS u(a, b));
+@@ -1139,6 +1142,19 @@ SELECT x.instance_id
+           FROM pgvigil.collector_connects c) x
+  WHERE x.crossed AND x.n >= 3;
+ 
++-- partitions_ahead_finding (N4): its body is 0271's (the partitions made ahead are read there, after this file): this
++-- stub lets the view name it on a fresh store (made only where it is absent: a re-run of this file after 0271 keeps
++-- 0271's body)
++DO $do$ BEGIN
++  IF to_regprocedure('pgvigil.partitions_ahead_finding(timestamp with time zone)') IS NULL THEN
++    CREATE FUNCTION pgvigil.partitions_ahead_finding(p_at timestamptz)
++    RETURNS TABLE (instance_id int, severity text, setting text, value text, is_set boolean, suggested text, platforms text,
++                   detail text, source text, at timestamptz) LANGUAGE sql STABLE
++    AS $f$ SELECT NULL::int, NULL::text, NULL::text, NULL::text, NULL::boolean, NULL::text, NULL::text, NULL::text, NULL::text,
++                  NULL::timestamptz WHERE false $f$;
++  END IF;
++END $do$;
++
+ CREATE OR REPLACE VIEW pgvigil.collector_findings AS
+ -- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a
+ -- cut that turns into a host not seen, is the same alert, repeated once with its new why - alert_due); the claim
+@@ -1180,6 +1196,10 @@ SELECT NULL::int, 'warning', 'purge not run in 2 days',
+  WHERE (p.finished_at IS NULL OR p.finished_at < now() - interval '2 days')
+    AND EXISTS (SELECT 1 FROM pgvigil.instances WHERE first_seen < now() - interval '2 days')
+ UNION ALL
++-- N4: next month's partitions missing in a month's last three days (UTC) - 0271's partitions_ahead_finding (the stub
++-- above until 0271 gives it its body)
++SELECT * FROM pgvigil.partitions_ahead_finding(now())
++UNION ALL
+ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the collection runs', 'all',
+        format('%s runs in a row failed since %s: %s', s.fail_streak, s.failing_since, coalesce(s.last_error, 'no error text')),
+        'pgvigil collector', s.last_run_at
+diff --git i/internal/repo/sql/0139_job_stats_hourly.sql w/internal/repo/sql/0139_job_stats_hourly.sql
+index 3d7c70c8..33885d67 100644
+--- i/internal/repo/sql/0139_job_stats_hourly.sql
++++ w/internal/repo/sql/0139_job_stats_hourly.sql
+@@ -454,8 +454,12 @@ BEGIN
+     SELECT c.relname
+       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+      WHERE i.inhparent = 'pgvigil.job_stats_hourly'::regclass
+-       AND c.relname ~ '_[0-9]{6}$'
+-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
++       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
++       -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
++       -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
++       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
++       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
++            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
+      ORDER BY c.relname
+   LOOP
+     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 9dbcf660..80990021 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -205,8 +205,12 @@ BEGIN
+                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+                          'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute')
+-       AND c.relname ~ '_[0-9]{6}$'
+-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
++       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
++       -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
++       -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
++       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
++       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
++            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
+      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
+      -- ACCESS EXCLUSIVE on its parent)
+      ORDER BY p.relname, c.relname

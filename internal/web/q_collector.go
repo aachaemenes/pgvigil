@@ -56,11 +56,13 @@ SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity
 
 // sqlCollectorCollections: per collection over 24 h. p50 / p95 from the summed histograms (an estimate within the
 // bucket's factor of two); lag: now against the newest ok read of the collection (any instance) and the oldest
-// instance's newest ok read (a failed run updates collection_dates too: it does not count as a read).
+// instance's newest ok read (a failed run updates collection_dates too: it does not count as a read); retries: the
+// imports its runs took again after a deadlock (0271, N4).
 const sqlCollectorCollections = `
 WITH r AS (
   SELECT engine, collection, sum(runs)::bigint AS runs, sum(failures)::bigint AS failures, sum(rows_written)::bigint AS rows_written,
-         sum(dur_ms_sum)::bigint AS dur_sum, max(dur_ms_max) AS dur_max, max(minute) AS last_minute
+         sum(dur_ms_sum)::bigint AS dur_sum, max(dur_ms_max) AS dur_max, max(minute) AS last_minute,
+         sum(retries)::bigint AS retries
     FROM pgvigil.collector_runs WHERE minute > now() - interval '24 hours'
    GROUP BY engine, collection
 ), h AS (
@@ -77,7 +79,7 @@ WITH r AS (
    GROUP BY i.engine, d.collection
 )
 SELECT r.engine, r.collection, r.runs, r.failures,
-       round(100.0 * r.failures / nullif(r.runs, 0), 1) AS failure_pct,
+       round(100.0 * r.failures / nullif(r.runs, 0), 1) AS failure_pct, r.retries,
        round(r.dur_sum::numeric / nullif(r.runs, 0)) AS avg_ms,
        round(pgvigil.collector_pctl(h.hist, 0.5)::numeric) AS p50_ms,
        round(pgvigil.collector_pctl(h.hist, 0.95)::numeric) AS p95_ms,

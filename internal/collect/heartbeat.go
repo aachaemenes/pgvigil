@@ -52,6 +52,7 @@ const histBuckets = 19 // b 0 = under 1 ms, b n = 2^(n-1) to 2^n ms, b 18 = 131 
 
 type runAgg struct {
 	runs, failures int
+	retries        int // the runs' imports taken again after a deadlock (Result.Retries; N4)
 	rows           int64
 	durSum         int64
 	durMax         int
@@ -437,6 +438,7 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		h.runs[k] = a
 	}
 	a.runs++
+	a.retries += res.Retries
 	if failed {
 		a.failures++
 	} else {
@@ -486,6 +488,7 @@ type beatRun struct {
 	DurSum     int64  `json:"dur_sum"`
 	DurMax     int    `json:"dur_max"`
 	Hist       []int  `json:"hist"`
+	Retries    int    `json:"retries,omitempty"` // N4: collector_runs.retries (absent = 0)
 }
 
 type beatLoad struct {
@@ -551,7 +554,7 @@ func (h *Heartbeat) take() beat {
 	}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
-			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
+			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...), Retries: a.retries})
 	}
 	now := time.Now()
 	for name, l := range h.load {

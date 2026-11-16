@@ -121,6 +121,8 @@ type Result struct {
 	// B6g-1 (N25 / N26): the run's own session's cpu_time (ms) and logical_reads, read at the run's end on SQL
 	// Server; nil = not read (PostgreSQL has no such read in pgvigil; an end read that failed)
 	CPUMs, Reads *int64
+	// Retries: the run's imports taken again after a deadlock (sched's loop sets it from repo.WithRetryCounter; N4)
+	Retries int
 }
 
 // TimedImport runs one write into the repository and adds its time to the run's import time; a write that fails

@@ -107,13 +107,13 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: v => badge(sevWord[String(v)] ?? String(v), sevKind[String(v)] ?? '') },
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'setting', label: 'check' }, { key: 'value' },
       { key: 'detail', wide: true }, { key: 'at', label: 'since', fmt: fmtTime },
-    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days.'),
+    ] as Col[]) : stateNote('empty', 'No finding: the collector beats, no collection fails three runs in a row, no login is refused, purge ran in the last 2 days, and in a month\'s last three days next month\'s partitions are made.'),
     // a forming wait that ended without a parent (task 201 DONE-2 N7): only while no parent stands on that host
     ...waits.map(r => el('p', { class: 'state' }, `The wait for a shared cause ended on ${r.host} at ${fmtTime(r.ended_at)} without one: new alerts of its ${fmtNum(r.instances)} failing instance(s) are sent as they come.`)));
 
   // the collections over 24 h
   const sum = (k: string) => colls.reduce((a, r) => a + Number(r[k] ?? 0), 0);
-  const runs = sum('runs'), fails = sum('failures');
+  const runs = sum('runs'), fails = sum('failures'), retried = sum('retries');
   const worst = colls.reduce<Row | null>((a, r) => r.p95_ms != null && (a == null || Number(r.p95_ms) > Number(a.p95_ms)) ? r : a, null);
   const failing = streaks.filter(r => Number(r.fail_streak) >= 3).length;
   const runsPanel = panel('Collections', 'last 24 h',
@@ -122,7 +122,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       tile('Failures', fmtNum(fails), fails ? 'warn' : '', { sub: runs ? `${(100 * fails / runs).toFixed(1)} % of runs` : undefined }),
       tile('Rows written', fmtNum(sum('rows_written'))),
       tile('Slowest p95', worst ? fmtNum(worst.p95_ms) : '-', '', { unit: worst ? 'ms' : undefined, sub: worst ? String(worst.collection) : undefined }),
-      tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' })),
+      tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' }),
+      // N4: an import PostgreSQL ended as a deadlock's victim and pgvigil took again (stored once); shown when above 0
+      ...(retried ? [tile('Retried after a deadlock', fmtNum(retried), 'warn', { sub: 'imports taken again; one that failed every try counts in Failures' })] : [])),
     minutes.length >= 2
       ? lineChart('Runs and failures per minute', minutes,
           [{ key: 'runs', label: 'runs' }, { key: 'failures', label: 'failures' }, { key: 'rows_written', label: 'rows written' }],
@@ -142,6 +144,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
         href: `#/collectorerrors?w=24h&view=error&type=Error&coll=${encodeURIComponent(String(r.collection))}`,
         title: 'The errors kept for this collection in the last 24 hours, on every instance. The count is the collector\'s runs that ended with an error, over the whole repository and per engine; the list is the error log\'s rows: the two can differ.' }, fmtNum(v)) },
       { key: 'failure_pct', label: 'failure %', num: true, fmt: v => v == null ? '' : `${v}` },
+      { key: 'retries', label: 'retried after a deadlock', num: true, fmt: v => Number(v ?? 0) ? fmtNum(v) : '' },
       { key: 'avg_ms', label: 'avg (ms)', num: true, fmt: fmtNum }, { key: 'p50_ms', label: 'p50 (ms)', num: true, fmt: fmtNum },
       { key: 'p95_ms', label: 'p95 (ms)', num: true, fmt: fmtNum }, { key: 'max_ms', label: 'max (ms)', num: true, fmt: fmtNum },
       { key: 'rows_written', label: 'rows written', num: true, fmt: fmtNum },

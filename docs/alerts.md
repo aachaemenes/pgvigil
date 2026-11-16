@@ -244,8 +244,9 @@ plus 3 minutes of each other, and the span is 5 minutes at most.
 
 A host whose collector was uninstalled while the repository stays is retired there by the uninstall
 ([uninstall.md](uninstall.md)): it raises no *collector not seen*. A blackout, silence or mute that names an instance
-never holds *collector or network* or *purge not run in 2 days*, which belong to no instance and carry no tag - mute
-those by their own alert, by check (`collector or network`) or by text.
+never holds *collector or network*, *purge not run in 2 days* or *partitions ahead missing* (next month's partitions
+not made in a month's last three days), which belong to no instance and carry no tag - mute those by their own alert,
+by check (`collector or network`) or by text.
 
 A cut that drops packets instead of refusing them makes each connect hang until the 10-second connect timeout above
 ends it (or the DSN's own timeout; without either the operating system gives up after about 2 minutes on Linux). A run
