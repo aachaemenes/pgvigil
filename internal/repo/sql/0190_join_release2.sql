@@ -18,7 +18,8 @@
 --   task 301 (0140): the mssql_backup_loc_findings arm; purge() keeps mssql_backup_roots_seen 400 days at least.
 --   task 304 (0147): the mssql_restore_findings arm; nothing for purge() (its tables are current state, cascaded).
 --   SLOW-CONNECT (0121): alert_due's slow-connect terms; the 'connect_time' threshold key (and 'seconds' in
---     pg_threshold_keys' unit check); import_pg_threshold is 0117's with connect_time taken at a SQL Server instance.
+--     pg_threshold_keys' unit check, which also takes the HA files' 'MB' and 'count'); import_pg_threshold is 0117's
+--     with 0142's engines rule (pg_threshold_keys.engines), connect_time's row naming both engines.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
 -- (0110's, its owner-only list extended in 0110 itself).
 --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
@@ -760,12 +761,20 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
 -- as a 'count' by then: the list is every unit a file below this one stores, or the check fails on those rows
 ALTER TABLE pgvigil.pg_threshold_keys DROP CONSTRAINT IF EXISTS pg_threshold_keys_unit_check;
 ALTER TABLE pgvigil.pg_threshold_keys ADD CONSTRAINT pg_threshold_keys_unit_check CHECK (unit IN ('seconds', 'minutes', 'hours', 'days', 'MB', 'count'));
-INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
-  ('connect_time', 'Connect time: an instance''s average connect over its last 5 written minutes', 'seconds', 'over', 1.00, 2.50, '{root,tag,instance}', 60)
+-- the engines whose instances take a key at the instance and database level: pg_threshold_keys.engines (the HA join;
+-- 0142's column and 0142's two lines, repeated here so this file stands on a tree without 0142). connect_time is both
+-- engines', as uptime
+ALTER TABLE pgvigil.pg_threshold_keys ADD COLUMN IF NOT EXISTS engines text[] NOT NULL DEFAULT '{postgres}';
+UPDATE pgvigil.pg_threshold_keys SET engines = '{postgres,sqlserver}' WHERE key = 'uptime';
+INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value, engines) VALUES
+  ('connect_time', 'Connect time: an instance''s average connect over its last 5 written minutes', 'seconds', 'over', 1.00, 2.50, '{root,tag,instance}', 60, '{postgres,sqlserver}')
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
-  warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
+  warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value,
+  engines = EXCLUDED.engines;
 
--- import_pg_threshold: 0117's, with one change - 'connect_time' is both engines' at the instance level, as 'uptime'
+-- import_pg_threshold: 0117's with 0142's one change (the HA join: this file runs after 0142 and would undo it) - a key
+-- is taken at the instance and database level by an instance of the key's engines; 'connect_time' is both engines'
+-- by its row above, as 'uptime'
 CREATE OR REPLACE FUNCTION pgvigil.import_pg_threshold(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -797,10 +806,11 @@ BEGIN
   ELSIF v_level IS NULL OR NOT (v_level = ANY (v_k.levels)) THEN
     v_why := format('%s is set at the levels %s', v_key, array_to_string(v_k.levels, ', '));
   ELSIF v_level IN ('instance', 'database') AND (v_inst IS NULL OR NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = v_inst
-                                                  AND (i.engine = 'postgres' OR (v_key IN ('uptime', 'connect_time') AND v_level = 'instance')))) THEN
-    -- the uptime key is both engines' (DBA Dash's Instance Uptime dialog, task 176b), and the slow-connect tier's
-    -- connect_time: a SQL Server instance takes them
-    v_why := format(CASE WHEN v_key IN ('uptime', 'connect_time') THEN 'no instance %s' ELSE 'no PostgreSQL instance %s' END, coalesce(p_payload->>'instance_id', '(none)'));
+                                                  AND i.engine = ANY (v_k.engines))) THEN
+    -- the key's engines take it (0142): uptime (DBA Dash's Instance Uptime dialog, task 176b) and the slow-connect
+    -- tier's connect_time both engines', the replication and HA keys SQL Server's, every other key PostgreSQL's
+    v_why := format(CASE WHEN v_k.engines = '{postgres}' THEN 'no PostgreSQL instance %s' WHEN v_k.engines = '{sqlserver}' THEN 'no SQL Server instance %s'
+                         ELSE 'no instance %s' END, coalesce(p_payload->>'instance_id', '(none)'));
   ELSIF v_level = 'tag' AND (v_tag IS NULL OR length(v_tag) > 200) THEN
     v_why := 'a tag level names its tag (200 characters at most)';
   ELSIF v_level = 'database' AND (v_db IS NULL OR length(v_db) > 63) THEN
