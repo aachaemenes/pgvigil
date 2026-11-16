@@ -19,8 +19,9 @@
 //       words in its detail; G6 the outcome as the audit row stores a run cancelled while it ran), and the panel's
 //       result badge as it was before the redraw; waits up to 10 s (the log answers 100 rows at most: the walk's
 //       instances start empty)
-//   G10 (CQ-RUNSGRID) a run whose panel is replaced while it runs (sp_WhoIsActive @delta_interval 8, then another
-//       tool's name clicked): the grid still gains that run's row when it ends, up to 30 s
+//   G10 (CQ-RUNSGRID) a run whose panel is replaced while it runs (sp_WhoIsActive @delta_interval 12, another tool's
+//       name clicked once the status line names the request - a run under the page's 25 s wait never shows 'Running
+//       on'): the grid still gains that run's row when it ends, up to 40 s
 //   S3 (CQ-RUNSGRID) the shot overlay: the walk scrolls to the top for every full-page shot and back after it (a
 //       full-page capture of a scrolled page paints the sticky header and tabs where the scroll left them); at the
 //       scroll W3's run left (over 0) the sticky header's top is 0 - what put the band in r10 / r11's W3 shot; the
@@ -242,14 +243,16 @@ await fenced('G10', `#/community?i=${msId} (SQL Server)`, async () => {
   if (!tool || !other) { row('G10', page, 'sp_WhoIsActive and sp_Blitz', 'not both in the tool list', false); return; }
   const click = (name) => ev(`(() => { const b = [...document.querySelectorAll('main button.link')].find(b => b.textContent === ${JSON.stringify(name)}); if (!b) return false; b.click(); return true; })()`);
   if (!await click(tool.name) || !await until(`!!(${panel(tool.name)})`)) { row('G10', page, tool.name, 'its panel never drew', false); return; }
-  await ev(`(() => { const i = [...(${panel(tool.name)}).querySelectorAll('input')].find(i => (i.getAttribute('aria-label') ?? '').toLowerCase().startsWith('@delta_interval')); i.value = '8'; i.dispatchEvent(new Event('input', {bubbles: true})); })()`);
+  await ev(`(() => { const i = [...(${panel(tool.name)}).querySelectorAll('input')].find(i => (i.getAttribute('aria-label') ?? '').toLowerCase().startsWith('@delta_interval')); i.value = '12'; i.dispatchEvent(new Event('input', {bubbles: true})); })()`);
   const before = await runsGrid();
   await ev(`[...(${panel(tool.name)}).querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify('Run ' + tool.name)}).click()`);
-  const st = await until(`(() => { const s = (${panel(tool.name)})?.querySelector(':scope > p[role="status"]')?.textContent ?? ''; return /^Running on /.test(s) ? s : ''; })()`, 30000);
+  // the ask taken (the status line names its request, still waiting or running): the page shows 'Running on' only when
+  // its 25 s wait runs out mid-run (rg02: an 8 s run never showed it)
+  const st = await until(`(() => { const s = (${panel(tool.name)})?.querySelector(':scope > p[role="status"]')?.textContent ?? ''; return /^(Waiting|Running) .*Request \\d+\\./.test(s) ? s : ''; })()`, 30000);
   const id = Number(((st ?? '').match(/Request (\d+)\./) ?? [])[1] ?? 0);
   if (id) made.push(`G10 ${id}`);
-  if (!st || !await click(other.name) || !await until(`!!(${panel(other.name)}) && !(${panel(tool.name)})`)) { row('G10', page, `${tool.name} -> Run, then ${other.name}`, `the run never showed running (${st}) or the other panel never replaced it`, false); return; }
-  await gridRow('G10', page, { id, before, res: null }, tool, ['done'], () => true, 30000);
+  if (!st || !await click(other.name) || !await until(`!!(${panel(other.name)}) && !(${panel(tool.name)})`)) { row('G10', page, `${tool.name} -> Run, then ${other.name}`, `the status line never named the request (${st}) or the other panel never replaced it`, false); return; }
+  await gridRow('G10', page, { id, before, res: null }, tool, ['done'], () => true, 40000);
 });
 
 // W7 / W8 the Running pages: the action doors in queue mode
