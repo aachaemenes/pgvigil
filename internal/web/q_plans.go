@@ -120,6 +120,9 @@ func (s *Server) planButtonsOn(ds *doorSet, name string) planButtons {
 		b.ExplainReason = fileOnly(name)
 	case ds.PG[name].Monitor == "":
 		b.ExplainReason = fmt.Sprintf("instance %s has no monitoring dsn in this server's config", name)
+	case ds.planPolicy(name) == "none":
+		// TEXT-NOW (the lead's T4): no statement text is shown or used under none, the stored text of before included
+		b.ExplainReason = textNoneWords
 	default:
 		b.Explain = true
 	}
@@ -330,6 +333,8 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case ds.PG[name].Page:
 		res = actions.Result{Outcome: actions.Refused, Detail: fileOnly(name)}
+	case ds.planPolicy(name) == "none":
+		res = actions.Result{Outcome: actions.Refused, Detail: textNoneWords}
 	case strings.TrimSpace(strings.ToLower(in.Confirm)) != "analyze":
 		res = actions.Result{Outcome: actions.Refused, Detail: `the typed confirmation is not "analyze"`}
 	default:
@@ -417,6 +422,9 @@ func (s *Server) planForSuggest(ctx context.Context, planID, instance, queryid, 
 	v := tr.row(p.InstanceID, []string{"pgq", "pgplan"}, []any{deref0(p.Query), p.Plan})
 	pl, _ := v[1].(string)
 	if pl == "" {
+		if tr.policy(p.InstanceID, true) == "none" {
+			return nil, errTextNone
+		}
 		return nil, pgx.ErrNoRows
 	}
 	p.Plan = pl
@@ -466,6 +474,10 @@ func (s *Server) PlanSuggest(w http.ResponseWriter, r *http.Request) {
 		inst, qid, db = id, n, d
 	}
 	p, err := s.planForSuggest(r.Context(), planID, inst, qid, db)
+	if errors.Is(err, errTextNone) {
+		s.reply(w, r, map[string]any{"plan_id": nil, "suggestions": []plans.Suggestion{}, "skipped": []plans.Skipped{}, "note": textNoneWords}, nil)
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// no plan: nothing to suggest from, and the page says how to get one
 		s.reply(w, r, map[string]any{"plan_id": nil, "suggestions": []plans.Suggestion{}, "skipped": []plans.Skipped{},
@@ -540,6 +552,10 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*plans.ExplainTimeout+time.Minute)
 	defer cancel()
 	p, err := a.s.planForSuggest(ctx, in.PlanID, nil, nil, nil)
+	if errors.Is(err, errTextNone) {
+		writeErr(w, http.StatusForbidden, errTextNone)
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no plan %d", in.PlanID))
 		return

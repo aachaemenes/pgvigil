@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -505,3 +506,10 @@ func markText(sql string, t *table) {
 // TextPolicy is an instance's query_text policy as this server's doors hold it now (serve gives it to the alert sends:
 // alerts.SetTextPolicy).
 func (s *Server) TextPolicy(name string) string { return s.doorsNow().planPolicy(name) }
+
+// textNoneWords: why EXPLAIN, EXPLAIN ANALYZE, the index suggestion and its planner check are off for an instance
+// whose policy is none now (the lead's T4): they would show or use a statement's text, the text stored before included.
+const textNoneWords = `off: this instance's query_text policy is "none": no statement text is shown or used, the text stored before included (EXPLAIN, EXPLAIN ANALYZE and the index suggestion read it)`
+
+// errTextNone is textNoneWords as a refusal.
+var errTextNone = errors.New(textNoneWords)

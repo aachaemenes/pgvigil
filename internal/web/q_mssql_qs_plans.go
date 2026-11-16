@@ -32,6 +32,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// sqlMSSQLSearch: the statements of one source whose text holds the pattern; a 'none' instance is skipped ($4), each
+// row's statement under its instance's policy now (the marker; reply applies it)
+const sqlMSSQLSearch = `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4) /* text: statement=stmt, instance_id=inst */`
+
 // planReadBudget bounds one read on demand: the connection, the two statements and the transfer of the XML.
 const planReadBudget = 30 * time.Second
 
@@ -608,7 +612,7 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		_, err = tx.Exec(ctx, "SET LOCAL statement_timeout = '"+searchBudget+"'")
 		if err == nil {
 			var rows pgx.Rows
-			rows, err = tx.Query(ctx, `SELECT * FROM pgvigil.mssql_statement_search($1, $2, $3, 200, $4)`, pattern, name, inst, skip)
+			rows, err = tx.Query(ctx, sqlMSSQLSearch, pattern, name, inst, skip)
 			if err == nil {
 				t := &table{Rows: [][]any{}}
 				for _, f := range rows.FieldDescriptions() {
@@ -626,6 +630,7 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					err = rows.Err()
 				}
+				markText(sqlMSSQLSearch, t) // TEXT-NOW: a normalized instance's statements shown normalized (textread.go)
 				one.Rows = t
 			}
 		}
