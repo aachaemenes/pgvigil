@@ -118,6 +118,13 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     it, inside the trigger), one now: both hours are stored, nothing is left as a range to rebuild and no 'rollup
 //     failed' row is written. A right the trigger's path lacks would not fail the import (0150 catches it): it would
 //     show here as no hour, a range and a failed row.
+//  11. A logical slot's walsender behind in time stays a finding. 0118's 'replay lag' arm judged EVERY sender; the HA
+//     files judge a physical link ('standby lag') and the join dropped 0118's arm (part 7) - which alone would leave
+//     a subscription's or a CDC task's sender 30 s behind with a check on the Replication page and no finding, so
+//     no alert. 0141 judges it: 'replay lag' from the newest read at the tiers of its own threshold key
+//     logical_sender_lag (30 / 300 s: 0118's). Three logical senders 400, 45 and 10 s behind are critical, warning
+//     and nothing - each once in pgvigil.findings, and once among the Replication page's checks
+//     (replication_checks), not twice.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -443,4 +450,32 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		            (SELECT count(*) FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1)::text || ' / ' ||
 		            (SELECT count(*) FROM pgvigil.collection_log l WHERE l.instance_id = $1 AND l.collection = 'replication_hourly' AND l.status = 'error')::text`, col),
 		"2 / 0 / 0")
+
+	// 11. a logical slot's walsender behind in time: a finding at 0118's tiers, said once
+	var lagLG int
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '18.0', 180000, false, '{}'::text[], 'postgres')`,
+		fmt.Sprintf("hajoin-laglg-%d", sfx)).Scan(&lagLG); err != nil {
+		t.Fatal(err)
+	}
+	logical := func(slot string, secs int) string {
+		return fmt.Sprintf(`{"kind":"sender","application_name":"%s","client_addr":"10.0.0.3","state":"streaming","sync_state":"async",`+
+			`"slot_name":"%s","slot_type":"logical","replay_lag_bytes":1048576,"replay_lag_secs":%d}`, slot, slot, secs)
+	}
+	exec(`SELECT pgvigil.import_replication($1, now(), $2::jsonb)`, lagLG,
+		"["+logical("lg_crit", 400)+","+logical("lg_warn", 45)+","+logical("lg_ok", 10)+"]")
+	want("the three logical senders as stored (the control: replication_latest)",
+		str(`SELECT coalesce(string_agg(key || ' ' || lag_secs::int, ', ' ORDER BY key), '')
+		       FROM pgvigil.replication_latest WHERE instance_id = $1 AND kind = 'sender'`, lagLG),
+		"slot:lg_crit 400, slot:lg_ok 10, slot:lg_warn 45")
+	want("0141's 'replay lag' of the logical senders (pg_hadr_checks)",
+		str(`SELECT coalesce(string_agg(severity || '|' || object, ',' ORDER BY object), '')
+		       FROM pgvigil.pg_hadr_checks WHERE instance_id = $1 AND check_name = 'replay lag'`, lagLG),
+		"critical|slot:lg_crit,warning|slot:lg_warn")
+	want("the logical senders' 'replay lag' in pgvigil.findings, by severity",
+		str(`SELECT coalesce(string_agg(x.severity || ' ' || x.n, ', ' ORDER BY x.severity), '')
+		       FROM (SELECT f.severity, count(*) AS n FROM pgvigil.findings f
+		              WHERE f.instance_id = $1 AND f.setting = 'replay lag' GROUP BY f.severity) x`, lagLG),
+		"critical 1, warning 1")
+	want("the Replication page's checks named 'replay lag' for the instance (each lagging sender once)",
+		str(`SELECT count(*)::text FROM pgvigil.replication_checks WHERE instance_id = $1 AND check_name = 'replay lag'`, lagLG), "2")
 }
