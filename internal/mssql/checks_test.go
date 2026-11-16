@@ -380,6 +380,13 @@ func TestDatabaseRules(t *testing.T) {
 		{collect.Row{"checkdb_age_min": int64(8 * 1440)}, "last_good_checkdb", "warn", "warning", AreaCheckDB, "dbachecks LastGoodCheckDb"},
 		{collect.Row{"checkdb_age_min": int64(7*1440 + 12*60)}, "last_good_checkdb", "warn", "warning", AreaCheckDB, "dbachecks LastGoodCheckDb"},
 		{collect.Row{"checkdb_age_min": int64(15 * 1440)}, "last_good_checkdb", "crit", "critical", AreaCheckDB, "sp_Blitz 68"},
+		// BLITZ-GAP (the lead 05:2x): replication in use, TDE, a database snapshot
+		{collect.Row{"published": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"merge_published": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"subscribed": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"distributor": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"encrypted": int64(1)}, "encrypted", "warn", "info", AreaDBOptions, "sp_Blitz 21"},
+		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "is_snapshot", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
 	}
 	for _, c := range cases {
 		dev, fs := judgeDatabase(db(c.over), srv)
@@ -439,6 +446,31 @@ func TestDatabaseRules(t *testing.T) {
 		if !keys[r.key] {
 			t.Errorf("rule %q judges %q, which is no column of the grid", r.check, r.key)
 		}
+	}
+}
+
+// TestBlitzGapWords: the words of sp_Blitz 19, 21 and 77's rules (BLITZ-GAP), and what they leave alone.
+func TestBlitzGapWords(t *testing.T) {
+	srv := serverFactsOf(Info{Kind: KindServer, Major: 16}, "SQL_Latin1_General_CP1_CI_AS")
+	for _, c := range []struct {
+		over collect.Row
+		want string
+	}{
+		{collect.Row{"published": int64(1)}, "app: published for transactional or snapshot replication"},
+		{collect.Row{"published": int64(1), "merge_published": int64(1)}, "app: published for transactional or snapshot replication; published for merge replication"},
+		{collect.Row{"subscribed": int64(1)}, "app: subscribed to a publication"},
+		{collect.Row{"database_name": "distribution", "distributor": int64(1)}, "distribution: the distribution database"},
+		{collect.Row{"encrypted": int64(1)}, "app: TDE is on: a restore on another server needs the certificate that protects its key, with its private key"},
+		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "app: a database snapshot of src: each page changed in src after it was taken is first copied into it"},
+	} {
+		_, fs := judgeDatabase(db(c.over), srv)
+		if len(fs) != 1 || !strings.HasPrefix(fs[0].Explain, c.want) {
+			t.Errorf("%v: findings %+v; want one starting %q", c.over, fs, c.want)
+		}
+	}
+	// tempdb is encrypted whenever a database uses TDE: not a finding of its own
+	if _, fs := judgeDatabase(db(collect.Row{"database_id": int64(2), "database_name": "tempdb", "encrypted": int64(1)}), srv); len(fs) != 0 {
+		t.Errorf("tempdb encrypted: %+v", fs)
 	}
 }
 

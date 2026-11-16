@@ -77,7 +77,18 @@
 #     auto-close database say 'warn' while it is seeded; the options part's cross db ownership chaining row says
 #     the status the table holds; the fleet's options part holds every instance's options.
 #  M. the imports refuse a PostgreSQL instance; an older payload after a newer one changes nothing.
-#  The last line is "proof-mssql-checks: PASS (A-M)" and the exit code 0.
+#  N. BLITZ-GAP (the lead 05:2x: sp_Blitz 19, 21 and 77 as pgvigil's own findings over the hourly sys.databases read),
+#     every failure of the row said together: a snapshot of the proof's database (CREATE DATABASE ... AS SNAPSHOT OF)
+#     - the finding 'database snapshot' (info, sp_Blitz 77) on it, 'a database snapshot of <db>'; dropped: gone. TDE
+#     on the proof's database (a master key and a certificate in master, its database encryption key, ENCRYPTION ON,
+#     state 3 waited) - its encrypted cell 'warn|sp_Blitz 21', the finding 'database encrypted' (info) with 'TDE is
+#     on'; ENCRYPTION OFF, state 1 waited, the key dropped: gone (the certificate stays: tempdb keeps its key until a
+#     restart). The container made its own distributor and publisher (sp_adddistributor, sp_adddistributiondb,
+#     sp_adddistpublisher) and the proof's database published (sp_replicationdboption 'publish') - the finding
+#     'replication in use' (info, sp_Blitz 19) on it ('published for transactional or snapshot replication') and on
+#     'distribution' ('the distribution database'); unpublished and the distributor dropped: both gone. RED ON THE
+#     BASE (46a9c3c8): none of the three findings exists ('FAIL: N: ...' naming each).
+#  The last line is "proof-mssql-checks: PASS (A-N)" and the exit code 0.
 #  NOT PROVEN HERE: a build behind the catalogue on a live server (the unit test TestJudgeBuild covers the
 #  judgement; one image), SQL Server 2016-2019 and 2025 (proof-mssql-versions.sh can run this proof per version),
 #  Windows, Amazon RDS, Azure SQL Managed Instance, a real damaged page, a database SUSPECT or RECOVERY_PENDING, the
@@ -397,4 +408,40 @@ for f in import_mssql_checks import_mssql_identity; do
   grep -q "not a SQL Server instance" "$OUT" || fail "M: $f's refusal: $(cat "$OUT")"
 done
 echo "M: OK"
-echo "proof-mssql-checks: PASS (A-M)"
+
+echo "--- N. BLITZ-GAP: a database snapshot (sp_Blitz 77), TDE (21), replication (19)"
+NB=""   # the row's failures, said together
+fnd() { q "select count(*) || '|' || coalesce(max(severity), '') || '|' || coalesce(max(rule), '') || '|' || coalesce(max(detail), '') from pgvigil.mssql_check_finding where instance_id = $I and check_name = '$1' and object = '$2'"; }
+SNAP=${DB}_snap; LNAME=$(sq "SELECT name FROM sys.master_files WHERE database_id = DB_ID(N'$DB') AND type = 0")
+if sq "CREATE DATABASE [$SNAP] ON (NAME = N'$LNAME', FILENAME = N'/var/opt/mssql/data/$SNAP.ss') AS SNAPSHOT OF [$DB];" >/dev/null; then
+  chk; f=$(fnd 'database snapshot' "$SNAP")
+  [[ $f == "1|info|sp_Blitz 77|$SNAP: a database snapshot of $DB:"* ]] && echo "  77: $f" | cut -c1-160 || NB+=" | 77 seeded: $f"
+  sq "DROP DATABASE [$SNAP];" >/dev/null; chk
+  [[ $(fnd 'database snapshot' "$SNAP") == 0* ]] || NB+=" | 77 after the drop: $(fnd 'database snapshot' "$SNAP")"
+else NB+=" | 77: the snapshot was not made"; fi
+CERT=pgv_tde_$SUF
+if printf '%s\n' "USE master; CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'$(pw)'; CREATE CERTIFICATE [$CERT] WITH SUBJECT = N'pgvigil proof TDE';
+USE [$DB]; CREATE DATABASE ENCRYPTION KEY WITH ALGORITHM = AES_256 ENCRYPTION BY SERVER CERTIFICATE [$CERT]; ALTER DATABASE [$DB] SET ENCRYPTION ON;" | sqs >/dev/null; then
+  for _ in $(seq 1 60); do [ "$(sq "SELECT encryption_state FROM sys.dm_database_encryption_keys WHERE database_id = DB_ID(N'$DB')")" = 3 ] && break; sleep 1; done
+  chk; f=$(fnd 'database encrypted' "$DB")
+  [[ $(cell "$DB" encrypted) == "warn|sp_Blitz 21" && $f == "1|info|sp_Blitz 21|$DB: TDE is on"* ]] && echo "  21: $(cell "$DB" encrypted), $f" | cut -c1-160 || NB+=" | 21 seeded: cell $(cell "$DB" encrypted), $f"
+  sq "ALTER DATABASE [$DB] SET ENCRYPTION OFF;" >/dev/null
+  for _ in $(seq 1 60); do [ "$(sq "SELECT encryption_state FROM sys.dm_database_encryption_keys WHERE database_id = DB_ID(N'$DB')")" = 1 ] && break; sleep 1; done
+  sq "DROP DATABASE ENCRYPTION KEY;" "$DB" >/dev/null || NB+=" | 21: the key was not dropped"
+  chk; [[ $(fnd 'database encrypted' "$DB") == 0* && $(cell "$DB" encrypted) == "none|" ]] || NB+=" | 21 after the undo: cell $(cell "$DB" encrypted), $(fnd 'database encrypted' "$DB")"
+else NB+=" | 21: TDE was not turned on"; fi
+docker exec "$CT" mkdir -p /var/opt/mssql/data/repldata
+if printf '%s\n' "USE master; DECLARE @s sysname = @@SERVERNAME; EXEC sp_adddistributor @distributor = @s, @password = N'$(pw)';
+EXEC sp_adddistributiondb @database = N'distribution', @security_mode = 1;
+EXEC sp_adddistpublisher @publisher = @s, @distribution_db = N'distribution', @security_mode = 1, @working_directory = N'/var/opt/mssql/data/repldata';
+EXEC sp_replicationdboption @dbname = N'$DB', @optname = N'publish', @value = N'true';" | sqs > "$WORK/repl.log" 2>&1; then
+  chk; f=$(fnd 'replication in use' "$DB"); g=$(fnd 'replication in use' distribution)
+  [[ $f == "1|info|sp_Blitz 19|$DB: published for transactional or snapshot replication"* ]] && echo "  19: $f" | cut -c1-160 || NB+=" | 19 seeded on $DB: $f"
+  [[ $g == "1|info|sp_Blitz 19|distribution: the distribution database"* ]] && echo "  19: $g" | cut -c1-160 || NB+=" | 19 seeded on distribution: $g"
+  printf '%s\n' "USE master; DECLARE @s sysname = @@SERVERNAME; EXEC sp_replicationdboption @dbname = N'$DB', @optname = N'publish', @value = N'false';
+EXEC sp_dropdistpublisher @publisher = @s; EXEC sp_dropdistributiondb @database = N'distribution'; EXEC sp_dropdistributor;" | sqs >/dev/null || NB+=" | 19: the undo failed"
+  chk; [[ $(fnd 'replication in use' "$DB") == 0* && $(fnd 'replication in use' distribution) == 0* ]] || NB+=" | 19 after the undo: $(fnd 'replication in use' "$DB") / $(fnd 'replication in use' distribution)"
+else NB+=" | 19: the distributor and the publication were not made: $(tail -3 "$WORK/repl.log" | tr '\n' ' ')"; fi
+[ -z "$NB" ] || fail "N:${NB}"
+echo "N: OK"
+echo "proof-mssql-checks: PASS (A-N)"
