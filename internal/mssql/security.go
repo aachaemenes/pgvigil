@@ -282,7 +282,16 @@ var secRegistryKeys = map[string]string{
 
 // secRegreadOff: why the security read does not call xp_instance_regread on this platform ("" = it may): the same
 // platforms the rights page lists registry_instance as not applying to (hostOnly).
-func secRegreadOff(_ Info) string { return "" }
+func secRegreadOff(i Info) string {
+	switch why := hostOnly(i); why {
+	case "":
+		return ""
+	case "hide":
+		return "Azure SQL Database runs the host: the registry is not read there"
+	default:
+		return why
+	}
+}
 
 func (r *secRun) registry() {
 	if r.skip("registry") {
@@ -294,6 +303,7 @@ func (r *secRun) registry() {
 	}
 	got := map[string]string{}
 	var notes []string
+	offs := 0 // values the platform does not let the read reach (secRegreadOff)
 	if !r.ctxt.Linux && r.ctxt.VSS {
 		if rows, err := QueryRows(r.ctx, r.conn, secRegistryDMV); err == nil {
 			for _, row := range rows {
@@ -310,6 +320,11 @@ func (r *secRun) registry() {
 	for _, n := range names {
 		if _, ok := got[n]; ok {
 			r.out = append(r.out, collect.Row{"kind": "registry", "value_name": n, "value": got[n], "source": "sys.dm_server_registry"})
+			continue
+		}
+		if off := secRegreadOff(r.info); off != "" {
+			notes = append(notes, n+" not read: "+off)
+			offs++
 			continue
 		}
 		if !r.ctxt.CanRegread {
@@ -339,11 +354,15 @@ func (r *secRun) registry() {
 	if r.ctxt.Linux {
 		r.out = append(r.out, collect.Row{"kind": "registry_na", "value_name": "HideInstance", "note": "not on Linux (no SQL Server Browser)"})
 	}
-	// read when at least one value was; else 'no right' when a missing right is why, 'failed' otherwise
+	// read when at least one value was; else 'n/a' where the platform runs the host, 'no right' when a missing right is
+	// why, 'failed' otherwise
 	status := "read"
 	if len(notes) >= len(names) {
 		status = "failed"
-		if !r.ctxt.CanRegread {
+		switch {
+		case offs >= len(names):
+			status = "n/a"
+		case !r.ctxt.CanRegread:
 			status = "no right"
 		}
 	}
