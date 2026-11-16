@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -117,8 +118,93 @@ func remoteServiceLog(cfgPath string) (string, bool) {
 	return filepath.Join(cfg.Remote.StateDir, "pgvigil-remote.log"), true
 }
 
-// remotePurgeGuard is uninstall -remote -purge's refusal while the outbox holds bundles not pushed (the lead's 12:2x).
-func remotePurgeGuard(o installOptions) error { return nil }
+// remoteFolders are a remote collector's outbox and state folder: its config's remote: block, else the install's
+// defaults (env: and file: values stay unresolved in Load, so a shell without the service's environment reads them).
+func remoteFolders(cfgPath string) (outbox, stateDir string) {
+	if cfg, err := config.Load(cfgPath); err == nil && cfg.Remote != nil && cfg.Remote.Outbox != "" && cfg.Remote.StateDir != "" {
+		return cfg.Remote.Outbox, cfg.Remote.StateDir
+	}
+	return remoteFolderDefaults()
+}
+
+// remotePurgeGuard is uninstall -remote -purge's refusal while the outbox holds bundles not pushed (the lead's 12:2x):
+// the collector cannot know whether the site's own transfer carried them; -force removes them too. Nothing is changed
+// when it refuses.
+func remotePurgeGuard(o installOptions) error {
+	if !o.Purge || o.Force {
+		return nil
+	}
+	outbox, _ := remoteFolders(o.Config)
+	if outbox == "" {
+		return nil
+	}
+	n, newest, err := remote.OutboxHolds(outbox)
+	if err != nil {
+		return fmt.Errorf("uninstall -remote -purge: the outbox %s cannot be read (%v): nothing was removed", outbox, err)
+	}
+	if n == 0 {
+		return nil
+	}
+	return fmt.Errorf("uninstall -remote -purge: the outbox %s holds %d bundle(s) not pushed, the newest ending %s: a bundle not yet carried to the hub is lost - let the site's transfer carry them first, or give -force to remove them too; nothing was removed",
+		outbox, n, newest.UTC().Format("2006-01-02 15:04:05 UTC"))
+}
+
+// uninstallRemote is `pgvigil uninstall -remote [-purge [-force]]` (the lead's 12:2x): the remote collector's service
+// stopped and removed - never the hub's; with -purge its outbox, its state folder, its config folder's own files and
+// its binary, each folder removed once empty and anything else in them kept and named.
+func uninstallRemote(log *slog.Logger, o installOptions) error {
+	outbox, stateDir := remoteFolders(o.Config)
+	held, _, _ := remote.OutboxHolds(outbox)
+	if err := remotePurgeGuard(o); err != nil {
+		return err
+	}
+	if err := removeRemoteService(log); err != nil {
+		return err
+	}
+	cfgDir := filepath.Dir(o.Config)
+	if !o.Purge {
+		fmt.Printf("the remote collector's service is gone; kept: %s, %s, %s and %s (uninstall -remote -purge removes them).\n", cfgDir, outbox, stateDir, o.Bin)
+		return nil
+	}
+	if outbox != "" {
+		n, kept, err := remote.PurgeOutbox(outbox)
+		if err != nil {
+			return fmt.Errorf("the outbox %s: %w", outbox, err)
+		}
+		if held > 0 {
+			fmt.Printf("removed with -force: %d bundle(s) not pushed (a bundle not yet carried to the hub is lost)\n", held)
+		}
+		log.Info("outbox purged", "path", outbox, "bundles", n)
+		for _, k := range kept {
+			fmt.Printf("kept, not the collector's: %s\n", k)
+		}
+	}
+	if stateDir != "" {
+		kept, err := remote.PurgeState(stateDir)
+		if err != nil {
+			return fmt.Errorf("the state folder %s: %w", stateDir, err)
+		}
+		log.Info("state folder purged", "path", stateDir)
+		for _, k := range kept {
+			fmt.Printf("kept, not the collector's: %s\n", filepath.Join(stateDir, k))
+		}
+	}
+	base := filepath.Base(o.Config)
+	if err := purgeFolder(log, cfgDir, base, strings.TrimSuffix(base, filepath.Ext(base))+".env"); err != nil {
+		return err
+	}
+	if err := os.Remove(o.Bin); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Printf("%s could not be removed (%v): delete it by hand once this process has exited.\n", o.Bin, err)
+	} else {
+		log.Info("removed", "binary", o.Bin)
+		if runtime.GOOS == "windows" { // its own folder under Program Files; never a shared bin folder
+			if err := os.Remove(filepath.Dir(o.Bin)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				log.Info("folder kept: it still holds other files", "path", filepath.Dir(o.Bin))
+			}
+		}
+	}
+	return nil
+}
 
 func sweepOutbox(outbox string, keepDays, maxMB int, now time.Time) int {
 	aged, capped := remote.SweepOutbox(outbox, keepDays, maxMB, now)

@@ -12,8 +12,8 @@
 # Offline (no network: a local folder, a mounted USB stick or a share holding the extracted offline bundle,
 # pgvigil-offline-<version>-linux-amd64; docs/airgap.md), as root:
 #   sh <folder>/install.sh --from <folder> [--fips | --plain] [--trust-root <dir>]
-# --remote (online or with --from) installs the remote collector's service instead (pgvigil install -remote:
-# docs/remote-collector.md); the upgrade flags do not go with it.
+# --remote (online or with --from) installs the remote collector's service instead (pgvigil install -remote: its own
+# binary /usr/local/bin/pgvigil-remote; docs/remote-collector.md); the upgrade flags do not go with it.
 #                          [--owner-dsn-file <path>] [--dump <file> | --no-dump] [--pg-dump <path>]
 # The binary and SHA256SUMS are copied into a new folder of root's alone, the copies verified and only the copies run
 # (a share or a stick can change between a check and a use). A fresh install runs 'pgvigil install'; on a host where the

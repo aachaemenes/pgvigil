@@ -18,7 +18,7 @@ import (
 // account, config and folders, so a box can run a hub collector beside it.
 const (
 	remoteUnitPath = "/etc/systemd/system/pgvigil-remote.service"
-	remoteBin      = "/usr/local/bin/pgvigil"
+	remoteBin      = "/usr/local/bin/pgvigil-remote" // its own binary (the lead's 12:2x): never the hub's
 	remoteConfig   = "/etc/pgvigil-remote/pgvigil-remote.yaml"
 	remoteEnvFile  = "/etc/pgvigil-remote/pgvigil-remote.env"
 	remoteAccount  = "pgvigil-remote"
@@ -79,6 +79,33 @@ WantedBy=multi-user.target
 
 func remoteConfigDefault() string  { return remoteConfig }
 func remoteAccountDefault() string { return remoteAccount }
+func remoteBinDefault() string     { return remoteBin }
+
+func remoteFolderDefaults() (outbox, stateDir string) { return remoteOutbox, remoteStateDir }
+
+// removeRemoteService is uninstall -remote's service part on Linux: pgvigil-remote.service stopped, disabled and its
+// unit removed - never pgvigil.service; the account stays (named), as the hub's uninstall leaves its own.
+func removeRemoteService(log *slog.Logger) error {
+	if os.Geteuid() != 0 {
+		return errors.New("uninstall needs root: run it with sudo")
+	}
+	unit := filepath.Base(remoteUnitPath)
+	if systemdRunning() {
+		if out, err := systemctl("disable", "--now", unit); err != nil {
+			log.Warn("systemctl disable --now", "unit", unit, "err", err, "out", out)
+		}
+	}
+	if err := os.Remove(remoteUnitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	log.Info("unit removed", "path", remoteUnitPath)
+	if systemdRunning() {
+		_, _ = systemctl("daemon-reload")
+		_, _ = systemctl("reset-failed", unit)
+	}
+	fmt.Printf("the account %s is kept; remove it with: userdel %s\n", remoteAccount, remoteAccount)
+	return nil
+}
 
 // installRemoteService is `pgvigil install -remote` on Linux (R14): the account, the binary, the config folder with the
 // remote sample config and the env file when absent, the outbox and the state folder from the config (absolute, never

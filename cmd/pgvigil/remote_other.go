@@ -9,6 +9,13 @@ import (
 
 func remoteConfigDefault() string  { return "/etc/pgvigil-remote/pgvigil-remote.yaml" }
 func remoteAccountDefault() string { return "pgvigil-remote" }
+func remoteBinDefault() string     { return "/usr/local/bin/pgvigil-remote" }
+
+func remoteFolderDefaults() (outbox, stateDir string) { return "", "" }
+
+func removeRemoteService(_ *slog.Logger) error {
+	return errors.New("uninstall -remote: Linux and Windows only (stop and remove the service under the platform's own service manager)")
+}
 
 func installRemoteService(_ *slog.Logger, _ installOptions) error {
 	return errors.New("install -remote: Linux and Windows only (run pgvigil run -config <file> under the platform's own service manager)")

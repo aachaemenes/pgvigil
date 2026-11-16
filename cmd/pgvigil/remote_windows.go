@@ -29,6 +29,37 @@ func remoteDataDir() string        { return filepath.Join(programData(), "pgvigi
 func remoteConfigDefault() string  { return filepath.Join(remoteDataDir(), "pgvigil-remote.yaml") }
 func remoteAccountDefault() string { return remoteAccountName }
 
+// remoteBinDefault is its own binary (the lead's 12:2x): never the hub's %ProgramFiles%\pgvigil\pgvigil.exe.
+func remoteBinDefault() string { return filepath.Join(programFiles(), "pgvigil-remote", "pgvigil.exe") }
+
+func remoteFolderDefaults() (outbox, stateDir string) {
+	return filepath.Join(remoteDataDir(), "outbox"), filepath.Join(remoteDataDir(), "state")
+}
+
+// removeRemoteService is uninstall -remote's service part on Windows: the service pgvigil-remote stopped and deleted -
+// never the service pgvigil.
+func removeRemoteService(log *slog.Logger) error {
+	m, err := connectSCM()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.Disconnect() }()
+	s, err := m.OpenService(remoteServiceName)
+	if err != nil {
+		log.Info("no service to remove", "name", remoteServiceName)
+		return nil
+	}
+	defer func() { _ = s.Close() }()
+	if err := stopIfRunning(log, s); err != nil {
+		return err
+	}
+	if err := s.Delete(); err != nil {
+		return fmt.Errorf("delete service: %w", err)
+	}
+	log.Info("service removed", "name", remoteServiceName)
+	return nil
+}
+
 // installRemoteService is `pgvigil install -remote` on Windows (R14): the binary, the config folder readable by SYSTEM,
 // Administrators and the service account only, the remote sample config when absent, the outbox and the state folder
 // from the config (absolute, two) writable by the service account only besides SYSTEM and Administrators, the service
@@ -59,7 +90,7 @@ func installRemoteService(log *slog.Logger, o installOptions) error {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return err
 	}
-	outboxDef, stateDef := filepath.Join(remoteDataDir(), "outbox"), filepath.Join(remoteDataDir(), "state")
+	outboxDef, stateDef := remoteFolderDefaults()
 	wrote, err := writeIfAbsent(o.Config, remoteConfigTemplate(outboxDef, stateDef), 0o600)
 	if err != nil {
 		return err

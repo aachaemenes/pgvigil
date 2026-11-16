@@ -108,6 +108,8 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	} else {
 		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
+		fs.BoolVar(&o.Remote, "remote", false, "remove the remote collector's service, never the hub's; with -purge also its config folder, outbox, state folder and binary (docs/remote-collector.md)")
+		fs.BoolVar(&o.Force, "force", false, "with -remote -purge: remove the bundles still in the outbox too (a bundle not yet carried to the hub is lost)")
 		fs.BoolVar(&o.All, "all", false, "remove everything of pgvigil on this host: the service, the binaries, the configuration, the account the install made, the Windows app (docs/uninstall.md)")
 		fs.BoolVar(&o.DryRun, "dry-run", false, "with -all: list every item, present or absent, and what would be done; change nothing")
 		fs.BoolVar(&o.DropRepository, "drop-repository", false, "with -all: also drop the repository database and the pgvigil roles (the database's name typed, a dump first)")
@@ -128,6 +130,10 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
 	ownerFlags := []string{"owner-dsn-env", "owner-dsn-file", "dump", "no-dump", "pg-dump"}
 	switch {
+	case name == "uninstall" && o.Force && !(o.Remote && o.Purge):
+		return o, errors.New("-force goes with -remote -purge only")
+	case name == "uninstall" && o.Remote && o.All:
+		return o, errors.New("-remote does not go with -all: uninstall -all is the hub collector's (the remote collector goes with uninstall -remote [-purge])")
 	case name == "uninstall" && !o.All && (o.DryRun || o.DropRepository):
 		return o, errors.New("-dry-run and -drop-repository go with -all")
 	case name == "uninstall" && !o.DropRepository:
@@ -161,6 +167,9 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 		if !o.set["user"] {
 			o.User = remoteAccountDefault()
 		}
+		if !o.set["bin"] {
+			o.Bin = remoteBinDefault() // its own binary: install -remote leaves a hub collector's as it was
+		}
 	}
 	if o.User == "" {
 		return o, errors.New("-user must name an account")
@@ -187,6 +196,9 @@ func runUninstall(log *slog.Logger, args []string) error {
 	o, err := parseInstallArgs("uninstall", args, defaultInstallOptions())
 	if err != nil {
 		return err
+	}
+	if o.Remote { // the remote collector has no repository: no retire, never the hub's service
+		return uninstallRemote(log, o)
 	}
 	// task 201: an uninstall that keeps the repository retires this host in it (pgvigil.import_collector_retire) -
 	// its 'collector not seen' alert would otherwise stand for good, hold its instances' alerts and keep every serve's
