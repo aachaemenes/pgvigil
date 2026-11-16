@@ -1,8 +1,8 @@
 diff --git c/docs/alerts.md i/docs/alerts.md
-index e9a2dd5..55fd025 100644
+index 07ac1087..a785a47b 100644
 --- c/docs/alerts.md
 +++ i/docs/alerts.md
-@@ -426,7 +426,12 @@ A channel of this file may not be named `contact-...`. The whole: [applications.
+@@ -660,7 +660,12 @@ A channel of this file may not be named `contact-...`. The whole: [applications.
  - **Thresholds in force** (the Alert rules page): every threshold each active instance is judged by. Per metric the
    alert rule in force on it (an instance's rule over a tag's over the fleet's) with the wider rules it overrides there;
    on a SQL Server instance the HA/DR, jobs and backups thresholds, marked *configuration file* where `mssql_thresholds`
@@ -17,7 +17,7 @@ index e9a2dd5..55fd025 100644
    for this instance; an instance's own rule opens to be edited. The rule form opens with the metric and the numbers
    filled. The built-in findings' own limits (the setting rules, vacuum, storage ...) are not listed here; they are in
 diff --git c/docs/menus.md i/docs/menus.md
-index 38434c3..56d902d 100644
+index 38434c30..56d902df 100644
 --- c/docs/menus.md
 +++ i/docs/menus.md
 @@ -48,7 +48,9 @@ Jobs, then Performance (and Logs on SQL Server), then Reports.
@@ -32,10 +32,10 @@ index 38434c3..56d902d 100644
      last read, status and errors in the last 24 hours; an unticked collection goes into the instance's `disabled:` list
      (paused), a ticked one comes out of it. An opt-in collection (off until a schedule gives it an interval) cannot be
 diff --git c/docs/sqlserver-hadr.md i/docs/sqlserver-hadr.md
-index e69ae2f..37264fb 100644
+index b8206b15..27b47f89 100644
 --- c/docs/sqlserver-hadr.md
 +++ i/docs/sqlserver-hadr.md
-@@ -104,7 +104,7 @@ Per database: state, recovery model, and the last full, differential and log bac
+@@ -148,7 +148,7 @@ Per database: state, recovery model, and the last full, differential and log bac
  - **Not judged**: tempdb, a database that is not online, a database snapshot, a standby database, a database younger than `new_database_hours`, a name matching `backup_exclude`. The log backup is judged only under the full or bulk-logged recovery model, after a first full backup, and not for `model` or a read-only database.
  - **Every age is the age at the read.** The collection is hourly; a page opened 50 minutes later does not add 50 minutes to a log backup's age.
  
@@ -45,7 +45,7 @@ index e69ae2f..37264fb 100644
  ## Findings
  
 diff --git c/internal/config/inventory.go i/internal/config/inventory.go
-index 3965991..5dbb37c 100644
+index 7a418be0..9eb8f32c 100644
 --- c/internal/config/inventory.go
 +++ i/internal/config/inventory.go
 @@ -19,6 +19,7 @@ import (
@@ -56,11 +56,11 @@ index 3965991..5dbb37c 100644
  	"errors"
  	"fmt"
  	"io"
-@@ -140,7 +141,15 @@ func Fingerprint(in Instance) string {
- 	sort.Strings(dis)
- 	tags := slices.Clone(in.Tags)
- 	sort.Strings(tags)
--	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ",")}, "\x1f")
+@@ -166,7 +167,15 @@ func Fingerprint(in Instance) string {
+ 	if a := in.Azure; a != nil {
+ 		cloud += ";azure:" + a.ServerKey() + "/" + a.Cloud
+ 	}
+-	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), cloud}, "\x1f")
 +	// a SQL Server instance's thresholds too (ST5b's design pass F1: the collector reads them only at its loops' start);
 +	// encoding/json writes a map's keys sorted, so an equal set in another order gives the same text
 +	th := ""
@@ -69,15 +69,15 @@ index 3965991..5dbb37c 100644
 +			th = string(b)
 +		}
 +	}
-+	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), th}, "\x1f")
++	return strings.Join([]string{in.Engine, in.Platform, in.DSNRaw, in.QueryText, strings.Join(tags, ","), strings.Join(sch, ","), strings.Join(dis, ","), cloud, th}, "\x1f")
  }
  
  // Diff names the instances to stop (gone or changed) and to start (new or changed), by name, each sorted.
 diff --git c/internal/config/inventory_test.go i/internal/config/inventory_test.go
-index 4ae7a19..ffebc92 100644
+index 7666226a..6ffe6656 100644
 --- c/internal/config/inventory_test.go
 +++ i/internal/config/inventory_test.go
-@@ -575,3 +575,20 @@ func TestMergePageSettings(t *testing.T) {
+@@ -580,3 +580,20 @@ func TestMergePageSettings(t *testing.T) {
  		t.Errorf("p2: %+v", all[1])
  	}
  }
@@ -100,7 +100,7 @@ index 4ae7a19..ffebc92 100644
 +}
 diff --git c/internal/engines/page_settings_merge_test.go i/internal/engines/page_settings_merge_test.go
 new file mode 100644
-index 0000000..587c623
+index 00000000..e2d8255a
 --- /dev/null
 +++ i/internal/engines/page_settings_merge_test.go
 @@ -0,0 +1,25 @@
@@ -117,7 +117,7 @@ index 0000000..587c623
 +// mssql.ThresholdRows whole - float64 numbers and backup_exclude as []string, json.Number refused there.
 +func TestMergedPageThresholdRows(t *testing.T) {
 +	all, skipped := config.Merge(nil, []config.PageInstance{{Name: "m1", Engine: config.EngineSQLServer, DSNRef: "file:/etc/pgvigil/m1",
-+		SettingsRaw: []byte(`{"thresholds": {"redo_queue_kb": 512000, "full_backup_hours": 0.5, "backup_exclude": ["Sales%"]}}`)}}, "full")
++		SettingsRaw: []byte(`{"thresholds": {"redo_queue_kb": 512000, "full_backup_hours": 0.5, "backup_exclude": ["Sales%"]}}`)}}, "full", config.CounterEdits{})
 +	if len(all) != 1 || len(skipped) != 0 {
 +		t.Fatalf("merged %d, skipped %v", len(all), skipped)
 +	}
@@ -130,7 +130,7 @@ index 0000000..587c623
 +	}
 +}
 diff --git c/internal/web/q_alert_rules.go i/internal/web/q_alert_rules.go
-index 5ce8225..801d1ce 100644
+index 8c455f50..d2c0344c 100644
 --- c/internal/web/q_alert_rules.go
 +++ i/internal/web/q_alert_rules.go
 @@ -22,6 +22,7 @@ import (
@@ -141,7 +141,7 @@ index 5ce8225..801d1ce 100644
  
  	"github.com/aachaemenes/pgvigil/internal/alerts"
  )
-@@ -102,8 +103,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
+@@ -109,8 +110,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
  // judges each metric's series by (alert_rules_effective: an instance's rule over a tag's over the fleet's), with the
  // rules it overrides on that instance - and, on a SQL Server instance, the HA/DR, jobs and backups thresholds of
  // mssql_hadr_limits (0066), each marked 'file' where the configuration sets it (mssql_thresholds) and 'default'
@@ -156,11 +156,11 @@ index 5ce8225..801d1ce 100644
 +
 +const sqlThresholdsInForceHead = `
  SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
-        e.database, e.rule_id, e.name AS rule_name, e.scope, coalesce(e.tag, e.instance_name) AS target, e.op,
-        e.warning, e.critical, e.for_minutes, NULL::text AS value,
-@@ -112,24 +119,66 @@ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric A
-           FROM pgvigil.alert_rule_scope o
+        e.database, e.rule_id, e.name AS rule_name, e.scope,
+        coalesce(e.tag, e.instance_name, pgvigil.alert_scope_text(e.scope_tags)) AS target, e.op,   -- task 403a: a tag list's words
+@@ -121,24 +128,66 @@ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric A
           WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
+            AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
             AND o.rule_id <> e.rule_id) AS overrides,
 -       coalesce(t.tags, '{}'::text[]) AS tags
 +       coalesce(t.tags, '{}'::text[]) AS tags, NULL::text AS pending
@@ -228,7 +228,7 @@ index 5ce8225..801d1ce 100644
  // AlertRules is GET /api/alertrules: the rules, their state, the window's attempts, the metric catalogue and the
  // sender's line; whether writes are on, and why not.
  func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
-@@ -144,7 +193,7 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
+@@ -153,7 +202,7 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
  		{"log", sqlAlertRuleLog, []any{from, to}},
  		{"catalog", sqlAlertRuleCatalog, nil},
  		{"sender", sqlAlertRuleSender, nil},
@@ -237,7 +237,7 @@ index 5ce8225..801d1ce 100644
  	})
  	if err != nil {
  		writeErr(w, http.StatusBadRequest, err)
-@@ -154,6 +203,11 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
+@@ -163,6 +212,11 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
  	s.alertRulesDoor(r, out)
  	for _, p := range ps {
  		t, err := s.query(r.Context(), p.sql, p.args...)
@@ -251,7 +251,7 @@ index 5ce8225..801d1ce 100644
  			return
 diff --git c/internal/web/q_alert_rules_inforce_test.go i/internal/web/q_alert_rules_inforce_test.go
 new file mode 100644
-index 0000000..6a1b4be
+index 00000000..6a1b4bef
 --- /dev/null
 +++ i/internal/web/q_alert_rules_inforce_test.go
 @@ -0,0 +1,77 @@
@@ -333,7 +333,7 @@ index 0000000..6a1b4be
 +	}
 +}
 diff --git c/internal/web/q_retention.go i/internal/web/q_retention.go
-index ca2a027..76c7bf3 100644
+index ca2a027d..76c7bf34 100644
 --- c/internal/web/q_retention.go
 +++ i/internal/web/q_retention.go
 @@ -433,7 +433,11 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
@@ -350,19 +350,19 @@ index ca2a027..76c7bf3 100644
  
  // sqlStored is GET /api/stored: the last purge run (its age and end, for the words) and the oldest partitions held. A
 diff --git c/web/src/admin_instances.ts i/web/src/admin_instances.ts
-index 340b78f..325feb1 100644
+index 0fd1913b..adb5dc14 100644
 --- c/web/src/admin_instances.ts
 +++ i/web/src/admin_instances.ts
-@@ -82,6 +82,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
-   // ST5a: an instance added here gets its own schedules and query_text (admin_settings.ts)
+@@ -109,6 +109,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
    const settings = instanceSettings({ send, say, draw: () => draw(), lock: c => lock(c), why });
  
+   let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
 +  let openedFromLink = '';
    async function draw(): Promise<void> {
      editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
      const d = await get<AdminData>('admin/instances');
-@@ -134,6 +135,14 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
-         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
+@@ -162,6 +163,14 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? 'ok' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
      );
      readOnly(d);
 +    // ST5b: a link to an instance's Settings (#/admin_instances?settings=<name>, Alerts > Rules' 'Admin > Instances')
@@ -377,7 +377,7 @@ index 340b78f..325feb1 100644
  
    // why this server cannot write ('' = it can). A grid draws its rows again at each sort, filter and 'Show more',
 diff --git c/web/src/alert_rules.ts i/web/src/alert_rules.ts
-index ded972a..cece3d7 100644
+index e57b5977..bbbcc0fe 100644
 --- c/web/src/alert_rules.ts
 +++ i/web/src/alert_rules.ts
 @@ -21,7 +21,7 @@ import { offBeside } from './ack';
@@ -389,16 +389,16 @@ index ded972a..cece3d7 100644
  }
  interface RuleResult { outcome: string; detail: string; rule_id?: number | null }
  
-@@ -431,7 +431,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -542,7 +542,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
      { key: 'detail', wide: true },
    ];
    sec.append(el('h3', {}, `Rule log ${rangeLabel(ctx)}`), grid(log, logCols, 'No rule was made, edited, switched or ended in the time range.'));
 -  sec.append(inForceView(d, inforce, all));
 +  sec.append(inForceView(d, inforce, all, d.inforce_note));
+   sec.append(await windowsView(d, ctx));
+   sec.append(timelineView(ctx));
    return sec;
- }
- 
-@@ -447,7 +447,7 @@ export function thresholdLine(r: Row): string {
+@@ -727,7 +727,7 @@ export function thresholdLine(r: Row): string {
  // override for this instance, an override for one of its tags, or the rule itself. Only an override that would be in
  // force is offered: an instance rule beats a tag rule and a tag rule beats the fleet's (0085), so a tag override is
  // offered over a fleet rule only, and an instance's own rule is edited, not overridden.
@@ -407,12 +407,12 @@ index ded972a..cece3d7 100644
    const insts = [...new Set(rows.map(r => String(r.instance)))].sort();
    const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'every instance'), ...insts.map(n => el('option', { value: n }, n)));
    const wrap = el('div', {});
-@@ -476,23 +476,33 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
+@@ -756,23 +756,33 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
    };
    const cols: Col[] = [
      { key: 'instance' },
--    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : '') },
-+    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : v === 'page' ? 'Admin > Instances' : 'default', v === 'rule' ? 'ok' : '') },
+-    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : 'none') },
++    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : v === 'page' ? 'Admin > Instances' : 'default', v === 'rule' ? 'ok' : 'none') },
      { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
      { key: 'database', fmt: v => String(v ?? '') },
      { key: 'op', label: 'rule', fmt: (_v, r) => {
@@ -446,10 +446,10 @@ index ded972a..cece3d7 100644
      el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel)), wrap);
  }
 diff --git c/web/src/mssql_backups.ts i/web/src/mssql_backups.ts
-index a2558a6..7079e6a 100644
+index 5ad05060..3ae3c48b 100644
 --- c/web/src/mssql_backups.ts
 +++ i/web/src/mssql_backups.ts
-@@ -273,8 +273,9 @@ const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' :
+@@ -530,8 +530,9 @@ const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' :
  // a rate under a header that names its unit ('full MB/s'): the cell is the number, so the export keeps a number (X7)
  const rate = (v: unknown) => v == null ? '' : fmtNum(v);
  // where the thresholds are set, for the Configure control that cannot act here
@@ -462,7 +462,7 @@ index a2558a6..7079e6a 100644
  const byInstanceCols = (ctx: Ctx): Col[] => [
    { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
 diff --git c/web/src/treemenu.ts i/web/src/treemenu.ts
-index 91b5d34..bcdcad5 100644
+index ac243d5c..78afbf5f 100644
 --- c/web/src/treemenu.ts
 +++ i/web/src/treemenu.ts
 @@ -27,6 +27,8 @@ import { reloadTree } from './tree';
@@ -474,7 +474,7 @@ index 91b5d34..bcdcad5 100644
  
  // ---- a menu with submenus ------------------------------------------------------------------------------------
  
-@@ -311,13 +313,9 @@ function addConnections(back: HTMLElement | null) {
+@@ -320,13 +322,9 @@ function addConnections(back: HTMLElement | null) {
  
  // ---- Instance Actions ---------------------------------------------------------------------------------------------
  
@@ -490,7 +490,7 @@ index 91b5d34..bcdcad5 100644
  
  async function collectionsOf(id: number): Promise<Collections> { return get<Collections>('instance/collections', { instance: id }); }
  
-@@ -325,6 +323,7 @@ function pauseResume(id: number, back: HTMLElement | null) {
+@@ -334,6 +332,7 @@ function pauseResume(id: number, back: HTMLElement | null) {
    const { body } = dialog('Pause/Resume Collections', back, true);
    body.append(el('p', { class: 'meta', role: 'status' }, 'Reading the instance\'s collections...'));
    void collectionsOf(id).then(d => {
@@ -498,7 +498,7 @@ index 91b5d34..bcdcad5 100644
      const rows = rowsOf(d.collections);
      // an opt-in collection (its default interval 0) runs only with a schedule: it is never paused or resumed by disabled:
      const optIn = (r: Row) => r.default_s != null && Number(r.default_s) === 0;
-@@ -359,6 +358,7 @@ function configureSchedule(id: number, back: HTMLElement | null) {
+@@ -368,6 +367,7 @@ function configureSchedule(id: number, back: HTMLElement | null) {
    const { body } = dialog('Configure Schedule', back, true);
    body.append(el('p', { class: 'meta', role: 'status' }, 'Reading the instance\'s collections...'));
    void collectionsOf(id).then(d => {
