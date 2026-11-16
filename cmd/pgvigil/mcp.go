@@ -78,7 +78,8 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	// every instance is read as 'none' (an instance the file does not name takes the file's default, as in serve;
 	// with no file the default is 'none'), said in its log
 	pc := web.PlansConfig{QueryText: map[string]string{}, DefaultQueryText: "none"}
-	if cfg != nil {
+	// a file was given (cfg is never nil here: the page intervals' watcher reads the empty default without one)
+	if *path != "" {
 		pc.DefaultQueryText = cfg.QueryText
 		for _, in := range cfg.Instances {
 			pc.QueryText[in.Name] = in.QueryText
