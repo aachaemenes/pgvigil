@@ -73,7 +73,7 @@
 #      'can no longer sign in' and alerted the same way; the scheduled turn moved on all the same.
 #   P  the Report mail page (#/reportmail): the Schedules grid lists the five schedules, the Sends grid the mails with
 #      their outcomes; the New schedule dialog has every field labelled and closes on Escape.
-#   K  the Daily checks mail (migration 0258): its rows K1-K14 and G1-G4 and their Expected are in
+#   K  the Daily checks mail (migration 0258; B20-4's worst first and post, 0273): its rows K1-K21 and G1-G4 and their Expected are in
 #      scripts/proof-reportmail-kept.sh, sourced after P. Needs the wiring (scripts/proof-dailymail-wiring.patch).
 # Changed with the Daily checks mail (written before its first run): a grid with no row is in a mail's body too - its
 # header row, no data row and the sentence the screen shows for it in place of 'No rows.' (before: no table for it, and
