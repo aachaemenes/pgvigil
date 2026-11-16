@@ -29,6 +29,9 @@
 # Expected (each line is checked, not only printed):
 #   nodes     four servers answer, each @@SERVERNAME its node name with HADR enabled
 #   trusts    a mirroring endpoint STARTED on each node; 12 CONNECT grants on the endpoints, counted on the servers
+#   health    the AlwaysOn_health event session runs on each node and starts with the server (SSMS's wizard does both
+#             for a new group; groups made by T-SQL alone leave it stopped, and a monitor that checks it - dbachecks'
+#             HADR checks, pgvigil's 'the AlwaysOn_health session is not running' - then reports every node at rest)
 #   ag1       d1a sees ag1 with d1a PRIMARY and d1b a CONNECTED SECONDARY; dagdb SYNCHRONIZED and HEALTHY on d1b
 #   ag2       d2a sees ag2 with d2a PRIMARY and d2b a CONNECTED SECONDARY, before the distributed group is made
 #   dag1      CREATE on d1a and JOIN on d2a succeed; d1a lists dag1 with is_distributed = 1
@@ -168,6 +171,16 @@ for n in "${NODES[@]}"; do
   TRUSTS=$((TRUSTS + ${g#*|}))
 done
 echo "  $TRUSTS endpoint trusts counted on the servers (${#NODES[@]} nodes, each trusts the other $(( ${#NODES[@]} - 1 )))"
+
+echo "== health: the AlwaysOn_health event session set to start with the server and started on each node"
+for n in "${NODES[@]}"; do
+  # STATE = START refuses on a session that already runs: asked only where sys.dm_xe_sessions does not list it
+  step "health session $n" "$n" "ALTER EVENT SESSION AlwaysOn_health ON SERVER WITH (STARTUP_STATE = ON);
+IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = 'AlwaysOn_health') ALTER EVENT SESSION AlwaysOn_health ON SERVER STATE = START;"
+  h=$(Q "$n" "SELECT CAST((SELECT COUNT(*) FROM sys.server_event_sessions WHERE name = 'AlwaysOn_health') AS varchar(5)) + '|' + CAST((SELECT COUNT(*) FROM sys.dm_xe_sessions WHERE name = 'AlwaysOn_health') AS varchar(5)) + '|' + ISNULL((SELECT CAST(CAST(startup_state AS int) AS varchar(5)) FROM sys.server_event_sessions WHERE name = 'AlwaysOn_health'), '-')")
+  [[ "$h" == "1|1|1" ]] || { echo "FAIL: $n has AlwaysOn_health exists | running | starts with the server = $h (want 1|1|1)"; exit 1; }
+done
+echo "  AlwaysOn_health runs on ${#NODES[@]} nodes and starts with the server"
 
 REPL() { echo "N'$1' WITH (ENDPOINT_URL = 'TCP://$1:5022', AVAILABILITY_MODE = SYNCHRONOUS_COMMIT, FAILOVER_MODE = MANUAL, SEEDING_MODE = AUTOMATIC, SECONDARY_ROLE (ALLOW_CONNECTIONS = ALL))"; }
 echo "== ag1 on d1a + d1b with dagdb"
