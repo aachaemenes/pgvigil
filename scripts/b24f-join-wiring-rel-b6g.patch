@@ -1,34 +1,20 @@
-B24f's join wiring, section rel-b6g (B6g-2, the Collection Health thresholds write; the lead 11-15 16:3x).
-Apply on the joined tree that holds rel-roles and rel-b6g:
-  git apply -3 scripts/b24f-join-wiring-rel-b6g.patch
-Built on a pre-join copy of each file it touches: rel-roles f421753c x rel-b6g 037a99b2 (local commit cd38a04b, ref jw-pre-b6g; web.go's
-probes and login lines merged by hand), so -3 merges it onto the join's own resolution.
-What it does: s.post for POST /api/collectionhealth/thresholds (admin: configuration others live with), its words in
-roles_wiring_b6g.go, its needs.ts and docs/roles.md rows; the thresholds dialog folds the role into its own reason after
-the seat's (Save and Inherit All marked with the need).
-B6g-6's acknowledge of collection errors is on no branch (grep 0 on every ref, 11-15 16:3x): when built, operator. If it
-rides POST /api/ack (the lead 07:4x: 'as POST /api/ack'), that route already holds its s.post, routeWhat words, needs.ts
-and docs/roles.md rows - only a needControl on its button (review-20 jw1 N7: a second row of each fails the duplicate
-checks); a route of its own would add those four. The dialog reads its role from the server's can (review-20 jw1 N2).
-Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
-
-diff --git a/docs/roles.md b/docs/roles.md
-index 118b5eee..2cb82f4b 100644
---- a/docs/roles.md
-+++ b/docs/roles.md
-@@ -129,6 +129,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+diff --git c/docs/roles.md i/docs/roles.md
+index f8774a05..12f02d1f 100644
+--- c/docs/roles.md
++++ i/docs/roles.md
+@@ -134,6 +134,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/alertrules/end` | admin | end an alert rule |
  | `POST /api/drives/thresholds` | admin | a drive threshold |
  | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
 +| `POST /api/collectionhealth/thresholds` | admin | a Collection Health threshold (a level's own values, or Inherit All) |
  | `POST /api/jobs/thresholds` | admin | a job threshold |
+ | `POST /api/pg/backup_dest` | admin | where a PostgreSQL server's backups go, as a person enters it (beside the value read) |
  | `POST /api/jobs/exclusions` | admin | a job exclusion |
- | `POST /api/customreports` | admin | a custom report or folder (SQL run against servers, a view others share) |
-diff --git a/internal/web/roles_wiring_b6g.go b/internal/web/roles_wiring_b6g.go
+diff --git c/internal/web/roles_wiring_b6g.go i/internal/web/roles_wiring_b6g.go
 new file mode 100644
 index 00000000..0d3dfa60
 --- /dev/null
-+++ b/internal/web/roles_wiring_b6g.go
++++ i/internal/web/roles_wiring_b6g.go
 @@ -0,0 +1,7 @@
 +package web
 +
@@ -37,14 +23,14 @@ index 00000000..0d3dfa60
 +func init() {
 +	routeWhat["POST /api/collectionhealth/thresholds"] = "changing a Collection Health threshold"
 +}
-diff --git a/internal/web/web.go b/internal/web/web.go
-index eba46930..359eb292 100644
---- a/internal/web/web.go
-+++ b/internal/web/web.go
-@@ -253,10 +253,10 @@ func (s *Server) Handler() http.Handler {
- 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
- 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 42e01ff7..4d14c87d 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -256,10 +256,10 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
+ 	// the collector's error log (0198)
+ 	api.HandleFunc("GET /api/collectorerrors", s.CollectorErrors)
 -	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)             // B6.2
 -	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                 // B6g-3: WIRING for the join (web.go is the lead's)
 -	api.HandleFunc("POST /api/collectionhealth/thresholds", s.CHThresholdWrite) // B6g-2: WIRING for the join (web.go is the lead's)
@@ -53,13 +39,13 @@ index eba46930..359eb292 100644
 +	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                         // B6g-3: WIRING for the join (web.go is the lead's)
 +	s.post(api, "POST /api/collectionhealth/thresholds", needAdmin, s.CHThresholdWrite) // B6g-2 (admin, B24f)
 +	api.HandleFunc("GET /api/collector", s.Collector)                                   // task 201
+ 	api.HandleFunc("GET /api/export", s.Export)
  	// task 204: Admin > Instances (q_instances_admin.go)
  	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
- 	s.post(api, "POST /api/admin/instances", needAdmin, s.InstancesAdminWrite)
-diff --git a/web/src/collection_health.ts b/web/src/collection_health.ts
+diff --git c/web/src/collection_health.ts i/web/src/collection_health.ts
 index c47baf8f..24481d9b 100644
---- a/web/src/collection_health.ts
-+++ b/web/src/collection_health.ts
+--- c/web/src/collection_health.ts
++++ i/web/src/collection_health.ts
 @@ -10,6 +10,7 @@
  import { get, post, Row, rowsOf, Table } from './api';
  import type { AckData } from './ack';
@@ -85,15 +71,15 @@ index c47baf8f..24481d9b 100644
      close.addEventListener('click', shut);
      const why = !readOk ? 'the thresholds could not be read' : whyOf();
      offNote.hidden = !why;
-diff --git a/web/src/needs.ts b/web/src/needs.ts
-index f3a5ff8c..6141105e 100644
---- a/web/src/needs.ts
-+++ b/web/src/needs.ts
-@@ -45,6 +45,7 @@ export const routeNeeds = {
-   'alertrules/end': ['admin', 'ending an alert rule'],
+diff --git c/web/src/needs.ts i/web/src/needs.ts
+index 72d2f76e..ab4107f7 100644
+--- c/web/src/needs.ts
++++ i/web/src/needs.ts
+@@ -50,6 +50,7 @@ export const routeNeeds = {
+   'alertwindows': ['operator', 'changing an alert window'],
    'drives/thresholds': ['admin', 'changing a drive threshold'],
    'pg/thresholds': ['admin', 'changing a PostgreSQL threshold'],
 +  'collectionhealth/thresholds': ['admin', 'changing a Collection Health threshold'],
    'jobs/thresholds': ['admin', 'changing a job threshold'],
+   'pg/backup_dest': ['admin', 'entering where the backups go'],
    'jobs/exclusions': ['admin', 'changing a job exclusion'],
-   'customreports': ['admin', 'changing a custom report'],
