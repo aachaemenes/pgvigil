@@ -93,16 +93,33 @@ func (blitzCollector) RunPlanned(ctx context.Context, conn *sql.Conn, _ Info, pl
 		timeout = blitzTimeoutMax
 	}
 	obj := bracket(db) + ".[dbo].[sp_Blitz]"
-	var dbID, objID sql.NullInt64
-	var canExec int
+	// the database and whether the login may enter it first: a three-part name in a database the login has no user in
+	// (or one not online) is Msg 916, an error, never a NULL (review-22 bzcoll S2: RDS keeps sp_Blitz in a user database)
+	var dbID, access sql.NullInt64
+	var dbState sql.NullString
 	var login string
-	if err := conn.QueryRowContext(ctx, `SELECT DB_ID(@db), OBJECT_ID(@obj, 'P'), ISNULL(HAS_PERMS_BY_NAME(@obj, N'OBJECT', N'EXECUTE'), 0), SUSER_SNAME()`,
-		sql.Named("db", db), sql.Named("obj", obj)).Scan(&dbID, &objID, &canExec, &login); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT DB_ID(@db), HAS_DBACCESS(@db), (SELECT d.state_desc FROM sys.databases AS d WHERE d.name = @db), SUSER_SNAME()`,
+		sql.Named("db", db)).Scan(&dbID, &access, &dbState, &login); err != nil {
 		return nil, fmt.Errorf("reading where sp_Blitz is: %w", err)
 	}
 	switch {
 	case !dbID.Valid:
 		return nil, fmt.Errorf("no database %s on this server (the instance's sp_Blitz database is set on its Findings tab): %w", db, collect.ErrSkip)
+	case !access.Valid || access.Int64 != 1:
+		st := ""
+		if dbState.Valid && dbState.String != "ONLINE" {
+			st = ": it is " + dbState.String
+		}
+		return nil, fmt.Errorf("the login %s has no access to the database %s, where sp_Blitz is looked for (no user there, or the database is not online%s): %w",
+			login, bracket(db), st, collect.ErrSkip)
+	}
+	var objID sql.NullInt64
+	var canExec int
+	if err := conn.QueryRowContext(ctx, `SELECT OBJECT_ID(@obj, 'P'), ISNULL(HAS_PERMS_BY_NAME(@obj, N'OBJECT', N'EXECUTE'), 0)`,
+		sql.Named("obj", obj)).Scan(&objID, &canExec); err != nil {
+		return nil, fmt.Errorf("reading where sp_Blitz is: %w", err)
+	}
+	switch {
 	case !objID.Valid:
 		return nil, fmt.Errorf("sp_Blitz is not in %s.[dbo] as the login %s sees it (a login without EXECUTE or VIEW DEFINITION on it does not see it; pgvigil never installs it: %s): %w",
 			bracket(db), login, blitzKitURL, collect.ErrSkip)
@@ -156,16 +173,22 @@ SELECT @v, CONVERT(char(8), @d, 112);`).Scan(&ver, &verDate)
 func blitzOutcome(rd blitzRead, err error, timedOut bool, timeoutS int) (outcome, why string) {
 	switch {
 	case timedOut:
-		return "timed out", fmt.Sprintf("sp_Blitz ran past its %d s timeout and was stopped (the site's timeout, on an instance's Findings tab)", timeoutS)
-	case !rd.set && err != nil:
+		// the words name no cause: a lost connection can leave the read waiting to the deadline (bzcoll S1)
+		return "timed out", fmt.Sprintf("no end of sp_Blitz within %d s, the site's timeout (still running, or the connection was lost): it was stopped", timeoutS)
+	case err != nil:
+		// readBlitz keeps every server error as a message: an error here is the connection's or the driver's, and a
+		// set it cut is never stored as findings (bzcoll S1 / N2)
+		if rd.set {
+			return "failed", "the read of sp_Blitz's result ended early: " + err.Error()
+		}
 		return "failed", err.Error()
 	case !rd.set && rd.errs > 0:
 		return "failed", rd.joined(11)
-	case !rd.set && len(rd.msgs) > 0:
+	case !rd.set && rd.server() > 0:
 		return "refused", rd.joined(0)
 	case !rd.set:
 		return "failed", "sp_Blitz returned no result set and no message"
-	case rd.errs > 0 || err != nil:
+	case rd.errs > 0:
 		return "done with messages", ""
 	}
 	return "done", ""
@@ -209,6 +232,12 @@ func readBlitz(ctx context.Context, conn *sql.Conn, stmt string) (blitzRead, err
 		case sqlexp.MsgNotice:
 			rd.add(m.Message)
 		case sqlexp.MsgError:
+			// a server error (an mssqldb.Error) is kept and the read goes on; any other is the connection's own: the
+			// driver queues nothing after it, so the read ends here, never at the deadline (bzcoll S1)
+			var me mssqldb.Error
+			if !errors.As(m.Error, &me) {
+				return rd, m.Error
+			}
 			rd.add(m.Error)
 		case sqlexp.MsgNext:
 			if err := rd.readSet(rows); err != nil {
@@ -247,10 +276,30 @@ func (rd *blitzRead) add(v any) {
 	if me.Class >= 11 {
 		rd.errs++
 	}
-	if len(rd.msgs) < blitzMsgsMax {
-		rd.msgs = append(rd.msgs, blitzMsg{number: me.Number, class: me.Class, state: me.State, line: me.LineNo, proc: me.ProcName,
-			text: cutText(strings.TrimSpace(me.Message))})
+	m := blitzMsg{number: me.Number, class: me.Class, state: me.State, line: me.LineNo, proc: me.ProcName, text: cutText(strings.TrimSpace(me.Message))}
+	if len(rd.msgs) >= blitzMsgsMax && me.Class >= 11 {
+		// the list is full: an error takes the place of the oldest notice, so a run's errors are kept over its notices
+		for i, k := range rd.msgs {
+			if k.class < 11 && k.proc != "pgvigil" {
+				rd.msgs = append(rd.msgs[:i], rd.msgs[i+1:]...)
+				break
+			}
+		}
 	}
+	if len(rd.msgs) < blitzMsgsMax {
+		rd.msgs = append(rd.msgs, m)
+	}
+}
+
+// server: how many of the kept messages are the server's (pgvigil's own notes left out: bzcoll N1).
+func (rd blitzRead) server() int {
+	n := 0
+	for _, m := range rd.msgs {
+		if m.proc != "pgvigil" {
+			n++
+		}
+	}
+	return n
 }
 
 // note is pgvigil's own line among a run's messages (number 0, severity 0).
@@ -318,6 +367,11 @@ func (rd *blitzRead) readSet(rows *sql.Rows) error {
 			group: blitzText(vals[idx["findingsgroup"]]), finding: blitzText(vals[idx["finding"]]),
 			db: blitzText(vals[idx["databasename"]]), url: blitzText(vals[idx["url"]]), details: blitzText(vals[idx["details"]]),
 		})
+	}
+	// a server error is a message (above); any other ended the set: the connection's own (bzcoll S1)
+	var me mssqldb.Error
+	if err := rows.Err(); err != nil && !errors.As(err, &me) {
+		return err
 	}
 	return nil
 }
@@ -387,5 +441,5 @@ func ChecksJudged() []int {
 
 // judgedRules: the CheckIDs the checks' rules name ("sp_Blitz <n>" in checks.go, dboptions.go, agentalerts.go and the
 // other readers, and offByDefault's database options).
-var judgedRules = []int{12, 13, 14, 15, 16, 17, 30, 31, 50, 59, 61, 68, 69, 73, 74, 90, 96, 98, 102, 116, 126, 128, 131,
-	132, 133, 134, 135, 136, 138, 140, 141, 188, 190, 213, 217, 219, 230, 257, 272, 275, 1020}
+var judgedRules = []int{12, 13, 14, 15, 16, 17, 20, 30, 31, 50, 59, 61, 68, 69, 73, 74, 90, 96, 98, 100, 102, 116, 126, 128,
+	131, 132, 133, 134, 135, 136, 138, 140, 141, 144, 188, 190, 213, 217, 219, 230, 231, 257, 272, 275, 1020}
