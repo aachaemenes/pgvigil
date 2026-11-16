@@ -77,6 +77,8 @@ type Config struct {
 	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
 	// Export is the repository's read-only export to Parquet (`pgvigil export`); absent = off (export.go).
 	Export *Export `yaml:"export"`
+	// Agents is the agents: block: the agent door on serve's pages (agents.go; off unless enabled).
+	Agents AgentsConfig `yaml:"agents"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }

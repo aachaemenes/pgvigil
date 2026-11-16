@@ -63,6 +63,7 @@ type Server struct {
 	origin *Server
 	// reports is the store-report login (REPORT ROLE, reportrole.go); never nil after Open.
 	reports *reportsDoor
+	agents  bool
 }
 
 // Options shape a Server beyond its repository connection.
@@ -92,6 +93,9 @@ type Options struct {
 	// Reports is the config's reports_dsn: the login a custom report on the store runs as (REPORT ROLE, reportrole.go);
 	// nil or empty = store reports are off, with the words.
 	Reports *ReportsConfig
+	// Agents turns the agent door's pages and routes on (the config's agents.enabled; q_investigate.go): off, the
+	// routes answer 404 with the words and the pages draw nothing of it.
+	Agents bool
 }
 
 // Expected is the interval map of the stale check.
@@ -161,6 +165,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	}
 	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags, version: o.Version}
 	s.reports = s.newReportsDoor(ctx, o.Reports)
+	s.agents = o.Agents
 	if o.Login {
 		var n int64
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {
@@ -313,6 +318,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/healthcal", s.HealthCal)
 	s.post(api, "POST /api/ack", needOperator, s.AckAdd)
 	s.post(api, "POST /api/ack/end", needOperator, s.AckEnd)
+	api.HandleFunc("GET /api/investigations", s.Investigations)
+	api.HandleFunc("POST /api/investigations", s.InvestigationAsk)
+	api.HandleFunc("POST /api/investigations/close", s.InvestigationClose)
+	api.HandleFunc("POST /api/investigations/run", s.InvestigationRun)
 	api.HandleFunc("GET /api/slow", s.slow)
 	api.HandleFunc("GET /api/slowqueries", s.SlowQueries)
 	api.HandleFunc("GET /api/compare", s.Compare)

@@ -201,7 +201,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		SessionTTL:         time.Duration(*sessionHours) * time.Hour,
 		Actions:            &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
 		Tags:               web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine(),
-		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}})
+		Reports: &web.ReportsConfig{Raw: cfg.ReportsDSNRaw, DSN: cfg.ReportsDSN()}, Agents: cfg.Agents.Enabled})
 	if err != nil {
 		_ = ln.Close()
 		return err

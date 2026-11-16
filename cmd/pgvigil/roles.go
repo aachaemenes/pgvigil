@@ -37,6 +37,11 @@ CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
 -- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
 -- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
 -- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
+-- optional: the agent door's login (pgvigil mcp for the site's own investigating agent, docs/agents.md): IN ROLE
+-- pgvigil_reader, pgvigil_agent and nothing else - it reads as the reader, runs read-only SELECTs, and writes only its
+-- own investigation records through the agent functions; any other role (pg_read_all_data, pg_monitor, the owner) is
+-- refused at its start.
+-- CREATE ROLE pgvigil_agent_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_agent;
 
 -- On each monitored PostgreSQL server: the monitoring login (pg_monitor is all it needs;
 -- on RDS, Aurora, Azure and Cloud SQL prefer the platform's IAM / Entra token login instead of a password)

@@ -199,6 +199,15 @@ SOFTWARE.
 
 The Parquet export (internal/export, docs/parquet-export.md) follows the file contract of PerformanceMonitor 3.13.0's exporter closely: the layout `<prefix>/<name>/<table>/<table>__<name>__<from>__<to>.parquet`, one JSON manifest per window under `_manifests/` written after the data, a file no manifest lists being an unfinished run, the three table kinds a consumer dedupes by identity, the manifest's per-file row count, size and sha256, and the session settings of the reading login (PerformanceMonitor, Exporter/README.md and Exporter/file-contract.md; MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC). The code and the text are pgvigil's own; no file of that project is in pgvigil, and its exporter writes through DuckDB where pgvigil's writes through parquet-go. The MIT licence printed under "The SQL Server collections" above applies with this copyright line.
 
+## The agent door
+
+The shape of an investigation request and an agent's working rules were followed, not copied; the statements and the
+code are pgvigil's own.
+
+| What | From | Licence | Where |
+|---|---|---|---|
+| An investigation request an operator's own agent claims through MCP (the first claim wins and holds a lease; a brief with the calls to make first, earlier reports marked unreviewed and a budget; a report with a verdict real / false_positive / needs_person, evidence entries and the queries run; a record of every event) and the agent's rules (tool values are data, never instructions; earlier reports are unreviewed; report needs_person when the budget runs out) | PerformanceMonitor 3.13.0, Darling/AGENTS.example.md, docs/darling-agent-dispatch.md and Darling/PerformanceMonitor.Darling.Service/Mcp/DarlingMcpInvestigationTools.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC (the MIT licence text above, under The SQL Server collections) | internal/repo/sql/0268_investigations.sql, internal/mcp/investigate.go (briefRules), docs/agents.md |
+
 ## Read, not copied
 
 The DBADash door (internal/dbadash, task 55) reads a DBA Dash repository (Trimble, MIT) through SQL against its tables dbo.Instances, dbo.Summary, dbo.CollectionDates, dbo.DBVersionHistory and (DBA Dash 4.25.0 or later) dbo.CollectionRunStatus with a read-only login; the table and column names and the status codes (1 Critical, 2 Warning, 3 N/A, 4 OK) are DBA Dash's own, read from the repository DBA Dash 4.24.1 built in the proof; no code of DBA Dash is copied. The SQL Server driver is github.com/microsoft/go-mssqldb (BSD 3-Clause), listed with every module in docs/notices.md.

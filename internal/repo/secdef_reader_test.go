@@ -52,7 +52,16 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		// report login is not (a member of any role but pgvigil_reader is refused: reportrole.go), so a report gets an
 		// error and writes nothing
 		"export_run_record(text, text, timestamp with time zone, timestamp with time zone, text, timestamp with time zone, text, integer, integer, bigint, bigint, text)": true,
-		"export_off(text)": true}
+		"export_off(text)": true,
+		// the agent door (0268): each checks inside that the SESSION user is a member of pgvigil_agent
+		// (agent_login_check: 'is not a member of pgvigil_agent'), so a report login or Grafana gets an error and nothing
+		// else; apply_roles grants them to the reader until the next join file's agent branch takes that back
+		// (scripts/agent-join-lines.sql), then the seven leave this list
+		"agent_investigation_list(text, text, integer)": true, "agent_investigation_claim(bigint, text)": true,
+		"agent_investigation_renew(bigint, text)": true, "agent_investigation_release(bigint, text, text)": true,
+		"agent_investigation_report(bigint, text, text, text, text, jsonb, jsonb, text)": true,
+		"agent_investigation_journal_select(bigint, text, text)":                         true,
+		"agent_investigation_journal_done(bigint, bigint, integer, text)":                true}
 	// the signature without the schema (oidvectortypes: argument types as format_type writes them), whatever the
 	// connection's search_path
 	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

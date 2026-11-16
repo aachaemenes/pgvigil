@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,12 +23,14 @@ import (
 //	pgvigil mcp [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]
 //
 // -dsn is the repository login, IN ROLE pgvigil_reader alone (checked before the first message:
-// a superuser, the owner, a writer, the collector or pgvigil_auth is refused). -config gives the
-// stale check each instance's collection intervals and each instance's query_text policy, as serve has
-// them; without it no policy is known and every instance is read as 'none' (no statement text, plan or
-// deadlock graph is returned: the locked-down default, which an admin relaxes by giving -config). Every tool is
-// read-only and answered by the JSON API's own handler in process; no port is opened and nothing
-// is sent anywhere but the client's pipe. Logs go to stderr (stdout is the protocol).
+// a superuser, the owner, a writer, the collector or pgvigil_auth is refused) - or, for the agent door
+// (docs/agents.md), IN ROLE pgvigil_reader, pgvigil_agent and nothing else, checked on its session user.
+// -config gives the stale check each instance's collection intervals and each instance's query_text policy, as serve
+// has them; without it no policy is known and every instance is read as 'none' (no statement text, plan or deadlock
+// graph is returned: the locked-down default, which an admin relaxes by giving -config). The read tools are answered
+// by the JSON API's own handler in process; the agent door's tools by the repository's agent functions on one
+// read-write connection of the same login, and run_select on a read-only connection of its own per call. No port is
+// opened and nothing is sent anywhere but the client's pipe. Logs go to stderr (stdout is the protocol).
 func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	dsnFlag := fs.String("dsn", "env:PGVIGIL_MCP_DSN", "the reader login's connection string (or env:NAME / file:path)")
@@ -61,9 +64,26 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		exp = expectedIntervals(cfg)
 	}
-	user, err := mcp.CheckReader(ctx, dsn)
+	login, err := mcp.CheckLogin(ctx, dsn, web.AgentStoreRefusal)
 	if err != nil {
 		return &configError{err}
+	}
+	user := login.User
+	var door *mcp.AgentDoor
+	if login.Agent {
+		if door, err = mcp.NewAgentDoor(ctx, dsn); err != nil {
+			return err
+		}
+		defer door.Close()
+		selCfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			return &configError{errors.New("-dsn does not parse as a PostgreSQL connection string")}
+		}
+		door.Wrap = web.WrapSelect
+		door.Select = func(ctx context.Context, sql string) ([]string, []string, [][]any, bool, string, error) {
+			r, why, err := web.StoreSelect(ctx, selCfg, "pgvigil-mcp-select", sql, 15*time.Second, 1000, 1<<20, web.AgentStoreRefusal)
+			return r.Columns, r.Types, r.Rows, r.Cut, why, err
+		}
 	}
 	// no Hosts (no listener), no login (the client's own child process), no actions: read only
 	srv, err := web.Open(ctx, log, dsn, web.Options{Expected: exp, AppName: "pgvigil-mcp"})
@@ -88,6 +108,10 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		log.Warn("pgvigil mcp without -config: no instance's query_text policy is known, so every instance is read as 'none' (no statement text, plan or deadlock graph is returned); give -config with the file serve reads to return what each instance's policy allows")
 	}
 	srv.SetPlans(pc)
-	log.Info("pgvigil mcp ready on stdio", "login", user, "version", version)
-	return mcp.New(srv.Handler(), version, secret).Serve(ctx, os.Stdin, os.Stdout)
+	log.Info("pgvigil mcp ready on stdio", "login", user, "agent", login.Agent, "version", version)
+	m := mcp.New(srv.Handler(), version, secret)
+	if door != nil {
+		m.WithAgent(door)
+	}
+	return m.Serve(ctx, os.Stdin, os.Stdout)
 }

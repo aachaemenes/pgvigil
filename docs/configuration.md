@@ -107,6 +107,19 @@ database than the repository dsn's is refused, with words. Without the key (or w
 the store is refused and the page and a mailed report say why; `serve` starts anyway, with one WARN. Reports on
 instances need nothing here. The rules and the words: [customreports.md](customreports.md).
 
+## The agent door (agents)
+
+```yaml
+agents:
+  enabled: true     # default false: the Investigate button, the Ask box and the Investigations page are not drawn
+```
+
+Off (the default), serve's `/api/investigations` routes answer 404 with "agents.enabled is off: ..." and the pages draw
+nothing of the door. On, a person may ask for an investigation of a finding or ask a question; the site's own agent
+claims it through `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_agent`, and an answered question's SELECT
+runs on Run as `reports_dsn` (without that key Run is off, with the words). pgvigil holds no agent, no model and no key:
+[agents.md](agents.md).
+
 ## The Daily checks mail (reports.daily_checks)
 
 ```yaml
