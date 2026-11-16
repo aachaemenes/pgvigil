@@ -4,9 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// subscriberCol: MSmerge_subscriptions' subscriber column itself, never subscriber_id or subscriber_db
+var subscriberCol = regexp.MustCompile(`m\.subscriber([^_A-Za-z0-9]|$)`)
 
 // A merge agent is its subscription (one agent per merge subscription, as a distribution agent is one per
 // transactional subscription): it is read by the subscriptions statement, with its failing time and error, and no
@@ -25,8 +29,9 @@ func TestReplicationMergeShape(t *testing.T) {
 		if without := replSubscriptionsOf("d", mapped, false); strings.Contains(without, "MSmerge_") {
 			t.Errorf("mapped %v: the statement without the merge tables still reads them", mapped)
 		}
-		// the subscriber's name is read only where the probe found the column (Microsoft's page lists none)
-		if strings.Contains(sub, "m.subscriber)") || !strings.Contains(replSubscriptionsWith("d", mapped, true, true), "UPPER(m.subscriber)") {
+		// the subscriber's name is read only where the probe found the column (Microsoft's page lists none): the plain
+		// form names no m.subscriber column at all (a 2016-2019 distributor without it would refuse the whole read)
+		if subscriberCol.MatchString(sub) || !strings.Contains(replSubscriptionsWith("d", mapped, true, true), "UPPER(m.subscriber)") {
 			t.Errorf("mapped %v: the subscriber name match must be in the names form only", mapped)
 		}
 		up := strings.ToUpper(sub + replSubscriptionsWith("d", mapped, true, true) + replMergeTablesSQL("d"))
@@ -67,7 +72,7 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 	types := map[string]string{"merge-idle": "push", "merge-retrying": "push", "merge-failed-again": "push", "merge-recovered": "push",
 		"merge-never-ok": "pull", "merge-pull2": "pull", "merge-2022-names": "push", "merge-late-error": "push",
 		"merge-recovered-running": "push", "merge-failing-in-progress": "push", "merge-flicker-a": "push", "merge-flicker-b": "push",
-		"merge-flicker-c": "push", "merge-untimed": "push", "merge-flapping": "push"}
+		"merge-flicker-c": "push", "merge-untimed": "push", "merge-flapping": "push", "merge-start-error": "push"}
 	if err != nil || len(want) == 0 {
 		t.Fatalf("the stub's expectations: %v %v", want, err)
 	}
@@ -137,7 +142,7 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 	if err != nil {
 		t.Fatalf("the publications read of the stub: %v", err)
 	}
-	wantArticles := map[string]string{"mpub": "<nil>", "mpub2": "<nil>", "tpub": "2"}
+	wantArticles := map[string]string{"mpub": "<nil>", "mpub2": "<nil>", "mpub3": "<nil>", "tpub": "2"}
 	for _, r := range pubs {
 		name := fmt.Sprint(r["publication"])
 		if want, ok := wantArticles[name]; !ok || fmt.Sprint(r["articles"]) != want {
