@@ -923,13 +923,42 @@ func textHash(s string) int64 {
 
 var normInListRE = regexp.MustCompile(`(?i)(\bIN\s*)\(\s*\?(?:\s*,\s*\?)+\s*\)`)
 
-// normalizeSQL rewrites one statement in a single pass over its runes: comments (-- to the end of the
-// line, /* */ nested) are dropped, string literals ('..' with ” doubling, E'..' with backslash escapes,
-// B'..' X'..' N'..' U&'..', $tag$..$tag$ with the tag matched exactly) and numbers (not a parameter $n,
-// not part of an identifier) become ?, double-quoted identifiers stay whole, whitespace collapses to
-// one space, and IN (?, ?, ...) collapses to IN (?). One pass, so an unpaired quote inside a comment or
-// an escaped quote inside a string never desynchronises what follows. A text rule, not a parser: it is
-// meant to keep data out of the repository, not to produce pg_stat_statements' exact form.
+// moneyAt: the digits from i on are followed by a decimal point and a digit (a money literal's form, never a
+// PostgreSQL parameter's).
+func moneyAt(in []rune, i int) bool {
+	for i < len(in) && unicode.IsDigit(in[i]) {
+		i++
+	}
+	return i+1 < len(in) && in[i] == '.' && unicode.IsDigit(in[i+1])
+}
+
+// radixAt: in[i] is '0' and in[i+1] a radix letter that begins a literal - x always (T-SQL writes an empty binary
+// value as 0x), o and b only with a digit of their base after them.
+func radixAt(in []rune, i int) bool {
+	if in[i+1] == 'x' || in[i+1] == 'X' {
+		return true
+	}
+	return i+2 < len(in) && radixDigit(in[i+1], in[i+2])
+}
+
+// radixDigit: r is a digit of the base the letter names (x hexadecimal, o octal, b binary).
+func radixDigit(letter, r rune) bool {
+	switch letter {
+	case 'x', 'X':
+		return unicode.IsDigit(r) || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F'
+	case 'o', 'O':
+		return r >= '0' && r <= '7'
+	}
+	return r == '0' || r == '1'
+}
+
+// normalizeSQL rewrites one statement in a single pass over its runes: comments (-- to the end of the line, /* */
+// nested) are dropped, string literals ('..' with ” doubling, E'..' with backslash escapes, B'..' X'..' N'..' U&'..',
+// $tag$..$tag$ with the tag matched exactly), numbers (not a parameter $n, not part of an identifier; '_' between
+// digits), 0x / 0o / 0b literals and money with a decimal point ($12.50) become ?, double-quoted identifiers stay
+// whole, whitespace collapses to one space, and IN (?, ?, ...) collapses to IN (?). One pass, so an unpaired quote
+// inside a comment or an escaped quote inside a string never desynchronises what follows. A text rule, not a parser: it
+// is meant to keep data out of the repository, not to produce pg_stat_statements' exact form.
 func normalizeSQL(s string) string {
 	in := []rune(s)
 	var out strings.Builder
@@ -1021,9 +1050,26 @@ func normalizeSQL(s string) string {
 			}
 			emit(c) // not a dollar quote: a $ on its own
 			i++
+		case c == '$' && !isIdent(prev(i)) && i+1 < n && unicode.IsDigit(in[i+1]) && moneyAt(in, i+1):
+			// T-SQL money with a decimal point ($12.50, -$3.25: the sign stays, as a number's does); $1 and $1.name,
+			// PostgreSQL's parameters, have no digit after a point and fall through to stay as they are
+			j := i + 1
+			for j < n && (unicode.IsDigit(in[j]) || in[j] == '.') {
+				j++
+			}
+			emit('?')
+			i = j
+		case c == '0' && i+1 < n && strings.ContainsRune("xXoObB", in[i+1]) && !isIdent(prev(i)) && prev(i) != '.' && radixAt(in, i):
+			// a binary literal (T-SQL 0x..., an empty 0x too) or PostgreSQL 16's 0x / 0o / 0b integers, '_' between digits
+			j := i + 2
+			for j < n && (radixDigit(in[i+1], in[j]) || in[j] == '_' && j+1 < n && radixDigit(in[i+1], in[j+1])) {
+				j++
+			}
+			emit('?')
+			i = j
 		case (unicode.IsDigit(c) || (c == '.' && i+1 < n && unicode.IsDigit(in[i+1]))) && !isIdent(prev(i)) && prev(i) != '.':
 			j := i
-			for j < n && (unicode.IsDigit(in[j]) || in[j] == '.') {
+			for j < n && (unicode.IsDigit(in[j]) || in[j] == '.' || in[j] == '_' && j+1 < n && unicode.IsDigit(in[j+1])) {
 				j++
 			}
 			if j < n && (in[j] == 'e' || in[j] == 'E') && j+1 < n && (unicode.IsDigit(in[j+1]) || ((in[j+1] == '+' || in[j+1] == '-') && j+2 < n && unicode.IsDigit(in[j+2]))) {
