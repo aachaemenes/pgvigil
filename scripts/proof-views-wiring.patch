@@ -1,30 +1,30 @@
 diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
-index a7afc66f..7a8f3fa8 100644
+index 26e8db74..d200cdec 100644
 --- c/cmd/pgvigil/report.go
 +++ i/cmd/pgvigil/report.go
-@@ -312,7 +312,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
+@@ -318,7 +318,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
  // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
  // one of them is written as <masked-key-N>: a name of the reader's own making can name the site.
  var knownKeys = map[string]bool{
 -	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
 +	"repository": true, "dsn": true, "instances": true, "views": true, "shared_editors": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
+ 	"password_secret": true, "ref": true,
+ 	"web": true, "readyz_without_login": true, // B6.4: the probes
  	"doors": true, "page_instance_reads": true, "reports_dsn": true,
- 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
- 	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
-index f350bb33..6b103ca9 100644
+index 4133d871..6326df31 100644
 --- c/cmd/pgvigil/serve.go
 +++ i/cmd/pgvigil/serve.go
-@@ -171,6 +171,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
- 		return err
+@@ -205,6 +205,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
  	}
  	defer srv.Close()
+ 	srv.EnableMetrics(promCfg)
 +	srv.SetViewEditors(cfg.Views.SharedEditors) // who may write shared views (pgvigil.yaml views.shared_editors)
  	// REPORT ROLE: one WARN when a custom report on the store cannot run here (no reports_dsn, or its login fails the
  	// check); serve starts either way and the page says the same words
  	if why := srv.StoreReportsOff(ctx); why != "" {
 diff --git c/docs/configuration.md i/docs/configuration.md
-index 264b71f0..6bd3c688 100644
+index 161a0c4f..ac13103f 100644
 --- c/docs/configuration.md
 +++ i/docs/configuration.md
 @@ -129,6 +129,23 @@ key read as what they stand for. `pgvigil serve` reads the block once, at its st
@@ -52,20 +52,20 @@ index 264b71f0..6bd3c688 100644
  
  Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
 diff --git c/internal/config/config.go i/internal/config/config.go
-index ce855797..2edcdbb1 100644
+index 7e9785de..8d00ceaa 100644
 --- c/internal/config/config.go
 +++ i/internal/config/config.go
-@@ -33,6 +33,8 @@ type Config struct {
- 	QueryText string `yaml:"query_text"`
- 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
+@@ -41,6 +41,8 @@ type Config struct {
  	UI UI `yaml:"ui"`
+ 	// Web is the web: block (B6.4: serve's probes)
+ 	Web Web `yaml:"web"`
 +	// Views: the saved views' one setting (0259; web/q_views.go): who may write shared views.
 +	Views Views `yaml:"views"`
  	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
  	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
  	// collects nothing from SQL Server itself.
-@@ -253,6 +255,13 @@ func (c *Config) validateDBADash() error {
- 	return nil
+@@ -371,6 +373,13 @@ type Web struct {
+ 	ReadyzWithoutLogin bool `yaml:"readyz_without_login"`
  }
  
 +// Views is the views store's setting until the per-user roles (B24f) carry a 'change shared views' right.
@@ -79,13 +79,13 @@ index ce855797..2edcdbb1 100644
  type UI struct {
  	// GroupBy lists tag keys, one folder level each, in order (e.g. [env, team]); empty = one folder per tag.
 diff --git c/internal/web/web.go i/internal/web/web.go
-index 9e87cd1d..9569d5d9 100644
+index 24ad443f..bc0b6080 100644
 --- c/internal/web/web.go
 +++ i/internal/web/web.go
-@@ -261,6 +261,13 @@ func (s *Server) Handler() http.Handler {
- 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
- 	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
+@@ -283,6 +283,13 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
+ 	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
+ 	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
 +	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
 +	api.HandleFunc("GET /api/views", s.Views)
 +	api.HandleFunc("POST /api/views", s.ViewSave)
