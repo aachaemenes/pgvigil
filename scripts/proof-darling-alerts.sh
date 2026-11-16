@@ -47,8 +47,9 @@
 #     pass sends it to a file drop; after VACUUM and a read the finding is gone, and a pass that misses it, a read and a
 #     pass clear the alert (the sender's clear rule: a read newer than the pass that first missed it);
 #     F2-F5 seeded at the collected rows (no standby, 10 GB slot, small volume or AG here: NOT PROVEN on a live engine):
-#     F2 a sender's replay lag of 45 s / 400 s / 10 s raises NO 'replay lag' here (the HA join dropped 0118's arm: a
-#     link's lag is 0141's 'standby lag', proven by proof-pg-hadr.sh), slot WAL 12 GB warning / 60 GB critical / 9 GB none, a
+#     F2 a LOGICAL slot's sender 45 s behind warning / 400 s critical / 10 s none: 'replay lag', since the HA join
+#     0141's rule at the same tiers (its key logical_sender_lag; 0118's arm judged every sender and is dropped: a
+#     physical link's lag is 0141's 'standby lag', proven by proof-pg-hadr.sh), slot WAL 12 GB warning / 60 GB critical / 9 GB none, a
 #     volume of 20 GB with 4.5 GB free warning, one of 15 GB with 1.8 GB free critical (its drive threshold 5 % / 2 %,
 #     so its percent rule raises nothing), 8 GB with 4 GB free none (10 GB or smaller), 500 GB with 3 GB free none (its
 #     percent rule judges it), 40 GB with 8 GB free none; F5 an AG database 400 s behind raises NO 'AG secondary
@@ -144,7 +145,7 @@ await shot('alerts');
 // the proof's own expectations: concrete (setting -> family) pairs read from the SQL that writes the findings (0118,
 // 0021, 0006, 0024, 0067, 0074, 0085), not the page's rules; an alert rule's alert is 'Alert rule'; a setting outside the
 // table is opened and its section required, its family printed, not graded
-const WANT = { 'dead tuples piling up': 'Vacuum', 'database xid age': 'Vacuum', 'autovacuum is off': 'Vacuum',
+const WANT = { 'dead tuples piling up': 'Vacuum', 'database xid age': 'Vacuum', 'autovacuum is off': 'Vacuum', 'replay lag': 'Replication',
   'replication slot retaining WAL': 'Replication', 'inactive replication slot': 'Replication',
   'swap used': 'Memory', 'a volume under 5 GB free': 'Storage and IO', 'a volume under 10 % free': 'Storage and IO', 'runnable queue per scheduler': 'CPU',
   'scheduler pressure': 'CPU', 'server unreachable': 'The instance', 'the redo queue is over its threshold': 'Replication',
@@ -432,7 +433,7 @@ seed() { rq "$1" >/dev/null; }
 rq "select pgvigil.ensure_month_partition('replication_sample', now()), pgvigil.ensure_month_partition('mssql_sched_sample', now() - interval '5 minutes'), pgvigil.ensure_month_partition('mssql_sched_sample', now()), pgvigil.mssql_ensure_day_partition('mssql_requests', now())" >/dev/null
 tiers() { rq "select string_agg(severity || ':' || value, ',' order by value) from pgvigil.findings where setting = '$1' and instance_id = $IID"; }
 seed "insert into pgvigil.replication_sample (instance_id, snapshot_at, kind, key, lag_bytes, lag_secs, active, detail) values
-  ($IID, now(), 'sender', 'd30_s_warn', 0, 45, true, '{}'), ($IID, now(), 'sender', 'd30_s_crit', 0, 400, true, '{}'), ($IID, now(), 'sender', 'd30_s_ok', 0, 10, true, '{}'),
+  ($IID, now(), 'sender', 'd30_s_warn', 0, 45, true, '{\"slot_type\":\"logical\"}'), ($IID, now(), 'sender', 'd30_s_crit', 0, 400, true, '{\"slot_type\":\"logical\"}'), ($IID, now(), 'sender', 'd30_s_ok', 0, 10, true, '{\"slot_type\":\"logical\"}'),
   ($IID, now(), 'slot', 'd30_slot_warn', 12 * 1073741824::bigint, null, false, '{}'), ($IID, now(), 'slot', 'd30_slot_crit', 60 * 1073741824::bigint, null, true, '{}'), ($IID, now(), 'slot', 'd30_slot_ok', 9 * 1073741824::bigint, null, true, '{}')"
 # the volume rule judges only where the drive's own percent threshold raises nothing (drives_now, default 20 % / 10 %):
 # D30C: carries a drive threshold of 5 % / 2 % so its 1.8 GB of 15 GB (12 %) is 'ok' by percent and critical by the floor
@@ -443,12 +444,13 @@ seed "insert into pgvigil.mssql_volumes (instance_id, volume, total_bytes, free_
 seed "insert into pgvigil.drive_thresholds (level, instance_id, drive, warn_pct, crit_pct, created_by, created_at) values ('drive', $IID, 'D30C:', 5, 2, 'proof-darling-alerts', now())"
 seed "insert into pgvigil.mssql_ag_database_state (instance_id, group_id, replica_server, database_name, snapshot_at, group_name, secondary_lag_s) values
   ($IID, 'g1', 'r2', 'd30db_behind', now(), 'd30ag', 400), ($IID, 'g1', 'r2', 'd30db_ok', now(), 'd30ag', 20)"
-L=$(tiers 'replay lag'); S=$(tiers 'replication slot retaining WAL'); V=$(tiers 'a volume under 5 GB free'); A=$(tiers 'AG secondary behind')
-[[ -z $L ]] || fail "F2: 'replay lag' findings '$L' on the seeded senders (want none: the HA join dropped 0118's arm, a link's lag is 0141's 'standby lag')"
+# 'replay lag' is 0141's since the HA join: its value is the sender's key, then ': ' and the rule's fixed words
+L=$(rq "select string_agg(severity || ':' || split_part(value, ':', 1), ',' order by value) from pgvigil.findings where setting = 'replay lag' and instance_id = $IID"); S=$(tiers 'replication slot retaining WAL'); V=$(tiers 'a volume under 5 GB free'); A=$(tiers 'AG secondary behind')
+[[ $L == "critical:d30_s_crit,warning:d30_s_warn" ]] || fail "F2: replay lag tiers '$L' of the seeded logical senders (want 400 s critical, 45 s warning, 10 s none)"
 [[ $S == "critical:d30_slot_crit,warning:d30_slot_warn" ]] || fail "F3: slot WAL tiers '$S' (want 60 GB critical, 12 GB warning, 9 GB none)"
 [[ $V == "critical:D30C:,warning:D30W:" ]] || fail "F4: volume tiers '$V' (want D30C: 1.8 of 15 GB critical, D30W: 4.5 of 20 GB warning; D30S: 8 GB, D30P: 0.6 % and D30O: 8 GB free none): drives_now $(rq "select string_agg(drive || ' ' || free_pct || '% ' || status, ', ' order by drive) from pgvigil.drives_now where instance_id = $IID and drive like 'D30%'")"
 [[ -z $A ]] || fail "F5: 'AG secondary behind' findings '$A' on the seeded AG database (want none: the HA join dropped 0118's arm, 0143's data-loss finding judges it)"
-ok "F2-F5: slot WAL ($S), volume free GB ($V): PerformanceMonitor's tiers, each below-threshold row raising nothing; no 'replay lag' and no 'AG secondary behind' on the seeded rows (dropped at the HA join)"
+ok "F2-F5: replay lag of the logical senders ($L), slot WAL ($S), volume free GB ($V): PerformanceMonitor's tiers, each below-threshold row raising nothing; no 'AG secondary behind' on the seeded AG database (dropped at the HA join)"
 seed "delete from pgvigil.replication_sample where instance_id = $IID and key like 'd30_%'"
 seed "update pgvigil.mssql_volumes set free_bytes = total_bytes where instance_id = $IID"
 seed "update pgvigil.mssql_ag_database_state set secondary_lag_s = 0 where instance_id = $IID"

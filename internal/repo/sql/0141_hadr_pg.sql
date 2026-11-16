@@ -44,6 +44,10 @@
 --                 pg_logical_checks (one finding per subscription: apply errors, worker down, disabled, sync errors,
 --                 PostgreSQL 18's conflicts, a table's initial sync not finished, silent), pg_logical_status for the
 --                 Replication page; a subscription's walsender on the publisher is keyed by its slot.
+--   HA join       (2026-11-15) 'replay lag' for a logical slot's walsender (a subscription, a CDC or DMS task): its
+--                 replay_lag at the newest read against the key 'logical_sender_lag' (30 / 300 s), the last arm of
+--                 pg_hadr_checks. 0118's arm of that name judged every sender and is dropped at the join (a physical
+--                 link is 'standby lag'); this keeps the finding, and so the alert, a logical consumer had.
 --   task 374      slots: the collector adds invalidation_reason (17 on), max_slot_wal_keep_size and pg_stat_replication_
 --                 slots' spill / stream counters (14 on: 'slot_stats' rows); pg_repl_slot_state keeps each slot's retained
 --                 WAL at an hourly mark for its growth per hour. One finding per slot: 'slot invalidated' (critical:
@@ -74,7 +78,10 @@ ALTER TABLE pgvigil.pg_threshold_keys DROP CONSTRAINT IF EXISTS pg_threshold_key
 ALTER TABLE pgvigil.pg_threshold_keys ADD CONSTRAINT pg_threshold_keys_unit_check CHECK (unit IN ('minutes', 'hours', 'days', 'seconds', 'MB'));
 INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
   ('standby_lag_bytes',  'Standby lag: WAL not yet replayed, 2 reads in a row', 'MB', 'over', 50, 100, '{root,tag,instance}', 1048576),
-  ('standby_replay_lag', 'Standby lag: the primary''s replay_lag beyond recovery_min_apply_delay, 2 reads in a row', 'seconds', 'over', 30, 300, '{root,tag,instance}', 604800)
+  ('standby_replay_lag', 'Standby lag: the primary''s replay_lag beyond recovery_min_apply_delay, 2 reads in a row', 'seconds', 'over', 30, 300, '{root,tag,instance}', 604800),
+  -- a key of its own, not standby_replay_lag: that rule subtracts recovery_min_apply_delay and holds for 2 reads (a
+  -- standby), and a site tunes a CDC task's or a subscription's lag apart from its standbys'; the defaults are 0118's
+  ('logical_sender_lag', 'Replay lag: a logical slot''s consumer (a subscription, a CDC task) behind the sender', 'seconds', 'over', 30, 300, '{root,tag,instance}', 604800)
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
   warn_default = EXCLUDED.warn_default, crit_default = EXCLUDED.crit_default, levels = EXCLUDED.levels, max_value = EXCLUDED.max_value;
 
@@ -936,12 +943,31 @@ SELECT a.instance_id, CASE WHEN t.crit IS NOT NULL AND a.lag_secs >= t.crit THEN
  WHERE a.kind = 'aurora_replica' AND a.snapshot_at > now() - interval '30 minutes'
    AND coalesce(a.state, '') <> 'MASTER_SESSION_ID' AND coalesce(t.warn, t.crit) IS NOT NULL AND a.lag_secs >= coalesce(t.warn, t.crit)
    -- a reader returns the same aurora_replica_status rows: the writer alone raises (one finding per lagging replica)
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_standby_state st WHERE st.instance_id = a.instance_id AND st.in_recovery);
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_standby_state st WHERE st.instance_id = a.instance_id AND st.in_recovery)
+UNION ALL
+-- a logical slot's walsender - a subscription's, a CDC or DMS task's - behind in time: its replay_lag at the newest
+-- read against 'logical_sender_lag' (30 / 300 s). 0118's 'replay lag' arm judged EVERY sender at these tiers; a
+-- physical link is 'standby lag' above and the HA join dropped 0118's arm, so this arm keeps the alarm a logical
+-- consumer had: the name, the tiers, one read. The object is the sender's key ('slot:<slot name>').
+SELECT r.instance_id, CASE WHEN t.crit IS NOT NULL AND r.lag_secs >= t.crit THEN 'critical' ELSE 'warning' END, 'replay lag',
+       r.key, r.snapshot_at,
+       format('the consumer of the logical slot %s (%s, %s) is %s s behind this server (replay_lag; warning %s s, critical %s s, %s)',
+              coalesce(r.detail->>'slot_name', r.key), coalesce(nullif(r.detail->>'application_name', ''), 'no application name'),
+              coalesce(r.state, 'state unknown'), round(r.lag_secs::numeric, 1),
+              coalesce(trim_scale(t.warn)::text, '-'), coalesce(trim_scale(t.crit)::text, '-'), t.level),
+       1, 'the consumer of the logical slot is behind this server (replay_lag past the thresholds)'
+  FROM pgvigil.replication_latest r
+  JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
+  CROSS JOIN LATERAL pgvigil.pg_threshold(r.instance_id, 'logical_sender_lag') t
+ WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.snapshot_at > now() - interval '30 minutes'
+   AND coalesce(t.warn, t.crit) IS NOT NULL AND r.lag_secs >= coalesce(t.warn, t.crit);
 
 -- 0006's daily-check view again with a severity column at its end (for the Summary's 'replication' overview and the
 -- Replication page, which judge severity by check name until they read this column: the join's wiring): a base backup's senders out of 'sender not streaming' and the replay-lag check (task 370
 -- a); a physical link's sender state and lag are judged once per link by pg_hadr_checks (task 371), an Aurora replica's
--- lag and a slot's WAL status by its rows (task 374), so 'sender not streaming' and 'replay lag' keep logical senders only; pg_hadr_checks' rows (value = the reads in
+-- lag and a slot's WAL status by its rows (task 374), so 'sender not streaming' keeps logical senders only; a logical
+-- sender's 'replay lag' is a row of pg_hadr_checks too (its last arm, at the tiers of 'logical_sender_lag': the arm
+-- this view had for it would say it a second time here); pg_hadr_checks' rows (value = the reads in
 -- a row, state = the finding's detail).
 CREATE OR REPLACE VIEW pgvigil.replication_checks AS
   SELECT instance_id, snapshot_at, 'inactive slot retaining WAL' AS check_name, key AS object,
@@ -953,10 +979,6 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
   SELECT instance_id, snapshot_at, 'sender not streaming', key, lag_bytes, 'bytes', state, 'warning'
     FROM pgvigil.replication_latest
    WHERE kind = 'sender' AND state IS DISTINCT FROM 'streaming' AND detail->>'slot_type' = 'logical'
-  UNION ALL
-  SELECT instance_id, snapshot_at, 'replay lag', key, lag_secs::bigint, 'seconds', state, 'warning'
-    FROM pgvigil.replication_latest
-   WHERE coalesce(lag_secs, 0) > 30 AND kind = 'sender' AND detail->>'slot_type' = 'logical'
   UNION ALL
   -- 0006's time rule on the standby side, kept for a standby no monitored primary sends to (the link rule judges the rest)
   SELECT r.instance_id, r.snapshot_at, 'replay lag', r.key, r.lag_secs::bigint, 'seconds', r.state, 'warning'
@@ -1062,6 +1084,7 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
                                    WHEN 'standby gone' THEN 'start the standby or reconnect it; if it was retired on purpose, the finding ends 7 days after it was last seen'
                                    WHEN 'replay paused' THEN 'resume replay on the standby (SELECT pg_wal_replay_resume()) unless it was paused on purpose'
                                    WHEN 'standby lag' THEN 'find what holds the standby back: a query conflicting with replay (max_standby_streaming_delay, hot_standby_feedback), slow disk or network, a long apply'
+                                   WHEN 'replay lag' THEN 'find what holds the slot''s consumer back: a long transaction being decoded, a slow apply on the subscriber or the CDC task, the network; a slot whose consumer is gone for good is dropped'
                                    WHEN 'synchronous commits waiting' THEN 'bring a synchronous standby back, or change synchronous_standby_names: until then commits wait'
                                    WHEN 'synchronous standby absent' THEN 'bring the named standby back or take its name out of synchronous_standby_names'
                                    WHEN 'subscription apply errors' THEN 'read the subscriber''s server log for the failing change (a conflicting row, a missing table or column), fix the data or ALTER SUBSCRIPTION ... SKIP the transaction'
@@ -1078,7 +1101,7 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
                                    ELSE 'see the Replication page'
                                  END
          ELSE 'schedule the amcheck collection for the database (README: the amcheck collection)'
-       END AS suggested, CASE WHEN c.check_name = 'Aurora replica lag' THEN 'aurora' ELSE 'self-managed' END AS platforms,
+       END AS suggested, CASE WHEN c.check_name = 'Aurora replica lag' THEN 'aurora' WHEN c.check_name = 'replay lag' THEN 'all' ELSE 'self-managed' END AS platforms,
        CASE c.check_group
          WHEN 'base backups' THEN 'without a recent base backup a restore replays more WAL, or has nothing to start from'
          WHEN 'log shipping' THEN 'a standby that falls behind loses what it has not replayed if it must take over'
@@ -1092,6 +1115,8 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object || ': ' || c
                                      THEN 'a commit waits until enough synchronous standbys confirm it: the applications stall'
                                      WHEN c.check_name = 'Aurora replica lag'
                                      THEN 'reads on a lagging replica return old data, and a failover to it takes longer'
+                                     WHEN c.check_name = 'replay lag'
+                                     THEN 'a logical consumer that applies late serves old data, and its slot keeps WAL on this server until it confirms'
                                      ELSE 'a standby that does not stream falls behind: a failover to it loses what it has not received' END
          ELSE 'damage in an index or a table is only found by a check that reads it'
        END AS detail, 'pg-backups' AS source, c.at

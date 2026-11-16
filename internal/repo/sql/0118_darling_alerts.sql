@@ -9,8 +9,10 @@
 --   (replay lag)                    NOT in this view since the HA join (task 389): the template pg-replication-lag
 --                                   (L57-65: a sender's replay lag at 30 s warning / 5 min critical) is judged once per
 --                                   link by 0141's 'standby lag', its tiers the threshold key standby_replay_lag
---                                   (30 / 300 s, two reads in a row, beyond recovery_min_apply_delay). The arm that stood
---                                   here said the same fault a second time and raised on a standby delayed on purpose
+--                                   (30 / 300 s, two reads in a row, beyond recovery_min_apply_delay), and a logical
+--                                   slot's sender by 0141's 'replay lag', its tiers the key logical_sender_lag (30 / 300 s,
+--                                   the newest read: this arm's rule). The arm that stood here said a standby's lag a
+--                                   second time and raised on a standby delayed on purpose
 --   replication slot retaining WAL  a slot's retained WAL at 10 GB (warning) / 50 GB (critical): template
 --                                   pg-replication-slot-wal (L87-96)
 --   a volume under 5 GB free        a SQL Server volume's free space under 5 GB (warning) / at or under 2 GB (critical):

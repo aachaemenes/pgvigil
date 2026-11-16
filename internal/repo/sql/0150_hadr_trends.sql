@@ -938,7 +938,7 @@ SELECT t.source, t.sending_id, t.sending, t.link, t.application_name, t.client_a
        (SELECT c.in_recovery FROM pgvigil.pg_repl_standby_state c WHERE c.instance_id = t.sending_id) AS sending_in_recovery
   FROM tiered t;
 
--- 0141's pg_hadr_checks again (0141 L865-939, every arm kept) with the cluster checks above as its last arm, so they
+-- 0141's pg_hadr_checks again (every arm kept, its last the logical senders' 'replay lag') with the cluster checks above as its last arm, so they
 -- reach pgvigil.findings the way 0141's rules do (pg_backups_checks' 'replication' group, pg_backups_findings).
 -- pg_hadr_checks: the streaming replication rules of this file, one row per finding (instance_id, severity, check_name,
 -- object, at, detail, reads, stable): one per link at most. detail is the newest read's account (the Summary and the
@@ -1030,6 +1030,23 @@ SELECT a.instance_id, CASE WHEN t.crit IS NOT NULL AND a.lag_secs >= t.crit THEN
                               JOIN pgvigil.pg_repl_standby_state os ON os.instance_id = o.instance_id AND os.in_recovery
                              WHERE o.kind = 'aurora_replica' AND o.key = a.key AND o.instance_id < a.instance_id
                                AND o.snapshot_at > now() - interval '30 minutes')))
+UNION ALL
+-- a logical slot's walsender - a subscription's, a CDC or DMS task's - behind in time: its replay_lag at the newest
+-- read against 'logical_sender_lag' (30 / 300 s). 0118's 'replay lag' arm judged EVERY sender at these tiers; a
+-- physical link is 'standby lag' above and the HA join dropped 0118's arm, so this arm keeps the alarm a logical
+-- consumer had: the name, the tiers, one read. The object is the sender's key ('slot:<slot name>').
+SELECT r.instance_id, CASE WHEN t.crit IS NOT NULL AND r.lag_secs >= t.crit THEN 'critical' ELSE 'warning' END, 'replay lag',
+       r.key, r.snapshot_at,
+       format('the consumer of the logical slot %s (%s, %s) is %s s behind this server (replay_lag; warning %s s, critical %s s, %s)',
+              coalesce(r.detail->>'slot_name', r.key), coalesce(nullif(r.detail->>'application_name', ''), 'no application name'),
+              coalesce(r.state, 'state unknown'), round(r.lag_secs::numeric, 1),
+              coalesce(trim_scale(t.warn)::text, '-'), coalesce(trim_scale(t.crit)::text, '-'), t.level),
+       1, 'the consumer of the logical slot is behind this server (replay_lag past the thresholds)'
+  FROM pgvigil.replication_latest r
+  JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
+  CROSS JOIN LATERAL pgvigil.pg_threshold(r.instance_id, 'logical_sender_lag') t
+ WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.snapshot_at > now() - interval '30 minutes'
+   AND coalesce(t.warn, t.crit) IS NOT NULL AND r.lag_secs >= coalesce(t.warn, t.crit)
 UNION ALL
 -- task 375 (0150): the checks across a cluster's members
 SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail, c.reads, c.stable

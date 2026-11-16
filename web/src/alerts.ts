@@ -650,8 +650,9 @@ export const alertCol: Col = {
 // the sources of the instances; the file is the source of the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
 // change is made). The tab rides in the address (atab=). The route and the tab are the shell's (a WIRING BLOCK).
 // builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC).
-// Its replay lag and AG lag defaults are not rows here: since the HA join the replication rules judge both ('standby lag',
-// 'a secondary would lose data in a failover') with tiers set on the Thresholds page
+// Its replay lag and AG lag defaults are not rows here: since the HA join the replication rules judge both ('standby lag'
+// for a standby, 'replay lag' for a logical slot's sender, 'a secondary would lose data in a failover') with tiers set
+// on the Thresholds page
 const builtIn: Row[] = [
   { finding: 'dead tuples piling up', engine: 'PostgreSQL', warning: '1,000,000 dead tuples in a table', critical: '10,000,000', from: 'template pg-autovacuum-dead-tuples' },
   { finding: 'replication slot retaining WAL', engine: 'PostgreSQL', warning: '10 GB', critical: '50 GB', from: 'template pg-replication-slot-wal' },
