@@ -272,6 +272,18 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 		}
 	case channels == 0 && live.id == 0:
 		reason = "Mailing the Daily checks needs an smtp channel: the sender has recorded none (the alerts: block of pgvigil.yaml, and pgvigil run)."
+	case !s.roleCan(r)["admin"]:
+		// the role (B24f, the lead 11-15 12:0x): keeping or turning off the mail is an admin's (its ops ride POST
+		// /api/reportmail, admin through s.post); a lower role reads the control off with these words
+		wh, ok := whoOf(r)
+		if !ok {
+			wh = s.sessionWho(r)
+		}
+		if wh.err != nil { // roleCan reads a role read error as no role (review-20 jw1 N4): its own words, as roleOK's 503
+			reason = fmt.Sprintf("the role could not be read: %v", wh.err)
+		} else {
+			reason = roleWords("keeping or turning off the Daily checks mail", needAdmin, wh)
+		}
 	}
 	out["writable"], out["reason"] = reason == "", reason
 	if reportmail.FindBrowser() == "" {

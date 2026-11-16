@@ -474,11 +474,11 @@ export async function dailyMailControl(ctx: Ctx): Promise<HTMLElement | null> {
   const why = el('span', { class: 'off-reason' });
   const off = d.writable ? null : (d.reason || 'the Daily checks mail cannot be changed here');
   if (off) why.textContent = off;
-  const keep = el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...');
+  const keep = markNeed(el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...'), 'reportmail');   // the role (B24f): an admin's (review-20 jw1 N1)
   if (off) offControl(keep, off, why); else keep.addEventListener('click', () => { void dailyMailDialog(d); });
   line.append(keep, ' ');
   if (d.kept) {
-    const drop = el('button', { type: 'button', class: 'link' }, 'Turn off');
+    const drop = markNeed(el('button', { type: 'button', class: 'link' }, 'Turn off'), 'reportmail');
     if (off) offControl(drop, off, why);
     else drop.addEventListener('click', () => {
       dialog('Turn off the daily mail', 'The Daily checks page is no longer mailed; its sends stay in the Report mail log.', 'Turn off', [],
