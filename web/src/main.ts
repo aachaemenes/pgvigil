@@ -125,6 +125,7 @@ const mssqlPages: Record<string, Render> = {
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
   mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlsecurity: mssqlSecurityView, mssqlchecks: mssqlChecksView,
+  schema: c => schemaView(c.instance!, c),   // A26-PG's tab (review B #4): the same page, its SQL Server reply (q_schema.go)
   mssqlerrorlog: mssqlErrorLogView, mssqlerrors: mssqlErrorFleetView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
