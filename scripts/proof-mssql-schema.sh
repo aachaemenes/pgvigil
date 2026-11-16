@@ -164,6 +164,8 @@ ok "P1 off: skipped, nothing read"
 
 echo "--- P2 / P7a / P8. the baseline"
 pass a26-full; pass a26-hash; pass a26-notrace
+echo "  a26-full's databases after its first pass: $(q "select string_agg(name || '=' || state || coalesce(' (' || left(note, 400) || ')', ''), '; ' order by database_id) from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full)" | cut -c1-2000)"
+echo "  a26-full's collection line: $(status a26-full mssql_schema | cut -c1-800)"
 eq "P2: shop's state" "$(mstate a26-full shop)" read
 eq "P2: changes at the baseline" "$(nchanges a26-full shop)" 0
 KINDS=$(q "select string_agg(distinct kind, ',' order by kind) from pgvigil.schema_objects where instance_id = $(iid a26-full) and dbid = $(dbid shop) and is_present")
