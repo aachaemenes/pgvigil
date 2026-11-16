@@ -18,9 +18,9 @@
 #
 # Expected (written before the first run; the base 75c72186 is RED on every part: no tables, no tools, no routes).
 #  A. off: a serve without the agents: section answers GET and POST /api/investigations 404 with 'agents.enabled is
-#     off'; a plain reader login's `pgvigil mcp` lists the nine read tools only and a claim_investigation call is
+#     off'; a plain reader login's `pgvigil mcp` lists the ten read tools only (alert_history among them) and a claim_investigation call is
 #     unknown (-32602).
-#  R. roles: a login IN ROLE pgvigil_reader, pgvigil_agent lists 16 tools (the nine + list_investigations,
+#  R. roles: a login IN ROLE pgvigil_reader, pgvigil_agent lists 17 tools (the ten + list_investigations,
 #     wait_for_investigations, claim_investigation, renew_investigation, run_select, report_investigation,
 #     release_investigation). Refused at start (exit 3, 'refused' and the reason on stderr, nothing on stdout), each
 #     also holding pgvigil_agent: a collector login (pgvigil_collector), an auth member (pgvigil_auth), a reader with
@@ -198,7 +198,10 @@ for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$PXPORT") 2>/dev/null && b
 export AGP_DSN; AGP_DSN=$(printf 'host=127.0.0.1 port=%s dbname=%s user=%s password=%s sslmode=disable' "$PXPORT" "$REPO" "$(L ag1)" "$PW")
 px() { : > "$WORK/px.log"; printf '%s\n' "$@" > "$WORK/px.rules"; }   # px '<action> <text>' ...: the proxy's rules, its log emptied
 pxn() { grep -c -F -x -- "$1" "$WORK/px.log"; }                       # pxn '<log line>': how many times it was logged
-for u in u1 u2 u3; do PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" "agt$u$SUF" >/dev/null 2>&1 || die "user add $u"; done
+# u1, the first user, is the repository's admin; u2 and u3 operators: asking the agent and running an answered ask need
+# the operator role (a user added without -role is a viewer)
+for u in u1 u2 u3; do r=(); [[ $u == u1 ]] || r=(-role operator)
+  PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" ${r[@]+"${r[@]}"} "agt$u$SUF" >/dev/null 2>&1 || die "user add $u"; done
 U1=agtu1$SUF; U2=agtu2$SUF; U3=agtu3$SUF
 
 # the finding every request names: the demo's first active finding
@@ -240,8 +243,8 @@ R() { jq -c "select(.i == $2) | $3" "$WORK/$1.out" 2>/dev/null; }      # R <name
 Rr() { jq -r "select(.i == $2) | $3" "$WORK/$1.out" 2>/dev/null; }
 tc() { local a=${2:-}; [[ -n $a ]] || a='{}'; jq -cn --arg t "$1" --argjson a "$a" '{tool:$t,args:$a}'; }
 lists_tools() { jq -r 'select(.i == 0) | [.reply.result.tools[].name] | sort | join(",")' "$WORK/$1.out" 2>/dev/null; }
-READ9="blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
-ALL16=$(printf '%s\n' blocking_chain find_statements fleet_summary instance_findings plan_findings statement_everywhere storage_forecast table_state top_statements list_investigations wait_for_investigations claim_investigation renew_investigation run_select report_investigation release_investigation | sort | paste -sd,)
+READ10="alert_history,blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
+ALL17=$(printf '%s\n' alert_history blocking_chain find_statements fleet_summary instance_findings plan_findings statement_everywhere storage_forecast table_state top_statements list_investigations wait_for_investigations claim_investigation renew_investigation run_select report_investigation release_investigation | sort | paste -sd,)
 
 echo "--- A. off"
 api "$S2" s2 "$U1" GET investigations >/dev/null; a1=$(cat "$WORK/body")
@@ -250,12 +253,12 @@ c1=$(api "$S2" s2 "$U1" GET investigations); c2=$(api "$S2" s2 "$U1" POST invest
 calls a_rd '{"rpc":"tools/list","params":{}}' "$(tc claim_investigation '{"id":1,"agent":"x"}')"
 mc RD_DSN a_rd
 t=$(lists_tools a_rd); e=$(R a_rd 1 '.reply.error.code')
-[[ $t == "$READ9" && $e == -32602 ]] && ok "A2 the plain reader's door: the nine read tools, claim_investigation unknown (-32602)" || bad "A2 the plain reader's door: tools '$t', claim error '$e'"
+[[ $t == "$READ10" && $e == -32602 ]] && ok "A2 the plain reader's door: the ten read tools, claim_investigation unknown (-32602)" || bad "A2 the plain reader's door: tools '$t', claim error '$e'"
 
 echo "--- R. roles"
 calls r_ag '{"rpc":"tools/list","params":{}}'
 mc AG1_DSN r_ag; t=$(lists_tools r_ag)
-[[ $t == "$ALL16" ]] && ok "R1 the agent login passes and lists 16 tools" || bad "R1 the agent login's tools: '$t' (exit $(jq -r 'select(.exit != null) | .exit' "$WORK/r_ag.out") $(jq -r 'select(.exit != null) | .stderr' "$WORK/r_ag.out" | tail -1 | cut -c1-200))"
+[[ $t == "$ALL17" ]] && ok "R1 the agent login passes and lists 17 tools" || bad "R1 the agent login's tools: '$t' (exit $(jq -r 'select(.exit != null) | .exit' "$WORK/r_ag.out") $(jq -r 'select(.exit != null) | .stderr' "$WORK/r_ag.out" | tail -1 | cut -c1-200))"
 refused() { # refused <tag> <dsn> <words>
   local rc
   PGVIGIL_MCP_DSN="$2" timeout 30 "$BIN" mcp </dev/null >"$WORK/rf-$1.out" 2>"$WORK/rf-$1.err"; rc=$?
