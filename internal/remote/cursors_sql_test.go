@@ -47,7 +47,7 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 			{"logs", t1, []map[string]any{{"kind": "cursor", "source": "csvlog:/var/log/pg", "read_to": a}}},
 		}, map[string]string{"csvlog:/var/log/pg": "log"}},
 		{"pgaudit", "postgres", []sqlBatch{
-			{"pgaudit", t0, []map[string]any{{"kind": "cursor", "source": "pgaudit:/var/log/pg", "read_to": b}}},
+			{"pgaudit", t0, []map[string]any{{"kind": "state", "loaded": true, "keep_text": false, "log_where": "file"}, {"kind": "cursor", "source": "pgaudit:/var/log/pg", "read_to": b}}},
 		}, map[string]string{"pgaudit:/var/log/pg": "log"}},
 		{"pi", "postgres", []sqlBatch{
 			{"pi", t0, []map[string]any{{"kind": "cursor", "source": "pi", "read_to": b}}},
