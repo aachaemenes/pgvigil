@@ -376,6 +376,12 @@ type toolState struct {
 	communityTool
 	Installed *bool  `json:"installed"`
 	Where     string `json:"where,omitempty"`
+	// a procedure's version read from its own text, its date, the version pgvigil was tested with and the word for the
+	// difference (community_versions.go: DBA Dash's Check Versions; nothing is run or deployed)
+	Version     *string `json:"version"`
+	VersionDate string  `json:"version_date,omitempty"`
+	Tested      string  `json:"tested,omitempty"`
+	VersionWord string  `json:"version_word,omitempty"`
 	// the tool's state here, said before any click: ready | note (it runs, a note beside it) | needs (off: what it
 	// lacks) | not_checked (off: a check failed or ran out of time) | demo (off: a demo instance has no server)
 	State string     `json:"state"`
@@ -538,6 +544,7 @@ type communityCheck struct {
 	Inst      []toolNeed                   // what stops every tool here
 	Tools     map[string][]toolNeed        // each tool's own needs and notes
 	Installed map[string]bool              // SQL Server: the procedures found in DB (nil = not read)
+	Versions  map[string]toolVersion       // SQL Server: the found procedures' versions from their text (nil = not read)
 	Preset    map[string]map[string]string // each tool's form values
 }
 
@@ -753,6 +760,22 @@ func (s *Server) msChecks(ctx context.Context, id int, name, dsn, db string) *co
 		return c
 	}
 	c.Installed = installed
+	// the installed procedures' versions, from a window of their own text (community_versions.go)
+	var inst []string
+	for _, t := range communityTools {
+		if t.Engine == "sqlserver" && t.Kind == "proc" && installed[strings.ToLower(t.Name)] {
+			inst = append(inst, "N'"+t.Name+"'")
+		}
+	}
+	c.Versions = map[string]toolVersion{}
+	if len(inst) > 0 {
+		if v, err := readVersions(ctx, conn, c.DB, azure, inst); err == nil {
+			c.Versions = v
+		} else {
+			c.Versions = nil
+			c.Inst = append(c.Inst, noteNeed("the procedures' versions could not be read: "+err.Error(), "", "live"))
+		}
+	}
 	for _, t := range communityTools {
 		if t.Engine != "sqlserver" || t.Kind != "proc" {
 			continue
@@ -1115,6 +1138,10 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		// what every tool here lacks before it can run (the server's state, the instance's login), with the way to get it
 		Needs     []toolNeed `json:"needs"`
 		CheckedAt *time.Time `json:"checked_at,omitempty"`
+		// SQL Server: the script that installs what is missing or older here (printed, never run) and the groups whose
+		// procedures are at different versions
+		InstallScript string   `json:"install_script,omitempty"`
+		VersionNotes  []string `json:"version_notes,omitempty"`
 	}{Instance: name, Engine: engine, Tools: []toolState{}, Needs: []toolNeed{}}
 	for _, t := range communityTools {
 		if t.Engine == engine {
@@ -1172,6 +1199,13 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range out.Tools {
 		t := &out.Tools[i]
+		if out.Demo && t.Kind == "proc" && engine == "sqlserver" {
+			// a demo instance's procedures: invented at the tested version, as the rest of its data is invented
+			if tv, ok := testedVersions[t.Group]; ok && testedOf(t.Name) != "" {
+				vv := testedOf(t.Name)
+				t.Version, t.VersionDate, t.Tested, t.VersionWord = &vv, tv.Date, vv, "the tested version"
+			}
+		}
 		if out.Demo {
 			// the tool's stored sample, said per tool; a tool without one says why beside it
 			if sm, err := community.Get(t.ID); err == nil {
@@ -1194,6 +1228,14 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 				if yes {
 					t.Where = out.Database + ".dbo"
 				}
+				if c.Versions != nil {
+					v := c.Versions[strings.ToLower(t.Name)]
+					if v.Version != "" {
+						vv := v.Version
+						t.Version = &vv
+					}
+					t.VersionDate, t.Tested, t.VersionWord = v.Date, testedOf(t.Name), versionWord(yes, v, t.Name)
+				}
 			}
 			t.Preset = c.Preset[t.ID]
 		}
@@ -1208,6 +1250,9 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		t.On = t.State == "ready" || t.State == "note"
+	}
+	if engine == "sqlserver" && (out.Demo || c != nil && c.Versions != nil) {
+		out.InstallScript, out.VersionNotes = installScript(name, msServerOf(door), out.Database, out.Tools)
 	}
 	for _, n := range out.Needs {
 		if n.Hard {

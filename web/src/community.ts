@@ -13,7 +13,7 @@
 // The address's tool=<id> opens that tool's panel as the page loads (a mailed page carries it).
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, tabsFor } from './router';
-import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 import { folderWords, inTagScope, tagWords } from './fleet';
 
@@ -24,6 +24,8 @@ interface Tool {
   id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string;
   installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[];
   state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>; sample?: SampleMark;
+  // a procedure's version from its own text against the one pgvigil was tested with (q_community.go, community_versions.go)
+  version?: string | null; version_date?: string; tested?: string; version_word?: string;
 }
 // a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export carries (a demo
 // serve mails nothing)
@@ -32,7 +34,7 @@ interface SampleAnswer extends SampleMark {
   tool: string; name: string; instance: string; database?: string; params: Record<string, string>;
   param_doc: { name: string; type: string; help?: string }[] | null; dropped: string[] | null; cut: string[] | null; scrubbed: string[] | null; sets: ResultSet[];
 }
-interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string }
+interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string; install_script?: string; version_notes?: string[] }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
 interface Params { installed: boolean; params: ProcParam[]; left_out: string[]; help_sets: ResultSet[]; help_error?: string; static_params?: { name: string; type: string; label?: string; default?: string }[] }
 interface GlennQuery { n: number; name: string; about: string; text: string }
@@ -177,6 +179,33 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const head = el('h3', {}, g);
     firstGroup ??= head;
     box.append(head, table);
+  }
+  // the community procedures' versions against the ones pgvigil was tested with (DBA Dash's Check Versions): read from
+  // each one's own text, nothing run; the install script printed for the DBA, never run by pgvigil
+  const procs = d.tools.filter(t => t.kind === 'proc' && t.version_word);
+  if (procs.length) {
+    const wordCls = (w: string) => w === 'the tested version' ? 'ok' : w === 'older than tested' || w === 'version not read' ? 'warn' : '';
+    box.append(el('h3', {}, 'Installed community tools'),
+      ...(d.version_notes ?? []).map(n => el('p', { class: 'meta' }, badge('mixed versions', 'warn'), ' ', n)),
+      grid(procs as unknown as Row[], [
+        { key: 'name', label: 'procedure' }, { key: 'group', label: 'kit' }, { key: 'where', label: 'database', fmt: v => String(v ?? '') },
+        { key: 'version', fmt: v => v == null ? '' : String(v) }, { key: 'version_date', label: 'its date', fmt: v => String(v ?? '') },
+        { key: 'tested', label: 'tested by pgvigil', fmt: v => String(v ?? '') },
+        { key: 'version_word', label: 'status', fmt: v => badge(String(v ?? ''), wordCls(String(v ?? ''))) },
+      ]));
+    if (d.install_script) {
+      const script = d.install_script;
+      const copy = el('button', { type: 'button' }, 'Copy');
+      // the clipboard's async API exists on a secure origin only: copyText falls back to a hidden textarea, and the
+      // status line says what happened (on a refusal: select the text below)
+      const said = el('span', { role: 'status', class: 'meta' });
+      copy.addEventListener('click', () => {
+        void copyText(script).then(ok => { said.textContent = ok ? 'Copied' : 'Not copied: select the text below and copy it'; });
+      });
+      box.append(el('details', { class: 'install-script' }, el('summary', {}, 'Print the install script'),
+        el('p', { class: 'meta' }, 'pgvigil prints this script and runs none of it: with dbatools it installs what is missing, older than tested or of no readable version here.'),
+        copy, ' ', said, el('pre', { class: 'mono' }, script)));
+    }
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
   // the address named a tool: on a demo instance its sample is open when the page has drawn (a linked page opens it

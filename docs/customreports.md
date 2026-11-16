@@ -139,6 +139,21 @@ says where to get it.
 | Darling Data | sp_PressureDetector, sp_QuickieStore, sp_HumanEventsBlockViewer, sp_HealthParser, sp_LogHunter, sp_IndexCleanup | <https://github.com/erikdarlingdata/DarlingData> |
 | Glenn Berry | SQL Server Diagnostic Queries | <https://glennsqlperformance.com/resources/> |
 
+**Installed community tools** (SQL Server; DBA Dash's Check Versions): each procedure found in the database, its version
+and date as its own text says them (read from the definition around its version line: `@Version = '8.34'`,
+`@version = '3.11'`, `Who Is Active? v2200.20260409`; the procedure is never run), the procedure's own version in
+the release pgvigil was tested with, and a word: the tested version, older than tested, newer than tested (not tested by
+pgvigil), version not read, not installed. A kit whose procedures come from different releases (their dates) is said once
+above the grid. Tested: the First Responder Kit 8.34 (2026-07-02; every procedure 8.34), Darling Data's release of
+2026-11-01 (each procedure its own version: sp_PressureDetector and sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11,
+sp_HealthParser and sp_LogHunter 3.11, sp_IndexCleanup 2.11), sp_WhoIsActive 2200.20260409 (2026-04-09).
+
+**Print the install script** gives a PowerShell script for the server's DBA: dbatools' `Install-DbaFirstResponderKit`,
+`Install-DbaDarlingData` and `Install-DbaWhoIsActive` for each kit with a procedure missing, older than tested or of no
+readable version, into the database the page looks in (a newer one is left as it is). dbatools fetches each kit's newest
+release where it runs; to install the tested ones, download their release files and add `-LocalFile`. pgvigil runs none of
+it: nothing is deployed from pgvigil, and the server sends nothing anywhere.
+
 Opening a procedure reads its parameters from `sys.parameters` of the installed copy (so the form follows the
 version you installed) and runs its `@help = 1` (audited, like any run) for the descriptions, matched to the
 parameters by name, and the help's own grids. A parameter left empty takes the procedure's default. Left out of the
