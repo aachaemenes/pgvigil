@@ -503,10 +503,12 @@ func closeAt(s string, l litSpan) int {
 
 // innerValue is the value that starts at p inside an enclosing literal: one in T-SQL's doubled quotes (up to the pair
 // that closes it - an escaped quote inside it is four quotes - or the literal's end), one in square brackets (Red Gate
-// SQL Backup's PASSWORD = [...]: up to its ], ]] inside, or the literal's end), else a bare word up to a space, ; , )
-// " or a quote. The end offset and whether it is the doubled-quote form; ok false = no value. (The j16 join's review
-// 5 #1 / #2: the doubled value ended at the first pair and the bracketed one at a space, comma or quote, so the mask
-// took a prefix and left the key; jobmask's valDoubled and valBracket read them so.)
+// SQL Backup's PASSWORD = [...]: up to its ], ]] inside, or the literal's end; a word right after the ] is the value's
+// too - a bare password opening with '[' and holding a ], the join's review 6 #4 - so it reads on to the stop set),
+// else a bare word up to a space, ; , ) " or a quote. The end offset and whether it is the doubled-quote form; ok
+// false = no value. (The j16 join's review 5 #1 / #2: the doubled value ended at the first pair and the bracketed one
+// at a space, comma or quote, so the mask took a prefix and left the key; jobmask's valDoubled and valBracket read them
+// so.)
 func innerValue(s string, p, stop int) (end int, doubled bool, ok bool) {
 	if p >= stop {
 		return p, false, false
@@ -531,7 +533,11 @@ func innerValue(s string, p, stop int) (end int, doubled bool, ok bool) {
 					i++ // ]] inside the value
 					continue
 				}
-				return i + 1, false, true
+				j := i + 1 // the later end wins: a word right after the ] is the value's too
+				for j < stop && !strings.ContainsRune(valueStops, rune(s[j])) {
+					j++
+				}
+				return j, false, true
 			}
 		}
 		return stop, false, true
@@ -543,11 +549,14 @@ func innerValue(s string, p, stop int) (end int, doubled bool, ok bool) {
 		return stop, false, true
 	}
 	j := p
-	for j < stop && !strings.ContainsRune(" \t\r\n;,)\"'", rune(s[j])) {
+	for j < stop && !strings.ContainsRune(valueStops, rune(s[j])) {
 		j++
 	}
 	return j, false, j > p
 }
+
+// valueStops ends a bare value inside a literal (innerValue): a space, ; , ) " or a quote.
+const valueStops = " \t\r\n;,)\"'"
 
 type edit struct {
 	from, to int
