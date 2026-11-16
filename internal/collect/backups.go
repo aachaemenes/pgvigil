@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +49,9 @@ func (b backupsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform
 // segment (its name is the timeline, then the segment number in two 8-hex halves; a .history, .partial or
 // .backup name keeps the segment's 24 characters or none). The position: pg_current_wal_lsn on a primary; on a standby
 // (where it fails) the last WAL received, else the last replayed, so a standby with archive_mode = always is measured.
+// On Aurora (backupsArchiverAuroraSQL) a reader's position is not read: Aurora rejects pg_last_wal_receive_lsn and
+// pg_last_wal_replay_lsn (SQLSTATE 0A000 "currently not supported for Aurora" on a real Aurora PostgreSQL 17.9 reader,
+// proof-pg-aurora.sh's Q7 lab run 2), so its archive lag stays NULL.
 const backupsArchiverSQL = `
 WITH a AS (
   SELECT s.*, pg_size_bytes(current_setting('wal_segment_size')) AS seg, r.rec,
@@ -67,10 +71,18 @@ SELECT 'archiver' AS kind, 'pg_stat_archiver' AS name, current_setting('archive_
        END AS archive_lag_bytes
   FROM a`
 
+// backupsArchiverAuroraSQL is backupsArchiverSQL without the standby position functions (see above).
+var backupsArchiverAuroraSQL = strings.Replace(backupsArchiverSQL,
+	"coalesce(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())", "NULL::pg_lsn", 1)
+
 // RunInstance reads the archiver, then the AWS side when the instance is RDS or Aurora and has an aws: block;
 // an AWS failure is a collector_error row, the archiver row still lands.
 func (backupsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
-	rows, err := conn.Query(ctx, backupsArchiverSQL)
+	q := backupsArchiverSQL
+	if info.Kind == platform.Aurora {
+		q = backupsArchiverAuroraSQL
+	}
+	rows, err := conn.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("backups: pg_stat_archiver: %w", err)
 	}
@@ -78,8 +90,16 @@ func (backupsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 	if err != nil {
 		return nil, fmt.Errorf("backups: pg_stat_archiver: %w", err)
 	}
+	reader := false
 	for _, r := range out {
 		r["archive_warn_minutes"] = archiveWarnMinutes(in)
+		if rec, _ := r["is_replica"].(bool); rec {
+			reader = true
+		}
+	}
+	if info.Kind == platform.Aurora && reader {
+		out = append(out, Row{"kind": "collector_note", "source": "backups",
+			"message": "not read on Aurora: pg_last_wal_receive_lsn() is not supported (a reader's archive lag)"})
 	}
 	if (info.Kind != platform.RDS && info.Kind != platform.Aurora) || in.AWS == nil {
 		return out, nil

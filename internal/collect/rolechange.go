@@ -48,6 +48,17 @@ SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmast
        (SELECT w.received_tli FROM pg_stat_wal_receiver w WHERE w.pid IS NOT NULL LIMIT 1) AS receiver_timeline,
        EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.application_name LIKE 'Patroni%') AS patroni_session`
 
+// roleBaseAuroraSQL is roleBaseSQL for Aurora, which rejects pg_stat_wal_receiver (pg_stat_get_wal_receiver(): SQLSTATE
+// 0A000 "currently not supported in Aurora" on a real Aurora PostgreSQL 17.9 reader, proof-pg-aurora.sh's Q7 lab run
+// 2): no receiver timeline there - a reader's timeline comes from its last checkpoint.
+const roleBaseAuroraSQL = `
+SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmaster_start, now() AS server_now,
+       nullif(current_setting('cluster_name'), '') AS cluster_name,
+       CASE WHEN pg_is_in_recovery() THEN NULL
+            ELSE ('x' || left(pg_walfile_name(pg_current_wal_lsn()), 8))::bit(32)::bigint END AS wal_timeline,
+       NULL::integer AS receiver_timeline,
+       EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.application_name LIKE 'Patroni%') AS patroni_session`
+
 // roleControlSQL: pg_control_system / pg_control_checkpoint (superuser or pg_monitor on most platforms).
 const roleControlSQL = `
 SELECT (pg_control_system()).system_identifier::text AS system_identifier, (pg_control_checkpoint()).timeline_id AS checkpoint_timeline`
@@ -61,7 +72,11 @@ func (r rolechangeCollector) Run(ctx context.Context, conn *pgx.Conn, info platf
 }
 
 func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
-	base, err := conn.Query(ctx, roleBaseSQL)
+	q := roleBaseSQL
+	if info.Kind == platform.Aurora {
+		q = roleBaseAuroraSQL
+	}
+	base, err := conn.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("rolechange: %w", err)
 	}
@@ -96,6 +111,14 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
 	delete(r, "wal_timeline")
 	delete(r, "receiver_timeline")
 	out := []Row{r}
+	if info.Kind == platform.Aurora && isReplica {
+		from := "no timeline read"
+		if src != "" {
+			from = "the timeline from the " + src
+		}
+		out = append(out, Row{"kind": "collector_note", "source": "rolechange",
+			"message": "not read on Aurora: pg_stat_get_wal_receiver() is not supported (" + from + ")"})
+	}
 	seen, _ := r["patroni_session"].(bool)
 	delete(r, "patroni_session")
 	if !info.Kind.Managed() {

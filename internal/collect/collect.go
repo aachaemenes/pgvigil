@@ -215,15 +215,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		}
 	}
 	applyTextPolicy(rows, in.QueryText)
+	// a collector's note (kind collector_note: a part it does not read on this platform) goes to the collection's log,
+	// never to the import
+	var notes []string
+	kept := rows[:0]
+	for _, row := range rows {
+		if row["kind"] == "collector_note" {
+			notes = append(notes, fmt.Sprintf("%v", row["message"]))
+			continue
+		}
+		kept = append(kept, row)
+	}
+	rows = kept
 	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)
-	status, note := "ok", ""
+	status, note := "ok", strings.Join(notes, "; ")
 	for _, row := range rows {
 		if row["kind"] == "collector_error" {
 			status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])
+			if len(notes) > 0 { // a failed part does not hide what was not read on this platform
+				note += "; " + strings.Join(notes, "; ")
+			}
 			break
 		}
 	}
