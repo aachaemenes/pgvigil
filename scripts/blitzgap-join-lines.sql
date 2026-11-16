@@ -14,3 +14,8 @@
 --    b. one more part, after the last: each user database's owner against the expected owner (sa unless a scope names
 --       another; 'off' off; 'info' when it differs, so no finding row; 'not applicable' when the SID maps to no login) -
 --       as in scripts/blitzgap-join-draft-config.sql's 'line 3b'
+
+-- 4. (docs, the join note as 72's) rel-b20's docs/sqlserver-checks.md 'sp_Blitz weekly' section says 'pgvigil has no rule for
+--    19, 21, 26, 55, 72, 77, 148 and 149': once rel-blitzgap is joined, that sentence keeps 72 only, and the seven are named
+--    where pgvigil judges them - 19 / 21 / 77 the Checks tab's database options, 55 the configuration checks' 'database
+--    owner', 26 / 148 / 149 the Storage tab.
