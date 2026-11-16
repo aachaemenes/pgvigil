@@ -9,7 +9,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { alertCol } from './alerts';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { sqlCell, whatIsThis } from './sqlview';
-import { investigateCol, investigations } from './investigate';
+import { investigateCol, investigateNote, investigations } from './investigate';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
@@ -138,6 +138,7 @@ export async function findingsView(instance?: number, keep?: (r: Row) => boolean
   if (keep) rows = rows.filter(keep);
   const noRead = !!instance && rowsOf(cfg?.state).length === 0;
   const crit = rows.filter(r => r.severity === 'critical').length, warn = rows.filter(r => r.severity === 'warning').length;
+  const invNote = inv ? investigateNote(inv) : null;
   const cols: Col[] = [
     { key: 'severity', fmt: sevBadge },
     ...(instance ? [] : [{ key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') } as Col, { key: 'platform' } as Col]),
@@ -148,10 +149,11 @@ export async function findingsView(instance?: number, keep?: (r: Row) => boolean
     { key: 'platforms', label: 'applies to' },
     { key: 'source' },
     alertCol,
-    ...(inv ? [investigateCol(inv)] : []),
+    ...(inv ? [investigateCol(inv, invNote)] : []),
   ];
   return el('section', {}, el('h2', {}, 'Findings'),
     el('p', { class: 'meta' }, `${crit} critical, ${warn} warning, ${rows.length - crit - warn} advice. Parameters off their recommended range for the platform, from the latest settings read.`),
+    ...(invNote ? [invNote] : []),
     grid(rows, cols, noRead ? 'No settings read for this instance yet: the instance collection runs hourly.' : 'No findings: every checked parameter is in its recommended range.'));
 }
 

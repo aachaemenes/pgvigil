@@ -7,7 +7,9 @@ question about the fleet, and lets the people on serve's pages read what it foun
 1. A person presses **Investigate** beside a finding (the Findings page, the fleet's or an instance's), with an optional
    note for the agent, or types a question into the **Ask** box on the **Investigations** page. pgvigil stores a
    request; for a finding, the repository keeps the finding as the page showed it at that moment, read by the
-   repository itself, never a copy the browser sends.
+   repository itself, never a copy the browser sends: the row the person pressed it on (a setting can hold rows for
+   several objects, one per database), named by its value with its numbers aside, so an age that grew since the page
+   drew still names it. Earlier reports of that row, not of its setting, ride in the brief.
 2. The site's agent runs `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_agent`. It lists or waits for open
    requests, **claims** one (the first claim wins; the claim holds a 15-minute lease the agent renews), reads with the
    read tools of [mcp.md](mcp.md) and with `run_select` (one read-only SELECT at a time), and **reports**: a verdict,
@@ -98,7 +100,10 @@ Every request keeps a record people read on its page: asked, claimed, renewed, r
 expired, closed and Run, each with who, when, rows, milliseconds and outcome. A `run_select` writes its row **before**
 it runs - no record, no run - and its outcome after. The statements and the reasons are kept apart from the record (a
 table only serve's UI login reads), so Grafana or a plain reader login sees that a SELECT ran, never its text. A request
-keeps 200 rows at most: the call that would add one more is refused, "the request's record is full". **The record
+keeps 200 rows at most: the agent's calls (claim, renew, run_select) and Run stop at 195, "the request's record is full",
+so the request's end (a lapse, the report, a release, a close, the expiry) always has room. A refused or failed
+run's outcome in the record is the word `refused` or `failed`; the server's words, which can quote the statement, are
+kept with the statement's text. **The record
 covers the door**: the same login can read the same tables through psql with no record; what bounds the login's reads is
 the rule above, not the record.
 
@@ -106,8 +111,8 @@ the rule above, not the record.
 
 - **open** until claimed; it **expires** 4 hours after it was asked unless it was reported.
 - **claimed**: the first claim wins; the lease is 15 minutes. A lapsed lease reads **open** again at once (a waiting
-  agent is woken) - an investigation only reads, so another claim is safe - and after its third claim a lapse reads
-  **expired**. A claim id read by another login is worth nothing: renew, report, release and run_select check that the
+  agent is woken) - an investigation only reads, so another claim is safe - and after its third claim a lapse, or a
+  release, reads **expired**. A claim id read by another login is worth nothing: renew, report, release and run_select check that the
   session user is the login that claimed and that the id's hash matches.
 - **reported** by the agent; **closed** by a person (Close, with a reason in the record).
 - Limits: 10 open or claimed requests per user, 20 an hour and 100 a day per repository (counted under one lock, so
@@ -170,6 +175,8 @@ The brief carries these, and an agent's own instructions should too (adapted fro
   statement timeout: the call's connection closes after it), `pg_notify`, `pg_cancel_backend` / `pg_terminate_backend`
   against the same login's own sessions, and one huge value the server builds whole before any cap (`repeat('x',
   500000000)`). An agent's model reads texts the monitored servers wrote: keep the agent's own tools to pgvigil's.
+  Run reads as the reports login with the same caps (1,000 rows or 4 MB, cells cut at 256 KB after the read), and
+  one huge value the server builds whole reaches serve's process before any cap.
 - The masks are collection's: the query_text policy and the credential mask run on the collector's rows before they are
   stored, so the read tools, the brief and `run_select` read the text as stored. A text imported outside the collector's
   pass (the DBA Dash import) is as that import stored it. The password scrub of [mcp.md](mcp.md) is a pattern over

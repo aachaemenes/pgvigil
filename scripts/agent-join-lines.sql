@@ -22,9 +22,9 @@
 --    (requests that ended more than 90 days after they were asked; an open or claimed one never; the journal and the
 --    texts go with them through ON DELETE CASCADE).
 --
--- 3. CQ's request queue (rel-cq, 0200-0209), when it joins: a queue-mode serve writes the requests through
+-- 3. The request queue (migrations 0200-0209), when it joins: a queue-mode serve writes the requests through
 --    pgvigil_requester, so grant it the two serve functions:
 --      GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_request(timestamptz, jsonb),
 --        pgvigil.import_investigation_event(timestamptz, jsonb) TO pgvigil_requester;
---    and the ask's Run stays off in queue mode, as custom reports are (customReportsOff): the WIRING line in
+--    and the ask's Run stays off in queue mode, as custom reports are (customReportsOff): the header of
 --    internal/web/q_investigate.go names it.

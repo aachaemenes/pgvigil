@@ -94,7 +94,7 @@ import { adminInstancesView } from './admin_instances';
 import { adminApplicationsView } from './applications';
 import { reportPages } from './reports';
 import { customReportsView } from './customreports';
-import { investigationsView } from './investigate';
+import { agentsOn, investigationsView } from './investigate';
 import { communityView } from './community';
 import { instanceFrame } from './instheader';
 
@@ -451,6 +451,8 @@ async function render(force = false) {
   // the Azure Summary (B2a) in the root strip only where the fleet holds an Azure SQL Database (DBA Dash shows it under
   // its Azure node); the page stays one of the root's (a link, the tree)
   if (!ctx.instance && !(await fleet().catch(() => null))?.instances.some(r => r.platform === 'azuresqldb')) offStrip.add('azuresummary');
+  // the Investigations tab only where the agent door is on (agents.enabled; read once per page load)
+  if (!ctx.instance && !(await agentsOn())) offStrip.add('investigations');
   const pages = ctx.instance ? (isMssql(engine) ? mssqlPages : instancePages) : rootPages;
   // a page of the other engine (an old link, a tree click from another instance) opens this instance's Summary
   if (ctx.instance && !pages[ctx.tab]) {

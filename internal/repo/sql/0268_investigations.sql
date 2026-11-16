@@ -33,8 +33,10 @@
 --   refuses it ('is not a member of pgvigil_agent'); secdef_reader_test.go lists the seven with that reason.
 -- Limits (a request): 10 open or claimed per user; 20 an hour and 100 a day per repository, counted under one
 -- transaction lock so concurrent asks cannot pass them. A request expires 4 hours after it was asked unless reported; a
--- lease is 15 minutes, renewed up to the expiry; a request is claimed 3 times at most. Kept 90 days after it ended
--- (investigations_purge; open and claimed never), the journal and the texts with it.
+-- lease is 15 minutes, renewed up to the expiry; a request is claimed 3 times at most. One that ended is
+-- kept 90 days after it was asked (investigations_purge; open and claimed never), the journal and the texts with it.
+-- A request's record holds 200 rows: the agent's calls and Run stop at 195, so its end (a lapse, the report, a
+-- release, a close, the expiry) always has room.
 -- Every time is the repository's clock (now()); NOTIFY pgvigil_investigation <id> on a new request and on a lapsed claim
 -- reopened, so a waiting agent wakes.
 
@@ -53,6 +55,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.investigations (
   instance_id    int REFERENCES pgvigil.instances(instance_id) ON DELETE SET NULL,
   instance_name  text,
   setting        text CHECK (length(setting) <= 200),
+  -- the finding's row the person pressed Investigate on: a setting can hold rows for several objects (one per database)
+  finding_value  text CHECK (length(finding_value) <= 2000),
+  finding_source text CHECK (length(finding_source) <= 200),
+  finding_key    text,          -- pgvigil.alert_finding_key of that row (its numbers aside): earlier reports are keyed on it
   severity       text,
   asked_by       text NOT NULL,
   client         text CHECK (length(client) <= 200),
@@ -72,7 +78,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.investigations (
 );
 CREATE INDEX IF NOT EXISTS investigations_live ON pgvigil.investigations (id) WHERE state IN ('open', 'claimed');
 CREATE INDEX IF NOT EXISTS investigations_asked ON pgvigil.investigations (asked_at);
-CREATE INDEX IF NOT EXISTS investigations_finding ON pgvigil.investigations (instance_id, setting) WHERE kind = 'finding';
+CREATE INDEX IF NOT EXISTS investigations_finding ON pgvigil.investigations (finding_key) WHERE kind = 'finding';
 
 CREATE TABLE IF NOT EXISTS pgvigil.ui_investigation_data (
   investigation_id bigint PRIMARY KEY REFERENCES pgvigil.investigations(id) ON DELETE CASCADE,
@@ -103,7 +109,10 @@ CREATE INDEX IF NOT EXISTS investigation_journal_req ON pgvigil.investigation_jo
 
 CREATE TABLE IF NOT EXISTS pgvigil.ui_investigation_journal_text (
   journal_id  bigint PRIMARY KEY REFERENCES pgvigil.investigation_journal(id) ON DELETE CASCADE,
-  text        text NOT NULL CHECK (length(text) <= 20000)
+  text        text CHECK (length(text) <= 20000),
+  -- a refused or failed run's server words: they can quote the statement (a literal, an identifier), so they are kept
+  -- here with it, never in the journal's outcome every reader reads
+  detail      text CHECK (length(detail) <= 2000)
 );
 
 -- the effective state, one expression for the view and the functions
@@ -113,6 +122,8 @@ RETURNS text LANGUAGE sql STABLE AS $$
            WHEN p_state IN ('reported', 'closed', 'expired') THEN p_state
            WHEN now() >= p_expires THEN 'expired'
            WHEN p_state = 'claimed' AND (p_lease IS NULL OR p_lease <= now()) THEN CASE WHEN p_claims >= 3 THEN 'expired' ELSE 'open' END
+           WHEN p_state = 'open' AND p_claims >= 3 THEN 'expired'
+
            ELSE p_state
          END
 $$;
@@ -122,24 +133,37 @@ SELECT i.id, i.kind, i.instance_id, i.instance_name, i.setting, i.severity, i.as
        pgvigil.investigation_state_now(i.state, i.expires_at, i.lease_until, i.claims) AS state, i.state AS stored_state,
        CASE WHEN pgvigil.investigation_state_now(i.state, i.expires_at, i.lease_until, i.claims) = 'claimed' THEN i.claimed_by END AS claimed_by,
        CASE WHEN pgvigil.investigation_state_now(i.state, i.expires_at, i.lease_until, i.claims) = 'claimed' THEN i.lease_until END AS lease_until,
-       i.claims, i.reported_at, i.verdict, i.closed_by, i.closed_at
+       i.claims, i.reported_at, i.verdict, i.closed_by, i.closed_at, i.finding_value, i.finding_source, i.finding_key,
+       i.claimed_by AS last_agent
   FROM pgvigil.investigations i;
 
--- investigation_journal_add: one journal row (and its text), or NULL when the request's record holds 200 rows
+-- investigation_outcome: an outcome 'refused: <words>' or 'failed: <words>' split into its word (the journal's, every
+-- reader's) and the words (the ui_ text table's: a server's words can quote the statement)
+CREATE OR REPLACE FUNCTION pgvigil.investigation_outcome(p_outcome text, OUT word text, OUT detail text)
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN p_outcome ~ '^(refused|failed): ' THEN split_part(p_outcome, ':', 1) ELSE left(p_outcome, 500) END,
+         CASE WHEN p_outcome ~ '^(refused|failed): ' THEN left(substr(p_outcome, strpos(p_outcome, ':') + 2), 2000) END
+$$;
+
+-- investigation_journal_add: one journal row (and its text), or NULL when the request's record is full: 195 rows for
+-- the calls (claimed, renewed, select, run), 200 for the rest, so a request can always end
 CREATE OR REPLACE FUNCTION pgvigil.investigation_journal_add(p_id bigint, p_event text, p_login text, p_outcome text,
                                                              p_text text DEFAULT NULL, p_rows bigint DEFAULT NULL, p_ms int DEFAULT NULL)
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
   v_j bigint;
+  o   record;
 BEGIN
-  IF (SELECT count(*) FROM pgvigil.investigation_journal WHERE investigation_id = p_id) >= 200 THEN
+  IF (SELECT count(*) FROM pgvigil.investigation_journal WHERE investigation_id = p_id)
+     >= CASE WHEN p_event IN ('claimed', 'renewed', 'select', 'run') THEN 195 ELSE 200 END THEN
     RETURN NULL;
   END IF;
+  SELECT * INTO o FROM pgvigil.investigation_outcome(p_outcome);
   INSERT INTO pgvigil.investigation_journal (investigation_id, at, event, login, rows, ms, outcome)
-  VALUES (p_id, now(), p_event, p_login, p_rows, p_ms, left(p_outcome, 500))
+  VALUES (p_id, now(), p_event, p_login, p_rows, p_ms, o.word)
   RETURNING id INTO v_j;
-  IF p_text IS NOT NULL THEN
-    INSERT INTO pgvigil.ui_investigation_journal_text (journal_id, text) VALUES (v_j, left(p_text, 20000));
+  IF p_text IS NOT NULL OR o.detail IS NOT NULL THEN
+    INSERT INTO pgvigil.ui_investigation_journal_text (journal_id, text, detail) VALUES (v_j, left(p_text, 20000), o.detail);
   END IF;
   RETURN v_j;
 END $$;
@@ -168,7 +192,7 @@ BEGIN
       PERFORM pg_notify('pgvigil_investigation', r.id::text);
     ELSE
       PERFORM pgvigil.investigation_journal_add(r.id, 'expired', NULL,
-        CASE WHEN now() >= r.expires_at THEN 'past its expiry' ELSE 'the third claim lapsed' END);
+        CASE WHEN now() >= r.expires_at THEN 'past its expiry' WHEN r.state = 'open' THEN 'the third claim ended' ELSE 'the third claim lapsed' END);
     END IF;
     v_n := v_n + 1;
   END LOOP;
@@ -187,6 +211,9 @@ DECLARE
   v_set    text := nullif(btrim(coalesce(p_payload->>'setting', '')), '');
   v_note   text := nullif(btrim(coalesce(p_payload->>'note', '')), '');
   v_q      text := nullif(btrim(coalesce(p_payload->>'question', '')), '');
+  v_val    text := nullif(left(coalesce(p_payload->>'value', ''), 2000), '');
+  v_src    text := nullif(btrim(coalesce(p_payload->>'source', '')), '');
+  v_key    text;
   v_inst   int;
   v_iname  text;
   v_snap   jsonb;
@@ -222,10 +249,16 @@ BEGIN
     v_why := 'this repository took 100 investigations in the last day: try again later';
   END IF;
   IF v_why IS NULL AND v_kind = 'finding' THEN
-    SELECT to_jsonb(f), f.severity INTO v_snap, v_sev
+    -- the row the page showed: named by its value (its numbers aside, as an alert's key: an age that grew since the
+    -- page drew still names it) and source; without them, the most severe row of the setting
+    SELECT to_jsonb(f), f.severity, pgvigil.alert_finding_key(f.instance_id, f.source, f.setting, f.value)
+      INTO v_snap, v_sev, v_key
       FROM pgvigil.findings_alerts f
      WHERE f.instance_id = v_inst AND f.setting = v_set
-     ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END
+       AND (v_src IS NULL OR f.source = v_src)
+       AND (v_val IS NULL OR pgvigil.alert_finding_key(f.instance_id, f.source, f.setting, f.value)
+                             = pgvigil.alert_finding_key(f.instance_id, f.source, f.setting, v_val))
+     ORDER BY (f.value = v_val) DESC NULLS LAST, CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END
      LIMIT 1;
     IF v_snap IS NULL THEN
       v_why := format('no finding %L on %s now', v_set, v_iname);
@@ -236,8 +269,10 @@ BEGIN
   IF v_why IS NOT NULL THEN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', v_why);
   END IF;
-  INSERT INTO pgvigil.investigations (kind, instance_id, instance_name, setting, severity, asked_by, client, asked_at, expires_at)
-  VALUES (v_kind, v_inst, v_iname, CASE WHEN v_kind = 'finding' THEN v_set END, v_sev, v_user, v_client, now(), now() + interval '4 hours')
+  INSERT INTO pgvigil.investigations (kind, instance_id, instance_name, setting, finding_value, finding_source, finding_key, severity,
+                                      asked_by, client, asked_at, expires_at)
+  VALUES (v_kind, v_inst, v_iname, CASE WHEN v_kind = 'finding' THEN v_set END, v_snap->>'value', v_snap->>'source', v_key, v_sev,
+          v_user, v_client, now(), now() + interval '4 hours')
   RETURNING id INTO v_id;
   INSERT INTO pgvigil.ui_investigation_data (investigation_id, snapshot, note, question)
   VALUES (v_id, v_snap, v_note, CASE WHEN v_kind = 'ask' THEN v_q END);
@@ -266,8 +301,10 @@ BEGIN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', 'id is not an investigation id');
   END IF;
   v_id := (p_payload->>'id')::bigint;
+  -- the row locked first, then settled: a settle that skipped a row another session held would leave a stale state
+  PERFORM 1 FROM pgvigil.investigations WHERE id = v_id FOR UPDATE;
   PERFORM pgvigil.investigations_settle(v_id);
-  SELECT i.state, i.kind INTO v_st, v_kind FROM pgvigil.investigations i WHERE i.id = v_id FOR UPDATE;
+  SELECT i.state, i.kind INTO v_st, v_kind FROM pgvigil.investigations i WHERE i.id = v_id;
   IF v_st IS NULL THEN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', format('no investigation %s', v_id));
   END IF;
@@ -289,7 +326,7 @@ BEGIN
              CASE WHEN coalesce(p_payload->>'rows', '') ~ '^[0-9]{1,18}$' THEN (p_payload->>'rows')::bigint END,
              CASE WHEN coalesce(p_payload->>'ms', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'ms')::int END);
     IF v_j IS NULL THEN
-      RETURN jsonb_build_object('outcome', 'refused', 'detail', 'the request''s record is full (200 rows): the rows are withheld');
+      RETURN jsonb_build_object('outcome', 'refused', 'detail', 'the request''s record is full (195 rows for calls and runs; the last 5 are kept for its end): the rows are withheld');
     END IF;
     RETURN jsonb_build_object('outcome', 'done', 'detail', 'run', 'id', v_id);
   END IF;
@@ -305,7 +342,8 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
            'report', CASE WHEN n.reported_at IS NOT NULL THEN jsonb_build_object('verdict', n.verdict, 'reported_at', n.reported_at,
                        'summary', d.summary, 'body', d.body, 'evidence', d.evidence, 'queries_run', d.queries_run, 'sql', d.sql) END,
            'journal', coalesce((SELECT jsonb_agg(jsonb_build_object('id', j.id, 'at', j.at, 'event', j.event, 'login', j.login,
-                                                                    'rows', j.rows, 'ms', j.ms, 'outcome', j.outcome, 'text', t.text) ORDER BY j.id)
+                                                                    'rows', j.rows, 'ms', j.ms, 'outcome', j.outcome, 'text', t.text,
+                                                                    'detail', t.detail) ORDER BY j.id)
                                   FROM pgvigil.investigation_journal j
                                   LEFT JOIN pgvigil.ui_investigation_journal_text t ON t.journal_id = j.id
                                  WHERE j.investigation_id = n.id), '[]'::jsonb))
@@ -345,8 +383,11 @@ RETURNS pgvigil.investigations LANGUAGE plpgsql AS $$
 DECLARE
   r pgvigil.investigations;
 BEGIN
+  -- locked first, then settled: the settle skips a row another session holds, and a lapse read from the stored state
+  -- would pass
+  PERFORM 1 FROM pgvigil.investigations WHERE id = p_id FOR UPDATE;
   PERFORM pgvigil.investigations_settle(p_id);
-  SELECT * INTO r FROM pgvigil.investigations WHERE id = p_id FOR UPDATE;
+  SELECT * INTO r FROM pgvigil.investigations WHERE id = p_id;
   IF r.id IS NULL THEN
     RAISE EXCEPTION 'no investigation %', p_id USING ERRCODE = '22023';
   END IF;
@@ -390,8 +431,9 @@ DECLARE
   v_name text := left(nullif(btrim(coalesce(p_agent, '')), ''), 100);
 BEGIN
   PERFORM pgvigil.agent_login_check();
+  PERFORM 1 FROM pgvigil.investigations WHERE id = p_id FOR UPDATE;   -- locked first, then settled (agent_claim_row)
   PERFORM pgvigil.investigations_settle(p_id);
-  SELECT * INTO r FROM pgvigil.investigations WHERE id = p_id FOR UPDATE;
+  SELECT * INTO r FROM pgvigil.investigations WHERE id = p_id;
   IF r.id IS NULL THEN
     RAISE EXCEPTION 'no investigation %', p_id USING ERRCODE = '22023';
   ELSIF r.state = 'claimed' THEN
@@ -404,7 +446,7 @@ BEGIN
     RAISE EXCEPTION 'investigation % expired (claimed 3 times)', p_id USING ERRCODE = '22023';
   END IF;
   IF pgvigil.investigation_journal_add(p_id, 'claimed', session_user::text, coalesce(v_name, '')) IS NULL THEN
-    RAISE EXCEPTION 'the request''s record is full (200 rows): investigation % takes no more calls', p_id USING ERRCODE = '54000';
+    RAISE EXCEPTION 'the request''s record is full (195 rows for calls; the last 5 are kept for its end): investigation % takes no more calls - report or release it', p_id USING ERRCODE = '54000';
   END IF;
   v_cid := replace(gen_random_uuid()::text, '-', '');
   UPDATE pgvigil.investigations
@@ -417,13 +459,13 @@ BEGIN
   RETURN jsonb_build_object(
     'claim_id', v_cid, 'lease_until', r.lease_until, 'expires_at', r.expires_at,
     'request', jsonb_build_object('id', r.id, 'kind', r.kind, 'instance_id', r.instance_id, 'instance', r.instance_name,
-                                  'setting', r.setting, 'severity', r.severity, 'asked_by', r.asked_by, 'asked_at', r.asked_at,
+                                  'setting', r.setting, 'value', r.finding_value, 'severity', r.severity, 'asked_by', r.asked_by, 'asked_at', r.asked_at,
                                   'snapshot', d.snapshot, 'note', d.note, 'question', d.question),
     'earlier_reports', coalesce((
       SELECT jsonb_agg(x ORDER BY x.reported_at DESC) FROM (
         SELECT e.id, e.verdict, left(ed.summary, 500) AS summary, e.reported_at, true AS unreviewed
           FROM pgvigil.investigations e JOIN pgvigil.ui_investigation_data ed ON ed.investigation_id = e.id
-         WHERE r.kind = 'finding' AND e.kind = 'finding' AND e.instance_id = r.instance_id AND e.setting = r.setting
+         WHERE r.kind = 'finding' AND e.kind = 'finding' AND e.finding_key = r.finding_key
            AND e.id <> r.id AND e.reported_at IS NOT NULL
          ORDER BY e.reported_at DESC LIMIT 5) x), '[]'::jsonb));
 END $$;
@@ -439,7 +481,7 @@ BEGIN
     RAISE EXCEPTION 'investigation % expired', p_id USING ERRCODE = '22023';
   END IF;
   IF pgvigil.investigation_journal_add(p_id, 'renewed', session_user::text, 'renewed') IS NULL THEN
-    RAISE EXCEPTION 'the request''s record is full (200 rows): investigation % takes no more calls', p_id USING ERRCODE = '54000';
+    RAISE EXCEPTION 'the request''s record is full (195 rows for calls; the last 5 are kept for its end): investigation % takes no more calls - report or release it', p_id USING ERRCODE = '54000';
   END IF;
   UPDATE pgvigil.investigations SET lease_until = least(now() + interval '15 minutes', expires_at) WHERE id = p_id RETURNING * INTO r;
   RETURN jsonb_build_object('id', p_id, 'lease_until', r.lease_until, 'expires_at', r.expires_at);
@@ -456,9 +498,15 @@ BEGIN
                                        nullif(left(btrim(coalesce(p_reason, '')), 1000), '')) IS NULL THEN
     RAISE EXCEPTION 'the request''s record is full (200 rows): investigation % takes no more calls', p_id USING ERRCODE = '54000';
   END IF;
-  UPDATE pgvigil.investigations SET state = 'open', lease_until = NULL, claim_hash = NULL WHERE id = p_id;
-  PERFORM pg_notify('pgvigil_investigation', p_id::text);
-  RETURN jsonb_build_object('id', p_id, 'state', 'open');
+  -- the third claim given back: the request expires (a fourth claim is refused), else it opens again and wakes a wait
+  UPDATE pgvigil.investigations SET state = CASE WHEN claims >= 3 THEN 'expired' ELSE 'open' END, lease_until = NULL, claim_hash = NULL
+   WHERE id = p_id RETURNING * INTO r;
+  IF r.state = 'open' THEN
+    PERFORM pg_notify('pgvigil_investigation', p_id::text);
+  ELSE
+    PERFORM pgvigil.investigation_journal_add(p_id, 'expired', NULL, 'the third claim ended');
+  END IF;
+  RETURN jsonb_build_object('id', p_id, 'state', r.state);
 END $$;
 
 -- the report: a finding's verdict real | false_positive | needs_person, an ask's answered (or needs_person: no answer);
@@ -519,7 +567,7 @@ BEGIN
   r := pgvigil.agent_claim_row(p_id, p_claim);
   v_j := pgvigil.investigation_journal_add(p_id, 'select', session_user::text, 'running', coalesce(p_sql, ''));
   IF v_j IS NULL THEN
-    RAISE EXCEPTION 'the request''s record is full (200 rows): investigation % takes no more calls', p_id USING ERRCODE = '54000';
+    RAISE EXCEPTION 'the request''s record is full (195 rows for calls; the last 5 are kept for its end): investigation % takes no more calls - report or release it', p_id USING ERRCODE = '54000';
   END IF;
   RETURN v_j;
 END $$;
@@ -529,8 +577,12 @@ RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pgvigil, pg_cat
 BEGIN
   PERFORM pgvigil.agent_login_check();
   UPDATE pgvigil.investigation_journal
-     SET rows = p_rows, ms = p_ms, outcome = left(coalesce(p_outcome, 'done'), 500)
+     SET rows = p_rows, ms = p_ms, outcome = (pgvigil.investigation_outcome(coalesce(p_outcome, 'done'))).word
    WHERE id = p_journal AND event = 'select' AND outcome = 'running' AND login = session_user::text;
+  IF FOUND THEN
+    UPDATE pgvigil.ui_investigation_journal_text SET detail = (pgvigil.investigation_outcome(p_outcome)).detail
+     WHERE journal_id = p_journal;
+  END IF;
 END $$;
 
 GRANT EXECUTE ON FUNCTION pgvigil.agent_investigation_list(text, text, int), pgvigil.agent_investigation_claim(bigint, text),

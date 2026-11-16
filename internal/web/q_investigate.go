@@ -27,7 +27,7 @@ import (
 //
 // Off unless the config's agents.enabled: the four answer 404 with agentsOff. The writes ride the acknowledgements'
 // path: the UI login's session user, the X-Pgvigil header, the actions door's audit login, one import function that
-// writes the row and its journal line. WIRING (CQ's request queue, when it joins): a queue-mode serve writes through
+// writes the row and its journal line. With the request queue (migrations 0200-0209): a queue-mode serve writes through
 // pgvigil_requester (scripts/agent-join-lines.sql 3) and keeps Run off, as customReportsOff keeps custom reports off.
 
 // agentsOff is the words of the door when the config leaves it off (docs/agents.md quotes them).
@@ -74,13 +74,20 @@ func (s *Server) runOff(ctx context.Context) string {
 	return s.reports.state(ctx)
 }
 
+// listMax is the most requests the list answers (the newest), said when cut.
+const listMax = 500
+
+// sqlInvestigations: the newest requests, each with its finding's row (value, source) or its question's start, and the
+// agent that last claimed it (kept after the report: the view's claimed_by says only who holds it now).
 const sqlInvestigations = `
-SELECT n.id, n.kind, n.instance_id, n.instance_name AS instance, n.setting, n.severity, n.state, n.asked_by, n.asked_at,
-       n.expires_at, n.claimed_by, n.lease_until, n.claims, n.verdict, n.reported_at, n.closed_by, n.closed_at
+SELECT n.id, n.kind, n.instance_id, n.instance_name AS instance, n.setting, n.finding_value AS value, n.finding_source AS source,
+       left(d.question, 200) AS question, n.severity, n.state, n.asked_by, n.asked_at, n.expires_at, n.claimed_by,
+       n.last_agent AS agent, n.lease_until, n.claims, n.verdict, n.reported_at, n.closed_by, n.closed_at
   FROM pgvigil.investigations_now n
+  LEFT JOIN pgvigil.ui_investigation_data d ON d.investigation_id = n.id
  WHERE ($1::text IS NULL OR n.state = $1) AND ($2::int IS NULL OR n.instance_id = $2)
  ORDER BY n.id DESC
- LIMIT 500`
+ LIMIT 501`
 
 // Investigations is GET /api/investigations: the list (?state=, ?instance=), or ?id= one request with its texts.
 func (s *Server) Investigations(w http.ResponseWriter, r *http.Request) {
@@ -90,10 +97,6 @@ func (s *Server) Investigations(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	q := r.URL.Query()
-	run := map[string]any{"enabled": true, "said": ""}
-	if why := s.runOff(ctx); why != "" {
-		run = map[string]any{"enabled": false, "said": why}
-	}
 	if v := q.Get("id"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || id <= 0 {
@@ -118,7 +121,13 @@ func (s *Server) Investigations(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		// Run's check (the reports login, cached a minute) only here: the list, read on every findings page, never waits on it
+		run := map[string]any{"enabled": true, "said": ""}
+		if why := s.runOff(ctx); why != "" {
+			run = map[string]any{"enabled": false, "said": why}
+		}
 		out["enabled"], out["run"] = true, run
+		out["writable"], out["said"] = s.investigationOff() == "", s.investigationOff()
 		writeJSONNoStore(w, http.StatusOK, out)
 		return
 	}
@@ -154,7 +163,11 @@ func (s *Server) Investigations(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []map[string]any{}
 	}
-	writeJSONNoStore(w, http.StatusOK, map[string]any{"enabled": true, "rows": list, "run": run,
+	cut := len(list) > listMax
+	if cut {
+		list = list[:listMax]
+	}
+	writeJSONNoStore(w, http.StatusOK, map[string]any{"enabled": true, "rows": list, "cut": cut,
 		"writable": s.investigationOff() == "", "said": s.investigationOff()})
 }
 
@@ -239,6 +252,8 @@ func (s *Server) InvestigationAsk(w http.ResponseWriter, r *http.Request) {
 		Kind       string `json:"kind"`
 		InstanceID int    `json:"instance_id"`
 		Setting    string `json:"setting"`
+		Value      string `json:"value"`
+		Source     string `json:"source"`
 		Note       string `json:"note"`
 		Question   string `json:"question"`
 	}
@@ -249,7 +264,7 @@ func (s *Server) InvestigationAsk(w http.ResponseWriter, r *http.Request) {
 	if in.InstanceID > 0 {
 		pay["instance_id"] = in.InstanceID
 	}
-	for k, v := range map[string]string{"setting": in.Setting, "note": in.Note, "question": in.Question} {
+	for k, v := range map[string]string{"setting": in.Setting, "value": in.Value, "source": in.Source, "note": in.Note, "question": in.Question} {
 		if v != "" {
 			pay[k] = v
 		}
@@ -336,7 +351,7 @@ func (s *Server) InvestigationRun(w http.ResponseWriter, r *http.Request) {
 	case rerr != nil:
 		outcome = "failed: " + rerr.Error()
 	case res.Cut:
-		outcome = fmt.Sprintf("done (cut at %d rows)", runRows)
+		outcome = fmt.Sprintf("done (cut at %d rows or 4 MB)", runRows)
 	}
 	o, d, _, aerr := s.investigationImport(r, seat, "import_investigation_event", map[string]any{"op": "run", "id": in.ID, "ui_user": seat.user,
 		"rows": len(res.Rows), "ms": ms, "outcome": outcome, "sql": *sql})
