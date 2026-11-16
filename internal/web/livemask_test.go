@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/cq"
 )
@@ -126,5 +127,34 @@ func TestMaskAuditRow(t *testing.T) {
 	maskAudit(bare)
 	if _, ok := bare["detail"]; ok {
 		t.Fatalf("a detail was added: %v", bare)
+	}
+}
+
+// review N9: the direct reply's mask runs after a run that may have used its whole budget (serve's write timeout 75 s
+// = runBudget 62 s + auditBudget 8 s + 5 s): the mask over a 24 MB reply (maxRunBytes) of plan XML - the costliest
+// cells, MaskXML - must fit the 5 s left. A timing row: the time and the rate are logged either way.
+func TestMaskRunTimeOnABigReply(t *testing.T) {
+	var op strings.Builder
+	for i := range 400 {
+		op.WriteString(`<RelOp NodeId="`)
+		op.WriteString(strings.Repeat("9", 1+i%4))
+		op.WriteString(`" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="1" EstimatedTotalSubtreeCost="0.0032831"><OutputList><ColumnReference Database="[db]" Schema="[dbo]" Table="[t]" Column="c"/></OutputList><IndexScan Ordered="1"><SeekPredicates><ScalarOperator ScalarString="[db].[dbo].[t].[c]=N'abc'"/></SeekPredicates></IndexScan></RelOp>`)
+	}
+	plan := `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.6"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT c FROM dbo.t WHERE c = N'abc' /* ` + lmCmd + ` */"><QueryPlan>` + op.String() + `</QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`
+	rows := make([][]any, 0, 24<<20/len(plan)+1)
+	for size := 0; size < 24<<20; size += len(plan) + 200 {
+		rows = append(rows, []any{int64(len(rows)), "SELECT c FROM dbo.t /* " + lmCmd + " */", plan})
+	}
+	run := instanceRun{Instance: "i1", Engine: "sqlserver", Outcome: "done", Sets: []resultSet{{Columns: []string{"n", "query_text", "query_plan"}, Rows: rows}}}
+	t0 := time.Now()
+	maskRun(&run)
+	took := time.Since(t0)
+	mb := float64(len(rows)*(len(plan)+200)) / (1 << 20)
+	t.Logf("maskRun over %d rows, about %.1f MB of plan XML and text: %s (%.1f MB/s)", len(rows), mb, took.Round(time.Millisecond), mb/took.Seconds())
+	if s, _ := run.Sets[0].Rows[0][2].(string); strings.Contains(s, lmPW) || strings.Contains(run.Sets[0].Rows[0][1].(string), lmPW) {
+		t.Fatalf("the big reply still holds the password")
+	}
+	if took > 5*time.Second {
+		t.Fatalf("maskRun took %s over a 24 MB reply: over the 5 s serve's write timeout leaves after a full run and its audit", took)
 	}
 }

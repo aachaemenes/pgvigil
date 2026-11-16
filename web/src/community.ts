@@ -326,7 +326,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
       try {
         const q = await post<Queued>('community/run?help=1', { instance_id: instance, tool: t.id, database: d.database ?? '' });
         const e = await waitRequest(q, hs);
-        if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal || e.outcome || e.state));   // '' is stored for words a state lacks
+        if (e.state !== 'done') hb.replaceChildren(errorBox(e.refusal || e.outcome || e.state));   // '' in a row written before CQ-LIVEMASK
         else {
           hb.replaceChildren(...(e.result?.sets ?? []).flatMap((s, i) => [el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)]));
           // the procedure's own words per parameter, into the form's 'what it does' column (direct mode fills it at once)
