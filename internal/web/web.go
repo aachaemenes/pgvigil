@@ -831,6 +831,7 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		Summary    *table     `json:"summary"`
 		Sessions   *table     `json:"sessions"`
 		Chains     *table     `json:"chains"`
+		OwnHidden  *table     `json:"own_hidden"` // B24 OWN: how many sessions the default hid (own=1 shows them)
 	}{SnapshotAt: snap}
 	if snap == nil {
 		s.reply(w, r, out, nil)
@@ -840,7 +841,12 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	if out.Sessions, err = s.query(ctx, sqlSessions, id, *snap); err != nil {
+	own := r.URL.Query().Get("own") == "1" // pgvigil's own sessions shown (B24 OWN; hidden by default)
+	if out.Sessions, err = s.query(ctx, sqlSessionsOwn, id, *snap, own); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	if out.OwnHidden, err = s.query(ctx, sqlSessionsOwnHidden, id, *snap, own); err != nil {
 		s.reply(w, r, nil, err)
 		return
 	}

@@ -108,3 +108,13 @@ Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](s
 ## Sources
 
 The snapshot's shape is ported from DBA Dash's `SQLRunningQueries.sql` (MIT, Copyright 2022 Trimble, Inc.). The list of idle background waits is the rows marked ignorable in sp_BlitzFirst's wait categories (SQL Server First Responder Kit, MIT, Copyright (c) 2022 Brent Ozar Unlimited). The wait categories are sp_PressureDetector's wait list (DarlingData, MIT, Copyright (c) 2021 Darling Data, LLC). sp_WhoIsActive is called, never copied.
+
+## pgvigil's own sessions (hidden by default)
+
+The Running queries and Waiting tasks reads leave out pgvigil's own sessions unless you ask for them (own=1; the page's
+'Show pgvigil's own sessions' switch), and say how many they left out. The collector decides 'own' on the server itself:
+a session whose program name is the collector's own (or starts with `pgvigil`) AND whose login is the collector's login;
+the actions door's sessions (`pgvigil-actions*`) are never own. A session that blocks or is blocked, runs a request or a
+transaction over 60 seconds, sits idle in a transaction over 60 seconds, or holds a memory grant or tempdb over 100 MB is
+shown even when it is pgvigil's own. A session another tool opens under the monitor's login with pgvigil's app name - or
+an admin's DSN that names that app name - is pgvigil's by this rule and is hidden by default too.
