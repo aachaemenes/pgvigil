@@ -513,11 +513,19 @@ for (const s of storageScopes.slice(2)) {
 // chip (its x back to the range before the zoom), on an instance of each engine
 const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
 // the own-page finder (in the page): a SQL Server Summary's status text of check KEY (Memory dumps, DB Mail) inside a
-// box (the header's reasons, the verdict card's reasons, the Not OK line), found by its data-group and marked
-// data-cc-own for the click; null when the box holds no text of KEY
+// box (the header's reasons, the verdict card's reasons, the Not OK line), marked data-cc-own for the click: the
+// header's '+n more' opened first (a reason past the first six is on the page too), then the text by its data-group
+// ('group'), else a text of the box that names the check by its words and sits under no data-group ('words': it lost
+// its data-group, so no row here and no twin rule of the walk can find it - the row FAILs it); null when the box holds
+// no text of KEY. The words are the product's: the header's column label, the verdict line's phrase (verdict.ts), the
+// Not OK name (fleet.ts mssql[2])
+const ownWords = { dumps: '^(memory dumps?\\b|the server wrote memory dumps)', dbmail: '^(db mail\\b|database mail\\b|the server cannot send mail)' };
 const ownFind = (box, key) => `(() => { document.querySelectorAll('[data-cc-own]').forEach(e => e.removeAttribute('data-cc-own'));
+  const more = [...document.querySelectorAll('main .inst-reason button')].find(b => /^[+]\\d+ more$/.test(b.textContent.trim())); if (more) more.click();
   const mark = (x, how) => { x.setAttribute('data-cc-own', '1'); const a = x.matches('a[href]') ? x : x.querySelector('a[href]'); return { how, link: !!a, text: x.textContent.trim().slice(0, 50) }; };
   for (const b of document.querySelectorAll(${JSON.stringify(box)})) { const x = b.querySelector(${JSON.stringify(`[data-group="${key}"]`)}); if (x) return mark(x, 'group'); }
+  const w = new RegExp(${JSON.stringify(ownWords[key])}, 'i');
+  for (const b of document.querySelectorAll(${JSON.stringify(box)})) for (const x of b.querySelectorAll('a, span, li')) if (!x.closest('[data-group]') && w.test(x.textContent.trim())) return mark(x, 'words');
   return null; })()`;
 // the finder's planted self-test: three texts of Memory dumps that lost their data-group (wanted 'words': the row
 // FAILs them), other words and another check's key in the same box (wanted null: not seen), a text with its
@@ -581,6 +589,7 @@ let ownTested = false;
     if (eng === 'sqlserver') for (const [where, box] of [['header reason', 'main .inst-reason'], ['verdict reason', 'main .verdict-reasons'], ['Not OK name', 'main p.counts']]) for (const key of ['dumps', 'dbmail']) {
       const was = await ev('location.hash');
       const f = await ev(ownFind(box, key));
+      if (f?.how === 'words') { pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, `'${f.text}' has no data-group`, false, "a status text of this check that lost its data-group: no own-page row and no twin rule can find it"); continue; }
       const got = !f ? null : !f.link ? { link: false, text: f.text } : await ev(`(async () => { const x = document.querySelector('[data-cc-own]');
         const a = x.matches('a[href]') ? x : x.querySelector('a[href]');
         window.scrollTo(0, 0); a.click();
