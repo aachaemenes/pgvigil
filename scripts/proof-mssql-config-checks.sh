@@ -717,16 +717,21 @@ eqv "C7 the key 'database owner' (sp_Blitz 55) is in the expected values' list" 
 sqv "C7 setup: a database owned by sa and one owned by $OWN" "CREATE DATABASE pgv_own_sa; CREATE DATABASE pgv_own_x; ALTER AUTHORIZATION ON DATABASE::pgv_own_x TO [$OWN];"
 # msdb's owner can change (master, model, tempdb and distribution refuse: 15109 - Proof-Box probe 11-16 07:59)
 sqv "C7 setup: msdb owned by $OWN" "ALTER AUTHORIZATION ON DATABASE::msdb TO [$OWN];"
+sqv "C7 setup: a database named DBAdmin owned by $OWN" "CREATE DATABASE [DBAdmin]; ALTER AUTHORIZATION ON DATABASE::[DBAdmin] TO [$OWN];"
 collect mssql_checks || bad "C7: collect mssql_checks"
 eqv "C7 the default (sa): the database owned by $OWN is info, sa's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa ok, pgv_own_x info"
 eqv "C7 its words" "$(det 'database owner' pgv_own_x)" "the owner is $OWN; the expected owner is sa (the default)"
 # sp_Blitz 8.35 (20261114) L3831: master, model, msdb and tempdb against the original sa always (FOLD-55 b2)
 eqv "C7 the system databases against the original sa: master ok, msdb owned by $OWN info" "$(st 'database owner' master), $(st 'database owner' msdb)" "master ok, msdb info"
 eqv "C7 ... msdb's words" "$(det 'database owner' msdb)" "the owner is $OWN; the expected owner is sa (a system database: always the original sa)"
+# sp_Blitz 8.35 L590-596: dbatools, dbadmin, dbmaintenance, gcloud_cloudsqladmin and rdsadmin are left out of every check,
+# 55 too (L3834-3836), by the name in any case (review-25 S1)
+eqv "C7 sp_Blitz's own five names left out: DBAdmin owned by $OWN has no row" "$(st 'database owner' DBAdmin)" "no row"
 eqv "C7 info makes no finding row" "$(pq "SELECT count(*) FROM pgvigil.mssql_config_check_findings WHERE instance_id = $IID AND check_name = 'database owner'")" 0
 eqv "C7 the expected owner set to $OWN on the instance" "$(exi "\"kind\":\"database\",\"key\":\"owner\",\"value\":\"$OWN\"")" done
 eqv "C7 ... then sa's database is info and $OWN's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa info, pgv_own_x ok"
 eqv "C7 ... a system database stays against sa: msdb info, master ok" "$(st 'database owner' msdb), $(st 'database owner' master)" "msdb info, master ok"
+eqv "C7 ... its row says the default, never the instance's scope" "$(pq "SELECT set_at FROM pgvigil.mssql_config_checks_of($IID) WHERE check_name = 'database owner' AND object = 'master'")" "default"
 eqv "C7 set OFF (any case): every row off" "$(exi '"kind":"database","key":"owner","value":"OFF"') $(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "done pgv_own_sa off, pgv_own_x off"
 eqv "C7 ... the system databases' rows too" "$(st 'database owner' msdb), $(st 'database owner' master)" "msdb off, master off"
 eqv "C7 back to the default" "$(exn '"kind":"database","key":"owner"') $(st 'database owner' pgv_own_x)" "done pgv_own_x info"
@@ -740,7 +745,18 @@ eqv "C7 Managed Instance: no row before its databases are read" "$(st 'database 
 pq "INSERT INTO pgvigil.mssql_database_option (instance_id, database_name, database_id, state, is_system, options, snapshot_at) VALUES ($MI55, 'pgv_mi_db', 5, 'ONLINE', false, '{\"owner\": \"pgv_mi_admin\"}', now()), ($MI55, 'msdb', 4, 'ONLINE', true, '{\"owner\": \"pgv_mi_admin\"}', now())" >/dev/null || bad "C7: the Managed Instance's written database rows"
 eqv "C7 ... nor with a user and a system database owned by its admin" "$(st 'database owner' '' "$MI55")" "no row"
 pq "DELETE FROM pgvigil.instances WHERE instance_id = $MI55" >/dev/null
+# a renamed sa before the security read has run (review-25 S2): master's own owner stands for the original sa (master's
+# owner cannot change: 15109), never the literal 'sa'; once read, the security read's original sa is the one expected
+# (review-25 N1); written rows - renaming sa live would cut this proof's own sa connection
+REN=$(mkinst "ren$SUF" sqlserver)
+pq "INSERT INTO pgvigil.mssql_database_option (instance_id, database_name, database_id, state, is_system, options, snapshot_at) VALUES ($REN, 'master', 1, 'ONLINE', true, '{\"owner\": \"pgv_sa_ren\"}', now()), ($REN, 'msdb', 4, 'ONLINE', true, '{\"owner\": \"pgv_sa_ren\"}', now()), ($REN, 'pgv_ren_db', 5, 'ONLINE', false, '{\"owner\": \"pgv_sa_ren\"}', now())" >/dev/null || bad "C7: the renamed sa's written database rows"
+eqv "C7 a renamed sa, its security read not run: master's owner stands for the original sa" "$(st 'database owner' '' "$REN")" "master ok, msdb ok, pgv_ren_db ok"
+eqv "C7 ... master's words" "$(det 'database owner' master "$REN")" "owned by pgv_sa_ren, as expected (a system database: always the original sa)"
+pq "INSERT INTO pgvigil.mssql_security_logins (instance_id, login_name, is_original_sa, snapshot_at) VALUES ($REN, 'pgv_sa_0x01', true, now())" >/dev/null || bad "C7: the renamed sa's written original sa"
+eqv "C7 ... once read, the security read's original sa is the one expected" "$(st 'database owner' master "$REN") / $(det 'database owner' master "$REN")" "master info / the owner is pgv_sa_ren; the expected owner is pgv_sa_0x01 (a system database: always the original sa)"
+pq "DELETE FROM pgvigil.instances WHERE instance_id = $REN" >/dev/null
 sqv "C7 undo: msdb back to sa" "ALTER AUTHORIZATION ON DATABASE::msdb TO sa;"
+sqv "C7 undo: DBAdmin" "DROP DATABASE [DBAdmin];"
 sqv "C7 undo" "DROP DATABASE pgv_own_sa; DROP DATABASE pgv_own_x;"
 
 # ---- V: the version run ---------------------------------------------------------------------------------------------
