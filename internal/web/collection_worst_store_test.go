@@ -42,9 +42,11 @@ func TestCollectionWorstOnAStore(t *testing.T) {
 	draft := os.Getenv("PGVIGIL_B6G_DRAFT")
 	if draft == "" {
 		// after the join that writes 0300 (and with it scripts/b6g-join-lines.sql's line) the store is read as migrated -
-		// never skipped (the review of B6G-N #2: a join that left the line out would go red here, not pass unseen)
+		// never skipped (the review of B6G-N #2: a join that left the line out would go red here, not pass unseen);
+		// schema_version.version is the migration's file name (text: repo.go), '0300' compared as text - the review of the
+		// fold #1 (an integer 300 was 42883); a join numbered other than 0300 changes this constant (b6g-join-lines.sql)
 		var joined bool
-		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.schema_version WHERE version >= 300)`).Scan(&joined); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.schema_version WHERE version >= '0300')`).Scan(&joined); err != nil {
 			t.Fatal(err)
 		}
 		if !joined {

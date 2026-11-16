@@ -11,3 +11,7 @@
 --                 ELSE '' END
 --    Its words land with it: docs/alerts.md ('One collection') and the rule dialog's help (web/src/alert_rules.ts) say
 --    the detail names the worst collection of the newest hour - rel-b6gn joins in the same join that writes the line.
+
+-- AT THE JOIN: TestCollectionWorstOnAStore reads a store holding a schema_version row of '0300' or later as migrated (no
+-- draft) - so the join file is 0300_..., or the test's '0300' (internal/web/collection_worst_store_test.go) changes with it;
+-- after the join the test runs in the store suite with PGVIGIL_B6G_DRAFT unset and goes red if this line is left out.
