@@ -60,10 +60,13 @@ type outboxBundle struct {
 	dir string
 }
 
-// finished lists the outbox's finished bundles (a folder at a bundle's layout holding its manifest; never a .part
+// finished lists the outbox's finished bundles.
+func (p *Pusher) finished() ([]outboxBundle, error) { return finishedBundles(p.outbox) }
+
+// finishedBundles lists an outbox's finished bundles (a folder at a bundle's layout holding its manifest; never a .part
 // folder), by instance and seq.
-func (p *Pusher) finished() ([]outboxBundle, error) {
-	dirs, err := filepath.Glob(filepath.Join(p.outbox, "*", "*", "*", "*", "*"))
+func finishedBundles(outbox string) ([]outboxBundle, error) {
+	dirs, err := filepath.Glob(filepath.Join(outbox, "*", "*", "*", "*", "*"))
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +76,7 @@ func (p *Pusher) finished() ([]outboxBundle, error) {
 		if err != nil || !fi.IsDir() || strings.HasSuffix(d, format.PartExt) {
 			continue
 		}
-		rel, err := filepath.Rel(p.outbox, d)
+		rel, err := filepath.Rel(outbox, d)
 		if err != nil {
 			continue
 		}
