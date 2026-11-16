@@ -769,7 +769,9 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autova
 -- The collection counters chartable and alertable, as DBA Dash's: per collection (the sub-series slot 'database' carries
 -- the collection; the instance's series is the worst collection each hour: the B6g-4 fold, the lead's 14:5x (a) #6 - a
 -- rule naming no collection watches that series, so its run may pass from one collection to another hour by hour, and
--- its alert names no collection - an alert that names its collection is a rule per collection (the lead's 15:3x (b));
+-- its alert's detail names the worst collection of its newest hour (B6G-N: collection_worst below, read by
+-- alert_rule_findings' line in scripts/b6g-join-lines.sql from the next join) - an alert of its own for each collection
+-- is a rule per collection (the lead's 15:3x (b));
 -- a 'below' rule must name one, the worst being the highest), from the hour rows (one
 -- point an hour, stamped at the hour's END so two points are exactly 60 minutes apart and an hourly collection's
 -- 60-minute rule never turns on a few ms of ticker jitter: #2 - so a failure at 10:17 is 'beyond since 11:00', and a
@@ -796,6 +798,35 @@ SELECT x.family || '.' || x.metric, x.engine, x.family, x.family_label, x.family
   END IF;
 END $do$;
 
+-- collection_metric_values (B6G-N): the Collection family's per-collection values of an instance, hour by hour, from the
+-- hour rows whose points (stamped at the hour's END) fall in (p_from, p_to] - p_database: one collection, NULL = every
+-- one; every collector summed. The ONE copy of the family's formulas: metric_points' series and collection_worst's name
+-- both read it. duration over the runs that ran (ok, partial, failed), CPU and logical reads over the runs that read
+-- their session (SQL Server's), the import over the runs that attempted one, failed per cent of the runs that ran.
+CREATE OR REPLACE FUNCTION pgvigil.collection_metric_values(p_instance_id int, p_from timestamptz, p_to timestamptz,
+                                                            p_database text DEFAULT NULL)
+RETURNS TABLE (hour timestamptz, collection text, metric text, value double precision)
+LANGUAGE sql STABLE AS $$
+  WITH h AS (
+    SELECT h.hour, h.collection,
+           sum(h.dur_ms_sum) AS dur, sum(h.ok + h.partial + h.failed) AS ran, sum(h.failed) AS failed,
+           sum(h.cpu_ms_sum) AS cpu, sum(h.cpu_runs) AS cpu_runs, sum(h.reads_sum) AS reads,
+           sum(h.import_ms_sum) AS imp, sum(h.import_runs) AS imp_runs
+      FROM pgvigil.collection_health_hour h
+     WHERE h.instance_id = p_instance_id AND (p_database IS NULL OR h.collection = p_database)
+       AND h.hour > p_from - interval '1 hour' AND h.hour <= p_to - interval '1 hour'
+     GROUP BY h.hour, h.collection
+  )
+  SELECT h.hour, h.collection, v.metric, v.value
+    FROM h CROSS JOIN LATERAL (VALUES
+      ('duration_ms', (h.dur::numeric / nullif(h.ran, 0))::double precision),
+      ('cpu_ms', (h.cpu::numeric / nullif(h.cpu_runs, 0))::double precision),
+      ('logical_reads', (h.reads::numeric / nullif(h.cpu_runs, 0))::double precision),
+      ('import_ms', (h.imp::numeric / nullif(h.imp_runs, 0))::double precision),
+      ('failed_pct', (100.0 * h.failed / nullif(h.ran, 0))::double precision)) AS v(metric, value)
+   WHERE v.value IS NOT NULL
+$$;
+
 -- metric_points: 0085's function is renamed once (metric_points_0085, a re-apply leaves it) and wrapped: the 'collection'
 -- family read here, every other family as 0085 reads it. Only functions call metric_points (metric_grid,
 -- alert_rule_eval: by name at run time), so none is left on the old one.
@@ -814,29 +845,27 @@ BEGIN
     -- p_database: one collection's series; NULL = the instance's: each hour's worst collection, per metric (every
     -- metric of the family is worse higher). Each point stamped at its hour's end: an open hour has no point yet.
     RETURN QUERY
-    WITH h AS (
-      SELECT h.hour, h.collection,
-             sum(h.dur_ms_sum) AS dur, sum(h.ok + h.partial + h.failed) AS ran, sum(h.failed) AS failed,
-             sum(h.cpu_ms_sum) AS cpu, sum(h.cpu_runs) AS cpu_runs, sum(h.reads_sum) AS reads,
-             sum(h.import_ms_sum) AS imp, sum(h.import_runs) AS imp_runs
-        FROM pgvigil.collection_health_hour h
-       WHERE h.instance_id = p_instance_id AND (p_database IS NULL OR h.collection = p_database)
-         AND h.hour > p_from - interval '1 hour' AND h.hour <= p_to - interval '1 hour'
-       GROUP BY h.hour, h.collection
-    )
-    SELECT h.hour + interval '1 hour', v.metric, max(v.value)
-      FROM h CROSS JOIN LATERAL (VALUES
-        ('duration_ms', (h.dur::numeric / nullif(h.ran, 0))::double precision),
-        ('cpu_ms', (h.cpu::numeric / nullif(h.cpu_runs, 0))::double precision),
-        ('logical_reads', (h.reads::numeric / nullif(h.cpu_runs, 0))::double precision),
-        ('import_ms', (h.imp::numeric / nullif(h.imp_runs, 0))::double precision),
-        ('failed_pct', (100.0 * h.failed / nullif(h.ran, 0))::double precision)) AS v(metric, value)
-     WHERE v.value IS NOT NULL
-     GROUP BY h.hour, v.metric;
+    SELECT v.hour + interval '1 hour', v.metric, max(v.value)
+      FROM pgvigil.collection_metric_values(p_instance_id, p_from, p_to, p_database) v
+     GROUP BY v.hour, v.metric;
   ELSE
     RETURN QUERY SELECT x.at, x.metric, x.value FROM pgvigil.metric_points_0085(p_instance_id, p_family, p_from, p_to, p_lookback, p_database) x;
   END IF;
 END $$;
+
+-- collection_worst (B6G-N, the lead's 15:3x: 'an alert that names nothing sends the DBA hunting'): the collection whose
+-- value of p_metric (the family's metric: 'failed_pct', not 'collection.failed_pct') is the highest in the hour whose
+-- point is stamped p_at - the hour ending at p_at, as the instance's series picks it; a tie goes to the first by name;
+-- NULL when no row of that hour reads the metric. A rule naming no collection names it in its alert's detail
+-- (alert_rule_findings' line, scripts/b6g-join-lines.sql: 0085's view, re-created whole at the next join).
+CREATE OR REPLACE FUNCTION pgvigil.collection_worst(p_instance_id int, p_metric text, p_at timestamptz)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT v.collection
+    FROM pgvigil.collection_metric_values(p_instance_id, p_at - interval '1 hour', p_at) v
+   WHERE v.metric = p_metric AND v.hour = p_at - interval '1 hour'
+   ORDER BY v.value DESC, v.collection
+   LIMIT 1
+$$;
 
 -- The Collection family's 60-minute floor in the store too (the B6g-4 fold #8): RulePayload refuses a shorter window in
 -- words; a call of import_alert_rule past the API meets this check, which the function's own 'refused by the store'

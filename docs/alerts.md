@@ -369,8 +369,9 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
   never one database by itself.
 - **One collection.** A metric of the *Collection* family ([metrics.md](metrics.md)) can name a collection in the
   same place. Naming none, the rule watches **the worst collection** each hour - its run may pass from one collection
-  to another hour by hour, and its alert names no collection (the Metrics page's Collection family shows which; for an
-  alert that names its collection, write a rule per collection). The
+  to another hour by hour, and its alert stays one alert while it does: its detail names **the worst collection of its
+  newest hour** (the Metrics page's Collection family shows the rest; for an alert of its own for each collection, write a
+  rule per collection). The
   family's points are hourly, stamped at the hour's end, so its rules take 60 minutes or more, a failure at 10:17 is
   'beyond since 11:00', and a **below** rule names its collection (with none it would read the highest).
 - **When it fires.** The alert sender judges every rule in force once a pass, on the samples the collector already
