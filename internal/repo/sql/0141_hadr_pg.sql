@@ -997,7 +997,8 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
 -- 0103's Summary rows and findings again (its section 4, every arm kept): the 'log shipping' arm leaves out a standby with
 -- primary_conninfo set, and the 'replication' check group carries pg_hadr_checks (to pgvigil.findings through
 -- pg_backups_findings, so the alert sender sends them; the Summary shows them through replication_checks); the findings'
--- platforms column says 'aurora' for 'Aurora replica lag' (every other row keeps 0103's 'self-managed').
+-- platforms column says 'aurora' for 'Aurora replica lag' and 'all' for a logical sender's 'replay lag' (0118's
+-- word for it); every other row keeps 0103's 'self-managed'.
 CREATE OR REPLACE VIEW pgvigil.pg_backups_checks AS
 SELECT b.instance_id, 'critical' AS severity, b.tool || ' read failing' AS check_name, b.name AS object, b.read_at AS at,
        coalesce(b.status_message, b.message, b.state) AS detail, 'base backups' AS check_group

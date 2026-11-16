@@ -28,9 +28,10 @@
 --     needed, kept as a bound); mssql_repl_hourly (0142) loses the hours past a year of an instance no import
 --     reaches (a live instance's are trimmed by its import); purge()'s last block calls
 --     pgvigil.replication_hourly_purge() (0150) beside 0139's. No line, on purpose: mssql_logship_foreign_logs and
---     mssql_logship_errors (current rows of 24 hours) and mssql_logship_idle, each replaced by every read of its
---     instance (0143 L604-627); replication_hourly_dirty (working ranges a heal removes). The threshold keys' unit
---     check and import_pg_threshold: at their lines below.
+--     mssql_logship_errors (current rows of 24 hours) and mssql_logship_idle, each replaced by every newest read
+--     of its instance whose part did not fail (0143 L602-627: a read older than the state, or a failed part, leaves
+--     the rows); replication_hourly_dirty (working ranges a heal removes). The threshold keys' unit check and
+--     import_pg_threshold: at their lines below.
 --   HA join, 376 (0144): the pg_patroni_findings arm of the findings view (0144 L19-20 leaves it to this file).
 --   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
 --     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
