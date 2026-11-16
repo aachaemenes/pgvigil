@@ -512,6 +512,27 @@ for (const s of storageScopes.slice(2)) {
 // buttons, a day and its drills (each to its page over that UTC day), Show as table, and the Performance page's zoom
 // chip (its x back to the range before the zoom), on an instance of each engine
 const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
+// the own-page finder (in the page): a SQL Server Summary's status text of check KEY (Memory dumps, DB Mail) inside a
+// box (the header's reasons, the verdict card's reasons, the Not OK line), found by its data-group and marked
+// data-cc-own for the click; null when the box holds no text of KEY
+const ownFind = (box, key) => `(() => { document.querySelectorAll('[data-cc-own]').forEach(e => e.removeAttribute('data-cc-own'));
+  const mark = (x, how) => { x.setAttribute('data-cc-own', '1'); const a = x.matches('a[href]') ? x : x.querySelector('a[href]'); return { how, link: !!a, text: x.textContent.trim().slice(0, 50) }; };
+  for (const b of document.querySelectorAll(${JSON.stringify(box)})) { const x = b.querySelector(${JSON.stringify(`[data-group="${key}"]`)}); if (x) return mark(x, 'group'); }
+  return null; })()`;
+// the finder's planted self-test: three texts of Memory dumps that lost their data-group (wanted 'words': the row
+// FAILs them), other words and another check's key in the same box (wanted null: not seen), a text with its
+// data-group (wanted 'group'); planted in a box of its own under main, removed after
+const ownPlant = `(() => { const d = document.createElement('div'); d.id = 'ccp'; d.innerHTML =
+  '<div class="ccp-h"><span class="reason-text">Memory Dump 3 files warning</span>, <a class="cell-link" data-group="backuplog" href="#/backups">Backup LOG 1 warning</a></div>'
+  + '<ul class="ccp-v"><li class="warn"><span class="verdict-text">the server wrote memory dumps (3 files warning)</span></li></ul>'
+  + '<p class="ccp-n"><span class="warn">Memory dumps 3 files warning</span></p>'
+  + '<p class="ccp-x"><span class="warn">Backup LOG 1 warning</span></p>'
+  + '<p class="ccp-g"><a class="warn" data-group="dumps" href="#/summary">Memory dumps 3 files warning</a></p>';
+  document.querySelector('main').append(d); return true; })()`;
+const ownPlants = [['planted header text', '#ccp .ccp-h', 'dumps', 'words'], ['planted verdict text', '#ccp .ccp-v', 'dumps', 'words'],
+  ['planted Not OK text', '#ccp .ccp-n', 'dumps', 'words'], ['planted other words', '#ccp .ccp-x', 'dumps', null],
+  ['planted other check', '#ccp .ccp-h', 'dbmail', null], ['planted with its group', '#ccp .ccp-g', 'dumps', 'group']];
+let ownTested = false;
 {
   if (await go('#/summary')) {
     const sb = await ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(pg.name)});
@@ -547,11 +568,21 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     pm(`${eng} ${inst.name}`, 'breadcrumb dot', eng, String(dot), ['OK', 'Warning', 'Critical', 'Offline'].includes(dot), 'the band dot before the name in the breadcrumb, named by its word');
     // the own-page status texts: a SQL Server Summary's Memory dumps / DB Mail reason - in the
     // header, the verdict card and the Not OK line - is a link that jumps to its Server card row, the address unchanged
-    if (eng === 'sqlserver') for (const [where, sel] of [['header reason', 'main .inst-reason [data-group="KEY"]'], ['verdict reason', 'main .verdict-reasons li[data-group="KEY"]'], ['Not OK name', 'main p.counts [data-group="KEY"]']]) for (const key of ['dumps', 'dbmail']) {
-      const q = sel.replace('KEY', key);
+    if (eng === 'sqlserver' && !ownTested) {
+      ownTested = true;
+      await ev(ownPlant);
+      const said = [];
+      for (const [name, box, key, want] of ownPlants) { const f = await ev(ownFind(box, key)); said.push([name, f ? f.how : null, want]); }
+      await ev(`document.getElementById('ccp')?.remove(); document.querySelectorAll('[data-cc-own]').forEach(e => e.removeAttribute('data-cc-own'))`);
+      const asWanted = said.filter(([, got, want]) => got === want).length;
+      pm(`${eng} ${inst.name}`, 'own-page self-test', eng, `${said.map(([n, got, want]) => `${n} -> ${got ?? 'not seen'}${got === want ? '' : ' (wanted ' + (want ?? 'not seen') + ')'}`).join(', ')} | ${asWanted} of ${ownPlants.length} as wanted`,
+        asWanted === ownPlants.length, 'the own-page finder over planted texts: a text that lost its data-group is found by its words and FAILs, other words and checks are not seen, a data-group is found');
+    }
+    if (eng === 'sqlserver') for (const [where, box] of [['header reason', 'main .inst-reason'], ['verdict reason', 'main .verdict-reasons'], ['Not OK name', 'main p.counts']]) for (const key of ['dumps', 'dbmail']) {
       const was = await ev('location.hash');
-      const got = await ev(`(async () => { const x = document.querySelector(${JSON.stringify(q)}); if (!x) return null;
-        const a = x.matches('a[href]') ? x : x.querySelector('a[href]'); if (!a) return { link: false, text: x.textContent.trim().slice(0, 50) };
+      const f = await ev(ownFind(box, key));
+      const got = !f ? null : !f.link ? { link: false, text: f.text } : await ev(`(async () => { const x = document.querySelector('[data-cc-own]');
+        const a = x.matches('a[href]') ? x : x.querySelector('a[href]');
         window.scrollTo(0, 0); a.click();
         for (let i = 0; i < 20 && document.activeElement?.getAttribute('data-row') !== ${JSON.stringify(key)}; i++) await new Promise(r => setTimeout(r, 150));
         const r = document.querySelector('main [data-row="${key}"]'), b = r?.getBoundingClientRect();
