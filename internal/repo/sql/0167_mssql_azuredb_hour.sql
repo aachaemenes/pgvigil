@@ -333,8 +333,11 @@ BEGIN
     SELECT c.relname
       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
      WHERE i.inhparent = 'pgvigil.mssql_azuredb_hour'::regclass
-       AND c.relname ~ '_[0-9]{6}$'
-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
+       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions in any order, and a
+       -- child named after an OID past 100,000 (six digits, no month) failed the purge with 22008 (N4-P10's fix in 0190)
+       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
+       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
      ORDER BY c.relname
   LOOP
     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);

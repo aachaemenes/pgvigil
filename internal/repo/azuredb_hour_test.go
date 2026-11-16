@@ -446,9 +446,23 @@ SELECT CASE WHEN h.instance_id IS NULL THEN 'no hour row'
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.mssql_azuredb_hour_partition($1)`, old); err != nil {
 		t.Fatal(err)
 	}
+	// a child whose name ends in six digits that are no month (a table named after an OID past 100,000, N4-P10's
+	// shape): purge reads no month from it and leaves it - never 22008 from parsing '_100017' as 1000-17
+	oddPart := fmt.Sprintf("mssql_azuredb_hour_odd_%d", 100017)
+	if _, err := pool.Exec(ctx, `CREATE TABLE pgvigil.`+oddPart+` PARTITION OF pgvigil.mssql_azuredb_hour FOR VALUES FROM ('2201-01-01 00:00+00') TO ('2201-02-01 00:00+00')`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS pgvigil.`+oddPart); err != nil {
+			t.Error(err)
+		}
+	}()
 	var dropped []string
 	if err := pool.QueryRow(ctx, `SELECT pgvigil.mssql_azuredb_hour_purge()`).Scan(&dropped); err != nil {
-		t.Fatal(err)
+		t.Fatalf("purge with a child named %s (six digits, no month): %v", oddPart, err)
+	}
+	if slices.Contains(dropped, oddPart) {
+		t.Errorf("purge dropped %s: a name ending in no month", oddPart)
 	}
 	if !slices.Contains(dropped, "mssql_azuredb_hour_"+old.Format("200601")) {
 		t.Errorf("purge dropped %v, want the month over 730 days old among them", dropped)
