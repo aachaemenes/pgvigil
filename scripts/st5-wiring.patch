@@ -1,8 +1,8 @@
 diff --git c/cmd/pgvigil/main.go i/cmd/pgvigil/main.go
-index cc3be83..e82eda2 100644
+index 408adc83..f5329402 100644
 --- c/cmd/pgvigil/main.go
 +++ i/cmd/pgvigil/main.go
-@@ -268,12 +268,12 @@ func checkCollectionNames(cfg *config.Config) error {
+@@ -292,12 +292,12 @@ func checkCollectionNames(cfg *config.Config) error {
  	for _, in := range cfg.Instances {
  		// an instance names only its own engine's collections
  		check := func(where, n string) error {
@@ -22,7 +22,7 @@ index cc3be83..e82eda2 100644
  			return nil
  		}
 diff --git c/cmd/pgvigil/mcp.go i/cmd/pgvigil/mcp.go
-index 458f158..f4aa553 100644
+index 458f1586..f4aa5534 100644
 --- c/cmd/pgvigil/mcp.go
 +++ i/cmd/pgvigil/mcp.go
 @@ -46,10 +46,11 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
@@ -50,19 +50,19 @@ index 458f158..f4aa553 100644
  	return mcp.New(srv.Handler(), version, secret).Serve(ctx, os.Stdin, os.Stdout)
  }
 diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
-index 493c261..15ce6dc 100644
+index 0ffa3e9f..c30e1842 100644
 --- c/cmd/pgvigil/serve.go
 +++ i/cmd/pgvigil/serve.go
-@@ -204,6 +204,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+@@ -247,6 +247,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
  	go srv.RunInstanceSync(ctx)
  	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
  	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
 +	// ST5a: Admin > Instances' Settings (serve_settings.go), before the watcher's first set
 +	srv.SetPageSettings(pageSettingsConfig(cfg))
  	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
- 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
- 	go srv.RunReportMail(ctx)
-@@ -247,17 +249,8 @@ func expectedIntervals(cfg *config.Config) web.Expected {
+ 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender); the Daily checks
+ 	// mail's block is applied by the same loop, at its start
+@@ -293,17 +295,8 @@ func expectedIntervals(cfg *config.Config) web.Expected {
  		e.Builtin[c.Name] = int(c.Default / time.Second)
  	}
  	for _, in := range cfg.Instances {
@@ -83,10 +83,10 @@ index 493c261..15ce6dc 100644
  	return e
  }
 diff --git c/docs/configuration.md i/docs/configuration.md
-index f7e3ca7..ba161dc 100644
+index 017b843e..fd46958a 100644
 --- c/docs/configuration.md
 +++ i/docs/configuration.md
-@@ -112,7 +112,8 @@ instances need nothing here. The rules and the words: [customreports.md](customr
+@@ -134,7 +134,8 @@ file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily che
  Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
  approves or ignores: a SQL Server Central Management Server (its login needs msdb's `ServerGroupReaderRole`), a DBA Dash
  repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
@@ -97,19 +97,19 @@ index f7e3ca7..ba161dc 100644
  checks until it is enabled. An instance enabled, or added (again), while its server is down is reported at its first
  read: 'server unreachable' and a failing collection, as for any instance that cannot be reached; so is an instance of `pgvigil.yaml` whose server has never answered (its row is made at that first read, with the file's engine, platform and tags). Until a read of an added instance connects, Admin > Servers, the fleet list, its Summary card and `pgvigil report` say 'not read yet (added <time>)': beside its name on the fleet list (which shows no last-seen time), in place of a last-seen time elsewhere; its 'history from' (the Diff page) is that first read. Removing a page instance no read ever reached (and `pgvigil import dbadash` never filled) removes its row too, so the name can be added again with the other engine; an instance read once, or imported, keeps its row and its history. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
 diff --git c/internal/config/inventory.go i/internal/config/inventory.go
-index c2d1405..3965991 100644
+index 62325cf7..7a418be0 100644
 --- c/internal/config/inventory.go
 +++ i/internal/config/inventory.go
-@@ -50,6 +50,8 @@ type PageInstance struct {
- 	// door reads them for its words (pagedoor.go), the collector does not
- 	Auth    string
- 	Options string
+@@ -56,6 +56,8 @@ type PageInstance struct {
+ 	// PageCloudRefusal (pagecloud.go)
+ 	AWS   *PageAWS
+ 	Azure *PageAzure
 +	// SettingsRaw is admin_instances.settings (0263, ST5a: its own schedules and query_text); Merge reads it
 +	SettingsRaw []byte
  }
  
  // InventoryReader is the repository's side: the generation alone (cheap, polled) and the list with its generation.
-@@ -101,6 +103,10 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+@@ -115,6 +117,10 @@ func MergeNotes(file []Instance, page []PageInstance, queryText string, root Cou
  				why = err.Error()
  			}
  		}
@@ -120,19 +120,19 @@ index c2d1405..3965991 100644
  		if why != "" {
  			skipped = append(skipped, p.Name+": "+why)
  			continue
-@@ -110,6 +116,7 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
+@@ -124,6 +130,7 @@ func MergeNotes(file []Instance, page []PageInstance, queryText string, root Cou
  			plat = "auto"
  		}
- 		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
+ 		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText, MSSQLCountersRoot: root})
 +		ps.apply(&all[len(all)-1]) // ST5a: its own schedules, off and query_text, as the file's are for its instances
  		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
  		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
  		if p.Engine == EngineSQLServer && p.RunningPlans {
 diff --git c/internal/config/inventory_test.go i/internal/config/inventory_test.go
-index 46bb1ca..4ae7a19 100644
+index cc450fb8..7666226a 100644
 --- c/internal/config/inventory_test.go
 +++ i/internal/config/inventory_test.go
-@@ -553,3 +553,25 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
+@@ -558,3 +558,25 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
  		}
  	}
  }
@@ -147,7 +147,7 @@ index 46bb1ca..4ae7a19 100644
 +		page("p1", `{"schedules": {"statements": 60, "activity": 0}, "query_text": "none"}`),
 +		page("p2", ``),
 +		page("p3", `{"schedules": {"statements": "soon"}}`),
-+	}, "full")
++	}, "full", CounterEdits{})
 +	if len(all) != 2 || len(skipped) != 1 || !strings.HasPrefix(skipped[0], "p3: its settings in Admin > Instances do not parse: ") {
 +		t.Fatalf("merged %d, skipped %v (want p1 and p2; p3 left out with its reason)", len(all), skipped)
 +	}
@@ -158,42 +158,55 @@ index 46bb1ca..4ae7a19 100644
 +		t.Errorf("p2: %+v", all[1])
 +	}
 +}
-diff --git c/internal/repo/repo.go i/internal/repo/repo.go
-index 3b0326d..f6474fa 100644
---- c/internal/repo/repo.go
-+++ i/internal/repo/repo.go
-@@ -233,9 +233,10 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
- }
+diff --git c/internal/config/pagecloud.go i/internal/config/pagecloud.go
+index d5e424e5..49713ffc 100644
+--- c/internal/config/pagecloud.go
++++ i/internal/config/pagecloud.go
+@@ -231,7 +231,8 @@ func pageCloud(p PageInstance, in *Instance) string {
  
- // Inventory is the page's instance list and its generation, read in one statement (0157's admin_inventory(),
--// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
-+// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty),
-+// with each instance's own settings (0263's admin_instance_settings(), ST5a) in the same snapshot.
- func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
--	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans FROM pgvigil.admin_inventory()`)
-+	rows, err := r.pool.Query(ctx, `SELECT i.name, i.engine, i.platform, i.dsn_ref, i.tags, i.disabled, i.auth, i.options, i.generation, i.running_plans, s.settings FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) ORDER BY i.name`)
- 	if err != nil {
- 		return nil, 0, err
- 	}
-@@ -246,13 +247,14 @@ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, err
- 		var name, engine, platform, ref, auth, options *string
+ // InventorySQL is the page's list read by both readers - the collector's (repo.Inventory) and serve's own
+ // (web/doorset.go): one statement, one scan (B24p's fold 5), so a column the store adds reaches both.
+-const InventorySQL = `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans, host, aws, azure FROM pgvigil.admin_inventory()`
++// ST5a (0263): each instance's own settings beside it (admin_instance_settings(), SECURITY DEFINER as admin_inventory())
++const InventorySQL = `SELECT i.name, i.engine, i.platform, i.dsn_ref, i.tags, i.disabled, i.auth, i.options, i.generation, i.running_plans, i.host, i.aws, i.azure, s.settings FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) ORDER BY i.name`
+ 
+ // InventoryRows is what ScanInventory reads (pgx.Rows is one)
+ type InventoryRows interface {
+@@ -250,15 +251,15 @@ func ScanInventory(rows InventoryRows) ([]PageInstance, int64, error) {
+ 		var name, engine, platform, ref, auth, options, host *string
  		var tags []string
  		var disabled, runningPlans *bool
--		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans); err != nil {
-+		var settings []byte
-+		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans, &settings); err != nil {
+-		var aws, azure []byte
+-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans, &host, &aws, &azure); err != nil {
++		var aws, azure, settings []byte
++		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans, &host, &aws, &azure, &settings); err != nil {
  			return nil, 0, err
  		}
  		if name == nil {
  			continue
  		}
--		p := config.PageInstance{Name: *name, Tags: tags}
-+		p := config.PageInstance{Name: *name, Tags: tags, SettingsRaw: settings}
- 		if engine != nil {
- 			p.Engine = *engine
+ 		p := PageInstance{Name: *name, Tags: tags, Engine: deref(engine), Platform: deref(platform), DSNRef: deref(ref),
+-			Auth: deref(auth), Options: deref(options), Host: deref(host)}
++			Auth: deref(auth), Options: deref(options), Host: deref(host), SettingsRaw: settings}
+ 		if disabled != nil {
+ 			p.Disabled = *disabled
  		}
+diff --git c/internal/repo/repo.go i/internal/repo/repo.go
+index 17be68b1..8171f239 100644
+--- c/internal/repo/repo.go
++++ i/internal/repo/repo.go
+@@ -372,7 +372,8 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
+ 
+ // Inventory is the page's instance list and its generation, read in one statement (0193's admin_inventory(),
+ // SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty) and
+-// one scan shared with serve's reader (config.InventorySQL / ScanInventory: B24p's fold 5).
++// one scan shared with serve's reader (config.InventorySQL / ScanInventory: B24p's fold 5), with each instance's own
++// settings (0263's admin_instance_settings(), ST5a) in the same snapshot.
+ func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
+ 	rows, err := r.pool.Query(ctx, config.InventorySQL)
+ 	if err != nil {
 diff --git c/internal/repo/secdef_reader_test.go i/internal/repo/secdef_reader_test.go
-index 6bf663c..ce8fa29 100644
+index 6bf663c7..ce8fa295 100644
 --- c/internal/repo/secdef_reader_test.go
 +++ i/internal/repo/secdef_reader_test.go
 @@ -44,7 +44,10 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
@@ -209,7 +222,7 @@ index 6bf663c..ce8fa29 100644
  	// connection's search_path
  	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 diff --git c/internal/web/doorset.go i/internal/web/doorset.go
-index 6aae0c3..72d1fcb 100644
+index 9ca1edb6..e5509a02 100644
 --- c/internal/web/doorset.go
 +++ i/internal/web/doorset.go
 @@ -46,6 +46,9 @@ type doorSet struct {
@@ -231,7 +244,7 @@ index 6aae0c3..72d1fcb 100644
  )
  
  // unreadWords: an instance this serve cannot place while the page's list is unread
-@@ -191,6 +194,8 @@ type pageDoorsConfig struct {
+@@ -195,6 +198,8 @@ type pageDoorsConfig struct {
  	file      []config.Instance
  	queryText string
  	reads     bool
@@ -240,7 +253,7 @@ index 6aae0c3..72d1fcb 100644
  }
  
  // pageDoors builds the set of one generation: the file's set copied, each open page door added. prev (the set
-@@ -239,6 +244,19 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
+@@ -243,6 +248,19 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
  			}
  		}
  		in, isMerged := merged[name]
@@ -260,7 +273,7 @@ index 6aae0c3..72d1fcb 100644
  		// the row's own refusal before the switch: the switch never opens it, so its words come first
  		switch why := config.PageDoorRefusal(name, p.Engine, p.Auth, p.Options); {
  		case p.Disabled:
-@@ -271,7 +289,6 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
+@@ -275,7 +293,6 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
  				continue
  			}
  		}
@@ -268,48 +281,17 @@ index 6aae0c3..72d1fcb 100644
  		if p.Engine == config.EngineSQLServer {
  			ds.MS[name] = mssql.Door{Monitor: dsn, Page: true}
  		} else {
-@@ -335,7 +352,8 @@ func (p poolInventory) InventoryGeneration(ctx context.Context) (int64, error) {
+@@ -339,6 +356,7 @@ func (p poolInventory) InventoryGeneration(ctx context.Context) (int64, error) {
  }
  
  func (p poolInventory) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
--	rows, err := p.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation FROM pgvigil.admin_inventory()`)
 +	// with the running plans box and its own settings (0263, ST5a): serve's expected intervals follow them
-+	rows, err := p.pool.Query(ctx, `SELECT i.name, i.engine, i.platform, i.dsn_ref, i.tags, i.disabled, i.auth, i.options, i.generation, i.running_plans, s.settings FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) ORDER BY i.name`)
+ 	rows, err := p.pool.Query(ctx, config.InventorySQL) // the collector's statement and scan (B24p's fold 5)
  	if err != nil {
  		return nil, 0, err
- 	}
-@@ -345,14 +363,15 @@ func (p poolInventory) Inventory(ctx context.Context) ([]config.PageInstance, in
- 	for rows.Next() {
- 		var name, engine, platform, ref, auth, options *string
- 		var tags []string
--		var disabled *bool
--		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen); err != nil {
-+		var disabled, runningPlans *bool
-+		var settings []byte
-+		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans, &settings); err != nil {
- 			return nil, 0, err
- 		}
- 		if name == nil {
- 			continue
- 		}
--		pi := config.PageInstance{Name: *name, Tags: tags}
-+		pi := config.PageInstance{Name: *name, Tags: tags, SettingsRaw: settings}
- 		for _, f := range []struct {
- 			to   *string
- 			from *string
-@@ -364,6 +383,9 @@ func (p poolInventory) Inventory(ctx context.Context) ([]config.PageInstance, in
- 		if disabled != nil {
- 			pi.Disabled = *disabled
- 		}
-+		if runningPlans != nil {
-+			pi.RunningPlans = *runningPlans
-+		}
- 		out = append(out, pi)
- 	}
- 	return out, gen, rows.Err()
-@@ -387,6 +409,9 @@ func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.C
- 	wake := make(chan struct{}, 1)
+@@ -370,6 +388,9 @@ func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.C
  	doorWake.Store(s.self(), wake)
+ 	schedCfg.Store(s.self(), cfg) // the Connection Test's list reads the loaded configuration (B24e review 11)
  	c := pageDoorsConfig{file: cfg.Instances, queryText: cfg.QueryText, reads: cfg.Doors.PageInstanceReads}
 +	if ps := s.settingsConfig(); ps != nil {
 +		c.intervals = ps.Intervals
@@ -317,7 +299,7 @@ index 6aae0c3..72d1fcb 100644
  	file := s.fileDoors()
  	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
  	first.Unread, first.PageReads = true, c.reads
-@@ -476,3 +501,25 @@ func (s *Server) doorsAfterGen(gen int64, err error) string {
+@@ -459,3 +480,25 @@ func (s *Server) doorsAfterGen(gen int64, err error) string {
  	}
  	return doorTakesEffect(s.wakeDoors(gen, doorWait), DoorEvery)
  }
@@ -344,7 +326,7 @@ index 6aae0c3..72d1fcb 100644
 +	return e
 +}
 diff --git c/internal/web/doorset_test.go i/internal/web/doorset_test.go
-index 3e9f974..2234632 100644
+index 5e66a783..0296518b 100644
 --- c/internal/web/doorset_test.go
 +++ i/internal/web/doorset_test.go
 @@ -392,3 +392,66 @@ func TestPlanButtonsPageDoor(t *testing.T) {
@@ -415,10 +397,10 @@ index 3e9f974..2234632 100644
 +	}
 +}
 diff --git c/internal/web/q_ack.go i/internal/web/q_ack.go
-index 5bc67aa..7260459 100644
+index b8b2a686..853eff7c 100644
 --- c/internal/web/q_ack.go
 +++ i/internal/web/q_ack.go
-@@ -299,7 +299,7 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
+@@ -297,7 +297,7 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
  		return
  	}
  	now := time.Now()
@@ -428,7 +410,7 @@ index 5bc67aa..7260459 100644
  		s.reply(w, r, nil, err)
  		return
 diff --git c/internal/web/q_collectiondates.go i/internal/web/q_collectiondates.go
-index 5dd86c3..d33047a 100644
+index 5dd86c38..d33047ad 100644
 --- c/internal/web/q_collectiondates.go
 +++ i/internal/web/q_collectiondates.go
 @@ -50,7 +50,7 @@ func (s *Server) CollectionDates(w http.ResponseWriter, r *http.Request) {
@@ -441,10 +423,10 @@ index 5dd86c3..d33047a 100644
  		writeErr(w, http.StatusInternalServerError, err)
  		return
 diff --git c/internal/web/q_frame.go i/internal/web/q_frame.go
-index b9cdd5f..1f4fcd2 100644
+index f0efa48f..a039075a 100644
 --- c/internal/web/q_frame.go
 +++ i/internal/web/q_frame.go
-@@ -30,7 +30,7 @@ const noPermission = `permission denied|must be superuser|must be a member|insuf
+@@ -31,7 +31,7 @@ const noPermission = `permission denied|must be superuser|must be a member|insuf
  
  // FrameStatus is the footer's one row.
  func (s *Server) FrameStatus(w http.ResponseWriter, r *http.Request) {
@@ -454,10 +436,10 @@ index b9cdd5f..1f4fcd2 100644
  		s.reply(w, r, nil, err)
  		return
 diff --git c/internal/web/q_instances_admin.go i/internal/web/q_instances_admin.go
-index ad84c66..3d09d45 100644
+index 58944acb..2b15a233 100644
 --- c/internal/web/q_instances_admin.go
 +++ i/internal/web/q_instances_admin.go
-@@ -263,6 +263,8 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
+@@ -271,6 +271,8 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
  		s.reply(w, r, nil, fmt.Errorf("checks: %w", err))
  		return
  	}
@@ -466,7 +448,7 @@ index ad84c66..3d09d45 100644
  	var gen int64
  	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
  		s.reply(w, r, nil, err)
-@@ -445,6 +447,11 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+@@ -606,6 +608,11 @@ func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user str
  		s.instanceRights(w, r, user, in)
  		return
  	}
@@ -478,20 +460,20 @@ index ad84c66..3d09d45 100644
  	if op == "test" {
  		// ST1 (Check all): an instance of pgvigil.yaml is tested as the file's own dsn (q_instances_checks.go)
  		if s.fileInstanceTest(w, r, user, in) {
-@@ -534,7 +541,7 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
+@@ -736,7 +743,7 @@ func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user str
  			previous = have.Ref
  		}
  	default:
--		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans or test"))
-+		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, settings, rights or test"))
+-		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, cloud_clear or test"))
++		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, settings, rights, cloud_clear or test"))
  		return
  	}
- 	ans, raw, err := s.callImport(ctx, "import_admin_instance", pay)
+ 	var ans importAnswer
 diff --git c/internal/web/q_mssql_summary.go i/internal/web/q_mssql_summary.go
-index 24d2de2..f4550f8 100644
+index 9d93e054..82a4a045 100644
 --- c/internal/web/q_mssql_summary.go
 +++ i/internal/web/q_mssql_summary.go
-@@ -297,7 +297,7 @@ SELECT k.key, k.label, k.unit, k.warn_default, k.crit_default, k.max_value,
+@@ -324,7 +324,7 @@ SELECT k.key, k.label, k.unit, k.warn_default, k.crit_default, k.max_value,
  // database state of the PostgreSQL ones (the Summary column both engines share), the collection ages and errors of
  // every instance and the root's uptime and memory dump thresholds.
  func (s *Server) MSSQLSummary(w http.ResponseWriter, r *http.Request) {
@@ -501,7 +483,7 @@ index 24d2de2..f4550f8 100644
  		s.reply(w, r, nil, err)
  		return
 diff --git c/internal/web/q_retention.go i/internal/web/q_retention.go
-index b6da2fe..ca2a027 100644
+index b6da2fe9..ca2a027d 100644
 --- c/internal/web/q_retention.go
 +++ i/internal/web/q_retention.go
 @@ -406,12 +406,13 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
@@ -534,10 +516,10 @@ index b6da2fe..ca2a027 100644
  		}
  		return nil
 diff --git c/internal/web/web.go i/internal/web/web.go
-index 9e87cd1..373daea 100644
+index 2e6ac3c8..86b2c7be 100644
 --- c/internal/web/web.go
 +++ i/internal/web/web.go
-@@ -672,7 +672,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+@@ -706,7 +706,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
  }
  
  func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
@@ -546,7 +528,7 @@ index 9e87cd1..373daea 100644
  	if err != nil {
  		s.reply(w, r, nil, err)
  		return
-@@ -682,7 +682,7 @@ func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
+@@ -716,7 +716,7 @@ func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
  }
  
  func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -555,7 +537,7 @@ index 9e87cd1..373daea 100644
  	if err != nil {
  		s.reply(w, r, nil, err)
  		return
-@@ -972,10 +972,11 @@ func (s *Server) counters(w http.ResponseWriter, r *http.Request) {
+@@ -1006,10 +1006,11 @@ func (s *Server) counters(w http.ResponseWriter, r *http.Request) {
  // else the collection default). So a cadence set above 15 minutes (schedules: iostats: 30m) keeps
  // its first point in every preset instead of an empty 15-minute chart (review 20a).
  func (s *Server) rateLookback(ctx context.Context, id int, collection string) int {
@@ -570,7 +552,7 @@ index 9e87cd1..373daea 100644
  				secs = v
  			}
 diff --git c/web/src/admin_instances.ts i/web/src/admin_instances.ts
-index d5aab04..340b78f 100644
+index 529f8bb2..0fd1913b 100644
 --- c/web/src/admin_instances.ts
 +++ i/web/src/admin_instances.ts
 @@ -11,6 +11,7 @@ import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet'
@@ -581,24 +563,24 @@ index d5aab04..340b78f 100644
  
  // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
  // described by that sentence (its id), so the reason is words on the page for each of them
-@@ -78,6 +79,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
-   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
+@@ -104,6 +105,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+   };
    // ST1 and ST2: Check all, the last test and last collected cells of both tables, the Rights read (admin_checks.ts)
    const checks = instanceChecks({ send, say, draw: () => draw(), lock: c => lock(c), why });
 +  // ST5a: an instance added here gets its own schedules and query_text (admin_settings.ts)
 +  const settings = instanceSettings({ send, say, draw: () => draw(), lock: c => lock(c), why });
  
+   let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
    async function draw(): Promise<void> {
-     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
-@@ -92,6 +95,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
-     const page = pageAll.filter(inFolder), file = fileAll.filter(inFolder), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
+@@ -120,6 +123,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
      whyNot = d.writable ? '' : String(d.why_not ?? '');
+     cloudNotes = d.cloud_blocks?.notes ?? {};
      checks.set(d);
 +    settings.set(d);
      root.replaceChildren(
        el('h2', {}, 'Instances' + (scoped ? ` - ${tagWords(scoped)}` : '')),
        el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
-@@ -113,6 +117,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -141,6 +145,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
          + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file. '
          + 'The file\'s global schedules: line for mssql_running_plans comes before this box: 0 turns it off for every instance here, and any other value reads every SQL Server instance here, ticked or not.'),
        grid(page, pageCols, 'No instance was added here yet.'),
@@ -606,7 +588,7 @@ index d5aab04..340b78f 100644
        el('h3', {}, 'Instances from pgvigil.yaml'),
        el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
        grid(file, checks.fileCols(), 'pgvigil.yaml lists no instance.'),
-@@ -262,7 +267,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -340,7 +345,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
        const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.disabled ? 'Enable' : 'Disable'} ${n}` }, r.disabled ? 'Enable' : 'Disable');
        toggle.addEventListener('click', () => { void act('admin/instances', { op: r.disabled ? 'enable' : 'disable', name: n }, r.disabled ? `${n} enabled: collected again within 15 seconds.` : `${n} disabled: its collections stop within 15 seconds.`); });
        const rm = removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); });
