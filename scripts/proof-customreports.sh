@@ -961,11 +961,13 @@ console.log(JSON.stringify(out));
 await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
 process.exit(0);
 JS
-  cj=$(timeout 180 node "$WORK/cards.mjs" "$CDP" "$U/" "$WORK/dl" "$COOKIE" "$CREP" "$C3REP" "$CPGREP" "$CMSREP" "${MRID:-}" 2>&1 | tail -1) || ifail "I page: the driver (its exit, or 180 s): ${cj:0:300}"
+  # its own download folder: its workbook of the store report has U's own export's name (the same page, the same minute)
+  mkdir -p "$WORK/dlcards"
+  cj=$(timeout 180 node "$WORK/cards.mjs" "$CDP" "$U/" "$WORK/dlcards" "$COOKIE" "$CREP" "$C3REP" "$CPGREP" "$CMSREP" "${MRID:-}" 2>&1 | tail -1) || ifail "I page: the driver (its exit, or 180 s): ${cj:0:300}"
   echo "$cj" > "$WORK/cards.json"
   while IFS= read -r line; do
     case $line in ok*) echo "$line" ;; FAIL*) ifail "${line#FAIL }" ;; "note "*"NOT PROVEN"*) echo "$line"; NOTPROVEN+=("${line#note }") ;; *) echo "$line" ;; esac
-  done < <(python3 - "$WORK/cards.json" "$WORK/dl" "$CWANT" <<'PY'
+  done < <(python3 - "$WORK/cards.json" "$WORK/dlcards" "$CWANT" <<'PY'
 import json, sys, zipfile, os, html
 try: d = json.load(open(sys.argv[1]))
 except Exception as e: print(f"FAIL I page: the driver's answer is not JSON ({e}): {open(sys.argv[1]).read()[:300]}"); sys.exit(0)
