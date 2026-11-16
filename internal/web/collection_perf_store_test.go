@@ -73,13 +73,13 @@ func TestCollectionPerfOnAStore(t *testing.T) {
 	from, to := h.Add(-time.Hour), h.Add(2*time.Hour)
 	hm := func(d time.Duration) string { return h.Add(d).Format("15:04") }
 	scopeIDs := []int32{s1, p}
-	read := func(id int32, cap int, c string) string {
+	read := func(id int32, limit int, c string) string {
 		t.Helper()
 		rs, err := tx.Query(ctx, `SELECT concat_ws('|', CASE r.instance_id WHEN $7 THEN 's1' WHEN $8 THEN 'p' ELSE 'other' END,
 		           CASE WHEN r.collection = $9 THEN 'c' ELSE r.collection END, to_char(r.at AT TIME ZONE 'UTC', 'HH24:MI'), r.period,
 		           coalesce(r.outcome, '-'), r.runs, r.failed, r.partial, coalesce(r.duration_ms::text, '-'), coalesce(r.max_duration_ms::text, '-'),
 		           coalesce(r.cpu_ms::text, '-'), coalesce(r.logical_reads::text, '-'), coalesce(r.import_ms::text, '-'), r.engine)
-		      FROM (`+sqlCollPerfRows+"\n"+`) r`, from, to, id, scopeIDs, c, cap, s1, p, coll)
+		      FROM (`+sqlCollPerfRows+"\n"+`) r`, from, to, id, scopeIDs, c, limit, s1, p, coll)
 		if err != nil {
 			t.Fatalf("the report's rows: %v", err)
 		}

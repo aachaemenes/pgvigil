@@ -78,8 +78,8 @@ func (d *blobDest) Upload(ctx context.Context, key, local string) error {
 func (d *blobDest) Put(ctx context.Context, key string, body []byte, onlyNew bool) error {
 	var o *azblob.UploadBufferOptions
 	if onlyNew {
-		any := azcore.ETagAny
-		o = &azblob.UploadBufferOptions{AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfNoneMatch: &any}}}
+		etagAny := azcore.ETagAny
+		o = &azblob.UploadBufferOptions{AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfNoneMatch: &etagAny}}}
 	}
 	_, err := d.c.UploadBuffer(ctx, d.container, d.root+key, body, o)
 	if bloberror.HasCode(err, bloberror.BlobAlreadyExists, bloberror.ConditionNotMet) {

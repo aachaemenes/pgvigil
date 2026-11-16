@@ -52,7 +52,7 @@ func (securityCollector) Name() string                   { return Prefix + "secu
 func (securityCollector) DefaultInterval() time.Duration { return time.Hour }
 func (securityCollector) Timeout() time.Duration         { return 3 * time.Minute }
 
-func (securityCollector) Applies(info Info) (bool, string) {
+func (securityCollector) Applies(_ Info) (bool, string) {
 	return true, ""
 }
 
