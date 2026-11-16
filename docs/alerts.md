@@ -440,9 +440,10 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
   with the words "too few batch requests/s to judge (3.2/s, the floor 5/s)": never OK, never a warning, and no
   finding. A rule that was firing and goes under the floor resolves with its normal *resolved* message after the
   destination's clear delay; one that was not firing changes nothing. A read under the floor also breaks the run of
-  samples beyond the value. A rule that flaps across the floor resolves and fires again (one *resolved* and one
-  *firing* message) only when it stays under the floor or judged below its value longer than the destination's clear
-  delay; a dip shorter than the clear delay keeps the alert open and sends nothing. The new firing comes only after
+  samples beyond the value. A rule that flaps across the floor resolves and fires again until it is marked flapping
+  (one *resolved* and one *firing* message) only when it stays under the floor or judged below its value longer than
+  the destination's clear delay; a dip shorter than the clear delay keeps the alert open and sends nothing. The new
+  firing comes only after
   its minutes of judged samples. A bursty server that crosses the floor every few
   minutes may never hold a run long enough to fire: on such a server give the rule fewer minutes (0 to 3), so a
   short run beyond the value is enough.
