@@ -15,7 +15,7 @@ package web
 //     session is read, so a stale cookie never reaches the nil login state.
 //   - The figures: pgvigil.metrics_newest (0196, one set-based statement) in the Metrics grid's units, converted here
 //     to base units by the frozen name table (promNames: one row per metric_catalog key; a key without a row fails
-//     TestPromNamesCoverTheCatalog); gauges only, no explicit timestamps, a stale point left out and the newest sample's
+//     TestPromNamesCoverTheCatalog unless its family is on promNotExported); gauges only, no explicit timestamps, a stale point left out and the newest sample's
 //     time per family given as pgvigil_sample_timestamp_seconds. The database family's instance totals always; each
 //     database's own series with metrics.databases on.
 //   - The body is rendered in the background ahead of expiry (one render at a time), the previous body served while a
@@ -814,7 +814,7 @@ func (s *Server) promNewest(ctx context.Context, b *promBody, insts map[int32]pr
 		}
 		p, ok := byKey[family+"."+metric]
 		if !ok {
-			continue // a key the table does not name: the test fails on it, the endpoint stays up
+			continue // a key the table does not name (a family on promNotExported, or a gap the test fails on): the endpoint stays up
 		}
 		v, ok := promValue(p.unit, value, secs)
 		if !ok {
