@@ -284,11 +284,11 @@ sys.exit(0 if len(g) == 2 and near(g[0], d30) and near(g[1], d7) else 1)
 PY
 done < "$TMPD/p1.want"
 check "P1 findings: F warning, G critical, the Linux file system critical (named by its first directory), nothing else" \
-  "SELECT string_agg(object || ':' || severity, ' ' ORDER BY object) FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $FC AND check_name = 'a volume full within 30 days'" \
+  "SELECT string_agg(object || ':' || severity, ' ' ORDER BY object COLLATE \"C\") FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $FC AND check_name = 'a volume full within 30 days'" \
   '/var/opt/mssql/a_new/:critical F:\:warning G:\:critical'
 check "P1 one row for the three Linux directories, naming all three; its 30-day slope read from every directory (5.0 days, the new one has one day)" \
   "WITH f AS (SELECT * FROM pgvigil.mssql_volume_forecast($FC) WHERE volume LIKE '/%')
-   SELECT (SELECT count(*) FROM f) || ' ' || (SELECT string_agg(x, ', ' ORDER BY x) FROM f, unnest(string_to_array(f.directories, ', ')) x) || ' ' || (SELECT max(days_until_full) FROM f)" \
+   SELECT (SELECT count(*) FROM f) || ' ' || (SELECT string_agg(x, ', ' ORDER BY x COLLATE \"C\") FROM f, unnest(string_to_array(f.directories, ', ')) x) || ' ' || (SELECT max(days_until_full) FROM f)" \
   '1 /var/opt/mssql/a_new/, /var/opt/mssql/data/, /var/opt/mssql/log/ 5.0'
 check "P1 H: the 7-day figure under 30 days, the 30-day one not" \
   "SELECT (days_until_full_7 < 30) || ' ' || (days_until_full IS NULL OR days_until_full >= 30) FROM pgvigil.mssql_volume_forecast($FC) WHERE volume = 'H:\'" 'true true'
@@ -457,8 +457,8 @@ sys.exit(1 if bad else 0)
 PY
   check "$1 P4 'mixed: ROW 1, PAGE 1' on the two-partition table" "SELECT compression FROM pgvigil.mssql_tables WHERE instance_id = $IID AND database_name = 'pgvst' AND table_name = 'pt1'" 'mixed: ROW 1, PAGE 1'
   check "$1 P4 the memory-optimized table's size from its memory" "SELECT table_type || ' ' || (used_kb > 0) FROM pgvigil.mssql_tables WHERE instance_id = $IID AND database_name = 'pgvst' AND table_name = 'mo1'" 'memory-optimized true'
-  [[ $graph == 1 ]] && check "$1 P4 node and edge" "SELECT string_agg(table_name || ':' || graph, ' ' ORDER BY table_name) FROM pgvigil.mssql_tables WHERE instance_id = $IID AND graph IS NOT NULL" 'ed1:edge nd1:node'
-  check "$1 P4 temporal pair" "SELECT string_agg(table_name || ':' || temporal, ' ' ORDER BY table_name) FROM pgvigil.mssql_tables WHERE instance_id = $IID AND temporal IS NOT NULL" 'tv1:system-versioned tv1_history:history table'
+  [[ $graph == 1 ]] && check "$1 P4 node and edge" "SELECT string_agg(table_name || ':' || graph, ' ' ORDER BY table_name COLLATE \"C\") FROM pgvigil.mssql_tables WHERE instance_id = $IID AND graph IS NOT NULL" 'ed1:edge nd1:node'
+  check "$1 P4 temporal pair" "SELECT string_agg(table_name || ':' || temporal, ' ' ORDER BY table_name COLLATE \"C\") FROM pgvigil.mssql_tables WHERE instance_id = $IID AND temporal IS NOT NULL" 'tv1:system-versioned tv1_history:history table'
   check "$1 P4 tempdb and model never read" "SELECT count(*) FROM pgvigil.mssql_tables WHERE instance_id = $IID AND database_name IN ('tempdb', 'model')" 0
   check "$1 P4 tempdb and model have no read marker either" "SELECT count(*) FROM pgvigil.mssql_tables_db_read WHERE instance_id = $IID AND database_name IN ('tempdb', 'model')" 0
   local sx gx
@@ -475,7 +475,7 @@ print(f[1].strip(), kb(f[2]), kb(f[3]), kb(f[4]), kb(f[5]))')
   check "$1 P4 a read with nothing changed stores no sample" "SELECT count(*) FROM pgvigil.mssql_table_sample WHERE instance_id = $IID AND database_name = 'pgvst' AND snapshot_at = '$t2'" 0
   sq "INSERT dbo.h0001 VALUES (1, 'a'); INSERT dbo.h0002 VALUES (1, 'a'); INSERT dbo.rw1 VALUES (1, 'r');" pgvst >/dev/null
   sleep 1; collect mssql_tables; t3=$(pq "SELECT max(read_at) FROM pgvigil.mssql_tables_db_read WHERE instance_id = $IID")
-  check "$1 P4 three tables changed: three samples" "SELECT string_agg(table_name, ' ' ORDER BY table_name) FROM pgvigil.mssql_table_sample WHERE instance_id = $IID AND database_name = 'pgvst' AND snapshot_at = '$t3'" 'h0001 h0002 rw1'
+  check "$1 P4 three tables changed: three samples" "SELECT string_agg(table_name, ' ' ORDER BY table_name COLLATE \"C\") FROM pgvigil.mssql_table_sample WHERE instance_id = $IID AND database_name = 'pgvst' AND snapshot_at = '$t3'" 'h0001 h0002 rw1'
   sq "DROP TABLE dbo.h0003;" pgvst >/dev/null; collect mssql_tables
   check "$1 P4 a dropped table is marked gone" "SELECT is_present FROM pgvigil.mssql_tables WHERE instance_id = $IID AND database_name = 'pgvst' AND table_name = 'h0003'" f
 }
@@ -497,7 +497,7 @@ INSERT INTO pgvigil.mssql_table_sample (instance_id, snapshot_at, database_name,
   ($GI, now() - interval '8 days', 'd1', 'dbo', 'grown', 10, 100), ($GI, now() - interval '1 day', 'd1', 'dbo', 'grown', 30, 300),
   ($GI, now() - interval '2 days', 'd1', 'dbo', 'unknown', 10, 100), ($GI, now() - interval '3 days', 'd1', 'dbo', 'fresh', 5, 50);" >/dev/null || bad "P4 growth rows"
 check "P4 growth over 7 days: fresh (new 3 days ago) +50 KB from 0, grown +200 KB, still 0; unknown, dnot and dnew left out" \
-  "SELECT string_agg(table_name || ':' || used_kb_grown, ' ' ORDER BY table_name) FROM pgvigil.mssql_table_growth($GI, 7)" 'fresh:50 grown:200 still:0'
+  "SELECT string_agg(table_name || ':' || used_kb_grown, ' ' ORDER BY table_name COLLATE \"C\") FROM pgvigil.mssql_table_growth($GI, 7)" 'fresh:50 grown:200 still:0'
 check "P4 growth of one database only (p_db)" "SELECT count(*) FROM pgvigil.mssql_table_growth($GI, 7, 'dnot')" 0
 check "P4 the series of a table unchanged for 10 days with no sample: flat from the window's start" \
   "SELECT count(*) || ' ' || min(used_kb) || ' ' || max(used_kb) FROM pgvigil.mssql_table_series($GI, 'd1', 'dbo', 'still', now() - interval '7 days', now())" '2 100 100'
@@ -509,10 +509,10 @@ BS=$(pq "SELECT now() - interval '1 hour'")
 pq "SELECT pgvigil.import_mssql_tables($BI, '$BS', '[$(tpart dba ta 1 8)]')" >/dev/null || bad "P4b import 1"
 pq "SELECT pgvigil.import_mssql_tables($BI, '$BS', '[$(tpart dbb tb 1 8),{\"kind\":\"dblist\",\"names\":[\"dba\",\"dbb\"]},{\"kind\":\"cursor\",\"source\":\"mssql_tables\",\"last_seq\":1}]')" >/dev/null || bad "P4b import 2"
 check "P4b two imports of one run: both tables and both samples kept" \
-  "SELECT (SELECT string_agg(table_name, ' ' ORDER BY table_name) FROM pgvigil.mssql_tables WHERE instance_id = $BI AND is_present) || ' ' || (SELECT count(*) FROM pgvigil.mssql_table_sample WHERE instance_id = $BI AND snapshot_at = '$BS')" 'ta tb 2'
+  "SELECT (SELECT string_agg(table_name, ' ' ORDER BY table_name COLLATE \"C\") FROM pgvigil.mssql_tables WHERE instance_id = $BI AND is_present) || ' ' || (SELECT count(*) FROM pgvigil.mssql_table_sample WHERE instance_id = $BI AND snapshot_at = '$BS')" 'ta tb 2'
 pq "SELECT pgvigil.import_mssql_tables($BI, now(), '[$(tpart dba ta 1 8),{\"kind\":\"dblist\",\"names\":[\"dba\"]},{\"kind\":\"cursor\",\"source\":\"mssql_tables\",\"last_seq\":0}]')" >/dev/null || bad "P4b import 3"
 check "P4b a database the list no longer names: its tables gone, its marker removed; the cursor stored" \
-  "SELECT (SELECT string_agg(table_name || ':' || is_present, ' ' ORDER BY table_name) FROM pgvigil.mssql_tables WHERE instance_id = $BI) || ' ' || (SELECT string_agg(database_name, ' ') FROM pgvigil.mssql_tables_db_read WHERE instance_id = $BI) || ' ' || (SELECT last_seq FROM pgvigil.mssql_cursor WHERE instance_id = $BI AND source = 'mssql_tables')" 'ta:true tb:false dba 0'
+  "SELECT (SELECT string_agg(table_name || ':' || is_present, ' ' ORDER BY table_name COLLATE \"C\") FROM pgvigil.mssql_tables WHERE instance_id = $BI) || ' ' || (SELECT string_agg(database_name, ' ') FROM pgvigil.mssql_tables_db_read WHERE instance_id = $BI) || ' ' || (SELECT last_seq FROM pgvigil.mssql_cursor WHERE instance_id = $BI AND source = 'mssql_tables')" 'ta:true tb:false dba 0'
 pq "UPDATE pgvigil.mssql_tables SET snapshot_at = now() - interval '40 days' WHERE instance_id = $IID AND table_name = 'h0003'" >/dev/null
 # purge() and the read in two statements: one statement reads one snapshot, taken before purge's DELETE
 check "P4 purge() deletes at least the gone table" "SELECT pgvigil.purge(30) >= 1" t
@@ -538,7 +538,7 @@ b = {l.split()[0]: list(map(int, l.split()[1:])) for l in sys.argv[2].splitlines
 for k in sorted(b):
     d = [y - x for x, y in zip(a.get(k, [0]*6), b[k])]
     print(k, *d[:6], end=" ")' "$h1" "$h2")
-  got=$(pq "SELECT string_agg(name || ' ' || reads || ' ' || read_bytes || ' ' || writes || ' ' || write_bytes || ' ' || read_stall_ms || ' ' || write_stall_ms, ' ' ORDER BY name) || ' ' FROM pgvigil.mssql_io_totals($IID, '$t1', '$t2', 'database') WHERE name IN ('pgvio1', 'pgvio2')")
+  got=$(pq "SELECT string_agg(name || ' ' || reads || ' ' || read_bytes || ' ' || writes || ' ' || write_bytes || ' ' || read_stall_ms || ' ' || write_stall_ms, ' ' ORDER BY name COLLATE \"C\") || ' ' FROM pgvigil.mssql_io_totals($IID, '$t1', '$t2', 'database') WHERE name IN ('pgvio1', 'pgvio2')")
   eqv "$1 P5 reads, bytes read, writes, bytes written, read and write stall per database = the hand diff" "$got" "$hand"
   check "$1 P5 latency = stall / operations" "SELECT bool_and(read_latency_ms IS NOT DISTINCT FROM round(read_stall_ms::numeric / nullif(reads, 0), 2) AND write_latency_ms IS NOT DISTINCT FROM round(write_stall_ms::numeric / nullif(writes, 0), 2)) FROM pgvigil.mssql_io_totals($IID, '$t1', '$t2', 'database')" t
   check "$1 P5 the IOs pending stored at each read" "SELECT count(*) > 0 AND bool_and(pending_ios IS NOT NULL) FROM pgvigil.mssql_fileio_read WHERE instance_id = $IID AND snapshot_at >= '$t1'" t
@@ -569,7 +569,7 @@ pq "SELECT pgvigil.import_mssql_fileio($VI, now() - interval '2 minutes', '$(fio
 pq "UPDATE pgvigil.mssql_files SET database_name = 'newdb', volume = 'F:\' WHERE instance_id = $VI" >/dev/null
 pq "SELECT pgvigil.import_mssql_fileio($VI, now() - interval '1 minute', '$(fio_payload -60 newdb 260)')" >/dev/null || bad "P5 import (new)"
 check "P5 by volume: the old database's IO on E:, the new one's on F:" \
-  "SELECT string_agg(name || ':' || reads, ' ' ORDER BY name) FROM pgvigil.mssql_io_totals($VI, now() - interval '10 minutes', now(), 'volume')" 'E:\:100 F:\:60'
+  "SELECT string_agg(name || ':' || reads, ' ' ORDER BY name COLLATE \"C\") FROM pgvigil.mssql_io_totals($VI, now() - interval '10 minutes', now(), 'volume')" 'E:\:100 F:\:60'
 # the chart's read on 3,000 databases x 60 minutes, in a month's partition that holds 24 hours of them (4.3 million rows,
 # the window 4 % of it): the app's two statements as it sends them - the grid's totals (whose first names are the
 # series' top 10) and the series with those names as a literal array
@@ -577,7 +577,7 @@ EX=$(pq "SELECT pgvigil.ensure_instance('ex-$SUF', 'sqlserver', '16.0', 160000, 
 pq "INSERT INTO pgvigil.mssql_fileio_read (instance_id, snapshot_at, interval_secs, files) SELECT $EX, now() - make_interval(mins => m), 60, 3000 FROM generate_series(1, 1440) m;
 INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs)
   SELECT $EX, now() - make_interval(mins => m), d, 1, 'db' || d, 5, 40960 + d, 3, 2, 16384, 1, 60 FROM generate_series(1, 1440) m, generate_series(1, 3000) d; ANALYZE pgvigil.mssql_fileio_sample;" >/dev/null || bad "P5 the month's rows"
-TOPN=$(pq "SELECT string_agg(quote_literal(t.name), ',' ORDER BY t.read_bytes + t.write_bytes DESC, t.name) FROM (SELECT * FROM pgvigil.mssql_io_totals($EX, now() - interval '1 hour', now(), 'database') t ORDER BY t.read_bytes + t.write_bytes DESC, t.name LIMIT 10) t")
+TOPN=$(pq "SELECT string_agg(quote_literal(t.name), ',' ORDER BY t.read_bytes + t.write_bytes DESC, t.name COLLATE \"C\") FROM (SELECT * FROM pgvigil.mssql_io_totals($EX, now() - interval '1 hour', now(), 'database') t ORDER BY t.read_bytes + t.write_bytes DESC, t.name LIMIT 10) t")
 for form in grid series; do
   case $form in
     grid) sql="SELECT * FROM pgvigil.mssql_io_totals($EX, now() - interval '1 hour', now(), 'database') ORDER BY read_bytes + write_bytes DESC, name" ;;
@@ -634,7 +634,7 @@ np "P7: Write Transactions/sec, Percent Log Used and Active Transactions per dat
 
 # ---- P8 the rules -------------------------------------------------------------------------------------------------------
 echo "== P8: the rules"
-finding() { pq "SELECT coalesce(string_agg(severity || ' ' || object, ', ' ORDER BY object), 'none') FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = ${2:-$IID} AND check_name = '$1'"; }
+finding() { pq "SELECT coalesce(string_agg(severity || ' ' || object, ', ' ORDER BY object COLLATE \"C\"), 'none') FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = ${2:-$IID} AND check_name = '$1'"; }
 rules_logs_orphans() {  # $1 label: the two-log and orphan rows (also the version run's)
   mkdb pgvchk >/dev/null
   sq "ALTER DATABASE pgvchk ADD LOG FILE (NAME = 'pgvchk_log2', FILENAME = '/var/opt/mssql/data/pgvchk_log2.ldf', SIZE = 8MB);" >/dev/null
@@ -678,12 +678,12 @@ eqv "P8 tempdb moved before its restart: every folder listed, the files it runs 
 pq "UPDATE pgvigil.mssql_storage_paths SET tempdb_paths = NULL, tempdb_paths_start = NULL WHERE instance_id = $IID" >/dev/null || bad "P8 the kept paths wiped"
 collect mssql_storage_depth
 check "P8 a move made before pgvigil's first read after the start: tempdb's running file is info, 'a tempdb file move may be pending', never a plain orphan" \
-  "SELECT coalesce(string_agg(severity || ' ' || object || ' ' || (detail LIKE '%a tempdb file move may be pending (the files run until the restart)%'), ', ' ORDER BY object), 'none') FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $IID AND check_name = 'an orphaned database file'" "info $TP true"
+  "SELECT coalesce(string_agg(severity || ' ' || object || ' ' || (detail LIKE '%a tempdb file move may be pending (the files run until the restart)%'), ', ' ORDER BY object COLLATE \"C\"), 'none') FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $IID AND check_name = 'an orphaned database file'" "info $TP true"
 sqv "P8 setup: tempdb's move undone" "ALTER DATABASE tempdb MODIFY FILE (NAME = [$TF], FILENAME = '$TP');"
 docker exec "$SQL" bash -c "head -c 8192 /dev/zero > /var/opt/mssql/data/tempdb_left.mdf && touch -d '2020-01-01 00:00:00' /var/opt/mssql/data/tempdb_left.mdf" || bad "P8 the left file"
 collect mssql_storage_depth
 check "P8 a tempdb-named file not written since the server's start (a finished move's leftover): a plain orphan" \
-  "SELECT coalesce(string_agg(severity || ' ' || object || ' ' || (detail LIKE '%a tempdb file move may be pending%'), ', ' ORDER BY object), 'none') FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $IID AND check_name = 'an orphaned database file'" 'warning /var/opt/mssql/data/tempdb_left.mdf false'
+  "SELECT coalesce(string_agg(severity || ' ' || object || ' ' || (detail LIKE '%a tempdb file move may be pending%'), ', ' ORDER BY object COLLATE \"C\"), 'none') FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $IID AND check_name = 'an orphaned database file'" 'warning /var/opt/mssql/data/tempdb_left.mdf false'
 docker exec "$SQL" rm -f /var/opt/mssql/data/tempdb_left.mdf
 docker exec "$SQL" mkdir -p /var/opt/mssql/data/pgvimofs || bad "P8 the container's folder"
 sqv "P8 setup: a memory-optimized container alone in its folder" "CREATE DATABASE pgvimo ON PRIMARY (NAME = 'pgvimo', FILENAME = '/var/opt/mssql/data/pgvimo.mdf'), FILEGROUP pgvimo_fg CONTAINS MEMORY_OPTIMIZED_DATA (NAME = 'pgvimo_c', FILENAME = '/var/opt/mssql/data/pgvimofs/c1') LOG ON (NAME = 'pgvimo_log', FILENAME = '/var/opt/mssql/data/pgvimo_log.ldf');"
@@ -740,7 +740,7 @@ pq "INSERT INTO pgvigil.mssql_storage_paths (instance_id, snapshot_at, host_plat
   VALUES ($WI, now(), 'Windows', 'WINBOX', 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\', 'C:\SQLLogs\', 1);
 INSERT INTO pgvigil.mssql_files (instance_id, database_id, file_id, database_name, file_name, type_desc, physical_name, size_bytes, growth_bytes, growth_pct, snapshot_at, first_seen)
   VALUES ($WI, 2, 1, 'tempdb', 'tempdev', 'ROWS', 'C:\TempDB\tempdb.mdf', 8388608, 67108864, 0, now(), now());" >/dev/null
-check "P8 the C: rules on a Windows instance" "SELECT string_agg(check_name, ', ' ORDER BY check_name) FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $WI AND check_name LIKE '%C:%'" \
+check "P8 the C: rules on a Windows instance" "SELECT string_agg(check_name, ', ' ORDER BY check_name COLLATE \"C\") FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $WI AND check_name LIKE '%C:%'" \
   'a tempdb file on C:, the default data path on C:, the default log path on C:'
 check "P8 none of the C: rules on the Linux container" "SELECT count(*) FROM pgvigil.mssql_storage_depth_findings WHERE instance_id = $IID AND check_name LIKE '%C:%'" 0
 summary_check "P8 the C: rules live on the Windows instance ($(live_count '%C:%' "$WI"))" "$WI"
