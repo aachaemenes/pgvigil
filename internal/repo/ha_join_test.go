@@ -95,6 +95,11 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //  6. 'pgvigil purge' builds the replication hours (0150) of an instance that waits for its first build: its stored
 //     samples and no first build queued make it pending (replication_hourly_pending); Repo.ReplicationHourlyHeal
 //     makes its months, builds it, queues the first build - it is pending no more and its hours are stored.
+//  7. A fault the HA files judge is said once. 0118's alert set held two rules the HA files now judge with tiers of
+//     their own: 'replay lag' (a sender 30 s behind; 0141's 'standby lag' judges the link over two reads) and 'AG
+//     secondary behind' (a secondary 300 s behind; 0143's 'a secondary would lose data in a failover'). With a
+//     standby 400 s behind at two reads a minute apart, and an availability group's secondary the same, each HA
+//     finding stands in pgvigil.findings and neither of 0118's two names does.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -305,4 +310,39 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		str(`SELECT (EXISTS (SELECT 1 FROM pgvigil.replication_hourly_first_build b WHERE b.instance_id = $1))::text || ' / ' ||
 		            (SELECT count(*) FROM pgvigil.replication_hourly h WHERE h.instance_id = $1 AND h.kind = 'slot' AND h.key = 'hajoin_slot')::text`, pg),
 		"true / 2")
+
+	// 7. 0118's 'replay lag' and 'AG secondary behind' beside the HA files' own findings of the same fault
+	var lagPG, lagMS int
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '18.0', 180000, false, '{}'::text[], 'postgres')`,
+		fmt.Sprintf("hajoin-lagpg-%d", sfx)).Scan(&lagPG); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+		fmt.Sprintf("hajoin-lagms-%d", sfx)).Scan(&lagMS); err != nil {
+		t.Fatal(err)
+	}
+	// a primary's one physical standby, and an availability group's one secondary: each 400 s behind at both reads
+	sender := `[{"kind":"sender","application_name":"sb1","client_addr":"10.0.0.2","state":"streaming","sync_state":"async",` +
+		`"replay_lag_bytes":1048576,"flush_lag_bytes":0,"replay_lag_secs":400}]`
+	secondary := `[{"kind":"database","group_id":"g1","group_name":"ag1","replica_server":"n2","database_name":"db1","is_local":0,` +
+		`"is_primary_replica":0,"synchronization_state":"SYNCHRONIZING","is_suspended":0,"est_data_loss_s":400,"secondary_lag_s":400}]`
+	for _, ago := range []string{"60 seconds", "0 seconds"} {
+		exec(`SELECT pgvigil.import_replication($1, now() - $2::interval, $3::jsonb)`, lagPG, ago, sender)
+		exec(`SELECT pgvigil.import_mssql_ag($1, now() - $2::interval, $3::jsonb)`, lagMS, ago, secondary)
+	}
+	want("the lagging standby in 0141's own view (the control: pg_hadr_checks)",
+		str(`SELECT coalesce(string_agg(severity || '|' || check_name || '|' || object, ',' ORDER BY check_name, object), '')
+		       FROM pgvigil.pg_hadr_checks WHERE instance_id = $1`, lagPG), "critical|standby lag|sb1 at 10.0.0.2")
+	want("the lagging secondary in 0143's own view (the control: mssql_hadr_findings)",
+		str(`SELECT coalesce(string_agg(severity || '|' || check_name || '|' || object, ',' ORDER BY check_name, object), '')
+		       FROM pgvigil.mssql_hadr_findings WHERE instance_id = $1 AND check_name = 'a secondary would lose data in a failover'`, lagMS),
+		"critical|a secondary would lose data in a failover|ag1 / n2 / db1")
+	// one read of pgvigil.findings for the four names: the two HA findings, and 0118's two that say the same fault again
+	want("the findings of the lagging standby and the lagging secondary, by name",
+		str(`SELECT coalesce(string_agg(x.setting || ' ' || x.n, ', ' ORDER BY x.setting), '')
+		       FROM (SELECT f.setting, count(*) AS n FROM pgvigil.findings f
+		              WHERE f.instance_id IN ($1, $2)
+		                AND f.setting IN ('standby lag', 'a secondary would lose data in a failover', 'replay lag', 'AG secondary behind')
+		              GROUP BY f.setting) x`, lagPG, lagMS),
+		"a secondary would lose data in a failover 1, standby lag 1")
 }
