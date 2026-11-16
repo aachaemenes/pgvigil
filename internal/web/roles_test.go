@@ -139,6 +139,23 @@ func TestEveryPostHasANeed(t *testing.T) {
 	}
 }
 
+// TestJoinedWritesHaveTheirNeed: the writes two j16 items registered outside s.post (B9c's job enable and disable,
+// task 409's expected values) go through it with their need - a viewer could enable or disable a job and set an
+// expected value (the j16 candidate's review B #1). Enable and disable are operator, as stop and start; an expected
+// value is admin, as every other threshold and setting write.
+func TestJoinedWritesHaveTheirNeed(t *testing.T) {
+	needs, _ := postNeeds(t)
+	for pat, want := range map[string]string{
+		"POST /api/jobs/actions/enable":  "operator",
+		"POST /api/jobs/actions/disable": "operator",
+		"POST /api/mssql/config_expect":  "admin",
+	} {
+		if got := needs[pat]; got != want {
+			t.Errorf("%s: need %q through s.post, want %q", pat, got, want)
+		}
+	}
+}
+
 // docRow is a line of docs/roles.md's table: | `POST /api/...` | <need> | <what> |
 var docRow = regexp.MustCompile("^\\|\\s*`(POST /[^`]+)`\\s*\\|\\s*(anyone|viewer|operator|admin)\\s*\\|")
 
