@@ -32,10 +32,18 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 // reads findings), so the guard walks the arms of both views and names K3 by its view (TestCollectorFindingsReadsItsArms;
 // TestCollectorFindingsK3AtTheJoin shows the walk finds both of 403b's views as own arms; TestCollectorFindingsReadsItsArms
 // is red at the join until they are read here and named in the claim CASE below). The claim ('why') is the collector parents' only.
+// The j16 join reads every own arm of both views here: KITWATCH's, B24e's (its own view collector_secret_findings since
+// 0300), B24h's probe and K3's two.
 const sqlCollectorFindings = `
 WITH f AS (
   SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     FROM (SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collector_findings
+          UNION ALL   -- KITWATCH (0253): the collector's sp_WhoIsActive call unusable or failing
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.kit_findings
+          UNION ALL   -- B24e (0192): a password secret the collector could not read or the server refused
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collector_secret_findings
+          UNION ALL   -- B24h (0254): the probe's round trip, ping and silence
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collector_probe_findings
           UNION ALL
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_findings
           UNION ALL
@@ -43,12 +51,17 @@ WITH f AS (
           UNION ALL
           SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.repository_autovacuum_findings
           UNION ALL
-          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_fold) x
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_fold
+          UNION ALL   -- 403b / B24k (0154): K3, the alert channels' own findings (alert_findings' arm through alert_channel_findings)
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.alert_channel_failing
+          UNION ALL
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.alert_channel_quota_low) x
    WHERE x.source IN ('pgvigil collector', 'pgvigil repository') AND ($1::int = 0 OR x.instance_id IS NULL OR x.instance_id = $1)
    ORDER BY x.instance_id, x.setting, x.value, x.detail
 )
 SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at,
-       CASE WHEN f.source = 'pgvigil repository' AND f.setting NOT IN ('alert sender idle', 'repository autovacuum behind', 'alert channel failing', 'collections run long')
+       CASE WHEN f.source = 'pgvigil repository' AND f.setting NOT IN ('alert sender idle', 'repository autovacuum behind', 'alert channel failing', 'pushover quota low',
+                                                                    'collections run long')
             THEN pgvigil.collector_claim(f.detail) END AS why
   FROM f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id

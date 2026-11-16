@@ -328,6 +328,17 @@ SELECT i.instance_id, p.severity, 'poison wait', p.object, true, 'under 1.0 wait
  WHERE i.engine = 'postgres' AND i.is_active AND p.severity IN ('info', 'warning', 'critical');
 
 -- ====================================================================================================================
+-- pgvigil.collector_secret_findings: base none (new in a slice of this file)
+--   #1 H the join 0300 --------: the 18 tests: TestCollectorFindingsReadsItsArms - B24e's inline arm of findings as its own view (b24e-join-lines.sql L5-11), an own source the Collector page reads by name
+-- ====================================================================================================================
+-- [#1 the join 0300 --------]
+CREATE OR REPLACE VIEW pgvigil.collector_secret_findings AS
+SELECT s.instance_id, s.severity, s.check_name AS setting, s.object AS value, true AS is_set,
+       'the login''s password readable from AWS Secrets Manager by the collector host''s identity'::text AS suggested,
+       'all'::text AS platforms, s.detail, 'pgvigil collector'::text AS source, s.at
+  FROM pgvigil.secret_findings s;
+
+-- ====================================================================================================================
 -- pgvigil.findings: base 0190_join_release2.sql L45
 --   #1 P S2 09661906: 09661906:scripts/proof-mssql-security-wiring.patch (0190_join_release2.sql hunks, pre blob 40526c2)
 --   #2 P S2 09661906: 09661906:scripts/proof-mssql-xe-captures-wiring.patch (0190_join_release2.sql hunks, pre blob a994399)
@@ -340,6 +351,7 @@ SELECT i.instance_id, p.severity, 'poison wait', p.object, true, 'under 1.0 wait
 --   #9 H B24e f6f83845: scripts/b24e-join-lines.sql L5-11 - after collector_findings' arm (after KITWATCH's)
 --   #10 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L5-7 (line 1) - after B24e's (the collector's own arms)
 --   #11 H 409-410 03f74d79: review A #9 (02:50) - the comment names 0190's mssql_checks_findings
+--   #12 H the join 0300 --------: the 18 tests: TestCollectorFindingsReadsItsArms - B24e's arm reads its own view (collector_secret_findings) in place of the inline source
 --   merge conflict at arm #3 (404), block 1, resolved by hand: both arms: the base's 301 / 304 arms, then 404's
 -- ====================================================================================================================
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -356,10 +368,10 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.kit_findings
     -- [#9 B24e f6f83845]
     UNION ALL
-    -- B24e (0192): a password secret the collector could not read or the server refused
-    SELECT instance_id, severity, check_name, object, true, 'the login''s password readable from AWS Secrets Manager by the collector host''s identity'::text,
-           'all'::text, detail, 'pgvigil collector'::text, at
-      FROM pgvigil.secret_findings
+    -- [#12 the join 0300 --------]
+    -- B24e (0192): a password secret the collector could not read or the server refused - its own view, so the
+    -- Collector page reads it by name
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_secret_findings
     -- [#10 B24H-STREAKS c937e891]
     UNION ALL
     -- B24h (0254): the probe's findings (b24h-join-lines.sql line 1)
@@ -609,6 +621,7 @@ SELECT s.instance_id, s.state AS severity,
 -- pgvigil.alert_findings: base 0190_join_release2.sql L499
 --   #1 P S2 09661906: 09661906:scripts/proof-alert-scope-wiring.patch (0190_join_release2.sql hunks, pre blob a994399a)
 --   #2 T B6G-N 17e6d3f7: 0190_join_release2.sql L462 (merge-base e4af7c3e 0190_join_release2.sql) - in place (0121 / 0190)
+--   #3 H the join 0300 --------: the 18 tests: TestCollectorFindingsOwnShapes - K3's comment names the source without quotes (a quoted own source in the view reads as an inline arm)
 -- ====================================================================================================================
 CREATE OR REPLACE VIEW pgvigil.alert_findings AS
 SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding_key,
@@ -618,7 +631,9 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
         UNION ALL
         -- [#1 S2 09661906]
         SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y
-        UNION ALL   -- tasks 403b / B24k (0154): the alert channels' own findings (failing, quota low; 'pgvigil repository', no instance)
+        -- [#3 the join 0300 --------]
+        UNION ALL   -- tasks 403b / B24k (0154): the alert channels' own findings (failing, quota low; the repository's own source, no instance)
+        -- [#1 S2 09661906]
         SELECT z.instance_id, z.severity, z.setting, z.value, z.suggested, z.detail, z.source, z.at FROM pgvigil.alert_channel_findings z) f
   LEFT JOIN pgvigil.instances i USING (instance_id)
   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
@@ -1169,6 +1184,7 @@ END $$;
 --   #9 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L37-39 (line 5) - collector_probe_host rows of a retired collector
 --   #10 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L20-23 (line 2) - beside the other self-trimming tables
 --   #11 H CQ-A 322675cc: scripts/cq-join-lines.sql L9-17 - before the hours tables (0139's block)
+--   #12 H the join 0300 --------: the 18 tests: TestRetentionRowsOfTheHAJoin - no bracket in a comment inside the parent list (the Retention page reads the list up to its first closing bracket)
 --   merge conflict at arm #1 (B2a-N2), block 1, resolved by hand: both blocks: the replication hours' (0150), then B2a-N2's mssql_azuredb_hour (0167)
 --   merge conflict at arm #2 (413), block 1, resolved by hand: parents list = the union (mssql_index_usage_read added)
 --   merge conflict at arm #2 (413), block 2, resolved by hand: both lines: the current text's, then 413's
@@ -1198,8 +1214,8 @@ BEGIN
                          'host_sample', 'host_disk_history', 'host_io', 'storage_sample',
                          'vacuum_sample', 'cloud_io_sample', 'dms_ri_sample', 'backup_sample', 'amcheck_runs', 'wait_sample', 'index_usage_daily', 'pi_load', 'serverless_sample', 'buffercache_sample', 'temp_sample', 'pooler_sample', 'custom_results', 'schema_changes', 'schema_ddl_log', 'alert_log', 'mssql_blocking', 'mssql_wait_sample', 'mssql_deadlocks', 'mssql_blocked_reports', 'mssql_slow_events', 'mssql_attentions', 'mssql_ag_events', 'mssql_ag_sample', 'mssql_job_runs', 'mssql_volume_sample', 'mssql_database_size', 'mssql_versionstore_sample',
                          'mssql_cpu_sample', 'mssql_sched_sample', 'mssql_memory_sample', 'mssql_memory_clerk', 'mssql_fileio_read', 'mssql_fileio_sample',
-                         -- [#7 409-410 03f74d79]
-                         'mssql_database_space', 'mssql_table_sample',   -- task 407 (0158)
+                         -- [#12 the join 0300 --------]
+                         'mssql_database_space', 'mssql_table_sample',   -- task 407, 0158
                          'table_activity', 'conn_sources', 'pooler_conn_sample',
                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
                          'mssql_qs_interval', 'mssql_qs_runtime',
@@ -1537,6 +1553,84 @@ BEGIN
   INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
   VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
   RETURN n;
+END $$;
+
+-- ====================================================================================================================
+-- pgvigil.partition_parents: base none (new in a slice of this file)
+--   #1 T N4 280368a5: 0271_partitions_ahead.sql L28 (merge-base d04bc70a none) - 0271: new in N4
+--   #2 H the join 0300 --------: the 18 tests: TestPartitionsAhead, TestPartitionsAheadHourTables - the hour tables of 0151 and 0167 take their own makers
+-- ====================================================================================================================
+-- [#1 N4 280368a5]
+CREATE OR REPLACE FUNCTION pgvigil.partition_parents()
+RETURNS TABLE (parent text, maker text, unit text) LANGUAGE sql STABLE AS $$
+  SELECT c.relname::text,
+         -- [#2 the join 0300 --------]
+         CASE WHEN c.relname = 'mssql_requests' THEN 'day'
+              -- the hour tables' own makers, 0151's and 0167's: fillfactor 80, no second index - cloud_replica_hour has no
+              -- instance_id for ensure_month_partition's index
+              WHEN c.relname IN ('cloud_replica_hour', 'mssql_georepl_hour') THEN 'hour_0151'
+              WHEN c.relname = 'mssql_azuredb_hour' THEN 'azuredb_hour'
+              WHEN a.attname = 'snapshot_at' THEN 'month' ELSE 'event' END,
+         -- [#1 N4 280368a5]
+         CASE WHEN c.relname = 'mssql_requests' THEN 'day' ELSE 'month' END
+    FROM pg_partitioned_table pt
+    JOIN pg_class c ON c.oid = pt.partrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = pt.partattrs[0]
+   WHERE n.nspname = 'pgvigil' AND NOT c.relispartition AND pt.partstrat = 'r' AND pt.partnatts = 1
+$$;
+
+-- ====================================================================================================================
+-- pgvigil.import_partition_make: base none (new in a slice of this file)
+--   #1 T N4 280368a5: 0271_partitions_ahead.sql L60 (merge-base d04bc70a none) - 0271: new in N4
+--   #2 H the join 0300 --------: the 18 tests: TestPartitionsAhead, TestPartitionsAheadHourTables - the two hour makers called by name
+-- ====================================================================================================================
+-- [#1 N4 280368a5]
+CREATE OR REPLACE FUNCTION pgvigil.import_partition_make(p_parent text, p_at timestamptz)
+RETURNS text LANGUAGE plpgsql SET lock_timeout = '450ms' AS $$
+DECLARE
+  v_maker text;
+  v_unit  text;
+  v_start timestamptz;
+  v_name  text;
+  v_dl    int := (SELECT s.setting::int FROM pg_settings s WHERE s.name = 'deadlock_timeout');   -- milliseconds
+BEGIN
+  IF v_dl IS NOT NULL AND v_dl / 2 < 450 THEN
+    PERFORM set_config('lock_timeout', greatest(v_dl / 2, 1)::text || 'ms', true);
+  END IF;
+  SELECT p.maker, p.unit INTO v_maker, v_unit FROM pgvigil.partition_parents() p WHERE p.parent = p_parent;
+  IF v_maker IS NULL THEN
+    RAISE EXCEPTION 'import_partition_make: % is not a partitioned table of schema pgvigil', p_parent USING ERRCODE = '22023';
+  END IF;
+  IF p_at IS NULL THEN
+    RAISE EXCEPTION 'import_partition_make: no time given' USING ERRCODE = '22023';
+  END IF;
+  v_start := date_trunc(v_unit, p_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
+  IF v_start > now() + interval '62 days' THEN
+    RAISE EXCEPTION 'import_partition_make: % starts %, more than 62 days ahead', p_parent, v_start USING ERRCODE = '22023';
+  END IF;
+  IF p_parent = 'alert_log' AND v_start < date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+     AND NOT pg_has_role(session_user, (SELECT n.nspowner FROM pg_namespace n WHERE n.nspname = 'pgvigil'), 'MEMBER') THEN
+    RAISE EXCEPTION 'import_partition_make: an earlier month of alert_log is the owner''s (0059)' USING ERRCODE = '42501';
+  END IF;
+  v_name := p_parent || '_' || to_char(v_start AT TIME ZONE 'UTC', CASE v_unit WHEN 'day' THEN 'YYYYMMDD' ELSE 'YYYYMM' END);
+  IF to_regclass('pgvigil.' || quote_ident(v_name)) IS NOT NULL THEN
+    RETURN 'exists';
+  END IF;
+  BEGIN
+    CASE v_maker
+      WHEN 'month' THEN PERFORM pgvigil.ensure_month_partition(p_parent, v_start);
+      WHEN 'day'   THEN PERFORM pgvigil.mssql_ensure_day_partition(p_parent, v_start);
+      -- [#2 the join 0300 --------]
+      WHEN 'hour_0151'    THEN PERFORM pgvigil.hour_partition_0151(p_parent, v_start);
+      WHEN 'azuredb_hour' THEN PERFORM pgvigil.mssql_azuredb_hour_partition(v_start);
+      -- [#1 N4 280368a5]
+      ELSE              PERFORM pgvigil.mssql_event_partition(p_parent, v_start);
+    END CASE;
+  EXCEPTION WHEN lock_not_available OR deadlock_detected THEN
+    RETURN 'busy';   -- the block's locks went with it; the next pass tries again
+  END;
+  RETURN 'made';   -- this call ran the maker: two passes at once may both count one partition (the maker takes the other's)
 END $$;
 
 -- ====================================================================================================================
@@ -2338,6 +2432,7 @@ END $$;
 --   #3 H PARQUET 16659e64: scripts/parquet-join-lines.sql L4-10 (line 1) - export_run_record / export_off owner-only, then their GRANT to pgvigil_exporter
 --   #4 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L4-18 (line 1) - the agent's eleven owner-only, then the seven agent_investigation_* to pgvigil_agent
 --   #5 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L25-30 (line 3); CQ-A 322675cc 0200 L36-37 makes pgvigil_requester - the queue-mode serve writes investigation asks through pgvigil_requester (the review's #2)
+--   #6 H the join 0300 --------: the 18 tests: TestSchemaMissingIsTheCollectorsDoor, TestReaderRunsNoOtherSecurityDefiner - no bracket in a comment inside the owner-only list; findings_history_partition owner-only (the lead's rule 2)
 --   merge conflict at arm #2 (413), block 1, resolved by hand: owner-only list = the union (mssql_index_depth_purge, mssql_fragmentation_stale added)
 -- ====================================================================================================================
 CREATE OR REPLACE FUNCTION pgvigil.apply_roles()
@@ -2370,21 +2465,28 @@ BEGIN
                         'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
                         -- task 406, 0157: they delete or write for the imports, and the reader never calls them
                         'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop',
+                        -- [#6 the join 0300 --------]
+                        -- B2a-N2, 0167: the Azure SQL Database hours' writers - the import's trigger and 'pgvigil purge' run them as the owner
                         -- [#1 B2a-N2 8aecbb2b]
-                        -- B2a-N2, 0167: the Azure SQL Database hours' writers (the import's trigger and 'pgvigil purge' run them as the owner)
                         'mssql_azuredb_hour_partition', 'mssql_azuredb_hour_recompute', 'mssql_azuredb_hour_rebuild', 'mssql_azuredb_hour_heal',
                         'mssql_azuredb_hour_failed', 'mssql_azuredb_hour_pending', 'mssql_azuredb_hour_heal_one', 'mssql_azuredb_hour_tg',
                         'mssql_azuredb_hour_purge',
                         -- [#2 413 7184f8ea]
                         'mssql_index_depth_purge', 'mssql_fragmentation_stale',
+                        -- [#6 the join 0300 --------]
+                        -- the Parquet export, 0256: the exporter's door, not the reader's
                         -- [#3 PARQUET 16659e64]
-                        -- the Parquet export (0256): the exporter's door, not the reader's
                         'export_run_record', 'export_off',
+                        -- [#6 the join 0300 --------]
+                        -- the agent door, 0268: the agent's functions, not the reader's
                         -- [#4 81-AGENT 654a9cd5]
-                        -- the agent door (0268): the agent's functions, not the reader's
                         'agent_investigation_list', 'agent_investigation_claim', 'agent_investigation_renew', 'agent_investigation_release',
                         'agent_investigation_report', 'agent_investigation_journal_select', 'agent_investigation_journal_done',
-                        'investigations_purge', 'investigations_settle', 'investigation_journal_add', 'agent_claim_row') THEN
+                        'investigations_purge', 'investigations_settle', 'investigation_journal_add', 'agent_claim_row',
+                        -- [#6 the join 0300 --------]
+                        -- 403a, 0154: the history's month partition, made as the owner for the alert sender, which keeps
+                        -- 0154's own grant - this branch takes back only the reader's
+                        'findings_history_partition') THEN
       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
     ELSE
