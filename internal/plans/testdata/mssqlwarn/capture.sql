@@ -105,6 +105,18 @@ BEGIN
     SELECT /* case:unparam */ id FROM dbo.big2 WHERE k = @x;
 END;
 GO
+-- the same local variable in a join, FULL-optimized: still no ParameterList (the #7 hit side); and with a parameter
+CREATE PROCEDURE dbo.p_unparam_full AS
+BEGIN
+    DECLARE @x int = 5;
+    SELECT /* case:unparam_full */ b.id FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = @x;
+END;
+GO
+CREATE PROCEDURE dbo.p_unparam_param @x int AS
+BEGIN
+    SELECT /* case:unparam_param */ b.id FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = @x;
+END;
+GO
 -- a second database with automatic statistics off: a column read there has no statistics
 CREATE DATABASE warnlab2;
 GO
@@ -233,3 +245,11 @@ DROP INDEX /* case:ddl_drop_index */ ix_ddl ON dbo.ddl_src;
 CREATE TABLE /* case:ddl_create_table */ dbo.ddl_tmp (i int NOT NULL);
 --@case ddl_drop_table runs=1
 DROP TABLE /* case:ddl_drop_table */ dbo.ddl_tmp;
+--@case unparam_full runs=2
+EXEC /* case:unparam_full */ dbo.p_unparam_full;
+--@case unparam_param runs=2
+EXEC /* case:unparam_param */ dbo.p_unparam_param @x = 5;
+--@case sel_writes runs=2
+SELECT /* case:sel_writes */ LEN(STRING_AGG(CAST(pad AS varchar(max)), ',')) AS l FROM dbo.big;
+--@case tspool_big runs=2
+SELECT /* case:tspool_big */ b.id, x.v FROM dbo.big2 AS b CROSS APPLY (SELECT TOP (5000) s.v FROM dbo.big AS s WHERE s.k = b.k % 7 ORDER BY s.v) AS x WHERE b.id <= 50 OPTION (LOOP JOIN);
