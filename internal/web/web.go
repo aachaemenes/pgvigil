@@ -428,6 +428,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/jobs/running", s.JobsRunning)
 	api.HandleFunc("POST /api/jobs/actions/stop", s.JobStop)
 	api.HandleFunc("POST /api/jobs/actions/start", s.JobStart)
+	api.HandleFunc("POST /api/jobs/actions/enable", s.JobEnable)   // B9c
+	api.HandleFunc("POST /api/jobs/actions/disable", s.JobDisable) // B9c
 	api.HandleFunc("GET /api/jobs/steps", s.JobSteps)
 	api.HandleFunc("GET /api/jobs/exclusions", s.JobExclusions)
 	api.HandleFunc("POST /api/jobs/exclusions", s.JobExclusions)
