@@ -120,10 +120,13 @@ showed, the worst three instances and a link to the page (`alerts_base_url` + `/
 
 The json format carries the same numbers as keys (`kind: daily checks`, `instances`, `critical`, `warnings`, `worst`,
 `day`, `link`) for a program. The text is the page's own numbers as that turn drew them, never read again. A mail that
-failed posts nothing; the post goes once a day per schedule (a second turn of the same day in the schedule's zone - a
-schedule brought due by hand, a test - posts nothing, and nothing is posted for a day the mail missed); a post that
-fails is recorded on the send (`post_error`) and alerted on every channel as `daily checks post failed`, the mail
-itself having gone. A `post:` name that is not a webhook channel of the same file's `alerts:` stops `pgvigil serve` at
+failed posts nothing; the post goes once a day per schedule, the day being the turn's own in the schedule's zone (a
+turn mailed late - past midnight, after an outage - posts under the day it was due; a second turn of the same day - a
+schedule brought due by hand - posts nothing and its send says why; a test never posts; nothing is posted for a day
+the mail missed); a post that fails, and a sent mail whose page sent no counts, are recorded on the send
+(`post_error`) and alerted on every channel as `daily checks post failed`, the mail itself having gone. A `post:`
+channel added to `alerts:` together with the block waits, like `channel:`, until the sender has recorded it (tried
+again each minute). A `post:` name that is not a webhook channel of the same file's `alerts:` stops `pgvigil serve` at
 its start (`reports.daily_checks: post: <name> is not a webhook channel of alerts:`); the page's dialog offers only the
 webhook channels the sender records.
 
