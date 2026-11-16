@@ -3,7 +3,7 @@
 # collector with cq.enabled holding two real servers (SQL Server 2022 with the First Responder Kit and sp_WhoIsActive,
 # PostgreSQL 16 with pg_stat_statements, each in its own container), and a headless Chromium that clicks Community tools
 # > Run for sp_Blitz and for one PostgreSQL tool, a Cancel through the queue, and reads every off control's words on
-# the community and Running pages (scripts/cq-walk.mjs: rows W1-W9, the runs grid G3 G5 G6 G9, the shot overlay S3). Then the repository's own rows of the walk's
+# the community and Running pages (scripts/cq-walk.mjs: rows W1-W9, the runs grid G3 G5 G6 G9 G10, the shot overlay S3). Then the repository's own rows of the walk's
 # requests: state, holder, the asker, a stored result, and the audit row with via queue. Lab only: every password is
 # made here at random and never leaves this host; no cloud credential.
 #
