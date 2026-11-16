@@ -85,6 +85,11 @@ type Config struct {
 	// Actions is serve's side of the queue (cq.go): actions: via: queue sends every action and community run through
 	// the repository; direct (the default) runs them in serve as before.
 	Actions ActionsVia `yaml:"actions"`
+	// Remote makes `pgvigil run` a remote collector (remote.go; docs/remote-collector.md): no repository, each
+	// instance's interval written as a bundle for a hub to ingest. Absent = a collector with a repository.
+	Remote *Remote `yaml:"remote"`
+	// RemoteSites are a hub's remote sites (remote.go): the drops it ingests remote collectors' bundles from.
+	RemoteSites []RemoteSite `yaml:"remote_sites"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -694,7 +699,12 @@ func Load(path string) (*Config, error) {
 // Validate checks the shape, not connectivity. An empty instance list is valid
 // (a host that only serves the UI); the collector commands require one.
 func (c *Config) Validate() error {
-	if strings.TrimSpace(c.Repository.DSNRaw) == "" {
+	if c.Remote != nil {
+		// a remote collector: no repository, its own block's checks (it sets query_text's default, hash)
+		if err := c.validateRemote(); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(c.Repository.DSNRaw) == "" {
 		return fmt.Errorf("repository.dsn is required")
 	}
 	if c.QueryText == "" {
@@ -703,8 +713,8 @@ func (c *Config) Validate() error {
 	if err := c.validateCQ(); err != nil {
 		return err
 	}
-	if !validQueryText(c.QueryText) {
-		return fmt.Errorf("query_text must be full, normalized or none (got %q)", c.QueryText)
+	if err := c.checkQueryText(c.QueryText, ""); err != nil {
+		return err
 	}
 	switch c.Probe {
 	case "", "icmp", "tcp", "off":
@@ -747,6 +757,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if err := c.validateRemoteSites(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for i := range c.Instances {
 		in := &c.Instances[i]
@@ -770,8 +783,8 @@ func (c *Config) Validate() error {
 		if in.QueryText == "" {
 			in.QueryText = c.QueryText
 		}
-		if !validQueryText(in.QueryText) {
-			return fmt.Errorf("instance %q: query_text must be full, normalized or none (got %q)", in.Name, in.QueryText)
+		if err := c.checkQueryText(in.QueryText, fmt.Sprintf("instance %q: ", in.Name)); err != nil {
+			return err
 		}
 		if in.Engine == "" {
 			in.Engine = EnginePostgres

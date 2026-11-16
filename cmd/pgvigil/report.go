@@ -308,6 +308,8 @@ var keepKeys = map[string]bool{
 	// export: its knobs and the kind of destination; its name, paths, bucket, container and endpoint name the site
 	"type": true, "settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
 	"snapshot_max_bytes": true, "statement_timeout": true,
+	// remote: and remote_sites: (config/remote.go): the knobs; the names, folders, drops and keys are masked
+	"keep_days": true, "max_mb": true, "sign": true, "expected_every": true, "gap_wait": true,
 }
 
 // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
@@ -364,6 +366,10 @@ var knownKeys = map[string]bool{
 	"cq": true, "workers": true, "result_keep": true, "via": true, "community_allow": true, "jobs_allow": true,
 	"patroni": true, "cert_file": true, "key_file": true,
 	"mssql_counters": true, "add": true, "remove": true, "object": true, "counter": true, "mssql_schema": true,
+	// the remote collector's remote: block and a hub's remote_sites: (config/remote.go); a site's or a collector's
+	// name, a folder, a drop and a public key name the site, so only the knobs are kept (keepKeys)
+	"remote": true, "site": true, "collector": true, "outbox": true, "keep_days": true, "max_mb": true, "sign": true, "push": true,
+	"remote_sites": true, "drop": true, "expected_every": true, "gap_wait": true, "collectors": true, "keys": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
