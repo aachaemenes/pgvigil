@@ -109,6 +109,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/alerts/dismiss` | operator | dismiss an alert |
 | `POST /api/alerts/mute` | operator | pause, resume or edit a mute rule (an edit to every instance, a tag or no end: admin) |
 | `POST /api/alerts/test` | operator | send a test alert |
+| `POST /api/alertwindows` | operator | a blackout, mute or digest window over one instance that ends at most 7 days away, or its end (every instance, a tag, no end or a later end: admin) |
 | `POST /api/plans/explain` | operator | EXPLAIN (stores a plan row) |
 | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |
 | `POST /api/plans/hypo` | operator | try a hypothetical index |
@@ -131,5 +132,12 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
 | `POST /api/jobs/thresholds` | admin | a job threshold |
 | `POST /api/jobs/exclusions` | admin | a job exclusion |
+| `POST /api/mssql/security/config` | admin | a SQL Server security setting (add, end) |
+| `POST /api/mssql/xecaptures/config` | admin | an XE capture setting (add, end) |
 | `POST /api/customreports` | admin | a custom report or folder (SQL run against servers, a view others share) |
 | `POST /api/reportmail` | admin | a report mail schedule (add, edit, end, enable, disable) |
+
+One write reaches no pgvigil role by design: `POST /api/slack/actions`, the Slack door's Acknowledge and Mute 1 h
+buttons on a Slack bot's posts. Slack signs each press, so it carries no pgvigil session: a Slack button acts without a
+pgvigil role, as whoever may press it in that Slack channel. The door is off unless `doors.slack_actions` is on in
+the site's file.

@@ -10,6 +10,7 @@ import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl, props, tile } from './ui';
 import { errorCell } from './doclinks';
+import { markNeed, routeWhy } from './needs';
 import { stripGrid } from './timestrip';
 import { planSourcesCol } from './mssql_plancache';
 
@@ -617,7 +618,8 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
         ? 'This instance keeps no statement text (query_text none): the script never captures it.'
         : `This instance's statement-text policy is ${policy}: the script starts there.`;
       textSel.setAttribute('aria-describedby', 'xc-text-note');
-      const why = d.writable ? '' : text(d.reason) || 'the settings cannot be edited on this server';
+      // the server's reason first, then the role (B24f: an XE capture setting is configuration others live with, admin)
+      const why = d.writable ? routeWhy('mssql/xecaptures/config') ?? '' : text(d.reason) || 'the settings cannot be edited on this server';
       const offNote = el('p', { id: 'xc-off-note', class: 'meta off-reason' }, `Editing is off here: ${why}.`);
       const editNote = el('div', { 'aria-live': 'polite' });
       const send = async (payload: Record<string, unknown>) => {
@@ -634,7 +636,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
           const input = r.value_kind === 'list'
             ? el('textarea', { rows: '4', cols: '40', 'aria-label': `New value of ${text(r.label)}, one entry a line` }, listEntries(r.value).join('\n'))
             : el('input', { type: 'text', size: '30', 'aria-label': `New value of ${text(r.label)}`, placeholder: 'ms' });
-          const save = el('button', { type: 'button', class: 'link' }, 'Save');
+          const save = markNeed(el('button', { type: 'button', class: 'link' }, 'Save'), 'mssql/xecaptures/config');
           const box = el('span', {}, input, ' ', save);
           if (why) { offControl(save, why, offNote); input.disabled = true; input.setAttribute('aria-describedby', 'xc-off-note'); return box; }
           save.addEventListener('click', () => {
@@ -643,7 +645,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
             void send({ op: 'add', scope: 'instance', instance_id: Number(ctx.instance), key: text(r.key), value });
           });
           if (r.config_id != null && r.set_at !== 'default') {
-            const clear = el('button', { type: 'button', class: 'link' }, 'Clear');
+            const clear = markNeed(el('button', { type: 'button', class: 'link' }, 'Clear'), 'mssql/xecaptures/config');
             clear.addEventListener('click', () => { void send({ op: 'end', config_id: Number(r.config_id) }); });
             box.append(' ', clear);
           }

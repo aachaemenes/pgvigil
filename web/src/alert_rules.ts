@@ -16,7 +16,13 @@ import { whatIsThis } from './sqlview';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, showMenu } from './ui';
 import { offBeside } from './ack';
 import { subNoun } from './metricfam';
-import { Can, markNeed, needControl, routeWhy } from './needs';
+import { Can, markNeed, needControl, roleWhy, routeWhy } from './needs';
+
+// the routes this file's buttons and dialogs post to (B24f): a rule needs admin, a window operator
+type RuleRoute = 'alertrules' | 'alertrules/end' | 'alertwindows';
+// wideWindow: a window over every instance or a tag, or with no end or one past 7 days, needs admin - the server's own
+// words for it (q_alert_scope.go AlertWindowWrite)
+const wideWindow = 'a fleet-wide, tag-wide or open-ended alert window';
 
 // note: the page's one visible sentence where rules cannot be written here - every off control of the page shares that
 // reason and points at it (the page that draws the sentence sets it); without one an off control says the reason beside itself
@@ -168,7 +174,7 @@ function starterButton(door: RulesDoor, after: () => void, tag?: string): HTMLEl
 
 // ruleButton: a button that opens the rule dialog; where rules cannot be written here it is off with the reason in
 // words on the page (the page's sentence, door.note, or beside itself)
-export function ruleButton(door: RulesDoor, label: string, aria: string, open: () => void, route: 'alertrules' | 'alertrules/end' = 'alertrules'): HTMLButtonElement {
+export function ruleButton(door: RulesDoor, label: string, aria: string, open: () => void, route: RuleRoute = 'alertrules'): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
   if (!door.writable) offBeside(b, door.reason || 'alert rules are read only here', door.note);
   else b.addEventListener('click', open);
@@ -341,7 +347,7 @@ export async function ruleDialog(o: RuleDialog) {
 // invalid() then comes first): below admin Save is off the B7 way with the role's words (review-18 b24f2 S5)
 function formDialog(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void,
   fields: HTMLElement[] = [], invalid: () => string = () => '', watch: HTMLElement[] = [],
-  at: { route?: 'alertrules' | 'alertrules/end'; can?: Can | null; serverOff?: boolean } = {}) {
+  at: { route?: RuleRoute; can?: Can | null; serverOff?: boolean } = {}) {
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const ok = markNeed(el('button', { type: 'submit' }, go), at.route ?? 'alertrules');
   const role = at.serverOff ? null : routeWhy(at.route ?? 'alertrules', at.can);
@@ -386,7 +392,7 @@ function formDialog(title: string, what: string, go: string, run: () => Promise<
 }
 
 // confirmWrite: a write with no field (end a rule, switch it on or off)
-function confirmWrite(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void, route: 'alertrules' | 'alertrules/end' = 'alertrules') {
+function confirmWrite(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void, route: RuleRoute = 'alertrules') {
   formDialog(title, what, go, run, after, [], () => '', [], { route });
 }
 
@@ -584,7 +590,7 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
   let rows: Row[] = [];
   try { rows = rowsOf((await get<{ windows?: Table | null }>('alertscope', { ...window_(ctx), part: 'windows' })).windows); }
   catch (e) { box.append(errorBox(e)); return box; }
-  box.append(el('div', { class: 'seg' }, ruleButton(door, 'New window', 'New window', () => { void windowDialog(door, undefined, redraw); })));
+  box.append(el('div', { class: 'seg' }, ruleButton(door, 'New window', 'New window', () => { void windowDialog(door, undefined, redraw); }, 'alertwindows')));
   const cols: Col[] = [
     { key: 'holds_now', label: 'now', fmt: (v, w) => !w.live ? 'ended' : v ? badge('holding', 'warn') : 'not now' },
     { key: 'window_id', label: 'window', num: true },
@@ -596,10 +602,10 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
     { key: 'created_at', label: 'made', fmt: (v, w) => `${fmtTime(v)} by ${String(w.created_by)}` + (w.replaces != null ? ` (replaces window ${String(w.replaces)})` : '') },
     { key: 'note', wide: true },
     { key: '_edit', label: '', fmt: (_v, w) => !w.live ? '' : el('span', { style: 'white-space:nowrap' },
-      ruleButton(door, 'Edit', `Edit window ${String(w.window_id)}`, () => { void windowDialog(door, w, redraw); }), ' · ',
+      ruleButton(door, 'Edit', `Edit window ${String(w.window_id)}`, () => { void windowDialog(door, w, redraw); }, 'alertwindows'), ' · ',
       ruleButton(door, 'End', `End window ${String(w.window_id)}`, () => confirmWrite(`End window ${String(w.window_id)}?`,
         'An ended window holds nothing from the next pass; the row stays with who ended it and when.', 'End',
-        () => post<WindowResult>('alertwindows', { op: 'end', window_id: Number(w.window_id) }) as Promise<RuleResult>, redraw))) },
+        () => post<WindowResult>('alertwindows', { op: 'end', window_id: Number(w.window_id) }) as Promise<RuleResult>, redraw, 'alertwindows'), 'alertwindows')) },
   ];
   box.append(grid(rows, cols, 'No window. A window holds alerts on weekdays during a daily span (a maintenance blackout, a nightly mute, a digest).'));
   return box;
@@ -616,7 +622,11 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
   ceiling.value = String(w?.severity_ceiling ?? 'warning');
   const ceilBox = el('label', {}, 'Holds ', ceiling, ' (a critical always pages at once)');
   const scope = el('select', {}, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tags' }, 'a tag list'), el('option', { value: 'instance' }, 'one instance'));
-  scope.value = String(w?.scope ?? 'fleet');
+  // the role (B24f, the lead 11-15 16:3x, as the mute dialog): below admin a window covers one instance and ends at
+  // most 7 days away - every instance, a tag and 'no end' are not offered, and an edit of a wider window says why
+  const wideWhy = roleWhy('admin', wideWindow, door.can);
+  if (wideWhy) for (const o of scope.options) o.disabled = o.value !== 'instance';
+  scope.value = String(w?.scope ?? (wideWhy ? 'instance' : 'fleet'));
   const instSel = el('select', {}, ...insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
   if (w?.instance_name != null) {
     const m = insts.find(i => i.name === w.instance_name);
@@ -656,6 +666,18 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
   const zone = el('input', { type: 'text', maxlength: '64', style: 'width:14em', value: String(w?.zone ?? browserZone) });
   const note = el('textarea', { rows: '2', maxlength: '500', style: 'width:100%' });
   note.value = String(w?.note ?? '');
+  // Ends: hours after now (or after the window's start, when that is later); an edit may keep its end
+  const ends = el('select', { 'aria-label': 'Ends' },
+    ...(w?.until != null ? [el('option', { value: 'keep' }, `as set (${fmtTime(w.until)})`)] : []),
+    el('option', { value: '24' }, '1 day'), el('option', { value: '168' }, '7 days'), el('option', { value: '0' }, 'no end'));
+  if (wideWhy) for (const o of ends.options) o.disabled = o.value === '0';
+  ends.value = w?.until != null ? 'keep' : wideWhy ? '168' : '0';
+  const startsMs = () => Math.max(Date.now(), w?.starts_at != null ? new Date(String(w.starts_at)).getTime() : 0);
+  // the 7-day choice ends 10 minutes short of 168 h (review-20 jw1 S1): the server measures the ceiling by its own clock,
+  // and a browser clock ahead of it by a second would else make an operator's one-instance 7-day window open-ended
+  const skewMs = (h: number) => h >= 168 ? 600e3 : 0;
+  const untilOf = (): string | undefined => ends.value === 'keep' ? String(w!.until) : Number(ends.value) > 0
+    ? new Date(startsMs() + Number(ends.value) * 3600e3 - skewMs(Number(ends.value))).toISOString() : undefined;
   const sync = () => {
     ceilBox.hidden = action.value !== 'digest'; tagsBox.hidden = scope.value !== 'tags'; instBox.hidden = scope.value !== 'instance';
     start.disabled = end.disabled = wholeDay.checked;
@@ -667,6 +689,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
     el('span', {}, ...days.map(x => x.label)),
     el('span', {}, el('label', {}, wholeDay, ' the whole day'), ' ', el('label', {}, 'from ', start), ' ', el('label', {}, 'to ', end), ' ', el('label', {}, 'in ', zone)),
     el('p', { class: 'meta' }, 'An end before the start runs across midnight, as part of the day it starts; an end of 00:00 runs to midnight. A digest window holds alerts only on channels that have a daily digest (digest_hour).'),
+    el('label', {}, 'Ends ', ends),
+    ...(wideWhy ? [el('p', { class: 'meta' }, `Every instance, a tag and 'no end' are not offered here: ${wideWhy}.`)] : []),
     el('label', {}, 'Name (optional) ', name),
     el('label', {}, 'Note (optional)', el('br'), note),
   ];
@@ -676,6 +700,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
     zone.value.trim() === '' ? 'a time zone' : '',
     scope.value === 'tags' && picked.size === 0 ? 'at least one tag' : '',
     scope.value === 'instance' && instSel.value === '' ? 'an instance' : '',
+    wideWhy && scope.value !== 'instance' ? `one instance (${wideWhy})` : '',
+    wideWhy && (untilOf() === undefined || new Date(untilOf()!).getTime() - startsMs() > 7 * 86400e3) ? `an end at most 7 days away (${wideWhy})` : '',
   ].filter(Boolean).join(', ');
   const body = () => ({
     op: w ? 'edit' : 'add', window_id: w ? Number(w.window_id) : undefined,
@@ -688,7 +714,7 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
     note: note.value.trim() || undefined,
     // an edit keeps what the form does not show: its start, its end date and the rule its scope came from
     starts_at: w?.starts_at != null ? String(w.starts_at) : undefined,
-    until: w?.until != null ? String(w.until) : undefined,
+    until: untilOf(),
     from_rule_id: w?.from_rule_id != null ? Number(w.from_rule_id) : undefined,
   });
   formDialog(w ? `Edit window ${String(w.window_id)}` : 'New window',
@@ -696,7 +722,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
       : 'The alert sender reads the window from its next pass. Held sends are logged; the Alerts page says why each was held.',
     'Save', () => post<WindowResult>('alertwindows', body()) as Promise<RuleResult>, after, fields,
     () => door.writable ? invalid() : `a server where alert windows can be written (${door.reason ?? 'read only here'})`,
-    [action, scope, start, end, zone, wholeDay, instSel, ticks, ...days.map(x => x.cb)]);
+    [action, scope, start, end, zone, wholeDay, instSel, ticks, ends, ...days.map(x => x.cb)],
+    { route: 'alertwindows', can: door.can, serverOff: !door.writable });
 }
 
 // ---- the findings history (0154; ENG#7, OVW#137, PBI#3): one instance's timeline -----------------------------------

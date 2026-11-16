@@ -52,6 +52,14 @@
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
 #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
 #     (unchanged); logout ok.
+#   S5w (POST /api/alertwindows, the join wiring's rel-sqltb-s2 section; review-20 jw1 S2 / box jobs C and D; written
+#     before its first run, on the joined tree only): an operator's add over every instance (an end 2 days away), over a
+#     tag, of one instance with no end, of one instance ending 8 days away, and a scope taken from a rule (from_rule_id,
+#     no scope of its own) each 403 with 'a fleet-wide, tag-wide or open-ended alert window needs the admin role'; the
+#     operator's add of one instance ending 6 days away done, its end done; the admin's add over every instance with no
+#     end done; the same five wide bodies as an edit of the operator's own window 403; an edit to one instance ending 6
+#     days away done; the operator's edit of the admin's fleet-wide window to one instance with an end done (judged by
+#     its successor, as the mute edit); the ceiling's edge by the server's clock: an end 168 h + 5 s away 403, 167 h done.
 #   The last line: 'proof-uiroles: <n> FAIL' and rc 1.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -263,6 +271,47 @@ else
   s5e o$SUF admin "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"y\",$FAR}" "an edit with an end 30 days away"
   s5e o$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"check_key\":\"z\",$END}" "an edit that keeps its one instance and an end"
   s5e a$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"any_instance\":true,\"check_key\":\"z\",$END}" "an edit to every instance"
+fi
+
+# ---- S5w: an alert window over every instance, a tag, with no end or a later end needs admin (the join wiring's
+# rel-sqltb-s2 section, the lead 11-15 16:3x; review-20 jw1 S2). Only on a tree with POST /api/alertwindows.
+WD="\"action\":\"blackout\",\"weekdays\":[1,2,3,4,5,6,7],\"start_local\":\"01:00\",\"end_local\":\"02:00\",\"zone\":\"UTC\""
+wend() { echo "\"until\":\"$(date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ)\""; }
+WWORDS="a fleet-wide, tag-wide or open-ended alert window needs the admin role"
+s5w() {   # s5w <user> <want: admin|done> <body> <what>; the reply's window_id ('' for none) in $WORK/s5w.id
+  local res code; res=$(post "$1" /api/alertwindows "$3"); code=${res%% *}
+  python3 -c "import json; print(json.load(open('$WORK/post.body')).get('window_id') or '')" > "$WORK/s5w.id" 2>/dev/null || : > "$WORK/s5w.id"
+  if [[ $2 == admin ]]; then
+    [[ $code == 403 && $res == *"$WWORDS"* && $res == *"$1 is"* ]] && ok "S5w ${ROLE[$1]} $4: refused ($res)" || bad "S5w ${ROLE[$1]} $4: $res"
+  else
+    [[ $code == 200 && $res == *'"outcome":"done"'* ]] && ok "S5w ${ROLE[$1]} $4: done ($res)" || bad "S5w ${ROLE[$1]} $4: $res"
+  fi
+}
+c=$(post a$SUF /api/alertwindows '{}'); c=${c%% *}
+if [[ $c == 404 || $c == 405 ]]; then echo "S5w: no POST /api/alertwindows on this tree ($c): not run"
+else
+  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"fleet\",$(wend '+2 days')}" "an add over every instance"
+  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"tags\",\"scope_tags\":[\"prod\"],$(wend '+2 days')}" "an add over a tag"
+  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID}" "an add of one instance with no end"
+  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+8 days')}" "an add of one instance ending 8 days away"
+  # the role is read before the store reads the rule: a rule id that does not exist is refused the same (fail closed)
+  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"\",\"from_rule_id\":999999,$(wend '+2 days')}" "a scope taken from a rule"
+  s5w o$SUF done "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+6 days')}" "an add of one instance ending 6 days away"; OW=$(cat "$WORK/s5w.id")
+  s5w a$SUF done "{\"op\":\"add\",$WD,\"scope\":\"fleet\"}" "an add over every instance with no end"; AW=$(cat "$WORK/s5w.id")
+  if [[ -z $OW || -z $AW ]]; then bad "S5w: no window_id from the done adds (operator '$OW', admin '$AW'): no edit row ran"
+  else
+    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"fleet\",$(wend '+2 days')}" "an edit to every instance"
+    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"tags\",\"scope_tags\":[\"prod\"],$(wend '+2 days')}" "an edit to a tag"
+    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"instance\",\"instance_id\":$IID}" "an edit with no end"
+    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+8 days')}" "an edit ending 8 days away"
+    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"\",\"from_rule_id\":999999,$(wend '+2 days')}" "an edit to a rule's scope"
+    s5w o$SUF done "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+6 days')}" "an edit of one instance ending 6 days away"; OW2=$(cat "$WORK/s5w.id")
+    s5w o$SUF done "{\"op\":\"edit\",\"window_id\":$AW,$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+2 days')}" "an edit of the admin's fleet-wide window to one instance with an end (its successor decides)"
+    s5w o$SUF done "{\"op\":\"end\",\"window_id\":${OW2:-$OW}}" "the end of its window"
+  fi
+  # the ceiling's edge by the server's clock (box job D): the dialog's 7-day choice now ends 10 minutes short of it
+  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+168 hours +5 seconds')}" "an add ending 168 h + 5 s away"
+  s5w o$SUF done "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+167 hours')}" "an add ending 167 h away"
 fi
 
 # ---- S9 --------------------------------------------------------------------------------------------------------------

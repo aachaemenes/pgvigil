@@ -170,6 +170,15 @@ func (s *Server) AlertScope(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, out, nil)
 }
 
+// rfcTime is a window's RFC 3339 field as openEnded reads it: nil when empty or not a time
+func rfcTime(v string) *time.Time {
+	t, err := time.Parse(time.RFC3339, v)
+	if v == "" || err != nil {
+		return nil
+	}
+	return &t
+}
+
 // AlertWindowWrite is POST /api/alertwindows {op: add|edit|end, ...alerts.WindowRequest}: one window made, replaced
 // by its successor, or ended; the row stays with who ended it and when.
 func (s *Server) AlertWindowWrite(w http.ResponseWriter, r *http.Request) {
@@ -214,6 +223,14 @@ func (s *Server) AlertWindowWrite(w http.ResponseWriter, r *http.Request) {
 	pay, err := alerts.WindowPayload(in, func(int) string { return instName })
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// the role (B24f, the lead 11-15 16:3x, as ackWrite's mute): an operator makes or edits a window over ONE instance
+	// that ends at most 7 days after now or its start (openEnded); a fleet or tag window, one with no end or a later
+	// one, and one that copies a rule's scope without naming its own (from_rule_id: fail closed) need admin. Ending a
+	// window is open to an operator. WindowPayload has checked the op and both times.
+	if in.Op != "end" && (in.Scope != "instance" || openEnded(rfcTime(in.StartsAt), rfcTime(in.Until), time.Now())) &&
+		!s.roleOK(w, r, needAdmin, "a fleet-wide, tag-wide or open-ended alert window") {
 		return
 	}
 	pay["ui_user"], pay["client"] = user, clientIP(r)

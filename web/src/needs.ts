@@ -43,10 +43,13 @@ export const routeNeeds = {
   'admin/applications/import': ['admin', 'importing the applications inventory file'],
   'alertrules': ['admin', 'changing an alert rule'],
   'alertrules/end': ['admin', 'ending an alert rule'],
+  'alertwindows': ['operator', 'changing an alert window'],
   'drives/thresholds': ['admin', 'changing a drive threshold'],
   'pg/thresholds': ['admin', 'changing a PostgreSQL threshold'],
   'jobs/thresholds': ['admin', 'changing a job threshold'],
   'jobs/exclusions': ['admin', 'changing a job exclusion'],
+  'mssql/security/config': ['admin', 'changing a SQL Server security setting'],
+  'mssql/xecaptures/config': ['admin', 'changing an XE capture setting'],
   'customreports': ['admin', 'changing a custom report'],
   'reportmail': ['admin', 'changing a report mail schedule'],
 } as const;

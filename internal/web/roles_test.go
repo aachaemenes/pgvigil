@@ -16,6 +16,15 @@ import (
 // operator, admin), and docs/roles.md's table is the same list. Both checks read the source, so a route added
 // without a need fails here, not on a box.
 
+// outsideRoles: the writes no pgvigil role reaches by design, each with its reason (the lead 11-15 16:3x); docs/roles.md
+// says each in words below its table
+var outsideRoles = map[string]string{
+	"POST /api/slack/actions": "403b's Slack door: Slack signs each button press (no X-Pgvigil header, no pgvigil session); doors.slack_actions is off by default and set in the site's file",
+}
+
+// outsideSeen counts each outsideRoles route's registrations in the last postNeeds read (TestRolesDocMatches wants one)
+var outsideSeen map[string]int
+
 // needNames are the need constants an s.post call may name (roles.go)
 var needNames = map[string]string{"needAnyone": "anyone", "needViewer": "viewer", "needOperator": "operator", "needAdmin": "admin"}
 
@@ -31,6 +40,7 @@ func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
 		t.Fatal(err)
 	}
 	needs = map[string]string{}
+	outsideSeen = map[string]int{}
 	for _, e := range ents {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
@@ -108,8 +118,10 @@ func inspectRegs(t *testing.T, fset *token.FileSet, d ast.Decl, needs map[string
 			switch {
 			case !hasMethod && pat != "/" && pat != "/api/":
 				*outside = append(*outside, at+": a method-less pattern "+pat)
-			case hasMethod && method != "GET" && method != "HEAD":
+			case hasMethod && method != "GET" && method != "HEAD" && outsideRoles[pat] == "":
 				*outside = append(*outside, at+": "+pat+" is registered outside s.post")
+			case hasMethod && outsideRoles[pat] != "":
+				outsideSeen[pat]++
 			}
 		}
 		return true
@@ -164,6 +176,16 @@ func TestRolesDocMatches(t *testing.T) {
 			t.Errorf("%s (%s in web.go) is not in docs/roles.md's table", k, code)
 		case code != docs:
 			t.Errorf("%s: web.go says %s, docs/roles.md says %s", k, code, docs)
+		}
+	}
+	// a write outside the roles by design (outsideRoles): registered once, and said in docs/roles.md's words below the
+	// table with its route in backticks (review-20 jw1 N3: the exemption had no check of its own)
+	for k := range outsideRoles {
+		if outsideSeen[k] != 1 {
+			t.Errorf("%s (outside the roles by design) is registered %d times in web.go, not once", k, outsideSeen[k])
+		}
+		if !strings.Contains(string(b), "`"+k+"`") {
+			t.Errorf("%s is outside the roles by design, but docs/roles.md does not say so (its route in backticks below the table)", k)
 		}
 	}
 }

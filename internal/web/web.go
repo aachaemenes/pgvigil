@@ -295,8 +295,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
 	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
 	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
-	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
-	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
+	api.HandleFunc("GET /api/alertscope", s.AlertScope)                     // task 403a: windows, held sends, flapping, overrides, history, digests
+	s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator; wide or open-ended: admin, in its handler)
 	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
 	api.HandleFunc("GET /api/views", s.Views)
 	api.HandleFunc("POST /api/views", s.ViewSave)
@@ -320,9 +320,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/memory", s.Memory)
 	api.HandleFunc("GET /api/mssql/audit", s.MSSQLAudit)
 	api.HandleFunc("GET /api/mssql/security", s.MSSQLSecurity)
-	api.HandleFunc("POST /api/mssql/security/config", s.MSSQLSecurityConfigWrite)
+	s.post(api, "POST /api/mssql/security/config", needAdmin, s.MSSQLSecurityConfigWrite)
 	api.HandleFunc("GET /api/mssql/xecaptures", s.MSSQLXECaptures)
-	api.HandleFunc("POST /api/mssql/xecaptures/config", s.MSSQLXECapturesConfigWrite)
+	s.post(api, "POST /api/mssql/xecaptures/config", needAdmin, s.MSSQLXECapturesConfigWrite)
 	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
 	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
 	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)

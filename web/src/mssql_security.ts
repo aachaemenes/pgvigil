@@ -8,6 +8,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl, tile } from './ui';
+import { markNeed, routeWhy } from './needs';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlSecurityTab = 'mssqlsecurity';
@@ -172,7 +173,8 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
     const out: Node[] = [];
     const state = rowsOf(d.state).find(r => r.collection === 'mssql_security');
     const read = rowsOf(d.read), rules = rowsOf(d.rules), findings = rowsOf(d.findings), context = rowsOf(d.context)[0];
-    const why = d.writable ? '' : text(d.reason) || 'the settings cannot be edited on this server';
+    // the server's reason first, then the role (B24f: a security setting is configuration others live with, admin)
+    const why = d.writable ? routeWhy('mssql/security/config') ?? '' : text(d.reason) || 'the settings cannot be edited on this server';
     // one visible sentence names why every switch and Save is off; each off control is described by it
     const offNote = el('p', { id: 'sec-off-note', class: 'meta off-reason' }, `Editing is off here: ${why}.`);
 
@@ -210,12 +212,12 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
     const switchCell = (_: unknown, r: Row): Node => {
       if (r.verdict === 'not enabled') return el('span', { class: 'meta' }, text(r.departure));
       const box = el('span', {});
-      const turn = el('button', { type: 'button', class: 'link' }, r.is_on === true ? 'Turn off' : 'Turn on');
+      const turn = markNeed(el('button', { type: 'button', class: 'link' }, r.is_on === true ? 'Turn off' : 'Turn on'), 'mssql/security/config');
       if (why) offControl(turn, why, offNote);
       else turn.addEventListener('click', () => send({ op: 'add', ...target(), key: 'rule:' + text(r.rule_key), value: r.is_on === true ? 'off' : 'on' }, editNote));
       box.append(turn);
       if (r.config_id != null && r.set_at !== 'default') {
-        const clear = el('button', { type: 'button', class: 'link' }, `Clear ${whereSet(r)}'s setting`);
+        const clear = markNeed(el('button', { type: 'button', class: 'link' }, `Clear ${whereSet(r)}'s setting`), 'mssql/security/config');
         if (why) offControl(clear, why, offNote);
         else clear.addEventListener('click', () => send({ op: 'end', config_id: Number(r.config_id) }, editNote));
         box.append(' ', clear);
@@ -245,7 +247,7 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'key', label: 'change', fmt: (_, r) => {
         const input = el('input', { type: 'text', 'aria-label': `New value of ${text(r.label)}`, size: '24',
           placeholder: r.value_kind === 'list' ? 'login, login, ...' : r.value_kind === 'days' ? 'days' : 'KERBEROS or NTLM' });
-        const save = el('button', { type: 'button', class: 'link' }, 'Save');
+        const save = markNeed(el('button', { type: 'button', class: 'link' }, 'Save'), 'mssql/security/config');
         const box = el('span', {}, input, ' ', save);
         if (why) {
           // a text box that is off takes no typing: disabled, and described by the same sentence
@@ -260,7 +262,7 @@ export async function mssqlSecurityView(ctx: Ctx): Promise<HTMLElement> {
           send({ op: 'add', ...target(), key: text(r.key), value }, editNote);
         });
         if (r.config_id != null && r.set_at !== 'default') {
-          const clear = el('button', { type: 'button', class: 'link' }, `Clear ${whereSet(r)}'s setting`);
+          const clear = markNeed(el('button', { type: 'button', class: 'link' }, `Clear ${whereSet(r)}'s setting`), 'mssql/security/config');
           clear.addEventListener('click', () => send({ op: 'end', config_id: Number(r.config_id) }, editNote));
           box.append(' ', clear);
         }
