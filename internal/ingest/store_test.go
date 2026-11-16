@@ -162,3 +162,46 @@ func TestRemoteObjectsOnAStore(t *testing.T) {
 		t.Errorf("SELECT on the three views for pgvigil_reader: %v", v)
 	}
 }
+
+// TestRemoteJoinDraftOnAStore (H1, the join lines): with scripts/remote-join-draft.sql applied (the box job applies it
+// after the migrate; skipped where it is not), pgvigil.findings carries a quiet site's finding (line 1), alert_due's
+// definition holds the remote floor (line 2: its behaviour under an open alert is the slice lead's proof), and
+// purge() runs with the remote ledgers' purge in it (line 3).
+func TestRemoteJoinDraftOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var drafted bool
+	if err := pool.QueryRow(ctx, `SELECT pg_get_viewdef('pgvigil.findings'::regclass) LIKE '%remote_silence_findings%'`).Scan(&drafted); err != nil {
+		t.Fatal(err)
+	}
+	if !drafted {
+		t.Skip("scripts/remote-join-draft.sql is not applied on this store")
+	}
+	site := fmt.Sprintf("h1j%d", time.Now().UnixNano()%1000000000)
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.remote_site_sync($1, '{}'::text[], 60, 180)`, site); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.remote_sites SET synced_at = now() - interval '10 minutes' WHERE name = $1`, site); err != nil {
+		t.Fatal(err)
+	}
+	var sev string
+	if err := pool.QueryRow(ctx, `SELECT severity FROM pgvigil.findings WHERE setting = 'remote site quiet' AND value = $1`, site).Scan(&sev); err != nil || sev != "critical" {
+		t.Errorf("findings' quiet site (never sent, synced 10 min ago, expected every minute): %q %v, want critical", sev, err)
+	}
+	var floor bool
+	if err := pool.QueryRow(ctx, `SELECT pg_get_functiondef('pgvigil.alert_due(timestamptz, jsonb)'::regprocedure) LIKE '%remote_instance_state%'`).Scan(&floor); err != nil || !floor {
+		t.Errorf("alert_due's remote floor: %v %v", floor, err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.purge(30)`); err != nil {
+		t.Errorf("purge() with the remote ledgers' purge: %v", err)
+	}
+}

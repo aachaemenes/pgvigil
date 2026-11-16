@@ -310,6 +310,21 @@ SELECT instance_id,
   FROM inst
  WHERE now() - as_of > make_interval(secs => 2 * expected_every_secs);
 
+-- remote_purge: the ledgers past p_days - a loaded bundle (its batches with it) and a cleared mark; each stream's
+-- high-water and an uncleared mark are kept (purge() calls it: scripts/REMOTE-join-lines.sql line 3)
+CREATE OR REPLACE FUNCTION pgvigil.remote_purge(p_days int DEFAULT 90)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  n bigint := 0;
+  v bigint;
+BEGIN
+  DELETE FROM pgvigil.remote_bundles WHERE state = 'loaded' AND loaded_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v = ROW_COUNT; n := n + v;
+  DELETE FROM pgvigil.remote_marks WHERE cleared_at IS NOT NULL AND cleared_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v = ROW_COUNT; n := n + v;
+  RETURN n;
+END $$;
+
 -- the reader (serve's pages) reads the views; nobody but the repository's owner (ingest inside pgvigil run) writes
 DO $$
 DECLARE t regclass;
@@ -325,5 +340,6 @@ END $$;
 REVOKE ALL ON FUNCTION pgvigil.remote_site_sync(text, text[], int, int), pgvigil.import_remote_ensure(text, text, text, text, text, int, boolean, text[]),
   pgvigil.remote_bundle_begin(text, text, text, text, bigint, timestamptz, timestamptz, text, int),
   pgvigil.import_remote_batch(bigint, text, int, int, timestamptz, jsonb, boolean),
-  pgvigil.remote_bundle_done(bigint, jsonb, jsonb, text), pgvigil.remote_mark(text, text, text, text, bigint, timestamptz, text, text, text)
+  pgvigil.remote_bundle_done(bigint, jsonb, jsonb, text), pgvigil.remote_mark(text, text, text, text, bigint, timestamptz, text, text, text),
+  pgvigil.remote_purge(int)
   FROM PUBLIC;
