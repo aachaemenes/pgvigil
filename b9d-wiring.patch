@@ -1,0 +1,34 @@
+diff --git i/cmd/pgvigil/main.go w/cmd/pgvigil/main.go
+index cc3be83d..e47e0171 100644
+--- i/cmd/pgvigil/main.go
++++ w/cmd/pgvigil/main.go
+@@ -100,6 +100,8 @@ func run(args []string) int {
+ 		err = runMCP(ctx, log, args[1:])
+ 	case "mssql-xe":
+ 		err = runMSSQLXE(args[1:])
++	case "mssql-agent-alerts":
++		err = runMSSQLAgentAlerts(args[1:])
+ 	case "import":
+ 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
+ 	default:
+@@ -150,7 +152,7 @@ func runMSSQLXE(args []string) error {
+ }
+ 
+ func usage() {
+-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|import|version> [-config file] [-once collection] [-instance name]")
++	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
+ 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
+ }
+ 
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6290ed6e..30c0aeeb 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -352,6 +352,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/state", s.MSSQLState)
+ 	api.HandleFunc("GET /api/mssql/checks", s.MSSQLChecks)
+ 	api.HandleFunc("GET /api/mssql/checks/fleet", s.MSSQLChecksFleet)
++	api.HandleFunc("GET /api/mssql/agent-alerts-script", s.MSSQLAgentAlertsScript) // B9d
+ 	api.HandleFunc("GET /api/mssql/waitinfo", s.MSSQLWaitInfo)
+ 	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
+ 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
