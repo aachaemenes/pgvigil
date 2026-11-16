@@ -35,7 +35,7 @@ const (
 type s3Dest struct {
 	c      *s3.Client
 	bucket string
-	root   string // "<prefix>/<name>/"
+	root   string // "<prefix>/<name>/", "<prefix>/" with no name
 	label  string
 }
 
@@ -95,7 +95,9 @@ func NewS3(ctx context.Context, o S3Options) (Destination, error) {
 	if root != "" {
 		root += "/"
 	}
-	root += o.Name + "/"
+	if o.Name != "" { // no name: the prefix itself (a remote collector's push, the hub's drops)
+		root += o.Name + "/"
+	}
 	label := "s3://" + o.Bucket + "/" + root
 	if o.Endpoint != "" {
 		label += " at " + o.Endpoint
