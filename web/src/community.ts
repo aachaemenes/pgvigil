@@ -194,7 +194,8 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const table = grid(tools as unknown as Row[], [
       { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, d, () => void openTool(r as unknown as Tool), cells.get(String(r.id)), above) },
       { key: 'description', wide: true },
-      { key: 'kit_version', label: 'installed (daily read)', fmt: (_v, r) => versionCell(r as unknown as Tool) },
+      // KITWATCH's read: the installed version as mssql_kits last read it (daily) and the version pgvigil was checked against
+      { key: 'kit_version', label: 'installed (daily read) / pgvigil checked', fmt: (_v, r) => versionCell(r as unknown as Tool) },
       { key: 'state', label: 'before it runs', wide: true, fmt: (_v, r) => cells.get(String(r.id)) ?? '' },
     ]);
     for (const t of tools) tables.set(t.id, table);
@@ -211,7 +212,8 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
       ...(d.version_notes ?? []).map(n => el('p', { class: 'meta' }, badge('mixed versions', 'warn'), ' ', n)),
       grid(procs as unknown as Row[], [
         { key: 'name', label: 'procedure' }, { key: 'group', label: 'kit' }, { key: 'where', label: 'database', fmt: v => String(v ?? '') },
-        { key: 'version', fmt: v => v == null ? '' : String(v) }, { key: 'version_date', label: 'its date', fmt: v => String(v ?? '') },
+        // ST3's read: the version installed on this instance, read from the procedure's own text when this page is drawn
+        { key: 'version', label: 'installed here (its text, read now)', fmt: v => v == null ? '' : String(v) }, { key: 'version_date', label: 'its date', fmt: v => String(v ?? '') },
         { key: 'tested', label: 'tested by pgvigil', fmt: v => String(v ?? '') },
         { key: 'version_word', label: 'status', fmt: v => badge(String(v ?? ''), wordCls(String(v ?? ''))) },
       ]));

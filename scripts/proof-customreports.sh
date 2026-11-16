@@ -1104,7 +1104,7 @@ import json, sys
 p = json.load(open(sys.argv[1])); a = json.load(open(sys.argv[2])); db = sys.argv[3]
 assert not p.get('error'), f"UV {db}: the driver: {p.get('error')}"
 assert p.get('heading'), f"UV {db}: no 'Installed community tools' heading on the page"
-want_cols = ['procedure', 'kit', 'database', 'version', 'its date', 'tested by pgvigil', 'status']
+want_cols = ['procedure', 'kit', 'database', 'installed here (its text, read now)', 'its date', 'tested by pgvigil', 'status']
 assert p.get('cols') == want_cols, f"UV {db}: the grid's columns {p.get('cols')}"
 api = {t['name']: t for t in a['tools'] if t['kind'] == 'proc' and t.get('version_word')}
 rows = {r['procedure']: r for r in p.get('rows') or []}
@@ -1112,7 +1112,7 @@ assert set(rows) == set(api) and len(rows) == len(p['rows']), f"UV {db}: the pag
 bad = []
 for n, t in api.items():
     r = rows[n]
-    want = {'kit': t['group'], 'database': t.get('where') or '', 'version': t.get('version') or '', 'its date': t.get('version_date') or '',
+    want = {'kit': t['group'], 'database': t.get('where') or '', 'installed here (its text, read now)': t.get('version') or '', 'its date': t.get('version_date') or '',
             'tested by pgvigil': t.get('tested') or '', 'status': t['version_word']}
     got = {k: r[k] for k in want}
     if got != want: bad.append((n, got, want))
