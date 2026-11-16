@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The agent door (docs/agents.md): with a login IN ROLE pgvigil_reader, pgvigil_agent, pgvigil mcp also serves the
+// The agent door (docs/agents.md): with a login IN ROLE pgvigil_reader, pgvigil_investigator, pgvigil mcp also serves the
 // investigation requests people make on serve's pages (Investigate on a finding, a question in the Ask box). The agent
 // lists or waits for them, claims one (the first claim wins; a 15-minute lease it renews), reads with the read tools and
 // run_select, and reports. The writes are the repository's own agent functions (migration 0268: SECURITY DEFINER, each
@@ -281,7 +281,7 @@ func agentTools() []tool {
 
 func (s *Server) door() (*AgentDoor, error) {
 	if s.agent == nil {
-		return nil, errors.New("the agent door is off: this login does not hold pgvigil_agent")
+		return nil, errors.New("the agent door is off: this login does not hold pgvigil_investigator")
 	}
 	return s.agent, nil
 }

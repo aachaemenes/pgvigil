@@ -77,7 +77,9 @@ func TestBackupDestOnAStore(t *testing.T) {
 	findings := func(id int) string {
 		t.Helper()
 		var s string
-		if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(severity || ':' || check_name || ':' || object, ' | ' ORDER BY check_name, object), '')
+		// one order on every server: the database's own collation sorts 'WAL ...' before 'base ...' under C and after it
+		// under en_US, so the names are compared lower-cased, byte by byte
+		if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(severity || ':' || check_name || ':' || object, ' | ' ORDER BY lower(check_name) COLLATE "C", object COLLATE "C"), '')
 			FROM pgvigil.pg_backup_dest_findings WHERE instance_id = $1`, id).Scan(&s); err != nil {
 			t.Fatal(err)
 		}

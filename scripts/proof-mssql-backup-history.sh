@@ -75,7 +75,8 @@
 #  I   (the page, light and dark, signed in) #/mssqlbackups?i=<bh-m>&db=pgbh6: the Backup history grid's header =
 #      DBA Dash's 24 Last Backup columns msdb's history holds, in order, then pgvigil's 15; one row per stored set of
 #      pgbh6; set a's last verify cell 'done ...'; Verify buttons on disk rows; the grid's right-click menu on a row
-#      holds 'Verify this backup...'; the Backup checks grid drawn, its read line (read while SELECT on restorehistory
+#      holds 'Verify this backup...' (the j16 join, J16 GRIDMENU VERIFY: on a disk row; on the row of a log backup to a
+#      URL, stored after the last read, the grid's menu is drawn without it); the Backup checks grid drawn, its read line (read while SELECT on restorehistory
 #      is denied) 'the restores: not read: no right (SELECT on msdb.dbo.restorehistory) - the restores read before
 #      stay'; db=pgbh2r: its Restore history 2 rows; axe-core
 #      4.14.0 (WCAG 2.1 A and AA) 0 violation nodes. Skipped (NOT PROVEN) without chromium and node.
@@ -505,9 +506,17 @@ if command -v chromium >/dev/null && command -v node >/dev/null && [ -z "${PROOF
   CDP=$((PORT + 1)); chromium --headless=new ${PGVIGIL_CHROMIUM_FLAGS:-} --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
   CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  # the menu check (J16 GRIDMENU VERIFY): one log backup of pgbh6 to a URL, stored after the last read (msdb has no such
+  # set: the store keeps it until the next history read; a log, alone in its type, inside the newest 10 the page shows)
+  UURL=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  q "insert into pgvigil.mssql_backup_history select (jsonb_populate_record(h, jsonb_build_object('backup_set_uuid', '$UURL',
+      'backup_set_id', h.backup_set_id + 100000, 'backup_type', 'L', 'is_copy_only', false, 'device_kind', 'url',
+      'path', 'https://pgbh.blob.core.windows.net/c/pgbh6.trn', 'family_count', 1, 'position', 1))).*
+     from pgvigil.mssql_backup_history h where h.instance_id = $I and h.database_name = 'pgbh6' order by h.backup_set_id limit 1" >/dev/null \
+    || fail "I: the stored URL backup of pgbh6"
   NH=$(q "select count(*) from pgvigil.mssql_backup_history where instance_id=$I and database_name='pgbh6'")
   cat > "$WORK/page.mjs" <<'JS'
-const [port, U, axePath, inst, user] = process.argv.slice(2);
+const [port, U, axePath, inst, user, urlUuid] = process.argv.slice(2);
 const pass = process.env.PGV_PROOF_UPW ?? '';
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
@@ -543,8 +552,13 @@ for (const theme of ['light', 'dark']) {
       r.buttons = await ev(`document.querySelectorAll('#mssql-backups-history-grid button.act-verify').length`);
       r.checks = await ev(`!!document.querySelector('#mssql-backups-checks-grid table.grid')`);
       r.noright = await ev(`document.querySelector('main').innerText.includes('the restores: not read: no right (SELECT on msdb.dbo.restorehistory) - the restores read before stay')`);
-      r.menu = await ev(`(() => { const td = document.querySelector('#mssql-backups-history-grid table.grid > tbody > tr > td'); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
-        const m = [...document.querySelectorAll('.menu [role=menuitem]')].map(b => b.textContent); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return m; })()`);
+      // the grid's right-click menu on a row's first cell: a disk row (it has a Verify button), then the stored URL row
+      const menuAt = row => `(() => { const td = ${row}?.closest('tr')?.querySelector('td'); if (!td) return null;
+        td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+        const m = [...document.querySelectorAll('.menu [role=menuitem]')].map(b => b.textContent); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return m; })()`;
+      r.menu = await ev(menuAt(`document.querySelector('#mssql-backups-history-grid button.act-verify')`));
+      await sleep(200);
+      r.menuUrl = await ev(menuAt(`document.querySelector('#mssql-backups-history-grid [data-verify-uuid="${urlUuid}"]')`));
     }
     if (theme === 'light' && name === 'rest') r.rows = await ev(`document.querySelectorAll('#mssql-backups-restores-grid table.grid > tbody > tr').length`);
     await cmd('Runtime.evaluate', { expression: axeSrc });
@@ -555,7 +569,7 @@ for (const theme of ['light', 'dark']) {
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
-  PGV_PROOF_UPW="$UPW" node "$WORK/page.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$I" "$USR" > "$WORK/page.json" 2> "$WORK/page.err" || fail "I: the page check did not run: $(tail -c 400 "$WORK/page.err")"
+  PGV_PROOF_UPW="$UPW" node "$WORK/page.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$I" "$USR" "$UURL" > "$WORK/page.json" 2> "$WORK/page.err" || fail "I: the page check did not run: $(tail -c 400 "$WORK/page.err")"
   kill "$CHR" 2>/dev/null || true; CHR=
   NH=$NH python3 - "$WORK/page.json" <<'PYI' || fail "I: the page"
 import json, os, sys
@@ -578,10 +592,11 @@ if not any(str(v).startswith("done ") for v in h.get("verified") or []): bad.app
 if not h.get("buttons"): bad.append("no Verify button")
 if not h.get("checks"): bad.append("no Backup checks grid")
 if not h.get("noright"): bad.append("the read line without 'the restores: not read: no right (SELECT on msdb.dbo.restorehistory) - the restores read before stay'")
-if "Verify this backup..." not in (h.get("menu") or []): bad.append(f"the right-click menu: {h.get('menu')}")
+if "Verify this backup..." not in (h.get("menu") or []): bad.append(f"the right-click menu on a disk row: {h.get('menu')}")
+if not h.get("menuUrl") or "Verify this backup..." in h["menuUrl"]: bad.append(f"the right-click menu on the URL row (drawn, no Verify): {h.get('menuUrl')}")
 if d["rest-light"].get("rows") != 2: bad.append(f"the Restore history of pgbh2r: {d['rest-light'].get('rows')} rows")
 if bad: print("\n".join(bad)); sys.exit(1)
-print(f"ok   I: light and dark: drawn, no error box, 0 axe violation nodes; Backup history header = DBA Dash's 24 + pgvigil's 15 in order, {h['rows']} rows, {h['buttons']} Verify buttons, a 'done' last verify, the menu {h['menu']}; Backup checks drawn, the denied read's line shown; pgbh2r's Restore history 2 rows")
+print(f"ok   I: light and dark: drawn, no error box, 0 axe violation nodes; Backup history header = DBA Dash's 24 + pgvigil's 15 in order, {h['rows']} rows, {h['buttons']} Verify buttons, a 'done' last verify, the menu {h['menu']} (the URL row's without Verify); Backup checks drawn, the denied read's line shown; pgbh2r's Restore history 2 rows")
 PYI
 else notproven "I: the page - no chromium or node here (or PROOF_SKIP_PAGE)"; fi
 

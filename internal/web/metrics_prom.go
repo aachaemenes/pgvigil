@@ -15,7 +15,7 @@ package web
 //     session is read, so a stale cookie never reaches the nil login state.
 //   - The figures: pgvigil.metrics_newest (0196, one set-based statement) in the Metrics grid's units, converted here
 //     to base units by the frozen name table (promNames: one row per metric_catalog key; a key without a row fails
-//     TestPromNamesCoverTheCatalog); gauges only, no explicit timestamps, a stale point left out and the newest sample's
+//     TestPromNamesCoverTheCatalog unless its family is on promNotExported); gauges only, no explicit timestamps, a stale point left out and the newest sample's
 //     time per family given as pgvigil_sample_timestamp_seconds. The database family's instance totals always; each
 //     database's own series with metrics.databases on.
 //   - The body is rendered in the background ahead of expiry (one render at a time), the previous body served while a
@@ -457,7 +457,8 @@ type promName struct {
 }
 
 // promNames: the 62 rows of the B24d name table (notes '### The name table'); TestPromNamesCoverTheCatalog fails on a
-// catalog key without a row. unit 'interval' = a count per interval exported per second.
+// catalog key without a row whose family is not on promNotExported. unit 'interval' = a count per interval exported
+// per second.
 var promNames = []promName{
 	{"sessions.total", "pgvigil_sessions", "", "count"},
 	{"sessions.active", "pgvigil_sessions_active", "", "count"},
@@ -521,6 +522,17 @@ var promNames = []promName{
 	{"host.mem_free", "pgvigil_host_memory_free_bytes", "", "bytes"},
 	{"host.swap_used", "pgvigil_host_swap_used_bytes", "", "bytes"},
 	{"host.load1", "pgvigil_host_load1", "", "count"},
+}
+
+// promNotExported: the metric_catalog families /metrics does not export yet, each with its words why - one rule per
+// family, so every key of such a family is left out and none has a promNames row. metrics_newest (0196) reads the
+// points of the nine families of 0085's catalog; the families the catalog gained after it carry no value series here
+// until it reads theirs (their pgvigil_sample_timestamp_seconds is given).
+var promNotExported = map[string]string{
+	"counters":   "SQL Server's performance counters: metrics_newest reads no counter points yet",
+	"xe":         "the Extended Events capture's client timeouts: metrics_newest reads no attention points yet",
+	"waits":      "SQL Server's wait seconds per core per minute: metrics_newest reads no wait points yet",
+	"collection": "the collections' own health, a series per collection: metrics_newest reads no collection points yet",
 }
 
 // promUnitWords is a HELP line's account of the conversion from the Metrics grid's unit.
@@ -802,7 +814,7 @@ func (s *Server) promNewest(ctx context.Context, b *promBody, insts map[int32]pr
 		}
 		p, ok := byKey[family+"."+metric]
 		if !ok {
-			continue // a key the table does not name: the test fails on it, the endpoint stays up
+			continue // a key the table does not name (a family on promNotExported, or a gap the test fails on): the endpoint stays up
 		}
 		v, ok := promValue(p.unit, value, secs)
 		if !ok {

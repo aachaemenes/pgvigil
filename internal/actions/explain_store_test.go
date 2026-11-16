@@ -44,6 +44,16 @@ func TestExplainAnalyzeLoginsOnAStore(t *testing.T) {
 	pw := "Ea" + hex.EncodeToString(b) // a throwaway login's password, unrelated to its name
 	sfx := time.Now().UnixNano() % 1000000000
 	name := func(k string) string { return fmt.Sprintf("pgvea_%s_%d", k, sfx) }
+	// pg_read_all_data is PostgreSQL 14's (the gate reads it through to_regrole: a 13 server has none to refuse); the
+	// login rad and its case run from 14 only, and on 13 the run says so by version (PG13-REPORTROLE, its review's #1)
+	var vnum int
+	if err := admin.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&vnum); err != nil {
+		t.Fatal(err)
+	}
+	hasReadAll := vnum >= 140000
+	if !hasReadAll {
+		t.Logf("PostgreSQL %d: no pg_read_all_data role (14+) - the login rad and its case are not run", vnum)
+	}
 	roles := []struct{ key, make string }{
 		{"su", "NOLOGIN SUPERUSER"},
 		{"rd", "LOGIN IN ROLE pgvigil_reader"},
@@ -59,6 +69,9 @@ func TestExplainAnalyzeLoginsOnAStore(t *testing.T) {
 		}
 	}()
 	for _, r := range roles {
+		if r.key == "rad" && !hasReadAll {
+			continue
+		}
 		if _, err := admin.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s PASSWORD '%s' %s`, name(r.key), pw, r.make)); err != nil {
 			t.Fatal(err)
 		}
@@ -69,6 +82,9 @@ func TestExplainAnalyzeLoginsOnAStore(t *testing.T) {
 		{"insu", "the explain login is a member of a superuser role"},
 		{"alr", "the explain login is a member of pgvigil_alerter"},
 	} {
+		if c.key == "rad" && !hasReadAll {
+			continue
+		}
 		g := ExplainGate{Enabled: true, Configured: true, DSN: dsn + " user=" + name(c.key) + " password=" + pw, Timeout: 10 * time.Second}
 		r := ExplainRequest{InstanceID: 1, Instance: "repo", Datname: cfg.Database, Statement: "SELECT 1",
 			Reason: "the explain login's refusal on a repository, a store test", User: "proof"}

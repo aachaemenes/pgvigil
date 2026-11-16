@@ -70,7 +70,7 @@ func (d *blobDest) Upload(ctx context.Context, key, local string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = d.c.UploadFile(ctx, d.container, d.root+key, f, &azblob.UploadFileOptions{BlockSize: 16 << 20, Concurrency: 2})
 	return err
 }
@@ -78,8 +78,8 @@ func (d *blobDest) Upload(ctx context.Context, key, local string) error {
 func (d *blobDest) Put(ctx context.Context, key string, body []byte, onlyNew bool) error {
 	var o *azblob.UploadBufferOptions
 	if onlyNew {
-		any := azcore.ETagAny
-		o = &azblob.UploadBufferOptions{AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfNoneMatch: &any}}}
+		etagAny := azcore.ETagAny
+		o = &azblob.UploadBufferOptions{AccessConditions: &blob.AccessConditions{ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfNoneMatch: &etagAny}}}
 	}
 	_, err := d.c.UploadBuffer(ctx, d.container, d.root+key, body, o)
 	if bloberror.HasCode(err, bloberror.BlobAlreadyExists, bloberror.ConditionNotMet) {
@@ -96,7 +96,7 @@ func (d *blobDest) Get(ctx context.Context, key string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 	return io.ReadAll(out.Body)
 }
 

@@ -68,6 +68,9 @@ func TestMetricsSampleTimesNamesEveryFamilyOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT date_trunc('second', now()) - interval '10 minutes', date_trunc('hour', now()) - interval '2 hours'`).Scan(&at, &hour); err != nil {
 		t.Fatal(err)
 	}
+	// a partitioned table's partition is made by the table's own maker, as its importer makes it: mssql_counter_read and
+	// mssql_wait_sample are month-partitioned (0124's and 0064's importers call ensure_month_partition) - a day
+	// partition there overlaps the month's (42P17)
 	type seed struct {
 		table string
 		sql   []string // $1 the instance, $2 the sample's time (the hour's start for collection)
@@ -76,7 +79,7 @@ func TestMetricsSampleTimesNamesEveryFamilyOnAStore(t *testing.T) {
 	}
 	seeds := map[string]seed{
 		"counters": {"mssql_counter_read", []string{
-			`SELECT pgvigil.mssql_ensure_day_partition('mssql_counter_read', $2::timestamptz) WHERE $1::int IS NOT NULL`,
+			`SELECT pgvigil.ensure_month_partition('mssql_counter_read', $2::timestamptz) WHERE $1::int IS NOT NULL`,
 			`INSERT INTO pgvigil.mssql_counter_read (instance_id, snapshot_at, scope, rows_read) VALUES ($1::int, $2::timestamptz, 'instance', 1)`}, at,
 			`DELETE FROM pgvigil.mssql_counter_read WHERE instance_id = $1`},
 		// a done read while the capture ran is a sample; a later read that is not done, or done while the capture was
@@ -86,7 +89,7 @@ func TestMetricsSampleTimesNamesEveryFamilyOnAStore(t *testing.T) {
 			   ($1::int, $2::timestamptz + interval '1 minute', 'running', false), ($1::int, $2::timestamptz + interval '2 minutes', 'stopped', true)`}, at,
 			`DELETE FROM pgvigil.mssql_attention_reads WHERE instance_id = $1`},
 		"waits": {"mssql_wait_sample", []string{
-			`SELECT pgvigil.mssql_ensure_day_partition('mssql_wait_sample', $2::timestamptz) WHERE $1::int IS NOT NULL`,
+			`SELECT pgvigil.ensure_month_partition('mssql_wait_sample', $2::timestamptz) WHERE $1::int IS NOT NULL`,
 			`INSERT INTO pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, waiting_tasks, wait_ms, signal_ms, interval_secs)
 			   VALUES ($1::int, $2::timestamptz, 'PAGEIOLATCH_SH', 1, 1, 0, 60)`}, at,
 			`DELETE FROM pgvigil.mssql_wait_sample WHERE instance_id = $1`},

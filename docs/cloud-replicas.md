@@ -50,6 +50,10 @@ Replication tab and an RDS for SQL Server instance's Availability tab: source an
 over the range bar's window (hours past a day; a window past 31 days shows its newest 31, and the page says so), the
 changes, the findings.
 
+The hours are rolled up as each read is stored. When a rollup fails, the samples are kept and the collector's error says
+so; the key's hours are rebuilt by its next imports (each heals what fits in its 200 ms, a long range over several). `pgvigil purge` drops the hours past their retention (730 days) but
+does not rebuild a failed key's hours yet (Known limit).
+
 The instance's own failover is read too, through the same door: RDS's event list (category failover: 'Multi-AZ instance
 failover started' and '... completed') and Cloud SQL's FAILOVER operations. An RDS Multi-AZ DB instance's or a Cloud SQL
 HA instance's failover reads 'restart' in the instance's own events (its standby runs no engine until it takes over);

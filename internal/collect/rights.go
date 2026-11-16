@@ -83,6 +83,13 @@ var Rights = []Right{
 		Grant:  "GRANT SELECT ON pg_catalog.pg_hba_file_rules TO {role};\nGRANT EXECUTE ON FUNCTION pg_catalog.pg_hba_file_rules() TO {role};",
 		Checks: []string{"has_table_privilege('pg_catalog.pg_hba_file_rules', 'SELECT')", "has_function_privilege('pg_catalog.pg_hba_file_rules()', 'EXECUTE')"},
 		On:     selfManaged},
+	// logical.go's read (logicalSubOidSQL) joins every subscription on this column
+	{Key: "subscription_oid", Name: "SELECT on pg_subscription's oid (PostgreSQL 13)",
+		For:    "the logical replication read's subscriptions and their tables (PostgreSQL 13 grants the column to superusers only; 14 grants it to all)",
+		Check:  "has_column_privilege('pg_catalog.pg_subscription', 'oid', 'SELECT')",
+		Grant:  "-- run as the owner of pg_catalog on that server\nGRANT SELECT (oid) ON pg_catalog.pg_subscription TO {role};",
+		Checks: []string{"has_column_privilege('pg_catalog.pg_subscription', 'oid', 'SELECT')"},
+		On:     selfManaged},
 }
 
 // RightsExceptions are the checks the package's statements make that no right of the catalogue stands for, each with
@@ -104,10 +111,18 @@ var RightsExceptions = map[string]string{
 	"has_column_privilege('pgagent.pga_job', 'jobnextrun', 'UPDATE')":                                                                                  "the actions login's (the job actions)",
 	"has_column_privilege('pgagent.pga_job', 'jobagentid', 'SELECT')":                                                                                  "the actions login's (the job actions)",
 	"has_column_privilege('pgagent.pga_job', 'jobenabled', 'SELECT')":                                                                                  "the actions login's (the job actions)",
-	"pg_has_role(current_user, 'pg_signal_backend', 'USAGE')":                                                                                          "the actions login's (cancel and terminate)",
-	"pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER')":                                                                                 "a custom collection's refusal of a login that is too strong",
-	"pg_has_role(session_user, 'pg_write_server_files', 'MEMBER')":                                                                                     "a custom collection's refusal of a login that is too strong",
-	"pg_has_role(session_user, 'pg_read_server_files', 'MEMBER')":                                                                                      "a custom collection's refusal of a login that is too strong",
+	// B9c's job enable / disable checks (jobs_actions.go) and A26's body probe (schema.go)
+	"has_column_privilege('pgagent.pga_job', 'jobenabled', 'UPDATE')":                               "the actions login's (the job enable / disable)",
+	"has_table_privilege('pgagent.pga_schedule', 'SELECT')":                                         "the actions login's (the job enable / disable: the schedule read)",
+	"has_table_privilege('pgagent.pga_exception', 'SELECT')":                                        "the actions login's (the job enable / disable: the schedule read)",
+	"has_schema_privilege('cron', 'USAGE')":                                                         "the actions login's (the job enable / disable on pg_cron)",
+	"has_function_privilege('`+cronAlterJob+`', 'EXECUTE')":                                         "the actions login's (the job enable / disable on pg_cron: cron.alter_job)",
+	"has_table_privilege('cron.job', 'SELECT')":                                                     "the actions login's (the job enable / disable on pg_cron)",
+	"has_function_privilege(to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)'), 'EXECUTE')": "a default right checked, never asked for: the schema collection's probe of pg_get_function_sqlbody (PostgreSQL 14+, PUBLIC's unless revoked); where it is revoked the schema run is partial and says so (a collector_error row), and a change to a SQL-standard function body (BEGIN ATOMIC, RETURN) is not seen",
+	"pg_has_role(current_user, 'pg_signal_backend', 'USAGE')":                                       "the actions login's (cancel and terminate)",
+	"pg_has_role(session_user, 'pg_execute_server_program', 'MEMBER')":                              "a custom collection's refusal of a login that is too strong",
+	"pg_has_role(session_user, 'pg_write_server_files', 'MEMBER')":                                  "a custom collection's refusal of a login that is too strong",
+	"pg_has_role(session_user, 'pg_read_server_files', 'MEMBER')":                                   "a custom collection's refusal of a login that is too strong",
 }
 
 // RightState is one right as the server answered it for the login.

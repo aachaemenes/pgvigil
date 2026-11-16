@@ -17,7 +17,7 @@ import (
 // dropped when the test ends. A fresh database, not the scratch store the other store tests share: the HA join's
 // faults are faults of the ORDER the files run in (0141-0144 and 0150 arrive below the join's own 0190, which is
 // edited in place), and a store that applied an older 0190 never runs the new one.
-func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
+func haJoinFreshStore(ctx context.Context, t *testing.T) *Repo {
 	t.Helper()
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -131,7 +131,7 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	r := haJoinFreshStore(t, ctx)
+	r := haJoinFreshStore(ctx, t)
 	str := func(sql string, args ...any) string {
 		t.Helper()
 		var s string

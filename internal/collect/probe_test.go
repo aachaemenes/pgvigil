@@ -15,7 +15,7 @@ func TestProbeTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -58,7 +58,7 @@ func TestProbeTCP(t *testing.T) {
 	// a dial that never answers: not answered at the connect's wait; one cut by the round's deadline: not probed
 	p = newProber("tcp", true)
 	p.connectMax = 50 * time.Millisecond
-	p.dial = func(ctx context.Context, addr string) error { <-ctx.Done(); return ctx.Err() }
+	p.dial = func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() }
 	p.noteRemote("i9", "black", "10.255.255.1:5432")
 	p.round(context.Background(), now)
 	if r := one(p.take(), "10.255.255.1:5432"); r == nil || r.Answered == nil || *r.Answered != 0 {
@@ -66,7 +66,7 @@ func TestProbeTCP(t *testing.T) {
 	}
 	p = newProber("tcp", true)
 	p.connectMax, p.roundMax = time.Second, 50*time.Millisecond
-	p.dial = func(ctx context.Context, addr string) error { <-ctx.Done(); return ctx.Err() }
+	p.dial = func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() }
 	p.noteRemote("i9", "slow", "10.255.255.2:5432")
 	p.round(context.Background(), now)
 	if r := one(p.take(), "10.255.255.2:5432"); r == nil || r.Answered != nil || r.Sent != 0 {
@@ -95,7 +95,7 @@ func TestProbeTCP(t *testing.T) {
 	// prober of another method stands for it here
 	p = newProber("icmp", true)
 	p.connectMax = 20 * time.Millisecond
-	p.dial = func(ctx context.Context, addr string) error { <-ctx.Done(); return ctx.Err() }
+	p.dial = func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() }
 	p.noteRemote("i9", "black", "10.255.255.1:5432")
 	p.round(context.Background(), now)
 	_ = p.take()

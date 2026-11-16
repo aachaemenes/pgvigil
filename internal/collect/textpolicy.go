@@ -501,18 +501,40 @@ func closeAt(s string, l litSpan) int {
 	return l.end
 }
 
-// innerValue is the value that starts at p inside an enclosing literal: one in T-SQL's doubled quotes (up to the next
-// pair or the literal's end), else a bare word up to a space, ; , ) " or a quote. The end offset and whether it is
-// the doubled-quote form; ok false = no value.
+// innerValue is the value that starts at p inside an enclosing literal: one in T-SQL's doubled quotes (up to the pair
+// that closes it - an escaped quote inside it is four quotes - or the literal's end), one in square brackets (Red Gate
+// SQL Backup's PASSWORD = [...]: up to its ], ]] inside, or the literal's end), else a bare word up to a space, ; , )
+// " or a quote. The end offset and whether it is the doubled-quote form; ok false = no value. (The j16 join's review
+// 5 #1 / #2: the doubled value ended at the first pair and the bracketed one at a space, comma or quote, so the mask
+// took a prefix and left the key; jobmask's valDoubled and valBracket read them so.)
 func innerValue(s string, p, stop int) (end int, doubled bool, ok bool) {
 	if p >= stop {
 		return p, false, false
 	}
 	if strings.HasPrefix(s[p:stop], "''") {
-		if k := strings.Index(s[p+2:stop], "''"); k >= 0 {
-			return p + 2 + k + 2, true, true
+		for i := p + 2; i < stop; {
+			if strings.HasPrefix(s[i:stop], "''''") {
+				i += 4 // an escaped quote inside the value
+				continue
+			}
+			if strings.HasPrefix(s[i:stop], "''") {
+				return i + 2, true, true
+			}
+			i++
 		}
 		return stop, true, true
+	}
+	if s[p] == '[' {
+		for i := p + 1; i < stop; i++ {
+			if s[i] == ']' {
+				if i+1 < stop && s[i+1] == ']' {
+					i++ // ]] inside the value
+					continue
+				}
+				return i + 1, false, true
+			}
+		}
+		return stop, false, true
 	}
 	if s[p] == '"' { // a value in double quotes (an OLE DB connection string's Pwd="..."): to its closing quote, quotes included
 		if k := strings.IndexByte(s[p+1:stop], '"'); k >= 0 {

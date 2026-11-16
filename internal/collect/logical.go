@@ -105,7 +105,7 @@ SELECT 'publication' AS kind, current_database()::text AS datname, p.pubname::te
        (SELECT count(*) FROM pg_publication_tables t WHERE t.pubname = p.pubname) AS table_count
   FROM pg_publication p`
 
-func (logicalCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+func (logicalCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
 	out := []Row{}
 	failed := 0
 	fail := func(source string, err error) {
@@ -187,7 +187,7 @@ func (logicalCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 		subs, _ := d["has_subs"].(bool)
 		subs = subs && oidOK // pg_subscription_rel's read joins pg_subscription's oid too
 		pubs, _ := d["has_pubs"].(bool)
-		read := func(ctx context.Context, c *pgx.Conn) ([]Row, error) {
+		read := func(_ context.Context, c *pgx.Conn) ([]Row, error) {
 			var rs []Row
 			if subs {
 				r, err := query(c, logicalRelsSQL)

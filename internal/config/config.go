@@ -312,6 +312,10 @@ func (c *Config) validateGMSA() error {
 // DefaultDBADashInterval is the read cadence of a DBADash repository.
 const DefaultDBADashInterval = 5 * time.Minute
 
+// DefaultQueryText is the statement-text policy of a file with no query_text line (Validate); the demo serve holds it
+// too, so its pages read every instance as an install with no line reads it
+const DefaultQueryText = "full"
+
 // DSN resolves the connection string; "" = an unset variable or an unreadable file.
 func (d DBADashRepo) DSN() string { return Resolve(strings.TrimSpace(d.DSNRaw)) }
 
@@ -698,7 +702,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("repository.dsn is required")
 	}
 	if c.QueryText == "" {
-		c.QueryText = "full"
+		c.QueryText = DefaultQueryText
 	}
 	if err := c.validateCQ(); err != nil {
 		return err

@@ -77,7 +77,7 @@ func (s *session) record(ctx context.Context, w Hour, final bool, started time.T
 	defer cancel()
 	conn, err := connectDoor(ctx, s.c.DSN)
 	if err == nil {
-		defer conn.Close(context.Background())
+		defer func() { _ = conn.Close(context.Background()) }()
 		pass, outcome := "1", "ok"
 		if final {
 			pass = "final"
@@ -94,7 +94,7 @@ func (s *session) record(ctx context.Context, w Hour, final bool, started time.T
 			s.c.Name, s.c.Dest.String(), w.From, w.To, pass, started, outcome, st.tables, st.files, st.rows, st.bytes, e)
 	}
 	if err != nil {
-		fmt.Fprintf(s.c.Err, "pgvigil export: the window's row for the Collector page could not be written: %s\n", oneLine(err.Error()))
+		_, _ = fmt.Fprintf(s.c.Err, "pgvigil export: the window's row for the Collector page could not be written: %s\n", oneLine(err.Error()))
 	}
 }
 
@@ -119,27 +119,27 @@ func open(ctx context.Context, c Config) (*session, error) {
 	}
 	s := &session{c: c, conn: conn}
 	if err := guard(ctx, conn); err != nil {
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 		return nil, err
 	}
 	if s.tables, err = Resolve(ctx, conn, Options{Carry: c.Carry, Exclude: c.Exclude, StateMaxBytes: c.MaxBytes}); err != nil {
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 		return nil, err
 	}
 	// the repository's clock, never this host's: the windows are the repository's hours
 	if err := conn.QueryRow(ctx, "/* pgvigil-export:clock */ SELECT now(), (SELECT count(*) FROM pgvigil.schema_version)").Scan(&s.now, &s.migrations); err != nil {
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("the repository's clock: %w", err)
 	}
 	s.now, s.opened = s.now.UTC(), time.Now()
 	if err := conn.QueryRow(ctx, doorSQL).Scan(&s.door); err != nil {
-		conn.Close(ctx)
+		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("the export's door: %w", err)
 	}
 	return s, nil
 }
 
-func (s *session) close() { s.conn.Close(context.Background()) }
+func (s *session) close() { _ = s.conn.Close(context.Background()) }
 
 // clock is the repository's time now: every time the export writes down (a manifest's, a run row's) is the
 // repository's, as the windows are.
@@ -245,7 +245,7 @@ func (s *session) lock() (release func(), held bool, err error) {
 	}
 	release, held, err = lockFile(filepath.Join(s.c.StateDir, "export.lock"))
 	if held {
-		fmt.Fprintf(s.c.Err, "pgvigil export: another run holds the lock (%s): nothing done\n", filepath.Join(s.c.StateDir, "export.lock"))
+		_, _ = fmt.Fprintf(s.c.Err, "pgvigil export: another run holds the lock (%s): nothing done\n", filepath.Join(s.c.StateDir, "export.lock"))
 	}
 	return release, held, err
 }
@@ -289,13 +289,13 @@ func Run(ctx context.Context, c Config) error {
 		}
 		incomplete = incomplete || !ok
 	}
-	fmt.Fprintf(c.Out, "pgvigil export: %d window(s) exported to %s", len(todo), c.Dest)
+	_, _ = fmt.Fprintf(c.Out, "pgvigil export: %d window(s) exported to %s", len(todo), c.Dest)
 	if more > 0 {
-		fmt.Fprintf(c.Out, "; %d more window(s) due: the next run takes them", more)
+		_, _ = fmt.Fprintf(c.Out, "; %d more window(s) due: the next run takes them", more)
 	}
-	fmt.Fprintln(c.Out)
+	_, _ = fmt.Fprintln(c.Out)
 	for _, w := range aged {
-		fmt.Fprintf(c.Err, "pgvigil export: the hour %s has no manifest and is older than max_window_age_hours: pgvigil export -config %s -from %s -to %s (or -gap, to accept the hole)\n",
+		_, _ = fmt.Fprintf(c.Err, "pgvigil export: the hour %s has no manifest and is older than max_window_age_hours: pgvigil export -config %s -from %s -to %s (or -gap, to accept the hole)\n",
 			isoUTC(w.From), c.ConfigPath, isoUTC(w.From), isoUTC(w.To))
 	}
 	if len(aged) > 0 {
@@ -352,7 +352,7 @@ func RunWindows(ctx context.Context, c Config, from, to time.Time, only []string
 		incomplete = incomplete || !ok
 		n++
 	}
-	fmt.Fprintf(c.Out, "pgvigil export: %d window(s) exported to %s\n", n, c.Dest)
+	_, _ = fmt.Fprintf(c.Out, "pgvigil export: %d window(s) exported to %s\n", n, c.Dest)
 	if incomplete {
 		return errIncomplete
 	}
@@ -397,7 +397,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
 		return false, st, refused("export.state_dir (%s) cannot be written: %v", c.StateDir, err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	// a window done again: what the old manifest listed is known before it goes, the manifest goes first (a cut
 	// after this point leaves no manifest, so the window counts as not done), the marker with it
@@ -463,7 +463,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 		}
 		if r.Class == State && !w.firstOfDay() && r.Name != "instances" {
 			if only != nil {
-				fmt.Fprintf(c.Err, "pgvigil export: %s is a state table: it is exported in the day's first window (00:00 UTC) only; window %s carries none of it\n", r.Name, isoUTC(w.From))
+				_, _ = fmt.Fprintf(c.Err, "pgvigil export: %s is a state table: it is exported in the day's first window (00:00 UTC) only; window %s carries none of it\n", r.Name, isoUTC(w.From))
 			}
 			continue // a state table: in the day's first window only
 		}
@@ -477,7 +477,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 					break
 				}
 				uploaded = true
-				os.Remove(f.local)
+				_ = os.Remove(f.local)
 				delete(old, f.Path)
 			}
 		}
@@ -501,10 +501,10 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 						delete(old, f.Path)
 					}
 				}
-				fmt.Fprintf(c.Err, "pgvigil export: window %s: %s failed on %d runs and is left out of the window: %s\n", isoUTC(w.From), r.Name, att[wkey][r.Name], msg)
+				_, _ = fmt.Fprintf(c.Err, "pgvigil export: window %s: %s failed on %d runs and is left out of the window: %s\n", isoUTC(w.From), r.Name, att[wkey][r.Name], msg)
 			} else {
 				retry++
-				fmt.Fprintf(c.Err, "pgvigil export: window %s: %s failed (run %d of %d before the window completes without it): %s\n", isoUTC(w.From), r.Name, att[wkey][r.Name], giveUpAfter, msg)
+				_, _ = fmt.Fprintf(c.Err, "pgvigil export: window %s: %s failed (run %d of %d before the window completes without it): %s\n", isoUTC(w.From), r.Name, att[wkey][r.Name], giveUpAfter, msg)
 			}
 			s.saveAttempts(att)
 			if s.conn.IsClosed() { // the read cost the connection: a new one for the tables that follow
@@ -529,7 +529,7 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 		st.bytes += entry.ByteSize
 	}
 	if retry > 0 {
-		fmt.Fprintf(c.Err, "pgvigil export: window %s is not complete: %d table(s) to try again; its manifest is not written\n", isoUTC(w.From), retry)
+		_, _ = fmt.Fprintf(c.Err, "pgvigil export: window %s is not complete: %d table(s) to try again; its manifest is not written\n", isoUTC(w.From), retry)
 		st.reason = fmt.Sprintf("%d table(s) failed and will be tried again; the window has no manifest", retry)
 		return false, st, nil
 	}
@@ -556,25 +556,25 @@ func (s *session) exportWindow(ctx context.Context, w Hour, final bool, only map
 		if errors.Is(err, errExists) {
 			return false, st, fmt.Errorf("window %s: its manifest was written by another run while this one worked: two exports of one repository to one destination are not supported", isoUTC(w.From))
 		}
-		fmt.Fprintf(c.Err, "pgvigil export: window %s: its files are written and its manifest is not (%s): %v\n", isoUTC(w.From), c.Dest, err)
+		_, _ = fmt.Fprintf(c.Err, "pgvigil export: window %s: its files are written and its manifest is not (%s): %v\n", isoUTC(w.From), c.Dest, err)
 		st.reason = "the files are written and the manifest is not: " + oneLine(err.Error())
 		return false, st, nil
 	}
 	if final && mark == "" {
 		if err := c.Dest.Put(ctx, finalKey(c.Name, w), []byte(isoUTC(time.Now())+"\n"), false); err != nil {
-			fmt.Fprintf(c.Err, "pgvigil export: window %s: its final manifest is written and its marker is not: %v\n", isoUTC(w.From), err)
+			_, _ = fmt.Fprintf(c.Err, "pgvigil export: window %s: its final manifest is written and its marker is not: %v\n", isoUTC(w.From), err)
 			st.reason = "the final manifest is written and its marker is not: " + oneLine(err.Error())
 			return false, st, nil
 		}
 	}
 	if mark == "" {
 		if err := c.Dest.Delete(ctx, pkey); err != nil { // the window is whole again; a note left behind is cleared by the next run
-			fmt.Fprintf(c.Err, "pgvigil export: window %s: its note of being written again could not be removed: %v\n", isoUTC(w.From), err)
+			_, _ = fmt.Fprintf(c.Err, "pgvigil export: window %s: its note of being written again could not be removed: %v\n", isoUTC(w.From), err)
 		}
 	}
 	delete(att, wkey)
 	s.saveAttempts(att)
-	fmt.Fprintf(c.Out, "window %s .. %s pass %v: %d table(s), %d file(s), %d row(s), %d bytes in %.1f s\n",
+	_, _ = fmt.Fprintf(c.Out, "window %s .. %s pass %v: %d table(s), %d file(s), %d row(s), %d bytes in %.1f s\n",
 		isoUTC(w.From), isoUTC(w.To), m.Pass, st.tables, st.files, st.rows, st.bytes, time.Since(started).Seconds())
 	if len(m.Failed) > 0 {
 		st.reason = fmt.Sprintf("%d table(s) left out after %d failed runs (the manifest's failed list names them)", len(m.Failed), giveUpAfter)
@@ -743,19 +743,19 @@ func Plan(ctx context.Context, c Config, asJSON bool) error {
 	if asJSON {
 		return json.NewEncoder(c.Out).Encode(out)
 	}
-	fmt.Fprintf(c.Out, "%d window(s) due (at most %d a run), %d hour(s) aged out; destination %s\n", len(out.Windows), c.PerRun, len(out.AgedOut), c.Dest)
+	_, _ = fmt.Fprintf(c.Out, "%d window(s) due (at most %d a run), %d hour(s) aged out; destination %s\n", len(out.Windows), c.PerRun, len(out.AgedOut), c.Dest)
 	for _, w := range out.Windows {
-		fmt.Fprintf(c.Out, "  due   %s .. %s pass %v\n", w.FromUTC, w.ToUTC, w.Pass)
+		_, _ = fmt.Fprintf(c.Out, "  due   %s .. %s pass %v\n", w.FromUTC, w.ToUTC, w.Pass)
 	}
 	for _, w := range out.AgedOut {
-		fmt.Fprintf(c.Out, "  aged  %s .. %s\n", w.FromUTC, w.ToUTC)
+		_, _ = fmt.Fprintf(c.Out, "  aged  %s .. %s\n", w.FromUTC, w.ToUTC)
 	}
 	for _, t := range out.Tables {
 		if t.Skipped != "" {
-			fmt.Fprintf(c.Out, "  %-34s left out: %s\n", t.Table, t.Skipped)
+			_, _ = fmt.Fprintf(c.Out, "  %-34s left out: %s\n", t.Table, t.Skipped)
 			continue
 		}
-		fmt.Fprintf(c.Out, "  %-34s %-9s %-14s %d bytes\n", t.Table, t.Kind, t.TimeColumn, t.Bytes)
+		_, _ = fmt.Fprintf(c.Out, "  %-34s %-9s %-14s %d bytes\n", t.Table, t.Kind, t.TimeColumn, t.Bytes)
 	}
 	return nil
 }
@@ -807,10 +807,10 @@ func Status(ctx context.Context, c Config, asJSON bool) error {
 		if out.Newest != nil {
 			newest = out.Newest.FromUTC + " .. " + out.Newest.ToUTC
 		}
-		fmt.Fprintf(c.Out, "%s at %s: newest window %s; %d hour(s) without a manifest, %d without their final pass, %d aged out\n",
+		_, _ = fmt.Fprintf(c.Out, "%s at %s: newest window %s; %d hour(s) without a manifest, %d without their final pass, %d aged out\n",
 			c.Name, c.Dest, newest, len(out.Missing), len(out.FinalMissing), len(out.AgedOut))
 		for _, w := range out.AgedOut {
-			fmt.Fprintf(c.Out, "  aged out: pgvigil export -config %s -from %s -to %s\n", c.ConfigPath, w.FromUTC, w.ToUTC)
+			_, _ = fmt.Fprintf(c.Out, "  aged out: pgvigil export -config %s -from %s -to %s\n", c.ConfigPath, w.FromUTC, w.ToUTC)
 		}
 	}
 	// exit 1 for an hour that aged out or is more than an hour late - not for one that only waits for the next run
@@ -882,7 +882,7 @@ func Gap(ctx context.Context, c Config, from, to time.Time) error {
 		s.record(context.WithoutCancel(ctx), w, false, s.clock(), true, windowStats{}, "") // the hole is accepted: the page's line for it goes
 		n++
 	}
-	fmt.Fprintf(c.Out, "pgvigil export: %d gap manifest(s) written to %s\n", n, c.Dest)
+	_, _ = fmt.Fprintf(c.Out, "pgvigil export: %d gap manifest(s) written to %s\n", n, c.Dest)
 	return nil
 }
 
@@ -930,7 +930,7 @@ func List(ctx context.Context, c Config, asJSON bool) error {
 		if !it.Exported {
 			what = "left out: " + it.Reason
 		}
-		fmt.Fprintf(c.Out, "%-34s %s\n", it.Table, strings.TrimSpace(what))
+		_, _ = fmt.Fprintf(c.Out, "%-34s %s\n", it.Table, strings.TrimSpace(what))
 	}
 	return nil
 }
@@ -963,7 +963,7 @@ func Check(ctx context.Context, c Config) error {
 	if !s.door {
 		door = "no row for the Collector page (the login is not IN ROLE pgvigil_exporter, or the repository has no export_run_record)"
 	}
-	fmt.Fprintf(c.Out, "pgvigil export -check: ok - %d of %d tables exported, destination %s writable, %s, the repository's clock %s\n", exported, len(s.tables), c.Dest, door, isoUTC(s.now))
+	_, _ = fmt.Fprintf(c.Out, "pgvigil export -check: ok - %d of %d tables exported, destination %s writable, %s, the repository's clock %s\n", exported, len(s.tables), c.Dest, door, isoUTC(s.now))
 	return nil
 }
 
@@ -982,11 +982,11 @@ func Off(ctx context.Context, c Config) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close(context.Background())
+	defer func() { _ = conn.Close(context.Background()) }()
 	var n int
 	if err := conn.QueryRow(ctx, "/* pgvigil-export:door */ SELECT pgvigil.export_off($1)", c.Name).Scan(&n); err != nil {
 		return fmt.Errorf("export_off: %w", err)
 	}
-	fmt.Fprintf(c.Out, "pgvigil export -off: %d row(s) of %s removed from export_state; the destination is as it was\n", n, c.Name)
+	_, _ = fmt.Fprintf(c.Out, "pgvigil export -off: %d row(s) of %s removed from export_state; the destination is as it was\n", n, c.Name)
 	return nil
 }

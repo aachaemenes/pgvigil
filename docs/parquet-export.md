@@ -143,13 +143,17 @@ never exported by a guess.
     rules, thresholds, acknowledgements, reports and schedules and from which address (`created_by`, `client`,
     `ended_by` and the like), an object's grants (`schema_objects.acl`), and who ran a DDL statement
     (`schema_ddl_log.role_name`);
+  - logins, hosts and client addresses are held too: the login, client host and client address of a session, a
+    request, an event or a blocking chain, and an owner's or a role's name (`usename`, `login_name`, `host_name`,
+    `client`, `owner`, `rolname` and the like; the per-role pgaudit settings leave only with the audit carry);
   - PostgreSQL's failed sign-ins (`log_events` of kind `auth_fail`) are left behind, and the manifest's
     `filtered_rows` says so.
   A table that leaves only with the audit carry still leaves without its text unless `text` is carried too.
 - Never exported: the web UI's logins; the collector's cursors, counter baselines and duplicate guards; the
   service's queues and marks; its inventory of connection references, hosts and logins. And these columns of
   tables that are carried: a mail's recipients, subject, body and attachment, a mail server's reply (it can quote
-  the address it refused), an alert channel's address, a claim token, a Patroni URL.
+  the address it refused), an alert channel's address, a claim token, a Patroni URL and a member's API error (it
+  can quote one), and Patroni's pending-restart values (a setting's old and new value, unmasked).
 - Every text, JSON and bytes column of every exported table is classed by name: one a later version adds is not
   exported by a guess (pgvigil's own proof fails until it is read and classed).
 - A window table's row whose time is not set yet (a job run that never started) belongs to no hour: it is in the
@@ -191,7 +195,10 @@ from an older file is null. The repository's encoding must be UTF8.
   that a second writer is refused), so the file system must have hard links - not a share or a mount without
   them (CIFS without the unix extensions, blobfuse, s3fs). `-check` tries it.
 - `s3`: `bucket`, `prefix`, `region`, and for an S3-compatible store its `endpoint`; `profile` to name one.
-  Credentials come from the AWS default chain, never from this file. Rights on the prefix: `s3:PutObject`,
+  Credentials come from the AWS default chain, never from this file. The signing region is `region`, else the AWS
+  configuration's (`AWS_REGION`, the profile's region); an S3-compatible store with neither signs with a fixed
+  default (such a store takes any region), and an AWS endpoint - or AWS with no `endpoint` - with neither is refused
+  with the setting to fill: pgvigil picks no AWS region. Rights on the prefix: `s3:PutObject`,
   `s3:GetObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`, and `s3:ListBucket` on the bucket. A file over
   64 MB goes up in parts. pgvigil sends no checksum trailer of its own (S3-compatible stores differ on them).
 - `azure_blob`: `container`, `prefix`, and one way in: `connection_string: env:NAME`, `sas_url: env:NAME` (the

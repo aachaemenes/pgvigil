@@ -161,7 +161,14 @@ instances:
     dsn: env:PGV_C_MON
 EOF
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "B: migrate"; }
-col() { for c in "$@"; do timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once "$c" >"$TMPD/col-$c.out" 2>&1 || { cat "$TMPD/col-$c.out" >&2; fail "collect $c"; }; done; }
+# Since task 401 (internal/mssql/counters.go, cpu.go L30-31, activity.go L184) the counters this proof grades are
+# mssql_counters' (instance objects) and mssql_counters_db's (Databases, Database Replica), no longer mssql_cpu's and
+# mssql_activity's: a read named mssql_cpu or mssql_activity here also runs its counters' collection right after it,
+# so every read takes what one read took when this proof was written (j16d6's darlingcpu B: 'reads per scope: []').
+# COL_AS_NAMED=1 runs the names alone (F's read under the thread pool starvation: no counter is graded there).
+colset() { local c; for c in "$@"; do echo "$c"; [[ -n "${COL_AS_NAMED:-}" ]] && continue
+  case "$c" in mssql_cpu) echo mssql_counters ;; mssql_activity) echo mssql_counters_db ;; esac; done; }
+col() { local c; for c in $(colset "$@"); do timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once "$c" >"$TMPD/col-$c.out" 2>&1 || { cat "$TMPD/col-$c.out" >&2; fail "collect $c"; }; done; }
 col mssql_instance mssql_cpu mssql_activity mssql_requests mssql_waiting_tasks
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 sleep 8
@@ -439,7 +446,7 @@ for i in $(seq 1 200); do churn pgvc_churn "$B"; done
 sleep 25
 dacq() { dac "SELECT CAST(SUM(work_queue_count) AS varchar(10)) + '|' + (SELECT CAST(COUNT(*) AS varchar(10)) FROM sys.dm_os_waiting_tasks WHERE wait_type = N'THREADPOOL') FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE'"; }
 D0=$(dacq) || fail "F: the DAC read before"
-t0=$(date +%s); col mssql_cpu mssql_waiting_tasks mssql_requests; t1=$(date +%s)
+t0=$(date +%s); COL_AS_NAMED=1 col mssql_cpu mssql_waiting_tasks mssql_requests; t1=$(date +%s)
 D1=$(dacq) || fail "F: the DAC read after"
 dac "EXEC dbo.sp_PressureDetector @what_to_check = 'cpu', @skip_queries = 1, @log_to_table = 1, @log_database_name = N'pgvc_out', @log_schema_name = N'dbo', @log_table_name_prefix = N'pdf';" >"$TMPD/pdf.out" 2>&1 || true
 PDF=$(dac "SELECT TOP (1) CAST(requests_waiting_for_threads AS varchar(10)) + '|' + CAST(total_threads AS varchar(10)) FROM pgvc_out.dbo.pdf_CPU ORDER BY collection_time DESC" 2>&1 || true)

@@ -123,7 +123,7 @@ agents:
 
 Off (the default), serve's `/api/investigations` routes answer 404 with "agents.enabled is off: ..." and the pages draw
 nothing of the door. On, a person may ask for an investigation of a finding or ask a question; the site's own agent
-claims it through `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_agent`, and an answered question's SELECT
+claims it through `pgvigil mcp` on a login IN ROLE `pgvigil_reader, pgvigil_investigator`, and an answered question's SELECT
 runs on Run as `reports_dsn` (without that key Run is off, with the words). pgvigil holds no agent, no model and no key:
 [agents.md](agents.md).
 

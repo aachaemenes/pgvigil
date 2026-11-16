@@ -63,8 +63,8 @@ const findingKey = (instance: unknown, source: unknown, setting: unknown, value:
 function stateBadge(r: InvRow): HTMLElement {
   if (r.state === 'claimed') return badge(`claimed by ${r.claimed_by ?? 'an agent'}`, 'warn');
   if (r.state === 'reported') return badge('report ready', 'ok');
-  if (r.state === 'open') return badge('open', 'info');
-  return badge(r.state, '');
+  if (r.state === 'open') return badge('open', 'none');   // X18: a status class on every badge (open = N/A: not judged yet)
+  return badge(r.state, 'none');
 }
 
 function invLink(id: number, text: string | Node): HTMLAnchorElement {

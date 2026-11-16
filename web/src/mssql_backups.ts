@@ -15,7 +15,7 @@ import { hashParam, hrefWith } from './dbinfo';
 import { fleet, tagsOf } from './fleet';
 import { Ctx } from './router';
 import { mssqlFindingCols, words } from './mssql_hadr';
-import { badge, Col, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, tile } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, GridMenuAsk, offControl, props, tile } from './ui';
 import { dialogRole, needControl } from './needs';
 
 type Parts = 'databases' | 'findings' | 'limits';
@@ -431,13 +431,14 @@ async function historyParts(ctx: Ctx, asked: string, dbName: string): Promise<HT
   if (!on.enabled) out.push(el('p', { class: 'meta', id: 'mssql-backups-verify-off' }, `Verify is off for this instance: ${on.reason ?? 'actions are off for this instance'}`));
   if (h instanceof Error) box.append(el('p', { class: 'meta' }, `not read: ${h.message}`));
   else draw(rowsOf(h.history));
-  // the grid's right-click menu (ui.ts sends its items): Verify on a disk row of this grid only
+  // the grid's right-click menu (ui.ts askGridMenu; gridtools builds it, this page's line at its end): Verify on a disk
+  // row of this grid only
   box.addEventListener('pgvigil:gridmenu', e => {
-    const d = (e as CustomEvent<{ table: HTMLTableElement; td: Element | null; items: [string, () => void][] }>).detail;
+    const d = (e as CustomEvent<GridMenuAsk>).detail;
     const uuid = d.td?.parentElement?.querySelector('[data-verify-uuid]')?.getAttribute('data-verify-uuid');
-    if (!on.enabled || !uuid || !box.contains(d.table)) return;
+    if (!on.enabled || !uuid || !d.table || !box.contains(d.table)) return;
     const r = drawn.find(x => x.backup_set_uuid === uuid);
-    if (r && r.device_kind === 'disk') d.items.push(['Verify this backup...', () => open(r)]);
+    if (r && r.device_kind === 'disk') d.extra.push(['Verify this backup...', () => open(r)]);
   });
   out.push(box, el('h3', { id: 'mssql-backups-restores' }, `Restore history: ${asked}`),
     el('p', { class: 'meta' }, 'The newest 20 restores of each restore type into this database (msdb.dbo.restorehistory, read hourly), with the backup '

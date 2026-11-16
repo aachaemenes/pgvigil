@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -60,5 +61,53 @@ func TestCertUseSQL(t *testing.T) {
 func TestSecAuthOwnSQLNeedsNoRight(t *testing.T) {
 	if strings.Contains(secAuthOwnSQL, "dm_exec_connections") || !strings.Contains(secAuthOwnSQL, "CONNECTIONPROPERTY('auth_scheme')") {
 		t.Errorf("the own connection's read: %s", secAuthOwnSQL)
+	}
+}
+
+// TestSecurityRegistryOffWhereHostOnly: on a platform that runs the host - Azure SQL
+// Database, Managed Instance, Amazon RDS, Google Cloud SQL - the security read never calls xp_instance_regread and never
+// prints a GRANT for it; the rights page says the same there (hostOnly). A server someone runs reads it.
+func TestSecurityRegistryOffWhereHostOnly(t *testing.T) {
+	for _, k := range []Kind{KindAzureDB, KindAzureMI, KindRDS, KindCloudSQL} {
+		why := secRegreadOff(Info{Kind: k, Major: 16})
+		if !strings.Contains(why, "the registry is not read there") {
+			t.Errorf("%s: secRegreadOff = %q, want the platform's words ('... the registry is not read there')", k, why)
+		}
+		if on := hostOnly(Info{Kind: k, Major: 16}); on == "" {
+			t.Errorf("%s: hostOnly lists the registry right as applying, the read skips it", k)
+		}
+	}
+	if why := secRegreadOff(Info{Kind: KindServer, Major: 16}); why != "" {
+		t.Errorf("a server someone runs: secRegreadOff = %q, want it read", why)
+	}
+}
+
+// TestSecurityRegistryPartWhereHostOnly: the registry part itself, run with no connection (no sys.dm_server_registry
+// read, no xp_instance_regread right): where the platform runs the host each value is noted in the platform's words,
+// no GRANT is printed and the part is 'n/a'; on a server someone runs the missing right is printed and the part is
+// 'no right' - so the read skipping xp_instance_regread is the part's own doing, not secRegreadOff's alone.
+func TestSecurityRegistryPartWhereHostOnly(t *testing.T) {
+	part := func(k Kind) collect.Row {
+		r := &secRun{ctx: context.Background(), info: Info{Kind: k, Major: 16}, want: map[string]bool{"registry": true},
+			ctxt: secContext{Login: "pgvigil_reader"}}
+		r.registry()
+		for _, row := range r.out {
+			if row["kind"] == "part" && row["part"] == "registry" {
+				return row
+			}
+		}
+		t.Fatalf("%s: the registry part wrote no part row: %v", k, r.out)
+		return nil
+	}
+	for _, k := range []Kind{KindAzureDB, KindAzureMI, KindRDS, KindCloudSQL} {
+		row := part(k)
+		note, _ := row["note"].(string)
+		if row["status"] != "n/a" || strings.Contains(note, "GRANT") || !strings.Contains(note, "the registry is not read there") {
+			t.Errorf("%s: the registry part %v %q, want 'n/a' in the platform's words and no GRANT", k, row["status"], note)
+		}
+	}
+	row := part(KindServer)
+	if note, _ := row["note"].(string); row["status"] != "no right" || !strings.Contains(note, "GRANT EXECUTE ON master.dbo.xp_instance_regread TO [pgvigil_reader]") {
+		t.Errorf("a server someone runs: the registry part %v %q, want 'no right' with the GRANT", row["status"], note)
 	}
 }

@@ -118,7 +118,7 @@ func checkSlackDoor(s *Settings) error {
 	return nil
 }
 
-// SlackActionsOn: the switch is on and at least one app is listed.
+// SlackActionsOn says the switch is on and at least one app is listed.
 func (s *Settings) SlackActionsOn() bool { return s.Doors.SlackActions && len(s.SlackApps) > 0 }
 
 // SlackDoor is the door serve runs: the apps with their secrets read, the limits and the replay guard.

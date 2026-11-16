@@ -94,7 +94,8 @@ again only with the same `-bin`, `-config` and `-user`.
 
 Roles belong to the server (the cluster), not to the database, so a role goes only when nothing else holds it:
 
-- The groups `pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth` and `pgvigil_alerter` are dropped, except one that
+- The groups the migrations make - `pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth`, `pgvigil_alerter`,
+  `pgvigil_requester`, `pgvigil_exporter` and `pgvigil_investigator` - are dropped, except one that
   another database records (`pg_shdepend`: another pgvigil repository on the same server, a grant elsewhere), one that
   is a member of a role outside pgvigil, a superuser, or the role the uninstall connects as. Each one kept is named.
 - A login is dropped only when it is the one this host's configuration names (its repository connection string read as

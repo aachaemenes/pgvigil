@@ -2,7 +2,7 @@
 # Proof of 'pgvigil migrate -print' (ST7): the statements migrate would run, printed and applied by psql, make the same
 # schema and the same row counts migrate makes, and the print itself changes nothing. Scratch databases and one scratch
 # login on the server PGVIGIL_REPO_DSN names (an admin connection; its own database is not touched), dropped at the end;
-# the cluster roles the migrations create (pgvigil_collector, pgvigil_reader, pgvigil_auth, pgvigil_alerter) stay there.
+# the cluster roles the migrations create (pgvigil_collector, _reader, _auth, _alerter, _requester, _exporter, _investigator) stay there.
 # Needs go, psql and pg_dump (pg_dump's major at least the server's) on this machine.
 #   PGVIGIL_REPO_DSN   an admin connection string (CREATEDB, CREATEROLE) to a scratch PostgreSQL server, in the key=value
 #                      form (the script appends ' dbname=...'; a postgres:// URI does not take that)
@@ -16,7 +16,9 @@
 #                line after the header is '\set ON_ERROR_STOP on' *; fresh has no pgvigil schema after it
 #   C apply      psql -X -f <the script> on fresh (no -v: the script's own ON_ERROR_STOP *): exit 0; schema_version holds
 #                every file; jit=off is the database setting of both; pg_dump -s of fresh and of ref are the same
-#                (pg_dump's \restrict key lines set aside) and so is every pgvigil table's row count *
+#                (pg_dump's \restrict key lines set aside, and the daily parent's day partitions mssql_requests_YYYYMMDD:
+#                a run over 00:00 UTC makes other days - their making is proof-partition-deadlock's R3) and so is every
+#                pgvigil table's row count *
 #   D again      a second -print on fresh: exit 0, 'pending: none', every line a comment
 #   E at N       two schema_version rows of fresh taken out (a middle file and the newest): -print names exactly those
 #                two, in order, in its header, its guard and its files; schema_version, the count of pg_class and
@@ -33,6 +35,8 @@
 #                last 3 files, through psql: exit 0, schema_version holds those; -print there names exactly the last 3;
 #                that script through psql: exit 0, every file, pg_dump -s and the row counts as ref's, the database's own
 #                jit=on kept and the 'left alone' notice in psql's output
+# A run that crosses the first of a month at 00:00 UTC after ref's migrate began makes other months ahead: C's and I's dump
+# compares then print NOT PROVEN with that reason instead of a false FAIL (the row counts are still compared).
 # NOT PROVEN here: the jit step's WARNING branch (the script run by the owner of schema pgvigil who does not own the
 # database); a script printed for a store with a gap, applied (a real gap cannot be made from the embedded files).
 set -euo pipefail
@@ -56,7 +60,11 @@ ok() { echo "ok   $*"; }
 q() { psql "$ADMIN dbname=$1" -XAt -v ON_ERROR_STOP=1 -c "$2"; }
 # every pgvigil table (plain and partitioned) with its row count, in name order
 counts() { q "$1" "select string_agg(c.relname || '=' || (xpath('/row/n/text()', query_to_xml(format('select count(*) as n from pgvigil.%I', c.relname), false, true, '')))[1]::text, ',' order by c.relname) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil' and c.relkind in ('r', 'p') and not c.relispartition"; }
-dumps() { pg_dump "$ADMIN dbname=$1" -s | grep -vE '^\\(un)?restrict '; }
+dumps() { pg_dump "$ADMIN dbname=$1" -s -T 'pgvigil.mssql_requests_2*' | grep -vE '^\\(un)?restrict '; }
+# samedump <part> <file>: the dump against ref's; a month turned since ref's dump (UTC) is NOT PROVEN, never a FAIL
+samedump() { if diff -q "$WORK/ref.dump" "$2" >/dev/null; then return 0; fi
+  if [ "$(date -u +%Y%m)" != "$REFMONTH" ]; then echo "NOT PROVEN $1: pg_dump -s not compared: the run crossed a month's first 00:00 UTC after ref's migrate began (other months ahead)"; return 0; fi
+  diff "$WORK/ref.dump" "$2" > "$WORK/$1.diff" || true; head -20 "$WORK/$1.diff" >&2; fail "$1: pg_dump -s differs"; }
 jitof() { q "$1" "select coalesce(string_agg(x, ','), '') from pg_db_role_setting s join pg_database d on d.oid = s.setdatabase, unnest(s.setconfig) x where d.datname = current_database() and s.setrole = 0 and x like 'jit=%'"; }
 BIN=${PGVIGIL_BIN:-}
 if [ -z "$BIN" ]; then
@@ -82,6 +90,7 @@ ok "T $(tail -1 "$WORK/t.out")"
 psql "$ADMIN" -XAtq -v ON_ERROR_STOP=1 -c "create database $REF" -c "create database $FRESH" -c "create database $PARTIAL" >/dev/null
 
 echo "== A migrate =="
+REFMONTH=$(date -u +%Y%m)   # read BEFORE the migrate makes ref's months ahead: a month turned during it is a turn too
 PGVIGIL_REPO_DSN="$ADMIN dbname=$REF" "$BIN" migrate -config "$CFG" 2> "$WORK/a.err" || { cat "$WORK/a.err" >&2; fail "A: migrate"; }
 [ "$(q "$REF" "select count(*) from pgvigil.schema_version")" = "$NFILES" ] || fail "A: schema_version does not hold the tree's $NFILES files"
 dumps "$REF" > "$WORK/ref.dump"; REFCOUNTS=$(counts "$REF")
@@ -102,7 +111,7 @@ rc=0; psql "$ADMIN dbname=$FRESH" -X -q -f "$WORK/fresh.sql" > "$WORK/c.out" 2>&
 [ "$(q "$FRESH" "select count(*) from pgvigil.schema_version")" = "$NFILES" ] || fail "C: schema_version does not hold $NFILES files"
 for db in "$REF" "$FRESH"; do [ "$(jitof "$db")" = "jit=off" ] || fail "C: $db's jit setting is '$(jitof "$db")', not jit=off"; done
 dumps "$FRESH" > "$WORK/fresh.dump"
-diff -q "$WORK/ref.dump" "$WORK/fresh.dump" >/dev/null || { diff "$WORK/ref.dump" "$WORK/fresh.dump" | head -20 >&2; fail "C: pg_dump -s differs"; }
+samedump C "$WORK/fresh.dump"
 [ "$(counts "$FRESH")" = "$REFCOUNTS" ] || fail "C: the row counts differ: ref $REFCOUNTS / fresh $(counts "$FRESH")"
 ok "C apply: psql exit 0, $NFILES files, jit=off on both, pg_dump -s the same ($(wc -l < "$WORK/ref.dump") lines), row counts the same"
 
@@ -177,7 +186,7 @@ rc=0; psql "$ADMIN dbname=$PARTIAL" -X -q -f "$WORK/rest.sql" > "$WORK/i2.out" 2
 [ "$rc" = 0 ] || { tail -20 "$WORK/i2.out" >&2; fail "I: the rest: psql exit $rc"; }
 [ "$(q "$PARTIAL" "select count(*) from pgvigil.schema_version")" = "$NFILES" ] || fail "I: schema_version does not hold $NFILES files"
 dumps "$PARTIAL" > "$WORK/part.dump"
-diff -q "$WORK/ref.dump" "$WORK/part.dump" >/dev/null || { diff "$WORK/ref.dump" "$WORK/part.dump" | head -20 >&2; fail "I: pg_dump -s differs"; }
+samedump I "$WORK/part.dump"
 [ "$(counts "$PARTIAL")" = "$REFCOUNTS" ] || fail "I: the row counts differ from ref's"
 [ "$(jitof "$PARTIAL")" = "jit=on" ] || fail "I: the database's own jit is '$(jitof "$PARTIAL")', not kept at jit=on"
 grep -q 'left alone' "$WORK/i1.out" || fail "I: no 'left alone' notice in psql's output"

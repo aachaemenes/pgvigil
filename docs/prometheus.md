@@ -62,15 +62,20 @@ scrape_configs:
 - Gauges, plus one counter (`pgvigil_metrics_refused_total`), no explicit timestamps: the newest collected value of each metric, in base units. A value older than
   its freshness (10 minutes; IO 30 minutes; host 15 minutes) is left out, so an alert on a missing series fires;
   `pgvigil_sample_timestamp_seconds{server, family}` gives the newest sample's Unix time of each family, fresh or stale,
-  however old (alert on `time() - pgvigil_sample_timestamp_seconds > 900`: an instance silent for days keeps firing).
+  however old (alert on `time() - pgvigil_sample_timestamp_seconds{family!="collection"} > 900`: an instance silent for
+  days keeps firing; the collection family's sample is the end of its newest ENDED hour, so up to two hours old by
+  design - alert on it past 7200 s).
 - Labels: `server` (pgvigil's instance name) on every instance series; `engine` on the figures and on
   `pgvigil_instance_info`; `family`, `severity` and `database` on their own series; the endpoint's own four series have
   none.
-- The names: 62, one per metric of the Metrics page (internal/web/metrics_prom.go `promNames`, frozen by a test):
+- The names: 62, one per metric of the Metrics page's sessions, database, server, IO, requests, CPU, scheduler, memory
+  and host families (internal/web/metrics_prom.go `promNames`, frozen by a test):
   a percent becomes a `_ratio` (/ 100), milliseconds `_seconds`, MB `_bytes` (x 1048576), a count per collection
   interval (deadlocks, checkpoints, requested checkpoints) `_per_second`. For example `pgvigil_sessions`,
   `pgvigil_sessions_connections_used_ratio`, `pgvigil_requests_blocked`, `pgvigil_cpu_sql_ratio`,
   `pgvigil_memory_total_bytes`, `pgvigil_host_load1`.
+- Not exported yet: the Metrics page's SQL Server counters, Extended Events, Waits and Collection families
+  (`promNotExported`, the same file); their `pgvigil_sample_timestamp_seconds` is given.
 - The database family: each PostgreSQL instance's totals always, as `pgvigil_instance_*` (the databases summed per
   read, as the Metrics page's default view shows them); with `metrics.databases: on`, each database's own series as
   `pgvigil_database_*{database}` - chosen by size, largest first, or the `include_databases` list, never by backends

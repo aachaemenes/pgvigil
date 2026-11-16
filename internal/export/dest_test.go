@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -183,5 +184,54 @@ func TestDueOrder(t *testing.T) {
 	todo, aged = dueJobs(now, 20*time.Minute, 30*time.Hour, 24*time.Hour, young)
 	if len(todo) != 28 || len(aged) != 0 || !todo[0].w.From.Equal(h(70)) || !todo[0].final || !todo[5].final || todo[6].final || !todo[6].w.From.Equal(h(76)) {
 		t.Errorf("a young export: %d jobs (want 28), %v aged, the first %v final %v, the seventh %v final %v", len(todo), aged, todo[0].w.From, todo[0].final, todo[6].w.From, todo[6].final)
+	}
+}
+
+// The S3 destination's signing region: the destination's own region, else the AWS configuration's (AWS_REGION, the
+// profile's region); only then, for a store named by its endpoint that is not AWS's, the S3-compatible signing
+// default. An AWS destination with no region anywhere is refused with the setting to fill - pgvigil never picks an
+// AWS region, so a government endpoint never signs as a commercial region.
+func TestS3Region(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config")
+	if err := os.WriteFile(cfgFile, []byte("[profile p]\nregion = eu-north-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", cfgFile)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "none"))
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	const store = "http://127.0.0.1:9000"
+	for _, c := range []struct {
+		name, env string
+		o         S3Options
+		want      string // the client's region; "" = refused
+	}{
+		{"the environment's region with an endpoint", "eu-west-3", S3Options{Endpoint: store}, "eu-west-3"},
+		{"the profile's region with an endpoint", "", S3Options{Endpoint: store, Profile: "p"}, "eu-north-1"},
+		{"the destination's region over the environment's", "eu-west-3", S3Options{Endpoint: store, Region: "ap-south-1"}, "ap-south-1"},
+		{"no region anywhere, an S3-compatible store", "", S3Options{Endpoint: store}, "us-east-1"},
+		{"no region anywhere, an AWS endpoint", "", S3Options{Endpoint: "https://s3.eu-west-3.amazonaws.com"}, ""},
+		{"no region anywhere, AWS by default", "", S3Options{}, ""},
+	} {
+		t.Setenv("AWS_REGION", c.env)
+		c.o.Bucket, c.o.Name = "b", "r"
+		d, err := NewS3(ctx, c.o)
+		if c.want == "" {
+			if err == nil || !strings.Contains(err.Error(), "export.destination.region") {
+				t.Errorf("%s: %v; want a refusal naming export.destination.region", c.name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if got := d.(*s3Dest).c.Options().Region; got != c.want {
+			t.Errorf("%s: signs as %q, want %q", c.name, got, c.want)
+		}
 	}
 }

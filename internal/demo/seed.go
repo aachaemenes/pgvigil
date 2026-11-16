@@ -259,9 +259,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	return f, st, err
 }
 
-// mssqlStorageParents are the partitioned parents import_mssql_storage writes (0067): the SQL Server instances' year
-// of storage reads before the grid (mssql_demo.go, a read a day) lands in their months.
-var mssqlStorageParents = []string{"mssql_database_size", "mssql_volume_sample"}
+// mssqlStorageParents are the partitioned parents import_mssql_storage opens (0067's two, 0158's mssql_database_space),
+// in the import's name order: the SQL Server instances' year of storage reads before the grid (mssql_demo.go, a read a
+// day) lands in their months, made here so the import makes none. TestStorageParentsAreTheImportsOpens holds the list
+// to the import's own ensure_month_partition calls. partition_parents() names every parent with its maker, not which
+// import writes it, so it cannot give this list.
+var mssqlStorageParents = []string{"mssql_database_size", "mssql_database_space", "mssql_volume_sample"}
 
 // seedWindow is the range of the seed's partitions: the months from the grid's first minute's (a minute before it:
 // SeedPooler's first read) to the month after the anchor's, the daily parent's days to two days after the anchor -

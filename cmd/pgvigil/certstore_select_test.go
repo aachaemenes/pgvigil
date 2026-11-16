@@ -38,7 +38,7 @@ func selCert(t *testing.T, serial int64, cn string, dns []string, from, to time.
 }
 
 func TestNormalizeThumbprint(t *testing.T) {
-	if got := normalizeThumbprint("‎3a 7f c1\tb2‏"); got != "3A7FC1B2" {
+	if got := normalizeThumbprint("\u200e3a 7f\u00a0c1\tb2\u200f"); got != "3A7FC1B2" {
 		t.Fatalf("normalizeThumbprint %q", got)
 	}
 	// B24n review 8: every Unicode space goes, as PerformanceMonitor's char.IsWhiteSpace (em, narrow no-break and

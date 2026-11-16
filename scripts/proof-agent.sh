@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of the agent door (migration 0268, internal/mcp's agent tools, internal/web/q_investigate.go, web/src/investigate.ts):
 # a person asks for an investigation of a finding (the Investigate button) or asks a question (the Ask box); the
-# operator's own agent claims the request through `pgvigil mcp` on a login IN ROLE pgvigil_reader, pgvigil_agent, reads
+# operator's own agent claims the request through `pgvigil mcp` on a login IN ROLE pgvigil_reader, pgvigil_investigator, reads
 # with the read tools and run_select, and reports; serve shows the report and runs an ask's one SELECT as reports_dsn.
 # The agent here is scripts/agent-client.py: JSON-RPC over the binary's stdio, no model.
 #
@@ -18,20 +18,20 @@
 #
 # Expected (written before the first run; the base 75c72186 is RED on every part: no tables, no tools, no routes).
 #  A. off: a serve without the agents: section answers GET and POST /api/investigations 404 with 'agents.enabled is
-#     off'; a plain reader login's `pgvigil mcp` lists the nine read tools only and a claim_investigation call is
+#     off'; a plain reader login's `pgvigil mcp` lists the ten read tools only (alert_history among them) and a claim_investigation call is
 #     unknown (-32602).
-#  R. roles: a login IN ROLE pgvigil_reader, pgvigil_agent lists 16 tools (the nine + list_investigations,
+#  R. roles: a login IN ROLE pgvigil_reader, pgvigil_investigator lists 17 tools (the ten + list_investigations,
 #     wait_for_investigations, claim_investigation, renew_investigation, run_select, report_investigation,
 #     release_investigation). Refused at start (exit 3, 'refused' and the reason on stderr, nothing on stdout), each
-#     also holding pgvigil_agent: a collector login (pgvigil_collector), an auth member (pgvigil_auth), a reader with
+#     also holding pgvigil_investigator: a collector login (pgvigil_collector), an auth member (pgvigil_auth), a reader with
 #     DELETE on one table ("may change the repository's tables"), the superuser ('superuser'), pg_read_all_data,
 #     pg_read_server_files, pgvigil_alerter (each named), the database owner reaching the agent role through
 #     options=-c role= ('<that login> is a member of': the check reads the SESSION user, not the role set at connect;
 #     on 14+ the list names pg_database_owner, on 13 the role the dsn set - 13 has no pg_database_owner); the agent role on a standby ('in
 #     recovery'). The plain reader, the reports login and the UI login calling agent_investigation_list are refused:
-#     'is not a member of pgvigil_agent' (the function's own check on the session user: apply_roles grants every
+#     'is not a member of pgvigil_investigator' (the function's own check on the session user: apply_roles grants every
 #     function outside its lists to the reader at each migrate) or, once apply_roles leaves the agent's functions to
-#     pgvigil_agent, 'permission denied for function'; the agent login's own INSERT into pgvigil.investigations:
+#     pgvigil_investigator, 'permission denied for function'; the agent login's own INSERT into pgvigil.investigations:
 #     permission denied.
 #  Q. the request: POST /api/investigations without a session 401, without X-Pgvigil 403; with both 200 and an id; the
 #     row is kind finding, state open, asked_by the UI user; its journal holds 'asked'; its snapshot is serve's read of
@@ -180,12 +180,12 @@ mk() { # mk <name> <roles...>: a login IN ROLE pgvigil_reader-like roles; each r
   printf "create role %s login password '%s'" "$n" "$PW" | psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -f - >/dev/null || die "create role $n"
   for r in "$@"; do qa "grant $r to $n" >/dev/null 2>&1 || echo "note: grant $r to $n failed (absent on this tree?)"; done
 }
-mk ag1 pgvigil_reader pgvigil_agent; mk ag2 pgvigil_reader pgvigil_agent; mk rd pgvigil_reader; mk ui pgvigil_reader pgvigil_auth
-mk rep pgvigil_reader; mk cola pgvigil_collector pgvigil_agent; mk autha pgvigil_reader pgvigil_auth pgvigil_agent
-mk wra pgvigil_reader pgvigil_agent; q "grant delete on pgvigil.query_text to $(L wra)" >/dev/null
-mk rada pgvigil_reader pgvigil_agent pg_read_all_data; mk rsfa pgvigil_reader pgvigil_agent pg_read_server_files
-mk alra pgvigil_reader pgvigil_agent pgvigil_alerter
-qa "create role $(L agr) nologin" >/dev/null; qa "grant pgvigil_reader to $(L agr)" >/dev/null; qa "grant pgvigil_agent to $(L agr)" >/dev/null 2>&1
+mk ag1 pgvigil_reader pgvigil_investigator; mk ag2 pgvigil_reader pgvigil_investigator; mk rd pgvigil_reader; mk ui pgvigil_reader pgvigil_auth
+mk rep pgvigil_reader; mk cola pgvigil_collector pgvigil_investigator; mk autha pgvigil_reader pgvigil_auth pgvigil_investigator
+mk wra pgvigil_reader pgvigil_investigator; q "grant delete on pgvigil.query_text to $(L wra)" >/dev/null
+mk rada pgvigil_reader pgvigil_investigator pg_read_all_data; mk rsfa pgvigil_reader pgvigil_investigator pg_read_server_files
+mk alra pgvigil_reader pgvigil_investigator pgvigil_alerter
+qa "create role $(L agr) nologin" >/dev/null; qa "grant pgvigil_reader to $(L agr)" >/dev/null; qa "grant pgvigil_investigator to $(L agr)" >/dev/null 2>&1
 mk ownm "$(L agr)"; qa "alter database $REPO owner to $(L ownm)" >/dev/null || die "the database owner"
 export AG1_DSN; AG1_DSN=$(dsn_of "$(L ag1)"); export AG2_DSN; AG2_DSN=$(dsn_of "$(L ag2)"); export RD_DSN; RD_DSN=$(dsn_of "$(L rd)")
 export UI_DSN; UI_DSN=$(dsn_of "$(L ui)"); export REPORTS_DSN; REPORTS_DSN=$(dsn_of "$(L rep)")
@@ -198,7 +198,10 @@ for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$PXPORT") 2>/dev/null && b
 export AGP_DSN; AGP_DSN=$(printf 'host=127.0.0.1 port=%s dbname=%s user=%s password=%s sslmode=disable' "$PXPORT" "$REPO" "$(L ag1)" "$PW")
 px() { : > "$WORK/px.log"; printf '%s\n' "$@" > "$WORK/px.rules"; }   # px '<action> <text>' ...: the proxy's rules, its log emptied
 pxn() { grep -c -F -x -- "$1" "$WORK/px.log"; }                       # pxn '<log line>': how many times it was logged
-for u in u1 u2 u3; do PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" "agt$u$SUF" >/dev/null 2>&1 || die "user add $u"; done
+# u1, the first user, is the repository's admin; u2 and u3 operators: asking the agent and running an answered ask need
+# the operator role (a user added without -role is a viewer)
+for u in u1 u2 u3; do r=(); [[ $u == u1 ]] || r=(-role operator)
+  PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" ${r[@]+"${r[@]}"} "agt$u$SUF" >/dev/null 2>&1 || die "user add $u"; done
 U1=agtu1$SUF; U2=agtu2$SUF; U3=agtu3$SUF
 
 # the finding every request names: the demo's first active finding
@@ -240,8 +243,8 @@ R() { jq -c "select(.i == $2) | $3" "$WORK/$1.out" 2>/dev/null; }      # R <name
 Rr() { jq -r "select(.i == $2) | $3" "$WORK/$1.out" 2>/dev/null; }
 tc() { local a=${2:-}; [[ -n $a ]] || a='{}'; jq -cn --arg t "$1" --argjson a "$a" '{tool:$t,args:$a}'; }
 lists_tools() { jq -r 'select(.i == 0) | [.reply.result.tools[].name] | sort | join(",")' "$WORK/$1.out" 2>/dev/null; }
-READ9="blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
-ALL16=$(printf '%s\n' blocking_chain find_statements fleet_summary instance_findings plan_findings statement_everywhere storage_forecast table_state top_statements list_investigations wait_for_investigations claim_investigation renew_investigation run_select report_investigation release_investigation | sort | paste -sd,)
+READ10="alert_history,blocking_chain,find_statements,fleet_summary,instance_findings,plan_findings,statement_everywhere,storage_forecast,table_state,top_statements"
+ALL17=$(printf '%s\n' alert_history blocking_chain find_statements fleet_summary instance_findings plan_findings statement_everywhere storage_forecast table_state top_statements list_investigations wait_for_investigations claim_investigation renew_investigation run_select report_investigation release_investigation | sort | paste -sd,)
 
 echo "--- A. off"
 api "$S2" s2 "$U1" GET investigations >/dev/null; a1=$(cat "$WORK/body")
@@ -250,12 +253,12 @@ c1=$(api "$S2" s2 "$U1" GET investigations); c2=$(api "$S2" s2 "$U1" POST invest
 calls a_rd '{"rpc":"tools/list","params":{}}' "$(tc claim_investigation '{"id":1,"agent":"x"}')"
 mc RD_DSN a_rd
 t=$(lists_tools a_rd); e=$(R a_rd 1 '.reply.error.code')
-[[ $t == "$READ9" && $e == -32602 ]] && ok "A2 the plain reader's door: the nine read tools, claim_investigation unknown (-32602)" || bad "A2 the plain reader's door: tools '$t', claim error '$e'"
+[[ $t == "$READ10" && $e == -32602 ]] && ok "A2 the plain reader's door: the ten read tools, claim_investigation unknown (-32602)" || bad "A2 the plain reader's door: tools '$t', claim error '$e'"
 
 echo "--- R. roles"
 calls r_ag '{"rpc":"tools/list","params":{}}'
 mc AG1_DSN r_ag; t=$(lists_tools r_ag)
-[[ $t == "$ALL16" ]] && ok "R1 the agent login passes and lists 16 tools" || bad "R1 the agent login's tools: '$t' (exit $(jq -r 'select(.exit != null) | .exit' "$WORK/r_ag.out") $(jq -r 'select(.exit != null) | .stderr' "$WORK/r_ag.out" | tail -1 | cut -c1-200))"
+[[ $t == "$ALL17" ]] && ok "R1 the agent login passes and lists 17 tools" || bad "R1 the agent login's tools: '$t' (exit $(jq -r 'select(.exit != null) | .exit' "$WORK/r_ag.out") $(jq -r 'select(.exit != null) | .stderr' "$WORK/r_ag.out" | tail -1 | cut -c1-200))"
 refused() { # refused <tag> <dsn> <words>
   local rc
   PGVIGIL_MCP_DSN="$2" timeout 30 "$BIN" mcp </dev/null >"$WORK/rf-$1.out" 2>"$WORK/rf-$1.err"; rc=$?
@@ -274,7 +277,7 @@ refused alerter "$(dsn_of "$(L alra)")" pgvigil_alerter
 refused owner_by_role "$(dsn_of "$(L ownm)") options='-c role=$(L agr)'" "$(L ownm) is a member of"
 for who in rd rep ui; do
   out=$(as "$(L $who)" -c "select pgvigil.agent_investigation_list(null::text, null::text, 1)")
-  [[ $out == *"permission denied for function agent_investigation_list"* || $out == *"is not a member of pgvigil_agent"* ]] && ok "R3 the $who login may not call the agent's functions" || bad "R3 the $who login calling agent_investigation_list: ${out:0:200}"
+  [[ $out == *"permission denied for function agent_investigation_list"* || $out == *"is not a member of pgvigil_investigator"* ]] && ok "R3 the $who login may not call the agent's functions" || bad "R3 the $who login calling agent_investigation_list: ${out:0:200}"
 done
 out=$(as "$(L ag1)" -c "insert into pgvigil.investigations (kind) values ('ask')")
 [[ $out == *"permission denied for table investigations"* ]] && ok "R4 the agent login has no INSERT on investigations" || bad "R4 the agent login's INSERT: ${out:0:200}"
@@ -291,7 +294,7 @@ else
   PRIIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$PRI")
   printf 'repository:\n  dsn: env:SBP_DSN\ninstances: []\n' > "$WORK/cfg-sb.yaml"
   SBP_DSN="host=$PRIIP port=5432 user=postgres dbname=sb sslmode=disable" "$BIN" migrate -config "$WORK/cfg-sb.yaml" >"$WORK/sb-migrate.log" 2>&1 || echo "note: the standby's primary did not migrate: $(tail -2 "$WORK/sb-migrate.log")"
-  printf "create role sbagent login password '%s' in role pgvigil_reader, pgvigil_agent" "$PW" | docker exec -i "$PRI" psql -h 127.0.0.1 -U postgres -d sb -XAtq -f - >/dev/null 2>&1
+  printf "create role sbagent login password '%s' in role pgvigil_reader, pgvigil_investigator" "$PW" | docker exec -i "$PRI" psql -h 127.0.0.1 -U postgres -d sb -XAtq -f - >/dev/null 2>&1
   docker run -d --name "$STB" --network "$NET" --entrypoint bash "$IMG" -c "until pg_basebackup -h $PRI -U postgres -D /tmp/sb -R -X stream -c fast; do sleep 1; done; chown -R postgres /tmp/sb; chmod 700 /tmp/sb; exec su postgres -c 'postgres -D /tmp/sb -c listen_addresses=*'" >/dev/null
   STBIP=""; for _ in $(seq 1 150); do STBIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$STB" 2>/dev/null); docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t && break; sleep 1; done
   if docker exec "$STB" psql -h 127.0.0.1 -U postgres -d sb -XAtqc 'select pg_is_in_recovery()' 2>/dev/null | grep -q t; then

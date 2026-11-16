@@ -376,7 +376,11 @@ else {
     const plain = ${JSON.stringify(plainColumns)};
     const plainLinks = [...m.querySelectorAll('a.cell-link')].map(a => (a.getAttribute('aria-label') ?? '').split(':')[0]).filter(c => plain.includes(c));
     const tb = m.querySelector('.summary-toolbar'), rt = tb && tb.querySelector('.refresh-time'), icon = rt && rt.querySelector('[role="img"]'), upper = m.querySelector('.tests');
+    // the View control (views.ts viewControl, VIEWS slice B / D16): its data-view-control attribute, its 'View' prefix only
+    // when no button carries the attribute
+    const vb = tb && (tb.querySelector('button[data-view-control]') ?? [...tb.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('View')));
     return { th: head(tests), ih, testRows, cells, plainLinks, buttons: tb ? [...tb.querySelectorAll('button')].map(b => b.textContent.trim()) : [],
+      view: vb ? { label: vb.textContent.trim(), byAttr: vb.hasAttribute('data-view-control') } : null,
       rt: rt ? rt.textContent : '', icon: icon ? icon.getAttribute('aria-label') : '', maxH: upper ? upper.style.maxHeight : '', upperHidden: upper ? upper.hidden : null };
   })()`);
   const wantTh = ['Test', 'Instance Count OK', 'Instance Count Warning', 'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged'];
@@ -402,8 +406,12 @@ else {
     const t = sh.testRows.find(x => x.name === 'Instance Uptime');
     shape('Instance Uptime acknowledged', t ? t.n.join('/') : 'no row', !!t && t.n[4] >= 1, t && t.n[4] >= 1 ? 'counted under Instance Count Acknowledged' : 'the acknowledged cell is not counted');
   }
-  const tbWant = ['Refresh', 'View', 'Options', 'Clear Filter'].filter(b => !sh.buttons.includes(b));
-  shape('toolbar', sh.buttons.join(', '), !tbWant.length, tbWant.length ? 'lacks ' + tbWant.join(', ') : 'Refresh, View, Options, Clear Filter');
+  // the View control's label is 'View: <the loaded view's name or None>', ' (changed)' after an edit of a loaded view
+  const tbWant = ['Refresh', 'Options', 'Clear Filter'].filter(b => !sh.buttons.includes(b));
+  const viewLabelOk = !!sh.view && /^View: \S/.test(sh.view.label);
+  if (!viewLabelOk) tbWant.splice(1, 0, sh.view ? `View: <a name or None> (its label reads '${sh.view.label}')` : 'View');
+  shape('toolbar', sh.buttons.join(', ') + (sh.view ? `; the View control found by ${sh.view.byAttr ? 'data-view-control' : 'its View prefix'}` : ''), !tbWant.length,
+    tbWant.length ? 'lacks ' + tbWant.join(', ') : `Refresh, ${sh.view.label}, Options, Clear Filter`);
   shape('Refresh Time', `${sh.rt.trim()} [${sh.icon}]`, sh.rt.startsWith('Refresh Time: ') && sh.icon === 'current', 'DBA Dash\'s Refresh Time with its OK tick');
   shape('Test Summary Max Height %', sh.maxH, sh.maxH === '70vh' && sh.upperHidden === false, 'the test pane at 70 % by default');
   // Options and its three sub-menus
@@ -433,9 +441,18 @@ else {
   const ud = await openDialog(); await closeDialog();
   shape('Uptime Threshold Config (root)', ud ? `${um.join(' | ')}; ${ud.label}; Inherit ${ud.inheritOn ? 'on' : 'off'}${ud.inheritDisabled ? ' (disabled)' : ''}, Warning box ${ud.warnEditable ? 'editable' : 'disabled'}` : 'no dialog', !!ud && ud.label === 'Uptime Threshold Config (root)' && ud.inheritDisabled === true && ud.inheritOn === false && ud.warnEditable === true && um.join('|') === 'Acknowledge Uptime|Configure Thresholds' && ud.text.includes('Clear ALL Alerts'),
     'Instance Uptime > Acknowledge Uptime / Configure Thresholds; the root\'s dialog, Inherit off and disabled, its Warning box editable, Clear ALL Alerts');
-  await clickTb('View'); await sleep(200);
-  const vm = await menuItems(); await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
-  shape('View menu', vm.join(' | '), vm.length === 2 && vm[0].endsWith('Focused View') && vm[1].endsWith('Show Test Summary') && vm[1] !== 'Show Test Summary', 'Focused View, Show Test Summary (ticked)');
+  // DBA Dash's View drop-down (views.ts viewControl, D16): the page's two toggles first, then {None}, the saved views and
+  // Save / Save as... / Rename... / Delete...; the menu draws once the saved views are read, so it is waited for (3 s)
+  const viewOpened = await ev(`(() => { const t = document.querySelector('.summary-toolbar'); const b = t && (t.querySelector('button[data-view-control]') ?? [...t.querySelectorAll('button')].find(x => x.textContent.trim().startsWith('View'))); if (!b) return false; b.click(); return true; })()`);
+  let vm = [];
+  for (let i = 0; viewOpened && i < 30 && !vm.length; i++) { await sleep(100); vm = (await menuItems()) ?? []; }
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  const vNone = vm.findIndex(x => x.endsWith('{None}')), vSave = vm.findIndex(x => x === 'Save');
+  const vmOk = vm.length >= 4 && vm[0].endsWith('Focused View') && vm[1].endsWith('Show Test Summary') && vm[1] !== 'Show Test Summary' && vNone === 2 && vSave > vNone;
+  shape('View menu', viewOpened ? (vm.length ? vm.join(' | ').slice(0, 260) : 'the View control opened no menu') : 'no View control', vmOk,
+    vmOk ? 'Focused View, Show Test Summary (ticked), then {None} and Save'
+      : !viewOpened ? 'no View control to open' : !vm.length ? 'the View control opened no menu'
+      : `want Focused View, Show Test Summary (ticked), then {None} (item ${vNone + 1}) and Save after it (item ${vSave + 1})`);
 }
 
 const storageScopes = [
@@ -820,8 +837,11 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
 // folders offer no page that holds PostgreSQL alone (router.ts pageEngine, read from each page's SQL) and still offer
 // SQL Server options
 {
-  // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines')
-  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'backups', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes', 'jobs']);
+  // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines'),
+  // jobs and backups when both pages listed SQL Server rows too (the fleet Jobs page's SQL Agent rows, 4bfd03b0; the root
+  // Backups page's SQL Server section, a606c77d): a SQL Server-only folder offers both (TAGALL: every root page under every tag folder)
+  const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes']);
+  const bothEngines = [['backups', 'hadr', 'mssqllogshipping'], ['jobs', 'jobs', 'jobstimeline']];   // [page, its group, a SQL Server page of that group's strip]
   await go('#/summary');
   const tops = await ev(`[...document.querySelectorAll('#tree .folder > .folder-head a')].map(a => new URLSearchParams((a.getAttribute('href') || '').split('?')[1] || '').get('tag')).filter(Boolean)`);
   const carriers = new Map();
@@ -839,12 +859,22 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
         if (box) for (const a of box.querySelectorAll(':scope > div:not(.tree-node) a.inst')) out.push(a.getAttribute('href'));
       }
       return out; })()`, true);
-    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t));
+    const tabs = (leaves ?? []).map(tabOf), bad = tabs.filter(t => pgOnly.has(t)), lacks = bothEngines.map(([t]) => t).filter(t => !tabs.includes(t));
     record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: 'engines', engine: 'sqlserver', link: `#/summary?tag=${msTag}`, landed: `${tabs.length} leaves in the root's folders: ${tabs.join(' ')}`.slice(0, 260),
       verdict: tabs.length === 0 ? "FAIL no leaf read in the root's folders"
         : bad.length ? `FAIL page(s) of PostgreSQL alone offered for a SQL Server-only tag: ${bad.join(', ')}`
         : !tabs.includes('mssqlrisks') ? 'FAIL SQL Server options is not offered'
-        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options there)` });
+        : lacks.length ? `FAIL page(s) that list SQL Server rows not offered for a SQL Server-only tag: ${lacks.join(', ')}`
+        : `ok (${carriers.get(msTag).length} SQL Server instance(s); no page of PostgreSQL alone; SQL Server options, ${bothEngines.map(([t]) => t).join(' and ')} there)` });
+    // the strips of those pages' groups, on a SQL Server page of each under that tag: the page is offered (main.ts tagPages)
+    for (const [t, g, on] of bothEngines) {
+      await go(`#/${on}?tag=${encodeURIComponent(msTag)}`);
+      const gs = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
+      record({ scope: `tag ${msTag}`, kind: 'tag-tree', column: `strip ${g}`, engine: 'sqlserver', link: `#/${on}?tag=${msTag}`, landed: `the strip: ${gs.join(' ')}`.slice(0, 260),
+        verdict: !gs.includes(on) ? `FAIL the strip does not hold ${on}`
+          : !gs.includes(t) ? `FAIL the ${g} strip does not offer ${t} for a SQL Server-only tag (it lists SQL Server rows)`
+          : `ok (the ${g} strip offers ${t})` });
+    }
     // the Configuration strip on SQL Server options under that tag: no page of PostgreSQL alone (main.ts tagPages)
     await go(`#/mssqlrisks?tag=${encodeURIComponent(msTag)}`);
     const strip = ((await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`)) ?? []).map(tabOf);
@@ -861,18 +891,25 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
 // instance's HA/DR strip holds DBA Dash's four tabs in its order; a PostgreSQL instance's strip none of the three
 {
   const haOrder = ['mssqlbackups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag'];
+  // each folder page and the collection it draws (q_mssql_hadr.go's hadrReads); CLICK_SEEDED (proof-clickmap.sh) names the
+  // collections the demo's seed holds rows of: a page with no Instance link is 'not proven' only for a kind the seed holds
+  // none of, and a FAIL for a kind it holds (or when CLICK_SEEDED is not given: what the data holds is then unknown)
+  const haKinds = { mssqlag: ['mssql_ag', 'Availability Groups'], mssqlmirroring: ['mssql_mirroring', 'Mirroring'], mssqllogshipping: ['mssql_logshipping', 'Log Shipping'] };
+  const seeded = process.env.CLICK_SEEDED == null ? null : new Set(process.env.CLICK_SEEDED.split(/\s+/).filter(Boolean));
   for (const t of ['mssqlag', 'mssqlmirroring', 'mssqllogshipping']) {
     await go(`#/${t}`);
     const link = await ev(`(() => { const x = [...document.querySelectorAll('main table a')].find(a => /[?&]i=\\d+/.test(a.getAttribute('href') || '')); return x ? x.getAttribute('href') : null; })()`);
     if (!link) {
+      const [coll, name] = haKinds[t];
       record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link: `#/${t}`, landed: 'no row with an Instance link',
-        verdict: t === 'mssqlmirroring' ? 'not proven: no Mirroring row with an Instance link in this data (its links are in Role Changes)' : 'FAIL the folder page has no Instance link' });
+        verdict: seeded && !seeded.has(coll) ? `not proven: no ${name} row in this data (the seed holds no ${coll} row)`
+          : `FAIL the folder page has no Instance link (${seeded ? `the seed holds ${coll} rows` : 'CLICK_SEEDED not given: what the data holds is unknown'})` });
       continue;
     }
     await ev(`(() => { [...document.querySelectorAll('main table a')].find(a => a.getAttribute('href') === ${JSON.stringify(link)})?.click(); })()`);
     await sleep(500); await settled();
     const got = await landing();
-    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !b.disabled : null; })()`);
+    const back = await ev(`(() => { const b = [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back'); return b ? !(b.disabled || b.getAttribute('aria-disabled') === 'true') : null; })()`);
     let backTo = '';
     if (back) { await ev(`(() => { [...document.querySelectorAll('main .toolbar button')].find(x => x.textContent.trim() === 'Back')?.click(); })()`); await sleep(500); await settled(); backTo = (await landing()).hash; }
     record({ scope: 'root', kind: 'hadr', column: 'Instance drill', engine: 'sqlserver', link, landed: `${got.hash}; Back ${back === null ? 'absent' : back ? 'on' : 'off'}${backTo ? ' -> ' + backTo : ''}`,

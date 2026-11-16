@@ -7,7 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, tile } from './ui';
 import { fleet, inTagScope } from './fleet';
 import { thresholdDialog, ThresholdPlace } from './pg_backups';
 
@@ -423,9 +423,11 @@ function backButton(ctx: Ctx, tab: string): HTMLElement {
     else sessionStorage.removeItem(backKey(tab));   // at the folder: a key the browser's own Back left is stale
   } catch { to = null; }
   const b = el('button', { type: 'button', title: 'Navigate Back: the folder this instance was opened from' }, 'Back');
-  if (!to) b.setAttribute('disabled', '');
   b.addEventListener('click', () => { try { sessionStorage.removeItem(backKey(tab)); } catch { /* */ } if (to) location.hash = to; });
-  return b;
+  if (to) return b;
+  // nowhere to go back to (the page opened by its address, a bookmark or a reload, not from this folder's Instance
+  // link): off with its reason shown beside it, as every off control is (ui.ts offControl; the a11y walk's off rule)
+  return el('span', {}, b, ' ', offControl(b, 'Back: on after an Instance link of this folder'));
 }
 
 // the events range of Role Changes and AlwaysOn Health Events (AG.cs:592-602): DBA Dash's list

@@ -264,7 +264,7 @@ sqtry() { local u=$ADMIN_USER pw=$ADMIN_PW; if [ "${3:-}" = mon ]; then u=$MON_U
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
-  for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -fv "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form rds -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
@@ -448,7 +448,7 @@ elif run_ok mssql_requests; then
   eq mssql_requests "$(q "select session_id || '|' || command || '|' || wait_type from pgvigil.mssql_requests where instance_id=$iid and session_id=$WSID order by snapshot_at desc limit 1")" \
     "$(sq "SELECT CAST(session_id AS varchar(9)) + '|' + command + '|' + wait_type FROM sys.dm_exec_requests WHERE session_id = $WSID")"
 fi
-docker rm -f "$WAITER" >/dev/null 2>&1 || true; WAITER=
+docker rm -fv "$WAITER" >/dev/null 2>&1 || true; WAITER=
 # the bracketed collections: read before, run, read after
 WSQL="SELECT wait_type + '|' + CAST(waiting_tasks_count AS varchar(20)) + '|' + CAST(wait_time_ms AS varchar(20)) FROM sys.dm_os_wait_stats WHERE waiting_tasks_count > 0 OR wait_time_ms > 0"
 sq "$WSQL" > "$WORK/w-b.txt"
@@ -502,7 +502,7 @@ for pcyc in $(seq 1 10); do
   bad "B: mssql_procstats (cycle $pcyc): the proof's procedure (database $FDBID, object $POBJ) stored as '$PK' with $PX execution(s), a plan neither read lists while both list '$KB' (the master user read $HB executions before the run, $HA after it); $(tr '\n' ' ' <<<"$BR_OUT")"
 done
 if [ -z "$PSDONE" ]; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: no cycle of ten met a stored plan of the proof's procedure in a read:$(cut -c1-900 <<<"$PSWHY")"; fi
-docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
+docker rm -fv "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
 # one row lock wait on pk_t: a session holds the row for 45 seconds, the proof's update waits for it
 LOCKER=pgvproof-lock-$SUF
 docker run -d --name "$LOCKER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
@@ -539,8 +539,8 @@ else
     else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: stored [$(tr '\n' ' ' < "$WORK/wt-s.txt")], the master user read [$(tr '\n' ' ' < "$WORK/wt-b.txt")] before and [$(tr '\n' ' ' < "$WORK/wt-a.txt")] after (want '$US|LCK_M_X|$LBS|$FDB' on all three)"; fi
   fi
 fi
-docker wait "$UPD" >/dev/null 2>&1 || true; docker rm -f "$UPD" >/dev/null 2>&1 || true; UPD=
-docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -f "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
+docker wait "$UPD" >/dev/null 2>&1 || true; docker rm -fv "$UPD" >/dev/null 2>&1 || true; UPD=
+docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -fv "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
 # the collector reads only the online databases its login can enter, never the engine's catalog tables (object ids 1 to
 # 100: indexlocks.go); the hand read mirrors both, the database list read as the collector's login
 IDBS=$(sqmon "SELECT STRING_AGG(CAST(database_id AS varchar(9)), ',') FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1") || IDBS=
@@ -866,7 +866,7 @@ PY
   PHWHY="$PHWHY cycle $cyc: $out;"
 done
 [ -n "$PHDONE" ] || { VERDICT[mssql_plancache_health]="FAIL"; bad "B: mssql_plancache_health: no cycle of five held:$(cut -c1-900 <<<"$PHWHY")"; }
-docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
+docker rm -fv "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
 
 # the three readers keep their own state (read, no right, off, failed): each must say read
 # mssql_syshealth: the component results stored per component and state lie between the master user's counts of

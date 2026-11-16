@@ -125,9 +125,6 @@ func tools() []tool {
 	}, alertTools()...) // task 403b: alert_history (tools_alerts.go)
 }
 
-// toolList is the reader's tools as tools/list names them.
-func toolList() []any { return listOf(tools()) }
-
 func listOf(ts []tool) []any {
 	var out []any
 	for _, t := range ts {
@@ -146,8 +143,6 @@ func (s *Server) served() []tool {
 	}
 	return append(tools(), agentTools()...)
 }
-
-func toolByName(n string) (tool, bool) { return findTool(tools(), n) }
 
 func findTool(ts []tool, n string) (tool, bool) {
 	for _, t := range ts {

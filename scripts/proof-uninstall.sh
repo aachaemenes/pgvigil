@@ -257,7 +257,7 @@ docker run -d --name "$TAG-second" --network "container:$SYS" -e "PGVIGIL_REPO_D
 sleep 5; [[ "$(docker inspect -f '{{.State.Running}}' "$TAG-second" 2>/dev/null)" == true ]] || fail "the second collector exited: $(docker logs --tail 5 "$TAG-second" 2>&1)"
 refused "second collector" "another collector writes into pgvigil" "${ALLDROP[@]}"
 grep -q 'the service runs again, nothing else was changed' "$WORK/c.out" || fail "the second collector's refusal did not start the service again: $(cat "$WORK/c.out")"
-docker rm -f "$TAG-second" >/dev/null 2>&1 || fail "the second collector's container was not removed"
+docker rm -fv "$TAG-second" >/dev/null 2>&1 || fail "the second collector's container was not removed"
 same "a second collector"
 ok "refused with nothing changed, before the stop: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN naming another database (with an env: and with a file: dsn), a dsn that resolves to nothing, the configuration gone with the database there, a drop-in's EnvironmentFile= and a drop-in's ExecStart= (each named), a -bin that disagrees, a serve on the installed binary (named, 'running' in the dry run; idle and -no-login it held $IDLE repository session(s) after 9 s with a 2 s idle limit), serves from copies at other paths (the release asset's name, pid $SQ, and a name without pgvigil, pid $SR, each named), a role without ADMIN OPTION (PostgreSQL $PGMAJ); after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
 
@@ -273,6 +273,7 @@ for l in "remove   the service pgvigil (systemd unit $U)" "remove   the binary $
   "remove   the configuration folder /etc/pgvigil" "remove   the service account pgvigil" \
   "remove   the database pgvigil (" "a dump first to /var/backups/pgvigil/pgvigil-before-uninstall-" "remove   the login role pgvigil_agent (the login this host's configuration names)" \
   "remove   the group role pgvigil_collector" "remove   the group role pgvigil_auth" "remove   the group role pgvigil_alerter" \
+  "remove   the group role pgvigil_requester" "remove   the group role pgvigil_exporter" "remove   the group role pgvigil_investigator" \
   "kept     the group role pgvigil_reader: used in pgvigil_other" \
   "kept     the login role pgvigil_ui: not the login this host's configuration names; when nothing else uses it: DROP ROLE \"pgvigil_ui\";" \
   "kept     the login role pgvigil_owner: the owner's login this uninstall connects as" "the monitored servers: never touched here" "dry run: nothing was changed"; do
@@ -296,6 +297,7 @@ insys "${ALLDROP[@]}" </dev/null >"$WORK/u.out" 2>&1 || fail "the uninstall: $(c
 prev=0
 for l in "stopped the service" "watching the repository for 1m15s" "dumped the repository to /var/backups/pgvigil/pgvigil-before-uninstall-" "dropped the database pgvigil" \
   "dropped the role pgvigil_agent" "dropped the role pgvigil_collector" "dropped the role pgvigil_reader" "dropped the role pgvigil_auth" "dropped the role pgvigil_alerter" \
+  "dropped the role pgvigil_requester" "dropped the role pgvigil_exporter" "dropped the role pgvigil_investigator" \
   "removed: the scheduled purge" "removed: the service pgvigil" "removed: the binary $B" "removed: the previous binary" "removed: the configuration $C" "removed: the environment file" \
   "removed: the purge's env file $PE" "removed: the page's credential folder /etc/pgvigil/instances" "removed: the page's credential folder /etc/pgvigil/sources" \
   "removed: the configuration folder /etc/pgvigil" "removed: the service account pgvigil" "kept: the dump /var/backups/pgvigil/pgvigil-before-uninstall-" "pgvigil is uninstalled from this host"; do
@@ -314,7 +316,7 @@ PQDB=postgres pq "CREATE DATABASE pgvigil_back" >/dev/null
 insys sh -c "cp $DUMPF /tmp/u.dump && chown postgres /tmp/u.dump"
 insys su postgres -c "pg_restore --no-owner --no-privileges -d pgvigil_back /tmp/u.dump" >"$WORK/restore.out" 2>&1 || fail "pg_restore: $(tail -n 5 "$WORK/restore.out")"
 [[ "$(PQDB=pgvigil_back pq "select count(*) from pgvigil.schema_version")" == "$FILES" && "$(PQDB=pgvigil_back pq "select count(*) from pgvigil.collection_dates")" -ge "$ROWS" ]] || fail "the restored dump's counts"
-ok "in order: stopped, watched 75 s, dumped, the database dropped, pgvigil_agent then the four groups dropped, the scheduled purge (timer and service), the service, the binaries, the configuration, the purge's env file, the page's credential folders and the account removed; read back: no file, unit (pgvigil, pgvigil-purge), account or group, roles left only pgvigil_monitor (the monitored server's) and pgvigil_owner (the owner's own, named), no database pgvigil; the dump 600 root in a 700 folder restores ($FILES migration rows, collection_dates complete)"
+ok "in order: stopped, watched 75 s, dumped, the database dropped, pgvigil_agent then the seven groups the migrations make dropped, the scheduled purge (timer and service), the service, the binaries, the configuration, the purge's env file, the page's credential folders and the account removed; read back: no file, unit (pgvigil, pgvigil-purge), account or group, roles left only pgvigil_monitor (the monitored server's) and pgvigil_owner (the owner's own, named), no database pgvigil; the dump 600 root in a 700 folder restores ($FILES migration rows, collection_dates complete)"
 
 echo "== R the second run =="
 insys /root/pgvigil uninstall -all -drop-repository -confirm-database pgvigil -owner-dsn-file /root/owner.dsn </dev/null >"$WORK/r1.out" 2>&1 || fail "the second run with -drop-repository: $(cat "$WORK/r1.out")"

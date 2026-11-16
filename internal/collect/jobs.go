@@ -76,11 +76,20 @@ SELECT 'job' AS kind, 'pgagent' AS scheduler, j.jobid::bigint AS job_id, j.jobna
   FROM pgagent.pga_job j`
 
 // MaskJobText is a job's text with every password it carries replaced by <masked>: MaskCredentials first (textpolicy.go,
-// task 415: the one literal-aware mask of every stored text - a value in doubled quotes inside a literal is one value),
-// then the job rules of package jobmask (S16 / S16b: its forms, CREATE / ALTER ROLE ... PASSWORD among them; the one
-// 0272's Go step in Migrate applies to stored rows). Both are idempotent and write <masked>, so a form either masks
-// stays masked.
-func MaskJobText(s string) string { return jobmask.Text(MaskCredentials(s)) }
+// task 415: the one literal-aware mask of every stored text - a value in doubled quotes inside a literal is one value,
+// a named argument's '=>'), then jobmask.Stored (S16 / S16b: widen, then the job rules of package jobmask, CREATE /
+// ALTER ROLE ... PASSWORD among them; the function 0272's re-mask of stored rows uses). Neither order of the two masks
+// alone hides what each hides alone (TestMaskJobTextComposed, J16 JOBMASK LEAK): MaskCredentials masks only the start
+// of some Red Gate values (a doubled value's N and opening quotes read as an empty literal, a bracketed value cut at
+// its space or comma), and jobmask.Text then reads its mark as a value already masked and keeps the key after it
+// (j16d5's mssqljobmask rg2 / rg3 / rg6); jobmask.Text first reads 'p_password =>' as 'p_password =' and masks only
+// the '>', and MaskCredentials then keeps the key as already masked. Since the join's review 5 MaskCredentials reads
+// a doubled value with an escaped quote and a bracketed value whole (innerValue); a doubled value with an N before it
+// (rg2's) is still read as the N alone, and Stored's widen drops its rest before the job rules run. widen only ever
+// drops text, and it drops more than a value's rest in one case: after a complete quoted mark followed by a character
+// that is neither a quote nor in its markEnds (a letter, '.', '|', '=', '-', '?', ':'), its restQ1 drops up to the
+// next doubled quote or the text's end - over-masking, never a key (a j17 row for package jobmask).
+func MaskJobText(s string) string { return jobmask.Stored(MaskCredentials(s)) }
 
 // maskTree masks every string of a decoded jsonb value (a job's definition) in place.
 func maskTree(v any) any {

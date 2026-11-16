@@ -125,18 +125,22 @@ export const rootGroups: TabGroup[] = [
 // opened under ?tag= narrows what it lists or picks to the tag's instances; what a page holds as one setting or one list
 // for the whole repository it says so in one line under a tag (fleet.ts fleetWideNote) and shows as the root does.
 // pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
-// page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
-// 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
-// disks, storage, backups, roles, indexes, jobs, DMS, database sizes -, mssql.All for SQL Server's mssql_*; custom checks
-// are both engines' since ST6: mssql_custom writes the same tables), or
-// the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
-// engine leaves them out, as a strip should; every other page holds both engines.
+// page's handler and SQL): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize 0086 L211 -
+// its note only counts the SQL Server instances it leaves out), tables only one engine's collections write
+// (internal/engines Specs: collect.All for PostgreSQL - host disks (disk_report, import_host), storage (volume_forecast:
+// host_disks, aurora_volume), roles (import_roles), indexes (index_state / index_inventory, import_indexes), DMS
+// (import_dms), extensions (import_extensions), database and table sizes (growth: import_databases, import_tables) -,
+// mssql.All for SQL Server's mssql_*), or the page's own words (reports.ts L430 / L577, the options pages). Pages that
+// list both engines' rows are not here: custom (ST6: mssql_custom writes the same tables), jobs (the fleet Job status
+// grid, every scheduler: jobs_fleet_status.ts L2) and backups (the root page appends mssqlBackupsFleetSection under a
+// scope with SQL Server: main.ts rootPages). A tag folder whose instances are all of the other engine leaves a page here
+// out, as a strip should (TAGALL: every other root page under every tag folder).
 export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
   mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver', mssqlerrors: 'sqlserver',
   mssqllogshipping: 'sqlserver', mssqlmirroring: 'sqlserver', mssqlag: 'sqlserver',
   pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
-  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', disks: 'postgres',
-  storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
+  tablesize: 'postgres', roles: 'postgres', dms: 'postgres', disks: 'postgres',
+  storage: 'postgres', growth: 'postgres', indexes: 'postgres',
   // the Imported servers page (Doors) holds SQL Server instances alone (dbadash.ts): a PostgreSQL-only folder has no Doors folder
   dbadash: 'sqlserver',
 };

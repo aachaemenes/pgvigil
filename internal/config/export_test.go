@@ -49,7 +49,7 @@ func TestExportSection(t *testing.T) {
 
 // What the section refuses, each with words that name the key.
 func TestExportSectionRefusals(t *testing.T) {
-	with := func(old, new string) string { return strings.Replace(exportOK, old, new, 1) }
+	with := func(old, repl string) string { return strings.Replace(exportOK, old, repl, 1) }
 	for name, c := range map[string]struct{ section, word string }{
 		"an upper-case name":              {with("name: prod-repo", "name: Prod"), "export.name"},
 		"a name with the separator":       {with("name: prod-repo", "name: a__b"), "export.name"},

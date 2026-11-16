@@ -53,7 +53,7 @@ func (d *folder) Upload(_ context.Context, key, local string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	return d.write(key, in)
 }
 
@@ -66,7 +66,7 @@ func (d *folder) Put(_ context.Context, key string, body []byte, onlyNew bool) e
 	if err := d.write(side, strings.NewReader(string(body))); err != nil {
 		return err
 	}
-	defer os.Remove(d.path(side))
+	defer func() { _ = os.Remove(d.path(side)) }()
 	if err := os.Link(d.path(side), d.path(key)); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return errExists
@@ -87,21 +87,21 @@ func (d *folder) write(key string, r io.Reader) error {
 		return err
 	}
 	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, p); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return nil

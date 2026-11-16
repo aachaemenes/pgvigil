@@ -110,7 +110,8 @@ want "$f" uptime "ok|true|1|0|0 h" "F clock skew"
 got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cells"]; c=d["columns"]; i=c.index("instance_id"); n={}
 for r in d["rows"]: n[r[i]]=n.get(r[i],0)+1
 print(len(n), sorted(set(n.values())), int(sys.argv[2]) in n)' "$WORK/sum.json" "$pg")
-[[ "$got" == "9 [25] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 9 instances x 25 keys (task P08's 24 DBA Dash columns + Elastic Pool Storage), no PostgreSQL row"
+# 26 keys since ST6b (699bc860): the Custom checks key, 'n/a' where mssql_custom never ran (q_mssql_summary.go L32, L67)
+[[ "$got" == "9 [26] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 9 instances x 26 keys (task P08's 24 DBA Dash columns + Elastic Pool Storage + ST6b's Custom), no PostgreSQL row"
 want "$i" dumps "ok|true|1|0|1 file" "I the default 48 h"
 [[ "$(cell "$i" dumps since)" == "$(q "select to_char(last_dump_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI') from pgvigil.mssql_health where instance_id = $i")"* ]] || fail "I: since is '$(cell "$i" dumps since)'"
 # the dialog's write is POST /api/pg/thresholds, a signed-in user's: here its function, as proof-clickmap T9 sets uptime

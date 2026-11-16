@@ -497,8 +497,9 @@ async function render(force = false) {
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
   // under a tag a folder's strip is the tag folder's own (TAGTREE / TAGALL; router.ts tagPages): every root page but one of an
   // engine the tag's instances lack - the page shown keeps its tab (an old link still opens it)
-  const tagFleet = ctx.tag && !ctx.instance && group.key !== 'main' ? await fleet().catch(() => null) : null;
-  const inTagStrip = tagFleet ? new Set(tagPages(group, new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')))) : null;
+  const tagFleet = ctx.tag && !ctx.instance ? await fleet().catch(() => null) : null;
+  const tagEngines = tagFleet ? new Set(tagFleet.instances.filter(r => inTagScope(ctx.tag!, r)).map(r => isMssql(r.engine) ? 'sqlserver' : 'postgres')) : null;
+  const inTagStrip = tagEngines && group.key !== 'main' ? new Set(tagPages(group, tagEngines)) : null;
   const strip = group.tabs.filter(k => tabs[k] && (!offStrip.has(k) || k === ctx.tab) && (!inTagStrip || inTagStrip.has(k) || k === ctx.tab));
   // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
   $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
@@ -506,8 +507,11 @@ async function render(force = false) {
     ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
     // every page keeps the tag (TAGALL; what a page holds for the whole repository it says so: fleet.ts fleetWideNote)
     ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
-  // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
-  $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));
+  // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs, wording-walk.mjs); under a tag only
+  // what its folder offers, by the strip's own rule (every main page; a folder's pages but one of an engine the tag's
+  // instances lack; the page shown), so a walk under a PostgreSQL-only tag never opens a SQL Server-only page by address
+  const offTag = tagEngines ? new Set(rootGroups.filter(g => g.key !== 'main').flatMap(g => g.tabs.filter(k => !tagPages(g, tagEngines).includes(k)))) : null;
+  $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).filter(k => !offTag || !offTag.has(k) || k === ctx.tab).map(k => href(ctx, { tab: k })));
 
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');

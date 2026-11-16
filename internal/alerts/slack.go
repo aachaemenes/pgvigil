@@ -258,14 +258,14 @@ func slackEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
-// slackCut cuts escaped text at max characters on a rune boundary, never inside an entity.
-func slackCut(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
+// slackCut cuts escaped text at limit characters on a rune boundary, never inside an entity.
+func slackCut(s string, limit int) string {
+	if utf8.RuneCountInString(s) <= limit {
 		return s
 	}
 	n, cut := 0, len(s)
 	for i := range s {
-		if n == max-4 {
+		if n == limit-4 {
 			cut = i
 			break
 		}

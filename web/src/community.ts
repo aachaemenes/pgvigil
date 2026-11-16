@@ -213,6 +213,14 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const here = `${v.installed}${v.database ? ` in ${v.database}` : ''}`;
     return v.newer ? el('span', {}, `${here}; ${checked} `, badge('newer than checked', 'warn')) : `${here}; ${checked}`;
   };
+  // X18: an installed version not newer than checked is OK; never read, not found, not readable or no version line is
+  // N/A; a newer one carries its warning badge
+  const versionCls = (t: Tool): string => {
+    const v = t.kit_version;
+    if (!v) return '';
+    if (!v.read_at || !v.present || !v.readable || !v.installed) return 'status none';
+    return v.newer ? '' : 'status ok';
+  };
   const groups = [...new Set(d.tools.map(t => t.group))];
   for (const g of groups) {
     const tools = d.tools.filter(t => t.group === g);
@@ -223,7 +231,8 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
       { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, d, () => void openTool(r as unknown as Tool), cells.get(String(r.id)), above) },
       { key: 'description', wide: true },
       // KITWATCH's read: the installed version as mssql_kits last read it (daily) and the version pgvigil was checked against
-      { key: 'kit_version', label: 'installed (daily read) / pgvigil checked', fmt: (_v, r) => versionCell(r as unknown as Tool) },
+      { key: 'kit_version', label: 'installed (daily read) / pgvigil checked', fmt: (_v, r) => versionCell(r as unknown as Tool),
+        cls: (_v, r) => versionCls(r as unknown as Tool) },
       { key: 'state', label: 'before it runs', wide: true, fmt: (_v, r) => cells.get(String(r.id)) ?? '' },
     ]);
     for (const t of tools) tables.set(t.id, table);

@@ -43,7 +43,7 @@ func tmStore(t *testing.T) (context.Context, pgx.Tx, string, int64, int, bool) {
 
 // tmSetMarks sets the three tables' marks to at (an SQL expression of now(), or '-infinity'), or with at "" removes
 // their rows (the first trim of a table: no row yet); nothing on a store without the mark table.
-func tmSetMarks(t *testing.T, ctx context.Context, tx pgx.Tx, marked bool, at string) {
+func tmSetMarks(ctx context.Context, t *testing.T, tx pgx.Tx, marked bool, at string) {
 	t.Helper()
 	if !marked {
 		return
@@ -59,7 +59,7 @@ func tmSetMarks(t *testing.T, ctx context.Context, tx pgx.Tx, marked bool, at st
 }
 
 // tmPlant writes one row in each of the three tables at the minute 'at' (an SQL expression of now()).
-func tmPlant(t *testing.T, ctx context.Context, tx pgx.Tx, col string, id int, at string) {
+func tmPlant(ctx context.Context, t *testing.T, tx pgx.Tx, col string, id int, at string) {
 	t.Helper()
 	for _, q := range []struct {
 		sql  string
@@ -80,7 +80,7 @@ func tmPlant(t *testing.T, ctx context.Context, tx pgx.Tx, col string, id int, a
 
 // tmBeat: one beat of the collector at the transaction's minute - import_collector_beat, then import_collector_probe
 // (heartbeat.go's order), each with an empty body.
-func tmBeat(t *testing.T, ctx context.Context, tx pgx.Tx, col string) {
+func tmBeat(ctx context.Context, t *testing.T, tx pgx.Tx, col string) {
 	t.Helper()
 	var known bool
 	if err := tx.QueryRow(ctx, `SELECT pgvigil.import_collector_beat($1, date_trunc('minute', now()), '{}'::jsonb)`, col).Scan(&known); err != nil || !known {
@@ -92,7 +92,7 @@ func tmBeat(t *testing.T, ctx context.Context, tx pgx.Tx, col string) {
 }
 
 // tmCounts: per table, the collector's rows past 8 days and its rows inside them ('<old>/<recent>').
-func tmCounts(t *testing.T, ctx context.Context, tx pgx.Tx, col string) map[string]string {
+func tmCounts(ctx context.Context, t *testing.T, tx pgx.Tx, col string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, tbl := range tmTables {
@@ -108,7 +108,7 @@ func tmCounts(t *testing.T, ctx context.Context, tx pgx.Tx, col string) map[stri
 
 // tmMarks: per table, its mark as whole minutes before date_trunc('minute', now()) - 8 days, rounded up - a mark at
 // now() - 8 days itself (a trim that reached the cut) reads 0 - ('none': no row, 'no mark table').
-func tmMarks(t *testing.T, ctx context.Context, tx pgx.Tx, marked bool) map[string]string {
+func tmMarks(ctx context.Context, t *testing.T, tx pgx.Tx, marked bool) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, tbl := range tmTables {
@@ -141,15 +141,15 @@ func TestTrimMarkBacklogOnAStore(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx, tx, col, _, id, marked := tmStore(t)
-			tmSetMarks(t, ctx, tx, marked, start)
+			tmSetMarks(ctx, t, tx, marked, start)
 			for m := 5; m <= 35; m += 5 {
-				tmPlant(t, ctx, tx, col, id, fmt.Sprintf("date_trunc('minute', now()) - interval '8 days' - interval '%d minutes'", m))
+				tmPlant(ctx, t, tx, col, id, fmt.Sprintf("date_trunc('minute', now()) - interval '8 days' - interval '%d minutes'", m))
 			}
-			tmPlant(t, ctx, tx, col, id, "date_trunc('minute', now()) - interval '1 minute'")
-			tmPlant(t, ctx, tx, col, id, "date_trunc('minute', now()) - interval '1 hour'")
+			tmPlant(ctx, t, tx, col, id, "date_trunc('minute', now()) - interval '1 minute'")
+			tmPlant(ctx, t, tx, col, id, "date_trunc('minute', now()) - interval '1 hour'")
 			for beat, want := range []struct{ rows, mark string }{{"5/2", "25"}, {"3/2", "15"}, {"1/2", "5"}, {"0/2", "0"}, {"0/2", "0"}} {
-				tmBeat(t, ctx, tx, col)
-				counts, marks := tmCounts(t, ctx, tx, col), tmMarks(t, ctx, tx, marked)
+				tmBeat(ctx, t, tx, col)
+				counts, marks := tmCounts(ctx, t, tx, col), tmMarks(ctx, t, tx, marked)
 				for _, tbl := range tmTables {
 					if counts[tbl] != want.rows {
 						t.Errorf("beat %d, %s: rows past 8 days / recent = %s, want %s (10 minutes a beat from the oldest row)", beat+1, tbl, counts[tbl], want.rows)
@@ -170,11 +170,11 @@ func TestTrimMarkBacklogOnAStore(t *testing.T) {
 // RED on the old trims (no mark: both go).
 func TestTrimMarkReadsFromTheMarkOnAStore(t *testing.T) {
 	ctx, tx, col, _, id, marked := tmStore(t)
-	tmSetMarks(t, ctx, tx, marked, "date_trunc('minute', now()) - interval '8 days' - interval '45 minutes'")
-	tmPlant(t, ctx, tx, col, id, "date_trunc('minute', now()) - interval '8 days' - interval '90 minutes'")
-	tmPlant(t, ctx, tx, col, id, "date_trunc('minute', now()) - interval '8 days' - interval '30 minutes'")
-	tmBeat(t, ctx, tx, col)
-	marks := tmMarks(t, ctx, tx, marked)
+	tmSetMarks(ctx, t, tx, marked, "date_trunc('minute', now()) - interval '8 days' - interval '45 minutes'")
+	tmPlant(ctx, t, tx, col, id, "date_trunc('minute', now()) - interval '8 days' - interval '90 minutes'")
+	tmPlant(ctx, t, tx, col, id, "date_trunc('minute', now()) - interval '8 days' - interval '30 minutes'")
+	tmBeat(ctx, t, tx, col)
+	marks := tmMarks(ctx, t, tx, marked)
 	for _, tbl := range tmTables {
 		var at90, at30 int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE minute = date_trunc('minute', now()) - interval '8 days' - interval '90 minutes'),
@@ -195,8 +195,8 @@ func TestTrimMarkReadsFromTheMarkOnAStore(t *testing.T) {
 // old row and moves the mark to the step's end. RED on 0121 as it was: no mark table.
 func TestTrimMarkFailedBeatOnAStore(t *testing.T) {
 	ctx, tx, col, sfx, id, marked := tmStore(t)
-	tmPlant(t, ctx, tx, col, id, "date_trunc('minute', now()) - interval '8 days' - interval '30 minutes'")
-	tmSetMarks(t, ctx, tx, marked, "date_trunc('minute', now()) - interval '8 days' - interval '45 minutes'")
+	tmPlant(ctx, t, tx, col, id, "date_trunc('minute', now()) - interval '8 days' - interval '30 minutes'")
+	tmSetMarks(ctx, t, tx, marked, "date_trunc('minute', now()) - interval '8 days' - interval '45 minutes'")
 	if _, err := tx.Exec(ctx, `SAVEPOINT tm_fail`); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestTrimMarkFailedBeatOnAStore(t *testing.T) {
 	if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT tm_fail`); err != nil {
 		t.Fatal(err)
 	}
-	counts, marks := tmCounts(t, ctx, tx, col), tmMarks(t, ctx, tx, marked)
+	counts, marks := tmCounts(ctx, t, tx, col), tmMarks(ctx, t, tx, marked)
 	for _, tbl := range []string{"collector_load", "collector_runs"} {
 		if counts[tbl] != "1/0" {
 			t.Errorf("after the failed beat, %s: rows past 8 days / recent = %s, want 1/0 (the trim rolled back)", tbl, counts[tbl])
@@ -227,8 +227,8 @@ func TestTrimMarkFailedBeatOnAStore(t *testing.T) {
 			t.Errorf("after the failed beat, %s: the mark = %s, want 45 (where it was)", tbl, marks[tbl])
 		}
 	}
-	tmBeat(t, ctx, tx, col)
-	counts, marks = tmCounts(t, ctx, tx, col), tmMarks(t, ctx, tx, marked)
+	tmBeat(ctx, t, tx, col)
+	counts, marks = tmCounts(ctx, t, tx, col), tmMarks(ctx, t, tx, marked)
 	for _, tbl := range tmTables {
 		if counts[tbl] != "0/0" || marks[tbl] != "20" {
 			t.Errorf("the control beat, %s: rows %s, the mark %s; want 0/0 and 20 (10 minutes past the row at 30)", tbl, counts[tbl], marks[tbl])
@@ -243,7 +243,7 @@ func TestTrimMarkFailedBeatOnAStore(t *testing.T) {
 func TestTrimMarkLateBeatOnAStore(t *testing.T) {
 	ctx, tx, col, sfx, _, marked := tmStore(t)
 	name := fmt.Sprintf("tm-%d", sfx)
-	tmSetMarks(t, ctx, tx, marked, "date_trunc('minute', now()) - interval '8 days'")
+	tmSetMarks(ctx, t, tx, marked, "date_trunc('minute', now()) - interval '8 days'")
 	var known bool
 	if err := tx.QueryRow(ctx, `SELECT pgvigil.import_collector_beat($1, date_trunc('minute', now()) - interval '9 days', jsonb_build_object(
 	    'load', jsonb_build_array(jsonb_build_object('instance', $2::text, 'attempts', 1, 'opened', 1, 'runs', 1, 'failures', 0, 'auth', 0)),
@@ -255,7 +255,7 @@ func TestTrimMarkLateBeatOnAStore(t *testing.T) {
 	    jsonb_build_object('host', 'tm-host', 'address', '10.9.7.1:5432', 'method', 'tcp', 'at', now() - interval '9 days', 'sent', 1, 'answered', 1, 'ms_sum', 5, 'ms_max', 5))))`, col); err != nil {
 		t.Fatalf("the late probe: %v", err)
 	}
-	counts := tmCounts(t, ctx, tx, col)
+	counts := tmCounts(ctx, t, tx, col)
 	for _, tbl := range tmTables {
 		if counts[tbl] != "0/0" {
 			t.Errorf("a late beat, %s: rows past 8 days / recent = %s, want 0/0 (none kept past 8 days)", tbl, counts[tbl])

@@ -220,10 +220,12 @@ export function compileFilter(f: string, num: boolean): (w: string) => boolean {
 
 // ---- the grid menu's ask (task GM) -----------------------------------------------------------------------------------
 // ui.ts asks, gridtools.ts gridMenu answers (done): a grid of grid(), a table.grid a page draws itself, the group panel's
-// .gt-table, a grid empty from the start (empty: its p.empty[data-cols], as the export reads it)
-export interface GridMenuAsk { table: HTMLTableElement | null; empty?: Element | null; td: Element | null; th: Element | null; x: number; y: number; back: HTMLElement; done: boolean }
-export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done'>): boolean {
-  const detail: GridMenuAsk = { ...d, done: false };
+// .gt-table, a grid empty from the start (empty: its p.empty[data-cols], as the export reads it). A page adds its own
+// lines to the end of the menu (extra: [label, action] pairs) from a listener on an element around its grid: the event
+// bubbles there before it reaches gridtools' listener on the document (mssql_backups.ts: Verify this backup...).
+export interface GridMenuAsk { table: HTMLTableElement | null; empty?: Element | null; td: Element | null; th: Element | null; x: number; y: number; back: HTMLElement; extra: [string, () => void][]; done: boolean }
+export function askGridMenu(at: Element, d: Omit<GridMenuAsk, 'done' | 'extra'>): boolean {
+  const detail: GridMenuAsk = { ...d, extra: [], done: false };
   at.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail }));
   return detail.done;
 }

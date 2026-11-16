@@ -7,13 +7,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
 
-	_ "github.com/microsoft/go-mssqldb"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 func main() { os.Exit(run()) }
@@ -29,7 +28,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "seconds must be a positive number")
 		return 2
 	}
-	db, err := sql.Open("sqlserver", os.Getenv("PGV_HOLD_DSN"))
+	db, err := mssqlopen.Open(os.Getenv("PGV_HOLD_DSN")) // the tree's one opener: a plain sqlserver:// URL opens as sql.Open did
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

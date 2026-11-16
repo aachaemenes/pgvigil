@@ -43,7 +43,7 @@ check() { if [ "$1" = "$2" ]; then echo "ok   $3"; else echo "FAIL $3 (got '$1',
 cleanup() {
   rc=$?; set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" >/dev/null 2>&1
-  docker rm -f "$PCT" >/dev/null 2>&1 || echo "CLEANUP: container $PCT not removed" >&2
+  docker rm -fv "$PCT" >/dev/null 2>&1 || echo "CLEANUP: container $PCT not removed" >&2
   rm -f "$CFG" "$OUT" "$OUT".*
   exit $rc
 }

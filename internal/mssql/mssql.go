@@ -646,7 +646,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if info.CheckBackupFiles && name == Prefix+"backup_checks" {
 		// the file check's own pool (run 301bp4: the collection's is capped at its one connection); a pool that does
 		// not open leaves it nil, and the read says 'not judged: no connection for the file check'
-		if fp, ferr := openBackupFilePool(in); ferr == nil {
+		if fp, ferr := openBackupFilePool(ctx, in); ferr == nil {
 			info.BackupFilePool = fp
 			defer func() { _ = fp.Close() }()
 		}

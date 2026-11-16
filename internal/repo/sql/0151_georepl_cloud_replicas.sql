@@ -398,7 +398,7 @@ SELECT e.instance_id, 'critical', 'failover group primary moved', e.group_name, 
 --   cloud_replica_findings (instance_id, severity, check_name, object, at, detail) on EVERY instance that reads the
 --                          resource (its own, its replicas, its source); its arm in pgvigil.findings, alerting and the
 --                          Summary's HA cell, and the purge lines (the partition parent cloud_replica_sample; the events
---                          past 24 hours' window), are the join's WIRING, as part G's.
+--                          past the window), are the join's WIRING, as part G's.
 -- The threshold: pg_threshold_keys 'provider_replica_lag' (minutes: the keys' units are minutes, hours and days; warning
 -- 10 = 600 s, critical 30 = 1800 s, pgvigil's own, above AWS's idle 'up to five minutes'); root, tag and instance (an
 -- instance level on a SQL Server instance is refused by this base's import_pg_threshold until 0142 joins: WIRING with
@@ -797,11 +797,12 @@ SELECT g.instance_id, 'warning', 'cloud door failing', CASE g.provider WHEN 'aws
 -- with a newer read's value; mssql_georepl_sample: INSERT, ON CONFLICT DO NOTHING) - per key its own lock in its own
 -- statement under lock_timeout 5 s, the key's dirty range healed under 200 ms, then the touched hours RECOMPUTED from
 -- the stored samples (never added to); a failure never fails the import (the hours merged into the key's dirty range,
--- one 'rollup failed' row in collection_log an hour at most, healed by the next trigger call of the key or by 'pgvigil
--- purge'); partitions by month without a second index (fillfactor 80), made by the trigger only when purge has not;
+-- one 'rollup failed' row in collection_log an hour at most, healed by the next trigger calls of the key); partitions
+-- by month without a second index (fillfactor 80), made by the trigger only when purge has not;
 -- 730 days by their own hours_retention rows. Departure from 0167: no first build - 0151 makes the sample tables and the
 -- hour tables together, so no stored sample predates the trigger. WIRING (as B2a-N2's patch): purge()'s last block
--- calls cloud_replica_hour_purge and mssql_georepl_hour_purge and heals each pending key; apply_roles()' owner-only
+-- calls cloud_replica_hour_purge and mssql_georepl_hour_purge (the join's arm); a pending key is not healed by 'pgvigil
+-- purge' (no heal of these hours in the program yet): its next import rebuilds it; apply_roles()' owner-only
 -- list gains the writers; purge's months ahead (AzureDBHourMonths' list) gains both tables.
 INSERT INTO pgvigil.hours_retention (table_name, days) VALUES ('cloud_replica_hour', 730), ('mssql_georepl_hour', 730)
 ON CONFLICT (table_name) DO NOTHING;
@@ -1007,7 +1008,7 @@ BEGIN
   IF v_log AND p_instance_id IS NOT NULL THEN
     INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
     VALUES (p_instance_id, 'cloud_replica_hour', now(), 'error',
-            format('rollup failed for %s:%s''s hours %s to %s (the samples are stored; the hours are rebuilt by the next import or purge): %s',
+            format('rollup failed for %s:%s''s hours %s to %s (the samples are stored; the hours are rebuilt by the next import): %s',
                    p_provider, p_resource, to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), p_why));
   END IF;
 END $$;
@@ -1026,12 +1027,13 @@ BEGIN
   IF v_log THEN
     INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
     VALUES (p_instance_id, 'mssql_georepl_hour', now(), 'error',
-            format('rollup failed for the hours %s to %s (the samples are stored; the hours are rebuilt by the next import or purge): %s',
+            format('rollup failed for the hours %s to %s (the samples are stored; the hours are rebuilt by the next import): %s',
                    to_char(p_from AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), to_char(p_to AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), p_why));
   END IF;
 END $$;
 
--- 'pgvigil purge' heals each pending key, one per transaction, with no budget
+-- heals one pending key, one per transaction, with no budget; 'pgvigil purge' does not call it yet (no heal of these
+-- hours in the program): a pending key waits for its next import, which rebuilds its hours
 CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_heal_one(p_provider text, p_resource text)
 RETURNS int LANGUAGE plpgsql AS $$
 BEGIN
@@ -1111,7 +1113,7 @@ DROP TRIGGER IF EXISTS mssql_georepl_hour_ins ON pgvigil.mssql_georepl_sample;
 CREATE TRIGGER mssql_georepl_hour_ins AFTER INSERT ON pgvigil.mssql_georepl_sample
   REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION pgvigil.mssql_georepl_hour_tg();
 
--- the keys 'pgvigil purge' heals
+-- the pending keys, the heal's list ('pgvigil purge' does not read it yet: a pending key waits for its next import)
 CREATE OR REPLACE FUNCTION pgvigil.cloud_replica_hour_pending()
 RETURNS TABLE (provider text, resource_id text) LANGUAGE sql STABLE AS $$
   SELECT d.provider, d.resource_id FROM pgvigil.cloud_replica_hour_dirty d ORDER BY 1, 2
@@ -1122,7 +1124,7 @@ RETURNS SETOF int LANGUAGE sql STABLE AS $$
 $$;
 
 -- the months of an hour table wholly older than its hours_retention row (730 days when absent) dropped; their names
--- returned (purge()'s last block adds them to the run's partitions_dropped: WIRING)
+-- returned (the join's arm of purge() adds them to the run's partitions_dropped)
 CREATE OR REPLACE FUNCTION pgvigil.hour_purge_0151(p_table text)
 RETURNS text[] LANGUAGE plpgsql AS $$
 DECLARE v_days int; v_part record; v_names text[] := '{}';
@@ -1134,8 +1136,12 @@ BEGIN
   v_days := coalesce(v_days, 730);
   FOR v_part IN
     SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
-     WHERE i.inhparent = ('pgvigil.' || p_table)::regclass AND c.relname ~ '_[0-9]{6}$'
-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
+     WHERE i.inhparent = ('pgvigil.' || p_table)::regclass
+       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions in any order, and a
+       -- child named after an OID past 100,000 (six digits, no month) would fail the purge with 22008 (0167's fix, the same)
+       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
+       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
      ORDER BY c.relname
   LOOP
     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);

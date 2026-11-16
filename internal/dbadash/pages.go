@@ -57,8 +57,8 @@ func Proven(v string) bool {
 
 // versionAtLeast: a DBVersionHistory version (4.25.0, 4.25.0.7) at or past another, part by part as numbers; an
 // empty or unreadable version is not
-func versionAtLeast(v, min string) bool {
-	vs, ms := strings.Split(strings.TrimSpace(v), "."), strings.Split(min, ".")
+func versionAtLeast(v, want string) bool {
+	vs, ms := strings.Split(strings.TrimSpace(v), "."), strings.Split(want, ".")
 	for i := range ms {
 		if i >= len(vs) {
 			return false

@@ -1,12 +1,7 @@
 package web
 
 import (
-	"errors"
-	"fmt"
 	"net/http"
-	"regexp"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // B24f's join wiring for rel-viewsb: its writes' refusal words beside roles.go's routeWhat, and
@@ -20,8 +15,6 @@ func init() {
 }
 
 const sharedViewWhat = "changing a shared view"
-
-var viewIDDigits = regexp.MustCompile(`^[0-9]{1,18}$`) // the store's own test of a view_id (0259 import_view_save)
 
 // sharedViewWhy: "" when the request's user may write shared views, else the role's words (the views list's shared_off)
 func (s *Server) sharedViewWhy(r *http.Request) string {
@@ -38,26 +31,22 @@ func (s *Server) sharedViewWhy(r *http.Request) string {
 	return roleWords(sharedViewWhat, needAdmin, wh)
 }
 
-// viewRole refuses, below admin, a save that makes a view shared and a save or a delete of one that is shared now -
-// read here through ui_view_get (a read error refuses: the check never fails open); the store refuses the same through
-// shared_ok. The body's shared and a view_id of plain digits are read as the store's own tests read them (a JSON string
-// "true" or "12" too); a view_id in another number form (2e0) is left to the store, which refuses a shared view
-// without shared_ok in the same words.
-// true = go on.
-func (s *Server) viewRole(w http.ResponseWriter, r *http.Request, user string, pay map[string]any) bool {
-	if s.roleCan(r)["admin"] {
-		return true
+// viewSharedRefused is the store's detail when it refuses a shared write without shared_ok (0259 import_view_save /
+// import_view_delete): serve answers it in the role's words.
+const viewSharedRefused = "changing a shared view needs the admin role"
+
+// viewRoleWords answers the store's refusal of a shared write: the store is the one judge of a shared write (shared_ok
+// is roleCan(r)["admin"], true only on a positive admin read: never failing open) and the one writer of ui_view_log, so
+// the refused attempt is logged before this answers - 403 in the role's words (B24f's text). A role that could not be
+// read never gets here: the route's needViewer gate (roleOK) answers 503 before the handler, and that request is not
+// logged (q_views.go); the 503 below only keeps the words right if this is called from another path.
+func (s *Server) viewRoleWords(r *http.Request) (int, string) {
+	wh, ok := whoOf(r)
+	if !ok {
+		wh = s.sessionWho(r)
 	}
-	shared := fmt.Sprint(pay["shared"]) == "true"
-	if v, ok := pay["view_id"]; ok && !shared {
-		if id := fmt.Sprint(v); viewIDDigits.MatchString(id) {
-			err := s.pool.QueryRow(r.Context(), `SELECT shared FROM pgvigil.ui_view_get($1, $2::bigint)`, user, id).Scan(&shared)
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				s.log.Warn("view: the role check could not read the view", "view_id", id, "err", err)
-				writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("view %s could not be read to check the role: %v", id, err))
-				return false
-			}
-		}
+	if wh.err != nil {
+		return http.StatusServiceUnavailable, "the role could not be read: " + wh.err.Error()
 	}
-	return !shared || s.roleOK(w, r, needAdmin, sharedViewWhat)
+	return http.StatusForbidden, roleWords(sharedViewWhat, needAdmin, wh)
 }

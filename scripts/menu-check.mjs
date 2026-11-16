@@ -738,7 +738,15 @@ await guard('G-file', async () => {
   const xl = await gmExcel(td);
   const f = {};
   for (const [label, ext] of [['CSV', 'csv'], ['JSON', 'json'], ['Markdown', 'md'], ['HTML', 'html'], ['SQL (INSERT) for PostgreSQL', 'pg.sql'], ['SQL (INSERT) for SQL Server', 'mssql.sql']]) f[label] = await gmFile(td, label, ext);
-  const named = !!xl && Object.values(f).every(x => x && stem(x) === stem(xl));
+  // one name for every format: the grid's part of each name equal to the Excel's, and its window the Excel's - each
+  // export names the relative window to the minute at its own click, so seven exports may straddle a minute (both ends
+  // move): the same length (end minus start) and a start within one minute of the Excel's (review 5 #6: a window of
+  // another length, 24 h against 1 h, fails)
+  const win = x => { const m = /^(.*)_(\d{8})-(\d{4})_(\d{8})-(\d{4})(?:\.(?:pg|mssql)\.sql|\.[a-z]+)$/.exec(x?.name ?? '');
+    const at = (d, t) => Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +t.slice(0, 2), +t.slice(2, 4)) / 60000;
+    return m ? { base: m[1], start: at(m[2], m[3]), len: at(m[4], m[5]) - at(m[2], m[3]) } : null; };
+  const wx = win(xl);
+  const named = !!wx && Object.values(f).every(x => { const w = win(x); return !!w && w.base === wx.base && w.len === wx.len && Math.abs(w.start - wx.start) <= 1; });
   const csv = csvRows(f.CSV?.text ?? '');
   let js = null; try { js = JSON.parse(f.JSON?.text ?? ''); } catch { /* no file, or not JSON */ }
   const md = (f.Markdown?.text ?? '').replace(/\r/g, '').split('\n').filter(Boolean);

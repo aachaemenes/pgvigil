@@ -57,7 +57,7 @@ func runExport(ctx context.Context, _ *slog.Logger, args []string) error {
 		return &usageError{errors.New("export: one of -tables-list, -plan, -status, -check, -gap, -off, -from / -to at a time")}
 	case (*tables != "" || *out != "") && !explicit:
 		return &usageError{errors.New("export: -tables and -out go with -from and -to")}
-	case *asJSON && !(*list || *plan || *status):
+	case *asJSON && !*list && !*plan && !*status:
 		return &usageError{errors.New("export: -json goes with -tables-list, -plan or -status")}
 	case !*gap && fs.NArg() > 0:
 		return &usageError{fmt.Errorf("export: unexpected argument %q", fs.Arg(0))}

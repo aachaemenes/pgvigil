@@ -245,7 +245,7 @@ func VerifyPreview(ctx context.Context, d Door, instance, uuid string) (s Verify
 	if d.Monitor == "" {
 		return s, "", fmt.Sprintf("instance %s: the read login's dsn resolved to an empty string", instance)
 	}
-	mdb, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
+	mdb, mon, err := d.openMonitor(ctx) // the read login with its password_secret (B24e), as every action check
 	if err != nil {
 		return s, "", fmt.Sprintf("the read login could not connect: %v", err)
 	}
@@ -277,7 +277,7 @@ func VerifyPrepare(ctx context.Context, d Door, r VerifyRequest) (VerifyJob, Ver
 	if d.Monitor == "" {
 		return refuse(r.Shown, "instance %s: the read login's dsn resolved to an empty string", r.Instance)
 	}
-	mdb, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
+	mdb, mon, err := d.openMonitor(ctx) // the read login with its password_secret (B24e), as every action check
 	if err != nil {
 		return refuse(r.Shown, "the read login could not connect to check the set: %v", err)
 	}
@@ -415,7 +415,7 @@ func VerifyRun(ctx context.Context, d Door, job VerifyJob) VerifyResult {
 	wctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	watched := make(chan struct{})
-	go func() { defer close(watched); watchVerify(wctx, cancel, d.Monitor, spid) }()
+	go func() { defer close(watched); watchVerify(wctx, cancel, d, spid) }()
 	notices, errs := runWithMessages(wctx, act, job.Statement, verifyArgs(job.Set.Paths, job.Set.Position)...)
 	lost := errors.Is(context.Cause(wctx), errVerifyLost)
 	cancel(nil)
@@ -465,7 +465,7 @@ const verifyWatchSQL = `SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW S
 // session's RESTORE; two looks in a row that miss it (or cannot connect) cancel with errVerifyLost. A read login
 // without VIEW SERVER STATE sees no other session's request: nothing is watched then, and the limit is verify_timeout
 // (docs/sqlserver-actions.md).
-func watchVerify(ctx context.Context, cancel context.CancelCauseFunc, monitor string, spid int64) {
+func watchVerify(ctx context.Context, cancel context.CancelCauseFunc, d Door, spid int64) {
 	misses := 0
 	t := time.NewTicker(verifyWatchEvery)
 	defer t.Stop()
@@ -477,7 +477,7 @@ func watchVerify(ctx context.Context, cancel context.CancelCauseFunc, monitor st
 		}
 		var vss, running int64
 		lctx, lcancel := context.WithTimeout(ctx, 20*time.Second)
-		mdb, mon, err := openAction(lctx, monitor, "pgvigil-actions-check")
+		mdb, mon, err := d.openMonitor(lctx)
 		if err == nil {
 			err = mon.QueryRowContext(lctx, verifyWatchSQL, spid).Scan(&vss, &running)
 			_ = mon.Close()

@@ -17,7 +17,7 @@ import (
 // again a minute later, not 15 minutes later; and the beat carries the opened addresses (the repository's half)
 func TestProbeOpenedIsAnswered(t *testing.T) {
 	p := newProber("tcp", false)
-	p.dial = func(ctx context.Context, addr string) error { <-ctx.Done(); return ctx.Err() } // black-holed: no answer within the wait
+	p.dial = func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() } // black-holed: no answer within the wait
 	p.connectMax = 20 * time.Millisecond
 	p.noteRemote("i1", "db1", "10.1.2.3:5432")
 	if !p.answered["10.1.2.3:5432"] {
@@ -113,7 +113,7 @@ func TestProbeInFlight(t *testing.T) {
 // #a9: an answered handshake under a millisecond is 1 ms, never 0 (the page read '0 ms'; P2's 'ms > 0')
 func TestProbeAnsweredAtLeastOneMs(t *testing.T) {
 	p := newProber("tcp", true)
-	p.dial = func(ctx context.Context, addr string) error { return nil }
+	p.dial = func(_ context.Context, _ string) error { return nil }
 	p.noteRemote("i1", "db1", "10.1.2.3:5432")
 	p.round(context.Background(), time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC))
 	rows := p.take()
@@ -137,7 +137,7 @@ func TestBeatCarriesOpenedAndMode(t *testing.T) {
 	}
 	for _, every := range []bool{true, false} {
 		p := newProber("tcp", every)
-		p.dial = func(ctx context.Context, addr string) error { return nil }
+		p.dial = func(_ context.Context, _ string) error { return nil }
 		p.noteRemote("i1", "db1", "10.1.2.3:5432")
 		p.noteFailed("i1")
 		p.round(context.Background(), time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC))

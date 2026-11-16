@@ -63,8 +63,8 @@ func (s *Server) readiness(ctx context.Context) (bool, string) {
 		return c.ok, c.why
 	}
 	c.ok, c.why = true, ""
-	switch {
-	case s.readyCheck == nil:
+	switch s.readyCheck {
+	case nil:
 		c.ok, c.why = false, "no readiness check is set"
 	default:
 		// the check's own 3 s, not the prober's: a prober that hangs up first (Kubernetes' 1 s) does not cut the check

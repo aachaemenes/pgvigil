@@ -26,9 +26,14 @@ import (
 // instance, the tag, the view, a snapshot's time and the range (viewDropped), so a view never moves its user to another instance or window; with keep_range the
 // range is kept apart in state.range. Reads: pgvigil.ui_view_list / ui_view_get on the read pool. Writes:
 // import_view_save / import_view_delete on the actions door's audit pool (the read pool is read-only) with the
-// session's user and client, one ui_view_log row per attempt: done 200, refused 400, forbidden 403, conflict 409 (a
-// stale version names the stored one; a taken name), each refusal in words. Shared writes: an admin's (B24f's 'change
-// shared views' right, roles_wiring_views.go viewRole; pgvigil.yaml views.shared_editors is read and no longer decides).
+// session's user and client, one ui_view_log row per attempt that reaches the store: done 200, refused 400, forbidden
+// 403, conflict 409 (a stale version names the stored one; a taken name), each refusal in words. Shared writes: an
+// admin's (B24f's 'change shared views' right); the store judges them through shared_ok and logs a refusal like any,
+// serve answers it in the role's words (roles_wiring_views.go viewRoleWords); pgvigil.yaml views.shared_editors is read
+// and no longer decides. A request that never reaches the store (no X-Pgvigil header, views off, no login, a role
+// that could not be read - the route's needViewer gate answers 503 before the handler -, a body unreadable, over
+// 256 KB or holding a NUL, a payload the door refuses) is answered and not logged: no user, or nothing the store can
+// judge.
 //                                                                     -> Server.Views, Server.ViewSave, Server.ViewDelete
 
 // viewBodyMax: a request body; the store refuses a state over 64 KB in words (and logs it), so the body may hold more.
@@ -165,9 +170,6 @@ func (s *Server) viewWrite(w http.ResponseWriter, r *http.Request, op string) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if !s.viewRole(w, r, user, pay) {
-		return
-	}
 	pay["ui_user"], pay["client"], pay["shared_ok"] = user, clientIP(r), s.roleCan(r)["admin"]
 	b, _ := json.Marshal(pay)
 	fn := "import_view_save"
@@ -201,6 +203,14 @@ func (s *Server) viewWrite(w http.ResponseWriter, r *http.Request, op string) {
 		return
 	}
 	if code != http.StatusOK {
+		// a shared write below admin: the store refused it and logged it (its one ui_view_log row); serve answers in the
+		// role's words. Every other refusal (a personal view's owner rule, a stale version, the shape) in the store's own.
+		if res.Outcome == "forbidden" && res.Detail == viewSharedRefused {
+			c, words := s.viewRoleWords(r)
+			s.log.Info("role refused", "user", user, "need", "admin", "what", sharedViewWhat, "route", r.Method+" "+r.URL.Path)
+			writeErr(w, c, errors.New(words))
+			return
+		}
 		writeErr(w, code, errors.New(res.Detail))
 		return
 	}

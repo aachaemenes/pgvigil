@@ -240,12 +240,12 @@ func (s *Server) CollectorErrors(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	text := func(name string, max int) (any, error) {
+	text := func(name string, limit int) (any, error) {
 		v := strings.TrimSpace(q.Get(name))
 		if v == "" {
 			return nil, nil
 		}
-		if len(v) > max {
+		if len(v) > limit {
 			return nil, errors.New(name + " is too long")
 		}
 		return v, nil

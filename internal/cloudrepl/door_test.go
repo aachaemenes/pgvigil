@@ -18,8 +18,10 @@ import (
 // partial; the store counts the door's failed reads: fold 15), and a throttle resting the door until its next interval
 // (one call, never again by the run's other instances; then read again).
 func TestDoorRows(t *testing.T) {
-	if p, why := Which(config.Instance{AWS: &config.AWS{DBInstance: "db1"}}); p != "" || !strings.Contains(why, "aws.replicas") {
-		t.Errorf("an aws: block without replicas: %q %q, want no door and the switch named", p, why)
+	// the reason fits what the instance holds: its aws: block is there and only the switch is off, so the words name
+	// the key (aws.replicas is off) and never read as a missing block (no 'aws:' - internal/engines' TestNotRunningOnTheConfig)
+	if p, why := Which(config.Instance{AWS: &config.AWS{Region: "us-east-2", DBInstance: "db1"}}); p != "" || !strings.Contains(why, "aws.replicas is off") || strings.Contains(why, "aws:") {
+		t.Errorf("an aws: block without replicas: %q %q, want no door and 'aws.replicas is off' without 'aws:'", p, why)
 	}
 	if p, _ := Which(config.Instance{AWS: &config.AWS{DBInstance: "db1", Replicas: true}}); p != "aws" {
 		t.Errorf("aws.replicas: %q, want aws", p)

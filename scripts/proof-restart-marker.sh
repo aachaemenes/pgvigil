@@ -89,7 +89,7 @@ cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   # chromium is its own process group (setsid): the group killed and waited for before its profile is removed
   if [[ -n "$CHRPID" ]]; then kill -- "-$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
-  docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -aq --filter "label=$LBL-$SUF" | xargs -r docker rm -fv >/dev/null 2>&1 || true
   docker volume rm -f "$MSVOL" "$PGVOL" >/dev/null 2>&1 || true
   echo "CLEANUP: left on this box, as pulled: the images mcr.microsoft.com/mssql/server:${MS_OLD:-?} and :${MS_NEW:-?}, postgres:${PG_OLD:-?} and :${PG_NEW:-?}" >&2
   docker network rm "$PGN1" "$PGN2" >/dev/null 2>&1 || true

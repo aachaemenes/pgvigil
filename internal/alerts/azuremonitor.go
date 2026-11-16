@@ -114,7 +114,7 @@ func (a *AzureMonitor) build() (sender, error) {
 	if err != nil || ep.Host == "" {
 		return nil, errors.New("azuremonitor.endpoint is not an absolute URL (the DCR's logs ingestion endpoint)")
 	}
-	if !(ep.Scheme == "https" || (ep.Scheme == "http" && loopback(ep.Hostname()))) {
+	if ep.Scheme != "https" && (ep.Scheme != "http" || !loopback(ep.Hostname())) {
 		return nil, fmt.Errorf("azuremonitor.endpoint must be https (got %s)", hostOf(ep))
 	}
 	if ep.User != nil || ep.RawQuery != "" || strings.Trim(ep.Path, "/") != "" {

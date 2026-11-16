@@ -10,8 +10,8 @@
 //
 // The tools read the page as the export does (export.ts: the same cells, numbers and colours) and change only how the
 // grid is drawn: classes on the table, a panel and a line beside it. A hidden column is marked data-gt-hidden on its
-// header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event with the
-// menu's items before it shows them, and the tools add theirs.
+// header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event (askGridMenu)
+// and the tools build the menu from it, a page's own lines (the event's extra) at its end.
 import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, saveGridAs, statusOf, timeZone, typed } from './export';
 import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
 import { MenuItem, gridLines, showTreeMenu } from './treemenu';
@@ -814,6 +814,7 @@ export function installGridTools() {
     if (!d || d.done) return;
     const items = d.table ? gridMenu(d.table, d.td, d.th, d.back) : d.empty ? emptyMenu(d.empty) : null;
     if (!items) return;
+    items.push(...d.extra.map(([label, act]) => ({ label, act })));   // a page's own lines, after the tools'
     d.done = true;
     const host = (d.table ?? d.empty)?.closest('dialog[open]') ?? undefined;
     showTreeMenu(d.x, d.y, items, d.back, 'Grid menu', host);

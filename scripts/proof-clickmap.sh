@@ -90,8 +90,9 @@
 #     '9 days', '5hrs', 'Never', '3 days', '42.5% / 3 months', 'View', the dump instance's Memory Dump '3 days', sql01's
 #     Instance Uptime 'ack: ...'; the test grid's headers are 'Test', 'Instance Count OK', 'Instance Count Warning',
 #     'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged', its tests sorted by name, each
-#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, View,
-#     Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
+#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, the
+#     View control (views.ts viewControl, found by data-view-control: its label 'View: <a name or None>', its menu Focused
+#     View, Show Test Summary ticked, then {None} and Save - D16), Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
 #     Summary Max Height % (10% ... 90%, 70% ticked; 40% sets the test pane to 40vh); Memory Dumps > Configure
 #     Thresholds opens 'Memory Dump Thresholds' with Critical 100 and Warning 200 (the root row T10 set), its words in
 #     DBA Dash's order (Warning, Critical, Acknowledge, Clear, Cancel, Update), the warning check box right of its
@@ -340,6 +341,15 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
+# the HA/DR collections the demo's seed holds rows of (0066's mssql_hadr_reads: each SQL Server instance's last read of a
+# collection and its row count, written by the import the seed goes through): click-check calls an HA/DR folder page with
+# no Instance link 'not proven' only for a kind the seed holds no row of, a FAIL for every other
+SEEDED=$(q "select coalesce(string_agg(collection, ' ' order by collection), '') from (select distinct r.collection from pgvigil.mssql_hadr_reads r join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver' and r.row_count > 0) x") || fail "the demo's HA/DR reads could not be read"
+# the demo seeds an availability group (mssql_demo.go: sql01 / sql02): without its rows every HA/DR folder would read
+# 'not proven' and the drill would prove nothing
+[[ " $SEEDED " == *" mssql_ag "* ]] || fail "the demo's seed holds no mssql_ag row ($SEEDED): the HA/DR folders' drill proves nothing"
+export CLICK_SEEDED="$SEEDED"
+echo "the demo's seed holds rows of: ${SEEDED:-no HA/DR collection}"
 node scripts/click-check.mjs "$CDP" "$U/" "${PGVIGIL_CLICK_OUT:-$WORK/click.json}" | tee "$WORK/click.txt" || fail "the click map has a FAIL (above)"
 grep -q '^links: .*; 0 FAIL$' "$WORK/click.txt" || fail "click-check.mjs did not end with 0 FAIL"
 # the check found what it was to check (a check that collected nothing passes nothing)

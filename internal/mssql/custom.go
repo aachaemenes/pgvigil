@@ -676,7 +676,7 @@ func statusRowOf(vals []any, types []string, ix [4]int, keep bool) (statusRow, e
 	}
 	sv := vals[ix[2]]
 	if sv == nil {
-		return r, errors.New("Status is NULL: each row's Status is 1 critical, 2 warning, 3 N/A or 4 OK (DBA Dash's custom check)")
+		return r, errors.New("the row's Status is NULL: each row's Status is 1 critical, 2 warning, 3 N/A or 4 OK (DBA Dash's custom check)")
 	}
 	f, _, err := mssqlread.Number(sv, types[ix[2]])
 	if err != nil || f != math.Trunc(f) || f < 1 || f > 4 {
@@ -686,7 +686,7 @@ func statusRowOf(vals []any, types []string, ix [4]int, keep bool) (statusRow, e
 		} else if err == nil {
 			shown = strconv.FormatFloat(f, 'f', -1, 64)
 		}
-		return r, fmt.Errorf("Status %s is not 1 to 4: each row's Status is 1 critical, 2 warning, 3 N/A or 4 OK (DBA Dash's custom check)", shown)
+		return r, fmt.Errorf("the row's Status %s is not 1 to 4: each row's Status is 1 critical, 2 warning, 3 N/A or 4 OK (DBA Dash's custom check)", shown)
 	}
 	r.Status = int(f)
 	if keep && ix[3] >= 0 {
@@ -767,7 +767,7 @@ func (k *statusKeeper) add(r statusRow) error {
 	}
 	key := r.Test + "\x00" + r.Context
 	if k.seen[key] {
-		return fmt.Errorf("Test %q and Context %q come twice: DBA Dash's custom check keeps one row per Test and Context", r.Test, r.Context)
+		return fmt.Errorf("the Test %q and Context %q come twice: DBA Dash's custom check keeps one row per Test and Context", r.Test, r.Context)
 	}
 	k.seen[key] = true
 	switch {

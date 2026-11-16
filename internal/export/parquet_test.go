@@ -139,7 +139,7 @@ func TestFileWriterExactGroups(t *testing.T) {
 	}
 	rows := make([]parquet.Row, 1)
 	rr := pf.RowGroups()[0].Rows()
-	defer rr.Close()
+	defer func() { _ = rr.Close() }()
 	if k, _ := rr.ReadRows(rows); k != 1 {
 		t.Fatalf("read %d rows", k)
 	}
@@ -189,7 +189,7 @@ func TestFileWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, _ := f.Stat()
 	if st.Size() != files[0].ByteSize {
 		t.Errorf("byte_size %d, the file %d", files[0].ByteSize, st.Size())
@@ -214,7 +214,7 @@ func TestFileWriter(t *testing.T) {
 	}
 	rows := make([]parquet.Row, 3)
 	rr := pf.RowGroups()[0].Rows()
-	defer rr.Close()
+	defer func() { _ = rr.Close() }()
 	if k, _ := rr.ReadRows(rows); k != 3 {
 		t.Fatalf("read %d rows", k)
 	}
@@ -291,7 +291,7 @@ func TestFileSplitByBytes(t *testing.T) {
 				t.Errorf("%s: a row group of %d rows", f.Path, g.NumRows())
 			}
 		}
-		fh.Close()
+		_ = fh.Close()
 	}
 	if rows != n {
 		t.Errorf("%d rows in the files, %d written", rows, n)

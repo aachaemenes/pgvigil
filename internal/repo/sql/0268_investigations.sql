@@ -1,6 +1,6 @@
 -- 0268_investigations: the agent door and the ask box. A person asks for an investigation of a finding (the
 -- Investigate button) or asks a question (the Ask box); the site's own agent claims the request through `pgvigil mcp`
--- on a login IN ROLE pgvigil_reader, pgvigil_agent, reads, and reports. pgvigil holds no agent, no model and no key:
+-- on a login IN ROLE pgvigil_reader, pgvigil_investigator, reads, and reports. pgvigil holds no agent, no model and no key:
 -- these tables are the queue between the people and an agent the site runs itself.
 --
 --   investigations                 one row a request: who asked, what (a finding of one instance, or a question), its
@@ -25,12 +25,12 @@
 --     import_investigation_request(at, payload)   a request; the snapshot read here from findings_alerts; the caps
 --     import_investigation_event(at, payload)     op close (a person ends one) or run (the ask's Run, audited)
 --   serve's UI login (pgvigil_auth, the ui_ rule): ui_investigation_read(id), one request with its texts
---   the agent (SECURITY DEFINER here, EXECUTE to pgvigil_agent; each checks inside that the SESSION user is a member of
---   pgvigil_agent, and the claim functions that it is the login that claimed, with the claim id's hash):
+--   the agent (SECURITY DEFINER here, EXECUTE to pgvigil_investigator; each checks inside that the SESSION user is a member of
+--   pgvigil_investigator, and the claim functions that it is the login that claimed, with the claim id's hash):
 --     agent_investigation_list / _claim / _renew / _release / _report / _journal_select / _journal_done
 --   apply_roles (0110) grants every function outside its lists to pgvigil_reader at each migrate, so until the next
 --   join file adds the agent branch (scripts/agent-join-lines.sql) the reader holds EXECUTE too and the check inside
---   refuses it ('is not a member of pgvigil_agent'); secdef_reader_test.go lists the seven with that reason.
+--   refuses it ('is not a member of pgvigil_investigator'); secdef_reader_test.go lists the seven with that reason.
 -- Limits (a request): 10 open or claimed per user; 20 an hour and 100 a day per repository, counted under one
 -- transaction lock so concurrent asks cannot pass them. A request expires 4 hours after it was asked unless reported; a
 -- lease is 15 minutes, renewed up to the expiry; a request is claimed 3 times at most. One that ended is
@@ -40,13 +40,20 @@
 -- Every time is the repository's clock (now()); NOTIFY pgvigil_investigation <id> on a new request and on a lapsed claim
 -- reopened, so a waiting agent wakes.
 
+-- the door's group role: a name no release gave a login (v0.3.0's collector login is pgvigil_agent, its MCP reader
+-- login pgvigil_mcp). A role of this name that may log in would get the door's grants below and pass agent_login_check
+-- (a role is a member of itself): migrate stops here instead, in words.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgvigil_agent') THEN
-    CREATE ROLE pgvigil_agent NOLOGIN;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgvigil_investigator' AND rolcanlogin) THEN
+    RAISE EXCEPTION 'the role pgvigil_investigator exists and may log in: it is the agent door''s group role, and a login of that name would get the door''s grants and pass its check - rename or drop that login (or ALTER ROLE pgvigil_investigator NOLOGIN if nothing logs in as it), then run pgvigil migrate again'
+      USING ERRCODE = '42710';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgvigil_investigator') THEN
+    CREATE ROLE pgvigil_investigator NOLOGIN;
   END IF;
 END $$;
--- no GRANT pgvigil_reader TO pgvigil_agent: the agent's login is IN ROLE pgvigil_reader, pgvigil_agent, the two roles
+-- no GRANT pgvigil_reader TO pgvigil_investigator: the agent's login is IN ROLE pgvigil_reader, pgvigil_investigator, the two roles
 -- the door's check admits ('pgvigil roles' prints it)
 
 CREATE TABLE IF NOT EXISTS pgvigil.investigations (
@@ -283,7 +290,10 @@ END $$;
 
 -- import_investigation_event: serve's other writes (the audit login). op close {id, ui_user, reason}: a person ends a
 -- request; op run {id, ui_user, rows, ms, outcome, sql}: the audit of an ask's Run, written before its rows are shown
--- (refused = the rows are withheld).
+-- (refused = the rows are withheld). op run is the actions door's audit login's alone - a member of pgvigil_collector
+-- (session_user: this function runs SECURITY DEFINER, so current_user is its owner); any other caller, the request
+-- queue's pgvigil_requester among them (0300 grants it the function for a later release's queue path), is refused
+-- 42501, so no other login writes run lines under a name of its choosing or fills a request's 195 rows of calls.
 CREATE OR REPLACE FUNCTION pgvigil.import_investigation_event(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -296,6 +306,10 @@ DECLARE
 BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_investigation_event: no ui_user' USING ERRCODE = '22023';
+  END IF;
+  IF v_op = 'run' AND NOT pg_has_role(session_user, 'pgvigil_collector', 'MEMBER') THEN
+    RAISE EXCEPTION 'import_investigation_event: op run is written by the actions door''s audit login (a member of pgvigil_collector), not by %', session_user
+      USING ERRCODE = '42501';
   END IF;
   IF coalesce(p_payload->>'id', '') !~ '^[0-9]{1,18}$' THEN
     RETURN jsonb_build_object('outcome', 'refused', 'detail', 'id is not an investigation id');
@@ -375,12 +389,12 @@ END $$;
 
 -- ---- the agent's door ----------------------------------------------------------------------------------------------
 -- agent_login_check: the SESSION user (a role set at connect or in a run is undone by it) must be a member of
--- pgvigil_agent
+-- pgvigil_investigator
 CREATE OR REPLACE FUNCTION pgvigil.agent_login_check()
 RETURNS void LANGUAGE plpgsql STABLE AS $$
 BEGIN
-  IF NOT pg_has_role(session_user, 'pgvigil_agent', 'MEMBER') THEN
-    RAISE EXCEPTION 'the login % is not a member of pgvigil_agent', session_user USING ERRCODE = '42501';
+  IF NOT pg_has_role(session_user, 'pgvigil_investigator', 'MEMBER') THEN
+    RAISE EXCEPTION 'the login % is not a member of pgvigil_investigator', session_user USING ERRCODE = '42501';
   END IF;
 END $$;
 
@@ -596,4 +610,4 @@ GRANT EXECUTE ON FUNCTION pgvigil.agent_investigation_list(text, text, int), pgv
   pgvigil.agent_investigation_renew(bigint, text), pgvigil.agent_investigation_release(bigint, text, text),
   pgvigil.agent_investigation_report(bigint, text, text, text, text, jsonb, jsonb, text),
   pgvigil.agent_investigation_journal_select(bigint, text, text),
-  pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_agent;
+  pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_investigator;

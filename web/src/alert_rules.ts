@@ -592,7 +592,8 @@ async function windowsView(door: RulesDoor, ctx: Ctx): Promise<HTMLElement> {
   catch (e) { box.append(errorBox(e)); return box; }
   box.append(el('div', { class: 'seg' }, ruleButton(door, 'New window', 'New window', () => { void windowDialog(door, undefined, redraw); }, 'alertwindows')));
   const cols: Col[] = [
-    { key: 'holds_now', label: 'now', fmt: (v, w) => !w.live ? 'ended' : v ? badge('holding', 'warn') : 'not now' },
+    { key: 'holds_now', label: 'now', fmt: (v, w) => !w.live ? 'ended' : v ? badge('holding', 'warn') : 'not now',
+      cls: (v, w) => !w.live ? 'status none' : v ? '' : 'status ok' },   // X18: ended = N/A, not now = OK
     { key: 'window_id', label: 'window', num: true },
     { key: 'name', fmt: v => String(v ?? '') },
     { key: 'action', fmt: (v, w) => actionWords[String(v)] + (v === 'digest' ? ` (up to ${String(w.severity_ceiling ?? 'warning')})` : '') },

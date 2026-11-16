@@ -148,7 +148,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       { key: 'step_fail_7d', label: 'failed steps 7 days', num: true },
       statCol('max_secs_7d', 'longest 7 days', dur),
       statCol('avg_secs_7d', 'average 7 days', dur),
-      statCol('_rate', 'failure rate 7 days', v => v == null ? 'no finished run' : `${fmtNum(Math.round(Number(v) * 1000) / 10)} %`),
+      // the cell's value is the percent (_rate_pct), so the export writes a share under Excel's percent format; _rate,
+      // the fraction, stays for the filter and the counts (X16: never '5.6 %' as text)
+      statCol('_rate_pct', 'failure rate 7 days', v => v == null ? 'no finished run' : `${fmtNum(Number(v))} %`),
       { key: 'level', label: 'judged at', fmt: (v, r) => {
         const text = v === 'default' ? 'default (DBA Dash\'s)' : String(v ?? '');
         const b = el('button', { type: 'button', class: 'link', 'aria-label': `${text}: the thresholds of ${String(r.job_name)} on ${String(r.instance)}` }, text);
@@ -232,7 +234,9 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     };
     const countCell = (show: string, label: string) => (v: unknown, r: Row) => {
       if (!Number(v)) return '0';
-      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label} on ${String(r.instance)}: show them` }, fmtNum(v));
+      // the name starts with the words shown (WCAG 2.5.3 label in name: a voice user says what is on the screen)
+      const shown = fmtNum(v);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${shown} ${label} on ${String(r.instance)}: show them` }, shown);
       b.addEventListener('click', () => goTo(Number(r.instance_id), show));
       return b;
     };
@@ -256,7 +260,7 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
       const words = rateWords(id);
       const n = stats && !statsWhy ? rows.filter(r => Number(r.instance_id) === id && r._rate != null && Number(r._rate) > 0.5).length : 0;
       if (!(n > 0)) return document.createTextNode(words);
-      const b = el('button', { type: 'button', class: 'link', 'aria-label': `jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${words} - jobs failing over half their runs on ${names.get(id) ?? ''}: show them` }, words);
       b.addEventListener('click', () => goTo(id, 'failrate'));
       return b;
     }
@@ -286,8 +290,12 @@ export async function jobStatusFleetSection(ctx: Ctx): Promise<HTMLElement> {
     const byKey = new Map(rows.map(r => [key(r), r]));
     get<Record<'stats', Table | null>>('jobsreport', { part: 'stats', ids: ids.join(',') || '0' })
       .then(x => {
-        stats = new Map(rowsOf(x.stats).map(r => { r._rate = rateOf(r); return [key(r), r]; }));
-        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; r.failed_7d = t?.failed_7d ?? null; r._stats_building = t?.building === true; }
+        stats = new Map(rowsOf(x.stats).map(r => {
+          r._rate = rateOf(r);
+          r._rate_pct = r._rate == null ? null : Math.round(Number(r._rate) * 1000) / 10;
+          return [key(r), r];
+        }));
+        for (const [k, r] of byKey) { const t = stats.get(k); for (const c of Object.keys(statFmt)) r[c] = t?.[c] ?? null; r._rate = t?._rate ?? null; r.failed_7d = t?.failed_7d ?? null; r._stats_building = t?.building === true; }
       }, e => { statsWhy = e instanceof Error ? e.message : String(e); })
       .finally(() => {
         for (const sp of box.querySelectorAll<HTMLElement>('[data-stat]')) {

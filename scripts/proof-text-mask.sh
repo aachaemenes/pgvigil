@@ -69,7 +69,7 @@ die() { echo "FAIL (setup) $*"; exit 1; }
 MADE_DB=
 cleanup() {
   rc=$?
-  docker rm -f "$SQL" "$PGC" >/dev/null 2>&1
+  docker rm -fv "$SQL" "$PGC" >/dev/null 2>&1
   if [ -n "$MADE_DB" ]; then psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped"; fi
   rm -rf "$TMPD"
   exit $rc
