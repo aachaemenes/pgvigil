@@ -36,7 +36,7 @@ func TestRemoteCollectorBlock(t *testing.T) {
 		t.Errorf("query_text: %q, %q, %q (want hash)", c.QueryText, c.Instances[0].QueryText, c.Instances[1].QueryText)
 	}
 	c, err = loadRaw(t, strings.Replace(remoteOK, "  state_dir:", "  interval: 1m\n  keep_days: 2\n  max_mb: 64\n  sign: true\n"+
-		"  push: {type: azure_blob, account_url: 'https://acct.blob.core.windows.net', container: drop}\n  state_dir:", 1)+"query_text: none\n")
+		"  push: {type: azure_blob, account_url: 'https://acct.blob.core.windows.net', container: drop, prefix: bundles}\n  state_dir:", 1)+"query_text: none\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,8 @@ func TestRemoteCollectorRefusals(t *testing.T) {
 		{"a push without a container", strings.Replace(remoteOK, "  outbox:", "  push: {type: azure_blob, account_url: 'https://a.blob.core.windows.net'}\n  outbox:", 1), "container"},
 		{"a push with two ways in", strings.Replace(remoteOK, "  outbox:", "  push: {type: azure_blob, container: d, account_url: 'https://a', sas_url: env:SAS}\n  outbox:", 1), "exactly one way in"},
 		{"a SAS written in the file", strings.Replace(remoteOK, "  outbox:", sasInline+"  outbox:", 1), "env:NAME or file:/path"},
+		// the hub refuses a container drop without its prefix (ingest.OpenDrop): the push names the same folder
+		{"a push without its prefix", strings.Replace(remoteOK, "  outbox:", "  push: {type: azure_blob, container: d, sas_url: env:SAS}\n  outbox:", 1), "prefix"},
 		{"an unknown key", strings.Replace(remoteOK, "  outbox:", "  outbx: /x\n  outbox:", 1), "outbx"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
