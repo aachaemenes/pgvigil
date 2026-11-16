@@ -42,6 +42,14 @@
 #  B. the read login gets SELECT on the dbo schema, EXECUTE on dbo.IDs and on the nine page procedures only; as that
 #     login an INSERT into dbo.Settings, EXEC dbo.Summary_Upd and EXEC dbo.Summary_Get are each refused with a
 #     permission error.
+#  CH9 (B6.3; written before the run): on 4.25.0 the tenth screen answers with its five result sets (CH9a); the same read
+#     login with dbo.CollectionHealth_Get's GRANT taken back reads 'page collectionhealth ... sets=0 ... note=not read:
+#     this login has no EXECUTE on dbo.CollectionHealth_Get' (CH9e, the review of B6.2, part b #2), then the GRANT is
+#     given again; on 4.24.1 the screen is not called and says it came with version 4.25.0 (CH9c); neither note names
+#     the source product (task 168; the lead 11-15 06:0x). CH9b (part G, Chromium): the
+#     fleet grid's header ('Collection Health' on 4.25.0, 'Collection errors (24hrs)' on 4.24.1) with DBA Dash's own
+#     tooltip, each row's landing by the version, on 4.25.0 the screen's h3 and five h4s and its Collections grid without
+#     the columns DBA Dash hides, on 4.24.1 the 'not read' line alone; a mixed fleet NOT COVERED (one release per rig).
 #  C. the pages: TestLivePages through the read login prints 9 lines 'page <key> ok ... proven=true'; the same nine
 #     procedures called as sa by pymssql (FreeTDS: another driver, the GUI's parameters written out in T-SQL here)
 #     return, page by page, the same number of result sets, the same column names in the same order, the same row
@@ -91,20 +99,24 @@
 #     instance, in a headless Chromium signed in as a UI user:
 #     G0 (before the walk, Node) web/src/move_address.test.mjs: the move's prefill rule - which DBA Dash connection is
 #        a network address, its host and port apart, else DBA Dash's Instance with why - every row 'ok';
+#        and web/src/chhealth.test.mjs (the review B6f5 #3): the Collection Health helpers' rows, 'chhealth: 0 FAIL';
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists every SQL Server tab (as many
 #        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 at the release join);
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
 #        Agent alerts), mssqlstorage (the Drives screen: 0 rows on Linux, as C's), mssqlfiles, mssqlconfig and
 #        mssqlproperties as the repository's screens with rows (mssqlstorage: as many as part C's DrivesReport_Get),
+#        the tenth screen collectionhealth (B6.3) by version - on 4.25.0 the repository's screen with rows, on 4.24.1
+#        a screen with no call (no row, no grid; its gate's words read by CH9b below) -,
 #        every other tab its one 'not read for an imported server' line and no grid row; no tab but the seven live
-#        screens holds 'DBADash' or 'DBA Dash' text; the tree shows 'Imported: lab' and no such text; the Imported servers
-#        page names the source product on its settings line only;
+#        screens (and collectionhealth's rows on 4.25.0: the source's data) holds 'DBADash' or 'DBA Dash' text; the tree
+#        shows 'Imported: lab' and no such text; the Imported servers page names the source product on its settings
+#        line only;
 #     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
 #        under DBA Dash's display name;
 #     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same tabs (Availability
 #        kept); mssqlcpu and jobstimeline render pgvigil's own pages over the imported rows (a grid row or a chart),
-#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the eight
-#        other screen tabs as in G1, every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
+#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the other
+#        screen tabs as in G1 (collectionhealth by version), every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
 #        Storage page there; it lists the databases of pgvigil's own file read, which an imported server has not.]
 # NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the imported-server match
 # with two repositories under one display name, a repository removed from the configuration, or a collection attempt on
@@ -133,6 +145,8 @@ NET=pgvdoor-net-$SUF; SQL=pgvdoor-sql-$SUF; SVC=pgvdoor-svc-$SUF; CFGC=pgvdoor-c
 DDB=DBADash_pgv$SUF; PGDB=pgv_door_$SUF; PGRO=pgv_door_ro_$SUF
 RO=pgv_ddro_$SUF; MON=pgv_ddmon_$SUF; ACT=pgv_ddact_$SUF; APP=pgv_ddapp_$SUF; USR=proofdba$SUF
 PROCS="PerformanceSummary_Get RunningQueriesSummary_Get RunningQueries_Get BackupReport_Get AgentJobsReport_Get DrivesReport_Get DBFilesReport_Get Configuration_Get Alerts_Get"
+# B6.3 (CH9): the tenth screen's procedure came with 4.25.0 - granted there only (docs/dbadash.md's GRANT line)
+[[ "$DDV" == 4.25.0 ]] && PROCS="$PROCS CollectionHealth_Get"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
@@ -266,7 +280,27 @@ pages() { PGVIGIL_DBADASH_PAGE_DSN="$PGV_DD_RO" PGVIGIL_DBADASH_PAGE_ID="$ID" PG
   PGVIGIL_DBADASH_PAGE_SNAPSHOT="${2:-}" go test -count=1 -run '^TestLivePages$' -v ./internal/dbadash 2>&1 | grep '^page ' || true; }
 echo "page read at $(date +%s) (the page side; the doorage review, finding 2: the gap to the pymssql read)"
 res=$(pages); echo "$res"
-[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == 9 ]] || fail "C: not every page answered ok and proven"
+# the page count, derived once (the review B6f8 #6: a literal 10 in C and F): every PageDef of pages.go answers a line
+NPAGE=$(echo "$res" | grep -c '^page ' || true); NDEF=$(grep -cE '^\s*\{Key: "' internal/dbadash/pages.go || true)
+[[ "$NPAGE" == "$NDEF" && "$NPAGE" -gt 0 ]] || fail "C: $NPAGE page line(s) for $NDEF PageDef(s) in internal/dbadash/pages.go"
+[[ "$(echo "$res" | grep -c ' ok .*proven=true ')" == "$NPAGE" ]] || fail "C: not every page answered ok and proven"
+# CH9: the tenth screen (B6.3) - on 4.25.0 its five result sets; on 4.24.1 no call, the gate's words
+chl=$(echo "$res" | grep '^page collectionhealth ' || true)
+if [[ "$DDV" == 4.25.0 ]]; then
+  [[ "$chl" == *" sets=5 "* && "$chl" == *"note="* && "$chl" != *"not read:"* ]] || fail "CH9a: the Collection Health screen on 4.25.0: $chl"
+  echo "ok   CH9a: Collection Health on 4.25.0 answers with its five result sets ($chl)"
+  # CH9e (the review of B6.2, part b #2): a 4.25.0 read login without the procedure's GRANT - OBJECT_ID cannot see what
+  # the login has no right on - reads 'no EXECUTE', never 'not in this repository'; the GRANT given again first
+  sqok "CH9e: the GRANT taken back" "REVOKE EXECUTE ON dbo.CollectionHealth_Get FROM [$RO]" "$DDB"
+  mkdir -p "$TMPD/pages-ch9e"
+  che=$(pages "$TMPD/pages-ch9e" | grep '^page collectionhealth ' || true)
+  sqok "CH9e: the GRANT given again" "GRANT EXECUTE ON dbo.CollectionHealth_Get TO [$RO]" "$DDB"
+  [[ "$che" == *" sets=0 "*"note=not read: this login has no EXECUTE on dbo.CollectionHealth_Get (the GRANT in docs/dbadash.md, version 4.25.0 and later)"* ]] || fail "CH9e: a 4.25.0 read login without the GRANT: $che"
+  echo "ok   CH9e: a 4.25.0 read login without the GRANT reads 'no EXECUTE' ($che)"
+else
+  [[ "$chl" == *" sets=0 "*"note=not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)"* ]] || fail "CH9c: the Collection Health screen on $DDV: $chl"
+  echo "ok   CH9c: Collection Health on $DDV is not called and says why"
+fi
 # the exact snapshot: one SnapshotDateUTC as the running page printed it, back through the sessions page
 SNAPTXT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["results"][0]; i=[c["name"] for c in s["columns"]].index("SnapshotDateUTC"); print(s["rows"][0][i] if s["rows"] else "")' "$TMPD/pages/running.json")
 [[ -n "$SNAPTXT" ]] || fail "C: the running page holds no snapshot to call back"
@@ -288,6 +322,9 @@ calls = {  # DBA Dash GUI's parameters for one instance, every status ticked (DB
   "dbfiles": ids + f"EXEC dbo.DBFilesReport_Get @InstanceIDs = @i, {st}, @FilegroupLevel = 1, @ShowHidden = 1",
   "configuration": f"EXEC dbo.Configuration_Get @InstanceIDs = '{idn}', @ShowHidden = 1",
   "alerts": f"EXEC dbo.Alerts_Get @InstanceIDs = '{idn}', @ShowHidden = 1",
+  # B6.3 (CH9a): 4.25.0's Collection Health as its GUI calls it by default (CollectionHealthView.cs), 4.25.0 only
+  **({"collectionhealth": ids + f"EXEC dbo.CollectionHealth_Get @InstanceIDs = @i, @FromDate = '{frm}', @ToDate = '{to}', @DetailMaxHours = 48, @GroupByInstance = 1, @IncludeSteps = 1, {st}"}
+     if os.environ.get("DDV") == "4.25.0" else {}),
   "sessions@snapshot": f"EXEC dbo.RunningQueries_Get @InstanceID = {idn}, @SnapshotDateFrom = '{snap}', @SnapshotDateTo = '{snap}'",
 }
 def dec(s):
@@ -389,12 +426,13 @@ for page, sqltext in calls.items():
     nonempty += rows_seen > 0
     print(f"ok   C: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL C: {page}")
 if bad: print("\n".join("FAIL " + x for x in bad)); sys.exit(1)
-if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of 9 pages and the snapshot call returned rows"); sys.exit(1)
-print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of {len(calls) - 1} pages and the snapshot call returned rows"); sys.exit(1)
+print(f"ok   C: {len(calls) - 1} pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
 PY
-docker run --rm --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES=/w/pages \
+docker run --rm --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e DDV="$DDV" -e PAGES=/w/pages \
   -v "$TMPD:/w:ro" "$IMG_PY" sh -c 'pip install -q --disable-pip-version-check --root-user-action=ignore "pymssql>=2.3,<2.4" 2>&1 | tail -3 && python /w/grids.py' | tee "$TMPD/grids.out" || true
-grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
+NPG=9; [[ "$DDV" == 4.25.0 ]] && NPG=10
+grep -q "^ok   C: $NPG pages and the exact snapshot" "$TMPD/grids.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
 
 echo "== D. the actions, through pgvigil serve =="
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
@@ -592,7 +630,7 @@ echo "== F. the version pin =="
 sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version) VALUES (DATEADD(day, 1, SYSUTCDATETIME()), '9.9.9')" "$DDB"
 res=$(pages)
 sqok "F: the version row's removal" "DELETE FROM dbo.DBVersionHistory WHERE Version = '9.9.9'" "$DDB"
-[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == 9 ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
+[[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == "$NPAGE" ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
 for pj in "$TMPD"/pages/*.json; do jget "$pj" note | grep -q 'not proven on source version 9.9.9' || fail "F: the note of $(basename "$pj"): $(jget "$pj" note)"; done
 echo "ok   F: on a repository at 9.9.9 every page says proven=false: '$(jget "$TMPD/pages/alerts.json" note)'; the row removed"
 
@@ -609,6 +647,12 @@ else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; f
 "$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/move_address.ts" --format=esm --outfile="$TMPD/move_address.mjs" --log-level=warning || fail "G0: move_address.ts did not compile"
 node "$GSRC/web/src/move_address.test.mjs" "$TMPD/move_address.mjs" > "$TMPD/g0-unit.out" 2>&1 || { cat "$TMPD/g0-unit.out"; fail "G0: the move's prefill unit tests"; }
 echo "ok   G0: the move's prefill rule: $(tail -1 "$TMPD/g0-unit.out")"
+# G0 (the review B6f5 #3): the Collection Health helpers (web/src/chhealth.ts: the Summary column's version rule and
+# tooltips, the chart's hours) - their rows run here, not only in a lane's light checks
+"$GSRC/web/node_modules/.bin/esbuild" "$GSRC/web/src/chhealth.ts" --bundle --format=esm --platform=neutral --outfile="$TMPD/chhealth.mjs" --log-level=warning || fail "G0: chhealth.ts did not compile"
+node "$GSRC/web/src/chhealth.test.mjs" "$TMPD/chhealth.mjs" > "$TMPD/g0-ch.out" 2>&1 || { cat "$TMPD/g0-ch.out"; fail "G0: the Collection Health helpers' rows"; }
+grep -q '^chhealth: 0 FAIL' "$TMPD/g0-ch.out" || fail "G0: the Collection Health helpers: $(tail -1 "$TMPD/g0-ch.out")"
+echo "ok   G0: the Collection Health helpers: $(grep '^chhealth' "$TMPD/g0-ch.out" | tail -1)"
 (cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "G: the build"
 BIN="$TMPD/pgvigil-g"
 psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $GDB" >/dev/null
@@ -675,7 +719,8 @@ for (const h of tabs) {
   const r = await ev(`(() => { const m = document.querySelector('main'); const s = m.querySelector('[data-source]');
     const rows = [...m.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty') && tr.children.length > 0).length;
     return JSON.stringify({ src: s?.dataset.source ?? 'native', rows: s?.dataset.rows ?? '-', trs: rows, charts: m.querySelectorAll('canvas, svg').length,
-      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length, named: /DBA ?Dash/.test(m.innerText) ? 1 : 0 }); })()`);
+      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length,
+      named: (() => { const c = m.cloneNode(true); c.querySelectorAll('table.grid tbody').forEach(e => e.remove()); return /DBA ?Dash/.test(c.textContent) ? 1 : 0; })() }); })()`);
   const o = JSON.parse(r);
   console.log(`tab ${key} render=yes source=${o.src} rows=${o.rows} trs=${o.trs} charts=${o.charts} notread=${o.notread} named=${o.named} errors=${o.errors}`);
 }
@@ -699,7 +744,7 @@ G168="availability counters findings jobstimeline mssql_blocked mssql_deadlocks 
 for k in $G168; do [[ " $GKEYS " == *" $k "* ]] || fail "G: task 168's SQL Server tab $k is no longer in router.ts mssqlInstanceTabs"; done
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
-  local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage " n line k
+  local out="$1" store=" $2 " screen=" $3 " n line k
   n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == "$GWANT" ]] || fail "$4: $n tabs walked (want $GWANT, router.ts mssqlInstanceTabs): $out"
   local walked; walked=$(echo "$out" | awk '/^tab /{print $2}' | LC_ALL=C sort | tr '\n' ' ')
   [[ "$walked" == "$(printf '%s\n' "${GK[@]}" | LC_ALL=C sort | tr '\n' ' ')" ]] || fail "$4: the walked tabs ($walked) are not router.ts mssqlInstanceTabs ($GKEYS)"
@@ -709,8 +754,9 @@ gtabs() {
   while read -r line; do
     k=$(echo "$line" | awk '{print $2}')
     [[ "$line" == *" render=yes "* && "$line" == *" errors=0" ]] || fail "$4: $line"
-    # pgvigil's own words name no source product; a live screen's rows are the source's data and may (a session's program name)
-    [[ "$data" == *" $k "* || "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
+    # pgvigil's own words name no source product: named is read with every grid's rows left out (the source's data may:
+    # a session's program name), so no tab is exempt (the review B6f8 #7)
+    [[ "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
     if [[ "$store" == *" $k "* ]]; then
       [[ "$line" == *" source=store "* ]] || fail "$4: $k is not pgvigil's own page over the imported rows: $line"
       t=$(echo "$line" | sed -n 's/.* trs=\([0-9]*\) charts=\([0-9]*\) .*/\1 \2/p'); (( ${t% *} + ${t#* } > 0 )) || fail "$4: $k shows no imported row: $line"
@@ -718,17 +764,85 @@ gtabs() {
       [[ "$line" == *" source=screen "* ]] || fail "$4: $k is not the repository's screen: $line"
       r=$(echo "$line" | sed -n 's/.* rows=\([0-9]*\) .*/\1/p')
       [[ "$k" == mssqlstorage ]] && { [[ "$r" == "$n_drv" ]] || fail "$4: the Drives screen shows $r rows (want $n_drv, part C's DrivesReport_Get)"; } || (( r > 0 )) || fail "$4: $k shows no row: $line"
+    elif [[ "$GGATED" == *" $k "* ]]; then
+      [[ "$line" == *" source=screen "* && "$line" == *" rows=0 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k on $DDV is not the screen with no call (no row, no grid): $line"
     else
       [[ "$line" == *" source=none "* && "$line" == *" notread=1 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k is not one 'not read' line: $line"
     fi
   done < <(echo "$out" | grep '^tab ')
 }
 SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlproperties"
+# B6.3: the tenth screen by version (dbadash.ts tabSources: collectionhealth is a screen on both) - on 4.25.0 the
+# repository's screen with rows, which are the source's data as the live screens' rows are; on 4.24.1 the screen makes
+# no call: no row, no grid, its gate's words (read by CH9b below), and pgvigil's words name no source product
+GGATED=" collectionhealth "
+[[ "$DDV" == 4.25.0 ]] && { SCREENS="$SCREENS collectionhealth"; GGATED=""; }
 # the Drives screen's rows as part C read them (DrivesReport_Get through the read login)
 n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(s.get("rows") or []) for s in d.get("results") or []))' "$TMPD/pages/drives.json")
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
 gtabs "$g1" "" "$SCREENS mssqlstorage" G1
 echo "ok   G1: the DBA Dash instance's own page: $GWANT tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
+# CH9b (the review of B6.2, part b #15): the door's fleet grid and its Collection Health landing, by this run's version -
+# 4.25.0: the header 'Collection Health' with DBA Dash's tooltip, every row's cell on the instance's Collection Health
+# screen, that screen's h3 and five h4s in DBA Dash's order, the Collections grid without the columns DBA Dash hides;
+# 4.24.1: 'Collection errors (24hrs)' with 4.24.1's tooltip, the old landing, and the screen's 'not read' line alone.
+# A mixed fleet (one repository of each) needs two releases in one rig: NOT COVERED here, said.
+cat > "$TMPD/g-ch9b.mjs" <<'JS'
+const [port, U, ver, id] = process.argv.slice(2);
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let n = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++n; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let fails = 0; const say = (ok, row, what) => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${row}: ${what}`); };
+const go = async h => { await cmd('Page.navigate', { url: U + h }); for (let i = 0; i < 150; i++) { if (await ev(`!!document.querySelector('main table.grid, main p.empty, main p.meta')`)) break; await sleep(200); } await sleep(1500); };
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
+if (st !== 200) { console.log(`FAIL CH9b login: ${st}`); process.exit(1); }
+// DBA Dash's own tooltips (4.25.0's and 4.24.1's Checks/Summary.Designer.cs L433, word for word)
+const TIP = {
+  '4.25.0': 'Collections at warning or critical: failing in a row for long enough, or a high failure rate since errors were acknowledged (24hrs at most) - thresholds configured in the Collection Health tab.  For an instance whose DBA Dash service predates collection health, the count of collection and import errors in the last 24hrs.  Click to see collection health.',
+  '4.24.1': 'Count of errors encountered by the DBA Dash service during data collection or import for the instance.  Retries are highlighted as warning, failures are critical.' };
+const LABEL = { '4.25.0': 'Collection Health', '4.24.1': 'Collection errors (24hrs)' };
+await go('#/dbadash?w=24h');
+const g = await ev(`(() => { for (const t of document.querySelectorAll('main table.grid')) { const ths = [...t.querySelectorAll('thead tr:first-child th')];
+  const k = ths.findIndex(th => /^Collection (Health|errors)/.test((th.querySelector('.th-label') ?? th).textContent.trim())); if (k < 0) continue; const th = ths[k];
+  return { label: (th.querySelector('.th-label') ?? th).textContent.trim(), title: th.getAttribute('title') ?? th.querySelector('[title]')?.getAttribute('title') ?? '',
+    links: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[k]?.querySelector('a')?.getAttribute('href') ?? '') }; } return null; })()`);
+say(!!g && g.label === LABEL[ver], 'CH9b header', g ? g.label : 'no Collection column');
+say(!!g && g.title === TIP[ver], 'CH9b header tooltip', g ? g.title.slice(0, 80) : '-');
+// each row's link (the review B6f8 #5: a cell with no link passed as 'not collectionhealth'): the instance asked, on
+// 4.25.0 its Collection Health tab, on 4.24.1 its page with no tab (DBA Dash's old landing)
+const lands = (g?.links ?? []).map(h => new URLSearchParams(h.split('?')[1] ?? '').get('dp'));
+say(!!g && g.links.length > 0 && g.links.every((h, n) => h !== '' && h.includes(`di=${id}`) && (ver === '4.25.0' ? lands[n] === 'collectionhealth' : lands[n] === null)),
+  'CH9b each row\'s landing', `${g?.links.length ?? 0} row(s): ${(g?.links ?? []).join(' ')}`);
+await go(`#/dbadash?dr=lab&di=${id}&dp=collectionhealth&w=24h`);
+const s = await ev(`(() => { const m = document.querySelector('main'); const h3 = [...m.querySelectorAll('h3')].map(h => h.textContent.trim()); const h4 = [...m.querySelectorAll('h4')].map(h => h.textContent.trim());
+  const t = m.querySelector('table.grid'); const heads = t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.querySelector('.th-label') ?? th).textContent.trim()) : [];
+  const k = heads.indexOf('Status Reason');
+  return { h3, h4, heads, rows: t ? t.querySelectorAll('tbody tr').length : 0, coloured: k < 0 || !t ? false : [...t.querySelectorAll('tbody tr')].every(tr => tr.children[k]?.classList.contains('status')),
+    notRead: m.textContent.includes('not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)'), grids: m.querySelectorAll('table.grid').length,
+    calledNow: m.textContent.includes('called now') }; })()`);
+if (ver === '4.25.0') {
+  say(s.h3.includes('Collection Health') && JSON.stringify(s.h4.slice(0, 5)) === JSON.stringify(['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights']), 'CH9b the screen\'s headings', `${s.h3.join(' | ')} / ${s.h4.join(' | ')}`);
+  // every key chHidden hides that comes back at @GroupByInstance = 1 (the review B6f3 #4), and No Status (UnknownCount's alias)
+  const hidden = ['No Status', 'InstanceID', 'Reference', 'Step', 'Status', 'LastStatus', 'ErrorsFrom', 'ErrorsTo', 'LastDurationMs', 'TotalDurationMs',
+    'MaxLogicalReads', 'TotalLogicalReads', 'TotalImportMs', 'AvgImportLogicalReads', 'TotalImportLogicalReads'].filter(h => s.heads.includes(h));
+  say(s.heads.length > 0 && hidden.length === 0 && s.rows > 0 && s.coloured, 'CH9b the Collections grid', `${s.rows} row(s); ${s.heads.join(' | ')}${hidden.length ? '; shown though DBA Dash hides: ' + hidden.join(', ') : ''}`);
+} else {
+  // the review B6f8 #4: the gated screen makes no call and says so (its meta line said 'called now ... (0 ms)')
+  say(s.notRead && s.grids === 0 && !s.calledNow, 'CH9b the screen on ' + ver, `not read line ${s.notRead}, ${s.grids} grid(s), 'called now' ${s.calledNow}`);
+}
+console.log('NOT COVERED: CH9b on a mixed fleet (a 4.25.0 and a 4.24.1 repository in one rig)');
+console.log(fails ? `ch9b: ${fails} FAIL` : 'ch9b: 0 FAIL');
+process.exit(fails ? 1 : 0);
+JS
+ch9b=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-ch9b.mjs" "$CDP" "$U/" "$DDV" "$ID" 2>&1) || fail "CH9b: $ch9b"
+echo "$ch9b"; echo "ok   CH9b: the door's Collection Health column and landing on $DDV ($(echo "$ch9b" | tail -1))"
 "$BIN" import dbadash -config "$TMPD/g.yaml" -repo lab >"$TMPD/g-import.out" 2>&1 || { cat "$TMPD/g-import.out" >&2; fail "G2: pgvigil import dbadash"; }
 GID=$(psql "$GDSN" -XAtq -c "SELECT instance_id FROM pgvigil.instances WHERE name = '$DISP' AND engine = 'sqlserver'")
 [[ "$GID" =~ ^[1-9][0-9]*$ ]] || { cat "$TMPD/g-import.out" >&2; fail "G2: no imported server named $DISP"; }
@@ -741,4 +855,4 @@ kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 
 echo "Not proven here: the buttons' machine-name and latest-snapshot guards in a browser;"
 echo "the 'volumes' mapping with rows when DBA Dash collected none ($n_vol here); a DBA Dash version other than $VER; Azure SQL Database rows."
-echo "proof-dbadash-door: OK (DBA Dash $VER; 9 pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"
+echo "proof-dbadash-door: OK (DBA Dash $VER; $NPG pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"

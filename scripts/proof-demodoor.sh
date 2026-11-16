@@ -330,6 +330,15 @@ post jobs/exclusions "{\"op\":\"add\",\"level\":\"instance\",\"instance_id\":$RE
 post jobs/exclusions "{\"op\":\"end\",\"exclusion_id\":$PXE}" "${H[@]}"; want "the end of prod-db1's job exclusion (the proof's row)" 403 "$NOT1"
 XL=$(q "select count(*) from pgvigil.job_exclusions where exclusion_id = $PXE and ended_at is null")
 if [[ "$XL" == 1 ]]; then ok "A prod-db1's job exclusion (the proof's row) still stands"; else fail "A prod-db1's job exclusion: $XL live (want 1)"; fi
+# B6g-2 (the review of B6g-2 #11): Collection Health thresholds on the door - one demo instance's levels written as demo;
+# a level over every instance (a collection's, everything's) and an instance not the demo's refused in words
+CHWIDE="an every-instance change would reach past the demo's instances"
+post collectionhealth/thresholds "{\"op\":\"set\",\"instance_id\":$D1,\"collection\":\"activity\",\"warn_fails_in_row\":2}" "${H[@]}"; want "a demo instance's Collection Health threshold" 200 '"outcome":"done"'
+[[ $(q "select created_by from pgvigil.collection_health_threshold where instance_id = $D1 and collection = 'activity' and ended_at is null") == demo ]] && ok "A its row is demo's" || fail "A the Collection Health threshold's created_by"
+post collectionhealth/thresholds "{\"op\":\"inherit\",\"instance_id\":$D1,\"collection\":\"activity\"}" "${H[@]}"; want "its inherit" 200 '"outcome":"done"'
+post collectionhealth/thresholds '{"op":"set","collection":"activity","warn_fails_in_row":2}' "${H[@]}"; want "a collection's threshold on every instance" 403 "$CHWIDE"
+post collectionhealth/thresholds '{"op":"set","warn_fails_in_row":2}' "${H[@]}"; want "a threshold over everything" 403 "$CHWIDE"
+post collectionhealth/thresholds "{\"op\":\"set\",\"instance_id\":$REAL,\"collection\":\"activity\",\"warn_fails_in_row\":2}" "${H[@]}"; want "prod-db1's Collection Health threshold" 403 "$NOT1"
 post ack '{"kind":"mute","match_text":"jit","note":"x"}' "${H[@]}"; want "a mute on every instance" 403 "an every-instance change would reach past the demo's instances"
 post drives/thresholds "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":$D1,\"warn\":20,\"crit\":10}" "${H[@]}"; want "an instance's drive threshold" 200 '"outcome":"done"'
 [[ $(q "select created_by from pgvigil.drive_thresholds where instance_id = $D1 order by threshold_id desc limit 1") == demo ]] && ok "A its row is demo's" || fail "A the threshold's created_by"

@@ -59,6 +59,14 @@ SELECT d.datname
                          WHERE x.instance_id = $1 AND x.snapshot_at <= $2 AND x.snapshot_at > $2::timestamptz - interval '1 day')
  ORDER BY d.datname`
 
+// sqlMetricCollections: the collections of an instance's hour rows in the day up to the window's end (the Collection
+// family's cut, B6g-4)
+const sqlMetricCollections = `
+SELECT DISTINCT h.collection
+  FROM pgvigil.collection_health_hour h
+ WHERE h.instance_id = $1 AND h.hour <= $2::timestamptz AND h.hour > $2::timestamptz - interval '1 day'
+ ORDER BY h.collection`
+
 // sqlMetricSeries: one metric's samples; $7 = the bucket in seconds (1 = every sample as stored), $8 the metric of
 // its family. A bucket carries its average, its highest and its lowest sample.
 const sqlMetricSeries = `
@@ -150,6 +158,14 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["databases"] = dbs
+	// B6g-4 (N30): the collections of the instance's hour rows over the day before the window's end - the Collection
+	// family's cut (the sub-series slot: db= one of them)
+	cols, err := s.query(r.Context(), sqlMetricCollections, id, to)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("collections: %w", err))
+		return
+	}
+	out["collections"] = cols
 	s.reply(w, r, out, nil)
 }
 

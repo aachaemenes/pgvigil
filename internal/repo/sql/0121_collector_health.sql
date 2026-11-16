@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat (
   instances     int,                              -- instances it ran a collection on in the last minute
   repo_conns    int,                              -- the repository's sessions named pgvigil* at the beat (every pgvigil process)
   span_s        int,                              -- the host's span at this run's newest beat (collector_span_take); NULL: no interval known
-  beat_minute   timestamptz                       -- the newest minute this run's beat wrote, on the collector's clock (collector_reading)
+  beat_minute   timestamptz,                      -- the newest minute this run's beat wrote, on the collector's clock (collector_reading)
+  sends_alerts  boolean                           -- this run sends alerts (its alerts: list names a channel), as its beat says; NULL before its first beat ('alert sender idle', 0166)
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.collector_beats (
@@ -270,6 +271,7 @@ BEGIN
      SET beat_at = now(), mem_bytes = (p_beat->>'mem_bytes')::bigint, goroutines = (p_beat->>'goroutines')::int,
          instances = (p_beat->>'instances')::int, repo_conns = v_conns,
          beat_minute = greatest(beat_minute, p_minute),
+         sends_alerts = coalesce((p_beat->>'sends_alerts')::boolean, sends_alerts),
          -- a run still beating 2 minutes after it was retired was retired by mistake (a second host of that name, the
          -- door run for a host that is not gone): the mark goes. A beat sooner than that is a stopping service's last
          -- one and must not undo its uninstall's retire
@@ -656,7 +658,11 @@ SELECT DISTINCT x.instance_id
 -- last good read and is sent as it is (a full disk found before a cut may be the shared cause itself).
 CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect'))
+  -- B6.4 (WIRING): 'collection runs long' with the collector's own kinds - held while a parent stands for its instance (a
+  -- cut or a host down slows the runs it does not fail); a host that is slow while its runs succeed forms no parent:
+  -- its instances fold into ONE 'collections run long' of the host instead (0166 collection_runs_long_fold, B6.4 #4)
+  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect',
+                                                                    'collection runs long'))
       OR (p_source = 'collector' AND p_setting = 'server unreachable')   -- 0118's (task 177 D30), where no heartbeat covers the instance
       OR (p_source = 'pgvigil' AND p_setting IN ('job run over twice its average', 'job schedule missed'))
       OR (p_source = 'mssql_jobs' AND p_setting = 'a job runs far longer than its average')
@@ -696,12 +702,12 @@ RETURNS SETOF int LANGUAGE sql STABLE AS $$
 $$;
 
 -- alert_key: an alert's key. The repository-wide 'collector or network' is keyed on its value AS IT IS - the value
--- names the collector's host, and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
+-- names the collector's host (and the host-valued folds alike: 'slow connects', B6.4 #4's 'collections run long'), and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
 -- and 'pgv-2' shared one key and the second, cut by the same event, was never sent. Every other finding keeps 0059's
 -- key. alert_findings (0190) and the alert page's two queries call it, so they agree.
 CREATE OR REPLACE FUNCTION pgvigil.alert_key(p_instance_id int, p_source text, p_setting text, p_value text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects')
+  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects', 'collections run long')
               THEN md5('0' || E'\x1f' || p_source || E'\x1f' || p_setting || E'\x1f' || coalesce(p_value, ''))
               ELSE pgvigil.alert_finding_key(coalesce(p_instance_id, 0), p_source, p_setting, p_value) END
 $$;
@@ -1139,6 +1145,17 @@ SELECT x.instance_id
           FROM pgvigil.collector_connects c) x
  WHERE x.crossed AND x.n >= 3;
 
+-- collection_dont_monitor (B6g-2, the lead's 07:4x DONT-MONITOR (a)): a collection its Collection Health threshold sets
+-- Don't monitor raises no 'collection failing' (below). Its body is 0166's (the thresholds' table is made there, after
+-- this file): this stub lets the view name it on a fresh store, and 0166's CREATE OR REPLACE gives it the body
+-- (made only where it is absent: a re-run of this file after 0166 keeps 0166's body - the review of B6g-2's fold part a #5)
+DO $do$ BEGIN
+  IF to_regprocedure('pgvigil.collection_dont_monitor(integer,text)') IS NULL THEN
+    CREATE FUNCTION pgvigil.collection_dont_monitor(p_instance_id int, p_collection text)
+    RETURNS boolean LANGUAGE sql STABLE AS $f$ SELECT false $f$;
+  END IF;
+END $do$;
+
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 -- the parent: its value is the host alone (one alert per collector, whatever its why: a restart inside the hold, or a
 -- cut that turns into a host not seen, is the same alert, repeated once with its new why - alert_due); the claim
@@ -1185,11 +1202,12 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
        'pgvigil collector', s.last_run_at
   FROM pgvigil.collector_streaks_now s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
+   AND NOT pgvigil.collection_dont_monitor(s.instance_id, s.collection)   -- B6g-2: Don't monitor (its Collection Health threshold)
    -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
    -- network' stands, and after it one failed run past its window (collector_in_window)
    -- a streak speaks only while a beating collector still names the instance (collector_covers): only such a run ends
    -- it. An instance moved to a `pgvigil collect` on a schedule, or one whose collector died, leaves this view 20
-   -- minutes after its last naming; the Summary's Collection Errors check reads the scheduled collect's errors
+   -- minutes after its last naming; the Summary's Collection Health column reads the scheduled collect's errors
    AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
 -- the instance's own connect failing, the server not answering (not a refused login: that is 'authentication

@@ -227,6 +227,11 @@ func parseHoursFlag(v string) ([]hoursSet, error) {
 		if !ok || err != nil || n < 1 || n > 3650 || t == "" || seen[t] || strings.Trim(t, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
 			return nil, fmt.Errorf("-hours wants <table>=<days>, each table once, with days 1 to 3650 (job_stats_hourly=730), not %q", part)
 		}
+		// a table's own cap, in words before any pair is set (0166's CHECK would refuse it half-way, and -dry-run would
+		// print a value the store refuses)
+		if t == "collection_health_hour" && n > 30 {
+			return nil, fmt.Errorf("-hours collection_health_hour=%d: this table keeps 30 days at most (0166)", n)
+		}
 		seen[t] = true
 		out = append(out, hoursSet{t, n})
 	}

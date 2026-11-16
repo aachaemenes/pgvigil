@@ -58,7 +58,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin_backupages: 'Backup ages (admin)', admin: 'Overview' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', azuresummary: 'Azure Summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_qscharts: 'Query Stats Charts', rp_qs: 'Query Stats', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size', rp_recycle: 'Recycle Bin', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance', mssqlerrors: 'SQL Server errors', collector: 'Collector', about: 'About', admin_instances: 'Instances (admin)', admin_applications: 'Applications', admin_counters: 'Counters (admin)', admin_backupages: 'Backup ages (admin)', admin: 'Overview' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Table Size', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
@@ -66,7 +66,7 @@ export const instanceTabs: Record<string, string> = {
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
   customreports: 'Custom reports', community: 'Community tools',
-  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', pgtemp: 'Temp',
+  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance', pgtemp: 'Temp',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
@@ -77,7 +77,7 @@ export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'azuresummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks', 'pgthresholds', 'retention'] },
-  { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collectorerrors', 'collector', 'mssqlerrors', 'corruption', 'custom'] },
+  { key: 'checks', name: 'Checks', tabs: ['checks', 'collectiondates', 'collectionhealth', 'collectorerrors', 'collector', 'mssqlerrors', 'corruption', 'custom'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'pgreplication', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'tablesize', 'disks', 'storage', 'growth', 'dbchanges', 'indexes'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
@@ -113,7 +113,7 @@ export function tagPages(g: TabGroup, engines: Set<string>): string[] {
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'waiting', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
   { key: 'conf', name: 'Configuration', tabs: ['config', 'pgdboptions', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
-  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors', 'corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectionhealth', 'collectorerrors', 'corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'pgbackups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'pgtemp', 'tables', 'driveperf', 'storage', 'dbinfo', 'dbchanges'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport', 'jobstimeline'] },
@@ -133,12 +133,12 @@ export const mssqlInstanceTabs: Record<string, string> = {
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
   customreports: 'Custom reports', community: 'Community tools',
-  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors',
+  drives: 'Drives', dbspace: 'DB Space', dbfiles: 'Files', driveperf: 'Drive Performance', collectiondates: 'Collection dates', collectorerrors: 'Collector errors', collectionhealth: 'Collection Health', collectionperf: 'Collection Performance',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
-  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors', 'custom'] },
+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectionhealth', 'collectorerrors', 'custom'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
@@ -158,7 +158,7 @@ export function groupOf(groups: TabGroup[], tab: string): TabGroup {
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
 export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
 // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
-export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements' };
+export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements', collectionperf: 'collectionhealth' };
 
 export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');
@@ -206,10 +206,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     if (v !== undefined && v !== '') q.set(name, String(v));
   };
   if (c.tab === 'counters') page('kind', 'kind');
-  // the Metrics page's database cut stays on its own links: a range change keeps the database in view
+  // the Metrics page's database and collection cuts stay on its own links: a range change keeps them in view (the
+  // collection's: the B6g-4 fold #9)
   if (keep && c.tab === 'counters') {
-    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('mdb');
-    if (v) q.set('mdb', v);
+    const u = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['mdb', 'mcol']) { const v = u.get(k); if (v) q.set(k, v); }
   }
   if (c.tab === 'logs') page('logKind', 'lk');
   if (c.tab === 'activity') { page('at', 'at'); page('minSecs', 'min'); page('st', 'st'); page('user', 'user'); page('db', 'db'); page('app', 'app'); }
@@ -258,6 +259,12 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (keep && c.tab === 'alert') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['k', 't', 'v']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
+  // B6g-3: the Collection Performance report's collection stays on a range change or a chart's drag (its review #1:
+  // the report read every collection after one)
+  if (keep && c.tab === 'collectionperf') {
+    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('collection');
+    if (v) q.set('collection', v);
   }
   // the Diff page's picks (diff.ts: mode, the two sides, their databases and times, identical rows) stay on a range change
   if (keep && c.tab === 'diff') {

@@ -350,3 +350,26 @@ export:
 ```
 
 A key the section does not know is refused (exit 3): a mistyped key must not pass as a default.
+
+## The probes: /livez and /readyz (web:)
+
+`pgvigil serve` answers two probes for a load balancer or an orchestrator, without the UI login and with nothing but
+their words:
+
+- `GET /livez` - `200 ok` while the process answers. It reads nothing.
+- `GET /readyz` - `200 ok` while the repository answers and its schema is current (the answer `pgvigil run` checks at
+  its start, read from `pgvigil.schema_version` on serve's own login), else `503 not ready: <why>` (`the repository
+  does not answer`, or `the repository's schema is behind this binary (needs <migration>)`). The answer is kept 5
+  seconds: a burst of probes runs one check. The check has its own 3 seconds: a probe that gives up sooner does not cut
+  it, and what the next probes are told is the repository's answer. The repository's own error stays in the log (it
+  can name the login and the address).
+
+`/readyz` is open while the UI login is off. With the login on it answers `404` unless the configuration opens it:
+
+```yaml
+web:
+  readyz_without_login: true   # default false: /readyz then needs nothing from the caller
+```
+
+The collector's own state (a collection failing, the alert sender idle, the repository's autovacuum behind) is a
+finding on the Collector page and the Summary, never a probe's answer.

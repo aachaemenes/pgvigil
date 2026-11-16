@@ -39,6 +39,9 @@ var RunsAs string
 // HeartbeatInfo is what the caller knows about this collector.
 type HeartbeatInfo struct {
 	Version string
+	// SendsAlerts: this run sends alerts (its alerts: list names a channel); each beat says so ('alert sender idle'
+	// counts only the live runs that send: B6.2 part c #3)
+	SendsAlerts bool
 }
 
 const histBuckets = 19 // b 0 = under 1 ms, b n = 2^(n-1) to 2^n ms, b 18 = 131 s and over
@@ -77,11 +80,13 @@ type Heartbeat struct {
 	pool     *pgxpool.Pool
 	log      *slog.Logger
 	mu       sync.Mutex
-	runs     map[[2]string]*runAgg // engine, collection
-	load     map[string]*loadAgg   // instance name
-	streaks  map[[2]string]*streak // instance name, collection
-	seen     map[string]time.Time  // instance name: when this run last named it in the repository (seenDue)
-	targets  map[string]string     // instance name: its dial target (InstanceTarget: N8)
+	runs     map[[2]string]*runAgg    // engine, collection
+	load     map[string]*loadAgg      // instance name
+	streaks  map[[2]string]*streak    // instance name, collection
+	hourly   map[healthKey]*healthAgg // B6.1: instance, collection, UTC hour (health.go)
+	hourNew  time.Time                // the newest hour counted
+	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
+	targets  map[string]string        // instance name: its dial target (InstanceTarget: N8)
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -387,6 +392,7 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.health(instance, collection, res, now, every) // B6.1's hourly counts: every outcome, a skip too
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
 		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
@@ -491,12 +497,14 @@ type beatStreak struct {
 }
 
 type beat struct {
-	MemBytes   uint64       `json:"mem_bytes"`
-	Goroutines int          `json:"goroutines"`
-	Instances  int          `json:"instances"`
-	Runs       []beatRun    `json:"runs"`
-	Load       []beatLoad   `json:"load"`
-	Streaks    []beatStreak `json:"streaks"`
+	MemBytes    uint64       `json:"mem_bytes"`
+	Goroutines  int          `json:"goroutines"`
+	Instances   int          `json:"instances"`
+	SendsAlerts bool         `json:"sends_alerts"`
+	Runs        []beatRun    `json:"runs"`
+	Load        []beatLoad   `json:"load"`
+	Streaks     []beatStreak `json:"streaks"`
+	Health      []beatHealth `json:"-"` // B6.1: running totals per instance, collection and UTC hour - their own body (healthBody)
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -506,8 +514,8 @@ func (h *Heartbeat) take() beat {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
-	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
-		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}}
+	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load), SendsAlerts: h.info.SendsAlerts,
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Health: h.takeHealth()}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
@@ -558,6 +566,24 @@ func runsAs() string {
 	return "console"
 }
 
+// repoNotices logs a WARNING the repository raises on the beat's connections (review B6f10 #6): import_collection_health
+// warns when the 'collections run long' stamps fail and keeps the beat's hour rows - without this the warning reached
+// only the server's log. The severity is read unlocalized; a NOTICE is not logged.
+func repoNotices(log *slog.Logger) func(*pgconn.PgConn, *pgconn.Notice) {
+	return func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		if n == nil {
+			return
+		}
+		sev := n.SeverityUnlocalized
+		if sev == "" {
+			sev = n.Severity
+		}
+		if sev == "WARNING" {
+			log.Warn("repository warning", "message", n.Message, "where", n.Where)
+		}
+	}
+}
+
 // StartHeartbeat writes this collector's row (its start in the repository's clock) and beats every minute until ctx ends,
 // then writes the last minute and marks a clean stop. dsn is the collector's repository DSN (the import_ door). The
 // returned wait blocks until that is done (at most 15 s: the final beat 8 s, the stop mark 5 s, the pool's close): the
@@ -569,6 +595,7 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 	}
 	cfg.MaxConns = 2
 	cfg.ConnConfig.RuntimeParams["application_name"] = "pgvigil-heartbeat"
+	cfg.ConnConfig.OnNotice = repoNotices(log)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: %w", err)
@@ -678,11 +705,34 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 		h.log.Warn("heartbeat: the beat was not written", "err", err)
 		return
 	}
+	if len(b.Health) > 0 {
+		// running totals: a beat lost here is repaired by the next one; their own body and their own 30 s (a slow
+		// heartbeat statement leaves this one its full time; at a stop both share the caller's 8 s)
+		q, args, err := healthWrite(h.id, b.Health)
+		if err == nil {
+			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+			_, err = h.pool.Exec(hctx, q, args...)
+			hcancel()
+		}
+		if err != nil {
+			h.log.Warn("heartbeat: the hourly collection health was not written", "err", err)
+		}
+	}
 	if !known { // the row is gone (trimmed after 8 days without a beat, or deleted): claimed again
 		if err := h.claim(ctx); err != nil {
 			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
 		}
 	}
+}
+
+// healthWrite: the hourly rows' statement and its arguments as beat() sends them - their own body (healthBody), never
+// the heartbeat's; TestBeatBodyHealthOnce reads what beat() writes through it
+func healthWrite(id string, rows []beatHealth) (string, []any, error) {
+	hb, err := healthBody(rows)
+	if err != nil {
+		return "", nil, err
+	}
+	return `SELECT pgvigil.import_collection_health($1, $2::jsonb)`, []any{id, string(hb)}, nil
 }
 
 // ChannelBackoff keeps a failing alert channel out of the next passes, as the collector's own alert loop does

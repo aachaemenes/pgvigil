@@ -65,8 +65,7 @@ const dbadash = {
   'Database State':      { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'databases' }, dd: 'Database State -> Configuration > DB Options' },
   '% Max Size':          { sqlserver: ['dbfiles'], dd: '% Max Size -> Storage > Files' },
   // the landing checked, the difference from DBA Dash's page named in the verdict (argued in the report)
-  'Collection Errors (24hrs)': { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'DBA Dash Errors (24hrs) -> Checks > DBA Dash ErrorLog',
-    diff: 'pgvigil has no error-log page yet (E205, parity task P13): Collection dates, whose rows carry each collection\'s last error' },
+  'Collection Health': { postgres: ['collectionhealth'], sqlserver: ['collectionhealth'], dd: 'DBA Dash 4.25.0 Collection Health -> Checks > Collection Health (4.24.1: Errors (24hrs) -> DBA Dash ErrorLog, P13\'s)' },
 };
 // the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};
@@ -76,7 +75,7 @@ const plainColumns = ['Memory Dump', 'Crash restarts', 'Is Agent Running', 'DB M
 const dialogColumns = new Set(['Instance Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
-  'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
+  'Collection Health': 'collectionhealth', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
   // task 383: a scope with SQL Server names this column 'Availability Groups' (a PostgreSQL-only one 'Replication', below)
   'Availability Groups': 'mssqlag', 'Mirroring': 'mssqlmirroring', 'Log Shipping': 'mssqllogshipping', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom',
   // the same tests under PostgreSQL's names, on a scope with no SQL Server instance (B7 DONE-3)
@@ -84,7 +83,7 @@ const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LO
 // DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
 const ddOrder = ['Instance', 'Memory Dump', 'Corruption', 'Last Good Check DB', 'SQL Agent Alerts', 'Backup FULL', 'Backup DIFF', 'Backup LOG', 'Drive Space',
   'Agent Jobs', 'Is Agent Running', 'Log Shipping', 'Mirroring', 'Availability Groups', 'Log Space', 'File Space', '% Max Size', 'Elastic Pool Storage', 'QS',
-  'Custom Checks', 'Collection Errors (24hrs)', 'Snapshot Age', 'DB Mail', 'Identity Columns', 'Database State', 'Service Broker', 'Instance Uptime'];
+  'Custom Checks', 'Collection Health', 'Snapshot Age', 'DB Mail', 'Identity Columns', 'Database State', 'Service Broker', 'Instance Uptime'];
 // the cell texts proof-clickmap's T10 seeded: instance -> column -> text ('x*' = starts with x)
 const expectText = JSON.parse(process.env.CLICK_EXPECT || '{}');
 const dumpRoot = (process.env.CLICK_DUMP_ROOT || '').split('|');

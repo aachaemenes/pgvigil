@@ -42,6 +42,11 @@ type Server struct {
 	hosts map[string]bool
 	// auth is the UI login; nil = off (a loopback listen that asked for it).
 	auth *authState
+	// readyCheck and readyzWithoutLogin: /readyz's check (B6.4: the repository answers, its schema current) and
+	// web.readyz_without_login; /readyz answers without a session while auth is nil or that is set (probes.go)
+	readyCheck         func(context.Context) (bool, string, error)
+	readyzWithoutLogin bool
+	ready              *readyCache // shared by renderCopy's copies (a pointer: the copy never copies its lock)
 	// tls says the listener is TLS: HSTS is sent and the session cookie is Secure.
 	tls bool
 	// actions is the cancel / terminate door (actions.go); never nil after Open.
@@ -66,6 +71,9 @@ type Options struct {
 	Hosts []string
 	// Login requires the UI login (pgvigil.ui_users) on every /api endpoint but login, logout and session.
 	Login bool
+	// ReadyzWithoutLogin opens /readyz without a session while the login is on (the config's web.readyz_without_login,
+	// default false: probes.go); /livez is always open, /readyz always open with the login off
+	ReadyzWithoutLogin bool
 	// TLS says the listener is TLS.
 	TLS bool
 	// SessionTTL is a session's life from its login; 0 = 12 h.
@@ -191,6 +199,9 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 			return nil, err
 		}
 	}
+	// B6.4: /readyz's check - the repository answers on this pool and its schema is current (run's own check)
+	s.readyCheck = readyCheckOn(s.pool)
+	s.readyzWithoutLogin = o.ReadyzWithoutLogin
 	return s, nil
 }
 
@@ -231,7 +242,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
 	// the collector's error log (0198)
 	api.HandleFunc("GET /api/collectorerrors", s.CollectorErrors)
-	api.HandleFunc("GET /api/collector", s.Collector) // task 201
+	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)             // B6.2
+	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                 // B6g-3: WIRING for the join (web.go is the lead's)
+	api.HandleFunc("POST /api/collectionhealth/thresholds", s.CHThresholdWrite) // B6g-2: WIRING for the join (web.go is the lead's)
+	api.HandleFunc("GET /api/collector", s.Collector)                           // task 201
 	api.HandleFunc("GET /api/export", s.Export)
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
@@ -463,6 +477,12 @@ func (s *Server) Handler() http.Handler {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
 	mux := http.NewServeMux()
+	// B6.4 (WIRING): the probes, outside the login (probes.go says what each answers); their cache made once, here
+	if s.ready == nil {
+		s.ready = &readyCache{}
+	}
+	mux.HandleFunc("GET /livez", s.livez)
+	mux.HandleFunc("GET /readyz", s.readyz)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/session", s.sessionInfo)

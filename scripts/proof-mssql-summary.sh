@@ -23,10 +23,13 @@
 #     dialog's POST /api/pg/thresholds calls) dumps = ok|true|0|1|1 file; the roots part names the root row (crash 24 / 168, its threshold_id) and
 #     the key's defaults (crash 48 / 168, uptime 12 / 48).
 #     [review fold 20261111-205600, before the rerun: 24 keys with pctmax; the serve under TZ=UTC]
-#  J. the collect part (Snapshot Age, Collection Errors (24hrs)), one row per active instance of either engine: a (only
-#     mssql_instance, logged now): age_min = age_max under 60 s, stale 0, failing 0, errors_24h 0; b (logged 20 days
-#     ago): stale 1; c (mssql_storage's last run an error, now): failing 1, errors_24h 1 and no age (the ages count
-#     runs that ended well only: review fold); the PostgreSQL instance has a row with no age (nothing ran).
+#  J. the collect part (Snapshot Age, Collection Health), one row per active instance of either engine: a (only
+#     mssql_instance, logged now): age_min = age_max under 60 s, stale 0, Collection Health not listed (no failure, no
+#     hourly rows: ch_level / ch_n '-|-'); b (logged 20 days ago): stale 1; c (mssql_storage ok a minute ago, then an
+#     error now): no age (the ages count runs that ended well only: review fold) and Collection Health ok (1 failure
+#     in a row, under 10 minutes since its last success: '0|0'); g (mssql_replication's only run an error: never
+#     succeeded) Collection Health warning, n 1 ('1|1'); the PostgreSQL instance has a row with no age (nothing ran).
+#     [B6.1 review fold 20261114-225417 #6: J reads the new cell's ch_level and ch_n, no longer failing / errors_24h]
 #  NOT PROVEN HERE: the page's own wording of these states (web/src/fleet.ts: 'stale', 'read failed', 'n/a', 'not
 #  yet', a flag with ', stale' beside it) and the failed-fetch text - a browser render; a configured interval other
 #  than the collector's default; the PostgreSQL database-state part (pgdb); the FULL / DIFF / LOG split of backup
@@ -118,13 +121,14 @@ got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["roots"]; c=d[
 f=lambda v: "-" if v is None else ("%g" % float(v))
 print(" ".join("%s:%s/%s:%s/%s:%s" % (k, f(R[k]["crit"]), f(R[k]["warn"]), f(R[k]["crit_default"]), f(R[k]["warn_default"]), "set" if R[k]["threshold_id"] is not None else "none") for k in sorted(R)))' "$WORK/sum.json")
 [[ "$got" == "crash:24/168:48/168:set uptime:-/-:12/48:none" ]] || fail "I: the roots part: $got"; echo "ok   I roots: $got"
-# collect <instance id>: age_min|age_max|stale|failing|errors_24h ('-' for none)
+# collect <instance id>: age_min|age_max|stale|ch_level|ch_n ('-' for none)
 collect() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["collect"]; c=d["columns"]; R=[dict(zip(c, r)) for r in d["rows"] if r[c.index("instance_id")] == int(sys.argv[2])]
 r=R[0] if len(R)==1 else None
-print("ROWS=%d" % len(R) if r is None else "|".join("-" if r[k] is None else str(r[k]) for k in ("age_min_secs","age_max_secs","stale","failing","errors_24h")))' "$WORK/sum.json" "$1"; }
+print("ROWS=%d" % len(R) if r is None else "|".join("-" if r[k] is None else str(r[k]) for k in ("age_min_secs","age_max_secs","stale","ch_level","ch_n")))' "$WORK/sum.json" "$1"; }
 ca=$(collect "$a"); IFS='|' read -r amin amax ast afl aer <<< "$ca"
-[[ "$amin" =~ ^[0-9]+$ && "$amin" -lt 60 && "$amin" == "$amax" && "$ast|$afl|$aer" == "0|0|0" ]] || fail "J a: $ca"; echo "ok   J a fresh: $ca"
+[[ "$amin" =~ ^[0-9]+$ && "$amin" -lt 60 && "$amin" == "$amax" && "$ast|$afl|$aer" == "0|-|-" ]] || fail "J a: $ca"; echo "ok   J a fresh: $ca"
 [[ "$(collect "$b" | cut -d'|' -f3)" == 1 ]] || fail "J b: $(collect "$b")"; echo "ok   J b stale: $(collect "$b")"
-[[ "$(collect "$c")" == "-|-|0|1|1" ]] || fail "J c: $(collect "$c")"; echo "ok   J c failing, no age: $(collect "$c")"
-[[ "$(collect "$pg")" == "-|-|0|0|0" ]] || fail "J pg: $(collect "$pg")"; echo "ok   J PostgreSQL instance, nothing ran: $(collect "$pg")"
+[[ "$(collect "$c")" == "-|-|0|0|0" ]] || fail "J c: $(collect "$c")"; echo "ok   J c failed now, no age, Collection Health ok (under 10 min): $(collect "$c")"
+[[ "$(collect "$g" | cut -d'|' -f4-5)" == "1|1" ]] || fail "J g: $(collect "$g")"; echo "ok   J g never succeeded, Collection Health warning: $(collect "$g")"
+[[ "$(collect "$pg")" == "-|-|0|-|-" ]] || fail "J pg: $(collect "$pg")"; echo "ok   J PostgreSQL instance, nothing ran: $(collect "$pg")"
 echo "proof-mssql-summary: PASS (A-J)"

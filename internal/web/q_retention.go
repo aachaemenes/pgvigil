@@ -83,12 +83,14 @@ SELECT t.relname AS table_name, t.relkind = 'p' AS partitioned,
 
 // sqlRetentionHours is every hours table of pgvigil.hours_retention (0139): its own age in days (not purge's -days) and
 // the monthly partitions that age drops (its function, called by purge()'s last block, holds the drop; purge()'s text
-// does not name these parents).
+// does not name these parents); partitioned false for one with no partitions, whose rows its own writer trims
+// (collection_health_hour, 0166: import_collection_health).
 const sqlRetentionHours = `
 SELECT h.table_name, h.days,
        count(c.oid) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => h.days))::int AS drop_months,
        coalesce(sum(pg_total_relation_size(c.oid)) FILTER (WHERE (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
-                                                             < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes
+                                                             < now() - make_interval(days => h.days)), 0)::bigint AS drop_bytes,
+       coalesce((SELECT k.relkind = 'p' FROM pg_class k WHERE k.oid = to_regclass('pgvigil.' || h.table_name)), false) AS partitioned
   FROM pgvigil.hours_retention h
   LEFT JOIN pg_inherits i ON i.inhparent = to_regclass('pgvigil.' || h.table_name)
   LEFT JOIN pg_class c ON c.oid = i.inhrelid AND c.relname ~ '_[0-9]{6}$'
@@ -336,7 +338,11 @@ func (s *Server) Retention(w http.ResponseWriter, r *http.Request) {
 		}
 		if hr, ok := hours[name]; ok {
 			// an hours table keeps its own age, whatever the -days previewed: its words and drops say that age
-			words, judged, note = fmt.Sprintf("monthly partitions kept %v days, its own age (pgvigil.hours_retention; 'pgvigil purge -hours %s=<days>' sets it)", hr[1], name), false, ""
+			kept := "monthly partitions kept"
+			if part, _ := hr[4].(bool); !part {
+				kept = "rows kept" // no partitions: its own writer trims its rows (collection_health_hour, 0166)
+			}
+			words, judged, note = fmt.Sprintf("%s %v days, its own age (pgvigil.hours_retention; 'pgvigil purge -hours %s=<days>' sets it)", kept, hr[1], name), false, ""
 			drop, dropBytes = hr[2], hr[3]
 		}
 		var actual, oldest any

@@ -85,8 +85,8 @@
 #     corruption / the Checks page's Database options; SQL Agent Alerts: the Checks page's Agent alerts; Backup FULL /
 #     DIFF / LOG: backups / mssqlbackups; Log Shipping, Mirroring, Availability Groups: replication or pgbackups /
 #     availability; Log Space and File Space: dbfiles; Identity Columns: the Identity columns view; Snapshot Age:
-#     Collection dates; Collection Errors (24hrs): Collection dates, a difference argued: DBA Dash's ErrorLog page is
-#     P13's); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
+#     Collection dates; Collection Health (4.25.0's name; 4.24.1's Collection Errors (24hrs)): the Collection Health tab
+#     (B6.2; 4.24.1's ErrorLog landing is P13's)); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
 #     '9 days', '5hrs', 'Never', '3 days', '42.5% / 3 months', 'View', the dump instance's Memory Dump '3 days', sql01's
 #     Instance Uptime 'ack: ...'; the test grid's headers are 'Test', 'Instance Count OK', 'Instance Count Warning',
 #     'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged', its tests sorted by name, each
@@ -352,7 +352,7 @@ pg_name = {'Memory Dump': 'Crash restarts', 'Last Good Check DB': 'Last amcheck'
 for c, engines in (('Drive Space', ('postgres', 'sqlserver')), ('Backup FULL', ('postgres', 'sqlserver')), ('Agent Jobs', ('postgres', 'sqlserver')),
                    ('Last Good Check DB', ('postgres', 'sqlserver')), ('SQL Agent Alerts', ('sqlserver',)), ('Corruption', ('sqlserver',)),
                    ('Identity Columns', ('sqlserver',)), ('Log Space', ('sqlserver',)), ('Availability Groups', ('postgres', 'sqlserver')),
-                   ('Snapshot Age', ('postgres', 'sqlserver')), ('Collection Errors (24hrs)', ('postgres', 'sqlserver'))):
+                   ('Snapshot Age', ('postgres', 'sqlserver')), ('Collection Health', ('postgres', 'sqlserver'))):
     for e in engines:
         # a PostgreSQL row's cell carries PostgreSQL's name where DBA Dash's is SQL Server's (B7 DONE-3: fleet.ts labelOf)
         n = pg_name.get(c, c) if e == 'postgres' else c

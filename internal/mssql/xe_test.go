@@ -571,7 +571,8 @@ func TestCursorRow(t *testing.T) {
 type fakeStore struct {
 	cursors  map[string]Cursor
 	imported [][]map[string]any
-	failAt   int // the import call (1-based) that fails; 0: none
+	failAt   int   // the import call (1-based) that fails; 0: none
+	failErr  error // that call's error (nil: 'the repository is away')
 	calls    int
 	status   string
 	note     string
@@ -586,6 +587,9 @@ func (f *fakeStore) MSSQLCursor(_ context.Context, _ int, source string) (string
 func (f *fakeStore) Import(_ context.Context, _ int, _ string, _ time.Time, rows []map[string]any) error {
 	f.calls++
 	if f.calls == f.failAt {
+		if f.failErr != nil {
+			return f.failErr
+		}
 		return errors.New("the repository is away")
 	}
 	f.imported = append(f.imported, rows)
@@ -606,7 +610,8 @@ func (f *fakeStore) LogCollectionStage(_ context.Context, _ int, _ string, _ tim
 type fakeBatches struct {
 	total, size int
 	tail        []collect.Row
-	swallow     bool // a failed batch's import becomes a collector_error row and the run goes on, as xe's fail() does
+	swallow     bool  // a failed batch's import becomes a collector_error row and the run goes on, as xe's fail() does
+	readErr     error // the reader's own failure after its batches: the run ends as an error at a READ
 }
 
 func (fakeBatches) Name() string                   { return Prefix + "fake" }
@@ -635,11 +640,17 @@ func (b fakeBatches) RunBatches(ctx context.Context, _ *sql.Conn, _ Info, opt Ba
 			if !b.swallow {
 				return err
 			}
-			return emit(append(b.tail, collect.Row{"kind": "collector_error", "source": "src", "message": err.Error()}))
+			if err := emit(append(b.tail, collect.Row{"kind": "collector_error", "source": "src", "message": err.Error()})); err != nil {
+				return err
+			}
+			return b.readErr
 		}
 		at = end
 	}
-	return emit(b.tail)
+	if err := emit(b.tail); err != nil {
+		return err
+	}
+	return b.readErr
 }
 
 func TestRunBatched(t *testing.T) {
@@ -672,6 +683,10 @@ func TestRunBatched(t *testing.T) {
 	if res.Err == nil || res.Rows != 10 || st.cursors["src"].LastSeq != 10 || st.status != "error" || !strings.Contains(st.note, "the repository is away") || st.stage != "import" {
 		t.Fatalf("a failed batch: %+v, cursor %d, status %s (%s), stage %q", res, st.cursors["src"].LastSeq, st.status, st.note, st.stage)
 	}
+	// B6g-1 (N27): the run ENDED as an error at an import - 'import failed' for the hour's counts, its writes timed
+	if res.Outcome != collect.OutcomeImportFailed || !res.Imported {
+		t.Errorf("a failed batch: outcome %q, imported %v - want 'import failed' with its imports timed", res.Outcome, res.Imported)
+	}
 	// a reader that swallows a failed batch's import (a collector_error row, the run goes on, as xe's fail() does): the
 	// run is partial and its stage still 'import' (0198)
 	sw := &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
@@ -679,12 +694,37 @@ func TestRunBatched(t *testing.T) {
 	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || !strings.HasPrefix(sw.note, "import: the repository is away") {
 		t.Fatalf("a swallowed failed batch: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
 	}
+	// B6g-1 (the lead 11-15 10:3x, (a)): a batch refused while the run WENT ON leaves the run partial for the hour as
+	// its log row says - one outcome for the rate and the streak; never 'import failed' (the stage is on the error log)
+	if res.Outcome != collect.OutcomePartial || !res.Imported {
+		t.Errorf("a swallowed failed batch: outcome %q, imported %v - want 'partial' with its imports timed", res.Outcome, res.Imported)
+	}
 	// a read that failed before the swallowed import (its collector_error row first in the tail): the note still leads
 	// with the import's error, so the note and the stage tell of the same failure
 	sw = &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
 	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true, tail: []collect.Row{{"kind": "collector_error", "source": "src_read", "message": "the ring buffer is gone"}}})
 	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || sw.note != "import: the repository is away; src_read: the ring buffer is gone" {
 		t.Fatalf("a read error before a swallowed import: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
+	}
+	// B6g-1 (the review of part a, #2 / #3): a run that ended as an error at a READ is a plain error - with every batch
+	// imported, and also after a batch that was refused and swallowed (the lead 11-15 10:3x: 'import failed' only when
+	// the run ENDED as an error at an import; the refused batch's stage stays 'import' on its log row)
+	rd := &fakeStore{cursors: map[string]Cursor{}}
+	res = run(rd, fakeBatches{total: 25, size: 10, readErr: errors.New("the ring buffer is gone")})
+	if res.Err == nil || res.Outcome != "" || !res.Imported || rd.status != "error" || rd.stage != "" {
+		t.Errorf("a read error after good batches: outcome %q, imported %v, err %v, status %s, stage %q - want a plain error with its imports timed", res.Outcome, res.Imported, res.Err, rd.status, rd.stage)
+	}
+	rd = &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
+	res = run(rd, fakeBatches{total: 25, size: 10, swallow: true, readErr: errors.New("the ring buffer is gone")})
+	if res.Err == nil || res.Outcome != "" || rd.status != "error" || rd.stage != "import" {
+		t.Errorf("a read error after a swallowed refused batch: outcome %q, err %v, status %s, stage %q - want a plain error (the run ended at a read), the log's stage still 'import'", res.Outcome, res.Err, rd.status, rd.stage)
+	}
+	// the review of B6g-1's folds #1: a swallowed import that timed out waiting for the pool (a bare deadline) and then a
+	// READ that met the run's deadline - the two errors share a cause, not an identity: a plain error, never 'import failed'
+	rd = &fakeStore{cursors: map[string]Cursor{}, failAt: 2, failErr: context.DeadlineExceeded}
+	res = run(rd, fakeBatches{total: 25, size: 10, swallow: true, readErr: fmt.Errorf("the audit specification of x: %w", context.DeadlineExceeded)})
+	if res.Err == nil || res.Outcome != "" {
+		t.Errorf("a read deadline after a swallowed import deadline: outcome %q, err %v - want a plain error", res.Outcome, res.Err)
 	}
 	// the next run goes on from the stored cursor: events 11 to 25, none twice
 	st.failAt = 0

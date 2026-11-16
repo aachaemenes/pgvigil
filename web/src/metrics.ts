@@ -6,15 +6,20 @@
 // figure comes from a series the repository already holds (no new collection); the grid, a row's chart and the rule's
 // evaluation read the same samples (pgvigil.metric_points). Data from /api/metrics and /api/metrics/series. The page
 // keeps the old Counters address: ?kind= is the family (db, server, io and sessions still open theirs; none = all) and
-// ?mdb= one database's series of the Database family. The route and the tab are the shell's.
+// ?mdb= one database's series of the Database family; ?mcol= one collection's of the Collection family (B6g-4). The
+// route and the tab are the shell's.
 import { get, post, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { conditionWords, fmtMetric, ruleButton, ruleDialog, RulesDoor, scopeWords, stateBadge, unitWord } from './alert_rules';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+import { collectionTickKey, subNoun, subSeries, subWords, tickStore, visibleFamilies } from './metricfam';
 
-interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null }
+interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null; collections?: Table | null }
+// the 'Collection Metrics' tick, per browser; with storage off it lasts this page's life (module state survives the
+// re-render the tick dispatches: the B6g-4 fold #4)
+const colTickKeep = tickStore(() => localStorage);
 interface SeriesData { step_secs: number; series: Table | null; metric: Table | null }
 
 // the Counters page's kinds, kept as addresses of their families
@@ -29,25 +34,32 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
   const asked = q.get('kind') ?? 'all';
   const mdb = q.get('mdb')?.slice(0, 200) || undefined;
+  // B6g-4: the Collection family's own cut (a collection), apart from the Database family's
+  const mcol = q.get('mcol')?.slice(0, 100) || undefined;
+  const colTick = colTickKeep.get(collectionTickKey) === '1';
   const sec = el('section', {}, el('h2', {}, `Metrics (${rangeLabel(ctx)})`));
   const w = window_(ctx);
   let d: MetricsData;
   try { d = await get<MetricsData>('metrics', { instance: ctx.instance, ...w, part: 'families' }); } catch (e) { sec.append(errorBox(e)); return sec; }
   const dbs = rowsOf(d.databases).map(r => String(r.datname));
-  const families: [string, string][] = rowsOf(d.families).map(f => [String(f.family), String(f.family_label)]);
+  const colNames = rowsOf(d.collections).map(r => String(r.collection));
+  // the Collection family listed once 'Collection Metrics' is ticked (DBA Dash's own toggle), or when the address
+  // names it (a shared link: the fold #5)
+  const families: [string, string][] = visibleFamilies(rowsOf(d.families).map(f => [String(f.family), String(f.family_label)] as [string, string]), colTick, legacyKind[asked] ?? asked);
   const kind = families.some(([k]) => k === (legacyKind[asked] ?? asked)) ? legacyKind[asked] ?? asked : 'all';
   // each family in view is its own read: a long range costs one family's read per request, and a family that fails
   // or times out shows its error under its own heading while the others draw
   const shown = families.filter(([k]) => kind === 'all' || kind === k);
-  const reads = await Promise.all(shown.map(([k]) => get<MetricsData>('metrics', { instance: ctx.instance, ...w, db: mdb, family: k })
+  const reads = await Promise.all(shown.map(([k]) => get<MetricsData>('metrics', { instance: ctx.instance, ...w, db: subSeries(k, mdb, mcol), family: k })
     .then(x => rowsOf(x.grid)).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))));
   const rows = reads.flatMap(x => x instanceof Error ? [] : x);
   // a link to this page: the family, and the database cut while the Database family is in view
   // (set or taken out here whatever the shell's own links keep, so 'all databases' always clears it)
-  const link = (k: string, db?: string) => {
+  const link = (k: string, db?: string, col: string | undefined = mcol) => {
     const [path, qs] = href(ctx, { tab: ctx.tab, kind: k }).split('?');
     const p = new URLSearchParams(qs ?? '');
     if (db && (k === 'all' || k === 'database')) p.set('mdb', db); else p.delete('mdb');
+    if (col && (k === 'all' || k === 'collection')) p.set('mcol', col); else p.delete('mcol');
     return `${path}?${p}`;
   };
 
@@ -59,9 +71,17 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   if (!d.writable) { d.note = el('p', { class: 'meta' }, `Thresholds are read only here: ${d.reason ?? ''}`); sec.append(d.note); }
   sec.append(el('div', { class: 'subtabs' }, ...[['all', 'all'], ...families].map(([k, label]) =>
     el('a', { href: link(k, mdb), class: k === kind ? 'on' : '', ...(k === kind ? { 'aria-current': 'true' } : {}) }, label))));
+  // 'Collection Metrics' (DBA Dash's toolbar tick): the collection counters, hidden until ticked, kept per browser
+  const tick = el('input', { type: 'checkbox', id: 'metrics-collection' });
+  tick.checked = colTick;
+  tick.addEventListener('change', () => { colTickKeep.set(collectionTickKey, tick.checked ? '1' : '0'); window.dispatchEvent(new HashChangeEvent('hashchange')); });
+  // the fold's #13 / #14: what the family holds and does not, and its freshness, said where it is ticked
+  sec.append(el('div', { class: 'toolbar' }, tick, ' ', el('label', { for: 'metrics-collection' }, 'Collection Metrics'),
+    el('span', { class: 'meta' }, ' - each collection\'s duration, CPU and logical reads (SQL Server only), import and failed per cent: one point an hour, at the hour\'s end. '
+      + 'Not read: DBA Dash\'s Import CPU, Import Logical Reads and Import Lag. A collection that runs less often than every 2 hours reads no data between its points, and a range under an hour may hold no point.')));
   if (!families.length) { sec.append(el('p', { class: 'empty' }, 'No counter is known for this instance.')); return sec; }
 
-  for (const [i, [, famLabel]] of shown.entries()) {
+  for (const [i, [famKey, famLabel]] of shown.entries()) {
     const read = reads[i];
     if (read instanceof Error) { sec.append(el('h3', {}, famLabel), errorBox(read)); continue; }
     const famRows = read;
@@ -72,7 +92,8 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
     const open = new Map<string, HTMLElement>();          // the charts drawn, by counter key
     const btns = new Map<string, HTMLButtonElement>();    // each row's Chart button as the grid last drew it
     const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-    const cut = (r: Row) => r.per_database ? mdb : undefined;
+    const famCut = subSeries(famKey, mdb, mcol), sw = subWords(famKey), subs = famKey === 'collection' ? colNames : dbs;
+    const cut = (r: Row) => r.per_database ? famCut : undefined;
 
     const toggleChart = async (r: Row) => {
       const key = String(r.key);
@@ -129,14 +150,14 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
     });
     const cols: Col[] = [
       { key: 'label', label: 'counter', fmt: (v, r) => el('span', { title: `${String(r.key)}, in ${unitWord(r.unit)}` }, String(v ?? '')) },
-      ...(perDb && mdb ? [{ key: 'database', fmt: (v: unknown, r: Row) => r.per_database ? String(v ?? '') : '(the instance)' }] as Col[] : []),
+      ...(perDb && famCut ? [{ key: 'database', label: sw.noun, fmt: (v: unknown, r: Row) => r.per_database ? String(v ?? '') : '(the instance)' }] as Col[] : []),
       figure('max_value', 'max'), figure('min_value', 'min'), figure('avg_value', 'avg'), figure('current_value', 'current'),
       { key: 'samples', num: true },
       { key: 'current_at', label: 'last sample', fmt: fmtTime },
       { key: 'warning', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op)} ${fmtMetric(v, r.unit)}` },
       { key: 'critical', num: true, fmt: (v, r) => v == null ? '' : `${String(r.op)} ${fmtMetric(v, r.unit)}` },
       { key: 'rule_id', label: 'rule', fmt: (v, r) => v == null ? '' : el('span', {},
-        `${Number(r.for_minutes) > 0 ? `for ${String(r.for_minutes)} min` : 'at the first sample'}, ${scopeWords(r.rule_scope, r.rule_target)}${r.rule_database != null ? `, database ${String(r.rule_database)}` : ''}: `,
+        `${Number(r.for_minutes) > 0 ? `for ${String(r.for_minutes)} min` : 'at the first sample'}, ${scopeWords(r.rule_scope, r.rule_target)}${r.rule_database != null ? `, ${sw.noun} ${String(r.rule_database)}` : ''}: `,
         // task 402: a seeded rule that is off colours the row and sends nothing; its state is never judged
         r.rule_enabled === false ? 'off: colours only, no alert' : r.rule_state == null ? 'not judged yet' : stateBadge(r.rule_state, r.rule_held, r.na_why)), cls: (v, r) => v != null && r.rule_state == null ? 'status none' : '' },
       { key: '_threshold', label: 'threshold', fmt: (_v, r) => thresholdCell(d, ctx.instance!, r, cut(r)) },
@@ -156,14 +177,16 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       if (todo.length) said.textContent = `${todo.length} chart(s) drawn under the grid.`;
     });
     const tools = el('div', { class: 'toolbar' }, el('div', { class: 'seg' }, allBtn));
-    if (perDb && dbs.length) {
-      const sel = el('select', { 'aria-label': `${famLabel}: database` }, el('option', { value: '' }, 'all databases (summed)'), ...dbs.map(n => el('option', { value: n }, n)));
-      if (mdb && !dbs.includes(mdb)) sel.append(el('option', { value: mdb }, mdb));
-      sel.value = mdb ?? '';
-      sel.addEventListener('change', () => { location.hash = link(kind, sel.value || undefined); });
-      tools.append(el('label', {}, 'Database ', sel));
-      // a rule without a database judges the summed series only: it is not shown as one database's threshold
-      if (mdb) tools.append(el('span', { class: 'meta' }, `The thresholds shown for ${mdb} are the rules that name that database; a rule without a database watches all databases summed, and shows under 'all databases'.`));
+    if (perDb && subs.length) {
+      const sel = el('select', { 'aria-label': `${famLabel}: ${sw.noun}` }, el('option', { value: '' }, sw.all), ...subs.map(n => el('option', { value: n }, n)));
+      if (famCut && !subs.includes(famCut)) sel.append(el('option', { value: famCut }, famCut));
+      sel.value = famCut ?? '';
+      // the Collection pick passes '' as it is: an undefined argument would take link's default (the address's mcol)
+      // and 'the worst collection' could never be picked (the fold #1)
+      sel.addEventListener('change', () => { location.hash = famKey === 'collection' ? link(kind, mdb, sel.value) : link(kind, sel.value || undefined); });
+      tools.append(el('label', {}, `${sw.label} `, sel));
+      // a rule without a database (collection) judges the series with no cut only: it is not shown as one's threshold
+      if (famCut) tools.append(el('span', { class: 'meta' }, `The thresholds shown for ${famCut} are the rules that name that ${sw.noun}; a rule without one watches ${sw.none}, and shows under '${sw.all}'.`));
     }
     box.append(grid(famRows, cols, 'No counter in this family.'));
     sec.append(head, tools, said, box, chartsBox);
@@ -440,7 +463,7 @@ function thresholdCell(d: RulesDoor, instance: number, r: Row, db: string | unde
   span.append(ruleButton(d, 'Edit', `Edit the threshold of ${name} (rule ${String(r.rule_id)}, ${scopeWords(r.rule_scope, r.rule_target)})`, () => { void editRule(d, Number(r.rule_id)); }));
   const own = r.rule_scope === 'instance' && (db == null || r.rule_database === db);
   if (!own) {
-    span.append(' · ', ruleButton(d, 'Override here', `Override here: the threshold of ${name} for this instance${db ? `, database ${db}` : ''}`, () => {
+    span.append(' · ', ruleButton(d, 'Override here', `Override here: the threshold of ${name} for this instance${db ? `, ${subNoun(String(r.key))} ${db}` : ''}`, () => {
       void ruleDialog({ door: d, metric: String(r.key), instanceId: instance, database: db, prefill: { op: r.op, warning: r.warning, critical: r.critical, for_minutes: r.for_minutes }, after: redraw });
     }));
   }

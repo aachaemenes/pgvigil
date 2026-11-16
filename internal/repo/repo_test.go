@@ -2,11 +2,14 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestSchemaStateSkipsALowerNumber: a store that applied 0110 before a lower-numbered file (0095) arrived is behind,
@@ -79,6 +82,76 @@ func TestSchemaMissingIsTheCollectorsDoor(t *testing.T) {
 	}
 	if strings.Contains(owner[1], "'schema_missing'") {
 		t.Errorf("schema_missing is on the owner-only list: %s", owner[1])
+	}
+}
+
+// TestSchemaReadIsTheReadersDoor (B6.2 part c #1): serve's check (SchemaCurrentRead) calls no pgvigil function - the
+// reader has EXECUTE on none of the collector's - and reads schema_version, which the newest apply_roles() lets the
+// reader SELECT (every table of the schema but ui_*)
+func TestSchemaReadIsTheReadersDoor(t *testing.T) {
+	if f := regexp.MustCompile(`pgvigil\.\w+\s*\(`).FindString(sqlSchemaMissingRead); f != "" {
+		t.Errorf("serve's schema read calls %s): the reader's login may not", f)
+	}
+	if !strings.Contains(sqlSchemaMissingRead, "pgvigil.schema_version") {
+		t.Errorf("serve's schema read does not read pgvigil.schema_version")
+	}
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := ""
+	for _, n := range names {
+		if b, err := migrations.ReadFile("sql/" + n); err == nil && strings.Contains(string(b), "FUNCTION pgvigil.apply_roles()") {
+			body = string(b)
+		}
+	}
+	if !regexp.MustCompile(`(?s)IF t\.relname LIKE 'ui\\_%' THEN\s*EXECUTE format\('REVOKE ALL ON %s FROM pgvigil_reader', t\.rel\);\s*ELSE\s*EXECUTE format\('GRANT SELECT ON %s TO pgvigil_reader', t\.rel\);`).MatchString(body) {
+		t.Errorf("the newest apply_roles() no longer gives the reader SELECT on every table but ui_* in the shape this test reads")
+	}
+}
+
+// TestSchemaCurrentReadAsTheReader (B6.2 part c #1, a box row): on a migrated store, as pgvigil_reader (SET LOCAL ROLE
+// in a transaction rolled back), SchemaCurrentWith fails 42501 (the collector's schema_missing) and SchemaCurrentRead
+// reads current, named by the newest file. Needs an owner's DSN of a scratch repository that may SET ROLE
+// pgvigil_reader: PGVIGIL_REPO_TEST_DSN (skipped without it).
+func TestSchemaCurrentReadAsTheReader(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	r, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := names[len(names)-1]
+	as := func(f func(q RowQuerier) (bool, string, error)) (bool, string, error) {
+		tx, err := r.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `SET LOCAL ROLE pgvigil_reader`); err != nil {
+			t.Fatalf("SET LOCAL ROLE pgvigil_reader (the DSN's login must be able to): %v", err)
+		}
+		return f(tx)
+	}
+	_, _, err = as(func(q RowQuerier) (bool, string, error) { return SchemaCurrentWith(ctx, q) })
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Errorf("as the reader, SchemaCurrentWith: err %v, want 42501 (the collector's door: the case the reader's read is for)", err)
+	}
+	if ok, name, err := as(func(q RowQuerier) (bool, string, error) { return SchemaCurrentRead(ctx, q) }); err != nil || !ok || name != latest {
+		t.Errorf("as the reader, SchemaCurrentRead = %v, %q, %v; want true, %s", ok, name, err, latest)
 	}
 }
 
@@ -319,5 +392,68 @@ func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
 	}
 	if ok, name, err := r.SchemaCurrent(ctx); err != nil || !ok || name != latest {
 		t.Fatalf("after the repair: SchemaCurrent = %v, %q, %v; want true, %s", ok, name, err, latest)
+	}
+}
+
+// TestRepositoryAutovacuumTrigger (B6.2 part c #9): 'repository autovacuum behind' judges each table's TOAST table too
+// (pg_stat_user_tables leaves pg_toast out; autovacuum judges a TOAST table on its own, with its own reloptions when it
+// has any, else its table's) and caps autovacuum's trigger as PostgreSQL 18 does (autovacuum_vacuum_max_threshold,
+// the table's reloption where set; -1 no cap; no such setting before 18)
+func TestRepositoryAutovacuumTrigger(t *testing.T) {
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := ""
+	for _, n := range names {
+		b, err := migrations.ReadFile("sql/" + n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i := strings.Index(string(b), "VIEW pgvigil.repository_autovacuum_findings AS"); i >= 0 {
+			body = string(b)[i:]
+			if j := strings.Index(body, ";\n\n"); j > 0 {
+				body = body[:j]
+			}
+		}
+	}
+	if body == "" {
+		t.Fatal("no migration defines pgvigil.repository_autovacuum_findings")
+	}
+	for _, want := range []string{"pg_stat_all_tables", "reltoastrelid", "current_setting('autovacuum_vacuum_max_threshold', true)", "autovacuum\\_vacuum\\_max\\_threshold=", "least("} {
+		if !strings.Contains(body, want) {
+			t.Errorf("repository_autovacuum_findings lacks %q", want)
+		}
+	}
+}
+
+// TestAlertSenderIdleReadsSenders (B6.2 part c #3, the lead's 03:2x (a)): 'alert sender idle' counts only live runs
+// whose beat says they send - collector_heartbeat.sends_alerts (0121's CREATE TABLE), written by import_collector_beat
+// from its p_beat's sends_alerts - so alerts turned off on every run raise no finding and need no owner step
+func TestAlertSenderIdleReadsSenders(t *testing.T) {
+	read := func(file, head string) string {
+		b, err := migrations.ReadFile("sql/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		i := strings.Index(s, head)
+		if i < 0 {
+			t.Fatalf("%s has no %q", file, head)
+		}
+		s = s[i:]
+		if j := strings.Index(s, ";\n\n"); j > 0 {
+			s = s[:j]
+		}
+		return s
+	}
+	if tbl := read("0121_collector_health.sql", "CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat ("); !regexp.MustCompile(`\bsends_alerts\s+boolean`).MatchString(tbl) {
+		t.Errorf("collector_heartbeat has no sends_alerts boolean")
+	}
+	if beat := read("0121_collector_health.sql", "CREATE OR REPLACE FUNCTION pgvigil.import_collector_beat("); !regexp.MustCompile(`sends_alerts\s*=\s*coalesce\(\(p_beat->>'sends_alerts'\)::boolean`).MatchString(beat) {
+		t.Errorf("import_collector_beat does not write sends_alerts from p_beat's sends_alerts")
+	}
+	if v := read("0166_collection_health.sql", "CREATE OR REPLACE VIEW pgvigil.alert_sender_idle_findings AS"); !regexp.MustCompile(`EXISTS \(SELECT 1 FROM pgvigil\.collector_live \w+ WHERE \w+\.sends_alerts\)`).MatchString(v) {
+		t.Errorf("alert_sender_idle_findings does not read only the live runs that send")
 	}
 }

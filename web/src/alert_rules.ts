@@ -15,6 +15,7 @@ import { Ctx, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, showMenu } from './ui';
 import { offBeside } from './ack';
+import { subNoun } from './metricfam';
 
 // note: the page's one visible sentence where rules cannot be written here - every off control of the page shares that
 // reason and points at it (the page that draws the sentence sets it); without one an off control says the reason beside itself
@@ -96,7 +97,7 @@ export function conditionWords(r: Row, unit: unknown = r.unit): string {
 // (warning), 100 (critical) for 5 min on every instance; or when ...' (the dialog's own words per rule)
 // overridden: a narrower rule takes the place of a wider one on what it covers; noChannel: no sender judges the rules
 export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = false): string {
-  const one = (r: Row) => `${name(r)} is ${conditionWords(r).trim()} on ${scopeWords(r.scope, r.tag ?? r.instance_name)}${r.database ? ` (database ${String(r.database)})` : ''}`;
+  const one = (r: Row) => `${name(r)} is ${conditionWords(r).trim()} on ${scopeWords(r.scope, r.tag ?? r.instance_name)}${r.database ? ` (${subNoun(String(r.metric ?? ''))} ${String(r.database)})` : ''}`;
   // a narrower rule on the same metric as a wider one (a tag or an instance rule beside a fleet rule, an instance rule beside a tag rule)
   const narrower = rules.some(n => n.scope !== 'fleet' && rules.some(w => w !== n && w.metric === n.metric && (w.scope === 'fleet' || (w.scope === 'tag' && n.scope === 'instance'))));
   return `pgvigil ${noChannel ? 'would alert (no alert channel is configured, so nothing is sent)' : 'will alert'} when ${rules.map(one).join('; or when ')}`
@@ -181,7 +182,8 @@ export async function ruleDialog(o: RuleDialog) {
   const fixedMetric = o.metric ?? undefined;
   const startMetric = String(r?.metric ?? fixedMetric ?? '');
   const metricSel = el('select', { required: '' });
-  const engines: [string, string][] = [['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server'], ['any', 'Host (both engines)']];
+  // 'any' is both engines' (the Host family and the Collection family's engine-free counters: the B6g-4 fold #7)
+  const engines: [string, string][] = [['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server'], ['any', 'Both engines']];
   for (const [eng, engName] of engines) {
     const fams = [...new Set(cat.filter(c => c.engine === eng).map(c => String(c.family_label)))];
     for (const fam of fams) {
@@ -265,6 +267,12 @@ export async function ruleDialog(o: RuleDialog) {
     instBox.hidden = scope.value !== 'instance';
     baseBox.hidden = dir.value !== 'above_baseline';
     dbBox.hidden = !m?.per_database;
+    // B6g-4 (N31): the Collection family's sub-series is a collection, and its points are hourly - a window of 60
+    // minutes or more (the server refuses less in words); empty watches the worst collection each hour (the fold #6)
+    const isColl = String(m?.key ?? '').startsWith('collection.');
+    dbBox.firstChild!.textContent = isColl ? 'Collection (empty = the worst collection each hour) ' : 'Database (empty = the whole instance) ';
+    mins.min = isColl ? '60' : '0';
+    if (isColl && (mins.value.trim() === '' || Number(mins.value) < 60)) mins.value = '60';
   };
   metricSel.addEventListener('change', sync);
   scope.addEventListener('change', sync);
@@ -289,7 +297,7 @@ export async function ruleDialog(o: RuleDialog) {
     metricSel.value === '' ? 'a metric' : '',
     warn.validity.badInput || crit.validity.badInput ? 'numbers in warning and critical'
       : warn.value.trim() === '' && crit.value.trim() === '' ? 'a warning or a critical value' : '',
-    mins.value.trim() === '' || !mins.validity.valid ? 'whole minutes from 0 to 1440' : '',
+    mins.value.trim() === '' || !mins.validity.valid ? `whole minutes from ${mins.min} to 1440` : '',
     scope.value === 'tag' && tagSel.value === '' ? 'a tag' : '',
     scope.value === 'tags' && picked.size === 0 ? 'at least one tag in the list' : '',
     dir.value === 'above_baseline' && zone.value.trim() === '' ? "the baseline's time zone" : '',
@@ -377,7 +385,7 @@ function confirmWrite(title: string, what: string, go: string, run: () => Promis
 
 const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
 
-const what = () => whatIsThis('A rule watches one metric of the Metrics page: above or below a warning and / or a critical value for n minutes. It covers every instance, the instances of one tag, or one instance; where two rules on one metric cover an instance the narrower one is in force (instance over tag over fleet), so a tag or an instance rule is a threshold override. A rule naming a database watches that database\'s own series. The alert sender judges the rules once a minute with its channels; a firing rule is sent like any finding, repeats, recovers, and can be acknowledged or muted on the Alerts page. A firing rule whose series stops is held, not recovered. Every change is logged; an edit ends the rule and writes its successor (docs/alerts.md).', 'Alert rules');
+const what = () => whatIsThis('A rule watches one metric of the Metrics page: above or below a warning and / or a critical value for n minutes. It covers every instance, the instances of one tag, or one instance; where two rules on one metric cover an instance the narrower one is in force (instance over tag over fleet), so a tag or an instance rule is a threshold override. A rule naming a database watches that database\'s own series. A rule on the Collection family takes 60 minutes or more; naming no collection it watches the worst collection each hour (its run may pass from one collection to another, and its alert\'s detail names the worst collection of its newest hour: for an alert of its own for each collection, a rule per collection), and a \'below\' rule names its collection. The alert sender judges the rules once a minute with its channels; a firing rule is sent like any finding, repeats, recovers, and can be acknowledged or muted on the Alerts page. A firing rule whose series stops is held, not recovered. Every change is logged; an edit ends the rule and writes its successor (docs/alerts.md).', 'Alert rules');
 
 // alertRulesView: the root page - the rules, what the sender last made of each, and the log of every change
 export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
@@ -486,7 +494,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
         ];
         return lines.length ? el('span', {}, words, el('br'), el('span', { class: 'meta' }, lines.join('; '))) : words;
       } },
-      { key: 'database', fmt: v => String(v ?? '') },
+      { key: 'database', label: 'database / collection', fmt: v => String(v ?? '') },
       { key: 'in_force', label: 'in force on', num: true, fmt: (v, r) => r.live && r.enabled ? `${fmtNum(v)} of ${fmtNum(r.covers)}` : '' },
       { key: 'firing', label: 'state', fmt: (v, r) => !r.live || !r.enabled ? ''
         : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
@@ -519,7 +527,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'state', fmt: (v, r) => stateBadge(v, r.held, r.na_why) },
     { key: 'instance' },
     { key: 'metric', fmt: (v, r) => r.label == null ? String(v) : `${String(r.family_label)}: ${String(r.label)}` },
-    { key: 'database', fmt: v => String(v ?? '') },
+    { key: 'database', label: 'database / collection', fmt: v => String(v ?? '') },
     // task 402: an 'na' row carries its floor's input (in the floor's unit a second) and the floor
     { key: 'value', label: 'newest sample', num: true, fmt: (v, r) => r.state === 'na' ? (v == null ? '' : `${fmtNum(Math.floor(100 * Number(v)) / 100)} ${String(r.floor_unit ?? '')}/s`) : fmtMetric(v, r.unit) },
     { key: 'threshold', num: true, fmt: (v, r) => v == null ? '' : r.state === 'na' ? `the floor ${fmtNum(v)}/s` : `${String(r.op ?? '')} ${fmtMetric(v, r.unit)}` },
@@ -758,7 +766,7 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[], note?: string):
     { key: 'instance' },
     { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : v === 'page' ? 'Admin > Instances' : 'default', v === 'rule' ? 'ok' : 'none') },
     { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
-    { key: 'database', fmt: v => String(v ?? '') },
+    { key: 'database', label: 'database / collection', fmt: v => String(v ?? '') },
     { key: 'op', label: 'rule', fmt: (_v, r) => {
       const line = thresholdLine(r);
       if (r.source !== 'rule') return el('span', { title: r.source === 'page' ? 'read only here: the instance\'s Settings in Admin > Instances set it'

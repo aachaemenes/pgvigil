@@ -521,12 +521,18 @@ func rowValue(dbType string, v any) any {
 // under RunTimeout; every repository write gets its own repoTimeout on a context the run's deadline (and a
 // shutdown's cancel) does not cut, so a run that timed out is recorded as an error instead of leaving the
 // previous ok row in place.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) collect.Result {
+func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) (res collect.Result) {
 	c, ok := Get(name)
 	if !ok {
 		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
+	// every return carries the run's start, the time its collection_log row is written under (B6f3 #1)
+	defer func() {
+		if res.Start.IsZero() {
+			res.Start = start
+		}
+	}()
 	if ic, ok := c.(InstanceCollector); ok {
 		if want, why := ic.Wants(in); !want {
 			return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
@@ -593,10 +599,26 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return collect.Result{Err: cerr, Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
+	// B6g-1 (N25 / N26): the run's own cost, read at its end on the run's one connection. Registered after the close
+	// above, so it runs before it; every return below carries it - a failed read, a skip, a failed import - but a run
+	// cut by its OWN timeout: the driver drops a connection whose statement hit its deadline (go-mssqldb takes
+	// context.DeadlineExceeded for a broken connection), so there is nothing left to read (proven on SQL Server 2022:
+	// TestSessionCostLive); such a run is not a cpu run and the hour's averages are over the runs that were read
+	defer func() { endRead(ctx, conn, &res) }()
 
 	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {
-		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
+		// connected, then failed: recorded as the collection's failed run ('detect: ', B6.1's fold); the run's own
+		// timeout (sctx) is recorded, a read cut by pgvigil's own shutdown (the parent ctx) is not
+		derr := timeoutNote(sctx, limit, err)
+		if ctx.Err() == nil {
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			if lerr := r.LogRunFailure(rctx, in.Name, config.EngineSQLServer, name, start, time.Since(start), derr); lerr != nil {
+				log.Warn("the failed run was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			rcancel()
+		}
+		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, derr), Duration: time.Since(start)}
 	}
 	if tag := poolTag(in); tag != "" {
 		info.PoolTag = tag
@@ -619,6 +641,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
 	ecancel()
 	if err != nil {
+		// the repository's own failure: nothing to record it in (the hourly counts still count it)
 		return collect.Result{Err: err, Duration: time.Since(start)}
 	}
 	rememberDetect(in, info, instanceID, start)
@@ -639,6 +662,8 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	tcancel()
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
+		// the HADR thresholds are configuration, not collected rows: a plain error in the hour (its log row's stage is
+		// 'import', the repository's side; the lead 11-15 11:2x)
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
@@ -692,20 +717,25 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	if err != nil {
 		err = timeoutNote(sctx, limit, err)
+		out := collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 		if cursorFailed {
+			// the read of the collector's own cursor failed: the repository's side (stage 'import' on its log row), but
+			// no collected row was written - a plain error in the hour (Import Failed = a write of collected rows failed)
 			logStage(instanceID, "error", err.Error(), "import")
 		} else {
 			logRun(instanceID, "error", err.Error())
 		}
-		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return out
 	}
 	collect.ApplyTextPolicy(rows, in.QueryText)
+	var imp collect.Result // the run's import time (B6g-1, N27: the Import call alone, apart from the read)
 	ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
-	err = r.Import(ictx, instanceID, name, start, rows)
+	err = imp.TimedImport(func() error { return r.Import(ictx, instanceID, name, start, rows) })
 	icancel()
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
-		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start),
+			Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 	}
 	// task 406: a collector that must learn its rows were stored (mssql_running_plans marks the plans it sent)
 	if as, ok := c.(AfterStorer); ok {
@@ -721,7 +751,41 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	logRun(instanceID, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
-	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note)}
+	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note), Outcome: collect.PartialOutcome(status),
+		Import: imp.Import, Imported: imp.Imported}
+}
+
+// endRead is a run's deferred last step on its connection: the session's cost into the result. A run cut by pgvigil's
+// own stop (its error set, the parent context over) is not read - its result is dropped (the scheduler counts no run a
+// stop cut short), and the read would stand between the stop and the loop's end
+func endRead(ctx context.Context, conn *sql.Conn, res *collect.Result) {
+	if res.Err != nil && ctx.Err() != nil {
+		return
+	}
+	res.CPUMs, res.Reads = sessionCost(ctx, conn)
+}
+
+// sessionCostSQL: the session's own running totals. A session always sees its own row of sys.dm_exec_sessions: the
+// read needs nothing beyond the login.
+const sessionCostSQL = `SELECT cpu_time, logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID`
+
+// sessionCostTimeout bounds the end read (DBA Dash's own timeout for its usage read)
+const sessionCostTimeout = 10 * time.Second
+
+// sessionCost reads the run's own cost at its end: cpu_time in ms and logical_reads of the run's session. A run holds
+// ONE connection from its connect to its close (Connect: one *sql.Conn of a pool of one), so the session's totals are
+// the run's. The read is made on a context of its own within sessionCostTimeout (a run's context may be over by then).
+// A run cut by its own timeout is NOT read: the driver dropped the connection with its statement (the lead 11-15
+// 11:2x: said, not worked around in v0.4.0). nil, nil = not read (the connection is gone, a NULL, no row): never a
+// zero that would read as 'no CPU'.
+func sessionCost(ctx context.Context, conn *sql.Conn) (cpuMs, reads *int64) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCostTimeout)
+	defer cancel()
+	var c, l sql.NullInt64
+	if err := conn.QueryRowContext(cctx, sessionCostSQL).Scan(&c, &l); err != nil || !c.Valid || !l.Valid {
+		return nil, nil
+	}
+	return &c.Int64, &l.Int64
 }
 
 // counterEditsJSON: pgvigil.yaml's mssql_counters lines of an instance (the root's, then its own) as the repository's

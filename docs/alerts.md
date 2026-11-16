@@ -163,7 +163,9 @@ severity floor, scoped channels too), instead of one per instance:
   matches: mute the alert itself, or by check (`collector or network`).
 
 Only the alerts a shared cause explains wait under it: *authentication failing*, *collection failing*, *server
-unreachable*, and the findings judged by their age on data the cut stops refreshing (*job run over twice its
+unreachable*, *collection runs long* (a cut or a host down slows the runs it does not fail; a host that is slow while
+its runs succeed forms no parent: its instances fold into one *collections run long* of the host, below), and the findings judged by
+their age on data the cut stops refreshing (*job run over twice its
 average*, *job schedule missed*, *a job runs far longer than its average*, *amcheck older than N d*, *unused index*).
 Every other finding comes from the last good read and is sent as it is: a disk filling up before the cut may be its
 cause.
@@ -200,8 +202,9 @@ connect, so its first failed connect is already the service's to report - after 
 once an hour, and for one never reached. The service's *server unreachable* and *collection failing* speak only while
 a collector that beats still names the instance: 20 minutes after its last naming (the instance moved to a scheduled
 `pgvigil collect`, or its collector died) they leave the findings, and the scheduled read's own *server unreachable*
-and the Summary's Collection Errors check speak for it. An alert that was open stays open until a read of the instance
-is ok - it is never resolved because nobody reads the server any more. An instance moved from the service to a
+and the Summary's Collection Health column speak for it (its run rates come from `pgvigil run`'s heartbeat: an
+instance read only by a scheduled `pgvigil collect` is judged by its failures in a row alone). An alert that was
+open stays open until a read of the instance is ok - it is never resolved because nobody reads the server any more. An instance moved from the service to a
 scheduled collect while it fails is announced again, once, by the scheduled collect: the two speak for different
 readers.
 
@@ -273,6 +276,78 @@ cost about 0.8 of a CPU, every connect under 10 ms at the 95th percentile on tha
 10 seconds, which would queue them behind the collector's CPU and read as slow connects everywhere. An hourly or daily
 collection still runs within 5 minutes of a start.
 
+## pgvigil's own health
+
+Four findings watch pgvigil itself. Each shows on the Collector page and the Summary like any finding.
+
+**collection runs long** (warning or critical, source `pgvigil collector`, per instance and collection): over the
+current and the previous UTC hour, with 5 or more runs, more than 5 % of the collection's runs took longer than half of
+its interval (warning), or more than 5 % took longer than the whole interval (critical: its 95th percentile is past the
+interval). The interval is the shortest one the collection's runs were scheduled at. It is sent like any finding and is
+held under a collector's parent (above). The Collector page's *Run duration per minute* chart draws each minute's 95th
+percentile and its longest run: one collection running long moves no 95th percentile among a minute's many runs.
+
+**collections run long** (warning or critical, source `pgvigil repository`, valued by the collector's host): a
+collector host that is slow while its runs succeed (short of CPU, memory or disk) makes many of its instances run long
+at once, and forms no *collector or network* parent because nothing fails. Instead of one *collection runs long* per
+instance, the host gets one alert. Over the same two UTC hours, and on the host's own runs only, an instance is
+judged there when a collection of it ran 5 or more times on that host, and runs long there by the rule above. The
+alert forms when more than half of the host's judged instances, and at least 3, run long. Once it has been sent, it
+stands until a quarter or less of them, or fewer than 3, still do. It is critical when more than half run long at
+critical. Its detail names the three slowest and how many more. While it stands, its members' own *collection runs
+long* alerts are held for the collections that run long on that host, when they are at or under the level the alert
+was sent at (or its level now, when that is higher): a member above it is sent on its own, and a critical member is
+still held when a critical alert falls to warning. A collection of a member that runs long only on another host is
+sent on its own. When 3 or more of a host's instances turn long within the host's span and a minute of each other, a
+new *collection runs long* of one of them waits until that span and a minute have passed, so an alert forming over two
+beats sends no member first. It is not resolved while the host's own *collector or network* stands: the runs stopped being judged because
+the host stopped, not because they got shorter. An instance read by two hosts is judged on each by its own runs there.
+
+What is judged: a host's runs that are not retired, and a host only while a run of it beats (a stopped, retired or
+renamed host makes no alert from its old runs); never an instance that a *collector or network* holds (a cut slows
+the runs it does not fail); and no new alert for a host whose *collector or network* stood inside the two hours - its
+alert open there on a configured channel, or held unsent by a mute (a silence or a blackout names an instance and never
+holds it) - since the cut's long runs stay in the window: the host is judged again once the window has passed the
+parent. The parent counts for 10 minutes past its end, because a cut that ends just before an hour leaves its last slow
+run in the next one: a mute's hold seen up to 10 minutes before the two hours counts, and so does a sent alert cleared
+that long before them, less the channel's `clear_after` (its clearing has already waited that). An alert not yet
+cleared on a configured channel when the parent rises keeps being judged without the instances the parent holds - while
+its finding is missing as well, if it went missing no more than 5 minutes before the parent's alert was sent, or later
+(the pass that first sees the parent stamps the miss and then the send, a moment apart; *collector not seen* rises up
+to a minute after its host stops being judged - at a 1-minute span; at a longer span not after it): it comes back when more than half of its judged instances, and at
+least 3, still run long. Its members stay held unless the parent holds
+enough of them to drop it; the rest are then sent on their own, and an alert that stood at half or less loses its lower
+bar at the first missing pass - it resolves after the parent and its members are sent on their own. An alert already
+found gone more than 5 minutes before the host's first parent inside the two hours was sent is not brought back by the
+cut's runs; one found gone inside those 5 minutes is (the two cannot be told apart), and a channel that had already
+resolved it is sent it again (a parent a mute held counts from that mute's first hold of the host's parent, however long ago: under a
+standing mute the cut's runs may bring such an alert back). The parent's tail does not resolve an alert
+that stands (the cuts' runs may keep it up to two hours after the last parent clears). A parent never
+seen by the alert sender is not seen here: no channel configured, quiet hours over the whole of it, every send of it
+failing, or its channel removed since - its runs are judged once it clears (a mute that held it on that channel keeps
+the host unjudged until the window has passed the hold: the safe side); and a parent first sent more than 5 minutes
+after it rose (a destination failing for more than 5 minutes, or `max_per_hour` holding it) keeps no alert that
+dropped at its rise; a channel inside its quiet hours finds nothing gone until they end, and then stamps and sends in
+one pass. After a cut, the instances' own *collection runs long*
+stand on the cut's runs for up to two hours, and are sent one by one.
+
+**alert sender idle** (warning, source `pgvigil repository`, no instance): alert channels are configured (a contact's
+route is not one) and no alert rule has been judged for more than 180 s while a collector beats - the same line as the
+Alert rules page's. It is shown and never sent: an idle sender cannot send its own news. The sender runs inside
+`pgvigil run`, and each run's beat says whether its `alerts:` list names a channel: the finding is judged only while a
+live run says it sends. Alerts turned off on purpose (the `alerts:` list removed from every run) raise nothing, with no
+step to take. A scheduled `pgvigil alerts` pass beside runs that name no channel beats nothing, so its stop raises no
+finding: the Alert rules page still says how old the rules' states are. After a run crashes, the finding can show for
+up to about a minute (a run counts as beating for 3 minutes after its last beat) before *collector not seen* replaces
+it.
+
+**repository autovacuum behind** (warning, source `pgvigil repository`): a table of the `pgvigil` schema (a partition
+alone, named with its parent), or its TOAST table, whose dead tuples are past autovacuum's own trigger and at least
+10,000, with no vacuum, automatic or manual, for 24 hours. The trigger is autovacuum's: `autovacuum_vacuum_threshold` +
+`autovacuum_vacuum_scale_factor` x the table's row estimate, capped from PostgreSQL 18 by
+`autovacuum_vacuum_max_threshold` (-1: no cap), each from the table's storage parameters where set (a TOAST table's own
+when it has any, else its table's), else the server's settings.
+
 ## The address of an alert, templates, the send cap, Send test
 
 - **Every alert carries the address of its page.** With `alerts_base_url` set (the UI's address as a reader opens it:
@@ -323,6 +398,13 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
   database: the rule then watches that database's own series, and overrides nothing for the instance's summed
   series. The other way round too: a rule that names no database watches the series summed over all databases, and
   never one database by itself.
+- **One collection.** A metric of the *Collection* family ([metrics.md](metrics.md)) can name a collection in the
+  same place. Naming none, the rule watches **the worst collection** each hour - its run may pass from one collection
+  to another hour by hour, and its alert stays one alert while it does: its detail names **the worst collection of its
+  newest hour** (the Metrics page's Collection family shows the rest; for an alert of its own for each collection, write a
+  rule per collection). The
+  family's points are hourly, stamped at the hour's end, so its rules take 60 minutes or more, a failure at 10:17 is
+  'beyond since 11:00', and a **below** rule names its collection (with none it would read the highest).
 - **When it fires.** The alert sender judges every rule in force once a pass, on the samples the collector already
   stores. A level is reached when the newest sample is beyond its value **and** the unbroken run of samples beyond
   it spans the rule's minutes, measured from the run's first sample to its newest: a single late sample never fires

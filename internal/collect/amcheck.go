@@ -109,6 +109,7 @@ func (amcheckCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 			continue
 		}
 		out = append(out, rows...)
+		out = append(out, amcheckUnchecked(rows)...) // relations left unchecked: the run ends partial (health.go)
 	}
 	return out, nil
 }

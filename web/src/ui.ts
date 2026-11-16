@@ -59,6 +59,7 @@ export interface Col {
   num?: boolean;          // right-aligned, sorted numerically
   wide?: boolean;         // long text, clipped with a title
   cls?: (v: unknown, row: Record<string, unknown>) => string;   // an extra cell class (a status colour)
+  title?: string;         // the header's tooltip (a column DBA Dash describes in its own words)
 }
 
 // The page model of a rendered grid, kept beside its table for the export (export.ts): the columns and the
@@ -334,7 +335,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       for (const b of filterBtns) b.setAttribute('aria-expanded', String(open));
       if (open) inputs.get(c.key)!.focus();
     });
-    const th = el('th', c.num ? { class: 'num' } : {}, el('span', { class: 'th-label' }, name), fb);
+    const th = el('th', { ...(c.num ? { class: 'num' } : {}), ...(c.title ? { title: c.title } : {}) }, el('span', { class: 'th-label' }, name), fb);
     th.addEventListener('click', () => {
       asc = sortKey === c.key ? !asc : true; sortKey = c.key;
       draw();

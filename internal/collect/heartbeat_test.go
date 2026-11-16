@@ -722,3 +722,19 @@ func TestConnTookFloor(t *testing.T) {
 		t.Errorf("connTook of a 2 s connect: %v, want 2 s or more", got)
 	}
 }
+
+// TestBeatSaysItSends (B6.2 part c #3): each beat says whether its run sends alerts (the run's alerts: list names a
+// channel), as 'sends_alerts' in the beat's JSON - 'alert sender idle' reads only the live runs that do
+func TestBeatSaysItSends(t *testing.T) {
+	for _, sends := range []bool{true, false} {
+		h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{},
+			info: HeartbeatInfo{Version: "test", SendsAlerts: sends}}
+		body, err := json.Marshal(h.take())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf(`"sends_alerts":%v`, sends); !strings.Contains(string(body), want) {
+			t.Errorf("SendsAlerts %v: the beat %s lacks %s", sends, body, want)
+		}
+	}
+}

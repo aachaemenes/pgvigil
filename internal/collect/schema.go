@@ -318,16 +318,22 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	// it into a collector_error row and went on (schemaCollector's per-database parts do); the first such error leads
 	// the run's note (LeadNote), so the note and the stage tell of the same failure
 	stage, importErr := "", ""
+	// every part's write is timed (B6g-1, N27); the run is 'import failed' only when it ENDED as an error at an import
+	// - a part that was refused while the run went on leaves it 'partial' (its stage 'import' is on the error log)
+	var imp Result
+	var lastImport *ImportError // the import error last handed back to the reader: the run ended at it, or went on
 	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
 		return r.LogCursor(ctx, instanceID, source)
 	}, func(rows []Row) error {
 		applyTextPolicy(rows, in.QueryText)
-		if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+		if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, name, start, rows) }); err != nil {
+			ie := &ImportError{Err: err}
+			lastImport = ie
 			stage = "import"
 			if importErr == "" {
 				importErr = "import: " + err.Error()
 			}
-			return err
+			return ie
 		}
 		parts++
 		for _, row := range rows {
@@ -342,12 +348,16 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	})
 	if err != nil {
 		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), stage)
-		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		res := Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start), Import: imp.Import, Imported: imp.Imported}
+		if EndedAtImport(err, lastImport) {
+			res.Outcome = OutcomeImportFailed
+		}
+		return res
 	}
 	d := time.Since(start)
 	_ = r.LogCollectionStage(ctx, instanceID, name, start, d, status, LeadNote(importErr, note), stage)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
-	return Result{Rows: n, Duration: d}
+	return Result{Rows: n, Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
 }
 
 // schemaMaxPayload caps one import call's payload, estimated (schemaPayloadSize), well under PostgreSQL's 256 MB jsonb

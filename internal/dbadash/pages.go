@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,26 @@ func Proven(v string) bool {
 	return false
 }
 
+// versionAtLeast: a DBVersionHistory version (4.25.0, 4.25.0.7) at or past another, part by part as numbers; an
+// empty or unreadable version is not
+func versionAtLeast(v, min string) bool {
+	vs, ms := strings.Split(strings.TrimSpace(v), "."), strings.Split(min, ".")
+	for i := range ms {
+		if i >= len(vs) {
+			return false
+		}
+		a, errA := strconv.Atoi(vs[i])
+		b, errB := strconv.Atoi(ms[i])
+		if errA != nil || errB != nil {
+			return false
+		}
+		if a != b {
+			return a > b
+		}
+	}
+	return true
+}
+
 // PageDef is one page: its key in the URL, DBADash's own name for the screen, the procedure and how it is called.
 type PageDef struct {
 	Key       string `json:"key"`
@@ -62,7 +83,9 @@ type PageDef struct {
 	Window bool `json:"window"`
 	// Snapshot says the procedure takes one running-queries snapshot time (the sessions page; none = the latest).
 	Snapshot bool `json:"snapshot,omitempty"`
-	args     func(a PageArgs) []any
+	// Since names the DBA Dash version the procedure came with (B6.3: a repository without it is read as 'not read')
+	Since string `json:"since,omitempty"`
+	args  func(a PageArgs) []any
 }
 
 // PageArgs are a page call's inputs: the DBADash InstanceID, the time range (UTC) and, for the sessions page, the
@@ -124,6 +147,32 @@ var Pages = []PageDef{
 	{Key: "alerts", Title: "SQL Agent Alerts", Procedure: "dbo.Alerts_Get", args: func(a PageArgs) []any {
 		return []any{sql.Named("InstanceIDs", fmt.Sprint(a.InstanceID)), sql.Named("ShowHidden", true)}
 	}},
+	// B6.3: DBA Dash 4.25.0's Checks > Collection Health, called as its GUI calls it by default (CollectionHealthView.cs:
+	// Show 'Row per collection per instance', Steps shown, every status; @DetailMaxHours its default 48; the chart
+	// bucket and the collection left to the procedure). Absent on 4.24.1 and older: gated (gateNote).
+	{Key: "collectionhealth", Title: "Collection Health", Procedure: "dbo.CollectionHealth_Get", Window: true, Since: "4.25.0", args: func(a PageArgs) []any {
+		return append([]any{sql.Named("InstanceIDs", ids(a.InstanceID)), sql.Named("FromDate", utc2(a.From)), sql.Named("ToDate", utc2(a.To)),
+			sql.Named("DetailMaxHours", 48), sql.Named("GroupByInstance", true), sql.Named("IncludeSteps", true)}, allStatuses()...)
+	}},
+}
+
+// gateNote: why a page whose procedure came with a later DBA Dash (Since) is not read - the procedure absent from the
+// repository, or the login without EXECUTE on it - in words that name no source product (task 168: the source is
+// named once, on the import's settings line; the lead 11-15 06:0x); "" to read it (and for every page with no Since)
+func gateNote(def PageDef, exists, canExec bool, version string) string {
+	switch {
+	case def.Since == "":
+		return ""
+	case !exists && versionAtLeast(version, def.Since):
+		// OBJECT_ID is NULL for an object the login has no right on (SQL Server's metadata visibility): on a repository
+		// of the procedure's version or later an unseen procedure is the missing GRANT (the review of B6.2, part b #2)
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (the GRANT in docs/dbadash.md, version %s and later)", def.Procedure, def.Since)
+	case !exists:
+		return fmt.Sprintf("not read: %s is not in this repository (it came with version %s)", def.Procedure, def.Since)
+	case !canExec:
+		return fmt.Sprintf("not read: this login has no EXECUTE on %s (the GRANT in docs/dbadash.md, version %s and later)", def.Procedure, def.Since)
+	}
+	return ""
 }
 
 // PageByKey finds a page; ok false for a key not in Pages.
@@ -264,6 +313,21 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 			return PageReply{}, fmt.Errorf("dbo.Instances: %w", err)
 		}
 		out.Instance, out.Machine = inst.String, machine.String
+	}
+	if def.Since != "" {
+		// a procedure newer than some repositories: read only where it is and may be run (never a failed call on 4.24.1)
+		var exists, canExec bool
+		if err := conn.QueryRowContext(ctx, `SELECT CAST(CASE WHEN OBJECT_ID(@p, 'P') IS NULL THEN 0 ELSE 1 END AS bit),
+       CAST(ISNULL(HAS_PERMS_BY_NAME(@p, 'OBJECT', 'EXECUTE'), 0) AS bit)`, sql.Named("p", def.Procedure)).Scan(&exists, &canExec); err != nil {
+			return PageReply{}, fmt.Errorf("%s's presence: %w", def.Procedure, err)
+		}
+		if n := gateNote(def, exists, canExec, out.Version); n != "" {
+			if out.Note != "" {
+				n = out.Note + "; " + n
+			}
+			out.Note = n
+			return out, nil
+		}
 	}
 	start := time.Now()
 	rs, err := callProc(ctx, conn, def.Procedure, def.args(a))

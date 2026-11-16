@@ -44,6 +44,7 @@ export function seriesColors(): string[] {
 }
 export const neutralColor = () => getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#868e96';
 const colorAt = (p: string[], i: number) => i < p.length ? p[i] : neutralColor();
+const tokenOr = (token: string | undefined, p: string[], i: number) => (token && getComputedStyle(document.documentElement).getPropertyValue(token).trim()) || colorAt(p, i);
 // a #rrggbb colour at an alpha, for a stacked band's fill (any other form is returned as it is)
 const withAlpha = (c: string, a: number) => /^#[0-9a-f]{6}$/i.test(c)
   ? `rgba(${parseInt(c.slice(1, 3), 16)}, ${parseInt(c.slice(3, 5), 16)}, ${parseInt(c.slice(5, 7), 16)}, ${a})` : c;
@@ -139,7 +140,8 @@ function whenPlaced(node: Node, fn: () => void) {
 // deadlocks are marked on the time axis, each mark a link to its rows; o.y2 draws named series on a second axis, o.lines
 // and o.limits draw thresholds and server limits; the heading's buttons open the chart menu and a full-window view.
 // A chart whose reads start well after the window's start, or that holds under three reads, says so under it (K09.02).
-export function lineChart(title: string, rows: Row[], series: { key: string; label: string }[],
+// a series' color: a CSS token of the theme ('--crit', '--warn', '--ok': a status colour), else the palette's next
+export function lineChart(title: string, rows: Row[], series: { key: string; label: string; color?: string }[],
                           fmt: (v: number) => string = v => v.toLocaleString(), o: ChartOpts = {}): HTMLElement {
   if (o.measure) { const k = chartKind(o.measure); o = { ...o, stacked: o.stacked || k === 'stacked', bars: o.bars || k === 'bars' }; }
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
@@ -193,9 +195,9 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const yRange = (scale: string) => (_u: uPlot, min: number, max: number): uPlot.Range.MinMax => uPlot.rangeNum(Math.min(min, 0), reach(scale, max), 0.1, true);
   const opts: uPlot.Options = {
     width: 560, height: 220,
-    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked || o.bars ? 1 : 2,
+    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: tokenOr(s.color, palette, i), width: o.stacked || o.bars ? 1 : 2,
                                             scale: on2.has(s.key) ? 'y2' : 'y',
-                                            fill: o.stacked || o.bars ? withAlpha(colorAt(palette, i), o.bars ? 0.75 : 0.45) : undefined,
+                                            fill: o.stacked || o.bars ? withAlpha(tokenOr(s.color, palette, i), o.bars ? 0.75 : 0.45) : undefined,
                                             ...(o.bars ? { paths: uPlot.paths.bars!({ size: [0.6, 48] }), points: { show: false } } : {}),
                                             // stacked: the data are running totals, the legend (the screen reader's form) gives the
                                             // band's own value, as the tooltip does

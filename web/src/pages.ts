@@ -513,7 +513,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // test without a page of its own (Memory Dump, Instance Uptime, Is Agent Running, DB Mail ...) filters the instance
   // grid below to the instances where it is a warning or a critical. Never the Daily checks list.
   const rootTabOf: Record<string, string> = {
-    full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectiondates', snapshot: 'collectiondates',
+    full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectionhealth', snapshot: 'collectiondates',
     checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', replication: 'pgreplication', custom: 'custom',
     dbstate: 'mssqlrisks', activity: 'running', dms: 'dms', tables: 'tablesize', roles: 'roles', indexes: 'indexes', version: 'versions',
   };

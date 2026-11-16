@@ -24,13 +24,34 @@ SELECT s.collector_id, s.host, s.os, s.runs_as, s.version, s.pid, s.started_at, 
 const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 
 // sqlCollectorFindings: the collector's findings ($1 the instance, 0 = all: an instance sees its own and the
-// repository-wide ones)
+// repository-wide ones) - every finding of pgvigil's own health, read from pgvigil.findings' own arms (0121's, B6.4's: a
+// collection that runs long and a collector host whose collections run long, the alert sender idle, the repository's
+// autovacuum behind), deduplicated by the findings view's own key. Never pgvigil.findings itself: a filter on source cannot pass its DISTINCT ON, so a fleet-wide load
+// built every arm (B6.2 part c #5). 403b's K3 (an alert channel failing) is read here where its arm is joined: a
+// WIRING line at the join. K3 is alert_findings' arm through alert_channel_findings (never findings': its ck CTE
+// reads findings), so the guard walks the arms of both views and names K3 by its view (TestCollectorFindingsReadsItsArms;
+// TestCollectorFindingsK3AtTheJoin shows the walk finds both of 403b's views as own arms; TestCollectorFindingsReadsItsArms
+// is red at the join until they are read here and named in the claim CASE below). The claim ('why') is the collector parents' only.
 const sqlCollectorFindings = `
+WITH f AS (
+  SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
+    FROM (SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collector_findings
+          UNION ALL
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_findings
+          UNION ALL
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.alert_sender_idle_findings
+          UNION ALL
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.repository_autovacuum_findings
+          UNION ALL
+          SELECT instance_id, severity, setting, value, detail, source, at FROM pgvigil.collection_runs_long_fold) x
+   WHERE x.source IN ('pgvigil collector', 'pgvigil repository') AND ($1::int = 0 OR x.instance_id IS NULL OR x.instance_id = $1)
+   ORDER BY x.instance_id, x.setting, x.value, x.detail
+)
 SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at,
-       CASE WHEN f.source = 'pgvigil repository' THEN pgvigil.collector_claim(f.detail) END AS why
-  FROM pgvigil.collector_findings f
+       CASE WHEN f.source = 'pgvigil repository' AND f.setting NOT IN ('alert sender idle', 'repository autovacuum behind', 'alert channel failing', 'collections run long')
+            THEN pgvigil.collector_claim(f.detail) END AS why
+  FROM f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
- WHERE $1::int = 0 OR f.instance_id IS NULL OR f.instance_id = $1
  ORDER BY pgvigil.severity_rank(f.severity) DESC, f.instance_id NULLS FIRST, f.setting`
 
 // sqlCollectorCollections: per collection over 24 h. p50 / p95 from the summed histograms (an estimate within the
@@ -70,10 +91,27 @@ SELECT r.engine, r.collection, r.runs, r.failures,
  ORDER BY r.failures DESC, r.engine, r.collection`
 
 // sqlCollectorMinutes: runs, failures and rows written per minute over 24 h (the chart)
+// B6.4 (CHK#38 / OVW#140): p95_ms, the minute's run duration at its 95th percentile over every collection (the
+// histograms of the minute summed, as the 24-hour p95 above), and max_ms, the minute's longest run (B6.2 part c #8: one
+// collection running long among a minute's runs moves no p95)
 const sqlCollectorMinutes = `
-SELECT minute AS snapshot_at, sum(runs)::bigint AS runs, sum(failures)::bigint AS failures, sum(rows_written)::bigint AS rows_written
-  FROM pgvigil.collector_runs WHERE minute > now() - interval '24 hours'
- GROUP BY minute ORDER BY minute`
+WITH m AS (
+  SELECT minute, sum(runs)::bigint AS runs, sum(failures)::bigint AS failures, sum(rows_written)::bigint AS rows_written,
+         max(dur_ms_max) AS max_ms
+    FROM pgvigil.collector_runs WHERE minute > now() - interval '24 hours'
+   GROUP BY minute
+), h AS (
+  SELECT minute, array_agg(n ORDER BY b) AS hist
+    FROM (SELECT cr.minute, u.b, sum(u.v)::int AS n
+            FROM pgvigil.collector_runs cr, unnest(cr.dur_hist) WITH ORDINALITY AS u(v, b)
+           WHERE cr.minute > now() - interval '24 hours'
+           GROUP BY cr.minute, u.b) x
+   GROUP BY minute
+)
+SELECT m.minute AS snapshot_at, m.runs, m.failures, m.rows_written, round(pgvigil.collector_pctl(h.hist, 0.95)::numeric) AS p95_ms,
+       m.max_ms
+  FROM m LEFT JOIN h ON h.minute = m.minute
+ ORDER BY m.minute`
 
 // sqlCollectorLoad: pgvigil's own load per instance: connections opened and connection attempts per minute over the
 // last hour (the mean over the minutes it ran, every collector summed, and the busiest minute), runs and failures in

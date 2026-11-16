@@ -138,6 +138,19 @@ func RulePayload(in RuleRequest, forced string, inst func(id int) string) (map[s
 		}
 		pay["for_minutes"] = *in.ForMinutes
 	}
+	// B6g-4 (N31): the Collection family's points are hourly (collection_health_hour), each stamped at its hour's end,
+	// so two points are exactly 60 minutes apart: its rule takes a window of an hour or more - a shorter one judges one
+	// point or none (the design's L56); no window given is the table's 5. The store holds the same floor
+	// (alert_rules_collection_window, 0166) for a call past this door.
+	if strings.HasPrefix(in.Metric, "collection.") && (in.ForMinutes == nil || *in.ForMinutes < 60) {
+		return nil, errors.New("a rule on the Collection family takes a window of 60 minutes or more (for_minutes): its points are hourly")
+	}
+	// the review of the B6g-4 fold #4: with no collection named the series is the worst (highest) collection each hour,
+	// so 'below' would mean every collection below - a 'below' rule names its collection (the store's
+	// alert_rules_collection_below too)
+	if strings.HasPrefix(in.Metric, "collection.") && in.Dir == "below" && strings.TrimSpace(in.Database) == "" {
+		return nil, errors.New("a 'below' rule on the Collection family names a collection: with none it reads the worst (highest) collection each hour")
+	}
 	switch in.Scope {
 	case "fleet":
 	case "tag":

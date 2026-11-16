@@ -114,6 +114,12 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
           [{ key: 'runs', label: 'runs' }, { key: 'failures', label: 'failures' }, { key: 'rows_written', label: 'rows written' }],
           v => v.toLocaleString(), { ownSpan: true, marks: false, y2: { keys: ['rows_written'], unit: 'rows' } })
       : stateNote('empty', 'No minute of runs in the last 24 hours: the collector has not beaten, or it is new (a beat a minute).'),
+    // B6.4: the run duration a minute - its p95 over every collection (most runs slower) and its longest run (one
+    // collection running long, which moves no p95 among a minute's many runs: B6.2 part c #8)
+    ...(minutes.length >= 2 ? [lineChart('Run duration per minute (p95 and longest, ms)', minutes, [{ key: 'p95_ms', label: 'p95 (ms)' }, { key: 'max_ms', label: 'longest (ms)' }],
+      v => v.toLocaleString(), { ownSpan: true, marks: false, unit: 'ms' })] : []),
+    // B6.2: each instance's collections judged by DBA Dash's rule
+    el('p', { class: 'meta' }, el('a', { href: href(ctx, { tab: 'collectionhealth' }) }, 'Collection Health'), ': each collection\'s status per instance by DBA Dash\'s rule, its failure rates and its errors.'),
     grid(colls, [
       { key: 'collection' }, { key: 'engine' },
       // a failure count opens the collector's error log of that collection over 24 h, its errors only (the count is the

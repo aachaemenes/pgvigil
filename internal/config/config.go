@@ -39,6 +39,8 @@ type Config struct {
 	VerifyTimeout Duration `yaml:"verify_timeout"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
 	UI UI `yaml:"ui"`
+	// Web is the web: block (B6.4: serve's probes)
+	Web Web `yaml:"web"`
 	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
 	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
 	// collects nothing from SQL Server itself.
@@ -358,6 +360,13 @@ func (c *Config) validateDBADash() error {
 		}
 	}
 	return nil
+}
+
+// Web is the web: block. ReadyzWithoutLogin opens serve's /readyz to a caller without a session while the UI login is
+// on (a load balancer's or an orchestrator's probe; it answers 'ok' or 'not ready: <why>' and nothing else); false by
+// default. /livez is always open; /readyz is always open with the login off.
+type Web struct {
+	ReadyzWithoutLogin bool `yaml:"readyz_without_login"`
 }
 
 // UI is the ui: block: the tree's folder levels and the order of the values in them.

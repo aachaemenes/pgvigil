@@ -23,7 +23,7 @@
 #     the function it adds a rule and ends it (2 log rows by 'proof-r'). A login IN ROLE pgvigil_alerter runs
 #     alert_rules_run (an integer back), may INSERT into alert_rule_state, may not INSERT into alert_rules and is
 #     refused import_alert_rule (permission denied for function). A login IN ROLE pgvigil_reader reads
-#     metric_catalog (62 rows) and is refused by alert_rules_run (permission denied for table alert_rule_state).
+#     metric_catalog (67 rows: 0085's 62 and 0166's five Collection rows) and is refused by alert_rules_run (permission denied for table alert_rule_state).
 #     [Run 1 graded: the reader was refused, on the table alert_rule_fired: the statement that stores the state ends
 #     in the insert into alert_rule_fired, and that is the table the refusal names. Expected from run 2: permission
 #     denied for one of the sender's two tables, alert_rule_state or alert_rule_fired.]
@@ -42,7 +42,8 @@
 #     metric without a per-database series.
 #     [Added before run 4, with the family read: GET /api/metrics with family=sessions answers the sessions rows alone
 #     and sessions.active's five figures again equal the hand query; part=families answers the five PostgreSQL
-#     families and no grid; family=nope 400.]
+#     families and no grid; family=nope 400.] [B6g-4's fold: 0166's Collection family is both engines' - the sixth
+#     family in part=families and in each engine's whole grid; part V's list of nine families is its own and stays.]
 #  S. a SQL Server instance's grid (seeded, not collected: the grid is a repository read; the collectors that fill
 #     these tables have their own proofs). mssql_requests_summary seeded with blocked = 3, 1, 7, 2, 0 (oldest to
 #     newest): requests.blocked reads max 7, min 0, avg 2.6, current 0, 5 samples. With an instance rule 'above 5
@@ -207,7 +208,7 @@ out=$(as "$COL" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"u
 [[ $(as "$ALR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rules', 'INSERT')") == "t|f" ]] || fail "R: the alerter's rights on alert_rule_state / alert_rules"
 out=$(as "$ALR" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"x\",\"rule_id\":$RRULE}')")
 [[ $out == *"permission denied for function"* ]] || fail "R: the alerter called import_alert_rule: $out"
-[[ $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog") == 62 ]] || fail "R: the reader's metric_catalog: $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog")"
+[[ $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog") == 67 ]] || fail "R: the reader's metric_catalog: $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog")"
 out=$(as "$RDR" -c "select pgvigil.alert_rules_run(now())")
 [[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* ]] || fail "R: the reader ran alert_rules_run: $out"
 [[ $(as "$RDR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rule_fired', 'INSERT')") == "f|f" ]] || fail "R: the reader may write the sender's tables"
@@ -341,7 +342,7 @@ print(d["step_secs"], len(s["rows"]), s["rows"][-1][c.index("value")] if s["rows
 [[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})), len(d["rows"]))' "$WORK/gs.json") == "sessions 8" ]] || fail "G: family=sessions answered other rows"
 five "$WORK/gs.json" sessions.active "$HANDS" "the sessions family alone"
 [[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&part=families" "$WORK/gf.json") == 200 ]] || fail "G: GET /api/metrics part=families: $(cat "$WORK/gf.json")"
-[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=d["families"]; print(" ".join(r[f["columns"].index("family")] for r in f["rows"]), "grid" in d)' "$WORK/gf.json") == "sessions database server io host False" ]] || fail "G: part=families: $(cat "$WORK/gf.json")"
+[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=d["families"]; print(" ".join(r[f["columns"].index("family")] for r in f["rows"]), "grid" in d)' "$WORK/gf.json") == "sessions database server io host collection False" ]] || fail "G: part=families: $(cat "$WORK/gf.json")"
 [[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&family=nope" "$WORK/bad.json") == 400 ]] || fail "G: family=nope did not answer 400: $(cat "$WORK/bad.json")"
 for bad in "metric=sessions.nope" "metric=requests.blocked" "metric=sessions.active&db=$TGT"; do
   [[ $(getj "metrics/series?instance=$AID&$bad&from=$FROM&to=$TO" "$WORK/bad.json") == 400 ]] || fail "G: series $bad did not answer 400: $(cat "$WORK/bad.json")"
@@ -362,8 +363,8 @@ getj "metrics?instance=$MSID&from=$FROM&to=$TO2" "$WORK/gm.json" >/dev/null
 got="$(cell "$WORK/gm.json" requests.blocked max_status) $(cell "$WORK/gm.json" requests.blocked min_status) $(cell "$WORK/gm.json" requests.blocked avg_status) $(cell "$WORK/gm.json" requests.blocked current_status) $(cell "$WORK/gm.json" requests.blocked rule_scope)"
 [[ $got == "critical ok warning ok instance" ]] || fail "S: the statuses and scope read '$got'"
 fams() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})))' "$1"; }
-[[ $(fams "$WORK/gm.json") == "cpu host memory requests scheduler" ]] || fail "S: the SQL Server grid's families: $(fams "$WORK/gm.json")"
-[[ $(fams "$WORK/ga.json") == "database host io server sessions" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json")"
+[[ $(fams "$WORK/gm.json") == "collection cpu host memory requests scheduler" ]] || fail "S: the SQL Server grid's families: $(fams "$WORK/gm.json")"
+[[ $(fams "$WORK/ga.json") == "collection database host io server sessions" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json")"
 ok "S: requests.blocked reads 7 / 0 / 2.6 / 0 over 5 samples; against above 2 / 6 the max is critical, the average warning, the rest ok; each engine lists its own families"
 
 # ---- F: fires once, clears once ----------------------------------------------------------------------------------------

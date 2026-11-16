@@ -66,6 +66,17 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- task 201 (0121): the collector's own findings; instance_id NULL for the repository-wide ones
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_findings
     UNION ALL
+    -- B6.4 (0166, WIRING): pgvigil's own health - a collection that runs long, the alert sender idle (shown, never sent:
+    -- alert_findings below leaves it out), the repository's autovacuum behind
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collection_runs_long_findings
+    UNION ALL
+    -- B6.4 #4 (0166, WIRING): a collector host whose runs run long, one alert for its instances (its members held)
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collection_runs_long_fold
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.alert_sender_idle_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.repository_autovacuum_findings
+    UNION ALL
     -- pg-collector: a database's frozen-xid age past 300 million (the databases collection's xid_age)
     SELECT d.instance_id, CASE WHEN d.xid_age >= 1000000000 THEN 'critical' ELSE 'warning' END, 'database xid age',
            d.datname || ': ' || d.xid_age::text, true, 'under 300000000', 'all',
@@ -520,7 +531,41 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
         SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y) f
   LEFT JOIN pgvigil.instances i USING (instance_id)
   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
- WHERE i.is_active OR f.source = 'pgvigil repository';
+ WHERE (i.is_active OR f.source = 'pgvigil repository')
+   -- B6.4 (WIRING): 'alert sender idle' is shown, never sent (an idle sender cannot send its own news)
+   AND NOT (f.source = 'pgvigil repository' AND f.setting = 'alert sender idle');
+
+-- B6f10 #2 (WIRING): alert_mark is 0073's with alert_due's channel scope - a repository-wide finding (source 'pgvigil
+-- repository') reaches every channel but a route's (repo_wide false, task 310), scoped channels too: its holds are
+-- written to ack_suppressed there as the sends would be (the 'collections run long' fold's tail reads a muted 'collector
+-- or network' from them; the Alerts page's Held sends count them), and its missing / back marks are unchanged
+CREATE OR REPLACE FUNCTION pgvigil.alert_mark(p_at timestamptz, p_channels jsonb)
+RETURNS void LANGUAGE plpgsql SET jit = off AS $$
+DECLARE
+  v_names text[] := ARRAY(SELECT e->>'name' FROM jsonb_array_elements(coalesce(p_channels, '[]'::jsonb)) e);
+BEGIN
+  UPDATE pgvigil.alert_state s SET missing_since = p_at
+   WHERE s.cleared_at IS NULL AND s.missing_since IS NULL AND s.channel = ANY (v_names)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = s.finding_key);
+  UPDATE pgvigil.alert_state s SET missing_since = NULL
+   WHERE s.cleared_at IS NULL AND s.missing_since IS NOT NULL AND s.channel = ANY (v_names)
+     AND EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = s.finding_key);
+  INSERT INTO pgvigil.ack_suppressed AS x (ack_id, channel, finding_key, instance_id, instance_name, severity, source,
+                                           setting, value, first_at, last_at, passes)
+  SELECT h.ack_id, h.channel, h.finding_key, h.instance_id, h.instance, h.severity, h.source, h.setting, h.value, p_at, p_at, 1
+    FROM (SELECT DISTINCT ON (c.name, f.finding_key) c.name AS channel, f.*,
+                 pgvigil.ack_hold(p_at, f.instance, f.tags, f.finding_key, f.source, f.setting, f.value) AS ack_id
+            FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
+                 AS c(name text, min_severity text, instances text[], tags text[], repo_wide boolean)
+            JOIN pgvigil.alert_findings f
+              ON pgvigil.alert_in_scope(f.instance, f.tags, coalesce(c.instances, '{}'), coalesce(c.tags, '{}'))
+                 OR (f.source = 'pgvigil repository' AND coalesce(c.repo_wide, true))
+           WHERE pgvigil.severity_rank(f.severity) >= pgvigil.severity_rank(c.min_severity)
+           ORDER BY c.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC) h
+   WHERE h.ack_id IS NOT NULL
+  ON CONFLICT (ack_id, channel, finding_key) DO UPDATE SET last_at = EXCLUDED.last_at, passes = x.passes + 1,
+    severity = EXCLUDED.severity, value = EXCLUDED.value;
+END $$;
 
 -- task 201: alert_due is 0073's with these changes: a repository-wide finding (source 'pgvigil repository') goes to
 -- every channel past its severity floor, scoped channels too; an alert of a kind a shared cause explains
@@ -530,7 +575,10 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
 -- minute is written, 3 minutes at most) and, for the collector's own kinds, while its newest failure is inside an
 -- 'instances failing together' window of the instance (collector_in_window: one failure past it after the parent
 -- clears; an open one's repeat waits the same way, its escalation never); every other finding is sent as it is; a repository-wide alert is never 'the instance left' and resolves
--- once its finding has been gone for the channel's clear_after. held and forming are read once per pass.
+-- once its finding has been gone for the channel's clear_after. held and forming are read once per pass. B6.4 #4 / B6f7
+-- (0166, WIRING): a member's 'collection runs long' of a collection long on its standing fold's host is held at or under
+-- the fold's held level; a new one waits while 3 or more of its host's instances turned long within the host's span
+-- and a minute (collection_runs_long_forming).
 CREATE OR REPLACE FUNCTION pgvigil.alert_due(p_at timestamptz, p_channels jsonb)
 RETURNS TABLE (channel text, event text, finding_key text, instance_id int, instance text, severity text, source text,
                setting text, value text, detail text, suggested text, finding_at timestamptz, first_sent_at timestamptz,
@@ -549,6 +597,13 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT value FROM slow_folds WHERE kind = 'target' GROUP BY value HAVING bool_and(under_host)
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
+  ), long_held AS MATERIALIZED (   -- B6.4 #4 (0166, WIRING): the members of a standing 'collections run long' fold, the
+    -- collections that run long on its host (B6f7 #6) and the severity at or under which their own 'collection runs long'
+    -- of those is held
+    SELECT instance_id, collection, severity FROM pgvigil.collection_runs_long_held
+  ), long_forming AS MATERIALIZED (  -- B6f7 #2 (0166, WIRING): 3 or more of a host's instances long within its span and
+    -- a minute: new ones wait
+    SELECT DISTINCT instance_id FROM pgvigil.collection_runs_long_forming
   ), ch AS (
     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
@@ -570,6 +625,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
                 AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'slow connect'
                 AND EXISTS (SELECT 1 FROM slow_held WHERE slow_held.instance_id = sc.instance_id))
+       AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'collection runs long'
+                AND EXISTS (SELECT 1 FROM long_held WHERE long_held.instance_id = sc.instance_id AND long_held.collection = sc.value
+                               AND pgvigil.severity_rank(sc.severity) <= pgvigil.severity_rank(long_held.severity)))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'slow connects'
                 AND EXISTS (SELECT 1 FROM slow_under WHERE slow_under.value = sc.value))
   ), s AS (
@@ -593,6 +651,8 @@ LANGUAGE sql STABLE SET jit = off AS $$
                              OR (m.source = 'pgvigil collector' AND pgvigil.collector_in_window(m.instance_id, m.at))))
                    AND NOT (m.source = 'pgvigil collector' AND m.setting = 'slow connect'
                             AND EXISTS (SELECT 1 FROM slow_forming WHERE slow_forming.instance_id = m.instance_id))
+                   AND NOT (m.source = 'pgvigil collector' AND m.setting = 'collection runs long'
+                            AND EXISTS (SELECT 1 FROM long_forming WHERE long_forming.instance_id = m.instance_id))
               -- open: an escalation always; a repeat of a collector kind waits like a new one while its newest failure
               -- is inside a failing-together window (the instance released by an ok read, its finding standing until
               -- the next clean minute is written: a stale repeat just before its recovery) - deferred, never dropped
@@ -617,8 +677,9 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM s
    WHERE NOT EXISTS (SELECT 1 FROM sc WHERE sc.channel = s.channel AND sc.finding_key = s.finding_key)
      -- a collector's 'slow connects' is not 'resolved' while that collector's own 'collector or network' stands (its
-     -- connects stopped being judged because it stopped, not because they got faster)
-     AND NOT (s.source = 'pgvigil repository' AND s.setting = 'slow connects'
+     -- connects stopped being judged because it stopped, not because they got faster); its 'collections run long' alike
+     -- (B6.4 #4: its runs stopped being judged, they did not get shorter)
+     AND NOT (s.source = 'pgvigil repository' AND s.setting IN ('slow connects', 'collections run long')
               AND EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = s.value))
      AND (NOT s.instance_active OR s.present
           OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)

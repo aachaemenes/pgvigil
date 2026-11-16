@@ -106,10 +106,34 @@ func All() []Collector {
 
 // Result is what one run produced.
 type Result struct {
+	// Start: when the run began - collection_log's snapshot_at for it; the hourly health rows file the run under its
+	// hour (the review B6f3 #1). Zero = not known (the clock at the record is used).
+	Start    time.Time
 	Rows     int
 	Duration time.Duration
 	Note     string // " (skipped: <why>)" when the collection does not apply
 	Err      error
+	Outcome  string // OutcomePartial when the run ended with a collector error row, OutcomeImportFailed; "" = derived (outcomeOf)
+	// B6g-1 (N27): the time the run spent writing into the repository (the Import calls only), apart from its read;
+	// Imported = a write was attempted (its time counts, 0 ms too). Duration stays the whole run.
+	Import   time.Duration
+	Imported bool
+	// B6g-1 (N25 / N26): the run's own session's cpu_time (ms) and logical_reads, read at the run's end on SQL
+	// Server; nil = not read (PostgreSQL has no such read in pgvigil; an end read that failed)
+	CPUMs, Reads *int64
+}
+
+// TimedImport runs one write into the repository and adds its time to the run's import time; a write that fails
+// marks the run 'import failed' (its caller returns the error as the run's Err). Two imports of one run sum.
+func (res *Result) TimedImport(write func() error) error {
+	t0 := time.Now()
+	err := write()
+	res.Import += time.Since(t0)
+	res.Imported = true
+	if err != nil {
+		res.Outcome = OutcomeImportFailed
+	}
+	return err
 }
 
 // sessionSetup keeps a collector from joining a convoy on a busy server: read
@@ -156,12 +180,18 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 }
 
 // RunOnce runs one collection against one instance and stores the rows.
-func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) Result {
+func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) (res Result) {
 	c, ok := Get(name)
 	if !ok {
 		return Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
+	// every return carries the run's start, the time its collection_log row is written under (B6f3 #1)
+	defer func() {
+		if res.Start.IsZero() {
+			res.Start = start
+		}
+	}()
 	if skip, why := Gated(c, in); skip {
 		return Result{Note: " (skipped: " + why + ")"}
 	}
@@ -188,10 +218,18 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 
 	info, err := platform.Detect(ctx, conn, in.Platform)
 	if err != nil {
+		// connected, then failed: recorded as the collection's failed run ('detect: ', B6.1's fold), so its failures in a
+		// row reach the run status as the hourly counts do; a read cut by pgvigil's own shutdown is not recorded
+		if ctx.Err() == nil {
+			if lerr := r.LogRunFailure(ctx, in.Name, config.EnginePostgres, name, start, time.Since(start), err); lerr != nil {
+				log.Warn("the failed run was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+		}
 		return Result{Err: err, Duration: time.Since(start)}
 	}
 	instanceID, err := r.EnsureInstance(ctx, in.Name, string(info.Kind), info.ServerVersion, info.ServerVersionNum, info.IsReplica, in.Tags)
 	if err != nil {
+		// the repository's own failure: nothing to record it in (the hourly counts still count it)
 		return Result{Err: err, Duration: time.Since(start)}
 	}
 	// a page instance's aws: block (B24p): checked against the provider's own answer for this host before its first
@@ -235,10 +273,12 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	// query-text policy before the text policy below empties the log row's own copy under normalized and none. They
 	// are imported BEFORE the log batch: the batch carries the reader's cursor, so a failed plans import leaves the
 	// cursor where it was and the next run reads the same lines again (import_plans is idempotent on the plan key).
+	var imp Result // the run's import time and, when a write fails, its outcome (B6g-1, N27)
 	if extra := planRowsFromLog(name, rows, in.QueryText); len(extra) > 0 {
-		if err := r.Import(ctx, instanceID, "plans", start, extra); err != nil {
+		if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, "plans", start, extra) }); err != nil {
 			_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
-			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start)}
+			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start),
+				Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 		}
 	}
 	applyTextPolicy(rows, in.QueryText)
@@ -254,9 +294,10 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		kept = append(kept, row)
 	}
 	rows = kept
-	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+	if err := imp.TimedImport(func() error { return r.Import(ctx, instanceID, name, start, rows) }); err != nil {
 		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), "import")
-		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start),
+			Outcome: imp.Outcome, Import: imp.Import, Imported: true}
 	}
 	d := time.Since(start)
 	status, note := "ok", strings.Join(notes, "; ")
@@ -271,5 +312,5 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
-	return Result{Rows: len(rows), Duration: d}
+	return Result{Rows: len(rows), Duration: d, Outcome: partialOutcome(status), Import: imp.Import, Imported: imp.Imported}
 }

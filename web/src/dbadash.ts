@@ -22,6 +22,7 @@ import { offBeside } from './ack';
 import { Ctx, href, mssqlInstanceGroups, mssqlInstanceTabs, window_ } from './router';
 import { hashParam } from './dbinfo';
 import { fleet, fleetWideNote, folderWords, tagScopeIds, tagWords } from './fleet';
+import { errColTips, repoHealthOf } from './chhealth';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtTime, grid, props, tile } from './ui';
 
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null; imported?: Table | null }
@@ -115,6 +116,7 @@ export const tabSources: Record<string, Source> = {
   mssqlfiles: { screen: 'dbfiles' },
   rowversions: { read: `${own}: its version store read` },
   mssqlconfig: { screen: 'configuration' },
+  collectionhealth: { screen: 'collectionhealth' },   // B6.3: DBA Dash 4.25.0's own (4.24.1: the screen says it is not there)
   mssqlactions: { read: 'the actions door of a server pgvigil collects itself (its actions_dsn and actions: list)' },
   jobstimeline: { store: 'the job outcomes' },
   mssqlcpu: { store: 'the CPU minutes' },
@@ -179,20 +181,34 @@ function instanceHref(ctx: Ctx, d: DBADashData, repo: string, id: unknown): stri
   return pv ? href(ctx, { tab: 'summary', instance: pv.instanceId, tag: undefined }) : dbadashHref(ctx, repo, id);
 }
 
-// the fleet grid: one row per instance, one cell per Summary status in the source's column order
+// the two tooltips, healthVersion (0138's rule), each header's tips and each row's landing: chhealth.ts (unit-tested,
+// the review B6f3 #11)
+
+// the fleet grid: one row per instance, one cell per Summary status in the source's column order; a repository at 4.25.0
+// or later (the column named 'Collection Health') has DBA Dash's tooltip on it and its cell opens the instance's
+// Collection Health screen, as DBA Dash's does
 function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLElement {
+  // each row's repository at 4.25.0 or later (0138's dbadash_health_version): its cell lands on Collection Health, a
+  // 4.24.1 one's on the old landing, whatever the other repositories are (the review of B6.2, part b #5)
+  const repoHealth = repoHealthOf(rowsOf(d.repositories));
   const cols: Col[] = [
     { key: 'level', label: 'level', fmt: v => ldot(Number(v ?? 0), levelWords[Number(v ?? 0)]) },
     { key: 'display_name', label: 'instance', fmt: (v, r) => el('a', { href: instanceHref(ctx, d, String(r.repository), r.instance_id) }, String(v)) },
     { key: 'repository' },
     { key: 'pgvigil', label: 'in pgvigil', fmt: (_v, r) => { const pv = pgvigilOf(d, String(r.repository), Number(r.instance_id)); return pv ? (pv.collected ? 'collected' : 'imported') : 'not imported'; } },
     { key: 'last_collection', label: 'last collection', fmt: v => v == null ? 'never' : fmtTime(v) },
-    ...checks.map(c => ({
-      key: 's_' + String(c.status_key), label: ownLabel(c.label),
-      cls: (_v: unknown, r: Row) => 'status ' + codeClass(num((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)])),
-      fmt: (_v: unknown, r: Row) => statusCell((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)], ownLabel(c.label), undefined,
-        instanceHref(ctx, d, String(r.repository), r.instance_id)),
-    }) as Col),
+    ...checks.map(c => {
+      const errCol = c.status_key === 'CollectionErrorStatus', label = ownLabel(c.label);
+      // the header's tooltip: 4.25.0's for 'Collection Health', 4.24.1's for 'Collection errors (24hrs)', both (4.25.0's
+      // first) on a mixed fleet's 'Collection Health / Collection errors (24hrs)' (the review of B6.2, part b #6)
+      const tips = errCol ? errColTips(label) : [];
+      return {
+        key: 's_' + String(c.status_key), label, ...(tips.length ? { title: tips.join('\n') } : {}),
+        cls: (_v: unknown, r: Row) => 'status ' + codeClass(num((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)])),
+        fmt: (_v: unknown, r: Row) => statusCell((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)], label, undefined,
+          errCol && repoHealth.get(String(r.repository)) ? dbadashHref(ctx, String(r.repository), r.instance_id, 'collectionhealth') : instanceHref(ctx, d, String(r.repository), r.instance_id)),
+      } as Col;
+    }),
   ];
   return grid(rows, cols, 'No SQL Server instance read from a repository yet.');
 }
@@ -447,6 +463,37 @@ const isStatusCol = (c: { name: string; type: string }) => /Status$/.test(c.name
 // a snapshot time of RunningQueriesSummary_Get (UTC, as the repository keeps it) as the sessions screen's ds= value
 const asUTC = (v: unknown) => String(v ?? '').replace(' ', 'T') + 'Z';
 
+// B6.3: DBA Dash 4.25.0's Collection Health screen as its GUI shows it (CollectionHealthView.cs): the result sets' names,
+// its column aliases, the columns it hides; the row's status (DBA Dash hides the Status column and colours the row)
+// colours Status Reason here, its word where the reason is empty
+const chSets = ['Collections', 'Runs Over Time', 'Cost Over Time', 'Import Lag Over Time', 'Insights'];
+// UnknownCount: DBA Dash's 'No Status' column is Visible = false (CollectionHealthView.cs L210; the review of B6.2, part b #4)
+const chHidden = new Set(['InstanceID', 'Reference', 'Step', 'Status', 'LastStatus', 'ErrorsFrom', 'ErrorsTo', 'DrillGroupByInstance', 'LastDurationMs', 'UnknownCount',
+  'TotalDurationMs', 'MaxLogicalReads', 'TotalLogicalReads', 'TotalImportMs', 'AvgImportLogicalReads', 'TotalImportLogicalReads']);
+const chAlias: Record<string, string> = {
+  InstanceDisplayName: 'Instance', Name: 'Collection', StatusReason: 'Status Reason', InstanceCount: 'Instances', FailingInstanceCount: 'Failing Instances',
+  RunCount: 'Runs', SucceededPct: 'Succeeded %', FailedPct: 'Failed %', FailedPct24Hrs: 'Failed % 24hrs', SucceededCount: 'Succeeded', WarningCount: 'Warnings',
+  RetriedCount: 'Retried', PartialCount: 'Partial', FailedCount: 'Failed', ImportFailedCount: 'Import Failed', UnknownCount: 'No Status',
+  ConsecutiveFailures: 'Failures In A Row', LastRunDate: 'Last Run', LastSuccessDate: 'Last Success', LastFailureDate: 'Last Failure',
+  AvgDurationMs: 'Avg Duration (ms)', MaxDurationMs: 'Max Duration (ms)', AvgCpuMs: 'Avg CPU (ms)', MaxCpuMs: 'Max CPU (ms)', TotalCpuMs: 'Total CPU (ms)',
+  AvgLogicalReads: 'Avg Logical Reads', AvgImportMs: 'Avg Import (ms)', MaxImportMs: 'Max Import (ms)', AvgImportCpuMs: 'Avg Import CPU (ms)',
+  TotalImportCpuMs: 'Total Import CPU (ms)', AvgImportLagSec: 'Avg Import Lag (sec)', MaxImportLagSec: 'Max Import Lag (sec)', ErrorCount: 'Errors',
+  ThresholdLevel: 'Thresholds', SnapshotDate: 'Date',
+};
+// a result set's own aliases where DBA Dash gives them per set (CollectionHealthView.cs L253-273: Cost's Value 'Seconds',
+// Import Lag's SnapshotDate 'Date Collected' and Value 'Seconds'; the review of B6.2, part b #7)
+const chAliasOf: Record<number, Record<string, string>> = { 2: { Value: 'Seconds' }, 3: { SnapshotDate: 'Date Collected', Value: 'Seconds' } };
+function chShape(cols: Col[], k: number): Col[] {
+  const shown = cols.filter(c => !(k === 0 && chHidden.has(c.key)));
+  for (const c of shown) c.label = chAliasOf[k]?.[c.key] ?? chAlias[c.key] ?? c.label;
+  const reason = shown.find(c => c.key === 'StatusReason');
+  if (reason) {
+    reason.cls = (_v: unknown, r: Row) => 'status ' + codeClass(num(r.Status));
+    reason.fmt = (v: unknown, r: Row) => v == null || String(v) === '' ? statusCell(num(r.Status), 'Status') : String(v);
+  }
+  return shown;
+}
+
 function setRows(set: PageSet): { cols: Col[]; rows: Row[] } {
   const names: string[] = [];
   for (const c of set.columns) {
@@ -481,9 +528,15 @@ async function screenInto(sec: HTMLElement, ctx: Ctx, m: Mode, page: string, sna
     sec.append(errorBox(e));
     return 0;
   }
+  // a screen gated by its procedure's version or right (B6.3: 'not read: ...'), on a proven version too: the server
+  // makes no call then (pages.go returns before callProc), so the meta line says so (the review B6f8 #4)
+  const gated = !!d.note && d.note.includes('not read:');
   sec.append(el('h3', {}, d.title, page === 'sessions' ? (snapshot ? ` at ${fmtTime(snapshot)}` : ' (the latest snapshot)') : ''),
-    el('p', { class: 'meta' }, `The repository's own ${d.procedure}, called now for this instance through its read login (${d.ms} ms); version ${d.version || '(no version row)'}.`));
+    el('p', { class: 'meta' }, gated
+      ? `The repository's own ${d.procedure} is not called for this instance; version ${d.version || '(no version row)'}.`
+      : `The repository's own ${d.procedure}, called now for this instance through its read login (${d.ms} ms); version ${d.version || '(no version row)'}.`));
   if (!d.proven) sec.append(el('p', { class: 'error', role: 'status' }, d.note ?? 'not proven on this source version'));
+  if (d.proven && gated) sec.append(el('p', { class: 'meta', role: 'status' }, d.note!));
   // the actions: the SQL Server instance pgvigil collects under the same server name AND machine name (a host renamed
   // without sp_dropserver keeps its old @@SERVERNAME, which a new server may carry), on the latest snapshot only (a past
   // snapshot's session id may belong to another session now); otherwise off with the reason
@@ -511,17 +564,18 @@ async function screenInto(sec: HTMLElement, ctx: Ctx, m: Mode, page: string, sna
       sec.append(noAction);
     }
   }
-  if (!d.results.length) sec.append(el('p', { class: 'empty' }, 'The procedure returned no result set.'));
+  if (!d.results.length && !gated) sec.append(el('p', { class: 'empty' }, 'The procedure returned no result set.'));
   let n = 0;
   d.results.forEach((set, k) => {
-    const { cols, rows } = setRows(set);
+    const shaped = setRows(set);
+    const rows = shaped.rows, cols = page === 'collectionhealth' ? chShape(shaped.cols, k) : shaped.cols;
     n += rows.length;
     if (page === 'running') {
       const at = cols.find(c => c.key === 'SnapshotDateUTC');
       if (at) at.fmt = v => el('a', { href: tabHref(ctx, m, 'mssql_running', asUTC(v)), title: 'the sessions of this snapshot' }, fmtTime(asUTC(v)));
     }
     if (actCol && k === 0) cols.push(actCol);
-    if (d.results.length > 1) sec.append(el('h4', {}, `Result set ${k + 1}`));
+    if (d.results.length > 1) sec.append(el('h4', {}, page === 'collectionhealth' && chSets[k] ? chSets[k] : `Result set ${k + 1}`));
     if (set.truncated) sec.append(el('p', { class: 'meta' }, 'The first 5000 rows of this result set.'));
     sec.append(grid(rows, cols, 'No rows.'));
   });

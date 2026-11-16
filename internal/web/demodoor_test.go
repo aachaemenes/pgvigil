@@ -132,6 +132,13 @@ func TestDemoDoorScope(t *testing.T) {
 		{"an alert of no instance (repository-wide, or its instance removed)", writeScope{Route: doorAck, FindingKey: "k-repo"}, noInstance},
 		{"a key no alert holds", writeScope{Route: doorDismiss, FindingKey: "k-nothing"}, "no alert has this key"},
 		{"a rule that names no instance and no alert", writeScope{Route: doorAck}, "an every-instance change " + wide},
+		// B6g-2 (the lead 11-15 04:2x (iii)): Collection Health's thresholds on the demo door - one demo instance (its
+		// collection or every collection of it) is carried; the two scopes wider than one instance are refused in words
+		{"a Collection Health threshold of a demo instance's collection", scopeOfCHThreshold(map[string]any{"instance_id": "1", "collection": "activity"}), ""},
+		{"a Collection Health threshold of every collection of a demo instance", scopeOfCHThreshold(map[string]any{"instance_id": "1"}), ""},
+		{"a Collection Health threshold of a real instance", scopeOfCHThreshold(map[string]any{"instance_id": "3"}), "prod-db1 " + notDemo},
+		{"a Collection Health threshold of a collection on every instance", scopeOfCHThreshold(map[string]any{"collection": "activity"}), "an every-instance change " + wide},
+		{"a Collection Health threshold of everything", scopeOfCHThreshold(map[string]any{}), "an every-instance change " + wide},
 		{"a silence that names no instance (a name alone is not read)", writeScope{Route: doorAck, OneInstance: true}, "names one instance or one alert"},
 		{"a silence of a seeded instance", writeScope{Route: doorAck, OneInstance: true, InstanceID: 1}, ""},
 		{"a rule by tag", writeScope{Route: doorAck, Tag: "env:prod"}, "a tag 'env:prod' change " + wide},
