@@ -201,6 +201,10 @@ func runRemote(ctx context.Context, log *slog.Logger, cfg *config.Config) error 
 		return err
 	}
 	defer lock.release()
+	// a first start (or one after the outbox was emptied by hand) makes the outbox; the lock made the state folder
+	if err := os.MkdirAll(r.Outbox, 0o750); err != nil {
+		return fmt.Errorf("remote.outbox %s: %w", r.Outbox, err)
+	}
 	st, fresh, err := remote.LoadState(r.StateDir)
 	if err != nil {
 		return err
