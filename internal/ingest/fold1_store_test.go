@@ -168,13 +168,16 @@ func TestRemoteSiteRetiredOnAStore(t *testing.T) {
 	}
 }
 
-// S3: a bundle once marked missing / short / newer format that loads later has those marks cleared
+// S3 (and FOLD 2 S6): a bundle once marked missing / short / newer format that loads later has those marks cleared, the
+// no-manifest mark (no stream, no digest) too
 func TestRemoteLoadClearsRetryMarksOnAStore(t *testing.T) {
 	f := newFold1(t, "f1s3")
 	t.Cleanup(f.cleanup)
 	f.must(`SELECT pgvigil.remote_site_sync($1, '{}'::text[], 60, 180)`, f.site)
 	id := f.ensure("SQL01")
-	f.must(`SELECT pgvigil.remote_mark($1, 'c1', 'SQL01', 'aaaaaaaaaaaaaaaa', 1, now(), 'missing', 'manifest.json is not in the drop', '')`, f.site)
+	f.must(`SELECT pgvigil.remote_mark($1, 'c1', 'SQL01', 'aaaaaaaaaaaaaaaa', 1, now(), 'short', 'mssql_ag.ndjson.gz is short', 'd1')`, f.site)
+	// FOLD 2 S6: a folder with no manifest yet is marked with no stream and no digest - cleared by its seq all the same
+	f.must(`SELECT pgvigil.remote_mark($1, 'c1', 'SQL01', '', 1, now(), 'missing', 'manifest.json is not in the drop', '')`, f.site)
 	f.bundle("SQL01", id, 1, time.Now().Add(-10*time.Minute), `[]`)
 	if v, err := f.one(`SELECT count(*) FROM pgvigil.remote_marks WHERE site = $1 AND seq = 1 AND cleared_at IS NULL`, f.site); err != nil || fmt.Sprint(v) != "0" {
 		t.Errorf("a loaded bundle's open 'missing' mark: %v %v, want 0", v, err)
@@ -305,5 +308,23 @@ func TestRemoteClearFloorOnAStore(t *testing.T) {
 	}
 	if !resolved(70 * time.Minute) {
 		t.Errorf("an owned instance's alert missing 70 minutes was not resolved (past the floor of 300 + 3600 s)")
+	}
+}
+
+// FOLD 2 N2: a bundle begun and stopped part-way ('loading') is what Recorded answers for its seq, with its digest - a
+// re-sent bundle of that seq with another manifest is then a conflict, never a second ledger row replaying its batches
+func TestRemoteRecordedSeesLoadingOnAStore(t *testing.T) {
+	f := newFold1(t, "f1n2")
+	t.Cleanup(f.cleanup)
+	f.must(`SELECT pgvigil.remote_site_sync($1, '{}'::text[], 60, 180)`, f.site)
+	id := f.ensure("SQL01")
+	end := time.Now().Add(-10 * time.Minute)
+	var b int64
+	if err := f.pool.QueryRow(f.ctx, `SELECT pgvigil.remote_bundle_begin($1, 'c1', 'SQL01', 'aaaaaaaaaaaaaaaa', 1, $2, $3, 'dA', $4)`, f.site, end.Add(-5*time.Minute), end, id).Scan(&b); err != nil {
+		t.Fatal(err)
+	}
+	digest, kind, found, err := (PoolHub{Pool: f.pool}).Recorded(f.ctx, f.site, "c1", "SQL01", "aaaaaaaaaaaaaaaa", 1)
+	if err != nil || !found || kind != "loading" || digest != "dA" {
+		t.Errorf("Recorded of a bundle stopped part-way: %q %q %v %v, want dA loading", digest, kind, found, err)
 	}
 }

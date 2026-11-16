@@ -50,6 +50,14 @@ func TestIngestCommand(t *testing.T) {
 	if err := runIngest(ctx, log, []string{"-config", sites, "now"}); err == nil || !strings.Contains(err.Error(), `unexpected argument "now"`) {
 		t.Errorf("a stray argument: %v, want 'unexpected argument'", err)
 	}
+	// FOLD 2 N4: -retry of a site the configuration does not list is refused before anything is cleared; -once=false is
+	// refused (there is no other mode)
+	if err := runIngest(ctx, log, []string{"-config", sites, "-retry", "nosite/c1/SQL06/2026-11-16/0000000002-20261116T174800Z"}); err == nil || !strings.Contains(err.Error(), "nosite") || !strings.Contains(err.Error(), "remote_sites") {
+		t.Errorf("-retry of a site not in remote_sites: %v, want it named as not in remote_sites:", err)
+	}
+	if err := runIngest(ctx, log, []string{"-config", sites, "-once=false"}); err == nil || !strings.Contains(err.Error(), "-once") {
+		t.Errorf("-once=false: %v, want a refusal naming -once", err)
+	}
 
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {

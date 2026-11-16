@@ -42,10 +42,14 @@ type memHub struct {
 	loads  []*Bundle
 	retry  map[string]time.Time // a key's open -retry (FOLD 1 B4): its window end
 	fail   map[string]error     // an instance key whose Load fails (FOLD 1 S5)
+	seen   map[string]time.Time // a folder's first sight by the hub (FOLD 2 B1)
+	// sightNow: a folder's first sight is the round that first lists it (the hub's real rule); false = its window's end,
+	// the settle clock every row before FOLD 2 was written against
+	sightNow bool
 }
 
 func newMemHub() *memHub {
-	return &memHub{loaded: map[string]string{}, kinds: map[string]string{}, newest: map[string]Newest{}, retry: map[string]time.Time{}, fail: map[string]error{}}
+	return &memHub{loaded: map[string]string{}, kinds: map[string]string{}, newest: map[string]Newest{}, retry: map[string]time.Time{}, fail: map[string]error{}, seen: map[string]time.Time{}}
 }
 
 func hk(site, coll, key, stream string, seq uint64) string {
@@ -97,6 +101,24 @@ func (h *memHub) Mark(_ context.Context, m Mark) error {
 func (h *memHub) retryBundle(site, coll string, ref format.Ref) {
 	k := hk(site, coll, ref.InstanceKey, streamIDs["st1"], ref.Seq)
 	h.kinds[k], h.retry[k] = "retry", ref.End
+}
+
+// Seen: the hub's first sight of a bundle folder (the settle clock: FOLD 2 B1)
+func (h *memHub) Seen(_ context.Context, site, coll, key, dir string, now time.Time) (time.Time, error) {
+	k := site + "/" + coll + "/" + key + "/" + dir
+	if t, ok := h.seen[k]; ok {
+		return t, nil
+	}
+	first := now
+	if !h.sightNow {
+		ref, err := format.ParseDir(dir)
+		if err != nil {
+			return time.Time{}, err
+		}
+		first = ref.End
+	}
+	h.seen[k] = first
+	return first, nil
 }
 
 // Retries: the window ends of a key's bundles with an open -retry
@@ -403,4 +425,188 @@ func TestRoundLoadErrorHoldsItsKeyOnly(t *testing.T) {
 		t.Errorf("the mark's reason carries the error: %q", h.marks[0].Reason)
 	}
 	eq(t, "set aside", res.SetAside, 1)
+}
+
+// faultDrop: a drop that lists one more key (a folder marker '<leaf>/': FOLD 2 B3) and refuses one key's Get (FOLD 2 S4)
+type faultDrop struct {
+	Drop
+	marker string // a listed key ending in '/'
+	refuse string // a key whose Get fails
+}
+
+func (f faultDrop) List(ctx context.Context, prefix string) ([]string, error) {
+	keys, err := f.Drop.List(ctx, prefix)
+	if f.marker != "" && strings.HasPrefix(f.marker, prefix) {
+		keys = append(keys, f.marker)
+	}
+	return keys, err
+}
+
+func (f faultDrop) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == f.refuse {
+		return nil, errors.New("open " + key + ": permission denied")
+	}
+	return f.Drop.Get(ctx, key)
+}
+
+// FOLD 2 B1: the settle runs from the hub's first sight of a folder - a backlog copied late (past gap_wait by its window
+// end) whose seq 2 is still copying holds seq 3 (no gap), and both load once 2 is whole: nothing marked, nothing late
+func TestRoundSettleFromFirstSight(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	h.sightNow = true
+	d.write("st1", 1, "mssql_activity", nil)
+	r2 := d.write("st1", 2, "mssql_activity", nil)
+	r3 := d.write("st1", 3, "mssql_activity", nil)
+	man, err := os.ReadFile(d.path(r2, format.ManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(d.path(r2, format.ManifestFile)); err != nil { // seq 2 still copying: its manifest comes last
+		t.Fatal(err)
+	}
+	now := r3.End.Add(2 * time.Hour) // copied late: every window ended past gap_wait
+	r := round(t, d.ingester(h, now, nil))
+	eq(t, "the first sight: 1 loaded, 2 waits and holds 3", h.order, []string{"st1/1"})
+	eq(t, "nothing marked", h.markKinds(), []string(nil))
+	eq(t, "waiting", r.Waiting, 1)
+	if err := os.WriteFile(d.path(r2, format.ManifestFile), man, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = round(t, d.ingester(h, now.Add(time.Minute), nil))
+	eq(t, "2 whole: 2 and 3 load in order", h.order, []string{"st1/1", "st1/2", "st1/3"})
+	eq(t, "no gap, nothing late", h.markKinds(), []string(nil))
+}
+
+// FOLD 2 B2: inside the settle ANY problem waits - a signature not there yet, a copy tool's temp file - and is marked
+// only past it (one row per kind)
+func TestRoundAnyProblemWaitsInsideTheSettle(t *testing.T) {
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	pub := key.Public().(ed25519.PublicKey)
+	for _, c := range []struct {
+		name string
+		make func(d *drop) format.Ref
+		keys map[string][][]byte
+		kind string
+	}{
+		{"manifest.sig not copied yet", func(d *drop) format.Ref {
+			r := d.write("st1", 1, "mssql_activity", key)
+			if err := os.Remove(d.path(r, format.SigFile)); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}, map[string][][]byte{"c1": {pub}}, KindSignature},
+		{"an rsync temp file beside the views", func(d *drop) format.Ref {
+			r := d.write("st1", 1, "mssql_activity", nil)
+			if err := os.WriteFile(d.path(r, ".mssql_ag.ndjson.gz.Xa81Qz"), []byte("half"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}, nil, format.KindExtra},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d, h := newDrop(t), newMemHub()
+			h.sightNow = true
+			r := c.make(d)
+			first := r.End.Add(2 * time.Hour)
+			res := round(t, d.ingester(h, first, c.keys))
+			eq(t, "inside the settle: waits, nothing marked", h.markKinds(), []string(nil))
+			eq(t, "waiting", res.Waiting, 1)
+			round(t, d.ingester(h, first.Add(16*time.Minute), c.keys))
+			eq(t, "past the settle: marked", h.markKinds(), []string{"st1/1:" + c.kind})
+		})
+	}
+}
+
+// FOLD 2 B3 + S4: a folder-marker key ('<leaf>/') is skipped; a file the drop refuses holds its own key - logged, the
+// other keys read in the same round - and past the settle its bundle is marked 'drop error' with the text
+func TestRoundMarkerAndDropErrorStopNothing(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	h.sightNow = true
+	ra := d.write("st1", 1, "mssql_activity", nil)
+	d.inst = "OTHER"
+	rb := d.write("st1", 1, "mssql_activity", nil)
+	in := d.ingester(h, ra.End.Add(time.Minute), nil)
+	in.Site.Drop = faultDrop{Drop: in.Site.Drop, marker: ra.Dir() + "/sub/", refuse: rb.Dir() + "/mssql_activity.ndjson.gz"}
+	res, err := in.Round(context.Background())
+	if err != nil {
+		t.Fatalf("a marker key or one refused file stopped the round: %v", err)
+	}
+	eq(t, "the marker's key loads", len(h.loads) == 1 && h.loads[0].Ref.InstanceKey == ra.InstanceKey, true)
+	eq(t, "the refused file's key waits", res.Waiting, 1)
+	in.Now = func() time.Time { return ra.End.Add(16 * time.Minute) }
+	round(t, in)
+	eq(t, "past the settle: 'drop error'", h.markKinds(), []string{"st1/1:drop error"})
+}
+
+// FOLD 2 B4: a bundle set aside for a reason the hub's own configuration caused (an unknown view) is read again once
+// the hub accepts it
+func TestRoundHubCausedSetAsideReadAgain(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	r1 := d.write("st1", 1, "mssql_cpu", nil) // a view this hub's allow list does not hold yet
+	now := r1.End.Add(time.Hour)
+	round(t, d.ingester(h, now, nil))
+	eq(t, "set aside: a view the hub does not accept yet", h.markKinds(), []string{"st1/1:" + KindUnknownView})
+	in := d.ingester(h, now.Add(time.Hour), nil)
+	in.Allow["mssql_cpu"] = true // the hub upgraded
+	round(t, in)
+	eq(t, "read again once the hub accepts it", h.order, []string{"st1/1"})
+}
+
+// FOLD 2 S1: OS litter in a bundle folder (._*, .DS_Store, Thumbs.db, desktop.ini) is ignored, never 'extra'
+func TestRoundOSLitterIgnored(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	r := d.write("st1", 1, "mssql_activity", nil)
+	for _, f := range []string{".DS_Store", "Thumbs.db", "._manifest.json", "desktop.ini"} {
+		if err := os.WriteFile(d.path(r, f), []byte("litter"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	round(t, d.ingester(h, r.End.Add(time.Hour), nil))
+	eq(t, "loaded despite the litter", h.order, []string{"st1/1"})
+	eq(t, "nothing marked", h.markKinds(), []string(nil))
+}
+
+// FOLD 2 S5: a collector folder the site does not list is logged and marked once a round, by name
+func TestRoundUnlistedCollectorMarked(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	r := d.write("st1", 1, "mssql_activity", nil)
+	if err := os.Rename(filepath.Join(d.root, "site1", "c1"), filepath.Join(d.root, "site1", "c9")); err != nil {
+		t.Fatal(err)
+	}
+	round(t, d.ingester(h, r.End.Add(time.Hour), nil))
+	found := false
+	for _, m := range h.marks {
+		if m.Collector == "c9" && strings.Contains(m.Reason, "c9") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a collector folder the site does not list left no mark: %v", h.markKinds())
+	}
+}
+
+// FOLD 2 N1: within one stream the bundles go in seq order even when the collector's clock stepped back
+func TestRoundSeqOrderWithinAStream(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	d.write("st1", 1, "mssql_activity", nil)
+	d.base = d.base.Add(-time.Hour) // the clock stepped back an hour before seq 2 closed
+	r2 := d.write("st1", 2, "mssql_activity", nil)
+	round(t, d.ingester(h, r2.End.Add(3*time.Hour), nil))
+	eq(t, "seq order", h.order, []string{"st1/1", "st1/2"})
+	eq(t, "nothing late", h.markKinds(), []string(nil))
+}
+
+// FOLD 2 N5: a gap is recorded only when the bundle after it loads (a failing load records no gap)
+func TestRoundGapOnlyWithTheLoad(t *testing.T) {
+	d, h := newDrop(t), newMemHub()
+	d.write("st1", 1, "mssql_activity", nil)
+	r3 := d.write("st1", 3, "mssql_activity", nil)
+	round(t, d.ingester(h, r3.End.Add(time.Minute), nil)) // 1 loads, 3 waits for 2
+	h.fail[r3.InstanceKey] = errors.New("an import refused")
+	_, _ = d.ingester(h, r3.End.Add(16*time.Minute), nil).Round(context.Background())
+	for _, m := range h.marks {
+		if m.Kind == KindGap {
+			t.Errorf("a gap recorded for a bundle that did not load: %+v", m)
+		}
+	}
 }
