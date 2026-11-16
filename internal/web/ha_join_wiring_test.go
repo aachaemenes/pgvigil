@@ -222,3 +222,89 @@ func TestReplicationTabNamesPatroniNoLeader(t *testing.T) {
 		t.Error("the Replication tab's part 'patroni_checks' does not name 'patroni no leader' for a cluster without a leader")
 	}
 }
+
+// TestSummaryMirroringCellOnAStore (hadr-s3's answer to the join's L10, its report's HA JOIN CHECK (d)): on a migrated
+// repository (PGVIGIL_REPO_TEST_DSN, skipped without it) a SQL Server instance that only mirrors - one read of a
+// synchronized principal whose named witness is disconnected (0143's warning 'the mirroring witness is disconnected')
+// and whose mirroring endpoint is stopped (its critical 'the mirroring endpoint is not started') - counts both in the
+// Summary's Mirroring cell and none in Availability Groups. The cell took only names that START with 'mirroring'
+// (three of 0143's eight mirroring names); the other five - these two, 'the mirroring send / redo queue is over its
+// threshold' and 'the principal of a mirrored database changed' - fell to Availability Groups, as the log shipping
+// names did before W19.
+func TestSummaryMirroringCellOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := fmt.Sprint(time.Now().UnixNano() % 1000000000)
+	var id int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+		"mirwire-"+sfx).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, q := range []string{`DELETE FROM pgvigil.mssql_mirroring_sample WHERE instance_id = $1`, `DELETE FROM pgvigil.instances WHERE instance_id = $1`} {
+			if _, err := pool.Exec(context.Background(), q, id); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	payload, err := json.Marshal([]map[string]any{
+		{"kind": "mirror", "database_name": "mirw_db", "role": "PRINCIPAL", "state": "SYNCHRONIZED", "safety_level": "FULL",
+			"partner": "TCP://MIR-" + sfx + ":5022", "partner_instance": "MIR-" + sfx, "witness": "TCP://WIT-" + sfx + ":5022",
+			"witness_state": "DISCONNECTED", "log_send_queue_kb": 0, "redo_queue_kb": 0, "role_sequence": 1},
+		{"kind": "endpoint", "endpoint_name": "Mirroring", "endpoint_port": 5022, "endpoint_state": "STOPPED"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_mirroring($1, now(), $2::jsonb)`, id, string(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.collection_dates (instance_id, collection, snapshot_at, status) VALUES ($1, 'mssql_mirroring', now(), 'ok')`, id); err != nil {
+		t.Fatal(err)
+	}
+	// the control: the two findings themselves, as 0143 raises them
+	var own string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(severity || '|' || check_name, ', ' ORDER BY severity, check_name), '') FROM pgvigil.mssql_hadr_findings
+	                               WHERE instance_id = $1`, id).Scan(&own); err != nil {
+		t.Fatal(err)
+	}
+	if own != "critical|the mirroring endpoint is not started, warning|the mirroring witness is disconnected" {
+		t.Fatalf("the instance's HA findings: %q; want the critical endpoint finding and the warning witness finding", own)
+	}
+	rs, err := pool.Query(ctx, sqlMSSQLSummaryCells, `{}`, 3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rs.Close()
+	crit, warn := map[string]int{}, map[string]int{}
+	for rs.Next() {
+		var iid, c, w int
+		var key, state string
+		var sampled bool
+		var value, errText *string
+		var detail []string
+		var readAt, since *time.Time
+		if err := rs.Scan(&iid, &key, &state, &sampled, &c, &w, &value, &detail, &readAt, &errText, &since); err != nil {
+			t.Fatal(err)
+		}
+		if iid == id {
+			crit[key], warn[key] = c, w
+		}
+	}
+	if err := rs.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if crit["mirroring"] != 1 || warn["mirroring"] != 1 || crit["availability"] != 0 || warn["availability"] != 0 {
+		t.Errorf("the Summary's counts (critical / warning): Mirroring %d / %d, Availability Groups %d / %d; want 1 / 1 and 0 / 0",
+			crit["mirroring"], warn["mirroring"], crit["availability"], warn["availability"])
+	}
+}
