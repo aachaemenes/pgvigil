@@ -172,6 +172,15 @@ func demoServe(ctx context.Context, log *slog.Logger, repoDSN, port string, runn
 	for _, name := range runningPlans {
 		exp.Instances[name] = map[string]int{"mssql_running_plans": 60}
 	}
-	return web.Open(ctx, log, repoDSN, web.Options{Expected: exp, Hosts: web.LoopbackHosts(port),
+	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: exp, Hosts: web.LoopbackHosts(port),
 		Tags: web.TagsUI{GroupBy: []string{"env"}, EnvOrder: config.DefaultEnvOrder}, Version: versionLine(), DemoDoor: door})
+	if err != nil {
+		return nil, err
+	}
+	// the plan configuration of an install with no file lines: every instance's statement-text policy is the
+	// configuration's default, so a page built from it (the XE captures script) reads the demo as it reads an install;
+	// the handlers' refusal of an empty policy stays (doorSet.queryText: never an empty policy read as full text).
+	// EXPLAIN ANALYZE and the planner check stay off (no gate, as before).
+	srv.SetPlans(web.PlansConfig{DefaultQueryText: config.DefaultQueryText})
+	return srv, nil
 }
