@@ -57,10 +57,20 @@
 #      and mpub2 (merge) articles NULL, tpub (transactional) 2 [red: 0 / 0]. Every other agent as before [green].
 #      Review q10wb's fold: merge-start-error (its own publication mpub3: a start session of runstatus 1 holding an
 #      error row before the failed session) since the failed session's error (5 min), code 18456; mpub3 articles NULL.
+#      The recovery hold (the lead 16:4x, review q10wa S4; written before its red run on 56c29ff2): a session in
+#      progress is failing while its newest error row is newer than its newest clean row or its newest error is under
+#      10 minutes old; a clean stretch of 10 minutes after an error is a recovery inside the session and a later
+#      failure starts the streak again. merge-day-old-error (one error a day ago, merging since) NOT failing [red:
+#      failing since a day]; merge-errors-60s (clean rows between errors 60 s apart, a clean row newest) failing since
+#      its first error (5 min), code 18456 [green on 56c29ff2 too: any error row was failing]; merge-recovered-then-
+#      failing (an error an hour ago, 54 clean minutes, a new failure) since the new failure (6 min) [red: 60 min];
+#      merge-hold (an error 3 min ago, clean rows since) failing since 3 min [green on 56c29ff2 too];
+#      merge-hold-expired (an error 15 min ago, clean since) NOT failing [red: failing since 15 min].
 #  T3. go test ./internal/mssql/ (the unit tests, no server). [green before and after]
 #  T3b. Q10W part W's own session reads (sql_since, sql_fail, sql_good: shared with part W) compiled and run on the
 #      stub's publication mpub: since = merge-flapping's marked error time, the newest failing session's runstatus 3
-#      (1531, in progress with its error row), the newest healthy one with a message 2 (1501); on mpub3 alone since =
+#      (2102, in its hold), the newest healthy one with a message 3 (2201, its hold passed; 1501's 2 before the hold
+#      rows were added); on mpub3 alone since =
 #      merge-start-error's marked error (the start row's earlier error left out: review q10wb S1). [new with the fix]
 #  T4. stored merge subscription rows, two reads 2 minutes apart, through import_mssql_replication on a stub instance:
 #      findings exactly
@@ -86,6 +96,10 @@
 #        read that saw it failing' [red on 4b1729a4: no failing_seen column ('no-column')]; beside it merge-untimed2,
 #        timed at the first read (since 12 min) and untimed at the second: since kept at 12 min, failing_seen not set,
 #        'keeps failing or retrying' without the words (review q10wb S2);
+#      - the carry (review q10wa S2 / S3, written before its red run on 56c29ff2), three reads: merge-untimed3 untimed,
+#        clean, untimed -> since the first read T0, failing_seen [red: the third read's time]; merge-retention 12 min
+#        then 8 min (an error purged) -> 12 min [red: 8]; merge-late-first untimed then timed 90 s -> T0, failing_seen
+#        [red: 90 s]; merge-new-streak 12 min then 90 s (a new error after the previous read) -> 90 s [green: the guard];
 #      - Q10W the alert row: repl_agent_retrying at 60 minutes (instance), a merge row failing since 75 min, then a read
 #        in a retry's clean window (in progress, no since), then failing again since the same 75 min: 'keeps failing
 #        or retrying', none, 'keeps failing or retrying', the stored since still the 75 min (review q10wb N4) [green on
@@ -115,7 +129,11 @@ ok() { echo "ok $*"; }
 # set by its part): a session's own error row; healthy = ended 2 / 4, or in progress (3) with no error row; failing =
 # 5 / 6, or 3 with an error row
 ERRROW() { echo "EXISTS (SELECT 1 FROM $D.MSmerge_history h0 WHERE h0.agent_id = $1.agent_id AND h0.session_id = $1.session_id AND ISNULL(h0.error_id, 0) <> 0)"; }
-HEALTHY() { echo "($1.runstatus IN (2, 4) OR ($1.runstatus = 3 AND NOT $(ERRROW "$1")))"; }
+# the recovery hold, as the product's mergeRecoveryHoldMin: a session in progress with error rows counts healthy once
+# its newest row is clean and its newest error is HOLD minutes old (the lead 16:4x); sql_since has no in-session cut
+# (part W's sessions have no recovery inside one: the hour-7 bounce step reads whether one appears)
+HOLD=10
+HEALTHY() { echo "($1.runstatus IN (2, 4) OR ($1.runstatus = 3 AND (NOT $(ERRROW "$1") OR ((SELECT MAX(hc.timestamp) FROM $D.MSmerge_history hc WHERE hc.agent_id = $1.agent_id AND hc.session_id = $1.session_id AND ISNULL(hc.error_id, 0) = 0) > (SELECT MAX(he.timestamp) FROM $D.MSmerge_history he WHERE he.agent_id = $1.agent_id AND he.session_id = $1.session_id AND ISNULL(he.error_id, 0) <> 0) AND ISNULL((SELECT MAX(e2.time) FROM $D.MSmerge_history he2 JOIN $D.MSrepl_errors e2 ON e2.id = he2.error_id WHERE he2.agent_id = $1.agent_id AND he2.session_id = $1.session_id AND ISNULL(he2.error_id, 0) <> 0), '19000101') <= DATEADD(minute, -$HOLD, GETDATE())))))"; }
 sql_since() { echo "SELECT ISNULL(CAST(DATEDIFF_BIG(second, '19700101', DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MIN(e.time))) AS varchar(20)), 'null') FROM $D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id JOIN $D.MSmerge_history h ON h.agent_id = x.agent_id AND h.session_id = x.session_id AND ISNULL(h.error_id, 0) <> 0 JOIN $D.MSrepl_errors e ON e.id = h.error_id WHERE a.publication = N'$1' AND x.session_id >= (SELECT MIN(z.session_id) FROM $D.MSmerge_sessions z WHERE z.agent_id = a.id AND z.runstatus IN (3, 5, 6) AND z.session_id > ISNULL((SELECT MAX(y.session_id) FROM $D.MSmerge_sessions y WHERE y.agent_id = a.id AND $(HEALTHY y)), -2147483648))"; }
 # sql_fail <base>: the newest failing session newer than base; sql_good <base>: the newest healthy one newer than base
 # that holds a message and has run 120 s (or ended 2 / 4)
@@ -212,13 +230,17 @@ INSERT dbo.MSmerge_agents VALUES (1, N'merge-idle', 0, N'p', N'mpub', 1, N's1', 
   (9, N'merge-recovered-running', 0, N'p', N'mpub', 1, N's9', NULL, N'SUBX'), (10, N'merge-failing-in-progress', 0, N'p', N'mpub', 1, N's10', NULL, N'SUBX'),
   (11, N'merge-flicker-a', 0, N'p', N'mpub', 1, N's11', NULL, N'SUBX'), (12, N'merge-flicker-b', 0, N'p', N'mpub', 1, N's12', NULL, N'SUBX'),
   (13, N'merge-flicker-c', 0, N'p', N'mpub', 1, N's13', NULL, N'SUBX'), (14, N'merge-untimed', 0, N'p', N'mpub', 1, N's14', NULL, N'SUBX'),
-  (15, N'merge-flapping', 0, N'p', N'mpub', 1, N's15', NULL, N'SUBX'), (16, N'merge-start-error', 0, N'p', N'mpub3', 1, N's16', NULL, N'SUBX');
+  (15, N'merge-flapping', 0, N'p', N'mpub', 1, N's15', NULL, N'SUBX'), (16, N'merge-start-error', 0, N'p', N'mpub3', 1, N's16', NULL, N'SUBX'),
+  (17, N'merge-day-old-error', 0, N'p', N'mpub', 1, N's18', NULL, N'SUBX'), (18, N'merge-errors-60s', 0, N'p', N'mpub', 1, N's19', NULL, N'SUBX'),
+  (19, N'merge-recovered-then-failing', 0, N'p', N'mpub', 1, N's20', NULL, N'SUBX'), (20, N'merge-hold', 0, N'p', N'mpub', 1, N's21', NULL, N'SUBX'),
+  (21, N'merge-hold-expired', 0, N'p', N'mpub', 1, N's22', NULL, N'SUBX');
 INSERT dbo.MSmerge_subscriptions (publisher_id, publisher_db, publication_id, subscriber_id, subscriber_db, subscription_type, sync_type, status, subscription_time) VALUES
   (0, N'p', 1, 1, N's1', 0, 1, 0, @b), (0, N'p', 1, 1, N's2', 0, 1, 0, @b), (0, N'p', 1, 1, N's3', 0, 1, 0, @b),
   (0, N'p', 1, 1, N's4', 0, 1, 0, @b), (0, N'p', 1, 1, N's5', 1, 1, 0, @b), (0, N'p', 2, 1, N's1', 1, 1, 0, @b),
   (0, N'p', 1, 1, N's8', 0, 1, 0, @b), (0, N'p', 1, 1, N's9', 0, 1, 0, @b), (0, N'p', 1, 1, N's10', 0, 1, 0, @b), (0, N'p', 1, 1, N's11', 0, 1, 0, @b),
   (0, N'p', 1, 1, N's12', 0, 1, 0, @b), (0, N'p', 1, 1, N's13', 0, 1, 0, @b), (0, N'p', 1, 1, N's14', 0, 1, 0, @b), (0, N'p', 1, 1, N's15', 0, 1, 0, @b),
-  (0, N'p', 4, 1, N's16', 0, 1, 0, @b);
+  (0, N'p', 4, 1, N's16', 0, 1, 0, @b), (0, N'p', 1, 1, N's18', 0, 1, 0, @b), (0, N'p', 1, 1, N's19', 0, 1, 0, @b), (0, N'p', 1, 1, N's20', 0, 1, 0, @b),
+  (0, N'p', 1, 1, N's21', 0, 1, 0, @b), (0, N'p', 1, 1, N's22', 0, 1, 0, @b);
 -- merge-2022-names: both ids NULL as on SQL Server 2022, matched by the subscriber's name; the decoy (another server's
 -- database of the same name, a pull) comes first and must not be taken
 INSERT dbo.MSmerge_subscriptions VALUES (0, N'p', 1, NULL, N's7', 1, 1, 0, @b, N'P', N'SUBY'), (0, N'p', 1, NULL, N's7', 0, 1, 0, @b, N'P', N'SUBX');
@@ -326,6 +348,51 @@ INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
 INSERT dbo.MSrepl_errors (id, time, error_code, error_text) VALUES
   (171, DATEADD(minute, -10, @b), N'20084', N'The process could not connect to Subscriber ''SUBX''.'),
   (172, DATEADD(minute, -5, @b), N'18456', N'Login failed for user ''sa''.');
+-- the recovery hold (the lead 16:4x, review q10wa S4): a session in progress is failing while its newest error row is
+-- newer than its newest clean row, or its newest error is under 10 minutes old; a clean stretch of 10 minutes after
+-- its last error is a recovery inside the session, and a later failure starts the streak again (rows inserted in
+-- their order: MSmerge_history.timestamp orders them, MSrepl_errors.time dates the errors)
+INSERT dbo.MSmerge_sessions (session_id, agent_id, start_time, end_time, delivery_rate, runstatus) VALUES
+  (1801, 17, DATEADD(day, -2, @b), DATEADD(minute, -1, @b), 0, 3),
+  (1901, 18, DATEADD(minute, -60, @b), DATEADD(minute, -59, @b), 0, 2), (1902, 18, DATEADD(minute, -6, @b), NULL, NULL, 3),
+  (2001, 19, DATEADD(minute, -90, @b), DATEADD(minute, -1, @b), 0, 3),
+  (2101, 20, DATEADD(minute, -60, @b), DATEADD(minute, -59, @b), 0, 2), (2102, 20, DATEADD(minute, -10, @b), DATEADD(minute, -1, @b), 0, 3),
+  (2201, 21, DATEADD(minute, -60, @b), DATEADD(minute, -1, @b), 0, 3);
+INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
+  -- merge-day-old-error: one transient error a day ago in a session merging since: NOT failing (red on the rule before)
+  (1801, 17, N'No data needed to be merged.', 0), (1801, 17, N'A deadlock was retried.', 181),
+  (1801, 17, N'Merged 2 data changes.', 0), (1801, 17, N'No data needed to be merged.', 0);
+INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
+  -- merge-errors-60s: a failing attempt that writes a clean row between its errors 60 s apart, a clean row newest:
+  -- failing throughout (the hold), since its first error
+  (1901, 18, N'No data needed to be merged.', 0), (1902, 18, N'Connecting to Subscriber ''SUBX''.', 0), (1902, 18, N'expected since', 191),
+  (1902, 18, N'Retrying.', 0), (1902, 18, N'The process could not connect to Subscriber ''SUBX''.', 192), (1902, 18, N'Retrying.', 0),
+  (1902, 18, N'The process could not connect to Subscriber ''SUBX''.', 193), (1902, 18, N'Retrying.', 0),
+  (1902, 18, N'The process could not connect to Subscriber ''SUBX''.', 194), (1902, 18, N'Retrying.', 0),
+  (1902, 18, N'The process could not connect to Subscriber ''SUBX''.', 195), (1902, 18, N'Connecting to Subscriber ''SUBX''.', 0),
+  (1902, 18, N'expected code 18456', 0);
+INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
+  -- merge-recovered-then-failing: an error an hour ago, a recovery inside the session (clean for 54 minutes), then a
+  -- new failure: since the new failure's first error, never the hour-old one
+  (2001, 19, N'No data needed to be merged.', 0), (2001, 19, N'an old failure', 2011), (2001, 19, N'Merged 1 data changes.', 0),
+  (2001, 19, N'No data needed to be merged.', 0), (2001, 19, N'expected since', 2012), (2001, 19, N'Retrying.', 0),
+  (2001, 19, N'The process could not connect to Subscriber ''SUBX''.', 2013), (2001, 19, N'expected code 18456', 0);
+INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
+  -- merge-hold: an error 3 minutes ago, clean rows since: failing (inside the hold), since that error
+  (2101, 20, N'No data needed to be merged.', 0), (2102, 20, N'Connecting to Subscriber ''SUBX''.', 0), (2102, 20, N'expected since', 2111),
+  (2102, 20, N'No data needed to be merged.', 0), (2102, 20, N'No data needed to be merged.', 0), (2102, 20, N'expected code 18456', 0),
+  -- merge-hold-expired: an error 15 minutes ago, clean rows since: NOT failing (the hold passed)
+  (2201, 21, N'No data needed to be merged.', 0), (2201, 21, N'The process could not connect to Subscriber ''SUBX''.', 2211),
+  (2201, 21, N'No data needed to be merged.', 0), (2201, 21, N'No data needed to be merged.', 0);
+INSERT dbo.MSrepl_errors (id, time, error_code, error_text) VALUES
+  (181, DATEADD(day, -1, @b), N'1205', N'Transaction was deadlocked and has been chosen as the deadlock victim.'),
+  (191, DATEADD(minute, -5, @b), N'18456', N'Login failed for user ''sa''.'), (192, DATEADD(minute, -4, @b), N'18456', N'Login failed for user ''sa''.'),
+  (193, DATEADD(minute, -3, @b), N'18456', N'Login failed for user ''sa''.'), (194, DATEADD(minute, -2, @b), N'18456', N'Login failed for user ''sa''.'),
+  (195, DATEADD(minute, -1, @b), N'18456', N'Login failed for user ''sa''.'),
+  (2011, DATEADD(minute, -60, @b), N'1205', N'Transaction was deadlocked and has been chosen as the deadlock victim.'),
+  (2012, DATEADD(minute, -6, @b), N'18456', N'Login failed for user ''sa''.'), (2013, DATEADD(minute, -5, @b), N'18456', N'Login failed for user ''sa''.'),
+  (2111, DATEADD(minute, -3, @b), N'18456', N'Login failed for user ''sa''.'),
+  (2211, DATEADD(minute, -15, @b), N'18456', N'Login failed for user ''sa''.');
 SQL
   IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$NODE")
   export PGVIGIL_MSSQL_TEST_DSN="sqlserver://sa:$SA@$IP:1433?database=master&encrypt=true&TrustServerCertificate=true"
@@ -343,13 +410,14 @@ SQL
   done
   if go test ./internal/mssql/ -count=1 > "$OUT" 2>&1; then ok "T3: go test ./internal/mssql/"; else mask < "$OUT" | tail -20; red "T3"; fi
   # T3b. part W's own session reads (sql_since / sql_fail / sql_good), compiled and run on this stub's publication mpub:
-  # since = merge-flapping's marked error (the earliest streak of mpub), the newest failing session 1531 (in progress
-  # with its error row: 3), the newest healthy one with a message that ended 2 / 4 or ran 120 s: 1501 (2)
+  # since = merge-flapping's marked error (the earliest streak of mpub), the newest failing session 2102 (in progress
+  # inside its hold: 3), the newest healthy one with a message that ended 2 / 4 or ran 120 s: 2201 (in progress, its
+  # hold passed: 3 - HEALTHY's hold branch)
   D=pgvm_stub.dbo; MSES="$D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'mpub'"
   QS() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | QIN; }
   WS=$(QS "SELECT CAST(DATEDIFF_BIG(second, '19700101', DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MIN(e.time))) AS varchar(20)) FROM $D.MSrepl_errors e JOIN $D.MSmerge_history h ON h.error_id = e.id WHERE h.agent_id = 15 AND h.comments = N'expected since'" 2>&1) || WS="error: $WS"
   PW="$(QS "$(sql_since mpub)" 2>&1 || echo error)|$(QS "$(sql_fail 0)" 2>&1 || echo error)|$(QS "$(sql_good 0)" 2>&1 || echo error)"
-  if [ "$PW" = "$WS|3|2" ]; then ok "T3b: part W's session reads on the stub: $PW"; else red "T3b" "got '$PW', want '$WS|3|2'" | mask; RED+=(T3b); fi
+  if [ "$PW" = "$WS|3|3" ]; then ok "T3b: part W's session reads on the stub: $PW"; else red "T3b" "got '$PW', want '$WS|3|3'" | mask; RED+=(T3b); fi
   # mpub3 alone: a start session's error row before the failed session never counts (review q10wb S1)
   WS3=$(QS "SELECT CAST(DATEDIFF_BIG(second, '19700101', DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MIN(e.time))) AS varchar(20)) FROM $D.MSrepl_errors e JOIN $D.MSmerge_history h ON h.error_id = e.id WHERE h.agent_id = 16 AND h.comments = N'expected since'" 2>&1) || WS3="error: $WS3"
   PW3=$(QS "$(sql_since mpub3)" 2>&1 || echo error)
@@ -411,6 +479,24 @@ warning:a replication agent keeps failing or retrying:merge / merge-failing'
   WUF='warning:a replication agent failed:merge / merge-untimed:true
 warning:a replication agent keeps failing or retrying:merge / merge-untimed2:false'
   if [ "$UT" = "true/true true/true " ] && [ "$UT2" = "true/null true/null " ] && [ "$UF" = "$WUF" ]; then ok "T4: the untimed fallback: $UT, $UT2, $(echo "$UF" | tr '\n' ' ')"; else red "T4-untimed" "$UT / $UT2 / $(echo "$UF" | tr '\n' ' ')"; fi
+  # the carry (review q10wa S2 / S3), three reads T0, T1, T2 on one instance: merge-untimed3 untimed, clean, untimed
+  # (one clean read between never resets: since T0, failing_seen); merge-retention since 12 min, then 8 min (its first
+  # error row purged at the distributor: an earlier stored time is kept while the series stays failing, 12 min);
+  # merge-late-first untimed, then timed since 90 s (the streak's oldest session had no error row: the first read
+  # that saw it stays, T0, failing_seen); merge-new-streak since 12 min, then 90 s (an error after the previous read
+  # while it held a real error time: a new streak, 90 s - the guard)
+  SC=$(q "select pgvigil.ensure_instance('proof-merge-carry-$HX', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+  T0=$(q "select now() - interval '5 minutes'"); F8=$(q "select now() - interval '8 minutes'")
+  carry() {   # carry <read time> <untimed3 extra> <retention since> <late-first extra> <new-streak since>
+    q "select pgvigil.import_mssql_replication($SC, '$1'::timestamptz, '[$(row merge merge-untimed3 s31 null "${2%%|*}" "$1" "${2#*|}"), $(job merge merge-untimed3 running),
+      $(row merge merge-retention s32 null 6 "$1" ", \"failing_since_utc\": \"$3\""), $(job merge merge-retention running),
+      $(row merge merge-late-first s33 null 6 "$1" "$4"), $(job merge merge-late-first running),
+      $(row merge merge-new-streak s34 null 6 "$1" ", \"failing_since_utc\": \"$5\""), $(job merge merge-new-streak running)]'::jsonb)" >/dev/null; }
+  carry "$T0" '6|, "failing_untimed": 1' "$F12" ', "failing_untimed": 1' "$F12"
+  carry "$T1" '3|' "$F8" ", \"failing_since_utc\": \"$F1\"" "$F1"
+  carry "$T2" '6|, "failing_untimed": 1' "$F8" ", \"failing_since_utc\": \"$F1\"" "$F1"
+  CY=$(q "select string_agg(agent_name || '=' || coalesce(CASE failing_since WHEN '$T0'::timestamptz THEN 'T0' WHEN '$F12'::timestamptz THEN 'F12' WHEN '$F8'::timestamptz THEN 'F8' WHEN '$F1'::timestamptz THEN 'F1' WHEN '$T2'::timestamptz THEN 'T2' ELSE failing_since::text END, 'null') || '/' || coalesce(failing_seen::text, 'null'), ',' order by agent_name) from pgvigil.mssql_replication_state where instance_id = $SC" 2>/dev/null || echo error)
+  if [ "$CY" = "merge-late-first=T0/true,merge-new-streak=F1/null,merge-retention=F12/null,merge-untimed3=T0/true" ]; then ok "T4: the carry: $CY"; else red "T4-carry" "$CY"; fi
   # the alert row (the lead 16:1x): a 60-minute retrying rule is reached across a retry's clean first seconds - the
   # read in that window has no finding, the next read gives the same since back (0059's alert_state keeps an open
   # alert through a gap shorter than the channel's clear delay, 600 s by default: read, not changed here)

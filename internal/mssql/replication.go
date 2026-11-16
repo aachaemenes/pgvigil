@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -247,6 +248,12 @@ WHERE a.subscriber_db <> N'virtual'` + mergeArm + `
 ORDER BY 4, 5, 6, 7, 8`
 }
 
+// mergeRecoveryHoldMin: a merge session in progress that wrote an error row counts as recovered inside itself once its
+// newest row is clean and its newest error is this many minutes old (the lead 2026-11-15: long enough that a failing
+// attempt writing clean rows between errors 60 s apart, as on the Windows lab, never reads recovered; short enough
+// that one transient error of a long-running continuous agent clears within two 5-minute reads).
+const mergeRecoveryHoldMin = 10
+
 // replMergeSubscriptions is the merge arm of replSubscriptionsFor: one row per merge agent (MSmerge_agents), its
 // newest session (MSmerge_sessions: runstatus 1 start, 2 succeed, 3 in progress, 4 idle, 5 retry, 6 fail; the time
 // is its end, or its start while it runs) and that session's newest message (MSmerge_history), the subscription's
@@ -257,24 +264,40 @@ ORDER BY 4, 5, 6, 7, 8`
 // subscription databases): those columns are NULL.
 // Failing (read on a Windows lab: a continuous merge agent's healthy session stays 3, in progress, until its job
 // stops; every start also writes a session of runstatus 1 and no duration): a session is healthy when it ended 2 / 4,
-// or is in progress (3) and its own history holds no error row; it is failing when it is 5 / 6, or in progress with an
-// error row. The agent is failing while a failing session is newer than its newest healthy one (the streak); since =
-// the earliest MSrepl_errors time of the streak's error rows, so a retry carries the first failure's time and a
-// session healthy for hours before its first error starts the streak at that error, never at its own start. A retry's
-// first seconds, before its first error row, read healthy (the known limit: the agent reads 'not failing' then).
+// or is in progress (3) with no error row in its own history or recovered inside itself (its newest row is clean and
+// its newest error is mergeRecoveryHoldMin minutes old or more); it is failing when it is 5 / 6, or in progress
+// otherwise. The agent is failing while a failing session is newer than its newest healthy one (the streak); since =
+// the earliest MSrepl_errors time of the streak's error rows after its last recovery inside a session (an error row
+// followed by a clean row and then the hold with no error), so a retry carries the first failure's time, a session
+// healthy for hours before its first error starts the streak at that error, and a failure after a recovery inside a
+// long session starts it again. A retry's first seconds, before its first error row, read healthy (the known limit:
+// about 90 s on the lab, where a failing attempt wrote its first error row 90 s after its start).
 // failing_untimed = 1: failing, and no error row of the streak names an MSrepl_errors row (no time at the distributor:
 // the import takes the first read that saw it). The error = the newest MSmerge_history row of the streak that names an
-// error id, its MSrepl_errors row with an error code first.
+// error id, its MSrepl_errors row with an error code first. MSmerge_history has no time of its own: its timestamp
+// (rowversion) orders the rows, MSrepl_errors.time dates the errors.
 func replMergeSubscriptions(db string, mapped, names bool) string {
 	d := quoteName(db)
+	hold := strconv.Itoa(mergeRecoveryHoldMin)
 	subMatch := `m.subscriber_id = a.subscriber_id`
 	if names {
 		subMatch = `(m.subscriber_id = a.subscriber_id
                      OR (a.subscriber_id IS NULL AND m.subscriber_id IS NULL AND UPPER(m.subscriber) = UPPER(a.subscriber_name)))`
 	}
-	// errorRow: a history row of session x that names an error
+	// errorRow: a history row of session x that names an error; healthy3: session x in progress counts as healthy (no
+	// error row, or recovered inside itself: its newest row clean and its newest error the hold old or more)
 	errorRow := func(x string) string {
 		return `EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history h0 WHERE h0.agent_id = ` + x + `.agent_id AND h0.session_id = ` + x + `.session_id AND ISNULL(h0.error_id, 0) <> 0)`
+	}
+	same := func(alias, x string) string {
+		return alias + `.agent_id = ` + x + `.agent_id AND ` + alias + `.session_id = ` + x + `.session_id`
+	}
+	healthy3 := func(x string) string {
+		return `(NOT ` + errorRow(x) + `
+                    OR ((SELECT MAX(hc.timestamp) FROM ` + d + `.dbo.MSmerge_history hc WHERE ` + same("hc", x) + ` AND ISNULL(hc.error_id, 0) = 0)
+                        > (SELECT MAX(he.timestamp) FROM ` + d + `.dbo.MSmerge_history he WHERE ` + same("he", x) + ` AND ISNULL(he.error_id, 0) <> 0)
+                        AND ISNULL((SELECT MAX(e2.time) FROM ` + d + `.dbo.MSmerge_history he2 JOIN ` + d + `.dbo.MSrepl_errors e2 ON e2.id = he2.error_id
+                                     WHERE ` + same("he2", x) + ` AND ISNULL(he2.error_id, 0) <> 0), '19000101') <= DATEADD(minute, -` + hold + `, GETDATE())))`
 	}
 	return `
 SELECT 'subscription', ` + literal(db) + `, a.id,
@@ -299,15 +322,32 @@ OUTER APPLY (SELECT TOP (1) x.session_id, x.runstatus, x.start_time, x.end_time,
                FROM ` + d + `.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) h
 OUTER APPLY (SELECT TOP (1) y.comments
                FROM ` + d + `.dbo.MSmerge_history y WHERE y.agent_id = a.id AND y.session_id = h.session_id ORDER BY y.timestamp DESC) c
-OUTER APPLY (SELECT MAX(y.session_id) AS ok_id FROM ` + d + `.dbo.MSmerge_sessions y
-              WHERE y.agent_id = a.id AND (y.runstatus IN (2, 4) OR (y.runstatus = 3 AND NOT ` + errorRow("y") + `))) mok
--- the streak: every session in progress newer than the newest healthy one holds an error row (else it would be that one)
+-- the newest healthy session: the newest that ended 2 / 4, or a session in progress newer than it that counts as
+-- healthy (the history is read only for those: review q10wa S1, a spool of the whole table otherwise)
+OUTER APPLY (SELECT MAX(y.session_id) AS ok24 FROM ` + d + `.dbo.MSmerge_sessions y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)) m24
+OUTER APPLY (SELECT MAX(y.session_id) AS ok3 FROM ` + d + `.dbo.MSmerge_sessions y
+              WHERE y.agent_id = a.id AND y.runstatus = 3 AND y.session_id > ISNULL(m24.ok24, -2147483648) AND ` + healthy3("y") + `) m3
+-- the streak: every session in progress newer than the newest healthy one is failing (else it would be that one)
 OUTER APPLY (SELECT MIN(z.session_id) AS first_id FROM ` + d + `.dbo.MSmerge_sessions z
-              WHERE z.agent_id = a.id AND z.runstatus IN (3, 5, 6) AND z.session_id > ISNULL(mok.ok_id, -2147483648)) mf
+              WHERE z.agent_id = a.id AND z.runstatus IN (3, 5, 6) AND z.session_id > ISNULL(ISNULL(m3.ok3, m24.ok24), -2147483648)) mf
+-- the last recovery inside a streak session: an error row followed in its session by a clean row before the next error,
+-- and the next error the hold or more after it; the streak's errors count after it
+OUTER APPLY (SELECT MAX(r.timestamp) AS cut FROM ` + d + `.dbo.MSmerge_history r
+               CROSS APPLY (SELECT MAX(er.time) AS t FROM ` + d + `.dbo.MSrepl_errors er WHERE er.id = r.error_id) rt
+              WHERE mf.first_id IS NOT NULL AND r.agent_id = a.id AND r.session_id >= mf.first_id AND ISNULL(r.error_id, 0) <> 0 AND rt.t IS NOT NULL
+                AND EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history c WHERE ` + same("c", "r") + ` AND ISNULL(c.error_id, 0) = 0 AND c.timestamp > r.timestamp
+                              AND NOT EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history n WHERE ` + same("n", "r") + ` AND ISNULL(n.error_id, 0) <> 0
+                                                AND n.timestamp > r.timestamp AND n.timestamp < c.timestamp))
+                AND NOT EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history n JOIN ` + d + `.dbo.MSrepl_errors en ON en.id = n.error_id
+                                 WHERE ` + same("n", "r") + ` AND ISNULL(n.error_id, 0) <> 0 AND n.timestamp > r.timestamp AND en.time < DATEADD(minute, ` + hold + `, rt.t))
+                -- a later error of the same session: a recovery with none after it is a healthy session, never a streak's
+                AND EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history n WHERE ` + same("n", "r") + ` AND ISNULL(n.error_id, 0) <> 0 AND n.timestamp > r.timestamp)) mc
 OUTER APPLY (SELECT MIN(e1.time) AS since FROM ` + d + `.dbo.MSmerge_history y1 JOIN ` + d + `.dbo.MSrepl_errors e1 ON e1.id = y1.error_id
-              WHERE mf.first_id IS NOT NULL AND y1.agent_id = a.id AND y1.session_id >= mf.first_id AND ISNULL(y1.error_id, 0) <> 0) mt
+              WHERE mf.first_id IS NOT NULL AND y1.agent_id = a.id AND y1.session_id >= mf.first_id AND ISNULL(y1.error_id, 0) <> 0
+                AND (mc.cut IS NULL OR y1.timestamp > mc.cut)) mt
 OUTER APPLY (SELECT TOP (1) y.error_id FROM ` + d + `.dbo.MSmerge_history y
               WHERE mf.first_id IS NOT NULL AND y.agent_id = a.id AND y.session_id >= mf.first_id AND ISNULL(y.error_id, 0) <> 0
+                AND (mc.cut IS NULL OR y.timestamp > mc.cut)
               ORDER BY y.session_id DESC, y.timestamp DESC) mh
 OUTER APPLY (SELECT TOP (1) CAST(e0.error_code AS nvarchar(128)) AS error_code,
                     CAST(LEFT(CAST(e0.error_text AS nvarchar(max)), 1000) AS nvarchar(1000)) AS error_text

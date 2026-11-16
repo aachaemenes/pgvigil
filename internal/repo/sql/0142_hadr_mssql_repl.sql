@@ -194,7 +194,6 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_repl_sample (
   repl_trans_total  bigint,
   trans_per_s       double precision    -- published_db: transactions read out per second since the series' previous read
 ) PARTITION BY RANGE (snapshot_at);
-ALTER TABLE pgvigil.mssql_repl_sample ADD COLUMN IF NOT EXISTS failing_seen boolean;   -- a repository that ran this file before Q10W
 -- the findings, the import's previous read and the trend read one series of one instance over a window
 CREATE INDEX IF NOT EXISTS mssql_repl_sample_series_idx ON pgvigil.mssql_repl_sample (instance_id, series, snapshot_at);
 
@@ -274,10 +273,7 @@ BEGIN
          r->>'agent_type', r->>'agent_name', (r->>'runstatus')::int, r->>'status_text', (r->>'last_run_utc')::timestamptz,
          (r->>'latency_ms')::bigint, (r->>'delivery_rate')::float8, (r->>'undistributed')::bigint, (r->>'est_catchup_s')::float8,
          (r->>'agent_id')::int, r->>'subscription_status', (r->>'session_start_utc')::timestamptz,
-         -- failing with no error time (a merge agent whose failing sessions name no MSrepl_errors row): the series'
-         -- previous read's failing time while that read saw it failing, else this read's time - said in the findings
-         CASE WHEN (r->>'failing_untimed')::int = 1 THEN coalesce(pv.failing_since, p_snapshot_at) ELSE (r->>'failing_since_utc')::timestamptz END,
-         CASE WHEN (r->>'failing_untimed')::int = 1 THEN CASE WHEN pv.failing_since IS NOT NULL THEN pv.failing_seen ELSE true END END,
+         fs.since, fs.seen,
          nullif(r->>'error_code', ''), nullif(r->>'error_text', ''), (r->>'oldest_pending_utc')::timestamptz, (r->>'oldest_pending_age_s')::int,
          j.job->>'job_state', (j.job->>'continuous')::int = 1, (j.job->>'job_stopped_utc')::timestamptz,
          r->>'database_name', r->>'distributor', (r->>'distributor_local')::int = 1, r->>'log_reuse_wait',
@@ -288,11 +284,30 @@ BEGIN
                           AND x->>'distribution_db' = r->>'distribution_db' AND x->>'agent_type' = r->>'agent_type'
                           AND x->>'agent_name' = r->>'agent_name'
                         LIMIT 1) j ON true
-    LEFT JOIN LATERAL (SELECT p.failing_since, p.failing_seen FROM pgvigil.mssql_repl_sample p
-                        WHERE (r->>'failing_untimed')::int = 1 AND p.instance_id = p_instance_id
-                          AND p.series = coalesce(r->>'distribution_db', '') || ':' || coalesce(r->>'agent_name', '?')
-                          AND p.snapshot_at < p_snapshot_at
-                        ORDER BY p.snapshot_at DESC LIMIT 1) pv ON true
+    -- a failing merge agent's time (Q10W, the lead 2026-11-15): the read's own (the earliest error of its streak) or,
+    -- with no error time at the distributor (failing_untimed), the first read that saw it failing (failing_seen, said
+    -- in the findings); carried from the series' newer of its two previous reads that saw it failing (one clean read
+    -- between, a retry's first seconds, never resets it), and never moved later while it stays failing: the stored
+    -- time is kept when it is earlier and was itself a first read, or when the read's time is no newer than that
+    -- previous read (its earliest error row purged at the distributor); a read's time newer than the previous read
+    -- after a real error time is a new streak
+    CROSS JOIN LATERAL (SELECT (r->>'failing_since_utc')::timestamptz AS rs,
+                               r->>'agent_type' = 'merge' AND (r->>'failing_since_utc' IS NOT NULL OR (r->>'failing_untimed')::int = 1) AS mfail) f
+    LEFT JOIN LATERAL (SELECT q.failing_since, q.failing_seen, q.snapshot_at
+                         FROM (SELECT p.failing_since, p.failing_seen, p.snapshot_at FROM pgvigil.mssql_repl_sample p
+                                WHERE f.mfail AND p.instance_id = p_instance_id
+                                  AND p.series = coalesce(r->>'distribution_db', '') || ':' || coalesce(r->>'agent_name', '?')
+                                  AND p.snapshot_at < p_snapshot_at
+                                ORDER BY p.snapshot_at DESC LIMIT 2) q
+                        WHERE q.failing_since IS NOT NULL ORDER BY q.snapshot_at DESC LIMIT 1) pv ON true
+    CROSS JOIN LATERAL (SELECT CASE WHEN NOT coalesce(f.mfail, false) THEN f.rs
+                                    WHEN pv.failing_since IS NULL THEN coalesce(f.rs, p_snapshot_at)
+                                    WHEN f.rs IS NULL OR (pv.failing_since < f.rs AND (coalesce(pv.failing_seen, false) OR f.rs <= pv.snapshot_at)) THEN pv.failing_since
+                                    ELSE f.rs END AS since,
+                               CASE WHEN NOT coalesce(f.mfail, false) THEN NULL
+                                    WHEN pv.failing_since IS NULL THEN CASE WHEN f.rs IS NULL THEN true END
+                                    WHEN f.rs IS NULL OR (pv.failing_since < f.rs AND (coalesce(pv.failing_seen, false) OR f.rs <= pv.snapshot_at)) THEN pv.failing_seen
+                               END AS seen) fs
    WHERE (r->>'kind' IN ('publication', 'subscription', 'agent') AND r->>'distribution_db' IS NOT NULL)
       OR (r->>'kind' = 'published_db' AND r->>'database_name' IS NOT NULL);
 

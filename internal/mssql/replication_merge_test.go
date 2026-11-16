@@ -72,7 +72,9 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 	types := map[string]string{"merge-idle": "push", "merge-retrying": "push", "merge-failed-again": "push", "merge-recovered": "push",
 		"merge-never-ok": "pull", "merge-pull2": "pull", "merge-2022-names": "push", "merge-late-error": "push",
 		"merge-recovered-running": "push", "merge-failing-in-progress": "push", "merge-flicker-a": "push", "merge-flicker-b": "push",
-		"merge-flicker-c": "push", "merge-untimed": "push", "merge-flapping": "push", "merge-start-error": "push"}
+		"merge-flicker-c": "push", "merge-untimed": "push", "merge-flapping": "push", "merge-start-error": "push",
+		"merge-day-old-error": "push", "merge-errors-60s": "push", "merge-recovered-then-failing": "push", "merge-hold": "push",
+		"merge-hold-expired": "push"}
 	if err != nil || len(want) == 0 {
 		t.Fatalf("the stub's expectations: %v %v", want, err)
 	}

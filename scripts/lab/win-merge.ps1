@@ -5,7 +5,18 @@
 #
 # Windows PowerShell 5.1, run as a local administrator of the host (an elevated session) AFTER win-mirroring.ps1 up,
 # as the same Windows user (the instances' sysadmin):
-#   powershell -NoProfile -ExecutionPolicy Bypass -File win-merge.ps1 -Action up|status|down [-LabDir C:\pgvmirror]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File win-merge.ps1 -Action up|status|bounce|down [-LabDir C:\pgvmirror]
+#   bounce  (after up and part W, before down) refused (exit 2) without the merge agent or with PGVMIRROR's engine not
+#           running. The subscriber's engine (MSSQL$PGVMIRROR; its Agent with it) stopped while the continuous merge
+#           agent's session runs, 30 s, started again (in a finally: whatever failed between), its Agent too when it was
+#           running; the merge agent's newest sessions and history rows (their error ids and MSrepl_errors times)
+#           printed before, while stopped and every 60 s for 12 minutes after the stop (the product's recovery hold is
+#           10); then one row (id 3000) written on the publisher and waited for on the subscriber (300 s), and the
+#           mirroring session waited for SYNCHRONIZED again (300 s; PGVMIRROR is its mirror). It reads the pattern and
+#           never judges it. Expected: 'bounce: ... stopped', '... started', the sessions (a session ending 5 / 6 and a
+#           new one, or one session going on), 'row 3000 on the subscriber', 'mirroring: pgvmirror ... SYNCHRONIZED',
+#           'VERDICT BOUNCED', exit 0; a service or the mirroring not back, or the row not carried: 'VERDICT NOT
+#           BOUNCED', exit 1.
 #   up      refused (exit 2, nothing changed) when either lab instance does not answer, or when any of this script's
 #           names already exists: a distribution database or a distributor entry on PGVPRINCIPAL, a SQL Server Agent
 #           job in a REPL- category there, pgvmerge on PGVPRINCIPAL, pgvmerge_sub on PGVMIRROR, or a right of
@@ -93,7 +104,7 @@
 # Exit: 0 done, 1 failed (a VERDICT NOT ... line names what), 2 refused (nothing changed).
 [CmdletBinding()]
 param(
-    [ValidateSet('up', 'status', 'down')] [string]$Action = 'status',
+    [ValidateSet('up', 'status', 'bounce', 'down')] [string]$Action = 'status',
     [string]$LabDir = 'C:\pgvmirror'
 )
 $ErrorActionPreference = 'Stop'
@@ -411,6 +422,72 @@ function Invoke-Status {
     return $false
 }
 
+# the merge agent's newest sessions and history rows, printed (bounce's reads)
+function Show-MergeSessions([string]$label) {
+    Say "bounce: $label"
+    $sessionRows = Invoke-LabSql $pubInst "SELECT TOP (6) x.session_id, x.runstatus, CONVERT(varchar(23), x.start_time, 126) AS started, CONVERT(varchar(23), x.end_time, 126) AS ended FROM dbo.MSmerge_sessions x JOIN dbo.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'$publication' ORDER BY x.session_id DESC" $distDb
+    foreach ($sessionRow in $sessionRows) { Say "  session $($sessionRow.session_id) runstatus $($sessionRow.runstatus) $($sessionRow.started) - $($sessionRow.ended)" }
+    $historyRows = Invoke-LabSql $pubInst "SELECT TOP (8) h.session_id, h.error_id, CONVERT(varchar(23), e.error_time, 126) AS error_time, CAST(LEFT(CAST(h.comments AS nvarchar(max)), 110) AS nvarchar(110)) AS comments FROM dbo.MSmerge_history h JOIN dbo.MSmerge_agents a ON a.id = h.agent_id OUTER APPLY (SELECT MAX(r.time) AS error_time FROM dbo.MSrepl_errors r WHERE r.id = h.error_id) e WHERE a.publication = N'$publication' ORDER BY h.timestamp DESC" $distDb
+    foreach ($historyRow in $historyRows) { Say "  history session $($historyRow.session_id) error $($historyRow.error_id) $($historyRow.error_time) | $($historyRow.comments)" }
+}
+
+function Invoke-Bounce {
+    $engineName = "MSSQL`$$($subInst.Name)"; $agentName = "SQLAgent`$$($subInst.Name)"
+    try { $agentRow = Get-MergeAgent } catch { Stop-Refused "the merge lab does not answer: $($_.Exception.Message)" }
+    if ($null -eq $agentRow) { Stop-Refused 'no merge agent (win-merge.ps1 up first)' }
+    $engineSvc = Get-Service -Name $engineName -ErrorAction SilentlyContinue
+    if ($null -eq $engineSvc -or [string]$engineSvc.Status -ne 'Running') { Stop-Refused "$engineName is not running" }
+    $agentSvc = Get-Service -Name $agentName -ErrorAction SilentlyContinue
+    $agentWasRunning = ($null -ne $agentSvc) -and ([string]$agentSvc.Status -eq 'Running')
+    $failures = New-Object System.Collections.Generic.List[string]
+    Show-MergeSessions "before (merge agent $($agentRow.agent))"
+    $stoppedAt = Get-Date
+    try {
+        Stop-Service -Name $engineName -Force -ErrorAction Stop   # -Force: its Agent depends on it and stops with it
+        $stoppedAt = Get-Date
+        Say "bounce: $engineName stopped at $($stoppedAt.ToUniversalTime().ToString('HH:mm:ss'))Z"
+        Start-Sleep -Seconds 30
+        Show-MergeSessions 'while the subscriber is stopped'
+    } catch { $failures.Add("the stop: $($_.Exception.Message)") }
+    finally {
+        try { Start-Service -Name $engineName -ErrorAction Stop; Say "bounce: $engineName started at $((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))Z" }
+        catch { $failures.Add("start $engineName : $($_.Exception.Message)") }
+        if ($agentWasRunning) {
+            try { Start-Service -Name $agentName -ErrorAction Stop; Say "bounce: $agentName started" } catch { $failures.Add("start $agentName : $($_.Exception.Message)") }
+        }
+    }
+    $readUntil = $stoppedAt.AddMinutes(12)
+    while ((Get-Date) -lt $readUntil) {
+        Start-Sleep -Seconds 60
+        try { Show-MergeSessions "+$([int]((Get-Date) - $stoppedAt).TotalSeconds) s after the stop" } catch { Say "bounce: the read failed: $($_.Exception.Message)" }
+    }
+    try {
+        Invoke-LabSql $pubInst "INSERT dbo.t_merge (id, v) VALUES (3000, N'after the bounce');" $pubDb | Out-Null
+        if (Wait-Until 300 { [int](Get-LabValue $subInst "SELECT COUNT(*) FROM dbo.t_merge WHERE id = 3000" $subDb) -eq 1 }) { Say 'bounce: row 3000 on the subscriber' }
+        else { $failures.Add('row 3000 not on the subscriber in 300 s') }
+        Show-MergeSessions 'after the row'
+    } catch { $failures.Add("the row: $($_.Exception.Message)") }
+    $mirrorQuery = "SELECT DB_NAME(database_id) AS db, mirroring_role_desc AS role, mirroring_state_desc AS state FROM sys.database_mirroring WHERE mirroring_guid IS NOT NULL"
+    try {
+        $synced = Wait-Until 300 {
+            $mirrorRows = Invoke-LabSql $pubInst $mirrorQuery
+            ($mirrorRows.Count -gt 0) -and (@($mirrorRows | Where-Object { $_.state -ne 'SYNCHRONIZED' }).Count -eq 0)
+        }
+        foreach ($mirrorRow in (Invoke-LabSql $pubInst $mirrorQuery)) { Say "bounce: mirroring: $($mirrorRow.db) $($mirrorRow.role) $($mirrorRow.state)" }
+        if (-not $synced) { $failures.Add('the mirroring session not SYNCHRONIZED again in 300 s') }
+    } catch { $failures.Add("the mirroring read: $($_.Exception.Message)") }
+    $mustRun = @($engineName)
+    if ($agentWasRunning) { $mustRun += $agentName }
+    foreach ($svcName in $mustRun) {
+        $svcNow = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+        $svcState = if ($null -eq $svcNow) { 'missing' } else { [string]$svcNow.Status }
+        if ($svcState -ne 'Running') { $failures.Add("$svcName $svcState") }
+    }
+    if ($failures.Count -eq 0) { Say 'VERDICT BOUNCED'; exit 0 }
+    Say "VERDICT NOT BOUNCED: $($failures -join '; ')"
+    exit 1
+}
+
 function Invoke-Up {
     if (-not (Test-Path -LiteralPath $saFile)) { Stop-Refused "no $saFile (win-mirroring.ps1 up first)" }
     try {
@@ -641,5 +718,6 @@ if (-not (Test-Elevated)) { Stop-Refused 'run in an elevated session (a local ad
 switch ($Action) {
     'up' { Invoke-Up }
     'status' { if (Invoke-Status) { exit 0 } else { exit 1 } }
+    'bounce' { Invoke-Bounce }
     'down' { Invoke-Down }
 }
