@@ -10,7 +10,8 @@
 # The tree is copied into the proof's folder first; the wiring patches (slice A's, B24 OWN's, this slice's docs) and the web bundle
 # are applied and built THERE, never in this checkout (the FOLD P3).
 #
-# Expected (written before the first run; u1 and u3 are views.shared_editors, u2 is not):
+# Expected (written before the first run; u1 and u3 are admins, u2 a viewer named in views.shared_editors - B24f: a shared
+# view needs the admin role, the key no longer decides):
 #  T  slow/groups (curl, u1): top=1000 answers 200 at fleet scope; top=all answers at most 5,000 groups and says when the
 #     cap cut; top=1001 -> 400 in words. The ALL read at fleet scope over the 7 seeded days is TIMED and printed (the
 #     lead 14:2x: over 2 s = said as a finding, not a failure) with its payload's bytes.
@@ -104,11 +105,12 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO" >/dev
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 "$BIN" demo -dsn "$PGVIGIL_REPO_DSN" -days 7 > "$WORK/demo.log" 2>&1 || { tail -5 "$WORK/demo.log" >&2; fail "the demo seed"; }
-printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\nviews:\n  shared_editors: [%s, %s]\n' "$U1" "$U3" > "$WORK/cfg.yaml"
+printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\nviews:\n  shared_editors: [%s]\n' "$U2" > "$WORK/cfg.yaml"   # u2 named: the key no longer decides (W3)
 CFG=$WORK/cfg.yaml
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { tail -5 "$WORK/migrate.out" >&2; fail "migrate"; }
-for u in "$U1:$U1PW" "$U2:$U2PW" "$U3:$U3PW"; do
-  PGVIGIL_PASSWORD=${u#*:} "$BIN" user add -config "$CFG" "${u%%:*}" >/dev/null 2>&1 || fail "user add ${u%%:*}"
+for u in "$U1:$U1PW:admin" "$U2:$U2PW:viewer" "$U3:$U3PW:admin"; do
+  IFS=: read -r un upw urole <<< "$u"
+  PGVIGIL_PASSWORD=$upw "$BIN" user add -config "$CFG" -role "$urole" "$un" >/dev/null 2>&1 || fail "user add $un"
 done
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
 "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 &
@@ -120,7 +122,7 @@ J=$WORK/j1
 NI=$(q "select count(*) from pgvigil.instances")
 (( NI > 0 )) || fail "setup: the demo seeded no instance"
 TAG=$(q "select t from (select unnest(tags) t from pgvigil.instances) x group by t order by count(*) desc, t limit 1" 2>/dev/null || true)
-ok "setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), the demo fleet ($NI instances, 7 days), users $U1 and $U3 (shared editors) and $U2; a tag '${TAG:-none}'"
+ok "setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), the demo fleet ($NI instances, 7 days), users $U1 and $U3 (admins) and $U2 (a viewer, named in views.shared_editors); a tag '${TAG:-none}'"
 
 # T: slow/groups' top (a T failure is counted and the browser cases still run: the red shows every row's reason)
 TF=0; tfail() { echo "FAIL T: $*"; TF=1; }

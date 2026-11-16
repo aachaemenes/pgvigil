@@ -299,10 +299,10 @@ func (s *Server) Handler() http.Handler {
 	s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator; wide or open-ended: admin, in its handler)
 	// saved page views and dashboards (VIEWS slice A, 0259; q_views.go)
 	api.HandleFunc("GET /api/views", s.Views)
-	api.HandleFunc("POST /api/views", s.ViewSave)
-	api.HandleFunc("POST /api/views/delete", s.ViewDelete)
+	s.post(api, "POST /api/views", needViewer, s.ViewSave)          // a shared view: admin, in viewRole (B24f)
+	s.post(api, "POST /api/views/delete", needViewer, s.ViewDelete) // the same
 	// a dashboard's composed panel, compiled and read (VIEWS slice C; compose.go, q_compose.go)
-	api.HandleFunc("POST /api/compose/run", s.ComposeRun)
+	s.post(api, "POST /api/compose/run", needViewer, s.ComposeRun) // a read of the repository
 	api.HandleFunc("GET /api/compose/catalog", s.ComposeCatalog)
 	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
 	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)

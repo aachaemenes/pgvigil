@@ -13,7 +13,7 @@
 -- Reads go through ui_view_list / ui_view_get (SECURITY DEFINER, the UI's door pgvigil_auth, on serve's read-only
 -- pool); writes through import_view_save / import_view_delete on the actions door's audit login (serve's read pool is
 -- read-only: a write there fails), the session's user and client in the payload, as import_alert_rule (0085) does.
--- A shared write needs serve's shared_ok (pgvigil.yaml views.shared_editors until B24f's 'change shared views' right).
+-- A shared write needs serve's shared_ok: the admin role (B24f's 'change shared views' right; serve refuses first in the role's words).
 -- A removed user's personal views go with it (UIUserRemove deletes them first, in its transaction); a shared view stays
 -- with no owner (ON DELETE SET NULL; the CHECK refuses a personal view without one, so a bare DELETE of a user who still
 -- owns personal views fails rather than leaving them ownerless).
@@ -157,7 +157,7 @@ BEGIN
   ELSIF octet_length(v_state::text) > 65536 THEN
     v_out := 'refused'; v_why := format('the view''s state is %s KB: a view holds at most 64 KB', octet_length(v_state::text) / 1024);
   ELSIF v_shared AND NOT v_ok THEN
-    v_out := 'forbidden'; v_why := 'shared views are written by the users named in pgvigil.yaml views.shared_editors';
+    v_out := 'forbidden'; v_why := 'changing a shared view needs the admin role';
   END IF;
   IF v_out IS NULL AND p_payload->>'view_id' IS NOT NULL THEN
     IF p_payload->>'view_id' ~ '^[0-9]{1,18}$' THEN
@@ -169,7 +169,7 @@ BEGIN
     ELSIF v_old.kind <> v_kind THEN
       v_out := 'refused'; v_why := format('view %s is a %s view: a view keeps its kind', v_id, v_old.kind);
     ELSIF v_old.shared AND NOT v_ok THEN
-      v_out := 'forbidden'; v_why := 'shared views are changed by the users named in pgvigil.yaml views.shared_editors';
+      v_out := 'forbidden'; v_why := 'changing a shared view needs the admin role';
     ELSIF NOT v_old.shared AND v_old.owner_user_id IS DISTINCT FROM v_uid THEN
       v_out := 'forbidden'; v_why := 'only its owner changes a personal view';
     ELSIF (CASE WHEN coalesce(p_payload->>'version', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'version')::int END) IS DISTINCT FROM v_old.version THEN
@@ -246,7 +246,7 @@ BEGIN
   ELSIF v_old.view_id IS NULL THEN
     v_out := 'refused'; v_why := format('no view %s', coalesce(p_payload->>'view_id', 'named'));
   ELSIF v_old.shared AND NOT v_ok THEN
-    v_out := 'forbidden'; v_why := 'shared views are deleted by the users named in pgvigil.yaml views.shared_editors';
+    v_out := 'forbidden'; v_why := 'changing a shared view needs the admin role';
   ELSIF NOT v_old.shared AND v_old.owner_user_id IS DISTINCT FROM v_uid THEN
     v_out := 'forbidden'; v_why := 'only its owner deletes a personal view';
   ELSIF (CASE WHEN coalesce(p_payload->>'version', '') ~ '^[0-9]{1,9}$' THEN (p_payload->>'version')::int END) IS DISTINCT FROM v_old.version THEN

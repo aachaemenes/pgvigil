@@ -11,7 +11,7 @@
 //
 // viewControl is the page's 'View: <name>' button and its lines: the page's own items, {None}, the shared views and
 // the user's own, the loaded one ticked; Save, Save as..., Rename..., Delete... - each off with the server's reason
-// when this user may not (saving off: demo, -no-login, no audit login; a shared view without views.shared_editors).
+// when this user may not (saving off: demo, -no-login, no audit login; a shared view below the admin role: B24f).
 import { Table, rowsOf } from './api';
 import { Layout, layerState, layoutsOf, setLayer } from './gridtools';
 import { Ctx, hashKeys, href, noteAddress, pageKeyOf, viewPageKeys } from './router';

@@ -1,7 +1,7 @@
 // VIEWS slice B in the browser (proof-views-b.sh): the View control on the Summary, the Performance Summary and Slow
 // Queries - save, load, the default on entering, {None}, the layouts layer, the shared views, the conflict, the time
 // range, a shared link, the mail render. Its cases and their expected results: proof-views-b.sh's header.
-//   VB_U1 / VB_U1PW (a shared editor), VB_U2 / VB_U2PW (not), VB_TAG (a tag of the demo fleet), VB_MSSQL (a SQL Server
+//   VB_U1 / VB_U1PW (an admin: writes shared views), VB_U2 / VB_U2PW (a viewer: does not), VB_TAG (a tag of the demo fleet), VB_MSSQL (a SQL Server
 //   instance id), VB_PG (a PostgreSQL instance id, for SHOTS), VB_CASES (space-separated case names; empty = all),
 //   VB_SHOTS (a folder: the SHOTS case saves the five pages' pictures there; unset = no SHOTS case)
 //   node scripts/views-b-check.mjs <cdp port> <base url/>

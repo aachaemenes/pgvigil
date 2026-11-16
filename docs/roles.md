@@ -5,9 +5,12 @@ page.
 
 | Role | What it may do |
 |---|---|
-| viewer | read every page, export, copy, run a stored custom report; change nothing |
-| operator | what a viewer may, and act on a monitored server - cancel a query, end a session, KILL, start or stop a job, evict a plan, EXPLAIN and EXPLAIN ANALYZE, try a hypothetical index, run the index advisor, run a community tool, send a report by mail - and acknowledge, note, dismiss, mute one instance with an end |
-| admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job thresholds, job exclusions, custom reports and their folders, report mail schedules, a mute or blackout over every instance, a tag, or with no end |
+| viewer | read every page, export, copy, run a stored custom report, save, rename and delete their own views; change nothing others live with |
+| operator | what a viewer may, and act on a monitored server - cancel a query, end a session, KILL, start or stop a job, evict a plan, EXPLAIN and EXPLAIN ANALYZE, try a hypothetical index, run the index advisor, run a community tool, send a report by mail, verify a backup (RESTORE VERIFYONLY), read a statistic's histogram or a database's index fragmentation - and acknowledge, note, dismiss, mute one instance or give it a blackout, mute or digest window, with an end at most 7 days away |
+| admin | what an operator may, and change configuration others live with - instances, discovery sources, proposals, DBA Dash moves, applications and their contacts, alert rules, drive / PostgreSQL / job / Collection Health thresholds, a SQL Server database's backup thresholds, job exclusions, SQL Server counter lists, security settings and XE capture settings, PostgreSQL backup destinations, custom reports and their folders, report mail schedules and the Daily checks mail, shared views, a mute, blackout or window over every instance, a tag, with no end or with a later end |
+
+This table names the main changes; the full list of writes, each with the role it needs, is *The routes* below (the
+server's own list: a test compares the two).
 
 Each action still needs what it needed before the roles: an instance's own opt-in (`actions:`, `explain_analyze`,
 `hypo_index`), a typed confirmation, the actions door's audit login. The server checks the route's role first, then those;
@@ -99,6 +102,9 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/community/params` | viewer | read a tool's parameters (@help) |
 | `POST /api/customreports/run` | viewer | run a stored custom report (on the reports login or the instance's read login) |
 | `POST /api/reportmail/rendered` | viewer | the mailed report's drawing step (the render's own user) |
+| `POST /api/views` | viewer | save or rename one's own view or dashboard (a shared one: admin) |
+| `POST /api/views/delete` | viewer | delete one's own view (a shared one: admin) |
+| `POST /api/compose/run` | viewer | read a dashboard's composed panel (a read of the repository) |
 | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
 | `POST /api/actions/terminate` | operator | end a PostgreSQL session |
 | `POST /api/mssql/actions/run` | operator | KILL, job start / stop, plan evict on SQL Server |

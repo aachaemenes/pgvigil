@@ -133,18 +133,19 @@ file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily che
 
 ```yaml
 views:
-  shared_editors: [ann, bob]   # UI users; none named = nobody writes shared views
+  shared_editors: [ann, bob]   # read and ignored since the roles: a shared view needs the admin role
 ```
 
 Every signed-in user saves personal views (a page's state, a dashboard) and reads the shared ones; a shared view is
-created, changed, deleted or made a page's shared default only by the users named here. A personal view is its owner's
+created, changed, deleted or made a page's shared default only by a user of the admin role (`docs/roles.md`). A personal view is its owner's
 alone, and removing a user (`pgvigil user remove`) deletes that user's personal views; a shared one stays. Views are
 saved through the actions door's audit login, so saving is off under `-no-login` and on `pgvigil demo -serve`; every
 attempt that reaches the store is kept in `ui_view_log` (a request serve refuses before it - no X-Pgvigil header, a
 body over 256 KB - is not). These rules are serve's: like alert rules, the store's write functions
 (`import_view_save`, `import_view_delete`) are the collector's door, so a login of the collector's role can write any
-view as any user - keep the collector's login on the hosts you trust. When the per-user roles arrive, their 'change
-shared views' right replaces this list.
+view as any user - keep the collector's login on the hosts you trust. `views.shared_editors`, the list
+that decided this before the roles, is read and ignored: a viewer or an operator named there is refused like any
+other, and the key goes in a later release.
 
 ## Instances added in the page
 

@@ -27,8 +27,8 @@ import (
 // range is kept apart in state.range. Reads: pgvigil.ui_view_list / ui_view_get on the read pool. Writes:
 // import_view_save / import_view_delete on the actions door's audit pool (the read pool is read-only) with the
 // session's user and client, one ui_view_log row per attempt: done 200, refused 400, forbidden 403, conflict 409 (a
-// stale version names the stored one; a taken name), each refusal in words. Shared writes: the users SetViewEditors
-// names (pgvigil.yaml views.shared_editors; none = nobody, until B24f's 'change shared views' right replaces it).
+// stale version names the stored one; a taken name), each refusal in words. Shared writes: an admin's (B24f's 'change
+// shared views' right, roles_wiring_views.go viewRole; pgvigil.yaml views.shared_editors is read and no longer decides).
 //                                                                     -> Server.Views, Server.ViewSave, Server.ViewDelete
 
 // viewBodyMax: a request body; the store refuses a state over 64 KB in words (and logs it), so the body may hold more.
@@ -124,8 +124,8 @@ func (s *Server) Views(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case off != "":
 		sharedOff = off
-	case !viewEditor(user):
-		sharedOff = "shared views are written by the users named in pgvigil.yaml views.shared_editors"
+	default:
+		sharedOff = s.sharedViewWhy(r)
 	}
 	s.reply(w, r, map[string]any{"views": t, "writable": off == "", "shared_writable": sharedOff == "", "off": off,
 		"shared_off": sharedOff, "user": user}, err)
@@ -165,7 +165,10 @@ func (s *Server) viewWrite(w http.ResponseWriter, r *http.Request, op string) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	pay["ui_user"], pay["client"], pay["shared_ok"] = user, clientIP(r), viewEditor(user)
+	if !s.viewRole(w, r, user, pay) {
+		return
+	}
+	pay["ui_user"], pay["client"], pay["shared_ok"] = user, clientIP(r), s.roleCan(r)["admin"]
 	b, _ := json.Marshal(pay)
 	fn := "import_view_save"
 	if op == "delete" {

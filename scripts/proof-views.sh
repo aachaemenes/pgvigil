@@ -13,10 +13,11 @@
 #     alone (a store custom report's or a Grafana reader's) has no SELECT on either and no EXECUTE on ui_view_list,
 #     ui_view_get, import_view_save or import_view_delete - its SELECT of ui_views is refused 'permission denied'; the
 #     four functions are SECURITY DEFINER.
-#  A  the API (serve with the UI login; u1 and u3 are in pgvigil.yaml views.shared_editors, u2 is not):
+#  A  the API (serve with the UI login; u1 and u3 are admins, u2 a viewer named in views.shared_editors - B24f: a shared
+#     view needs the admin role, the key no longer decides):
 #     S1 u1 saves a personal page view on root:fleet -> 200, version 1; u1's list has it ('mine'); u2's list does not;
 #        u2's GET of its id -> 404 in words.
-#     S2 u2 saves a shared view -> 403 in words naming views.shared_editors, nothing stored; u1 saves the shared 'team'
+#     S2 u2 saves a shared view -> 403 in words naming the admin role, nothing stored; u1 saves the shared 'team'
 #        -> 200; u2's list shows it, not 'mine'; u2's edit of it -> 403.
 #     S2b [review fold] the owner check: u2 saves its personal 'u2mine' -> 200; u2's save and delete of u1's personal
 #        'mine' -> 403 ('only its owner'), 'mine' unchanged; editor u1's save of u2's 'u2mine' -> 403.
@@ -85,18 +86,19 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO" >/dev
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 { printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n'
-  # the key is new with the store: a tree before it is given no such key (its red is the missing table and route)
-  [[ $HAVE == 1 ]] && printf 'views:\n  shared_editors: [%s, %s]\n' "$U1" "$U3"
+  # u2, a viewer, is named in the key that decided before the roles: S2 proves it no longer decides (review-20 S3);
+  # a tree before the store is given no such key (its red is the missing table and route)
+  [[ $HAVE == 1 ]] && printf 'views:\n  shared_editors: [%s]\n' "$U2"
 } > "$WORK/cfg.yaml"
 CFG=$WORK/cfg.yaml
 "$BIN" migrate -config "$CFG" > "$WORK/migrate.out" 2>&1 || { tail -5 "$WORK/migrate.out" >&2; fail "migrate"; }
 "$BIN" migrate -config "$CFG" > "$WORK/migrate2.out" 2>&1 || { tail -5 "$WORK/migrate2.out" >&2; fail "migrate twice"; }
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create role $RDR login password '$PW' in role pgvigil_reader" >/dev/null || fail "the reader login"
 as_rdr() { psql "$PGVIGIL_ADMIN_DSN dbname=$REPO user=$RDR password=$PW" -XAt -c "$1" 2>&1 || true; }
-PGVIGIL_PASSWORD=$U1PW "$BIN" user add -config "$CFG" "$U1" >/dev/null 2>&1 || fail "user add $U1"
-PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" "$U2" >/dev/null 2>&1 || fail "user add $U2"
-PGVIGIL_PASSWORD=$U3PW "$BIN" user add -config "$CFG" "$U3" >/dev/null 2>&1 || fail "user add $U3"
-echo "ok   setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), users $U1 and $U3 (shared editors) and $U2"
+PGVIGIL_PASSWORD=$U1PW "$BIN" user add -config "$CFG" -role admin "$U1" >/dev/null 2>&1 || fail "user add $U1"
+PGVIGIL_PASSWORD=$U2PW "$BIN" user add -config "$CFG" -role viewer "$U2" >/dev/null 2>&1 || fail "user add $U2"
+PGVIGIL_PASSWORD=$U3PW "$BIN" user add -config "$CFG" -role admin "$U3" >/dev/null 2>&1 || fail "user add $U3"
+echo "ok   setup: repository $REPO on PostgreSQL $(q "select current_setting('server_version')"), users $U1 and $U3 (admins) and $U2 (a viewer, named in views.shared_editors)"
 
 if part S; then
   [[ $(q "select to_regclass('pgvigil.ui_views') is not null and to_regclass('pgvigil.ui_view_log') is not null") == t ]] || fail "S: no table pgvigil.ui_views / ui_view_log (red before 0259)"
@@ -147,7 +149,7 @@ if part A; then
   ok "S1: a personal view: u1 lists and reads it, u2 neither lists nor reads it (404 in words: $(js "d.get('error')"))"
   # S2
   c=$(call "$J2" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"u2shared","shared":true,"state":{"params":{}}}')")
-  expect "$c" 403 "S2: u2's shared save"; [[ $(js "d.get('error', '')") == *shared_editors* ]] || fail "S2: the refusal does not name views.shared_editors: $(js "d")"
+  expect "$c" 403 "S2: u2's shared save"; [[ $(js "d.get('error', '')") == *"needs the admin role"* ]] || fail "S2: the refusal does not name the admin role: $(js "d")"
   [[ $(q "select count(*) from pgvigil.ui_views where name = 'u2shared'") == 0 ]] || fail "S2: u2's shared view stored"
   c=$(call "$J1" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"team","shared":true,"state":{"params":{"focus":"0"}}}')")
   expect "$c" 200 "S2: u1's shared save"; TEAM=$(js "d['view_id']")
@@ -155,7 +157,7 @@ if part A; then
   [[ $(js "[(v['shared'], v['mine']) for v in rows(d['views']) if v['name'] == 'team']") == "[(True, False)]" ]] || fail "S2: u2's list of 'team': $(head -c 300 "$WORK/out.json")"
   c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$TEAM,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"team\",\"shared\":true,\"state\":{\"params\":{\"focus\":\"1\"}}}")")
   expect "$c" 403 "S2: u2's edit of the shared view"
-  ok "S2: shared writes only by views.shared_editors (u2 refused in words: create and edit); u2 reads 'team'"
+  ok "S2: shared writes only by an admin (u2, a viewer named in views.shared_editors, refused in words: create and edit); u2 reads 'team'"
   J3=$WORK/j3; login "$J3" "$U3" "$U3PW"
   c=$(call "$J2" POST /api/views "$(body '{"kind":"page","page":"root:fleet","name":"u2mine","state":{"params":{}}}')"); expect "$c" 200 "S2b: u2's personal save"; U2MINE=$(js "d['view_id']")
   c=$(call "$J2" POST /api/views "$(body "{\"view_id\":$MINE,\"version\":1,\"kind\":\"page\",\"page\":\"root:fleet\",\"name\":\"taken\",\"state\":{\"params\":{}}}")")

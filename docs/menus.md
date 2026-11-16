@@ -121,8 +121,8 @@ The menu lists the page's own items first (the Summary's Focused View and Show T
 Columns), then `{None}`, the shared views and the user's own (`(shared)` or `(mine)`, `- default` on the one that loads
 by default, a tick on the loaded one), then **Save**, **Save as...**, **Rename...** and **Delete...**. An item the user
 may not use is off with its reason beside it: saving is off under `-no-login`, on `pgvigil demo -serve` and without
-the actions door's audit login; a shared view is written only by the users `views.shared_editors` names
-(`docs/configuration.md`); a personal view only by its owner. **Save as...** asks for a name, who sees it (Only me, or
+the actions door's audit login; a shared view is written only by a user of the admin role
+(`docs/roles.md`; `views.shared_editors` is read and ignored); a personal view only by its owner. **Save as...** asks for a name, who sees it (Only me, or
 Everyone), whether it loads by default on this page, a folder, and whether to keep the time range.
 
 - **Loading**: a view lives in the page's address (`view=<id>` beside the page's picks, which Save as and opening a
