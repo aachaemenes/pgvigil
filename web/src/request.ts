@@ -9,6 +9,7 @@
 import { LoginRequired, post } from './api';
 import { InstanceRun, ResultSet } from './customreports';
 import { el, fmtTime } from './ui';
+import { needControl } from './needs';
 
 export interface Queued { request_id: number; expires_at?: string; detail?: string; via?: string }
 
@@ -70,7 +71,7 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((done, fail
 // button while it waits or runs; it returns the end (its result, for the asker). It stops (an AbortError) when status
 // leaves the page.
 export async function waitRequest(q: Queued, status: HTMLElement): Promise<RequestEnd> {
-  const cancel = el('button', { type: 'button', class: 'link' }, 'Cancel');
+  const cancel = needControl(el('button', { type: 'button', class: 'link' }, 'Cancel'), 'requests/{id}/cancel');   // the role (B24f)
   const words = el('span', {}, 'Waiting for the collector to take it.');
   const said = el('span', { class: 'meta' }, ` Request ${q.request_id}.`);
   status.replaceChildren(words, said, ' ', cancel);

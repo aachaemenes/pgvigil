@@ -39,6 +39,7 @@ export const routeNeeds = {
   'mssql/indexes/fragmentation/cost': ['operator', 'reading the heap size before a fragmentation read'],
   'mssql/indexes/fragmentation/cancel': ['operator', 'cancelling a fragmentation read'],
   'community/run': ['operator', 'running a community tool'],
+  'requests/{id}/cancel': ['operator', 'cancelling a queued request'],
   'reportmail/send': ['operator', 'sending a report by mail'],
   'reportmail/test': ['operator', 'sending a test report mail'],
   'admin/instances': ['admin', 'changing an instance'],

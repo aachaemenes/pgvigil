@@ -195,7 +195,7 @@ func TestRolesDocMatches(t *testing.T) {
 // route above viewer names that route's need. Both checks read the source.
 
 // pageNeedRow is a line of web/src/needs.ts's routeNeeds table:   'ack/end': ['operator', 'ending an acknowledgement'],
-var pageNeedRow = regexp.MustCompile(`^\s*'([a-z_/]+)':\s*\['(operator|admin)',\s*(?:'([^']*)'|"([^"]*)")\],\s*$`)
+var pageNeedRow = regexp.MustCompile(`^\s*'([a-z_/{}]+)':\s*\['(operator|admin)',\s*(?:'([^']*)'|"([^"]*)")\],\s*$`)
 
 // pageNeeds reads the table: route (as api.post names it) -> need, what
 func pageNeeds(t *testing.T) map[string][2]string {
@@ -264,6 +264,8 @@ var (
 		"plan.ts":            {"plans/explain", "plans/analyze"},
 		"admin_instances.ts": {"admin/instances", "admin/sources", "admin/proposals"},
 		"migrate.ts":         {"admin/dbadash_moves"},
+		"request.ts":         {"requests/{id}/cancel"},
+		"community.ts":       {"community/run"},
 		"applications.ts":    {"admin/applications", "admin/applications/contacts", "admin/applications/assign", "admin/applications/routes"},
 		"app_import.ts":      {"admin/applications/import"},
 		"uptimedialog.ts":    {"pg/thresholds"},

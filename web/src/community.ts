@@ -369,7 +369,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     // queue mode: the procedure's own help is a request of its own, run by the collector
     const det = el('details', {}, el('summary', {}, `${t.name}'s own help`));
     const hs = el('p', { class: 'meta', role: 'status' }), hb = el('div', {});
-    const ask = el('button', { type: 'button' }, `Run ${t.name} ${t.help} = 1`);
+    const ask = needControl(el('button', { type: 'button' }, `Run ${t.name} ${t.help} = 1`), 'community/run');   // a request: operator (B24f)
     ask.addEventListener('click', async () => {
       offControl(ask, 'running', hs);
       try {

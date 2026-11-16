@@ -72,7 +72,9 @@ that collector's pgvigil.yaml)".
 
 ## Who may ask, and what they see
 
-- Every signed-in user may ask what the instance's doors open, as in direct mode. The doors are the COLLECTOR's: its
+- A signed-in user of the operator role or above may ask what the instance's doors open, as in direct mode (a
+  request is a community run, `POST /api/community/run`, a tool's @help in queue mode too; cancelling one's own
+  request is the operator's as well: docs/roles.md). The doors are the COLLECTOR's: its
   logins, its `doors: page_instance_reads` for instances added in Admin > Instances, and the instance's
   `community_allow` (below). The page draws each button from what the collector published, with the collector's words
   and its host. When two collectors hold one instance, a request goes to one whose doors are open for it.

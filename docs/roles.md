@@ -99,7 +99,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/logout` | anyone | sign out |
 | `POST /api/mssql/actions/preview` | viewer | preview an action's statement (runs nothing) |
 | `POST /api/community/glenn/parse` | viewer | read a diagnostic file (stores nothing) |
-| `POST /api/community/params` | viewer | read a tool's parameters (@help) |
+| `POST /api/community/params` | viewer | read a tool's parameters (@help; in queue mode @help is a request of its own, `POST /api/community/run`: operator) |
 | `POST /api/customreports/run` | viewer | run a stored custom report (on the reports login or the instance's read login) |
 | `POST /api/reportmail/rendered` | viewer | the mailed report's drawing step (the render's own user) |
 | `POST /api/views` | viewer | save or rename one's own view or dashboard (a shared one: admin) |
@@ -129,6 +129,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/mssql/indexes/fragmentation/cost` | operator | read the heap size a fragmentation read would scan |
 | `POST /api/mssql/indexes/fragmentation/cancel` | operator | cancel a running fragmentation read |
 | `POST /api/indexes/advise` | operator | run the index advisor (hypothetical indexes and EXPLAIN on the monitored server; nothing is created) |
+| `POST /api/requests/{id}/cancel` | operator | cancel one's own queued request (a community run in queue mode) |
 | `POST /api/community/run` | operator | run a community tool (a script runs as the read login in a rolled-back transaction) |
 | `POST /api/reportmail/send` | operator | send a report by mail now |
 | `POST /api/reportmail/test` | operator | send a schedule's test mail |

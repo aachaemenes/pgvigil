@@ -383,7 +383,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
 	// task CQ (487): a request of the queue - its state and its asker's result (wait up to 25 s), its cancel
 	api.HandleFunc("GET /api/requests/{id}", s.RequestGet)
-	api.HandleFunc("POST /api/requests/{id}/cancel", s.RequestCancel)
+	s.post(api, "POST /api/requests/{id}/cancel", needOperator, s.RequestCancel)
 	api.HandleFunc("GET /api/extensions", s.Extensions)
 	api.HandleFunc("GET /api/roles", s.Roles)
 	api.HandleFunc("GET /api/versions", s.Versions)
