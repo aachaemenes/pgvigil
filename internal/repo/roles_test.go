@@ -29,8 +29,9 @@ func TestCollectorMayCallWhatRepoCalls(t *testing.T) {
 		seen[m[1]] = true
 	}
 	// the owner's own calls (migrate, purge; purge's heals of the job statistics, 0139: JobStatsHeal and its failure's
-	// record) are not the collector's
-	for _, n := range []string{"apply_roles", "purge", "job_stats_pending", "job_stats_heal_one", "job_stats_failed"} {
+	// record; and of the replication hours, 0150: ReplicationHourlyHeal and its failure's record) are not the collector's
+	for _, n := range []string{"apply_roles", "purge", "job_stats_pending", "job_stats_heal_one", "job_stats_failed",
+		"replication_hourly_pending", "replication_hourly_months", "replication_hourly_heal_one", "replication_hourly_failed"} {
 		delete(seen, n)
 	}
 	names := make([]string, 0, len(seen))

@@ -721,3 +721,62 @@ func (r *Repo) JobStatsHeal(ctx context.Context) (instances int, hourRows int64,
 	}
 	return instances, hourRows, failed, nil
 }
+
+// ReplicationHourlyHeal builds the replication hours (0150) of every instance still waiting - a dirty range, or
+// samples and no first build queued (pgvigil.replication_hourly_pending) - each instance in its own statements and
+// transactions, never all in one: first its month partitions (replication_hourly_months, committed by itself: making
+// a partition locks the whole hours table, and inside a build's long transaction that lock would hold every other
+// instance's rollup), then replication_hourly_heal_one (no budget: the instance's imports meanwhile mark their hours
+// and go on). It returns the instances built, their hour rows and the instances that failed (they stay for the next
+// run; the failure goes to the collection log as a trigger's does). A store without 0150 heals nothing.
+func (r *Repo) ReplicationHourlyHeal(ctx context.Context) (instances int, hourRows int64, failed int, err error) {
+	var have bool
+	if err := r.pool.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.replication_hourly_pending()') IS NOT NULL`).Scan(&have); err != nil || !have {
+		return 0, 0, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT i FROM pgvigil.replication_hourly_pending() i`)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("replication hours pending: %w", err)
+	}
+	var ids []int32
+	for rows.Next() {
+		var id int32
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, 0, fmt.Errorf("replication hours pending: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, fmt.Errorf("replication hours pending: %w", err)
+	}
+	for _, id := range ids {
+		var n int64
+		_, herr := r.pool.Exec(ctx, `SELECT pgvigil.replication_hourly_months($1)`, id)
+		if herr == nil {
+			herr = r.pool.QueryRow(ctx, `SELECT pgvigil.replication_hourly_heal_one($1)`, id).Scan(&n)
+		}
+		if herr != nil {
+			if ctx.Err() != nil {
+				return instances, hourRows, failed, ctx.Err()
+			}
+			failed++
+			// recorded as a trigger's failure is (0150's replication_hourly_failed: merged into the instance's 'mark'
+			// range, a 'rollup failed' row at most once an hour); an instance whose first build failed has no range
+			// yet: the range of its stored samples is marked
+			_, _ = r.pool.Exec(ctx, `SELECT pgvigil.replication_hourly_failed($1, s.from_at, s.to_at, 'in pgvigil purge: ' || $2)
+			                           FROM (SELECT d.from_at, d.to_at FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1
+			                                 UNION ALL
+			                                 SELECT min(x.snapshot_at), max(x.snapshot_at) FROM pgvigil.replication_sample x
+			                                  WHERE x.instance_id = $1
+			                                    AND NOT EXISTS (SELECT 1 FROM pgvigil.replication_hourly_dirty d WHERE d.instance_id = $1)
+			                                 HAVING min(x.snapshot_at) IS NOT NULL) s`,
+				id, herr.Error())
+			continue
+		}
+		instances++
+		hourRows += n
+	}
+	return instances, hourRows, failed, nil
+}

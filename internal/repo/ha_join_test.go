@@ -88,6 +88,9 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     (40P01; purge has no retry). Shown with two sessions: a transaction holds the first parent as purge does after
 //     its first drop, the import runs and waits, the transaction asks for the second parent - it gets it at once, and
 //     the import ends without an error when the transaction commits.
+//  6. 'pgvigil purge' builds the replication hours (0150) of an instance that waits for its first build: its stored
+//     samples and no first build queued make it pending (replication_hourly_pending); Repo.ReplicationHourlyHeal
+//     makes its months, builds it, queues the first build - it is pending no more and its hours are stored.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -269,4 +272,24 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	if err := <-imported; err != nil {
 		t.Errorf("the AG import that ran beside the purge-side transaction: %v", err)
 	}
+
+	// 6. the purge command's heal of the replication hours
+	for _, ago := range []string{"3 hours", "2 hours"} {
+		exec(`SELECT pgvigil.ensure_month_partition('replication_sample', now() - $1::interval)`, ago)
+		exec(`INSERT INTO pgvigil.replication_sample (instance_id, snapshot_at, kind, key, state, lag_bytes, active, detail)
+		      VALUES ($1, now() - $2::interval, 'slot', 'hajoin_slot', 'reserved', 1048576, true, '{}'::jsonb)`, pg, ago)
+	}
+	pending := func() string {
+		return str(`SELECT (EXISTS (SELECT 1 FROM pgvigil.replication_hourly_pending() i WHERE i = $1))::text`, pg)
+	}
+	want("the instance with samples and no first build, before the heal: pending", pending(), "true")
+	built, hourRows, failedHeals, err := r.ReplicationHourlyHeal(ctx)
+	if err != nil || failedHeals != 0 || built < 1 {
+		t.Errorf("ReplicationHourlyHeal = %d instance(s), %d hour rows, %d failed, %v; want 1 or more built, none failed", built, hourRows, failedHeals, err)
+	}
+	want("after the heal: pending", pending(), "false")
+	want("after the heal: its first build queued and its slot's hours stored",
+		str(`SELECT (EXISTS (SELECT 1 FROM pgvigil.replication_hourly_first_build b WHERE b.instance_id = $1))::text || ' / ' ||
+		            (EXISTS (SELECT 1 FROM pgvigil.replication_hourly h WHERE h.instance_id = $1 AND h.kind = 'slot' AND h.key = 'hajoin_slot'))::text`, pg),
+		"true / true")
 }

@@ -24,9 +24,11 @@ import (
 // the UI logins cannot call it). pgvigil does not schedule it; the operator does
 // (deploy/pgvigil-purge.timer, pg_cron on the repository, a Windows scheduled task). -dry-run
 // lists the partitions a run would drop and changes nothing. After purge() it builds the job statistics' hours
-// (0139) of every instance still waiting, one instance per transaction; a purge scheduled as SQL alone
-// (SELECT pgvigil.purge(N) from pg_cron) does not: schedule beside it
-// SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1 (one instance a run).
+// (0139) and the replication hours (0150) of every instance still waiting, one instance per transaction; a purge
+// scheduled as SQL alone (SELECT pgvigil.purge(N) from pg_cron) does not: schedule beside it
+// SELECT pgvigil.job_stats_heal_one(i) FROM pgvigil.job_stats_pending() i LIMIT 1 (one instance a run), and for the
+// replication hours, as two statements, SELECT pgvigil.replication_hourly_months(i) FROM
+// pgvigil.replication_hourly_pending() i LIMIT 1 and then SELECT pgvigil.replication_hourly_heal_one(i) for it.
 func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("pgvigil purge", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -144,6 +146,21 @@ func runPurge(ctx context.Context, log *slog.Logger, args []string) error {
 		fmt.Printf("purge: the job statistics' hours of %d instance(s) built (%d hour rows) in %.1f s", inst, rows, time.Since(start).Seconds())
 		if failed > 0 {
 			fmt.Printf("; %d instance(s) failed and stay for the next run (collection log 'job_stats_hourly')", failed)
+		}
+		fmt.Println()
+	}
+	// 0150: the replication hours the same way - an instance's month partitions in a transaction of their own, then
+	// its build or heal
+	start = time.Now()
+	inst, rows, failed, err = r.ReplicationHourlyHeal(ctx)
+	if err != nil {
+		return err
+	}
+	if inst > 0 || failed > 0 {
+		log.Info("replication hours healed", "instances", inst, "hour_rows", rows, "failed", failed, "ms", time.Since(start).Milliseconds())
+		fmt.Printf("purge: the replication hours of %d instance(s) built (%d hour rows) in %.1f s", inst, rows, time.Since(start).Seconds())
+		if failed > 0 {
+			fmt.Printf("; %d instance(s) failed and stay for the next run (collection log 'replication_hourly')", failed)
 		}
 		fmt.Println()
 	}
