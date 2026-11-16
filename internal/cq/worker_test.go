@@ -137,7 +137,8 @@ func TestWorkerOnAStore(t *testing.T) {
 	}}
 	registerForTest(t, "admin_test", standIn{fn: func(_ context.Context, env *Env, _ Request) End {
 		return End{State: "done", Outcome: "tested on " + env.Instance.Name, Rows: 1,
-			Result: map[string]any{"sets": []any{map[string]any{"columns": []string{"ok"}, "rows": [][]any{{true}}}}}}
+			Result: map[string]any{"sets": []any{map[string]any{"columns": []string{"ok", "cmd", "plan", "n"},
+				"rows": [][]any{{true, wkCmd, wkPlan, int64(12345678901234567)}}}}}}
 	}})
 	registerForTest(t, "index_advisor", standIn{fn: func(ctx context.Context, _ *Env, _ Request) End {
 		<-ctx.Done()
@@ -209,8 +210,15 @@ func TestWorkerOnAStore(t *testing.T) {
 	waitFor("admin_test done", 2*time.Second, func() bool { s, _ := stateOf(id); return s == "done" })
 	t.Logf("admin_test asked -> done in %s", time.Since(t0).Round(time.Millisecond))
 	var res []byte
-	if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_action_result($1, 'wt')::text`, id).Scan(&res); err != nil || !strings.Contains(string(res), `"rows": [[true]]`) {
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_action_result($1, 'wt')::text`, id).Scan(&res); err != nil {
 		t.Fatalf("the asker's result: %s %v", res, err)
+	}
+	// task 488: the stored result is masked (the sqlcmd -P switch, the plan's literal), the plan still XML, the number
+	// as written; the store's own copy holds no secret either
+	checkMasked(t, res)
+	var raw string
+	if err := pool.QueryRow(ctx, `SELECT result::text FROM pgvigil.ui_action_data WHERE request_id = $1`, id).Scan(&raw); err != nil || strings.Contains(raw, "Wk1secret") || strings.Contains(raw, "Wk2secret") {
+		t.Fatalf("the stored row holds a secret: %s %v", raw, err)
 	}
 
 	// a running request cancelled

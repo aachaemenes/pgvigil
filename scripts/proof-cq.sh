@@ -35,7 +35,9 @@
 #       passes'); Glenn Berry's free SQL refused at the insert with community_allow unset ('sends free SQL text'); a
 #       forged kind refused at the insert
 #   P13 a reader login (Grafana's shape) gets 42501 on ui_action_data and on ui_action_result; a second UI user's GET of
-#       the first's request: 403 'this run was asked by another user' (the masked line waits for 488)
+#       the first's request: 403 'this run was asked by another user'; task 488: a target session's sqlcmd -P line
+#       read by pg_running through the queue comes back masked, in serve's reply and in the stored row, while the
+#       direct run's reply shows it (the control, and the difference docs/queue.md names)
 #   P2  20 asks: the claim within 1 s of the insert (median of taken_at - asked_at) and the GET's answer within 1 s of
 #       done_at (median)
 #   P6  cancel: a waiting request (the collector stopped with SIGSTOP) 'cancelled' at once; a running sp_WhoIsActive
@@ -250,7 +252,29 @@ out=$(psql "$GRAF" -XAtq -v VERBOSITY=sqlstate -c "select count(*) from pgvigil.
 out=$(psql "$GRAF" -XAtq -v VERBOSITY=sqlstate -c "select pgvigil.ui_action_result($ID1, '$UIUSER')" 2>&1 || true)
 [[ $out == *42501* ]] || fail "P13: the reader called ui_action_result: $out"
 [[ $(getc "requests/$ID1" "$JAR2") == 403 ]] && grep -q 'this run was asked by another user' "$WORK/body" || fail "P13: the second user's GET: $(cat "$WORK/body")"
-ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403"
+# task 488: the mask before the store, on a live read
+P13S="Pq13secret$RANDOM"
+psql "$TGT_MON" -XAtq -c "select pg_sleep(30), 'sqlcmd -S . -U app -P $P13S -Q x'" >/dev/null 2>&1 & P13PID=$!
+seen=0
+for _ in $(seq 1 20); do
+  [[ $(psql "$TGT_MON" -XAtq -c "select count(*) from pg_stat_activity where pid <> pg_backend_pid() and query like '%' || 'Pq13secret' || '%'") == 1 ]] && { seen=1; break; }
+  sleep 0.5
+done
+[[ $seen == 1 ]] || fail "P13: the session carrying the sqlcmd line never showed in pg_stat_activity"
+id=$(ask community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}"); isid "$id"
+# the stored row is read BEFORE the asker's GET (a read result is cleared at the next sweep): its end from the
+# repository, then the row itself, which must hold a result
+st=""
+for _ in $(seq 1 120); do st=$(rq "select state from pgvigil.action_requests where request_id = $id"); [[ $st != waiting && $st != running ]] && break; sleep 0.5; done
+[[ $st == done ]] || fail "P13: pg_running for the mask ended $st"
+read -r kept leak <<<"$(rq "select count(*) filter (where result is not null), count(*) filter (where result::text like '%$P13S%') from pgvigil.ui_action_data where request_id = $id" | tr '|' ' ')"
+[[ $kept == 1 && $leak == 0 ]] || fail "P13: the stored row: $kept with a result, $leak holding the sqlcmd password (want 1 and 0)"
+[[ $(waitreq "$id") == done ]] || fail "P13: pg_running's GET: $(cat "$WORK/body")"
+grep -q "$P13S" "$WORK/body" && fail "P13: the queue's reply shows the sqlcmd password: $(grep -o ".\{60\}$P13S" "$WORK/body" | head -1)"
+[[ $(js "sum('-P <masked>' in str(c) for s in d['result']['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked sqlcmd line in the queue's result (the session not read?): $(head -c 800 "$WORK/body")"
+[[ $(post community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}" "$DJAR" "$DU") == 200 ]] && grep -q "$P13S" "$WORK/body" || fail "P13: the direct run's control does not show the session's line: $(head -c 600 "$WORK/body")"
+kill "$P13PID" 2>/dev/null || true
+ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403, a session's sqlcmd -P line masked in the queue's reply and stored row and shown by the direct run"
 
 # ---- P2: latency ----------------------------------------------------------------------------------------------------
 : > "$WORK/lat"

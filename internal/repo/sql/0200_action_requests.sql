@@ -13,7 +13,8 @@
 --                     that inserted), the instance, the state, the holder and its lease, the times. The reader may read
 --                     it (the Grafana login included): it holds no payload and no result.
 --   ui_action_data    the payload and the result of a request. Owner only (ui_*: apply_roles revokes it from the
---                     reader); a result is read through ui_action_result(request, ui_user) by the asker alone.
+--                     reader); a result is read through ui_action_result(request, ui_user) by the asker alone (by
+--                     every signed-in user under the opt-in '7d' keep); every string of it masked before it is stored.
 --   cq_workers        each worker's lease: the instances it holds now and its last beat on the repository's now().
 --   action_doors      per worker, instance, kind and name (a tool or a job; '' = the kind): open or shut and the
 --                     collector's own words. A shut or missing door refuses at the insert and is skipped by the claim.
@@ -100,6 +101,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.action_requests (
   result_bytes    int,
   duration_ms     int,
   keep_until      timestamptz,
+  keep            text NOT NULL DEFAULT 'read' CHECK (keep IN ('read', '7d')),  -- the collector's cq.result_keep at the end (task 488)
   read_at         timestamptz,
   cleared_at      timestamptz
 );
@@ -395,7 +397,8 @@ END $$;
 
 -- ---- the worker's side ---------------------------------------------------------------------------------------------
 -- import_action_sweep: waiting requests past expires_at -> 'expired'; running ones whose lease lapsed -> 'lost' (never
--- run again); kept results past keep_until or read -> cleared. Each change notifies pgvigil_result. Returns the count.
+-- run again); kept results past keep_until, or read under the 'read' keep -> cleared (a '7d' keep stays its 7 days,
+-- read or not: task 488). Each change notifies pgvigil_result. Returns the count.
 CREATE OR REPLACE FUNCTION pgvigil.import_action_sweep()
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
@@ -419,7 +422,7 @@ BEGIN
   END LOOP;
   WITH c AS (
     UPDATE pgvigil.action_requests SET cleared_at = v_now
-     WHERE cleared_at IS NULL AND keep_until IS NOT NULL AND (keep_until <= v_now OR read_at IS NOT NULL)
+     WHERE cleared_at IS NULL AND keep_until IS NOT NULL AND (keep_until <= v_now OR (read_at IS NOT NULL AND keep = 'read'))
      RETURNING request_id)
   UPDATE pgvigil.ui_action_data a SET result = NULL FROM c WHERE a.request_id = c.request_id;
   RETURN v_n;
@@ -585,6 +588,7 @@ BEGIN
          refusal = left(p_end ->> 'refusal', 2000), rows_out = (p_end ->> 'rows')::int, duration_ms = (p_end ->> 'duration_ms')::int,
          result_bytes = CASE WHEN v_result IS NOT NULL THEN v_bytes END,
          keep_until = CASE WHEN v_result IS NULL THEN NULL WHEN v_keep = '7d' THEN v_now + interval '7 days' ELSE v_now + interval '1 hour' END,
+         keep = CASE WHEN v_keep = '7d' THEN '7d' ELSE 'read' END,
          lease_until = NULL
    WHERE request_id = p_request_id AND taken_by = p_collector_id AND state = 'running';
   v_ok := FOUND;
@@ -604,7 +608,9 @@ $$;
 
 -- ---- the asker's read ------------------------------------------------------------------------------------------------
 -- ui_action_result: one request's state and, for its asker alone, its result (a 'read' keep is cleared at the next
--- sweep once read). Another user gets the refusal words and no data.
+-- sweep once read). Another user gets the refusal words and no data - except under a '7d' keep (the collector's
+-- cq.result_keep: 7d, an opt-in whose words say every pgvigil user can read every stored result; task 488), which
+-- answers every signed-in user as it answers the asker; only the asker's read sets read_at.
 CREATE OR REPLACE FUNCTION pgvigil.ui_action_result(p_request_id bigint, p_ui_user text)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -615,11 +621,11 @@ BEGIN
   SELECT * INTO r FROM pgvigil.action_requests WHERE request_id = p_request_id;
   IF r.request_id IS NULL THEN
     RETURN jsonb_build_object('refused', format('no request %s', p_request_id));
-  ELSIF r.ui_user <> lower(btrim(coalesce(p_ui_user, ''))) THEN
+  ELSIF r.ui_user <> lower(btrim(coalesce(p_ui_user, ''))) AND r.keep <> '7d' THEN
     RETURN jsonb_build_object('refused', 'this run was asked by another user');
   END IF;
   SELECT a.result INTO v FROM pgvigil.ui_action_data a WHERE a.request_id = p_request_id;
-  IF v IS NOT NULL AND r.read_at IS NULL AND r.state IN ('done', 'failed') THEN
+  IF v IS NOT NULL AND r.read_at IS NULL AND r.state IN ('done', 'failed') AND r.ui_user = lower(btrim(coalesce(p_ui_user, ''))) THEN
     UPDATE pgvigil.action_requests SET read_at = clock_timestamp() WHERE request_id = p_request_id;
   END IF;
   RETURN jsonb_build_object('request_id', r.request_id, 'kind', r.kind, 'instance', r.instance, 'state', r.state,

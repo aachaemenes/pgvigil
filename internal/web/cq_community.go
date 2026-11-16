@@ -127,8 +127,14 @@ func cqStoredSize(b []byte) int {
 
 // cqSets is a stored result: the run's sets and its words, one shape in both modes ({sets: [{columns, rows, ...}]}).
 // Over cqResultMax as stored the rows are cut from the end (the last set first) until it fits, each cut set marked
-// truncated and the cut said: 'cut at <n> rows: queue mode keeps 8 MB' (the direct run's reply stops at 24 MB).
+// truncated and the cut said: 'cut at <n> rows: queue mode keeps 8 MB' (the direct run's reply stops at 24 MB). The
+// column names and text cells are masked first (task 488, cq.MaskRows), so the cut measures what is stored; the
+// worker masks the whole result again before it stores it (cq.MaskResult, idempotent).
 func cqSets(run instanceRun) map[string]any {
+	for i := range run.Sets {
+		cq.MaskStrings(run.Sets[i].Columns)
+		cq.MaskRows(run.Sets[i].Rows)
+	}
 	out := map[string]any{"sets": run.Sets, "declined": run.Declined, "error": run.Error, "duration_ms": run.DurationMS}
 	if b, err := json.Marshal(out); err != nil || cqStoredSize(b) <= cqResultMax {
 		return out

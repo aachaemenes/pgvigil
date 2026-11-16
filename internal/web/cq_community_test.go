@@ -208,6 +208,15 @@ func TestCQSetsCut(t *testing.T) {
 	}
 }
 
+// Task 488: a set's text cells and column names are masked before the cut measures them (the worker masks the whole
+// result again before it is stored); a cell of another type is kept.
+func TestCQSetsMasked(t *testing.T) {
+	out := cqSets(instanceRun{Sets: []resultSet{{Columns: []string{"cmd", "n"}, Rows: [][]any{{"osql -E -S . -P Cl4secret", 3}}}}})
+	if s := out["sets"].([]resultSet)[0]; s.Rows[0][0] != "osql -E -S . -P <masked>" || s.Rows[0][1] != 3 || s.Columns[0] != "cmd" {
+		t.Fatalf("the masked set: %#v", s)
+	}
+}
+
 // The cut is measured as jsonb's text writes it (review 20261114-215058 finding 4): a separator is one byte more there.
 func TestCQStoredSize(t *testing.T) {
 	if n := cqStoredSize([]byte(`{"a":[1,2]}`)); n != 13 { // jsonb's text: {"a": [1, 2]}

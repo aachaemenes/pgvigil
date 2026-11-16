@@ -364,6 +364,69 @@ func TestActionRequestsOnAStore(t *testing.T) {
 		t.Fatalf("a read result after the sweep: %v (want cleared)", m)
 	}
 
+	// task 488, the keeps: an unread 'read' result stays through a sweep and goes at its hour (keep_until moved back);
+	// a '7d' result is kept 7 days, read or not, and every signed-in user reads it (the opt-in's words)
+	finish := func(id int64, keep string) {
+		t.Helper()
+		var ok bool
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.import_action_finish($1, $2, $3::jsonb)`, w1, id,
+			fmt.Sprintf(`{"state": "done", "outcome": "1 set, 1 row", "rows": 1, "keep": %q, "result": {"sets": [{"columns": ["n"], "rows": [[1]]}]}}`, keep)).Scan(&ok); err != nil || !ok {
+			t.Fatalf("finish %d (%s): %v %v", id, keep, ok, err)
+		}
+	}
+	stored := func(id int64) bool {
+		t.Helper()
+		var kept bool
+		if err := pool.QueryRow(ctx, `SELECT result IS NOT NULL FROM pgvigil.ui_action_data WHERE request_id = $1`, id).Scan(&kept); err != nil {
+			t.Fatal(err)
+		}
+		return kept
+	}
+	k1 := ask("community_run", i1, "alice", run)
+	if got := claim(w1, 4, 1); len(got) != 1 || got[0].ID != k1.RequestID {
+		t.Fatalf("the unread run's claim: %+v, want %d", got, k1.RequestID)
+	}
+	finish(k1.RequestID, "read")
+	exec(`SELECT pgvigil.import_action_sweep()`)
+	if !stored(k1.RequestID) {
+		t.Fatal("an unread result was cleared by a sweep inside its hour")
+	}
+	if m := result(k1.RequestID, "bob"); m["refused"] != "this run was asked by another user" {
+		t.Fatalf("bob read alice's unread 'read' result: %v", m)
+	}
+	exec(`UPDATE pgvigil.action_requests SET keep_until = clock_timestamp() - interval '1 second' WHERE request_id = $1`, k1.RequestID)
+	exec(`SELECT pgvigil.import_action_sweep()`)
+	if stored(k1.RequestID) {
+		t.Fatal("an unread result outlived its hour")
+	}
+	k7 := ask("community_run", i1, "alice", run)
+	if got := claim(w1, 4, 1); len(got) != 1 || got[0].ID != k7.RequestID {
+		t.Fatalf("the 7d run's claim: %+v, want %d", got, k7.RequestID)
+	}
+	finish(k7.RequestID, "7d")
+	var keep string
+	var days bool
+	if err := pool.QueryRow(ctx, `SELECT keep, keep_until BETWEEN done_at + interval '7 days' - interval '1 second' AND done_at + interval '7 days'
+		FROM pgvigil.action_requests WHERE request_id = $1`, k7.RequestID).Scan(&keep, &days); err != nil || keep != "7d" || !days {
+		t.Fatalf("the 7d keep: %q, 7 days %v (%v)", keep, days, err)
+	}
+	if m := result(k7.RequestID, "alice"); m["result"] == nil {
+		t.Fatalf("alice's 7d read: %v", m)
+	}
+	exec(`SELECT pgvigil.import_action_sweep()`)
+	if m := result(k7.RequestID, "bob"); m["refused"] != nil || m["result"] == nil || m["cleared"] != false {
+		t.Fatalf("a 7d result after its asker read it and a sweep, read by bob: %v (want kept and served)", m)
+	}
+	var readBy bool
+	if err := pool.QueryRow(ctx, `SELECT read_at IS NOT NULL FROM pgvigil.action_requests WHERE request_id = $1`, k7.RequestID).Scan(&readBy); err != nil || !readBy {
+		t.Fatalf("the asker's read of a 7d result left read_at empty (%v)", err)
+	}
+	exec(`UPDATE pgvigil.action_requests SET keep_until = clock_timestamp() - interval '1 second' WHERE request_id = $1`, k7.RequestID)
+	exec(`SELECT pgvigil.import_action_sweep()`)
+	if stored(k7.RequestID) {
+		t.Fatal("a 7d result outlived its 7 days")
+	}
+
 	// expiry and the lost lease, on the repository clock
 	e := ask("community_run", i1, "alice", run)
 	exec(`UPDATE pgvigil.action_requests SET expires_at = clock_timestamp() - interval '1 second' WHERE request_id = $1`, e.RequestID)

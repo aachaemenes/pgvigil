@@ -95,7 +95,7 @@ Proof: `scripts/proof-pg-dboptions.sh` (PostgreSQL 13, 16 and 18).
 
 ## The request queue (cq, actions)
 
-`cq:` (a collector's `enabled`, `workers`, `result_keep`: read) and `actions: via:` (serve's `direct` or `queue`) send the
+`cq:` (a collector's `enabled`, `workers`, `result_keep`: read or 7d) and `actions: via:` (serve's `direct` or `queue`) send the
 community tools through the repository, so serve and the collector can run on different machines; both are off by
 default. An instance's `community_allow` (all, none or tool names) and `jobs_allow` (names, `*`, `-name`) are DBA Dash's
 allow-lists. What each key opens, and what serve stops doing in queue mode: [queue.md](queue.md).

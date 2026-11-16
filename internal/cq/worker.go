@@ -539,11 +539,21 @@ func (w *Worker) runOne(ctx context.Context, r Request, raw []byte) End {
 // finish writes the end and the run's audit rows in one transaction; a row that is no longer this worker's running
 // row (lost, or swept) takes neither.
 func (w *Worker) finish(r Request, end End, took time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
 	if end.State == "" {
 		end.State = "done"
 	}
+	if end.Result != nil {
+		// CQ-16 (task 488): every string of a result is masked before it is stored, whatever the kind and whatever its
+		// runner masked itself (idempotent); before the call's clock starts. A result that cannot be read to mask it is
+		// not kept, and the run's audit row is still written: the run did execute.
+		m, err := MaskResult(end.Result)
+		if err != nil {
+			end.State, end.Outcome, m = "failed", fmt.Sprintf("it ran, but its result could not be masked, so it is not kept: %v", err), nil
+		}
+		end.Result = m
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
 	body := map[string]any{"state": end.State, "outcome": end.Outcome, "refusal": end.Refusal, "rows": end.Rows,
 		"duration_ms": took.Milliseconds(), "keep": w.cfg.CQ.ResultKeep}
 	if end.Result != nil {

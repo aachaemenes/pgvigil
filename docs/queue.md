@@ -40,7 +40,9 @@ On the collector host, in that collector's `pgvigil.yaml`:
 cq:
   enabled: true      # this collector takes the requests of the instances it holds (default false)
   workers: 4         # requests run at once, 1 to 16 (default 4), plus one slot kept for kill, cancel, terminate and job stop
-  result_keep: read  # read (the default, and the only value in this release): kept until its asker has read it, or 1 hour
+  result_keep: read  # read (the default): kept until its asker has read it, or 1 hour, and only its asker reads it;
+                     # 7d: every result this collector stores is kept 7 days, read or not, and EVERY pgvigil user can
+                     # read every stored result (an opt-in: a person's runs are no longer theirs alone)
 ```
 
 On the serve host, in serve's `pgvigil.yaml`:
@@ -78,6 +80,7 @@ that collector's pgvigil.yaml)".
   can ask any open kind under any name. At most 10 open requests per user name and 10 per repository login; every
   user of one serve shares serve's login, so that is 10 open requests across all of that serve's users.
 - A result is read by its asker as serve names them: another user's page gets "this run was asked by another user".
+  Under a collector's `cq.result_keep: 7d` every signed-in user reads every result that collector stored, for 7 days.
   The check trusts the user name serve passes, so any holder of serve's auth login (which already reads the UI's
   password hashes) can read any stored result. The Grafana login and every other `pgvigil_reader` login can see that a
   request was made, by whom and how it ended, never its arguments or its result.
@@ -128,9 +131,18 @@ release: type the value, or the procedure's own words say what it needs.
 A community run's result is stored for its asker as its sets (columns and rows), with the direct run's limits per set
 (5,000 rows, 50 sets, 256 KB a cell) and 8 MB in all as the repository stores it; past 8 MB it is cut with the words
 "cut at <n> rows: queue mode keeps 8 MB" (the direct run's reply stops at 24 MB). One the repository still finds over
-8 MB ends **failed** with words, its result not kept. It is cleared after it is read, or after an hour. The request's
+8 MB ends **failed** with words, its result not kept. It is cleared after it is read, or after an hour; under the
+collector's `cq.result_keep: 7d` it is kept 7 days, read or not, and every pgvigil user can read it. The request's
 own row (who, when, what, how it ended) is kept: a read's and every refused one's for 7 days, an action's as the
 actions log is.
+
+Every text in a stored result is masked BEFORE it is stored, with the credential mask the collector puts on the
+statements it stores: a sqlcmd, bcp or osql `-P`, `PASSWORD = '...'`, `SECRET = '...'`, a password-named `@` parameter,
+a connection string's or a URI's password, `ConvertTo-SecureString`, `net use`, each written `<masked>`; a value that
+is an XML document (a plan, a deadlock graph, a blocked process report) is masked inside its attribute values and
+text and stays XML. A cell, a column name, a message and the run's own words are all masked. The direct run is not
+stored and its reply shows the tool's output as the tool returned it, so the same run can show a secret in direct
+mode and `<masked>` in queue mode.
 
 ## Audit
 
