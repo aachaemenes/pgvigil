@@ -99,7 +99,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
 
   // the collections over 24 h
   const sum = (k: string) => colls.reduce((a, r) => a + Number(r[k] ?? 0), 0);
-  const runs = sum('runs'), fails = sum('failures');
+  const runs = sum('runs'), fails = sum('failures'), retried = sum('retries');
   const worst = colls.reduce<Row | null>((a, r) => r.p95_ms != null && (a == null || Number(r.p95_ms) > Number(a.p95_ms)) ? r : a, null);
   const failing = streaks.filter(r => Number(r.fail_streak) >= 3).length;
   const runsPanel = panel('Collections', 'last 24 h',
@@ -108,7 +108,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       tile('Failures', fmtNum(fails), fails ? 'warn' : '', { sub: runs ? `${(100 * fails / runs).toFixed(1)} % of runs` : undefined }),
       tile('Rows written', fmtNum(sum('rows_written'))),
       tile('Slowest p95', worst ? fmtNum(worst.p95_ms) : '-', '', { unit: worst ? 'ms' : undefined, sub: worst ? String(worst.collection) : undefined }),
-      tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' })),
+      tile('Failing now', fmtNum(failing), failing ? 'crit' : '', { sub: 'three runs in a row or more' }),
+      // N4: an import PostgreSQL ended as a deadlock's victim and pgvigil took again (stored once); shown when above 0
+      ...(retried ? [tile('Retried after a deadlock', fmtNum(retried), 'warn', { sub: 'imports taken again and stored: none lost' })] : [])),
     minutes.length >= 2
       ? lineChart('Runs and failures per minute', minutes,
           [{ key: 'runs', label: 'runs' }, { key: 'failures', label: 'failures' }, { key: 'rows_written', label: 'rows written' }],
@@ -118,6 +120,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'collection' }, { key: 'engine' },
       { key: 'runs', num: true, fmt: fmtNum }, { key: 'failures', num: true, fmt: fmtNum },
       { key: 'failure_pct', label: 'failure %', num: true, fmt: v => v == null ? '' : `${v}` },
+      { key: 'retries', label: 'retried after a deadlock', num: true, fmt: v => Number(v ?? 0) ? fmtNum(v) : '' },
       { key: 'avg_ms', label: 'avg (ms)', num: true, fmt: fmtNum }, { key: 'p50_ms', label: 'p50 (ms)', num: true, fmt: fmtNum },
       { key: 'p95_ms', label: 'p95 (ms)', num: true, fmt: fmtNum }, { key: 'max_ms', label: 'max (ms)', num: true, fmt: fmtNum },
       { key: 'rows_written', label: 'rows written', num: true, fmt: fmtNum },

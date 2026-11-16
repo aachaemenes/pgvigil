@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -335,7 +336,10 @@ func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instanc
 	case <-time.After(jitter):
 	}
 	run := func() {
-		res := engines.RunOnce(ctx, log, r, in, name)
+		// the run's imports taken again after a deadlock (repo.Import counts them) go to its heartbeat row (N4)
+		var retries atomic.Int64
+		res := engines.RunOnce(repo.WithRetryCounter(ctx, &retries), log, r, in, name)
+		res.Retries = int(retries.Load())
 		if res.Err == nil || ctx.Err() == nil { // task 201: the heartbeat counts the run, never one the stop cut short
 			collect.RecordRunEvery(in.Name, in.Engine, name, res, iv) // task 201 DONE-2 N3: the span's interval
 		}

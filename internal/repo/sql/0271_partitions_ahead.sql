@@ -99,3 +99,9 @@ BEGIN
   END;
   RETURN 'made';   -- this call ran the maker: two passes at once may both count one partition (the maker takes the other's)
 END $$;
+
+-- collector_runs.retries: a minute's imports that a collection's runs took again after a deadlock (repo.Import's retry,
+-- counted per run into the beat's runs[].retries); 0 where the beat sends none (an older collector). The Collector page
+-- shows it per collection over 24 h. The beat's arm is a join line (scripts/n4-join-lines.sql (3): another slice edits
+-- import_collector_beat in place), placed for the proofs by scripts/n4-wiring.patch.
+ALTER TABLE pgvigil.collector_runs ADD COLUMN IF NOT EXISTS retries int NOT NULL DEFAULT 0;

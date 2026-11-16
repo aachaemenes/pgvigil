@@ -23,7 +23,7 @@ index be6b258c..59a0189b 100644
  	for _, in := range targets {
  		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
 diff --git i/internal/repo/repo.go w/internal/repo/repo.go
-index 272569c5..409bead5 100644
+index 272569c5..ab85b2cd 100644
 --- i/internal/repo/repo.go
 +++ w/internal/repo/repo.go
 @@ -75,8 +75,19 @@ const migrateLockKey int64 = 7265471133001
@@ -47,7 +47,15 @@ index 272569c5..409bead5 100644
  	c, err := r.pool.Acquire(ctx)
  	if err != nil {
  		return 0, fmt.Errorf("migrate: %w", err)
-@@ -629,7 +640,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
+@@ -459,6 +470,7 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
+ 		// with 40P01 and rolls it back whole, so taking it again is safe and stores it once.
+ 		r.logger().Warn("an import was ended by a deadlock; taking it again", "collection", collection,
+ 			"instance_id", instanceID, "snapshot_at", snapshotAt, "attempt", attempt)
++		countRetry(ctx) // the run's counter (retries.go): collector_runs.retries (N4)
+ 		select {
+ 		case <-ctx.Done():
+ 			return err
+@@ -629,7 +641,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
  // by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
  // (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
  // It takes every partitioned series in the schema, so a series the function does not yet name
@@ -58,7 +66,7 @@ index 272569c5..409bead5 100644
  func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
  	var have bool
  	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
-@@ -651,8 +664,9 @@ SELECT c.relname
+@@ -651,8 +665,9 @@ SELECT c.relname
    JOIN pg_class p ON p.oid = i.inhparent
    JOIN pg_namespace ns ON ns.oid = p.relnamespace
   WHERE ns.nspname = 'pgvigil'
@@ -70,6 +78,39 @@ index 272569c5..409bead5 100644
         < now() - make_interval(days => `+age+`)
     AND cardinality($2::text[]) = cardinality($3::int[])
   ORDER BY c.relname`, days, names, ages)
+diff --git i/internal/repo/sql/0121_collector_health.sql w/internal/repo/sql/0121_collector_health.sql
+index 6ff25302..acd33db7 100644
+--- i/internal/repo/sql/0121_collector_health.sql
++++ w/internal/repo/sql/0121_collector_health.sql
+@@ -248,7 +248,8 @@ RETURNS void LANGUAGE sql AS $$
+ $$;
+ 
+ -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
+---   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
++--   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints], retries}],  (retries: the runs'
++--         imports taken again after a deadlock, absent when none - 0271's collector_runs.retries, N4)
+ --   load: [{instance, attempts, opened, runs, failures, auth, interval_s}],  (interval_s: the fastest configured interval, absent when not known)
+ --   streaks: [{instance, collection, fails, error, at, since}]}  (instances by name; an unknown name is skipped; since =
+ --   the streak's first failure, absent when the collector carried the count from the repository)
+@@ -275,13 +276,15 @@ BEGIN
+          -- one and must not undo its uninstall's retire
+          retired_at = CASE WHEN retired_at < now() - interval '2 minutes' THEN NULL ELSE retired_at END
+    WHERE collector_id = p_id;
+-  INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist)
++  INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist,
++                                      retries)
+   SELECT p_minute, p_id, coalesce(nullif(r.engine, ''), 'postgres'), r.collection, r.runs, r.failures, r.rows, r.dur_sum, r.dur_max,
+-         ARRAY(SELECT jsonb_array_elements_text(r.hist)::int)
++         ARRAY(SELECT jsonb_array_elements_text(r.hist)::int), greatest(coalesce(r.retries, 0), 0)
+     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(engine text, collection text, runs int, failures int, rows bigint,
+-                                                                  dur_sum bigint, dur_max int, hist jsonb)
++                                                                  dur_sum bigint, dur_max int, hist jsonb, retries int)
+   ON CONFLICT (minute, collector_id, engine, collection) DO UPDATE
+      SET runs = collector_runs.runs + EXCLUDED.runs, failures = collector_runs.failures + EXCLUDED.failures,
++         retries = collector_runs.retries + EXCLUDED.retries,
+          rows_written = collector_runs.rows_written + EXCLUDED.rows_written, dur_ms_sum = collector_runs.dur_ms_sum + EXCLUDED.dur_ms_sum,
+          dur_ms_max = greatest(collector_runs.dur_ms_max, EXCLUDED.dur_ms_max),
+          dur_hist = ARRAY(SELECT coalesce(a, 0) + coalesce(b, 0) FROM unnest(collector_runs.dur_hist, EXCLUDED.dur_hist) AS u(a, b));
 diff --git i/internal/repo/sql/0139_job_stats_hourly.sql w/internal/repo/sql/0139_job_stats_hourly.sql
 index 3d7c70c8..33885d67 100644
 --- i/internal/repo/sql/0139_job_stats_hourly.sql

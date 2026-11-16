@@ -109,6 +109,8 @@ type Result struct {
 	Duration time.Duration
 	Note     string // " (skipped: <why>)" when the collection does not apply
 	Err      error
+	// Retries: the run's imports taken again after a deadlock (sched's loop sets it from repo.WithRetryCounter; N4)
+	Retries int
 }
 
 // sessionSetup keeps a collector from joining a convoy on a busy server: read

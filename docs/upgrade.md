@@ -68,6 +68,14 @@ what happens in the other order, and what the project's own proof showed (`scrip
   (the name stays while the table does): their test of a partition's month could read that name. The upgrade replaces
   `pgvigil.purge()`; the new hours tables' function is made with the same guard; the new binary's dry run reads a month
   only from a name ending in one. Nothing to do by hand.
+- **A new month's partitions are made ahead.** v0.3.0's imports made a new month's partition inside their own
+  transaction, so at a month's first minute two imports could deadlock: PostgreSQL ended one (SQLSTATE 40P01) and that
+  run's rows were not stored. The upgrade makes the current and the next month's partitions of every partitioned table
+  (the next two days of `mssql_requests`), `pgvigil run` and `pgvigil collect` make them at their start and `pgvigil
+  run` every hour, each partition in a short transaction of its own, and `pgvigil demo` makes its whole range first.
+  An import still makes a month itself for old or late rows - the SQL Server error log, Extended Events and audit
+  readers' first read of an old file: one ended by a deadlock is taken again, up to three times, and the Collector page
+  counts the imports taken again per collection over 24 hours ('retried after a deadlock'). Nothing to do by hand.
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.

@@ -30,3 +30,14 @@
 -- and internal/web/q_retention.go - its CTEs MATERIALIZED with the strict month and day patterns, the hours read's
 -- FILTER guarded by the CASE (today's shapes passed on PostgreSQL 18.6 under a forced plan in the code review's probe;
 -- a CTE read once with a month test outside it failed with 22008 there, so the safety is made explicit).
+
+-- (3) N4 T9 (the lead's (d)): 0121_collector_health.sql, pgvigil.import_collector_beat() - the beat's runs[].retries into
+--     0271's collector_runs.retries. A join line, not a CREATE OR REPLACE in 0271: rel-b6g (B6.4 / B6g-2) edits this
+--     function in place too (its sends_alerts arm), and a later replace would drop the other slice's arm. In the
+--     INSERT INTO pgvigil.collector_runs of the runs:
+--       the column list gains   retries
+--       the SELECT gains        greatest(coalesce(r.retries, 0), 0)
+--       the recordset gains     retries int        (after hist jsonb)
+--       ON CONFLICT ... SET gains   retries = collector_runs.retries + EXCLUDED.retries,
+--     and the function's header comment names runs[].retries (absent = 0, an older collector). The column itself is
+--     0271's (ALTER TABLE ... ADD COLUMN IF NOT EXISTS retries int NOT NULL DEFAULT 0).
