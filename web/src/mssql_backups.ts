@@ -16,6 +16,7 @@ import { fleet, tagsOf } from './fleet';
 import { Ctx } from './router';
 import { mssqlFindingCols, words } from './mssql_hadr';
 import { badge, Col, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, tile } from './ui';
+import { dialogRole, needControl } from './needs';
 
 type Parts = 'databases' | 'findings' | 'limits';
 type FileParts = 'sets' | 'files' | 'writers' | 'roots' | 'findings' | 'read' | 'checks' | 'path' | 'check_findings';
@@ -349,7 +350,7 @@ const verifyCell = (on: VerifyOnOff, open: (r: Row) => void) => (v: unknown, r: 
   } else if (on.enabled) {
     const b = el('button', { type: 'button', class: 'act-verify', style: 'font-size:12px;padding:0 .4rem;margin-left:.4rem', title: 'RESTORE VERIFYONLY of this backup' }, 'Verify');
     b.addEventListener('click', () => open(r));
-    out.append(b);
+    out.append(needControl(b, 'mssql/actions/verify/preview'));   // the role (B24f): a verify is an operator's
   }
   return out;
 };
@@ -486,8 +487,10 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
   const reason = el('textarea', { rows: '3', maxlength: '500', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', placeholder: s.database, autocomplete: 'off' });
   const go = el('button', { type: 'submit', disabled: '' }, 'Verify');
+  // the role (B24f, review-18 b24f2 B1): the dialog's own check backs the button that opened it
+  const role = dialogRole(go, 'mssql/actions/verify/run');
   const msg = el('p', { class: 'meta', role: 'status' });
-  const check = () => { go.disabled = sent || typed.value.trim() !== s.database || reason.value.trim().length < 5; };
+  const check = () => { if (!role.why) go.disabled = sent || typed.value.trim() !== s.database || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
   typed.addEventListener('input', check);
   body.replaceChildren(
@@ -497,12 +500,12 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
     el('p', { class: 'meta' }, 'The statement (the paths are parameters): ', el('code', {}, p.statement ?? '')),
     el('label', {}, 'Reason', el('br'), reason), el('br'),
     el('label', {}, 'Type the database\'s name to confirm ', typed), el('br'),
-    msg);
+    role.note, msg);
   foot.prepend(go, ' ');
   reason.focus();
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
-    if (sent || go.disabled) return;
+    if (role.why || sent || go.disabled) return;   // off is off: an Enter in a field submits the form too
     sent = true; // one send per dialog: a second click, or an edit after the reply, sends nothing
     go.disabled = true;
     msg.textContent = 'Sending...';

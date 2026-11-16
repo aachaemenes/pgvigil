@@ -6,6 +6,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { AckData, offBeside, seatWhy } from './ack';
 import { badge, Col, el, errorBox, fmtTime, grid, props } from './ui';
+import { markNeed, routeWhy } from './needs';
 
 type Parts = 'destinations' | 'dests' | 'reads' | 'settings' | 'findings' | 'history' | 'door';
 
@@ -31,7 +32,7 @@ function entryDialog(instanceId: number, name: string, r: Row, after: () => void
   const text = el('input', { type: 'text', maxlength: '500', 'aria-label': 'where the backups go', value: String(r.entered_text ?? ''), style: 'width:28rem' });
   const note = el('input', { type: 'text', maxlength: '500', 'aria-label': 'a note', value: String(r.entered_note ?? ''), style: 'width:28rem' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const save = el('button', { type: 'submit' }, 'Save'), back = el('button', { type: 'button' }, 'Back');
+  const save = markNeed(el('button', { type: 'submit' }, 'Save'), 'pg/backup_dest'), back = el('button', { type: 'button' }, 'Back');
   const form = el('form', { method: 'dialog' }, el('h3', {}, `${String(r.label)}: ${name}`),
     el('p', {}, 'Name where they go - a host and a directory, a bucket, a share. Never a password, a key or a signed URL: such an entry is refused. An empty text ends the entry in force; who and when are kept.'),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Where ', text)), el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Note ', note)),
@@ -82,13 +83,14 @@ export async function pgBackupDestSection(instanceId: number, name: string, ad: 
     const roles = rowsOf(d.destinations), reads = rowsOf(d.reads), set = rowsOf(d.settings)[0];
     // the server's own off words first (a demo serve carries no entry whatever the seat says), then the seat's
     const doorOff = String(rowsOf(d.door)[0]?.off ?? '');
-    const why = doorOff || (seatWhy(ad, 'backup destinations', instanceId, name) ?? '');
+    // then the role (B24f: an entered destination is configuration others live with, admin)
+    const why = doorOff || (seatWhy(ad, 'backup destinations', instanceId, name) ?? '') || (routeWhy('pg/backup_dest') ?? '');
     const note = why ? el('p', { class: 'meta' }, `Destinations are read only here: ${why}`) : null;
     sec.append(el('p', { class: 'meta' }, 'Read from the server\'s archive_command, archive_library and restore_command (no command text is kept), and from the backup tool\'s own '
       + 'configuration on the collector\'s host when the instance has backups: read_tools: true in pgvigil.yaml. A destination a person enters is shown beside the one read.'));
     if (note) sec.append(note);
     sec.append(props(roles.map((r): [string, string | Node] => {
-      const edit = el('button', { type: 'button', class: 'link', 'aria-label': `Edit ${String(r.label)} for ${name}` }, 'Edit');
+      const edit = markNeed(el('button', { type: 'button', class: 'link', 'aria-label': `Edit ${String(r.label)} for ${name}` }, 'Edit'), 'pg/backup_dest');
       if (note) offBeside(edit, why, note); else edit.addEventListener('click', () => entryDialog(instanceId, name, r, after));
       return [String(r.label), el('span', {}, roleLine(r), ' ', edit)];
     })));

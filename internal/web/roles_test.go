@@ -268,6 +268,7 @@ var (
 		"app_import.ts":      {"admin/applications/import"},
 		"uptimedialog.ts":    {"pg/thresholds"},
 		"pg_backups.ts":      {"pg/thresholds"},
+		"pg_backup_dest.ts":  {"pg/backup_dest"},
 	}
 )
 

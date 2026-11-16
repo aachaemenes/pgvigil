@@ -102,6 +102,8 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
 | `POST /api/actions/terminate` | operator | end a PostgreSQL session |
 | `POST /api/mssql/actions/run` | operator | KILL, job start / stop, plan evict on SQL Server |
+| `POST /api/mssql/actions/verify/preview` | operator | read a backup set to verify (through the instance's read login) |
+| `POST /api/mssql/actions/verify/run` | operator | RESTORE VERIFYONLY of a backup (reads its files on the server; makes no database) |
 | `POST /api/jobs/actions/stop` | operator | stop a job |
 | `POST /api/jobs/actions/start` | operator | start a job |
 | `POST /api/ack` | operator | acknowledge, note, mute or black out one instance with an end (wider or open-ended: admin) |
@@ -133,6 +135,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/drives/thresholds` | admin | a drive threshold |
 | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
 | `POST /api/jobs/thresholds` | admin | a job threshold |
+| `POST /api/pg/backup_dest` | admin | where a PostgreSQL server's backups go, as a person enters it (beside the value read) |
 | `POST /api/jobs/exclusions` | admin | a job exclusion |
 | `POST /api/mssql/security/config` | admin | a SQL Server security setting (add, end) |
 | `POST /api/mssql/xecaptures/config` | admin | an XE capture setting (add, end) |
