@@ -128,6 +128,19 @@ var Rights = []Right{
 			}
 			return ""
 		}},
+	// Azure SQL Database: the schema and maintenance reads ask the database's own VIEW DEFINITION (VIEW ANY DEFINITION is a
+	// server right the platform does not give a database user)
+	{Key: "view_definition_db", Name: "VIEW DEFINITION (the database)", Core: true,
+		For:    "the database's metadata: the schema read's object definitions and the maintenance read",
+		Check:  "HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')",
+		Grant:  "-- in the database itself\nGRANT VIEW DEFINITION TO {user};",
+		Checks: []string{"HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')", "HAS_PERMS_BY_NAME(DB_NAME(), ''DATABASE'', ''VIEW DEFINITION'')"},
+		On: func(i Info) string {
+			if i.Kind != KindAzureDB {
+				return "hide"
+			}
+			return ""
+		}},
 	{Key: "view_any_definition", Name: "VIEW ANY DEFINITION", Core: true,
 		For:   "every database's metadata: the audits and their specifications, the definitions of objects and jobs",
 		Check: "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')",
