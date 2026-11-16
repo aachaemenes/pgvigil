@@ -218,7 +218,7 @@ func pageDoors(file *doorSet, prev *doorSet, c pageDoorsConfig, all []config.Ins
 	for _, in := range all {
 		merged[in.Name] = in
 	}
-	_, skipped := config.Merge(c.file, page, c.queryText)
+	_, skipped := config.Merge(c.file, page, c.queryText, config.CounterEdits{}) // only skipped is read: the root counter lines never decide it
 	left := map[string]string{}
 	for _, sk := range skipped {
 		if n, why, ok := cutColon(sk); ok {
@@ -391,7 +391,7 @@ func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.C
 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
 	first.Unread, first.PageReads = true, c.reads
 	s.storeDoors(&first)
-	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, every, wake, true,
+	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, every, wake, true,
 		func(all []config.Instance, page []config.PageInstance, gen int64) {
 			prev := s.doorsNow()
 			if prev.Gen == gen && !prev.Unread && !prev.emptyPage() {

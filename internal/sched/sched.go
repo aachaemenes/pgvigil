@@ -43,7 +43,7 @@ func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config
 	s := newScheduler(log, oldLoopsWait, func(ictx context.Context, in config.Instance, wg *sync.WaitGroup) int {
 		return startInstance(ictx, log, r, cfg, in, wg)
 	})
-	config.WatchInventory(ctx, log, r, lock.hold, cfg.Instances, cfg.QueryText, 15*time.Second, func(all []config.Instance) { s.apply(ctx, all) })
+	config.WatchInventory(ctx, log, r, lock.hold, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, 15*time.Second, func(all []config.Instance) { s.apply(ctx, all) })
 	s.wait()
 	log.Info("scheduler stopped")
 	return nil

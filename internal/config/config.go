@@ -57,6 +57,9 @@ type Config struct {
 	// Serve's own repository login holds pgvigil_auth (it reads the UI's password hashes), so without this key a store
 	// report is refused with words, never run as serve's login (REPORT ROLE, internal/web/reportrole.go).
 	ReportsDSNRaw string `yaml:"reports_dsn"`
+	// MSSQLCounters adds counters to every SQL Server instance's counter list or removes them (docs/configuration.md,
+	// 'mssql_counters'); an instance's own lines are narrower and win.
+	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -144,6 +147,10 @@ type Instance struct {
 	// http://<the dsn's host>:8008 (docs/backups-postgres.md); nil = the default, asked only while a Patroni session
 	// is connected.
 	Patroni *Patroni `yaml:"patroni"`
+	// MSSQLCounters adds counters to this SQL Server instance's counter list or removes them (docs/configuration.md).
+	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
+	// MSSQLCountersRoot is the file's root mssql_counters, copied here by Validate (the runner reads one instance).
+	MSSQLCountersRoot CounterEdits `yaml:"-"`
 }
 
 // Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
@@ -154,6 +161,64 @@ type Patroni struct {
 	CAFile   string `yaml:"ca_file"`
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+}
+
+// CounterEdits are pgvigil.yaml's additions to and removals from the SQL Server counter list.
+type CounterEdits struct {
+	Add    []CounterRef `yaml:"add"`
+	Remove []CounterRef `yaml:"remove"`
+}
+
+// CounterRef names a counter: its object (without the instance's prefix) and name, one instance of it or every one
+// (instance empty), and for an addition its kind (” from the type read; 'count' for a 65792 counter that counts since
+// the server started).
+type CounterRef struct {
+	Object   string `yaml:"object" json:"object"`
+	Counter  string `yaml:"counter" json:"counter"`
+	Instance string `yaml:"instance" json:"inst,omitempty"`
+	Kind     string `yaml:"kind" json:"kind,omitempty"`
+}
+
+// CounterInUse says what reads a counter (” = nothing); the SQL Server collector sets it (a removal of a counter in
+// use is refused).
+var CounterInUse = func(_, _ string) string { return "" }
+
+// validateCounterEdits checks one mssql_counters block.
+func validateCounterEdits(where string, e CounterEdits) error {
+	for _, set := range []struct {
+		name string
+		refs []CounterRef
+	}{{"add", e.Add}, {"remove", e.Remove}} {
+		for i, r := range set.refs {
+			if strings.TrimSpace(r.Object) == "" || strings.TrimSpace(r.Counter) == "" {
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: object and counter are required", where, set.name, i)
+			}
+			if len(r.Object) > 128 || len(r.Counter) > 128 || len(r.Instance) > 128 {
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: a name is 128 characters at most", where, set.name, i)
+			}
+			switch r.Kind {
+			case "", "count", "rate", "gauge":
+			default:
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: kind must be empty, count, rate or gauge (got %q)", where, set.name, i, r.Kind)
+			}
+			// a DMV column's arithmetic is pgvigil's own (the collector would ignore a kind): refused in words
+			if r.Kind != "" && strings.HasPrefix(strings.ToLower(r.Object), "sys.dm_os_") {
+				return fmt.Errorf("%s.mssql_counters.%s[%d]: %s / %s is a DMV column: its kind is fixed by pgvigil, leave kind empty", where, set.name, i, r.Object, r.Counter)
+			}
+			if set.name == "remove" {
+				if why := CounterInUse(r.Object, r.Counter); why != "" {
+					return fmt.Errorf("%s.mssql_counters.remove[%d]: %s / %s is read by %s and stays in the list", where, i, r.Object, r.Counter, why)
+				}
+			}
+			// a counter a page or a rule reads keeps the arithmetic its type gives (a gauge kind on Errors/sec stores no rate)
+			if set.name == "add" && r.Kind != "" {
+				if why := CounterInUse(r.Object, r.Counter); why != "" {
+					return fmt.Errorf("%s.mssql_counters.add[%d]: %s / %s is read by %s: its kind stays as SQL Server types it", where, i, r.Object, r.Counter, why)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // DBADashRepo is one DBADash repository of the dbadash: list.
@@ -532,12 +597,19 @@ func (c *Config) Validate() error {
 	if err := c.validateGMSA(); err != nil {
 		return err
 	}
+	if err := validateCounterEdits("root", c.MSSQLCounters); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for i := range c.Instances {
 		in := &c.Instances[i]
 		if strings.TrimSpace(in.Name) == "" {
 			return fmt.Errorf("instances[%d]: name is required", i)
 		}
+		if err := validateCounterEdits(fmt.Sprintf("instance %q", in.Name), in.MSSQLCounters); err != nil {
+			return err
+		}
+		in.MSSQLCountersRoot = c.MSSQLCounters
 		if seen[in.Name] {
 			return fmt.Errorf("instance %q is listed twice", in.Name)
 		}
@@ -682,12 +754,24 @@ func Resolve(v string) string {
 	}
 }
 
+// renamedCollections: a collection whose read moved to another (task 401: the counters of mssql_cpu and mssql_activity
+// are mssql_counters' and mssql_counters_db's): a site that disabled the old one keeps the read off.
+var renamedCollections = map[string]string{"mssql_cpu": "mssql_counters", "mssql_activity": "mssql_counters_db"}
+
+// followingCollections: a collection that reads the same source as another and is off whenever that one is (the
+// counter catalogue reads sys.dm_os_performance_counters like mssql_counters: a site that switched the counters off,
+// or mssql_cpu before them, keeps that DMV unread - F7).
+var followingCollections = map[string]string{"mssql_counter_catalog": "mssql_counters"}
+
 // Interval returns the effective interval of a collection for an instance:
 // the instance's override, then the global override, then the page's default (PageDefaults), then the
 // collection's default; zero = disabled.
 func (c *Config) Interval(in Instance, collection string, def time.Duration) time.Duration {
 	for _, d := range in.Disabled {
-		if d == collection {
+		if d == collection || renamedCollections[d] == collection {
+			return 0
+		}
+		if f := followingCollections[collection]; f != "" && (d == f || renamedCollections[d] == f) {
 			return 0
 		}
 	}

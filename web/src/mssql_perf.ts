@@ -119,8 +119,14 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
     }
   }
   const box2 = el('div', { class: 'charts' });
-  box2.append(lineChart('CPU scheduler trend', sched,
-    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' }]));
+  // the schedulers that failed to create a worker come from mssql_counters' reads: a range with none of them leaves
+  // the series out and says why (review part 5 NIT 8)
+  const fw = sched.some(r => r.failed_to_create_worker != null);
+  const trend = lineChart('CPU scheduler trend', sched,
+    [{ key: 'runnable_tasks', label: 'runnable tasks' }, { key: 'runnable_max', label: 'runnable tasks (max)' }, { key: 'work_queue', label: 'work queue' }, { key: 'pending_io', label: 'pending disk IO' },
+      ...(fw ? [{ key: 'failed_to_create_worker', label: 'schedulers that failed to create a worker' }] : [])]);
+  if (!fw && sched.length) trend.append(el('p', { class: 'meta' }, 'Schedulers that failed to create a worker: not read in this range (mssql_counters is off for this instance, or has not read yet).'));
+  box2.append(trend);
   box2.append(lineChart('Workers', sched, [{ key: 'current_workers', label: 'current workers' }, { key: 'active_workers', label: 'active workers' }, { key: 'max_workers', label: 'max worker threads' }]));
   box2.append(lineChart('Batch requests and compilations per second', counters,
     [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }, { key: 'recompiles_s', label: 'recompilations/s' }]));
@@ -237,6 +243,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(pcBox);
   sec.append(grid(stats, [
     { key: 'clerk_type', label: 'clerk type' },
+    { key: 'clerk_name', label: 'what it is', fmt: v => v == null ? el('span', { class: 'meta', title: 'a clerk type the name list (Telegraf\'s) does not hold' }, 'not named') : String(v) },
     { key: 'current_kb', label: 'pages (current)', num: true, fmt: kb },
     { key: 'current_pct', label: '% of clerks', num: true, fmt: pct },
     { key: 'max_kb', label: 'max', num: true, fmt: kb },

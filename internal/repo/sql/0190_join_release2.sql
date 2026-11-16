@@ -1065,3 +1065,50 @@ SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.clou
  WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400)
    AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
    AND b.cluster_backups_on IS NULL;
+
+-- ---- task 401 (0152, B3): the SQL Server counters --------------------------------------------------------------------
+-- mssql_cpu_newest is 0124's with its Workload Group Stats taken from the instance counter read nearest the scheduler
+-- read (the counters are mssql_counters' own read since 401: an exact match on mssql_cpu's read time would never find
+-- them). metric_catalog and metric_points with the family 'counters' are 0300's (the j16 join file: no j16 hunk of an
+-- object 0300 re-creates goes into an earlier file).
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_cpu_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (snapshot_at timestamptz, schedulers int, cpu_count int, runnable_tasks int, work_queue int, current_workers int,
+               active_workers int, max_workers int, offline_cpus int, nodes_total int, nodes_online int,
+               level text, verdict text, pm_level text, pm_recommendation text,
+               rg_active_requests bigint, rg_queued_requests bigint, rg_blocked_tasks bigint, rg_parallel_threads bigint,
+               requests_at timestamptz, requests bigint, runnable_requests bigint, runnable_pct numeric,
+               threadpool_at timestamptz, threadpool int, threadpool_longest_ms bigint, cpu_info jsonb)
+LANGUAGE sql STABLE AS $$
+  WITH s AS (SELECT * FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
+              ORDER BY x.snapshot_at DESC LIMIT 1),
+  -- task 401: the counters are mssql_counters' own read now (not mssql_cpu's): the instance counter read nearest the
+  -- scheduler read within 30 s, as rq and tp take theirs
+  cr AS (SELECT c.snapshot_at FROM s, pgvigil.mssql_counter_read c
+          WHERE c.instance_id = p_instance_id AND c.scope = 'instance'
+            AND c.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+          ORDER BY abs(extract(epoch FROM c.snapshot_at - s.snapshot_at)) LIMIT 1),
+  wg AS (SELECT sum(c.value) FILTER (WHERE k.counter = 'Active requests') AS act, sum(c.value) FILTER (WHERE k.counter = 'Queued requests') AS q,
+                sum(c.value) FILTER (WHERE k.counter = 'Blocked tasks') AS blk, sum(c.value) FILTER (WHERE k.counter = 'Active parallel threads') AS par
+           FROM cr JOIN pgvigil.mssql_counter_sample c ON c.instance_id = p_instance_id AND c.snapshot_at = cr.snapshot_at
+           JOIN pgvigil.mssql_counter_series k ON k.series_id = c.series_id AND k.object = 'Workload Group Stats'),
+  rq AS (SELECT q.snapshot_at FROM s, pgvigil.mssql_requests_summary q
+          WHERE q.instance_id = p_instance_id AND q.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+          ORDER BY abs(extract(epoch FROM q.snapshot_at - s.snapshot_at)) LIMIT 1),
+  rc AS (SELECT count(*) AS n, count(*) FILTER (WHERE r.status = 'runnable') AS runnable
+           FROM rq JOIN pgvigil.mssql_requests r ON r.instance_id = p_instance_id AND r.snapshot_at = rq.snapshot_at
+          WHERE r.session_id > 50 AND coalesce(r.status, '') NOT IN ('background', 'sleeping')),
+  tp AS (SELECT w.snapshot_at, w.threadpool, w.threadpool_longest_ms FROM s, pgvigil.mssql_waiting_summary w
+          WHERE w.instance_id = p_instance_id AND w.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+          ORDER BY abs(extract(epoch FROM w.snapshot_at - s.snapshot_at)) LIMIT 1)
+  SELECT s.snapshot_at, s.schedulers, s.cpu_count, s.runnable_tasks, s.work_queue, s.current_workers, s.active_workers, s.max_workers,
+         s.offline_cpus, s.nodes_total, s.nodes_online, l.level, l.verdict, l.pm_level, l.pm_recommendation,
+         wg.act, wg.q, wg.blk, wg.par,
+         rq.snapshot_at, rc.n, rc.runnable, CASE WHEN rc.n > 0 THEN round(100.0 * rc.runnable / rc.n, 2) END,
+         tp.snapshot_at, tp.threadpool, tp.threadpool_longest_ms,
+         (SELECT i.info FROM pgvigil.mssql_cpu_info i WHERE i.instance_id = p_instance_id)
+    FROM s
+    LEFT JOIN wg ON true LEFT JOIN rq ON true LEFT JOIN rc ON rq.snapshot_at IS NOT NULL LEFT JOIN tp ON true
+    CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
+                                                  s.cpu_count, wg.q::int) l
+$$;

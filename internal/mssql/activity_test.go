@@ -7,72 +7,28 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
-// One read of the counters gives the four throughput counters as 'counter' rows exactly as before (counter, value)
-// and the listed counters as 'perfmon' rows; the per-database objects go to the 5-minute read only, the system
-// names nowhere.
-func TestCPUCounterRowsSplit(t *testing.T) {
+// One read of the counters gives the four throughput counters as 'counter' rows exactly as before (counter, value);
+// every other counter is mssql_counters' (task 401) and leaves this read.
+func TestCPUCounterRows(t *testing.T) {
 	rows := []collect.Row{
 		{"object": "SQLServer:SQL Statistics", "counter": "Batch Requests/sec", "instance": "", "value": int64(900), "type": int64(272696576)},
 		{"object": "SQLServer:Databases", "counter": "Transactions/sec", "instance": "_Total", "value": int64(50), "type": int64(272696576)},
 		{"object": "SQLServer:Databases", "counter": "Transactions/sec", "instance": "sales", "value": int64(12), "type": int64(272696576)},
-		{"object": "SQLServer:Databases", "counter": "Log Bytes Flushed/sec", "instance": "master", "value": int64(7), "type": int64(272696576)},
 		{"object": "MSSQL$NAMED:General Statistics", "counter": "Processes blocked", "instance": "", "value": int64(0), "type": int64(65792)},
-		{"object": "SQLServer:Workload Group Stats", "counter": "Queued requests", "instance": "internal", "value": int64(3), "type": int64(65792)},
-		{"object": "SQLServer:Workload Group Stats", "counter": "Queued requests", "instance": "default", "value": int64(2), "type": int64(65792)},
-		{"object": "SQLServer:Plan Cache", "counter": "Cache Hit Ratio", "instance": "_Total", "value": int64(5), "type": int64(537003264)},
 	}
-	inst := cpuCounterRows(rows, false)
-	var counters, perfmon []collect.Row
-	for _, r := range inst {
-		switch r["kind"] {
-		case "counter":
-			counters = append(counters, r)
-		case "perfmon":
-			perfmon = append(perfmon, r)
-		}
-	}
-	if len(counters) != 2 || counters[0]["counter"] != "Batch Requests/sec" || counters[1]["counter"] != "Transactions/sec" || len(counters[1]) != 3 {
-		t.Fatalf("the 'counter' rows: %v (want Batch Requests/sec and _Total Transactions/sec, keys kind, counter, value)", counters)
-	}
-	want := map[string]bool{"SQL Statistics|Batch Requests/sec|_Total": true, "General Statistics|Processes blocked|_Total": true,
-		"Workload Group Stats|Queued requests|default": true}
-	if len(perfmon) != len(want) {
-		t.Fatalf("instance 'perfmon' rows: %v", perfmon)
-	}
-	for _, r := range perfmon {
-		k := r["object"].(string) + "|" + r["counter"].(string) + "|" + r["instance"].(string)
-		if !want[k] {
-			t.Errorf("unexpected perfmon row %s (a per-database object, a system name or an unlisted counter)", k)
-		}
-	}
-	db := cpuCounterRows(rows, true)
-	if len(db) != 2 {
-		t.Fatalf("per-database rows: %v (want _Total and sales Transactions/sec; master left out; no 'counter' rows)", db)
-	}
-	for _, r := range db {
-		if r["kind"] != "perfmon" || r["object"] != "Databases" || r["instance"] == "master" {
-			t.Errorf("per-database row %v", r)
-		}
+	got := cpuCounterRows(rows)
+	if len(got) != 2 || got[0]["counter"] != "Batch Requests/sec" || got[1]["counter"] != "Transactions/sec" || len(got[1]) != 3 || got[1]["kind"] != "counter" {
+		t.Fatalf("the 'counter' rows: %v (want Batch Requests/sec and _Total Transactions/sec, keys kind, counter, value)", got)
 	}
 }
 
-// The counter list is PerformanceMonitor's 61 names, no name twice, and the read's IN lists quote a name with a quote.
-func TestPerfmonListAndQuoting(t *testing.T) {
-	seen := map[string]bool{}
-	for _, c := range perfmonCounters {
-		if seen[c] {
-			t.Errorf("%q twice", c)
-		}
-		seen[c] = true
-	}
-	if len(perfmonCounters) != 61 {
-		t.Errorf("%d names, want 61", len(perfmonCounters))
-	}
+// The read's IN lists quote a name with a quote; the CPU read names the four throughput counters only.
+func TestNListAndCPUCounterSQL(t *testing.T) {
 	if got := nList([]string{"a'b", "c"}); got != "N'a''b', N'c'" {
 		t.Errorf("nList = %s", got)
 	}
-	if !strings.Contains(cpuCounterSQL, "N'Wait for the worker'") || !strings.Contains(activityDBCounterSQL, "N'mssqlsystemresource'") {
-		t.Error("the reads do not carry the list or the system names")
+	if !strings.Contains(cpuCounterSQL, "N'SQL Re-Compilations/sec'") || strings.Contains(cpuCounterSQL, "N'Wait for the worker'") {
+		t.Error("the CPU read is not the four throughput counters alone")
 	}
 }
 

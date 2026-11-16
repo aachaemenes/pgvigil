@@ -25,9 +25,6 @@ import (
 //     tasks) and sys.dm_db_session_space_usage (the session's finished tasks) summed per session over 50, kept when
 //     the allocations are over 0, the 20 largest by allocations, with the running tasks' part apart and the session's
 //     login, program, host, status, open transactions and last request's end.
-//   - The per-database performance counters (the Databases and Database Replica objects of perfmonCounters, every
-//     database but the system ones) as 'perfmon' rows: per-database counters every 5 minutes, the instance's every
-//     minute (cpu.go).
 //   - sp_PressureDetector's CPU details from sys.dm_os_sys_info: the columns it lists that this server has
 //     (socket_count, numa_node_count, cpu_count, cores_per_socket, hyperthread_ratio, softnuma_configuration_desc,
 //     scheduler_total_count, scheduler_count), found in sys.all_columns as sp_PressureDetector finds them (L3843-3881).
@@ -105,14 +102,6 @@ GROUP BY u.session_id
 HAVING SUM(u.ua + u.ia) > 0
 ORDER BY SUM(u.ua + u.ia) DESC`
 
-// activityDBCounterSQL: the per-database objects of perfmonCounters (cpuCounterRows keeps them with perDB).
-var activityDBCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
-  CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
-FROM sys.dm_os_performance_counters
-WHERE (RTRIM(object_name) LIKE N'%:Databases' OR RTRIM(object_name) LIKE N'%:Database Replica')
-  AND counter_name IN (` + perfmonInList() + `)
-  AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `)`
-
 // cpuInfoColumns: sp_PressureDetector's CPU details, in its order; a server lists only those sys.dm_os_sys_info has.
 var cpuInfoColumns = []string{"socket_count", "numa_node_count", "cpu_count", "cores_per_socket", "hyperthread_ratio",
 	"softnuma_configuration_desc", "scheduler_total_count", "scheduler_count"}
@@ -141,7 +130,7 @@ func (activityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]col
 		out = append(out, keep(rows)...)
 	}
 	apart("sys.dm_db_session_space_usage", activityTempdbSQL, func(r []collect.Row) []collect.Row { return r })
-	apart("sys.dm_os_performance_counters", activityDBCounterSQL, func(r []collect.Row) []collect.Row { return cpuCounterRows(r, true) })
+	// the per-database counters are mssql_counters_db's (task 401): one writer per series
 	if q, err := cpuInfoSQL(ctx, conn); err != nil {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": err.Error()})
 	} else if q != "" {

@@ -77,6 +77,7 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
     el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
+    el('li', {}, 'compilations per 100 batches: a muted 0 under 1 batch request a second (not a ratio)'),
     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only'),
     el('li', {}, 'Azure SQL Database: CPU is the database\'s share of its limit from sys.dm_db_resource_stats (mssql_azuredb_resources, VIEW DATABASE STATE), the minutes weighed by their 15-second samples')));
@@ -108,6 +109,10 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
     { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
     { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
+    { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
+      fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
+        : Number(r.batch_s) < 1 ? muted('0', 'under 1 batch request a second: 0, not a ratio')
+        : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')

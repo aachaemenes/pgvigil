@@ -71,9 +71,10 @@ func RefOK(v string) bool {
 }
 
 // Merge gives the file's instances, then the page's enabled ones the file does not name, each made an Instance the
-// way Validate makes a file instance (platform auto when empty, the file-level query_text). A page instance that
-// breaks a rule is left out with its reason in skipped (the page refuses those on write; this guards a hand edit).
-func Merge(file []Instance, page []PageInstance, queryText string) (all []Instance, skipped []string) {
+// way Validate makes a file instance (platform auto when empty, the file-level query_text, the file's root
+// mssql_counters lines). A page instance that breaks a rule is left out with its reason in skipped (the page refuses
+// those on write; this guards a hand edit).
+func Merge(file []Instance, page []PageInstance, queryText string, root CounterEdits) (all []Instance, skipped []string) {
 	all = append(all, file...)
 	inFile := map[string]bool{}
 	for _, in := range file {
@@ -109,7 +110,7 @@ func Merge(file []Instance, page []PageInstance, queryText string) (all []Instan
 		if plat == "" {
 			plat = "auto"
 		}
-		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText})
+		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText, MSSQLCountersRoot: root})
 		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
 		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
 		if p.Engine == EngineSQLServer && p.RunningPlans {
@@ -168,8 +169,8 @@ func Diff(old, cur []Instance) (stop, start []string) {
 // hold (nil = always) says whether this collector holds the page's instances (one collector of a repository does:
 // sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
 // each tick: when the holder ends, the next to take the lock reads the page's list at once.
-func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
-	WatchInventoryRaw(ctx, log, src, hold, file, queryText, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
+func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, apply func([]Instance)) {
+	WatchInventoryRaw(ctx, log, src, hold, file, queryText, root, every, nil, false, func(all []Instance, _ []PageInstance, _ int64) { apply(all) })
 }
 
 // WatchInventoryRaw is WatchInventory for serve's doors: apply also gets the page's raw rows (a disabled row and a row
@@ -178,7 +179,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 // a receive on wake reads at once (serve's own write, so this serve's doors follow before it replies); with reapply,
 // every tick applies the last rows again although the generation did not move (serve re-resolves a page door whose
 // credential could not be read).
-func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
+func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, root CounterEdits, every time.Duration, wake <-chan struct{}, reapply bool, apply func(all []Instance, page []PageInstance, gen int64)) {
 	if every <= 0 {
 		every = 15 * time.Second
 	}
@@ -201,7 +202,7 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 					toldOther = true
 				}
 				if held || have == -1 { // lost the lock, or never had it: the file's list alone
-					all, _ := Merge(file, nil, queryText)
+					all, _ := Merge(file, nil, queryText, root)
 					apply(all, nil, 0)
 				}
 				held, have, failing = false, -3, false
@@ -233,13 +234,13 @@ func WatchInventoryRaw(ctx context.Context, log *slog.Logger, src InventoryReade
 			failing = true
 			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick), generation -1
 				have = -2
-				all, _ := Merge(file, nil, queryText)
+				all, _ := Merge(file, nil, queryText, root)
 				apply(all, nil, -1)
 			}
 			return
 		}
 		failing = false
-		all, skipped := Merge(file, page, queryText)
+		all, skipped := Merge(file, page, queryText, root)
 		for _, s := range skipped {
 			log.Warn("instances: a page instance is left out", "why", s)
 		}

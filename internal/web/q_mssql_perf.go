@@ -71,14 +71,24 @@ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / p.step) * p.step) 
           FROM pgvigil.mssql_azuredb_window(ARRAY[$1::int], $2, $3) a WHERE $3::timestamptz - $2::timestamptz > interval '1 day') s, p
  GROUP BY 1 ORDER BY 1`
 
+// sqlMSSQLSchedSeries: the scheduler read's steps, with the schedulers that failed to create a worker (task 401 D6 /
+// OVW#51: sys.dm_os_schedulers.failed_to_create_worker summed over the VISIBLE ONLINE schedulers by mssql_counters,
+// the most in each step; NULL in a step with no counter read).
 const sqlMSSQLSchedSeries = `
+WITH s AS (
 SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
        round(avg(s.runnable_tasks), 2) AS runnable_tasks, max(s.runnable_tasks) AS runnable_max, round(avg(s.work_queue), 2) AS work_queue,
        round(avg(s.pending_io), 2) AS pending_io, round(avg(s.current_workers), 0) AS current_workers, round(avg(s.active_workers), 0) AS active_workers,
        max(s.max_workers) AS max_workers
   FROM pgvigil.mssql_sched_sample s
  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
- GROUP BY 1 ORDER BY 1`
+ GROUP BY 1),
+f AS (
+SELECT to_timestamp(floor(extract(epoch FROM v.snapshot_at) / $4) * $4) AS snapshot_at, max(v.value) AS failed_to_create_worker
+  FROM pgvigil.mssql_counter_values($1, $2, $3, 'instance') v
+ WHERE v.object = 'sys.dm_os_schedulers' AND v.counter = 'failed_to_create_worker'
+ GROUP BY 1)
+SELECT s.*, f.failed_to_create_worker FROM s LEFT JOIN f USING (snapshot_at) ORDER BY 1`
 
 // sqlMSSQLCounterSeries: each read's rate weighed by its interval, so a step's figure is the step's own per second.
 const sqlMSSQLCounterSeries = `
@@ -135,15 +145,18 @@ SELECT x.snapshot_at, x.clerk_type, round(avg(x.kb) / 1024.0, 1) AS mb
          GROUP BY 1, 2, 3) x
  GROUP BY 1, 2 ORDER BY 1, 2`
 
+// sqlMSSQLClerkStats: clerk_name is the type's friendly name (task 401 D6 / T24: pgvigil.mssql_clerk_names, Telegraf's
+// list), NULL for a type the list does not name.
 const sqlMSSQLClerkStats = `
-SELECT c.clerk_type, (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
+SELECT c.clerk_type, (SELECT n.name FROM pgvigil.mssql_clerk_names n WHERE n.clerk_type = c.clerk_type) AS clerk_name,
+       (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1] AS current_kb, max(c.pages_kb) AS max_kb,
        round(avg(c.pages_kb), 0) AS avg_kb, min(c.pages_kb) AS min_kb, max(c.snapshot_at) AS snapshot_at,
        round((100.0 * (array_agg(c.pages_kb ORDER BY c.snapshot_at DESC))[1]
               / nullif((SELECT clerks_kb FROM pgvigil.mssql_memory_sample m WHERE m.instance_id = $1 AND m.snapshot_at = max(c.snapshot_at)), 0))::numeric, 1) AS current_pct
   FROM pgvigil.mssql_memory_clerk c
  WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
  GROUP BY c.clerk_type
- ORDER BY 2 DESC NULLS LAST`
+ ORDER BY 3 DESC NULLS LAST`
 
 // sqlMSSQLFileLatency: read and write latency per step for each database and file type ('tempdb ROWS'); the five
 // groups with the most stall over the range on their own, the rest as '(other)'.

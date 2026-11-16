@@ -354,6 +354,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
+	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
+	api.HandleFunc("POST /api/mssql/counteradmin", s.MSSQLCounterAdminWrite)
 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)

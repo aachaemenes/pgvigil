@@ -27,10 +27,8 @@ import (
 //   - Throughput: sys.dm_os_performance_counters' Batch Requests/sec, SQL Compilations/sec, SQL Re-Compilations/sec
 //     and Databases _Total Transactions/sec, which count since the server started: the import stores each
 //     interval's rate per second (no rate across a restart or a counter that went down).
-//   - The performance counters (task 177 D14): the same read of sys.dm_os_performance_counters also returns the
-//     counters of sp_PressureDetector's perfmon list and PerformanceMonitor's (perfmonCounters), every instance but
-//     sp_PressureDetector's system names, as rows of their own kind 'perfmon' for mssql_counter_sample (0124); the
-//     per-database objects (Databases, Database Replica) are read every 5 minutes by mssql_activity, not here.
+//   - The performance counters of task 177 D14 (sp_PressureDetector's perfmon list and PerformanceMonitor's) are
+//     mssql_counters' and mssql_counters_db's list since task 401 (counters.go): this read takes the four above only.
 //   - The schedulers taken offline (VISIBLE OFFLINE) and the NUMA nodes online and in all, the DAC's node left out
 //     (PerformanceMonitor's CpuSchedulerStatsCollector), in the scheduler statement.
 //
@@ -119,18 +117,14 @@ CROSS JOIN (SELECT CAST(COUNT(*) AS bigint) AS nodes_total,
               FROM sys.dm_os_nodes WHERE node_state_desc NOT LIKE N'%DAC%') n
 WHERE s.status = N'VISIBLE ONLINE'`
 
-// cpuCounterSQL: the cumulative throughput counters and the instance-level performance counters, in one read.
-// object_name carries the instance's prefix (SQLServer: or MSSQL$<name>:) and is nchar padded with blanks: trimmed
-// before the match. cpuCounterRows splits the rows into the two kinds.
+// cpuCounterSQL: the four cumulative throughput counters. object_name carries the instance's prefix (SQLServer: or
+// MSSQL$<name>:) and is nchar padded with blanks: trimmed before the match.
 var cpuCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,
   CAST(RTRIM(instance_name) AS nvarchar(128)) AS instance, CAST(cntr_value AS bigint) AS value, CAST(cntr_type AS bigint) AS type
 FROM sys.dm_os_performance_counters
 WHERE (RTRIM(object_name) LIKE N'%:SQL Statistics'
        AND counter_name IN (N'Batch Requests/sec', N'SQL Compilations/sec', N'SQL Re-Compilations/sec'))
-   OR (RTRIM(object_name) LIKE N'%:Databases' AND counter_name = N'Transactions/sec' AND instance_name = N'_Total')
-   OR (counter_name IN (` + perfmonInList() + `)
-       AND RTRIM(object_name) NOT LIKE N'%:Databases' AND RTRIM(object_name) NOT LIKE N'%:Database Replica'
-       AND RTRIM(instance_name) NOT IN (` + perfmonSkipInList() + `))`
+   OR (RTRIM(object_name) LIKE N'%:Databases' AND counter_name = N'Transactions/sec' AND instance_name = N'_Total')`
 
 func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	if err := perfState(ctx, conn, info, "sys.dm_os_ring_buffers and sys.dm_os_schedulers"); err != nil {
@@ -148,7 +142,7 @@ func (cpuCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]colle
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, cpuCounterRows(counters, false)...)
+	out = append(out, cpuCounterRows(counters)...)
 	// the ring buffer is read on its own: a server that refuses it (a build without the record) keeps the rest
 	ring, err := QueryRows(ctx, conn, cpuRingSQL)
 	if err != nil {
@@ -191,27 +185,8 @@ func cpuRows(ring []collect.Row, linux bool) []collect.Row {
 	return out
 }
 
-// perfmonCounters is the counter list of task 177 D14: PerformanceMonitor's (PerfmonStatsCollector.DefaultCounters,
-// 3.12.0, 61 names), which is sp_PressureDetector's perfmon list (sp_PressureDetector.sql, darlingdata-20261101,
-// L2373-2386, 59 names) and the two Database Replica names. Every instance of each is read; sp_PressureDetector's
-// system names (perfmonSkip) are left out.
-var perfmonCounters = []string{
-	"Forwarded Records/sec", "Table Lock Escalations/sec", "Page reads/sec", "Page writes/sec", "Checkpoint pages/sec", "Requests completed/sec",
-	"Transactions/sec", "Lock Requests/sec", "Lock Wait Time (ms)", "Lock Waits/sec", "Number of Deadlocks/sec", "Log Flushes/sec", "Page lookups/sec",
-	"Granted Workspace Memory (KB)", "Lock Memory (KB)", "Memory Grants Pending", "SQL Cache Memory (KB)", "Background writer pages/sec",
-	"Stolen Server Memory (KB)", "Target Server Memory (KB)", "Total Server Memory (KB)", "Lazy writes/sec", "Readahead pages/sec",
-	"Batch Requests/sec", "SQL Compilations/sec", "SQL Re-Compilations/sec", "Longest Transaction Running Time", "Log Bytes Flushed/sec",
-	"Lock waits", "Log buffer waits", "Log write waits", "Memory grant queue waits", "Network IO waits", "Log Flush Write Time (ms)",
-	"Non-Page latch waits", "Page IO latch waits", "Page latch waits", "Thread-safe memory objects waits", "Wait for the worker",
-	"Active parallel threads", "Active requests", "Blocked tasks", "Query optimizations/sec", "Queued requests", "Reduced memory grants/sec",
-	"Version Store Size (KB)", "Free Space in tempdb (KB)", "Active Temp Tables", "Processes blocked", "Full Scans/sec", "Index Searches/sec",
-	"Page Splits/sec", "Free list stalls/sec", "Workfiles Created/sec", "Worktables Created/sec", "Temp Tables Creation Rate", "Version Generation rate (KB/s)",
-	"Version Cleanup rate (KB/s)", "Lock Timeouts/sec",
-	"Transaction Delay", "Mirrored Write Transactions/sec",
-}
-
 // perfmonSkip: the instance names sp_PressureDetector leaves out of its perfmon read (the system databases, and the
-// internal workload group and resource pool).
+// internal workload group and resource pool); counters.go leaves them out of every counter read.
 var perfmonSkip = []string{"internal", "master", "model", "msdb", "model_msdb", "model_replicatedmaster", "mssqlsystemresource"}
 
 func nList(names []string) string {
@@ -222,15 +197,6 @@ func nList(names []string) string {
 	return strings.Join(q, ", ")
 }
 
-func perfmonInList() string     { return nList(perfmonCounters) }
-func perfmonSkipInList() string { return nList(perfmonSkip) }
-
-// perDBObject: the objects whose instances are databases (or a database's replica), read every 5 minutes.
-func perDBObject(object string) bool {
-	o := counterObject(object)
-	return o == "Databases" || o == "Database Replica"
-}
-
 // counterObject drops the instance's prefix from object_name (SQLServer:Buffer Manager, MSSQL$NAMED:Buffer Manager).
 func counterObject(object string) string {
 	if i := strings.Index(object, ":"); i >= 0 {
@@ -239,38 +205,19 @@ func counterObject(object string) string {
 	return object
 }
 
-// cpuCounterRows splits one read of sys.dm_os_performance_counters into the two kinds the import takes:
-//   - 'counter': the four throughput counters exactly as cpu.go always sent them (counter, value; 0074's import keys
-//     them by name and keeps their last values in mssql_perf_counter_last);
-//   - 'perfmon': a counter of perfmonCounters with its object (prefix dropped), instance (an empty name read as _Total, as
-//     sp_PressureDetector does), raw value and cntr_type, for 0124's mssql_counter_sample. perDB keeps the per-database
-//     objects (mssql_activity's 5-minute read); otherwise they are left to it.
-func cpuCounterRows(rows []collect.Row, perDB bool) []collect.Row {
-	want := make(map[string]bool, len(perfmonCounters))
-	for _, c := range perfmonCounters {
-		want[c] = true
-	}
-	skip := make(map[string]bool, len(perfmonSkip))
-	for _, s := range perfmonSkip {
-		skip[s] = true
-	}
+// cpuCounterRows keeps the four throughput counters exactly as cpu.go always sent them (kind 'counter', counter,
+// value; 0074's import keys them by name and keeps their last values in mssql_perf_counter_last).
+func cpuCounterRows(rows []collect.Row) []collect.Row {
 	var out []collect.Row
 	for _, r := range rows {
 		object, _ := r["object"].(string)
 		counter, _ := r["counter"].(string)
 		inst, _ := r["instance"].(string)
 		obj := counterObject(object)
-		if !perDB && ((obj == "SQL Statistics" && (counter == "Batch Requests/sec" || counter == "SQL Compilations/sec" || counter == "SQL Re-Compilations/sec")) ||
-			(obj == "Databases" && counter == "Transactions/sec" && inst == "_Total")) {
+		if (obj == "SQL Statistics" && (counter == "Batch Requests/sec" || counter == "SQL Compilations/sec" || counter == "SQL Re-Compilations/sec")) ||
+			(obj == "Databases" && counter == "Transactions/sec" && inst == "_Total") {
 			out = append(out, collect.Row{"kind": "counter", "counter": counter, "value": r["value"]})
 		}
-		if !want[counter] || skip[inst] || perDBObject(object) != perDB {
-			continue
-		}
-		if inst == "" {
-			inst = "_Total"
-		}
-		out = append(out, collect.Row{"kind": "perfmon", "object": obj, "counter": counter, "instance": inst, "value": r["value"], "type": r["type"]})
 	}
 	return out
 }

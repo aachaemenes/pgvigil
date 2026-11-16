@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -562,6 +563,20 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			raw = nil
 		}
 		rows, err = sc.RunWithSettings(sctx, conn, info, raw)
+	} else if lc, ok := c.(ListCollector); ok {
+		// a collection whose list is the repository's (task 401): the defaults, pgvigil.yaml's lines and Admin's rows
+		var list []CounterSpec
+		lctx, lcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+		raw, lerr := r.MSSQLCounterList(lctx, instanceID, counterEditsJSON(in))
+		lcancel()
+		if lerr == nil {
+			list, lerr = ParseCounterList(raw)
+		}
+		if lerr != nil {
+			logRun(instanceID, "error", lerr.Error())
+			return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, lerr), Duration: time.Since(start)}
+		}
+		rows, err = lc.RunList(sctx, conn, info, list)
 	} else {
 		rows, err = c.Run(sctx, conn, info)
 	}
@@ -603,6 +618,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
 	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note)}
 }
+
+// counterEditsJSON: pgvigil.yaml's mssql_counters lines of an instance (the root's, then its own) as the repository's
+// list function takes them.
+func counterEditsJSON(in config.Instance) []byte {
+	out := []map[string]string{}
+	for _, l := range []struct {
+		layer string
+		e     config.CounterEdits
+	}{{"root", in.MSSQLCountersRoot}, {"instance", in.MSSQLCounters}} {
+		for _, set := range []struct {
+			action string
+			refs   []config.CounterRef
+		}{{"add", l.e.Add}, {"remove", l.e.Remove}} {
+			for _, r := range set.refs {
+				out = append(out, map[string]string{"layer": l.layer, "action": set.action, "object": r.Object, "counter": r.Counter,
+					"inst": r.Instance, "kind": r.Kind})
+			}
+		}
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+func init() { config.CounterInUse = CounterInUse }
 
 // timeoutNote says so when an error is the run's own deadline: the driver's text for it names no cause.
 func timeoutNote(sctx context.Context, limit time.Duration, err error) error {

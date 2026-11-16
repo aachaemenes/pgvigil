@@ -27,7 +27,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
 		{Name: "inline", Engine: EnginePostgres, DSNRef: "host=x password=y"},            // a connection string, never run
 		{Name: "eng", Engine: "oracle", DSNRef: "file:/x/eng.dsn"},
 	}
-	all, skipped := Merge(file, page, "normalized")
+	// the file's root mssql_counters lines reach a page instance too (review 401 S4: the runner reads them from it)
+	root := CounterEdits{Remove: []CounterRef{{Object: "Deprecated Features", Counter: "Usage", Instance: "sp_dboption"}}}
+	all, skipped := Merge(file, page, "normalized", root)
 	var names []string
 	for _, in := range all {
 		names = append(names, in.Name)
@@ -40,6 +42,9 @@ func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
 	}
 	if all[1].Platform != "auto" || all[1].QueryText != "normalized" || all[1].DSNRaw != "file:/etc/pgvigil/instances/sql1.dsn" {
 		t.Fatalf("sql1 = %+v", all[1])
+	}
+	if len(all[1].MSSQLCountersRoot.Remove) != 1 || all[1].MSSQLCountersRoot.Remove[0] != root.Remove[0] {
+		t.Fatalf("sql1's root counter lines = %+v, want the file's root %+v", all[1].MSSQLCountersRoot, root)
 	}
 	if len(skipped) != 4 {
 		t.Fatalf("skipped %v, want 4 (pg1, bad ref, inline, eng)", skipped)
@@ -95,7 +100,7 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
 			var n []string
 			for _, in := range all {
 				n = append(n, in.Name)
@@ -435,7 +440,7 @@ func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", CounterEdits{}, 20*time.Millisecond, func(all []Instance) {
 			var n []string
 			for _, in := range all {
 				n = append(n, in.Name)
@@ -481,7 +486,7 @@ func TestWatchInventoryRawFailedFirstReadIsUnread(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gens := make(chan int64, 16)
-	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", 20*time.Millisecond, nil, false,
+	go WatchInventoryRaw(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, nil, "full", CounterEdits{}, 20*time.Millisecond, nil, false,
 		func(_ []Instance, _ []PageInstance, gen int64) { gens <- gen })
 	select {
 	case g := <-gens:
@@ -518,7 +523,7 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
 	}
 	seen := make(chan got, 16)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
+	go WatchInventoryRaw(ctx, log, src, nil, nil, "full", CounterEdits{}, time.Hour, wake, false, func(all []Instance, page []PageInstance, gen int64) {
 		seen <- got{len(all), page, gen}
 	})
 	first := <-seen
@@ -541,7 +546,7 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	n := make(chan int64, 16)
-	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
+	go WatchInventoryRaw(ctx2, log, src, nil, nil, "full", CounterEdits{}, 20*time.Millisecond, nil, true, func(_ []Instance, _ []PageInstance, gen int64) { n <- gen })
 	for i := 0; i < 3; i++ {
 		select {
 		case g := <-n:

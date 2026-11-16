@@ -41,7 +41,7 @@ func fileSet() (*doorSet, pageDoorsConfig) {
 }
 
 func build(file *doorSet, prev *doorSet, c pageDoorsConfig, page []config.PageInstance, gen int64) *doorSet {
-	all, _ := config.Merge(c.file, page, c.queryText)
+	all, _ := config.Merge(c.file, page, c.queryText, config.CounterEdits{})
 	return pageDoors(file, prev, c, all, page, gen)
 }
 

@@ -31,7 +31,9 @@ import (
 //   commits_s ...    PostgreSQL: dbstats, the counters' rise per restart epoch (0010) summed over the databases.
 //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
 //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
-//                    temp_bytes_s are NULL.
+//                    temp_bytes_s are NULL. compiles_per_100 (SQL Server only, task 401 D6 / PBI#2): SQL
+//                    Compilations per 100 Batch Requests over the range from the same reads, 0 under 1 batch/s (the
+//                    'counters' metric compiles_per_100_batches' floor).
 //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
 //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
 //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
@@ -76,7 +78,7 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        NULL::numeric AS signal_pct,
-       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
@@ -189,7 +191,10 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((w.other_ms / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
-       h.cpu_sql_avg, h.cpu_source, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+       h.cpu_sql_avg, h.cpu_source, t.batch_s,
+       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_raw < 1 THEN 0
+            ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
+       m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
        CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
@@ -226,7 +231,10 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
     ) u ORDER BY (coalesce(u.cpu_samples, 0) > 0) DESC, u.pri DESC LIMIT 1) h ON true
   LEFT JOIN LATERAL (
     SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,
-           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s
+           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s,
+           -- the floor and the ratio read the rate before rounding (task 401 D6, review part 5 NIT 4)
+           (sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric AS batch_raw,
+           (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
       FROM pgvigil.mssql_sched_sample x
      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
   LEFT JOIN LATERAL (

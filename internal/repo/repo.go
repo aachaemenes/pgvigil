@@ -545,6 +545,16 @@ func (r *Repo) MSSQLSeqCursor(ctx context.Context, instanceID int, source string
 	return *n, true, nil
 }
 
+// MSSQLCounterList returns an instance's SQL Server counter list (pgvigil.import_mssql_counter_list, task 401): the
+// defaults, pgvigil.yaml's lines (yaml, a JSON array the runner builds) and Admin's rows, the narrowest scope winning.
+func (r *Repo) MSSQLCounterList(ctx context.Context, instanceID int, yaml []byte) ([]byte, error) {
+	var b []byte
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.import_mssql_counter_list($1, $2::jsonb)::text`, instanceID, string(yaml)).Scan(&b); err != nil {
+		return nil, fmt.Errorf("import_mssql_counter_list: %w", err)
+	}
+	return b, nil
+}
+
 // LogCollection records when a collection ran and how it ended.
 func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error {
 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,
