@@ -25,7 +25,7 @@ import (
 // a superuser, the owner, a writer, the collector or pgvigil_auth is refused). -config gives the
 // stale check each instance's collection intervals and each instance's query_text policy, as serve has
 // them; without it no policy is known and every instance is read as 'none' (no statement text, plan or
-// deadlock graph is returned: Q15's locked-down default, a relaxation the admin's -config). Every tool is
+// deadlock graph is returned: the locked-down default, which an admin relaxes by giving -config). Every tool is
 // read-only and answered by the JSON API's own handler in process; no port is opened and nothing
 // is sent anywhere but the client's pipe. Logs go to stderr (stdout is the protocol).
 func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
@@ -73,9 +73,9 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	defer srv.Close()
 	// TEXT-NOW: the statement text a tool returns follows each instance's query_text policy as the file states it now
-	// (internal/web/textread.go), as serve's pages do. TEXT-NOW-M: with no file no policy is known, and the door fails
-	// closed - every instance is read as 'none' (the file's default for an instance it does not name is the rule
-	// serve keeps; here the default is 'none'), said in its log
+	// (internal/web/textread.go), as serve's pages do. With no file no policy is known and the door fails closed:
+	// every instance is read as 'none' (an instance the file does not name takes the file's default, as in serve;
+	// with no file the default is 'none'), said in its log
 	pc := web.PlansConfig{QueryText: map[string]string{}, DefaultQueryText: "none"}
 	if cfg != nil {
 		pc.DefaultQueryText = cfg.QueryText
