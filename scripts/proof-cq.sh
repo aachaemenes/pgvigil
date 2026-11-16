@@ -37,7 +37,9 @@
 #   P13 a reader login (Grafana's shape) gets 42501 on ui_action_data and on ui_action_result; a second UI user's GET of
 #       the first's request: 403 'this run was asked by another user'; task 488: a target session's sqlcmd -P line
 #       read by pg_running through the queue comes back masked, in serve's reply and in the stored row, while the
-#       direct run's reply shows it (the control, and the difference docs/queue.md names)
+#       direct run's reply shows it (the control, and the difference docs/queue.md names); the same for a SQL Server
+#       session's batch read by sp_WhoIsActive @get_outer_command = 1 (its sql_command a processing instruction:
+#       review 488 B1)
 #   P2  20 asks: the claim within 1 s of the insert (median of taken_at - asked_at) and the GET's answer within 1 s of
 #       done_at (median)
 #   P6  cancel: a waiting request (the collector stopped with SIGSTOP) 'cancelled' at once; a running sp_WhoIsActive
@@ -56,7 +58,7 @@ export LC_ALL=C
 WORK=$(mktemp -d); N=$(( $(od -An -N3 -tu4 /dev/urandom | tr -d ' ') % 900000 + 100000 )); NOTPROVEN=()
 PW="Cq$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 NET=cqnet_$N; RCT=cqrepo_$N; SCT=cqserve_$N; MCT=cqms_$N; TGT=cqt_$N; MON=cqmon_$N
-RUN1=""; RUN2=""; DIRECT=""; BOUNCER=""
+RUN1=""; RUN2=""; DIRECT=""; BOUNCER=""; P13PID=""; M13PID=""
 # each set only after its create succeeded: a name another run holds is never removed by this one
 MADE_NET=""; MADE_RCT=""; MADE_SCT=""; MADE_MS=""; MADE_TGT=""; MADE_MON=""
 trap 'exit 1' TERM
@@ -64,7 +66,7 @@ fail() { echo "FAIL: $*" >&2; kill -TERM $$; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
   rm -rf "$WORK"   # first: serve.yaml holds the repository password
-  for p in "$RUN1" "$RUN2" "$DIRECT" "$BOUNCER"; do [[ -n "$p" ]] && { kill -CONT "$p" 2>/dev/null; kill "$p" 2>/dev/null; } || true; done
+  for p in "$RUN1" "$RUN2" "$DIRECT" "$BOUNCER" "$P13PID" "$M13PID"; do [[ -n "$p" ]] && { kill -CONT "$p" 2>/dev/null; kill "$p" 2>/dev/null; } || true; done
   wait 2>/dev/null || true
   [[ -n "$MADE_SCT" ]] && docker rm -f -v "$SCT" >/dev/null 2>&1
   [[ -n "$MADE_RCT" ]] && docker rm -f -v "$RCT" >/dev/null 2>&1
@@ -265,13 +267,15 @@ out=$(psql "$GRAF" -XAtq -v VERBOSITY=sqlstate -c "select pgvigil.ui_action_resu
 [[ $(getc "requests/$ID1" "$JAR2") == 403 ]] && grep -q 'this run was asked by another user' "$WORK/body" || fail "P13: the second user's GET: $(cat "$WORK/body")"
 # task 488: the mask before the store, on a live read
 P13S="Pq13secret$RANDOM"
-psql "$TGT_MON" -XAtq -c "select pg_sleep(30), 'sqlcmd -S . -U app -P $P13S -Q x'" >/dev/null 2>&1 & P13PID=$!
-seen=0
+# the session sleeps 300 s (the queue run and the direct control inside it under any load) and is ended by its pid
+psql "$TGT_MON" -XAtq -c "select pg_sleep(300), 'sqlcmd -S . -U app -P $P13S -Q x'" >/dev/null 2>&1 & P13PID=$!
+P13BP=""
 for _ in $(seq 1 20); do
-  [[ $(psql "$TGT_MON" -XAtq -c "select count(*) from pg_stat_activity where pid <> pg_backend_pid() and query like '%' || 'Pq13secret' || '%'") == 1 ]] && { seen=1; break; }
+  P13BP=$(psql "$TGT_MON" -XAtq -c "select pid from pg_stat_activity where pid <> pg_backend_pid() and query like '%' || 'Pq13secret' || '%' limit 1")
+  [[ -n "$P13BP" ]] && break
   sleep 0.5
 done
-[[ $seen == 1 ]] || fail "P13: the session carrying the sqlcmd line never showed in pg_stat_activity"
+[[ -n "$P13BP" ]] || fail "P13: the session carrying the sqlcmd line never showed in pg_stat_activity"
 id=$(ask community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}"); isid "$id"
 # the stored row is read BEFORE the asker's GET (a read result is cleared at the next sweep): its end from the
 # repository, then the row itself, which must hold a result
@@ -284,8 +288,32 @@ read -r kept leak <<<"$(rq "select count(*) filter (where result is not null), c
 grep -q "$P13S" "$WORK/body" && fail "P13: the queue's reply shows the sqlcmd password: $(grep -o ".\{60\}$P13S" "$WORK/body" | head -1)"
 [[ $(js "sum('-P <masked>' in str(c) for s in d['result']['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked sqlcmd line in the queue's result (the session not read?): $(head -c 800 "$WORK/body")"
 [[ $(post community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}" "$DJAR" "$DU") == 200 ]] && grep -q "$P13S" "$WORK/body" || fail "P13: the direct run's control does not show the session's line: $(head -c 600 "$WORK/body")"
-kill "$P13PID" 2>/dev/null || true
-ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403, a session's sqlcmd -P line masked in the queue's reply and stored row and shown by the direct run"
+psql "$TGT_MON" -XAtq -c "select pg_terminate_backend($P13BP)" >/dev/null 2>&1; kill "$P13PID" 2>/dev/null || true; P13PID=""
+if [[ -n "$MS" ]]; then
+  # the SQL Server leg (review 488 B1): sp_WhoIsActive writes a batch's text as one processing instruction
+  # (<?query --...--?>), which the stored-text mask of task 415 keeps as it stands; the result store masks it
+  M13S="Ms13secret$RANDOM"
+  docker exec -e SQLCMDPASSWORD "$MCT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -U sa -Q "/* sqlcmd -S . -U app -P $M13S -Q x */ WAITFOR DELAY '00:05:00'" >/dev/null 2>&1 & M13PID=$!
+  M13SPID=""
+  for _ in $(seq 1 30); do
+    M13SPID=$(sq "SELECT TOP (1) r.session_id FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.session_id <> @@SPID AND t.text LIKE N'%' + N'Ms13secret' + N'%'" | tr -dc '0-9')
+    [[ -n "$M13SPID" ]] && break
+    sleep 0.5
+  done
+  [[ -n "$M13SPID" ]] || fail "P13: the SQL Server session carrying the sqlcmd line never showed in dm_exec_requests"
+  id=$(ask community/run "{\"instance_id\":$MSID,\"tool\":\"sp_WhoIsActive\",\"params\":{\"get_outer_command\":\"1\"}}"); isid "$id"
+  st=""
+  for _ in $(seq 1 120); do st=$(rq "select state from pgvigil.action_requests where request_id = $id"); [[ $st != waiting && $st != running ]] && break; sleep 0.5; done
+  [[ $st == done ]] || fail "P13: sp_WhoIsActive for the mask ended $st"
+  read -r kept leak <<<"$(rq "select count(*) filter (where result is not null), count(*) filter (where result::text like '%$M13S%') from pgvigil.ui_action_data where request_id = $id" | tr '|' ' ')"
+  [[ $kept == 1 && $leak == 0 ]] || fail "P13: sp_WhoIsActive's stored row: $kept with a result, $leak holding the sqlcmd password (want 1 and 0)"
+  [[ $(waitreq "$id") == done ]] || fail "P13: sp_WhoIsActive's GET: $(cat "$WORK/body")"
+  grep -q "$M13S" "$WORK/body" && fail "P13: the queue's sp_WhoIsActive reply shows the sqlcmd password"
+  [[ $(js "sum(('<?query' in str(c)) and ('-P <masked>' in str(c)) for s in d['result']['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked processing instruction in sp_WhoIsActive's queue result: $(head -c 800 "$WORK/body")"
+  [[ $(post community/run "{\"instance_id\":$MSID,\"tool\":\"sp_WhoIsActive\",\"params\":{\"get_outer_command\":\"1\"}}" "$DJAR" "$DU") == 200 ]] && grep -q "$M13S" "$WORK/body" || fail "P13: the direct sp_WhoIsActive's control does not show the batch's line: $(head -c 600 "$WORK/body")"
+  sq "KILL $M13SPID" >/dev/null 2>&1; kill "$M13PID" 2>/dev/null || true; M13PID=""
+fi
+ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403, a session's sqlcmd -P line masked in the queue's reply and stored row and shown by the direct run${MS:+ (pg_running, and the processing instruction of sp_WhoIsActive)}"
 
 # ---- P2: latency ----------------------------------------------------------------------------------------------------
 : > "$WORK/lat"

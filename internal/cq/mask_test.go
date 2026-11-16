@@ -14,7 +14,10 @@ import (
 const (
 	wkCmd     = "EXEC xp_cmdshell 'sqlcmd -S . -U app -P Wk1secret -Q x'"
 	wkCmdWant = "EXEC xp_cmdshell 'sqlcmd -S . -U app -P <masked> -Q x'"
-	wkPlan    = `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>` +
+	// sp_WhoIsActive's sql_text / sql_command: one processing instruction (review 488 B1: MaskXML keeps one as it is)
+	wkPI     = "<?query --\r\nEXEC xp_cmdshell 'sqlcmd -S . -U app -P Wk3secret -Q x'\r\n--?>"
+	wkPIWant = "<?query --\r\nEXEC xp_cmdshell 'sqlcmd -S . -U app -P <masked> -Q x'\r\n--?>"
+	wkPlan   = `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>` +
 		`<StmtSimple StatementText="ALTER LOGIN a WITH PASSWORD = &apos;Wk2secret&apos;" StatementId="1" /></Statements></Batch></BatchSequence></ShowPlanXML>`
 )
 
@@ -66,9 +69,10 @@ func checkMasked(t *testing.T, res []byte) {
 	}
 }
 
-// TestMaskResult: every string at any depth masked (a typed set's cells and column names, a nested message), the
-// object keys, booleans, nulls and numbers kept as written, a second pass changing nothing; MaskRows and MaskStrings
-// in place, a cell of another type untouched; nil stays nil; a value with no JSON form is an error.
+// TestMaskResult: every string at any depth masked (a typed set's cells and column names, a nested message, an
+// object's key), a processing instruction's text masked and the document still XML, plain keys, booleans, nulls and
+// numbers kept as written, a second pass changing nothing; MaskRows and MaskStrings in place, a cell of another type
+// untouched; nil stays nil; a value with no JSON form is an error.
 func TestMaskResult(t *testing.T) {
 	type set struct {
 		Columns []string `json:"columns"`
@@ -77,7 +81,8 @@ func TestMaskResult(t *testing.T) {
 	in := map[string]any{
 		"sets": []set{{Columns: []string{"ok", "cmd", "plan", "n", "f", "none"}, Rows: [][]any{{true, wkCmd, wkPlan, int64(12345678901234567), 1.5, nil}}}},
 		"words": map[string]any{"messages": []any{"CREATE LOGIN app WITH PASSWORD = N'Tq1secret', CHECK_POLICY = ON", "<IDLE>"},
-			"password=Kp1secret": "a key is the result's own field name"},
+			"password=Kp1secret": "a key holding a secret", "pi": wkPI, "pi_cut": "<?query --\r\nsqlcmd -S . -P Wk4secret -Q x",
+			"declared": `<?xml version="1.0"?><x>osql -E -S . -P Wk5secret</x>`},
 	}
 	out, err := MaskResult(in)
 	if err != nil {
@@ -88,7 +93,7 @@ func TestMaskResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(b)
-	for _, secret := range []string{"Wk1secret", "Wk2secret", "Tq1secret"} {
+	for _, secret := range []string{"Wk1secret", "Wk2secret", "Wk3secret", "Wk4secret", "Wk5secret", "Tq1secret", "Kp1secret"} {
 		if strings.Contains(got, secret) {
 			t.Errorf("the secret %q is still there: %s", secret, got)
 		}
@@ -112,8 +117,13 @@ func TestMaskResult(t *testing.T) {
 	if m := w["messages"].([]any); m[0] != "CREATE LOGIN app WITH PASSWORD = '<masked>', CHECK_POLICY = ON" || m[1] != "<IDLE>" {
 		t.Errorf("the messages: %#v", m)
 	}
-	if _, ok := w["password=Kp1secret"]; !ok {
-		t.Errorf("an object key was changed: %#v", w)
+	if _, ok := w["password=<masked>"]; !ok || w["messages"] == nil {
+		t.Errorf("the keys: a secret-shaped one masked, a plain one kept: %#v", w)
+	}
+	if pi := w["pi"]; pi != wkPIWant {
+		t.Errorf("the processing instruction:\n got %q\nwant %q", pi, wkPIWant)
+	} else if err := wellFormed("<r>" + pi.(string) + "</r>"); err != nil {
+		t.Errorf("the masked processing instruction is not XML: %v", err)
 	}
 	again, err := MaskResult(out)
 	if err != nil {

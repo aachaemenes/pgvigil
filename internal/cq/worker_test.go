@@ -136,7 +136,7 @@ func TestWorkerOnAStore(t *testing.T) {
 		return End{State: "done", Outcome: "slow"}
 	}}
 	registerForTest(t, "admin_test", standIn{fn: func(_ context.Context, env *Env, _ Request) End {
-		return End{State: "done", Outcome: "tested on " + env.Instance.Name, Rows: 1,
+		return End{State: "done", Outcome: "tested on " + env.Instance.Name + "; " + wkCmd, Rows: 1,
 			Result: map[string]any{"sets": []any{map[string]any{"columns": []string{"ok", "cmd", "plan", "n"},
 				"rows": [][]any{{true, wkCmd, wkPlan, int64(12345678901234567)}}}}}}
 	}})
@@ -219,6 +219,10 @@ func TestWorkerOnAStore(t *testing.T) {
 	var raw string
 	if err := pool.QueryRow(ctx, `SELECT result::text FROM pgvigil.ui_action_data WHERE request_id = $1`, id).Scan(&raw); err != nil || strings.Contains(raw, "Wk1secret") || strings.Contains(raw, "Wk2secret") {
 		t.Fatalf("the stored row holds a secret: %s %v", raw, err)
+	}
+	// review 488 S1: the run's own words, which the reader (Grafana) reads in action_requests, masked too
+	if _, o := stateOf(id); o != "tested on "+ia+"; "+wkCmdWant {
+		t.Fatalf("the stored outcome: %q, want the -P switch masked", o)
 	}
 
 	// a running request cancelled

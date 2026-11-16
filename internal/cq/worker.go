@@ -544,14 +544,16 @@ func (w *Worker) finish(r Request, end End, took time.Duration) {
 	}
 	if end.Result != nil {
 		// CQ-16 (task 488): every string of a result is masked before it is stored, whatever the kind and whatever its
-		// runner masked itself (idempotent); before the call's clock starts. A result that cannot be read to mask it is
-		// not kept, and the run's audit row is still written: the run did execute.
+		// runner masked itself (idempotent); before the call's clock starts. A result with no JSON form (a NaN or an
+		// infinity in a cell) is not kept, and the run's audit row is still written: the run did execute.
 		m, err := MaskResult(end.Result)
 		if err != nil {
-			end.State, end.Outcome, m = "failed", fmt.Sprintf("it ran, but its result could not be masked, so it is not kept: %v", err), nil
+			end.State, end.Outcome, m = "failed", fmt.Sprintf("it ran, but its result has no JSON form, so it is not kept: %v", err), nil
 		}
 		end.Result = m
 	}
+	// the run's own words too (review 488 S1): action_requests' outcome and refusal are the reader's (Grafana's) to read
+	end.Outcome, end.Refusal = MaskText(end.Outcome), MaskText(end.Refusal)
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	body := map[string]any{"state": end.State, "outcome": end.Outcome, "refusal": end.Refusal, "rows": end.Rows,
@@ -604,7 +606,7 @@ func (w *Worker) finish(r Request, end End, took time.Duration) {
 func (w *Worker) finishBare(r Request, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	b, _ := json.Marshal(map[string]any{"state": "failed", "outcome": why})
+	b, _ := json.Marshal(map[string]any{"state": "failed", "outcome": MaskText(why)})
 	if _, err := w.pool.Exec(ctx, `SELECT pgvigil.import_action_finish($1, $2, $3::jsonb)`, w.id, r.ID, string(NoNUL(b))); err != nil {
 		w.log.Warn("request queue: an end was not written; the request goes 'lost'", "request", r.ID, "err", err)
 	}

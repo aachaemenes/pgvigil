@@ -410,16 +410,30 @@ func TestActionRequestsOnAStore(t *testing.T) {
 		FROM pgvigil.action_requests WHERE request_id = $1`, k7.RequestID).Scan(&keep, &days); err != nil || keep != "7d" || !days {
 		t.Fatalf("the 7d keep: %q, 7 days %v (%v)", keep, days, err)
 	}
+	readAt := func(id int64) bool {
+		t.Helper()
+		var set bool
+		if err := pool.QueryRow(ctx, `SELECT read_at IS NOT NULL FROM pgvigil.action_requests WHERE request_id = $1`, id).Scan(&set); err != nil {
+			t.Fatal(err)
+		}
+		return set
+	}
+	// another user's read first: served, read_at left alone (only the asker's read sets it; review 488 N5)
+	if m := result(k7.RequestID, "bob"); m["refused"] != nil || m["result"] == nil {
+		t.Fatalf("bob's read of a 7d result: %v (want served)", m)
+	}
+	if readAt(k7.RequestID) {
+		t.Fatal("another user's read of a 7d result set read_at")
+	}
 	if m := result(k7.RequestID, "alice"); m["result"] == nil {
 		t.Fatalf("alice's 7d read: %v", m)
+	}
+	if !readAt(k7.RequestID) {
+		t.Fatal("the asker's read of a 7d result left read_at empty")
 	}
 	exec(`SELECT pgvigil.import_action_sweep()`)
 	if m := result(k7.RequestID, "bob"); m["refused"] != nil || m["result"] == nil || m["cleared"] != false {
 		t.Fatalf("a 7d result after its asker read it and a sweep, read by bob: %v (want kept and served)", m)
-	}
-	var readBy bool
-	if err := pool.QueryRow(ctx, `SELECT read_at IS NOT NULL FROM pgvigil.action_requests WHERE request_id = $1`, k7.RequestID).Scan(&readBy); err != nil || !readBy {
-		t.Fatalf("the asker's read of a 7d result left read_at empty (%v)", err)
 	}
 	exec(`UPDATE pgvigil.action_requests SET keep_until = clock_timestamp() - interval '1 second' WHERE request_id = $1`, k7.RequestID)
 	exec(`SELECT pgvigil.import_action_sweep()`)

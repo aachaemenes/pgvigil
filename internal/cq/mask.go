@@ -3,19 +3,23 @@ package cq
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
 // MaskResult is a run's result as the repository stores it, with task 415's credential mask over every string in it
 // (CQ-16: every text and XML cell is masked BEFORE it is stored). A value that reads as an XML document (a showplan, a
-// deadlock graph, a blocked process report, sp_WhoIsActive's sql_text) takes collect.MaskXML, mssql.MaskPlanXML's own
-// mask, so it stays XML; any other text takes collect.MaskCredentials (a sqlcmd, bcp or osql -P, PASSWORD = '...',
-// SECRET = '...', a password-named @ parameter, a connection string's or a URI's password, ConvertTo-SecureString,
-// net use). Every string at any depth is masked - a cell, a column name, a message, the run's own words; an object's
-// keys are the result's field names and are kept. The value is read through its JSON form, the form it is stored in,
-// with its numbers kept as written. The mask is idempotent, so a result whose runner masked its rows before its own
-// size cut (the community kind's cqSets, MaskRows) comes through unchanged.
+// deadlock graph, a blocked process report) takes collect.MaskXML, mssql.MaskPlanXML's own mask, so it stays XML; any
+// other text takes collect.MaskCredentials (a sqlcmd, bcp or osql -P, PASSWORD = '...', SECRET = '...', a
+// password-named @ parameter, a connection string's or a URI's password, ConvertTo-SecureString, net use, and the
+// collector's other forms). MaskXML keeps a processing instruction as it stands, and the Darling Data and First
+// Responder Kit procedures write their query text as one (sp_WhoIsActive's sql_text and sql_command:
+// <?query --\r\n...\r\n--?>), so each processing instruction's text is masked as a text first (maskCell; a processing
+// instruction may hold '<', so <masked> keeps the document XML). Every string at any depth is masked - a cell, a
+// column name, an object's key, a message, the run's own words. The value is read through its JSON form, the form it
+// is stored in, with its numbers kept as written. The mask is idempotent, so a result whose runner masked its rows
+// before its own size cut (the community kind's cqSets, MaskRows) comes through unchanged.
 func MaskResult(v any) (any, error) {
 	if v == nil {
 		return nil, nil
@@ -33,15 +37,59 @@ func MaskResult(v any) (any, error) {
 	return maskJSON(x), nil
 }
 
-// maskJSON masks every string of a decoded JSON value in place and returns it.
+// MaskText is one stored text with the result store's mask (maskCell): a run's words (its outcome, its refusal) as
+// the store keeps them.
+func MaskText(s string) string { return maskCell(s) }
+
+// maskCell is the mask of one stored string: each processing instruction's text masked as a text (maskPIs), then
+// collect.MaskStored (MaskXML for a value that reads as XML, MaskCredentials otherwise).
+func maskCell(s string) string {
+	if s == "" {
+		return s
+	}
+	return collect.MaskStored(maskPIs(s))
+}
+
+// maskPIs masks the text of every processing instruction <?...?> in s with collect.MaskCredentials (review 488 B1:
+// collect.MaskXML writes one back as it came). One not closed (a cell cut inside it) is left to MaskXML's cut path,
+// which masks it as a text.
+func maskPIs(s string) string {
+	if !strings.Contains(s, "<?") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for {
+		i := strings.Index(s, "<?")
+		if i < 0 {
+			break
+		}
+		j := strings.Index(s[i+2:], "?>")
+		if j < 0 {
+			break
+		}
+		end := i + 2 + j
+		b.WriteString(s[:i])
+		b.WriteString("<?")
+		b.WriteString(collect.MaskCredentials(s[i+2 : end]))
+		b.WriteString("?>")
+		s = s[end+2:]
+	}
+	b.WriteString(s)
+	return b.String()
+}
+
+// maskJSON masks every string of a decoded JSON value, its objects' keys included, and returns it.
 func maskJSON(v any) any {
 	switch x := v.(type) {
 	case string:
-		return collect.MaskStored(x)
+		return maskCell(x)
 	case map[string]any:
+		m := make(map[string]any, len(x))
 		for k, e := range x {
-			x[k] = maskJSON(e)
+			m[maskCell(k)] = maskJSON(e)
 		}
+		return m
 	case []any:
 		for i, e := range x {
 			x[i] = maskJSON(e)
@@ -56,7 +104,7 @@ func MaskRows(rows [][]any) {
 	for _, r := range rows {
 		for j, c := range r {
 			if s, ok := c.(string); ok && s != "" {
-				r[j] = collect.MaskStored(s)
+				r[j] = maskCell(s)
 			}
 		}
 	}
@@ -65,8 +113,6 @@ func MaskRows(rows [][]any) {
 // MaskStrings masks each string of ss in place (a set's column names).
 func MaskStrings(ss []string) {
 	for i, s := range ss {
-		if s != "" {
-			ss[i] = collect.MaskStored(s)
-		}
+		ss[i] = maskCell(s)
 	}
 }

@@ -137,12 +137,13 @@ own row (who, when, what, how it ended) is kept: a read's and every refused one'
 actions log is.
 
 Every text in a stored result is masked BEFORE it is stored, with the credential mask the collector puts on the
-statements it stores: a sqlcmd, bcp or osql `-P`, `PASSWORD = '...'`, `SECRET = '...'`, a password-named `@` parameter,
-a connection string's or a URI's password, `ConvertTo-SecureString`, `net use`, each written `<masked>`; a value that
-is an XML document (a plan, a deadlock graph, a blocked process report) is masked inside its attribute values and
-text and stays XML. A cell, a column name, a message and the run's own words are all masked. The direct run is not
-stored and its reply shows the tool's output as the tool returned it, so the same run can show a secret in direct
-mode and `<masked>` in queue mode.
+statements it stores; among its forms: a sqlcmd, bcp, osql or isql `-P`, `PASSWORD = '...'`, `SECRET = '...'`, a
+password-named `@` parameter, a connection string's or a URI's password, `ConvertTo-SecureString`, `net use`, each
+written `<masked>`. A value that is an XML document (a plan, a deadlock graph, a blocked process report) is masked
+inside its attribute values, text and processing instructions (sp_WhoIsActive writes its query text as one) and stays
+XML. A cell, a column name, a message and the run's own words are all masked, and so are the request's outcome and
+refusal, which the Grafana login can read. The direct run is not stored and its reply shows the tool's output as the tool returned it, so
+the same run can show a secret in direct mode and `<masked>` in queue mode.
 
 ## Audit
 
