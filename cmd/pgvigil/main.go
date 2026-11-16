@@ -100,6 +100,8 @@ func run(args []string) int {
 		err = runMCP(ctx, log, args[1:])
 	case "mssql-xe":
 		err = runMSSQLXE(args[1:])
+	case "mssql-agent-alerts":
+		err = runMSSQLAgentAlerts(args[1:])
 	case "import":
 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
 	default:
@@ -169,7 +171,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|import|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|version> [-config file] [-once collection] [-instance name]")
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 

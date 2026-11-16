@@ -379,6 +379,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/state", s.MSSQLState)
 	api.HandleFunc("GET /api/mssql/checks", s.MSSQLChecks)
 	api.HandleFunc("GET /api/mssql/checks/fleet", s.MSSQLChecksFleet)
+	api.HandleFunc("GET /api/mssql/agent-alerts-script", s.MSSQLAgentAlertsScript) // B9d
 	api.HandleFunc("GET /api/mssql/waitinfo", s.MSSQLWaitInfo)
 	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
