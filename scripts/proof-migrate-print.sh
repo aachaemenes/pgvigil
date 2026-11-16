@@ -35,7 +35,7 @@
 #                last 3 files, through psql: exit 0, schema_version holds those; -print there names exactly the last 3;
 #                that script through psql: exit 0, every file, pg_dump -s and the row counts as ref's, the database's own
 #                jit=on kept and the 'left alone' notice in psql's output
-# A run that crosses the first of a month at 00:00 UTC after ref's dump makes other months ahead: C's and I's dump
+# A run that crosses the first of a month at 00:00 UTC after ref's migrate began makes other months ahead: C's and I's dump
 # compares then print NOT PROVEN with that reason instead of a false FAIL (the row counts are still compared).
 # NOT PROVEN here: the jit step's WARNING branch (the script run by the owner of schema pgvigil who does not own the
 # database); a script printed for a store with a gap, applied (a real gap cannot be made from the embedded files).
@@ -63,7 +63,7 @@ counts() { q "$1" "select string_agg(c.relname || '=' || (xpath('/row/n/text()',
 dumps() { pg_dump "$ADMIN dbname=$1" -s -T 'pgvigil.mssql_requests_2*' | grep -vE '^\\(un)?restrict '; }
 # samedump <part> <file>: the dump against ref's; a month turned since ref's dump (UTC) is NOT PROVEN, never a FAIL
 samedump() { if diff -q "$WORK/ref.dump" "$2" >/dev/null; then return 0; fi
-  if [ "$(date -u +%Y%m)" != "$REFMONTH" ]; then echo "NOT PROVEN $1: pg_dump -s not compared: the run crossed a month's first 00:00 UTC after ref's dump (other months ahead)"; return 0; fi
+  if [ "$(date -u +%Y%m)" != "$REFMONTH" ]; then echo "NOT PROVEN $1: pg_dump -s not compared: the run crossed a month's first 00:00 UTC after ref's migrate began (other months ahead)"; return 0; fi
   diff "$WORK/ref.dump" "$2" > "$WORK/$1.diff" || true; head -20 "$WORK/$1.diff" >&2; fail "$1: pg_dump -s differs"; }
 jitof() { q "$1" "select coalesce(string_agg(x, ','), '') from pg_db_role_setting s join pg_database d on d.oid = s.setdatabase, unnest(s.setconfig) x where d.datname = current_database() and s.setrole = 0 and x like 'jit=%'"; }
 BIN=${PGVIGIL_BIN:-}
