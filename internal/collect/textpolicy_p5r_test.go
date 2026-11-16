@@ -127,8 +127,9 @@ func TestMaskXMLRecompileCredential(t *testing.T) {
 // @PasswordHash', leaves no name after it); a statement whose text names a credential parameter has its expression
 // literals masked whether or not the parameter is listed (a live plan may carry both); a linked server's RemoteQuery is
 // an expression; each statement of a batch, of an IF's branches, is its own region; names keep their digits, every
-// number form goes; a comment's, a CDATA section's or an instruction's raw text is not read as tags. Each row: the
-// exact output, the secrets gone, still XML, a second pass changes nothing, and inside <?query_plan ... ?> the same.
+// number form goes; a comment's, a CDATA section's or an instruction's raw text is not read as tags; a statement whose
+// text the showplan cut (3,999 characters) and that lists no parameter is masked too (M3). Each row: the exact output,
+// the secrets gone, still XML, a second pass changes nothing, and inside <?query_plan ... ?> the same.
 func TestMaskXMLCredentialRegions(t *testing.T) {
 	const (
 		head = `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>`
@@ -181,6 +182,14 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 			`<![CDATA[<StmtSimple StatementText="x @pwd"><Const ConstValue="(31337)" />]]>` +
 			`<?note <StmtSimple StatementText="y @secret"><Const ConstValue="(42424)" /> ?>`
 	)
+	// M3 (the lead 04:2x, (a)): a showplan keeps 3,999 characters of a statement's text (read on SQL Server 2022
+	// 16.0.4325.4), so a long statement's credential name can stand past the cut; a statement at that length that lists
+	// no parameter is masked as one that names a credential. Lengths in SQL Server's characters (UTF-16 code units).
+	const pre = "SELECT id FROM dbo.T WHERE "
+	tCut := pre + strings.Repeat("x", 3999-len(pre))                 // 3,999 characters
+	tShort := pre + strings.Repeat("x", 3998-len(pre))               // 3,998: not at the cut
+	tWide := pre + strings.Repeat("x", 3997-len(pre)) + "\U0001F600" // 3,998 runes, 3,999 UTF-16 code units
+	paramsI := `<ParameterList><ColumnReference Column="@i" ParameterDataType="int" ParameterCompiledValue="(42)" /></ParameterList>`
 	for _, c := range []struct {
 		name, in, want string
 		gone           []string
@@ -201,6 +210,12 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 			[]string{"e+003", "5.0000", "0F1E2D3C"}},
 		{"M1 a linked server's RemoteQuery", head + stmt(tRem, remote(val)) + tail, head + stmt(mt(tRem), remote(mlit)) + tail, []string{"hunter2"}},
 		{"raw text is not read as tags", head + raw + stmt(tI, seek("(42)")) + tail, head + raw + stmt(mt(tI), seek("(42)")) + tail, nil},
+		{"M3 a statement at the cut, no ParameterList", head + stmt(tCut, seek(val)) + tail, head + stmt(mt(tCut), seek(mlit)) + tail, []string{"hunter2"}},
+		{"M3 at the cut in UTF-16 code units", head + stmt(tWide, seek(val)) + tail, head + stmt(mt(tWide), seek(mlit)) + tail, []string{"hunter2"}},
+		{"M3 a cut statement, then a listed one", head + stmt(tCut, seek(val)) + stmt(tI, seek("(7)")+paramsI) + tail,
+			head + stmt(mt(tCut), seek(mlit)) + stmt(mt(tI), seek("(7)")+paramsI) + tail, []string{"hunter2"}},
+		{"M3 a cut statement that lists a parameter", head + stmt(tCut, seek("(7)")+paramsI) + tail, head + stmt(mt(tCut), seek("(7)")+paramsI) + tail, nil},
+		{"M3 one character under the cut", head + stmt(tShort, seek("(7)")) + tail, head + stmt(mt(tShort), seek("(7)")) + tail, nil},
 	} {
 		got := MaskXML(c.in)
 		if got != c.want {
