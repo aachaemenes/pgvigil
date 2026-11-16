@@ -59,11 +59,11 @@
 #              page ('12.0') and a number under '0.0' in the workbook (dbs_onedec, every DB Space grid)
 #   library    when python3 has openpyxl, each workbook loads with it without an error, its tables counted; none = said
 #   tools      when the grid's menu carries the grid tools (ui.ts sends 'pgvigil:gridmenu'; not wired = said), on
-#              the fleet Backups grid: 'Copy the rows as HTML with the colours' puts a table on the clipboard whose
+#              the fleet Backups grid: 'Copy > Grid' (task GM) puts a table on the clipboard whose
 #              header is #0063a3 and whose cells carry each status the screen shows as background and text colour, a
-#              row per grid row; 'Copy the rows as Markdown' a pipe table of rows + 2 lines; Ctrl+click on two numbers
+#              row per grid row; 'Copy > As Markdown > Standard' a pipe table of rows + 2 lines; Ctrl+click on two numbers
 #              says '2 cells selected' with their sum, a plain click clears it; 'Group by platform' lists one group
-#              per platform, their rows adding up to the grid's; 'Data bars on failed' draws a bar on each failed
+#              per platform, their rows adding up to the grid's; 'Data bar > Behind value' on failed draws a bar on each failed
 #              count above zero, the largest at 100 %; 'Freeze the columns up to platform' makes the first two sticky;
 #              'Hide column platform' hides it, keeps the choice in localStorage and after a reload it is still
 #              hidden, frozen and barred; the workbook exported then has no platform column (one column fewer, the
@@ -493,12 +493,13 @@ const tools = async () => {
     td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 })); return [...document.querySelectorAll('.menu button')].map(b => b.textContent); })()`);
   const choose = async (col, text) => {
     const items = await menu(col);
-    const hit = await ev(`(() => { const b = [...document.querySelectorAll('.menu button')].find(x => x.textContent === ${JSON.stringify(text)}); if (!b) return false; b.click(); return true; })()`);
-    if (!hit) throw new Error(`the menu on '${col}' has no '${text}': ${JSON.stringify(items)}`);
+    // text: an item, or a path 'Copy > Grid' through the grid menu's submenus (task GM), each step by its own label
+    const miss = await ev(`(path => { const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(); for (const l of path) { const boxes = [...document.querySelectorAll('.menu')], box = boxes[boxes.length - 1], bs = box ? [...box.querySelectorAll(':scope > button')] : []; const b = bs.find(x => lab(x) === l); if (!b) return l + ' not among: ' + bs.map(lab).join(' | '); b.click(); } return ''; })(${JSON.stringify(text.split(' > '))})`);
+    if (miss) throw new Error(`the menu on '${col}' has no '${text}': ${miss}; top: ${JSON.stringify(items)}`);
     await sleep(250);
   };
   const first = await menu('platform');
-  const out = { wired: first.some(x => x.startsWith('Copy the rows as HTML')), menu: first };
+  const out = { wired: first.some(x => x.startsWith('Export file')), menu: first };   // the grid menu of task GM
   await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   if (!out.wired) return out;
   out.head = await ev(HS); out.rows = await ev(`Number(${T}.dataset.rows)`);
@@ -507,9 +508,9 @@ const tools = async () => {
   await ev(`(() => { window.__gt = {}; const c = navigator.clipboard;
     c.write = async items => { for (const it of items) for (const ty of it.types) window.__gt[ty] = await (await it.getType(ty)).text(); };
     c.writeText = async t => { window.__gt.text = t; }; })()`);
-  await choose('platform', 'Copy the rows as HTML with the colours'); await sleep(300);
+  await choose('platform', 'Copy > Grid'); await sleep(300);
   out.html = await ev(`window.__gt['text/html'] ?? null`); out.plain = await ev(`window.__gt['text/plain'] ?? null`);
-  await choose('platform', 'Copy the rows as Markdown'); await sleep(300);
+  await choose('platform', 'Copy > As Markdown > Standard'); await sleep(300);
   out.markdown = await ev(`window.__gt.text ?? null`);
   // Ctrl+click on the first two 'failed' counts, then a plain click
   out.sel = await ev(`(() => { const j = ${HS}.indexOf('failed'); const tds = [...${T}.querySelectorAll(':scope > tbody > tr')].slice(0, 2).map(tr => tr.children[j]);
@@ -523,7 +524,7 @@ const tools = async () => {
       platforms: [...new Set([...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[${HS}.indexOf('platform')].textContent.trim()))].length }; })()`);
   await choose('platform', 'Ungroup');
   out.ungrouped = await ev(`!document.querySelector('main .gt-groups')`);
-  await choose('failed', 'Data bars on failed');
+  await choose('failed', 'Data bar > Behind value');
   const BARS = `(() => { const j = ${HS}.indexOf('failed'); return [...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => { const td = tr.children[j]; return { t: td.textContent.trim(), bar: td.classList.contains('gt-bar'), share: td.style.getPropertyValue('--gt-share'), badge: !!td.querySelector('.badge') }; }); })()`;
   out.bars = await ev(BARS);
   await choose('platform', 'Freeze the columns up to platform');
@@ -684,7 +685,8 @@ let before = folder();
 if (!await click('Export Excel')) throw new Error("the grid's menu has no Export Excel: " + JSON.stringify(gm.items));
 gm.xlsx = await waitDl(before, "the grid menu's Export Excel");
 await sleep(200);
-gm.said = await ev(`document.querySelector('main .grid-box .filter-count')?.textContent ?? ''`);
+// the grid menu (task GM) says what it saved in the grid tools' own line (.gt-stats); main's hook wrote the filter count's
+gm.said = await ev(`(() => { const b = document.querySelector('main .grid-box'); return b?.querySelector('.gt-stats')?.textContent || b?.querySelector('.filter-count')?.textContent || ''; })()`);
 out.gridmenu = gm;
 // the fleet Summary's Export to Excel drop-down: Export Summary (the instance grid), Export Test Summary (the tests grid)
 await go('#/summary?w=2h');
@@ -2259,7 +2261,7 @@ else:
     md = (t.get('markdown') or '').rstrip('\n').split('\n')
     marks = md[1].replace(' ', '').strip('|').split('|') if len(md) > 1 else []
     check(len(md) == rows + 2 and md[0] == '| ' + ' | '.join(head) + ' |' and len(marks) == len(head) and set(marks) <= {'---', '---:'} and '---:' in marks
-          and md[2] == '| ' + ' | '.join(re.sub(r'([\\|*_`<\[\]])', r'\\\1', c['t']) for c in g['cells'][0]) + ' |',
+          and md[2] == '| ' + ' | '.join(re.sub(r'([\\|*_`<\[\]])', r'\\\1', c['t'].replace('&', '&amp;')) for c in g['cells'][0]) + ' |',
           f"tools: the Markdown copy is a pipe table of {len(md)} lines (the grid's {rows} rows + 2), number columns right-aligned, its first row the screen's")
     sel = t['sel']; sm = re.search(r'sum ([^\u00b7]+)\u00b7', sel['line'])
     check(sel['picked'] == 2 and sel['line'].startswith('2 cells selected: sum ') and sm is not None and digits(sm.group(1)) == str(sum(int(digits(x) or 0) for x in sel['cells'])),
@@ -2270,7 +2272,7 @@ else:
           and len(gp.get('rows', [])) == gp.get('platforms') and sum(int(digits(r[1]) or 0) for r in gp.get('rows', [])) == rows and t.get('ungrouped') is True,
           f"tools: 'Group by platform' lists {len(gp.get('rows', []))} groups for {gp.get('platforms')} platforms, their rows adding up to {rows}, each number column summed; 'Ungroup' removes it")
     def bars_ok(bs): return len(bs) == len(g['cells']) and all(b['bar'] == (int(digits(b['t']) or 0) > 0) for b in bs) and any(b['share'] == '100%' for b in bs) and any(b['bar'] for b in bs)
-    check(bars_ok(t['bars']), f"tools: 'Data bars on failed' draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
+    check(bars_ok(t['bars']), f"tools: 'Data bar > Behind value' on failed draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
     fz = t['frozen']
     check(fz['on'] and fz['classes'] == ['gt-f1', 'gt-f2'] and fz['sticky'][:2] == ['sticky', 'sticky'] and fz['sticky'][2] != 'sticky', f"tools: 'Freeze the columns up to platform' makes the first two columns sticky ({fz})")
     hd = t['hidden']

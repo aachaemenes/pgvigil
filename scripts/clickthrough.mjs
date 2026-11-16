@@ -333,6 +333,9 @@ const verdict = (row, before, after, dl0) => {
   const newErr = (after.errors || []).filter(e => !(before.errors || []).includes(e));
   const apiBad = row.api.filter(x => x.status >= 400 || x.status === 0);
   row.status = after.status !== before.status ? after.status : '';
+  // a save that failed says so in the grid's tools line (a status, gridtools.ts report): an error, never a status row
+  // that meets a must row (review-17 B2)
+  if (/(^| \| )Export failed/.test(row.status)) newErr.push(row.status);
   row.errors = newErr; row.to = after.hash; row.h2 = after.h2; row.dialog = after.dialog; row.menu = after.menu;
   const grew = dlCount() > dl0;
   if (row.held.length) return 'write held';
@@ -344,6 +347,19 @@ const verdict = (row, before, after, dl0) => {
   if (after.dialog && after.dialog !== before.dialog) return 'dialog';
   if (after.menu?.length && JSON.stringify(after.menu) !== JSON.stringify(before.menu)) return 'menu';
   if (after.hash !== before.hash) return 'navigates';
+  // an item of the grid menu (a path under a grid's right-click): it closes the menu and puts the focus back on its
+  // cell before it acts (treemenu.ts closeAll), so the menu's closing, a submenu parent's aria-expanded and the focus
+  // say nothing of the item; a file or a copy is judged first (its menu's closing is no proof of either), and an item
+  // that changed nothing else is NOTHING (review-17 B1). Outside the grid menu the order is as before
+  if (row.path?.[0] === 'CTX' && row.path.length > 1) {
+    if (grew) return 'download';
+    if ((after.copied ?? 0) > (before.copied ?? 0)) return 'copies';
+    if (row.status) return 'status';
+    if (after.html !== before.html || after.canvas !== before.canvas || after.tree !== before.tree || (before.dialog && !after.dialog)) return 'redraws';
+    if (row.jsDialogs.length) return 'js-dialog';
+    if (row.api.some(x => x.status >= 200 && x.status < 300)) return 'reads';
+    return 'NOTHING';
+  }
   if (row.status) return 'status';
   if (after.open !== before.open) return 'expands';
   if (after.html !== before.html || after.canvas !== before.canvas || after.tree !== before.tree || (before.dialog && !after.dialog) || (before.menu?.length && !after.menu?.length)) return 'redraws';
@@ -355,6 +371,22 @@ const verdict = (row, before, after, dl0) => {
   if (after.focus !== before.focus) return 'focus';
   return 'NOTHING';
 };
+// the verdict's fixture (checked at the walker's start: exit 2 on a wrong one): a grid menu item that only closed its
+// menu (the focus back on the cell, its parent no longer expanded) is NOTHING; one that changed the grid redraws; a
+// failed save is an error; outside the grid menu a closed menu is still a redraw
+{
+  const R = path => ({ path, held: [], chooser: [], api: [], exc: [], jsDialogs: [] });
+  const B = { hash: '#/x', h2: '', canvas: '', html: 'grid', copied: 0, focus: 'BUTTONHide column a', errors: [], status: '', dialog: null, menu: ['Copy▸', 'Hide column a'], mark: true, open: 1, tree: 9 };
+  const A = { ...B, menu: [], open: 0, focus: 'TDx' }, d0 = dlCount();
+  for (const [got, want, what] of [[verdict(R(['CTX', 'menu B Hide column a']), B, A, d0), 'NOTHING', 'a grid menu item that did nothing'],
+    [verdict(R(['CTX', 'menu B Copy▸', 'menu B Cell']), { ...B, open: 2 }, A, d0), 'NOTHING', 'a third-level item that did nothing'],
+    [verdict(R(['CTX', 'menu B Hide column a']), B, { ...A, html: 'grid less a column' }, d0), 'redraws', 'a grid menu item that changed the grid'],
+    [verdict(R(['CTX', 'menu B Export Excel']), B, { ...A, status: 'Export failed: no sheet' }, d0), 'error', 'a failed save'],
+    [verdict(R(['CTX', 'menu B Copy▸', 'menu B Grid']), B, { ...A, copied: 1, status: 'Copied 3 rows' }, d0), 'copies', 'a copy that says so'],
+    [verdict(R(['B Tools']), B, { ...B, menu: [] }, d0), 'redraws', 'a menu closed outside the grid menu']]) {
+    if (got !== want) { console.error(`the verdict's fixture (${what}): '${got}', want '${want}'`); process.exit(2); }
+  }
+}
 // the mark (a full reload loses it) and a copy counter: the clipboard's writes are counted in the page, never sent
 const MARK = `(() => { window.__walk = 1; window.__walkCopied = 0; try { const c = navigator.clipboard; if (c && !c.__walk) { c.writeText = () => { window.__walkCopied++; return Promise.resolve(); }; c.write = () => { window.__walkCopied++; return Promise.resolve(); }; c.__walk = 1; } } catch (e) {}
   if (!document.__walk) { const ex = document.execCommand.bind(document); document.execCommand = (k, ...a) => { if (k === 'copy') window.__walkCopied++; return ex(k, ...a); }; document.__walk = 1; } })()`;
@@ -362,6 +394,18 @@ const MARK = `(() => { window.__walk = 1; window.__walkCopied = 0; try { const c
 const GRID_MAX = 3;
 const gridKey = sig => { const m = /^(menu B (?:Freeze the columns up to|Filter by value|Exclude value|Hide the column|Sort|Copy|Rows:|Selected Cells|Clear filters|Group by)|B Filter |S The aggregate of each number column|S Group by a column|S Select the cells of a column|B Show every column|CTX)/.exec(sig); return m ? m[1] : null; };
 const gridSeen = new Map();
+// the grid's menu (CTX: a right-click on a grid's first cell opens GM's .tm-menu, web/src/gridtools.ts gridMenu): each
+// item counted by its own path (GRID_MAX a driver), its varying words folded (a column's name, a cell's value, a tick,
+// the submenu's arrow); what an item opens that is not the menu (the Columns... panel's controls) by its first word
+// ('Icheckbox', 'B'; a gridKey control by its own key), as before.
+// One 'CTX menu' count for every item reached three items a driver and left the rest unclicked (the GM walk rows)
+const gmWords = sig => !/^menu /.test(sig) ? (gridKey(sig) ?? sig.replace(/\s.*$/, ''))
+  : sig.replace(/▸$/, '').replace(/^menu B ✓ /, 'menu B ').replace(/^(menu B (?:Hide column|Freeze the columns up to|Group by|Filter by value|Exclude value)\b).*/, '$1').replace(/^menu B \[.*\] .*/, 'menu B [column] statistics');
+for (const [got, want] of [[gmWords('menu B Copy▸'), 'menu B Copy'], [gmWords('menu B ✓ Row numbers'), 'menu B Row numbers'], [gmWords('menu B Hide column Free space'), 'menu B Hide column'],
+  [gmWords('menu B Filter by value: OK'), 'menu B Filter by value'], [gmWords('menu B [Free] Count: #| Sum: #'), 'menu B [column] statistics'], [gmWords('menu B Rows: #| Cols: #'), 'menu B Rows: #| Cols: #'],
+  [gmWords('Icheckbox Free space'), 'Icheckbox'], [gmWords('B Show every column'), 'B Show every column']]) {
+  if (got !== want) { console.error(`the grid menu's count fixture: '${got}', want '${want}'`); process.exit(2); }
+}
 const pagesOf = shard.pages;
 const chromePage = shard.chrome ? [{ scope: 'root', engine: null, hash: '#/summary', tab: 'bar', bar: true, cap: 60 }] : [];
 // the bar last: what its clicks keep (a theme, a range) never reaches another page's rows
@@ -385,9 +429,11 @@ for (const pg of [...pagesOf, ...chromePage]) {
     // the instance header's controls: once per engine (the same header on every page of the instance)
     if (p.length === 1 && /^hdr /.test(c.sig)) { const hk = (pg.engine ?? 'root') + ':' + c.sig; if (hdrSeen.has(hk)) continue; hdrSeen.add(hk); }
     // the grid's own controls: GRID_MAX times a driver, then counted as the same component
-    const gk = gridKey(c.sig) ?? (p.length > 1 && p[0].sig === 'CTX' ? 'CTX ' + (gridKey(c.sig) ?? c.sig.replace(/\s.*$/, '')) : null);
+    const gk = p[0].sig === 'CTX' ? ['CTX', ...p.slice(1).map(s => gmWords(s.sig))].join(' > ') : gridKey(c.sig);
     if (gk) { const k = gk + (p[p.length - 1].opt !== undefined ? '=' + p[p.length - 1].opt : ''); const n = gridSeen.get(k) ?? 0; if (n >= GRID_MAX) { same++; continue; } gridSeen.set(k, n + 1); }
-    if (budget-- <= 0) { capped++; out.clicks.push({ scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, kind: 'over the cap' }); continue; }
+    // the grid menu's clicks are bounded by GRID_MAX a driver, not by the page's cap (its right-click comes last in the
+    // queue: on a page at its cap it was never clicked)
+    if (p[0].sig !== 'CTX' && budget-- <= 0) { capped++; out.clicks.push({ scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '')), tag: c.tag, what: c.what, kind: 'over the cap' }); continue; }
     const last = p[p.length - 1];
     const row = { scope: pg.scope, page: pg.tab, hash: pg.hash, path: p.map(s => s.sig + (s.opt !== undefined ? ' = ' + s.opt : '') + (s.nth ? ' [' + s.nth + ']' : '')), tag: c.tag, what: c.what, count: c.n, on: !!c.on };
     try {
@@ -405,7 +451,8 @@ for (const pg of [...pagesOf, ...chromePage]) {
       }
       if (c.tag === 'SELECT' && last.opt === undefined) {
         for (const o of (c.opts || []).filter(o => o !== c.cur).slice(0, 5)) queue.unshift({ path: [...p.slice(0, -1), { sig: last.sig, opt: o }], c: { ...c, what: c.what + ' = ' + o } });
-        budget++; continue;
+        if (p[0].sig !== 'CTX') budget++;   // a path under a right-click took no unit of the page's cap
+        continue;
       }
       // replay the path on a fresh page (once more from a fresh page when a step's control is lost: a late redraw can
       // close a menu an earlier step opened), wait for the last step's control without clicking it, and only then
@@ -434,6 +481,8 @@ for (const pg of [...pagesOf, ...chromePage]) {
       if (chooser.length) { await sleep(800); await settled(15000); }
       // a link to the server's own file (a .xdl, a .sqlplan): its download is given up to 5 s to start
       if (c.tag === 'A' && /^\/api\//.test(c.href || '')) for (let i = 0; i < 25 && dlCount() <= dl0; i++) await sleep(200);
+      // the grid menu's Export Excel and Export file items: the file is built in the page first, given up to 5 s to start
+      if (p[0].sig === 'CTX' && /^menu B Export (Excel|file)/.test(p[1]?.sig ?? '') && !/▸$/.test(last.sig)) for (let i = 0; i < 25 && dlCount() <= dl0; i++) await sleep(200);
       const after = await ev(state).catch(e => ({ errors: ['(page gone) ' + e], mark: false }));
       row.api = [...net]; row.exc = [...exc]; row.jsDialogs = [...dlgs]; row.held = [...new Set(held)]; row.chooser = [...chooser];
       row.kind = verdict(row, before, after, dl0);

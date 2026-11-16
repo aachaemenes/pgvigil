@@ -155,7 +155,7 @@
 #     on another platform than the test server's (azuresqlmi, aurora): each line ends 'not <instance>, <its platform's
 #     words>, where the same run returns other rows.' and the mark '(<words>)'; the picker's are on the test server's
 #     platform (sqlserver, onprem): 'not <instance>.' with no clause; every line and mark says 'captured <day> UTC';
-#     the sample grid's menu 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark
+#     the sample grid's menu 'Copy > As Markdown > Standard' and 'Copy > Grid' (HTML in the colours beside the words) hand the clipboard the mark
 #     first (the tools' grid's copy carries none); the exported sample CSV opened by the bar's Tools > Open Grid or
 #     Data Set reads as the sample's own columns and rows, its note starting with the mark.
 #     [the panel in view, 1500 x 1100] every tool's panel, after its click, after 'Open sample' from the top of the page
@@ -1039,15 +1039,36 @@ const axOff = async () => {
   }
   return rows;
 };
+const press = async (k, code, vk, mods = 0) => {
+  await cmd('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+  await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+};
+const OFFB = 'main table.grid button.link[aria-disabled="true"]';
 const tabWalk = async (max) => {
-  // from the page's own heading (the bar and the tree come first in the document: not this page's controls)
+  // from the page's own heading (the bar and the tree come first in the document: not this page's controls), Tab; a grid
+  // is ONE tab stop, its current cell (the ARIA grid pattern, task GM): in each grid Tab reaches, Ctrl+Home, then each row
+  // holding an off tool: Home, ArrowRight to its column, F2 onto the cell's button (read), Escape back to the cell, Down
   await ev(`(() => { const h = document.querySelector('main h2'); h.setAttribute('tabindex', '-1'); h.focus(); return 1; })()`);
-  const reached = new Set();
+  const reached = new Set(), walked = new Set();
+  const onOff = () => ev(`(() => { const e = document.activeElement; return e?.matches?.(${JSON.stringify(OFFB)}) ? e.textContent.trim() : ''; })()`);
   for (let i = 0; i < max; i++) {
-    await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
-    await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
-    const x = await ev(`(() => { const e = document.activeElement; return e && e.matches && e.matches('main table.grid button.link[aria-disabled="true"]') ? e.textContent.trim() : ''; })()`);
-    if (x) reached.add(x);
+    await press('Tab', 'Tab', 9);
+    const at = await ev(`(() => { const e = document.activeElement; if (e?.matches?.(${JSON.stringify(OFFB)})) return { off: e.textContent.trim() };
+      const t = e?.closest?.('main table.grid'); return t && e.matches('td, th') ? { grid: [...document.querySelectorAll('main table.grid')].indexOf(t) } : {}; })()`);
+    if (at.off) reached.add(at.off);
+    if (at.grid === undefined || walked.has(at.grid)) continue;
+    walked.add(at.grid);
+    const plan = await ev(`[...[...document.querySelectorAll('main table.grid')][${at.grid}].querySelectorAll(':scope > tbody > tr:not(.trend-row)')].map(tr => [...tr.children].findIndex(td => !!td.querySelector(${JSON.stringify(OFFB)})))`);
+    await press('Home', 'Home', 36, 2);   // Ctrl+Home: the first row's first cell
+    for (let r = 0; r < plan.length; r++) {
+      if (r > 0) await press('ArrowDown', 'ArrowDown', 40);
+      if (plan[r] < 0) continue;
+      await press('Home', 'Home', 36);
+      for (let k = 0; k < plan[r]; k++) await press('ArrowRight', 'ArrowRight', 39);
+      await press('F2', 'F2', 113);
+      const x = await onOff(); if (x) reached.add(x);
+      await press('Escape', 'Escape', 27);
+    }
   }
   return [...reached];
 };
@@ -1398,19 +1419,16 @@ if (mode === 'live') {
     const miss = await ev(`(() => { const td = ${cell}; if (!td) return 'the cell went away after the scroll';
       const r = td.getBoundingClientRect();
       td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-      const bs = [...document.querySelectorAll('.menu [role=menuitem]')];
-      if (!bs.length) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
-      const b = bs.find(x => x.textContent.trim() === ${JSON.stringify(item)});
-      if (!b) return ${JSON.stringify(item)} + ' not among: ' + bs.map(x => x.textContent.trim()).join(' | ');
-      b.click(); return ''; })()`);
+      if (!document.querySelector('.menu')) return 'no menu opened on the cell (a text selection on the page keeps the browser menu instead)';
+      return (path => { const lab = x => [...x.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(); for (const l of path) { const boxes = [...document.querySelectorAll('.menu')], box = boxes[boxes.length - 1], bs = box ? [...box.querySelectorAll(':scope > button')] : []; const b = bs.find(x => lab(x) === l); if (!b) return l + ' not among: ' + bs.map(lab).join(' | '); b.click(); } return ''; })(${JSON.stringify(item.split(' > '))}); })()`);   // item: a path through the grid menu (task GM)
     if (miss) return { error: miss };
     if (!await until(`window.__clips.length > ${n}`, 5000)) return { error: 'nothing reached the clipboard in 5 s after ' + item };
     return await ev(`window.__clips[${n}]`);
   };
   out.clip = {
-    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as Markdown'),
-    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy the rows as HTML with the colours'),
-    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy the rows as Markdown'),
+    md: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy > As Markdown > Standard'),
+    html: await copyFrom(`document.querySelector('main section .sample table.grid tbody td')`, 'Copy > Grid'),
+    tools: await copyFrom(`[...document.querySelectorAll('main table.grid tbody td')].find(td => !td.closest('[data-sample]') && td.closest('table').querySelector('button.link'))`, 'Copy > As Markdown > Standard'),
   };
   // the exported sample CSV opened by the bar's Tools > Open Grid or Data Set: the sample's own columns and rows
   out.reopen = null;
@@ -1498,8 +1516,8 @@ else:
     open(os.environ['VIEWBAD'], 'a').write(f"U2 sp_Blitz's form after its click: {v}\n")
 ax, tab = d['msaAx'], d['msaTab']
 assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
-assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
-print(f"ok   U2: pgcr-msa: Tab reaches all {len(tab)} off tools; each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
+assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: the keyboard (Tab, the grid's arrows, F2) reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
+print(f"ok   U2: pgcr-msa: the keyboard reaches all {len(tab)} off tools (Tab to the grid, the arrows, F2: the grid pattern); each one's accessibility-tree description is the reason beside it ('{ax[0]['axDesc'][:70]}')")
 c = d['msaClick']; assert c['clicked'] and c['sent'] == 0 and not c['error'], f"U2: a mouse click on an off tool: {c}"
 lk = d['look']
 for t in ('light', 'dark'):
@@ -1764,11 +1782,11 @@ assert not bad and sum(1 for n in firsts if 'sp_Blitz' in n) == 2, f"S: the CSV 
 print(f"ok   S: Export CSV: exactly the panel's 2 files start with the mark ({', '.join(n for n in firsts if 'sp_Blitz' in n)}), none of the other {len(firsts) - 2}")
 # the grid menu's copies (review 20261112-222929 finding 2): the sample's mark first in both, the tools' grid's none
 c = d.get('clip') or {}; md, hc, tc = c.get('md') or {}, c.get('html') or {}, c.get('tools') or {}
-unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', ''))
-assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy the rows as Markdown: {md}"
-assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy the rows as HTML: {str(hc)[:400]}"
+unmd = re.sub(r'\\([\\|*_`<\[\]])', r'\1', md.get('text', '')).replace('&amp;', '&')
+assert unmd.startswith(p['mark'] + '\n\n') and '|' in unmd.split('\n\n', 1)[1], f"S: Copy > As Markdown > Standard: {md}"
+assert hc.get('plain', '').startswith(p['mark'] + '\n') and hc.get('html', '').startswith('<p>') and html.unescape(re.sub(r'<[^>]+>', '', hc['html'].split('</p>', 1)[0])) == p['mark'] and '<table' in hc['html'], f"S: Copy > Grid (HTML): {str(hc)[:400]}"
 assert tc.get('kind') == 'text' and 'stored sample of' not in tc.get('text', '') and '|' in tc.get('text', ''), f"S: the tools' grid's copy: {str(tc)[:300]}"
-print(f"ok   S: the sample grid's menu: 'Copy the rows as Markdown' and 'as HTML with the colours' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
+print(f"ok   S: the sample grid's menu: 'Copy > As Markdown > Standard' and 'Copy > Grid' hand the clipboard the mark first (Markdown {len(md['text'])} chars, HTML {len(hc['html'])}); the tools' grid's copy carries none")
 # the exported sample CSV opened by Tools > Open Grid or Data Set (finding 3): the sample's own columns and rows, the mark in the note
 ro = d.get('reopen') or {}
 assert ro and not ro.get('error') and ro['cols'] == ro['shown']['cols'] and ro['rows'] == ro['shown']['rows'] and ro['cols'] > 1 \

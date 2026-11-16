@@ -1,7 +1,7 @@
 // The menus' browser check (task 172): the tree's right-click menus, their keyboard (the context-menu key, Shift+F10,
 // the arrows into and out of a submenu, Escape back to the node), each item doing what DBA Dash's shot shows, the drive
 // nodes' used-space bars, the grids' cell-menu lines (Select, Filter by value, Exclude value, Clear filters, 'Rows |
-// Cols' and the Sum / Avg / Min / Max line; the grid's Export Excel is export.ts's, after the copy lines), the Tools menu's file opening by the picker, a drop and a
+// Cols' and the Sum / Avg / Min / Max line, and task GM's grid menu: the G- cases), the Tools menu's file opening by the picker, a drop and a
 // paste, and the Data Retention page against a hand read of the repository.
 //   PGVIGIL_ADMIN_DSN="host=... user=..." node scripts/menu-check.mjs
 // Self-contained: it builds the binary (the web bundle internal/web/dist/app.js must be built first), seeds the demo
@@ -9,6 +9,7 @@
 // killed run too: SIGINT / SIGTERM drop the database by name). Needs go, psql, chromium, node 22+.
 //   PGVIGIL_DEMO_WAIT_S  seconds to wait for the seeded demo (default 240)
 //   PGVIGIL_MENU_SHOTS   a folder: a picture of each menu, light and dark, is saved there
+//   PGVIGIL_MENU_ONLY    the cases to run, by name prefix, comma-separated ('G': the grid menu's; scripts/proof-gridmenu.sh)
 // Prints one 'ok <case>: ...' or 'FAIL <case>: ...' line per case and 'PASS' / 'FAIL' last; exit 1 on a failed case.
 //
 // Expected (written before the first run; the cases marked (run 3) rewritten after review s172-1, before run 3):
@@ -63,14 +64,7 @@
 //   D  drives         under onprem-sql01's Storage folder one node per volume of /api/mssql/storage (total > 0), each with
 //                     a bar whose width is its used share (within 0.2 %) in the colour of its free share (ok / warn under
 //                     20 % / crit under 10 %), its visible words '... free (n %)', its title '... free of ...' (run 3)
-//   G  grid menu      Instances' first non-empty sessions cell: one 'Export Excel' line before them, then 'Select row|Select
-//                     column|Filter by value: <v>|Exclude value (contains)|Select all|Rows: <n> | Cols: <m>|[sessions] Sum: <s> | Avg:
-//                     <a> | Min | Max' after the grid's own items, over the non-empty cells summed by hand (run 3: empty
-//                     cells are no numbers); Select column -> n cells, the tools' line says so, the menu then 'Selected
-//                     Cells: n (<numbers> numeric) | Sum: <s> ...'; Select row -> the m cells of one row; Filter by value
-//                     (a number column: '=') -> exactly the rows showing v; Exclude value -> the rows not holding v; Clear
-//                     filters -> n rows each time; Export Excel -> an .xlsx (PK, a worksheet) downloaded; (run 4) a version
-//                     cell ('17.10', a text column): no Sum line, the menu ends with 'Rows: ...'
+//   G  grid menu      (task 172's flat menu) retired by task GM: its rows are now G-select, G-menu, G-filters and G-file
 //   T  tools          the bar's Tools: 'Open Deadlock Graph | *.xdl|Open Query Plan | *.sqlplan|Open Grid or Data Set |
 //                     *.json;*.csv;*.gz|Open STATISTICS IO / TIME messages | *.txt;*.statistics.json' (the fourth since
 //                     task 406's reader), the button aria-expanded true; the picker given dl.xdl -> 'Deadlock graph: dl.xdl',
@@ -88,7 +82,65 @@
 //                     hand; job_runs 'rows older than the age' by start_time, judged, its oldest row = min(start_time) by
 //                     hand, the page's cells the same; query_text the same as activity_sample, not judged; instances
 //                     'kept whole'
-//   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark
+//   GM the grid menu at DBA Dash's level (task GM, the design as the pass's fold left it; written before the build, red
+//                     first on main 1aba474: every G- row FAIL there but G-chart; case G retired into G-select). Grids: Instances'
+//                     (number column 'sessions', text 'platform', unique 'name'), a dropped JSON file's viewer grid (a
+//                     modal dialog; the hostile fixture), slow.ts's own table, demo-onprem-sql01's Drives, a statements
+//                     grid, an empty one. Contracts: the block's head. Each case:
+//   G-menu            a sessions cell: Copy, Export Excel, Export file, Transpose, Select, Columns..., Row numbers, Data bar,
+//                     'Filter by value...', 'Exclude value...', All filters, Clear filters in that order, then 'Rows: n |
+//                     Cols: m' and '[sessions] Sum: ...'; Copy > Grid | Column | Cell | Row | Selected | As Markdown | As
+//                     JSON (DD's order), As Markdown > Standard | Prettified, As JSON > Compact | Prettified, Export file >
+//                     CSV | JSON | Markdown | HTML | SQL (INSERT) for PostgreSQL | for SQL Server, Transpose > This row |
+//                     Selected rows | Grid, Select > Row | Column | All, Data bar > Behind value | Under value | Traffic
+//                     light (higher is worse) | (higher is better) | Remove, All filters > = <> > < >= <= (a text column:
+//                     Like | Not like first); Clear filters off with the visible words 'no filter is set'
+//   G-select          Select > Column: n cells, the tools' line says so, the menu's last line 'Selected Cells: n (k
+//                     numeric) | Sum: ...'; Select > Row: the row's shown cells; a version cell: no Sum line, 'Rows: ...' last
+//   G-header          sessions' header: the grid-level items, Hide column / Freeze up to / Group by sessions, Data bar,
+//                     its Sum line last; its Copy holds Grid, Column, Selected, As Markdown, As JSON (no Cell, no Row)
+//   G-copy            through a stubbed clipboard: Cell; Row ends with the row tab-separated; Column = the shown column;
+//                     Selected = a 2x2 rectangle with HTML beside it; Grid = the header and n rows; Markdown n+2 lines,
+//                     '| --- |' second, prettified one width; JSON n objects keyed by the shown headers, sessions a number
+//                     or null (an empty cell), 'longest active' its seconds; JSON VALUES: a percent shown '12.5 %' is 12.5;
+//                     EMPTY: a filter leaving no row turns every Copy item off with 'No data to copy'
+//   G-file            Export Excel and each Export file form share one file name stem (oneFile's); CSV the header then n
+//                     rows; JSON n objects; Markdown n+2 lines; HTML meta utf-8, a style block with the fills, td classes,
+//                     no inline style; PostgreSQL SQL: no BOM (psql reads none), SET standard_conforming_strings = on first,
+//                     SET client_encoding = 'UTF8', DROP TABLE IF
+//                     EXISTS pg_temp.pgvigil_grid, one CREATE TEMP TABLE, INSERT INTO pg_temp.pgvigil_grid, n value rows,
+//                     no N''; SQL Server: a BOM, IF OBJECT_ID('tempdb..#pgvigil_grid') ... DROP, [sessions], every string N''
+//   G-hidden          platform hidden: in no copy and no file
+//   G-order           sessions descending and '>0': Copy > Column and the CSV in that order
+//   G-rownum          Row numbers: a CSS counter, no cell added; kept after a reload; with it on, Hide platform hides
+//                     platform, Freeze up to sessions ends at sessions, Filter by value counts right; not in Copy > Grid or
+//                     the CSV; off again
+//   G-transpose       This row: 'Transposed ...' of the shown columns, name and value, with Copy; Selected rows (2): three
+//                     cells a row; Grid on a page over 50 rows: 50 values a row, the cap's reason, its Copy every row
+//   G-filters         Filter by value AND Exclude value: the rows by hand; the six operators from a prompt holding the
+//                     clicked value; Like / Not like 'a%'; Clear filters off with its words when none; QUOTING on the
+//                     fixture: Filter by value 'R & D' = that one row, typed 'R & D' = contains (2 rows), Like's prefill on
+//                     pg_stat_statements 'pg\_stat\_statements'
+//   G-in              three name cells: Filter by these values = those three rows; Exclude these values = the rest
+//   G-bars            Under value a gradient at the bottom; traffic lights in their own classes (no ok / warn / crit /
+//                     status), worse and better the colours swapped, kept after a reload, absent from the HTML file; Remove
+//   G-keys            Tab lands in the grid (role grid, aria-rowcount n, no other tab stop in its body); Down, Right: the
+//                     cell of row 2, column 2; Shift+F10: the menu at it, the focus on Copy; Right, Down, Enter: Copy >
+//                     Column, the focus back on the cell; Shift+F10, Escape: the cell; Tab leaves the grid
+//   G-grouped         Group by platform: the grid's menu works, Copy > Grid n rows; the group panel's table has a menu
+//   G-empty0          a grid empty from the start: Copy items off 'No data to copy', Export Excel on, Columns..., 'Rows: 0'
+//   G-dialog          the viewer's grid: the menu inside the dialog, Copy > Cell 'a]b'
+//   G-sql             the fixture's two SQL files on the box's PostgreSQL (standard_conforming_strings on, then off, then off
+//                     with the file sent as one query as pgAdmin's F5 does) and a SQL Server container (PGVIGIL_MENU_MSSQL /
+//                     _ENV; the fixture holds a backslash before a line break and a GO line): every row read back equal, NUL dropped and said,
+//                     names "we]ird""name" / column_n, table t intact
+//   G-stmt            a statement cell's button: the grid's menu, Copy > Cell the statement
+//   G-plain           slow.ts's own table.grid: the menu, Copy > Cell
+//   G-mssql           demo-onprem-sql01's Drives grid: the same first level
+//   G-chart           a chart's menu unchanged (ui.ts showMenu: Copy image ... Export Excel): green on both sides
+//   G-big             a 10,000-row grid's menu opens (.tm-menu); its open time said
+//   G-themes          (PGVIGIL_MENU_SHOTS) the menu and the transpose shot light and dark, the menu's background differs
+//   S  shots          (run 3) after a reload in the dark theme (data-theme dark): every one of the 15 light and 4 dark (grid-cell-menu-light from G-menu)
 //                     pictures written by this run
 const { spawn, execFileSync } = await import('node:child_process');
 const fs = await import('node:fs');
@@ -114,7 +166,17 @@ function cleanup() {
   if (done) return; done = true;
   try { srv?.kill('SIGTERM'); } catch { /* gone */ }
   try { chr?.kill('SIGTERM'); } catch { /* gone */ }
-  try { psql(`drop database if exists ${db} with (force)`, 'postgres'); } catch (e) { console.error(`FAIL cleanup: the database ${db} was not dropped: ${e.message}`); process.exitCode = 1; }
+  // the drop retried while the demo's sessions close: SIGTERM does not wait, and a demo still seeding has a pool that
+  // opens a session again after FORCE ends it ('is being accessed by other users', gridmenu-b2 under a load of 66): after
+  // a refusal the serve is killed outright, up to 10 tries 0.5 s apart (a sync pause: no timer runs in an exit handler)
+  for (let k = 1; ; k++) {
+    try { psql(`drop database if exists ${db} with (force)`, 'postgres'); break; }
+    catch (e) {
+      if (k >= 10) { console.error(`FAIL cleanup: the database ${db} was not dropped: ${e.message}`); process.exitCode = 1; break; }
+      try { srv?.kill('SIGKILL'); } catch { /* gone */ }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    }
+  }
   try { fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); } catch (e) { console.error(`cleanup: ${work} was not removed: ${e.message}`); }
 }
 process.on('exit', cleanup);
@@ -164,7 +226,13 @@ const ev = async e => {
 };
 let failed = 0;
 const check = (name, okay, detail) => { console.log(`${okay ? 'ok  ' : 'FAIL'} ${name}: ${detail}`); if (!okay) failed++; };
-const guard = async (name, f) => { try { await f(); } catch (e) { check(name, false, 'threw: ' + (e instanceof Error ? e.message : String(e)).slice(0, 400)); } };
+// PGVIGIL_MENU_ONLY: the cases whose names start with one of its comma-separated prefixes ('G' = case G and the GM
+// cases G-...); unset = every case
+const only = (process.env.PGVIGIL_MENU_ONLY ?? '').split(',').map(x => x.trim()).filter(Boolean);
+const guard = async (name, f) => {
+  if (only.length && !only.some(p => name === p || name.startsWith(p + ' ') || name.startsWith(p + '-'))) return;
+  try { await f(); } catch (e) { check(name, false, 'threw: ' + (e instanceof Error ? e.message : String(e)).slice(0, 400)); }
+};
 await send('Page.enable');
 await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin });
 await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dl, eventsEnabled: true });
@@ -181,8 +249,10 @@ const shot = async name => {
   const r = await send('Page.captureScreenshot', { format: 'png' });
   if (r.result?.data) fs.writeFileSync(path.join(shots, name + '.png'), Buffer.from(r.result.data, 'base64'));
 };
-const key = async (k, code, vk, mods = 0) => {
-  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+const key = async (k, code, vk, mods = 0, text) => {
+  // text: a key that types (Enter '\r'): a keyDown with its text raises the keypress a button acts on (rawKeyDown has none)
+  await send('Input.dispatchKeyEvent', text ? { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods, text, unmodifiedText: text }
+    : { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
   await sleep(150);
 };
@@ -470,64 +540,626 @@ await guard('W pg words', async () => {
   check('W pg words', !!line && hit.length === 0, `demo-cloudsql-analytics01's Summary says '${line.slice(0, 200)}'; SQL Server-only names in it: ${hit.join(', ') || 'none'}; judged on an all-OK instance (where the line lists the cells without a read): ${!/^Not OK/.test(line)}`);
 });
 
-// ---- G: the grid cell menu ----
-await guard('G grid menu', async () => {
-  await go('#/instances');
-  const col = `[...document.querySelectorAll('main table.grid thead tr:first-child th')].findIndex(h => h.textContent === 'sessions')`;
-  const g = await ev(`(async () => {
-    const t = document.querySelector('main table.grid'); const ths = [...t.querySelectorAll('thead tr:first-child th')];
-    const j = ${col}; const trs = [...t.querySelectorAll(':scope > tbody > tr')];
-    const texts = trs.map(tr => tr.children[j].textContent.trim()), vals = texts.filter(x => x !== '').map(x => Number(x.replace(/[^0-9.-]/g, '')));
-    const sum = vals.reduce((a, b) => a + b, 0), f = n => (Math.round(n * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const want = '[sessions] Sum: ' + f(sum) + ' | Avg: ' + f(sum / vals.length) + ' | Min: ' + f(Math.min(...vals)) + ' | Max: ' + f(Math.max(...vals));
-    const td = trs.find(tr => tr.children[j].textContent.trim() !== '').children[j]; const r = td.getBoundingClientRect();
-    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-    const items = [...document.querySelectorAll('.menu button')].map(b => b.textContent);
-    const v = td.textContent.trim();
-    return { items, want, n: trs.length, cols: ths.filter(h => !h.hasAttribute('data-gt-hidden')).length, v, sum: f(sum), nums: vals.length,
-      eq: texts.filter(x => x === v).length, holds: texts.filter(x => x.includes(v)).length };
-  })()`);
-  await shot('grid-cell-menu-light');
-  const tail = g.items.slice(g.items.indexOf('Select row'));
-  const wantTail = ['Select row', 'Select column', `Filter by value: ${g.v}`, 'Exclude value (contains)', 'Select all', `Rows: ${g.n} | Cols: ${g.cols}`, g.want];
-  check('G grid menu', JSON.stringify(tail) === JSON.stringify(wantTail), tail.join(' / ') + (JSON.stringify(tail) === JSON.stringify(wantTail) ? '' : ' (want ' + wantTail.join(' / ') + ')'));
-  // the grid's Export Excel (export.ts): one line, before these, after the copies
-  const xl = g.items.filter(x => x.startsWith('Export Excel'));
-  check('G grid menu Export Excel', xl.length === 1 && xl[0] === 'Export Excel' && g.items.indexOf('Export Excel') < g.items.indexOf('Select row'), JSON.stringify(xl));
-  await clickItem('Select column'); await sleep(300);
-  const sel = await ev(`(() => { const t = document.querySelector('main table.grid'); const td = t.querySelector('tbody td.gt-sel'); const r = td.getBoundingClientRect();
-    const n = t.querySelectorAll('tbody td.gt-sel').length; const line = t.closest('.grid-box').querySelector('.gt-stats')?.textContent ?? '';
-    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
-    const items = [...document.querySelectorAll('.menu button')].map(b => b.textContent); return { n, line, last: items[items.length - 1] }; })()`);
-  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
-  // Select row: the row's cells of the columns shown
-  await rightClick(`document.querySelector('main table.grid tbody tr:nth-child(2) td:nth-child(2)')`);
-  await clickItem('Select row'); await sleep(300);
-  const rowSel = await ev(`({ n: document.querySelectorAll('main table.grid tbody td.gt-sel').length, rows: new Set([...document.querySelectorAll('main table.grid tbody td.gt-sel')].map(td => td.parentElement)).size })`);
-  check('G selection', sel.n === g.n && /selected/.test(sel.line) && sel.last.startsWith(`Selected Cells: ${g.n} (${g.nums} numeric) | Sum: ${g.sum} |`) && rowSel.n === g.cols && rowSel.rows === 1,
-    `column: ${sel.n} cells; '${sel.line}'; '${sel.last}'; row: ${rowSel.n} cells in ${rowSel.rows} row for ${g.cols} columns`);
-  const firstNum = `[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.children[${col}]).find(td => td.textContent.trim() === ${JSON.stringify(g.v)})`;
-  const shownRows = `(() => { const t = document.querySelector('main table.grid'); return [...t.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[${col}].textContent.trim()); })()`;
-  await rightClick(firstNum); await clickItem('Filter by value'); await sleep(500);
-  const fv = await ev(shownRows);
-  await rightClick(firstNum); await clickItem('Clear filters'); await sleep(500);
-  const back1 = (await ev(shownRows)).length;
-  await rightClick(firstNum); await clickItem('Exclude value'); await sleep(500);
-  const ex = await ev(shownRows);
-  await rightClick(`document.querySelector('main table.grid tbody td')`); await clickItem('Clear filters'); await sleep(500);
-  const back2 = (await ev(shownRows)).length;
-  check('G filter', fv.length === g.eq && fv.every(x => x === g.v) && back1 === g.n && ex.length === g.n - g.holds && ex.every(x => !x.includes(g.v)) && back2 === g.n,
-    `filter by '${g.v}': ${fv.length} rows (${g.eq} equal by hand); exclude: ${ex.length} (${g.n - g.holds} by hand); cleared: ${back1}, ${back2} of ${g.n}`);
-  for (const f of fs.readdirSync(dl)) fs.rmSync(path.join(dl, f));
-  await rightClick(`document.querySelector('main table.grid tbody td')`);
-  await clickItem('Export Excel'); let x = '';
-  for (let k = 0; k < 40 && !x; k++) { await sleep(250); x = fs.readdirSync(dl).find(f => f.endsWith('.xlsx')) ?? ''; }
-  const buf = x ? fs.readFileSync(path.join(dl, x)) : Buffer.alloc(0);
-  // a text column whose values look like numbers (the version, '17.10'): no Sum line
-  await rightClick(`[...document.querySelectorAll('main table.grid tbody tr')].map(tr => tr.children[[...document.querySelectorAll('main table.grid thead tr:first-child th')].findIndex(h => h.textContent.startsWith('version'))]).find(td => /^\\d+\\.\\d+$/.test(td.textContent.trim()))`);
-  const verLast = await ev(`(() => { const b = [...document.querySelectorAll('.menu button')].map(x => x.textContent); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return b[b.length - 1] ?? ''; })()`);
-  check('G text column', /^Rows: /.test(verLast), `the last item on a version cell: '${verLast}'`);
-  check('G export', buf.length > 0 && buf.subarray(0, 2).toString() === 'PK' && buf.includes(Buffer.from('xl/worksheets/sheet')), `${x || 'no .xlsx'} ${buf.length} bytes`);
+// ---- GM: the grid menu at DBA Dash's level (task GM, its design as the pass's fold left it) - one case per item, each
+// able to fail on a tree without it (the flat menu answers no '.tm-menu'). The grids: Instances' (#/instances; number
+// column 'sessions', text 'platform', unique 'name'), a dropped JSON file's viewer grid (a modal dialog: the hostile
+// fixture), slow.ts's own table.grid, a SQL Server instance's Drives grid, a statements grid, an empty one. Contracts the
+// cases hold the build to: the menu is treemenu's (.tm-menu boxes in the host of the grid - the open dialog or the body;
+// a submenu's button aria-haspopup with its '▸'; an off item aria-disabled with its reason as visible words in a child
+// .off-reason); a copy goes through navigator.clipboard (stubbed here: each write kept as type and text); a file is a
+// browser download; a filter's prompt is a dialog[open] whose first input holds the prefill and whose form (or its
+// Filter / OK / Apply button) applies it; a transpose is a dialog[open] holding a table and a Copy button.
+const GT = `document.querySelector('main table.grid')`;
+const gIx = (label, t = GT) => `[...${t}.querySelectorAll('thead tr:first-child th')].findIndex(h => h.textContent.trim() === ${JSON.stringify(label)})`;
+const gRowsOf = t => `[...${t}.querySelectorAll(':scope > tbody > tr')].filter(tr => !tr.classList.contains('trend-row'))`;
+const gRows = gRowsOf(GT);
+const gCell = (label, nth = 0, t = GT) => `${gRowsOf(t)}.map(tr => tr.children[${gIx(label, t)}]).filter(td => td && td.textContent.trim() !== '')[${nth}]`;
+const gCol = (label, t = GT) => ev(`${gRowsOf(t)}.map(tr => tr.children[${gIx(label, t)}]?.textContent.trim() ?? '')`);
+const gHeads = (t = GT) => ev(`[...${t}.querySelectorAll('thead tr:first-child th')].filter(h => !h.hasAttribute('data-gt-hidden') && getComputedStyle(h).display !== 'none').map(h => h.textContent.trim())`);
+// gStats: a column's Sum / Avg / Min / Max as the menu writes them, from the drawn cells' words (the base's case G)
+const gStats = col => ev(`(() => { const t = ${GT}, j = ${gIx(col)}; const texts = [...t.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[j]?.textContent.trim() ?? '');
+  const vals = texts.filter(x => x !== '').map(x => Number(x.replace(/[^0-9.-]/g, ''))), s = vals.reduce((a, b) => a + b, 0), f = n => (Math.round(n * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return 'Sum: ' + f(s) + ' | Avg: ' + f(s / vals.length) + ' | Min: ' + f(Math.min(...vals)) + ' | Max: ' + f(Math.max(...vals)); })()`);
+const gNum = s => { const t = String(s).replace(/,/g, '').trim(); return t !== '' && /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : null; };
+// each open menu level: its items' labels (the '▸' and an off item's words left out), the visible words of an off one
+const gmLevels = () => ev(`[...document.querySelectorAll('.tm-menu')].map(m => [...m.querySelectorAll(':scope > button')].map(b => {
+  const why = b.querySelector('.off-reason'), c = b.cloneNode(true); c.querySelectorAll('.off-reason, .tm-arrow, .tm-check').forEach(x => x.remove());
+  return { label: c.textContent.replace(/▸$/, '').trim(), off: b.getAttribute('aria-disabled') === 'true' ? (why && why.offsetParent !== null && why.textContent.trim() ? why.textContent.trim() : '(no visible words)') : null,
+    sub: b.getAttribute('aria-haspopup') === 'menu', inDialog: !!m.closest('dialog[open]') }; }))`);
+const gmClose = async () => { for (let k = 0; k < 5 && await ev(`!!document.querySelector('.tm-menu, .menu')`); k++) { await escape(); await sleep(100); } await ev(`document.querySelectorAll('.tm-menu, .menu').forEach(m => m.remove())`); };
+const gmOpen = async sel => { await gmClose(); await rightClick(sel); await sleep(300); return gmLevels(); };
+const gmBtn = (i, label) => `(() => { const box = [...document.querySelectorAll('.tm-menu')][${i}]; return box && [...box.querySelectorAll(':scope > button')].find(b => { const c = b.cloneNode(true);
+  c.querySelectorAll('.off-reason, .tm-arrow, .tm-check').forEach(x => x.remove()); const t = c.textContent.replace(/▸$/, '').trim(); return t === ${JSON.stringify(label)} || t.replace(/\\.\\.\\.$/, '') === ${JSON.stringify(label)} || ${label.endsWith(':')} && t.startsWith(${JSON.stringify(label)}); }); })()`;
+// gmPick: down the open menu by its labels (a label ending ':' matches its start): each but the last opens its submenu,
+// the last acts; false when one is not there or is off (the menu is closed then)
+const gmPick = async (...labels) => {
+  for (let i = 0; i < labels.length; i++) {
+    const hit = await ev(`(() => { const b = ${gmBtn(i, labels[i])}; if (!b || b.getAttribute('aria-disabled') === 'true') return false; b.click(); return true; })()`);
+    if (!hit) { await gmClose(); return false; }
+    await sleep(250);
+  }
+  return true;
+};
+const gmSub = async (sel, ...labels) => { await gmOpen(sel); const okk = await gmPick(...labels); const lv = okk ? await gmLevels() : []; await gmClose(); return okk ? (lv[labels.length] ?? []).map(x => x.label.replace(/\.\.\.$/, '')) : null; };
+const gmClip = () => ev(`(() => { window.__clip = []; const c = navigator.clipboard;
+  c.writeText = t => { window.__clip.push({ type: 'text/plain', t: String(t) }); return Promise.resolve(); };
+  c.write = async its => { for (const it of its) for (const ty of it.types) window.__clip.push({ type: ty, t: await (await it.getType(ty)).text() }); };
+  return true; })()`);
+const gmCopied = async (type = 'text/plain') => { for (let k = 0; k < 20; k++) { const v = await ev(`(window.__clip || []).filter(x => x.type === ${JSON.stringify(type)}).map(x => x.t).pop() ?? null`); if (v != null) return v; await sleep(150); } return null; };
+const gmCopy = async (sel, ...labels) => { await gmClip(); await gmOpen(sel); if (!await gmPick(...labels)) return null; return gmCopied(); };
+const dlClear = () => { for (const f of fs.readdirSync(dl)) fs.rmSync(path.join(dl, f), { recursive: true, force: true }); };
+const dlWait = async ext => { for (let k = 0; k < 40; k++) { const f = fs.readdirSync(dl).find(x => x.endsWith('.' + ext)); if (f) { await sleep(300); return { name: f, buf: fs.readFileSync(path.join(dl, f)), text: fs.readFileSync(path.join(dl, f), 'utf8') }; } await sleep(250); } return null; };
+const gmFile = async (sel, label, ext) => { dlClear(); await gmOpen(sel); if (!await gmPick('Export file', label)) return null; return dlWait(ext); };
+const gmExcel = async sel => { dlClear(); await gmOpen(sel); if (!await gmPick('Export Excel')) return null; return dlWait('xlsx'); };
+const gFresh = async () => { await gmClose(); await closeDialogs(); await go('#/summary'); await go('#/instances'); };
+const gFilter = async (label, v, t = GT) => { await ev(`(() => { const t = ${t}; t.querySelector('thead tr.filters')?.removeAttribute('hidden');
+  const i = t.querySelectorAll('thead tr.filters td')[${gIx(label, t)}]?.querySelector('input'); if (!i) return false; i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`); await sleep(600); };
+const gPrompt = async v => ev(`(() => { const d = [...document.querySelectorAll('dialog[open]')].pop(); const i = d?.querySelector('input'); if (!i) return null; const was = i.value;
+  if (${JSON.stringify(v)} !== null) i.value = ${JSON.stringify(v)};
+  if (i.form) i.form.requestSubmit(); else [...d.querySelectorAll('button')].find(b => /^(Filter|OK|Apply)$/.test(b.textContent.trim()))?.click(); return was; })()`);
+const gClick = (sel, mods = {}) => ev(`(() => { const x = ${sel}; if (!x) return false; x.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...${JSON.stringify(mods)} })); return true; })()`);
+const gSelectRect = async (a, b) => { await gClick(a, { ctrlKey: true }); return gClick(b, { shiftKey: true }); };
+const gClearSel = (t = GT) => gClick(`${t}.querySelector('tbody td')`);
+const gSolid = () => ev(`localStorage.setItem('pgvigil.status', 'solid')`);
+// gReset: every grid choice kept in this browser dropped (theme, status style and refresh kept), and the page loaded
+// again (gridtools keeps them in memory too)
+const gReset = async () => { await ev(`(() => { for (const k of Object.keys(localStorage)) if (!/^pgvigil\\.(theme|status|refresh)$/.test(k)) localStorage.removeItem(k); })()`); await send('Page.reload'); await sleep(1500); };
+// RFC 4180 rows (the byte-order mark left out)
+const csvRows = text => { const out = []; let row = [], cur = '', q = false; const t = text.replace(/^﻿/, '');
+  for (let i = 0; i < t.length; i++) { const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true; else if (ch === ',') { row.push(cur); cur = ''; } else if (ch === '\n') { row.push(cur); out.push(row); row = []; cur = ''; } else if (ch !== '\r') cur += ch; }
+  if (cur !== '' || row.length) { row.push(cur); out.push(row); }
+  return out; };
+const tuples = s => s.split('\n').filter(l => /^\s*,?\s*\(/.test(l)).length;
+const stem = f => f?.name.replace(/\.(pg|mssql)\.sql$|\.[a-z]+$/, '').replace(/_\d{8}-\d{4}$/, '') ?? null;   // the extension(s) and the window's end minute off
+// the hostile fixture (blocker 3): a value of each kind that breaks a careless writer, in a dropped JSON file's grid
+const GH = 'gm-hostile.json', longText = 'SELECT ' + 'x'.repeat(9993);
+const hostile = [
+  ["it's", 'o1'], ['a]b', 'o2'], ['say "hi"', 'o3'], ['trail\\', 'o4'], ['line1\nline2', 'o5'], ['tab\there', 'o6'], ['nul\u0000here', 'o7'], ['00412', 'o8'],
+  ['NaN', 'o9'], ['<script>alert(1)</script>', 'o10'], [longText, '100%'], ['\\', "');DROP TABLE t;--"], ['R & D', 'pg_stat_statements'], ['R & D dept', 'o14'],
+  // review-15 gm2 B3 and its GO question: T-SQL's backslash line continuation, and a GO line inside a value (sqlcmd)
+  ['back\\\nslash', 'o15'], ['x\nGO\ny', 'o16'],
+  // review-15 gm3 S8: sqlcmd's variable form (the file asks for -x) and its command lines inside a value (:r, !! a shell)
+  ['$(x)', 'o17'], ['a\n:r nofile.sql\n!! echo ran\nb', 'o18'],
+].map(([txt, odd], i) => ({ id: i + 1, txt, 'we]ird"name': odd, num: [1, 2.5, -3, 0, 412, 1000000, 7.25, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18][i], '': i < 6 ? null : 'e' + (i + 1) }));
+const want = hostile.map(r => ({ ...r, txt: r.txt.replace(/\u0000/g, '') }));
+const GV = `[...document.querySelectorAll('dialog[open] table.grid')].pop()`;
+const dropHostile = async (rows = hostile, name = GH) => { await closeDialogs(); await go('#/summary');
+  await ev(`(() => { const dt = new DataTransfer(); dt.items.add(new File([${JSON.stringify(JSON.stringify(rows))}], ${JSON.stringify(name)})); document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); })()`);
+  for (let k = 0; k < 40; k++) { await sleep(250); if (await ev(`!!${GV}`)) break; } };
+
+await guard('G-menu', async () => {
+  await gSolid(); await send('Page.reload'); await sleep(1500); await gFresh();
+  const n = (await gCol('sessions')).length, cols = (await gHeads()).length;
+  const L = await gmOpen(gCell('sessions'));
+  await shot('grid-cell-menu-light');   // S's picture (the retired case G wrote it)
+  const top = (L[0] ?? []).map(x => x.label);
+  const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row numbers', 'Data bar', 'All filters', 'Clear filters'];
+  const at = wantTop.map(w => top.indexOf(w)), ordered = at.every((x, i) => x >= 0 && (i === 0 || x > at[i - 1]));
+  const fv = top.findIndex(x => x.startsWith('Filter by value')), xv = top.findIndex(x => x.startsWith('Exclude value'));
+  const subsOk = ['Copy', 'Export file', 'Transpose', 'Select', 'Data bar', 'All filters'].every(s => L[0]?.find(x => x.label === s)?.sub);
+  const clear = L[0]?.find(x => x.label === 'Clear filters');
+  const tail = top.slice(-2);
+  const W = { Copy: ['Grid', 'Column', 'Cell', 'Row', 'Selected', 'As Markdown', 'As JSON'], 'Copy > As Markdown': ['Standard', 'Prettified'], 'Copy > As JSON': ['Compact', 'Prettified'],
+    'Export file': ['CSV', 'JSON', 'Markdown', 'HTML', 'SQL (INSERT) for PostgreSQL', 'SQL (INSERT) for SQL Server'], Transpose: ['This row', 'Selected rows', 'Grid'], Select: ['Row', 'Column', 'All'],
+    'Data bar': ['Behind value', 'Under value', 'Traffic light (higher is worse)', 'Traffic light (higher is better)', 'Remove'], 'All filters': ['=', '<>', '>', '<', '>=', '<='] };
+  const got = {};
+  for (const k of Object.keys(W)) got[k] = await gmSub(gCell('sessions'), ...k.split(' > '));
+  const txt = await gmSub(gCell('platform'), 'All filters'), txtWant = ['Like', 'Not like', '=', '<>', '>', '<', '>=', '<='];
+  const bad = Object.keys(W).filter(k => JSON.stringify(got[k]) !== JSON.stringify(W[k])).map(k => `${k}: ${JSON.stringify(got[k])}`);
+  if (JSON.stringify(txt) !== JSON.stringify(txtWant)) bad.push(`platform's All filters: ${JSON.stringify(txt)}`);
+  const stats = '[sessions] ' + await gStats('sessions');
+  check('G-menu', ordered && fv > at[7] && xv > fv && xv < at[8] && subsOk && clear?.off === 'no filter is set'
+    && new RegExp(`^Rows: ${n} \\| Cols: ${cols}$`).test(tail[0] ?? '') && tail[1] === stats && bad.length === 0,
+    `first level: ${top.join(' / ') || '(no .tm-menu)'}; order of ${wantTop.join(', ')}: ${at.join(',')}; Filter / Exclude at ${fv} / ${xv}; Clear filters ${clear ? (clear.off ?? 'ON') : 'absent'}; last two '${tail.join("' / '")}' (want the line '${stats}'); submenus off: ${bad.join('; ') || 'none'}`);
+});
+
+await guard('G-select', async () => {
+  // Select > Column: every drawn cell, the tools' line says so, the menu's last line the selection's statistics; Select >
+  // Row: the row's shown cells; a version cell (text that looks like a number): no Sum line, the menu ends 'Rows: ...'
+  await gFresh();
+  const ses = await gCol('sessions'), n = ses.length, cols = (await gHeads()).length, nums = ses.filter(x => gNum(x) !== null).length;
+  await gmOpen(gCell('sessions')); const c = await gmPick('Select', 'Column'); await sleep(300);
+  const sel = await ev(`({ n: ${GT}.querySelectorAll('tbody td.gt-sel').length, line: ${GT}.closest('.grid-box')?.querySelector('.gt-stats')?.textContent ?? '' })`);
+  const L = await gmOpen(gCell('sessions')), last = (L[0] ?? []).map(x => x.label).pop() ?? ''; await gmClose();
+  const selWant = `Selected Cells: ${n} (${nums} numeric) | ` + await gStats('sessions'); await gClearSel();
+  await gmOpen(`${gRows}[1].children[1]`); const r = await gmPick('Select', 'Row'); await sleep(300);
+  const row = await ev(`({ n: ${GT}.querySelectorAll('tbody td.gt-sel').length, rows: new Set([...${GT}.querySelectorAll('tbody td.gt-sel')].map(td => td.parentElement)).size })`);
+  await gClearSel();
+  const V = await gmOpen(`${gRows}.map(tr => tr.children[${gIx('version')}]).find(td => /^\\d+\\.\\d+$/.test(td.textContent.trim()))`), vlast = (V[0] ?? []).map(x => x.label).pop() ?? ''; await gmClose();
+  check('G-select', c && sel.n === n && /selected/.test(sel.line) && last === selWant && r && row.n === cols && row.rows === 1 && /^Rows: /.test(vlast),
+    `Select > Column ${c}: ${sel.n} cells of ${n}, '${sel.line}', the menu's last '${last}' (want '${selWant}'); Select > Row ${r}: ${row.n} cells in ${row.rows} row (${cols} columns); a version cell's last line '${vlast}'`);
+});
+
+await guard('G-header', async () => {
+  await gFresh();
+  const th = `${GT}.querySelectorAll('thead tr:first-child th')[${await ev(gIx('sessions'))}]`;
+  const H = await gmOpen(th), top = (H[0] ?? []).map(x => x.label);
+  const copy = await gmSub(th, 'Copy');
+  const wantIn = ['Copy', 'Export Excel', 'Export file', 'Columns...', 'Row numbers', 'Hide column sessions', 'Group by sessions', 'Data bar', 'Clear filters'];
+  const missing = wantIn.filter(w => !top.includes(w));
+  check('G-header', missing.length === 0 && top.some(x => x.startsWith('Freeze the columns up to sessions')) && top.some(x => /^Rows: /.test(x)) && /^\[sessions\] Sum: /.test(top[top.length - 1] ?? '')
+    && ['Grid', 'Column', 'Selected', 'As Markdown', 'As JSON'].every(x => copy?.includes(x)) && !copy?.includes('Cell') && !copy?.includes('Row'),
+    `sessions' header menu: ${top.join(' / ') || '(no .tm-menu)'}${missing.length ? '; missing ' + missing.join(', ') : ''}; its Copy: ${JSON.stringify(copy)}`);
+});
+
+await guard('G-copy', async () => {
+  await gFresh();
+  const hs = await gHeads(), ses = await gCol('sessions'), n = ses.length, td = gCell('sessions'), j = await ev(gIx('sessions'));
+  const cell = await gmCopy(td, 'Copy', 'Cell'), want0 = await ev(`${td}.textContent.trim()`);
+  const rowTsv = await ev(`[...${td}.parentElement.children].filter(c => getComputedStyle(c).display !== 'none').map(c => c.textContent.trim()).join('\\t')`);
+  const row = await gmCopy(td, 'Copy', 'Row');
+  const col = await gmCopy(td, 'Copy', 'Column');
+  await gSelectRect(`${gRows}[0].children[${j}]`, `${gRows}[1].children[${j + 1}]`);
+  const rect = await ev(`[0, 1].map(r => [${j}, ${j + 1}].map(c => ${gRows}[r].children[c].textContent.trim()).join('\\t')).join('\\n')`);
+  await gmClip(); await gmOpen(td); const selOk = await gmPick('Copy', 'Selected'); const sel = selOk ? await gmCopied() : null, selHtml = selOk ? await gmCopied('text/html') : null; await gClearSel();
+  const grid = await gmCopy(td, 'Copy', 'Grid');
+  const mdS = await gmCopy(td, 'Copy', 'As Markdown', 'Standard'), mdP = await gmCopy(td, 'Copy', 'As Markdown', 'Prettified');
+  const jsC = await gmCopy(td, 'Copy', 'As JSON', 'Compact'), jsP = await gmCopy(td, 'Copy', 'As JSON', 'Prettified');
+  const lines = s => (s ?? '').replace(/\r/g, '').split('\n');
+  const parse = s => { try { return JSON.parse(s ?? ''); } catch { return null; } };
+  const jc = parse(jsC), jp = parse(jsP);
+  // the JSON's raw values: sessions a number or null (an empty cell), 'longest active' the seconds its words say
+  const secsOf = s => { const m = /^(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:([\d.]+)\s*s)?$/.exec(s.trim()); return s.trim() && m ? (+(m[1] ?? 0)) * 86400 + (+(m[2] ?? 0)) * 3600 + (+(m[3] ?? 0)) * 60 + (+(m[4] ?? 0)) : null; };
+  const longest = await gCol('longest active');
+  // (a duration whose words do not parse here is not judged)
+  const typed = Array.isArray(jc) && jc.every((o, i) => (ses[i] === '' ? o.sessions === null : o.sessions === gNum(ses[i]))
+    && (longest[i] === '' ? o['longest active'] === null : secsOf(longest[i]) === null || Math.abs(o['longest active'] - secsOf(longest[i])) <= (/d/.test(longest[i]) ? 3600 : /h/.test(longest[i]) ? 60 : 1)));
+  const mdLines = lines(mdP).filter(Boolean), widths = new Set(mdLines.map(l => l.length));
+  const r = {
+    cell: cell === want0, row: lines(row).pop() === rowTsv, column: JSON.stringify(lines(col)) === JSON.stringify(ses),
+    selected: sel === rect && /<table/i.test(selHtml ?? ''), grid: lines(grid)[0] === hs.join('\t') && lines(grid).length === n + 1,
+    mdStandard: lines(mdS).filter(Boolean).length === n + 2 && /^\|( *:?-{3,}:? *\|)+$/.test(lines(mdS)[1] ?? ''), mdPrettified: mdLines.length === n + 2 && widths.size === 1,
+    jsonCompact: Array.isArray(jc) && jc.length === n && JSON.stringify(Object.keys(jc[0] ?? {})) === JSON.stringify(hs) && typed && !/\n/.test(jsC ?? ''),
+    jsonPrettified: JSON.stringify(jp) === JSON.stringify(jc) && /\n/.test(jsP ?? ''),
+  };
+  check('G-copy', Object.values(r).every(Boolean), Object.entries(r).map(([k, v]) => `${k} ${v ? 'ok' : 'NO'}`).join(', ') + `; ${n} rows, ${hs.length} columns; the cell '${cell}' (want '${want0}'); the selection '${(sel ?? '').replace(/\t/g, '→').replace(/\n/g, '⏎')}' (want '${rect.replace(/\t/g, '→').replace(/\n/g, '⏎')}')`);
+  // a percent: the first root page whose grid shows one, its JSON value the shown number (12.5, not 0.125)
+  let pct = null;
+  for (const h of ['#/drives', '#/storage', '#/disks', '#/dbspace', '#/growth', '#/backups']) {
+    await go(h);
+    const hit = await ev(`(() => { const t = document.querySelector('main table.grid'); if (!t) return null; const rows = ${gRowsOf('t')};
+      for (const [i, tr] of rows.entries()) for (const [k, td] of [...tr.children].entries()) if (/^-?[\\d.,]+ %$/.test(td.textContent.trim())) return { i, head: t.querySelectorAll('thead tr:first-child th')[k].textContent.trim(), text: td.textContent.trim() };
+      return null; })()`);
+    if (hit) { const js = parse(await gmCopy(`document.querySelector('main table.grid tbody td')`, 'Copy', 'As JSON', 'Compact')); pct = { h, ...hit, got: js?.[hit.i]?.[hit.head] }; break; }
+  }
+  check('G-copy JSON values', !!pct && typeof pct.got === 'number' && Math.abs(pct.got - Number(pct.text.replace(/[ ,%]/g, ''))) <= 0.005, pct ? `${pct.h} '${pct.head}' row ${pct.i} shows '${pct.text}', its JSON ${JSON.stringify(pct.got)}` : 'no grid with a percent on the pages tried');
+  // an emptied grid: every Copy item off with 'No data to copy'
+  await gFresh(); await gFilter('platform', 'no-such-platform-xyz');
+  await gmOpen(`${GT}.querySelector('thead tr:first-child th')`); await gmPick('Copy'); const sub = (await gmLevels())[1] ?? []; await gmClose();
+  check('G-copy empty', (await gCol('sessions')).length === 0 && sub.length > 0 && sub.every(x => x.off === 'No data to copy'),
+    `${(await gCol('sessions')).length} rows shown; Copy's items: ${sub.map(x => `${x.label} ${x.off ?? 'ON'}`).join(' / ') || '(no Copy submenu)'}`);
+});
+
+await guard('G-file', async () => {
+  await gFresh();
+  const n = (await gCol('sessions')).length, hs = await gHeads(), td = gCell('sessions');
+  const xl = await gmExcel(td);
+  const f = {};
+  for (const [label, ext] of [['CSV', 'csv'], ['JSON', 'json'], ['Markdown', 'md'], ['HTML', 'html'], ['SQL (INSERT) for PostgreSQL', 'pg.sql'], ['SQL (INSERT) for SQL Server', 'mssql.sql']]) f[label] = await gmFile(td, label, ext);
+  const named = !!xl && Object.values(f).every(x => x && stem(x) === stem(xl));
+  const csv = csvRows(f.CSV?.text ?? '');
+  let js = null; try { js = JSON.parse(f.JSON?.text ?? ''); } catch { /* no file, or not JSON */ }
+  const md = (f.Markdown?.text ?? '').replace(/\r/g, '').split('\n').filter(Boolean);
+  const html = f.HTML?.text ?? '', pg = f['SQL (INSERT) for PostgreSQL']?.text ?? '', ms = f['SQL (INSERT) for SQL Server']?.text ?? '';
+  const bom = x => !!x && x.buf[0] === 0xef && x.buf[1] === 0xbb && x.buf[2] === 0xbf;
+  const firstStmt = s => s.replace(/^﻿/, '').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('--')) ?? '';
+  const r = {
+    named, csv: csv.length === n + 1 && JSON.stringify(csv[0]) === JSON.stringify(hs), json: Array.isArray(js) && js.length === n && JSON.stringify(Object.keys(js[0] ?? {})) === JSON.stringify(hs),
+    markdown: md.length === n + 2, html: /<meta charset="utf-8">/i.test(html) && /<style[\s\S]*background[\s\S]*<\/style>/i.test(html) && /<td class="[^"]+"/.test(html) && !/<td[^>]*style=/i.test(html),
+    sqlPg: !!f['SQL (INSERT) for PostgreSQL'] && !bom(f['SQL (INSERT) for PostgreSQL']) && /^SET standard_conforming_strings = on;$/i.test(firstStmt(pg)) && /SET client_encoding = 'UTF8';/.test(pg) && /DROP TABLE IF EXISTS pg_temp\.pgvigil_grid;/.test(pg)
+      && (pg.match(/CREATE TEMP(ORARY)? TABLE/gi) ?? []).length === 1 && /INSERT INTO pg_temp\.pgvigil_grid/.test(pg) && tuples(pg) === n && !/\bN'/.test(pg),
+    sqlMs: bom(f['SQL (INSERT) for SQL Server']) && /IF OBJECT_ID\('tempdb\.\.#pgvigil_grid'\) IS NOT NULL DROP TABLE #pgvigil_grid/.test(ms) && /\[sessions\]/.test(ms) && /N'/.test(ms) && !ms.split('\n').filter(l => /^\s*,?\s*\(/.test(l)).some(l => /[(,]\s*'/.test(l)) && tuples(ms) === n,
+  };
+  check('G-file', Object.values(r).every(Boolean), Object.entries(r).map(([k, v]) => `${k} ${v ? 'ok' : 'NO'}`).join(', ')
+    + `; Excel ${xl?.name ?? 'none'}; files: ${Object.entries(f).map(([k, v]) => `${k} ${v ? v.name + ' ' + v.buf.length + ' B' : 'none'}`).join(' | ')}; ${n} rows; csv ${csv.length} rows, md ${md.length} lines, pg tuples ${tuples(pg)}, ms tuples ${tuples(ms)}`);
+});
+
+await guard('G-hidden', async () => {
+  // a hidden column is absent from every copy and every file
+  await gFresh();
+  await gmOpen(gCell('platform')); const hid = await gmPick('Hide column platform'); await sleep(300);
+  const td = gCell('sessions'), out = {};
+  out.grid = await gmCopy(td, 'Copy', 'Grid'); out.md = await gmCopy(td, 'Copy', 'As Markdown', 'Standard'); out.json = await gmCopy(td, 'Copy', 'As JSON', 'Compact');
+  for (const [label, ext] of [['CSV', 'csv'], ['JSON', 'json'], ['Markdown', 'md'], ['HTML', 'html'], ['SQL (INSERT) for PostgreSQL', 'pg.sql'], ['SQL (INSERT) for SQL Server', 'mssql.sql']]) out[label] = (await gmFile(td, label, ext))?.text ?? null;
+  const holds = Object.entries(out).filter(([, v]) => v === null || /platform/.test(v)).map(([k, v]) => `${k} ${v === null ? 'none' : 'holds platform'}`);
+  await gReset();
+  check('G-hidden', hid && holds.length === 0, `Hide column platform ${hid}; ${holds.join(', ') || 'no form holds platform'}`);
+});
+
+await guard('G-order', async () => {
+  await gFresh();
+  const j = await ev(gIx('sessions'));
+  for (let k = 0; k < 2; k++) { await ev(`${GT}.querySelectorAll('thead tr:first-child th')[${j}].click()`); await sleep(300); }   // twice: descending
+  await gFilter('sessions', '>0');
+  const shown = await gCol('sessions'), nums = shown.map(gNum);
+  const desc = nums.every((x, i) => i === 0 || x === null || nums[i - 1] === null || nums[i - 1] >= x);
+  const col = await gmCopy(gCell('sessions'), 'Copy', 'Column');
+  const csv = await gmFile(gCell('sessions'), 'CSV', 'csv');
+  const rows = csvRows(csv?.text ?? ''), h = rows[0] ?? [];
+  const plain = x => String(x).replace(/,/g, '');
+  const csvCol = rows.slice(1).map(r => r[h.indexOf('sessions')] ?? '');
+  check('G-order', desc && shown.length > 0 && (col ?? '').split('\n').join('|') === shown.join('|') && csvCol.map(plain).join('|') === shown.map(plain).join('|'),
+    `sorted descending ${desc}, ${shown.length} rows '>0': ${shown.join(',')}; Copy Column: ${(col ?? 'none').split('\n').join(',')}; the CSV's sessions: ${csvCol.join(',') || 'none'}`);
+});
+
+await guard('G-rownum', async () => {
+  await gFresh();
+  const n = (await gCol('sessions')).length, cells0 = await ev(`${gRows}[0].children.length`), heads0 = (await gHeads()).length;
+  await gmOpen(gCell('sessions')); const on = await gmPick('Row numbers'); await sleep(300);
+  // numbers drawn without a DOM column: a CSS counter on the row (no cell added)
+  const look = () => ev(`(() => { const tr = ${gRows}[0]; if (!tr) return null; const xs = [tr, ...tr.children];
+    return { cells: tr.children.length, counter: xs.some(x => /counter\\(/.test(getComputedStyle(x, '::before').content)), heads: [...${GT}.querySelectorAll('thead tr:first-child th')].length }; })()`);
+  const a = await look();
+  await send('Page.reload'); await sleep(1500); await go('#/instances');
+  const b = await look();
+  // with the numbers on: Hide, Freeze and Filter reach the column they name
+  await gmOpen(gCell('platform')); await gmPick('Hide column platform'); await sleep(300);
+  const hiddenHead = await ev(`[...${GT}.querySelectorAll('thead tr:first-child th')].filter(h => h.hasAttribute('data-gt-hidden')).map(h => h.textContent.trim()).join(',')`);
+  await gmOpen(gCell('sessions')); const fz = await ev(`(() => { const b = [...document.querySelectorAll('.tm-menu button')].find(b => b.textContent.startsWith('Freeze the columns up to sessions')); b?.click(); return !!b; })()`); await sleep(300);
+  // the frozen columns: the table's gt-f<n> classes (gridtools apply) - every header cell is sticky (the header row stays in
+  // view), so 'position: sticky' cannot tell a frozen one (b3: it named the last column)
+  const frozenLast = await ev(`(() => { const t = ${GT}, hs = [...t.querySelectorAll('thead tr:first-child th')]; const fs = [...t.classList].map(c => /^gt-f(\\d+)$/.exec(c)).filter(Boolean).map(m => Number(m[1])); return fs.length ? hs[Math.max(...fs) - 1]?.textContent.trim() ?? '' : ''; })()`);
+  const v = await ev(`${gCell('sessions')}.textContent.trim()`), eq = (await gCol('sessions')).filter(x => x === v).length;
+  await gmOpen(gCell('sessions')); await gmPick('Filter by value:'); await sleep(500); const fv = await gCol('sessions');
+  const grid = await gmCopy(gCell('sessions'), 'Copy', 'Grid');
+  const csv = await gmFile(gCell('sessions'), 'CSV', 'csv');
+  await gmOpen(gCell('sessions')); const off = await gmPick('Row numbers'); await sleep(300);
+  const c = await look();
+  await gReset();
+  check('G-rownum', on && !!a && a.counter && a.cells === cells0 && a.heads === heads0 && !!b && b.counter && hiddenHead === 'platform' && fz && frozenLast === 'sessions' && fv.length === eq && fv.every(x => x === v)
+    && !!grid && !/^#\t/.test(grid) && !!csv && (csvRows(csv.text)[0] ?? ['#'])[0] !== '#' && off && !!c && !c.counter,
+    `on ${on}: ${JSON.stringify(a)} (cells ${cells0}, heads ${heads0} before); after a reload ${JSON.stringify(b)}; hidden '${hiddenHead}'; Freeze ${fz} -> last frozen '${frozenLast}'; Filter by value '${v}': ${fv.length} rows (${eq} by hand); Copy Grid starts '${(grid ?? 'none').slice(0, 20)}'; the CSV starts '${(csv?.text ?? 'none').slice(0, 20)}'; off ${off}: ${JSON.stringify(c)}`);
+});
+
+await guard('G-transpose', async () => {
+  await gFresh();
+  const hs = await gHeads(), td = gCell('sessions');
+  const dlg = () => ev(`(() => { const d = [...document.querySelectorAll('dialog[open]')].pop(); if (!d) return null; const t = d.querySelector('table');
+    return { title: d.querySelector('h2, h3, legend, [role=heading]')?.textContent.trim() ?? d.getAttribute('aria-label') ?? '', rows: t ? [...t.querySelectorAll('tbody tr')].map(tr => [...tr.children].map(c => c.textContent.trim())) : [], text: d.textContent,
+      copy: [...d.querySelectorAll('button')].some(b => /^Copy/.test(b.textContent.trim())) }; })()`);
+  await gmOpen(td); await gmPick('Transpose', 'This row'); await sleep(400); const one = await dlg(); await closeDialogs();
+  await gSelectRect(`${gRows}[0].children[1]`, `${gRows}[1].children[1]`);
+  await gmOpen(td); await gmPick('Transpose', 'Selected rows'); await sleep(400); const two = await dlg(); await closeDialogs(); await gClearSel();
+  const rowOk = !!one && /^Transposed/.test(one.title) && one.rows.length === hs.length && one.rows.every((r, i) => r[0] === hs[i] && r.length === 2) && one.copy;
+  const twoOk = !!two && two.rows.length === hs.length && two.rows.every(r => r.length === 3);
+  // Grid on a grid over 50 rows: the cap with its reason in the dialog; the dialog's Copy takes every row
+  let big = null;
+  for (const h of ['#/collectiondates', '#/findings', '#/checks', '#/extensions', '#/roles', '#/indexes', '#/versions']) {
+    await go(h); const n = await ev(`document.querySelector('main table.grid') ? Number(${GT}.dataset.rows ?? ${gRows}.length) : 0`);
+    if (n > 50) {
+      await gmOpen(`${GT}.querySelector('tbody td')`); await gmPick('Transpose', 'Grid'); await sleep(500); const d = await dlg();
+      await gmClip(); await ev(`[...[...document.querySelectorAll('dialog[open]')].pop()?.querySelectorAll('button') ?? []].find(b => /^Copy/.test(b.textContent.trim()))?.click()`);
+      const copied = await gmCopied(); big = { h, n, d, cols: (copied ?? '').split('\n')[0]?.split('\t').length ?? 0 }; await closeDialogs(); break;
+    }
+  }
+  const capOk = !!big?.d && /\b50\b/.test(big.d.text) && big.d.rows.length > 0 && big.d.rows.every(r => r.length === 51) && big.cols === big.n + 1;
+  check('G-transpose', rowOk && twoOk && capOk, `This row: ${one ? `'${one.title}', ${one.rows.length} rows (want ${hs.length}), Copy ${one.copy}` : 'no dialog'}; Selected rows (2): ${two ? `${two.rows.length} rows of ${[...new Set(two.rows.map(r => r.length))].join('/')} cells` : 'no dialog'}; `
+    + `Grid: ${big ? `${big.h} ${big.n} rows -> ${big.d ? `${big.d.rows.length} rows of ${[...new Set(big.d.rows.map(r => r.length))].join('/')} cells, '50' said ${/\b50\b/.test(big.d.text)}, its Copy ${big.cols} columns (want ${big.n + 1})` : 'no dialog'}` : 'no grid over 50 rows on the pages tried'}`);
+});
+
+await guard('G-filters', async () => {
+  await gFresh();
+  const ses0 = await gCol('sessions'), plat0 = await gCol('platform'), n = ses0.length;
+  // the value: one that two or more rows share (Exclude value then leaves a row), else the first row's; the menus open on
+  // a cell holding it, and Clear filters on the header (b3: the AND left no row, so no first row's cell was there)
+  const shared = ses0.find((s, i) => s !== '' && ses0.indexOf(s) !== i);
+  const v = shared ?? await ev(`${gCell('sessions')}.textContent.trim()`), x = gNum(v);
+  const vCell = `${gRows}.map(tr => tr.children[${gIx('sessions')}]).find(td => td.textContent.trim() === ${JSON.stringify(v)})`;
+  const head0 = `${GT}.querySelector('thead tr:first-child th')`;
+  const menuAct = start => ev(`(() => { const b = [...document.querySelectorAll('.tm-menu button')].find(b => b.textContent.startsWith(${JSON.stringify(start)}) && b.getAttribute('aria-disabled') !== 'true'); b?.click(); return !!b; })()`);
+  // Filter by value on sessions, then Exclude value on the platform of the first row it leaves: both hold (AND)
+  await gmOpen(vCell); const f1 = await menuAct('Filter by value'); await sleep(500);
+  const ex = await ev(`${gCell('platform')}?.textContent.trim() ?? ''`);
+  await gmOpen(gCell('platform')); const x1 = await menuAct('Exclude value'); await sleep(500);
+  const both = await gCol('sessions'), bothP = await gCol('platform'), wantBoth = ses0.filter((s, i) => gNum(s) === x && plat0[i] !== ex).length;
+  await gmOpen(head0); await gmPick('Clear filters'); await sleep(500);
+  const back = (await gCol('sessions')).length;
+  // All filters: each operator from a prompt holding the clicked value, against the count by hand (number cells only)
+  const ops = { '=': a => a === x, '<>': a => a !== x, '>': a => a > x, '<': a => a < x, '>=': a => a >= x, '<=': a => a <= x };
+  const opRes = [];
+  for (const [op, test] of Object.entries(ops)) {
+    await gmOpen(vCell);
+    const okk = await gmPick('All filters', op); await sleep(300); const was = okk ? await gPrompt(null) : null; await sleep(500);
+    const got = (await gCol('sessions')).length, want = ses0.filter(s => gNum(s) !== null && test(gNum(s))).length;
+    opRes.push(`${op} ${v}: ${got}/${want}${was === v ? '' : ` (prompt held '${was}')`}`);
+    if (!okk || got !== want || was !== v) opRes.push('BAD');
+    await gmOpen(`${GT}.querySelector('thead tr:first-child th')`); await gmPick('Clear filters'); await sleep(400);
+  }
+  for (const [op, test] of [['Like', s => /^a/i.test(s)], ['Not like', s => !/^a/i.test(s)]]) {
+    await gmOpen(gCell('platform')); const okk = await gmPick('All filters', op); await sleep(300); await gPrompt('a%'); await sleep(500);
+    const got = (await gCol('platform')).length, want = plat0.filter(test).length;
+    opRes.push(`${op} 'a%': ${got}/${want}`); if (!okk || got !== want) opRes.push('BAD');
+    await gmOpen(`${GT}.querySelector('thead tr:first-child th')`); await gmPick('Clear filters'); await sleep(400);
+  }
+  const L = await gmOpen(gCell('sessions')); const clear = (L[0] ?? []).find(b => b.label === 'Clear filters'); await gmClose();
+  check('G-filters', f1 && x1 && both.length === wantBoth && both.every(s => gNum(s) === x) && bothP.every(q => q !== ex) && back === n && !opRes.includes('BAD') && clear?.off === 'no filter is set',
+    `sessions = '${v}' and platform not '${ex}': ${both.length} rows (${wantBoth} by hand, of ${n}); cleared ${back}; ${opRes.filter(r => r !== 'BAD').join('; ')}; with none set Clear filters ${clear ? (clear.off ?? 'ON') : 'absent'}`);
+  // the quoting rule (SF4) on the fixture's grid: a menu-made value with ' & ' inside is one value; a typed 'R & D' keeps
+  // today's meaning (contains); Like's prefill escapes _ and %
+  await dropHostile();
+  const txtCell = val => `${gRowsOf(GV)}.map(tr => tr.children[${gIx('txt', GV)}]).find(td => td.textContent.trim() === ${JSON.stringify(val)})`;
+  await gmOpen(txtCell('R & D')); const fr = await menuAct('Filter by value'); await sleep(500); const amp = await gCol('txt', GV);
+  await gmOpen(`${GV}.querySelector('thead tr:first-child th')`); await gmPick('Clear filters'); await sleep(400);
+  await gFilter('txt', 'R & D', GV); const typedAmp = await gCol('txt', GV); await gFilter('txt', '', GV);
+  const oddCell = `${gRowsOf(GV)}.map(tr => tr.children[${gIx('we]ird"name', GV)}]).find(td => td.textContent.trim() === 'pg_stat_statements')`;
+  await gmOpen(oddCell); const lk = await gmPick('All filters', 'Like'); await sleep(300); const pre = lk ? await gPrompt(null) : null; await sleep(400);
+  const liked = await gCol('we]ird"name', GV);
+  await closeDialogs();
+  check('G-filters quoting', fr && JSON.stringify(amp) === JSON.stringify(['R & D']) && JSON.stringify(typedAmp) === JSON.stringify(['R & D', 'R & D dept']) && lk && pre === 'pg\\_stat\\_statements' && JSON.stringify(liked) === JSON.stringify(['pg_stat_statements']),
+    `Filter by value 'R & D': ${JSON.stringify(amp)}; typed 'R & D': ${JSON.stringify(typedAmp)}; Like on 'pg_stat_statements': prefill '${pre}', ${JSON.stringify(liked)}`);
+});
+
+await guard('G-in', async () => {
+  // IN / NOT IN from a selection inside one column: three name cells
+  await gFresh();
+  const names = await gCol('name'), n = names.length, j = await ev(gIx('name'));
+  for (const r of [0, 1, 2]) await gClick(`${gRows}[${r}].children[${j}]`, { ctrlKey: true });
+  const three = names.slice(0, 3);
+  await gmOpen(`${gRows}[0].children[${j}]`); const inn = await gmPick('Filter by these values'); await sleep(500);
+  const a = await gCol('name');
+  await gmOpen(`${GT}.querySelector('thead tr:first-child th')`); await gmPick('Clear filters'); await sleep(400);
+  for (const r of [0, 1, 2]) await gClick(`${gRows}[${r}].children[${j}]`, { ctrlKey: true });
+  await gmOpen(`${gRows}[0].children[${j}]`); const out = await gmPick('Exclude these values'); await sleep(500);
+  const b = await gCol('name');
+  await gmOpen(`${GT}.querySelector('thead tr:first-child th')`); await gmPick('Clear filters'); await sleep(400); await gClearSel();
+  check('G-in', inn && JSON.stringify([...a].sort()) === JSON.stringify([...three].sort()) && out && b.length === n - 3 && b.every(x => !three.includes(x)),
+    `the three: ${three.join(', ')}; Filter by these values ${inn}: ${a.length} rows (${a.slice(0, 4).join(', ')}); Exclude these values ${out}: ${b.length} of ${n}`);
+});
+
+await guard('G-bars', async () => {
+  await gFresh();
+  const ses = (await gCol('sessions')).map(gNum), hi = Math.max(...ses.filter(x => x !== null)), lo = Math.min(...ses.filter(x => x !== null));
+  const cellAt = val => `${gRows}.map(tr => tr.children[${gIx('sessions')}]).find(td => ${JSON.stringify(String(val))} === td.textContent.trim().replace(/,/g, ''))`;
+  const look = val => ev(`(() => { const td = ${cellAt(val)}; if (!td) return null; const s = getComputedStyle(td); return { cls: td.className, bg: s.backgroundColor, img: s.backgroundImage, size: s.backgroundSize, pos: s.backgroundPosition }; })()`);
+  const tableOf = s => (/<table[\s\S]*<\/table>/i.exec(s ?? '')?.[0] ?? '');
+  const pick = async (...labels) => { await gmOpen(cellAt(hi)); return gmPick('Data bar', ...labels); };
+  const htmlBefore = (await gmFile(gCell('sessions'), 'HTML', 'html'))?.text ?? null;
+  const under = await pick('Under value'); await sleep(300); const u = await look(hi);
+  const underOk = under && !!u && /gradient/.test(u.img) && /100%$/.test(u.pos) && !/^auto$|100% 100%/.test(u.size);
+  const worse = await pick('Traffic light (higher is worse)'); await sleep(300); const wHi = await look(hi), wLo = await look(lo);
+  const htmlWorse = (await gmFile(gCell('sessions'), 'HTML', 'html'))?.text ?? null;
+  const better = await pick('Traffic light (higher is better)'); await sleep(300); const bHi = await look(hi), bLo = await look(lo);
+  // after the reload the column's highest cell is found again: the live demo may have stored a newer sample (b3: the
+  // cell holding the old highest value was gone)
+  await send('Page.reload'); await sleep(1500); await go('#/instances');
+  const ses2 = (await gCol('sessions')).map(gNum), hi2 = Math.max(...ses2.filter(x => x !== null)), kept = await look(hi2);
+  await gmOpen(cellAt(hi2)); const removed = await gmPick('Data bar', 'Remove'); await sleep(300); const gone = await look(hi2);
+  const status = c => /\b(ok|warn|crit|status)\b/.test(c?.cls ?? '');
+  // traffic lights: their own classes (never a status's), worse / better the two colours swapped, not in the files
+  check('G-bars', underOk && worse && !!wHi && !!wLo && wHi.bg !== wLo.bg && !status(wHi) && !status(wLo) && better && bHi?.bg === wLo.bg && bLo?.bg === wHi.bg && kept?.bg === bHi?.bg
+    && !!htmlBefore && tableOf(htmlBefore) === tableOf(htmlWorse) && removed && gone?.bg !== bHi?.bg && !/gradient/.test(gone?.img ?? ''),
+    `Under value ${under}: ${JSON.stringify(u)}; worse ${worse}: ${hi} ${wHi?.bg} '${wHi?.cls}' / ${lo} ${wLo?.bg}; better ${better}: ${bHi?.bg} / ${bLo?.bg}; after a reload (highest ${hi2}) ${kept?.bg}; the HTML file's table the same with the lights on ${!!htmlBefore && tableOf(htmlBefore) === tableOf(htmlWorse)}; Remove ${removed}: ${gone?.bg} ${gone?.img}`);
+});
+
+await guard('G-keys', async () => {
+  await gFresh();
+  // the focus on the last control before the grid (never the grid's own box), then Tab: into the grid (one tab stop)
+  await ev(`(() => { const t = ${GT}; const f = [...document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')].filter(e => e.tabIndex >= 0 && !t.contains(e) && !e.contains(t) && (e.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) && e.offsetParent !== null);
+    (f[f.length - 1] ?? document.body).focus(); })()`);
+  await key('Tab', 'Tab', 9);
+  const into = await ev(`(() => { const a = document.activeElement, t = ${GT}; return { inGrid: t.contains(a) || a === t, tag: a?.tagName, role: t.getAttribute('role'), rowcount: t.getAttribute('aria-rowcount'), n: ${gRows}.length,
+    stops: [...t.querySelectorAll('tbody a[href], tbody button, tbody input, tbody [tabindex]')].filter(e => e.tabIndex >= 0 && e !== a).length }; })()`);
+  await key('ArrowDown', 'ArrowDown', 40); await key('ArrowRight', 'ArrowRight', 39);
+  const at = await ev(`(() => { const a = document.activeElement; return a?.tagName === 'TD' ? { r: ${gRows}.indexOf(a.parentElement), c: [...a.parentElement.children].indexOf(a) } : { tag: a?.tagName }; })()`);
+  await key('F10', 'F10', 121, 8);
+  const m = await ev(`(() => { const box = document.querySelector('.tm-menu'), a = document.activeElement, td = ${typeof at.c === 'number' ? `${gRows}[${at.r}].children[${at.c}]` : 'null'};
+    const b = box?.getBoundingClientRect(), c = td?.getBoundingClientRect();
+    return { open: !!box, focus: box?.contains(a) ? a.textContent.replace(/▸$/, '').trim() : a?.tagName, atCell: !!(b && c && b.left >= c.left - 8 && b.left <= c.right + 8 && b.top >= c.top - 8 && b.top <= c.bottom + 40) }; })()`);
+  await gmClip();
+  // Copy > Column: Right into Copy (Grid first), Down to Column, Enter
+  await key('ArrowRight', 'ArrowRight', 39); await key('ArrowDown', 'ArrowDown', 40); await key('Enter', 'Enter', 13, 0, '\r');
+  const col = await gmCopied(), back = await ev(`document.activeElement?.tagName`);
+  await key('F10', 'F10', 121, 8); await key('Escape', 'Escape', 27);
+  const esc = await ev(`(() => { const a = document.activeElement; return { menus: document.querySelectorAll('.tm-menu').length, tag: a?.tagName, r: a?.tagName === 'TD' ? ${gRows}.indexOf(a.parentElement) : -1 }; })()`);
+  await key('Tab', 'Tab', 9);
+  const out = await ev(`(() => { const a = document.activeElement, t = ${GT}; return !t.contains(a) && a !== t && a !== t.parentElement; })()`);
+  const colWant = (await ev(`${gRows}.map(tr => tr.children[${typeof at.c === 'number' ? at.c : 0}]?.textContent.trim().replace(/[\\t\\n]/g, ' ') ?? '')`)).join('\n');
+  check('G-keys', into.inGrid && into.role === 'grid' && into.rowcount === String(into.n) && into.stops === 0 && at.r === 1 && at.c === 1 && m.open && m.focus === 'Copy' && m.atCell && col === colWant && back === 'TD' && esc.menus === 0 && esc.tag === 'TD' && esc.r === 1 && out,
+    `Tab -> ${JSON.stringify(into)}; Down, Right -> ${JSON.stringify(at)}; Shift+F10 -> ${JSON.stringify(m)}; Right, Down, Enter (Copy > Column) -> ${col === colWant ? 'the column' : `'${(col ?? 'nothing').slice(0, 60)}'`}, the focus ${back}; Shift+F10, Escape -> ${JSON.stringify(esc)}; Tab leaves the grid ${out}`);
+});
+
+await guard('G-grouped', async () => {
+  await gFresh();
+  const n = (await gCol('sessions')).length;
+  await gmOpen(gCell('platform')); const g = await gmPick('Group by platform'); await sleep(500);
+  const panel = await ev(`!!document.querySelector('main .gt-groups')`);
+  const L = await gmOpen(gCell('sessions'));
+  const grid = await gmCopy(gCell('sessions'), 'Copy', 'Grid');
+  // the group panel's own table has the menu too
+  const P = await gmOpen(`document.querySelector('main .gt-groups table tbody td')`);
+  await gmOpen(gCell('sessions')); await gmPick('Ungroup'); await sleep(300);
+  check('G-grouped', g && panel && (L[0] ?? []).length > 0 && (grid ?? '').replace(/\r/g, '').split('\n').length === n + 1 && (P[0] ?? []).some(x => x.label === 'Copy'),
+    `Group by platform ${g}, its panel ${panel}; the grid's menu then: ${(L[0] ?? []).map(x => x.label).slice(0, 6).join(' / ') || '(no .tm-menu)'}...; Copy Grid ${(grid ?? '').split('\n').length - 1} rows of ${n}; the panel's own menu: ${(P[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}`);
+});
+
+await guard('G-empty0', async () => {
+  // a grid empty from the start (ui.ts's div.empty-grid): its menu all the same
+  let hit = null;
+  for (const h of ['#/alerts', '#/corruption', '#/dms', '#/replication', '#/pgreplication', '#/dbchanges', `#/jobs?i=${erpId}`, `#/logs?i=${erpId}`, `#/replication?i=${erpId}`]) {
+    await go(h); if (await ev(`!!document.querySelector('main .empty-grid')`)) { hit = h; break; }
+  }
+  const L = hit ? await gmOpen(`document.querySelector('main .empty-grid table, main .empty-grid')`) : [];
+  const top = L[0] ?? [];
+  const copy = hit ? await (async () => { await gmOpen(`document.querySelector('main .empty-grid table, main .empty-grid')`); await gmPick('Copy'); const s = (await gmLevels())[1] ?? []; await gmClose(); return s; })() : [];
+  const xl = top.find(x => x.label === 'Export Excel');
+  check('G-empty0', !!hit && copy.length > 0 && copy.every(x => x.off === 'No data to copy') && !!xl && xl.off === null && top.some(x => x.label === 'Columns...') && top.some(x => /^Rows: 0\b/.test(x.label)),
+    `${hit ?? 'no empty grid on the pages tried'}: ${top.map(x => x.label + (x.off ? ` (${x.off})` : '')).join(' / ') || '(no .tm-menu)'}; Copy: ${copy.map(x => `${x.label} ${x.off ?? 'ON'}`).join(' / ')}`);
+});
+
+await guard('G-dialog', async () => {
+  // a file viewer's grid (a modal dialog): the menu in that dialog, Copy > Cell copies
+  await dropHostile();
+  const td = `${gRowsOf(GV)}[1].children[${gIx('txt', GV)}]`;
+  const L = await gmOpen(td);
+  const inDialog = (L[0] ?? []).length > 0 && (L[0] ?? []).every(x => x.inDialog);
+  const cell = await gmCopy(td, 'Copy', 'Cell');
+  await closeDialogs();
+  check('G-dialog', inDialog && cell === 'a]b', `the menu ${(L[0] ?? []).length ? (inDialog ? 'inside the dialog' : 'OUTSIDE the dialog') : '(no .tm-menu)'}; Copy > Cell '${cell}'`);
+});
+
+await guard('G-sql', async () => {
+  // the hostile fixture's two SQL files run on the box's PostgreSQL (once with standard_conforming_strings off for the
+  // session) and its SQL Server; every row read back equal (NUL dropped, said in the header); a table t survives
+  await dropHostile();
+  const td = `${gRowsOf(GV)}[0].children[0]`;
+  const pgf = await gmFile(td, 'SQL (INSERT) for PostgreSQL', 'pg.sql'), msf = await gmFile(td, 'SQL (INSERT) for SQL Server', 'mssql.sql');
+  await closeDialogs();
+  const res = [];
+  const cmp = (rows, tag) => {
+    if (!Array.isArray(rows) || rows.length !== want.length) { res.push(`${tag}: ${Array.isArray(rows) ? rows.length : 'no'} rows read back`); return; }
+    rows.forEach((r, i) => { const w = want[i], vals = Object.values(r);
+      const okRow = Number(vals[0]) === w.id && vals[1] === w.txt && vals[2] === w['we]ird"name'] && Number(vals[3]) === w.num && (vals[4] ?? null) === w[''];
+      if (!okRow) res.push(`${tag} row ${w.id}: ${JSON.stringify(vals).slice(0, 160)}`); });
+    const names = Object.keys(rows[0] ?? {});
+    if (names[2] !== 'we]ird"name' || !/^column_\d+$/.test(names[4] ?? '')) res.push(`${tag} names ${JSON.stringify(names)}`);
+  };
+  if (!pgf || !msf) res.push(`files: PostgreSQL ${pgf?.name ?? 'none'}, SQL Server ${msf?.name ?? 'none'}`);
+  else {
+    if (!/NUL/.test(pgf.text.split('\n').filter(l => l.startsWith('--') || l.startsWith('﻿--')).join(' '))) res.push('the PostgreSQL header names no NUL dropped');
+    fs.writeFileSync(path.join(work, 'gm-pg.sql'), pgf.buf); fs.writeFileSync(path.join(work, 'gm-ms.sql'), msf.buf);
+    psql('create table if not exists t (x int)');
+    // -f: psql runs the file a statement at a time; whole: the file as ONE query (psql -c, as pgAdmin's F5 sends it),
+    // lexed before its SET runs - with standard_conforming_strings off it is the hostile row's injection path (gm2 B2)
+    for (const [scs, whole] of [['on', false], ['off', false], ['off', true]]) {
+      const tag = `PostgreSQL (standard_conforming_strings ${scs}${whole ? ', the file as one query' : ''})`;
+      try {
+        const o = execFileSync('psql', [`${dsn} dbname=${db}`, '-XAtq', '-v', 'ON_ERROR_STOP=1', ...(whole ? ['-c', pgf.text] : ['-f', path.join(work, 'gm-pg.sql')]), '-c', '\\echo @@READBACK', '-c', 'select row_to_json(g)::text from pg_temp.pgvigil_grid g order by g.id'],
+          { encoding: 'utf8', env: { ...process.env, PGOPTIONS: `-c standard_conforming_strings=${scs}` } });
+        cmp(o.split('\n@@READBACK\n')[1]?.split('\n').filter(Boolean).map(l => JSON.parse(l)), tag);
+      } catch (e) { res.push(`${tag}: ${String(e.stderr ?? e.message).split('\n').slice(0, 3).join(' | ')}`); }
+      if (psql(`select count(*) from pg_class where relname = 't' and relkind = 'r'`) !== '1') { res.push(`table t is GONE after ${tag}`); psql('create table if not exists t (x int)'); }
+    }
+    if (psql(`select count(*) from pg_class where relname = 't' and relkind = 'r'`) !== '1') res.push('table t is GONE');
+    const sc = process.env.PGVIGIL_MENU_MSSQL, ef = process.env.PGVIGIL_MENU_MSSQL_ENV;
+    if (!sc || !ef) res.push('no SQL Server given (PGVIGIL_MENU_MSSQL / PGVIGIL_MENU_MSSQL_ENV: proof-gridmenu.sh starts one)');
+    else {
+      // the read-back: sqlcmd refuses -h -1 with -y 0 (b3), and -y caps a value's width at 8,000: each name and each cell
+      // as UTF-16 hex in lines of its own, a cell in 4,000-character chunks ('@@N|<column>|<hex>', '@@C|<row>|<column>|
+      // <chunk>|<hex>', 'NULL' for a NULL), put together here
+      const rb = `\nGO\nSET NOCOUNT ON;\nDECLARE @o int = OBJECT_ID('tempdb..#pgvigil_grid'), @v nvarchar(max), @s nvarchar(max);
+SELECT '@@N|' + CAST(column_id AS varchar(10)) + '|' + CONVERT(varchar(max), CONVERT(varbinary(max), CAST(name AS nvarchar(max))), 2) FROM tempdb.sys.columns WHERE object_id = @o ORDER BY column_id;
+SELECT @v = STRING_AGG(CAST(N'(' + CAST(column_id AS nvarchar(10)) + N', CONVERT(varchar(max), CONVERT(varbinary(max), CAST(g.' + QUOTENAME(name) + N' AS nvarchar(max))), 2))' AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY column_id) FROM tempdb.sys.columns WHERE object_id = @o;
+SET @s = N'SELECT ''@@C|'' + CAST(g.pgvigil_rn AS varchar(10)) + ''|'' + CAST(c.k AS varchar(10)) + ''|'' + CAST(n.i AS varchar(10)) + ''|'' + ISNULL(SUBSTRING(c.h, n.i * 4000 + 1, 4000), ''NULL'')
+  FROM (SELECT ROW_NUMBER() OVER (ORDER BY ' + (SELECT QUOTENAME(name) FROM tempdb.sys.columns WHERE object_id = @o AND column_id = 1) + N') AS pgvigil_rn, * FROM #pgvigil_grid) g
+  CROSS APPLY (VALUES ' + @v + N') c(k, h)
+  CROSS APPLY (SELECT TOP (ISNULL(LEN(c.h), 0) / 4000 + 1) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 FROM sys.all_objects) n(i)
+  ORDER BY g.pgvigil_rn, c.k, n.i';
+EXEC (@s);\nGO\n`;
+      try {
+        // the file as written (its UTF-8 BOM first) goes in by -i <file>, as a user runs it: through -i /dev/stdin sqlcmd
+        // read the BOM as text (gridmenu-b4: 'Incorrect syntax near U+FEFF'). The read-back is a second -i file (its
+        // leading GO ends the export's last batch)
+        fs.writeFileSync(path.join(work, 'gm-rb.sql'), rb, 'utf8');
+        // docker cp keeps the mode and makes root the owner: 0644 so the image's own user (mssql) reads them under any umask
+        for (const f of ['gm-ms.sql', 'gm-rb.sql']) { fs.chmodSync(path.join(work, f), 0o644); execFileSync('docker', ['cp', path.join(work, f), `${sc}:/tmp/${f}`], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+        const o = execFileSync('docker', ['exec', '--env-file', ef, sc, 'bash', '-c', 'SQLCMDPASSWORD=$SA_PW /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -x -w 65535 -f 65001 -y 8000 -h -1 -d tempdb -i /tmp/gm-ms.sql,/tmp/gm-rb.sql'],
+          { encoding: 'utf8', maxBuffer: 256 << 20 });
+        const ls = o.split('\n').map(l => l.trim());
+        const hex = h => h === 'NULL' ? null : Buffer.from(h, 'hex').toString('utf16le');
+        const names = new Map(ls.filter(l => l.startsWith('@@N|')).map(l => { const [, k, h] = l.split('|'); return [Number(k), hex(h)]; }));
+        const cells = new Map();   // row -> column -> chunks
+        for (const l of ls.filter(l => l.startsWith('@@C|'))) {
+          const [, r, k, i, h = ''] = l.split('|');
+          if (!cells.has(+r)) cells.set(+r, new Map());
+          const row = cells.get(+r); if (!row.has(+k)) row.set(+k, []);
+          row.get(+k)[+i] = h;
+        }
+        const rows = [...cells.keys()].sort((a, b) => a - b).map(r => Object.fromEntries([...cells.get(r).keys()].sort((a, b) => a - b)
+          .map(k => { const ch = cells.get(r).get(k); return [names.get(k) ?? 'c' + k, ch.length === 1 && ch[0] === 'NULL' ? null : hex(ch.join(''))]; })));
+        if (!names.size) res.push(`SQL Server: no read-back lines (sqlcmd said: ${ls.filter(Boolean).slice(-3).join(' | ').slice(0, 300)})`);
+        else cmp(rows, 'SQL Server');
+      } catch (e) { res.push(`SQL Server: ${String([e.stderr, e.stdout, e.message].find(x => x && String(x).trim())).split('\n').filter(Boolean).slice(0, 3).join(' | ')}`); }
+    }
+  }
+  check('G-sql', res.length === 0, res.length ? res.join('; ').slice(0, 900) : `${want.length} rows read back equal on PostgreSQL (standard_conforming_strings on and off) and SQL Server; table t intact`);
+});
+
+await guard('G-stmt', async () => {
+  // a statement cell is a button (sqlview.ts): its right-click opens the grid's menu, Copy > Cell gives the statement
+  await go(`#/statements?i=${erpId}`); await sleep(500);
+  const btn = `document.querySelector('main table.grid tbody td button')`;
+  const L = await gmOpen(btn);
+  const cell = await gmCopy(btn, 'Copy', 'Cell'), full = await ev(`(() => { const b = ${btn}; const td = b?.closest('td'); return td?.getAttribute('data-full') ?? b?.getAttribute('data-full') ?? td?.textContent.trim() ?? ''; })()`);
+  check('G-stmt', (L[0] ?? []).some(x => x.label === 'Copy') && !!cell && cell.length > 0 && cell.replace(/\s+/g, ' ').trim() === full.replace(/\s+/g, ' ').trim(),
+    `a statement button's right-click: ${(L[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}; Copy > Cell '${(cell ?? 'nothing').slice(0, 60)}'`);
+});
+
+await guard('G-plain', async () => {
+  // a table.grid not drawn by grid() (slow.ts's own tables, each inside a .grid-wrap of its own; grid()'s sit in a
+  // .grid-box): the menu through the delegated handler (review-15 gm1 B1)
+  const sel = `[...document.querySelectorAll('main table.grid')].find(t => !t.closest('.grid-box'))?.querySelector('tbody td')`;
+  let found = false;
+  for (const h of ['#/slowqueries', `#/slowqueries?i=${erpId}`]) { await go(h); await sleep(800); found = await ev(`!!${sel}`); if (found) break; }
+  const L = found ? await gmOpen(sel) : [];
+  const cell = found ? await gmCopy(sel, 'Copy', 'Cell') : null, want0 = found ? await ev(`${sel}.textContent.trim()`) : null;
+  check('G-plain', found && (L[0] ?? []).some(x => x.label === 'Copy') && cell === want0, `${found ? 'slow.ts table found' : 'no table.grid outside a .grid-box on the slow pages'}; its menu: ${(L[0] ?? []).map(x => x.label).slice(0, 4).join(' / ') || '(no .tm-menu)'}; Copy > Cell '${cell}' (want '${want0}')`);
+});
+
+await guard('G-mssql', async () => {
+  // a SQL Server instance's grid: the same menu. The Drives page draws a grid only under Toggle Metrics (drives.ts
+  // draw(): drive cards by default - gridmenu-b4's red waited for a grid the card view never draws); the demo seeds
+  // sql01's volumes (mssql_storage_demo.go). The case presses Toggle Metrics as a user does, and puts the stored
+  // choice back after
+  await go(`#/drives?i=${idOf('demo-onprem-sql01')}`);
+  const before = await ev(`localStorage.getItem('pgvigil.drivesMetrics') ?? '<none>'`);
+  let cellThere = false, top = [], pressed = 'no Toggle Metrics button', cards = 0;
+  try {
+    pressed = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(b => b.textContent.trim() === 'Toggle Metrics');
+      if (!b) return 'no Toggle Metrics button'; if (b.getAttribute('aria-pressed') !== 'true') b.click(); return 'Toggle Metrics aria-pressed ' + b.getAttribute('aria-pressed'); })()`);
+    // the grid comes after the page's own read (the toggle draws again): a cell waited for, up to 20 s
+    for (let i = 0; i < 40 && !cellThere; i++) { cellThere = await ev(`!!document.querySelector('main table.grid tbody td')`); if (!cellThere) await sleep(500); }
+    cards = cellThere ? 0 : await ev(`document.querySelectorAll('main .drive-list > *').length`);
+    const L = cellThere ? await gmOpen(`document.querySelector('main table.grid tbody td')`) : [];
+    top = (L[0] ?? []).map(x => x.label);
+    await gmClose();
+  } finally {
+    await ev(before === '<none>' ? `localStorage.removeItem('pgvigil.drivesMetrics'); true` : `localStorage.setItem('pgvigil.drivesMetrics', ${JSON.stringify(before)}); true`);
+  }
+  const wantTop = ['Copy', 'Export Excel', 'Export file', 'Transpose', 'Select', 'Columns...', 'Row numbers', 'All filters', 'Clear filters'];
+  check('G-mssql', wantTop.every(w => top.includes(w)), `demo-onprem-sql01's Drives grid (${pressed}): ${cellThere ? top.join(' / ') || '(no .tm-menu)' : `no grid cell on the page in 20 s (${cards} drive card(s) drawn)`}`);
+});
+
+await guard('G-chart', async () => {
+  // a chart's own menu stays ui.ts's showMenu (unchanged by GM: green on both sides)
+  let opened = false;
+  for (const h of [`#/summary?i=${erpId}`, `#/performance?i=${erpId}`, '#/perfsummary']) {
+    await go(h); await sleep(1500);
+    opened = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(b => [b.getAttribute('aria-label'), b.title, b.textContent].some(s => /^Chart menu/.test(s ?? ''))); b?.click(); return !!b; })()`);
+    if (opened) break;
+  }
+  await sleep(300);
+  const items = await ev(`[...document.querySelectorAll('.menu:not(.tm-menu) button')].map(b => b.textContent.trim())`), gridMenu = await ev(`!!document.querySelector('.tm-menu')`);
+  await gmClose();
+  check('G-chart', opened && ['Copy image', 'Save image', 'Copy data', 'Export data (CSV)', 'Export Excel'].every(x => items.includes(x)) && !gridMenu,
+    `a chart's menu ${opened ? 'opened' : 'button not found'}: ${items.join(' / ')}`);
+});
+
+await guard('G-big', async () => {
+  // a 10,000-row grid (a dropped file): the menu's open time read and said (no threshold yet: a number first)
+  const big = Array.from({ length: 10000 }, (_, i) => ({ id: i + 1, name: 'row ' + (i + 1), n: (i * 7919) % 1000, at: '2026-11-14' }));
+  await dropHostile(big, 'gm-big.json');
+  const t = await ev(`(() => { const t = ${GV}; const td = t?.querySelector('tbody td:nth-child(3)'); if (!td) return null; const r = td.getBoundingClientRect();
+    const a = performance.now(); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 })); const ms = performance.now() - a;
+    return { ms: Math.round(ms), tm: !!document.querySelector('.tm-menu'), rows: t.getAttribute('aria-rowcount') ?? t.dataset.rows ?? '' }; })()`);
+  await gmClose(); await closeDialogs();
+  check('G-big', !!t && t.tm, t ? `the menu on a 10,000-row grid opened in ${t.ms} ms (${t.tm ? '.tm-menu' : 'no .tm-menu'}; rows ${t.rows})` : 'the grid did not draw');
+});
+
+if (shots) await guard('G-themes', async () => {
+  const both = {};
+  for (const theme of ['light', 'dark']) {
+    await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)})`); await send('Page.reload'); await sleep(1500); await go('#/instances');
+    await gmOpen(gCell('sessions')); await gmPick('Copy'); await sleep(200);
+    both[theme] = await ev(`(() => { const b = document.querySelector('.tm-menu'); return b ? getComputedStyle(b).backgroundColor : null; })()`);
+    await shot(`gm-menu-${theme}`); await gmClose();
+    await gmOpen(gCell('sessions')); await gmPick('Transpose', 'This row'); await sleep(400); await shot(`gm-transpose-${theme}`); await closeDialogs();
+  }
+  await ev(`localStorage.setItem('pgvigil.theme', 'light')`); await send('Page.reload'); await sleep(1500);
+  const wantShots = ['gm-menu-light', 'gm-menu-dark', 'gm-transpose-light', 'gm-transpose-dark'].map(x => x + '.png');
+  const missing = wantShots.filter(f => !fs.existsSync(path.join(shots, f)) || fs.statSync(path.join(shots, f)).mtimeMs < started);
+  check('G-themes', !!both.light && !!both.dark && both.light !== both.dark && missing.length === 0, `the menu's background light ${both.light}, dark ${both.dark}; ${wantShots.length - missing.length} of ${wantShots.length} pictures${missing.length ? ', missing ' + missing.join(', ') : ''}`);
 });
 
 const xdl = `<deadlock><victim-list><victimProcess id="process1"/></victim-list><process-list>

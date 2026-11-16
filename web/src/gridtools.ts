@@ -12,12 +12,17 @@
 // grid is drawn: classes on the table, a panel and a line beside it. A hidden column is marked data-gt-hidden on its
 // header, which the export honours. The one hook is the grid's menu: ui.ts sends a 'pgvigil:gridmenu' event with the
 // menu's items before it shows them, and the tools add theirs.
-import { Cell, Kind, Status, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, statusOf, typed } from './export';
-import { cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, offControl } from './ui';
+import { Cell, Kind, Meta, Section, Status, csv, exportGrid, fillOf, fontOf, fromText, headFill, linkFill, linkFont, readGrid, saveGridAs, statusOf, timeZone, typed } from './export';
+import { GridMenuAsk, cellText, copyText, el, fmtBytes, fmtNum, fmtSecs, gridModel, isCondList, offControl, quoteFilter } from './ui';
+import { MenuItem, gridLines, showTreeMenu } from './treemenu';
+import { Grid, htmlDoc, json, markdown, sqlScript, tsv } from './gridwriters';
 
-type Item = [string, () => void];
-interface MenuDetail { table?: HTMLTableElement; td?: Element | null; items?: Item[] }
-interface Prefs { hidden: string[]; frozen: number; bars: string[] }
+// bars: a column's data bar by its name - behind the value (the default, the only style before task GM: a stored list of
+// names loads as it), under the value, or a traffic light with the high values the worse or the better; rownum: the row
+// numbers drawn (a counter, no column)
+type BarStyle = 'behind' | 'under' | 'worse' | 'better';
+interface Prefs { hidden: string[]; frozen: number; bars: Record<string, BarStyle>; rownum?: boolean }
+const BAR_STYLES: [BarStyle, string][] = [['behind', 'Behind value'], ['under', 'Under value'], ['worse', 'Traffic light (higher is worse)'], ['better', 'Traffic light (higher is better)']];
 type Agg = 'sum' | 'avg' | 'min' | 'max';
 interface Grouping { col: string; agg: Agg; box: HTMLElement }
 
@@ -68,7 +73,7 @@ function hash(s: string): string {
 const keyOf = (t: HTMLTableElement) => `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${hash(headingOf(t) + '|' + names(t).join('|'))}`;
 
 function load(t: HTMLTableElement): Prefs {
-  const none: Prefs = { hidden: [], frozen: 0, bars: [] }, k = keyOf(t);
+  const none: Prefs = { hidden: [], frozen: 0, bars: {} }, k = keyOf(t);
   let raw: string | null = null;
   try { raw = localStorage.getItem(k); } catch { /* the browser refuses storage: what this page load chose is in mem */ }
   if (raw === null) return mem.get(k) ?? none;
@@ -76,11 +81,14 @@ function load(t: HTMLTableElement): Prefs {
     const p = JSON.parse(raw) as Partial<Prefs> | null;
     if (!p || typeof p !== 'object') return none;
     const list = (v: unknown) => Array.isArray(v) ? v.filter(x => typeof x === 'string') as string[] : [];
-    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars: list(p.bars) };
+    const styles = new Set(BAR_STYLES.map(x => x[0]));
+    const bars: Record<string, BarStyle> = Array.isArray(p.bars) ? Object.fromEntries(list(p.bars).map(n => [n, 'behind' as BarStyle]))
+      : p.bars && typeof p.bars === 'object' ? Object.fromEntries(Object.entries(p.bars).filter(([, v]) => styles.has(v as BarStyle))) as Record<string, BarStyle> : {};
+    return { hidden: list(p.hidden), frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(p.frozen) || 0))), bars, rownum: p.rownum === true };
   } catch { return none; }   // a value another version wrote
 }
 function save(t: HTMLTableElement, p: Prefs) {
-  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !p.bars.length;
+  const k = keyOf(t), empty = !p.hidden.length && !p.frozen && !Object.keys(p.bars).length && !p.rownum;
   if (empty) mem.delete(k); else mem.set(k, p);
   try {
     if (empty) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(p));
@@ -118,27 +126,40 @@ function apply(t: HTMLTableElement, p: Prefs = load(t)) {
   const wrap = t.closest<HTMLElement>('.grid-wrap');
   if (wrap) wrap.style.isolation = freeze.length ? 'isolate' : '';
   if (freeze.length) sizes?.observe(t); else sizes?.unobserve(t);
+  t.classList.toggle('gt-rownum', !!p.rownum);
   bars(t, p, ns);
 }
 
-// bars: a bar behind each number above zero of a column, its length the value's share of the column's largest (the
-// rows drawn; a cell the page colours carries none). A screen aid: the export writes the number.
+// bars: a column's data bar (the rows drawn; a cell the page colours carries none): behind each number above zero or
+// under it, its length the value's share of the column's largest; or a traffic light, the column's range in thirds,
+// the top third red and the bottom green (higher is worse) or the reverse (higher is better). A screen aid in the
+// tools' own classes (never ok / warn / crit, which the export reads as a status): no file carries it.
 function bars(t: HTMLTableElement, p: Prefs, ns: string[]) {
-  const on = new Set(p.bars.map(n => ns.indexOf(n)).filter(j => j >= 0));
+  const on = new Map(Object.entries(p.bars).map(([n, st]) => [ns.indexOf(n), st] as [number, BarStyle]).filter(([j]) => j >= 0));
   const had = t.hasAttribute('data-gt-bars');
   if (!on.size && !had) return;
   t.toggleAttribute('data-gt-bars', on.size > 0);
   const trs = bodyRows(t);
   const m = gridModel(t), data = m?.rows(), modelled = !!(data && m && m.cols.length === ns.length);
   ns.forEach((_, j) => {
-    const vals = trs.map((tr, i) => on.has(j) ? numberAt(t, tr.children[j], modelled ? data![i]?.[m!.cols[j].key] : undefined)?.n : undefined);
-    const max = Math.max(0, ...vals.map(v => v ?? 0));
+    const st = on.get(j);
+    const vals = trs.map((tr, i) => st ? numberAt(t, tr.children[j], modelled ? data![i]?.[m!.cols[j].key] : undefined)?.n : undefined);
+    const nums = vals.filter((v): v is number => v !== undefined);
+    const max = Math.max(0, ...nums), lo = nums.length ? Math.min(...nums) : 0, hi = nums.length ? Math.max(...nums) : 0;
     trs.forEach((tr, i) => {
       const td = tr.children[j] as HTMLElement | undefined, v = vals[i];
       if (!td) return;
-      const share = v !== undefined && v > 0 && max > 0 && !statusOf(td) ? Math.max(1, Math.round(v / max * 100)) : 0;
+      const own = !!statusOf(td);
+      const share = (st === 'behind' || st === 'under') && v !== undefined && v > 0 && max > 0 && !own ? Math.max(1, Math.round(v / max * 100)) : 0;
       td.classList.toggle('gt-bar', share > 0);
+      td.classList.toggle('gt-bar-under', share > 0 && st === 'under');
       if (share > 0) td.style.setProperty('--gt-share', `${share}%`); else td.style.removeProperty('--gt-share');
+      let light = '';
+      if ((st === 'worse' || st === 'better') && v !== undefined && !own) {
+        const third = hi > lo ? (v - lo) / (hi - lo) : 0.5, top = third >= 2 / 3, bottom = third <= 1 / 3;
+        light = top ? (st === 'worse' ? 'r' : 'g') : bottom ? (st === 'worse' ? 'g' : 'r') : 'a';
+      }
+      for (const x of ['r', 'a', 'g']) td.classList.toggle('gt-tl-' + x, light === x);
     });
   });
 }
@@ -179,6 +200,8 @@ function summary(ns: Num[]): string {
 
 // ---- the selection and its line -----------------------------------------------------------------------------
 
+// homeOf: the grid's current cell, its one tab stop (ui.ts grid); a table outside grid() itself
+const homeOf = (t: HTMLTableElement): HTMLElement | null => t.querySelector<HTMLElement>(':scope > thead > tr > th[tabindex="0"], :scope > tbody > tr > td[tabindex="0"]') ?? (t.tabIndex >= 0 ? t : t.closest<HTMLElement>('.grid-wrap[tabindex]'));   // a page's own table: its focusable wrap
 const boxOf = (t: HTMLTableElement): Element => t.closest('.grid-box') ?? t.closest('.grid-wrap') ?? t;
 const wrapOf = (t: HTMLTableElement): Element => { const w = t.closest('.grid-wrap'); return w && boxOf(t).contains(w) ? w : t; };
 // lineOf: the tools' status line of a grid, if it has one yet; line: the same, made when it is first needed
@@ -317,17 +340,6 @@ function copyByEvent(h: string, plain: string): boolean {
   try { document.execCommand('copy'); } catch { /* refused: done stays false */ } finally { document.removeEventListener('copy', on, true); }
   return done;
 }
-// copyHtml: the table on the clipboard as HTML, with the tab-separated words beside it for a plain-text paste; never
-// the markup itself as text
-// mark: a stored sample's mark (the closest [data-sample]), put first so a copy is never read as the instance's own data
-async function copyHtml(s: Sheet, mark = ''): Promise<boolean> {
-  const h = (mark ? `<p>${html(mark)}</p>` : '') + toHtml(s);
-  const plain = (mark ? mark + '\n' : '') + [s.cols, ...s.rows.map(r => s.cols.map((_, j) => r[j]?.text ?? ''))].map(r => r.map(v => v.replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
-  try {
-    await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([h], { type: 'text/html' }), 'text/plain': new Blob([plain], { type: 'text/plain' }) })]);
-    return true;
-  } catch { return copyByEvent(h, plain); }
-}
 function said(t: HTMLTableElement, what: string) {
   return (ok: boolean) => {
     const p = line(t);
@@ -369,7 +381,7 @@ function group(t: HTMLTableElement, col: string | null, agg: Agg = groupings.get
   for (const [v, l] of [['sum', 'sum'], ['avg', 'average'], ['min', 'min'], ['max', 'max']]) pick.append(el('option', v === agg ? { value: v, selected: '' } : { value: v }, l));
   pick.addEventListener('change', () => { group(t, col, pick.value as Agg); (groupings.get(t)?.box.querySelector('select') as HTMLElement | null)?.focus(); });
   const off = el('button', { type: 'button', class: 'link' }, 'Ungroup');
-  off.addEventListener('click', () => { group(t, null); redrawPanel(t); (wrapOf(t) as HTMLElement).focus?.(); });
+  off.addEventListener('click', () => { group(t, null); redrawPanel(t); homeOf(t)?.focus(); });
   const table = el('table', { class: 'gt-table' },
     el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, ns[at]), el('th', { scope: 'col', class: 'num' }, 'rows'), ...numCols.map(j => el('th', { scope: 'col', class: 'num' }, `${ns[j]} (${agg})`)))),
     el('tbody', {}, ...[...groups.entries()].sort((a, b) => b[1].rows - a[1].rows || a[0].localeCompare(b[0])).map(([key, x]) =>
@@ -396,14 +408,15 @@ function redrawPanel(t: HTMLTableElement) {
 function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   panels.get(t)?.remove();
   const ns = names(t), hs = heads(t), p = load(t), k = keyOf(t);
-  const hidden = new Set(p.hidden.filter(n => ns.includes(n))), barsOn = new Set(p.bars.filter(n => ns.includes(n)));
+  const hidden = new Set(p.hidden.filter(n => ns.includes(n))), barsOn = new Set(Object.keys(p.bars).filter(n => ns.includes(n)));
   const box = el('div', { class: 'gt-panel', role: 'dialog', 'aria-label': 'Columns of this grid' });
   const close = () => {
     box.remove(); panels.delete(t); openPanels.delete(k);
-    const to = back && back.isConnected && back.tabIndex >= 0 ? back : wrapOf(t) as HTMLElement;   // a cell cannot take the focus: the grid's scroll box does
-    to.focus?.();
+    const to = back && back.isConnected && back.tabIndex >= 0 ? back : homeOf(t);   // else the grid's current cell (its one tab stop)
+    to?.focus();
   };
-  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: [...barsOn] });
+  // a bar ticked here keeps its style (behind the value when new); the row numbers stay as they are
+  const now = (): Prefs => ({ hidden: [...hidden], frozen: Number(freeze.value) || 0, bars: Object.fromEntries([...barsOn].map(n => [n, p.bars[n] ?? 'behind' as BarStyle])), rownum: p.rownum });
   const list = el('div', { class: 'gt-cols' });
   ns.forEach((n, j) => {
     const tick = el('input', { type: 'checkbox' }) as HTMLInputElement;
@@ -434,7 +447,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const all = el('button', { type: 'button' }, 'Show every column');
   all.addEventListener('click', () => { hidden.clear(); list.querySelectorAll<HTMLInputElement>('.gt-col > label:first-child input').forEach(i => { i.checked = true; }); save(t, now()); });
   const reset = el('button', { type: 'button' }, 'Reset this grid');
-  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); freeze.value = '0'; save(t, now()); group(t, null); pickColumn(t, -1); chooser(t, back); });
+  reset.addEventListener('click', () => { hidden.clear(); barsOn.clear(); freeze.value = '0'; save(t, { ...now(), rownum: false }); group(t, null); pickColumn(t, -1); chooser(t, back); });
   const done = el('button', { type: 'button' }, 'Close');
   done.addEventListener('click', close);
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } });
@@ -443,7 +456,7 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   const offNote = el('span', { class: 'off-reason' });
   const offState = () => {
     const noneHidden = hidden.size === 0;
-    const plain = noneHidden && barsOn.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0;
+    const plain = noneHidden && barsOn.size === 0 && (Number(freeze.value) || 0) === 0 && !groupings.get(t) && picked(t).length === 0 && !p.rownum;
     const why = [noneHidden ? 'every column is shown' : '', plain ? 'nothing in this grid is changed from its default' : ''].filter(Boolean);
     offNote.textContent = why.join('; ');
     offControl(all, noneHidden ? 'every column is shown' : null, offNote);
@@ -464,41 +477,203 @@ function chooser(t: HTMLTableElement, back: HTMLElement | null, focus = true) {
   if (focus) (box.querySelector('input') as HTMLElement | null)?.focus();
 }
 
-// ---- the menu ------------------------------------------------------------------------------------------------
+// ---- the menu (task GM: DBA Dash's grid menu) ------------------------------------------------------------------
 
-// menuItems: the tools' lines of a grid's menu; td: the cell under the pointer (its column is the one hidden, frozen
-// to, grouped by or given bars; none when the menu was opened from the keyboard: the chooser has them all)
-export function menuItems(t: HTMLTableElement, td: Element | null, back: HTMLElement | null = null): Item[] {
-  const ns = names(t), hs = heads(t), p = load(t);
-  const j = td && td.parentElement ? colOf(td) : -1;
+// the copies' and the files' grid: every row the filters leave in the shown order, the columns not hidden; sel = the
+// selection's rows and columns when there is one (the copies' 'Selected' and their Markdown / JSON)
+function gridOf(t: HTMLTableElement, sel: boolean): Grid {
+  const s = sel ? shown(t) : (() => { const g = readGrid(t); return { cols: g.cols, rows: g.rows, num: heads(t).filter(h => !h.hasAttribute('data-gt-hidden')).map(h => h.classList.contains('num')) }; })();
+  return { ...s, sample: t.closest('[data-sample]')?.getAttribute('data-sample') ?? undefined };
+}
+// copyBoth: HTML with the colours and its plain words on the clipboard (copyByEvent where ClipboardItem is refused)
+async function copyBoth(h: string, plain: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([h], { type: 'text/html' }), 'text/plain': new Blob([plain], { type: 'text/plain' }) })]);
+    return true;
+  } catch { return copyByEvent(h, plain); }
+}
+const filterable = (t: HTMLTableElement) => !!t.querySelector(':scope > thead > tr.filters');
+const filterInputs = (t: HTMLTableElement) => [...t.querySelectorAll<HTMLInputElement>(':scope > thead > tr.filters input')];
+const filtered = (t: HTMLTableElement) => filterInputs(t).some(i => i.value.trim() !== '');
+function setFilter(t: HTMLTableElement, j: number, v: string) {
+  const row = t.querySelector<HTMLTableRowElement>(':scope > thead > tr.filters'), inp = filterInputs(t)[j];
+  if (!row || !inp) return;
+  if (row.hidden) heads(t)[j]?.querySelector<HTMLButtonElement>('.filter-btn')?.click();
+  inp.value = v;
+  inp.dispatchEvent(new Event('input'));
+}
+// addCond: a condition the menu writes (quoted, ui.ts compileFilter) AND the column's filter; a typed one there is kept
+// with its meaning (words quoted as words, '!x' as not those words, an operator with its number as it is)
+function addCond(t: HTMLTableElement, j: number, cond: string) {
+  const f = filterInputs(t)[j]?.value.trim() ?? '', num = !!heads(t)[j]?.classList.contains('num');
+  const keep = !f || (f.includes('"') ? isCondList(f, num) : /^(<>|>=|<=|>|<|=)\s*\S/.test(f));
+  const was = keep ? f : f.startsWith('!') ? '!' + quoteFilter(f.slice(1)) : quoteFilter(f);
+  setFilter(t, j, was ? `${was} & ${cond}` : cond);
+}
+// a dialog of the tools in the grid's own host (a grid in a modal dialog: that dialog), the focus back on close
+function toolDialog(t: HTMLTableElement, label: string, back: HTMLElement | null, ...kids: (Node | string)[]): HTMLDialogElement {
+  const d = el('dialog', { class: 'gt-dialog', 'aria-label': label }, el('h3', {}, label), ...kids) as HTMLDialogElement;
+  d.addEventListener('close', () => { d.remove(); if (back?.isConnected) back.focus(); });
+  (t.closest('dialog[open]') ?? document.body).append(d);
+  d.showModal();
+  return d;
+}
+// filterPrompt: All filters' operator with the clicked value to change (Like's _ and % escaped: the value as it is)
+function filterPrompt(t: HTMLTableElement, j: number, op: string, value: string, back: HTMLElement | null) {
+  const n = names(t)[j];
+  const like = /like$/i.test(op);
+  const inp = el('input', { type: 'text', 'aria-label': `${n} ${op}`, size: '40' }) as HTMLInputElement;
+  inp.value = like ? value.replace(/[\\%_]/g, '\\$&') : value;
+  const cancel = el('button', { type: 'button' }, 'Cancel');
+  const form = el('form', { method: 'dialog' }, el('p', {}, el('label', {}, `${n} ${op} `, inp)),
+    el('p', { class: 'meta' }, like ? '% any run of characters, _ one character, \\% \\_ \\\\ themselves' : 'The rows whose value meets it stay; the column\'s filter keeps what it held.'),
+    el('p', {}, el('button', { type: 'submit' }, 'Filter'), ' ', cancel));
+  const d = toolDialog(t, `Filter ${n}`, back, form);
+  form.addEventListener('submit', e => { e.preventDefault(); const v = inp.value; d.close(); if (v !== '') addCond(t, j, like ? `${op.toLowerCase()} ${quoteFilter(v)}` : op + quoteFilter(v)); });
+  cancel.addEventListener('click', () => d.close());
+  inp.focus(); inp.select();
+}
+// transpose: rows as columns (a column's name, then its value in each row), in a dialog with Copy; the grid form shows
+// 50 rows and says so, its Copy takes every row
+const CAP = 50;
+function transpose(t: HTMLTableElement, rows: number[] | 'all', back: HTMLElement | null) {
+  const g = gridOf(t, false), all = rows === 'all' ? g.rows : rows.map(i => g.rows[i]).filter(Boolean);
+  const drawn = all.slice(0, CAP);
+  const table = el('table', { class: 'gt-table' }, el('tbody', {}, ...g.cols.map((c, k) => el('tr', {}, el('th', { scope: 'row' }, c), ...drawn.map(r => el('td', g.num?.[k] ? { class: 'num' } : {}, r[k]?.text ?? ''))))));
+  const copy = el('button', { type: 'button' }, 'Copy'), close = el('button', { type: 'button' }, 'Close');
+  const said = el('span', { class: 'meta', role: 'status' });
+  const name = headingOf(t) || 'grid';
+  const d = toolDialog(t, `Transposed ${name}`, back,
+    ...(all.length > CAP ? [el('p', { class: 'meta' }, `The first ${CAP} of ${fmtNum(all.length)} rows: a transposed grid is a column per row, so the dialog stops at ${CAP}; Copy takes every row.`)] : []),
+    el('div', { class: 'gt-scroll' }, table), el('p', {}, copy, ' ', close, ' ', said));
+  copy.addEventListener('click', () => {
+    const text = g.cols.map((c, k) => [c, ...all.map(r => (r[k]?.text ?? '').replace(/[\t\r\n]+/g, ' '))].join('\t')).join('\n');
+    void copyText(text).then(ok => { said.textContent = ok ? `Copied ${all.length} rows transposed` : 'Not copied: the browser refused the clipboard'; });
+  });
+  close.addEventListener('click', () => d.close());
+}
+
+// gridMenu: the grid's whole menu, DBA Dash's order. td: the clicked cell, th: the clicked header cell, neither: the grid
+// itself. Every item acts or says why it cannot, in words in the item.
+export function gridMenu(t: HTMLTableElement, td: Element | null, th: Element | null, back: HTMLElement | null): MenuItem[] {
+  const ns = names(t), hs = heads(t), p = load(t), plain = !t.classList.contains('grid');   // plain: the group panel's table
+  const j = td && td.parentElement ? colOf(td) : th ? hs.indexOf(th as HTMLTableCellElement) : -1;
   const n = j >= 0 ? ns[j] : undefined;
-  const sel = picked(t).length, what = sel ? 'the selection' : 'the rows';
+  const sel = picked(t), trs = bodyRows(t), none = trs.length === 0 ? 'No data to copy' : undefined;
+  const g = (s: boolean) => gridOf(t, s);
+  const tell = (what: string) => (ok: boolean) => said(t, what)(ok);
+  const then = (f: () => void) => () => { f(); redrawPanel(t); };
+  const lines = gridLines(t, td, j);
+  const out: MenuItem[] = [];
+  // 1. Copy (DD:438-447: Grid, Column, Cell, Row, Selected, As Markdown, As JSON)
+  // Grid: the tab-separated words with the HTML table in the screen's colours beside them (main's 'Copy the rows as HTML
+  // with the colours' kept: a paste into a mail or a document keeps the colours), a stored sample's mark first in both
+  const copy: MenuItem[] = [{ label: 'Grid', off: none, act: () => { const x = g(false); void copyBoth((x.sample ? `<p>${html(x.sample)}</p>` : '') + toHtml(x), (x.sample ? x.sample + '\n' : '') + tsv(x)).then(tell(`${x.rows.length} rows`)); } }];
+  if (j >= 0) copy.push({ label: 'Column', off: none, act: () => {
+    const x = g(false), k = x.cols.indexOf(readGrid(t, true).cols[j]), at = k >= 0 ? k : 0;
+    void copyText(x.rows.map(r => (r[at]?.text ?? '').replace(/[\t\r\n]+/g, ' ')).join('\n')).then(tell(`the column ${n}`));
+  } });
+  if (td) {
+    copy.push({ label: 'Cell', act: () => { void copyText(cellText(td)).then(tell('the cell')); } });
+    copy.push({ label: 'Row', act: () => {
+      const x = g(false), keep = hs.map(h => !h.hasAttribute('data-gt-hidden'));
+      const row = [...td.parentElement!.children].filter((_, k) => keep[k]).map(c => cellText(c).replace(/[\t\r\n]+/g, ' ')).join('\t');
+      void copyText(x.cols.join('\t') + '\n' + row).then(tell('the row'));
+    } });
+  }
+  if (td || th) copy.push({ label: 'Selected', off: none ?? (sel.length ? undefined : 'no cell is selected'), act: () => {
+    const x = g(true);
+    void copyBoth((x.sample ? `<p>${html(x.sample)}</p>` : '') + toHtml(x), tsv(x, false)).then(tell(`${sel.length} cells`));
+  } });
+  copy.push({ label: 'As Markdown', off: none, sub: [false, true].map(pr => ({ label: pr ? 'Prettified' : 'Standard', act: () => { const x = g(sel.length > 0); void copyText(markdown(x, pr)).then(tell(`${x.rows.length} rows as Markdown`)); } })) });
+  copy.push({ label: 'As JSON', off: none, sub: [false, true].map(pr => ({ label: pr ? 'Prettified' : 'Compact', act: () => { const x = g(sel.length > 0); void copyText(json(x, pr)).then(tell(`${x.rows.length} rows as JSON`)); } })) });
+  if (none) copy.forEach(c => { c.off = none; delete c.sub; });
+  out.push({ label: 'Copy', sub: copy });
+  if (plain) { out.push({ sep: true, label: '' }, ...lines.info); return out; }
+  // 2. Export Excel, 3. Export file
+  const report = (x: Promise<string>) => { void x.then(f => { line(t).textContent = 'Exported ' + f; }, (e: unknown) => { const l = line(t); l.textContent = 'Export failed: ' + (e instanceof Error ? e.message : String(e)); }); };
+  out.push({ label: 'Export Excel', act: () => report(exportGrid(t)) });
+  const file = (label: string, ext: string, type: string, write: (x: Grid, sec: Section, m: Meta) => string) =>
+    ({ label, act: () => report(saveGridAs(t, ext, (sec, m) => new Blob([write({ cols: sec.cols, rows: sec.rows, num: g(false).num, sample: sec.sample, name: sec.name }, sec, m)], { type }))) });
+  const head = (sec: Section, m: Meta) => ({ title: `${sec.name} (${m.instance}, ${m.tab}, ${m.window})`, zone: timeZone(m.at), at: m.at.toISOString() });
+  out.push({ label: 'Export file', sub: [
+    file('CSV', 'csv', 'text/csv;charset=utf-8', (_x, sec) => csv(sec)),
+    file('JSON', 'json', 'application/json', x => json(x, true) + '\n'),
+    file('Markdown', 'md', 'text/markdown;charset=utf-8', x => markdown(x, true)),
+    file('HTML', 'html', 'text/html;charset=utf-8', (x, sec, m) => htmlDoc(x, `${sec.name} - ${m.instance}`)),
+    file('SQL (INSERT) for PostgreSQL', 'pg.sql', 'application/sql', (x, sec, m) => sqlScript(x, 'postgres', head(sec, m))),
+    file('SQL (INSERT) for SQL Server', 'mssql.sql', 'application/sql', (x, sec, m) => '﻿' + sqlScript(x, 'sqlserver', head(sec, m))),
+  ] });
+  // 4. Transpose, 5. Select
+  if (!th) {
+    const selRows = [...new Set(sel.map(c => trs.indexOf(c.parentElement as HTMLTableRowElement)).filter(i => i >= 0))].sort((a, b) => a - b);
+    const tp: MenuItem[] = [];
+    if (td) tp.push({ label: 'This row', act: () => transpose(t, [trs.indexOf(td.parentElement as HTMLTableRowElement)], back) });
+    tp.push({ label: 'Selected rows', off: none ?? (selRows.length ? undefined : 'no cell is selected'), act: () => transpose(t, selRows, back) });
+    tp.push({ label: 'Grid', off: none, act: () => transpose(t, 'all', back) });
+    out.push({ label: 'Transpose', sub: tp });
+  }
+  if (lines.select.length) out.push({ label: 'Select', sub: lines.select });
+  if (sel.length) out.push({ label: 'Clear the selection', act: () => clear(t) });
+  // 6. the columns: the chooser, the row numbers, hide / freeze / group, the data bar
+  out.push({ sep: true, label: '' }, { label: 'Columns...', act: () => chooser(t, back) }, { label: 'Row numbers', checked: !!p.rownum, act: then(() => save(t, { ...p, rownum: !p.rownum })) });
   const visible = hs.filter(h => !h.hasAttribute('data-gt-hidden')).length;
   const frozen = [...t.classList].filter(c => /^gt-f\d+$/.test(c)).length;
-  const barred = new Set(p.bars);
-  // a stored sample's grid (community.ts demoPanel): its mark first in both copies, as in an export
-  const mark = t.closest('[data-sample]')?.getAttribute('data-sample') ?? '';
-  const items: Item[] = [
-    [`Copy ${what} as Markdown`, () => { const s = shown(t); void copyText((mark ? mark.replace(/[\\|*_`<[\]]/g, '\\$&') + '\n\n' : '') + toMarkdown(s)).then(said(t, `${s.rows.length} rows as Markdown`)); }],
-    [`Copy ${what} as HTML with the colours`, () => { const s = shown(t); void copyHtml(s, mark).then(said(t, `${s.rows.length} rows as HTML`)); }],
-  ];
-  // a change from the menu while the chooser is open draws the chooser again (its ticks and its off buttons)
-  const then = (f: () => void) => () => { f(); redrawPanel(t); };
   if (n !== undefined) {
-    if (visible > 1) items.push([`Hide column ${n}`, then(() => save(t, { ...p, hidden: [...new Set([...p.hidden, n])] }))]);
+    if (visible > 1) out.push({ label: `Hide column ${n}`, act: then(() => save(t, { ...p, hidden: [...new Set([...p.hidden, n])] })) });
     const upTo = hs.slice(0, j + 1).filter(h => !h.hasAttribute('data-gt-hidden')).length;
-    if (j < FREEZE_POS && upTo <= MAX_FROZEN && upTo < visible && frozen !== upTo) items.push([`Freeze the columns up to ${n}`, then(() => save(t, { ...p, frozen: upTo }))]);
-    if (groupings.get(t)?.col !== n) items.push([`Group by ${n}`, then(() => group(t, n))]);
-    if (hs[j].classList.contains('num')) {
-      const on = barred.has(n);
-      items.push([on ? `No data bars on ${n}` : `Data bars on ${n}`, then(() => save(t, { ...p, bars: on ? p.bars.filter(x => x !== n) : [...p.bars, n] }))]);
-    }
+    if (j < FREEZE_POS && upTo <= MAX_FROZEN && upTo < visible && frozen !== upTo) out.push({ label: `Freeze the columns up to ${n}`, act: then(() => save(t, { ...p, frozen: upTo })) });
+    if (groupings.get(t)?.col !== n) out.push({ label: `Group by ${n}`, act: then(() => group(t, n)) });
   }
-  if (frozen) items.push(['Unfreeze the columns', then(() => save(t, { ...p, frozen: 0 }))]);
-  if (groupings.has(t)) items.push(['Ungroup', then(() => group(t, null))]);
-  if (sel) items.push(['Clear the selection', () => clear(t)]);
-  items.push(['Columns...', () => chooser(t, back)]);
-  return items;
+  if (frozen) out.push({ label: 'Unfreeze the columns', act: then(() => save(t, { ...p, frozen: 0 })) });
+  if (groupings.has(t)) out.push({ label: 'Ungroup', act: then(() => group(t, null)) });
+  if (n !== undefined && hs[j].classList.contains('num')) {
+    const st = p.bars[n];
+    const pick = (to: BarStyle | null) => then(() => { const b = { ...p.bars }; if (to) b[n] = to; else delete b[n]; save(t, { ...p, bars: b }); });
+    out.push({ label: 'Data bar', sub: [...BAR_STYLES.map(([k, l]) => ({ label: l, checked: st === k, act: pick(k) })), { label: 'Remove', off: st ? undefined : `no data bar on ${n}`, act: pick(null) }] });
+  }
+  // 7. the filters (a grid with a filter row): by the clicked value, by a selection in one column, any operator, clear
+  out.push({ sep: true, label: '' });
+  if (td && filterable(t)) {
+    const v = cellText(td).replace(/\s+/g, ' ').trim(), short = v.length > 30 ? v.slice(0, 30) + '...' : v;   // as the filter compares (ui.ts shownWords)
+    if (v !== '') {
+      out.push({ label: `Filter by value: ${short}`, act: () => addCond(t, j, '=' + quoteFilter(v)) });
+      out.push({ label: `Exclude value: ${short}`, act: () => addCond(t, j, '<>' + quoteFilter(v)) });
+    }
+    const inCol = sel.length > 1 && sel.every(c => colOf(c) === j) ? [...new Set(sel.map(c => cellText(c).replace(/\s+/g, ' ').trim()))] : [];
+    if (inCol.length) {
+      const list = inCol.map(quoteFilter).join(',');
+      out.push({ label: 'Filter by these values', act: () => { clear(t); addCond(t, j, 'in:' + list); } });
+      out.push({ label: 'Exclude these values', act: () => { clear(t); addCond(t, j, '!in:' + list); } });
+    }
+    const num = hs[j].classList.contains('num');
+    out.push({ label: 'All filters', sub: [...(num ? [] : ['Like', 'Not like']), '=', '<>', '>', '<', '>=', '<='].map(op => ({ label: op, act: () => filterPrompt(t, j, op, v, back) })) });
+  }
+  out.push({ label: 'Clear filters', off: filtered(t) ? undefined : 'no filter is set', act: () => filterInputs(t).forEach((i, k) => { if (i.value) setFilter(t, k, ''); }) });
+  // 8. the counts and the statistics
+  out.push({ sep: true, label: '' }, ...lines.info);
+  return out;
+}
+// emptyMenu: a grid empty from the start (ui.ts: its header alone, the columns in its p.empty's data-cols)
+function emptyMenu(p: Element): MenuItem[] {
+  let cols: string[] = [];
+  try { cols = JSON.parse(p.getAttribute('data-cols') ?? '[]') as string[]; } catch { /* none read */ }
+  const none = 'No data to copy';
+  return [
+    { label: 'Copy', sub: ['Grid', 'As Markdown', 'As JSON'].map(label => ({ label, off: none })) },
+    { label: 'Export Excel', act: () => { void exportGrid(p).catch((e: unknown) => {
+      const box = p.closest('.empty-grid') ?? p.parentElement;
+      if (!box) return;
+      let l = box.querySelector<HTMLElement>(':scope > .gt-stats');
+      if (!l) { l = el('p', { class: 'meta gt-stats', role: 'status' }); box.append(l); }
+      l.textContent = 'Export failed: ' + (e instanceof Error ? e.message : String(e));
+    }); } },
+    { sep: true, label: '' },
+    { label: 'Columns...', off: 'no rows: the columns are chosen on a grid with rows' },
+    { label: 'Clear filters', off: 'no filter is set' },
+    { sep: true, label: '' },
+    { label: `Rows: 0 | Cols: ${fmtNum(cols.length)}`, info: true, act: () => { void copyText(`Rows: 0 | Cols: ${cols.length}`); } },
+  ];
 }
 
 // ---- starting ------------------------------------------------------------------------------------------------
@@ -520,6 +695,13 @@ const css = () => {
     + '.grid td.gt-sel{outline:2px solid var(--accent);outline-offset:-2px}'
     + '.grid td.gt-bar{background-image:linear-gradient(to right,rgba(43,100,207,.28) var(--gt-share,0%),transparent var(--gt-share,0%));'
     + 'background-image:linear-gradient(to right,color-mix(in srgb,var(--accent) 28%,transparent) var(--gt-share,0%),transparent var(--gt-share,0%))}'
+    + '.grid td.gt-bar.gt-bar-under{background-size:100% 4px;background-position:0 100%;background-repeat:no-repeat}'
+    + '.grid td.gt-tl-r{background-color:rgba(217,48,37,.3)}.grid td.gt-tl-a{background-color:rgba(242,153,0,.3)}.grid td.gt-tl-g{background-color:rgba(30,142,62,.3)}'
+    // the row numbers: a counter in a cell the CSS draws before each row (no column: hide, freeze and filter keep theirs)
+    + 'table.grid.gt-rownum > tbody{counter-reset:gtrow}table.grid.gt-rownum > tbody > tr:not(.trend-row){counter-increment:gtrow}'
+    + 'table.grid.gt-rownum > tbody > tr:not(.trend-row)::before{content:counter(gtrow);display:table-cell;padding:.2rem .5rem;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}'
+    + 'table.grid.gt-rownum > thead > tr::before{content:"";display:table-cell}table.grid.gt-rownum > thead > tr:first-child::before{content:"#";color:var(--muted);padding:.2rem .5rem}'
+    + '.gt-dialog{max-width:min(90vw,70rem);background:var(--card);color:var(--fg);border:1px solid var(--line)}.gt-dialog .gt-scroll{max-height:60vh}'
     + '.gt-stats:empty{display:none}.gt-stats{margin:.2rem 0}'
     + '.gt-panel,.gt-groups{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:.5rem .8rem;margin:.3rem 0}'
     + '.gt-panel p,.gt-groups p{margin:.3rem 0}.gt-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:.1rem 1rem;max-height:16rem;overflow:auto}'
@@ -568,9 +750,15 @@ export function installGridTools() {
     }
   }).observe(document.body, { childList: true, subtree: true });
   document.querySelectorAll<HTMLTableElement>('table.grid').forEach(ask);
+  // the grid's menu (ui.ts askGridMenu): built here and shown in the grid's host - the open dialog it sits in, else the body
   document.addEventListener('pgvigil:gridmenu', e => {
-    const d = (e as CustomEvent<MenuDetail>).detail;
-    if (d?.table && Array.isArray(d.items)) d.items.push(...menuItems(d.table, d.td ?? null, (d.td as HTMLElement | null) ?? null));
+    const d = (e as CustomEvent<GridMenuAsk>).detail;
+    if (!d || d.done) return;
+    const items = d.table ? gridMenu(d.table, d.td, d.th, d.back) : d.empty ? emptyMenu(d.empty) : null;
+    if (!items) return;
+    d.done = true;
+    const host = (d.table ?? d.empty)?.closest('dialog[open]') ?? undefined;
+    showTreeMenu(d.x, d.y, items, d.back, 'Grid menu', host);
   });
   document.addEventListener('click', onClick);
   document.addEventListener('mousedown', e => {   // a Shift+click on a cell extends the tools' selection, not the browser's text selection

@@ -444,7 +444,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const bad = (r: Row, key: string) => { const b = bucketOf(r, key); return b === 'warn' || b === 'crit'; };
   // its own scroll, as DBA Dash's upper pane, at most Test Summary Max Height % of the window: the instance grid below
   // stays on the first screen
-  const upper = el('div', { class: 'grid-wrap tests', tabindex: '0', role: 'region', 'aria-label': 'Test Summary' });
+  // no tab stop of its own: the grid's current cell is the one stop (task GM), and moving it scrolls this pane
+  const upper = el('div', { class: 'grid-wrap tests', role: 'region', 'aria-label': 'Test Summary' });
   const sizeUpper = () => { upper.style.maxHeight = `${maxPct}vh`; upper.hidden = !showTests; };
   sizeUpper();
   // the instances both grids speak of: all in scope, or in the focused view those with a warning or a critical
@@ -485,7 +486,6 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) > 0);
     countBtns.clear();
     const g = grid(t, testCols, focus ? 'No test has a warning or a critical instance.' : 'No test has a sampled instance.');
-    g.querySelector('.grid-wrap')?.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
     upper.replaceChildren(g);
   };
   const setFocus = (v: boolean) => {

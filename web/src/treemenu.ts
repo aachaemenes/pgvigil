@@ -30,15 +30,18 @@ import { ackDialog, ackWhy, loadAckSafe } from './ack';
 
 // ---- a menu with submenus ------------------------------------------------------------------------------------
 
-export interface MenuItem { label: string; act?: () => void; sub?: MenuItem[]; off?: string; sep?: boolean; info?: boolean }
+// off: the item cannot act here, its reason drawn as words in the item (offControl's rule); checked: a toggle's state
+export interface MenuItem { label: string; act?: () => void; sub?: MenuItem[]; off?: string; sep?: boolean; info?: boolean; checked?: boolean }
 
-let open: { boxes: HTMLElement[]; back: HTMLElement | null } | null = null;
+// host: where the boxes go - the open dialog a grid sits in (a modal's top layer: a box under it is inert), else the body
+let open: { boxes: HTMLElement[]; back: HTMLElement | null; host?: Element } | null = null;
 function closeAll(focusBack = true) {
   if (!open) return;
   const o = open; open = null;
   for (const b of o.boxes) b.remove();
   if (focusBack && o.back?.isConnected) o.back.focus();
 }
+let offSeq = 0;
 const buttonsOf = (box: HTMLElement) => [...box.querySelectorAll<HTMLButtonElement>(':scope > button')];
 
 // menuBox: one level of a menu at x, y (kept inside the window); level 0 replaces any open menu
@@ -48,7 +51,8 @@ function menuBox(items: MenuItem[], x: number, y: number, level: number, label: 
   const box = el('div', { class: 'menu tm-menu', role: 'menu', 'aria-label': label, style: `left:${x}px;top:${y}px` });
   for (const it of items) {
     if (it.sep) { box.append(el('div', { class: 'tm-sep', role: 'separator' })); continue; }
-    const b = el('button', { type: 'button', role: 'menuitem', class: it.info ? 'tm-info' : '' }, it.label );
+    const b = el('button', { type: 'button', role: it.checked === undefined ? 'menuitem' : 'menuitemcheckbox', class: it.info ? 'tm-info' : '' }, it.label );
+    if (it.checked !== undefined) { b.setAttribute('aria-checked', String(it.checked)); b.prepend(el('span', { class: 'tm-check' + (it.checked ? '' : ' tm-unchecked'), 'aria-hidden': 'true' }, it.checked ? '\u2713 ' : '')); }
     if (it.sub) {
       b.setAttribute('aria-haspopup', 'menu');
       b.setAttribute('aria-expanded', 'false');
@@ -63,10 +67,14 @@ function menuBox(items: MenuItem[], x: number, y: number, level: number, label: 
       b.addEventListener('click', () => openSub(true));
       b.addEventListener('mouseenter', () => openSub(false));
     } else if (it.off) {
+      // its reason as words in the item, read as the item's description
+      const why = el('span', { class: 'off-reason', id: 'tm-off-' + String(++offSeq) }, it.off);
       b.setAttribute('aria-disabled', 'true');
       b.title = it.off;
       b.classList.add('tm-off');
-      b.setAttribute('aria-label', `${it.label}: ${it.off}`);
+      b.setAttribute('aria-label', it.label);   // the name is the label; the reason is read once, as its description
+      b.setAttribute('aria-describedby', why.id);
+      b.append(why);
     } else {
       // the menu closes with the focus back on its node first, so a dialog the item opens returns there when it closes
       b.addEventListener('click', () => { closeAll(true); it.act?.(); });
@@ -89,7 +97,7 @@ function menuBox(items: MenuItem[], x: number, y: number, level: number, label: 
     } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeAll(); }
     else if (e.key === 'Tab') { e.preventDefault(); closeAll(); }
   });
-  document.body.append(box);
+  (open.host ?? document.body).append(box);
   const r = box.getBoundingClientRect();
   if (r.right > innerWidth - 4) box.style.left = `${Math.max(4, (level ? x - r.width - (parentBtn?.getBoundingClientRect().width ?? 0) : x - r.width))}px`;
   if (r.bottom > innerHeight - 4) box.style.top = `${Math.max(4, innerHeight - 4 - r.height)}px`;
@@ -97,10 +105,11 @@ function menuBox(items: MenuItem[], x: number, y: number, level: number, label: 
   return box;
 }
 
-// showTreeMenu: a menu of items at x, y, its first item focused; back: where the focus returns
-export function showTreeMenu(x: number, y: number, items: MenuItem[], back: HTMLElement | null, label: string) {
+// showTreeMenu: a menu of items at x, y, its first item focused; back: where the focus returns; host: the boxes' parent
+// (a grid in an open dialog: that dialog)
+export function showTreeMenu(x: number, y: number, items: MenuItem[], back: HTMLElement | null, label: string, host?: Element) {
   closeAll(false);
-  open = { boxes: [], back };
+  open = { boxes: [], back, host };
   const box = menuBox(items, x, y, 0, label);
   open.back = back;
   buttonsOf(box)[0]?.focus();
@@ -610,8 +619,6 @@ function openFor(n: TNode, x: number, y: number) {
 
 // ---- the grids' cell menu (B16, E104) -------------------------------------------------------------------------------
 
-type GItem = [string, () => void];
-interface GridMenu { table?: HTMLTableElement; td?: Element | null; items?: GItem[] }
 
 const heads = (t: HTMLTableElement) => [...t.querySelectorAll<HTMLTableCellElement>(':scope > thead > tr:first-child > th')];
 const dataRows = (t: HTMLTableElement) => [...t.querySelectorAll<HTMLTableRowElement>(':scope > tbody > tr')].filter(tr => !tr.classList.contains('trend-row'));
@@ -621,10 +628,12 @@ interface Num { n: number; kind: string }
 // numberAt: a cell's number in its unit's base, as the grid tools read it (the page model's raw value, else a number
 // column's text); undefined = not a number
 function numberAt(t: HTMLTableElement, td: Element, raw: unknown): Num | undefined {
-  const text = cellText(td);
-  if (text === '') return undefined;
   const j = [...td.parentElement!.children].indexOf(td);
-  const numCol = !!heads(t)[j]?.classList.contains('num');
+  return numberOf(cellText(td), raw, !!heads(t)[j]?.classList.contains('num'));
+}
+// numberOf: the same from a cell's words and raw value (the page model's rows: no row built for it)
+function numberOf(text: string, raw: unknown, numCol: boolean): Num | undefined {
+  if (text === '') return undefined;
   // a text column whose values look like numbers (a version '17.10', a code '0042') is no number: summed only a number
   // column, or a value the page holds as a number
   if (!numCol && typeof raw !== 'number') return undefined;
@@ -673,73 +682,47 @@ function firstVisible(tr: HTMLTableRowElement, hs: HTMLTableCellElement[]): Elem
   return undefined;
 }
 
-// everyRow: every row the grid's filters leave, past its drawn page too (the page model builds the undrawn ones off the
-// screen, as Copy all and the export do), with each row's raw values when the model matches the columns
-function everyRow(t: HTMLTableElement): { trs: HTMLTableRowElement[]; raws?: Record<string, unknown>[]; keys?: string[] } {
-  const m = gridModel(t);
-  if (m?.allRows && m.cols.length === heads(t).length) return { trs: m.allRows(), raws: m.rows(), keys: m.cols.map(c => c.key) };
-  return { trs: dataRows(t) };
-}
-
-function setFilter(t: HTMLTableElement, j: number, v: string) {
-  const row = t.querySelector<HTMLTableRowElement>(':scope > thead > tr.filters');
-  const inp = row?.querySelectorAll<HTMLInputElement>('input')[j];
-  if (!row || !inp) return;
-  if (row.hidden) heads(t)[j]?.querySelector<HTMLButtonElement>('.filter-btn')?.click();
-  inp.value = v;
-  inp.dispatchEvent(new Event('input'));
-}
-
-function gridItems(t: HTMLTableElement, td: Element | null): GItem[] {
+// gridLines: the grid menu's Select submenu and its count and statistics lines (B16, D02; gridtools.ts gridMenu builds
+// the menu, task GM). j: the clicked column (a cell's or a header's), -1 none. The statistics: the selection's when
+// there is one, else the column's over every row the filters leave - read from the page model's rows (no row is built
+// for them), else from the drawn cells.
+export function gridLines(t: HTMLTableElement, td: Element | null, j: number): { select: MenuItem[]; info: MenuItem[] } {
   const hs = heads(t), rows = dataRows(t);
   const total = Number(t.dataset.rows ?? rows.length);
-  const out: GItem[] = [];
-  const j = td ? [...td.parentElement!.children].indexOf(td) : -1;
-  if (td && j >= 0) {
-    const tr = td.parentElement as HTMLTableRowElement;
-    out.push(['Select row', () => selectCells(t, firstVisible(tr, hs), lastVisible(tr, hs))]);
-    // the selection is of the cells drawn: a grid past its page says how many that is
-    out.push([rows.length < total ? `Select column (the ${fmtNum(rows.length)} drawn)` : 'Select column', () => selectCells(t, rows[0]?.children[j], rows[rows.length - 1]?.children[j])]);
-    const v = cellText(td), short = v.length > 30 ? v.slice(0, 30) + '...' : v;
-    if (t.querySelector(':scope > thead > tr.filters') && v) {
-      // a number column compares the value as shown ('=' in the grid's filter: units included); a text column's filter is
-      // a part of the words, and the item says so
-      const num = !!hs[j]?.classList.contains('num');
-      out.push([num ? `Filter by value: ${short}` : `Filter by value (contains): ${short}`, () => setFilter(t, j, num ? '=' + v : v)]);
-      out.push(['Exclude value (contains)', () => setFilter(t, j, '!' + v)]);
-    }
-  }
-  if (rows.length) out.push([rows.length < total ? `Select all (the ${fmtNum(rows.length)} rows drawn)` : 'Select all', () => {
+  const select: MenuItem[] = [];
+  if (td) { const tr = td.parentElement as HTMLTableRowElement; select.push({ label: 'Row', act: () => selectCells(t, firstVisible(tr, hs), lastVisible(tr, hs)) }); }
+  if (j >= 0 && rows.length) select.push({ label: rows.length < total ? `Column (the ${fmtNum(rows.length)} drawn)` : 'Column', act: () => selectCells(t, rows[0]?.children[j], rows[rows.length - 1]?.children[j]) });
+  if (rows.length) select.push({ label: rows.length < total ? `All (the ${fmtNum(rows.length)} rows drawn)` : 'All', act: () => {
     const first = rows[0] ? firstVisible(rows[0], hs) : undefined, last = rows[rows.length - 1] ? lastVisible(rows[rows.length - 1], hs) : undefined;
     selectCells(t, first, last);
-  }]);
-  const filtered = [...t.querySelectorAll<HTMLInputElement>(':scope > thead > tr.filters input')].some(i => i.value.trim() !== '');
-  if (filtered) out.push(['Clear filters', () => { t.querySelectorAll<HTMLInputElement>(':scope > thead > tr.filters input').forEach((i, k) => { if (i.value) setFilter(t, k, ''); }); }]);
-  // the statistics: the selection's when there is one, else the clicked cell's column over the rows drawn
+  } });
   const visibleCols = hs.filter(h => !h.hasAttribute('data-gt-hidden')).length;
   const dims = `Rows: ${fmtNum(total)} | Cols: ${fmtNum(visibleCols)}`;
-  out.push([dims, () => { void copyText(dims); }]);
+  const info: MenuItem[] = [{ label: dims, info: true, act: () => { void copyText(dims); } }];
   const sel = [...t.querySelectorAll<HTMLTableCellElement>(':scope > tbody > tr > td.gt-sel')];
   let line = '';
   if (sel.length > 1) {
     const nums = sel.map(c => numberAt(t, c, rawOf(t, c.parentElement as HTMLTableRowElement, [...c.parentElement!.children].indexOf(c)))).filter((x): x is Num => !!x);
-    const s = statsLine(nums);
-    line = `Selected Cells: ${fmtNum(sel.length)} (${fmtNum(nums.length)} numeric)${s ? ' | ' + s : ''}`;
-  } else if (td && j >= 0) {
-    // the clicked column over every row the filters leave, drawn or not (the 'Rows' figure above counts the same rows)
-    const all = everyRow(t);
-    const nums = all.trs.map((tr, i) => tr.children[j] ? numberAt(t, tr.children[j], all.raws && all.keys ? all.raws[i]?.[all.keys[j]] : undefined) : undefined).filter((x): x is Num => !!x);
-    const s = statsLine(nums);
-    if (s) line = `[${headText(hs[j]) || 'column ' + (j + 1)}] ${s}`;
+    const st = statsLine(nums);
+    line = `Selected Cells: ${fmtNum(sel.length)} (${fmtNum(nums.length)} numeric)${st ? ' | ' + st : ''}`;
+  } else if (j >= 0) {
+    const st = statsLine(columnNums(t, j));
+    if (st) line = `[${headText(hs[j]) || 'column ' + (j + 1)}] ${st}`;
   }
-  if (line) out.push([line, () => { void copyText(line); }]);
-  return out;
+  if (line) info.push({ label: line, info: true, act: () => { void copyText(line); } });
+  return { select, info };
+}
+// columnNums: a column's numbers over every row the filters leave
+function columnNums(t: HTMLTableElement, j: number): Num[] {
+  const m = gridModel(t), numCol = !!heads(t)[j]?.classList.contains('num');
+  if (m?.text && m.cols.length === heads(t).length) { const c = m.cols[j]; return m.rows().map(r => numCol || typeof r[c.key] === 'number' ? numberOf(m.text!(r, c), r[c.key], numCol) : undefined).filter((x): x is Num => !!x); }   // a text column's cells are never built
+  return dataRows(t).map(tr => tr.children[j] ? numberAt(t, tr.children[j], undefined) : undefined).filter((x): x is Num => !!x);
 }
 
 // ---- starting -----------------------------------------------------------------------------------------------------
 
 const css = '.tm-menu{min-width:14rem}.tm-menu button{display:flex;justify-content:space-between;gap:1.5rem;width:100%;text-align:left}'
-  + '.tm-menu .tm-arrow{opacity:.7}.tm-menu .tm-off{opacity:.55;cursor:not-allowed}.tm-sep{border-top:1px solid var(--line);margin:.2rem 0}'
+  + '.tm-menu .tm-arrow{opacity:.7}.tm-menu .tm-off{color:var(--muted);cursor:not-allowed;flex-wrap:wrap}.tm-menu .tm-off .off-reason{flex-basis:100%;font-size:.85em}.tm-menu .tm-check{margin-right:.2rem}.tm-menu .tm-unchecked{display:inline-block;width:.7em;height:.7em;border:1px solid currentColor;margin-right:.45rem;vertical-align:-.05em}.tm-sep{border-top:1px solid var(--line);margin:.2rem 0}'
   + '.tm-bar{display:inline-block;vertical-align:middle;width:3.2rem;height:.7rem;border:1px solid var(--line);background:var(--bg);margin-right:.2rem}'
   + '.tm-bar.none{border-style:dashed}.tm-bar>span{display:block;height:100%;background:var(--ok,#006638)}.tm-bar.warn>span{background:var(--warn,#e49325)}.tm-bar.crit>span{background:var(--crit,#ab1f26)}'
   + '.tm-dialog table.grid td,.tm-dialog table.grid th{padding:.15rem .5rem}.tm-yaml{background:var(--card);border:1px solid var(--line);padding:.4rem .6rem}'
@@ -775,13 +758,11 @@ export function installTreeMenu() {
     openFor(n, x, y);
   });
   document.addEventListener('mousedown', e => { if (open && !open.boxes.some(b => b.contains(e.target as Node))) closeAll(false); });
+  // an Escape from outside the open menu (the focus left it without a focusin: on the page's body) closes it, the focus
+  // back on its node, as ui.ts's grid menu did; an Escape inside a menu is its own box's (one level at a time)
+  document.addEventListener('keydown', e => { if (open && e.key === 'Escape' && !open.boxes.some(b => b.contains(e.target as Node))) { e.preventDefault(); closeAll(true); } });
   document.addEventListener('focusin', e => { if (open && !open.boxes.some(b => b.contains(e.target as Node))) closeAll(false); });
   window.addEventListener('hashchange', () => closeAll(false));
-  // on window: the event reaches it after the grid tools' document listener, so these lines end the menu as DBA Dash's do
-  window.addEventListener('pgvigil:gridmenu', e => {
-    const d = (e as CustomEvent<GridMenu>).detail;
-    if (d?.table && Array.isArray(d.items)) d.items.push(...gridItems(d.table, d.td ?? null));
-  });
   const tree = document.getElementById('tree');
   if (tree) new MutationObserver(ms => {
     if (!filters.size) return;

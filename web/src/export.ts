@@ -16,7 +16,7 @@
 import { fleet } from './fleet';
 import { installGridTools } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
-import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
+import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName, zonedToUtc } from './tz';
 import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, readWindowWords, showMenu } from './ui';
 import { cutReads } from './api';
 import { readRows } from './export_colours';
@@ -29,6 +29,7 @@ import type { LookCache, PageSheet } from './export_page';
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date' | 'bool' | 'days' | 'day';   // bool: v 1 or 0, written as an Excel boolean (P3)   // days: a count of days the page writes 'n days'   // day: a date alone (v its Excel serial, stamp 'YYYY-MM-DD')
 export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string;   // link: the screen draws the cell as a link   // head: a heading inside a sheet (written in the header row's style)   // stamp: a time's local text for the CSV
+  raw?: string;   // a text cell's own value where the screen collapses its whitespace (a line break, a tab): the JSON and SQL forms write it
   per?: string;   // a size per a time ('381.5 MB / day': kind 'bytes', per 'day')
   dp?: number;   // (X13) a grid sheet's number shown with the decimals its column shows on the page: '0.0' for 1 (a share: '0%' for 0); the value stays exact
   look?: Look;   // the cell's look as the page's own CSS paints it (export_colours.ts, export_page.ts): when set, the file writes it and nothing else
@@ -312,7 +313,9 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
   const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {
     const t = text(td);
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
+    // a text whose words the screen collapsed ('line1\nline2' shows 'line1 line2'): its own value kept beside them (review-15 gm3 B4)
+    const own = typeof raw === 'string' && t !== '' && raw !== t && norm(raw) === t ? { raw } : {};
+    const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), ...own, status: statusOf(td), link: linkOf(td), text: t };
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
     // are that number ('3' collection errors; on DBA Dash 4.25.0 '3' collections at warning or critical), as DBA Dash
     // writes its 'DBA Dash Errors (24hrs)' / 'Collection Health'
@@ -986,23 +989,48 @@ export function workbook(meta: Meta, given: Section[], page?: PageSheet): { name
 // duration in seconds, a size in bytes, a share in percent), a time as the screen shows it (the display time zone's clock); a text cell
 // that a spreadsheet would read as a formula (= + - @ tab CR first) gets a leading apostrophe (OWASP CSV injection).
 export function csv(s: Section): string {
+  // rawValue's value, and three rules of the CSV's own: a time as the screen's clock (a spreadsheet reads it as a time),
+  // a boolean as the page's word, a text a spreadsheet would read as a formula with a leading apostrophe
   const val = (c: Cell): string => {
-    if (typeof c.v === 'number') {
-      if (c.kind === 'date' || c.kind === 'day') return c.stamp ?? '';
-      if (c.kind === 'bool') return c.text;   // the CSV keeps the page's word for a boolean
-      if (c.kind === 'secs') return String(Math.round(c.v * 86400 * 1000) / 1000);
-      if (c.kind === 'msecs') return String(c.v);   // the milliseconds, as the raw value
-      if (c.kind === 'pct') return String(Math.round(c.v * 1e12) / 1e10);   // the percent figure (the cell holds the share): 12.5, not 0.125; ten decimals kept
-      return String(c.v);
-    }
+    const r = rawValue(c);
+    if (r === null) return '';
+    if (typeof c.v === 'number' && (c.kind === 'date' || c.kind === 'day')) return c.stamp ?? '';
+    if (typeof r === 'boolean') return c.text;   // the CSV keeps the page's word for a boolean
+    if (typeof r === 'number') return String(r);
     // a cell that starts with = + - @ TAB CR, or with 's before one, gets one more ' (as the server's inventory CSV and
     // its import's undo: task 312, review P M-6 - "'=x" written as it is read back as =x)
-    return /^'*[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
+    return /^'*[=+\-@\t\r]/.test(r) ? "'" + r : r;
   };
   const q = (v: string) => /[",\r\n]|^\s|\s$/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   // a stored sample's file starts with its mark, a line of its own above the header; a list cut to its part's reach
   // says what it read on the next line
   return '﻿' + [...(s.sample ? [q(s.sample)] : []), ...(s.read ? [q(s.read)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
+}
+
+// rawValue: a cell's own value for the CSV, JSON and SQL forms (task GM; one function for the three): an empty cell null;
+// a number the number - a size in bytes, a duration in seconds (a millisecond column in milliseconds), a percent the
+// figure the page shows (12.5, never the 0.125 a workbook's percent format holds), a count of days the days; a time ISO
+// 8601 with the display zone's offset at that instant ('2026-11-14T17:00:00-08:00'); anything else the words as shown
+// (a yes / no cell is a 'bool', a day a 'day': typed() and the page read them). The workbook writes Excel's own forms instead (docs/export.md says
+// which, per form).
+export function rawValue(c: Cell): string | number | boolean | null {
+  if (c.v === '') return null;
+  if (typeof c.v !== 'number') return c.v;
+  switch (c.kind as string) {
+    case 'date': return c.stamp ? isoOf(c.stamp) : c.text;
+    case 'day': return c.stamp ?? c.text;
+    case 'bool': return c.v === 1;
+    case 'secs': return Math.round(c.v * 86400 * 1000) / 1000;
+    case 'pct': return Math.round(c.v * 1e12) / 1e10;
+    default: return c.v;   // int, dec, bytes (a size per a time too), nsecs (seconds already), msecs, days
+  }
+}
+// isoOf: a time the screen writes on the display zone's clock ('YYYY-MM-DD HH:MM:SS') with that zone's offset at it
+function isoOf(s: string): string {
+  const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(s);
+  if (!m) return s;
+  const o = offsetMin(zonedToUtc(+m[1], +m[2], +m[3], +m[4], +m[5], +m[6])), a = Math.abs(o), two = (n: number) => String(n).padStart(2, '0');
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${o < 0 ? '-' : '+'}${two(Math.floor(a / 60))}:${two(a % 60)}`;
 }
 
 // ---- zip (the .xlsx container and the CSV bundle) ---------------------------------------------------------
@@ -1096,7 +1124,7 @@ export function exportName(m: Meta, ext: string): string {
   return `${safe(m.instance)}_${safe(m.tab)}_${fileStamp(m.from)}_${fileStamp(m.to)}.${ext}`;
 }
 
-function save(blob: Blob, name: string) {
+export function save(blob: Blob, name: string) {
   const a = el('a', { href: URL.createObjectURL(blob), download: name });
   a.hidden = true;
   document.body.append(a);
@@ -1107,11 +1135,12 @@ function save(blob: Blob, name: string) {
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-// oneFile: a workbook of one grid or one chart (its sheet, then 'About'), named
-// <instance>_<tab>_<sheet>_<from>_<to>.xlsx
+// oneName: a one-grid file's name, <instance>_<tab>_<sheet>_<from>_<to>.<ext> (the workbook's and every Export file form's)
+const oneName = (m: Meta, sec: Section, ext: string) => `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within], [!!sec.own])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.${ext}`;
+// oneFile: a workbook of one grid or one chart (its sheet, then 'About')
 async function oneFile(m: Meta, sec: Section): Promise<string> {
   const z = await zip(workbook(m, [sec]), m.at);
-  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name], [], [sec.within], [!!sec.own])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
+  const name = oneName(m, sec, 'xlsx');
   save(new Blob([z], { type: XLSX }), name);
   return name;
 }
@@ -1126,12 +1155,26 @@ export async function exportSection(sec: Section, ctx: Ctx = parse()): Promise<s
 // export reads it (the same heading, cells, colours, hidden columns); an empty grid (its note) is a sheet of its header
 // row. name: the sheet's name instead of the heading's.
 export async function exportGrid(g: Element, name?: string, ctx: Ctx = parse()): Promise<string> {
+  const { m, sec } = await gridRead(g, ctx);
+  return oneFile(m, name ? { ...sec, name } : sec);
+}
+// gridRead: the grid g as a section and its window's meta (task GM's one read for Export Excel and Export file; named
+// apart from gridSection, the X7 grid sheet)
+async function gridRead(g: Element, ctx: Ctx): Promise<{ m: Meta; sec: Section }> {
   const m = await metaOf(ctx);
   const root = g.closest('dialog') ?? document.getElementById('main') ?? document.body;
-  const found = walk(root, m.tab, true).find(f => f.el === g)?.sec
+  const sec = walk(root, m.tab, true).find(f => f.el === g)?.sec
     ?? (g.tagName === 'TABLE' && g.classList.contains('grid') ? { name: m.tab, ...readGrid(g as HTMLTableElement) } : undefined);
-  if (!found) throw new Error('no grid here');
-  return oneFile(m, name ? { ...found, name } : found);
+  if (!sec) throw new Error('no grid here');
+  return { m, sec };
+}
+// saveGridAs: one grid in another form (the grid menu's Export file, gridwriters.ts): read as exportGrid reads it (the
+// shown rows in the shown order, the hidden columns left out, an empty grid's header) and saved under the workbook's name
+export async function saveGridAs(g: Element, ext: string, write: (sec: Section, m: Meta) => Blob, ctx: Ctx = parse()): Promise<string> {
+  const { m, sec } = await gridRead(g, ctx);
+  const name = oneName(m, sec, ext);
+  save(write(sec, m), name);
+  return name;
 }
 
 // chartSection: a chart's numbers as a sheet (its Export Excel's and the page export's numbers sheet): a time as a time,
@@ -1288,33 +1331,6 @@ export async function pageBook(ctx: Ctx, r: HTMLElement | null, tab: string, wai
   return { items, found, names: sheetNames(secs.map(s => s.name), [], secs.map(s => s.within), secs.map(s => !!s.own)) };
 }
 
-// tell: a word in the grid's own count line for a moment (ui.ts grid: the 'n of m rows' line above it)
-function tell(g: Element, what: string) {
-  const count = g.closest('.grid-box')?.querySelector('.filter-count');
-  if (!count) return;
-  const before = count.textContent;
-  count.textContent = what;
-  window.setTimeout(() => { if (count.textContent === what) count.textContent = before; }, 2500);
-}
-
-// the grid's menu (ui.ts sends 'pgvigil:gridmenu' with its items): Export Excel after the copies, where DBA Dash's grid
-// menu has it (Copy, then Export Excel)
-let menuOn = false;
-function installGridExport() {
-  if (menuOn || typeof document === 'undefined') return;
-  menuOn = true;
-  document.addEventListener('pgvigil:gridmenu', e => {
-    const d = (e as CustomEvent<{ table?: HTMLTableElement; items?: [string, () => void][] }>).detail;
-    if (!d?.table || !Array.isArray(d.items)) return;
-    const t = d.table;
-    let at = 0;
-    d.items.forEach((it, i) => { if (/^Copy\b/.test(it[0])) at = i + 1; });
-    d.items.splice(at, 0, ['Export Excel', () => {
-      void exportGrid(t).then(n => tell(t, 'Exported ' + n), (x: unknown) => tell(t, 'Export failed: ' + (x instanceof Error ? x.message : String(x))));
-    }]);
-  });
-}
-
 // summaryExport: the fleet Summary's Export to Excel drop-down (DBA Dash's Summary toolbar): Export Summary (the
 // instance grid) or Export Test Summary (the grid of tests), each a workbook of that grid alone
 function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLElement): HTMLElement {
@@ -1347,7 +1363,6 @@ async function chartsDrawn(r: Element | null): Promise<void> {
 // start with the bar: they answer the grids' own menu and touch nothing until asked.
 export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => document.getElementById('main')): HTMLElement {
   installGridTools();
-  installGridExport();   // after the tools: its line goes after their copies
   const note = el('span', { class: 'meta', role: 'status' });
   const run = async (b: HTMLButtonElement, kind: 'xlsx' | 'csv') => {
     b.disabled = true; note.textContent = '';
