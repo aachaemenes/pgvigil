@@ -124,6 +124,10 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/plans/explain` | operator | EXPLAIN (stores a plan row) |
 | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |
 | `POST /api/plans/hypo` | operator | try a hypothetical index |
+| `POST /api/mssql/stats/histogram` | operator | read a statistic's histogram on the monitored server (DBCC SHOW_STATISTICS) |
+| `POST /api/mssql/indexes/fragmentation` | operator | read one database's index fragmentation (sys.dm_db_index_physical_stats, LIMITED or SAMPLED) |
+| `POST /api/mssql/indexes/fragmentation/cost` | operator | read the heap size a fragmentation read would scan |
+| `POST /api/mssql/indexes/fragmentation/cancel` | operator | cancel a running fragmentation read |
 | `POST /api/indexes/advise` | operator | run the index advisor (hypothetical indexes and EXPLAIN on the monitored server; nothing is created) |
 | `POST /api/community/run` | operator | run a community tool (a script runs as the read login in a rolled-back transaction) |
 | `POST /api/reportmail/send` | operator | send a report by mail now |

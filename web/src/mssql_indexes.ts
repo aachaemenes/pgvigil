@@ -16,6 +16,7 @@ import { get, post, rowsOf, Row, Table } from './api';
 import { lineChart, seriesColors } from './chart';
 import { Ctx, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+import { needControl } from './needs';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlIndexesTab = 'mssqlindexes';
@@ -136,7 +137,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       if (none) return none;
       const b = el('button', { type: 'button', class: 'link' }, 'histogram');
       b.addEventListener('click', () => { void showHistogram(String(r.database), String(r.schema_name), String(r.table_name), String(r[statsKey])); });
-      return b;
+      return needControl(b, 'mssql/stats/histogram');   // the role (B24f): a read on the monitored server, an operator's
     };
     out.push(el('h3', {}, 'Statistics'), grid(rowsOf(d.statsdbs), [
       { key: 'database' }, { key: 'statistics', num: true }, { key: 'statistics_with_props', label: 'with properties', num: true },
@@ -352,6 +353,8 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     const note = offControl(lim, why || null);
     offControl(smp, why || null, note);
     offControl(cost, (off.startsWith('off: a fragmentation read runs only') || !dbName) ? (why || null) : null, note);
+    // the role (B24f): each read runs on the monitored server, an operator's (a reason already above stays first)
+    needControl(lim, 'mssql/indexes/fragmentation'); needControl(smp, 'mssql/indexes/fragmentation'); needControl(cost, 'mssql/indexes/fragmentation/cost');
     const costOut = el('span', { class: 'meta' });
     cost.addEventListener('click', () => {
       costOut.textContent = 'Reading...';
@@ -388,7 +391,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
         const r = rowsOf(f.read)[0];
         if (!r) { status.replaceChildren(el('p', { class: 'meta' }, 'No such read.')); return; }
         if (r.state === 'running') {
-          const cancel = el('button', { type: 'button' }, 'Cancel');
+          const cancel = needControl(el('button', { type: 'button' }, 'Cancel'), 'mssql/indexes/fragmentation/cancel');
           cancel.addEventListener('click', () => {
             post<Row>('mssql/indexes/fragmentation/cancel', { instance_id: ctx.instance, read_id: id })
               .then(c => status.append(el('p', { class: 'meta' }, String(c.words ?? c.state)))).catch((e: unknown) => status.append(errorBox(e)));
