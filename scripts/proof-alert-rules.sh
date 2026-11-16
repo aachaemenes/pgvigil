@@ -210,7 +210,8 @@ out=$(as "$COL" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"u
 [[ $(as "$ALR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rules', 'INSERT')") == "t|f" ]] || fail "R: the alerter's rights on alert_rule_state / alert_rules"
 out=$(as "$ALR" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"ui_user\":\"x\",\"rule_id\":$RRULE}')")
 [[ $out == *"permission denied for function"* ]] || fail "R: the alerter called import_alert_rule: $out"
-RCAT=$(as "$RDR" -c "select count(*) from pgvigil.metric_catalog"); OCAT=$(q "select count(*) from pgvigil.metric_catalog")
+# the owner's read can fail under set -e: its error text goes to the comparison, which then FAILs with it
+RCAT=$(as "$RDR" -c "select count(*) from pgvigil.metric_catalog"); OCAT=$(q "select count(*) from pgvigil.metric_catalog" 2>&1) || true
 [[ $OCAT =~ ^[0-9]+$ && $RCAT == "$OCAT" && $OCAT -ge 67 ]] || fail "R: the reader's metric_catalog: $RCAT rows, the owner's $OCAT (want the same, and at least 0085's 62 and 0166's five)"
 out=$(as "$RDR" -c "select pgvigil.alert_rules_run(now())")
 [[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* ]] || fail "R: the reader ran alert_rules_run: $out"
