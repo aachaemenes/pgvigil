@@ -20,8 +20,9 @@ import (
 // dropped at the end, so no other package's Migrate makes or drops a month under them.
 
 // throwawayRepo creates a database on the test DSN's server, opens a Repo on it (not migrated) and drops the database
-// when the test ends. It skips, naming why, when the DSN is unset or its login may not create a database.
-func throwawayRepo(t *testing.T) (context.Context, *Repo, *pgxpool.Pool) {
+// when the test ends; it returns the database's DSN too. It skips, naming why, when the DSN is unset or its login may
+// not create a database.
+func throwawayRepo(t *testing.T) (context.Context, *Repo, *pgxpool.Pool, string) {
 	t.Helper()
 	base := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if base == "" {
@@ -69,7 +70,7 @@ func throwawayRepo(t *testing.T) (context.Context, *Repo, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return ctx, r, pool
+	return ctx, r, pool, dsn
 }
 
 // nextMonthStart is the first second of the next UTC month.
@@ -83,7 +84,7 @@ func nextMonthStart() time.Time {
 // made with the statement that made it; it needs a superuser, and the test skips with that reason otherwise. Red on a
 // tree whose Migrate makes no month ahead: the imports make next month's partitions themselves.
 func TestRolloverImportMakesNoPartition(t *testing.T) {
-	ctx, r, pool := throwawayRepo(t)
+	ctx, r, pool, _ := throwawayRepo(t)
 	var super bool
 	var who string
 	if err := pool.QueryRow(ctx, `SELECT rolsuper, rolname FROM pg_roles WHERE rolname = current_user`).Scan(&super, &who); err != nil {
@@ -143,7 +144,7 @@ CREATE EVENT TRIGGER n4_made ON ddl_command_end WHEN TAG IN ('CREATE TABLE') EXE
 // deadlock, no retry (no WARN), both rows stored. Red on a tree whose Migrate makes no month ahead: the import holds
 // activity_sample's ACCESS EXCLUSIVE while it waits, tx1 closes the cycle, and the retry clears it (one WARN).
 func TestRolloverCycleCannotForm(t *testing.T) {
-	ctx, r, pool := throwawayRepo(t)
+	ctx, r, pool, _ := throwawayRepo(t)
 	var logged bytes.Buffer
 	r.SetLog(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	if _, err := r.Migrate(ctx); err != nil {
