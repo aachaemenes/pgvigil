@@ -95,11 +95,16 @@ MADE=1
 docker run -d --name "$CT" --cpuset-cpus 0-3 --memory 6g -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_PID=Developer \
   -e MSSQL_MEMORY_LIMIT_MB=4096 "$IMG" >/dev/null || fail "docker run $IMG"
 sqi() {   # sqi <database> <timeout s>: one session over stdin, its output on stdout (-y 0: long values whole)
-  docker exec -i -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" "$CT" "$SQLCMD" -S localhost -C -b -I -f 65001 -U sa \
+  docker exec -i -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" "$CT" "$SQLCMD" -S localhost -C -b -I -U sa \
     -d "$1" -t "$2" -y 0 -h -1 -i /dev/stdin
 }
-for _ in $(seq 1 90); do echo "SELECT 1;" | sqi master 10 >/dev/null 2>&1 && break; sleep 2; done
-echo "SELECT 1;" | sqi master 10 >/dev/null 2>&1 || fail "the SQL Server does not answer"
+for _ in $(seq 1 90); do echo "SELECT 1;" | sqi master 10 > "$WORK/probe.out" 2>&1 && break; sleep 2; done
+if ! echo "SELECT 1;" | sqi master 10 > "$WORK/probe.out" 2>&1; then
+  echo "the last probe said: $(tr -d '\r' < "$WORK/probe.out" | head -3 | cut -c1-200)"
+  echo "the container: $(docker inspect -f '{{.State.Status}} exit {{.State.ExitCode}}' "$CT" 2>&1)"
+  docker logs --tail 15 "$CT" 2>&1 | cut -c1-200
+  fail "the SQL Server does not answer"
+fi
 printf '%s\n' "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;" \
   "EXEC sp_configure 'max degree of parallelism', 2; EXEC sp_configure 'cost threshold for parallelism', 5; RECONFIGURE;" \
   | sqi master 60 >/dev/null || fail "sp_configure"
