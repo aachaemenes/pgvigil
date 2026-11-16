@@ -105,6 +105,12 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     order 0143 runs last and its view stands. A guard on the view as the store ends with it: it reads
 //     mssql_repl_findings, keeps 0143's arms, holds no replication arm of its own, and mssql_repl_findings is 0142's
 //     (0143 makes a stand-in of 0066's two arms only where the view is missing).
+//  9. Replication hours that could not be written are said. 0150's trigger never fails the import that stores the
+//     samples: it keeps the hours as a range to rebuild and writes a 'rollup failed' row to collection_log
+//     (collection 'replication_hourly'); the heal writes 'rollup healed'. From the failed row until the healed one the
+//     instance carries the warning 'replication hours not rolled up' in pgvigil.findings (source 'pgvigil collector',
+//     its value the samples' table), as the job statistics' hours do under their own name. Driven by 0150's own
+//     writers, so a change of their notes shows here.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -368,4 +374,28 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 			t.Errorf("%s: %v, want %v", c.what, !c.holds, c.holds)
 		}
 	}
+
+	// 9. a failed rollup of the replication hours: 0150's own 'rollup failed' row raises the finding, its heal clears it
+	var roll int
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '18.0', 180000, false, '{}'::text[], 'postgres')`,
+		fmt.Sprintf("hajoin-roll-%d", sfx)).Scan(&roll); err != nil {
+		t.Fatal(err)
+	}
+	logRows := func(status, like string) string {
+		t.Helper()
+		return str(`SELECT count(*)::text FROM pgvigil.collection_log
+		             WHERE instance_id = $1 AND collection = 'replication_hourly' AND status = $2 AND note LIKE $3`, roll, status, like)
+	}
+	notRolledUp := func() string {
+		t.Helper()
+		return str(`SELECT coalesce(string_agg(severity || '|' || value || '|' || source, ',' ORDER BY value), 'none')
+		              FROM pgvigil.findings WHERE instance_id = $1 AND setting = 'replication hours not rolled up'`, roll)
+	}
+	exec(`SELECT pgvigil.replication_hourly_failed($1, date_trunc('hour', now()) - interval '2 hours',
+	                                               date_trunc('hour', now()) - interval '1 hour', 'a table in the way')`, roll)
+	want("0150's 'rollup failed' row in collection_log (the control)", logRows("error", "rollup failed for the hours %"), "1")
+	want("the failed rollup of the replication hours in pgvigil.findings", notRolledUp(), "warning|replication_sample|pgvigil collector")
+	exec(`SELECT pgvigil.replication_hourly_heal_one($1)`, roll)
+	want("0150's 'rollup healed' row in collection_log (the control)", logRows("ok", "rollup healed: the hours %"), "1")
+	want("the finding after the heal", notRolledUp(), "none")
 }
