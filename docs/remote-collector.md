@@ -177,7 +177,10 @@ across every hub process on the repository, so a site catching up never delays a
 - checks each bundle in order: the signature first when the collector lists keys; the manifest's site, collector,
   instance and sequence against the configuration and the folder; the format version (a newer one is set aside and
   read after the hub's upgrade); every view against pgvigil's own list (an unknown view is refused); each file's
-  size, sum and row count; a bundle whose views uncompress past 2 GiB in all is set aside ('too_big'). The **settle
+  size, sum and row count; a bundle whose views uncompress past 2 GiB in all is set aside ('too_big'). Every file is
+  read under a cap - `manifest.json` and `SHA256SUMS` 1 MiB, `manifest.sig` 4 KiB, a view file the bytes its manifest
+  names (a bucket or container is asked for one byte more, never the whole object): a file past its cap is set aside
+  ('too_big', the file named) at once, as nothing a copy still running writes is longer, and read no further. The **settle
   time** (`gap_wait`) runs from when the hub FIRST SAW the bundle's folder, never from the bundle's window end, so a
   backlog copied late is not past it on arrival: inside it, any problem - a file missing or short, a signature not there
   yet, a copy tool's temp file - is a copy still running and is waited for (the bundles after it wait too); past it
@@ -285,10 +288,8 @@ store's own.
   are absent rather than late, and an alert on a missing series fires between bundles.
   `pgvigil_sample_timestamp_seconds{server, family}` gives its newest sample's time.
 - An Event Grid notification instead of polling is a later option.
-- Each round lists the site's whole folder (one level at a time with a delimiter is a later change of the drop's
-  reader): give the drop a lifecycle rule, or let the site's clean-up remove old bundles, so the listing stays short.
-- A view file is fetched whole before its size is checked against the manifest (a bounded read is a later change of
-  the drop's reader); the 2 GiB cap per bundle is checked from the manifest before any view file is fetched.
+- The hub lists a site's whole drop prefix each round - the site's lifecycle rule (`keep_days`) bounds it; a one-level
+  listing is a later row.
 - A remote collector in a Kubernetes pod is not in v0.4.0, and nothing in it precludes one: a read-only root with the
   two folders set where the pod may write, and credentials by `env:` / `file:`.
 
