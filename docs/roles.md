@@ -134,6 +134,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/alertrules/end` | admin | end an alert rule |
 | `POST /api/drives/thresholds` | admin | a drive threshold |
 | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
+| `POST /api/collectionhealth/thresholds` | admin | a Collection Health threshold (a level's own values, or Inherit All) |
 | `POST /api/jobs/thresholds` | admin | a job threshold |
 | `POST /api/pg/backup_dest` | admin | where a PostgreSQL server's backups go, as a person enters it (beside the value read) |
 | `POST /api/jobs/exclusions` | admin | a job exclusion |

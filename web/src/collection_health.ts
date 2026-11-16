@@ -10,6 +10,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import type { AckData } from './ack';
 import { loadAckSafe, offBeside, seatWhy } from './ack';
+import { markNeed, routeWhy } from './needs';
 import type { CHScope, CHSettingKey } from './chthresholds';
 import { chFormat, chPayload, chScopes, chSettings, chValue, inheritedOf, ownRow } from './chthresholds';
 import type { Ctx } from './router';
@@ -84,12 +85,15 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void, pageMsg?: (wor
     const c = ctl.get(k)!;
     if (c.val.type === 'checkbox') c.val.checked = v === true; else c.val.value = String(v);
   };
-  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined);
+  // the seat's reason first, then the role (B24f: a Collection Health threshold is configuration others live with, admin)
+  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined)
+    || routeWhy('collectionhealth/thresholds', ad.can);   // the server's own answer first (review-20 jw1 N2)
   const btns = el('div', { style: 'margin-top:.6rem' });
   // the buttons of the level picked (DBA Dash's order: Close, Save, Inherit All): Save and Inherit All off with the
   // level's reason where it cannot be written
   const drawButtons = () => {
     const close = el('button', { type: 'button' }, 'Close'), save = el('button', { type: 'submit' }, 'Save'), all = el('button', { type: 'button' }, 'Inherit All');
+    markNeed(save, 'collectionhealth/thresholds'); markNeed(all, 'collectionhealth/thresholds');
     close.addEventListener('click', shut);
     const why = !readOk ? 'the thresholds could not be read' : whyOf();
     offNote.hidden = !why;

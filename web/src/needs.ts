@@ -50,6 +50,7 @@ export const routeNeeds = {
   'alertwindows': ['operator', 'changing an alert window'],
   'drives/thresholds': ['admin', 'changing a drive threshold'],
   'pg/thresholds': ['admin', 'changing a PostgreSQL threshold'],
+  'collectionhealth/thresholds': ['admin', 'changing a Collection Health threshold'],
   'jobs/thresholds': ['admin', 'changing a job threshold'],
   'pg/backup_dest': ['admin', 'entering where the backups go'],
   'jobs/exclusions': ['admin', 'changing a job exclusion'],
