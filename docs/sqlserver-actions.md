@@ -14,6 +14,7 @@ The door is off by default. It is off for an instance until that instance has a 
 | `job_enable` | `EXEC msdb.dbo.sp_update_job @job_id = '<id>', @enabled = 1` | `SQLAgentOperatorRole` in msdb |
 | `job_disable` | `EXEC msdb.dbo.sp_update_job @job_id = '<id>', @enabled = 0` | `SQLAgentOperatorRole` in msdb |
 | `plan_evict` | `EXEC master.dbo.pgvigil_evict_plan @plan_handle = <handle>`, or `DBCC FREEPROCCACHE (<handle>)` where the server has no such procedure; the handle is sent as a varbinary parameter | `EXECUTE` on the signed procedure below (documented), or `ALTER SERVER STATE` (the alternative, with what it gives) |
+| `verify_backup` | `RESTORE HEADERONLY` of the set's file and position, then `RESTORE VERIFYONLY` of it (with `CHECKSUM` where the set has checksums); the paths and the position are sent as parameters | `CREATE DATABASE` in master (below: what that grant also opens) |
 
 Nothing else. The read login never sends any of these.
 

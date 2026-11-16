@@ -1,6 +1,6 @@
 # PostgreSQL: base backups, role changes and server state
 
-Two collections and two tabs per instance, two fleet pages, and five Summary columns: the PostgreSQL side of DBA Dash's backups, log shipping, role-change, crash, Query Store, uptime and last-good-check cells. Nothing is installed on the monitored server and nothing is written there.
+Three collections and two tabs per instance, two fleet pages, and five Summary columns: the PostgreSQL side of DBA Dash's backups, log shipping, role-change, crash, Query Store, uptime and last-good-check cells. Nothing is installed on the monitored server and nothing is written there.
 
 | collection | every | reads | needs |
 | --- | --- | --- | --- |

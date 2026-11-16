@@ -58,7 +58,7 @@ The service tier matters: on Basic, S0 and S1 (and in an elastic pool) Microsoft
 
 ### What runs
 
-Eight collections of this table run; the others are skipped by an Azure SQL Database rule, each with its reason on the run's row and on the page that would show it ("Not read on this instance: ... is skipped (...)"), and the Summary lists their groups as "not on this platform" (its Disk cell too: the platform has no volumes).
+Nine collections of this table run; the others are skipped by an Azure SQL Database rule, each with its reason on the run's row and on the page that would show it ("Not read on this instance: ... is skipped (...)"), and the Summary lists their groups as "not on this platform" (its Disk cell too: the platform has no volumes).
 
 | collection | on Azure SQL Database | why |
 | --- | --- | --- |
