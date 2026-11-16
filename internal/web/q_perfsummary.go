@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
 // The Performance summary (plan task 108): GET /api/perfsummary?[from=&to=][&tag=] is the fleet page of DBA Dash's
@@ -357,9 +359,12 @@ func queryTx(ctx context.Context, tx pgx.Tx, sql string, args ...any) (*table, e
 			return nil, err
 		}
 		for i, x := range v {
-			// a bigint past 2^53 would lose digits as a JSON number in a browser
+			// a bigint past 2^53 would lose digits as a JSON number in a browser; +/-infinity and the float specials as
+			// PostgreSQL's text (collect.JSONValue, as Server.query)
 			if n, ok := x.(int64); ok && (n > 1<<53 || n < -(1<<53)) {
 				v[i] = strconv.FormatInt(n, 10)
+			} else {
+				v[i] = collect.JSONValue(x)
 			}
 		}
 		t.Rows = append(t.Rows, v)

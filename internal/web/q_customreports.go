@@ -60,6 +60,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/mssqlread"
 	"github.com/aachaemenes/pgvigil/internal/plans"
@@ -383,7 +384,12 @@ func (z *sizer) cell(v any) any {
 // as its text, anything else as its text form.
 func pgCell(v any, oid uint32) any {
 	switch x := v.(type) {
-	case nil, bool, string, float32, int16, int32, int8, uint8, uint16, uint32:
+	case nil, bool, string, int16, int32, int8, uint8, uint16, uint32:
+		return x
+	case float32: // a float4 NaN or infinity has no JSON form (json.Marshal would refuse the whole reply)
+		if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+			return strconv.FormatFloat(float64(x), 'g', -1, 32)
+		}
 		return x
 	case float64:
 		if math.IsNaN(x) || math.IsInf(x, 0) {
@@ -421,7 +427,7 @@ func pgCell(v any, oid uint32) any {
 		}
 		return nil
 	case map[string]any, []any:
-		return x
+		return collect.JSONValue(x) // walked: an infinity inside as its text (not JSON 1), a NaN inside as 'NaN'
 	case fmt.Stringer:
 		return x.String()
 	case driver.Valuer:

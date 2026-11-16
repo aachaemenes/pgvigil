@@ -26,7 +26,8 @@ const roleCols: Col[] = [
   { key: 'bypassrls', label: 'bypassrls', fmt: (v, r) => v ? badge('yes', r.super || r.is_platform ? '' : 'warn') : '', cls: (v, r) => v && (r.super || r.is_platform) ? 'status none' : '' },
   { key: 'inherit', fmt: v => v ? '' : 'noinherit' },
   { key: 'connlimit', label: 'conn. limit', num: true, fmt: v => v == null || Number(v) === -1 ? '' : String(v) },
-  { key: 'valid_until', label: 'password valid until', fmt: (v) => v == null ? '' : new Date(String(v)) < new Date() ? badge(fmtTime(v) + ' (expired)', 'warn') : fmtTime(v), cls: v => v == null || new Date(String(v)) < new Date() ? '' : 'status ok' },
+  // '-infinity' is always expired and 'infinity' never expires: new Date() reads neither (an invalid date), so they are named
+  { key: 'valid_until', label: 'password valid until', fmt: (v) => v == null ? '' : v === '-infinity' || new Date(String(v)) < new Date() ? badge(fmtTime(v) + ' (expired)', 'warn') : fmtTime(v), cls: v => v == null || v === '-infinity' || new Date(String(v)) < new Date() ? '' : 'status ok' },
   { key: 'member_of', label: 'member of', wide: true },
   { key: 'config', label: 'ALTER ROLE SET', wide: true },
 ];
