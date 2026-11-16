@@ -66,11 +66,14 @@ scrape_configs:
 - Labels: `server` (pgvigil's instance name) on every instance series; `engine` on the figures and on
   `pgvigil_instance_info`; `family`, `severity` and `database` on their own series; the endpoint's own four series have
   none.
-- The names: 62, one per metric of the Metrics page (internal/web/metrics_prom.go `promNames`, frozen by a test):
+- The names: 62, one per metric of the Metrics page's sessions, database, server, IO, requests, CPU, scheduler, memory
+  and host families (internal/web/metrics_prom.go `promNames`, frozen by a test):
   a percent becomes a `_ratio` (/ 100), milliseconds `_seconds`, MB `_bytes` (x 1048576), a count per collection
   interval (deadlocks, checkpoints, requested checkpoints) `_per_second`. For example `pgvigil_sessions`,
   `pgvigil_sessions_connections_used_ratio`, `pgvigil_requests_blocked`, `pgvigil_cpu_sql_ratio`,
   `pgvigil_memory_total_bytes`, `pgvigil_host_load1`.
+- Not exported yet: the Metrics page's SQL Server counters, Extended Events, Waits and Collection families
+  (`promNotExported`, the same file); their `pgvigil_sample_timestamp_seconds` is given.
 - The database family: each PostgreSQL instance's totals always, as `pgvigil_instance_*` (the databases summed per
   read, as the Metrics page's default view shows them); with `metrics.databases: on`, each database's own series as
   `pgvigil_database_*{database}` - chosen by size, largest first, or the `include_databases` list, never by backends

@@ -525,8 +525,15 @@ var promNames = []promName{
 }
 
 // promNotExported: the metric_catalog families /metrics does not export yet, each with its words why - one rule per
-// family, so every key of such a family is left out and none has a promNames row.
-var promNotExported = map[string]string{}
+// family, so every key of such a family is left out and none has a promNames row. metrics_newest (0196) reads the
+// points of the nine families of 0085's catalog; the families the catalog gained after it carry no value series here
+// until it reads theirs (their pgvigil_sample_timestamp_seconds is given).
+var promNotExported = map[string]string{
+	"counters":   "SQL Server's performance counters: metrics_newest reads no counter points yet",
+	"xe":         "the Extended Events capture's client timeouts: metrics_newest reads no attention points yet",
+	"waits":      "SQL Server's wait seconds per core per minute: metrics_newest reads no wait points yet",
+	"collection": "the collections' own health, a series per collection: metrics_newest reads no collection points yet",
+}
 
 // promUnitWords is a HELP line's account of the conversion from the Metrics grid's unit.
 var promUnitWords = map[string]string{
