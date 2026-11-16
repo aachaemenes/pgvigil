@@ -1,0 +1,184 @@
+package repo
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// KITWATCH K4.2 (F15, F16): pgvigil.kit_findings, a view of its own in the findings shape - 'sp_WhoIsActive
+// unusable' (warning) on an instance whose newest mssql_requests reads are a streak of at least 5 reads in a row over
+// at least 5 minutes in which the collector fell back to the DMV read AND the newest one's error is of a shape class
+// (207 invalid column, 8144 / 8145 too many or unknown parameters, 213 the column count, 2812 no such procedure); a
+// streak of any other error (a deadlock victim, a lock timeout) is an info 'sp_WhoIsActive failing'; the next read
+// that is not the fallback clears it at once; a shorter or briefer streak raises nothing, and fallbacks with good reads
+// between them are no streak (a passing error opens and clears nothing). Each read goes in as production writes it:
+// import_mssql_requests (one summary row per read, ok or not) and log_collection (collection_log holds a run only
+// when it is not ok). collector_findings (0121, another owner's, edited in place) is not redefined: 0139's arm still
+// answers through it. On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it).
+func TestKitFindingsOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sfx := time.Now().UnixNano() % 1000000000
+	ids := make([]int, 7)
+	for i := range ids {
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+			fmt.Sprintf("kitfind-%d-%d", i, sfx)).Scan(&ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		c, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		if _, err := pool.Exec(c, `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, ids); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+	})
+	base := time.Now()
+	// one read of mssql_requests as the collector writes it (mssql.go: the import, then log_collection with the same
+	// snapshot_at; the partial note '<source>: <message>', requests.go's message with the error's number)
+	read := func(inst int, ago time.Duration, errMsg string, errNum int) {
+		t.Helper()
+		at := base.Add(-ago)
+		source, sourceNote, status, note := "sp_whoisactive", "sp_WhoIsActive in master, completed from the DMVs by session and request id", "ok", ""
+		if errMsg != "" {
+			source, sourceNote, status = "dmv", "sp_WhoIsActive in master failed, the DMV read ran instead", "partial"
+			note = fmt.Sprintf("sp_WhoIsActive: mssql: %s (error %d); the DMV read ran instead", errMsg, errNum)
+		}
+		payload := fmt.Sprintf(`[{"kind":"summary","server_utc":%q,"source":%q,"source_note":%q,"memory_grants_pending":0,"read_ms":5}]`,
+			at.UTC().Format(time.RFC3339Nano), source, sourceNote)
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_requests($1, $2, $3::jsonb)`, inst, at, payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.log_collection($1, 'mssql_requests', $2, 40, $3, $4)`, inst, at, status, note); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const shapeMsg, deadlockMsg = "Invalid column name 'tempdb_current'.", "Transaction (Process ID 61) was deadlocked on lock resources with another process and has been chosen as the deadlock victim."
+	streak := func(inst, n int, every time.Duration, msg string, num int) {
+		for i := n; i >= 1; i-- {
+			read(inst, time.Duration(i)*every, msg, num)
+		}
+	}
+	streak(ids[0], 6, time.Minute, shapeMsg, 207)     // a shape-class streak: warning
+	streak(ids[1], 4, time.Minute, shapeMsg, 207)     // too few reads: none
+	streak(ids[2], 6, time.Minute, deadlockMsg, 1205) // another class: info
+	streak(ids[3], 6, time.Minute, shapeMsg, 207)     // then a good read: cleared at once
+	read(ids[3], 10*time.Second, "", 0)               //
+	streak(ids[4], 6, 20*time.Second, shapeMsg, 207)  // 6 reads inside 2 minutes: too brief, none
+	for _, h := range []time.Duration{8, 6, 4, 2} {   // five deadlock fallbacks 2 h apart, a good read a minute after
+		read(ids[6], h*time.Hour, deadlockMsg, 1205) // each but the newest: no streak, none
+		read(ids[6], h*time.Hour-time.Minute, "", 0)
+	}
+	read(ids[6], 2*time.Minute, deadlockMsg, 1205)
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, status, note)
+	                             VALUES ($1, 'job_stats_hourly', now() - interval '30 minutes', 'error',
+	                                     'rollup failed for the mssql_job_runs hours 2026-11-14 10:00 to 2026-11-14 11:00 UTC (the runs are stored; the hours are rebuilt by the next import or purge): x')`, ids[5]); err != nil {
+		t.Fatal(err)
+	}
+	got := func(inst int) string {
+		t.Helper()
+		var s string
+		if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(format('%s|%s|%s', severity, setting, source), ', '), 'none') FROM pgvigil.kit_findings WHERE instance_id = $1`, inst).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	for _, c := range []struct {
+		what string
+		inst int
+		want string
+	}{
+		{"a shape-class streak of 6 over 6 minutes", ids[0], "warning|sp_WhoIsActive unusable|pgvigil collector"},
+		{"4 reads", ids[1], "none"},
+		{"a deadlock-victim streak", ids[2], "info|sp_WhoIsActive failing|pgvigil collector"},
+		{"a good read after the streak", ids[3], "none"},
+		{"6 reads inside 2 minutes", ids[4], "none"},
+		{"five fallbacks 2 h apart with good reads between", ids[6], "none"},
+	} {
+		if g := got(c.inst); g != c.want {
+			t.Errorf("%s: %s, want %s", c.what, g, c.want)
+		}
+	}
+	var detail string
+	if err := pool.QueryRow(ctx, `SELECT detail FROM pgvigil.kit_findings WHERE instance_id = $1`, ids[0]).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail, "tempdb_current") || !strings.Contains(detail, "207") || !strings.Contains(detail, "6 mssql_requests reads") {
+		t.Errorf("the finding's detail %q does not carry the streak's reads and the server's error", detail)
+	}
+	// 0121's view is the owner's: its 0139 arm still answers (this task never redefines collector_findings)
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.collector_findings WHERE instance_id = $1 AND setting = 'job statistics not rolled up'`, ids[5]).Scan(&n); err != nil || n != 1 {
+		t.Errorf("collector_findings' 0139 arm: %d row(s) %v, want 1", n, err)
+	}
+}
+
+// K4.3: import_mssql_kits keeps an instance's kits as last read (each read replaces the last), and
+// pgvigil.kit_versions_fleet counts the instances per procedure and version - one line per tool version for the
+// fleet, never a finding per instance (F14).
+func TestKitVersionsOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sfx := time.Now().UnixNano() % 1000000000
+	ids := make([]int, 2)
+	for i := range ids {
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+			fmt.Sprintf("kitver-%d-%d", i, sfx)).Scan(&ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		c, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		_, _ = pool.Exec(c, `DELETE FROM pgvigil.instances WHERE instance_id = ANY ($1)`, ids)
+	})
+	imp := func(id int, payload string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_kits($1, now(), $2::jsonb)`, id, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proc := func(name, ver, date string) string {
+		return fmt.Sprintf(`{"kind":"proc","database_name":"master","procedure_name":%q,"version":%q,"version_date":%q,"modify_date":"2026-11-01T00:00:00","readable":true}`, name, ver, date)
+	}
+	imp(ids[0], `[{"kind":"read"},`+proc("sp_Blitz", "8.34", "20260702")+`,`+proc("sp_WhoIsActive", "v2200.20260409", "20260409")+`]`)
+	imp(ids[1], `[{"kind":"read"},`+proc("sp_Blitz", "8.35", "20261114")+`]`)
+	imp(ids[0], `[{"kind":"read"},`+proc("sp_Blitz", "8.35", "20261114")+`]`) // the next read replaces the last
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.mssql_kit_versions WHERE instance_id = $1`, ids[0]).Scan(&n); err != nil || n != 1 {
+		t.Errorf("after the second read: %d row(s) %v, want 1 (sp_WhoIsActive gone)", n, err)
+	}
+	// the fleet line counts every instance of the store holding that version (another test's rows included)
+	var fleet, direct int
+	if err := pool.QueryRow(ctx, `SELECT coalesce((SELECT instances FROM pgvigil.kit_versions_fleet WHERE procedure_name = 'sp_Blitz' AND version = '8.35'), 0),
+	                                     (SELECT count(DISTINCT instance_id) FROM pgvigil.mssql_kit_versions WHERE procedure_name = 'sp_Blitz' AND version = '8.35')`).Scan(&fleet, &direct); err != nil {
+		t.Fatal(err)
+	}
+	if fleet != direct || direct < 2 {
+		t.Errorf("the fleet line for sp_Blitz 8.35: %d instance(s), the rows hold %d (want equal, at least this test's 2)", fleet, direct)
+	}
+}

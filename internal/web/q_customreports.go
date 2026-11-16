@@ -319,8 +319,12 @@ func procCall(engine, name string, params []reportParam, given map[string]any) s
 
 // resultSet is one result set of a run as the page draws it: types says per column number, time or text.
 type resultSet struct {
-	Columns   []string `json:"columns"`
-	Types     []string `json:"types"`
+	Columns []string `json:"columns"`
+	Types   []string `json:"types"`
+	// SQLTypes and Nullable: the driver's own type name and nullability (nil = not known), only when the run asks for
+	// them ("exact_types": true - KITWATCH K4.1, opt-in, so today's answers and the demo samples do not change)
+	SQLTypes  []string `json:"sql_types,omitempty"`
+	Nullable  []*bool  `json:"nullable,omitempty"`
 	Rows      [][]any  `json:"rows"`
 	Truncated bool     `json:"truncated,omitempty"`
 }
@@ -334,7 +338,9 @@ type instanceRun struct {
 	Error      string `json:"error,omitempty"`
 	// a community procedure looked at this server and said no in its own words (q_community.go declines): the
 	// outcome stays failed (the statement reached the server), the page draws a note instead of an error box
-	Declined   bool        `json:"declined,omitempty"`
+	Declined bool `json:"declined,omitempty"`
+	// AtSetCap: the batch returned more result sets than a run keeps (maxSets): the ones after it were not read
+	AtSetCap   bool        `json:"at_set_cap,omitempty"`
 	DurationMS int         `json:"duration_ms"`
 	Rows       int         `json:"rows"`
 	Sets       []resultSet `json:"sets"`
@@ -483,31 +489,64 @@ func msType(name string) string { return mssqlread.Type(name) }
 // offset is the server's wall clock and stays one (no zone, never moved to the reader's).
 func msCell(v any, typ string) any { return mssqlread.Cell(v, typ) }
 
+// colType is what readMS reads of a result column (*sql.ColumnType; a test's fake)
+type colType interface {
+	Name() string
+	DatabaseTypeName() string
+	Nullable() (nullable, ok bool)
+}
+
+// msSet is an empty result set of these columns: the page's coarse types and, with exact, the driver's SQL type and
+// nullability (KITWATCH K4.1, opt-in)
+func msSet(cts []colType, exact bool) resultSet {
+	set := resultSet{Columns: make([]string, len(cts)), Types: make([]string, len(cts)), Rows: [][]any{}}
+	if exact {
+		set.SQLTypes, set.Nullable = make([]string, len(cts)), make([]*bool, len(cts))
+	}
+	for i, c := range cts {
+		set.Columns[i], set.Types[i] = c.Name(), msType(c.DatabaseTypeName())
+		if exact {
+			set.SQLTypes[i] = strings.ToUpper(c.DatabaseTypeName())
+			if n, ok := c.Nullable(); ok {
+				set.Nullable[i] = &n
+			}
+		}
+	}
+	return set
+}
+
 // readMS reads every result set of a SQL Server request (at most maxRows rows each, at most maxSets sets). At a cap it
 // calls stop, which cancels the request (an attention: the server stops), and keeps what it read: a later result set
 // of the batch is then not read, and the cut set says so.
 func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, error) {
+	sets, _, err := readMSWith(rows, maxRows, z, stop, false)
+	return sets, err
+}
+
+// readMSWith is readMS with the exact types asked for (K4.1) and atCap: the batch had more sets than maxSets (the
+// ones past it not read - the community run says so: KITWATCH F3)
+func readMSWith(rows *sql.Rows, maxRows int, z *sizer, stop func(), exact bool) (sets []resultSet, atCap bool, err error) {
 	defer func() { _ = rows.Close() }()
-	var sets []resultSet
 	for {
 		cts, err := rows.ColumnTypes()
 		if err != nil {
-			return sets, err
+			return sets, false, err
 		}
 		if len(cts) > 0 {
 			if len(sets) >= maxSets {
 				stop()
-				return sets, nil
+				return sets, true, nil
 			}
-			set := resultSet{Columns: make([]string, len(cts)), Types: make([]string, len(cts)), Rows: [][]any{}}
+			cols := make([]colType, len(cts))
 			for i, c := range cts {
-				set.Columns[i], set.Types[i] = c.Name(), msType(c.DatabaseTypeName())
+				cols[i] = c
 			}
+			set := msSet(cols, exact)
 			for rows.Next() {
 				if len(set.Rows) >= maxRows || z.n > maxRunBytes {
 					set.Truncated = true
 					stop()
-					return append(sets, set), nil // the cancel's own error is not the run's
+					return append(sets, set), false, nil // the cancel's own error is not the run's
 				}
 				vals := make([]any, len(cts))
 				ptrs := make([]any, len(cts))
@@ -515,7 +554,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 					ptrs[i] = &vals[i]
 				}
 				if err := rows.Scan(ptrs...); err != nil {
-					return append(sets, set), err
+					return append(sets, set), false, err
 				}
 				for i, v := range vals {
 					vals[i] = z.cell(msCell(v, cts[i].DatabaseTypeName()))
@@ -523,7 +562,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 				set.Rows = append(set.Rows, vals)
 			}
 			if err := rows.Err(); err != nil {
-				return append(sets, set), err
+				return append(sets, set), false, err
 			}
 			sets = append(sets, set)
 		}
@@ -531,7 +570,7 @@ func readMS(rows *sql.Rows, maxRows int, z *sizer, stop func()) ([]resultSet, er
 			break
 		}
 	}
-	return sets, rows.Err()
+	return sets, false, rows.Err()
 }
 
 // ---- running ----------------------------------------------------------------------------------------------------

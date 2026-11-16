@@ -1,0 +1,7158 @@
+{
+ "engine": "SQL Server 2022 16.0.4325.4",
+ "kits": [
+  {
+   "kit": "frk",
+   "url": "BrentOzarULTD/SQL-Server-First-Responder-Kit@20260708",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "version": "8.34",
+   "version_date": "20260702"
+  },
+  {
+   "kit": "dd",
+   "url": "erikdarlingdata/DarlingData@205fc5137eb0",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "version": "6.11",
+   "version_date": "20261101"
+  },
+  {
+   "kit": "wia",
+   "url": "amachanic/sp_whoisactive@20260409",
+   "sha256": "4c528a139d7e2259e46a7656d056fb359fc8472818cbc9569ae83ff96278c466",
+   "version": "v2200.20260409",
+   "version_date": "20260409"
+  }
+ ],
+ "runs": [
+  {
+   "tool": "sp_Blitz",
+   "kit": "frk",
+   "version": "8.34",
+   "version_date": "20260702",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "Priority",
+       "type": "number",
+       "sql_type": "TINYINT",
+       "nullable": true
+      },
+      {
+       "name": "FindingsGroup",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "DatabaseName",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "URL",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Details",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "QueryPlan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "QueryPlanFiltered",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "CheckID",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@CheckUserDatabaseObjects",
+    "@CheckProcedureCache",
+    "@OutputType",
+    "@OutputProcedureCache",
+    "@CheckProcedureCacheFilter",
+    "@CheckServerInfo",
+    "@SkipChecksServer",
+    "@SkipChecksDatabase",
+    "@SkipChecksSchema",
+    "@SkipChecksTable",
+    "@IgnorePrioritiesBelow",
+    "@IgnorePrioritiesAbove",
+    "@OutputXMLasNVARCHAR",
+    "@EmailRecipients",
+    "@EmailProfile",
+    "@SummaryMode",
+    "@BringThePain",
+    "@UsualDBOwner",
+    "@UsualOwnerOfJobs",
+    "@SkipBlockingChecks",
+    "@Debug",
+    "@VersionCheckMode"
+   ],
+   "all_params": [
+    {
+     "name": "@Help",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@CheckUserDatabaseObjects",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@CheckProcedureCache",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@OutputType",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@OutputProcedureCache",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@CheckProcedureCacheFilter",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@CheckServerInfo",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@SkipChecksServer",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@SkipChecksDatabase",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@SkipChecksSchema",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@SkipChecksTable",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@IgnorePrioritiesBelow",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@IgnorePrioritiesAbove",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@OutputServerName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputDatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputSchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputXMLasNVARCHAR",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@EmailRecipients",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@EmailProfile",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@SummaryMode",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@BringThePain",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@UsualDBOwner",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@UsualOwnerOfJobs",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@SkipBlockingChecks",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@Debug",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@Version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@VersionDate",
+     "type": "datetime",
+     "output": true
+    },
+    {
+     "name": "@VersionCheckMode",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 0,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": [
+    "sp_BlitzBackups",
+    "sp_BlitzCache",
+    "sp_BlitzFirst",
+    "sp_BlitzIndex",
+    "sp_BlitzLock",
+    "sp_BlitzWho",
+    "sp_DatabaseRestore",
+    "sp_ineachdb"
+   ]
+  },
+  {
+   "tool": "sp_BlitzCache",
+   "kit": "frk",
+   "version": "8.34",
+   "version_date": "20260702",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "Database",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Cost",
+       "type": "number",
+       "sql_type": "FLOAT",
+       "nullable": true
+      },
+      {
+       "name": "Query Text",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Query Type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Warnings",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Query Plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "Missing Indexes",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "Implicit Conversion Info",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "Cached Execution Parameters",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "# Executions",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Executions / Minute",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Execution Weight",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Total CPU (ms)",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Avg CPU (ms)",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "CPU Weight",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Total Duration (ms)",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Avg Duration (ms)",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Duration Weight",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Total Reads",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Avg Reads",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Read Weight",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Total Writes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Avg Writes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Write Weight",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Average Rows",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Minimum Memory Grant KB",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Maximum Memory Grant KB",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Minimum Used Grant KB",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Maximum Used Grant KB",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Average Max Memory Grant",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Min Spills",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Max Spills",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Total Spills",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Avg Spills",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Created At",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "Last Execution",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "Last Completion",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "Plan Handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      },
+      {
+       "name": "SQL Handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      },
+      {
+       "name": "SET Options",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Query Hash",
+       "type": "text",
+       "sql_type": "BINARY",
+       "nullable": true
+      },
+      {
+       "name": "PlanGenerationNum",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "Remove Plan Handle From Cache",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "Priority",
+       "type": "number",
+       "sql_type": "TINYINT",
+       "nullable": true
+      },
+      {
+       "name": "FindingsGroup",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "URL",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Details",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "CheckID",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@Top",
+    "@SortOrder",
+    "@UseTriggersAnyway",
+    "@ExportToExcel",
+    "@ExpertMode",
+    "@OutputType",
+    "@ConfigurationDatabaseName",
+    "@ConfigurationSchemaName",
+    "@ConfigurationTableName",
+    "@DurationFilter",
+    "@HideSummary",
+    "@IgnoreSystemDBs",
+    "@IgnoreReadableReplicaDBs",
+    "@OnlyQueryHashes",
+    "@IgnoreQueryHashes",
+    "@OnlySqlHandles",
+    "@IgnoreSqlHandles",
+    "@QueryFilter",
+    "@DatabaseName",
+    "@StoredProcName",
+    "@SlowlySearchPlansFor",
+    "@Reanalyze",
+    "@SkipAnalysis",
+    "@BringThePain",
+    "@MinimumExecutionCount",
+    "@Debug",
+    "@CheckDateOverride",
+    "@MinutesBack",
+    "@VersionCheckMode",
+    "@KeepCRLF"
+   ],
+   "all_params": [
+    {
+     "name": "@Help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@Top",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@SortOrder",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@UseTriggersAnyway",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@ExportToExcel",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@ExpertMode",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@OutputType",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@OutputServerName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputDatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputSchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ConfigurationDatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ConfigurationSchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ConfigurationTableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@DurationFilter",
+     "type": "decimal",
+     "output": false
+    },
+    {
+     "name": "@HideSummary",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@IgnoreSystemDBs",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@IgnoreReadableReplicaDBs",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@OnlyQueryHashes",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@IgnoreQueryHashes",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@OnlySqlHandles",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@IgnoreSqlHandles",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@QueryFilter",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@DatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@StoredProcName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@SlowlySearchPlansFor",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@Reanalyze",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@SkipAnalysis",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@BringThePain",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@MinimumExecutionCount",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@Debug",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@CheckDateOverride",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@MinutesBack",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@AI",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@AIModel",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@AIURL",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@AICredential",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@AIConfigTable",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@AIPromptConfigTable",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@AIPrompt",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@Version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@VersionDate",
+     "type": "datetime",
+     "output": true
+    },
+    {
+     "name": "@VersionCheckMode",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@KeepCRLF",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 24,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_BlitzFirst",
+   "kit": "frk",
+   "version": "8.34",
+   "version_date": "20260702",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "Priority",
+       "type": "number",
+       "sql_type": "TINYINT",
+       "nullable": false
+      },
+      {
+       "name": "FindingsGroup",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "URL",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Details",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "HowToStopIt",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "QueryText",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "QueryPlan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@AsOf",
+    "@ExpertMode",
+    "@Seconds",
+    "@OutputType",
+    "@OutputResultSets",
+    "@OutputXMLasNVARCHAR",
+    "@FilterPlansByDatabase",
+    "@CheckProcedureCache",
+    "@EmergencyMode",
+    "@CheckServerInfo",
+    "@FileLatencyThresholdMS",
+    "@SinceStartup",
+    "@ShowSleepingSPIDs",
+    "@BlitzCacheSkipAnalysis",
+    "@MemoryGrantThresholdPct",
+    "@Debug",
+    "@VersionCheckMode"
+   ],
+   "all_params": [
+    {
+     "name": "@LogMessage",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@Help",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@AsOf",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@ExpertMode",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@Seconds",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@OutputType",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@OutputServerName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputDatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputSchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableNameFileStats",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableNamePerfmonStats",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableNameWaitStats",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableNameBlitzCache",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableNameBlitzWho",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputResultSets",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableRetentionDays",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@OutputXMLasNVARCHAR",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@FilterPlansByDatabase",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@CheckProcedureCache",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@EmergencyMode",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@CheckServerInfo",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@FileLatencyThresholdMS",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@SinceStartup",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@ShowSleepingSPIDs",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@BlitzCacheSkipAnalysis",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@MemoryGrantThresholdPct",
+     "type": "decimal",
+     "output": false
+    },
+    {
+     "name": "@LogMessageCheckID",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@LogMessagePriority",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@LogMessageFindingsGroup",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@LogMessageFinding",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@LogMessageURL",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@LogMessageCheckDate",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@Debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@Version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@VersionDate",
+     "type": "datetime",
+     "output": true
+    },
+    {
+     "name": "@VersionCheckMode",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 0,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_BlitzIndex",
+   "kit": "frk",
+   "version": "8.34",
+   "version_date": "20260702",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "Priority",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "Finding",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Database Name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Details: schema.table.index(indexid)",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Definition: [Property] ColumnName {datatype maxbytes}",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Secret Columns",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Usage",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Size",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "More Info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "URL",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "Create TSQL",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "Sample Query Plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@ObjectName",
+    "@DatabaseName",
+    "@SchemaName",
+    "@TableName",
+    "@Mode",
+    "@Filter",
+    "@SkipPartitions",
+    "@SkipStatistics",
+    "@UsualStatisticsSamplingPercent",
+    "@GetAllDatabases",
+    "@ShowColumnstoreOnly",
+    "@BringThePain",
+    "@IgnoreDatabases",
+    "@ThresholdMB",
+    "@OutputType",
+    "@IncludeInactiveIndexes",
+    "@ShowAllMissingIndexRequests",
+    "@ShowPartitionRanges",
+    "@SortOrder",
+    "@SortDirection",
+    "@Debug",
+    "@VersionCheckMode"
+   ],
+   "all_params": [
+    {
+     "name": "@ObjectName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@DatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@SchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@TableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@Mode",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@Filter",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@SkipPartitions",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@SkipStatistics",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@UsualStatisticsSamplingPercent",
+     "type": "float",
+     "output": false
+    },
+    {
+     "name": "@GetAllDatabases",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@ShowColumnstoreOnly",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@BringThePain",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@IgnoreDatabases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ThresholdMB",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@OutputType",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@OutputServerName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputDatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputSchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@IncludeInactiveIndexes",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@ShowAllMissingIndexRequests",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@ShowPartitionRanges",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@SortOrder",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@SortDirection",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@Help",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@Debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@AI",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@AIModel",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@AIURL",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@AICredential",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@AIConfigTable",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@AIPromptConfigTable",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@AIPrompt",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@Version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@VersionDate",
+     "type": "datetime",
+     "output": true
+    },
+    {
+     "name": "@VersionCheckMode",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 0,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_BlitzLock",
+   "kit": "frk",
+   "version": "8.34",
+   "version_date": "20260702",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "server_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "deadlock_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_date",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "spid",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "deadlock_group",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "object_names",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "isolation_level",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "owner_mode",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "waiter_mode",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "lock_mode",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "transaction_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "client_option_1",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "client_option_2",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "login_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "host_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "client_app",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_time",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "wait_resource",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "priority",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "log_used",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "last_tran_started",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "last_batch_started",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "last_batch_completed",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "transaction_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "parallel_deadlock_details",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "deadlock_graph",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "available_plans",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "creation_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "last_execution_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "execution_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "executions_per_second",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "total_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_reads_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_physical_reads_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_writes_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_used_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_used_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_reserved_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_reserved_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "min_used_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_used_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "total_rows",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "sql_handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      },
+      {
+       "name": "statement_start_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "statement_end_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "check_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "object_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "finding_group",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@DatabaseName",
+    "@StartDate",
+    "@EndDate",
+    "@ObjectName",
+    "@StoredProcName",
+    "@AppName",
+    "@HostName",
+    "@LoginName",
+    "@EventSessionName",
+    "@TargetSessionType",
+    "@VictimsOnly",
+    "@DeadlockType",
+    "@TargetDatabaseName",
+    "@TargetSchemaName",
+    "@TargetTableName",
+    "@TargetColumnName",
+    "@TargetTimestampColumnName",
+    "@Debug",
+    "@VersionCheckMode",
+    "@ExportToExcel",
+    "@SkipExecutionPlans"
+   ],
+   "all_params": [
+    {
+     "name": "@DatabaseName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@StartDate",
+     "type": "datetime",
+     "output": false
+    },
+    {
+     "name": "@EndDate",
+     "type": "datetime",
+     "output": false
+    },
+    {
+     "name": "@ObjectName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@StoredProcName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@AppName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@HostName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@LoginName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@EventSessionName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@TargetSessionType",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@VictimsOnly",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@DeadlockType",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@TargetDatabaseName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@TargetSchemaName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@TargetTableName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@TargetColumnName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@TargetTimestampColumnName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@Debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@Help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@Version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@VersionDate",
+     "type": "datetime",
+     "output": true
+    },
+    {
+     "name": "@VersionCheckMode",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@OutputDatabaseName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@OutputSchemaName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@OutputTableName",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@ExportToExcel",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@SkipExecutionPlans",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 0,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_BlitzWho",
+   "kit": "frk",
+   "version": "8.34",
+   "version_date": "20260702",
+   "sha256": "726ba3728d9b53287bbed10af03a4e4f23d76f2117e2a73b527c2d27d1f5ea90",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "run_date",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": false
+      },
+      {
+       "name": "elapsed_time",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": false
+      },
+      {
+       "name": "blocking_session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "live_query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "Cached_Parameter_Info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_cost",
+       "type": "number",
+       "sql_type": "FLOAT",
+       "nullable": true
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "wait_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_resource",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "top_session_waits",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "open_transaction_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "is_implicit_transaction",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "nt_domain",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "host_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "login_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "nt_user_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "program_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@ShowSleepingSPIDs",
+    "@ExpertMode",
+    "@Debug",
+    "@MinElapsedSeconds",
+    "@MinCPUTime",
+    "@MinLogicalReads",
+    "@MinPhysicalReads",
+    "@MinWrites",
+    "@MinTempdbMB",
+    "@MinRequestedMemoryKB",
+    "@MinBlockingSeconds",
+    "@CheckDateOverride",
+    "@ShowActualParameters",
+    "@GetOuterCommand",
+    "@GetLiveQueryPlan",
+    "@VersionCheckMode",
+    "@SortOrder",
+    "@OnlyProblems"
+   ],
+   "all_params": [
+    {
+     "name": "@Help",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@ShowSleepingSPIDs",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@ExpertMode",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@Debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@OutputDatabaseName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputSchemaName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableName",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OutputTableRetentionDays",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@MinElapsedSeconds",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinCPUTime",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinLogicalReads",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinPhysicalReads",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinWrites",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinTempdbMB",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinRequestedMemoryKB",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@MinBlockingSeconds",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@CheckDateOverride",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@ShowActualParameters",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@GetOuterCommand",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@GetLiveQueryPlan",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@Version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@VersionDate",
+     "type": "datetime",
+     "output": true
+    },
+    {
+     "name": "@VersionCheckMode",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@SortOrder",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@OnlyProblems",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 0,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_HealthParser",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "wait_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "duration_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "signal_duration_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_resource",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "session_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time_rounded",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "wait_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "waits",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "average_wait_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_wait_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "lastNotification",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "outOfMemoryExceptions",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "isAnyPoolOutOfMemory",
+       "type": "text",
+       "sql_type": "BIT",
+       "nullable": true
+      },
+      {
+       "name": "processOutOfMemoryPeriod",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "available_physical_memory_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "available_virtual_memory_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "available_paging_file_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "working_set_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "percent_of_committed_memory_in_ws",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "page_faults",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "system_physical_memory_high",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "system_physical_memory_low",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "process_physical_memory_low",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "process_virtual_memory_low",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "vm_reserved_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "vm_committed_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "locked_pages_allocated",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "large_pages_allocated",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "emergency_memory_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "emergency_memory_in_use_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "target_committed_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "current_committed_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "pages_allocated",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "pages_reserved",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "pages_free",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "pages_in_use",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "page_alloc_potential",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "numa_growth_phase",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "last_oom_factor",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "last_os_error",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "state",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "spinlockBackoffs",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "sickSpinlockType",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "sickSpinlockTypeAfterAv",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "latchWarnings",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "isAccessViolationOccurred",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "writeAccessViolationCount",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "totalDumpRequests",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "intervalDumpRequests",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "nonYieldingTasksReported",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "pageFaults",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "systemCpuUtilization",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "sqlCpuUtilization",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "BadPagesDetected",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "BadPagesFixed",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "sql_cpu_utilization",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "other_process_cpu",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "system_idle",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "memory_utilization",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "page_faults",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "working_set_delta_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "error_number",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "severity",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "state",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "message",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_date",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "is_victim",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "current_database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "deadlock_resources",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "isolation_level",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "lock_mode",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_time",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "log_used",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "transaction_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "transaction_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "client_option_1",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "client_option_2",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "last_tran_started",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "last_batch_started",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "last_batch_completed",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "client_app",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "host_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "login_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "priority",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "deadlock_graph",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "currentdbname",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "creation_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "last_execution_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "execution_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "executions_per_second",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_elapsed_time",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_reads_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_physical_reads_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_writes_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_used_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_used_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_reserved_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_reserved_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "min_used_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_used_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "total_rows",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "sql_handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      },
+      {
+       "name": "statement_start_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "statement_end_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@what_to_check",
+    "@start_date",
+    "@end_date",
+    "@warnings_only",
+    "@database_name",
+    "@wait_duration_ms",
+    "@wait_round_interval_minutes",
+    "@skip_locks",
+    "@skip_waits",
+    "@use_ring_buffer",
+    "@pending_task_threshold",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@what_to_check",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@start_date",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@end_date",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@warnings_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@wait_duration_ms",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@wait_round_interval_minutes",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@skip_locks",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@skip_waits",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@use_ring_buffer",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@pending_task_threshold",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@log_to_table",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@log_database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_table_name_prefix",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_retention_days",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 12,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_HumanEventsBlockViewer (decline: no such session)",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "declined",
+   "message": "sp_HumanEventsBlockViewer declined: A session with the name kitwatch_none does not exist or is not currently active. (msg 50000, severity 11)",
+   "sets": [],
+   "at_set_cap": false,
+   "form_params": [
+    "@session_name",
+    "@target_type",
+    "@start_date",
+    "@end_date",
+    "@database_name",
+    "@object_name",
+    "@target_database",
+    "@target_schema",
+    "@target_table",
+    "@target_column",
+    "@timestamp_column",
+    "@max_blocking_events",
+    "@skip_execution_plans",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@session_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_type",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@start_date",
+     "type": "datetime2",
+     "output": false
+    },
+    {
+     "name": "@end_date",
+     "type": "datetime2",
+     "output": false
+    },
+    {
+     "name": "@database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@object_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_database",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_schema",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_table",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_column",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@timestamp_column",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_to_table",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@log_database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_table_name_prefix",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_retention_days",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@max_blocking_events",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@skip_execution_plans",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 14,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_HumanEventsBlockViewer",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "blocked_process_report",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "event_time",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "currentdbname",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "contentious_object",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "activity",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "blocking_tree",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "spid",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "ecid",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "wait_time_ms",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "isolation_level",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "lock_mode",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "resource_owner_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "transaction_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "transaction_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "last_transaction_started",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "last_transaction_completed",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "client_option_1",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "client_option_2",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_resource",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "priority",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "log_used",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "client_app",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "host_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "login_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "transaction_id",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "blocked_process_report_xml",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "available_plans",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "currentdbname",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "creation_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "last_execution_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "execution_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "executions_per_second",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_worker_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_reads_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_physical_reads_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_writes_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_used_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_used_grant_mb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "min_reserved_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_reserved_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "min_used_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_used_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "total_rows",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "sql_handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      },
+      {
+       "name": "statement_start_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "statement_end_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "findings",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "check_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "object_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "finding_group",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "finding",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@session_name",
+    "@target_type",
+    "@start_date",
+    "@end_date",
+    "@database_name",
+    "@object_name",
+    "@target_database",
+    "@target_schema",
+    "@target_table",
+    "@target_column",
+    "@timestamp_column",
+    "@max_blocking_events",
+    "@skip_execution_plans",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@session_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_type",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@start_date",
+     "type": "datetime2",
+     "output": false
+    },
+    {
+     "name": "@end_date",
+     "type": "datetime2",
+     "output": false
+    },
+    {
+     "name": "@database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@object_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_database",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_schema",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_table",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@target_column",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@timestamp_column",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_to_table",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@log_database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_table_name_prefix",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_retention_days",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@max_blocking_events",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@skip_execution_plans",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 14,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_IndexCleanup (decline: no valid database)",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "declined",
+   "message": "sp_IndexCleanup declined: No valid databases found to process. (msg 50000, severity 16)",
+   "sets": [],
+   "at_set_cap": false,
+   "form_params": [
+    "@database_name",
+    "@schema_name",
+    "@table_name",
+    "@min_reads",
+    "@min_writes",
+    "@min_size_gb",
+    "@min_rows",
+    "@dedupe_only",
+    "@get_all_databases",
+    "@include_databases",
+    "@exclude_databases",
+    "@sort_order",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@table_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@min_reads",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@min_writes",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@min_size_gb",
+     "type": "decimal",
+     "output": false
+    },
+    {
+     "name": "@min_rows",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@dedupe_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_all_databases",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@include_databases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@exclude_databases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@sort_order",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 13,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_IndexCleanup",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "script_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "additional_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "schema_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "table_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "index_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "consolidation_rule",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "target_index_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "superseded_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "index_size_gb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "index_rows",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "index_reads",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "index_writes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "original_index_definition",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "script",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "level",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "database_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "schema_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "table_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "tables_analyzed",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_indexes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "removable_indexes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "mergeable_indexes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "compressable_indexes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "percent_removable",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "current_size_gb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "size_after_cleanup_gb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "space_saved_gb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "space_reduction_percent",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "compression_savings_potential",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "compression_savings_potential_total",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "computed_columns_with_udfs",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "check_constraints_with_udfs",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "filtered_indexes_needing_includes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_rows",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "reads_breakdown",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "writes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "daily_write_ops_saved",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "lock_wait_count",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "daily_lock_waits_saved",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_lock_wait_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "latch_wait_count",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "daily_latch_waits_saved",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_latch_wait_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "usage_since",
+       "type": "text",
+       "sql_type": "DATETIME2",
+       "nullable": true
+      },
+      {
+       "name": "usage_since_reason",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@database_name",
+    "@schema_name",
+    "@table_name",
+    "@min_reads",
+    "@min_writes",
+    "@min_size_gb",
+    "@min_rows",
+    "@dedupe_only",
+    "@get_all_databases",
+    "@include_databases",
+    "@exclude_databases",
+    "@sort_order",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@table_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@min_reads",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@min_writes",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@min_size_gb",
+     "type": "decimal",
+     "output": false
+    },
+    {
+     "name": "@min_rows",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@dedupe_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_all_databases",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@include_databases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@exclude_databases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@sort_order",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 13,
+   "presets": [
+    "@database_name"
+   ],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_LogHunter (decline: no EXECUTE on xp_readerrorlog)",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "declined",
+   "message": "sp_LogHunter declined: Current user does not have EXECUTE permission on xp_readerrorlog, so we can't read the error log (msg 50000, severity 11)",
+   "sets": [],
+   "at_set_cap": false,
+   "form_params": [
+    "@days_back",
+    "@start_date",
+    "@end_date",
+    "@custom_message",
+    "@custom_message_only",
+    "@first_log_only",
+    "@language_id",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@days_back",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@start_date",
+     "type": "datetime",
+     "output": false
+    },
+    {
+     "name": "@end_date",
+     "type": "datetime",
+     "output": false
+    },
+    {
+     "name": "@custom_message",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@custom_message_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@first_log_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@language_id",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 8,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_LogHunter",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "table_name",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "log_date",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "process_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "text",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@days_back",
+    "@start_date",
+    "@end_date",
+    "@custom_message",
+    "@custom_message_only",
+    "@first_log_only",
+    "@language_id",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@days_back",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@start_date",
+     "type": "datetime",
+     "output": false
+    },
+    {
+     "name": "@end_date",
+     "type": "datetime",
+     "output": false
+    },
+    {
+     "name": "@custom_message",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@custom_message_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@first_log_only",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@language_id",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 8,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_PressureDetector",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "message",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "command_to_run",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "how_to_use_the_dac",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "wait_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "description",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "server_hours_uptime",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "server_hours_cpu_time",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "hours_wait_time",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_ms_per_wait",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_wait_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "percent_signal_waits",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "waiting_tasks_count",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "drive",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_file_details",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "server_hours_uptime",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "file_size_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_read_stall_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_write_stall_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_avg_stall_ms",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_read_kb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "avg_write_kb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_gb_read",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_gb_written",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_read_count",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_write_count",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "object_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "counter_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "instance_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "server_hours_uptime",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "total",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_per_second",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "tempdb_info",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "memory_source",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "memory_consumer",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "memory_consumed_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "low_memory",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "cache_memory",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "memory_health_history",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "resource_semaphore_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "total_database_size_gb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_physical_memory_gb",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "max_server_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_memory_grant_cap",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "memory_model",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "target_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_target_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "total_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "available_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "granted_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "used_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "grantee_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "waiter_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "timeout_error_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "forced_grant_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "total_reduced_memory_grant_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "pool_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "dd hh:mm:ss.mss",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "live_query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "request_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "grant_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "wait_time_seconds",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "requested_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "granted_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "used_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "max_used_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "ideal_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "required_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "queue_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "wait_order",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "is_next_candidate",
+       "type": "text",
+       "sql_type": "BIT",
+       "nullable": true
+      },
+      {
+       "name": "wait_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_duration_seconds",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "dop",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "reserved_worker_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "used_worker_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "plan_handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "cpu_details_output",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "cpu_utilization_over_threshold",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "external_cpu_utilization_over_threshold",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "total_threads",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "used_threads",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "available_threads",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "reserved_worker_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "threads_waiting_for_cpu",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "requests_waiting_for_threads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "current_workers",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "total_active_request_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "total_queued_request_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "total_blocked_task_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "total_active_parallel_thread_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "avg_runnable_tasks_count",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "high_runnable_percent",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "THREADPOOL",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "dd hh:mm:ss.mss",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "live_query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "statement_start_offset",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "statement_end_offset",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "plan_handle",
+       "type": "text",
+       "sql_type": "VARBINARY",
+       "nullable": true
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "blocking_session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "wait_type",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "wait_time_ms",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "wait_resource",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "cpu_time_ms",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "total_elapsed_time_ms",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "reads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "writes",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "logical_reads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "granted_query_memory_gb",
+       "type": "number",
+       "sql_type": "DECIMAL",
+       "nullable": true
+      },
+      {
+       "name": "transaction_isolation_level",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "dop",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": false
+      },
+      {
+       "name": "parallel_worker_count",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@what_to_check",
+    "@skip_queries",
+    "@skip_plan_xml",
+    "@minimum_disk_latency_ms",
+    "@cpu_utilization_threshold",
+    "@skip_waits",
+    "@skip_perfmon",
+    "@sample_seconds",
+    "@troubleshoot_blocking",
+    "@debug"
+   ],
+   "all_params": [
+    {
+     "name": "@what_to_check",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@skip_queries",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@skip_plan_xml",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@minimum_disk_latency_ms",
+     "type": "smallint",
+     "output": false
+    },
+    {
+     "name": "@cpu_utilization_threshold",
+     "type": "smallint",
+     "output": false
+    },
+    {
+     "name": "@skip_waits",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@skip_perfmon",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@sample_seconds",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@log_to_table",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@log_database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_table_name_prefix",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_retention_days",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@troubleshoot_blocking",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 10,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_QuickieStore",
+   "kit": "dd",
+   "version": "6.11",
+   "version_date": "20261101",
+   "sha256": "9b65eebcac099215637349edbc38bde82724d755d7d2f84724e233a7693019a8",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "source",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_id",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "plan_id",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "all_plan_ids",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "execution_type_desc",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "object_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "query_sql_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "query_plan",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "compatibility_level",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": false
+      },
+      {
+       "name": "force_failure_count",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "last_force_failure_reason_desc",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "has_query_feedback",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "has_query_store_hints",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "has_plan_variants",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "has_compile_replay_script",
+       "type": "text",
+       "sql_type": "BIT",
+       "nullable": true
+      },
+      {
+       "name": "is_optimized_plan_forcing_disabled",
+       "type": "text",
+       "sql_type": "BIT",
+       "nullable": true
+      },
+      {
+       "name": "plan_type_desc",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "plan_forcing_type_desc",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "top_waits",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "first_execution_time",
+       "type": "time",
+       "sql_type": "DATETIMEOFFSET",
+       "nullable": true
+      },
+      {
+       "name": "first_execution_time_utc",
+       "type": "time",
+       "sql_type": "DATETIMEOFFSET",
+       "nullable": false
+      },
+      {
+       "name": "last_execution_time",
+       "type": "time",
+       "sql_type": "DATETIMEOFFSET",
+       "nullable": true
+      },
+      {
+       "name": "last_execution_time_utc",
+       "type": "time",
+       "sql_type": "DATETIMEOFFSET",
+       "nullable": false
+      },
+      {
+       "name": "count_executions",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "executions_per_second",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_duration_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "min_duration_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_duration_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_duration_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_cpu_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "min_cpu_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_cpu_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_cpu_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_logical_io_reads_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_logical_io_reads_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_io_reads_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_logical_io_writes_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_logical_io_writes_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_logical_io_writes_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_physical_io_reads_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_physical_io_reads_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_physical_io_reads_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_clr_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_clr_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_clr_time_ms",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "min_dop",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "max_dop",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "avg_query_max_used_memory_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_query_max_used_memory_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_query_max_used_memory_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_rowcount",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_rowcount",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_rowcount",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_num_physical_io_reads",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_num_physical_io_reads",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_num_physical_io_reads",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_log_bytes_used_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_log_bytes_used_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_log_bytes_used_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "avg_tempdb_space_used_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "max_tempdb_space_used_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "total_tempdb_space_used_mb",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "context_settings",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "n",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      }
+     ],
+     "truncated": false
+    },
+    {
+     "columns": [
+      {
+       "name": "all_done",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "period",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "databases",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "support",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "help",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "problems",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "performance",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "version_and_date",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "thanks",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@database_name",
+    "@sort_order",
+    "@top",
+    "@start_date",
+    "@end_date",
+    "@timezone",
+    "@execution_count",
+    "@duration_ms",
+    "@execution_type_desc",
+    "@procedure_schema",
+    "@procedure_name",
+    "@include_plan_ids",
+    "@include_query_ids",
+    "@include_query_hashes",
+    "@include_plan_hashes",
+    "@include_sql_handles",
+    "@ignore_plan_ids",
+    "@ignore_query_ids",
+    "@ignore_query_hashes",
+    "@ignore_plan_hashes",
+    "@ignore_sql_handles",
+    "@query_text_search",
+    "@query_text_search_not",
+    "@escape_brackets",
+    "@escape_character",
+    "@only_queries_with_hints",
+    "@only_queries_with_feedback",
+    "@only_queries_with_variants",
+    "@only_queries_with_forced_plans",
+    "@only_queries_with_forced_plan_failures",
+    "@wait_filter",
+    "@query_type",
+    "@expert_mode",
+    "@hide_help_table",
+    "@format_output",
+    "@get_all_databases",
+    "@include_databases",
+    "@exclude_databases",
+    "@workdays",
+    "@work_start",
+    "@work_end",
+    "@regression_baseline_start_date",
+    "@regression_baseline_end_date",
+    "@regression_comparator",
+    "@regression_direction",
+    "@include_query_hash_totals",
+    "@include_maintenance",
+    "@find_high_impact",
+    "@primary_window",
+    "@find_parameter_sensitive",
+    "@debug",
+    "@troubleshoot_performance"
+   ],
+   "all_params": [
+    {
+     "name": "@database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@sort_order",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@top",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@start_date",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@end_date",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@timezone",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@execution_count",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@duration_ms",
+     "type": "bigint",
+     "output": false
+    },
+    {
+     "name": "@execution_type_desc",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@procedure_schema",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@procedure_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@include_plan_ids",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@include_query_ids",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@include_query_hashes",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@include_plan_hashes",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@include_sql_handles",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ignore_plan_ids",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ignore_query_ids",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ignore_query_hashes",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ignore_plan_hashes",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@ignore_sql_handles",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@query_text_search",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@query_text_search_not",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@escape_brackets",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@escape_character",
+     "type": "nchar",
+     "output": false
+    },
+    {
+     "name": "@only_queries_with_hints",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@only_queries_with_feedback",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@only_queries_with_variants",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@only_queries_with_forced_plans",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@only_queries_with_forced_plan_failures",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@wait_filter",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@query_type",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@expert_mode",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@hide_help_table",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@format_output",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_all_databases",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@include_databases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@exclude_databases",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@workdays",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@work_start",
+     "type": "time",
+     "output": false
+    },
+    {
+     "name": "@work_end",
+     "type": "time",
+     "output": false
+    },
+    {
+     "name": "@regression_baseline_start_date",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@regression_baseline_end_date",
+     "type": "datetimeoffset",
+     "output": false
+    },
+    {
+     "name": "@regression_comparator",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@regression_direction",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@include_query_hash_totals",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@include_maintenance",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@find_high_impact",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@primary_window",
+     "type": "nvarchar",
+     "output": false
+    },
+    {
+     "name": "@find_parameter_sensitive",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@debug",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@troubleshoot_performance",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@log_to_table",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@log_database_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_schema_name",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_table_name_prefix",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@log_retention_days",
+     "type": "int",
+     "output": false
+    },
+    {
+     "name": "@version",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@version_date",
+     "type": "datetime",
+     "output": true
+    }
+   ],
+   "described": 52,
+   "presets": [
+    "@database_name"
+   ],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_WhoIsActive (collector)",
+   "kit": "wia",
+   "version": "v2200.20260409",
+   "version_date": "20260409",
+   "sha256": "4c528a139d7e2259e46a7656d056fb359fc8472818cbc9569ae83ff96278c466",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": false
+      },
+      {
+       "name": "sql_text",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "sql_command",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "login_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "wait_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "tran_log_writes",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "CPU",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "tempdb_allocations",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "tempdb_current",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "blocking_session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "blocked_session_count",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "reads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "writes",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "physical_reads",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": true
+      },
+      {
+       "name": "used_memory",
+       "type": "number",
+       "sql_type": "BIGINT",
+       "nullable": false
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "tran_start_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "implicit_tran",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "open_tran_count",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "percent_complete",
+       "type": "number",
+       "sql_type": "REAL",
+       "nullable": true
+      },
+      {
+       "name": "host_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "program_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "start_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": false
+      },
+      {
+       "name": "login_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "request_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "collection_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": false
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@filter",
+    "@filter_type",
+    "@not_filter",
+    "@not_filter_type",
+    "@show_own_spid",
+    "@show_system_spids",
+    "@show_sleeping_spids",
+    "@get_full_inner_text",
+    "@get_plans",
+    "@get_outer_command",
+    "@get_transaction_info",
+    "@get_task_info",
+    "@get_locks",
+    "@get_avg_time",
+    "@get_additional_info",
+    "@get_memory_info",
+    "@find_block_leaders",
+    "@delta_interval",
+    "@output_column_list",
+    "@sort_order",
+    "@format_output"
+   ],
+   "all_params": [
+    {
+     "name": "@filter",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@filter_type",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@not_filter",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@not_filter_type",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@show_own_spid",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@show_system_spids",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@show_sleeping_spids",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@get_full_inner_text",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_plans",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@get_outer_command",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_transaction_info",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_task_info",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@get_locks",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_avg_time",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_additional_info",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_memory_info",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@find_block_leaders",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@delta_interval",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@output_column_list",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@sort_order",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@format_output",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@destination_table",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@return_schema",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@schema",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 21,
+   "presets": [],
+   "read_by_name": [
+    "CPU",
+    "blocking_session_id",
+    "open_tran_count",
+    "percent_complete",
+    "physical_reads",
+    "reads",
+    "request_id",
+    "session_id",
+    "sql_text",
+    "status",
+    "tempdb_allocations",
+    "tempdb_current",
+    "tran_start_time",
+    "writes"
+   ],
+   "hard_siblings": []
+  },
+  {
+   "tool": "sp_WhoIsActive",
+   "kit": "wia",
+   "version": "v2200.20260409",
+   "version_date": "20260409",
+   "sha256": "4c528a139d7e2259e46a7656d056fb359fc8472818cbc9569ae83ff96278c466",
+   "outcome": "done",
+   "message": "",
+   "sets": [
+    {
+     "columns": [
+      {
+       "name": "dd hh:mm:ss.mss",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": false
+      },
+      {
+       "name": "sql_text",
+       "type": "text",
+       "sql_type": "XML",
+       "nullable": true
+      },
+      {
+       "name": "login_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "wait_info",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "CPU",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "tempdb_allocations",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "tempdb_current",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "blocking_session_id",
+       "type": "number",
+       "sql_type": "SMALLINT",
+       "nullable": true
+      },
+      {
+       "name": "blocked_session_count",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "reads",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "writes",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "physical_reads",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "used_memory",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "status",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": false
+      },
+      {
+       "name": "open_tran_count",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "percent_complete",
+       "type": "text",
+       "sql_type": "VARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "host_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "database_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "program_name",
+       "type": "text",
+       "sql_type": "NVARCHAR",
+       "nullable": true
+      },
+      {
+       "name": "start_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": false
+      },
+      {
+       "name": "login_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": true
+      },
+      {
+       "name": "request_id",
+       "type": "number",
+       "sql_type": "INT",
+       "nullable": true
+      },
+      {
+       "name": "collection_time",
+       "type": "text",
+       "sql_type": "DATETIME",
+       "nullable": false
+      }
+     ],
+     "truncated": false
+    }
+   ],
+   "at_set_cap": false,
+   "form_params": [
+    "@filter",
+    "@filter_type",
+    "@not_filter",
+    "@not_filter_type",
+    "@show_own_spid",
+    "@show_system_spids",
+    "@show_sleeping_spids",
+    "@get_full_inner_text",
+    "@get_plans",
+    "@get_outer_command",
+    "@get_transaction_info",
+    "@get_task_info",
+    "@get_locks",
+    "@get_avg_time",
+    "@get_additional_info",
+    "@get_memory_info",
+    "@find_block_leaders",
+    "@delta_interval",
+    "@output_column_list",
+    "@sort_order",
+    "@format_output"
+   ],
+   "all_params": [
+    {
+     "name": "@filter",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@filter_type",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@not_filter",
+     "type": "sysname",
+     "output": false
+    },
+    {
+     "name": "@not_filter_type",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@show_own_spid",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@show_system_spids",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@show_sleeping_spids",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@get_full_inner_text",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_plans",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@get_outer_command",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_transaction_info",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_task_info",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@get_locks",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_avg_time",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_additional_info",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@get_memory_info",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@find_block_leaders",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@delta_interval",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@output_column_list",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@sort_order",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@format_output",
+     "type": "tinyint",
+     "output": false
+    },
+    {
+     "name": "@destination_table",
+     "type": "varchar",
+     "output": false
+    },
+    {
+     "name": "@return_schema",
+     "type": "bit",
+     "output": false
+    },
+    {
+     "name": "@schema",
+     "type": "varchar",
+     "output": true
+    },
+    {
+     "name": "@help",
+     "type": "bit",
+     "output": false
+    }
+   ],
+   "described": 21,
+   "presets": [],
+   "read_by_name": [],
+   "hard_siblings": []
+  },
+  {
+   "tool": "mssql_requests (the collector)",
+   "kit": "wia",
+   "outcome": "ok",
+   "message": "",
+   "sets": [],
+   "described": 0
+  },
+  {
+   "tool": "sp_HumanEvents (the page's advice call)",
+   "kit": "dd",
+   "outcome": "done",
+   "message": "done",
+   "sets": [],
+   "described": 0
+  },
+  {
+   "tool": "sp_LogHunter (decline source: This will not run on Azure SQL DB)",
+   "kit": "dd",
+   "outcome": "raised",
+   "sets": [],
+   "described": 0
+  },
+  {
+   "tool": "sp_IndexCleanup (decline source: @get_all_databases is not supported on A)",
+   "kit": "dd",
+   "outcome": "raised",
+   "sets": [],
+   "described": 0
+  },
+  {
+   "tool": "sp_HealthParser (decline source: This won't work in Azure)",
+   "kit": "dd",
+   "outcome": "raised",
+   "sets": [],
+   "described": 0
+  },
+  {
+   "tool": "sp_QuickieStore (decline source: Not all Azure offerings are supported)",
+   "kit": "dd",
+   "outcome": "raised",
+   "sets": [],
+   "described": 0
+  }
+ ],
+ "install_failed": ""
+}
