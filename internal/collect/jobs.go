@@ -83,10 +83,12 @@ SELECT 'job' AS kind, 'pgagent' AS scheduler, j.jobid::bigint AS job_id, j.jobna
 // of some Red Gate values (a doubled value's N and opening quotes read as an empty literal, a bracketed value cut at
 // its space or comma), and jobmask.Text then reads its mark as a value already masked and keeps the key after it
 // (j16d5's mssqljobmask rg2 / rg3 / rg6); jobmask.Text first reads 'p_password =>' as 'p_password =' and masks only
-// the '>', and MaskCredentials then keeps the key as already masked. Stored's widen drops the rest of a value an
-// earlier mask left after its mark - the same shapes - before the job rules run, and only ever drops text: where a
-// complete quoted mark is followed by '?' or ':' and no later quote, it drops the rest of the text too (over-masking,
-// never a key: a j17 row for package jobmask).
+// the '>', and MaskCredentials then keeps the key as already masked. Since the join's review 5 MaskCredentials reads
+// a doubled value with an escaped quote and a bracketed value whole (innerValue); a doubled value with an N before it
+// (rg2's) is still read as the N alone, and Stored's widen drops its rest before the job rules run. widen only ever
+// drops text, and it drops more than a value's rest in one case: after a complete quoted mark followed by a character
+// that is neither a quote nor in its markEnds (a letter, '.', '|', '=', '-', '?', ':'), its restQ1 drops up to the
+// next doubled quote or the text's end - over-masking, never a key (a j17 row for package jobmask).
 func MaskJobText(s string) string { return jobmask.Stored(MaskCredentials(s)) }
 
 // maskTree masks every string of a decoded jsonb value (a job's definition) in place.
