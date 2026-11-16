@@ -1,18 +1,44 @@
 B24f's join wiring, section rel-cq (task CQ 487, the request queue; at rel-cq's own DONE - the lead 11-15 16:3x).
 Apply on the joined tree that holds rel-roles and rel-cq (its cq-wiring-a2 patch applied):
   git apply -3 scripts/b24f-join-wiring-rel-cq.patch
-Built on a pre-join copy of each file: rel-roles f421753c x rel-cq ccde1fcf + that wiring patch's web.go hunk (local commit
-d86caf4a, ref jw-pre-cq; merged clean), so -3 merges it onto the join's own resolution.
+Built on a pre-join copy of each file: rel-roles f421753c x rel-cq ccde1fcf (web/src/community.ts too) + that wiring patch's web.go
+hunk (local commit ed75081f, ref jw-pre-cq; merged clean), so -3 merges it onto the join's own resolution.
 What it does: s.post with needOperator for POST /api/requests/{id}/cancel (a queued request is a community run, an
 operator's: its asker's cancel); its words in roles_wiring_cq.go, needs.ts and docs/roles.md rows; roles_test.go's
 pageNeedRow takes a route with {id} and request.ts (its template post) joins pageOtherRts; the waiting request's Cancel
-carries the need.
+carries the need; community.ts joins pageOtherRts (its post('community/run?help=1') is not a literal route) and
+queue mode's @help button carries community/run's operator need (review-20 jw2 B1, S4); docs/queue.md's who may ask and
+the community/params row name the operator need (jw2 N4, S4).
 Proof: the four role checks on the joined tree; tsc there.
 
+diff --git a/docs/queue.md b/docs/queue.md
+index d377ba28..8881900f 100644
+--- a/docs/queue.md
++++ b/docs/queue.md
+@@ -70,7 +70,9 @@ that collector's pgvigil.yaml)".
+ 
+ ## Who may ask, and what they see
+ 
+-- Every signed-in user may ask what the instance's doors open, as in direct mode. The doors are the COLLECTOR's: its
++- A signed-in user of the operator role or above may ask what the instance's doors open, as in direct mode (a
++  request is a community run, `POST /api/community/run`, a tool's @help in queue mode too; cancelling one's own
++  request is the operator's as well: docs/roles.md). The doors are the COLLECTOR's: its
+   logins, its `doors: page_instance_reads` for instances added in Admin > Instances, and the instance's
+   `community_allow` (below). The page draws each button from what the collector published, with the collector's words
+   and its host. When two collectors hold one instance, a request goes to one whose doors are open for it.
 diff --git a/docs/roles.md b/docs/roles.md
-index 118b5eee..f72e3a96 100644
+index 118b5eee..ffcae1e4 100644
 --- a/docs/roles.md
 +++ b/docs/roles.md
+@@ -96,7 +96,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/logout` | anyone | sign out |
+ | `POST /api/mssql/actions/preview` | viewer | preview an action's statement (runs nothing) |
+ | `POST /api/community/glenn/parse` | viewer | read a diagnostic file (stores nothing) |
+-| `POST /api/community/params` | viewer | read a tool's parameters (@help) |
++| `POST /api/community/params` | viewer | read a tool's parameters (@help; in queue mode @help is a request of its own, `POST /api/community/run`: operator) |
+ | `POST /api/customreports/run` | viewer | run a stored custom report (on the reports login or the instance's read login) |
+ | `POST /api/reportmail/rendered` | viewer | the mailed report's drawing step (the render's own user) |
+ | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
 @@ -113,6 +113,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |
  | `POST /api/plans/hypo` | operator | try a hypothetical index |
@@ -22,7 +48,7 @@ index 118b5eee..f72e3a96 100644
  | `POST /api/reportmail/send` | operator | send a report by mail now |
  | `POST /api/reportmail/test` | operator | send a schedule's test mail |
 diff --git a/internal/web/roles_test.go b/internal/web/roles_test.go
-index a0f67487..0f605599 100644
+index a0f67487..affdb0fb 100644
 --- a/internal/web/roles_test.go
 +++ b/internal/web/roles_test.go
 @@ -173,7 +173,7 @@ func TestRolesDocMatches(t *testing.T) {
@@ -34,11 +60,12 @@ index a0f67487..0f605599 100644
  
  // pageNeeds reads the table: route (as api.post names it) -> need, what
  func pageNeeds(t *testing.T) map[string][2]string {
-@@ -242,6 +242,7 @@ var (
+@@ -242,6 +242,8 @@ var (
  		"plan.ts":            {"plans/explain", "plans/analyze"},
  		"admin_instances.ts": {"admin/instances", "admin/sources", "admin/proposals"},
  		"migrate.ts":         {"admin/dbadash_moves"},
 +		"request.ts":         {"requests/{id}/cancel"},
++		"community.ts":       {"community/run"},
  		"applications.ts":    {"admin/applications", "admin/applications/contacts", "admin/applications/assign", "admin/applications/routes"},
  		"app_import.ts":      {"admin/applications/import"},
  		"uptimedialog.ts":    {"pg/thresholds"},
@@ -68,6 +95,19 @@ index cf0b038a..8f80897c 100644
  	api.HandleFunc("GET /api/extensions", s.Extensions)
  	api.HandleFunc("GET /api/roles", s.Roles)
  	api.HandleFunc("GET /api/versions", s.Versions)
+diff --git a/web/src/community.ts b/web/src/community.ts
+index 2d8bb9e8..15ea9719 100644
+--- a/web/src/community.ts
++++ b/web/src/community.ts
+@@ -315,7 +315,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
+     // queue mode: the procedure's own help is a request of its own, run by the collector
+     const det = el('details', {}, el('summary', {}, `${t.name}'s own help`));
+     const hs = el('p', { class: 'meta', role: 'status' }), hb = el('div', {});
+-    const ask = el('button', { type: 'button' }, `Run ${t.name} ${t.help} = 1`);
++    const ask = needControl(el('button', { type: 'button' }, `Run ${t.name} ${t.help} = 1`), 'community/run');   // a request: operator (B24f)
+     ask.addEventListener('click', async () => {
+       offControl(ask, 'running', hs);
+       try {
 diff --git a/web/src/needs.ts b/web/src/needs.ts
 index f3a5ff8c..cf76fa17 100644
 --- a/web/src/needs.ts
