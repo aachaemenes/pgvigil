@@ -145,11 +145,12 @@ func TestRoundViewFilePastItsBytesIsTooBig(t *testing.T) {
 }
 
 // a manifest past the format's cap: set aside 'too_big' naming manifest.json, never decoded, never loaded; the round
-// goes on with the next stream's bundle (before, a manifest read error ended the whole round)
+// goes on with the next key's bundle (before, a manifest read error ended the whole round)
 func TestRoundManifestPastItsCapIsTooBig(t *testing.T) {
 	d, h := newDrop(t), newMemHub()
 	r1 := d.write("st1", 1, "mssql_activity", nil)
-	r2 := d.write("st2", 1, "mssql_activity", nil)
+	d.inst = `HOST\INST2` // the next bundle under another instance key (one seq's folder holds one bundle)
+	r2 := d.write("st1", 1, "mssql_activity", nil)
 	d.edit(r1, format.ManifestFile, func(b []byte) []byte { // still valid JSON: whitespace after the object
 		return append(b, bytes.Repeat([]byte(" "), rowManifestCap+1-len(b))...)
 	})
@@ -157,7 +158,7 @@ func TestRoundManifestPastItsCapIsTooBig(t *testing.T) {
 	cd := &capDrop{Drop: in.Site.Drop}
 	in.Site.Drop = cd
 	round(t, in)
-	eq(t, "the next stream's bundle loaded, the big one not", h.order, []string{"st2/1"})
+	eq(t, "the other key's bundle loaded, the big one not", h.order, []string{"st1/1"})
 	var found bool
 	for _, m := range h.marks {
 		if m.Seq == 1 && m.Kind == format.KindTooBig && strings.Contains(m.Reason, format.ManifestFile) {
