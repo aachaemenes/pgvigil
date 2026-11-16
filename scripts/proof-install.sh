@@ -17,15 +17,23 @@
 # installs /usr/local/bin/pgvigil-remote and pgvigil-remote.service (active as pgvigil-remote, ExecStart naming its own
 # binary), a bundle lands in /var/lib/pgvigil-remote/outbox within 150 s, and the hub's binary, unit, config and env
 # file stay byte for byte, its process the same (never restarted), /etc/pgvigil's owner and mode and its account as
-# they were; `install.sh --remote` again succeeds over itself; `uninstall -remote
+# they were; `install.sh --remote` again succeeds over itself; ORDER HUB-THEN-REMOTE (the lead's 12:5x rows): the hub's
+# `pgvigil install -upgrade` run by the operator with a $V2 binary beside the remote ends '5. swapped the binary and
+# started the service', /usr/local/bin/pgvigil prints $V2, and the remote's binary, unit, config, env, process, folders
+# and account stay as they were (that check first fails on a planted change to the remote's env file, then passes
+# again once it is put back); `uninstall -remote
 # -purge` is refused while the outbox holds bundles (the words 'not pushed', 'lost', '-force'; the remote still active),
 # `-purge -force` removes the unit, /etc/pgvigil-remote, /var/lib/pgvigil-remote and the binary and keeps and names the
 # account, the hub's files still byte for byte and active; `pgvigil uninstall` removes the unit and keeps the config
-# and binary; `-purge` removes those too; busybox ash parses install.sh.
+# and binary; `-purge` removes those too; ORDER REMOTE-THEN-HUB on the host with no hub left: `install.sh --remote`
+# active, then the hub's fresh `install.sh` ('installed and enabled'), `command -v` finding /usr/local/bin/pgvigil and
+# /usr/local/bin/pgvigil-remote, the hub's `install -upgrade` to $V2 ('5. swapped the binary; the service is enabled,
+# not started': its DSN is the template's empty one), the remote as it was across both; `pgvigil-remote uninstall
+# -remote -purge -force` leaves the hub as it was; the hub's `uninstall -purge` last; busybox ash parses install.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TAG="pgvinst$RANDOM"; NET="$TAG-net"; REPO="$TAG-repo"; ASSETS="$TAG-assets"; SYS="$TAG-sys"
-V="v0.0.0-proof"; PW="pw$RANDOM$RANDOM"; IMG="pgvigil-proof-systemd:bookworm"
+V="v0.0.0-proof"; V2="v0.0.0-proof2"; PW="pw$RANDOM$RANDOM"; IMG="pgvigil-proof-systemd:bookworm"
 WORK=$(mktemp -d)
 cleanup() {
   if [[ "${PGVIGIL_PROOF_KEEP:-}" = "1" && "${FAILED:-}" = "1" ]]; then echo "kept: $SYS $REPO $ASSETS on $NET"; return; fi
@@ -42,6 +50,10 @@ echo "== build the mock release ($V) =="
 mkdir -p "$WORK/srv/$V"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$V" -o "$WORK/srv/$V/pgvigil_${V}_linux_amd64" ./cmd/pgvigil
 (cd "$WORK/srv/$V" && sha256sum -- * > SHA256SUMS)
+# a second version for the hub's -upgrade beside the remote (the same code, another version string: other bytes)
+mkdir -p "$WORK/srv/$V2"
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$V2" -o "$WORK/srv/$V2/pgvigil_${V2}_linux_amd64" ./cmd/pgvigil
+(cd "$WORK/srv/$V2" && sha256sum -- * > SHA256SUMS)
 cp deploy/install.sh "$WORK/srv/install.sh"
 cmp -s deploy/install.sh docs/install.sh || fail "docs/install.sh differs from deploy/install.sh (the Pages copy is stale)"
 cmp -s deploy/install.ps1 docs/install.ps1 || fail "docs/install.ps1 differs from deploy/install.ps1 (the Pages copy is stale)"
@@ -140,7 +152,14 @@ HUBFILES="/usr/local/bin/pgvigil /etc/systemd/system/pgvigil.service /etc/pgvigi
 # and its account (W review S7)
 hubstate() { insys sh -c "sha256sum $HUBFILES; systemctl show -p MainPID -p ActiveEnterTimestampMonotonic pgvigil; stat -c '%U:%G %a' /etc/pgvigil; id pgvigil"; }
 hub_before=$(hubstate)
-insys sh -c "mkdir -p /etc/pgvigil-remote && printf 'remote:\n  site: lab11\n  collector: c1\n  interval: 1m\n  outbox: /var/lib/pgvigil-remote/outbox\n  state_dir: /var/lib/pgvigil-remote/state\nquery_text: hash\ninstances:\n  - name: pg-remote\n    dsn: env:REMOTE_PG_DSN\n' > /etc/pgvigil-remote/pgvigil-remote.yaml && printf 'REMOTE_PG_DSN=host=$REPO port=5432 user=postgres password=$PW dbname=postgres sslmode=disable\n' > /etc/pgvigil-remote/pgvigil-remote.env"
+remconfig() { insys sh -c "mkdir -p /etc/pgvigil-remote && printf 'remote:\n  site: lab11\n  collector: c1\n  interval: 1m\n  outbox: /var/lib/pgvigil-remote/outbox\n  state_dir: /var/lib/pgvigil-remote/state\nquery_text: hash\ninstances:\n  - name: pg-remote\n    dsn: env:REMOTE_PG_DSN\n' > /etc/pgvigil-remote/pgvigil-remote.yaml && printf 'REMOTE_PG_DSN=host=$REPO port=5432 user=postgres password=$PW dbname=postgres sslmode=disable\n' > /etc/pgvigil-remote/pgvigil-remote.env"; }
+# the remote untouched = its files byte for byte, the same running process, its folders' owner and mode and its account
+REMFILES="/usr/local/bin/pgvigil-remote /etc/systemd/system/pgvigil-remote.service /etc/pgvigil-remote/pgvigil-remote.yaml /etc/pgvigil-remote/pgvigil-remote.env"
+remstate() { insys sh -c "sha256sum $REMFILES; systemctl show -p MainPID -p ActiveEnterTimestampMonotonic pgvigil-remote; stat -c '%n %U:%G %a' /etc/pgvigil-remote /var/lib/pgvigil-remote/outbox /var/lib/pgvigil-remote/state; id pgvigil-remote"; }
+# the operator's -upgrade: the $V2 binary fetched into a folder of its own, run with the owner's DSN and no dump
+OWNER="postgres://postgres:$PW@$REPO:5432/postgres?sslmode=disable"
+hubupgrade() { insys sh -c "rm -rf /root/up && mkdir -p /root/up && cd /root/up && curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V2 PGVIGIL_BASE_URL=http://$ASSETS:8000 PGVIGIL_NO_SERVICE=1 sh >/dev/null && PGV_OWNER='$OWNER' ./pgvigil install -upgrade -owner-dsn-env PGV_OWNER -no-dump"; }
+remconfig
 insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh -s -- --remote" >"$WORK/r1.out" 2>&1 || fail "install.sh --remote: $(cat "$WORK/r1.out")"
 grep -q 'remote collector is installed and running' "$WORK/r1.out" || fail "install.sh --remote did not end with 'installed and running': $(cat "$WORK/r1.out")"
 [[ "$(insys /usr/local/bin/pgvigil-remote version)" == "pgvigil $V ("* ]] || fail "the remote binary: $(insys /usr/local/bin/pgvigil-remote version 2>&1)"
@@ -157,6 +176,22 @@ echo "== install.sh --remote again over itself (its env file in /etc/pgvigil-rem
 insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh -s -- --remote" >"$WORK/r2.out" 2>&1 || fail "the second install.sh --remote: $(cat "$WORK/r2.out")"
 [[ "$(insys systemctl is-active pgvigil-remote)" == active ]] || fail "pgvigil-remote not active after the second install"
 echo "ok   the second install.sh --remote: active"
+
+echo "== order hub-then-remote: the hub's 'pgvigil install -upgrade' to $V2 beside the remote changes only the hub =="
+rem_before=$(remstate)
+# the check can fail: a planted change to the remote's env file is seen, then the file is put back as it was
+insys sh -c "cp -p /etc/pgvigil-remote/pgvigil-remote.env /root/rem.env.plant && echo '# plant' >> /etc/pgvigil-remote/pgvigil-remote.env"
+[[ "$(remstate)" != "$rem_before" ]] || fail "the remote-state check did not see a planted change to its env file"
+insys sh -c "cp -p /root/rem.env.plant /etc/pgvigil-remote/pgvigil-remote.env && rm -f /root/rem.env.plant"
+[[ "$(remstate)" == "$rem_before" ]] || fail "the remote's env file was not put back as it was: $(diff <(echo "$rem_before") <(remstate))"
+hubupgrade >"$WORK/up1.out" 2>&1 || fail "pgvigil install -upgrade ($V2) beside the remote: $(cat "$WORK/up1.out")"
+grep -q '5. swapped the binary and started the service' "$WORK/up1.out" || fail "the upgrade did not end with '5. swapped the binary and started the service': $(cat "$WORK/up1.out")"
+[[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $V2 ("* ]] || fail "the hub's binary after -upgrade: $(insys /usr/local/bin/pgvigil version)"
+[[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "the hub is not active after -upgrade"
+[[ "$(remstate)" == "$rem_before" ]] || fail "the hub's -upgrade changed the remote (files, process, folders or account): $(diff <(echo "$rem_before") <(remstate))"
+[[ "$(insys /usr/local/bin/pgvigil-remote version)" == "pgvigil $V ("* ]] || fail "the remote's binary after the hub's -upgrade: $(insys /usr/local/bin/pgvigil-remote version 2>&1)"
+hub_before=$(hubstate)   # the hub after its upgrade (a new binary and process): what the remote's uninstall must keep
+echo "ok   the hub's install -upgrade beside the remote: /usr/local/bin/pgvigil $V2 and active; the remote's binary ($V), unit, config, env, process, folders and account the same (the check saw a planted change first)"
 
 echo "== uninstall -remote -purge: refused with bundles in the outbox, then -force; the hub untouched =="
 if insys /usr/local/bin/pgvigil-remote uninstall -remote -purge >"$WORK/r3.out" 2>&1; then fail "uninstall -remote -purge with bundles was not refused: $(cat "$WORK/r3.out")"; fi
@@ -180,4 +215,25 @@ insys /usr/local/bin/pgvigil uninstall -purge >"$WORK/u2.out" 2>&1 || fail "unin
 insys test ! -e /etc/pgvigil || fail "-purge kept /etc/pgvigil"
 insys test ! -e /usr/local/bin/pgvigil || fail "-purge kept the binary"
 echo "ok   uninstall keeps config and binary; -purge removes both"
-echo "proof-install: OK (the remote collector beside the hub - install.sh --remote, its bundle, the hub byte for byte, the second install, the uninstall guard and -force; checksum refusal, shared folder refused, install with an empty repository DSN (not started), the unconfigured start exits 3 without a loop, the DSN filled in with no instance in the file starting the service, the upgrade path keeping the config and collecting as pgvigil with $n sample(s), uninstall, purge; busybox parse)"
+
+echo "== order remote-then-hub: the remote first on a host with no hub, then the hub's install and -upgrade =="
+remconfig
+insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh -s -- --remote" >"$WORK/o1.out" 2>&1 || fail "install.sh --remote on a host with no hub: $(cat "$WORK/o1.out")"
+[[ "$(insys systemctl is-active pgvigil-remote)" == active ]] || fail "pgvigil-remote is not active (no hub on the host)"
+rem_before=$(remstate)
+insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh" >"$WORK/o2.out" 2>&1 || fail "the hub's install.sh after the remote: $(cat "$WORK/o2.out")"
+grep -q 'installed and enabled' "$WORK/o2.out" || fail "the hub's install after the remote did not end with 'installed and enabled': $(cat "$WORK/o2.out")"
+[[ "$(remstate)" == "$rem_before" ]] || fail "the hub's install changed the remote (files, process, folders or account): $(diff <(echo "$rem_before") <(remstate))"
+[[ "$(insys sh -c 'command -v pgvigil; command -v pgvigil-remote' | tr '\n' ' ')" == "/usr/local/bin/pgvigil /usr/local/bin/pgvigil-remote " ]] || fail "the commands resolve to: $(insys sh -c 'command -v pgvigil; command -v pgvigil-remote' | tr '\n' ' ')"
+hubupgrade >"$WORK/o3.out" 2>&1 || fail "pgvigil install -upgrade ($V2) with the remote installed first: $(cat "$WORK/o3.out")"
+grep -q '5. swapped the binary; the service is enabled, not started' "$WORK/o3.out" || fail "the upgrade did not end with '5. swapped the binary; the service is enabled, not started': $(cat "$WORK/o3.out")"
+[[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $V2 ("* ]] || fail "the hub's binary after -upgrade: $(insys /usr/local/bin/pgvigil version)"
+[[ "$(remstate)" == "$rem_before" ]] || fail "the hub's -upgrade changed the remote installed first (files, process, folders or account): $(diff <(echo "$rem_before") <(remstate))"
+hub_before=$(hubstate)
+insys /usr/local/bin/pgvigil-remote uninstall -remote -purge -force >"$WORK/o4.out" 2>&1 || fail "pgvigil-remote uninstall -remote -purge -force (the remote installed first): $(cat "$WORK/o4.out")"
+insys test ! -e /usr/local/bin/pgvigil-remote || fail "the remote's binary is still there: $(cat "$WORK/o4.out")"
+[[ "$(hubstate)" == "$hub_before" ]] || fail "the remote's uninstall changed the hub installed after it (files, process, folder or account): $(diff <(echo "$hub_before") <(hubstate))"
+insys /usr/local/bin/pgvigil uninstall -purge >"$WORK/o5.out" 2>&1 || fail "the hub's uninstall -purge: $(cat "$WORK/o5.out")"
+insys test ! -e /usr/local/bin/pgvigil || fail "-purge kept the hub's binary"
+echo "ok   the remote first, then the hub: the hub's install and its install -upgrade ($V2) left the remote's binary, unit, config, env, process, folders and account as they were; pgvigil and pgvigil-remote each resolve to their own binary; the remote's uninstall left the hub as it was"
+echo "proof-install: OK (both install orders - the hub's install -upgrade changes only the hub, the remote's uninstall only the remote; the remote collector beside the hub - install.sh --remote, its bundle, the hub byte for byte, the second install, the uninstall guard and -force; checksum refusal, shared folder refused, install with an empty repository DSN (not started), the unconfigured start exits 3 without a loop, the DSN filled in with no instance in the file starting the service, the upgrade path keeping the config and collecting as pgvigil with $n sample(s), uninstall, purge; busybox parse)"
