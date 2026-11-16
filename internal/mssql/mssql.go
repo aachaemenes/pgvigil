@@ -508,6 +508,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		if t.Key == "pool" {
 			info.PoolTag = t.Value
 		}
+		if t.Key+":"+t.Value == LinkedServerTestTag { // task 409
+			info.LinkedServerTest = true
+		}
 	}
 	info.ReadAutoCloseDatabases = in.Reads != nil && in.Reads.AutoCloseDatabases
 	info.CheckBackupFiles = in.Reads != nil && in.Reads.BackupFiles
@@ -519,6 +522,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			defer func() { _ = fp.Close() }()
 		}
 	}
+	// the identity rule's lines from the instance's mssql_thresholds (the file was checked when it was read: an error
+	// here leaves the defaults)
+	info.IdentityWarnPct, info.IdentityCritPct, _ = IdentityLimits(in.MSSQLThresholds)
 	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
 	ecancel()

@@ -231,6 +231,8 @@ instances:
 
 A threshold of 0 turns its finding off.
 
+The same block takes the two lines of the identity columns' rule, `identity_warn_pct` and `identity_crit_pct` ([day-one checks](sqlserver-checks.md)): each from 10 to 100, the warning under the critical. They are that collection's own and are not stored with the thresholds above; 0 is refused for them.
+
 The newer rules take their numbers from the Thresholds page (root, a tag, an instance; the two log shipping keys also per database), each a default the user changes:
 
 | key | unit | warning | critical | source |

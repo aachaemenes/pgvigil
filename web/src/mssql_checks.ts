@@ -79,7 +79,15 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
     return sec;
   }
   switch (view) {
-    case 'options': sec.append(...optionsView(rowsOf(d.options))); break;
+    case 'options': {
+      // task 409: where an expected value is in force for an option, the option is judged by it (the Configuration
+      // tab's Checks set it); a server that does not answer the route leaves the day-one verdicts as they are
+      let expect: Row[] = [], expectErr = '';
+      try { expect = rowsOf((await get<Record<'in_force', Table | null>>('mssql/config_expect', { instance: ctx.instance, part: 'in_force' })).in_force).filter(r => r.kind === 'config'); }
+      catch (e) { expect = []; expectErr = e instanceof Error ? e.message : String(e); }
+      sec.append(...optionsView(rowsOf(d.options), expect, expectErr));
+      break;
+    }
     case 'databases': sec.append(...databasesView(rowsOf(d.databases), rowsOf(d.columns), q.get('risk') ?? '')); break;
     case 'flags': sec.append(...flagsView(rowsOf(d.flags))); break;
     case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect), rowsOf(d.build_docs)[0] ?? {})); break;
@@ -114,24 +122,36 @@ function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
 }
 
 // every sys.configurations option, worst first: the value in use coloured by its verdict (DBA Dash's Configuration grid)
-function optionsView(rows: Row[]): HTMLElement[] {
-  const n = (s: string) => rows.filter(r => r.is_present !== false && r.status === s).length;
+function optionsView(rows: Row[], expect: Row[] = [], expectErr = ''): HTMLElement[] {
+  // task 409: the expected value in force for an option (its name without case), and what it makes of the value in use;
+  // an option the server no longer lists is not read, never judged on its last value
+  const want = new Map(expect.map(e => [String(e.key).toLowerCase(), e]));
+  const exp = (r: Row) => r.is_present === false ? undefined : want.get(String(r.name).toLowerCase());
+  const met = (r: Row) => Number(r.value_in_use) === Number(exp(r)?.value);
+  const expWords = (r: Row) => `${met(r) ? 'as expected' : 'deviates: expected ' + String(exp(r)?.value)} (set at ${String(exp(r)?.set_at)})`;
+  // the verdict that counts: the expectation's where one is in force, else the day-one rule's; worst first
+  const eff = (r: Row): string => r.is_present === false ? 'none' : exp(r) ? (met(r) ? 'ok' : 'warn') : String(r.status ?? 'none');
+  const rank: Record<string, number> = { crit: 0, warn: 1, ok: 2, none: 3 };
+  rows = [...rows].sort((a, b) => (rank[eff(a)] ?? 3) - (rank[eff(b)] ?? 3));
+  const n = (s: string) => rows.filter(r => r.is_present !== false && eff(r) === s).length;
   const cols: Col[] = [
     { key: 'name', label: 'option' },
-    { key: 'value_in_use', label: 'in use', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status none'),
-      fmt: (v, r) => titled(fmtNum(v), 'best practice: ' + verdict(r.status, r.severity)) },
+    { key: 'value_in_use', label: 'in use', num: true, cls: (v, r) => r.is_present === false ? '' : statusCls(eff(r)) || (v == null || v === '' ? '' : 'status none'),
+      fmt: (v, r) => titled(fmtNum(v), exp(r) ? 'expected value: ' + expWords(r) : 'best practice: ' + verdict(r.status, r.severity)) },
     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
-    { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
-    { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
-    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : r.status === 'ok' ? 'status ok' : 'status none' },
-    { key: 'detail', label: 'why', wide: true },
-    { key: 'rule' },
+    { key: 'advised', label: 'advised', fmt: (v, r) => exp(r) ? '' : r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
+    { key: 'status', label: 'verdict', fmt: (v, r) => exp(r) ? expWords(r) : verdict(v, r.severity) },
+    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : eff(r) === 'ok' ? 'status ok' : 'status none' },
+    { key: 'detail', label: 'why', wide: true, fmt: (v, r) => exp(r) ? 'judged by the expected value set on the Configuration tab' : String(v ?? '') },
+    { key: 'rule', fmt: (v, r) => exp(r) ? 'expected value' : String(v ?? '') },
   ];
   return [
     el('p', { class: 'meta' }, `${fmtNum(rows.length)} options: ${fmtNum(n('crit'))} critical, ${fmtNum(n('warn'))} deviate, ${fmtNum(n('ok'))} at their `
-      + `default or best practice, ${fmtNum(n('none'))} without a known default. Green: at the default or the best practice. Yellow: a `
+      + `default, best practice or expected value, ${fmtNum(n('none'))} without a known default. Green: at the default or the best practice. Yellow: a `
       + 'warning or an advice rule is broken (a value only off its default is advice). Red: a critical rule is broken. The defaults '
-      + 'are sp_Blitz\'s table; the rules sp_Blitz\'s, sp_PerfCheck\'s, dbachecks\' and Glenn Berry\'s, each named in its row.'),
+      + 'are sp_Blitz\'s table; the rules sp_Blitz\'s, sp_PerfCheck\'s, dbachecks\' and Glenn Berry\'s, each named in its row. '
+      + 'An option with an expected value in force (the Configuration tab\'s Checks) is judged by that value alone: green when it is met, yellow when not.'),
+    ...(expectErr ? [el('p', { class: 'empty' }, `The expected values were not read (${expectErr}): the verdicts below are the day-one rules', while the findings leave out an option that has an expected value.`)] : []),
     grid(rows, cols, 'No option read yet.'),
   ];
 }
@@ -271,14 +291,14 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
   const unscanned = scans.filter(s => s.scanned !== true);
   return [
     el('p', { class: 'meta' }, `${fmtNum(scans.length - unscanned.length)} database(s) scanned, ${fmtNum(unscanned.length)} not (each says why below). `
-      + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from 75 %, red from 90 %: at the limit every insert fails. '
+      + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from the warning line, red from the critical line (75 % and 90 %, or the instance\'s identity_warn_pct and identity_crit_pct; a finding names the lines in force): at the limit every insert fails. '
       + 'The rate is taken against a read up to seven days back.'
       + (cols.length >= 500 ? ' The 500 fullest columns are listed; the area cell counts every one.' : '')),
     grid(cols, [
       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
       { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
       { key: 'pct_used', label: '% used', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status ok'), fmt: fmtNum },
-      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical (90 % and more)' : v === 'warn' ? 'warning (75 % and more)' : 'under 75 %' },
+      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical' : v === 'warn' ? 'warning' : 'under the warning line' },
       { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
       { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
     ], 'No identity column at 10 % of its range or more.'),

@@ -353,6 +353,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/actions/terminate", s.actions.Terminate)
 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
+	api.HandleFunc("GET /api/mssql/storage_depth", s.MSSQLStorageDepth) // task 407
+	api.HandleFunc("GET /api/mssql/config_checks", s.MSSQLConfigChecks) // task 409
+	api.HandleFunc("GET /api/mssql/config_expect", s.MSSQLConfigExpect) // task 409
+	api.HandleFunc("POST /api/mssql/config_expect", s.MSSQLConfigExpectWrite)
+	api.HandleFunc("GET /api/mssql/maintenance", s.MSSQLMaintenance) // task 410
+	api.HandleFunc("GET /api/mssql/dbio", s.MSSQLDBIO)               // task 407
 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)

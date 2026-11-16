@@ -41,6 +41,21 @@
 -- (0110's, its owner-only list extended in 0110 itself).
 --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
 --     'not judged'; the rest 0104's text), and the findings view's 'database xid age' arm leaves an invalid database out.
+--   task 409 (0160): pgvigil.mssql_checks_findings (0090's view) leaves out the day-one finding of a server option that
+--     has an expected value in force, met or not (the expectation alone judges it): every reader follows - pgvigil.findings,
+--     mssql_checks_status (the Checks page's areas and the Summary's cells) and the Checks page's list. The findings and
+--     purge() arms of tasks 407, 409 and 410 are 0300's (the j16 join file: no j16 hunk of an object 0300 re-creates).
+
+-- 0090's mssql_checks_findings with task 409's anti-join (0160 sorts below this file)
+CREATE OR REPLACE VIEW pgvigil.mssql_checks_findings AS
+SELECT f.instance_id, f.severity, f.check_name, f.object, f.snapshot_at AS at,
+       f.detail || ' [rule: ' || f.rule || coalesce('; value: ' || nullif(f.value, ''), '') || ']' AS detail,
+       f.area, f.rule, f.value, f.first_seen
+  FROM pgvigil.mssql_check_finding f
+  JOIN pgvigil.mssql_check_area a ON a.instance_id = f.instance_id AND a.area = f.area
+ WHERE a.snapshot_at > now() - CASE WHEN f.area = 'identity' THEN interval '18 hours' ELSE interval '3 hours' END
+   AND NOT (f.area = 'config' AND f.check_name = 'server option'
+            AND EXISTS (SELECT 1 FROM pgvigil.mssql_config_expect_now n WHERE n.instance_id = f.instance_id AND n.kind = 'config' AND n.key = lower(f.object)));
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*

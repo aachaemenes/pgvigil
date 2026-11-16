@@ -70,7 +70,12 @@ var HADRThresholds = map[string]float64{
 // ThresholdRows turns an instance's thresholds as the configuration gives them (name: number, and backup_exclude:
 // a list of LIKE patterns of database names whose backups are not judged) into the one-row payload of
 // pgvigil.import_mssql_hadr_thresholds. An unknown name or a negative number is an error here, before any write.
+// The identity rule's two lines (IdentityThresholds) live in the same block and are the collection's own: checked
+// here with the rest, never written to the threshold store.
 func ThresholdRows(t map[string]any) ([]collect.Row, error) {
+	if _, _, err := IdentityLimits(t); err != nil {
+		return nil, err
+	}
 	row := collect.Row{}
 	names := make([]string, 0, len(t))
 	for k := range t {
@@ -87,8 +92,11 @@ func ThresholdRows(t map[string]any) ([]collect.Row, error) {
 			row[k] = pats
 			continue
 		}
+		if _, identity := IdentityThresholds[k]; identity {
+			continue
+		}
 		if _, known := HADRThresholds[k]; !known {
-			return nil, fmt.Errorf("mssql threshold %q is not known; known: %s, backup_exclude", k, strings.Join(thresholdNames(), ", "))
+			return nil, fmt.Errorf("mssql threshold %q is not known; known: %s, backup_exclude, identity_warn_pct, identity_crit_pct", k, strings.Join(thresholdNames(), ", "))
 		}
 		n, ok := number(v)
 		if !ok || n < 0 {

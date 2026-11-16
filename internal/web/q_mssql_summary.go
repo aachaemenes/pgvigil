@@ -71,6 +71,8 @@ WITH inst AS (
                      -- a volume's free space is DBA Dash's Drive Space (task 176); the files and the version store its File Space
                      -- DBA Dash's % Max Size apart (a file at or within one growth of its max size, task P08)
                      WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' WHEN setting LIKE '%max size%' THEN 'pctmax' ELSE 'filespace' END
+                     -- task 407: a SQL Server volume full within 30 days is DBA Dash's Drive Space too; no other storage depth arm has a cell
+                     WHEN 'mssql_storage_depth' THEN 'disk'
                      -- DBA Dash's Backup FULL, DIFF and LOG columns apart (task P08): a log or a differential finding by its
                      -- name ('backups not judged' by its detail), any other backup finding is FULL's
                      WHEN 'mssql_jobs' THEN CASE WHEN NOT (setting ILIKE '%backup%' OR value = 'mssql_backups') THEN 'jobs'
@@ -92,7 +94,8 @@ WITH inst AS (
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_backup_loc' FROM pgvigil.mssql_backup_loc_findings
           -- task 304 (0147): the log chain broken is Backup LOG's
-          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_restore' FROM pgvigil.mssql_restore_findings) u
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_restore' FROM pgvigil.mssql_restore_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage_depth' FROM pgvigil.mssql_storage_depth_findings WHERE check_name = 'a volume full within 30 days') u
    WHERE severity IN ('critical', 'warning')
 ), started AS (
   SELECT m.instance_id, m.started_at FROM pgvigil.mssql_instance m JOIN inst USING (instance_id)

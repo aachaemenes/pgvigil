@@ -57,6 +57,13 @@ type Info struct {
 	ReadAutoCloseDatabases bool
 	CheckBackupFiles       bool
 	BackupFilePool         *sql.DB
+	// LinkedServerTest: the instance carries the tag pgvigil:linkedserver-test (the runner sets it): its linked
+	// servers' connections are tested (mssql_linkedserver_test, task 409)
+	LinkedServerTest bool
+	// IdentityWarnPct, IdentityCritPct: the identity rule's lines from the instance's mssql_thresholds
+	// (identity_warn_pct, identity_crit_pct; the runner sets them, 0 = the defaults)
+	IdentityWarnPct float64
+	IdentityCritPct float64
 }
 
 // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right

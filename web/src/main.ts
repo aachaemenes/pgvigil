@@ -57,6 +57,7 @@ import { mssqlJobs } from './mssql_jobs';
 import { jobsPgView } from './jobs_pg';
 import { pgDeadlocksView } from './pg_deadlocks';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
+import { mssqlMaintenanceView } from './mssql_maintenance';
 import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
@@ -110,7 +111,7 @@ const mssqlPages: Record<string, Render> = {
   jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
-  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+  mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
@@ -124,7 +125,7 @@ const mssqlPages: Record<string, Render> = {
 // the SQL Server tabs whose own read says nothing when their collection was skipped on the instance (a platform rule
 // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
 const mssqlTabRuns: Record<string, string[]> = {
-  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
+  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'], mssqlmaintenance: ['mssql_maintenance', 'mssql_jobs'],
   mssqlcpu: ['mssql_cpu'], mssqlazure: ['mssql_azuredb_resources', 'mssql_azuredb_governance'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],

@@ -66,6 +66,7 @@ const (
 	doorPgThreshold    doorRoute = "pg/thresholds"
 	doorJobThreshold   doorRoute = "jobs/thresholds"
 	doorJobExclusion   doorRoute = "jobs/exclusions"
+	doorConfigExpect   doorRoute = "mssql/config_expect" // task 409
 )
 
 // doorRowRef names a stored row an end, an edit, a pause or a resume acts on: acks (ack_id), alert_dismissals
@@ -127,6 +128,7 @@ var doorLevels = map[doorRoute][]string{
 	doorPgThreshold:    {"instance", "database"},
 	doorJobThreshold:   {"instance", "job"},
 	doorJobExclusion:   {"instance"},
+	doorConfigExpect:   {"instance"},
 }
 
 func doorWide(what string) string {
@@ -138,7 +140,7 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 	switch sc.Route {
 	// a job's thresholds and the job exclusions came back on with their pages (B7 DONE-3): the page and the route turn
 	// on together, so the server never carries a write its page says is off
-	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion:
+	case doorAck, doorAckEnd, doorDismiss, doorMuteChange, doorDriveThreshold, doorPgThreshold, doorJobThreshold, doorJobExclusion, doorConfigExpect:
 	case doorAlertTest:
 		return "Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here", nil
 	default:

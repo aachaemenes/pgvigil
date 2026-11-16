@@ -78,6 +78,53 @@ The store's size and the two rates over the chosen range, each chart with its nu
 
 When cleanup stands still and no snapshot transaction was active at the read, the finding says `holder unknown` and names the next read (the oldest open transaction of any kind).
 
+## Storage depth (task 407)
+
+What SQLWATCH, SQLMonitor, dbachecks, Telegraf and windows_exporter show of a SQL Server's storage beyond the files'
+sizes, on the Storage and Database files tabs (migration 0158).
+
+- Days until full: each volume's used space over 30 days (at least 7 days of reads) and over 7 days, by regression; the
+  30-day figure judges. 'a volume full within 30 days' is a warning, under 7 days critical: the meaning the host
+  volumes' rule has on PostgreSQL (SQLWATCH warns under 7 days and is critical under 3: not taken, so one rule means
+  one thing on both engines). On Linux the directories that read the same total and free bytes are one file system.
+- The space inside each database (`mssql_storage`'s per-database read, where the login has VIEW SERVER STATE - on
+  SQL Server 2022 VIEW SERVER PERFORMANCE STATE is enough - and VIEW ANY DEFINITION): reserved, data, index and unused
+  pages as sp_spaceused counts them (an XML or full-text index's internal tables as index), the data files' space not
+  reserved yet, the log's size and use. A database whose split was not read keeps its row, grey, with the reason.
+- tempdb (`mssql_versionstore`'s minute read): user objects, internal objects, the version store and the free space.
+  'tempdb data files filling' judges the newest read against tempdb's capacity, taken from the hourly storage read: a
+  file that does not grow counts its size, the files that grow to a max size the smaller of their max sizes and their
+  size plus the volume's free space, a file without limit its size plus that free space (a Linux file system's free
+  space counted once). Growth between two reads does not move it. Over 50 % a warning, over 80 % critical; with tempdb's
+  files not read, or a file without limit on a volume whose free space was not read, the capacity is 'not known'.
+  SQLMonitor also alerts at a fixed 100 GB: not taken (a fixed size is wrong for a small and a large server alike).
+- Every table (`mssql_tables`, every 6 hours, ON by default on a new and an upgraded site): type, compression, partitions,
+  rows and sizes as sp_spaceused counts them (an XML or full-text index's internal tables with the table); a sample is
+  stored only when a table's rows or size changed, so an unchanged table costs nothing after its first read. A server
+  with many tables is stored 20,000 tables an import, and a pass the run's deadline cuts goes on at the next run from
+  the first database it did not reach. A table first seen inside the window, in a database read before it, grew from 0. Store cost: one row per table in `mssql_tables` and one per change in `mssql_table_sample` (about
+  150 bytes with its index). tempdb and model are left out. Switch it off for an instance with
+  `disabled: [mssql_tables]` in its entry of pgvigil.yaml.
+- IO per database and per volume (`mssql_fileio`): every database apart in a grid, a chart of the busiest 5, 10 or
+  20, and the range beside the same window a day or a week before. Each file also gives the resource governor's queued
+  stall and the IOs pending at the read, matched to the file by its handle (Microsoft calls the pending time 'internal
+  use only': it is not kept).
+- The default data and log paths, the fixed drives (free space only: SQL Server gives no drive size) and the data and
+  log files in the instance's folders that no database lists (`mssql_storage_depth`, SQL Server 2017 and later): a
+  folder's own files, never a subfolder's (another instance's files may sit there). The orphan list needs VIEW ANY
+  DEFINITION and says so without it; a folder that cannot be listed keeps the last list. 'SMO and DMO XPs' at 0 turns
+  that read off; pgvigil never switches it on. After ALTER DATABASE tempdb MODIFY FILE the server names the new path at
+  once but runs on the old files until its restart: pgvigil keeps tempdb's paths from its first read after each start
+  and never calls those files orphans. A move made before that first read cannot be told apart: a file named like a
+  tempdb file and written since the server's start then reads 'a tempdb file move may be pending (the files run until
+  the restart)', as info. A file a finished move left behind (not written since the start) is a plain orphan.
+- The log space rule names the transaction that keeps the log from clearing when it waits on ACTIVE_TRANSACTION
+  (session, login, host, program, open since, last statement; a distributed transaction by its unit of work; a local
+  one no session holds by its transaction id), tempdb's log too; a holder that could not be read says 'holder not read'.
+  It never kills it.
+- Not read: the Windows host's disk counters (queue length, latency, IOPS and throughput per logical and physical
+  disk), the volumes' block size and allocation unit. pgvigil has no Windows host door yet.
+
 ## One run by hand
 
 ```

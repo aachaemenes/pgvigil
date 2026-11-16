@@ -123,7 +123,7 @@ export const instanceGroups: TabGroup[] = [
 // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
 export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
-  mssql_blocked: 'Blocked reports', mssql_xewaits: 'Waits over the threshold', mssql_xewarnings: 'Query warnings', mssql_xemodules: 'Procedure runs', mssql_xecaptures: 'XE captures', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs',
+  mssql_blocked: 'Blocked reports', mssql_xewaits: 'Waits over the threshold', mssql_xewarnings: 'Query warnings', mssql_xemodules: 'Procedure runs', mssql_xecaptures: 'XE captures', findings: 'Findings', availability: 'Availability', mssqllogshipping: 'Log Shipping', mssqlmirroring: 'Mirroring', mssqlag: 'Availability Groups', mssqlbackups: 'Backups', mssqlrestore: 'Restore chain', mssqljobs: 'Jobs', mssqlmaintenance: 'Maintenance',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
@@ -140,7 +140,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
-  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
+  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes', 'mssqlpool', 'mssqlazure'] },
   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqlerrors', 'mssqltrace', 'mssqlhealth'] },
   { key: 'reports', name: 'Reports', tabs: ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables', 'customreports', 'community'] },
