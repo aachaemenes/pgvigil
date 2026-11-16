@@ -1274,6 +1274,25 @@ SELECT f.instance_id, 'warning', 'job statistics not rolled up', f.src, true, 't
                     WHERE h.instance_id = f.instance_id AND h.collection = 'job_stats_hourly' AND h.status = 'ok'
                       AND h.note LIKE 'rollup healed: the ' || f.src || ' hours %' AND h.log_id > f.log_id)
 UNION ALL
+-- HA join (0150): an instance's replication hours not rolled up - its newest 'rollup failed' row of the last day
+-- (collection_log, collection 'replication_hourly') with no 'rollup healed' row after it. An arm of its own, not a
+-- name in the arm above: 0150's notes name no source ('rollup failed for the hours X to Y ...', 'rollup healed: the
+-- hours X to Y rebuilt' - an instance has ONE range to rebuild, its trigger's), so the arm above, which parses the
+-- source out of the note and requires it, gives no row for them. The value is the samples' table, fixed while the
+-- fault lasts (an alert is keyed by its finding's value); the detail is the row's note. The samples are stored and
+-- the Replication page's charts read them; only a chart over the hours is behind. 'After' is by log_id, as above
+SELECT f.instance_id, 'warning', 'replication hours not rolled up', 'replication_sample', true, 'the hours rebuilt by the next import or pgvigil purge', 'all',
+       f.note, 'pgvigil collector', f.snapshot_at
+  FROM (SELECT DISTINCT ON (l.instance_id) l.instance_id, l.note, l.snapshot_at, l.log_id
+          FROM pgvigil.collection_log l
+         WHERE l.collection = 'replication_hourly' AND l.status = 'error' AND l.note LIKE 'rollup failed for the hours %'
+           AND l.snapshot_at > now() - interval '1 day'
+         ORDER BY l.instance_id, l.log_id DESC) f
+  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
+ WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collection_log h
+                    WHERE h.instance_id = f.instance_id AND h.collection = 'replication_hourly' AND h.status = 'ok'
+                      AND h.note LIKE 'rollup healed: the hours %' AND h.log_id > f.log_id)
+UNION ALL
 -- the slow-connect tier: an instance whose connects average over its own warning (collector_connects); its value the
 -- average in seconds (alert_finding_key reads its digits as '#': one alert while it stays slow)
 SELECT c.instance_id, CASE WHEN c.level = 2 THEN 'critical' ELSE 'warning' END, 'slow connect', to_char(c.avg_s, 'FM9990.00') || ' s', true,
@@ -1289,6 +1308,9 @@ SELECT NULL::int, CASE WHEN f.level = 2 THEN 'critical' ELSE 'warning' END, 'slo
        'connects under their warning', 'all', f.detail, 'pgvigil repository', f.since
   FROM pgvigil.collector_slow_folds f;
 
--- the job statistics' rows of collection_log (0139's 'rollup failed' / 'rollup healed'), per instance newest first: the
--- arm 'job statistics not rolled up' above reads only these (the log keeps every collection's errors and skips)
-CREATE INDEX IF NOT EXISTS collection_log_job_stats_idx ON pgvigil.collection_log (instance_id, log_id DESC) WHERE collection = 'job_stats_hourly';
+-- the rollups' rows of collection_log ('rollup failed' / 'rollup healed': 0139's job statistics and, since the HA join,
+-- 0150's replication hours), per instance newest first: the arms 'job statistics not rolled up' and 'replication hours
+-- not rolled up' above read only these (the log keeps every collection's errors and skips). One index for both: each
+-- arm names its one collection, which implies this predicate
+CREATE INDEX IF NOT EXISTS collection_log_job_stats_idx ON pgvigil.collection_log (instance_id, log_id DESC)
+ WHERE collection IN ('job_stats_hourly', 'replication_hourly');
