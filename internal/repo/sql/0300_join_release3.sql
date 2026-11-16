@@ -1,11 +1,11 @@
--- 0300 the third join file of the release (v0.4.0, the j16 join): each object that two or more slices of this join
--- change, re-created WHOLE here, after every slice migration of the join. The join file's rule: no slice's change of
--- an object this file re-creates goes into 0085 or an earlier join file (0110, 0190); it arrives here as an arm (a
--- slice's own file may create the object first: this file runs after every one, so its text is the one that stays). Base:
--- the HA join (task 389, rel-ha389-prep 40762a29). Each object = the base's effective text, then every writer's arm in
--- the join's order as a three-way merge (T a slice's tree, P its wiring patch, D its draft) or a hand placement from
--- its join-lines file (H); every line an arm brought is under its marker '-- [j16 #<n> <item> <sha>]', and the arm
--- list heads each object; the join's table changes (#E) close the file. Migrate calls apply_roles() after every file, this one too.
+-- 0300 the third join file of the release (v0.4.0): each object that two or more slices change, re-created WHOLE here,
+-- after every slice migration. The rule of a join file: no slice's change of an object this file re-creates goes into
+-- 0085 or an earlier join file (0110, 0190); it arrives here as an arm (a slice's own file may create the object first:
+-- this file runs after every one, so its text is the one that stays). Base: each object's text at 40762a29. Each object =
+-- the base's effective text, then every writer's arm in order as a three-way merge (T a slice's tree, P its wiring
+-- patch, D its draft) or a hand placement from its join-lines file (H); every line an arm brought is under its marker
+-- '-- [#<n> <item> <sha>]', and the arm list heads each object; the table changes (#E) close the file. Migrate calls
+-- apply_roles() after every file, this one too.
 
 -- ====================================================================================================================
 -- pgvigil.collector_shared_cause: base 0121_collector_health.sql L657
@@ -14,14 +14,14 @@
 -- ====================================================================================================================
 CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  -- [j16 #1 B6G-N 17e6d3f7]
+  -- [#1 B6G-N 17e6d3f7]
   -- B6.4 (WIRING): 'collection runs long' with the collector's own kinds - held while a parent stands for its instance (a
   -- cut or a host down slows the runs it does not fail); a host that is slow while its runs succeed forms no parent:
   -- its instances fold into ONE 'collections run long' of the host instead (0166 collection_runs_long_fold, B6.4 #4)
   SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable', 'slow connect',
-                                                                    -- [j16 #1 B6G-N 17e6d3f7]
+                                                                    -- [#1 B6G-N 17e6d3f7]
                                                                     'collection runs long',
-                                                                    -- [j16 #2 B24H-STREAKS c937e891]
+                                                                    -- [#2 B24H-STREAKS c937e891]
                                                                     -- B24h (0254): the probe's settings (b24h-join-lines.sql line 2)
                                                                     'query round trip slow', 'ping slow', 'host not answering ping'))
       OR (p_source = 'collector' AND p_setting = 'server unreachable')   -- 0118's (task 177 D30), where no heartbeat covers the instance
@@ -38,7 +38,7 @@ $$;
 -- ====================================================================================================================
 CREATE OR REPLACE FUNCTION pgvigil.alert_key(p_instance_id int, p_source text, p_setting text, p_value text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  -- [j16 #2 B24H-STREAKS c937e891]
+  -- [#2 B24H-STREAKS c937e891]
   SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting IN ('collector or network', 'slow connects', 'collections run long', 'ping slow', 'host not answering ping',
                                                                                        'network slow from this collector')
               THEN md5('0' || E'\x1f' || p_source || E'\x1f' || p_setting || E'\x1f' || coalesce(p_value, ''))
@@ -79,7 +79,7 @@ SELECT NULL::int AS instance_id, 'critical'::text AS severity, 'collector or net
                                    WHERE s.cleared_at IS NULL AND s.source = 'pgvigil repository'
                                      AND s.setting = 'collector or network' AND s.value = p.host) ps
                     GROUP BY st.at, ps.first
-                    -- [j16 #3 B24H-STREAKS c937e891]
+                    -- [#3 B24H-STREAKS c937e891]
                     HAVING count(*) > 0), '')
        -- B24h line 6: a 'server not answering' parent ends with the probe's newest answer for its server's host (5 minutes;
        -- nothing when not probed)
@@ -101,7 +101,7 @@ SELECT NULL::int, 'warning', 'purge not run in 2 days',
   FROM (SELECT max(finished_at) AS finished_at FROM pgvigil.purge_runs) p
  WHERE (p.finished_at IS NULL OR p.finished_at < now() - interval '2 days')
    AND EXISTS (SELECT 1 FROM pgvigil.instances WHERE first_seen < now() - interval '2 days')
--- [j16 #2 N4 280368a5]
+-- [#2 N4 280368a5]
 UNION ALL
 -- N4: next month's partitions missing in a month's last three days (UTC) - 0271's partitions_ahead_finding (the stub
 -- above until 0271 gives it its body)
@@ -112,13 +112,13 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
        'pgvigil collector', s.last_run_at
   FROM pgvigil.collector_streaks_now s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
-   -- [j16 #1 B6G-N 17e6d3f7]
+   -- [#1 B6G-N 17e6d3f7]
    AND NOT pgvigil.collection_dont_monitor(s.instance_id, s.collection)   -- B6g-2: Don't monitor (its Collection Health threshold)
    -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
    -- network' stands, and after it one failed run past its window (collector_in_window)
    -- a streak speaks only while a beating collector still names the instance (collector_covers): only such a run ends
    -- it. An instance moved to a `pgvigil collect` on a schedule, or one whose collector died, leaves this view 20
-   -- [j16 #1 B6G-N 17e6d3f7]
+   -- [#1 B6G-N 17e6d3f7]
    -- minutes after its last naming; the Summary's Collection Health column reads the scheduled collect's errors
    AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
@@ -127,7 +127,7 @@ UNION ALL
 -- builds no 'collection failing'
 SELECT s.instance_id, 'critical', 'server unreachable', 'no connection', true, 'the server answering the collector', 'all',
        format('%s connection attempts in a row failed since %s: %s', s.fail_streak, s.failing_since, coalesce(s.last_error, 'no error text'))
-       -- [j16 #3 B24H-STREAKS c937e891]
+       -- [#3 B24H-STREAKS c937e891]
        -- B24h line 6: the probe's newest answer for the instance's host from this collector (5 minutes; nothing when not probed)
        || coalesce((SELECT CASE WHEN pr.answered > 0 THEN '; the host answers (tcp): the service is down, not the host'
                                   ELSE '; the host does not answer either (tcp): the host or the network' END
@@ -279,14 +279,14 @@ SELECT v.instance_id, CASE WHEN v.free_bytes <= 2 * 1073741824::bigint THEN 'cri
  WHERE v.source = 'dm_os_volume_stats' AND v.status = 'ok' AND v.free_bytes < 5 * 1073741824::bigint
    AND v.snapshot_at > now() - interval '3 hours' AND v.total_bytes > 10 * 1073741824::bigint
 UNION ALL
--- [j16 #1 405 2370bd1c]
+-- [#1 405 2370bd1c]
 SELECT i.instance_id, CASE WHEN q.per_sched >= 16 THEN 'critical' ELSE 'warning' END, 'runnable queue per scheduler', 'schedulers', true,
        'under 8 per scheduler', 'all',
-       -- [j16 #1 405 2370bd1c]
+       -- [#1 405 2370bd1c]
        format('runnable tasks averaged %s per scheduler over %s (%s schedulers): work waits for a CPU',
               round(q.per_sched, 1), q.window_text, q.schedulers),
        'mssql_perf', q.at
-  -- [j16 #1 405 2370bd1c]
+  -- [#1 405 2370bd1c]
   FROM pgvigil.instances i
   CROSS JOIN LATERAL pgvigil.mssql_runnable_queue(i.instance_id, now()) q
  WHERE i.engine = 'sqlserver' AND q.per_sched >= 8
@@ -316,7 +316,7 @@ SELECT c.instance_id, 'critical', 'server unreachable', i.name, true, 'answering
   FROM (SELECT DISTINCT ON (d.instance_id) d.* FROM pgvigil.collection_dates d ORDER BY d.instance_id, d.snapshot_at DESC) c
   JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND c.status = 'error' AND c.snapshot_at > now() - interval '30 minutes'
-   -- [j16 #1 405 2370bd1c]
+   -- [#1 405 2370bd1c]
    AND c.note LIKE 'connect: %'
 UNION ALL
 -- task 405 (Changed 19): the PostgreSQL poison wait (0156's pg_poison_wait_findings, wait_sample only), its info row
@@ -350,21 +350,21 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 201 (0121): the collector's own findings; instance_id NULL for the repository-wide ones
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_findings
-    -- [j16 #8 KITWATCH 32460ec2]
+    -- [#8 KITWATCH 32460ec2]
     UNION ALL
     -- KITWATCH (0253): the collector's sp_WhoIsActive call seen - unusable (warning) or failing (info)
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.kit_findings
-    -- [j16 #9 B24e f6f83845]
+    -- [#9 B24e f6f83845]
     UNION ALL
     -- B24e (0192): a password secret the collector could not read or the server refused
     SELECT instance_id, severity, check_name, object, true, 'the login''s password readable from AWS Secrets Manager by the collector host''s identity'::text,
            'all'::text, detail, 'pgvigil collector'::text, at
       FROM pgvigil.secret_findings
-    -- [j16 #10 B24H-STREAKS c937e891]
+    -- [#10 B24H-STREAKS c937e891]
     UNION ALL
     -- B24h (0254): the probe's findings (b24h-join-lines.sql line 1)
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_probe_findings
-    -- [j16 #5 B6G-N 17e6d3f7]
+    -- [#5 B6G-N 17e6d3f7]
     UNION ALL
     -- B6.4 (0166, WIRING): pgvigil's own health - a collection that runs long, the alert sender idle (shown, never sent:
     -- alert_findings below leaves it out), the repository's autovacuum behind
@@ -452,7 +452,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_xe', at FROM pgvigil.mssql_xe_findings
     UNION ALL
-    -- [j16 #2 S2 09661906]
+    -- [#2 S2 09661906]
     -- task 411 (0162): an optional capture's session stopped
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_xe_captures', at FROM pgvigil.mssql_xe_captures_findings
     UNION ALL
@@ -464,7 +464,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_storage', at FROM pgvigil.mssql_storage_findings
     UNION ALL
-    -- [j16 #4 409-410 03f74d79]
+    -- [#4 409-410 03f74d79]
     -- task 407 (0158): storage depth - days until a volume is full, tempdb filling, dbachecks' file and path rules
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_storage_depth', at FROM pgvigil.mssql_storage_depth_findings
     UNION ALL
@@ -482,7 +482,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_audit', at FROM pgvigil.mssql_audit_findings
     UNION ALL
-    -- [j16 #1 S2 09661906]
+    -- [#1 S2 09661906]
     -- task 408 (0159): the SQL Server security rules in force that hit
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_security', at FROM pgvigil.mssql_security_findings
     UNION ALL
@@ -492,10 +492,10 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_stats', at FROM pgvigil.mssql_stats_findings
     UNION ALL
-    -- [j16 #11 409-410 03f74d79]
+    -- [#11 409-410 03f74d79]
     -- (task 409: mssql_checks_findings leaves out a server option an expected value judges; 0190's mssql_checks_findings)
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_checks', at FROM pgvigil.mssql_checks_findings
-    -- [j16 #4 409-410 03f74d79]
+    -- [#4 409-410 03f74d79]
     UNION ALL
     -- task 409 (0160): the configuration checks against the expected values
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_config_checks', at FROM pgvigil.mssql_config_check_findings
@@ -508,7 +508,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- task 162 (0103): base backups, log shipping, crash restarts, the statement store, amcheck age
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_backups_findings
     UNION ALL
-    -- [j16 #7 INV(302) 4c155a56]
+    -- [#7 INV(302) 4c155a56]
     -- task 302 (0148): a credential in the archiver's command, WAL discarded (warnings); the tool read off and 162's
     -- base backups not read (info: the Summary's Backup FULL cell maps 'base backups not read' to grey, never green)
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'backup_dest', at FROM pgvigil.pg_backup_dest_findings
@@ -542,13 +542,13 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- task 301 (0140): a backup on the database's own volume, log backups to two destinations, a destination not seen before
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_backup_loc', at FROM pgvigil.mssql_backup_loc_findings
     UNION ALL
-    -- [j16 #6 INV(301b) 4c155a56]
+    -- [#6 INV(301b) 4c155a56]
     -- task 301b (0191): a backup file not where msdb says, pseudo-simple, the default backup path not reachable
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_backup_check', at FROM pgvigil.mssql_backup_check_findings
     UNION ALL
     -- task 304 (0147): the log chain is broken (never for a gap a replica's late read may fill)
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_restore_chain', at FROM pgvigil.mssql_restore_findings
-    -- [j16 #3 404 1cb5f703]
+    -- [#3 404 1cb5f703]
     UNION ALL
     -- task 404 (0155): a restart, a failover, a crash restart or a build change in the last 24 hours (info)
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.restart_findings
@@ -564,7 +564,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
 CREATE OR REPLACE VIEW pgvigil.alert_rule_findings AS
 SELECT s.instance_id, s.state AS severity,
        c.family_label || ': ' || c.label || CASE WHEN s.database <> '' THEN ' [' || s.database || ']' ELSE '' END AS setting,
-       -- [j16 #1 S2 09661906]
+       -- [#1 S2 09661906]
        CASE s.op_family
          WHEN 'rise' THEN 'rises ' || pgvigil.metric_num(s.threshold) || ' between two samples for ' || r.for_minutes
                           || ' min; last rise ' || coalesce(pgvigil.metric_num(s.value), 'none')
@@ -573,7 +573,7 @@ SELECT s.instance_id, s.state AS severity,
               || coalesce(pgvigil.metric_num(s.value), 'none') END AS value,
        NULL::boolean AS is_set, NULL::text AS suggested, NULL::text AS platforms,
        'alert rule ' || r.rule_id || coalesce(' "' || r.name || '"', '') || ' ('
-         -- [j16 #1 S2 09661906]
+         -- [#1 S2 09661906]
          || CASE r.scope WHEN 'fleet' THEN 'every instance' WHEN 'tag' THEN 'tag ' || r.tag
                          WHEN 'tags' THEN 'tags ' || pgvigil.alert_scope_text(r.scope_tags) ELSE 'instance ' || r.instance_name END
          || '): ' || r.metric || ' '
@@ -586,19 +586,19 @@ SELECT s.instance_id, s.state AS severity,
                                              || coalesce(s.baseline_days, 0) || ' of 7 days), the rule''s value alone' END
               ELSE r.op || ' ' || pgvigil.metric_num(s.threshold) || ' (' || c.unit || ')' END
          || ' since ' || to_char(s.beyond_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
-         -- [j16 #2 B6G-N 17e6d3f7]
+         -- [#2 B6G-N 17e6d3f7]
          -- B6G-N (scripts/b6g-join-lines.sql line 1): a Collection-family rule naming no collection names the worst
          -- collection of its newest hour (the detail is outside alert_finding_key: one alert as the worst passes)
          || CASE WHEN c.family = 'collection' AND s.database = '' AND s.sample_at IS NOT NULL
                  THEN coalesce('; the worst collection of its newest hour: ' || pgvigil.collection_worst(s.instance_id, c.metric, s.sample_at), '')
                  ELSE '' END
-         -- [j16 #1 S2 09661906]
+         -- [#1 S2 09661906]
          || CASE WHEN s.held THEN '; no fresh sample since ' || to_char(s.sample_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC: the alert is held' ELSE '' END
          || CASE WHEN s.flapping_since IS NOT NULL
                  THEN '; flapping since ' || to_char(s.flapping_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')
                       || ' UTC (4 to 7 changes in its last 12 results): sent once, its repeats held' ELSE '' END AS detail,
        'alert rule'::text AS source, coalesce(s.sample_at, s.evaluated_at) AS at,
-       -- [j16 #1 S2 09661906]
+       -- [#1 S2 09661906]
        s.rule_id, s.op_family, s.flapping_since, s.value AS metric_value
   FROM pgvigil.alert_rule_state s
   JOIN pgvigil.alert_rules r ON r.rule_id = s.rule_id
@@ -616,13 +616,13 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
        f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at
   FROM (SELECT x.instance_id, x.severity, x.setting, x.value, x.suggested, x.detail, x.source, x.at FROM pgvigil.findings x
         UNION ALL
-        -- [j16 #1 S2 09661906]
+        -- [#1 S2 09661906]
         SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y
         UNION ALL   -- tasks 403b / B24k (0154): the alert channels' own findings (failing, quota low; 'pgvigil repository', no instance)
         SELECT z.instance_id, z.severity, z.setting, z.value, z.suggested, z.detail, z.source, z.at FROM pgvigil.alert_channel_findings z) f
   LEFT JOIN pgvigil.instances i USING (instance_id)
   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
- -- [j16 #2 B6G-N 17e6d3f7]
+ -- [#2 B6G-N 17e6d3f7]
  WHERE (i.is_active OR f.source = 'pgvigil repository')
    -- B6.4 (WIRING): 'alert sender idle' is shown, never sent (an idle sender cannot send its own news)
    AND NOT (f.source = 'pgvigil repository' AND f.setting = 'alert sender idle');
@@ -654,7 +654,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT value FROM slow_folds WHERE kind = 'target' GROUP BY value HAVING bool_and(under_host)
   ), slow_forming AS MATERIALIZED (  -- 3 or more of a collector's instances crossed in its newest minute: new ones wait
     SELECT instance_id FROM pgvigil.collector_slow_forming
-  -- [j16 #2 B6G-N 17e6d3f7]
+  -- [#2 B6G-N 17e6d3f7]
   ), long_held AS MATERIALIZED (   -- B6.4 #4 (0166, WIRING): the members of a standing 'collections run long' fold, the
     -- collections that run long on its host (B6f7 #6) and the severity at or under which their own 'collection runs long'
     -- of those is held
@@ -662,7 +662,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ), long_forming AS MATERIALIZED (  -- B6f7 #2 (0166, WIRING): 3 or more of a host's instances long within its span and
     -- a minute: new ones wait
     SELECT DISTINCT instance_id FROM pgvigil.collection_runs_long_forming
-  -- [j16 #3 B24H-STREAKS c937e891]
+  -- [#3 B24H-STREAKS c937e891]
   ), probe_state AS MATERIALIZED (   -- B24h line 3: the judged instances and their collector's fold, read ONCE a pass
     -- (the review of the fold #1; #b4's attempt 3: collector_probe_state reads the judged view once)
     SELECT collector_host, instance_id, host, ping_slow, not_answering, folded, host_crossed, crossed_hosts FROM pgvigil.collector_probe_state
@@ -693,43 +693,43 @@ LANGUAGE sql STABLE SET jit = off AS $$
            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
            coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery,
            coalesce(c.repo_wide, true) AS repo_wide,
-           -- [j16 #1 S2 09661906]
+           -- [#1 S2 09661906]
            coalesce(c.checks, '{}') AS checks, coalesce(c.digest, false) AS digest   -- task 403a (0154: A31, the digest hold)
       FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
            AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
-                -- [j16 #1 S2 09661906]
+                -- [#1 S2 09661906]
                 repo_wide boolean, checks text[], digest boolean)
-  -- [j16 #3 B24H-STREAKS c937e891]
+  -- [#3 B24H-STREAKS c937e891]
   ), af AS MATERIALIZED (   -- B24h line 3 (the review of F9 #3): alert_findings read ONCE a pass - line 1 puts the
     -- judged rows in it, and 0190's form read it twice (sc, and s's EXISTS once alerts are open)
     SELECT * FROM pgvigil.alert_findings
   ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
                -- task 310 - an application contact's route says repo_wide false)
-    -- [j16 #1 S2 09661906]
+    -- [#1 S2 09661906]
     SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, ch.clear_after_secs AS ch_clear_after,
            coalesce(ch.digest, false) AS ch_digest, f.*
-      -- [j16 #3 B24H-STREAKS c937e891]
+      -- [#3 B24H-STREAKS c937e891]
       FROM ch JOIN af f   -- B24h line 3: the one read (was pgvigil.alert_findings)
-        -- [j16 #1 S2 09661906]
+        -- [#1 S2 09661906]
         ON (pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide))
        AND pgvigil.alert_checks_match(ch.checks, f.source, f.setting)   -- task 403a: a channel's checks: list (A31, 0154)
      ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
   ), m AS (    -- the ones at or above its floor that nothing holds
     SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor
-       -- [j16 #1 S2 09661906]
+       -- [#1 S2 09661906]
        AND pgvigil.alert_hold(p_at, sc.channel, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value,
                               sc.severity, sc.ch_clear_after, sc.ch_digest) IS NULL   -- task 403a: every hold (0154), acks first
        AND NOT (pgvigil.collector_shared_cause(sc.source, sc.setting)
                 AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'slow connect'
                 AND EXISTS (SELECT 1 FROM slow_held WHERE slow_held.instance_id = sc.instance_id))
-       -- [j16 #2 B6G-N 17e6d3f7]
+       -- [#2 B6G-N 17e6d3f7]
        AND NOT (sc.source = 'pgvigil collector' AND sc.setting = 'collection runs long'
                 AND EXISTS (SELECT 1 FROM long_held WHERE long_held.instance_id = sc.instance_id AND long_held.collection = sc.value
                                AND pgvigil.severity_rank(sc.severity) <= pgvigil.severity_rank(long_held.severity)))
        AND NOT (sc.source = 'pgvigil repository' AND sc.setting = 'slow connects'
                 AND EXISTS (SELECT 1 FROM slow_under WHERE slow_under.value = sc.value))
-       -- [j16 #3 B24H-STREAKS c937e891]
+       -- [#3 B24H-STREAKS c937e891]
        -- B24h line 3: an instance's probe finding while probe_held names it (under its collector's fold, or its ping rows
        -- under its host's row) or it is judged from a collector under slow-connect's host fold; a host's row while a
        -- standing fold holds the host or its instances are held under 'collector or network'; B24h's fold while its
@@ -745,7 +745,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
   ), s AS (
     SELECT st.*, ch.repeat_secs, ch.recovery, ch.clear_after_secs,
            (i.is_active IS TRUE OR st.source = 'pgvigil repository') AS instance_active,
-           -- [j16 #3 B24H-STREAKS c937e891]
+           -- [#3 B24H-STREAKS c937e891]
            -- B24h line 3: on the one read, hashed (was EXISTS on pgvigil.alert_findings per open alert)
            st.finding_key IN (SELECT af.finding_key FROM af WHERE af.finding_key IS NOT NULL) AS present
       FROM pgvigil.alert_state st JOIN ch ON ch.name = st.channel
@@ -765,10 +765,10 @@ LANGUAGE sql STABLE SET jit = off AS $$
                              OR (m.source = 'pgvigil collector' AND pgvigil.collector_in_window(m.instance_id, m.at))))
                    AND NOT (m.source = 'pgvigil collector' AND m.setting = 'slow connect'
                             AND EXISTS (SELECT 1 FROM slow_forming WHERE slow_forming.instance_id = m.instance_id))
-                   -- [j16 #2 B6G-N 17e6d3f7]
+                   -- [#2 B6G-N 17e6d3f7]
                    AND NOT (m.source = 'pgvigil collector' AND m.setting = 'collection runs long'
                             AND EXISTS (SELECT 1 FROM long_forming WHERE long_forming.instance_id = m.instance_id))
-                   -- [j16 #3 B24H-STREAKS c937e891]
+                   -- [#3 B24H-STREAKS c937e891]
                    -- B24h line 3: a new round trip or host ping row waits while B24h's fold may be forming (part b #5,
                    -- the review of the fold #4: the host row is the ping alert sent)
                    AND NOT (m.source = 'pgvigil collector' AND m.setting = 'query round trip slow'
@@ -799,12 +799,12 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM s
    WHERE NOT EXISTS (SELECT 1 FROM sc WHERE sc.channel = s.channel AND sc.finding_key = s.finding_key)
      -- a collector's 'slow connects' is not 'resolved' while that collector's own 'collector or network' stands (its
-     -- [j16 #2 B6G-N 17e6d3f7]
+     -- [#2 B6G-N 17e6d3f7]
      -- connects stopped being judged because it stopped, not because they got faster); its 'collections run long' alike
      -- (B6.4 #4: its runs stopped being judged, they did not get shorter)
      AND NOT (s.source = 'pgvigil repository' AND s.setting IN ('slow connects', 'collections run long')
               AND EXISTS (SELECT 1 FROM pgvigil.collector_parent p WHERE p.host = s.value))
-     -- [j16 #3 B24H-STREAKS c937e891]
+     -- [#3 B24H-STREAKS c937e891]
      -- B24h line 3: B24h's fold, and a host's rows of a collector whose parent stands, are not 'resolved' (part b #2,
      -- the review of the fold #3: the probes stopped with the collector, the host was not seen to recover)
      AND NOT (s.source = 'pgvigil repository' AND s.setting = 'network slow from this collector'
@@ -833,7 +833,7 @@ CREATE OR REPLACE FUNCTION pgvigil.alert_mark(p_at timestamptz, p_channels jsonb
 RETURNS void LANGUAGE plpgsql SET jit = off AS $$
 DECLARE
   v_names text[] := ARRAY(SELECT e->>'name' FROM jsonb_array_elements(coalesce(p_channels, '[]'::jsonb)) e);
-  -- [j16 #1 S2 09661906]
+  -- [#1 S2 09661906]
   v_attach jsonb;
 BEGIN
   UPDATE pgvigil.alert_state s SET missing_since = p_at
@@ -842,7 +842,7 @@ BEGIN
   UPDATE pgvigil.alert_state s SET missing_since = NULL
    WHERE s.cleared_at IS NULL AND s.missing_since IS NOT NULL AND s.channel = ANY (v_names)
      AND EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = s.finding_key);
-  -- [j16 #1 S2 09661906]
+  -- [#1 S2 09661906]
   -- the carry-over's clock: a digest row whose finding is gone is marked at the first pass that no longer sees it
   UPDATE pgvigil.alert_held d SET missing_since = p_at
    WHERE d.hold_kind = 'digest' AND d.missing_since IS NULL AND d.channel = ANY (v_names)
@@ -862,12 +862,12 @@ BEGIN
                                       f.severity, c.clear_after_secs, coalesce(c.digest, false)) AS hold
               FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
                    AS c(name text, min_severity text, instances text[], tags text[], clear_after_secs int, checks text[],
-                        -- [j16 #2 B6G-N 17e6d3f7]
+                        -- [#2 B6G-N 17e6d3f7]
                         digest boolean, repo_wide boolean)
               JOIN pgvigil.alert_findings f
                 ON (pgvigil.alert_in_scope(f.instance, f.tags, coalesce(c.instances, '{}'), coalesce(c.tags, '{}'))
                     OR (f.source = 'pgvigil repository' AND coalesce(c.repo_wide, true)))
-             -- [j16 #1 S2 09661906]
+             -- [#1 S2 09661906]
              WHERE pgvigil.severity_rank(f.severity) >= pgvigil.severity_rank(c.min_severity)
                AND pgvigil.alert_checks_match(c.checks, f.source, f.setting)
                -- a failing channel's own 'alert channel failing' is never sent to it (alerts.go), so it is never held
@@ -945,7 +945,7 @@ BEGIN
      SET beat_at = now(), mem_bytes = (p_beat->>'mem_bytes')::bigint, goroutines = (p_beat->>'goroutines')::int,
          instances = (p_beat->>'instances')::int, repo_conns = v_conns,
          beat_minute = greatest(beat_minute, p_minute),
-         -- [j16 #1 B6G-N 17e6d3f7]
+         -- [#1 B6G-N 17e6d3f7]
          sends_alerts = coalesce((p_beat->>'sends_alerts')::boolean, sends_alerts),
          -- a run still beating 2 minutes after it was retired was retired by mistake (a second host of that name, the
          -- door run for a host that is not gone): the mark goes. A beat sooner than that is a stopping service's last
@@ -953,17 +953,17 @@ BEGIN
          retired_at = CASE WHEN retired_at < now() - interval '2 minutes' THEN NULL ELSE retired_at END
    WHERE collector_id = p_id;
   INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist,
-                                      -- [j16 #3 N4 280368a5]
+                                      -- [#3 N4 280368a5]
                                       retries)
   SELECT p_minute, p_id, coalesce(nullif(r.engine, ''), 'postgres'), r.collection, r.runs, r.failures, r.rows, r.dur_sum, r.dur_max,
-         -- [j16 #3 N4 280368a5]
+         -- [#3 N4 280368a5]
          ARRAY(SELECT jsonb_array_elements_text(r.hist)::int), greatest(coalesce(r.retries, 0), 0)
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(engine text, collection text, runs int, failures int, rows bigint,
-                                                                  -- [j16 #3 N4 280368a5]
+                                                                  -- [#3 N4 280368a5]
                                                                   dur_sum bigint, dur_max int, hist jsonb, retries int)
   ON CONFLICT (minute, collector_id, engine, collection) DO UPDATE
      SET runs = collector_runs.runs + EXCLUDED.runs, failures = collector_runs.failures + EXCLUDED.failures,
-         -- [j16 #3 N4 280368a5]
+         -- [#3 N4 280368a5]
          retries = collector_runs.retries + EXCLUDED.retries,
          rows_written = collector_runs.rows_written + EXCLUDED.rows_written, dur_ms_sum = collector_runs.dur_ms_sum + EXCLUDED.dur_ms_sum,
          dur_ms_max = greatest(collector_runs.dur_ms_max, EXCLUDED.dur_ms_max),
@@ -1010,12 +1010,12 @@ BEGIN
   SELECT now(), p_id, (p_beat->>'mem_bytes')::bigint, (p_beat->>'goroutines')::int, v_conns, pg_database_size(current_database()),
          coalesce(sum(r.runs), 0), coalesce(sum(r.failures), 0), coalesce(sum(r.rows), 0)
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(runs int, failures int, rows bigint);
-  -- [j16 #2 B24H-STREAKS c937e891]
+  -- [#2 B24H-STREAKS c937e891]
   -- the history this file keeps: 8 days (the page reads 24 h and 7 days); the two minute-led tables by their marks
   -- (collector_trim), and a beat whose own minute is already past 8 days (a collector clock that far behind) takes its
   -- rows back at once - they sit below the mark, where no trim reaches (the old whole-key trim removed them here too)
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
-  -- [j16 #2 B24H-STREAKS c937e891]
+  -- [#2 B24H-STREAKS c937e891]
   PERFORM pgvigil.collector_trim('collector_runs');
   PERFORM pgvigil.collector_trim('collector_load');
   IF p_minute < now() - interval '8 days' THEN
@@ -1032,7 +1032,7 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_instances ci JOIN pgvigil.collector_heartbeat h USING (collector_id)
                        JOIN pgvigil.instances i ON i.name = ci.instance
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
-  -- [j16 #2 B24H-STREAKS c937e891]
+  -- [#2 B24H-STREAKS c937e891]
   -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
   -- its streak rows when its last run's row goes below (the lead's 11-15 19:2x: the trim above takes only the beating
   -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0 - with no
@@ -1089,7 +1089,7 @@ BEGIN
   ELSIF v_level IN ('instance', 'database') AND (v_inst IS NULL OR NOT EXISTS (SELECT 1 FROM pgvigil.instances i WHERE i.instance_id = v_inst
                                                   AND i.engine = ANY (v_k.engines))) THEN
     -- the key's engines take it (0142): uptime (DBA Dash's Instance Uptime dialog, task 176b) and the slow-connect
-    -- [j16 #1 B24H-STREAKS c937e891]
+    -- [#1 B24H-STREAKS c937e891]
     -- tier's connect_time both engines', the replication and HA keys SQL Server's, every other key PostgreSQL's;
     -- B24h's round_trip_time and ping_time both engines' (b24h-join-lines.sql L34-35, line 4: the UPDATE at the end of this file)
     v_why := format(CASE WHEN v_k.engines = '{postgres}' THEN 'no PostgreSQL instance %s' WHEN v_k.engines = '{sqlserver}' THEN 'no SQL Server instance %s'
@@ -1101,12 +1101,12 @@ BEGIN
   ELSIF v_op = 'set' THEN
     FOR i IN 1..2 LOOP
       DECLARE v text := p_payload->>(CASE i WHEN 1 THEN 'warn' ELSE 'crit' END);
-              -- [j16 #1 B24H-STREAKS c937e891]
+              -- [#1 B24H-STREAKS c937e891]
               -- B24h line 8: a key in seconds takes three places (0.025, 0.005); set here, never a CASE inside the
               -- IF's condition (PL/pgSQL ends an IF's condition at its first THEN - rel-b6g vis-b6g0166)
               v_re text := CASE WHEN v_k.unit = 'seconds' THEN '^[0-9]{1,7}(\.[0-9]{1,3})?$' ELSE '^[0-9]{1,7}(\.[0-9]{1,2})?$' END;
       BEGIN
-        -- [j16 #1 B24H-STREAKS c937e891]
+        -- [#1 B24H-STREAKS c937e891]
         IF v IS NOT NULL AND v !~ v_re THEN
           v_why := format('%s must be a number from 0 to %s (%s), or null', CASE i WHEN 1 THEN 'warn' ELSE 'crit' END, v_k.max_value, v_k.unit);
         ELSIF v IS NOT NULL AND v::numeric > v_k.max_value THEN
@@ -1122,7 +1122,7 @@ BEGIN
       v_warn := (p_payload->>'warn')::numeric;
       v_crit := (p_payload->>'crit')::numeric;
       -- uptime and crash take a level with neither (DBA Dash's Enabled box off: not judged there, task P08)
-      -- [j16 #1 B24H-STREAKS c937e891]
+      -- [#1 B24H-STREAKS c937e891]
       IF v_warn IS NULL AND v_crit IS NULL AND v_key NOT IN ('uptime', 'crash', 'round_trip_time', 'ping_time') THEN   -- B24h line 8: its two keys settable empty (off)
         v_why := 'no threshold is set: to take the level above, inherit';
       ELSIF v_warn IS NOT NULL AND v_crit IS NOT NULL AND v_k.direction = 'over' AND v_crit < v_warn THEN
@@ -1169,7 +1169,7 @@ END $$;
 --   #9 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L37-39 (line 5) - collector_probe_host rows of a retired collector
 --   #10 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L20-23 (line 2) - beside the other self-trimming tables
 --   #11 H CQ-A 322675cc: scripts/cq-join-lines.sql L9-17 - before the hours tables (0139's block)
---   merge conflict at arm #1 (B2a-N2), block 1, resolved by hand: both blocks: the HA join's replication_hourly (0150), then B2a-N2's mssql_azuredb_hour (0167)
+--   merge conflict at arm #1 (B2a-N2), block 1, resolved by hand: both blocks: the replication hours' (0150), then B2a-N2's mssql_azuredb_hour (0167)
 --   merge conflict at arm #2 (413), block 1, resolved by hand: parents list = the union (mssql_index_usage_read added)
 --   merge conflict at arm #2 (413), block 2, resolved by hand: both lines: the current text's, then 413's
 --   merge conflict at arm #3 (413), block 1, resolved by hand: parents list = the union (mssql_session_count, mssql_session_by added)
@@ -1198,7 +1198,7 @@ BEGIN
                          'host_sample', 'host_disk_history', 'host_io', 'storage_sample',
                          'vacuum_sample', 'cloud_io_sample', 'dms_ri_sample', 'backup_sample', 'amcheck_runs', 'wait_sample', 'index_usage_daily', 'pi_load', 'serverless_sample', 'buffercache_sample', 'temp_sample', 'pooler_sample', 'custom_results', 'schema_changes', 'schema_ddl_log', 'alert_log', 'mssql_blocking', 'mssql_wait_sample', 'mssql_deadlocks', 'mssql_blocked_reports', 'mssql_slow_events', 'mssql_attentions', 'mssql_ag_events', 'mssql_ag_sample', 'mssql_job_runs', 'mssql_volume_sample', 'mssql_database_size', 'mssql_versionstore_sample',
                          'mssql_cpu_sample', 'mssql_sched_sample', 'mssql_memory_sample', 'mssql_memory_clerk', 'mssql_fileio_read', 'mssql_fileio_sample',
-                         -- [j16 #7 409-410 03f74d79]
+                         -- [#7 409-410 03f74d79]
                          'mssql_database_space', 'mssql_table_sample',   -- task 407 (0158)
                          'table_activity', 'conn_sources', 'pooler_conn_sample',
                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
@@ -1212,13 +1212,13 @@ BEGIN
                          'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute',
                          'mssql_repl_sample', 'mssql_ag_replica_sample', 'mssql_ag_dbcounter_sample', 'mssql_mirroring_sample',
                          'mssql_logrestore_sample',
-                         -- [j16 #2 413 7184f8ea]
+                         -- [#2 413 7184f8ea]
                          'mssql_index_usage_read',
-                         -- [j16 #3 413 7184f8ea]
+                         -- [#3 413 7184f8ea]
                          'mssql_session_count', 'mssql_session_by',
-                         -- [j16 #4 S2 09661906]
+                         -- [#4 S2 09661906]
                          'findings_history')
-       -- [j16 #8 N4 280368a5]
+       -- [#8 N4 280368a5]
        -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
        -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
        -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
@@ -1226,7 +1226,7 @@ BEGIN
        AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
             + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days =>
              -- task 403a: the alert log and the findings history are kept 90 days at least (PM Added 20's three months)
-             -- [j16 #4 S2 09661906]
+             -- [#4 S2 09661906]
              CASE p.relname WHEN 'alert_log' THEN greatest(p_days, 90)
                             WHEN 'findings_history' THEN greatest(p_days, pgvigil.findings_history_days()) ELSE p_days END)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -1239,9 +1239,9 @@ BEGIN
   END LOOP;
   DELETE FROM pgvigil.job_runs WHERE start_time < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- [j16 #4 S2 09661906]
+  -- [#4 S2 09661906]
   n := n + pgvigil.alert_threads_purge();   -- task 403b K2 (0154): the Slack bot's threads of closed occurrences, after 90 days
-  -- [j16 #6 404 1cb5f703]
+  -- [#6 404 1cb5f703]
   -- task 404 (0155): restarts and build changes keep 365 days, the longest chart range, whatever p_days says
   DELETE FROM pgvigil.instance_events WHERE at < now() - interval '365 days';
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
@@ -1276,7 +1276,7 @@ BEGIN
   DELETE FROM pgvigil.host_disks WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.storage_state WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
-  -- [j16 #7 409-410 03f74d79]
+  -- [#7 409-410 03f74d79]
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- task 407 (0158): SQL Server tables and fixed drives no longer present, for longer than the retention
   DELETE FROM pgvigil.mssql_tables WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
@@ -1387,7 +1387,7 @@ BEGIN
   n := n + pgvigil.mssql_reads_purge(p_days);
   n := n + pgvigil.mssql_plancache_purge(p_days);
   n := n + pgvigil.mssql_qs_plans_purge(p_days);   -- task 406 (0157): running plans, live captures, plan statistics, forced-plan failures
-  -- [j16 #2 413 7184f8ea]
+  -- [#2 413 7184f8ea]
   n := n + pgvigil.mssql_index_depth_purge(p_days);   -- task 414 (0164)
   -- the PostgreSQL job step runs (161, 0102) past the retention, as job_runs
   DELETE FROM pgvigil.job_step_runs WHERE start_time < now() - make_interval(days => p_days);
@@ -1406,7 +1406,7 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_xe_state WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- [j16 #5 402 0d029a1a]
+  -- [#5 402 0d029a1a]
   -- task 402 (0153, B24 Fixed 1): the attention capture's reads, a plain table (no partition is made inside 0065's import)
   DELETE FROM pgvigil.mssql_attention_reads WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
@@ -1492,16 +1492,16 @@ BEGIN
   -- current state and go with their instance (ON DELETE CASCADE)
   DELETE FROM pgvigil.mssql_backup_roots_seen WHERE last_seen < now() - make_interval(days => greatest(p_days, 400));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- [j16 #9 B24H-STREAKS c937e891]
+  -- [#9 B24H-STREAKS c937e891]
   -- B24h (0254): a retired collector's collector_probe_host rows, with its heartbeat row (collector_probe's 8 days are
   -- import_collector_probe's own trim)
   DELETE FROM pgvigil.collector_probe_host ph WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat h WHERE h.collector_id = ph.collector_id);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- [j16 #10 81-AGENT 654a9cd5]
+  -- [#10 81-AGENT 654a9cd5]
   -- the agent door (0268): requests that ended more than 90 days after they were asked (an open or claimed one
   -- never; the journal and the texts go with them through ON DELETE CASCADE)
   PERFORM pgvigil.investigations_purge(90);
-  -- [j16 #11 CQ-A 322675cc]
+  -- [#11 CQ-A 322675cc]
   -- 0200 (CQ): the request queue's read kinds after 7 days (a read's result is cleared within the hour by the sweep;
   -- the row's ask and end go with it), and a refused ask of any kind after 7 days (nothing ran: a requester must not
   -- grow the table without bound); the action kinds that ran are an audit, kept whole as actions_log is; a worker
@@ -1525,7 +1525,7 @@ BEGIN
     v_dropped := v_dropped || pgvigil.replication_hourly_purge();
     n := n + cardinality(v_dropped);
   END IF;
-  -- [j16 #1 B2a-N2 8aecbb2b]
+  -- [#1 B2a-N2 8aecbb2b]
   -- B2a-N2 (0167): the Azure SQL Database hours by their own age (its heals and the month ahead are 'pgvigil purge''s,
   -- after this: AzureDBHourMonths, AzureDBHoursHeal)
   IF to_regprocedure('pgvigil.mssql_azuredb_hour_purge()') IS NOT NULL THEN
@@ -1566,7 +1566,7 @@ RETURNS bigint LANGUAGE sql STABLE AS $$
     WHEN p_source = 'azdb_since' THEN
       (SELECT floor(extract(epoch FROM a.newest_minute))::bigint
          FROM pgvigil.mssql_azuredb_read a WHERE a.instance_id = p_instance_id)
-    -- [j16 #1 INV(301b) 4c155a56]
+    -- [#1 INV(301b) 4c155a56]
     WHEN p_source IN ('backup_history', 'backup_history_mark', 'restore_history', 'restore_history_mark') THEN
       (SELECT CASE p_source WHEN 'backup_history' THEN c.last_set_id WHEN 'backup_history_mark' THEN c.set_mark
                             WHEN 'restore_history' THEN c.last_restore_id ELSE c.restore_mark END
@@ -1575,10 +1575,10 @@ RETURNS bigint LANGUAGE sql STABLE AS $$
 $$;
 
 -- ====================================================================================================================
--- pgvigil.metric_na_reasons: base none (new in a j16 item)
+-- pgvigil.metric_na_reasons: base none (new in a slice of this file)
 --   #1 T 402 0d029a1a: 0152_mssql_counters.sql L857 (merge-base f8e89d2e none) - 0152: new in 402, 412's row in it
 -- ====================================================================================================================
--- [j16 #1 402 0d029a1a]
+-- [#1 402 0d029a1a]
 CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS
 SELECT v.key, v.why FROM (VALUES
     ('waits.wait_s_per_core_min'::text,
@@ -1597,7 +1597,7 @@ SELECT v.key, v.why FROM (VALUES
 CREATE OR REPLACE VIEW pgvigil.metric_catalog AS
 SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.unit,
        v.per_database, v.fresh_secs, v.sort,
-       -- [j16 #4 VIEWS 4db89778]
+       -- [#4 VIEWS 4db89778]
        -- grain (views slice C): how a panel rolls a metric up within a time bucket before its aggregate across
        -- instances: a rate or a gauge is averaged, a count per collection interval summed, a ratio averaged and
        -- never summed; a new metric names its grain here (gauge is the default)
@@ -1605,7 +1605,7 @@ SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v
             WHEN v.unit = 'pct' THEN 'ratio'
             WHEN v.family || '.' || v.metric IN ('database.deadlocks', 'server.checkpoints', 'server.checkpoints_req') THEN 'interval_count'
             ELSE 'gauge' END AS grain
-  -- [j16 #1 402(401) 0d029a1a]
+  -- [#1 402(401) 0d029a1a]
   FROM (SELECT * FROM (VALUES
     ('postgres',  'sessions',  'Sessions',          10, 'total',                 'sessions',                          'count',       false,  600,  1),
     ('postgres',  'sessions',  'Sessions',          10, 'active',                'active sessions',                   'count',       false,  600,  2),
@@ -1669,12 +1669,12 @@ SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v
     ('any',       'host',      'Host',              90, 'mem_free',              'host memory free',                  'bytes',       false,  900,  4),
     ('any',       'host',      'Host',              90, 'swap_used',             'host swap used',                    'bytes',       false,  900,  5),
     ('any',       'host',      'Host',              90, 'load1',                 'load average (1 min)',              'count',       false,  900,  6)
-  -- [j16 #1 402(401) 0d029a1a]
+  -- [#1 402(401) 0d029a1a]
   ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)
   -- task 401 (0152): the SQL Server counters family
   UNION ALL
   SELECT m.engine, m.family, m.family_label, m.family_sort, m.metric, m.label, m.unit, m.per_database, m.fresh_secs, m.sort
-    -- [j16 #2 402 0d029a1a]
+    -- [#2 402 0d029a1a]
     FROM pgvigil.mssql_counter_metrics m
   -- task 402 (0153, B24 Fixed 1): the attention capture's client timeouts rate (mssql_attention_points); fresh 10
   -- minutes, so an mssql_xe interval up to 5 minutes keeps its points fresh
@@ -1685,12 +1685,12 @@ SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v
     ('sqlserver', 'xe', 'Extended Events', 55, 'client_timeouts_left_out_per_min',
      'attentions left out per minute (SSMS IntelliSense, VS Code metadata, under 1 ms with no statement, Azure Data Studio metadata, pgvigil)',
      'per_min', false, 600, 2),
-    -- [j16 #3 402(412) 0d029a1a]
+    -- [#3 402(412) 0d029a1a]
     -- task 412 (0152, B19): SQLMonitor's wait seconds per core per minute (mssql_wait_core_points); a point per wait
     -- read spanning its newest five minutes, so fresh as the per-minute families
     ('sqlserver', 'waits', 'Waits', 56, 'wait_s_per_core_min',
      'wait seconds per core per minute (benign waits and SQLMonitor''s per-core list left out)', 's_core_min', false, 600, 1)
-  -- [j16 #5 B6G-N 17e6d3f7]
+  -- [#5 B6G-N 17e6d3f7]
   ) AS x(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)
   -- B6G (0166): the Collection family (0166 appends these rows to the live view; 0300 holds them in its text)
   UNION ALL
@@ -1903,15 +1903,15 @@ BEGIN
         ('available_mb', (c.available_kb / 1024.0)::double precision),
         ('os_used_pct', (100.0 * (c.physical_kb - c.available_kb) / nullif(c.physical_kb, 0))::double precision)) AS v(metric, value)
      WHERE v.value IS NOT NULL;
-  -- [j16 #1 402(401) 0d029a1a]
+  -- [#1 402(401) 0d029a1a]
   ELSIF p_family = 'counters' THEN
     -- task 401 (0152): the SQL Server counters family
     RETURN QUERY SELECT * FROM pgvigil.mssql_counter_points(p_instance_id, p_from, p_to, p_lookback, p_database);
-  -- [j16 #2 402 0d029a1a]
+  -- [#2 402 0d029a1a]
   ELSIF p_family = 'xe' THEN
     -- task 402 (0153, B24 Fixed 1): a point per done read of the attention capture, PerformanceMonitor's 3-minute rate
     RETURN QUERY SELECT * FROM pgvigil.mssql_attention_points(p_instance_id, p_from, p_to);
-  -- [j16 #3 402(412) 0d029a1a]
+  -- [#3 402(412) 0d029a1a]
   ELSIF p_family = 'waits' THEN
     -- task 412 (0152, B19): a point per stored wait read over its newest five minutes of reads; no scheduler count =
     -- a point with no value (metric_na_reasons says why)
@@ -1931,17 +1931,17 @@ RETURNS TABLE (at timestamptz, metric text, value double precision)
 LANGUAGE plpgsql STABLE SET jit = off AS $$
 #variable_conflict use_column
 BEGIN
-  -- [j16 #1 B6G-N 17e6d3f7]
+  -- [#1 B6G-N 17e6d3f7]
   IF p_family = 'collection' THEN
     -- p_database: one collection's series; NULL = the instance's: each hour's worst collection, per metric (every
     -- metric of the family is worse higher). Each point stamped at its hour's end: an open hour has no point yet.
     RETURN QUERY
-    -- [j16 #1 B6G-N 17e6d3f7]
+    -- [#1 B6G-N 17e6d3f7]
     SELECT v.hour + interval '1 hour', v.metric, max(v.value)
       FROM pgvigil.collection_metric_values(p_instance_id, p_from, p_to, p_database) v
      GROUP BY v.hour, v.metric;
   ELSE
-    -- [j16 #1 B6G-N 17e6d3f7]
+    -- [#1 B6G-N 17e6d3f7]
     RETURN QUERY SELECT x.at, x.metric, x.value FROM pgvigil.metric_points_0085(p_instance_id, p_family, p_from, p_to, p_lookback, p_database) x;
   END IF;
 END $$;
@@ -1957,7 +1957,7 @@ CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_
 RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
                rule_scope text, rule_target text, rule_database text)
 LANGUAGE sql STABLE AS $$
-  -- [j16 #2 402 0d029a1a]
+  -- [#2 402 0d029a1a]
   WITH RECURSIVE e AS (
     SELECT e.rule_id, e.name, e.op, e.warning, e.critical, e.for_minutes, e.scope, coalesce(e.tag, e.instance_name, pgvigil.alert_scope_text(e.scope_tags)), e.database
       FROM pgvigil.alert_rules_effective e
@@ -1969,9 +1969,9 @@ LANGUAGE sql STABLE AS $$
            r.created_by, r.client
       FROM pgvigil.alert_rules r
      WHERE r.metric = p_key AND r.scope = 'fleet' AND r.ended_at IS NULL AND NOT r.enabled
-       -- [j16 #3 the join (0300) --------]
+       -- [#3 the join (0300) --------]
        AND r.op_family = 'threshold'   -- S2's 0154 L631-634: one live rule per family (alert_rules_live_family_uq)
-       -- [j16 #2 402 0d029a1a]
+       -- [#2 402 0d029a1a]
        AND r.database IS NOT DISTINCT FROM p_database),
   ch AS (      -- that rule and each rule it replaces, back to the first (a successor's id is always the higher)
     SELECT o.rule_id, o.replaces, o.created_by, o.client, o.metric FROM o
@@ -1999,16 +1999,16 @@ $$;
 --   #2 P 402 0d029a1a: 0d029a1a:scripts/proof-mssql-counter-checks-wiring.patch (0190_join_release2.sql hunks, pre blob 2ea63181)
 --   #3 H the join (0300) --------: the join file - 0154 drops and creates it (three more columns); 0300 keeps S2's return type, so OR REPLACE (a bare CREATE fails: the function exists after 0154)
 --   #4 H the join (0300) --------: the join file - S2 x 402: S2's p holds a level and a rise row per metric and time, so 402's na lookup takes the level row (else 'more than one row returned by a subquery' at every na state)
---   #5 H s2 A17 --------: sqltoolsbuild-s2 report L1271 (00:46), taken by the lead 00:4x - the rise arm carries p0.value AS v0 and keeps a row where the point itself has no value
+--   #5 H s2 A17 --------: A17 - the rise arm carries p0.value AS v0 and keeps a row where the point itself has no value
 --   merge conflict at arm #2 (402), block 1, resolved by hand: 402's change 1 (a NULL point breaks a run) on S2's read of the kind's points
 --   merge conflict at arm #2 (402), block 2, resolved by hand: 402's change 2 (the na state from the floors) with S2's three columns (fam, base, base_days)
 -- ====================================================================================================================
--- [j16 #3 the join (0300) --------]
+-- [#3 the join (0300) --------]
 CREATE OR REPLACE FUNCTION pgvigil.alert_rule_eval(p_at timestamptz)
 RETURNS TABLE (rule_id bigint, instance_id int, metric text, database text, state text, value double precision,
                threshold double precision, sample_at timestamptz, beyond_since timestamptz,
                crit_beyond boolean, crit_within_at timestamptz, warn_beyond boolean, warn_within_at timestamptz,
-               -- [j16 #1 S2 09661906]
+               -- [#1 S2 09661906]
                op_family text, baseline double precision, baseline_days int)
 LANGUAGE plpgsql STABLE SET jit = off AS $$
 #variable_conflict use_column
@@ -2021,24 +2021,24 @@ BEGIN
      GROUP BY e.instance_id, c.family, e.database
   LOOP
     RETURN QUERY
-    -- [j16 #1 S2 09661906]
+    -- [#1 S2 09661906]
     WITH p0 AS MATERIALIZED (
       SELECT x.at, x.metric, x.value
         FROM pgvigil.metric_points(g.instance_id, g.family, p_at - make_interval(mins => g.max_for + 60), p_at,
                                    interval '1 hour', g.database) x
-    -- [j16 #1 S2 09661906]
+    -- [#1 S2 09661906]
     ), p AS MATERIALIZED (   -- every sample as a level, and as the rise from the sample before it
       SELECT 'level'::text AS kind, p0.at, p0.metric, p0.value FROM p0
       UNION ALL
       SELECT 'rise'::text, d.at, d.metric, d.value
-        -- [j16 #5 s2 A17 --------]
+        -- [#5 s2 A17 --------]
         FROM (SELECT p0.at, p0.metric, p0.value - lag(p0.value) OVER (PARTITION BY p0.metric ORDER BY p0.at) AS value,
                      p0.value AS v0 FROM p0) d
-       -- A17 (sqltoolsbuild-s2's report L1271, the lead 00:4x): a floored point (no value) keeps its rise row, NULL,
+       -- A17: a floored point (no value) keeps its rise row, NULL,
        -- so 'na' and change 1 reach a rises rule; a first point and a point after a floored one still give none
        WHERE d.value IS NOT NULL OR d.v0 IS NULL
     ), lv AS (          -- each rule of this instance, family and series at each level it sets
-      -- [j16 #1 S2 09661906]
+      -- [#1 S2 09661906]
       SELECT e.rule_id, e.metric AS key, c.metric AS m, CASE e.op WHEN 'below' THEN 'below' ELSE 'above' END AS op,
              CASE e.op_family WHEN 'rise' THEN 'rise' ELSE 'level' END AS kind, e.op_family AS fam,
              e.for_minutes, c.fresh_secs, l.sev,
@@ -2048,7 +2048,7 @@ BEGIN
              CASE WHEN e.op_family = 'baseline' THEN coalesce(b.days, 0) END AS base_days
         FROM pgvigil.alert_rules_effective e
         JOIN pgvigil.metric_catalog c ON c.key = e.metric
-        -- [j16 #1 S2 09661906]
+        -- [#1 S2 09661906]
         LEFT JOIN pgvigil.alert_rule_baseline b
           ON b.rule_id = e.rule_id AND b.instance_id = e.instance_id AND b.database = coalesce(e.database, '')
         CROSS JOIN LATERAL (VALUES ('critical', e.critical), ('warning', e.warning)) AS l(sev, thr)
@@ -2057,16 +2057,16 @@ BEGIN
     ), j AS (
       SELECT lv.*, z.last_at, z.last_value, z.last_within,
              (SELECT min(p2.at) FROM p p2
-               -- [j16 #1 S2 09661906]
+               -- [#1 S2 09661906]
                WHERE p2.kind = lv.kind AND p2.metric = lv.m AND (z.last_within IS NULL OR p2.at > z.last_within)) AS run_from
         FROM lv
         LEFT JOIN LATERAL (
           SELECT max(p1.at) AS last_at, (array_agg(p1.value ORDER BY p1.at DESC))[1] AS last_value,
-                 -- [j16 #2 402 0d029a1a]
+                 -- [#2 402 0d029a1a]
                  -- task 402 change 1 of 2: a point with no value (a floored ratio under its floor) is inside every level,
                  -- so it breaks a run beyond (0085 counted it beyond: NOT alert_beyond(op, NULL, thr) is NULL)
                  max(p1.at) FILTER (WHERE p1.value IS NULL OR NOT pgvigil.alert_beyond(lv.op, p1.value, lv.thr)) AS last_within
-            -- [j16 #1 S2 09661906]
+            -- [#1 S2 09661906]
             FROM p p1 WHERE p1.kind = lv.kind AND p1.metric = lv.m) z ON true
     ), k AS (
       SELECT j.*,
@@ -2074,10 +2074,10 @@ BEGIN
              (j.run_from IS NOT NULL AND j.last_at - j.run_from >= make_interval(mins => j.for_minutes)) AS long_enough
         FROM j
     ), x AS (
-      -- [j16 #1 S2 09661906]
+      -- [#1 S2 09661906]
       SELECT k.rule_id, k.key, k.fam,
              CASE WHEN NOT bool_or(k.fresh) THEN 'nodata'
-                  -- [j16 #2 402 0d029a1a]
+                  -- [#2 402 0d029a1a]
                   -- task 402 change 2 of 2: the newest fresh point has no value (a floored ratio under its floor,
                   -- 0152's metric_floors): not judged, 'na', before the levels
                   WHEN bool_or(k.fresh AND k.last_value IS NULL) THEN 'na'
@@ -2092,39 +2092,39 @@ BEGIN
              max(k.last_within) FILTER (WHERE k.sev = 'critical') AS crit_in,
              bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'warning') AS warn_run,
              max(k.last_within) FILTER (WHERE k.sev = 'warning') AS warn_in,
-             -- [j16 #1 S2 09661906]
+             -- [#1 S2 09661906]
              max(k.base) AS base, max(k.base_days) AS base_days
         FROM k
-       -- [j16 #1 S2 09661906]
+       -- [#1 S2 09661906]
        GROUP BY k.rule_id, k.key, k.fam
     )
-    -- [j16 #2 402 0d029a1a]
+    -- [#2 402 0d029a1a]
     SELECT x.rule_id, g.instance_id, x.key, g.database, x.st,
            -- 'na' (change 2): the value is the floor's input at the same read and the threshold the floor (no floor
            -- row: both NULL)
            CASE WHEN x.st = 'na' THEN (SELECT p3.value FROM p p3 WHERE p3.metric = split_part(f.input_key, '.', 2) AND p3.at = x.last_at
-                                                      -- [j16 #4 the join (0300) --------]
+                                                      -- [#4 the join (0300) --------]
                                                       AND p3.kind = 'level')   -- S2's p: a level and a rise row per point
-                -- [j16 #2 402 0d029a1a]
+                -- [#2 402 0d029a1a]
                 ELSE x.last_value END,
            -- the value and the run of the level the state names (no level reached: the lower one set)
            CASE x.st WHEN 'na' THEN f.floor WHEN 'critical' THEN x.crit_thr WHEN 'warning' THEN x.warn_thr ELSE coalesce(x.warn_thr, x.crit_thr) END,
            x.last_at,
-           -- [j16 #2 402 0d029a1a]
+           -- [#2 402 0d029a1a]
            CASE x.st WHEN 'na' THEN NULL WHEN 'critical' THEN x.crit_from WHEN 'warning' THEN x.warn_from ELSE coalesce(x.warn_from, x.crit_from) END,
-           -- [j16 #1 S2 09661906]
+           -- [#1 S2 09661906]
            x.crit_run, x.crit_in, x.warn_run, x.warn_in, x.fam, x.base, x.base_days
-      -- [j16 #2 402 0d029a1a]
+      -- [#2 402 0d029a1a]
       FROM x LEFT JOIN pgvigil.metric_floors f ON f.key = x.key;
   END LOOP;
 END $$;
 
 -- ====================================================================================================================
--- pgvigil.metrics_sample_times: base none (new in a j16 item)
+-- pgvigil.metrics_sample_times: base none (new in a slice of this file)
 --   #1 T B24d 9bd7f716: 0196_metrics_newest.sql L265 (merge-base ebf9a9c2 none) - 0196: new in B24d
 --   #2 D B24d 16d67e88: scripts/b24d-join-lines.sql against 0196 at 9bd7f716 - A15: the counters / xe / waits / collection arms
 -- ====================================================================================================================
--- [j16 #1 B24d 9bd7f716]
+-- [#1 B24d 9bd7f716]
 CREATE OR REPLACE FUNCTION pgvigil.metrics_sample_times(p_ids int[] DEFAULT NULL)
 RETURNS TABLE (instance_id int, family text, at timestamptz)
 LANGUAGE sql STABLE SET jit = off AS $$
@@ -2132,7 +2132,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
     FROM pgvigil.instances i
     CROSS JOIN LATERAL (SELECT DISTINCT c.family FROM pgvigil.metric_catalog c WHERE c.engine IN (i.engine, 'any')) f
     CROSS JOIN LATERAL (SELECT CASE f.family
-             -- [j16 #2 B24d 16d67e88]
+             -- [#2 B24d 16d67e88]
              WHEN 'sessions'   THEN (SELECT max(x.snapshot_at) FROM pgvigil.activity_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
              WHEN 'database'   THEN (SELECT max(x.snapshot_at) FROM pgvigil.dbstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
              WHEN 'server'     THEN (SELECT max(x.snapshot_at) FROM pgvigil.serverstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
@@ -2146,7 +2146,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
              WHEN 'xe'         THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_attention_reads x WHERE x.instance_id = i.instance_id AND x.read_done AND x.state = 'running' AND x.snapshot_at <= now())
              WHEN 'waits'      THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_wait_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
              WHEN 'collection' THEN (SELECT max(x.hour) + interval '1 hour' FROM pgvigil.collection_health_hour x WHERE x.instance_id = i.instance_id AND x.hour + interval '1 hour' <= now())
-           -- [j16 #1 B24d 9bd7f716]
+           -- [#1 B24d 9bd7f716]
            END AS at) t
    WHERE i.instance_id = ANY (coalesce(p_ids, ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active)))
      AND t.at IS NOT NULL
@@ -2195,7 +2195,7 @@ BEGIN
          (r->>'dbid')::bigint AS dbid, r->>'datname' AS datname, r->>'object_kind' AS kind, r->>'identity' AS identity,
          r->>'schema_name' AS schema_name, r->>'object_name' AS object_name, r->>'parent' AS parent,
          r->>'definition' AS definition, r->>'owner' AS owner, r->>'acl' AS acl, r->>'hash' AS hash,
-         -- [j16 #2 A26-PG 24b477f4]
+         -- [#2 A26-PG 24b477f4]
          r->>'def_hash' AS def_hash, r->>'hash_prev' AS hash_prev
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'obj' AND r->>'dbid' IS NOT NULL AND r->>'object_kind' IS NOT NULL AND r->>'identity' IS NOT NULL
@@ -2229,7 +2229,7 @@ BEGIN
       is_present = true;
 
     IF NOT v_base THEN
-      -- [j16 #2 A26-PG 24b477f4]
+      -- [#2 A26-PG 24b477f4]
       -- A26-PG (0275): a PostgreSQL 14+ SQL-standard body read for the first time (the code before it hashed the
       -- function's empty prosrc): a present stored row whose hash is the read's hash_prev, and not the read's hash,
       -- takes the read's definition, hash and def_hash here, so the diff below records no change for it and the
@@ -2322,7 +2322,7 @@ BEGIN
                       WHERE r->>'kind' IN ('db', 'seen') AND (r->>'dbid')::bigint = s.dbid)
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                       WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'schema:' || s.datname);
-  -- [j16 #1 A26 5b6bcff0]
+  -- [#1 A26 5b6bcff0]
   -- A26 (0267): the objects of a database gone from the read go with it (0058 marked the database row only, so its
   -- objects stayed present on the page and purge's NOT is_present line never took them)
   UPDATE pgvigil.schema_objects o SET is_present = false, snapshot_at = p_snapshot_at
@@ -2370,17 +2370,17 @@ BEGIN
                         'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
                         -- task 406, 0157: they delete or write for the imports, and the reader never calls them
                         'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop',
-                        -- [j16 #1 B2a-N2 8aecbb2b]
+                        -- [#1 B2a-N2 8aecbb2b]
                         -- B2a-N2, 0167: the Azure SQL Database hours' writers (the import's trigger and 'pgvigil purge' run them as the owner)
                         'mssql_azuredb_hour_partition', 'mssql_azuredb_hour_recompute', 'mssql_azuredb_hour_rebuild', 'mssql_azuredb_hour_heal',
                         'mssql_azuredb_hour_failed', 'mssql_azuredb_hour_pending', 'mssql_azuredb_hour_heal_one', 'mssql_azuredb_hour_tg',
                         'mssql_azuredb_hour_purge',
-                        -- [j16 #2 413 7184f8ea]
+                        -- [#2 413 7184f8ea]
                         'mssql_index_depth_purge', 'mssql_fragmentation_stale',
-                        -- [j16 #3 PARQUET 16659e64]
+                        -- [#3 PARQUET 16659e64]
                         -- the Parquet export (0256): the exporter's door, not the reader's
                         'export_run_record', 'export_off',
-                        -- [j16 #4 81-AGENT 654a9cd5]
+                        -- [#4 81-AGENT 654a9cd5]
                         -- the agent door (0268): the agent's functions, not the reader's
                         'agent_investigation_list', 'agent_investigation_claim', 'agent_investigation_renew', 'agent_investigation_release',
                         'agent_investigation_report', 'agent_investigation_journal_select', 'agent_investigation_journal_done',
@@ -2391,12 +2391,12 @@ BEGIN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_reader', f.sig);
     END IF;
   END LOOP;
--- [j16 #3 PARQUET 16659e64]
+-- [#3 PARQUET 16659e64]
 
   -- the Parquet export (0256): its two functions are the exporter's (parquet-join-lines.sql 1)
   GRANT EXECUTE ON FUNCTION pgvigil.export_run_record(text, text, timestamptz, timestamptz, text, timestamptz, text, int, int, bigint, bigint, text) TO pgvigil_exporter;
   GRANT EXECUTE ON FUNCTION pgvigil.export_off(text) TO pgvigil_exporter;
--- [j16 #4 81-AGENT 654a9cd5]
+-- [#4 81-AGENT 654a9cd5]
 
   -- the agent door (0268): the seven agent_investigation_* are the agent's (0268's own GRANT, kept; agent-join-lines.sql 1)
   GRANT EXECUTE ON FUNCTION pgvigil.agent_investigation_list(text, text, int), pgvigil.agent_investigation_claim(bigint, text),
@@ -2405,7 +2405,7 @@ BEGIN
     pgvigil.agent_investigation_journal_select(bigint, text, text),
     pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_agent;
 
-  -- [j16 #5 81-AGENT 654a9cd5]
+  -- [#5 81-AGENT 654a9cd5]
   -- the agent door x the request queue (0268 x 0200): a queue-mode serve writes the asks through pgvigil_requester
   -- (agent-join-lines.sql 3); apply_roles revokes a function's grants only from PUBLIC and the reader, so this grant stands
   GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_request(timestamptz, jsonb),
@@ -2435,7 +2435,7 @@ END $$;
 --       level takes B24h's keys too'); internal/repo/sql/0254_probe.sql L136 + L144 (collector_probe_thresholds: the two keys in
 --       force for EVERY active instance, read from pgvigil.instances with no engine filter); docs/alerts.md L102-103 (settable per
 --       root, tag or instance, no engine named); the keys' levels {root,tag,instance} (0254 L112-113), so no database level.
---       visual-s1 (B24h's owner) confirms at the join; proof row: B24h's two keys accepted on a SQL Server instance
+--       proof row: B24h's two keys accepted on a SQL Server instance
 -- ====================================================================================================================
 UPDATE pgvigil.pg_threshold_keys SET engines = '{postgres,sqlserver}' WHERE key IN ('round_trip_time', 'ping_time');
 
@@ -2445,7 +2445,7 @@ UPDATE pgvigil.pg_threshold_keys SET engines = '{postgres,sqlserver}' WHERE key 
 --       j.state): without the CHECK every rule pass with a floored metric under its floor fails; the index serves metric_rule's
 --       alert_rule_log reads. No 0300 object: they may stay in 0190 instead (the amendment drops only 0300 objects' hunks)
 -- ====================================================================================================================
--- [j16 #E3 402 0d029a1a]
+-- [#E3 402 0d029a1a]
 CREATE INDEX IF NOT EXISTS alert_rule_log_enable_idx ON pgvigil.alert_rule_log (rule_id) WHERE op = 'enable' AND outcome = 'done';
 ALTER TABLE pgvigil.alert_rule_state DROP CONSTRAINT IF EXISTS alert_rule_state_state_check;
 ALTER TABLE pgvigil.alert_rule_state ADD CONSTRAINT alert_rule_state_state_check
@@ -2456,7 +2456,7 @@ ALTER TABLE pgvigil.alert_rule_state ADD CONSTRAINT alert_rule_state_state_check
 --   #E4 base 40762a29 0118_darling_alerts.sql L154 (L1 left out replay lag and the AG secondary) + 405 2370bd1c
 --       proof-pm313-rules-wiring.patch L222 ('task 405', the PostgreSQL poison wait); its 'replay lag' / 'an AG secondary behind' left out (F4)
 -- ====================================================================================================================
--- [j16 #E4 405 2370bd1c]
+-- [#E4 405 2370bd1c]
 COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, slot WAL, a volume under 5 GB free, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
 
 -- ====================================================================================================================
@@ -2469,7 +2469,7 @@ COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert d
 --       both engines and among the no-pid kinds
 --   #E1 CQ-A 322675cc: scripts/cq-join-lines.sql L19-22: no kind (its audit rows are action_requests')
 -- ====================================================================================================================
--- [j16 #E1 INV(301b) 4c155a56 + B9c e001dd80] ACCESS EXCLUSIVE on actions_log while each CHECK is checked (as 0191 / 0194)
+-- [#E1 INV(301b) 4c155a56 + B9c e001dd80] ACCESS EXCLUSIVE on actions_log while each CHECK is checked (as 0191 / 0194)
 ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_action_check;
 ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_action_check CHECK (
      (engine = 'postgres' AND action IN ('cancel', 'terminate', 'explain_analyze', 'hypo_index', 'job_stop', 'job_start', 'job_enable', 'job_disable'))
