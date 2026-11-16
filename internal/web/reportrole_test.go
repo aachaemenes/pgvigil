@@ -67,6 +67,16 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'pgvigil'`).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
+	// pg_read_all_data is PostgreSQL 14's (the product reads it through to_regrole: a 13 server has none to refuse); the
+	// login 'rad' and its cases run from 14 only, and on 13 the run says so by version (PG13-REPORTROLE)
+	var vnum int
+	if err := pool.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&vnum); err != nil {
+		t.Fatal(err)
+	}
+	hasReadAll := vnum >= 140000
+	if !hasReadAll {
+		t.Logf("PostgreSQL %d: no pg_read_all_data role (14+) - the login rad and its two pgRefusal cases are not run", vnum)
+	}
 	name := func(k string) string { return fmt.Sprintf("pgvrr_%s_%d", k, sfx) }
 	other := fmt.Sprintf("pgvrr_db_%d", sfx)
 	logins := []struct{ key, make string }{
@@ -93,6 +103,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		}
 	}()
 	for _, l := range logins {
+		if l.key == "rad" && !hasReadAll {
+			continue
+		}
 		if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s' %s`, name(l.key), pw, l.make)); err != nil {
 			t.Fatal(err)
 		}
@@ -218,6 +231,9 @@ func TestStoreReportsLoginOnAStore(t *testing.T) {
 		{"alr", "", "a member of pgvigil_alerter"},      // alert_contact_routes() returns every contact's address to it
 		{"alr", plain, "a member of pgvigil_alerter"},   // the role is the server's, whichever database the run opens
 	} {
+		if c.key == "rad" && !hasReadAll {
+			continue
+		}
 		got := refusalAs(name(c.key), c.db)
 		switch {
 		case c.want == "" && got != "":
