@@ -98,6 +98,53 @@ column, Freeze, Group by, Data bars, Columns...):
   the drawn page too; an empty cell is no number), in the column's own unit (bytes, durations, percentages as the screen writes them). With a selection of two cells or more:
   `Selected Cells: n (k numeric) | Sum: ... | Avg: ... | Min: ... | Max: ...`. A click on either line copies it.
 
+## Saved views (the View button)
+
+The Summary, the Performance summary and the three Slow queries pages (the fleet's, an instance's and a SQL Server
+instance's) carry DBA Dash's View drop-down: a button `View: <name>` in the page's toolbar (`View: None` when no
+view is loaded, `(changed)` after it while the page's picks or its grids' layouts differ from the loaded view's). A view is a named state of one page:
+
+- the page's own picks, as the page has them when it is saved (every one, not only those in the address):
+
+  | Page | Picks a view keeps |
+  | --- | --- |
+  | Summary | Focused View, Show Test Summary, the test summary's height, the instance grid's sort |
+  | Performance summary | none of its own: the layouts below |
+  | Slow queries (fleet, instance) | Threshold, Group By, Database, Top, Events, Auto Size Columns |
+  | Slow queries (SQL Server instance) | Group By, Database, Top, Events, Auto Size Columns |
+
+- the layouts of the page's grids (hidden columns, data bars, frozen columns; `Columns...` and the cell menu's items),
+  each kept under the grid's heading;
+- the time range, when **Save the time range** is ticked.
+
+The menu lists the page's own items first (the Summary's Focused View and Show Test Summary, Slow queries' Auto Size
+Columns), then `{None}`, the shared views and the user's own (`(shared)` or `(mine)`, `- default` on the one that loads
+by default, a tick on the loaded one), then **Save**, **Save as...**, **Rename...** and **Delete...**. An item the user
+may not use is off with its reason beside it: saving is off under `-no-login`, on `pgvigil demo -serve` and without
+the actions door's audit login; a shared view is written only by the users `views.shared_editors` names
+(`docs/configuration.md`); a personal view only by its owner. **Save as...** asks for a name, who sees it (Only me, or
+Everyone), whether it loads by default on this page, a folder, and whether to keep the time range.
+
+- **Loading**: a view lives in the page's address (`view=<id>` beside the page's picks, which Save as and opening a
+  view write there), so a reload, Back and Forward and a link sent to someone bring it back; a pick the link carries
+  wins over the view's. Entering one of these pages with none of its picks in the address loads
+  the user's own default for the page, else the shared default, once; a default's saved time range applies only when
+  the view is picked from the menu or its link is opened, so entering the page keeps the range you were on. A page's
+  default resets its picks each time the page is entered; `{None}` (`view=none`) keeps them.
+- **Layouts**: a loaded view's layouts lie over the browser's own grid choices and never overwrite them: `{None}`,
+  another page or a tab change gives your own back. A grid the view does not name draws with no choices while the
+  view is loaded. A column hidden or a bar added on a loaded view marks it `(changed)` until **Save**; a view's layout
+  whose grid is no longer on the page is said under the toolbar ('n grid layouts of this view no longer match:
+  skipped (...)').
+- **Another's view**: a link to someone's personal view opens its picks (they are in the address) but not its layouts
+  ('view N is not yours to open: its address applied, its layouts not'); a view of another page is not applied.
+- **Save** writes the page as it is now: its picks, its grids' layouts and, for a view that keeps the time range, the
+  range on screen. **Rename** keeps the stored range.
+- **Two people at once**: saving a view someone changed since you loaded it is refused with the reason and a
+  **Load the stored one** link; nothing is overwritten. A name already taken is refused in words.
+- A report mail's render (the Daily checks mail, Send now, a schedule) takes no view: no default is loaded and
+  `view=` is ignored.
+
 ## Tools (the bar)
 
 | Item | Opens |

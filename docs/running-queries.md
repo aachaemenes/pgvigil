@@ -67,3 +67,13 @@ the actions door's sessions (`pgvigil-actions*`) are never own. A session that b
 transaction over 60 seconds, sits idle in a transaction over 60 seconds, is
 shown even when it is pgvigil's own. A backend another tool opens under the collector's login with an application_name starting
 with `pgvigil` is pgvigil's by this rule and is hidden by default too.
+
+On the page: the switch reads `Show pgvigil's own sessions (n hidden)`, n being what this read left out (with a wait
+filter: `(n hidden in this snapshot)`, the whole snapshot's count), and rides the page's address (`own=1`), so a link,
+Earlier / Later / Latest and a reload keep it, and it stays on between Running queries and Waiting tasks of one
+instance; ticking it keeps the snapshot on screen. A row of pgvigil's own that is shown carries the word `pgvigil`
+beside its id, its title saying why it is shown (an alert's page marks them too). The session counts above the grids
+are the whole server's: a line beside the switch says how many of those sessions are pgvigil's own ('n of the sessions
+above are pgvigil's own'; Waiting tasks: 'n of the waiting tasks above'), and Waiting tasks' Longest wait follows the
+switch. A read stored before pgvigil began to mark its own sessions (migration 0265) says so under the switch: nothing
+in it is hidden. An alert's page always shows pgvigil's own sessions: a blocking head is never hidden from an alert.

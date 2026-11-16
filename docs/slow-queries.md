@@ -23,12 +23,22 @@ counts every event of the filter.
   hour carries its UTC offset, so the hour a clock goes back is two rows) and Engine. A value that is an empty
   string (a SQL Server client that sends no application name) is its own row, `(empty)`, apart from `(none)`. DBA Dash's Time - Custom is the page's own range.
 - **Database**: the databases with slow events in the range, each with its count; one picked cuts the grid to it.
-- **Top**: 20, 50, 100 or 500 groups, the most events first (Time - Hour and Time - Day in time order).
+- **Top**: 10, 20, 50, 100, 500 or 1000 groups, or ALL, the most events first (Time - Hour and Time - Day in time
+  order). ALL reads at most 5,000 groups and says so when it stopped there. Under a tag folder the fleet's groups are
+  read (at least 500, or ALL) and the folder's kept, as the folder's line says.
+- **Threshold** rides the address as `ms` on the fleet's and an instance's Slow queries page; the SQL Server Slow
+  page's Group by reads at the 1 s default.
 - **Events**: `calls` (the default) counts SQL Server's rpc and batch completions only; `calls and their statements`
   adds the statement events (`sql_statement_completed`, `sp_statement_completed`). With the capture's statement
   events on, one slow procedure call is stored as the call and as its slow statements, so counting both would count
   its time twice.
 - The page's **Threshold** (100 ms to 1 min, or all logged) applies to the grid too.
+- **Auto Size Columns** (an item of the View button): in the Group By grid and the events under it, each statement on
+  one line up to its first 400 characters (what the server keeps of an example), the grid scrolling sideways, the
+  cell's title the same 400; off: the first 80 characters. A click on a statement still opens it whole.
+- Group By, Database, Top, Events and Auto Size Columns ride the page's address (`g`, `gdb`, `top`, `ev`, `fit`), so
+  a link, a reload and a saved view keep them; the View button saves and loads them with the grid's layout
+  (`docs/menus.md`, *Saved views*).
 
 Every count is a button: it lists the events of that cell below the grid, the longest first (at most 500, with the
 cell's full count): instance, database, event type, object, time, duration, CPU, reads, writes, rows, user,
@@ -89,7 +99,7 @@ started earlier is not drawn. At most 5,000 runs are drawn (the newest); the pag
 
 | Route | Parameters | Parts |
 |---|---|---|
-| `GET /api/slow/groups` | `instance` (none = the fleet), `from`, `to`, `min` (ms, default 1000), `db`, `group`, `tz`, `top`, `events` (`calls` or `all`) | `groups`, `totals`, `dbs` |
+| `GET /api/slow/groups` | `instance` (none = the fleet), `from`, `to`, `min` (ms, default 1000), `db`, `group`, `tz`, `top` (1 to 1000, or `all`: at most 5,000), `events` (`calls` or `all`) | `groups`, `totals`, `dbs` |
 | `GET /api/slow/events` | the same, and `value` (or `blank=1` for the empty string, or `null=1`; none = every group), `bucket` (0-9), `failed=1` | `events`, `meta` |
 | `GET /api/stmttrend` | `instance`, `from`, `to`, and `queryid` (with `db`) or `shape` (with `min`) | `meta`, `trend` |
 | `GET /api/jobs/timeline` | `instance` (none = the fleet), `from`, `to`, and on an instance `scheduler` with `job` | `runs`, `meta`, `steps` (SQL Server) |
