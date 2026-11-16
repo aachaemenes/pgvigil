@@ -1,8 +1,53 @@
+diff --git i/cmd/pgvigil/main.go w/cmd/pgvigil/main.go
+index be6b258c..59a0189b 100644
+--- i/cmd/pgvigil/main.go
++++ w/cmd/pgvigil/main.go
+@@ -31,6 +31,7 @@ import (
+ 	"os/signal"
+ 	"strings"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/aachaemenes/pgvigil/internal/alerts"
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+@@ -242,6 +243,11 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
+ 		return err
+ 	}
+ 	defer r.Close()
++	// partitions ahead (0271, N4), as the scheduler does at its start: this run's imports make no partition in the
++	// normal path
++	if res, err := r.PartitionsAhead(ctx, time.Now()); err != nil {
++		log.Warn("partitions ahead: not all made", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
++	}
+ 	failed := 0
+ 	for _, in := range targets {
+ 		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
 diff --git i/internal/repo/repo.go w/internal/repo/repo.go
-index 272569c5..a43b8a0b 100644
+index 272569c5..409bead5 100644
 --- i/internal/repo/repo.go
 +++ w/internal/repo/repo.go
-@@ -629,7 +629,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
+@@ -75,8 +75,19 @@ const migrateLockKey int64 = 7265471133001
+ 
+ // Migrate applies pending migration files in name order; returns how many ran.
+ // The whole run holds a session advisory lock on one dedicated connection, so a
+-// second migrate waits and then finds nothing to do.
++// second migrate waits and then finds nothing to do. Then the partitions ahead (0271, N4),
++// once that connection is back in the pool (a one-connection pool needs it).
+ func (r *Repo) Migrate(ctx context.Context) (int, error) {
++	applied, err := r.migrateFiles(ctx)
++	if err != nil {
++		return applied, err
++	}
++	r.aheadAfterMigrate(ctx)
++	return applied, nil
++}
++
++// migrateFiles is Migrate's files under its lock, on one connection it releases on return.
++func (r *Repo) migrateFiles(ctx context.Context) (int, error) {
+ 	c, err := r.pool.Acquire(ctx)
+ 	if err != nil {
+ 		return 0, fmt.Errorf("migrate: %w", err)
+@@ -629,7 +640,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
  // by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
  // (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
  // It takes every partitioned series in the schema, so a series the function does not yet name
@@ -13,7 +58,7 @@ index 272569c5..a43b8a0b 100644
  func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
  	var have bool
  	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
-@@ -651,8 +653,9 @@ SELECT c.relname
+@@ -651,8 +664,9 @@ SELECT c.relname
    JOIN pg_class p ON p.oid = i.inhparent
    JOIN pg_namespace ns ON ns.oid = p.relnamespace
   WHERE ns.nspname = 'pgvigil'

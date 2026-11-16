@@ -36,6 +36,7 @@ const oldLoopsWait = 35 * time.Second
 // instance's loops run under its own context. The page's instances belong to one collector of a repository: the
 // holder of the page lease (pageLease); another collects its file's instances only.
 func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config) error {
+	startPartitions(ctx, log, r, partitionsEvery) // N4: partitions made ahead, before any instance's loop (partitions.go)
 	lock := newPageLease(cfg.Repository.DSN(), log)
 	defer lock.release()
 	go lock.keep(ctx)
