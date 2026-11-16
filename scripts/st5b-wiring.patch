@@ -67,6 +67,37 @@ index 4ae7a19..ffebc92 100644
 +		t.Error("an equal set of thresholds in another order moved the fingerprint")
 +	}
 +}
+diff --git c/internal/engines/page_settings_merge_test.go i/internal/engines/page_settings_merge_test.go
+new file mode 100644
+index 0000000..587c623
+--- /dev/null
++++ i/internal/engines/page_settings_merge_test.go
+@@ -0,0 +1,25 @@
++package engines
++
++import (
++	"testing"
++
++	"github.com/aachaemenes/pgvigil/internal/config"
++	"github.com/aachaemenes/pgvigil/internal/mssql"
++)
++
++// TestMergedPageThresholdRows (ST5b, the design pass's F2): a stored settings row read by Merge reaches
++// mssql.ThresholdRows whole - float64 numbers and backup_exclude as []string, json.Number refused there.
++func TestMergedPageThresholdRows(t *testing.T) {
++	all, skipped := config.Merge(nil, []config.PageInstance{{Name: "m1", Engine: config.EngineSQLServer, DSNRef: "file:/etc/pgvigil/m1",
++		SettingsRaw: []byte(`{"thresholds": {"redo_queue_kb": 512000, "full_backup_hours": 0.5, "backup_exclude": ["Sales%"]}}`)}}, "full")
++	if len(all) != 1 || len(skipped) != 0 {
++		t.Fatalf("merged %d, skipped %v", len(all), skipped)
++	}
++	rows, err := mssql.ThresholdRows(all[0].MSSQLThresholds)
++	if err != nil || len(rows) != 1 || rows[0]["redo_queue_kb"] != float64(512000) || rows[0]["full_backup_hours"] != 0.5 {
++		t.Errorf("mssql.ThresholdRows of the merged instance: %v (%v)", rows, err)
++	}
++	if pats, ok := rows[0]["backup_exclude"].([]string); !ok || len(pats) != 1 || pats[0] != "Sales%" {
++		t.Errorf("backup_exclude of the merged instance: %#v", rows[0]["backup_exclude"])
++	}
++}
 diff --git c/internal/web/q_alert_rules.go i/internal/web/q_alert_rules.go
 index 5ce8225..4327dac 100644
 --- c/internal/web/q_alert_rules.go
