@@ -157,7 +157,7 @@ r=$(tool find_statements '{"text":"select"}'); [[ $(jq -r '.result.isError' <<<"
 body <<<"$r" | jq -e '.sources|type == "array"' >/dev/null || fail "(4) find_statements: no sources list: $r"
 ok "(4) find_statements 'select': $(body <<<"$r" | jq '.sources|length') source(s), $(body <<<"$r" | jq '[.sources[]?.rows.rows // [] | length]|add // 0') row(s)"
 
-# task 403b's alert tool, once (review B #7 of the j16 candidate: (3) listed it, (4) never called it)
+# task 403b's alert tool, once (review B #7 of the candidate: (3) listed it, (4) never called it)
 r=$(tool alert_history "$(jq -cn --arg i "$INST" '{instance:$i,hours:48}')"); [[ $(jq -r '.result.isError' <<<"$r") == false ]] || fail "(4) alert_history: $r"
 [[ $(body <<<"$r" | jq -r '.from') != null && $(body <<<"$r" | jq -r '.to') != null ]] || fail "(4) alert_history: no window in the reply: $r"
 ok "(4) alert_history $INST 48 h: $(body <<<"$r" | jq '(.alerts // [])|length') alert(s), $(body <<<"$r" | jq '(.findings_history // [])|length') findings history row(s)"

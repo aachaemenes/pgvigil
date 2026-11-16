@@ -538,8 +538,8 @@ type AWS struct {
 	DMS *DMS `yaml:"dms"`
 	// Replicas switches on the provider replica door (task 390b P1): rds:DescribeDBInstances for the DB instance's
 	// read replicas and their status, cloudwatch:GetMetricData for each replica's ReplicaLag, rds:DescribeEvents for
-	// the instance's own failover events (P3). Off by default (the
-	// lead's Q8: its own door; the io, logs and dms reads of the same block keep theirs); it needs db_instance.
+	// the instance's own failover events (P3). Off by default (decision
+	// Q8: its own door; the io, logs and dms reads of the same block keep theirs); it needs db_instance.
 	Replicas bool `yaml:"replicas"`
 }
 

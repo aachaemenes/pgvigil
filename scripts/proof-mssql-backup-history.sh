@@ -17,7 +17,7 @@
 # Nothing it did not make is touched; every container, volume and the repository database go on every exit path.
 #
 # Expected (written before the first run; the facts of probes 301bP1 and 301bP2 behind them):
-#  AC  (the lead's red row, FIRST; a timing row: red under load is rerun once before it is graded a fault) an
+#  AC  (the red row, FIRST; a timing row: red under load is rerun once before it is graded a fault) an
 #      AUTO_CLOSE database pgbhac (FULL, no backup). First the control that 15 s idle closes it on this box: after
 #      15 s the instance with reads.auto_close_databases on reads it - mssql_backup_checks raises the error log's count
 #      of 'Starting up database 'pgbhac'' (sp_readerrorlog by sa) by one and its cell is read. Then, after the same
@@ -66,10 +66,10 @@
 #      h  serve stopped (SIGTERM) one second into the verify of a 1 GB full: its end row 'cut by shutdown' (a timing
 #         row: a verify that ended first says so and the row is NOT PROVEN for that run). i  a 'started' row three hours
 #         old with no end, put in by hand: serve's next start writes 'ended unknown' for it.
-#      k  (the lead's P3.4, RED) serve killed (SIGKILL: no end row, its lock gone with its session) one second into a
+#      k  (P3.4, RED) serve killed (SIGKILL: no end row, its lock gone with its session) one second into a
 #         verify of the 1 GB full: its 'started' row, seconds old (inside verify_timeout), gets 'ended unknown' at the
 #         next start (a timing row as h: a verify that ended first is NOT PROVEN for that run).
-#      l  (the lead's P3.4, NEGATIVE CONTROL) a 'started' row a minute old while another session holds the instance's
+#      l  (P3.4, NEGATIVE CONTROL) a 'started' row a minute old while another session holds the instance's
 #         lock (as a live verify does): serve's start leaves it 'started'; with the lock let go, the next start sweeps it.
 #      j  every verify_backup row of the run: no '/backups' in its statement, and some hold RESTORE VERIFYONLY.
 #  I   (the page, light and dark, signed in) #/mssqlbackups?i=<bh-m>&db=pgbh6: the Backup history grid's header =
@@ -453,7 +453,7 @@ case "${E%%|*}" in
   done) notproven "H6h: the verify of the 1 GB full ended before serve stopped (done): 'cut by shutdown' not seen in this run" ;;
   *) fail "H6h: the end row after the shutdown: $E" ;;
 esac
-# k (the lead's P3.4, RED): serve killed one second into a verify of the 1 GB full; the next start sweeps its row
+# k (P3.4, RED): serve killed one second into a verify of the 1 GB full; the next start sweeps its row
 startserve
 T0=$(q "select now()")
 [ "$(preview bh-m "$UBIG")" = 200 ] && [ "$(run bh-m "$UBIG" pgbh6big)" = 202 ] || fail "H6k run: $(cat "$BODY")"
@@ -475,7 +475,7 @@ else
   [ "${K1%%,*}" = started ] || fail "H6k: the rows after the kill: '$K1'"
   notproven "H6k: the verify of the 1 GB full ended before serve was killed ('$K1'): the sweep of a killed run's row not seen in this run"
 fi
-# l (the lead's P3.4, NEGATIVE CONTROL): no sweep while the instance's lock is held
+# l (P3.4, NEGATIVE CONTROL): no sweep while the instance's lock is held
 LT=00000000-0000-0000-0000-0000000301B4
 lseen() { q "select string_agg(outcome, ',' order by at, action_id) from pgvigil.actions_log where action='verify_backup' and target_id='$LT'"; }
 q "select pgvigil.import_mssql_actions_log($I, now() - interval '1 minute', jsonb_build_array(jsonb_build_object('instance_name', 'bh-m', 'ui_user', '$USR',

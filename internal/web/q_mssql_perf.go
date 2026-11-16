@@ -418,7 +418,7 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
 		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
 		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
 		{"rg", sqlMSSQLResourceGovernor, []any{id}},
-		// task 405 (Fixed 8; the lead's 22:4x on S4): PerformanceMonitor's max server memory number, 0156's, the one the
+		// task 405 (Fixed 8 on S4): PerformanceMonitor's max server memory number, 0156's, the one the
 		// Server options check states in its words (checks.go pmMemorySuggestion)
 		{"suggestion", `SELECT * FROM pgvigil.mssql_memory_suggestion($1)`, []any{id}},
 		{"skipped", sqlMSSQLMemorySkipped, []any{id}},

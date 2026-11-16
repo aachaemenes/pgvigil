@@ -16,7 +16,7 @@
 #
 # Expected: an 'ok' line per row below, then 'proof-schema-sqlbody: PASS (<rows>)'; any other end is a FAIL line.
 #   V<v>  the probe's facts: to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)') present on 14 and 18, absent on
-#         13 - FAIL when absent on 14 or 18 (the lead's G1 row); pg_dump's binary names pg_get_function_sqlbody on 14 and
+#         13 - FAIL when absent on 14 or 18 (the G1 row); pg_dump's binary names pg_get_function_sqlbody on 14 and
 #         18 (the code comment calls it pg_dump's own reader: FAIL when it does not).
 #   U<v>  the upgrade: the old collector reads first (f_atomic stored as its hashed form over an empty body, no text),
 #         then this binary: NO schema_changes row of the monitored database; on 14 / 18 the stored definitions carry

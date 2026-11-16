@@ -1,4 +1,4 @@
--- B24h's lines for the joined objects (the lead's 03:3x join-file rule): 0254 creates B24h's own objects only; the next
+-- B24h's lines for the joined objects (join-file rule): 0254 creates B24h's own objects only; the next
 -- join (0300_join_release3.sql) re-creates each object below WHOLE with these lines in it. Not a migration: never applied
 -- by `pgvigil migrate` (scripts/ is not embedded).
 

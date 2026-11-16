@@ -9,8 +9,8 @@
 #                      database and two logins, all named pgvigil_s2chan_*_<random>, and drops them at the end. Not
 #                      dropped: the cluster-wide group roles `pgvigil migrate` makes.
 #   The proof builds BIN from a copy of this tree (go build) with scripts/proof-alert-scope-wiring.patch applied (the
-#   lead's lines in 0190, web.go, q_alert_rules.go, tools.go; skipped when the tree already holds them, or holds them in a
-#   join's own words: the j16 join routes POST /api/alertwindows through s.post; one line of each of the 12 hunks).
+#   join's lines in 0190, web.go, q_alert_rules.go, tools.go; skipped when the tree already holds them, or holds them in a
+#   join's own words: the join routes POST /api/alertwindows through s.post; one line of each of the 12 hunks).
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on 5e53c86 the build has no alert_channel_failing, part M fails):
@@ -27,7 +27,7 @@
 #       severity warning, detail 'alert channel failing: webhook to http://127.0.0.1:<port> (json), the last 3 sends
 #       failed, ...; last error: ... 500 ...', source 'pgvigil repository', sender 'pgvigil' (the file's envelope);
 #     - hook2 never gets its own: no sink body on /c names 'alert channel failing', no alert_state row of hook2 for it;
-#     - hook (floor critical) gets none either (K3 at warning: a critical-only channel is not told; the lead's 23:4x);
+#     - hook (floor critical) gets none either (K3 at warning: a critical-only channel is not told);
 #     - alert_channel_failing's at for hook2 is its first failed attempt (the streak's start), not the third;
 #     - a further pass: no second firing file on drop;
 #     - the sink answers 200, one more test: its alert_log row is 'test'; that same pass (alert_mark marks the finding
@@ -50,7 +50,7 @@
 #     Through `pgvigil mcp` (the reader login): tools/list names alert_history; tools/call {instance A, hours 2160}: 2
 #     alerts (not the 100-day-old one) and a findings_history list; {hours 2161}: an error result naming 1..2160;
 #     {from, to 91 days apart}: an error naming 90 days.
-#  L. (PGVIGIL_PROOF_PART=L only, on the laptop, the lead's 22:0x rules: F3 (a)) one Send test each through the changed
+#  L. (PGVIGIL_PROOF_PART=L only, on the laptop rules: F3 (a)) one Send test each through the changed
 #     senders to the lab's REAL destinations this run has a secret for: slack-live (the lab's Slack incoming webhook,
 #     PGV_LIVE_SLACK), po-live (Pushover's Messages API, PGV_LIVE_PO_TOKEN and PGV_LIVE_PO_USER) and az-live (the Azure
 #     lab's Logs Ingestion endpoint, PGV_LIVE_AZ_SECRET with the rule's and the app's ids in PGV_LIVE_AZ_ENDPOINT, _DCR,
@@ -265,7 +265,7 @@ for t in psql curl python3 ss go tar git; do command -v $t >/dev/null || fail "$
 # ---- the binary -------------------------------------------------------------------------------------------------------
 TREE=$WORK/tree; mkdir -p "$TREE"
 tar --exclude=./.git --exclude=./web/node_modules --exclude=./bin -cf - . | tar -xf - -C "$TREE"
-# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the j16 join's B24F-JOIN-WIRING routes POST
+# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the join's B24F-JOIN-WIRING routes POST
 # /api/alertwindows through s.post, so the patch neither applies nor reverses there): one line of each hunk, as text
 joined_wiring() { local f s
   while read -r f s; do grep -qF -- "$s" "$1/$f" || return 1; done <<'EOF'

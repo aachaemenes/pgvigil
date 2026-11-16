@@ -262,7 +262,7 @@ func (s *Server) Handler() http.Handler {
 	// the collector's error log (0198)
 	api.HandleFunc("GET /api/collectorerrors", s.CollectorErrors)
 	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)                     // B6.2
-	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                         // B6g-3: WIRING for the join (web.go is the lead's)
+	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                         // B6g-3: WIRING for the join (web.go is the join's)
 	s.post(api, "POST /api/collectionhealth/thresholds", needAdmin, s.CHThresholdWrite) // B6g-2 (admin, B24f)
 	api.HandleFunc("GET /api/collector", s.Collector)                                   // task 201
 	api.HandleFunc("GET /api/export", s.Export)
@@ -395,7 +395,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/perfsummary", s.PerfSummary)
 	api.HandleFunc("GET /api/performance", s.Performance)
 	api.HandleFunc("GET /api/indexes", s.Indexes)
-	s.post(api, "POST /api/indexes/advise", needOperator, s.IndexAdvisor) // hypopg and EXPLAIN on the monitored server: as plans/hypo (the lead 13:3x)
+	s.post(api, "POST /api/indexes/advise", needOperator, s.IndexAdvisor) // hypopg and EXPLAIN on the monitored server: as plans/hypo
 	api.HandleFunc("GET /api/dmsio", s.DMSIO)
 	api.HandleFunc("GET /api/tags", s.Tags(s.tags))
 	s.post(api, "POST /api/actions/cancel", needOperator, s.actions.Cancel)

@@ -434,7 +434,7 @@ func TestRepositoryAutovacuumTrigger(t *testing.T) {
 	}
 }
 
-// TestAlertSenderIdleReadsSenders (B6.2 part c #3, the lead's 03:2x (a)): 'alert sender idle' counts only live runs
+// TestAlertSenderIdleReadsSenders (B6.2 part c #3 (a)): 'alert sender idle' counts only live runs
 // whose beat says they send - collector_heartbeat.sends_alerts (0121's CREATE TABLE), written by import_collector_beat
 // from its p_beat's sends_alerts - so alerts turned off on every run raise no finding and need no owner step
 func TestAlertSenderIdleReadsSenders(t *testing.T) {

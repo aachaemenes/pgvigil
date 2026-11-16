@@ -106,7 +106,7 @@ SELECT DISTINCT a.instance_id FROM pgvigil.actions_log a
    AND NOT EXISTS (` + sqlVerifyEndOf + `)`
 
 // sqlVerifySweep writes 'ended unknown' for each 'started' verify of instance $1 with no end of its own - run only
-// while the sweep holds the instance's lock, so no verify is running there (whatever the row's age: the lead's P3.4).
+// while the sweep holds the instance's lock, so no verify is running there (whatever the row's age: decision P3.4).
 const sqlVerifySweep = `
 SELECT count(pgvigil.import_mssql_actions_log(a.instance_id, now(), jsonb_build_array(jsonb_build_object(
          'instance_name', a.instance_name, 'ui_user', a.ui_user, 'client', a.client, 'action', 'verify_backup',

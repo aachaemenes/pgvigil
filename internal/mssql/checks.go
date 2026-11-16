@@ -639,7 +639,7 @@ func parseBuilds(text string) map[int][]buildRow {
 // buildListURL is Microsoft's list of every SQL Server build, linked where the catalogue has no page of a build's own.
 const buildListURL = "https://support.microsoft.com/kb/321185"
 
-// BuildDocs: the documentation links of an instance's build (task 412, the lead's 11-15 B1 (a)): its own page only when
+// BuildDocs: the documentation links of an instance's build (task 412, decision B1 (a)): its own page only when
 // the catalogue lists this very build (the nearest lower row is another build's page); a build of the catalogue with no
 // page of its own (an RTM row: empty; a preview or RTM of 2025: a product page) links Microsoft's build list, said in
 // words; a build newer than the catalogue's newest says so. The newest build of the major is linked beside it. Read at

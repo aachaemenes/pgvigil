@@ -20,12 +20,12 @@
 -- An AUTO_CLOSE database is not read for last_log_backup_lsn unless the instance opts in (the read opens a closed
 -- database: probe 301bP2 on SQL Server 2019 and 2022): its cell says 'not read: AUTO_CLOSE (reading would open it)'.
 --
--- THE JOIN-FILE RULE (the lead's 2026-11-15 03:3x): 0191 sorts after 0190 and creates its own objects only. The joined
+-- THE JOIN-FILE RULE: 0191 sorts after 0190 and creates its own objects only. The joined
 -- objects' lines are in scripts/inv-301b-join-lines.sql: mssql_hadr_cursor's arm for this collection's two cursors, the
 -- pgvigil.findings arm, and the actions_log lists. On this branch mssql_hadr_cursor does not know the cursors (a whole
 -- pass every read); the store test and the proof apply scripts/inv-301b-joined-cursor.sql, the function as the joined
 -- tree holds it.
--- actions_log's three CHECKs are widened HERE too (the lead's 03:3x: BOTH), so this branch's action verify_backup can be
+-- actions_log's three CHECKs are widened HERE too (BOTH), so this branch's action verify_backup can be
 -- written: the lists copy 0157's (task 406, plan_evict) whole and add verify_backup (no pid) and the outcomes started,
 -- cut by shutdown and ended unknown; 0194 (B9c) copies these, 0300 re-creates each CHECK once with every slice's list.
 -- Lock footprint: three new tables' worth of CREATE, and an ACCESS EXCLUSIVE lock on actions_log while each CHECK is
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_path_check (
 -- (an hour of slack); a database created anew under an old name loses the sets stored for the old one; a database the
 -- server no longer lists loses its sets. A cursor read (from_set_id > 0) that lists a database the last read did not
 -- sends the cursor to 0, so the next read is one whole pass (301's F7). The restores are written only when the read had
--- the right ('no right': the state says so and the stored restores stay). N = 10, M = 20 (the lead's E2). Its first
+-- the right ('no right': the state says so and the stored restores stay). N = 10, M = 20 (decision E2). Its first
 -- statement is 0066's mssql_hadr_read (the engine, the instance's lock for the collection, and a read older than the
 -- stored one - a one-off collect imported late - changes nothing).
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_backup_history(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -381,7 +381,7 @@ SELECT p.instance_id, p.path AS default_backup_path,
        CASE p.state WHEN 'directory' THEN 'yes' WHEN 'gone' THEN 'no' END AS reachable
   FROM pgvigil.mssql_backup_path_check p;
 
--- mssql_backup_check_findings: the three findings (warning each, the lead's E5). A file is judged only for a database
+-- mssql_backup_check_findings: the three findings (warning each, decision E5). A file is judged only for a database
 -- mssql_backup_judged judges (no not-judged reason), 'info' when a replica of its availability group is not monitored
 -- (0140's rule); an answered 'gone' is the finding, a timeout or a refusal is 'not judged' and none (F5); a set that
 -- is not 0140's judged set (a newer one ran on another replica) raises none (F6: mssql_backup_file_newer).

@@ -44,7 +44,7 @@
 --   task 409 (0160): pgvigil.mssql_checks_findings (0090's view) leaves out the day-one finding of a server option that
 --     has an expected value in force, met or not (the expectation alone judges it): every reader follows - pgvigil.findings,
 --     mssql_checks_status (the Checks page's areas and the Summary's cells) and the Checks page's list. The findings and
---     purge() arms of tasks 407, 409 and 410 are 0300's (the j16 join file: no j16 hunk of an object 0300 re-creates).
+--     purge() arms of tasks 407, 409 and 410 are 0300's (the join file: no new hunk of an object 0300 re-creates).
 
 -- 0090's mssql_checks_findings with task 409's anti-join (0160 sorts below this file)
 CREATE OR REPLACE VIEW pgvigil.mssql_checks_findings AS
@@ -1084,7 +1084,7 @@ SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.clou
 -- ---- task 401 (0152, B3): the SQL Server counters --------------------------------------------------------------------
 -- mssql_cpu_newest is 0124's with its Workload Group Stats taken from the instance counter read nearest the scheduler
 -- read (the counters are mssql_counters' own read since 401: an exact match on mssql_cpu's read time would never find
--- them). metric_catalog and metric_points with the family 'counters' are 0300's (the j16 join file: no j16 hunk of an
+-- them). metric_catalog and metric_points with the family 'counters' are 0300's (the join file: no new hunk of an
 -- object 0300 re-creates goes into an earlier file).
 
 CREATE OR REPLACE FUNCTION pgvigil.mssql_cpu_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)

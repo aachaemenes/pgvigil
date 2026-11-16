@@ -1,7 +1,7 @@
 // Where a PostgreSQL server's base backups and WAL go (task 302): 'base backups to', 'WAL to' and 'restore from' as
 // the newest backup_dest read named them (each with its source: archive_command, archive_library, restore_command, or
 // the tool's own configuration when read_tools is on), the managed platforms' line, and a person's entry shown BESIDE
-// a read value, never over it. Data from /api/pg/backup_dest; the lead wires the section into the Base backups tab and
+// a read value, never over it. Data from /api/pg/backup_dest; the join wires the section into the Base backups tab and
 // the fleet columns into the fleet Backups section (pg_backups.ts: one import and a few lines each).
 import { get, Row, rowsOf, Table } from './api';
 import { AckData, offBeside, seatWhy } from './ack';

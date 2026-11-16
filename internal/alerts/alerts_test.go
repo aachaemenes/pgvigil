@@ -508,7 +508,7 @@ func TestFileDrop(t *testing.T) {
 	}
 }
 
-// task 403b (the lead 01:3x): a file carries the alert's own source; the envelope's constant is "sender": "pgvigil".
+// task 403b: a file carries the alert's own source; the envelope's constant is "sender": "pgvigil".
 // Red on 9a48c364: the envelope's own field "source" shadowed the alert's, so every file said "pgvigil".
 func TestFileDropSource(t *testing.T) {
 	dir := t.TempDir()

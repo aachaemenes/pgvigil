@@ -1,4 +1,4 @@
--- Task 302 (migration 0148): the lines for the lead's NEXT join migration - never an edit of 0190 (the migrator skips a
+-- Task 302 (migration 0148): the lines for the NEXT join migration - never an edit of 0190 (the migrator skips a
 -- recorded file, so an edit of 0190 never reaches a repository that has it). Not a migration of its own: each piece goes
 -- where its comment says.
 

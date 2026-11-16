@@ -28,7 +28,7 @@
 #  rs1 (RESTORE ... PASSWORD = N'...'), rgc (SQLBackupC's -SQL "... PASSWORD = '...'") and for keep1 / keep2 (a
 #  certificate's name, @KeyColumns, @EncryptionKeyPlaceholder, -KeepAlive: readable in the version); 'PROOF FAILED'.
 #  After the fix: every row ok, 'PROOF OK'.
-#  H (a run's output; outside S16's order, its own commit, asked of the lead): a job whose step PRINTs a backup
+#  H (a run's output; outside S16's order, its own commit, asked for): a job whose step PRINTs a backup
 #  command with its key, run once. Red run (maskred1, a NOTE then): the token in msdb's history 1, stored in
 #  pgvigil.mssql_job_runs 1, in the step's version 1, the dump 3. Expected after the H commit (maskRunText in
 #  internal/mssql/jobs.go): the history still holds it (1), stored nowhere (mssql_job_runs 0, the step's version 0,
@@ -39,11 +39,11 @@
 #  key cut by msdb's history inside it: stored), rg4 (sqbutility 1032's sixth argument), ls3 (@EncryptionKey as a bare
 #  word), cli4 (-K ''...'' inside xp_cmdshell's string), rg5 (PASSWORD = [..]]..]): 6 FAIL, 'PROOF FAILED: 6'; every
 #  older row ok, keep1-keep3 ok (each stored command equal to the command sent). After the fold: every row ok.
-#  The switches by their tool (the lead's 16:2x R9; expected written before its red run, on ee03c155's code): FAIL for
+#  The switches by their tool (R9; expected written before its red run, on ee03c155's code): FAIL for
 #  keep4 (a PowerShell -Path stored '-P<masked>') and keep5 (sqlcmd's -K ReadOnly stored '-K <masked>'): 2 FAIL,
 #  'PROOF FAILED: 2'; ok for the controls os1 (osql's attached -P) and is1 (isql.exe's -P) and every older row. After
 #  it: every row ok.
-#  U, the upgrade (the lead's 16:2x R1 (B), migration 0272; only with PGVIGIL_OLD_SRC, a source tree of the build
+#  U, the upgrade (R1 (B), migration 0272; only with PGVIGIL_OLD_SRC, a source tree of the build
 #  before S16, else 'NOT PROVEN U'): the same jobs read by that build into a repository of their own, then migrate with
 #  this build. Expected written before its red run (on 432239a4's code, no 0272): FAIL - a secret still in
 #  job_versions, mssql_jobs or mssql_job_runs - for the twelve forms the older build stored raw or in part (ola1, ola2,
@@ -51,7 +51,7 @@
 #  rs1, rgc, os1, is1 and rg5 (masked by the older build already); the dump row FAIL; ok for 'the migrate writes no
 #  version' and 'the first read after it writes at most one version a job, the second none'. After 0272: every U row
 #  ok.
-#  U's guard row G1 (the lead's 16:5x, attempt 3; expected written before its red run, on 29c61eff's code): a step
+#  U's guard row G1 (attempt 3; expected written before its red run, on 29c61eff's code): a step
 #  command two levels of dynamic SQL deep (a form no rule reads), planted into one stored script's @command literal
 #  before the migrate: red - its secret left in job_versions (FAIL G1); after the guard: the literal replaced whole by
 #  '<masked: an older build stored this command unmasked>', the secret nowhere (ok G1). With it, the red run's four

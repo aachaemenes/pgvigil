@@ -273,7 +273,7 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
 	case channels == 0 && live.id == 0:
 		reason = "Mailing the Daily checks needs an smtp channel: the sender has recorded none (the alerts: block of pgvigil.yaml, and pgvigil run)."
 	case !s.roleCan(r)["admin"]:
-		// the role (B24f, the lead 11-15 12:0x): keeping or turning off the mail is an admin's (its ops ride POST
+		// the role (B24f): keeping or turning off the mail is an admin's (its ops ride POST
 		// /api/reportmail, admin through s.post); a lower role reads the control off with these words
 		wh, ok := whoOf(r)
 		if !ok {

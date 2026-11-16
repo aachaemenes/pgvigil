@@ -1,4 +1,4 @@
--- inv-301b-join-lines.sql - task 301b's lines for the joined objects (the lead's JOIN-FILE RULE, 2026-11-15 03:3x): its
+-- inv-301b-join-lines.sql - task 301b's lines for the joined objects (the join-file rule): its
 -- migration 0191 is above 0190, so it creates only its own objects; the next join (0300_join_release3.sql) re-creates
 -- each object below WHOLE with these lines in it. Not a migration: `pgvigil migrate` never applies it (scripts/ is not
 -- embedded).
@@ -18,7 +18,7 @@
 --    -- task 301b (0191): a backup file not where msdb says, pseudo-simple, the default backup path not reachable
 --    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_backup_check', at FROM pgvigil.mssql_backup_check_findings
 
--- 3. actions_log's three CHECKs (the lead's 03:3x: BOTH - 0191 widens them for this branch, 0300 re-creates each ONCE with
+-- 3. actions_log's three CHECKs (BOTH - 0191 widens them for this branch, 0300 re-creates each ONCE with
 --    every slice's list). 301b's part:
 --      actions_log_action_check  engine = 'sqlserver': 'verify_backup'
 --      actions_log_pid_check     'verify_backup' among the actions with no pid

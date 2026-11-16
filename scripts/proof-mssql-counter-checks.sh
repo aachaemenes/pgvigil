@@ -31,7 +31,7 @@
 #     carries the seed's rule_id, 2 and 5, a name ending '(off: colours only, no alert)', and metric_status
 #     'critical'; alert_rules_run writes no state and no finding for counters.logins_s; a user's own fleet rule on
 #     counters.latch_waits_s added and then switched off: metric_rule gives no row for it.
-#     B2 (402 S2, the lead's 22:0x; red on df1ffdc at B2a: 'none', the sandbox run s2-test of 11-14 22:2x read 10 of 14
+#     B2 (402 S2; red on df1ffdc at B2a: 'none', the sandbox run s2-test read 10 of 14
 #     there and 14 of 14 on this metric_rule): the seed of counters.lock_timeouts_gt0_s (the one seeded row the proof
 #     edits, against F20: F leaves it out) edited to 0.5 / 2 while off: metric_rule gives the successor, 0.5 and 2, its
 #     name ending '(off: colours only, no alert)'; edited again (never on): the second successor; that one switched on
@@ -48,7 +48,7 @@
 #     (compiles_per_100_batches, page_splits_per_100_batches, page_lookups_per_batch, recompiles_per_100_compiles) the
 #     proof's own batches and RPCs (its program, read by APP_NAME() at the setup) outnumber those of every program but
 #     pgvigil, else red; then warning or critical with one finding. The clear leg: two quiet reads, the second 60 s
-#     after the first (the product's interval, the lead's 19:0x; a run with QUIET other than 60 ends PARTIAL), the
+#     after the first (the product's interval; a run with QUIET other than 60 ends PARTIAL), the
 #     window named (batches and RPCs by program, statistics updates, scans and seeks per object): ok with no finding,
 #     or 'na' under a floor. A clear held up prints 'NOT PROVEN clear: <names>' only for a metric named background can
 #     move (the batch ratios, full_scans_per_search, page_reads_s, readahead_pct; finding 2) and only after three more
@@ -69,14 +69,14 @@
 #  E. not provokable on a box, the rule's path only: free_list_stalls_s, lazy_writes_s, buffer_cache_hit_pct,
 #     ple_per_4gb, errors_offline_s - an instance rule with a threshold the newest point crosses fires (the point
 #     printed); NOT PROVEN live at the seeded threshold.
-#  D with the floors (FL6, the lead's 19:4x / 19:5x; red on fd7b9bb at GC, on 3e745fa in D at compiles_per_100_batches:
+#  D with the floors (FL6; red on fd7b9bb at GC, on 3e745fa in D at compiles_per_100_batches:
 #     0085's eval counts its NULL newest point as beyond, critical with a finding after the quiet reads - the floors'
 #     review part B, finding 4): each floored check's load reads at its floor or more (5 Batch Requests/s; 1 Full
 #     Scan/s), else it fails as too small; its clear leg reads ok, or 'na' with no finding and metric_floors' input
 #     under its floor (the proof's own floored() line; the product's page words are NOT PROVEN, as G says) - a hard
 #     clear either way, no NOT PROVEN for it; a clear read over its floor that still holds takes up to two more quiet
 #     pairs, each printed, and stays hard (finding 6).
-#  G7 (the lead's 11-15 06:4x, written before its first run): with a metric_na_reasons row for compiles_per_100_batches
+#  G7 (written before its first run): with a metric_na_reasons row for compiles_per_100_batches
 #     made in the run's own repository while that rule reads 'na', GET /api/metrics' grid row and GET /api/alertrules
 #     ?part=state's row carry na_why "not judged: the proof's own words" (the state 'na'); the view's own definition
 #     put back after. G7 proves a metric with both a floor and a reason (the reason's words win over the floor's); a
@@ -86,7 +86,7 @@
 #     PerformanceMonitor's order: 'under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio
 #     metadata|Azure Data Studio metadata|counts|Azure Data Studio metadata|pgvigil's own reads|counts|counts|counts|under
 #     1 ms|under 1 ms' (a NULL duration counts; a name rule before the 1 ms floor, the floor before azdata's shapes; the
-#     lead's 11-15 F1 FLOOR (a) + EDGE (1): the floor only for an event that came with no statement - has_text false, or
+#     F1 FLOOR (a) + EDGE (1): the floor only for an event that came with no statement - has_text false, or
 #     for a row stored before the flag a blank statement - so a short azdata metadata statement reads azdata's reason, a
 #     short event with its text or with has_text true counts; red on ccbed981: no four-argument function). T6 the
 #     import's path: four attentions through import_mssql_xe on a built instance, at 500 us each: has_text true with no
@@ -96,7 +96,7 @@
 #     seed's 9.999 / 59.999 goes critical at that read; a quiet read after it: still critical (the 3-minute window holds
 #     the burst), as PerformanceMonitor's own text says of a storm. T2 built rows (chkxs2: a done read, a read cut
 #     before the capture (no new_events) storing 6 rows, a done read storing 4): one point per metric, at the last read,
-#     counted 5 (10 rows over 2 minutes), none at the cut read. T4 (the lead's 22:4x, F1 S3: PerformanceMonitor's
+#     counted 5 (10 rows over 2 minutes), none at the cut read. T4 (F1 S3: PerformanceMonitor's
 #     judged count; red on bfb184d: 50.00, warning) built reads a minute apart: 50 rows stored while the event_counter
 #     moved 300: 300.00, critical at the seed's thresholds (a storm past the ring buffer); no row stored and the counter
 #     +30: 30.00; the counter gone down (the session made again) with 20 rows: 20.00. The built reads' counters move
@@ -116,7 +116,7 @@
 #     metadata, 10 query-editor batches counted; the counted point as recomputed. The XE API's attentions carry
 #     left_out with those reasons. Every live cancel under 1 ms of the proof's own batches came with its statement and is
 #     not left out by the 1 ms floor; another cancel under 1 ms on the server is printed with its reasons, not judged (a
-#     cancel with no statement is proven on the function and the import only, T0 / T6). T3n (the lead's 11-15 F1 FLOOR EDGE (1), the
+#     cancel with no statement is proven on the function and the import only, T0 / T6). T3n (F1 FLOOR EDGE (1), the
 #     red row: on ccbed981 the four-argument call fails, no such function; through its three arguments the 10 would read
 #     'under 1 ms'): the same server read as a second instance chkboxnone under
 #     query_text none (its own config file), 10 cancels under 'proof-none': 10 rows, no statement stored, has_text on
@@ -392,8 +392,8 @@ echo "== C. on by an instance rule (F20) =="
 # load, a read, the run (warning or critical); two quiet reads, the run (ok); the instance rule ended
 SEEDOF() { grep "^counters.$1|" "$TMPD/seed-a"; }
 # the quiet reads' spacing: the rule judges the newest point, so the first quiet read comes 2 s after the load's (it
-# takes what SQL Server publishes late) and the second QUIET s after it, the product's own 60 s interval (the lead's
-# 19:0x: runs chk3, chk9 and chk10 at 3, 12 and 30 s read the collector's own batches and an unnamed background over
+# takes what SQL Server publishes late) and the second QUIET s after it, the product's own 60 s interval (runs chk3,
+# chk9 and chk10 at 3, 12 and 30 s read the collector's own batches and an unnamed background over
 # the ratios' thresholds).
 QUIET=${QUIET:-60}
 # the clear leg's window (between the scope's two newest reads) is named: every batch and RPC by program and the
@@ -724,7 +724,7 @@ echo "   T2: $P2"
 [[ "$P2" == "1m client_timeouts_left_out_per_min 0.00, 1m client_timeouts_per_min 5.00" ]] || fail "T2: the points around a cut read [$P2]"
 ok "T2: a cut read gives no point and its 6 rows count in the next done read's span (10 over 2 minutes)"
 
-# T4 (the lead's 22:4x, F1 S3; red on bfb184d: 50.00, warning): PerformanceMonitor's judged count - a storm past the
+# T4 (F1 S3; red on bfb184d: 50.00, warning): PerformanceMonitor's judged count - a storm past the
 # ring buffer (the read stores 50 rows, the event_counter moved 300) reads 300 a minute, critical; T4b no row stored,
 # the counter +30: 30 (the whole change); T4c the counter gone down (the session made again), 20 rows: 20 (the rows alone)
 XS4=$(xinst chkxs4); [[ "$XS4" =~ ^[0-9]+$ ]] || fail "T4: the built instance [$XS4]"
@@ -752,7 +752,7 @@ echo "   T5: the reads table after four imports: $P5"
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $XS5" >/dev/null
 ok "T5: through import_mssql_xe a cut read is not done, a done read keeps its counter, a repeat and another capture add no row"
 
-# T6 (the lead's 11-15 F1 FLOOR EDGE (1)): has_text through import_mssql_xe - four attentions at 500 us on a built instance
+# T6 (F1 FLOOR EDGE (1)): has_text through import_mssql_xe - four attentions at 500 us on a built instance
 XS6=$(xinst chkxs6); [[ "$XS6" =~ ^[0-9]+$ ]] || fail "T6: the built instance [$XS6]"
 XE6=$(pq "SELECT to_char(('$XT'::timestamptz - interval '61 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 [[ "$XE6" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "T6: the event time [$XE6]"
@@ -972,7 +972,7 @@ PY
 xend "$RX"
 ok "T3: one mssql_attention_reads row per read, all done; the XE API names each left-out reason"
 
-# T3n (the lead's 11-15 F1 FLOOR EDGE (1), the red row): the same server read as a second instance under query_text none
+# T3n (F1 FLOOR EDGE (1), the red row): the same server read as a second instance under query_text none
 CFGN=$TMPD/n.yaml
 printf 'repository:\n  dsn: "%s"\ninstances:\n  - name: chkboxnone\n    engine: sqlserver\n    dsn: env:PGV_CHK_MON\n    query_text: none\n' "$PGDSN" > "$CFGN"
 coln() { timeout 180 "$TMPD/pgvigil" collect -config "$CFGN" -instance chkboxnone -once mssql_xe > "$TMPD/coln.out" 2>&1 \
@@ -1060,7 +1060,7 @@ got = ((g[0].get('current_value'), g[0].get('floor'), g[0].get('floor_unit'), g[
 print(f'   FL4: the grid row (current, floor, unit, input) and the state row (state, unit): {got}')
 sys.exit(0 if got == ((None, 5, 'batch requests', 'counters.batch_requests_s'), ('na', 'batch requests')) else 1)
 PY2
-    # G7 (the lead's 11-15 06:4x, red on 799423e4: no na_why): a metric's own N/A reason (0152's metric_na_reasons, a
+    # G7 (red on 799423e4: no na_why): a metric's own N/A reason (0152's metric_na_reasons, a
     # slice's join line in a release) reaches the state row and the grid row; the view's own definition put back after
     # (a later slice's rows in it stay: boxfix N4)
     G7DEF=$(pq "SELECT pg_get_viewdef('pgvigil.metric_na_reasons'::regclass, true)"); [[ -n "$G7DEF" ]] || fail "G7: metric_na_reasons' definition"

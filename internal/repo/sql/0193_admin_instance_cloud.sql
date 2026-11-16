@@ -3,7 +3,7 @@
 -- so none of its cloud reads ran: CloudWatch IO / logs / Performance Insights / serverless (aws:), and 390a's
 -- failover groups (azure:).
 --
--- The blocks sit in a table of their own beside the page's row (the lead's Q1): import_admin_instance is not
+-- The blocks sit in a table of their own beside the page's row (decision Q1): import_admin_instance is not
 -- redefined again; a remove deletes the row and the blocks go with it (ON DELETE CASCADE). Their shape is the
 -- configuration file's minus log_group and dms (Q3, those stay pgvigil.yaml's): aws {region, profile, cluster,
 -- db_instance} on a PostgreSQL row only (Q2; on SQL Server an aws: block is pgvigil.yaml's provider replica door
@@ -12,7 +12,7 @@
 -- credentials are the collector host's own SDK chains. These rules are Go's own (config.PageCloudShape), so every
 -- block the store takes passes the merge's shape check.
 --
--- The doors (the lead's Q4 = (a), Allen's Q15): pgvigil.yaml's doors.page_cloud_blocks (OFF by default) lets the
+-- The doors (decisions Q4 = (a) and Q15): pgvigil.yaml's doors.page_cloud_blocks (OFF by default) lets the
 -- collector use a page block at all, and the block's target must be the instance's own host by name; a profile only
 -- when doors.page_aws_profiles lists it (Q5). Those are the configuration file's, checked by serve before it calls
 -- here and by the collector at each merge (config.MergeNotes): a block the store holds may still be dropped there,

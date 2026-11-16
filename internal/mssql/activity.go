@@ -48,8 +48,8 @@ func (activityCollector) Applies(in Info) (bool, string) {
 	return true, ""
 }
 
-// activitySessionsSQL: one read of sys.dm_exec_sessions grouped by GROUPING SETS (task 413's one read, the lead 11-15):
-//   - the total over ALL sessions (the Connections page's one user / system rule, the lead 09:4x: background = the
+// activitySessionsSQL: one read of sys.dm_exec_sessions grouped by GROUPING SETS (task 413's one read):
+//   - the total over ALL sessions (the Connections page's one user / system rule: background = the
 //     system sessions, is_user_process = 0; before 413 the total counted sessions over 50, PerformanceMonitor's rule);
 //   - per program, host and database, the user sessions with a program name that are not pgvigil's own
 //     (PerformanceMonitor's SessionStatsCollector groups): any other session has no key there and falls in the NULL

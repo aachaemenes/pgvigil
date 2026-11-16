@@ -1,5 +1,5 @@
 // Unit rows of the Metrics page's Collection family (metricfam.ts; B6g-4, N30 / N31): hidden until 'Collection Metrics'
-// is ticked, its read cut by its own collection (the sub-series slot: the lead's 07:4x SERIES (a)), its words.
+// is ticked, its read cut by its own collection (the sub-series slot: SERIES (a)), its words.
 //   node web/src/metricfam.test.mjs <tmp>/metricfam.mjs
 let bad = 0;
 let m;
@@ -18,7 +18,7 @@ if (m) {
   call('a family read cut by its own sub-series: the collection family by the collection', () => [m.subSeries('collection', 'sales', 'activity'), m.subSeries('database', 'sales', 'activity'), m.subSeries('sessions', 'sales', 'activity')],
     ['activity', 'sales', 'sales']);
   call('no collection cut: the instance\'s series (the worst collection each hour)', () => m.subSeries('collection', 'sales', undefined), undefined);
-  // the B6g-4 fold (the lead's 14:5x #6 (a)): the empty cut of the Collection family is the worst collection each hour
+  // the B6g-4 fold (#6 (a)): the empty cut of the Collection family is the worst collection each hour
   call('the picker\'s words', () => [m.subWords('collection'), m.subWords('database')],
     [{ noun: 'collection', all: 'the worst collection', label: 'Collection', none: 'the worst collection each hour' },
      { noun: 'database', all: 'all databases (summed)', label: 'Database', none: 'all databases summed' }]);

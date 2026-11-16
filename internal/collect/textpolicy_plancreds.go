@@ -76,7 +76,7 @@ const planStmtCut = 3999
 // maskPlanCredStatements is the statement pass of MaskXML, run over the document as it came in, before the tag pass:
 // each showplan statement (a Stmt... start tag, up to the next one) whose StatementText holds a credential word - or is
 // at the showplan's cut (planStmtCut) or absent (a live plan) and which lists no parameter, the shapes a credential
-// compiled in where no word can be read leaves (the lead 11-16 04:2x / 04:4x: locked down by default, Q15) - has its
+// compiled in where no word can be read leaves (locked down by default, Q15) - has its
 // expression attributes' literals masked
 // (maskPlanLiterals) and the listed values of its auto-parameters and credential-named parameters. The start tags are read as maskXML reads them (nextPlanTag); a tag
 // the text ends inside ends the pass. One pass and no list of tags (a statement at the cut reads ahead to the next
@@ -97,7 +97,7 @@ func maskPlanCredStatements(s string) string {
 		if strings.HasPrefix(tag, "<Stmt") {
 			text, _ := planAttr(tag, "StatementText")
 			// the words; a text cut at the plan's length, or no text at all (a live plan: sys.dm_exec_query_statistics_xml
-			// writes none), with no ParameterList: the words cannot be read (the lead 11-16 04:2x and 04:4x, Q15)
+			// writes none), with no ParameterList: the words cannot be read (Q15)
 			in = planCredWordRE.MatchString(text) || (text == "" || utf16Len(text) >= planStmtCut) && !planListsParams(s, at+e, opens, noEnd)
 		}
 		if in {

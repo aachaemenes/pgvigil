@@ -159,7 +159,7 @@ var Pages = []PageDef{
 
 // gateNote: why a page whose procedure came with a later DBA Dash (Since) is not read - the procedure absent from the
 // repository, or the login without EXECUTE on it - in words that name no source product (task 168: the source is
-// named once, on the import's settings line; the lead 11-15 06:0x); "" to read it (and for every page with no Since)
+// named once, on the import's settings line); "" to read it (and for every page with no Since)
 func gateNote(def PageDef, exists, canExec bool, version string) string {
 	switch {
 	case def.Since == "":

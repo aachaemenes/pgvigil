@@ -11,7 +11,7 @@ import (
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 )
 
-// P3 (task 390b task 14, the lead's 00:2x): the provider's own failover events of the instance itself, handed to 404's
+// P3 (task 390b task 14): the provider's own failover events of the instance itself, handed to 404's
 // restart / failover event (0155's instance_events) by the import, where the provider's word wins (an RDS Multi-AZ DB
 // instance's or a Cloud SQL HA instance's failover reads 'restart' in 0155: its standby runs no engine until it takes
 // over). Read under the same doors as P1 / P2: RDS DescribeEvents is a new call under aws.replicas (its right

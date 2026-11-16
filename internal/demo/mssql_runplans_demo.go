@@ -10,8 +10,8 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 )
 
-// The plans the demo keeps of its SQL Server instances' running queries (mssql_running_plans, task 406; Allen 11-15
-// 06:01: no plan on Running queries). The demo turns the collection on for its SQL Server instances, as an admin's
+// The plans the demo keeps of its SQL Server instances' running queries (mssql_running_plans, task 406; reported:
+// no plan on Running queries). The demo turns the collection on for its SQL Server instances, as an admin's
 // schedules: line would (cmd/pgvigil/demo.go: RunningPlanInstances), and each snapshot sends what the collector sends
 // (internal/mssql/plancache.go runningPlansCollector): the policy row, then one 'running' row per request of the
 // mssql_requests snapshot whose plan meets DBA Dash 4.25.0's plan threshold (CPU 1,000 ms, a grant of 6,400 pages,

@@ -13,7 +13,7 @@ import (
 // TestProbeImportFoldOnAStore (the B24h-1 fold F3: the review of 60991f0e part a #1 and part b #6 / #7 / #9; a box row:
 // PGVIGIL_REPO_TEST_DSN): import_collector_probe on a migrated repository, one transaction rolled back -
 //   - an address a connection opened to (the beat's 'opened') is the host's last answer, probed or not (part a #1, the
-//     lead's 12:4x (a): 'never answered' never stands for a server a connection reached);
+//     call (a): 'never answered' never stands for a server a connection reached);
 //   - a probe row keeps its mode ('scheduled': a round of probe_every_minute, part b #7);
 //   - a probe row older than 8 days goes at the next import (part b #9: no purge() until the join) - the trim reads from
 //     the table's mark (TRIMMARK), so the transaction first clears the probe rows older than 7 days and sets the mark to

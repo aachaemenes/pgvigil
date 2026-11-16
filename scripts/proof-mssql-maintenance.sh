@@ -26,7 +26,7 @@
 #     every database the login can enter, the four procedures and dbo.CommandLog present, each version '2026-09-12
 #     15:02:38' as the file's own line. A second database with dbo.CommandExecute alone -> a partial install naming
 #     what is missing (warning). A database the login cannot enter is named in the 'not installed' row ('not looked
-#     into: <db> (no access)') and does not hold it 'not read' (the departure C1, the lead's 13:3x).
+#     into: <db> (no access)') and does not hold it 'not read' (the departure C1).
 #  O2 the jobs as installed on Linux (ten; no 'Output File Cleanup'): each matched by what its step calls (the
 #     procedure with @BackupType and @Databases, the CommandLog clean-up's DELETE, the two msdb history procedures),
 #     shown under Ola's name; ten 'no enabled schedule' warnings. Schedules added -> ok. One job disabled, one schedule
@@ -410,7 +410,7 @@ sqv "Q5 setup: a command whose password crosses the 4,000th character" "INSERT d
 col mssql_maintenance
 Q5T=$(pq "SELECT right(command, 40) FROM pgvigil.mssql_ola_commandlog WHERE instance_id = $IID AND database_name = 'pgvdba' AND command LIKE 'xxxxxxxxxx%' ORDER BY snapshot_at DESC LIMIT 1")
 # (on the code before the fold the import's own cut takes the end of an unmasked tail: '<masked>'Q5c' - the key's
-# first characters stored, probe sqltb-s4-probeq5): the stored text ends with the masked literal itself
+# first characters stored, probe q5): the stored text ends with the masked literal itself
 eqv "Q5 the command masked before it is cut: the stored text ends with the masked literal (the tail printed when not)" "$([[ $Q5T == *"PASSWORD = '<masked>'" ]] && echo masked || echo "[$Q5T]")" masked
 # Q6 (P3-1): a full backup of a database whose name holds 'Differential', a full and a 40-file differential of pgvp1
 # (its command past 4,000 characters): read through the API's last part in W

@@ -1,6 +1,6 @@
 -- 0162: the optional Extended Events captures of SQL Server (task 411, B18; the collection mssql_xe_captures,
 -- internal/mssql/xe_captures.go, every minute). The sessions are the DBA's to make from the printed script
--- (pgvigil mssql-xe -print -captures ...; Allen Q5); pgvigil never creates, alters or drops one.
+-- (pgvigil mssql-xe -print -captures ...; decision Q5); pgvigil never creates, alters or drops one.
 --
 --   mssql_xe_capture_state   per instance and capture (waits, warnings, warncounts, modules): not installed, stopped or
 --                            running, the target, the events the last read found, the loss (0065's mssql_xe_lost rule)

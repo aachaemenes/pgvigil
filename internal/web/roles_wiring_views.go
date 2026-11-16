@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// B24f's join wiring for rel-viewsb (the lead 11-15 16:3x): its writes' refusal words beside roles.go's routeWhat, and
+// B24f's join wiring for rel-viewsb: its writes' refusal words beside roles.go's routeWhat, and
 // the shared view's admin rule. A personal view is its owner's at any role (it changes nothing others live with: viewer);
 // a shared view's save, rename or delete needs admin (Q2: 'change shared views'), in place of pgvigil.yaml
 // views.shared_editors as 0259 planned. compose/run reads the repository only: viewer.

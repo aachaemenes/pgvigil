@@ -15,7 +15,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
-// N4 (the lead's (c)): a DBA Dash history batch makes PAST months' partitions inside its own call (0134's
+// N4 (decision (c)): a DBA Dash history batch makes PAST months' partitions inside its own call (0134's
 // dbadash_import_months) and had no retry. These rows cut the seam (importBatch) and hold it to: no partition made
 // inside the batch's call, a parent held by another session ends the batch before its transaction ('busy'), a batch a
 // deadlock ended taken again once. Each runs on a database of its own made from PGVIGIL_REPO_TEST_DSN's server.

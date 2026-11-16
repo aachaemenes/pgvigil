@@ -24,7 +24,7 @@ const collPerfCap = 5000
 // sqlCollPerfRows: the Hour rows (an instance, a collection and an hour, summed over the collectors that wrote it) and
 // the Run rows (collection_log's failed and partial runs of the range), newest first, $6 + 1 at most - read by
 // pgvigil.collection_perf_rows (0166), which walks the range newest first and stops at the cap (J5 after the index, the
-// lead's 16:0x (a): the whole-range form aggregated every hour before keeping 5,001 - 96 s at the root for every
+// call (a): the whole-range form aggregated every hour before keeping 5,001 - 96 s at the root for every
 // collection at 2,124 instances x 60 collections x 8 days); its rows sorted again here in the page's own order.
 // TestCollectionPerfCapOrderOnAStore holds it to the whole-range form, row for row.
 var sqlCollPerfRows = `

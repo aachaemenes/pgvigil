@@ -12,10 +12,10 @@
 #                   cache trimmed under the cap's pressure): A6 runs uncapped, in an 8 GB container for the headroom
 #                   (uncapped 2017 used 5.67 GiB at 5,000 sessions)
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-mssql-sessions-wiring.patch (activity.go's grouping sets, web.go,
-#                   mssql_perf.ts, 0190: the lead's files) to this copy when the tree lacks them.
+#                   mssql_perf.ts, 0190: the join's files) to this copy when the tree lacks them.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch.
 #
-# Expected (written before the first run). THE RULE (the lead 09:4x): user / system = sys.dm_exec_sessions.is_user_process
+# Expected (written before the first run). THE RULE: user / system = sys.dm_exec_sessions.is_user_process
 # (1 user, 0 system) over ALL sessions, everywhere on the Connections page; the activity total moves from 'session_id > 50'
 # (PerformanceMonitor's) to all sessions too (docs and a release-note line name the departure).
 #  A. the container: a monitor login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE); three logins

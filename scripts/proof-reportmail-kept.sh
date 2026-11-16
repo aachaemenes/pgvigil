@@ -23,7 +23,7 @@
 #       there already, not a new one; this row checks writable and the reason only.)
 #   K5b a viewer of its own (KVUSER, added '-role viewer' with a fresh jar: part S's U2USER is an admin and disabled by
 #       part K) reads the part writable false with 'needs the admin role' in its reason; its daily_keep 403 with the admin
-#       role's words; nothing kept (B24f, the lead 11-15 12:0x).
+#       role's words; nothing kept (B24f).
 #   K6  the page's keep through the door (op daily_keep as the signed-in user): a row kept_by page, drawn as that user,
 #       next send the next 07:00 UTC; the Report mail door's end of it 409 with the setting's words.
 #   K7  the control on the Daily checks page (a headless Chromium): the line says 'Mail daily: on, next send ...,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof of task 302: where a PostgreSQL server's base backups and WAL go (migration 0148, internal/collect/backup_dest.go's
-# collection backup_dest, the read_tools opt-in in readBackupTool, /api/pg/backup_dest through the lead's wiring,
+# collection backup_dest, the read_tools opt-in in readBackupTool, /api/pg/backup_dest through the wiring,
 # scripts/inv-302-wiring.patch on top of 301's and 304's).
 #
 # Needs: docker (its own PostgreSQL 17, 13 and 18 containers), psql, curl, python3, a go toolchain; and

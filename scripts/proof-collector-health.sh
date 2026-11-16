@@ -66,7 +66,7 @@
 #           member's alert after it.
 #      SL   one slow server: t1 alone through slowp (its own port), t2-t12 direct - t1's own 'slow connect' once on U
 #           and S, no fold, no other instance's; the delay lifted: resolved once.
-#      RT   B24h-1's query round trip through the service (P5a; the lead 11-15 06:1x: READ FROM THE VIEWS - B24h's alert
+#      RT   B24h-1's query round trip through the service (P5a: READ FROM THE VIEWS - B24h's alert
 #           arms are WIRING until the join writes 0300, so nothing is sent; P5b, the alert, runs at that join): t1-t12
 #           dialled through four proxies slowq1-slowq4 (each its own container and address: its own host), three each,
 #           that hold every frontend 'Q' and 'S' (a server answering late); round_trip_time at its default (0.040 s,

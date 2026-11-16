@@ -24,7 +24,7 @@ const word: Record<string, string> = { critical: 'Critical', warning: 'Warning',
 const kind: Record<string, string> = { critical: 'crit', warning: 'warn', 'n/a': '', ok: 'ok' };
 const statuses: [string, string][] = [['critical', 'Critical'], ['warning', 'Warning'], ['na', 'N/A'], ['ok', 'OK']];
 const shows: [string, string][] = [['instance', 'Row per collection per instance'], ['collection', 'Row per collection']];
-// the lead's words (23:2x 11-14) where DBA Dash shows its Import Lag chart
+// the agreed words where DBA Dash shows its Import Lag chart
 export const importLagWords = 'pgvigil writes into the repository inside the run that collected: no queue stands between the two, so there is no import lag (Avg Import is the write\'s own time)';
 const pct = (v: unknown) => v == null ? '' : String(Number(v));
 // ruleWords: the status rule above the grid in the numbers its rows are judged by (the design fold's #9; the review of
@@ -383,7 +383,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       } catch (e) { list.replaceChildren(errorBox(e)); }
     };
     qBox.addEventListener('change', () => void read());
-    // B6g-5 (the lead's 10:2x B6G-5 (a): no second roll-up): the same errors on the Collector errors page - its types,
+    // B6g-5 (B6G-5 (a): no second roll-up): the same errors on the Collector errors page - its types,
     // stages, the service's own failures and Acknowledge Errors (B24o's, DBA Dash's ErrorLog) - this list's scope,
     // collection and window, a row per error
     // the list's window once, for the list and the link alike (the review of B6g part c #9); type=Error: the failed runs

@@ -533,7 +533,7 @@ func pctText(part, whole int64) string {
 // keep their words whatever the read gave.
 
 // notSetStrict: the strict row's words where the key answered without ForceStrict - what was read, no default claimed
-// (no Microsoft page gives the setting's default; the lead's 16:0x call); the page does not count it 'not read'.
+// (no Microsoft page gives the setting's default); the page does not count it 'not read'.
 const notSetStrict = "not set: the key holds no ForceStrict value"
 
 // netKeys are the seven rows' keys, fixed for the checks that judge them.

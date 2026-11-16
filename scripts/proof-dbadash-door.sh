@@ -46,7 +46,7 @@
 #     login with dbo.CollectionHealth_Get's GRANT taken back reads 'page collectionhealth ... sets=0 ... note=not read:
 #     this login has no EXECUTE on dbo.CollectionHealth_Get' (CH9e, the review of B6.2, part b #2), then the GRANT is
 #     given again; on 4.24.1 the screen is not called and says it came with version 4.25.0 (CH9c); neither note names
-#     the source product (task 168; the lead 11-15 06:0x). CH9b (part G, Chromium): the
+#     the source product (task 168). CH9b (part G, Chromium): the
 #     fleet grid's header ('Collection Health' on 4.25.0, 'Collection errors (24hrs)' on 4.24.1) with DBA Dash's own
 #     tooltip, each row's landing by the version, on 4.25.0 the screen's h3 and five h4s and its Collections grid without
 #     the columns DBA Dash hides, on 4.24.1 the 'not read' line alone; a mixed fleet NOT COVERED (one release per rig).

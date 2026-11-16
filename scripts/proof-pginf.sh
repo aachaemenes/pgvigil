@@ -6,7 +6,7 @@
 #
 #   scripts/proof-pginf.sh            the seven rows below, then (PGINF_FULL=1) the whole collect and web packages
 #
-# EXPECTED (written 2026-11-15 15:4x PST before any run):
+# EXPECTED (written before any run):
 #   red  (the tests on pgvigil main 32c7aace's code, rel-pginf's first commit):
 #     TestRowsToMapsJSONValues           FAIL 'the rows do not marshal ... json: unsupported value: NaN'
 #     TestRowsToMapsInfinityLive         FAIL 'the rows do not marshal ... unsupported value: NaN'
@@ -15,11 +15,11 @@
 #     TestQueryJSONValues                FAIL 'query: the table does not marshal ... unsupported value: NaN'
 #     TestPgCellJSONValues               FAIL 'the cells do not marshal ... unsupported value: NaN' (added with the
 #                                        review's fold; red on f22a85b3, whose fix did not reach custom reports' pgCell)
-#   PGINF-2 (migration 0270, written 2026-11-15 15:4x before its run):
+#   PGINF-2 (migration 0270, written before its run):
 #     TestRolesMinusInfinityText         red (the tests on 70f74171): FAIL - role_flags got 'login | login | login,valid
 #                                        until 2026-01-02 03:04 UTC | login' (the non-finite 'valid until' dropped) and
 #                                        the finding's detail got NULL; green (0270): PASS
-#   PGINF-2's review fold (written 2026-11-15 15:4x before its run):
+#   PGINF-2's review fold (written before its run):
 #     TestReportPwageNonFinite           red (on 59a71dd8): FAIL 'the Password age report's PostgreSQL part failed ...
 #                                        cannot convert infinity to integer' (PostgreSQL 18); green: PASS
 #   green (the fix): all seven PASS (counted: a skip or a missing test is a FAIL); PGINF_FULL=1: 'ok   tsc --noEmit' for

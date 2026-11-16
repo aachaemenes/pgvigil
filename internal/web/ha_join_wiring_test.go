@@ -119,7 +119,7 @@ func TestSummaryLogShippingCellOnAStore(t *testing.T) {
 	}
 }
 
-// TestReplicationTabNamesPatroniNoLeader (the wiring review's #8; the rule the lead relays as Allen's: a click lands
+// TestReplicationTabNamesPatroniNoLeader (the wiring review's #8; the rule: a click lands
 // where its cause shows). The Summary's Replication cell counts the overview checks 'replication' and 'patroni' and
 // lands on the instance's Replication tab, which reads GET /api/replication. On a migrated repository
 // (PGVIGIL_REPO_TEST_DSN, skipped without it) a Patroni cluster that two reads 70 s apart find without a leader

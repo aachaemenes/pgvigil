@@ -132,7 +132,7 @@ func TestDemoDoorScope(t *testing.T) {
 		{"an alert of no instance (repository-wide, or its instance removed)", writeScope{Route: doorAck, FindingKey: "k-repo"}, noInstance},
 		{"a key no alert holds", writeScope{Route: doorDismiss, FindingKey: "k-nothing"}, "no alert has this key"},
 		{"a rule that names no instance and no alert", writeScope{Route: doorAck}, "an every-instance change " + wide},
-		// B6g-2 (the lead 11-15 04:2x (iii)): Collection Health's thresholds on the demo door - one demo instance (its
+		// B6g-2 (iii): Collection Health's thresholds on the demo door - one demo instance (its
 		// collection or every collection of it) is carried; the two scopes wider than one instance are refused in words
 		{"a Collection Health threshold of a demo instance's collection", scopeOfCHThreshold(map[string]any{"instance_id": "1", "collection": "activity"}), ""},
 		{"a Collection Health threshold of every collection of a demo instance", scopeOfCHThreshold(map[string]any{"instance_id": "1"}), ""},

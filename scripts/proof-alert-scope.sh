@@ -8,15 +8,15 @@
 #                      the end. Not dropped: the cluster-wide group roles `pgvigil migrate` makes (pgvigil_collector,
 #                      pgvigil_reader, pgvigil_alerter, pgvigil_auth).
 #   The proof builds two binaries from a copy of this tree (go build): BIN with scripts/proof-alert-scope-wiring.patch
-#   applied (the lead's lines in 0190 and web.go; skipped when the tree already holds them), and BIN0, the same tree
-#   without 0154, for part M's second store. A tree that holds the wiring in a join's own words (the j16 join: POST
+#   applied (the join's lines in 0190 and web.go; skipped when the tree already holds them), and BIN0, the same tree
+#   without 0154, for part M's second store. A tree that holds the wiring in a join's own words (the join: POST
 #   /api/alertwindows through s.post, 0300 re-creating alert_due whole after 0154; one line of each of the patch's 12
 #   hunks is looked for) builds BIN as it is and no BIN0: part M's store 2 is then NOT PROVEN, because such a tree
 #   without 0154 is not the unwired tree and no store meets 0154 after the join file (both arrive with v0.4.0).
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on the base 6178b52 the build has no 0154 and part M fails):
-#  M. migration order (the lead 22:4x: until v0.4.0 the join edits 0190 in place; a store already at 0190 is rebuilt or
+#  M. migration order (until v0.4.0 the join edits 0190 in place; a store already at 0190 is rebuilt or
 #     has 0190's functions re-created by hand at the join). Store 1, migrated fresh by BIN (the wiring applied to its
 #     tree): 0154 applied BEFORE 0190 (schema_version.applied_at); alert_due's definition calls alert_hold and
 #     alert_checks_match and no longer ack_hold; purge's names findings_history and greatest(p_days, 90). Store 2,
@@ -151,7 +151,7 @@ TREE=$WORK/tree; TREE0=$WORK/tree0; mkdir -p "$TREE" "$TREE0"
 tar --exclude=./.git --exclude=./web/node_modules --exclude=./bin -cf - . | tar -xf - -C "$TREE"
 (cd "$TREE" && tar -cf - .) | tar -xf - -C "$TREE0"   # BIN0: the tree as the branch holds it (unwired), without 0154
 rm -f "$TREE0/internal/repo/sql/0154_alert_scope.sql"
-# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the j16 join's B24F-JOIN-WIRING routes POST
+# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the join's B24F-JOIN-WIRING routes POST
 # /api/alertwindows through s.post, so the patch neither applies nor reverses there): one line of each hunk, as text
 joined_wiring() { local f s
   while read -r f s; do grep -qF -- "$s" "$1/$f" || return 1; done <<'EOF'

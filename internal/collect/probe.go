@@ -36,7 +36,7 @@ type beatProbe struct {
 	Answered *int      `json:"answered"`
 	MsSum    int64     `json:"ms_sum"`
 	MsMax    int       `json:"ms_max"`
-	// a round of probe_every_minute (the review of B24h-1 part b #7, the lead's 12:4x (a)): ping slow and not answering
+	// a round of probe_every_minute (the review of B24h-1 part b #7 (a)): ping slow and not answering
 	// judge such rows only - the default mode's probes after a failure feed the parent's words
 	Scheduled bool `json:"scheduled"`
 }

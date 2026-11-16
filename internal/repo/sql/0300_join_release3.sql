@@ -350,7 +350,7 @@ SELECT s.instance_id, s.severity, s.check_name AS setting, s.object AS value, tr
 --   #8 H KITWATCH 32460ec2: scripts/kitwatch-join-lines.sql L6-10 - after collector_findings' arm
 --   #9 H B24e f6f83845: scripts/b24e-join-lines.sql L5-11 - after collector_findings' arm (after KITWATCH's)
 --   #10 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L5-7 (line 1) - after B24e's (the collector's own arms)
---   #11 H 409-410 03f74d79: review A #9 (02:50) - the comment names 0190's mssql_checks_findings
+--   #11 H 409-410 03f74d79: review A #9 - the comment names 0190's mssql_checks_findings
 --   #12 H the join 0300 --------: the 18 tests: TestCollectorFindingsReadsItsArms - B24e's arm reads its own view (collector_secret_findings) in place of the inline source
 --   merge conflict at arm #3 (404), block 1, resolved by hand: both arms: the base's 301 / 304 arms, then 404's
 -- ====================================================================================================================
@@ -1049,7 +1049,7 @@ BEGIN
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
   -- [#2 B24H-STREAKS c937e891]
   -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
-  -- its streak rows when its last run's row goes below (the lead's 11-15 19:2x: the trim above takes only the beating
+  -- its streak rows when its last run's row goes below (the trim above takes only the beating
   -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0 - with no
   -- other collector beating meanwhile its rows stay, and import_collector_streaks leaves them out). The guard reads only
   -- the heartbeat rows, so a beat with no host leaving pays nothing for it. The beats of the minute the guard turns
@@ -2532,7 +2532,7 @@ END $$;
 --   #E2 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L34-35 (line 4). B24H's 0254 inserts round_trip_time and
 --       ping_time with no engines value (its branch has no 0142); on the joined tree 0142's DEFAULT '{postgres}' applies, so
 --       import_pg_threshold refuses them at a SQL Server instance ('no PostgreSQL instance'). Line 4 asked for them there
---       (at the instance level); in the HA candidate's engines model that is this row, not a code line (the lead 00:3x: taken).
+--       (at the instance level); in the HA candidate's engines model that is this row, not a code line (taken).
 --       The engines list from B24h's own code and docs (c937e891): b24h-join-lines.sql L34-35 ('a SQL Server instance's own
 --       level takes B24h's keys too'); internal/repo/sql/0254_probe.sql L136 + L144 (collector_probe_thresholds: the two keys in
 --       force for EVERY active instance, read from pgvigil.instances with no engine filter); docs/alerts.md L102-103 (settable per
@@ -2562,7 +2562,7 @@ ALTER TABLE pgvigil.alert_rule_state ADD CONSTRAINT alert_rule_state_state_check
 COMMENT ON VIEW pgvigil.darling_alert_findings IS 'PerformanceMonitor''s alert defaults as findings (task 177 D30, task 405): dead tuples, slot WAL, a volume under 5 GB free, the runnable queue per scheduler, long-running requests, a server unreachable, the PostgreSQL poison wait.';
 
 -- ====================================================================================================================
--- actions_log's three CHECKs, re-created once with every slice's kinds (the lead's 03:3x)
+-- actions_log's three CHECKs, re-created once with every slice's kinds
 --   #E1 base 40762a29 0157_qs_plans.sql L454-459: postgres cancel terminate explain_analyze hypo_index job_stop job_start;
 --       sqlserver kill job_start job_stop plan_evict; no pid explain_analyze hypo_index job_start job_stop plan_evict
 --   #E1 H INV(301b) 4c155a56: 0191_backup_history.sql L413-420 and scripts/inv-301b-join-lines.sql L21-25 (line 3):

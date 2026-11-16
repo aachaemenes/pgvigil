@@ -75,7 +75,7 @@
 #     instance engine sqlserver.
 #  L  internal/web TestST6FencesLive (go test, the live variables set): a custom report runs as the documented login,
 #     is refused naming ALTER ANY CONNECTION for the login with it and refused for a sysadmin; community tools let
-#     the ALTER ANY CONNECTION login in and refuse the sysadmin (the lead's 12:5x: they keep openMS's check alone).
+#     the ALTER ANY CONNECTION login in and refuse the sysadmin (they keep openMS's check alone).
 #  NOT PROVEN here: SQL Server on Windows (Linux containers), Azure SQL Database / Managed Instance / Amazon RDS (the
 #     rights reads differ there), a write through an existing linked server whose mapping holds remote rights (named in
 #     docs/custom.md, not stopped), the check left in another principal's context (unreachable: the fence refuses

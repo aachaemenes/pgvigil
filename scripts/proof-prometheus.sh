@@ -5,7 +5,7 @@
 # sha256sums.txt checked) gives promtool and the scrape. Box only (dba-lab-box), never the laptop.
 #   PGVIGIL_ADMIN_DSN   the box's PostgreSQL as its owner (a database is made and dropped)
 #   PROM_SCALE          instances of the P8 scale run (default 1000; 0 = P8 NOT PROVEN)
-# Expected (written 2026-11-15 02:1x PST before any run; red on pgvigil main ebf9a9c, which has no /metrics):
+# Expected (written before any run; red on pgvigil main ebf9a9c, which has no /metrics):
 #   P1 off       serve with no doors: GET /metrics 404 naming doors.prometheus_metrics, never the page shell
 #   P2 start     doors on under -no-login without metrics.token: serve exits non-zero naming metrics.token; a token file
 #                of 10 bytes: exits naming '32'; env:NAME of an unset variable: exits; a 40-byte token: starts
@@ -33,7 +33,7 @@
 #   P10 rotate   the token file rewritten while Prometheus scrapes every 5 s, the OLD token read 200 right after the
 #                rewrite, credentials_file changed 3 s later: min_over_time(up[90s]) == 1 a minute later (the window
 #                holds the scrapes that sent the old token: no refused scrape)
-# Amended 2026-11-15 04:5x PST by the build review's fold, before any run: P2 greps each refusal's own words; P4 waits
+# Amended by the build review's fold, before any run: P2 greps each refusal's own words; P4 waits
 # for a render after the odd server's insert (P6's way); P5 reads psql's CSV (a name with a line feed) and leaves the
 # odd server out of its four-value check; P6 checks the instance was there before; P8 needs 20 x PROM_SCALE series
 # at least, every one of the 8 scrapes a body, and says NOT PROVEN when the seeded data is not fresh (and that

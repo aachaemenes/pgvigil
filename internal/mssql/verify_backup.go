@@ -2,7 +2,7 @@ package mssql
 
 // verify_backup (task 301b, dbachecks' Database#6): RESTORE VERIFYONLY of one backup set through the actions door - off
 // unless the instance has an actions_dsn AND its actions: list names verify_backup, and off by default in the site's
-// switch list (the lead's O1): it gives the actions login CREATE DATABASE, so that login can restore a copy of any
+// switch list (decision O1): it gives the actions login CREATE DATABASE, so that login can restore a copy of any
 // database whose backup file the SQL Server service account can read (probe 301bP1: both forms of the right do it, the
 // copy owned by the login). VERIFYONLY itself creates no database and writes no restorehistory row (301bP1).
 //

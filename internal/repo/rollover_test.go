@@ -155,7 +155,7 @@ CREATE EVENT TRIGGER n4_made ON ddl_command_end WHEN TAG IN ('CREATE TABLE') EXE
 	}
 }
 
-// TestRolloverCycleCannotForm: rel-j15dl's cycle on real months. tx1 holds a shared query_text row; the Repo's import
+// TestRolloverCycleCannotForm: the deadlock cycle on real months. tx1 holds a shared query_text row; the Repo's import
 // into next month waits on it - holding no lock at SHARE UPDATE EXCLUSIVE or stronger on any relation, read from another
 // session while it waits - and tx1's own import into this month then commits without a wait on the parent: no
 // deadlock, no retry (no WARN), both rows stored. Red on a tree whose Migrate makes no month ahead: the import holds

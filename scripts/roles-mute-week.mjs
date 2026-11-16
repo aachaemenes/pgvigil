@@ -1,4 +1,4 @@
-// The 7-day end an operator picks in a dialog (task B24f; the lead 11-15 19:3x, review-20 jw1 S1, review-21), over a
+// The 7-day end an operator picks in a dialog (task B24f, review-20 jw1 S1, review-21), over a
 // headless Chromium (CDP): signed in as an operator, the page's clock 60 s AHEAD of the server's, two dialogs with
 // their 7-day choice picked and saved on one PostgreSQL instance - the instance header's Silence (its Summary, 'until'
 // 7 days) and the Alerts page's New mute rule ('until' 7 days after the start, start at once). The server measures

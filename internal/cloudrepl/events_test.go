@@ -48,7 +48,7 @@ func (f *fakeEvents) DescribeEvents(_ context.Context, in *rds.DescribeEventsInp
 	return out, nil
 }
 
-// P3 (task 390b task 14, the lead's 00:2x): the provider's own failover events. RDS DescribeEvents for the aws: block's
+// P3 (task 390b task 14): the provider's own failover events. RDS DescribeEvents for the aws: block's
 // DB instance (SourceType db-instance, EventCategories failover, the last 2 hours, every page): RDS-EVENT-0013 'Multi-AZ
 // instance failover started.' and 0049 'Multi-AZ instance failover completed.' (and 0015's complete, 0050 / 0051's
 // activation) are a failover's phases; 0034's 'Abandoning user requested failover' is none; AccessDenied names the

@@ -9,7 +9,7 @@ package mssql
 // What the script holds to (the design's C13-1..10 as the design pass folded them):
 //   - it stops with words, before anything else, where Agent alerts cannot be made: Express, Azure SQL Database,
 //     Managed Instance (sp_add_alert raises 41914 there), Azure SQL Edge, Amazon RDS (rdsadmin present), SQL Server on
-//     Linux (Microsoft lists Agent alerts among its unsupported features; the lead's 00:1x; read through @@VERSION,
+//     Linux (Microsoft lists Agent alerts among its unsupported features; read through @@VERSION,
 //     which every version has - sys.dm_os_host_info came in SQL Server 2017), and a login
 //     that is not sysadmin (sp_verify_alert, error 15003: Cloud SQL and RDS give no login that role). The stop is its
 //     own first batch, so its words print before a later batch's msdb reference is compiled;

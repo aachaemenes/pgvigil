@@ -1,4 +1,4 @@
--- B9c (migration 0194, above 0190): the lines for the next join's own file 0300_join_release3.sql (the lead's 03:3x:
+-- B9c (migration 0194, above 0190): the lines for the next join's own file 0300_join_release3.sql (
 -- the actions_log CHECKs = BOTH - 0194 keeps widening them so this branch's proof accepts its actions, and 0300
 -- re-creates each CHECK ONCE with every slice's actions, so a list a later file failed to copy cannot drop one). Not a
 -- migration of its own; the record of what the join places.

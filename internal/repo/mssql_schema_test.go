@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// 0267 re-creates 0058's import_schema whole with ONE arm (A26, the lead's 14:4x S10): with that arm taken back out,
+// 0267 re-creates 0058's import_schema whole with ONE arm (A26 S10): with that arm taken back out,
 // 0267's function is 0058's, character for character - an edit of either that the other does not carry fails here.
 func TestImportSchema0267Is0058PlusTheGoneArm(t *testing.T) {
 	body := func(file string) string {

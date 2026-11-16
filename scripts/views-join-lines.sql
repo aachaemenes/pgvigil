@@ -1,4 +1,4 @@
--- views-join-lines.sql: the lines VIEWS slice C needs in an object another migration owns, for the lead to place at
+-- views-join-lines.sql: the lines VIEWS slice C needs in an object another migration owns, to be placed at
 -- the join (rel-views-a; the panel compiler internal/web/compose.go reads metric_catalog.grain).
 --   metric_catalog (0085's view): re-created whole with one column appended, grain (rate | ratio | interval_count |
 --   gauge); CREATE OR REPLACE VIEW keeps every existing column, name and order, so 0085's readers are unchanged.

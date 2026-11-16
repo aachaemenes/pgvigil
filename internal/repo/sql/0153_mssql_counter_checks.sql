@@ -15,7 +15,7 @@
 --   - the buffer cache hit ratio warns under 90 with no critical (a weak signal: D4).
 --   - page life expectancy is judged per 4 GB of the lowest memory node's database pages (300 s per 4 GB, D5 / F19).
 --   - the other ratios under their denominator's floor are 0 (0152's metric_points); the per-batch ratios and full
---     scans per search are NOT JUDGED under a floor (0152's metric_floors, the lead's 19:4x): SQL Server's own
+--     scans per search are NOT JUDGED under a floor (0152's metric_floors): SQL Server's own
 --     telemetry (SQLServerCEIP) runs 2-3 batches a second and pushed compilations to 139.7 per 100 batches and full
 --     scans per search to 0.0128 on the proof's quiet container (chk13), over both seeds' critical.
 --   - SQLWATCH CHK#32 judges kill-connection and database-offline errors summed (critical above 1); here each is its own
@@ -101,11 +101,11 @@ SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 --     'pgvigil', a pgvigil departure). The attention's duration is the time the interrupt itself took: 30 real client
 --     timeouts on the box (402full3, 11-15) took 255-713 us each, so PerformanceMonitor's floor on every event (#7061)
 --     would leave every real timeout out; the floor keeps to the noise PerformanceMonitor names (a cancel of a command
---     that had already finished carries no statement: the lead's 11-15 F1 FLOOR (a)). 'No statement' is has_text false,
+--     that had already finished carries no statement: decision F1 FLOOR (a)). 'No statement' is has_text false,
 --     else, for a row stored before the flag (NULL), a blank stored statement.
 --   mssql_attentions.has_text  whether the server sent the event's statement, recorded by the collector before the
---     instance's text policy runs (query_text none stores no statement and keeps the flag; the flag holds no text: the
---     lead's 11-15 F1 FLOOR EDGE (1)); set by import_mssql_xe, wrapped here the way 0116 wraps it.
+--     instance's text policy runs (query_text none stores no statement and keeps the flag; the flag holds no text: decision
+--     F1 FLOOR EDGE (1)); set by import_mssql_xe, wrapped here the way 0116 wraps it.
 --   mssql_attention_points(instance, from, to)  per done read R of a running session in (from, to]: the base B = the
 --     newest done read at or before R - 3 minutes, else the oldest done read before R (a short history), both within
 --     the 60 minutes before R (PerformanceMonitor's ReadLookbackMinutes: after a gap the first read back gives no point
@@ -113,7 +113,7 @@ SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 --     greatest(1, the minutes from B to R), rounded to 2 places - the counted rows scaled to the event_counter's exact
 --     change over (B, R] (PerformanceMonitor's judged count: the change times the counted share of the stored rows; the
 --     whole change when no row was stored; the stored rows alone when a counter is missing or went down, the session
---     made again: the lead's 11-14 22:4x, F1 S3); client_timeouts_left_out_per_min the same for the rows left out. Each stored row is judged once, its counts summed per read that stored it, then per span. A read
+--     made again: F1 S3); client_timeouts_left_out_per_min the same for the rows left out. Each stored row is judged once, its counts summed per read that stored it, then per span. A read
 --     that was not done only widens the next span; its stored rows count there.
 -- The departures: a rule's 'above' is strict and PerformanceMonitor's bars are '>=' (the seed's 9.999 / 59.999, on a
 -- rate rounded to 2 places as PerformanceMonitor rounds it: 9.995 reads 10.00 and fires); the

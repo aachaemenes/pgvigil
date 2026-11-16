@@ -1,4 +1,4 @@
--- B6G-N's lines for the joined objects (the lead's 03:3x join-file rule; the lead's 15:3x B6G-N): 0166 creates B6g's own
+-- B6G-N's lines for the joined objects (join-file rule B6G-N): 0166 creates B6g's own
 -- objects (collection_metric_values, collection_worst); the next join (0300_join_release3.sql) re-creates each object
 -- below WHOLE with these lines in it. Not a migration: never applied by `pgvigil migrate` (scripts/ is not embedded).
 

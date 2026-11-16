@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestCollectionWorstOnAStore (B6G-N, the lead's 15:3x: 'an alert that names nothing sends the DBA hunting'; a box row:
+// TestCollectionWorstOnAStore (B6G-N: 'an alert that names nothing sends the DBA hunting'; a box row:
 // PGVIGIL_REPO_TEST_DSN): a Collection-family rule that names no collection watches the instance's series - each hour's
 // worst collection - so its alert's detail names the worst collection of its newest hour. alert_rule_findings is 0085's
 // view, re-created whole at the join with scripts/b6g-join-lines.sql's line: until then PGVIGIL_B6G_DRAFT names the

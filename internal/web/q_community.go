@@ -393,7 +393,7 @@ type toolState struct {
 	// a demo instance only: the tool's stored sample (GET /api/community/sample has its result sets)
 	Sample *sampleMark `json:"sample,omitempty"`
 	// KITWATCH K4.3: the version installed here (mssql_kits' daily read of the definitions; the page's database, else
-	// master) beside the one pgvigil was checked against - its own key: 'version' is the page-time read above (j16)
+	// master) beside the one pgvigil was checked against - its own key: 'version' is the page-time read above
 	KitVersion *kitVersion `json:"kit_version,omitempty"`
 }
 

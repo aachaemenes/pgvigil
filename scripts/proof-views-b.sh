@@ -13,7 +13,7 @@
 # view needs the admin role, the key no longer decides):
 #  T  slow/groups (curl, u1): top=1000 answers 200 at fleet scope; top=all answers at most 5,000 groups and says when the
 #     cap cut; top=1001 -> 400 in words. The ALL read at fleet scope over the 7 seeded days is TIMED and printed (the
-#     lead 14:2x: over 2 s = said as a finding, not a failure) with its payload's bytes.
+#     rule: over 2 s = said as a finding, not a failure) with its payload's bytes.
 #  W1 Summary: u1 ticks Focused View, Save as 'f1' (Only me, Load by default); opens Slow Queries, clicks the Summary tab
 #     -> f1 DRAWN: the instance grid holds only rows with a warning or a critical status, the address has focus=1 and
 #     view=<f1>, the button reads 'View: f1'. W1b localStorage focus=1, an address without keys, Save as 'f1b' (no

@@ -873,7 +873,7 @@ func (s *Server) CustomReports(w http.ResponseWriter, r *http.Request) {
 		Store string `json:"store,omitempty"`
 		// Can is what the session's role may do (B24f): a run is open to every role, a save, move or delete needs admin
 		Can map[string]bool `json:"can"`
-		// StoreText: the lead's T3 (TEXT-NOW) - a store report is the admin's own door: said while any instance's
+		// StoreText: decision T3 (TEXT-NOW) - a store report is the admin's own door: said while any instance's
 		// query_text policy is not full
 		StoreText string `json:"store_text,omitempty"`
 	}

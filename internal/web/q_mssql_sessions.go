@@ -24,7 +24,7 @@ import (
 //                      that policy now (TEXT-NOW's stmt rule at read), none under 'none'
 //          top_window  the window the top read and whether a longer one was cut to its newest 7 days
 //          policy      as above
-//        One user / system rule on every part: sys.dm_exec_sessions.is_user_process over all sessions (the lead 11-15).
+//        One user / system rule on every part: sys.dm_exec_sessions.is_user_process over all sessions.
 //                                                                                          -> Server.MSSQLSessions
 
 const sqlMSSQLSessionsTop = `

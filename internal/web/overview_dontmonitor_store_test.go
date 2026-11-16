@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestOverviewCollectionFailingDontMonitorOnAStore (B6g-2, the lead's 07:4x DONT-MONITOR (a); a box row:
+// TestOverviewCollectionFailingDontMonitorOnAStore (B6g-2 DONT-MONITOR (a); a box row:
 // PGVIGIL_REPO_TEST_DSN): the overview's daily check 'collection failing' leaves out a collection its Collection Health
 // threshold sets Don't monitor - as 0121's finding arm does - and lists it again under a level that monitors it. One
 // transaction rolled back: a threshold over every instance would reach the other packages' store rows.

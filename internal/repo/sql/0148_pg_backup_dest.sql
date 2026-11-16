@@ -216,7 +216,7 @@ SELECT r.instance_id, 'info', 'backup tool read off', r.tool || ' ' || r.name,
  WHERE r.state = 'off'
 UNION ALL
 -- 162's base-backup listing kept off by the same opt-in (F1): its tool row is 'not_read', so the base backups are not
--- judged - the Summary's Backup cell maps this info finding to grey, never green (the lead's map)
+-- judged - the Summary's Backup cell maps this info finding to grey, never green (the agreed map)
 SELECT t.instance_id, 'info', 'base backups not read', t.tool || ' ' || t.name,
        'the server names ' || t.tool || ' ' || t.name || '; its base backups are listed only with backups: read_tools: true, so they are not judged', t.snapshot_at
   FROM pgvigil.pg_backup_tools t JOIN pgvigil.instances i ON i.instance_id = t.instance_id AND i.is_active

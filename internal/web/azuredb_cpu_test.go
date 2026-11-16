@@ -139,7 +139,7 @@ func TestAzureDBCPUOnAStore(t *testing.T) {
 		t.Errorf("Performance Summary on SQL Server: %q, want 2 samples, 62.5, 95 and its own buckets (30 and 95)", got[ss])
 	}
 
-	// B2a-N2 (the lead's Q3: the CPU series to hours past 1 day only): two more minutes (base+3, base+6, a sample each);
+	// B2a-N2 (decision Q3: the CPU series to hours past 1 day only): two more minutes (base+3, base+6, a sample each);
 	// a 6-hour window at a 3-minute step reads the minutes - three points (base, base+3, base+6), never the one hour row
 	// at base that a window read for any length gives; a 25-hour window steps whole hours and reads the hour: one point,
 	// its average the four minutes' weighed by samples, (10 x 4 + 40 x 2 + 50 + 70) / 8 = 30

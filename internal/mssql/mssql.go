@@ -680,7 +680,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
 		// the HADR thresholds are configuration, not collected rows: a plain error in the hour (its log row's stage is
-		// 'import', the repository's side; the lead 11-15 11:2x)
+		// 'import', the repository's side)
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
@@ -792,8 +792,8 @@ const sessionCostTimeout = 10 * time.Second
 // sessionCost reads the run's own cost at its end: cpu_time in ms and logical_reads of the run's session. A run holds
 // ONE connection from its connect to its close (Connect: one *sql.Conn of a pool of one), so the session's totals are
 // the run's. The read is made on a context of its own within sessionCostTimeout (a run's context may be over by then).
-// A run cut by its own timeout is NOT read: the driver dropped the connection with its statement (the lead 11-15
-// 11:2x: said, not worked around in v0.4.0). nil, nil = not read (the connection is gone, a NULL, no row): never a
+// A run cut by its own timeout is NOT read: the driver dropped the connection with its statement (said,
+// not worked around in v0.4.0). nil, nil = not read (the connection is gone, a NULL, no row): never a
 // zero that would read as 'no CPU'.
 func sessionCost(ctx context.Context, conn *sql.Conn) (cpuMs, reads *int64) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCostTimeout)

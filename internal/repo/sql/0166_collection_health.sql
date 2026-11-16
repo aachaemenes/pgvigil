@@ -132,7 +132,7 @@ ALTER TABLE pgvigil.collection_health_hour
   ADD COLUMN IF NOT EXISTS cpu_ms_max int NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS reads_sum bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS collection_health_hour_instance ON pgvigil.collection_health_hour (instance_id, hour);
 -- one collection's rows across the fleet (the Collection Performance report and the Collection family at the root): J5
--- (the review of B6g-3 #6, the lead's 13:3x rule) read 'activity' over 8 days at 2,124 instances x 60 collections in
+-- (the review of B6g-3 #6) read 'activity' over 8 days at 2,124 instances x 60 collections in
 -- 5,398 ms without it - every hour row read (742,756 buffers) for 1 in 60. Its cost on the beat's upsert is in the DONE.
 CREATE INDEX IF NOT EXISTS collection_health_hour_collection ON pgvigil.collection_health_hour (collection, hour);
 
@@ -178,7 +178,7 @@ BEGIN
    -- raises runs or skipped, so a change is never missed, and a lost beat still differs from the stored row
    WHERE (h.runs, h.skipped) IS DISTINCT FROM (EXCLUDED.runs, EXCLUDED.skipped);
   GET DIAGNOSTICS n = ROW_COUNT;
-  -- B6f7 #2 (the lead's 07:2x (a)): the beating run's host - its judged instances running long there stamped since now
+  -- B6f7 #2 (a): the beating run's host - its judged instances running long there stamped since now
   -- (kept while they stay long), the others unstamped; collection_runs_long_forming reads the stamps. A host with no
   -- unretired run left loses its stamps.
   -- In its own sub-block (B6f9 #2): a failure there is a WARNING and the hour rows above are kept; one host's runs
@@ -264,7 +264,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS collection_health_threshold_live
 -- instance), collection (none = every collection), and for a set the columns it gives}; answers {outcome: done |
 -- refused, detail, threshold_id}. A set of no column, a value out of its range, an unknown or inactive instance, an
 -- inherit of a scope with no row of its own: refused in words, nothing written.
--- collection_dont_monitor (B6g-2, the lead's 07:4x DONT-MONITOR (a)): whether a collection of an instance is set Don't
+-- collection_dont_monitor (B6g-2 DONT-MONITOR (a)): whether a collection of an instance is set Don't
 -- monitor - resolved as collection_health()'s th CTE resolves it (this instance and collection, this instance, this
 -- collection on every instance, everything, then false: keep the two in step). 0121's 'collection failing' arm and the
 -- overview's check of the same name leave such a collection out; 0121 holds a stub of it for its view's sake
@@ -557,10 +557,10 @@ $$;
 
 -- the error list of the Collection Health page (B6.2: one instance and collection, or one collection over a scope,
 -- between two times): its errors only. collection_log is a plain table (0001), so this build holds its writes for its
--- length at the upgrade - measured at 10M rows on the box before it is kept here (the lead's 23:2x call)
+-- length at the upgrade - measured at 10M rows on the box before it is kept here
 CREATE INDEX IF NOT EXISTS collection_log_errors_idx ON pgvigil.collection_log (instance_id, collection, snapshot_at) WHERE status = 'error';
 
--- B6.4 (DONE-3, the lead's 23:4x calls): pgvigil's own health findings, each a view in the findings' columns; each is
+-- B6.4 (DONE-3 calls): pgvigil's own health findings, each a view in the findings' columns; each is
 -- an arm of 0190's pgvigil.findings (a WIRING line there: this file never redefines what 0190 defines).
 
 -- 'collection runs long' (CHK#38 / OVW#140; source 'pgvigil collector', per instance and collection): over the current
@@ -584,7 +584,7 @@ SELECT h.instance_id,
  GROUP BY h.instance_id, h.collection
 HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 
--- 'collections run long' (B6.4 #4, the lead's 03:2x (a) and 04:2x (i)-(iii); source 'pgvigil repository', the value the
+-- 'collections run long' (B6.4 #4 (a) and calls (i)-(iii); source 'pgvigil repository', the value the
 -- collector's HOST): a host slow while its runs succeed (CPU-starved) forms no 'collector or network' parent, so each
 -- of its instances would send its own 'collection runs long' - one alert per host instead, on the slow-connect fold's
 -- shape (0121 collector_slow_folds). Over the finding's own window (the current and the previous UTC hour) and the
@@ -598,7 +598,7 @@ HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 -- term, 0190 WIRING, through collection_runs_long_held); one above it is sent on its own, and a new one waits while 3
 -- or more of the host's instances turned long within its span and a minute (collection_runs_long_forming). Its alert is
 -- not resolved while the host's own 'collector or network' stands (alert_due). An arm of 0190's pgvigil.findings
--- (WIRING). What is judged (B6f7, the review of the fold; the lead's 07:1x / 07:2x / 07:5x calls; B6f10): the host's
+-- (WIRING). What is judged (B6f7, the review of the fold and its calls; B6f10): the host's
 -- runs not retired, and the host only while a run of it beat within its span + 3 minutes (a stopped, retired or renamed
 -- host folds nothing from its old rows); never an instance a 'collector or network' holds now (collector_held_instances,
 -- as collector_connects: a cut slows the runs it does not fail); and no NEW fold for a host whose 'collector or network'
@@ -627,7 +627,7 @@ WITH w AS (
   SELECT date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 hour' AS start
 ), stood AS MATERIALIZED (   -- the hosts whose 'collector or network' stood inside the window, each with the time the
                              -- sender has for it: sent on a configured channel (since = its first send), or held
-                             -- unsent by a mute (ack_suppressed, the lead's 07:5x; since = that mute's FIRST hold of
+                             -- unsent by a mute (ack_suppressed; since = that mute's FIRST hold of
                              -- this host's parent, however long ago - first_at never moves, B6f12 #2). A cut ending
                              -- just before an hour's edge leaves its last slowed run in the next hour, so the parent
                              -- counts for 10 minutes past its end: a hold seen up to 10 minutes before the window
@@ -657,7 +657,7 @@ WITH w AS (
      AND (f.missing_since IS NULL
           OR EXISTS (SELECT 1 FROM stood t WHERE t.host = f.value AND t.since <= f.missing_since + interval '5 minutes'))
 ), hb AS (    -- the host's runs not retired; the host beating; and no 'collector or network' of it inside the window,
-              -- unless the host's fold's alert is not cleared: that fold keeps being judged (B6f9 #1, the lead's 07:5x
+              -- unless the host's fold's alert is not cleared: that fold keeps being judged (B6f9 #1
               -- (a); B6f10 #1), the instances a parent holds still left out below
   SELECT h.collector_id, h.host
     FROM pgvigil.collector_heartbeat h
@@ -687,7 +687,7 @@ SELECT r.host, r.instance_id, max(r.at) AS at,
   FROM pgvigil.collection_runs_long_rows r
  GROUP BY r.host, r.instance_id;
 
--- collection_runs_long_since (B6f7 #2, the lead's 07:1x / 07:2x (a)): per host and judged instance running long there,
+-- collection_runs_long_since (B6f7 #2 (a)): per host and judged instance running long there,
 -- since when - stamped and unstamped by the beat's door for the beating run's host (import_collection_health): the
 -- forming wait reads it (collection_runs_long_forming). A host's rows go once no run of it is left unretired.
 CREATE TABLE IF NOT EXISTS pgvigil.collection_runs_long_since (
@@ -767,7 +767,7 @@ SELECT mc.key::int AS instance_id,
 
 -- 'alert sender idle' (CHK#35; source 'pgvigil repository', no instance): alert channels configured (a contact's route is
 -- not one) and the rules last judged more than 180 s ago - ONE number with the Alert rules page's line (alert_rules.ts
--- 'ago > 180'). Only while a live run says it sends (its beat's sends_alerts: B6.2 part c #3, the lead's 03:2x) - never
+-- 'ago > 180'). Only while a live run says it sends (its beat's sends_alerts: B6.2 part c #3) - never
 -- when no collector beats ('collector not seen' is the cause then: the sender runs inside pgvigil run), nor when every
 -- live run has no channel (alerts turned off on purpose), nor before the sender's first pass (the page says so in
 -- words). A scheduled 'pgvigil alerts' beside runs with no channel beats nothing: its stop raises no finding. SHOWN, NEVER SENT: 0190's alert_findings leaves
@@ -833,13 +833,13 @@ SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'repository autova
  WHERE v.n_dead_tup > v.trigger_at
    AND (v.last_vac IS NULL OR v.last_vac < now() - interval '24 hours');
 
--- ===== B6g-4 (N30 / N31, design L12 / L56; the lead's 07:4x SERIES (a)): the Metrics family 'collection' =====
+-- ===== B6g-4 (N30 / N31, design L12 / L56 SERIES (a)): the Metrics family 'collection' =====
 -- The collection counters chartable and alertable, as DBA Dash's: per collection (the sub-series slot 'database' carries
--- the collection; the instance's series is the worst collection each hour: the B6g-4 fold, the lead's 14:5x (a) #6 - a
+-- the collection; the instance's series is the worst collection each hour: the B6g-4 fold (a) #6 - a
 -- rule naming no collection watches that series, so its run may pass from one collection to another hour by hour, and
 -- its alert's detail names the worst collection of its newest hour (B6G-N: collection_worst below, read by
 -- alert_rule_findings' line in scripts/b6g-join-lines.sql from the next join) - an alert of its own for each collection
--- is a rule per collection (the lead's 15:3x (b));
+-- is a rule per collection (b);
 -- a 'below' rule must name one, the worst being the highest), from the hour rows (one
 -- point an hour, stamped at the hour's END so two points are exactly 60 minutes apart and an hourly collection's
 -- 60-minute rule never turns on a few ms of ticker jitter: #2 - so a failure at 10:17 is 'beyond since 11:00', and a
@@ -921,7 +921,7 @@ BEGIN
   END IF;
 END $$;
 
--- collection_worst (B6G-N, the lead's 15:3x: 'an alert that names nothing sends the DBA hunting'): the collection whose
+-- collection_worst (B6G-N: 'an alert that names nothing sends the DBA hunting'): the collection whose
 -- value of p_metric (the family's metric: 'failed_pct', not 'collection.failed_pct') is the highest in the hour whose
 -- point is stamped p_at - the hour ending at p_at, as the instance's series picks it; a tie goes to the first by name;
 -- NULL when no row of that hour reads the metric. A rule naming no collection names it in its alert's detail
@@ -951,7 +951,7 @@ DO $do$ BEGIN
   END IF;
 END $do$;
 
--- collection_perf_rows: the Collection Performance report's rows (B6g-3; J5 after the index, the lead's 16:0x (a)) -
+-- collection_perf_rows: the Collection Performance report's rows (B6g-3; J5 after the index (a)) -
 -- the Hour rows (an instance, a collection and an hour, summed over the collectors that wrote it) and the Run rows
 -- (collection_log's failed and partial runs; 0139's job statistics rollup rows are not runs), the NEWEST p_cap + 1 by
 -- the page's own order (at DESC, the instance's name, the collection, the period). The read stops at its cap: it walks

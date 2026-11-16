@@ -16,7 +16,7 @@ import (
 // operator, admin), and docs/roles.md's table is the same list. Both checks read the source, so a route added
 // without a need fails here, not on a box.
 
-// outsideRoles: the writes no pgvigil role reaches by design, each with its reason (the lead 11-15 16:3x); docs/roles.md
+// outsideRoles: the writes no pgvigil role reaches by design, each with its reason; docs/roles.md
 // says each in words below its table
 var outsideRoles = map[string]string{
 	"POST /api/slack/actions": "403b's Slack door: Slack signs each button press (no X-Pgvigil header, no pgvigil session); doors.slack_actions is off by default and set in the site's file",
@@ -139,9 +139,9 @@ func TestEveryPostHasANeed(t *testing.T) {
 	}
 }
 
-// TestJoinedWritesHaveTheirNeed: the writes two j16 items registered outside s.post (B9c's job enable and disable,
+// TestJoinedWritesHaveTheirNeed: the writes two joined items registered outside s.post (B9c's job enable and disable,
 // task 409's expected values) go through it with their need - a viewer could enable or disable a job and set an
-// expected value (the j16 candidate's review B #1). Enable and disable are operator, as stop and start; an expected
+// expected value (the candidate's review B #1). Enable and disable are operator, as stop and start; an expected
 // value is admin, as every other threshold and setting write.
 func TestJoinedWritesHaveTheirNeed(t *testing.T) {
 	needs, _ := postNeeds(t)

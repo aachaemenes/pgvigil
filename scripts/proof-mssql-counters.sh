@@ -10,7 +10,7 @@
 #   PGVIGIL_IMAGES     the SQL Server images, the first the full run, the others the version run (default
 #                      '2022-latest 2019-latest').
 #   PGVIGIL_SHOTS      where the page shots go (default: a folder of the run, removed with it).
-#   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the lead's files) to the run's own copy
+#   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the join's files) to the run's own copy
 #                      of the tree (under its folder) when it lacks the counters' runner hook; 0 = the copy as it is. The
 #                      web bundle and the binary are built in that copy; the tree the proof runs from is never changed.
 #   PGVIGIL_LOGINS_WANT  the count the logins rows of D and L want (default 41: the 40 provoked and the collector's
@@ -212,7 +212,7 @@ listed() { pq "SELECT count(*) FROM jsonb_array_elements(pgvigil.import_mssql_co
 readat() { pq "SELECT count(*) FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_last l ON l.series_id = k.series_id
   WHERE k.instance_id = $SB AND k.object = '$1' AND k.counter = '$2'
     AND l.server_utc = (SELECT server_utc FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = pgvigil.mssql_counter_scope('$1') ORDER BY snapshot_at DESC LIMIT 1)"; }
-# The logins rows' own witness (the lead's 11-15 10:5x): an event session of the proof's own on login, logout and the
+# The logins rows' own witness: an event session of the proof's own on login, logout and the
 # failed login's error (18456), by program, started before a logins phase's first read and read ONLY when the count is
 # not the one wanted. Its rows go into the FAIL line, so a red names the program of an extra login: box run 401m1 read
 # +42 / +42 once and no log named it (a failed login moves both counters, one each, and the 2022 image makes no login by
@@ -488,7 +488,7 @@ sq "$(printf "RAISERROR('pgvigil proof user error', 16, 1);\n%.0s" $(seq 1 12))"
 sq "$(printf "RAISERROR('pgvigil proof info message', 10, 1);\n%.0s" $(seq 1 7))" >/dev/null 2>&1 || true
 col mssql_counters
 EU=$(chg 'SQL Errors' 'Errors/sec' 'User Errors'); EI=$(chg 'SQL Errors' 'Errors/sec' 'Info Errors')
-# the severe errors in a phase of their own: in one phase with the 12 above, User Errors read +15 (sqltb-s1-proof3)
+# the severe errors in a phase of their own: in one phase with the 12 above, User Errors read +15 (run proof3)
 for _ in 1 2 3; do sq "RAISERROR('pgvigil proof severe error', 20, 1) WITH LOG;" >/dev/null 2>&1 || true; done
 col mssql_counters
 EKAT=$(pq "SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")   # H reads errors_kill_s here

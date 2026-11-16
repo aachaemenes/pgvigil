@@ -24,7 +24,7 @@ import (
 //   - p2:  SELECT ... WHERE id = @i OPTION (RECOMPILE) - no credential, the constant (42).
 // live-p5r is a LIVE plan (the shape 406's mssql_live_plans store): sys.dm_exec_query_statistics_xml of a running
 // procedure ... WHERE name = @password ... OPTION (RECOMPILE, MAXDOP 1, MAXRECURSION 0) on a scratch SQL Server 2022
-// 16.0.4325.4 container (P5R-MASK's observation run sqltb-s3-p5r-obs3; its own statements and fake value 'hunter2', no
+// 16.0.4325.4 container (P5R-MASK's observation run p5r-obs3; its own statements and fake value 'hunter2', no
 // client text): no StatementText at all, no ParameterList, the value in ScalarString and ConstValue (quotes written raw).
 
 func readPlanFixture(t *testing.T, name string) string {
@@ -194,7 +194,7 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 			`<![CDATA[<StmtSimple StatementText="x @pwd"><Const ConstValue="(31337)" />]]>` +
 			`<?note <StmtSimple StatementText="y @secret"><Const ConstValue="(42424)" /> ?>`
 	)
-	// M3 (the lead 04:2x, (a)): a showplan keeps 3,999 characters of a statement's text (read on SQL Server 2022
+	// M3 (a): a showplan keeps 3,999 characters of a statement's text (read on SQL Server 2022
 	// 16.0.4325.4), so a long statement's credential name can stand past the cut; a statement at that length that lists
 	// no parameter is masked as one that names a credential. Lengths in SQL Server's characters (UTF-16 code units).
 	const pre = "SELECT id FROM dbo.T WHERE "
@@ -205,7 +205,7 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 		return `<StmtSimple StatementId="1" StatementType="SELECT" QueryHash="0x41C46A69E5A0DC66"><QueryPlan>` + body + `</QueryPlan></StmtSimple>`
 	}
 	paramsI := `<ParameterList><ColumnReference Column="@i" ParameterDataType="int" ParameterCompiledValue="(42)" /></ParameterList>`
-	// M2 (read on 16.0.4325.4, sqltb-s3-p5r-obs2): Query Store stores an auto-parameterized statement's own text as
+	// M2 (read on 16.0.4325.4, p5r-obs2): Query Store stores an auto-parameterized statement's own text as
 	// parameterized ('... WHERE [password]=@1'; forced: '... where pwd_hash = @0') with no ParameterizedText, and the
 	// literal's value only in the ParameterList's @1 / @0; a statement whose text holds a credential word has those values
 	// masked, its expression literals too
@@ -340,7 +340,7 @@ func TestMaskPlanCredStatementsCost(t *testing.T) {
 }
 
 // TestMaskXMLLivePlan: a live plan carries no StatementText (and here no ParameterList), so nothing names the
-// parameter its RECOMPILE value came from: every literal of its expressions is masked (the lead 11-16 04:4x, (a): under
+// parameter its RECOMPILE value came from: every literal of its expressions is masked (decision (a): under
 // every policy, locked down by default), and every other attribute keeps its bytes.
 func TestMaskXMLLivePlan(t *testing.T) {
 	live := readPlanFixture(t, "live-p5r")

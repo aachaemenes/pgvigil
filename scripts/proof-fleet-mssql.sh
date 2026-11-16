@@ -67,7 +67,7 @@
 #   J3 stats     4 s after the grid: the 'succeeded 7 days' column there, every cell a number, both seeded jobs' '1'
 #   J4 history   a click on the SQL Agent seeded job's name opens '<instance> | <job>' under the grid with its runs (2); its
 #                'Open the job on its instance' link is #/mssqljobs?i=<sql01>&job=<name> and lands with that job's history open (SF4)
-#   (B9b, expected written 2026-11-14 22:5x PST before any run, amended 2026-11-15 02:0x PST by the build review's fold;
+#   (B9b, expected written before any run, amended by the build review's fold;
 #   red on rel-b9's base 00e7b96, which has none of it). The S1 seed adds for B9b: the SQL Agent seeded job runs now
 #   (its mssql_jobs row's running_since 5 minutes ago), and on erp01 the pg_cron job RJ 'fleet-proof-two-of-three-failed'
 #   (failed 200 and 180 minutes ago, succeeded 170 minutes ago) and NJ 'fleet-proof-no-run' (no run at all).

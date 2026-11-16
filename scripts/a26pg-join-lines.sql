@@ -1,4 +1,4 @@
--- A26-PG (migration 0275, above 0190): the lines for the next join's own file 0300_join_release3.sql (the 03:3x rule).
+-- A26-PG (migration 0275, above 0190): the lines for the next join's own file 0300_join_release3.sql (the join-file rule).
 -- Not a migration of its own; the record of what the join places.
 --
 -- WHEN: A26-PG joins in the SAME join file as A26's 0267 (or that file is numbered above both). 'pgvigil migrate'
@@ -25,7 +25,7 @@
 --     o.hash = EXCLUDED.hash and keeps last_changed (EXCLUDED carries no hash_prev). Its aliases are o and i, never d:
 --     d is import_schema's own loop record (as A26's arm uses sd).
 --
--- Why (the lead's 17:1x, A26's finding): the schema collection took a PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC,
+-- Why (A26's finding): the schema collection took a PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC,
 -- RETURN) from prosrc, which is empty for it, so its changes were never recorded; it now reads pg_get_function_sqlbody
 -- and sends hash_prev (the old code's hash of the same row) beside each such body, and this arm makes the upgrade's
 -- first read the body's baseline instead of one false 'changed' row per such function.
@@ -34,5 +34,5 @@
 -- Server's rows (import_mssql_schema calls import_schema) carry none: the arm is inert for them.
 --
 -- Nothing else joined changes: schema_findings, schema_changes_window, diff_schema / diff_schema_snapshots (0086),
--- purge (0190) and apply_roles are untouched; no new object, no CHECK widened (the baseline is silent, the lead's G4).
+-- purge (0190) and apply_roles are untouched; no new object, no CHECK widened (the baseline is silent, decision G4).
 -- Not read here: whether B20's migrations 0273 / 0274 re-create import_schema too - the join's check.

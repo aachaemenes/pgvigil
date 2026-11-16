@@ -780,7 +780,7 @@ $$;
 -- ---- the metrics family 'counters' ----------------------------------------------------------------------------------
 
 -- mssql_counter_metrics: the metrics of the family in metric_catalog's columns (the join file adds them to the
--- catalogue). The per-batch ratios and full scans per search have floors (the lead's 19:4x, metric_floors below):
+-- catalogue). The per-batch ratios and full scans per search have floors (metric_floors below):
 -- under one the ratio is not judged - its point has no value - and the rates it is judged by are metrics of their own
 -- (batch_requests_s, full_scans_s, index_searches_s), so the page can say why. The other ratios' labels say their
 -- floor: under it the point is 0 (an idle server's own reads are not a ratio).
@@ -833,7 +833,7 @@ SELECT v.engine, v.family, v.family_label, v.family_sort, v.metric, v.label, v.u
     ('sqlserver', 'counters', 'Counters', 50, 'log_growths',                'log growths per read',                            'count', true,  1800, 44)
   ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort);
 
--- metric_floors: a metric judged only when the rate it is judged by reads at its floor or more (the lead's 19:4x: 5
+-- metric_floors: a metric judged only when the rate it is judged by reads at its floor or more (5
 -- Batch Requests/s for the per-batch ratios, 1 Full Scan/s for full scans per search). One place for the numbers:
 -- mssql_counter_points reads it, and a rule on a floored metric whose point has no value reads 'na', not judged - no
 -- finding, the page's N/A with 'too few <unit>/s to judge (<value>/s, the floor <floor>/s)' (the join file's
@@ -851,7 +851,7 @@ COMMENT ON VIEW pgvigil.metric_floors IS 'The floors under which a metric is not
 
 -- metric_na_reasons: a metric whose own points function gives a point no value under a condition of its own read, not a
 -- per-second floor (so no metric_floors row): its rule's 'na' and the Metrics grid's N/A say this reason in words, never
--- a bare N/A (the lead's 11-15 06:4x). Task 412's row here (mssql_wait_core_points, the end of this file); a slice above
+-- a bare N/A. Task 412's row here (mssql_wait_core_points, the end of this file); a slice above
 -- 0190 adds its own in its join lines (B24c: G32 under 10 % of the machine), the join re-creating the view whole with
 -- every row.
 CREATE OR REPLACE VIEW pgvigil.metric_na_reasons AS
@@ -864,8 +864,8 @@ COMMENT ON VIEW pgvigil.metric_na_reasons IS 'A metric not judged under a condit
 -- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
 -- names one database's series of the per-database metrics; NULL = the server's _Total. A rate read at raw 0 is 0 (the
 -- read's zero_series); an average with no event in the read is 0. A floored ratio (metric_floors, above) gives a point
--- with NO value (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0 (the
--- lead's 19:4x); no rate read = no point. Full scans per search over no index search is the scans over one search
+-- with NO value (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0; no
+-- rate read = no point. Full scans per search over no index search is the scans over one search
 -- (every access a scan). The other ratios under their floor are 0.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_points(p_instance_id int, p_from timestamptz, p_to timestamptz,
                                                          p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
@@ -1134,7 +1134,7 @@ INSERT INTO pgvigil.mssql_clerk_names (clerk_type, name) VALUES
 -- mssql_wait_percore_ignored: SQLMonitor's per-core list beyond pgvigil's benign waits (is_benign, sp_BlitzFirst 8.34's
 -- Ignorable, waits.go). SQLMonitor's BlitzFirst_WaitStats_Categories (DDLs/SCH-Create-All-Objects.sql at de87d37, 543 rows)
 -- marks 84 types IgnorableOnPerCoreMetric: pgvigil's 57 and these 27, as data, for this figure only (the Waits page's
--- per-type figures keep them; the lead's 11-15 D-412-1 (b)).
+-- per-type figures keep them; decision D-412-1 (b)).
 CREATE OR REPLACE VIEW pgvigil.mssql_wait_percore_ignored AS
 SELECT v.wait_type FROM (VALUES
     ('CHKPT'), ('CXCONSUMER'), ('EXECSYNC'), ('FSAGENT'), ('MEMORY_ALLOCATION_EXT'), ('PREEMPTIVE_OS_FLUSHFILEBUFFERS'),

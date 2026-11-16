@@ -145,7 +145,7 @@ func (s *Server) roleOK(w http.ResponseWriter, r *http.Request, n need, what str
 	return true
 }
 
-// muteCeiling is the longest end an operator may give a mute, a silence or a blackout (the lead 11-15 13:3x): an end
+// muteCeiling is the longest end an operator may give a mute, a silence or a blackout: an end
 // more than 7 days after now, or after its start when that is later, is open-ended and needs admin with the same words
 // as no end at all (review-18 b24f1 S2: the store takes any end in the future, 9999-12-31 included).
 const muteCeiling = 7 * 24 * time.Hour

@@ -12,14 +12,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestCollectionPerfScaleJ5 (the review of B6g-3 #6, the lead's 13:3x (a): measure first; a box row on a store seeded
+// TestCollectionPerfScaleJ5 (the review of B6g-3 #6 (a): measure first; a box row on a store seeded
 // at fleet scale by .vis/scale-seed.sql, PGVIGIL_SCALE_DSN - skipped without it): the Collection Performance report's
 // read over 8 days - at the root for one collection and for every collection, then one instance and a sparse scope
 // (the review of J5 (a) #6) - as the page reads it: one GET runs rows, charts
 // and meta in series (web.go multi), so the read is their sum. Each statement under EXPLAIN (ANALYZE, BUFFERS, TIMING
 // OFF) three times (per-node timing would add a clock read per row: the review of B6g part c #6) - the median - and once
 // with TIMING ON for its top node and buffers; the session as the serve sets it (jit off, custom plans: web.go). The
-// lead's rule decides on the one-collection read's sum: over 2 s, the (collection, hour) index.
+// agreed rule decides on the one-collection read's sum: over 2 s, the (collection, hour) index.
 func TestCollectionPerfScaleJ5(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_SCALE_DSN")
 	if dsn == "" {

@@ -13,7 +13,7 @@ import (
 
 // The partitions-ahead pass (0271, N4), ported from the earlier build of the same design (rel-pdeadlock, 11-14) onto
 // databases of their own (throwawayRepo): on the shared test database another package's Migrate makes a month under
-// them. The retry rows of that build are not ported (Import's own retry and its test are rel-j15dl's).
+// them. The retry rows of that build are not ported (Import's own retry and its test are another branch's).
 
 // TestPartitionsAheadTwice (R13): with next month's partitions of every month parent dropped, two passes at once both
 // end without an error and every one of them exists again (a partition cannot exist twice; one of two makers finds it
