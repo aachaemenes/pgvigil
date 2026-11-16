@@ -27,7 +27,8 @@ func Which(in config.Instance) (provider, why string) {
 	case in.AWS != nil && in.AWS.Replicas && strings.TrimSpace(in.AWS.DBInstance) != "":
 		return "aws", ""
 	case in.AWS != nil:
-		return "", "the aws: block's replicas switch is off (aws.replicas: true opens the provider replica door, P1)"
+		// the block is there (its other reads may run): the words name the one key that is off, never a missing block
+		return "", "aws.replicas is off on this instance (aws.replicas: true with aws.db_instance opens the provider replica door, P1)"
 	}
 	return "", "no aws: block with replicas: true and no gcp: block in the config: the provider replicas are not read"
 }
