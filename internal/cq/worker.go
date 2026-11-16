@@ -536,6 +536,16 @@ func (w *Worker) runOne(ctx context.Context, r Request, raw []byte) End {
 	return run.Run(ctx, &env, r)
 }
 
+// endBody is a run's end as import_action_finish (0200) reads it: its state, words, rows, time, the keep and the result.
+func endBody(end End, took time.Duration, keep string) map[string]any {
+	body := map[string]any{"state": end.State, "outcome": end.Outcome, "refusal": end.Refusal, "rows": end.Rows,
+		"duration_ms": took.Milliseconds(), "keep": keep}
+	if end.Result != nil {
+		body["result"] = end.Result
+	}
+	return body
+}
+
 // finish writes the end and the run's audit rows in one transaction; a row that is no longer this worker's running
 // row (lost, or swept) takes neither.
 func (w *Worker) finish(r Request, end End, took time.Duration) {
@@ -556,12 +566,7 @@ func (w *Worker) finish(r Request, end End, took time.Duration) {
 	end.Outcome, end.Refusal = MaskText(end.Outcome), MaskText(end.Refusal)
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	body := map[string]any{"state": end.State, "outcome": end.Outcome, "refusal": end.Refusal, "rows": end.Rows,
-		"duration_ms": took.Milliseconds(), "keep": w.cfg.CQ.ResultKeep}
-	if end.Result != nil {
-		body["result"] = end.Result
-	}
-	b, err := json.Marshal(body)
+	b, err := json.Marshal(endBody(end, took, w.cfg.CQ.ResultKeep))
 	if err != nil {
 		w.finishBare(r, fmt.Sprintf("its end could not be written: %v", err))
 		return

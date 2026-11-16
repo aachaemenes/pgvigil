@@ -224,6 +224,11 @@ func TestWorkerOnAStore(t *testing.T) {
 	if _, o := stateOf(id); o != "tested on "+ia+"; "+wkCmdWant {
 		t.Fatalf("the stored outcome: %q, want the -P switch masked", o)
 	}
+	// CQ-LIVEMASK: a done end has no refusal, stored NULL, never an empty string (endBody leaves the key out)
+	var refusalNull bool
+	if err := pool.QueryRow(ctx, `SELECT refusal IS NULL FROM pgvigil.action_requests WHERE request_id = $1`, id).Scan(&refusalNull); err != nil || !refusalNull {
+		t.Fatalf("a done end's refusal: want NULL, not an empty string (%v)", err)
+	}
 
 	// a running request cancelled
 	id = ask("index_advisor", ia, `{"database": "postgres"}`)
