@@ -144,9 +144,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_blitz_finding (
   PRIMARY KEY (run_id, n)
 );
 
--- mssql_blitz_due: whether the weekly run of an instance is due now, in words. 'off' (its own switch, else the site
--- default), 'not due' (a run is stored since the newest slot: <day> <hour>:00 in the site's zone, at or before now) or
--- 'due'. A run of any outcome counts: a refused or timed-out run is not retried before the next slot.
+-- mssql_blitz_due: whether the weekly run of an instance is due at p_now, in words. 'off' (its own switch, else the
+-- site default; and an id that is no SQL Server instance), 'not due' (a run is stored since the newest slot: <day>
+-- <hour>:00 in the site's zone, at or before p_now as an instant - an hour that happens twice when the clocks go back
+-- counts once: PostgreSQL reads that local time as its second occurrence, standard time, and the slot is that instant:
+-- review-22 bzstore SF1) or 'due' (a switch just turned on is
+-- due at its next hourly look). A run of any outcome counts: a refused or timed-out run is not retried before the next
+-- slot. The collector asks with its run's own start (import_mssql_blitz_plan), the instant it stores the run under.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_blitz_due(p_instance_id int, p_now timestamptz DEFAULT now())
 RETURNS TABLE (state text, why text, enabled boolean, own_switch boolean, site_enabled boolean, proc_db text,
                timeout_s int, run_dow int, run_hour int, run_tz text, slot_at timestamptz, next_at timestamptz,
@@ -160,6 +164,8 @@ DECLARE
   v_local timestamp;
   v_slot  timestamp;
   v_when  text;
+  v_eng   text;
+  v_name  text;
   v_days  CONSTANT text[] := ARRAY['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 BEGIN
   SELECT x.enabled, x.run_dow, x.run_hour, x.run_tz, x.timeout_s INTO s FROM pgvigil.mssql_blitz_site x LIMIT 1;
@@ -170,7 +176,7 @@ BEGIN
   v_local := p_now AT TIME ZONE s.run_tz;
   v_slot := date_trunc('day', v_local) - make_interval(days => (extract(dow FROM v_local)::int - s.run_dow + 7) % 7)
             + make_interval(hours => s.run_hour);
-  IF v_slot > v_local THEN
+  IF (v_slot AT TIME ZONE s.run_tz) > p_now THEN
     v_slot := v_slot - interval '7 days';
   END IF;
   v_when := v_days[s.run_dow + 1] || ' ' || lpad(s.run_hour::text, 2, '0') || ':00 ' || s.run_tz;
@@ -185,7 +191,13 @@ BEGIN
   slot_at := v_slot AT TIME ZONE s.run_tz;
   next_at := (v_slot + interval '7 days') AT TIME ZONE s.run_tz;
   SELECT max(r.started_at) INTO last_run_at FROM pgvigil.mssql_blitz_run r WHERE r.instance_id = p_instance_id;
-  IF NOT enabled THEN
+  SELECT i.engine, i.name INTO v_eng, v_name FROM pgvigil.instances i WHERE i.instance_id = p_instance_id;
+  IF v_name IS NULL OR v_eng IS DISTINCT FROM 'sqlserver' THEN
+    state := 'off';
+    enabled := false;
+    why := CASE WHEN v_name IS NULL THEN 'no instance ' || coalesce(p_instance_id::text, '(none)')
+                ELSE v_name || ' is not a SQL Server instance: sp_Blitz is SQL Server''s' END;
+  ELSIF NOT enabled THEN
     state := 'off';
     why := CASE WHEN v_own IS NOT NULL
                 THEN 'the weekly sp_Blitz is off for this instance (its own switch; the site default is '
@@ -194,9 +206,12 @@ BEGIN
                      || ' the instance or the site on the instance''s Findings tab)' END;
   ELSIF last_run_at IS NOT NULL AND last_run_at >= slot_at THEN
     state := 'not due';
-    why := 'not due yet: this week''s run started ' || to_char(last_run_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')
-           || ' UTC; the next is due ' || to_char(v_slot + interval '7 days', 'YYYY-MM-DD HH24:MI') || ' ' || s.run_tz
-           || ' (every ' || v_when || ')';
+    why := 'not due yet: this week''s run started ' || to_char(last_run_at AT TIME ZONE s.run_tz, 'YYYY-MM-DD HH24:MI')
+           || ' ' || s.run_tz || '; the next is due ' || to_char(v_slot + interval '7 days', 'YYYY-MM-DD HH24:MI') || ' '
+           || s.run_tz || ' (every ' || v_when || ')';
+  ELSIF last_run_at IS NULL THEN
+    state := 'due';
+    why := 'due: no run is stored yet - the first runs at the next hourly look, then every ' || v_when;
   ELSE
     state := 'due';
     why := 'due: no run since ' || to_char(v_slot, 'YYYY-MM-DD HH24:MI') || ' ' || s.run_tz || ' (every ' || v_when || ')';
@@ -206,12 +221,13 @@ END $$;
 COMMENT ON FUNCTION pgvigil.mssql_blitz_due(int, timestamptz) IS
   'B20-2: whether an instance''s weekly sp_Blitz is due now, with its words (the page''s and the collector''s one rule).';
 
--- import_mssql_blitz_plan: the collector's question before a run (apply_roles makes an import_ function its door):
--- the state, its words, the database sp_Blitz is looked for in and the statement's timeout.
-CREATE OR REPLACE FUNCTION pgvigil.import_mssql_blitz_plan(p_instance_id int)
+-- import_mssql_blitz_plan: the collector's question before a run (apply_roles makes an import_ function its door), at
+-- p_at - the run's own start, the instant its run is stored under, so the question and the stored time share one clock
+-- (review-22 bzstore SF2): the state, its words, the database sp_Blitz is looked for in and the statement's timeout.
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_blitz_plan(p_instance_id int, p_at timestamptz)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
   SELECT jsonb_build_object('state', d.state, 'why', d.why, 'proc_db', d.proc_db, 'timeout_s', d.timeout_s)
-    FROM pgvigil.mssql_blitz_due(p_instance_id) d
+    FROM pgvigil.mssql_blitz_due(p_instance_id, p_at) d
 $$;
 
 -- import_mssql_blitz: one run. Rows: 'run' {outcome, seconds, error, frk_version, frk_version_date (YYYYMMDD), login,
@@ -270,9 +286,11 @@ BEGIN
 END $$;
 
 -- import_mssql_blitz_setting: the admin's switch (POST /api/mssql/blitz/settings; the role is checked before it is
--- called). Ops: 'site' {enabled, run_dow, run_hour, run_tz, timeout_s} - a key left out keeps its value; 'instance'
--- {instance_id, enabled (true, false, or null = the site default), proc_db (left out = kept, else master)}. Every
--- attempt is written to admin_audit, done or refused; the answer is {outcome, detail}.
+-- called). Ops: 'site' {enabled, run_dow, run_hour, run_tz, timeout_s}; 'instance' {instance_id, enabled (true, false,
+-- or null = the site default), proc_db}; a key left out keeps its value (proc_db master at first). Every value is
+-- checked as jsonb before it is cast, so a direct caller is refused in words, never with a cast error (review-22
+-- bzstore NIT5); every attempt that reaches the function is written to admin_audit, done or refused; the answer is
+-- {outcome, detail}.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_blitz_setting(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -286,41 +304,60 @@ DECLARE
   v_name   text;
   v_engine text;
   v_db     text;
+  v_en     boolean;
+  v_dow    int;
+  v_hour   int;
+  v_tz     text;
+  v_to     int;
   s        record;
+  b        record;
 BEGIN
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'import_mssql_blitz_setting: no ui_user' USING ERRCODE = '22023';
   END IF;
-  IF v_op = 'site' THEN
+  v_target := coalesce(v_op, '(none)');
+  -- the types first: booleans, whole numbers that fit an int, texts
+  v_why := CASE
+    WHEN v_op IS NULL OR v_op NOT IN ('site', 'instance') THEN 'op is site or instance, not ' || coalesce(v_op, '(none)')
+    WHEN p_payload ? 'enabled' AND jsonb_typeof(p_payload->'enabled') <> 'boolean'
+         AND NOT (v_op = 'instance' AND jsonb_typeof(p_payload->'enabled') = 'null')
+      THEN CASE WHEN v_op = 'site' THEN 'enabled is true or false' ELSE 'enabled is true, false or null (the site default)' END
+    WHEN EXISTS (SELECT 1 FROM unnest(ARRAY['run_dow', 'run_hour', 'timeout_s', 'instance_id']) k
+                  WHERE p_payload ? k AND (jsonb_typeof(p_payload->k) <> 'number' OR (p_payload->>k) !~ '^-?[0-9]{1,9}$'))
+      THEN 'run_dow, run_hour, timeout_s and instance_id are whole numbers'
+    WHEN EXISTS (SELECT 1 FROM unnest(ARRAY['run_tz', 'proc_db']) k WHERE p_payload ? k AND jsonb_typeof(p_payload->k) <> 'string')
+      THEN 'run_tz and proc_db are texts'
+  END;
+  IF v_why IS NULL AND v_op = 'site' THEN
     SELECT x.enabled, x.run_dow, x.run_hour, x.run_tz, x.timeout_s INTO s FROM pgvigil.mssql_blitz_site x FOR UPDATE;
     v_target := 'site';
-    s.enabled := CASE WHEN p_payload ? 'enabled' THEN (p_payload->>'enabled')::boolean ELSE s.enabled END;
-    s.run_dow := CASE WHEN p_payload ? 'run_dow' THEN (p_payload->>'run_dow')::int ELSE s.run_dow END;
-    s.run_hour := CASE WHEN p_payload ? 'run_hour' THEN (p_payload->>'run_hour')::int ELSE s.run_hour END;
-    s.run_tz := CASE WHEN p_payload ? 'run_tz' THEN p_payload->>'run_tz' ELSE s.run_tz END;
-    s.timeout_s := CASE WHEN p_payload ? 'timeout_s' THEN (p_payload->>'timeout_s')::int ELSE s.timeout_s END;
+    v_en := CASE WHEN p_payload ? 'enabled' THEN (p_payload->>'enabled')::boolean ELSE s.enabled END;
+    v_dow := CASE WHEN p_payload ? 'run_dow' THEN (p_payload->>'run_dow')::int ELSE s.run_dow END;
+    v_hour := CASE WHEN p_payload ? 'run_hour' THEN (p_payload->>'run_hour')::int ELSE s.run_hour END;
+    v_tz := CASE WHEN p_payload ? 'run_tz' THEN p_payload->>'run_tz' ELSE s.run_tz END;
+    v_to := CASE WHEN p_payload ? 'timeout_s' THEN (p_payload->>'timeout_s')::int ELSE s.timeout_s END;
     v_why := CASE
-      WHEN s.enabled IS NULL THEN 'the site default is on or off (true or false)'
-      WHEN s.run_dow IS NULL OR s.run_dow NOT BETWEEN 0 AND 6 THEN 'run_dow is a day of the week, 0 (Sunday) to 6 (Saturday)'
-      WHEN s.run_hour IS NULL OR s.run_hour NOT BETWEEN 0 AND 23 THEN 'run_hour is an hour of the day, 0 to 23'
-      WHEN s.run_tz IS NULL OR NOT EXISTS (SELECT 1 FROM pg_timezone_names z WHERE z.name = s.run_tz)
-        THEN coalesce(s.run_tz, 'the zone') || ' is not a time zone PostgreSQL knows (pg_timezone_names: UTC, Europe/London, America/New_York ...)'
-      WHEN s.timeout_s IS NULL OR s.timeout_s NOT BETWEEN 1 AND 1800 THEN 'timeout_s is 1 to 1800 seconds'
+      WHEN v_dow NOT BETWEEN 0 AND 6 THEN 'run_dow is a day of the week, 0 (Sunday) to 6 (Saturday)'
+      WHEN v_hour NOT BETWEEN 0 AND 23 THEN 'run_hour is an hour of the day, 0 to 23'
+      WHEN v_tz IS NULL OR NOT EXISTS (SELECT 1 FROM pg_timezone_names z WHERE z.name = v_tz)
+        THEN coalesce(v_tz, 'the zone') || ' is not a time zone PostgreSQL knows (pg_timezone_names: UTC, Europe/London, America/New_York ...)'
+      WHEN v_to NOT BETWEEN 1 AND 1800 THEN 'timeout_s is 1 to 1800 seconds'
     END;
     IF v_why IS NULL THEN
       UPDATE pgvigil.mssql_blitz_site
-         SET enabled = s.enabled, run_dow = s.run_dow, run_hour = s.run_hour, run_tz = s.run_tz, timeout_s = s.timeout_s,
-             updated_at = p_at, updated_by = v_user;
-      v_detail := 'the site default ' || CASE WHEN s.enabled THEN 'on' ELSE 'off' END || ', every '
-                  || (ARRAY['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'])[s.run_dow + 1]
-                  || ' ' || lpad(s.run_hour::text, 2, '0') || ':00 ' || s.run_tz || ', a ' || s.timeout_s || ' s timeout';
+         SET enabled = v_en, run_dow = v_dow, run_hour = v_hour, run_tz = v_tz, timeout_s = v_to, updated_at = p_at, updated_by = v_user;
+      v_detail := 'the site default ' || CASE WHEN v_en THEN 'on' ELSE 'off' END || ', every '
+                  || (ARRAY['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'])[v_dow + 1]
+                  || ' ' || lpad(v_hour::text, 2, '0') || ':00 ' || v_tz || ', a ' || v_to || ' s timeout';
     END IF;
-  ELSIF v_op = 'instance' THEN
+  ELSIF v_why IS NULL AND v_op = 'instance' THEN
     v_id := (p_payload->>'instance_id')::int;
     SELECT i.name, i.engine INTO v_name, v_engine FROM pgvigil.instances i WHERE i.instance_id = v_id;
     v_target := coalesce(v_name, 'instance ' || coalesce(v_id::text, '(none)'));
-    v_db := CASE WHEN p_payload ? 'proc_db' THEN p_payload->>'proc_db'
-                 ELSE coalesce((SELECT b.proc_db FROM pgvigil.mssql_blitz_setting b WHERE b.instance_id = v_id), 'master') END;
+    SELECT x.enabled, x.proc_db INTO b FROM pgvigil.mssql_blitz_setting x WHERE x.instance_id = v_id;
+    -- a key left out keeps the stored value: a write that only moves sp_Blitz's database keeps the switch
+    v_en := CASE WHEN p_payload ? 'enabled' THEN (p_payload->>'enabled')::boolean ELSE b.enabled END;
+    v_db := CASE WHEN p_payload ? 'proc_db' THEN p_payload->>'proc_db' ELSE coalesce(b.proc_db, 'master') END;
     v_why := CASE
       WHEN v_id IS NULL OR v_name IS NULL THEN 'no instance ' || coalesce(v_id::text, '(none named)')
       WHEN v_engine IS DISTINCT FROM 'sqlserver' THEN v_name || ' is not a SQL Server instance: sp_Blitz is SQL Server''s'
@@ -328,16 +365,13 @@ BEGIN
         THEN 'the database sp_Blitz is in is a name of 1 to 128 characters'
     END;
     IF v_why IS NULL THEN
-      INSERT INTO pgvigil.mssql_blitz_setting AS b (instance_id, enabled, proc_db, updated_at, updated_by)
-      VALUES (v_id, (p_payload->>'enabled')::boolean, v_db, p_at, v_user)
+      INSERT INTO pgvigil.mssql_blitz_setting AS t (instance_id, enabled, proc_db, updated_at, updated_by)
+      VALUES (v_id, v_en, v_db, p_at, v_user)
       ON CONFLICT (instance_id) DO UPDATE
          SET enabled = EXCLUDED.enabled, proc_db = EXCLUDED.proc_db, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by;
-      v_detail := v_name || ': ' || CASE (p_payload->>'enabled')::boolean WHEN true THEN 'on' WHEN false THEN 'off'
-                  ELSE 'the site default' END || ', sp_Blitz in ' || v_db;
+      v_detail := v_name || ': ' || CASE v_en WHEN true THEN 'on' WHEN false THEN 'off' ELSE 'the site default' END
+                  || ', sp_Blitz in ' || v_db;
     END IF;
-  ELSE
-    v_target := coalesce(v_op, '(none)');
-    v_why := 'op is site or instance, not ' || coalesce(v_op, '(none)');
   END IF;
   INSERT INTO pgvigil.admin_audit (at, ui_user, client, op, target, outcome, detail)
   VALUES (p_at, v_user, v_client, 'mssql_blitz_' || coalesce(v_op, 'unknown'), v_target,
