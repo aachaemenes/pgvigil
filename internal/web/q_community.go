@@ -1449,8 +1449,9 @@ func (s *Server) CommunityParams(w http.ResponseWriter, r *http.Request) {
 		hcancel()
 		run := instanceRun{Instance: name, Door: kind, DoorGen: ds.Gen}
 		run.finish(t0, sets, "", err)
+		maskRun(&run) // CQ-LIVEMASK (review S3): the help's sets, and so each parameter's help words, as the queue stores them
 		if err != nil {
-			out.HelpError = err.Error()
+			out.HelpError = maskText(err.Error())
 		}
 		out.HelpSets = run.Sets
 		descs := helpText(run.Sets)

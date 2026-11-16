@@ -36,10 +36,11 @@
 #       forged kind refused at the insert
 #   P13 a reader login (Grafana's shape) gets 42501 on ui_action_data and on ui_action_result; a second UI user's GET of
 #       the first's request: 403 'this run was asked by another user'; task 488: a target session's sqlcmd -P line
-#       read by pg_running through the queue comes back masked, in serve's reply and in the stored row, while the
-#       direct run's reply shows it (the control, and the difference docs/queue.md names); the same for a SQL Server
-#       session's batch read by sp_WhoIsActive @get_outer_command = 1 (its sql_command a processing instruction:
-#       review 488 B1)
+#       read by pg_running through the queue comes back masked, in serve's reply and in the stored row, and
+#       (CQ-LIVEMASK) masked the same in the DIRECT run's reply; the same for a SQL Server session's batch read by
+#       sp_WhoIsActive @get_outer_command = 1 (its sql_command a processing instruction: review 488 B1); CQ-LIVEMASK:
+#       a direct Glenn Berry query whose statement and error words carry a sqlcmd -P line (a RAISERROR of it): the
+#       reply's error words, its audit row's detail and statement and the page's run log hold it masked
 #   P2  20 asks: the claim within 1 s of the insert (median of taken_at - asked_at) and the GET's answer within 1 s of
 #       done_at (median)
 #   P6  cancel: a waiting request (the collector stopped with SIGSTOP) 'cancelled' at once; a running sp_WhoIsActive
@@ -287,7 +288,10 @@ read -r kept leak <<<"$(rq "select count(*) filter (where result is not null), c
 [[ $(waitreq "$id") == done ]] || fail "P13: pg_running's GET: $(cat "$WORK/body")"
 grep -q "$P13S" "$WORK/body" && fail "P13: the queue's reply shows the sqlcmd password: $(grep -o ".\{60\}$P13S" "$WORK/body" | head -1)"
 [[ $(js "sum('-P <masked>' in str(c) for s in d['result']['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked sqlcmd line in the queue's result (the session not read?): $(head -c 800 "$WORK/body")"
-[[ $(post community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}" "$DJAR" "$DU") == 200 ]] && grep -q "$P13S" "$WORK/body" || fail "P13: the direct run's control does not show the session's line: $(head -c 600 "$WORK/body")"
+# CQ-LIVEMASK: the direct run's reply masked as the queue stores it (before: shown as the server answered)
+[[ $(post community/run "{\"instance_id\":$PGID,\"tool\":\"pg_running\"}" "$DJAR" "$DU") == 200 ]] || fail "P13: the direct pg_running: $(head -c 600 "$WORK/body")"
+grep -q "$P13S" "$WORK/body" && fail "P13: the direct run's reply shows the sqlcmd password: $(grep -o ".\{60\}$P13S" "$WORK/body" | head -1)"
+[[ $(js "sum('-P <masked>' in str(c) for r0 in d['runs'] for s in r0['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked sqlcmd line in the direct run's reply (the session not read?): $(head -c 800 "$WORK/body")"
 psql "$TGT_MON" -XAtq -c "select pg_terminate_backend($P13BP)" >/dev/null 2>&1; kill "$P13PID" 2>/dev/null || true; P13PID=""
 if [[ -n "$MS" ]]; then
   # the SQL Server leg (review 488 B1): sp_WhoIsActive writes a batch's text as one processing instruction
@@ -310,10 +314,25 @@ if [[ -n "$MS" ]]; then
   [[ $(waitreq "$id") == done ]] || fail "P13: sp_WhoIsActive's GET: $(cat "$WORK/body")"
   grep -q "$M13S" "$WORK/body" && fail "P13: the queue's sp_WhoIsActive reply shows the sqlcmd password"
   [[ $(js "sum(('<?query' in str(c)) and ('-P <masked>' in str(c)) for s in d['result']['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked processing instruction in sp_WhoIsActive's queue result: $(head -c 800 "$WORK/body")"
-  [[ $(post community/run "{\"instance_id\":$MSID,\"tool\":\"sp_WhoIsActive\",\"params\":{\"get_outer_command\":\"1\"}}" "$DJAR" "$DU") == 200 ]] && grep -q "$M13S" "$WORK/body" || fail "P13: the direct sp_WhoIsActive's control does not show the batch's line: $(head -c 600 "$WORK/body")"
+  # CQ-LIVEMASK: the direct sp_WhoIsActive's processing instruction masked as the queue stores it
+  [[ $(post community/run "{\"instance_id\":$MSID,\"tool\":\"sp_WhoIsActive\",\"params\":{\"get_outer_command\":\"1\"}}" "$DJAR" "$DU") == 200 ]] || fail "P13: the direct sp_WhoIsActive: $(head -c 600 "$WORK/body")"
+  grep -q "$M13S" "$WORK/body" && fail "P13: the direct sp_WhoIsActive's reply shows the batch's sqlcmd password"
+  [[ $(js "sum(('<?query' in str(c)) and ('-P <masked>' in str(c)) for r0 in d['runs'] for s in r0['sets'] for r in s['rows'] for c in r)") -ge 1 ]] || fail "P13: no masked processing instruction in the direct sp_WhoIsActive's reply: $(head -c 800 "$WORK/body")"
   sq "KILL $M13SPID" >/dev/null 2>&1; kill "$M13PID" 2>/dev/null || true; M13PID=""
+  # CQ-LIVEMASK: a direct Glenn Berry query whose statement and error words carry a sqlcmd -P line - the reply's error
+  # words, the audit row's detail and statement, and the page's run log ('Runs on this instance') hold it masked
+  L13S="Lm13secret$RANDOM"
+  c=$(post community/run "{\"instance_id\":$MSID,\"tool\":\"glenn_berry\",\"text\":\"RAISERROR('sqlcmd -S . -U app -P $L13S -Q x', 16, 1)\",\"query_name\":\"1 livemask\"}" "$DJAR" "$DU")
+  [[ $c == 200 ]] || fail "P13: the direct Glenn Berry query: $c $(head -c 600 "$WORK/body")"
+  grep -q "$L13S" "$WORK/body" && fail "P13: the direct query's error words show the sqlcmd password: $(head -c 600 "$WORK/body")"
+  [[ $(js "sum('-P <masked>' in (r0.get('error') or '') for r0 in d['runs'])") == 1 ]] || fail "P13: the direct query's error words hold no masked sqlcmd line: $(head -c 600 "$WORK/body")"
+  read -r n leak masked <<<"$(rq "select count(*), count(*) filter (where coalesce(detail, '') || coalesce(statement, '') like '%$L13S%'), count(*) filter (where detail like '%-P <masked>%' and statement like '%-P <masked>%') from pgvigil.custom_report_log where tool = 'glenn_berry' and report_name = '1 livemask'" | tr '|' ' ')"
+  [[ $n == 1 && $leak == 0 && $masked == 1 ]] || fail "P13: the direct query's audit row: $n row(s), $leak holding the password, $masked with detail and statement masked (want 1, 0, 1)"
+  [[ $(getc "community?instance=$MSID" "$DJAR" "$DU") == 200 ]] || fail "P13: the community page's read: $(head -c 400 "$WORK/body")"
+  grep -q "$L13S" "$WORK/body" && fail "P13: the page's run log shows the sqlcmd password"
+  [[ $(js "sum('-P <masked>' in str(c) for r in d['log']['rows'] for c in r)") -ge 2 ]] || fail "P13: the page's run log holds no masked detail and statement: $(head -c 400 "$WORK/body")"
 fi
-ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403, a session's sqlcmd -P line masked in the queue's reply and stored row and shown by the direct run${MS:+ (pg_running, and the processing instruction of sp_WhoIsActive)}"
+ok "P8: the table-writing parameter refused at the worker${MS:+, the free SQL of Glenn Berry at the insert}, a forged kind at the insert; P13: the reader 42501 on ui_action_data and ui_action_result (it reads action_requests), the second user 403, a session's sqlcmd -P line masked in the queue's reply and stored row and in the direct run's reply${MS:+ (pg_running, and the processing instruction of sp_WhoIsActive; a direct query: its error words, audit row and run log)}"
 
 # ---- P2: latency ----------------------------------------------------------------------------------------------------
 : > "$WORK/lat"
