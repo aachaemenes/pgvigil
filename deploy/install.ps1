@@ -18,7 +18,8 @@
 # 'pgvigil install' and puts the folder on the machine PATH; where the service pgvigil exists it is an upgrade,
 # 'pgvigil install -upgrade' (refusals first, then stop, dump, migrate, swap, start, the way back printed:
 # docs/upgrade.md), and the installed build (FIPS or plain, as 'pgvigil version' says) is kept unless -Fips or -Plain
-# names the other. -App also places the Windows app machine-wide beside that collector (pgvigil-app install -app-only:
+# names the other. -Remote (online or with -From) installs the remote collector's service instead (pgvigil install
+# -remote: docs/remote-collector.md); the upgrade switches and -App do not go with it. -App also places the Windows app machine-wide beside that collector (pgvigil-app install -app-only:
 # the app zip's own pgvigil.exe, the plain build, is never installed over it); its update check stays off unless
 # -UpdateCheck. The checksum proves the files are those SHA256SUMS names (integrity, not origin); -TrustRoot <dir>, a
 # folder with the site's OWN fulcio.pem, rekor.pub and ctfe.pub, also verifies the signature with cosign.exe (on the
@@ -33,7 +34,8 @@ param(
     [string]$OwnerDsnFile,
     [string]$Dump,
     [switch]$NoDump,
-    [string]$PgDump
+    [string]$PgDump,
+    [switch]$Remote
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -127,6 +129,13 @@ if ($From) {
             Write-Host ".\pgvigil.exe $version is ready (no service installed)"
             return
         }
+        if ($Remote) {
+            if ($OwnerDsnFile -or $Dump -or $NoDump -or $PgDump -or $App) { throw 'pgvigil install: -Remote does not go with the upgrade switches or -App (a remote collector has no repository)' }
+            & $exe install -remote
+            if ($LASTEXITCODE -ne 0) { throw "pgvigil install -remote exited with $LASTEXITCODE" }
+            Add-MachinePath (Join-Path $env:ProgramFiles 'pgvigil')
+            return
+        }
         if ($svc) {
             Write-Host 'the service pgvigil is installed: upgrading it'
             $up = @('install', '-upgrade')
@@ -200,7 +209,7 @@ try {
         Write-Host ".\pgvigil.exe $version is ready (no service installed)"
         return
     }
-    & (Join-Path $work $asset) install
+    if ($Remote) { & (Join-Path $work $asset) install -remote } else { & (Join-Path $work $asset) install }
     if ($LASTEXITCODE -ne 0) { throw "pgvigil install exited with $LASTEXITCODE" }
     $binDir = Join-Path $env:ProgramFiles 'pgvigil'
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')

@@ -12,6 +12,8 @@
 # Offline (no network: a local folder, a mounted USB stick or a share holding the extracted offline bundle,
 # pgvigil-offline-<version>-linux-amd64; docs/airgap.md), as root:
 #   sh <folder>/install.sh --from <folder> [--fips | --plain] [--trust-root <dir>]
+# --remote (online or with --from) installs the remote collector's service instead (pgvigil install -remote:
+# docs/remote-collector.md); the upgrade flags do not go with it.
 #                          [--owner-dsn-file <path>] [--dump <file> | --no-dump] [--pg-dump <path>]
 # The binary and SHA256SUMS are copied into a new folder of root's alone, the copies verified and only the copies run
 # (a share or a stick can change between a check and a use). A fresh install runs 'pgvigil install'; on a host where the
@@ -25,6 +27,7 @@
 set -eu
 
 FROM=""; FLAVOUR=""; TRUST=""; UPFLAGS=""
+REMOTE=0   # --remote: the remote collector's service (pgvigil install -remote; docs/remote-collector.md)
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) [ $# -ge 2 ] || { printf 'pgvigil install: --from needs a folder\n' >&2; exit 1; }; FROM=$2; shift 2 ;;
@@ -36,6 +39,7 @@ while [ $# -gt 0 ]; do
       case "$2" in *[!A-Za-z0-9/._:+@=-]*) printf 'pgvigil install: %s %s: a path of letters, digits and / . _ - : + @ = only\n' "$1" "$2" >&2; exit 1 ;; esac
       UPFLAGS="$UPFLAGS -${1#--} $2"; shift 2 ;;
     --no-dump) UPFLAGS="$UPFLAGS -no-dump"; shift ;;
+    --remote) REMOTE=1; shift ;;
     *) printf 'pgvigil install: unknown argument %s (see the header of this script)\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -133,6 +137,11 @@ if [ -n "$FROM" ]; then
     say "./pgvigil $VERSION is ready (no service installed)"
     exit 0
   fi
+  if [ "$REMOTE" = 1 ]; then
+    [ -z "$UPFLAGS" ] || die "the upgrade flags do not go with --remote (a remote collector has no repository)"
+    "$WORK/$ASSET" install -remote
+    exit $?
+  fi
   if [ -n "$INSTALLED" ]; then
     say "an installed collector was found ($UNIT): upgrading it"
     # shellcheck disable=SC2086 # UPFLAGS holds checked words only (letters, digits and path characters)
@@ -184,11 +193,15 @@ if [ "${PGVIGIL_NO_SERVICE:-}" = "1" ]; then
 fi
 
 # the install needs root: already root, else sudo, else say what to run
+RFLAG=""
+[ "$REMOTE" = 1 ] && RFLAG="-remote"
 if [ "$(id -u)" = 0 ]; then
-  "$WORK/$ASSET" install
+  # shellcheck disable=SC2086 # RFLAG is empty or -remote
+  "$WORK/$ASSET" install $RFLAG
 elif command -v sudo >/dev/null 2>&1; then
-  say "running 'pgvigil install' with sudo"
-  sudo "$WORK/$ASSET" install
+  say "running 'pgvigil install $RFLAG' with sudo"
+  # shellcheck disable=SC2086 # RFLAG is empty or -remote
+  sudo "$WORK/$ASSET" install $RFLAG
 else
   mv "$WORK/$ASSET" ./pgvigil
   die "not root and no sudo: run 'su -c \"./pgvigil install\"' with the binary now in the current folder"
