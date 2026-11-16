@@ -3,7 +3,6 @@ package cq
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
@@ -41,42 +40,13 @@ func MaskResult(v any) (any, error) {
 // the store keeps them.
 func MaskText(s string) string { return maskCell(s) }
 
-// maskCell is the mask of one stored string: each processing instruction's text masked as a text (maskPIs), then
-// collect.MaskStored (MaskXML for a value that reads as XML, MaskCredentials otherwise).
+// maskCell is the mask of one stored string: collect.MaskStored (MaskXML for a value that reads as XML - a processing
+// instruction's text too, sp_WhoIsActive's <?query -- ... --?> cell among them - MaskCredentials otherwise).
 func maskCell(s string) string {
 	if s == "" {
 		return s
 	}
-	return collect.MaskStored(maskPIs(s))
-}
-
-// maskPIs masks the text of every processing instruction <?...?> in s with collect.MaskCredentials (review 488 B1:
-// collect.MaskXML writes one back as it came). One not closed (a cell cut inside it) is left to MaskXML's cut path,
-// which masks it as a text.
-func maskPIs(s string) string {
-	if !strings.Contains(s, "<?") {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for {
-		i := strings.Index(s, "<?")
-		if i < 0 {
-			break
-		}
-		j := strings.Index(s[i+2:], "?>")
-		if j < 0 {
-			break
-		}
-		end := i + 2 + j
-		b.WriteString(s[:i])
-		b.WriteString("<?")
-		b.WriteString(collect.MaskCredentials(s[i+2 : end]))
-		b.WriteString("?>")
-		s = s[end+2:]
-	}
-	b.WriteString(s)
-	return b.String()
+	return collect.MaskStored(s)
 }
 
 // maskJSON masks every string of a decoded JSON value, its objects' keys included, and returns it.
