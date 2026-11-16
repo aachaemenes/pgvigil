@@ -1,0 +1,120 @@
+B24f's join wiring, section rel-agent-fold (task 81's agent door: Investigate, the Ask box, the Investigations page;
+rel-agent is inside it; at its own DONE - the lead 11-15 16:3x, 'read first').
+Apply on the joined tree that holds rel-roles and rel-agent-fold:
+  git apply -3 scripts/b24f-join-wiring-rel-agent-fold.patch
+Built on a pre-join copy of each file: rel-roles f421753c x rel-agent-fold 5330154d (local commit 22274e63, ref
+jw-pre-agent; web.go's ack lines merged by hand), so -3 merges it onto the join's own resolution.
+What it does (read first, q_investigate.go L17-30, L286-330): s.post with needOperator for POST /api/investigations (a
+request sets the site's agent to work on a monitored server's finding or a question, as a community run) and
+/close (as an acknowledgement's end); needViewer for /run (the answered ask's stored SELECT runs on the repository through
+reports_dsn, as a stored custom report's run - not on a monitored server: the 16:3x proposal's 'operator' changed by the
+read); their words in roles_wiring_agent.go, needs.ts and docs/roles.md rows; Investigate, Ask and Close the request carry
+the need, after the door's own reason.
+Proof: the four role checks on the joined tree; tsc there.
+
+diff --git a/docs/roles.md b/docs/roles.md
+index 118b5eee..7995cf19 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -97,6 +97,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/mssql/actions/preview` | viewer | preview an action's statement (runs nothing) |
+ | `POST /api/community/glenn/parse` | viewer | read a diagnostic file (stores nothing) |
+ | `POST /api/community/params` | viewer | read a tool's parameters (@help) |
++| `POST /api/investigations/run` | viewer | run an answered ask's stored SELECT (on the custom reports' store login, reports_dsn) |
+ | `POST /api/customreports/run` | viewer | run a stored custom report (on the reports login or the instance's read login) |
+ | `POST /api/reportmail/rendered` | viewer | the mailed report's drawing step (the render's own user) |
+ | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
+@@ -106,6 +107,8 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/jobs/actions/start` | operator | start a job |
+ | `POST /api/ack` | operator | acknowledge, note, mute or black out one instance with an end (wider or open-ended: admin) |
+ | `POST /api/ack/end` | operator | end an acknowledgement |
++| `POST /api/investigations` | operator | ask the site's agent to investigate a finding or answer a question (the agent works through pgvigil mcp) |
++| `POST /api/investigations/close` | operator | close an investigation request |
+ | `POST /api/alerts/dismiss` | operator | dismiss an alert |
+ | `POST /api/alerts/mute` | operator | pause, resume or edit a mute rule (an edit to every instance, a tag or no end: admin) |
+ | `POST /api/alerts/test` | operator | send a test alert |
+diff --git a/internal/web/roles_wiring_agent.go b/internal/web/roles_wiring_agent.go
+new file mode 100644
+index 00000000..b9bbb026
+--- /dev/null
++++ b/internal/web/roles_wiring_agent.go
+@@ -0,0 +1,11 @@
++package web
++
++// B24f's join wiring for rel-agent / rel-agent-fold (the lead 11-15 16:3x, read first): an investigation request sets the
++// site's agent to work on a monitored server's finding or a question (operator, as a community run); its close is an
++// operator's, as an acknowledgement's end; Run is the answered ask's stored SELECT on the repository through reports_dsn
++// (viewer, as a stored custom report's run). The refusal words, beside roles.go's routeWhat in a file of their own.
++func init() {
++	routeWhat["POST /api/investigations"] = "asking the agent for an investigation"
++	routeWhat["POST /api/investigations/close"] = "closing an investigation"
++	routeWhat["POST /api/investigations/run"] = "running an answered ask"
++}
+diff --git a/internal/web/web.go b/internal/web/web.go
+index 228b33c8..bd5e0620 100644
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -290,9 +290,9 @@ func (s *Server) Handler() http.Handler {
+ 	s.post(api, "POST /api/ack", needOperator, s.AckAdd)
+ 	s.post(api, "POST /api/ack/end", needOperator, s.AckEnd)
+ 	api.HandleFunc("GET /api/investigations", s.Investigations)
+-	api.HandleFunc("POST /api/investigations", s.InvestigationAsk)
+-	api.HandleFunc("POST /api/investigations/close", s.InvestigationClose)
+-	api.HandleFunc("POST /api/investigations/run", s.InvestigationRun)
++	s.post(api, "POST /api/investigations", needOperator, s.InvestigationAsk)
++	s.post(api, "POST /api/investigations/close", needOperator, s.InvestigationClose)
++	s.post(api, "POST /api/investigations/run", needViewer, s.InvestigationRun) // the stored SELECT on the repository (reports_dsn)
+ 	api.HandleFunc("GET /api/slow", s.slow)
+ 	api.HandleFunc("GET /api/slowqueries", s.SlowQueries)
+ 	api.HandleFunc("GET /api/compare", s.Compare)
+diff --git a/web/src/investigate.ts b/web/src/investigate.ts
+index 595bafe3..66d4b55a 100644
+--- a/web/src/investigate.ts
++++ b/web/src/investigate.ts
+@@ -7,6 +7,7 @@ import { get, post } from './api';
+ import { hashParam } from './dbinfo';
+ import type { Ctx } from './router';
+ import { badge, Col, el, fmtTime, grid, offControl } from './ui';
++import { needControl } from './needs';
+ 
+ export interface InvRow {
+   id: number; kind: string; instance_id?: number | null; instance?: string | null; setting?: string | null; severity?: string | null;
+@@ -97,7 +98,7 @@ export function investigateCol(list: InvList): Col {
+         'Opens a request an agent the site runs claims through pgvigil mcp; pgvigil keeps the finding as this page shows it now.',
+         'Note for the agent (optional)', 1000, false,
+         note => post('investigations', { kind: 'finding', instance_id: Number(row.instance_id), setting: String(row.setting), note })));
+-      return b;
++      return needControl(b, 'investigations');   // the role (B24f): an investigation is an operator's
+     },
+   };
+ }
+@@ -156,7 +157,7 @@ async function detail(id: number, after: () => void): Promise<HTMLElement> {
+     { key: 'at', fmt: fmtTime }, { key: 'event' }, { key: 'login' }, { key: 'rows', num: true }, { key: 'ms', num: true },
+     { key: 'outcome', wide: true }, { key: 'text', label: 'statement or reason', wide: true }]));
+   if (r.state !== 'closed') {
+-    const close = el('button', { type: 'button' }, 'Close the request');
++    const close = needControl(el('button', { type: 'button' }, 'Close the request'), 'investigations/close');
+     close.addEventListener('click', () => {
+       const why = window.prompt('Why is it closed? (kept in its record)') ?? '';
+       void post('investigations/close', { id, reason: why }).then(after, e => window.alert(e instanceof Error ? e.message : String(e)));
+@@ -192,6 +193,7 @@ export async function investigationsView(_c: Ctx): Promise<HTMLElement> {
+       go.disabled = false;
+     }
+   });
++  needControl(go, 'investigations');   // after the server's reason, which stays first
+   sec.append(el('div', { class: 'askbox' }, el('label', {}, 'Ask a question', el('br'), ask), el('div', {}, go), said),
+     el('p', { class: 'meta' }, reportWords));
+   const cols: Col[] = [
+diff --git a/web/src/needs.ts b/web/src/needs.ts
+index f3a5ff8c..3d29e245 100644
+--- a/web/src/needs.ts
++++ b/web/src/needs.ts
+@@ -23,6 +23,8 @@ export const routeNeeds = {
+   'jobs/actions/start': ['operator', 'starting a job'],
+   'ack': ['operator', 'acknowledging'],
+   'ack/end': ['operator', 'ending an acknowledgement'],
++  'investigations': ['operator', 'asking the agent for an investigation'],
++  'investigations/close': ['operator', 'closing an investigation'],
+   'alerts/dismiss': ['operator', 'dismissing an alert'],
+   'alerts/mute': ['operator', 'changing a mute rule'],
+   'alerts/test': ['operator', 'sending a test alert'],
