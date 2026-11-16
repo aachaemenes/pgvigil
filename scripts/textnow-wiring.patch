@@ -64,3 +64,33 @@ index f350bb33..49f41106 100644
  	doors := map[string]mssql.Door{}
  	for _, in := range cfg.Instances {
  		if in.Engine == config.EngineSQLServer {
+diff --git i/docs/customreports.md w/docs/customreports.md
+index a95ad255..32c5e127 100644
+--- i/docs/customreports.md
++++ w/docs/customreports.md
+@@ -110,6 +110,13 @@ the page does not run it when it opens, and a mailed report carries the same wor
+ start and starts anyway. Behind PgBouncer, the reports login's startup settings are the UI login's (the README's
+ `track_extra_parameters` line).
+ 
++A report on the repository is the admin's own door to the stored statement text: its SQL reads the text as it was
++kept, whatever an instance's `query_text` setting is now. The pages, the exports, the report mails, the alerts and the
++MCP door apply the setting as it stands when they read; a report's own SQL cannot. While any instance's setting is not
++`full`, the Custom reports page says so: 'A store report reads stored statement text whatever an instance's query_text
++policy is now: its SQL reads the repository's tables as the reports login (an admin's grant), not through the pages'
++rule (docs/security.html).'
++
+ SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
+ [the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`) and no
+ more, never sysadmin: a run on a login that is a member of sysadmin is refused before anything is sent. The rollback
+diff --git i/docs/security.html w/docs/security.html
+index ed70ca82..71a95326 100644
+--- i/docs/security.html
++++ w/docs/security.html
+@@ -50,6 +50,7 @@
+   <h2>The data it keeps</h2>
+   <ul class="list">
+     <li>Passwords can stay out of the config file (an inline one is refused for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login). You choose whether statement text is kept as is, with every literal replaced, or not at all. Whichever you choose, on SQL Server and on PostgreSQL, the password-shaped parts of the statements, plans and Extended Events reports it keeps are masked before they are stored: a PASSWORD, SECRET, KEY_SOURCE, IDENTITY_VALUE or IDENTIFIED BY value; a password parameter by name, and every value of a call of sp_addlogin, sp_password, sp_addlinkedsrvlogin or the application-role procedures by position; a connection string's or a URL's password; the -P of a sqlcmd, bcp, osql or isql command line; a key, passphrase or password given to pgcrypto or to SQL Server's passphrase, certificate and asymmetric-key functions; a private key block; a plan's value of a password parameter. A password kept as an ordinary value in a table's data is a literal like any other: only the setting that replaces every literal, or keeps no text, takes it out.</li>
++    <li>The statement-text setting applies when the text is read, not only when it is collected: a page, an export, a report mail, an alert or the MCP door shows the text an instance's setting allows now, so an instance moved to keep no text stops showing the text kept before, and one moved to replace every literal shows the old text with its literals replaced. Two are the admin's own: a custom report on the store runs its own SQL as the reports login and reads the stored text as it was kept (the Custom reports page says so while any instance keeps less than the full text), and a report mail rendered before a change is sent as it was rendered.</li>
+     <li>Its own database gives each part its own role: the collector adds data only through its import functions, the web page reads (and records each action it runs), the alert sender holds a login of its own, and the sign-in check runs through one function nobody else can call.</li>
+     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
+   </ul>
