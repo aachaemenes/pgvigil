@@ -222,3 +222,42 @@ func TestBlitzDBSkipNote(t *testing.T) {
 		}
 	}
 }
+
+// TestBlitzNoteFirstCorners: the cap's corners (review-23 N2): the only notice not last, exactly the cap, and a pgvigil
+// note never dropped for it (N1).
+func TestBlitzNoteFirstCorners(t *testing.T) {
+	var mid blitzRead
+	for i := 0; i < blitzMsgsMax; i++ {
+		if i == 10 {
+			mid.add(mssqldb.Error{Class: 0, Message: "the only notice"})
+			continue
+		}
+		mid.add(mssqldb.Error{Class: 16, Number: int32(i + 1), Message: "an error"})
+	}
+	mid.noteFirst("first")
+	if len(mid.msgs) != blitzMsgsMax || mid.msgs[0].text != "first" {
+		t.Fatalf("the notice in the middle: %d messages, the first %+v", len(mid.msgs), mid.msgs[0])
+	}
+	for _, m := range mid.msgs[1:] {
+		if m.class < 11 {
+			t.Errorf("the notice kept while an error was dropped: %+v", m)
+		}
+	}
+	var exact blitzRead
+	for i := 0; i < blitzMsgsMax-1; i++ {
+		exact.add(mssqldb.Error{Class: 0, Number: int32(i + 1), Message: "a notice"})
+	}
+	exact.noteFirst("first")
+	if len(exact.msgs) != blitzMsgsMax || exact.msgs[blitzMsgsMax-1].number != blitzMsgsMax-1 {
+		t.Errorf("exactly the cap: %d messages, the last %+v", len(exact.msgs), exact.msgs[len(exact.msgs)-1])
+	}
+	var own blitzRead
+	for i := 0; i < blitzMsgsMax-1; i++ {
+		own.add(mssqldb.Error{Class: 16, Number: int32(i + 1), Message: "an error"})
+	}
+	own.note("sp_Blitz's version was not read")
+	own.noteFirst("first")
+	if len(own.msgs) != blitzMsgsMax || own.msgs[0].text != "first" || own.msgs[blitzMsgsMax-1].text != "sp_Blitz's version was not read" {
+		t.Errorf("a pgvigil note last: %d messages, the last %+v", len(own.msgs), own.msgs[len(own.msgs)-1])
+	}
+}

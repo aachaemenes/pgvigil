@@ -319,18 +319,31 @@ func (rd *blitzRead) note(s string) {
 }
 
 // noteFirst is pgvigil's own line at the head of a run's messages, kept over the cap: a full list gives up its newest
-// notice of the server's (else its newest message) for it.
+// notice of the server's, else its newest message of the server's (a pgvigil note is never the one dropped: review-23
+// N1); a list of nothing but pgvigil notes gives up its last.
 func (rd *blitzRead) noteFirst(s string) {
 	rd.msgs = append([]blitzMsg{{proc: "pgvigil", text: cutText(s)}}, rd.msgs...)
 	if len(rd.msgs) <= blitzMsgsMax {
 		return
 	}
-	drop := len(rd.msgs) - 1
+	drop, server := -1, -1
 	for i := len(rd.msgs) - 1; i > 0; i-- {
-		if rd.msgs[i].class < 11 && rd.msgs[i].proc != "pgvigil" {
+		if rd.msgs[i].proc == "pgvigil" {
+			continue
+		}
+		if server < 0 {
+			server = i
+		}
+		if rd.msgs[i].class < 11 {
 			drop = i
 			break
 		}
+	}
+	switch {
+	case drop < 0 && server >= 0:
+		drop = server
+	case drop < 0:
+		drop = len(rd.msgs) - 1
 	}
 	rd.msgs = append(rd.msgs[:drop], rd.msgs[drop+1:]...)
 }
