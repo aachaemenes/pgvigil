@@ -65,6 +65,7 @@ const (
 	dropAddress = "an address a message is sent to"
 	dropToken   = "a claim token"
 	dropURL     = "an address that can carry credentials"
+	dropSetting = "settings' old and new values, unmasked: a connection setting can carry a password"
 	dropReply   = "a mail server's reply: it can quote the address it refused"
 	dropText    = "statement, plan or log text: carried only with export.carry: [text]"
 	dropAudit   = "who did what, or a grant: carried only with export.carry: [audit]"
@@ -110,7 +111,7 @@ var tables = []Table{
 	out("alert_channel_quota", whyMark),
 	state("alert_channels").drop("destination", dropAddress),
 	state("alert_dismissals").audit("created_by", "client", "ended_by"),
-	state("alert_held"),
+	state("alert_held").text("detail"),
 	window("alert_log", "snapshot_at").drop("destination", dropAddress).drop("error", dropReply),
 	state("alert_rule_baseline"),
 	state("alert_rule_fired"),
@@ -205,7 +206,7 @@ var tables = []Table{
 	state("index_inventory").text("columns", "index_def"),
 	state("index_state").text("covered_by_def", "index_def", "drop_sql", "undo_sql"),
 	window("index_usage_daily", "snapshot_at"),
-	window("instance_events", "seen_at"),
+	state("instance_events"),
 	state("instance_extension_settings"),
 	state("instance_extensions"),
 	window("instance_setting_history", "changed_at"),
@@ -214,7 +215,7 @@ var tables = []Table{
 	state("instance_versions"),
 	state("instances"),
 	window("investigation_journal", "at").carry(CarryAudit),
-	window("investigations", "asked_at").carry(CarryAudit).drop("claim_hash", dropToken),
+	state("investigations").carry(CarryAudit).drop("claim_hash", dropToken),
 	window("iostats", "snapshot_at"),
 	state("job_exclusions").audit("created_by", "client", "ended_by"),
 	window("job_runs", "start_time").text("command", "return_message"),
@@ -297,7 +298,7 @@ var tables = []Table{
 	state("mssql_database_option"),
 	window("mssql_database_size", "snapshot_at"),
 	window("mssql_database_space", "snapshot_at"),
-	state("mssql_db_confcheck"),
+	state("mssql_db_confcheck").text("scoped_note"),
 	window("mssql_deadlocks", "event_at").text("victim_statement", "processes", "resources", "graph"),
 	window("mssql_errorlog", "log_at").text("message"),
 	window("mssql_failed_logins", "logged_at").carry(CarryAudit).text("message"),
@@ -368,7 +369,7 @@ var tables = []Table{
 	state("mssql_missing_index"),
 	window("mssql_missing_index_read", "snapshot_at"),
 	state("mssql_monitor_app"),
-	window("mssql_ola_commandlog", "start_at").text("command", "error_message"),
+	state("mssql_ola_commandlog").text("command", "error_message"),
 	state("mssql_orphan_files"),
 	state("mssql_pc_database"),
 	out("mssql_pc_handles", whyBaseline),
@@ -406,7 +407,7 @@ var tables = []Table{
 	state("mssql_reader_state"),
 	window("mssql_repl_hourly", "hour"),
 	window("mssql_repl_sample", "snapshot_at"),
-	state("mssql_replication_state"),
+	state("mssql_replication_state").text("status_text", "error_text"),
 	window("mssql_requests", "snapshot_at"),
 	window("mssql_requests_summary", "snapshot_at"),
 	state("mssql_restore_files"),
@@ -439,7 +440,7 @@ var tables = []Table{
 	state("mssql_server_role_members").carry(CarryAudit),
 	state("mssql_service"),
 	state("mssql_service_ext"),
-	window("mssql_session_by", "snapshot_at"),
+	window("mssql_session_by", "snapshot_at").auditRows("dimension IN ('login', 'address')"),
 	window("mssql_session_count", "snapshot_at"),
 	window("mssql_session_group", "snapshot_at"),
 	window("mssql_session_summary", "snapshot_at"),
@@ -479,7 +480,7 @@ var tables = []Table{
 	state("mssql_xe_capture_state").text("note"),
 	state("mssql_xe_foreign"),
 	state("mssql_xe_foreign_read"),
-	window("mssql_xe_modules", "event_at"),
+	window("mssql_xe_modules", "event_at").audit("login_name", "host_name"),
 	state("mssql_xe_session_state"),
 	state("mssql_xe_state"),
 	window("mssql_xe_waits", "event_at").text("statement"),
@@ -499,7 +500,7 @@ var tables = []Table{
 	state("pg_logical_pubs"),
 	state("pg_logical_rels"),
 	state("pg_logical_subs"),
-	state("pg_patroni_members").drop("api_url", dropURL),
+	state("pg_patroni_members").drop("api_url", dropURL).drop("api_message", dropURL).drop("pending_restart_reason", dropSetting),
 	state("pg_patroni_read").drop("url", dropURL),
 	state("pg_repl_link_seen"),
 	state("pg_repl_slot_state"),
