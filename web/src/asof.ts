@@ -16,9 +16,11 @@ export function remoteOf(r: Row | undefined): Remote | null {
     expectedSecs: Number(r.expected_every_secs ?? 0) || 300 };
 }
 
-// the site goes quiet at 2 x expected_every (its silence finding's warning); a collector with no healthy collection
-// for 30 minutes before its newest bundle is offline as PerformanceMonitor's rule says (instheader.ts OFFLINE_MIN)
-const QUIET_TIMES = 2, OFFLINE_BEFORE_MIN = 30;
+// PerformanceMonitor's rule: no healthy collection for 30 minutes is offline (for a remote instance: in the 30 minutes
+// before its newest bundle)
+export const OFFLINE_MIN = 30;
+// the site goes quiet at 2 x expected_every (its silence finding's warning)
+const QUIET_TIMES = 2, OFFLINE_BEFORE_MIN = OFFLINE_MIN;
 const quiet = (rem: Remote, now: number) => now - rem.asOf > QUIET_TIMES * rem.expectedSecs * 1000;
 // an age in words: Nm ago, Nh ago, Nd ago
 function ago(ms: number): string {
@@ -28,7 +30,7 @@ function ago(ms: number): string {
   return hr < 24 ? `${hr}h ago` : `${Math.floor(hr / 24)}d ago`;
 }
 
-// remoteFreshness: a remote instance's freshness (instheader.ts freshness() asks it first): offline when its site
+// remoteFreshness: a remote instance's freshness (freshness() below asks it first): offline when its site
 // sent no bundle for 2 x expected_every (the site's silence) or its collector collected nothing healthy in the 30
 // minutes before its newest bundle; stale when a collection is stale against as_of (the live read's coll_stale);
 // else online. null for an instance the hub reads itself.
@@ -41,13 +43,28 @@ export function remoteFreshness(r: Row | undefined, now = Date.now()): 'online' 
   return Number(r?.coll_stale ?? 0) > 0 ? 'stale' : 'online';
 }
 
-// asOfLine: 'as of <clock> (remote collector <c> of site <s>, a bundle every <interval>)'; '' for another instance
+export type Freshness = 'online' | 'stale' | 'offline' | 'awaiting';
+// freshness: the instance header's and the Summary's rule (instheader.ts re-exports it) - online, stale (a collection
+// past its interval: the footer's rule), offline (no healthy collection for 30 minutes), awaiting (no collection ever);
+// a remote instance by its newest bundle and its site's cadence first (remoteFreshness). DOM-free, so its unit test
+// runs the header's own rule (review B S7).
+export function freshness(r: Row | undefined, now = Date.now()): Freshness {
+  if (!r || r.last_collect_at == null) return 'awaiting';
+  const rf = remoteFreshness(r, now);
+  if (rf) return rf;
+  if (now - Date.parse(String(r.last_collect_at)) > OFFLINE_MIN * 60000) return 'offline';
+  return Number(r.coll_stale ?? 0) > 0 ? 'stale' : 'online';
+}
+
+// asOfLine: 'as of <clock> (remote collector <c> of site <s>, a bundle every <interval>)' - 'a remote collector of
+// site <s>' while its collector is not known yet (no bundle loaded); '' for another instance
 export function asOfLine(r: Row | undefined): string {
   const rem = remoteOf(r);
   if (!rem) return '';
   const clock = new Date(rem.asOf).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const every = rem.everySecs > 0 ? `a bundle every ${Math.round(rem.everySecs / 60)} min` : 'its bundle interval not known yet';
-  return `as of ${clock} (remote collector ${rem.collector} of site ${rem.site}, ${every})`;
+  const from = rem.collector ? `remote collector ${rem.collector} of site ${rem.site}` : `a remote collector of site ${rem.site}`;
+  return `as of ${clock} (${from}, ${every})`;
 }
 
 // quietLine: the site's silence in the words of its finding, 'site <s> has gone quiet: last bundle <age>', once no

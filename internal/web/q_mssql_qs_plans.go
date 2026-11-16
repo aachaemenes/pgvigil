@@ -83,6 +83,9 @@ func (ds *doorSet) planPolicy(name string) string {
 
 // planFetchOff is why a plan cannot be read on demand for the instance on this door set, or "".
 func (ds *doorSet) planFetchOff(name string) string {
+	if why := ds.remoteWhy(name); why != "" { // R13's words before the policy's (review B N1)
+		return "not read: " + why
+	}
 	if qt := ds.planPolicy(name); qt != "full" {
 		return fmt.Sprintf("not read: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled parameter values, so plans are read under \"full\" only", qt)
 	}

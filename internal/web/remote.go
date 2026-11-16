@@ -9,6 +9,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -32,8 +33,14 @@ type remoteDoor struct {
 	ExpectedEvery time.Duration
 }
 
-// from is the door's words for where the instance is read: 'remote collector <c> of site <s>'.
-func (r remoteDoor) from() string { return "remote collector " + r.Collector + " of site " + r.Site }
+// from is the door's words for where the instance is read: 'remote collector <c> of site <s>' ('a remote collector of
+// site <s>' while no bundle of the instance has named its collector yet).
+func (r remoteDoor) from() string {
+	if r.Collector == "" {
+		return "a remote collector of site " + r.Site
+	}
+	return "remote collector " + r.Collector + " of site " + r.Site
+}
 
 // remoteWhy is the words every live door says for a remote instance (actions.RemoteOff), or "" for any other.
 func (ds *doorSet) remoteWhy(name string) string {
@@ -50,16 +57,22 @@ type remoteRow struct {
 }
 
 // sqlRemoteInstances: every instance a site owns, as of its newest loaded bundle (0329's view, granted to serve's
-// reader role)
-const sqlRemoteInstances = `SELECT name, engine, site, collector, as_of, coalesce(interval_secs, 0), coalesce(expected_every_secs, 0)
+// reader role); a column the view leaves NULL (an instance whose collector no bundle has named yet) reads empty, so
+// one row never fails the read (review B S2)
+const sqlRemoteInstances = `SELECT coalesce(name, ''), coalesce(engine, ''), coalesce(site, ''), coalesce(collector, ''), as_of,
+       coalesce(interval_secs, 0), coalesce(expected_every_secs, 0)
   FROM pgvigil.remote_instance_state ORDER BY name`
 
-// readRemote reads the remote instances; a store before 0329 (no such view) has none.
+// readRemote reads the remote instances; a store before 0329 (no such view) has none; a login with no SELECT on the
+// view is told which grant it lacks.
 func readRemote(ctx context.Context, pool *pgxpool.Pool) ([]remoteRow, error) {
 	rows, err := pool.Query(ctx, sqlRemoteInstances)
 	if err != nil {
 		if noRemoteView(err) {
 			return nil, nil
+		}
+		if noRemoteGrant(err) {
+			return nil, fmt.Errorf("serve's login may not read pgvigil.remote_instance_state: migration 0329 grants SELECT on it to pgvigil_reader, and serve reads as a member of that role (%w)", err)
 		}
 		return nil, err
 	}
@@ -71,6 +84,9 @@ func readRemote(ctx context.Context, pool *pgxpool.Pool) ([]remoteRow, error) {
 		var every, expected int
 		if err := rows.Scan(&r.Name, &r.Engine, &r.Door.Site, &r.Door.Collector, &asOf, &every, &expected); err != nil {
 			return nil, err
+		}
+		if r.Name == "" || r.Door.Site == "" {
+			continue // not an instance a site owns (the view never gives one)
 		}
 		if asOf != nil {
 			r.Door.AsOf = *asOf
@@ -86,6 +102,16 @@ func noRemoteView(err error) bool {
 	var pe *pgconn.PgError
 	return errors.As(err, &pe) && pe.Code == "42P01"
 }
+
+// noRemoteGrant: the login may not read the view (insufficient_privilege: no SELECT, or no USAGE on the schema)
+func noRemoteGrant(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42501"
+}
+
+// remoteWarned: the remote names already logged as colliding with an instance of this server (once per name and
+// site, not at every rebuild: review B N2)
+var remoteWarned sync.Map
 
 // withRemote is a copy of ds with exactly these remote instances: each in Remote and as a door in PG or MS carrying
 // its words and no login. A name pgvigil.yaml or Admin > Instances already holds keeps its own door (0329's
@@ -108,7 +134,7 @@ func withRemote(ds *doorSet, rows []remoteRow, log *slog.Logger) *doorSet {
 		_, inPG := cp.PG[r.Name]
 		_, inMS := cp.MS[r.Name]
 		if inPG || inMS {
-			if log != nil {
+			if _, dup := remoteWarned.LoadOrStore(r.Name+"\x00"+r.Door.Site, true); !dup && log != nil {
 				log.Warn("a remote instance's name is already an instance of this server: its own door stands", "instance", r.Name, "site", r.Door.Site)
 			}
 			continue

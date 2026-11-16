@@ -796,6 +796,10 @@ func slicesContains(l []string, v string) bool {
 func (s *Server) instanceTest(w http.ResponseWriter, r *http.Request, user string, in map[string]any) {
 	ctx := r.Context()
 	name := str(in, "name")
+	if why := s.doorsNow().remoteWhy(name); why != "" { // R13's words before any page instance or form (review B N1)
+		s.reply(w, r, map[string]any{"ok": false, "detail": why}, nil)
+		return
+	}
 	var engine, dsn string
 	have, err := s.pageInstance(ctx, name)
 	if err != nil {

@@ -112,12 +112,12 @@ func (s *Server) planButtonsOn(ds *doorSet, name string) planButtons {
 	a := s.actions
 	var b planButtons
 	switch {
+	case ds.remoteWhy(name) != "": // R13's words before the server's own (review B N1)
+		b.ExplainReason = ds.remoteWhy(name)
 	case a == nil:
 		b.ExplainReason = "actions are off on this server"
 	case a.off != "":
 		b.ExplainReason = a.off
-	case ds.remoteWhy(name) != "":
-		b.ExplainReason = ds.remoteWhy(name)
 	case ds.PG[name].Page:
 		b.ExplainReason = fileOnly(name)
 	case ds.PG[name].Monitor == "":

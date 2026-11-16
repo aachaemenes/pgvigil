@@ -141,10 +141,10 @@ var runAdvisor = advisor.Run
 func (s *Server) adviseOff(ds *doorSet, name string) string {
 	door, ok := ds.PG[name]
 	switch {
+	case ds.remoteWhy(name) != "": // R13's words before the server's own (review B N1)
+		return ds.remoteWhy(name)
 	case s.actions == nil:
 		return "the index advisor needs the actions door, which is off on this server"
-	case ds.remoteWhy(name) != "":
-		return ds.remoteWhy(name)
 	case ok && door.Page:
 		return fileOnly(name) // the index advisor stays on pgvigil.yaml's instances
 	case !ok || strings.TrimSpace(door.Monitor) == "":
