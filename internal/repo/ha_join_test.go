@@ -78,6 +78,9 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     replication_hourly's months go by their own age through replication_hourly_purge() in purge()'s last block
 //     (0150), named among the run's dropped partitions. A row or a month inside the age stays. mssql_repl_hourly
 //     (0142) keeps a year of hours: its import trims a live instance's, purge() the rest of one no longer read.
+//  4. The slices' findings reach pgvigil.findings, the one view the alerts and the Findings page read: a Patroni
+//     cluster that two reads a minute apart find without a leader (0144's pg_patroni_checks) is a critical
+//     'patroni no leader' finding of source 'patroni' there (0144 leaves that union arm to the join's 0190).
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -191,4 +194,29 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	want("the hours of mssql_repl_hourly after purge(30) (all / inside the year)",
 		str(`SELECT count(*) || ' / ' || count(*) FILTER (WHERE hour > now() - interval '366 days') FROM pgvigil.mssql_repl_hourly WHERE instance_id = $1`, ms),
 		"1 / 1")
+
+	// 4. Patroni: a leader, then none at two reads 70 s apart (scripts/proof-patroni.sh's seeded row s1)
+	var pat int
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '18.0', 180000, false, '{}'::text[], 'postgres')`,
+		fmt.Sprintf("hajoin-pat-%d", sfx)).Scan(&pat); err != nil {
+		t.Fatal(err)
+	}
+	patRead := func(leader string) string {
+		return `{"kind":"patroni_read","url":"u","ok":true,"cluster_ok":true,"scope":"c1","members":2,"leader":` + leader + `,"system_identifier":"s-c1"}`
+	}
+	patMember := func(member, role, state string) string {
+		return `{"kind":"patroni","member":"` + member + `","role":"` + role + `","state":"` + state + `","api_ok":true}`
+	}
+	patImport := func(secondsAgo int, payload string) {
+		t.Helper()
+		exec(`SELECT pgvigil.import_patroni($1, now() - $2::int * interval '1 second', $3::jsonb)`, pat, secondsAgo, payload)
+	}
+	patImport(140, "["+patRead(`"m1"`)+","+patMember("m1", "leader", "running")+","+patMember("m2", "replica", "streaming")+"]")
+	patImport(70, "["+patRead("null")+","+patMember("m2", "replica", "running")+"]")
+	patImport(0, "["+patRead("null")+","+patMember("m2", "replica", "running")+"]")
+	want("the Patroni checks of the cluster without a leader (the control: 0144's own view)",
+		str(`SELECT coalesce(string_agg(severity || '|' || check_name || '|' || object, ',' ORDER BY check_name, object), '')
+		       FROM pgvigil.pg_patroni_checks WHERE instance_id = $1`, pat), "critical|patroni member down|m1,critical|patroni no leader|c1")
+	want("'patroni no leader' in pgvigil.findings",
+		str(`SELECT count(*)::text FROM pgvigil.findings WHERE instance_id = $1 AND setting = 'patroni no leader' AND severity = 'critical' AND source = 'patroni'`, pat), "1")
 }
