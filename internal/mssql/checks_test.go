@@ -386,7 +386,7 @@ func TestDatabaseRules(t *testing.T) {
 		{collect.Row{"subscribed": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"distributor": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"encrypted": int64(1)}, "encrypted", "warn", "info", AreaDBOptions, "sp_Blitz 21"},
-		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "snapshot", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
+		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "snapshot_of", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
 	}
 	for _, c := range cases {
 		dev, fs := judgeDatabase(db(c.over), srv)
@@ -411,12 +411,15 @@ func TestDatabaseRules(t *testing.T) {
 		{"vlf_count": int64(199)},
 		{"checkdb_age_min": int64(6 * 1440)},
 		{"checkdb_age_min": int64(7*1440 + 60)}, // a weekly CHECKDB running now: inside the half day's grace
-		{"is_snapshot": int64(1), "auto_close": int64(1), "page_verify": "NONE"},
 	}
 	for _, over := range quiet {
 		if dev, fs := judgeDatabase(db(over), srv); len(dev) != 0 || len(fs) != 0 {
 			t.Errorf("%v must raise nothing: %v %+v", over, dev, fs)
 		}
+	}
+	// a snapshot raises its own finding only (sp_Blitz 77, BLITZ-GAP): the options it carries are its source's
+	if dev, fs := judgeDatabase(db(collect.Row{"is_snapshot": int64(1), "snapshot_of": "src", "auto_close": int64(1), "page_verify": "NONE"}), srv); len(dev) != 1 || len(fs) != 1 || fs[0].Rule != "sp_Blitz 77" {
+		t.Errorf("a snapshot raises more than 77: %v %+v", dev, fs)
 	}
 	// Azure SQL Managed Instance has no version to hold a compatibility level to
 	if dev, _ := judgeDatabase(db(collect.Row{"compatibility_level": int64(130)}), serverFactsOf(Info{Kind: KindAzureMI, Major: 12}, "")); len(dev) != 0 {
@@ -485,7 +488,14 @@ func TestDatabasesQuery(t *testing.T) {
 			t.Errorf("the read lacks %s", c)
 		}
 	}
-	if strings.Contains(old, "%!") || strings.Contains(now, "%!") {
+	// the replication flags (sp_Blitz 19, BLITZ-GAP) are asked for only where the server has them
+	repl := databasesQuery(map[string]bool{"is_published": true, "is_merge_published": true, "is_subscribed": true, "is_distributor": true})
+	for _, c := range []string{"d.is_published", "d.is_merge_published", "d.is_subscribed", "d.is_distributor"} {
+		if !strings.Contains(repl, c) || strings.Contains(old, c) {
+			t.Errorf("%s: asked %v where the server has it, %v where it does not", c, strings.Contains(repl, c), strings.Contains(old, c))
+		}
+	}
+	if strings.Contains(old, "%!") || strings.Contains(now, "%!") || strings.Contains(repl, "%!") {
 		t.Error("a format verb was left unfilled")
 	}
 	if !hasVLFView(Info{Kind: KindServer, Major: 13, Build: 5026}) || hasVLFView(Info{Kind: KindServer, Major: 13, Build: 4001}) || !hasVLFView(Info{Kind: KindAzureMI, Major: 12}) {
