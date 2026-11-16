@@ -235,3 +235,36 @@ func TestS3Region(t *testing.T) {
 		}
 	}
 }
+
+// A bucket's or a container's keys are rooted at '<prefix>/<name>/', and at the prefix alone when the name is empty (a
+// remote collector's push and the hub's drops read the prefix itself): never '<prefix>//' or '/'.
+func TestDestinationRoots(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "none"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "none"))
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_REGION", "eu-west-3")
+	for _, c := range []struct{ prefix, name, want string }{
+		{"exports", "r", "exports/r/"},
+		{"/exports/", "", "exports/"},
+		{"", "r", "r/"},
+		{"", "", ""},
+	} {
+		d, err := NewS3(ctx, S3Options{Endpoint: "http://127.0.0.1:9000", Bucket: "b", Prefix: c.prefix, Name: c.name})
+		if err != nil {
+			t.Fatalf("s3 %q %q: %v", c.prefix, c.name, err)
+		}
+		if got := d.(*s3Dest).root; got != c.want {
+			t.Errorf("s3 prefix %q name %q: root %q, want %q", c.prefix, c.name, got, c.want)
+		}
+		b, err := NewAzureBlob(BlobOptions{SASURL: "https://acct.blob.core.windows.net/c?sv=2024-01-01&sig=x", Container: "c", Prefix: c.prefix, Name: c.name})
+		if err != nil {
+			t.Fatalf("blob %q %q: %v", c.prefix, c.name, err)
+		}
+		if got := b.(*blobDest).root; got != c.want {
+			t.Errorf("blob prefix %q name %q: root %q, want %q", c.prefix, c.name, got, c.want)
+		}
+	}
+}
