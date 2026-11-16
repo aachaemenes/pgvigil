@@ -360,13 +360,13 @@ func (set *resultSet) markCards() {
 		if len(r) != 2 || r[ii] == nil {
 			continue
 		}
-		text := cellText(r[ii])
+		text := cardText(r[ii])
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
 		sev := "Info"
 		if r[si] != nil {
-			switch strings.ToLower(strings.TrimSpace(cellText(r[si]))) {
+			switch strings.ToLower(strings.TrimSpace(cardText(r[si]))) {
 			case "warning":
 				sev = "Warning"
 			case "critical":
@@ -378,8 +378,8 @@ func (set *resultSet) markCards() {
 	set.Cards = &cards
 }
 
-// cellText is a cell's value as text (a driver's []byte as its bytes)
-func cellText(v any) string {
+// cardText is a cell's value as text (a driver's []byte as its bytes)
+func cardText(v any) string {
 	if b, ok := v.([]byte); ok {
 		return string(b)
 	}

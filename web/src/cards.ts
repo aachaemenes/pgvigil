@@ -8,7 +8,8 @@ import { badge, el } from './ui';
 
 export interface Card { severity: string; insight: string }
 
-const LINK = /\[([^\]]*)\]\(([^)\s]+)\)/g;
+// the url may hold one level of balanced parentheses (a docs link's '(v=sql.105)')
+const LINK = /\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g;
 const KIND: Record<string, string> = { Critical: 'crit', Warning: 'warn', Info: 'none' };
 
 // insightNodes: the insight's text, its http / https [text](url) links as <a>, everything else as written

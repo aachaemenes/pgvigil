@@ -74,7 +74,8 @@ row in row order, and not as a grid (as DBA Dash draws its own reports' insights
 `Critical`, read in any case; anything else, NULL too, is `Info`. A row whose `Insight` is NULL or blank is left out;
 a set with no rows draws no card. The insight is text: only `[words](https://...)` (http or https) becomes a link,
 opened in a new tab; any other `[words](...)` - `javascript:`, `data:`, a relative address - stays as its own text.
-A grid after a card set is numbered without it. Each instance of a tag or fleet run shows its own cards in its own
+A grid after a card set is numbered without it on the page; a column format or a colour rule names its result set by the
+number the run returns it, every set counted, a card set too (the editor says so). Each instance of a tag or fleet run shows its own cards in its own
 part of the page. The page's workbook and its mail carry the cards as text, one line `<severity>: <insight>` each,
 in a sheet (a table in the mail) of their own under the same heading. A PostgreSQL report returns one result set, so
 its card report has no grid; a SQL Server batch can return the cards and its grids together. The API marks a card set
