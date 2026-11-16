@@ -26,7 +26,7 @@
 #  T. the starter rules: 'Starter rules' on #/alertrules opens a menu of PerformanceMonitor's starter templates whose
 #     measure pgvigil charts as a metric: 'PostgreSQL: connection count high' and 'SQL Server: sustained blocking'; the
 #     first opens the New alert rule dialog filled: sessions.total, above, 200, 500, 15 minutes, its name (Save off on
-#     the demo's read-only serve, the reason said).
+#     the demo's read-only serve: aria-disabled, B3's offControl, the reason said).
 #  C. the click table: every a[href] and button inside the page (main) of #/alerts, one #/alert page and #/alertrules:
 #     every link's target read (a page of the UI); one of each kind clicked (a link kind: its tab, its parameters' names,
 #     its words without figures; a button kind: its words), the kind's count in the table: a link lands on its own tab with no error box (its h2 named), a button opens a dialog (its title named), a
@@ -35,7 +35,8 @@
 #     its reason (the demo serves read only); 0 FAIL.
 #  A. #/admin (its route the WIRING BLOCK's): five tabs - Servers (a row per instance of /api/instances), Notification
 #     routes, Alert settings (the sentence and the six built-in thresholds of 0118), Threshold overrides, Server actions
-#     (three switches per SQL Server instance) -, each its heading and a grid, no error box, the tab in the address
+#     (five switches per SQL Server instance - kill, job_start, job_stop and B9c's job_enable / job_disable - read from the
+#     tab's own rows, no other engine's row) -, each its heading and a grid, no error box, the tab in the address
 #     (atab=); its links and buttons in C.
 #  P. shots of #/alerts, an alert page, #/alertrules and #/admin in the light and the dark theme.
 #  F. migration 0118 (PerformanceMonitor's defaults as findings) on a fresh repository leaves pgvigil.findings alone;
@@ -182,7 +183,8 @@ out.starters = await ev(`(async () => { const b = [...document.querySelectorAll(
   const form = d ? [...d.querySelectorAll('input, select, textarea')].map(x => x.value) : null;
   const title = d?.querySelector('h3, h2')?.textContent ?? null; const save = d?.querySelector('button[type=submit]');
   const need = d ? [...d.querySelectorAll('p.meta')].map(p => p.textContent).find(t => /^Save needs/.test(t)) ?? '' : '';
-  const res = { items, title, form, saveOff: !!save?.disabled, need }; if (d) d.close(); return res; })()`);
+  // Save off is B3's offControl: aria-disabled 'true' (the control stays focusable and says why), never the disabled attribute
+  const res = { items, title, form, saveOff: save?.getAttribute('aria-disabled') === 'true', need }; if (d) d.close(); return res; })()`);
 // A: the Admin page, every tab opened (the route is the WIRING BLOCK's: the box run applies it)
 out.admin = { tabs: [] };
 await go('#/admin'); await sleep(800);
@@ -190,12 +192,14 @@ const atabs = await ev(`[...document.querySelectorAll('main .seg[aria-label="Adm
 for (const [i, label] of (atabs || []).entries()) {
   await ev(`document.querySelectorAll('main .seg[aria-label="Admin tabs"] button')[${i}].click()`); await sleep(1500);
   out.admin.tabs.push(await ev(`(() => { const b = document.querySelector('main .admin-body'); return { label: ${JSON.stringify(label)}, h3: b?.querySelector('h3')?.textContent ?? '', error: !!b?.querySelector('.error'),
-    rows: b ? [...b.querySelectorAll('table.grid')].map(t => Number(t.dataset.rows ?? t.querySelectorAll(':scope > tbody > tr').length)) : [], sentence: b?.querySelector('p.will-alert')?.textContent ?? null, hash: location.hash }; })()`));
+    rows: b ? [...b.querySelectorAll('table.grid')].map(t => Number(t.dataset.rows ?? t.querySelectorAll(':scope > tbody > tr').length)) : [], sentence: b?.querySelector('p.will-alert')?.textContent ?? null, hash: location.hash,
+    pairs: ${JSON.stringify(label)} === 'Server actions' && b ? [...b.querySelectorAll('table.grid > tbody > tr')].map(tr => [tr.children[0]?.textContent ?? '', tr.children[1]?.textContent ?? '']) : null }; })()`));
   if (i === 0) await shot('admin');
 }
 const instsAll = await (await fetch(U + 'api/instances')).json();
 out.admin.instances = instsAll.rows.length;
 out.admin.sqlservers = instsAll.rows.filter(r => r[instsAll.columns.indexOf('engine')] === 'sqlserver').length;
+out.admin.sqlnames = instsAll.rows.filter(r => r[instsAll.columns.indexOf('engine')] === 'sqlserver').map(r => r[instsAll.columns.indexOf('name')]);
 // C: every link and button of the three pages: every link's target read and checked; one of each kind clicked (a link
 // kind: its tab, its parameters' names and its words with the figures out; a button kind: its words the same way)
 const pages = ['#/alerts?w=7d', out.evidence[0] ? `#/alert?k=${out.evidence[0].key}` : null, '#/alertrules?w=7d', '#/admin?atab=settings'].filter(Boolean);
@@ -305,10 +309,16 @@ links = d['links']; odd = [x for x in links if off(x['href'])]
 check(len(links) > 0 and not odd, f"C: every link's target read: {len(links)} links on the pages walked, each a page of the UI ({len(odd)} not: {odd[:3]})")
 a = d.get('admin') or {}; tabsA = {t['label']: t for t in a.get('tabs', [])}
 want_tabs = ['Servers', 'Notification routes', 'Alert settings', 'Threshold overrides', 'Server actions']
+ACTS = ['kill', 'job_start', 'job_stop', 'job_enable', 'job_disable']
 check(list(tabsA) == want_tabs and all(t['h3'] == t['label'] and not t['error'] and t['rows'] for t in tabsA.values())
       and tabsA['Servers']['rows'][0] == a.get('instances') and tabsA['Alert settings']['rows'][0] == 6 and (tabsA['Alert settings'].get('sentence') or '').startswith('pgvigil ')
-      and tabsA['Server actions']['rows'][0] == 3 * a.get('sqlservers', -1) and all('atab=' in t['hash'] for t in tabsA.values()),
-      f"A: #/admin's tabs {list(tabsA)}: each its heading and grid, no error box; Servers {tabsA.get('Servers', {}).get('rows')} = {a.get('instances')} instances, the built-in thresholds 6 rows and the sentence, Server actions {tabsA.get('Server actions', {}).get('rows')} = 3 x {a.get('sqlservers')} SQL Server instances, the tab in the address")
+      # Server actions: each SQL Server instance's five actions (B9c added job_enable / job_disable to kill, job_start, job_stop),
+      # read from the tab's own rows, and no row of another engine (alerts.ts: the tab lists SQL Server instances only)
+      and tabsA['Server actions']['rows'][0] == len(ACTS) * a.get('sqlservers', -1)
+      and sorted({x[1] for x in tabsA['Server actions'].get('pairs') or []}) == sorted(ACTS)
+      and {x[0] for x in tabsA['Server actions'].get('pairs') or []} == set(a.get('sqlnames') or [])
+      and all('atab=' in t['hash'] for t in tabsA.values()),
+      f"A: #/admin's tabs {list(tabsA)}: each its heading and grid, no error box; Servers {tabsA.get('Servers', {}).get('rows')} = {a.get('instances')} instances, the built-in thresholds 6 rows and the sentence, Server actions {tabsA.get('Server actions', {}).get('rows')} = {len(ACTS)} x {a.get('sqlservers')} SQL Server instances (actions {sorted({x[1] for x in tabsA.get('Server actions', {}).get('pairs') or []})}, instances {sorted({x[0] for x in tabsA.get('Server actions', {}).get('pairs') or []})}), the tab in the address")
 cl = d['clicks']; kinds = {}
 for c in cl: kinds[c['kind']] = kinds.get(c['kind'], 0) + 1
 badc = [c for c in cl if c['kind'] in ('link-error', 'none', 'gone') or (c['kind'] == 'disabled' and not c.get('why')) or (c['kind'] == 'link' and not c.get('landing', {}).get('h2'))]
