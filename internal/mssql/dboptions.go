@@ -107,6 +107,9 @@ var databasesSQL = `SELECT d.database_id, d.name AS database_name, CAST(d.state_
   CAST(d.is_memory_optimized_elevate_to_snapshot_on AS int) AS memory_optimized_elevate,
   %s AS adr, %s AS optimized_locking, %s AS ledger,
   CAST(CASE WHEN d.source_database_id IS NULL THEN 0 ELSE 1 END AS int) AS is_snapshot,
+  CAST(DB_NAME(d.source_database_id) AS nvarchar(128)) AS snapshot_of,
+  CAST(d.is_published AS int) AS published, CAST(d.is_merge_published AS int) AS merge_published,
+  CAST(d.is_subscribed AS int) AS subscribed, CAST(d.is_distributor AS int) AS distributor,
   CAST(d.log_reuse_wait_desc AS nvarchar(60)) AS log_reuse_wait,
   CAST(SERVERPROPERTY('Collation') AS nvarchar(128)) AS server_collation,
   DATEDIFF(day, d.create_date, GETDATE()) AS age_days,
@@ -287,6 +290,39 @@ var databaseRules = []dbRule{
 			return sevInfo, "sp_Blitz 213", "the owner's SID maps to no login on this server"
 		}
 		return "", "", ""
+	}},
+	// BLITZ-GAP (the lead 05:2x): sp_Blitz 19, 21 and 77, judged by pgvigil over its own read of sys.databases
+	{"replication", AreaDBOptions, "replication in use", func(d dbFacts, _ serverFacts) (string, string, string) {
+		var on []string
+		for _, f := range []struct{ key, words string }{
+			{"published", "published for transactional or snapshot replication"}, {"merge_published", "published for merge replication"},
+			{"subscribed", "subscribed to a publication"}, {"distributor", "the distribution database"},
+		} {
+			if d.on(f.key) {
+				on = append(on, f.words)
+			}
+		}
+		if len(on) == 0 || !d.online() {
+			return "", "", ""
+		}
+		return sevInfo, "sp_Blitz 19", strings.Join(on, "; ")
+	}},
+	{"encrypted", AreaDBOptions, "database encrypted", func(d dbFacts, _ serverFacts) (string, string, string) {
+		if d.user() && d.on("encrypted") { // tempdb is encrypted whenever a database uses TDE: not a finding of its own
+			return sevInfo, "sp_Blitz 21", "TDE is on: a restore on another server needs the certificate that protects its key, " +
+				"with its private key (the Security tab lists master's certificates and their use)"
+		}
+		return "", "", ""
+	}},
+	{"snapshot", AreaDBOptions, "database snapshot", func(d dbFacts, _ serverFacts) (string, string, string) {
+		if !d.snapshot() {
+			return "", "", ""
+		}
+		src := d.text("snapshot_of")
+		if src == "" {
+			src = "its source database"
+		}
+		return sevInfo, "sp_Blitz 77", "a database snapshot of " + src + ": each page changed in " + src + " after it was taken is first copied into it"
 	}},
 	{"collation", AreaDBOptions, "collation differs from the server's", func(d dbFacts, s serverFacts) (string, string, string) {
 		if c := d.text("collation"); d.user() && c != "" && s.Collation != "" && c != s.Collation {

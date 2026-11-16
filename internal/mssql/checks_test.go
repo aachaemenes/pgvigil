@@ -386,7 +386,7 @@ func TestDatabaseRules(t *testing.T) {
 		{collect.Row{"subscribed": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"distributor": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"encrypted": int64(1)}, "encrypted", "warn", "info", AreaDBOptions, "sp_Blitz 21"},
-		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "is_snapshot", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
+		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "snapshot", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
 	}
 	for _, c := range cases {
 		dev, fs := judgeDatabase(db(c.over), srv)
