@@ -185,6 +185,10 @@ echo "--- P3. DDL, one pass"
 sq "CREATE TABLE dbo.NewT (a int); ALTER TABLE dbo.Orders ADD note nvarchar(20) NULL; CREATE INDEX ix_orders_d ON dbo.Orders (d); DROP TABLE dbo.Gone;" shop >/dev/null || fail "P3's DDL"
 sq "EXEC (N'ALTER VIEW dbo.v_orders AS SELECT id, d, note FROM dbo.Orders'); EXEC (N'ALTER PROCEDURE dbo.p_key AS BEGIN OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = ''S3cretTwo''; SELECT 2 AS two; END'); EXEC (N'ALTER FUNCTION dbo.f_two() RETURNS int AS BEGIN RETURN 3; END');" shop >/dev/null || fail "P3's ALTERs"
 pass a26-full; pass a26-hash
+echo "  P3 after the pass: reader $(q "select state || ' at ' || snapshot_at || coalesce(' note: ' || left(note, 300), '') from pgvigil.mssql_reader_state where instance_id = $(iid a26-full) and reader = 'defaulttrace'")"
+echo "  P3 shop's ddl events: $(q "select count(*) || ' from ' || coalesce(min(event_at)::text, '-') || ' to ' || coalesce(max(event_at)::text, '-') || ' ' || coalesce(string_agg(sub || ' ' || coalesce(object_name, '?') || '/' || coalesce(object_type, '?'), ', ' order by event_at), '') from pgvigil.mssql_trace_events where instance_id = $(iid a26-full) and kind = 'ddl' and database_name = 'shop'" | cut -c1-900)"
+echo "  P3 shop's row: $(q "select state || ' read_at ' || coalesce(read_at::text, '-') || ' snapshot_at ' || snapshot_at || coalesce(' note: ' || left(note, 300), '') from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid shop)")"
+echo "  P3 collection lines: schema $(status a26-full mssql_schema | cut -c1-500) | defaulttrace $(status a26-full mssql_defaulttrace | cut -c1-500)"
 eq "P3: the changes" "$(changes a26-full shop)" "added column dbo.Orders.note, added index ix_orders_d on dbo.Orders, added table dbo.NewT, changed function dbo.f_two, changed procedure dbo.p_key, changed view dbo.v_orders, dropped table dbo.Gone"
 WHO=$(q "select coalesce(who_login, '<none>') || ' ' || who_n from pgvigil.mssql_schema_changes_window($(iid a26-full), now() - interval '1 hour', now(), $(dbid shop)) where identity = 'dbo.NewT'")
 eq "P3: who created dbo.NewT" "$WHO" "sa 1"
