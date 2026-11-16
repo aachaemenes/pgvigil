@@ -9,14 +9,15 @@
 #                      0 skips it with a line
 #
 # The API (B20-1, the design's items; this proof pins it): GET /api/trend?metric=<m>&bucket=hour|day&stat=<s>&from=&to=
-#   [&hour=<0-23>&tz=<zone>&top=<1-20>&engine=both|postgres|sqlserver&id=<instance>&by=database]
+#   [&hour=<0-23>&tz=<zone>&top=<1-20>&engine=both|postgres|sqlserver&instance=<instance_id>&by=database]
 #   metric: os_cpu, sql_cpu, latency, active, free_memory, connections; stat p50 / p95 / p98 / p99 / max (free_memory:
-#   p50 / p5 / p2 / p1 / min, lowest first). The answer: {metric, bucket, stat, window, words: [..], series: [{instance_id,
+#   p50 / p5 / p2 / p1 / min, lowest first). The answer: {metric, bucket, stat, from, to (what it read), words: [..], series: [{instance_id,
 #   name, engine, rank, reach, points: [{at, v, n}]}], none: [{instance_id, name, engine, why}]}; by=database: a series
 #   per database (its 'database' field) of one instance (id). The reader under it: pgvigil.trend_series(p_metric text,
 #   p_ids int[] (NULL = every instance of the engine), p_from timestamptz, p_to timestamptz, p_bucket text, p_stat text,
 #   p_hour int, p_tz text, p_by text DEFAULT NULL) RETURNS TABLE (instance_id int, database_name text, at timestamptz,
-#   v double precision, n int); the fleet file-IO window is the handler's (it moves p_from), never the function's.
+#   v double precision, n int) - a row per bucket and a row with 'at' NULL per series (its statistic over every sample of
+#   the range: the rank); the fleet file-IO window is the handler's (it moves p_from), never the function's.
 #
 # Expected (written before its first run; the RED run on rel-b20 = rel-roles f421753c, no Trend yet): every row FAIL
 # for one reason - GET /api/trend answers 404 (or the SPA's HTML), so no JSON; part F's timing rows FAIL the same.
@@ -38,10 +39,10 @@
 #   D (buckets): bucket=day over 40 days: one point a day, n per point; bucket=hour over 40 days answers bucket 'day'
 #     with 'hourly up to 31 days, daily beyond'.
 #   R (reach): a 365-day range: words 'samples kept back to <the seed's oldest day>' and 'a year needs the hours (B21)'.
-#   B (by database): id=S1 by=database latency over 7 days: one series per database (db_a with its values, db_b idle =
-#     no point); id=P1 by=database: 'pg_stat_io has no database split'; the fleet (no id) by=database: no series,
+#   B (by database): instance=S1 by=database latency over 7 days: one series per database (db_a with its values, db_b idle =
+#     no point); instance=P1 by=database: 'pg_stat_io has no database split'; the fleet (no instance) by=database: no series,
 #     'file I/O by database across the fleet waits for hourly history; one instance's page shows it'.
-#   C (the fleet latency cap): no id, latency, a 7-day range: every point inside the newest window the words name
+#   C (the fleet latency cap): no instance, latency, a 7-day range: every point inside the newest window the words name
 #     ('file I/O trends across the fleet read the newest <1 day|3 days> until hourly history lands').
 #   F (FLEET=1; a database of its own, the collector's order): 100 SQL Server instances x 40 files x 3 days;
 #     pgvigil.trend_series('latency', NULL, ...) with serve's session settings (read only, statement_timeout 15000, jit
@@ -241,12 +242,15 @@ n=0
 for m in os_cpu sql_cpu latency active free_memory connections; do
   n=$((n + 1)); st=${STAT[$m]}
   c=$(api "metric=$m&bucket=hour&stat=$st&from=$F2&to=$TT&top=20&engine=both" "$WORK/v$n.json")
-  expected "$m" hour "${FRAC[$st]}" "$FROM2" "$TO" > "$WORK/v$n.exp"
+  # the range the answer says it read (the fleet latency's window moves from): the seed's percentiles over that range
+  fa=$(jq "$WORK/v$n.json" "d.get('from') or ''"); ta=$(jq "$WORK/v$n.json" "d.get('to') or ''")
+  expected "$m" hour "${FRAC[$st]}" "${fa:-$FROM2}" "${ta:-$TO}" > "$WORK/v$n.exp"
   r=$(python3 "$WORK/chk.py" points "$WORK/v$n.json" "$WORK/v$n.exp")
   [[ $c == 200 && $r == ok* ]] && ok "V$n $m $st by the hour: $r" || bad "V$n $m $st: $c $r"
 done
 # V3's trap: the raw cumulative reader gives other values for P1 than the deltas (else the row proves nothing)
-VAL[rawlat]=$RAWLAT; expected rawlat hour 0.95 "$FROM2" "$TO" | grep "^$P1|" > "$WORK/raw.exp"
+fa=$(jq "$WORK/v3.json" "d.get('from') or ''"); ta=$(jq "$WORK/v3.json" "d.get('to') or ''")
+VAL[rawlat]=$RAWLAT; expected rawlat hour 0.95 "${fa:-$FROM2}" "${ta:-$TO}" | grep "^$P1|" > "$WORK/raw.exp"
 r=$(python3 "$WORK/chk.py" points "$WORK/v3.json" "$WORK/raw.exp" 2>/dev/null)
 [[ $(jq "$WORK/v3.json" "any(int(s['instance_id']) == $P1 and s.get('points') for s in d.get('series') or [])") == True && $r == bad* ]] && ok "V3's trap: P1's latency is not the raw counters' ratio (the deltas read)" || bad "V3's trap: P1's latency matches the raw cumulative counters ($r)"
 
@@ -302,7 +306,7 @@ wr=$(jq "$WORK/r.json" "' '.join(d.get('words') or [])")
 
 # ---- B: by database ---------------------------------------------------------------------------------------------------
 F7=$(ISO "'$T0'::timestamptz - interval '7 days'"); FROM7=$(q "select '$T0'::timestamptz - interval '7 days'")
-c=$(api "metric=latency&bucket=hour&stat=p95&from=$F7&to=$TT&id=$S1&by=database" "$WORK/b1.json")
+c=$(api "metric=latency&bucket=hour&stat=p95&from=$F7&to=$TT&instance=$S1&by=database" "$WORK/b1.json")
 dbs=$(jq "$WORK/b1.json" "sorted(s.get('database') for s in d.get('series') or [] if s.get('points'))")
 VAL[latency_db]="select instance_id, snapshot_at as at, sum(read_stall_ms + write_stall_ms)::float8 / sum(reads + writes) as v
    from pgvigil.mssql_fileio_sample where instance_id = $S1 and database_name = 'db_a' group by 1, 2 having sum(reads + writes) / max(interval_secs) >= 1"
@@ -315,7 +319,7 @@ print(json.dumps(d))
 PY
 r=$(python3 "$WORK/chk.py" points "$WORK/b1a.json" "$WORK/b1.exp")
 [[ $c == 200 && $dbs == "['db_a']" && $r == ok* ]] && ok "B S1 by database over 7 days: db_a drawn as the seed, db_b idle no point ($r)" || bad "B S1 by database: $c $dbs $r"
-c=$(api "metric=latency&bucket=hour&stat=p95&from=$F7&to=$TT&id=$P1&by=database" "$WORK/b2.json")
+c=$(api "metric=latency&bucket=hour&stat=p95&from=$F7&to=$TT&instance=$P1&by=database" "$WORK/b2.json")
 [[ $c == 200 && $(jq "$WORK/b2.json" "' '.join(d.get('words') or [])") == *"pg_stat_io has no database split"* ]] && ok "B P1 by database: pg_stat_io has no database split" || bad "B P1 by database: $c $(jq "$WORK/b2.json" "d.get('words')")"
 c=$(api "metric=latency&bucket=hour&stat=p95&from=$F7&to=$TT&by=database" "$WORK/b3.json")
 [[ $c == 200 && $(jq "$WORK/b3.json" "len(d.get('series') or [])") == 0 && $(jq "$WORK/b3.json" "' '.join(d.get('words') or [])") == *"file I/O by database across the fleet waits for hourly history; one instance's page shows it"* ]] \
