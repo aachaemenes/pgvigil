@@ -112,8 +112,9 @@ instances:
 A tool outside the list is off with "<tool> is not in community_allow for this instance". Glenn Berry's diagnostic
 queries send free SQL text, so through the queue they run only where `community_allow` names them (`glenn_berry` or
 "SQL Server Diagnostic Queries") or says `all`; unset, they are off with words saying so. `jobs_allow` (names, `*` and
-`-name` exclusions, as DBA Dash's allowed jobs) is read and checked now and applies to the job buttons when they go
-through the queue.
+`-name` exclusions, as DBA Dash's allowed jobs) is read and its form checked at start, but no job is checked against
+it yet: the job buttons do not go through the queue in this first cut, and the job check comes with them (from CQ's
+slice B on).
 
 The collector checks which tools each instance has, and each installed procedure's parameters, at its start, when
 its instances change and every 10 minutes, and publishes them with its doors; the page reads that, never a request
