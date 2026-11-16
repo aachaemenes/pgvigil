@@ -50,7 +50,7 @@ import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
 import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
 import { mssqlDeadlocksView } from './mssql_deadlocks';
-import { hasAvailability, mssqlAvailability } from './mssql_hadr';
+import { hasAvailability, mssqlAgView, mssqlAvailability, mssqlLogShippingView, mssqlMirroringView } from './mssql_hadr';
 import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
 import { mssqlRestore } from './mssql_restore';
 import { mssqlJobs } from './mssql_jobs';
@@ -104,6 +104,7 @@ const mssqlPages: Record<string, Render> = {
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
+  mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
   mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
@@ -163,7 +164,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, ...reportPages, admin: adminView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, ...reportPages, admin: adminView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
