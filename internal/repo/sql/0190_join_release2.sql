@@ -20,6 +20,13 @@
 --   SLOW-CONNECT (0121): alert_due's slow-connect terms; the 'connect_time' threshold key (and 'seconds' in
 --     pg_threshold_keys' unit check, which also takes the HA files' 'MB' and 'count'); import_pg_threshold is 0117's
 --     with 0142's engines rule (pg_threshold_keys.engines), connect_time's row naming both engines.
+--   HA join (0141-0144, 0150): purge()'s monthly partition parents gain mssql_repl_sample (0142) and
+--     mssql_ag_replica_sample, mssql_ag_dbcounter_sample, mssql_mirroring_sample, mssql_logrestore_sample (0143);
+--     mssql_mirroring_role_changes, mssql_fci_owner_changes and mssql_ag_seeding (0143) go by their time, as
+--     mssql_ag_failovers; purge()'s last block calls pgvigil.replication_hourly_purge() (0150) beside 0139's. No line,
+--     on purpose: mssql_repl_hourly (its import keeps a year of an instance's hours), mssql_logship_foreign_logs and
+--     mssql_logship_errors (current rows of 24 hours, replaced by each read), replication_hourly_dirty (working
+--     ranges a heal removes). The threshold keys' unit check and import_pg_threshold: at their lines below.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parents and lines; apply_roles() is not here
 -- (0110's, its owner-only list extended in 0110 itself).
 --   INVALID DATABASES (rel-invxid): pg_db_options is 0104's view REPLACED WHOLE here (an invalid database's xid cell grey
@@ -205,7 +212,9 @@ BEGIN
                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
-                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute')
+                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute',
+                         'mssql_repl_sample', 'mssql_ag_replica_sample', 'mssql_ag_dbcounter_sample', 'mssql_mirroring_sample',
+                         'mssql_logrestore_sample')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -377,6 +386,16 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_ag_failovers WHERE at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- the HA join (0143): a mirrored database's role changes and a failover cluster instance's owner changes are history
+  -- as the failovers above are, and go by the same age. The seeding rows are current rows that each read replaces
+  -- whole: one older than the age belongs to an instance no read has reached for the whole window, as with
+  -- mssql_xe_state above
+  DELETE FROM pgvigil.mssql_mirroring_role_changes WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_fci_owner_changes WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_ag_seeding WHERE snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- Query Store (0083): a query or a plan no read has listed within the window goes once no kept runtime row names it
   -- (the runtime partitions go by whole months, so a query's text stays as long as a runtime row of it does); a
   -- tuning recommendation no read has listed within the window goes; mssql_qs_store (each database's read cursor)
@@ -442,6 +461,12 @@ BEGIN
   IF to_regprocedure('pgvigil.job_stats_hourly_purge()') IS NOT NULL THEN
     n := n - cardinality(v_dropped);
     v_dropped := v_dropped || pgvigil.job_stats_hourly_purge();
+    n := n + cardinality(v_dropped);
+  END IF;
+  -- 0150 (the HA join): replication_hourly the same way, by its own hours_retention row
+  IF to_regprocedure('pgvigil.replication_hourly_purge()') IS NOT NULL THEN
+    n := n - cardinality(v_dropped);
+    v_dropped := v_dropped || pgvigil.replication_hourly_purge();
     n := n + cardinality(v_dropped);
   END IF;
   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
