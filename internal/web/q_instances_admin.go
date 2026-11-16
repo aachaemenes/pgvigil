@@ -1924,9 +1924,9 @@ func (s *Server) testConfigured(ctx context.Context, name string) (testResult, b
 	}
 	engine, dsn := "", ""
 	var sec *secrets.Ref
-	if d, ok := ds.MS[name]; ok && !d.Page {
+	if d, ok := ds.MS[name]; ok && !d.Page && d.Remote == "" { // a remote instance is never dialed (remote.go)
 		engine, dsn, sec = config.EngineSQLServer, d.Monitor, d.Secret
-	} else if d, ok := ds.PG[name]; ok && !d.Page {
+	} else if d, ok := ds.PG[name]; ok && !d.Page && d.Remote == "" {
 		engine, dsn, sec = config.EnginePostgres, d.Monitor, d.Secret
 	} else {
 		return testResult{}, false

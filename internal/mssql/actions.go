@@ -134,6 +134,8 @@ func PageOff(instance string) string {
 // Off is the reason the door cannot do k on the instance, or "" when it can.
 func (d Door) Off(instance string, k ActionKind) string {
 	switch {
+	case d.Remote != "":
+		return RemoteOff(instance, d.Remote)
 	case d.Page:
 		return PageOff(instance)
 	case d.Actions == "" && d.Configured:

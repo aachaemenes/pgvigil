@@ -74,6 +74,8 @@ type Door struct {
 // Off is the reason a door cannot act, or "" when it can.
 func (d Door) Off(instance string) string {
 	switch {
+	case d.Remote != "":
+		return RemoteOff(instance, d.Remote)
 	case d.Page:
 		return PageOff(instance)
 	case d.Actions != "":

@@ -106,6 +106,8 @@ const (
 func (s *Server) histogramOff(ctx context.Context, ds *doorSet, name string) string {
 	g := s.indexDepthGate(name)
 	switch {
+	case ds.remoteWhy(name) != "":
+		return "off: " + ds.remoteWhy(name)
 	case ds.isPage("sqlserver", name):
 		return "off: a histogram is read only on an instance of pgvigil.yaml (histogram: true there)"
 	case !g.Histogram:
@@ -136,6 +138,8 @@ func (s *Server) histogramOff(ctx context.Context, ds *doorSet, name string) str
 // fragOff is why a fragmentation read cannot start for the instance here, or "".
 func (s *Server) fragOff(ds *doorSet, name string) string {
 	switch {
+	case ds.remoteWhy(name) != "":
+		return "off: " + ds.remoteWhy(name)
 	case ds.isPage("sqlserver", name):
 		return "off: a fragmentation read runs only on an instance of pgvigil.yaml (index_fragmentation: true there)"
 	case !s.indexDepthGate(name).Fragmentation:

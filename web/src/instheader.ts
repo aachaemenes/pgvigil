@@ -26,6 +26,7 @@ import { AckData, ackDialog, ackHolds, ackOn, ackWhy, checkAcks, endButton, load
 import { Cell, cells, cellTarget, cellText, Fleet, fleet, groups, labelOf, sinceState } from './fleet';
 import { Ctx, href } from './router';
 import { verdict, verdictCard } from './verdict';
+import { asOfLine, quietLine, remoteFreshness } from './asof';
 import { el, fmtTime, pill } from './ui';
 
 export type Band = 'crit' | 'warn' | 'ok' | 'unknown';
@@ -78,9 +79,11 @@ export function relTime(at: unknown, now = Date.now()): string {
 
 export type Freshness = 'online' | 'stale' | 'offline' | 'awaiting';
 // online, stale (a collection past its interval: the footer's rule), offline (no healthy collection for 30 minutes),
-// awaiting (no collection ever)
+// awaiting (no collection ever); a remote instance by its newest bundle and its site's cadence (asof.ts)
 export function freshness(r: Row | undefined, now = Date.now()): Freshness {
   if (!r || r.last_collect_at == null) return 'awaiting';
+  const rf = remoteFreshness(r, now);
+  if (rf) return rf;
   if (now - Date.parse(String(r.last_collect_at)) > OFFLINE_MIN * 60000) return 'offline';
   return Number(r.coll_stale ?? 0) > 0 ? 'stale' : 'online';
 }
@@ -261,7 +264,7 @@ export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promi
   const [n, m] = measured(chips);
   const fr = freshness(live, now);
   const status = fr === 'awaiting' ? statusWord.awaiting
-    : `${statusWord[fr]} · ${fr === 'offline' ? lastCollected(live, now) : `last collect ${clockOf(live?.last_collect_at)}`}${n < m ? ` · ${n} of ${m} measured` : ''}`;
+    : `${statusWord[fr]} · ${fr === 'offline' ? (quietLine(live, now) || lastCollected(live, now)) : (asOfLine(live) || `last collect ${clockOf(live?.last_collect_at)}`)}${n < m ? ` · ${n} of ${m} measured` : ''}`;
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   // data-groups: the band's items in order (an offline band 'offline' first): the verdict card's reasons are these
   const word = el('span', { class: `badge band-word ${b.cls}`, 'data-groups': [...(b.offline ? ['offline'] : []), ...b.items.map(i => i.key)].join(' ') }, b.word);

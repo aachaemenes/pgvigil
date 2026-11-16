@@ -67,6 +67,7 @@ const (
 	howCorrect   = "correct its row in Admin > Instances (docs/configuration.md)"
 	howSwitch    = "an admin sets 'doors: page_instance_reads: on' in pgvigil.yaml and serves again, or the instance goes into pgvigil.yaml with its read login (docs/configuration.md)"
 	howInTheFile = "put the instance in pgvigil.yaml with its read login (docs/configuration.md)"
+	howRemote    = "nothing opens a live door to it here: its history and findings come from its bundles; a live action runs on a pgvigil inside its site (docs/remote-collector.md)"
 	howUnread    = "serve reads the list again every 15 s; its log names why a read failed (a repository older than this serve - run pgvigil migrate (0131, 0263) - or serve's role without EXECUTE on admin_inventory() or admin_instance_settings())"
 )
 
@@ -152,6 +153,9 @@ func noDoorWords(name string) string {
 // readLogin is an instance's read login on this set: its dsn and its door's kind ('file' or 'page'), or why it has
 // none and what opens it. engine is 'sqlserver' or a PostgreSQL one.
 func (ds *doorSet) readLogin(engine, name string) (dsn, kind string, no noDoor) {
+	if why := ds.remoteWhy(name); why != "" {
+		return "", "", noDoor{why, howRemote}
+	}
 	var monitor string
 	var ok, page, secret bool
 	if engine == config.EngineSQLServer {
@@ -398,13 +402,17 @@ func (s *Server) WatchDoors(ctx context.Context, log *slog.Logger, cfg *config.C
 	first := *file // until the first read: pgvigil.yaml's doors, the page's list unread
 	first.Unread, first.PageReads = true, c.reads
 	s.storeDoors(&first)
+	go s.watchRemote(ctx, log, every) // the remote instances (0329): their doors refuse in their own words
 	config.WatchInventoryRaw(ctx, log, poolInventory{s.pool}, nil, cfg.Instances, cfg.QueryText, cfg.MSSQLCounters, every, wake, true,
 		func(all []config.Instance, page []config.PageInstance, gen int64) {
 			prev := s.doorsNow()
 			if prev.Gen == gen && !prev.Unread && !prev.emptyPage() {
 				return // the same generation and every page door resolved: the set stands
 			}
-			s.storeDoors(pageDoors(file, prev, c, all, page, gen))
+			mu := s.doorStoreMu()
+			mu.Lock()
+			s.storeDoors(withRemote(pageDoors(file, prev, c, all, page, gen), s.remoteRows(), log))
+			mu.Unlock()
 		})
 }
 

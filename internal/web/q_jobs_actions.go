@@ -280,6 +280,9 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 	would := collect.JobStatement(kind, in.Scheduler, in.JobID, in.PID)
 	ds := s.doorsNow() // the request's one door set
 	switch {
+	case ds.remoteWhy(name) != "":
+		// an instance a remote collector reads: no connection of any kind
+		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: ds.remoteWhy(name)}
 	case ds.PG[name].Page:
 		// an instance added in Admin > Instances: no action of any kind
 		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: actions.PageOff(name)}

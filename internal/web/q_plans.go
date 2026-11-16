@@ -116,6 +116,8 @@ func (s *Server) planButtonsOn(ds *doorSet, name string) planButtons {
 		b.ExplainReason = "actions are off on this server"
 	case a.off != "":
 		b.ExplainReason = a.off
+	case ds.remoteWhy(name) != "":
+		b.ExplainReason = ds.remoteWhy(name)
 	case ds.PG[name].Page:
 		b.ExplainReason = fileOnly(name)
 	case ds.PG[name].Monitor == "":
@@ -331,6 +333,8 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 	var row *plans.Row
 	ds := a.doorsNow() // the request's one door set
 	switch {
+	case ds.remoteWhy(name) != "":
+		res = actions.Result{Outcome: actions.Refused, Detail: ds.remoteWhy(name)}
 	case ds.PG[name].Page:
 		res = actions.Result{Outcome: actions.Refused, Detail: fileOnly(name)}
 	case ds.planPolicy(name) == "none":
