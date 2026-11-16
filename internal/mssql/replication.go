@@ -251,7 +251,8 @@ ORDER BY 4, 5, 6, 7, 8`
 // mergeRecoveryHoldMin: a merge session in progress that wrote an error row counts as recovered inside itself once its
 // newest row is clean and its newest error is this many minutes old (the lead 2026-11-15: long enough that a failing
 // attempt writing clean rows between errors 60 s apart, as on the Windows lab, never reads recovered; short enough
-// that one transient error of a long-running continuous agent clears within two 5-minute reads).
+// that one transient error of a long-running continuous agent clears soon: with reads 5 minutes apart two reads still
+// see it failing and the third clears).
 const mergeRecoveryHoldMin = 10
 
 // replMergeSubscriptions is the merge arm of replSubscriptionsFor: one row per merge agent (MSmerge_agents), its
@@ -330,18 +331,26 @@ OUTER APPLY (SELECT MAX(y.session_id) AS ok3 FROM ` + d + `.dbo.MSmerge_sessions
 -- the streak: every session in progress newer than the newest healthy one is failing (else it would be that one)
 OUTER APPLY (SELECT MIN(z.session_id) AS first_id FROM ` + d + `.dbo.MSmerge_sessions z
               WHERE z.agent_id = a.id AND z.runstatus IN (3, 5, 6) AND z.session_id > ISNULL(ISNULL(m3.ok3, m24.ok24), -2147483648)) mf
--- the last recovery inside a streak session: an error row followed in its session by a clean row before the next error,
--- and the next error the hold or more after it; the streak's errors count after it
-OUTER APPLY (SELECT MAX(r.timestamp) AS cut FROM ` + d + `.dbo.MSmerge_history r
-               CROSS APPLY (SELECT MAX(er.time) AS t FROM ` + d + `.dbo.MSrepl_errors er WHERE er.id = r.error_id) rt
-              WHERE mf.first_id IS NOT NULL AND r.agent_id = a.id AND r.session_id >= mf.first_id AND ISNULL(r.error_id, 0) <> 0 AND rt.t IS NOT NULL
-                AND EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history c WHERE ` + same("c", "r") + ` AND ISNULL(c.error_id, 0) = 0 AND c.timestamp > r.timestamp
-                              AND NOT EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history n WHERE ` + same("n", "r") + ` AND ISNULL(n.error_id, 0) <> 0
-                                                AND n.timestamp > r.timestamp AND n.timestamp < c.timestamp))
-                AND NOT EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history n JOIN ` + d + `.dbo.MSrepl_errors en ON en.id = n.error_id
-                                 WHERE ` + same("n", "r") + ` AND ISNULL(n.error_id, 0) <> 0 AND n.timestamp > r.timestamp AND en.time < DATEADD(minute, ` + hold + `, rt.t))
-                -- a later error of the same session: a recovery with none after it is a healthy session, never a streak's
-                AND EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history n WHERE ` + same("n", "r") + ` AND ISNULL(n.error_id, 0) <> 0 AND n.timestamp > r.timestamp)) mc
+-- the last recovery inside a streak session: a timed error row followed in its session by a clean row before the
+-- next error row, a later error row in the session (a recovery with none after it is a healthy session, never a
+-- streak's), and every later error of the session the hold or more after it; the streak's errors count after it.
+-- One ordered pass over the streak's history (review q10wc S1: nested EXISTS per error row spooled the whole table):
+-- cl = the session's clean rows so far; over the error rows, the next one's cl and the later ones' earliest time
+OUTER APPLY (SELECT MAX(w2.ts) AS cut
+               FROM (SELECT w.ts, w.tmax, w.cl,
+                            LEAD(w.ts) OVER (PARTITION BY w.session_id ORDER BY w.ts) AS next_ts,
+                            LEAD(w.cl) OVER (PARTITION BY w.session_id ORDER BY w.ts) AS next_cl,
+                            MIN(w.tmin) OVER (PARTITION BY w.session_id ORDER BY w.ts ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_tmin
+                       FROM (SELECT r.session_id, r.timestamp AS ts, ISNULL(r.error_id, 0) AS eid, rt.tmin, rt.tmax,
+                                    SUM(CASE WHEN ISNULL(r.error_id, 0) = 0 THEN 1 ELSE 0 END)
+                                      OVER (PARTITION BY r.session_id ORDER BY r.timestamp ROWS UNBOUNDED PRECEDING) AS cl
+                               FROM ` + d + `.dbo.MSmerge_history r
+                               OUTER APPLY (SELECT MIN(er.time) AS tmin, MAX(er.time) AS tmax FROM ` + d + `.dbo.MSrepl_errors er
+                                             WHERE ISNULL(r.error_id, 0) <> 0 AND er.id = r.error_id) rt
+                              WHERE mf.first_id IS NOT NULL AND r.agent_id = a.id AND r.session_id >= mf.first_id) w
+                      WHERE w.eid <> 0) w2
+              WHERE w2.tmax IS NOT NULL AND w2.next_ts IS NOT NULL AND w2.next_cl > w2.cl
+                AND (w2.later_tmin IS NULL OR w2.later_tmin >= DATEADD(minute, ` + hold + `, w2.tmax))) mc
 OUTER APPLY (SELECT MIN(e1.time) AS since FROM ` + d + `.dbo.MSmerge_history y1 JOIN ` + d + `.dbo.MSrepl_errors e1 ON e1.id = y1.error_id
               WHERE mf.first_id IS NOT NULL AND y1.agent_id = a.id AND y1.session_id >= mf.first_id AND ISNULL(y1.error_id, 0) <> 0
                 AND (mc.cut IS NULL OR y1.timestamp > mc.cut)) mt

@@ -7,16 +7,20 @@
 # as the same Windows user (the instances' sysadmin):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File win-merge.ps1 -Action up|status|bounce|down [-LabDir C:\pgvmirror]
 #   bounce  (after up and part W, before down) refused (exit 2) without the merge agent or with PGVMIRROR's engine not
-#           running. The subscriber's engine (MSSQL$PGVMIRROR; its Agent with it) stopped while the continuous merge
-#           agent's session runs, 30 s, started again (in a finally: whatever failed between), its Agent too when it was
-#           running; the merge agent's newest sessions and history rows (their error ids and MSrepl_errors times)
-#           printed before, while stopped and every 60 s for 12 minutes after the stop (the product's recovery hold is
-#           10); then one row (id 3000) written on the publisher and waited for on the subscriber (300 s), and the
-#           mirroring session waited for SYNCHRONIZED again (300 s; PGVMIRROR is its mirror). It reads the pattern and
-#           never judges it. Expected: 'bounce: ... stopped', '... started', the sessions (a session ending 5 / 6 and a
-#           new one, or one session going on), 'row 3000 on the subscriber', 'mirroring: pgvmirror ... SYNCHRONIZED',
-#           'VERDICT BOUNCED', exit 0; a service or the mirroring not back, or the row not carried: 'VERDICT NOT
-#           BOUNCED', exit 1.
+#           running, or when the read before it fails (nothing changed). The subscriber's engine (MSSQL$PGVMIRROR; every
+#           running service that depends on it, its Agent among them, stops with it) stopped while the continuous merge
+#           agent's session runs: round 1 for 30 s; only when round 1 leaves no new error id in the agent's history within
+#           150 s of its start, round 2 keeps it stopped until the agent's first new error id, 180 s at most (the agent
+#           polls every 60 s: a short stop can fall between two polls). After each stop the engine and those services
+#           are started again (in a finally: whatever failed between). The merge agent's newest sessions and history
+#           rows (their error ids, updateable flags and MSrepl_errors times) printed before, while stopped and every 60 s
+#           for 12 minutes after the last start (the product's recovery hold is 10), then one line 'bounce: READING
+#           rounds <n>; new error ids <n>; sessions from <id> ... id:runstatus ...; ended 5 / 6: <n>'; then one row (id
+#           3000) written on the publisher and waited for on the subscriber (300 s), and the mirroring session waited
+#           for SYNCHRONIZED again (300 s; PGVMIRROR is its mirror). It reads the pattern and never judges it.
+#           Expected: 'round 1: ... stopped', '... started', round 2 or not, the sessions, the READING line, 'row 3000
+#           on the subscriber', 'mirroring: pgvmirror ... SYNCHRONIZED', 'VERDICT BOUNCED', exit 0; a service or the
+#           mirroring not back, or the row not carried: 'VERDICT NOT BOUNCED', exit 1.
 #   up      refused (exit 2, nothing changed) when either lab instance does not answer, or when any of this script's
 #           names already exists: a distribution database or a distributor entry on PGVPRINCIPAL, a SQL Server Agent
 #           job in a REPL- category there, pgvmerge on PGVPRINCIPAL, pgvmerge_sub on PGVMIRROR, or a right of
@@ -427,40 +431,80 @@ function Show-MergeSessions([string]$label) {
     Say "bounce: $label"
     $sessionRows = Invoke-LabSql $pubInst "SELECT TOP (6) x.session_id, x.runstatus, CONVERT(varchar(23), x.start_time, 126) AS started, CONVERT(varchar(23), x.end_time, 126) AS ended FROM dbo.MSmerge_sessions x JOIN dbo.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'$publication' ORDER BY x.session_id DESC" $distDb
     foreach ($sessionRow in $sessionRows) { Say "  session $($sessionRow.session_id) runstatus $($sessionRow.runstatus) $($sessionRow.started) - $($sessionRow.ended)" }
-    $historyRows = Invoke-LabSql $pubInst "SELECT TOP (8) h.session_id, h.error_id, CONVERT(varchar(23), e.error_time, 126) AS error_time, CAST(LEFT(CAST(h.comments AS nvarchar(max)), 110) AS nvarchar(110)) AS comments FROM dbo.MSmerge_history h JOIN dbo.MSmerge_agents a ON a.id = h.agent_id OUTER APPLY (SELECT MAX(r.time) AS error_time FROM dbo.MSrepl_errors r WHERE r.id = h.error_id) e WHERE a.publication = N'$publication' ORDER BY h.timestamp DESC" $distDb
-    foreach ($historyRow in $historyRows) { Say "  history session $($historyRow.session_id) error $($historyRow.error_id) $($historyRow.error_time) | $($historyRow.comments)" }
+    $historyRows = Invoke-LabSql $pubInst "SELECT TOP (10) h.session_id, h.error_id, CAST(h.updateable_row AS int) AS upd, CONVERT(varchar(23), e.error_time, 126) AS error_time, CAST(LEFT(CAST(h.comments AS nvarchar(max)), 110) AS nvarchar(110)) AS comments FROM dbo.MSmerge_history h JOIN dbo.MSmerge_agents a ON a.id = h.agent_id OUTER APPLY (SELECT MAX(r.time) AS error_time FROM dbo.MSrepl_errors r WHERE r.id = h.error_id) e WHERE a.publication = N'$publication' ORDER BY h.timestamp DESC" $distDb
+    foreach ($historyRow in $historyRows) { Say "  history session $($historyRow.session_id) error $($historyRow.error_id) updateable $($historyRow.upd) $($historyRow.error_time) | $($historyRow.comments)" }
+}
+
+# the merge agent's distinct error ids in its history so far, and its newest session (bounce's reading)
+function Get-MergeErrorIds {
+    return [int](Get-LabValue $pubInst "SELECT COUNT(DISTINCT h.error_id) FROM dbo.MSmerge_history h JOIN dbo.MSmerge_agents a ON a.id = h.agent_id WHERE a.publication = N'$publication' AND ISNULL(h.error_id, 0) <> 0" $distDb)
+}
+function Get-NewestMergeSession {
+    return [int](Get-LabValue $pubInst "SELECT ISNULL(MAX(x.session_id), 0) FROM dbo.MSmerge_sessions x JOIN dbo.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'$publication'" $distDb)
 }
 
 function Invoke-Bounce {
-    $engineName = "MSSQL`$$($subInst.Name)"; $agentName = "SQLAgent`$$($subInst.Name)"
+    $engineName = "MSSQL`$$($subInst.Name)"
     try { $agentRow = Get-MergeAgent } catch { Stop-Refused "the merge lab does not answer: $($_.Exception.Message)" }
     if ($null -eq $agentRow) { Stop-Refused 'no merge agent (win-merge.ps1 up first)' }
     $engineSvc = Get-Service -Name $engineName -ErrorAction SilentlyContinue
     if ($null -eq $engineSvc -or [string]$engineSvc.Status -ne 'Running') { Stop-Refused "$engineName is not running" }
-    $agentSvc = Get-Service -Name $agentName -ErrorAction SilentlyContinue
-    $agentWasRunning = ($null -ne $agentSvc) -and ([string]$agentSvc.Status -eq 'Running')
+    # every running service that depends on the engine (its Agent among them) stops with it and is started again after it
+    $dependents = @($engineSvc.DependentServices | Where-Object { [string]$_.Status -eq 'Running' } | ForEach-Object { [string]$_.Name })
     $failures = New-Object System.Collections.Generic.List[string]
-    Show-MergeSessions "before (merge agent $($agentRow.agent))"
-    $stoppedAt = Get-Date
     try {
-        Stop-Service -Name $engineName -Force -ErrorAction Stop   # -Force: its Agent depends on it and stops with it
-        $stoppedAt = Get-Date
-        Say "bounce: $engineName stopped at $($stoppedAt.ToUniversalTime().ToString('HH:mm:ss'))Z"
-        Start-Sleep -Seconds 30
-        Show-MergeSessions 'while the subscriber is stopped'
-    } catch { $failures.Add("the stop: $($_.Exception.Message)") }
-    finally {
-        try { Start-Service -Name $engineName -ErrorAction Stop; Say "bounce: $engineName started at $((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))Z" }
-        catch { $failures.Add("start $engineName : $($_.Exception.Message)") }
-        if ($agentWasRunning) {
-            try { Start-Service -Name $agentName -ErrorAction Stop; Say "bounce: $agentName started" } catch { $failures.Add("start $agentName : $($_.Exception.Message)") }
+        Show-MergeSessions "before (merge agent $($agentRow.agent); running dependents: $(if ($dependents.Count -gt 0) { $dependents -join ', ' } else { 'none' }))"
+        $errorsBefore = Get-MergeErrorIds
+        $sessionBefore = Get-NewestMergeSession
+    } catch { Stop-Refused "the read before the bounce failed (nothing changed): $($_.Exception.Message)" }
+    # round 1 stops the engine 30 s; only when it leaves no new error id within 150 s of its start, round 2 keeps it
+    # stopped until the agent's first new error id, 180 s at most (the agent polls every 60 s: a short stop can fall
+    # between two polls and show nothing)
+    $rounds = 0; $lastStart = Get-Date
+    foreach ($round in 1, 2) {
+        if ($round -eq 2) {
+            if ($failures.Count -gt 0) { break }
+            $sawError = $false
+            try { $sawError = Wait-Until 150 { (Get-MergeErrorIds) -gt $errorsBefore } }
+            catch { $failures.Add("the error read after round 1: $($_.Exception.Message)"); break }
+            if ($sawError) { Say 'bounce: round 1 left a new error id: no round 2'; break }
+            Say 'bounce: round 1 left no new error id in 150 s: round 2'
+        }
+        $rounds = $round
+        try {
+            Stop-Service -Name $engineName -Force -ErrorAction Stop   # -Force: its dependents stop with it
+            $stoppedAt = Get-Date
+            Say "bounce: round ${round}: $engineName stopped at $($stoppedAt.ToUniversalTime().ToString('HH:mm:ss'))Z"
+            if ($round -eq 1) { Start-Sleep -Seconds 30 }
+            else {
+                try { $gotError = Wait-Until 180 { (Get-MergeErrorIds) -gt $errorsBefore }; Say "bounce: round 2: a new error id while stopped: $gotError" }
+                catch { $failures.Add("the error read while stopped: $($_.Exception.Message)") }
+            }
+            try { Show-MergeSessions "round ${round}: while the subscriber is stopped" }
+            catch { $failures.Add("the read while stopped: $($_.Exception.Message)") }
+        } catch { $failures.Add("round ${round} the stop: $($_.Exception.Message)") }
+        finally {
+            try { Start-Service -Name $engineName -ErrorAction Stop; Say "bounce: round ${round}: $engineName started at $((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))Z" }
+            catch { $failures.Add("start $engineName : $($_.Exception.Message)") }
+            foreach ($dependent in $dependents) {
+                try { Start-Service -Name $dependent -ErrorAction Stop; Say "bounce: round ${round}: $dependent started" } catch { $failures.Add("start $dependent : $($_.Exception.Message)") }
+            }
+            $lastStart = Get-Date
         }
     }
-    $readUntil = $stoppedAt.AddMinutes(12)
+    # read 12 minutes from the last start (the product's recovery hold is 10)
+    $readUntil = $lastStart.AddMinutes(12)
     while ((Get-Date) -lt $readUntil) {
         Start-Sleep -Seconds 60
-        try { Show-MergeSessions "+$([int]((Get-Date) - $stoppedAt).TotalSeconds) s after the stop" } catch { Say "bounce: the read failed: $($_.Exception.Message)" }
+        try { Show-MergeSessions "+$([int]((Get-Date) - $lastStart).TotalSeconds) s after the last start" } catch { Say "bounce: the read failed: $($_.Exception.Message)" }
     }
+    try {
+        $errorsAfter = Get-MergeErrorIds
+        $sessionRows = @(Invoke-LabSql $pubInst "SELECT x.session_id, x.runstatus FROM dbo.MSmerge_sessions x JOIN dbo.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'$publication' AND x.session_id >= $sessionBefore ORDER BY x.session_id" $distDb)
+        $sessionText = @($sessionRows | ForEach-Object { "$($_.session_id):$($_.runstatus)" }) -join ' '
+        $ended56 = @($sessionRows | Where-Object { [int]$_.runstatus -in 5, 6 }).Count
+        Say "bounce: READING rounds $rounds; new error ids $($errorsAfter - $errorsBefore); sessions from $sessionBefore (the newest before the stop) on, id:runstatus: $sessionText; ended 5 / 6: $ended56"
+    } catch { $failures.Add("the reading: $($_.Exception.Message)") }
     try {
         Invoke-LabSql $pubInst "INSERT dbo.t_merge (id, v) VALUES (3000, N'after the bounce');" $pubDb | Out-Null
         if (Wait-Until 300 { [int](Get-LabValue $subInst "SELECT COUNT(*) FROM dbo.t_merge WHERE id = 3000" $subDb) -eq 1 }) { Say 'bounce: row 3000 on the subscriber' }
@@ -476,9 +520,7 @@ function Invoke-Bounce {
         foreach ($mirrorRow in (Invoke-LabSql $pubInst $mirrorQuery)) { Say "bounce: mirroring: $($mirrorRow.db) $($mirrorRow.role) $($mirrorRow.state)" }
         if (-not $synced) { $failures.Add('the mirroring session not SYNCHRONIZED again in 300 s') }
     } catch { $failures.Add("the mirroring read: $($_.Exception.Message)") }
-    $mustRun = @($engineName)
-    if ($agentWasRunning) { $mustRun += $agentName }
-    foreach ($svcName in $mustRun) {
+    foreach ($svcName in @(@($engineName) + $dependents)) {
         $svcNow = Get-Service -Name $svcName -ErrorAction SilentlyContinue
         $svcState = if ($null -eq $svcNow) { 'missing' } else { [string]$svcNow.Status }
         if ($svcState -ne 'Running') { $failures.Add("$svcName $svcState") }

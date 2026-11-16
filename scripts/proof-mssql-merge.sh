@@ -71,7 +71,8 @@
 #      stub's publication mpub: since = merge-flapping's marked error time, the newest failing session's runstatus 3
 #      (2102, in its hold), the newest healthy one with a message 3 (2201, its hold passed; 1501's 2 before the hold
 #      rows were added); on mpub3 alone since =
-#      merge-start-error's marked error (the start row's earlier error left out: review q10wb S1). [new with the fix]
+#      merge-start-error's marked error (the start row's earlier error left out: review q10wb S1), and sql_good there 2
+#      (1701 ended 2: sql_good's 2 / 4 branch, which mpub no longer reaches - review q10wc's test note). [new with the fix]
 #  T4. stored merge subscription rows, two reads 2 minutes apart, through import_mssql_replication on a stub instance:
 #      findings exactly
 #        warning:a replication agent failed:merge / merge-failed
@@ -422,6 +423,9 @@ SQL
   WS3=$(QS "SELECT CAST(DATEDIFF_BIG(second, '19700101', DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MIN(e.time))) AS varchar(20)) FROM $D.MSrepl_errors e JOIN $D.MSmerge_history h ON h.error_id = e.id WHERE h.agent_id = 16 AND h.comments = N'expected since'" 2>&1) || WS3="error: $WS3"
   PW3=$(QS "$(sql_since mpub3)" 2>&1 || echo error)
   if [ "$PW3" = "$WS3" ]; then ok "T3b: since on mpub3 (a start row's error before the failure left out): $PW3"; else red "T3b-start" "got '$PW3', want '$WS3'" | mask; RED+=(T3b-start); fi
+  # mpub3: the newest healthy session with a message is 1701, ended 2 (sql_good's 2 / 4 branch; review q10wc's test note)
+  PG3=$(MSES="$D.MSmerge_sessions x JOIN $D.MSmerge_agents a ON a.id = x.agent_id WHERE a.publication = N'mpub3'"; QS "$(sql_good 0)" 2>&1 || echo error)
+  if [ "$PG3" = "2" ]; then ok "T3b: sql_good on mpub3 (ended 2 / 4): $PG3"; else red "T3b-good3" "got '$PG3', want '2'" | mask; RED+=(T3b-good3); fi
 
   echo "--- T4. stored merge rows through the import"
   CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil || fail "the build"
