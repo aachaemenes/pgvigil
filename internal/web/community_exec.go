@@ -158,7 +158,7 @@ func communityExec(ctx context.Context, t *communityTool, in *communityBody, nam
 		rows, err := conn.QueryContext(rctx, stmt, args...)
 		var sets []resultSet
 		if err == nil {
-			sets, err = readMS(rows, 5000, &sizer{}, rcancel)
+			sets, run.AtSetCap, err = readMSWith(rows, 5000, &sizer{}, rcancel, in.ExactTypes)
 		}
 		rcancel()
 		_ = conn.Close()
