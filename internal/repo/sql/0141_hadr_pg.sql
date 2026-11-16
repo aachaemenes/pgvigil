@@ -869,6 +869,21 @@ SELECT s.instance_id, i.name AS instance, s.datname, s.subname, s.enabled, s.in_
   LEFT JOIN pgvigil.pg_logical_checks k ON k.instance_id = s.instance_id AND k.object = s.datname || '.' || s.subname
  WHERE s.is_present;
 
+-- pg_logical_sender_lag: the logical slots' walsenders at or past a tier of 'logical_sender_lag' at their instance's
+-- newest read (a read older than 30 minutes raises nothing). ONE place for the rule, read twice: pg_hadr_checks' last
+-- arm gives it the finding's words, replication_checks the Replication page's plain ones. severity is the tier
+-- reached, over that tier's value in seconds.
+CREATE OR REPLACE VIEW pgvigil.pg_logical_sender_lag AS
+SELECT r.instance_id, r.key, r.snapshot_at, r.lag_secs, r.state, r.detail->>'slot_name' AS slot_name,
+       nullif(r.detail->>'application_name', '') AS application_name, t.warn, t.crit, t.level,
+       CASE WHEN t.crit IS NOT NULL AND r.lag_secs >= t.crit THEN 'critical' ELSE 'warning' END AS severity,
+       CASE WHEN t.crit IS NOT NULL AND r.lag_secs >= t.crit THEN t.crit ELSE coalesce(t.warn, t.crit) END AS over
+  FROM pgvigil.replication_latest r
+  JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
+  CROSS JOIN LATERAL pgvigil.pg_threshold(r.instance_id, 'logical_sender_lag') t
+ WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.snapshot_at > now() - interval '30 minutes'
+   AND coalesce(t.warn, t.crit) IS NOT NULL AND r.lag_secs >= coalesce(t.warn, t.crit);
+
 -- pg_hadr_checks: the streaming replication rules of this file, one row per finding (instance_id, severity, check_name,
 -- object, at, detail, reads, stable): one per link at most. detail is the newest read's account (the Summary and the
 -- Replication page); stable is the text the findings carry. A read older than 30 minutes raises nothing (the
@@ -949,25 +964,21 @@ UNION ALL
 -- read against 'logical_sender_lag' (30 / 300 s). 0118's 'replay lag' arm judged EVERY sender at these tiers; a
 -- physical link is 'standby lag' above and the HA join dropped 0118's arm, so this arm keeps the alarm a logical
 -- consumer had: the name, the tiers, one read. The object is the sender's key ('slot:<slot name>').
-SELECT r.instance_id, CASE WHEN t.crit IS NOT NULL AND r.lag_secs >= t.crit THEN 'critical' ELSE 'warning' END, 'replay lag',
-       r.key, r.snapshot_at,
+-- The rule itself is pg_logical_sender_lag's (0141): this arm gives it the finding's words.
+SELECT l.instance_id, l.severity, 'replay lag', l.key, l.snapshot_at,
        format('the consumer of the logical slot %s (%s, %s) is %s s behind this server (replay_lag; warning %s s, critical %s s, %s)',
-              coalesce(r.detail->>'slot_name', r.key), coalesce(nullif(r.detail->>'application_name', ''), 'no application name'),
-              coalesce(r.state, 'state unknown'), round(r.lag_secs::numeric, 1),
-              coalesce(trim_scale(t.warn)::text, '-'), coalesce(trim_scale(t.crit)::text, '-'), t.level),
+              coalesce(l.slot_name, l.key), coalesce(l.application_name, 'no application name'), coalesce(l.state, 'state unknown'),
+              round(l.lag_secs::numeric, 1), coalesce(trim_scale(l.warn)::text, '-'), coalesce(trim_scale(l.crit)::text, '-'), l.level),
        1, 'the consumer of the logical slot is behind this server (replay_lag past the thresholds)'
-  FROM pgvigil.replication_latest r
-  JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
-  CROSS JOIN LATERAL pgvigil.pg_threshold(r.instance_id, 'logical_sender_lag') t
- WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.snapshot_at > now() - interval '30 minutes'
-   AND coalesce(t.warn, t.crit) IS NOT NULL AND r.lag_secs >= coalesce(t.warn, t.crit);
+  FROM pgvigil.pg_logical_sender_lag l;
 
 -- 0006's daily-check view again with a severity column at its end (for the Summary's 'replication' overview and the
 -- Replication page, which judge severity by check name until they read this column: the join's wiring): a base backup's senders out of 'sender not streaming' and the replay-lag check (task 370
 -- a); a physical link's sender state and lag are judged once per link by pg_hadr_checks (task 371), an Aurora replica's
 -- lag and a slot's WAL status by its rows (task 374), so 'sender not streaming' keeps logical senders only; a logical
--- sender's 'replay lag' is a row of pg_hadr_checks too (its last arm, at the tiers of 'logical_sender_lag': the arm
--- this view had for it would say it a second time here); pg_hadr_checks' rows (value = the reads in
+-- sender's 'replay lag' is said ONCE here, in plain words - '<n> seconds behind (over <tier> s)', its level the tier
+-- of 'logical_sender_lag' it reached (pg_logical_sender_lag, the rule the finding reads too) - so the row
+-- pg_hadr_checks holds for it is left out of this view's last arm; pg_hadr_checks' other rows (value = the reads in
 -- a row, state = the finding's detail).
 CREATE OR REPLACE VIEW pgvigil.replication_checks AS
   SELECT instance_id, snapshot_at, 'inactive slot retaining WAL' AS check_name, key AS object,
@@ -986,13 +997,18 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
    WHERE r.kind = 'receiver' AND coalesce(r.lag_secs, 0) > 30
      AND NOT EXISTS (SELECT 1 FROM pgvigil.pg_repl_link_health h WHERE h.standby_id = r.instance_id AND h.sending_id IS NOT NULL)
   UNION ALL
+  -- a logical slot's sender behind in time: a one-read rule, so its words are the lag and the tier, not a count of reads
+  SELECT l.instance_id, l.snapshot_at, 'replay lag', l.key, l.lag_secs::bigint, 'seconds behind', 'over ' || trim_scale(l.over) || ' s', l.severity
+    FROM pgvigil.pg_logical_sender_lag l
+  UNION ALL
   -- a read that failed is a check of its own: an unreadable slot list must not look healthy
   SELECT d.instance_id, d.snapshot_at, 'replication read failed', split_part(d.note, ':', 1), NULL::bigint, NULL, d.note, 'warning'
     FROM pgvigil.collection_dates d
    WHERE d.collection = 'replication' AND d.status = 'partial'
   UNION ALL
   SELECT h.instance_id, h.at, h.check_name, h.object, h.reads::bigint, 'read(s) in a row', h.detail, h.severity
-    FROM pgvigil.pg_hadr_checks h;
+    FROM pgvigil.pg_hadr_checks h
+   WHERE h.check_name <> 'replay lag';   -- a logical sender's: its plain row is above
 
 -- 0103's Summary rows and findings again (its section 4, every arm kept): the 'log shipping' arm leaves out a standby with
 -- primary_conninfo set, and the 'replication' check group carries pg_hadr_checks (to pgvigil.findings through

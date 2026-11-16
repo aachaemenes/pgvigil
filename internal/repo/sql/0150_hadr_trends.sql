@@ -1035,18 +1035,13 @@ UNION ALL
 -- read against 'logical_sender_lag' (30 / 300 s). 0118's 'replay lag' arm judged EVERY sender at these tiers; a
 -- physical link is 'standby lag' above and the HA join dropped 0118's arm, so this arm keeps the alarm a logical
 -- consumer had: the name, the tiers, one read. The object is the sender's key ('slot:<slot name>').
-SELECT r.instance_id, CASE WHEN t.crit IS NOT NULL AND r.lag_secs >= t.crit THEN 'critical' ELSE 'warning' END, 'replay lag',
-       r.key, r.snapshot_at,
+-- The rule itself is pg_logical_sender_lag's (0141): this arm gives it the finding's words.
+SELECT l.instance_id, l.severity, 'replay lag', l.key, l.snapshot_at,
        format('the consumer of the logical slot %s (%s, %s) is %s s behind this server (replay_lag; warning %s s, critical %s s, %s)',
-              coalesce(r.detail->>'slot_name', r.key), coalesce(nullif(r.detail->>'application_name', ''), 'no application name'),
-              coalesce(r.state, 'state unknown'), round(r.lag_secs::numeric, 1),
-              coalesce(trim_scale(t.warn)::text, '-'), coalesce(trim_scale(t.crit)::text, '-'), t.level),
+              coalesce(l.slot_name, l.key), coalesce(l.application_name, 'no application name'), coalesce(l.state, 'state unknown'),
+              round(l.lag_secs::numeric, 1), coalesce(trim_scale(l.warn)::text, '-'), coalesce(trim_scale(l.crit)::text, '-'), l.level),
        1, 'the consumer of the logical slot is behind this server (replay_lag past the thresholds)'
-  FROM pgvigil.replication_latest r
-  JOIN pgvigil.instances i ON i.instance_id = r.instance_id AND i.is_active
-  CROSS JOIN LATERAL pgvigil.pg_threshold(r.instance_id, 'logical_sender_lag') t
- WHERE r.kind = 'sender' AND r.detail->>'slot_type' = 'logical' AND r.snapshot_at > now() - interval '30 minutes'
-   AND coalesce(t.warn, t.crit) IS NOT NULL AND r.lag_secs >= coalesce(t.warn, t.crit)
+  FROM pgvigil.pg_logical_sender_lag l
 UNION ALL
 -- task 375 (0150): the checks across a cluster's members
 SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail, c.reads, c.stable

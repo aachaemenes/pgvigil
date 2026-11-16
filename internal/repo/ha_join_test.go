@@ -124,7 +124,8 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     no alert. 0141 judges it: 'replay lag' from the newest read at the tiers of its own threshold key
 //     logical_sender_lag (30 / 300 s: 0118's). Three logical senders 400, 45 and 10 s behind are critical, warning
 //     and nothing - each once in pgvigil.findings, and once among the Replication page's checks
-//     (replication_checks), not twice.
+//     (replication_checks), not twice: there in plain words, the lag and the tier it is over ('400 seconds behind'
+//     with 'over 300 s'), at the tier's level - a one-read rule says no count of reads.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -478,4 +479,9 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		"critical 1, warning 1")
 	want("the Replication page's checks named 'replay lag' for the instance (each lagging sender once)",
 		str(`SELECT count(*)::text FROM pgvigil.replication_checks WHERE instance_id = $1 AND check_name = 'replay lag'`, lagLG), "2")
+	// the page's and the overview's words for them (the overview joins value, unit and state as below)
+	want("the Replication page's rows of the two lagging logical senders: level, name, words",
+		str(`SELECT coalesce(string_agg(severity || '|' || object || '|' || value || ' ' || unit || ' (' || state || ')', ', ' ORDER BY object), '')
+		       FROM pgvigil.replication_checks WHERE instance_id = $1 AND check_name = 'replay lag'`, lagLG),
+		"critical|slot:lg_crit|400 seconds behind (over 300 s), warning|slot:lg_warn|45 seconds behind (over 30 s)")
 }
