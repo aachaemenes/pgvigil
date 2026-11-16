@@ -41,7 +41,10 @@ type doorSet struct {
 	Hypo      map[string]bool
 	PgJobs    map[string]map[string]bool
 	// NoDoor: a page instance with no door here -> why, and what opens it
-	NoDoor    map[string]noDoor
+	NoDoor map[string]noDoor
+	// Remote: the instances a remote collector reads (migration 0329: a site owns them), each also a door in PG / MS
+	// with its Remote words and no login - every live door refuses it in those words (remote.go)
+	Remote    map[string]remoteDoor
 	PageReads bool
 	// Unread: the page's list not read yet on this serve (its first read failed, or has not run): an instance in
 	// neither list is said to be unknown here, never 'in neither list'

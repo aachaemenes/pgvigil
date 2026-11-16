@@ -129,6 +129,12 @@ var dbNameRE = regexp.MustCompile(`^[^\x00]{1,63}$`)
 // runAdvisor is the advisor call, a variable so the handler's tests can stand in for a server.
 var runAdvisor = advisor.Run
 
+// adviseOff is why the index advisor cannot run on the instance with this door set, or "": the page's Advise button
+// carries it, so the button is off with these words before a click (the handler says the same).
+func (s *Server) adviseOff(ds *doorSet, name string) string {
+	return "" // OUTBOX V task 1: the red rows' stub
+}
+
 // IndexAdvisor serves POST /api/indexes/advise {instance_id, database}.
 func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 	a := s.actions
