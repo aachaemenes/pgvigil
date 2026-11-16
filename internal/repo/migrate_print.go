@@ -129,7 +129,7 @@ func migrateScript(w io.Writer, meta migratePrintMeta, names, applied []string, 
 	s.WriteString("-- run it with psql as the repository owner (the owner of schema pgvigil; SET ROLE to it first otherwise):\n")
 	s.WriteString("--   psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f <this file>\n")
 	s.WriteString("-- (each file commits on its own, as migrate commits them: a failure stops at that file, the ones before it stay applied)\n")
-	s.WriteString("-- not in this script: migrate's partitions-ahead pass after its files (this month's and the next month's partitions, and the next two days of mssql_requests); pgvigil run and pgvigil collect make them at their start, pgvigil run every hour\n\n")
+	s.WriteString("-- it ends with migrate's partitions-ahead pass after its files (this month's and the next month's partitions, and the next two days of mssql_requests), the window read when it runs; pgvigil run and pgvigil collect make them at their start too, pgvigil run every hour\n\n")
 
 	// psql only, and the first statement: a run without ON_ERROR_STOP would go on past a failed file (and leave a gap a
 	// later migrate fills out of order); a tool that is not psql fails on this line before anything runs
@@ -161,10 +161,29 @@ func migrateScript(w io.Writer, meta migratePrintMeta, names, applied []string, 
 		s.WriteString(rolesBlock)
 		s.WriteString("COMMIT;\n")
 	}
+	s.WriteString("\n" + aheadPass)
 	fmt.Fprintf(&s, "\nSELECT pg_advisory_unlock(%d);\n", migrateLockKey)
 	_, err := s.WriteTo(w)
 	return err
 }
+
+// aheadPass is migrate's partitions-ahead pass after its files (0271; aheadAfterMigrate) as SQL decided when the script
+// runs, so a store the script builds equals a migrated one: AheadWindow at now() - the months up to the next month's
+// first day, the daily parent's days up to two days on - and each due partition made by import_partition_make in a
+// statement of its own (psql's \gexec runs each generated block on its own, outside a transaction: one parent locked at
+// a time, never beside an import's lock); a make that fails is a WARNING naming it, never a stop, as migrate warns.
+const aheadPass = `-- migrate's partitions-ahead pass (0271): this month's and the next month's partitions, the next two days of the daily parent
+WITH d AS (
+  SELECT parent, unit, starts
+    FROM pgvigil.import_partitions_due(now(), greatest((date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC',
+                                                       now() + interval '48 hours'))
+   WHERE unit <> 'day' OR starts <= date_trunc('day', (now() + interval '48 hours') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+)
+SELECT format($f$DO $pgvigil_make$ BEGIN PERFORM pgvigil.import_partition_make(%L, %L::timestamptz); EXCEPTION WHEN OTHERS THEN RAISE WARNING 'partitions ahead: %% at %%: %%', %L, %L, SQLERRM; END $pgvigil_make$;$f$,
+              d.parent, d.starts, d.parent, d.starts)
+  FROM d ORDER BY d.parent, d.starts
+\gexec
+`
 
 // jitBlock is repositoryJITOff's rule decided when the script runs: PostgreSQL 11 or later, no jit entry of the
 // database's own -> ALTER DATABASE <db> SET jit = off; a refusal (the login does not own the database) is a WARNING

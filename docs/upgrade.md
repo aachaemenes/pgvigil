@@ -90,7 +90,7 @@ what happens in the other order, and what the project's own proof showed (`scrip
 - **A new month's partitions are made ahead.** v0.3.0's imports made a new month's partition inside their own
   transaction, so at a month's first minute two imports could deadlock: PostgreSQL ended one (SQLSTATE 40P01) and that
   run's rows were not stored. The upgrade makes the current and the next month's partitions of every partitioned table
-  (the next two days of `mssql_requests`), `pgvigil run` and `pgvigil collect` make them at their start and `pgvigil
+  (the next two days of `mssql_requests`; `pgvigil migrate` and the script `pgvigil migrate -print` writes alike), `pgvigil run` and `pgvigil collect` make them at their start and `pgvigil
   run` every hour, each partition in a short transaction of its own, and `pgvigil demo` makes its whole range first.
   An import still makes a month itself for old or late rows - the SQL Server error log, Extended Events and audit
   readers' first read of an old file: one ended by a deadlock is tried up to three times in all, and the Collector page
