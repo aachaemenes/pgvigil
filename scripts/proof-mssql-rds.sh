@@ -165,6 +165,10 @@
 #     except mssql_ag: skipped, the note "Always On is not enabled on this server" (RDS Express has no availability
 #     group; a rule of the server, said as skipped, never counted as collected or failed). A collection skipped for
 #     a missing right, partial, or failed is a FAIL with its note (the statement and the file are named in the report).
+#     mssql_fci (added at the HA join, 2026-11-15): skipped, the note "a managed service runs its own failover: there
+#     is no failover cluster instance to read", and no row in mssql_fci_nodes. NOT PROVEN: this rule was written from
+#     the collection's code (internal/mssql/fci.go, Applies) and has never run - no RDS SQL Server lab has run since
+#     the collection exists. Its first lab run proves it or shows what RDS answers.
 #  C. the pages: GET /api/mssql/summary gives the instance availability as ok or n/a and every other cell a read
 #     (no 'never'); the Summary renders (chromium) with the platform badge rdssqlserver; each SQL Server tab of the
 #     instance renders without an error line.
@@ -207,7 +211,7 @@
 #        (R1 run 1's refusal of the server form's bare file name made -form rds; no probe session since);
 #     S6 msdb's alerts and operators as the master user (sysalerts, sysoperators: counts, or the refusal), beside the
 #        alerts area's note.
-#  NOT PROVEN HERE: SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
+#  NOT PROVEN HERE: mssql_fci's skip rule (never run: see B), SQL Server Agent's jobs (mssql_jobs skipped: the RDS form of the login), Web and Enterprise
 #  Edition, Multi-AZ with Always On or mirroring (AWS's other HA modes), the
 #  Agent's own error log (rds_read_error_log @type = 2), RDS's other procedures (rds_* in msdb) beyond what the
 #  collections read, Windows authentication (AWS Managed Microsoft AD), RDS Custom.
@@ -369,7 +373,7 @@ mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls 
 ALL=(mssql_instance mssql_services mssql_requests mssql_waits mssql_xe mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups
   mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
   mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
-  mssql_waiting_tasks mssql_reports mssql_activity mssql_pool)
+  mssql_waiting_tasks mssql_reports mssql_activity mssql_pool mssql_fci)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${ALL[@]}" | sort | tr '\n' ' ')" ] || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
@@ -630,6 +634,13 @@ for c in mssql_activity mssql_pool; do
     *) VERDICT[$c]="FAIL"; bad "B: $c status '$st' (want $( [ "$c" = mssql_activity ] && echo "ok" || echo "skipped: elastic pools are Azure SQL Database's")): $(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)" ;;
   esac
 done
+# mssql_fci (the HA join): a failover cluster instance is a cluster the user owns; RDS runs its own failover, so the
+# collection is skipped by its managed-service rule and stores no node. NOT PROVEN until an RDS SQL Server lab runs
+# (the header says so): the note's words are read from internal/mssql/fci.go, not from a run
+"$BIN" collect -config "$CFG" -once mssql_fci -instance "$N" > "$WORK/mssql_fci.out" 2>&1 || true
+st=$(status_of mssql_fci)
+if [[ $st == "skipped|a managed service runs its own failover"* ]] && grep -q "skipped: " "$WORK/mssql_fci.out" && [ "$(q "select count(*) from pgvigil.mssql_fci_nodes where instance_id=$iid")" = 0 ]; then VERDICT[mssql_fci]="SKIP (${st#skipped|})"
+else VERDICT[mssql_fci]="FAIL"; bad "B: mssql_fci status '$st' (want skipped: a managed service runs its own failover, and no row in mssql_fci_nodes): $(tr '\n' ' ' < "$WORK/mssql_fci.out" | cut -c1-300)"; fi
 "$BIN" collect -config "$CFG" -once mssql_ag -instance "$N" > "$WORK/mssql_ag.out" 2>&1 || true
 st=$(status_of mssql_ag)
 HADR=$(sq "SELECT CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int)")
