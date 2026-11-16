@@ -297,28 +297,11 @@ const sqlSummaryCHNone = `NULL::int AS ch_level, NULL::int AS ch_n, NULL::text A
 const sqlSummaryCHJoin = `LEFT JOIN pgvigil.collection_health_summary($1::jsonb) h ON h.instance_id = i.instance_id`
 
 const sqlSummaryCollectBase = `
-WITH m AS (
-  -- the collector's errors acknowledged on the error log page (0198): the highest log_id of the instance's live
-  -- 'collector errors' rows; a seen_state not of the form 'log_id:<n>' is never read (a CASE, so no cast can fail)
-  SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark,
-         max(a.created_at) FILTER (WHERE a.seen_state ~ '^log_id:[0-9]{1,18}$') AS acked_at
-    FROM pgvigil.acks a
-   WHERE a.kind = 'ack' AND a.check_key = 'collector errors' AND a.instance_id IS NOT NULL
-     AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, now())
-   GROUP BY a.instance_id
-), c AS (
+WITH c AS (
   SELECT c.instance_id, c.collection, c.status, c.snapshot_at,
-         coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv,
-         -- a failing collection whose failed run is at or under the mark is acknowledged (DBA Dash's Summary_Upd L123):
-         -- the run's row found by instance, collection and snapshot (log_collection writes both tables from one time)
-         -- (a failed run whose row was purged, 30 days, is acknowledged when it ran before the acknowledgement)
-         coalesce(c.status = 'error' AND m.mark IS NOT NULL
-                  AND coalesce((SELECT max(l.log_id) FROM pgvigil.collection_log l
-                                 WHERE l.instance_id = c.instance_id AND l.collection = c.collection AND l.snapshot_at = c.snapshot_at) <= m.mark,
-                               c.snapshot_at < m.acked_at), false) AS acked
+         coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
     FROM pgvigil.collection_dates c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
-    LEFT JOIN m ON m.instance_id = c.instance_id
 )
 SELECT i.instance_id,
        -- the ages count from runs that ended well only: log_collection moves snapshot_at on a failed run too, and a
@@ -328,10 +311,12 @@ SELECT i.instance_id,
        (max(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_max_secs,
        count(*) FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END))::int AS stale,
-       coalesce(array_agg(c.collection || CASE WHEN c.status = 'error' THEN ': the last run failed' ELSE ': stale, the last run ' || to_char(c.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC' END
-                          ORDER BY c.status <> 'error', c.collection)
-                FILTER (WHERE c.iv IS DISTINCT FROM 0 AND NOT c.acked AND (c.status = 'error' OR (c.status <> 'skipped'
-                          AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)))), '{}') AS detail,
+       -- the stale collections, one line each (the Snapshot Age cell's detail); the failing ones are Collection Health's
+       -- (ch_detail), which honours an acknowledgement itself
+       coalesce(array_agg(c.collection || ': stale, the last run ' || to_char(c.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'
+                          ORDER BY c.collection)
+                FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
+                          AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END)), '{}') AS detail,
        {ch}
   FROM pgvigil.instances i
   LEFT JOIN c ON c.instance_id = i.instance_id

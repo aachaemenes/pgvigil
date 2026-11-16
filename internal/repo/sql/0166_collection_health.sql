@@ -214,10 +214,19 @@ END $$;
 -- is that tier's (the streak's when both are equal). N/A: the collection off for the instance (its interval 0 in
 -- p_expected, the stale check's {"defaults": {...}, "instances": {name: {...}}}) or no known run (skips only). A
 -- collection failing now is listed even with no run since p_rate_from - while its last run is within three of its
--- intervals and at least a day (a collection removed from the configuration while it failed leaves the list then;
--- B6.1 has no acknowledge). An inactive instance is not listed (DBA Dash's CollectionHealth_Get: IsActive = 1).
+-- intervals and at least a day (a collection removed from the configuration while it failed leaves the list then; an
+-- acknowledgement never takes a row off it). An inactive instance is not listed (DBA Dash's CollectionHealth_Get:
+-- IsActive = 1).
 -- The Summary and the page both read this. p_rate_to (B6.2: a picked range in the past) ends the runs counted
 -- (hours that begin before it; NULL = now); the failures in a row are always now's, as DBA Dash's.
+-- The acknowledgement of the collector errors (collection_errors_ack, DBA Dash's ErrorAckDate) changes only the
+-- judged_* values, which the Summary's cell reads (collection_health_summary): the stored failures in a row count once
+-- a failure is newer than the acknowledgement - a collection_log row above its mark, since the last success; a purged
+-- row falls back to the time - and then whole (Summary_Upd.sql L123); the rate counts the hours from the
+-- acknowledgement's hour rounded up, or from p_rate_from, whichever is later (CollectionHealthRateFrom.sql L10-18), a
+-- second aggregate beside the range's own. status, consecutive_failures and the run columns stay raw, as DBA Dash's
+-- report keeps them (CollectionHealth_Get.sql L232, L266); a row whose failures in a row the acknowledgement leaves out
+-- says so in its reason ('acknowledged at <time> by <user>: n in a row before it').
 -- p_instances / p_collection (the review of B6.2, part a #4): the page's scope applied inside, on the hourly scan and on
 -- the run status side, so an instance's page never aggregates the fleet; the durations and rows written come from the
 -- same scan (the page read them twice). NULL = every instance / every collection (the Summary's call)
@@ -360,8 +369,28 @@ BEGIN
   RETURN jsonb_build_object('outcome', 'done', 'detail', 'set', 'threshold_id', v_new);
 END $$;
 
--- its result grew (B6g-1): CREATE OR REPLACE cannot change a result's columns, so an earlier form is dropped first
--- (nothing depends on it: collection_health_summary's body is text, the page reads it by name)
+-- the instance's live acknowledgement of its collector errors (the Collector errors page's Acknowledge: an 'ack' of
+-- check_key 'collector errors' whose seen_state 'log_id:<n>' marks the highest collection_log row it covers): per
+-- instance the live row with the highest mark - its mark, time and user - and the hour the Summary's rate starts from,
+-- the acknowledgement's time rounded UP to a whole hour (CollectionHealthRateFrom.sql L10-13). A seen_state not of that
+-- form is never read (a CASE, so no cast can fail). DBA Dash's acknowledgement is one for every instance; pgvigil's is
+-- per instance (the Collector errors page writes a row per instance). collection_health and the page's Failed % 24hrs
+-- read it.
+CREATE OR REPLACE FUNCTION pgvigil.collection_errors_ack()
+RETURNS TABLE (instance_id int, mark bigint, ack_at timestamptz, ack_by text, rate_from timestamptz)
+LANGUAGE sql STABLE AS $$
+  SELECT DISTINCT ON (a.instance_id) a.instance_id, x.mark, a.created_at, a.created_by,
+         date_trunc('hour', (a.created_at AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
+    FROM pgvigil.acks a
+   CROSS JOIN LATERAL (SELECT CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END AS mark) x
+   WHERE a.kind = 'ack' AND a.check_key = 'collector errors' AND a.instance_id IS NOT NULL AND x.mark IS NOT NULL
+     AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, now())
+   ORDER BY a.instance_id, x.mark DESC, a.created_at DESC
+$$;
+
+-- its result grew (B6g-1; the judged values and the acknowledgement after it): CREATE OR REPLACE cannot change a
+-- result's columns, so an earlier form is dropped first (nothing depends on it: collection_health_summary's body is
+-- text, the page reads it by name)
 DROP FUNCTION IF EXISTS pgvigil.collection_health(timestamptz, jsonb, timestamptz, int[], text);
 CREATE OR REPLACE FUNCTION pgvigil.collection_health(p_rate_from timestamptz, p_expected jsonb DEFAULT NULL, p_rate_to timestamptz DEFAULT NULL,
                                                      p_instances int[] DEFAULT NULL, p_collection text DEFAULT NULL)
@@ -374,17 +403,27 @@ RETURNS TABLE (instance_id int, collection text, status text, status_reason text
                import_failed int, import_runs int, import_sum numeric, import_max int,
                cpu_runs int, cpu_sum numeric, cpu_max int, reads_sum numeric,
                -- B6g-2: where the row's thresholds come from (NULL = DBA Dash's defaults alone) and the numbers in words
-               threshold_from text, threshold_words text)
+               threshold_from text, threshold_words text,
+               -- the Summary's judgement: the instance's live acknowledgement of its collector errors applied (the same
+               -- as status / consecutive_failures with none), and that acknowledgement's time and user (NULL = none)
+               judged_status text, judged_failures int, ack_at timestamptz, ack_by text)
 LANGUAGE sql STABLE SET jit = off AS $$
-  WITH h AS (
+  WITH a AS (
+    SELECT x.* FROM pgvigil.collection_errors_ack() x WHERE p_instances IS NULL OR x.instance_id = ANY (p_instances)
+  ), h AS (
     SELECT h.instance_id, h.collection, sum(h.runs)::int AS runs, sum(h.ok)::int AS ok, sum(h.partial)::int AS partial,
            sum(h.failed)::int AS failed, sum(h.skipped)::int AS skipped,
            sum(h.dur_ms_sum) AS dur_sum, max(h.dur_ms_max) AS dur_max, sum(h.rows_written) AS rows_written,
            sum(h.import_failed)::int AS import_failed, sum(h.import_runs)::int AS import_runs,
            sum(h.import_ms_sum) AS import_sum, max(h.import_ms_max) AS import_max, sum(h.cpu_runs)::int AS cpu_runs,
            sum(h.cpu_ms_sum) FILTER (WHERE h.cpu_runs > 0) AS cpu_sum, max(h.cpu_ms_max) FILTER (WHERE h.cpu_runs > 0) AS cpu_max,
-           sum(h.reads_sum) FILTER (WHERE h.cpu_runs > 0) AS reads_sum
+           sum(h.reads_sum) FILTER (WHERE h.cpu_runs > 0) AS reads_sum,
+           -- the judged rate's hours: from the acknowledgement's hour on (the constant bound below stays the scan's)
+           coalesce(sum(h.ok) FILTER (WHERE a.rate_from IS NULL OR h.hour >= a.rate_from), 0)::int AS ok_j,
+           coalesce(sum(h.partial) FILTER (WHERE a.rate_from IS NULL OR h.hour >= a.rate_from), 0)::int AS partial_j,
+           coalesce(sum(h.failed) FILTER (WHERE a.rate_from IS NULL OR h.hour >= a.rate_from), 0)::int AS failed_j
       FROM pgvigil.collection_health_hour h
+      LEFT JOIN a ON a.instance_id = h.instance_id
      WHERE h.hour >= date_trunc('hour', (p_rate_from AT TIME ZONE 'UTC') + interval '1 hour' - interval '1 microsecond') AT TIME ZONE 'UTC'
        AND (p_rate_to IS NULL OR h.hour < p_rate_to)
        AND (p_instances IS NULL OR h.instance_id = ANY (p_instances)) AND (p_collection IS NULL OR h.collection = p_collection)
@@ -394,6 +433,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
            h.instance_id IS NOT NULL AS in_range,
            coalesce(h.runs, 0) AS runs, coalesce(h.ok, 0) AS ok, coalesce(h.partial, 0) AS partial,
            coalesce(h.failed, 0) AS failed, coalesce(h.skipped, 0) AS skipped,
+           coalesce(h.ok_j, 0) AS ok_j, coalesce(h.partial_j, 0) AS partial_j, coalesce(h.failed_j, 0) AS failed_j,
            s.last_run_at, s.last_status, coalesce(s.consecutive_failures, 0) AS cf, s.last_ok_at, s.last_failure_at, s.last_partial_at,
            h.dur_sum, h.dur_max, h.rows_written,
            coalesce(h.import_failed, 0) AS import_failed, coalesce(h.import_runs, 0) AS import_runs, h.import_sum, h.import_max,
@@ -402,32 +442,29 @@ LANGUAGE sql STABLE SET jit = off AS $$
                          WHERE (p_instances IS NULL OR x.instance_id = ANY (p_instances)) AND (p_collection IS NULL OR x.collection = p_collection)) s
              ON s.instance_id = h.instance_id AND s.collection = h.collection
      WHERE h.instance_id IS NOT NULL OR s.consecutive_failures > 0   -- failing now: listed with no run in the range
-  ), m AS (
-    -- the j16 join (the lead's 11-16 call): the instance's acknowledgement of its collector errors on the error log
-    -- page (B24o: an 'ack' of check_key 'collector errors', seen_state 'log_id:<n>'): the highest log_id its live rows
-    -- cover; a seen_state not of that form is never read (a CASE, so no cast can fail) - the Summary's own rule
-    SELECT a.instance_id, max(CASE WHEN a.seen_state ~ '^log_id:[0-9]{1,18}$' THEN substring(a.seen_state from 8)::bigint END) AS mark,
-           max(a.created_at) FILTER (WHERE a.seen_state ~ '^log_id:[0-9]{1,18}$') AS acked_at
-      FROM pgvigil.acks a
-     WHERE a.kind = 'ack' AND a.check_key = 'collector errors' AND a.instance_id IS NOT NULL
-       AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, now())
-     GROUP BY a.instance_id
   ), j AS (
-    SELECT k.*, i.name,
+    SELECT k.*, i.name, a.mark, a.ack_at, a.ack_by,
            coalesce((p_expected -> 'instances' -> i.name ->> k.collection)::int, (p_expected -> 'defaults' ->> k.collection)::int, -1) AS iv,
            CASE WHEN k.cf = 0 THEN 0
                 WHEN k.last_ok_at IS NOT NULL
                 THEN (extract(epoch FROM date_trunc('minute', k.last_failure_at) - date_trunc('minute', k.last_ok_at)) / 60)::int END AS fm,
            k.ok + k.partial + k.failed AS known,
-           -- the newest failure is at or under the instance's mark (its run's row found by instance, collection and time;
-           -- a failure whose row was purged is acknowledged when it ran before the acknowledgement): nothing of this
-           -- collection counts until a newer error, as DBA Dash's 'Acknowledge Errors' clears its Summary column
-           coalesce(k.last_failure_at IS NOT NULL AND m.mark IS NOT NULL
-                    AND coalesce((SELECT max(l.log_id) FROM pgvigil.collection_log l
-                                   WHERE l.instance_id = k.instance_id AND l.collection = k.collection AND l.snapshot_at = k.last_failure_at) <= m.mark,
-                                 k.last_failure_at < m.acked_at), false) AS acked
+           k.ok_j + k.partial_j + k.failed_j AS known_j,
+           -- the judged failures in a row (Summary_Upd.sql L123): the whole stored streak with no live acknowledgement,
+           -- or once a failure is newer than it - a failed run's row logged above the mark since the last success (the
+           -- repository's own sequence, no clock: an older-started run logged late counts); the newest failure's row
+           -- purged (30 days) falls back to the time - else 0 (collection_log_errors_idx)
+           CASE WHEN a.mark IS NULL OR k.cf = 0 THEN k.cf
+                WHEN EXISTS (SELECT 1 FROM pgvigil.collection_log l
+                              WHERE l.instance_id = k.instance_id AND l.collection = k.collection AND l.status = 'error'
+                                AND l.snapshot_at > coalesce(k.last_ok_at, '-infinity'::timestamptz) AND l.log_id > a.mark) THEN k.cf
+                WHEN k.last_failure_at >= a.ack_at
+                     AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_log l
+                                      WHERE l.instance_id = k.instance_id AND l.collection = k.collection AND l.status = 'error'
+                                        AND l.snapshot_at = k.last_failure_at) THEN k.cf
+                ELSE 0 END AS cfj
       FROM k JOIN pgvigil.instances i ON i.instance_id = k.instance_id
-      LEFT JOIN m ON m.instance_id = k.instance_id
+      LEFT JOIN a ON a.instance_id = k.instance_id
      WHERE i.is_active
   ), live AS MATERIALIZED (
     -- B6g-2: the thresholds in force, read once and joined four times (the review of B6g-2 #6: the history table's
@@ -463,48 +500,57 @@ LANGUAGE sql STABLE SET jit = off AS $$
     SELECT th.*,
            format('in a row %s / %s, failing %s / %s min, failed %s / %s %% of %s runs or more', th.wfr, th.cfr, th.wfm, th.cfm,
                   trim_scale(th.wpct), trim_scale(th.cpct), th.mr) AS th_words,
-           CASE WHEN th.acked THEN 0
-                WHEN th.cf >= th.cfr AND (th.fm IS NULL OR th.fm >= th.cfm) THEN 2
+           CASE WHEN th.cf >= th.cfr AND (th.fm IS NULL OR th.fm >= th.cfm) THEN 2
                 WHEN th.cf >= th.wfr AND (th.fm IS NULL OR th.fm >= th.wfm) THEN 1 ELSE 0 END AS st,
-           CASE WHEN th.acked THEN 0
-                WHEN th.known >= th.mr AND th.failed > 0 AND round(100.0 * th.failed / th.known, 2) >= th.cpct AND th.last_status = 'error' THEN 2
+           CASE WHEN th.known >= th.mr AND th.failed > 0 AND round(100.0 * th.failed / th.known, 2) >= th.cpct AND th.last_status = 'error' THEN 2
                 WHEN th.known >= th.mr AND th.failed + th.partial > 0 AND round(100.0 * (th.failed + th.partial) / th.known, 2) >= th.wpct THEN 1 ELSE 0 END AS rt,
+           -- the judged tiers: the same rule over the judged streak and the judged rate's hours
+           CASE WHEN th.cfj >= th.cfr AND (th.fm IS NULL OR th.fm >= th.cfm) THEN 2
+                WHEN th.cfj >= th.wfr AND (th.fm IS NULL OR th.fm >= th.wfm) THEN 1 ELSE 0 END AS stj,
+           CASE WHEN th.known_j >= th.mr AND th.failed_j > 0 AND round(100.0 * th.failed_j / th.known_j, 2) >= th.cpct AND th.last_status = 'error' THEN 2
+                WHEN th.known_j >= th.mr AND th.failed_j + th.partial_j > 0 AND round(100.0 * (th.failed_j + th.partial_j) / th.known_j, 2) >= th.wpct THEN 1 ELSE 0 END AS rtj,
+           -- N/A from the raw values: an acknowledged collection with no run since is OK, never N/A
            th.iv = 0 OR th.dm OR (th.known = 0 AND th.cf = 0) AS na
       FROM th
   )
   SELECT t.instance_id, t.collection,
          CASE WHEN t.na THEN 'n/a' WHEN greatest(t.st, t.rt) = 2 THEN 'critical' WHEN greatest(t.st, t.rt) = 1 THEN 'warning' ELSE 'ok' END,
-         CASE WHEN t.iv = 0 THEN 'collection off'
-              WHEN t.dm THEN 'not monitored (its Collection Health threshold)'
-              WHEN t.na THEN 'no runs (skipped only)'
-              WHEN t.acked AND (t.cf > 0 OR t.failed + t.partial > 0)
-                THEN 'its errors acknowledged on the collector error log (counted again from a newer error)'
-              WHEN t.st > 0 AND t.st >= t.rt
-                THEN t.cf || ' failure(s) in a row' || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
-              WHEN t.rt > 0
-                THEN trim_scale(round(100.0 * t.failed / t.known, 1)) || ' % failed, ' || trim_scale(round(100.0 * t.partial / t.known, 1)) || ' % partial of ' || t.known || ' runs'   -- one place, as DBA Dash's DECIMAL(5,1) (part a #6: 1 of 300 read '0 %')
-              ELSE '' END,
+         concat_ws('; ',
+           nullif(CASE WHEN t.iv = 0 THEN 'collection off'
+                       WHEN t.dm THEN 'not monitored (its Collection Health threshold)'
+                       WHEN t.na THEN 'no runs (skipped only)'
+                       WHEN t.st > 0 AND t.st >= t.rt
+                         THEN t.cf || ' failure(s) in a row' || CASE WHEN t.fm IS NULL THEN ', never succeeded' ELSE ', failing ' || t.fm || ' min' END
+                       WHEN t.rt > 0
+                         THEN trim_scale(round(100.0 * t.failed / t.known, 1)) || ' % failed, ' || trim_scale(round(100.0 * t.partial / t.known, 1)) || ' % partial of ' || t.known || ' runs'   -- one place, as DBA Dash's DECIMAL(5,1) (part a #6: 1 of 300 read '0 %')
+                       ELSE '' END, ''),
+           -- the failures in a row the acknowledgement leaves out of the Summary, said on the row that keeps them
+           CASE WHEN NOT t.na AND t.cf > 0 AND t.cfj = 0
+                THEN 'acknowledged at ' || to_char(t.ack_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC by ' || t.ack_by || ': ' || t.cf || ' in a row before it' END),
          t.fm, t.cf, t.runs, t.ok, t.partial, t.failed, t.skipped,
          CASE WHEN t.known > 0 THEN round(100.0 * t.failed / t.known, 1) END,
          CASE WHEN t.known > 0 THEN round(100.0 * (t.failed + t.partial) / t.known, 1) END,
          t.last_run_at, t.last_ok_at, t.last_failure_at, t.last_partial_at, t.dur_sum, t.dur_max, t.rows_written,
          t.import_failed, t.import_runs, t.import_sum, t.import_max, t.cpu_runs, t.cpu_sum, t.cpu_max, t.reads_sum,
-         t.th_from, t.th_words
+         t.th_from, t.th_words,
+         CASE WHEN t.na THEN 'n/a' WHEN greatest(t.stj, t.rtj) = 2 THEN 'critical' WHEN greatest(t.stj, t.rtj) = 1 THEN 'warning' ELSE 'ok' END,
+         t.cfj, t.ack_at, t.ack_by
     FROM t
 $$;
 
 -- the Summary's 'Collection Health' cell per instance (DBA Dash's Summary_Upd.sql:156-158): the worst status but N/A,
 -- n = the collections at warning or critical, all_na when every listed collection is N/A (the cell then says N/A, as
--- DBA Dash's ISNULL(MIN(NULLIF(...,3)),3)); the window 24 hours from the next whole hour (CollectionHealthRateFrom.sql)
+-- DBA Dash's ISNULL(MIN(NULLIF(...,3)),3)); the window 24 hours from the next whole hour (CollectionHealthRateFrom.sql).
+-- It reads the judged values: the instance's acknowledgement of its collector errors applied (Summary_Upd.sql L123)
 CREATE OR REPLACE FUNCTION pgvigil.collection_health_summary(p_expected jsonb DEFAULT NULL)
 RETURNS TABLE (instance_id int, level int, n int, collections text, all_na boolean)
 LANGUAGE sql STABLE SET jit = off AS $$
   SELECT c.instance_id,
-         coalesce(max(CASE c.status WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END) FILTER (WHERE c.status <> 'n/a'), 0)::int,
-         count(*) FILTER (WHERE c.status IN ('warning', 'critical'))::int,
-         string_agg(c.collection || ' ' || c.status, ', ' ORDER BY c.status = 'critical' DESC, c.collection)
-           FILTER (WHERE c.status IN ('warning', 'critical')),
-         bool_and(c.status = 'n/a')
+         coalesce(max(CASE c.judged_status WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END) FILTER (WHERE c.judged_status <> 'n/a'), 0)::int,
+         count(*) FILTER (WHERE c.judged_status IN ('warning', 'critical'))::int,
+         string_agg(c.collection || ' ' || c.judged_status, ', ' ORDER BY c.judged_status = 'critical' DESC, c.collection)
+           FILTER (WHERE c.judged_status IN ('warning', 'critical')),
+         bool_and(c.judged_status = 'n/a')
     FROM pgvigil.collection_health(date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '23 hours', p_expected) c
    GROUP BY c.instance_id
 $$;

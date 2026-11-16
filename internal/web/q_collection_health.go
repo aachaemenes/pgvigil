@@ -48,12 +48,16 @@ WITH c AS (
                                    CASE WHEN $3::int > 0 THEN ARRAY[$3::int] ELSE $4::int[] END, nullif($5::text, '')) c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id
    WHERE ` + chScopeOf("c") + `
-), s AS (   -- the Summary's rate: its window, 24 hours from the next whole hour; the known runs only of an instance with a
-            -- failure or a partial in it (DBA Dash's SummaryKnownCount, CollectionHealth_Get :244; the lead's 00:5x on #9a)
+), s AS (   -- the Summary's rate: its window, 24 hours from the next whole hour, or from the instance's acknowledgement of
+            -- its collector errors rounded up to the hour if that is later (CollectionHealthRateFrom.sql; CollectionHealth_Get
+            -- L154-169); the known runs only of an instance with a failure or a partial in it (DBA Dash's SummaryKnownCount,
+            -- CollectionHealth_Get :244; the lead's 00:5x on #9a)
   SELECT h.instance_id, h.collection, sum(h.failed) AS failed24,
          CASE WHEN sum(h.failed) + sum(h.partial) > 0 THEN sum(h.ok + h.partial + h.failed) ELSE 0 END AS known24
     FROM pgvigil.collection_health_hour h
+    LEFT JOIN pgvigil.collection_errors_ack() a ON a.instance_id = h.instance_id
    WHERE h.hour >= date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '23 hours' AND ` + chScopeOf("h") + `
+     AND (a.rate_from IS NULL OR h.hour >= a.rate_from)
    GROUP BY h.instance_id, h.collection
 ), e AS (
   SELECT l.instance_id, l.collection, count(*)::int AS errors
