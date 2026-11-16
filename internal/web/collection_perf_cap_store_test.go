@@ -43,22 +43,36 @@ SELECT x.at, x.instance_id, i.name AS instance, i.engine, x.collection, x.period
  ORDER BY x.at DESC, i.name, x.collection, x.period
  LIMIT $6::int + 1`
 
+// sqlCollPerfRowsOwn: the function's own rows, unsorted and uncut (the review of J5 (a) #1: the caller sorts and cuts
+// again, so a function that ignored its cap read right through sqlCollPerfRows)
+var sqlCollPerfRowsOwn = `SELECT * FROM pgvigil.collection_perf_rows($1::timestamptz, $2::timestamptz, $3::int, $4::int[], coalesce($5::text, ''), $6::int)`
+
 // TestCollectionPerfCapOrderOnAStore (J5 after the index, the lead's 16:0x (a): 'a cap that keeps the wrong 5,001 is a
 // wrong page'; a box row: PGVIGIL_REPO_TEST_DSN): the capped rows read (pgvigil.collection_perf_rows, walking the range
 // newest first and stopping at the cap) equals the whole-range form ROW FOR ROW - every column, in order - for every
-// scope (the root, one collection, one instance, an instance list) and cap (0, 1, 5, 17, 60, 10000), over two ranges:
-// one to now from a time inside an hour, one that ends inside an hour in the past. The seed, in one transaction rolled
-// back: three active instances whose names sort against their ids (b, a, c inserted in that order) and one inactive,
-// two collections, 10 hours of hour rows (two collectors on even hours, so the sums count), and runs - failed and
-// partial, one exactly at an hour's start (beside that hour's Hour row: 'Hour' sorts first), one in the range's first
-// partial hour, one a second before an hour ends - with a skipped run, a job statistics rollup run and the inactive
-// instance's runs, which neither read shows.
+// scope (the root, one collection, one instance, an instance list) and cap (0, 1, 5, 17, 60, 10000), over five ranges:
+// one to now from a time inside an hour, one that ends inside a past hour, one ending on an hour, one under an hour and
+// one with no row (zero from every read). Both as the page reads it (sqlCollPerfRows) and the function's OWN rows as it
+// emits them, unsorted and uncut: exactly min(the whole range's rows, cap + 1), in the page's order (the review of J5
+// (a) #1). Every case twice: in the session's own zone and under Asia/Kolkata (5:30 from UTC: the review's #3). The
+// seed, in one transaction rolled back: three active instances whose names sort against their ids (b, a, c inserted in
+// that order) and one inactive, two collections, 10 hours of hour rows (two collectors on even hours, so the sums
+// count), and runs - failed and partial, one exactly at an hour's start (beside that hour's Hour row: 'Hour' sorts
+// first), one in the range's first partial hour, one a second before an hour ends, one before the first range's start
+// inside its first hour and one after the second range's end inside its hour (neither ever shown: the review's #2) -
+// with a skipped run, a job statistics rollup run and the inactive instance's runs, which neither read shows. Then
+// each of five MUTANTS planted in the store (the function's text from pg_get_functiondef, exactly one fragment changed,
+// rolled back after) must be caught by the function's own rows: the window's LIMIT without the rows already out, no
+// row count, the runs read from the window's start (not p_from), the first window an hour late, the first hour in the
+// session's zone. And the function's two guards: plan_cache_mode = force_custom_plan set on it (the review's #4: the
+// window statement is one cached plan run up to 11 times a call, the serve's setting lost behind a PgBouncer that drops
+// it), and a NULL bound read as nothing (#5: a NULL p_from walked back through all of history).
 func TestCollectionPerfCapOrderOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
 		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -116,6 +130,10 @@ func TestCollectionPerfCapOrderOnAStore(t *testing.T) {
 		run(key, ca, "error", base.Add(-3*time.Hour+17*time.Minute)) // inside the hour
 		run(key, cb, "partial", base.Add(-5*time.Hour-time.Second))  // a second before an hour ends
 		run(key, cb, "error", base.Add(-7*time.Hour-10*time.Minute)) // the first range's first partial hour
+		for _, coll := range []string{ca, cb} {
+			run(key, coll, "error", base.Add(-7*time.Hour-25*time.Minute)) // before the first range's start, inside its first hour
+			run(key, coll, "error", base.Add(-4*time.Hour+30*time.Minute)) // after the second range's end, inside its hour
+		}
 		run(key, ca, "partial", base.Add(-1*time.Hour+30*time.Minute))
 		run(key, ca, "skipped", base.Add(-2*time.Hour+5*time.Minute))                     // never a row
 		run(key, "job_stats_hourly", "error", base.Add(-2*time.Hour+6*time.Minute))       // never a row
@@ -137,39 +155,138 @@ func TestCollectionPerfCapOrderOnAStore(t *testing.T) {
 		return out
 	}
 	now := time.Now().UTC()
-	ranges := map[string][2]time.Time{
-		"to now, from inside an hour": {base.Add(-7*time.Hour - 20*time.Minute), now},
-		"ending inside a past hour":   {base.Add(-9 * time.Hour), base.Add(-4*time.Hour + 10*time.Minute)},
+	ranges := []struct {
+		name     string
+		from, to time.Time
+		empty    bool
+	}{
+		{"to now, from inside an hour", base.Add(-7*time.Hour - 20*time.Minute), now, false},
+		{"ending inside a past hour", base.Add(-9 * time.Hour), base.Add(-4*time.Hour + 10*time.Minute), false},
+		{"ending on an hour", base.Add(-3 * time.Hour), base.Add(-1 * time.Hour), false},
+		{"under an hour", base.Add(-3*time.Hour + 5*time.Minute), base.Add(-3*time.Hour + 40*time.Minute), false},
+		{"with no row", base.Add(-30 * time.Hour), base.Add(-29 * time.Hour), true},
 	}
-	scopes := map[string][3]any{
-		"the root":         {0, nil, ""},
-		"one collection":   {0, nil, ca},
-		"one instance":     {int(ids["a"]), nil, ""},
-		"an instance list": {0, []int32{ids["a"], ids["c"]}, cb},
+	scopes := []struct {
+		name string
+		sc   [3]any
+	}{
+		{"the root", [3]any{0, nil, ""}},
+		{"one collection", [3]any{0, nil, ca}},
+		{"one instance", [3]any{int(ids["a"]), nil, ""}},
+		{"an instance list", [3]any{0, []int32{ids["a"], ids["c"]}, cb}},
 	}
-	for rn, rg := range ranges {
-		for sn, sc := range scopes {
-			for _, cap := range []int{0, 1, 5, 17, 60, 10000} {
-				args := []any{rg[0], rg[1], sc[0], sc[1], sc[2], cap}
-				want, got := read(sqlCollPerfRowsWhole, args), read(sqlCollPerfRows, args)
-				if len(want) == 0 {
-					t.Fatalf("%s, %s, cap %d: the whole-range form reads no row (the seed?)", rn, sn, cap)
-				}
-				if strings.Join(got, "\n") != strings.Join(want, "\n") {
-					n := 0
-					for n < len(got) && n < len(want) && got[n] == want[n] {
-						n++
+	var zone string
+	if err := tx.QueryRow(ctx, `SHOW TimeZone`).Scan(&zone); err != nil {
+		t.Fatal(err)
+	}
+	// check: every case in both zones; report = false counts the cases each read differs in (a mutant's run)
+	check := func(report bool) (own, page, cases int) {
+		t.Helper()
+		for _, z := range []string{zone, "Asia/Kolkata"} {
+			exec(`SELECT set_config('TimeZone', $1, true)`, z)
+			for _, rg := range ranges {
+				for _, sp := range scopes {
+					for _, cap := range []int{0, 1, 5, 17, 60, 10000} {
+						cases++
+						args := []any{rg.from, rg.to, sp.sc[0], sp.sc[1], sp.sc[2], cap}
+						want := read(sqlCollPerfRowsWhole, args)
+						reads := []struct {
+							name string
+							rows []string
+							n    *int
+						}{{"the page's read", read(sqlCollPerfRows, args), &page}, {"the function's own rows", read(sqlCollPerfRowsOwn, args), &own}}
+						if report && rg.empty != (len(want) == 0) {
+							t.Fatalf("%s, %s, %s, cap %d: the whole-range form reads %d row(s) (the seed?)", z, rg.name, sp.name, cap, len(want))
+						}
+						for _, r := range reads {
+							if strings.Join(r.rows, "\n") == strings.Join(want, "\n") {
+								continue
+							}
+							*r.n++
+							if !report {
+								continue
+							}
+							n := 0
+							for n < len(r.rows) && n < len(want) && r.rows[n] == want[n] {
+								n++
+							}
+							g, w := "<none>", "<none>"
+							if n < len(r.rows) {
+								g = r.rows[n]
+							}
+							if n < len(want) {
+								w = want[n]
+							}
+							t.Errorf("%s, %s, %s, cap %d, %s: %d row(s), want %d; first difference at row %d:\n got  %s\n want %s",
+								z, rg.name, sp.name, cap, r.name, len(r.rows), len(want), n+1, g, w)
+						}
 					}
-					g, w := "<none>", "<none>"
-					if n < len(got) {
-						g = got[n]
-					}
-					if n < len(want) {
-						w = want[n]
-					}
-					t.Errorf("%s, %s, cap %d: %d row(s), want %d; first difference at row %d:\n got  %s\n want %s", rn, sn, cap, len(got), len(want), n+1, g, w)
 				}
 			}
+		}
+		exec(`SELECT set_config('TimeZone', $1, true)`, zone)
+		return own, page, cases
+	}
+	if own, page, cases := check(true); own+page == 0 {
+		t.Logf("J5a: %d cases (5 ranges x 4 scopes x 6 caps x 2 zones), the page's read and the function's own rows equal to the whole-range form", cases)
+	}
+
+	// the mutants: each one fragment of the function's text changed, planted in a savepoint, rolled back after
+	const sig = `'pgvigil.collection_perf_rows(timestamptz, timestamptz, int, int[], text, int)'::regprocedure`
+	var def string
+	if err := tx.QueryRow(ctx, `SELECT pg_get_functiondef(`+sig+`)`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []struct{ name, from, to string }{
+		{"the window's LIMIT without the rows already out", `LIMIT p_cap + 1 - v_out;`, `LIMIT p_cap + 1;`},
+		{"no row count", `GET DIAGNOSTICS v_got = ROW_COUNT;`, `v_got := 0;`},
+		{"the runs from the window's start", `l.snapshot_at >= greatest(v_lo, p_from)`, `l.snapshot_at >= v_lo`},
+		{"the first window an hour late", `(p_to - interval '1 microsecond') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+			`(p_to - interval '1 microsecond') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '1 hour'`},
+		{"the first hour in the session's zone", `date_trunc('hour', p_from AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`, `date_trunc('hour', p_from)`},
+	} {
+		if c := strings.Count(def, m.from); c != 1 {
+			t.Errorf("mutant %q NOT PLANTED: its fragment is in the function %d time(s)", m.name, c)
+			continue
+		}
+		exec(`SAVEPOINT j5a_mutant`)
+		exec(strings.Replace(def, m.from, m.to, 1))
+		own, page, cases := check(false)
+		exec(`ROLLBACK TO SAVEPOINT j5a_mutant`)
+		t.Logf("J5a mutant %q: the function's own rows differ in %d of %d cases, the page's read in %d", m.name, own, cases, page)
+		if own == 0 {
+			t.Errorf("mutant %q NOT CAUGHT: the function's own rows equal the whole-range form in all %d cases", m.name, cases)
+		}
+	}
+	if own, page, _ := check(false); own+page != 0 {
+		t.Errorf("after the mutants were rolled back the reads still differ (own %d, page %d)", own, page)
+	}
+
+	// the review's #4: the function sets plan_cache_mode itself
+	var conf string
+	if err := tx.QueryRow(ctx, `SELECT coalesce(array_to_string(proconfig, ','), '') FROM pg_proc WHERE oid = `+sig).Scan(&conf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(conf, "plan_cache_mode=force_custom_plan") {
+		t.Errorf("collection_perf_rows' own settings %q: no plan_cache_mode=force_custom_plan (a generic plan of the window statement reads the hour-led key with the scope as a filter)", conf)
+	}
+	// the review's #5: a NULL bound or cap reads nothing, at once (each call in a savepoint under a 5 s statement timeout)
+	for _, c := range []struct {
+		name string
+		args []any
+	}{
+		{"p_from NULL", []any{nil, now, 0, nil, "", 5}},
+		{"p_from NULL, cap 10000", []any{nil, now, 0, nil, "", 10000}},
+		{"p_to NULL", []any{base.Add(-3 * time.Hour), nil, 0, nil, "", 5}},
+		{"p_cap NULL", []any{base.Add(-3 * time.Hour), now, 0, nil, "", nil}},
+	} {
+		exec(`SAVEPOINT j5a_null`)
+		exec(`SET LOCAL statement_timeout = '5s'`)
+		var n int
+		err := tx.QueryRow(ctx, `SELECT count(*) FROM pgvigil.collection_perf_rows($1::timestamptz, $2::timestamptz, $3::int, $4::int[], $5::text, $6::int)`, c.args...).Scan(&n)
+		exec(`ROLLBACK TO SAVEPOINT j5a_null`)
+		if err != nil || n != 0 {
+			t.Errorf("%s: %d row(s), err %v; want 0 rows and no error", c.name, n, err)
 		}
 	}
 }
