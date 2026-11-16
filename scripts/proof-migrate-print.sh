@@ -2,7 +2,7 @@
 # Proof of 'pgvigil migrate -print' (ST7): the statements migrate would run, printed and applied by psql, make the same
 # schema and the same row counts migrate makes, and the print itself changes nothing. Scratch databases and one scratch
 # login on the server PGVIGIL_REPO_DSN names (an admin connection; its own database is not touched), dropped at the end;
-# the cluster roles the migrations create (pgvigil_collector, pgvigil_reader, pgvigil_auth, pgvigil_alerter) stay there.
+# the cluster roles the migrations create (pgvigil_collector, _reader, _auth, _alerter, _requester, _exporter, _investigator) stay there.
 # Needs go, psql and pg_dump (pg_dump's major at least the server's) on this machine.
 #   PGVIGIL_REPO_DSN   an admin connection string (CREATEDB, CREATEROLE) to a scratch PostgreSQL server, in the key=value
 #                      form (the script appends ' dbname=...'; a postgres:// URI does not take that)

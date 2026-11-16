@@ -36,8 +36,8 @@ As the repository's owner, make the agent's login (`pgvigil roles` prints the li
 CREATE ROLE pgvigil_investigator_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_investigator;
 ```
 
-`pgvigil_investigator` is the door's group role, made by migration 0268 (NOLOGIN; the collector's login `pgvigil_agent`
-and the MCP reader's login `pgvigil_mcp` of earlier releases are other roles and get none of the door). If a role named
+`pgvigil_investigator` is the door's group role, made by migration 0268 (NOLOGIN). The collector's login `pgvigil_agent`
+(`pgvigil roles`) and the MCP reader's login `pgvigil_mcp` ([mcp.md](mcp.md)) are other roles and get none of the door. If a role named
 `pgvigil_investigator` already exists and may log in, `pgvigil migrate` stops at 0268 and says so: a login of that name
 would get the door's grants and pass its check. Rename or drop that login, then migrate again.
 
@@ -56,7 +56,7 @@ reads (the reader's tables and views; never `ui_*`), under the same rule asked a
 
 ## The agent's tools
 
-With `pgvigil_investigator`, `pgvigil mcp` serves seven tools beside the reader's nine:
+With `pgvigil_investigator`, `pgvigil mcp` serves seven tools beside the reader's ten:
 
 | Tool | Arguments | What it does |
 |---|---|---|

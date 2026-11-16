@@ -86,7 +86,7 @@ Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud 
 
 Download the binary for your platform from the [latest release](https://github.com/aachaemenes/pgvigil/releases/latest), verify it (the section below), rename it `pgvigil` (`pgvigil.exe` on Windows) and put it anywhere on the PATH; `pgvigil version` prints its tag. From source instead: Go 1.27, `go build -o bin/pgvigil ./cmd/pgvigil` or `make build`.
 
-1. A repository database on a PostgreSQL 13+ server (proven on 13, 16 and 18; a repository on RDS or Aurora is not proven), and a login that owns it; this is the only place pgvigil writes. The owner needs CREATEROLE: `migrate` creates the four NOLOGIN roles of the access contract (`pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth`, `pgvigil_alerter`). On RDS and Aurora the master user has it.
+1. A repository database on a PostgreSQL 13+ server (proven on 13, 16 and 18; a repository on RDS or Aurora is not proven), and a login that owns it; this is the only place pgvigil writes. The owner needs CREATEROLE: `migrate` creates the seven NOLOGIN roles of the access contract (`pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth`, `pgvigil_alerter`, `pgvigil_requester`, `pgvigil_exporter`, `pgvigil_investigator`). On RDS and Aurora the master user has it.
    ```
    CREATE ROLE pgvigil_owner LOGIN CREATEROLE PASSWORD '...';
    CREATE DATABASE pgvigil OWNER pgvigil_owner;

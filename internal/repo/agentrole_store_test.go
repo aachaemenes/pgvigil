@@ -41,17 +41,34 @@ func TestAgentDoorRoleIsNotTheCollectorLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	type before struct{ had, couldLogin, wasMember bool }
-	found := map[string]before{}
+	t.Cleanup(func() { _ = admin.Close(context.Background()) }) // registered first: it runs last
 	for _, l := range publishedLogins {
-		var b before
+		var had, couldLogin, wasMember bool
+		// wasMember: a DIRECT membership (pg_auth_members), the one the GRANT below makes and the undo takes back
 		if err := admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1),
        coalesce((SELECT rolcanlogin FROM pg_roles WHERE rolname = $1), false),
-       coalesce((SELECT pg_has_role($1, $2, 'MEMBER') WHERE to_regrole($1) IS NOT NULL AND to_regrole($2) IS NOT NULL), false)`,
-			l.name, l.group).Scan(&b.had, &b.couldLogin, &b.wasMember); err != nil {
+       EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = to_regrole($1)::oid AND m.roleid = to_regrole($2)::oid)`,
+			l.name, l.group).Scan(&had, &couldLogin, &wasMember); err != nil {
 			t.Fatalf("read the server's role %s: %v", l.name, err)
 		}
-		found[l.name] = b
+		// the undo before the change (review 1 S4), so a failure below never leaves the server's role changed; it runs
+		// after the fresh database (haJoinFreshStore, below) is dropped
+		id, gid := pgx.Identifier{l.name}.Sanitize(), pgx.Identifier{l.group}.Sanitize()
+		t.Cleanup(func() {
+			bg := context.Background()
+			if !had {
+				if _, err := admin.Exec(bg, `DROP ROLE IF EXISTS `+id); err != nil {
+					t.Logf("%s left on the server (it holds grants elsewhere): %v", l.name, err)
+				}
+				return
+			}
+			if !couldLogin {
+				_, _ = admin.Exec(bg, `ALTER ROLE `+id+` NOLOGIN`)
+			}
+			if !wasMember {
+				_, _ = admin.Exec(bg, `REVOKE `+gid+` FROM `+id)
+			}
+		})
 		// as the documents printed it (the groups are 0008's)
 		if _, err := admin.Exec(ctx, fmt.Sprintf(`DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %[2]s) THEN CREATE ROLE %[4]s NOLOGIN; END IF;
@@ -62,25 +79,6 @@ GRANT %[4]s TO %[3]s;`, quoteLit(l.name), quoteLit(l.group), pgx.Identifier{l.na
 			t.Fatalf("make v0.3.0's login %s IN ROLE %s: %v", l.name, l.group, err)
 		}
 	}
-	t.Cleanup(func() { // registered first: it runs after the fresh database (below) is dropped
-		bg := context.Background()
-		defer func() { _ = admin.Close(bg) }()
-		for _, l := range publishedLogins {
-			b, id, gid := found[l.name], pgx.Identifier{l.name}.Sanitize(), pgx.Identifier{l.group}.Sanitize()
-			if !b.had {
-				if _, err := admin.Exec(bg, `DROP ROLE IF EXISTS `+id); err != nil {
-					t.Logf("%s left on the server (it holds grants elsewhere): %v", l.name, err)
-				}
-				continue
-			}
-			if !b.couldLogin {
-				_, _ = admin.Exec(bg, `ALTER ROLE `+id+` NOLOGIN`)
-			}
-			if !b.wasMember {
-				_, _ = admin.Exec(bg, `REVOKE `+gid+` FROM `+id)
-			}
-		}
-	})
 	r := haJoinFreshStore(ctx, t)
 
 	var doorLogin *bool
@@ -147,6 +145,8 @@ func quoteLit(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") +
 // TestAgentDoorRoleGuard (AGENTROLE, the lead's guard (y), a box row like the one above): when a role of the door's
 // name already exists as a LOGIN role, 0268 stops the migrate in words naming the role and why - a login of that name
 // would get the door's grants and pass its check - and the database is left before 0268 (the file's own transaction).
+// Run with -p 1 (the box driver does): for one fresh migrate pgvigil_investigator is a LOGIN role server-wide, and
+// another package's fresh migrate on the same server reaching 0268 in that window stops at the guard (review 1 N2).
 func TestAgentDoorRoleGuard(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -164,6 +164,19 @@ func TestAgentDoorRoleGuard(t *testing.T) {
        coalesce((SELECT rolcanlogin FROM pg_roles WHERE rolname = $1), false)`, doorRole).Scan(&had, &couldLogin); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = admin.Close(context.Background()) }) // registered first: it runs last
+	// the role's undo before the change (review 1 S4); it runs after the database's drop below
+	t.Cleanup(func() {
+		bg := context.Background()
+		switch {
+		case !had:
+			if _, err := admin.Exec(bg, `DROP ROLE IF EXISTS `+id); err != nil {
+				t.Logf("%s left on the server: %v", doorRole, err)
+			}
+		case !couldLogin:
+			_, _ = admin.Exec(bg, `ALTER ROLE `+id+` NOLOGIN`)
+		}
+	})
 	stmt := `CREATE ROLE ` + id + ` LOGIN`
 	if had {
 		stmt = `ALTER ROLE ` + id + ` LOGIN`
@@ -176,18 +189,8 @@ func TestAgentDoorRoleGuard(t *testing.T) {
 		t.Fatalf("a fresh database: %v", err)
 	}
 	t.Cleanup(func() {
-		bg := context.Background()
-		defer func() { _ = admin.Close(bg) }()
-		if _, err := admin.Exec(bg, `DROP DATABASE IF EXISTS `+pgx.Identifier{name}.Sanitize()+` WITH (FORCE)`); err != nil {
+		if _, err := admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+pgx.Identifier{name}.Sanitize()+` WITH (FORCE)`); err != nil {
 			t.Errorf("drop %s: %v", name, err)
-		}
-		switch {
-		case !had:
-			if _, err := admin.Exec(bg, `DROP ROLE IF EXISTS `+id); err != nil {
-				t.Logf("%s left on the server: %v", doorRole, err)
-			}
-		case !couldLogin:
-			_, _ = admin.Exec(bg, `ALTER ROLE `+id+` NOLOGIN`)
 		}
 	})
 	pcfg, err := pgxpool.ParseConfig(dsn)
