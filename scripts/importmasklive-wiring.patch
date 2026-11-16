@@ -1,0 +1,138 @@
+diff --git i/internal/textnow/textnow.go w/internal/textnow/textnow.go
+index ca1f5f76..a287d0a1 100644
+--- i/internal/textnow/textnow.go
++++ w/internal/textnow/textnow.go
+@@ -63,6 +63,9 @@ func findRuleOf(check string) (findRule, bool) {
+ // textCut is what stands for a statement a finding quoted, under none.
+ const textCut = "(not shown: this instance's query_text policy is none)"
+ 
++// NotShown is what stands for a statement the policy none hides, on a finding and on a page that shows one.
++const NotShown = textCut
++
+ // cutStmt keeps a finding's words up to where it quotes a statement and puts the statement under the policy: none =
+ // textCut in its place, normalized = its normalized form. A field that quotes one but whose quote is not found (a
+ // name with the marker's own characters in it, a reworded message) fails closed: the whole field is the statement.
+diff --git i/internal/web/dbadash_text_test.go w/internal/web/dbadash_text_test.go
+new file mode 100644
+index 00000000..10b13f77
+--- /dev/null
++++ w/internal/web/dbadash_text_test.go
+@@ -0,0 +1,31 @@
++package web
++
++import "testing"
++
++// TestDBADashStatement: a screen's statement text under the instance's query_text - the strictest of the matching
++// instances' policies, the read rule's words under none, the collector's normalized form under normalized.
++func TestDBADashStatement(t *testing.T) {
++	for _, c := range []struct {
++		modes []string
++		want  string
++	}{
++		{[]string{"full"}, "full"}, {[]string{"full", "normalized"}, "normalized"}, {[]string{"normalized", "none", "full"}, "none"},
++		{[]string{"none"}, "none"}, {[]string{"full", "a word no policy has"}, "none"}, {nil, "full"},
++	} {
++		if got := strictestText(c.modes); got != c.want {
++			t.Errorf("strictestText(%v) = %q, want %q", c.modes, got, c.want)
++		}
++	}
++	const st = "CREATE LOGIN app WITH PASSWORD = '<masked>'; SELECT 1"
++	if got := dbadashStatement("full", st); got != st {
++		t.Errorf("full: %q", got)
++	}
++	if got := dbadashStatement("normalized", st); got != "CREATE LOGIN app WITH PASSWORD = ?; SELECT ?" {
++		t.Errorf("normalized: %q", got)
++	}
++	for _, m := range []string{"none", "", "a word no policy has"} {
++		if got := dbadashStatement(m, st); got != "(not shown: this instance's query_text policy is none)" {
++			t.Errorf("%q: %q, want the words", m, got)
++		}
++	}
++}
+diff --git i/internal/web/q_dbadash.go w/internal/web/q_dbadash.go
+index 2504521b..015f6d8f 100644
+--- i/internal/web/q_dbadash.go
++++ w/internal/web/q_dbadash.go
+@@ -8,7 +8,9 @@ import (
+ 	"strings"
+ 	"time"
+ 
++	"github.com/aachaemenes/pgvigil/internal/collect"
+ 	"github.com/aachaemenes/pgvigil/internal/dbadash"
++	"github.com/aachaemenes/pgvigil/internal/textnow"
+ )
+ 
+ // The DBADash door's API (task 55): DBADash's own instances and Summary statuses, read from the DBADash repositories the
+@@ -209,5 +211,72 @@ func (s *Server) dbadashPage(w http.ResponseWriter, r *http.Request, repo *strin
+ 		writeErr(w, http.StatusBadGateway, err)
+ 		return
+ 	}
++	if out.HasStatements() {
++		// the statement text a screen shows follows the instance's query_text now, as every stored text does
++		mode, err := s.dbadashTextMode(ctx, *repo, id)
++		if err != nil {
++			writeErr(w, http.StatusInternalServerError, err)
++			return
++		}
++		out.Statements(func(st string) any { return dbadashStatement(mode, st) })
++	}
+ 	s.reply(w, r, out, nil)
+ }
++
++// dbadashTextMode is the query_text policy the statements of a repository instance's screen are shown under now: of
++// the pgvigil instances that are that server (sqlDBADashImported: collected under its server name, imported under its
++// display name, or its move), each as this request's door set holds its policy, the strictest; with no such instance
++// the file's own (planPolicy of no name).
++func (s *Server) dbadashTextMode(ctx context.Context, repo string, id int) (string, error) {
++	ds := s.doorsNow()
++	rows, err := s.pool.Query(ctx, `SELECT name FROM (`+sqlDBADashImported+`) x WHERE source_id = $2`, repo, id)
++	if err != nil {
++		return "", err
++	}
++	defer rows.Close()
++	var modes []string
++	for rows.Next() {
++		var name string
++		if err := rows.Scan(&name); err != nil {
++			return "", err
++		}
++		modes = append(modes, ds.planPolicy(name))
++	}
++	if err := rows.Err(); err != nil {
++		return "", err
++	}
++	if len(modes) == 0 {
++		return ds.planPolicy(""), nil
++	}
++	return strictestText(modes), nil
++}
++
++// strictestText is the strictest of some query_text policies: none, then normalized, then full (an unknown word
++// counts as none).
++func strictestText(modes []string) string {
++	out := "full"
++	for _, m := range modes {
++		switch m {
++		case "full":
++		case "normalized":
++			if out == "full" {
++				out = "normalized"
++			}
++		default:
++			return "none"
++		}
++	}
++	return out
++}
++
++// dbadashStatement is a statement text of a screen under a policy: none = the read rule's words in its place,
++// normalized = the collector's normalized form, full = as read.
++func dbadashStatement(mode, st string) any {
++	switch mode {
++	case "full":
++		return st
++	case "normalized":
++		return collect.NormalizeSQL(st)
++	}
++	return textnow.NotShown
++}
