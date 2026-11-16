@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/pi v1.46.8
 	github.com/aws/aws-sdk-go-v2/service/rds v1.132.2
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.9
+	github.com/golang-sql/sqlexp v0.1.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/microsoft/go-mssqldb v1.11.2
 	golang.org/x/crypto v0.58.0
@@ -39,7 +40,6 @@ require (
 	github.com/aws/smithy-go v1.28.8 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
-	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

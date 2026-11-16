@@ -104,6 +104,7 @@ var routeWhat = map[string]string{
 	"POST /api/alertrules/end":              "ending an alert rule",
 	"POST /api/drives/thresholds":           "changing a drive threshold",
 	"POST /api/pg/thresholds":               "changing a PostgreSQL threshold",
+	"POST /api/mssql/blitz/settings":        "changing the weekly sp_Blitz",
 	"POST /api/jobs/thresholds":             "changing a job threshold",
 	"POST /api/jobs/exclusions":             "changing a job exclusion",
 	"POST /api/customreports":               "changing a custom report",

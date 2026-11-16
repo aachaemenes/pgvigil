@@ -28,6 +28,7 @@ import { slowFleetView } from './slow';
 import { trendCol } from './stmt_trend';
 import { readStmtGroups, stmtGroupsSection, totalWithShare } from './stmt_filter';
 import { customReportView } from './custom';
+import { blitzSection } from './blitz';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
 import type { AttentionBox } from './export';
@@ -860,7 +861,12 @@ export type { Fleet };
 // findings: one instance's parameter findings, or the fleet's scoped to the tag folder picked in the tree,
 // each row linking to its instance's Findings tab.
 export async function findings(ctx: Ctx): Promise<HTMLElement> {
-  if (ctx.instance) return findingsView(ctx.instance);
+  if (ctx.instance) {
+    // a SQL Server instance's tab also holds its stored weekly sp_Blitz (B20-2, blitz.ts)
+    const [view, f] = await Promise.all([findingsView(ctx.instance), fleet()]);
+    const me = f.instances.find(r => Number(r.instance_id) === ctx.instance);
+    return me && isMssql(me.engine) ? el('div', {}, view, await blitzSection(ctx, ctx.instance)) : view;
+  }
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await findingsView(undefined, ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'findings'));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
