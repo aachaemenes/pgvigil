@@ -59,14 +59,16 @@ var sqlCollPerfRowsOwn = `SELECT * FROM pgvigil.collection_perf_rows($1::timesta
 // that order) and one inactive, two collections, 10 hours of hour rows (two collectors on even hours, so the sums
 // count), and runs - failed and partial, one exactly at an hour's start (beside that hour's Hour row: 'Hour' sorts
 // first), one in the range's first partial hour, one a second before an hour ends, one before the first range's start
-// inside its first hour and one after the second range's end inside its hour (neither ever shown: the review's #2) -
+// inside its first hour and one after the second range's end inside its hour (neither shown by the range it borders:
+// the review's #2) -
 // with a skipped run, a job statistics rollup run and the inactive instance's runs, which neither read shows. Then
 // each of five MUTANTS planted in the store (the function's text from pg_get_functiondef, exactly one fragment changed,
 // rolled back after) must be caught by the function's own rows: the window's LIMIT without the rows already out, no
 // row count, the runs read from the window's start (not p_from), the first window an hour late, the first hour in the
 // session's zone. And the function's two guards: plan_cache_mode = force_custom_plan set on it (the review's #4: the
 // window statement is one cached plan run up to 11 times a call, the serve's setting lost behind a PgBouncer that drops
-// it), and a NULL bound read as nothing (#5: a NULL p_from walked back through all of history).
+// it), and a NULL bound read as nothing (#5: a NULL p_from walked back through all of history - the two p_from rows
+// fail on the guard without its NULL terms; the p_to and p_cap rows are kept as regression rows, passing either way).
 func TestCollectionPerfCapOrderOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {

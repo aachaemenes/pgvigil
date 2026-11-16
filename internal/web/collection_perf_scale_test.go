@@ -57,7 +57,7 @@ func TestCollectionPerfScaleJ5(t *testing.T) {
 	}
 	// the review of J5 (a) #6: beside the two reads at the root, the walk's own cost - one instance (60 rows an hour: the
 	// cap at about 84 hours, 8 windows) and a sparse scope (10 instances of one collection: 1,920 rows in 8 days, under the
-	// cap, so the walk goes to the range's first hour, its last window 128 hours wide)
+	// cap, so the walk goes to the range's first hour, its last window the 128-hour step clipped to that hour)
 	var one int
 	var ten []int32
 	if err := pool.QueryRow(ctx, `SELECT min(instance_id) FROM pgvigil.instances WHERE name LIKE 'sc-i%'`).Scan(&one); err != nil {
