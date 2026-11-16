@@ -134,10 +134,10 @@ func TestRightsOnPlatforms(t *testing.T) {
 		}
 		return strings.Join(a, " "), strings.Join(o, " ")
 	}
-	if a, o := listed(platform.Info{Kind: platform.OnPrem}); a != "pg_monitor connect server_log_list server_log_read hba_rules" || o != "" {
+	if a, o := listed(platform.Info{Kind: platform.OnPrem}); a != "pg_monitor connect server_log_list server_log_read hba_rules subscription_oid" || o != "" {
 		t.Errorf("self-managed: apply %q, off %q", a, o)
 	}
-	if a, o := listed(platform.Info{Kind: platform.Kind("rds")}); a != "pg_monitor connect" || o != "server_log_list server_log_read hba_rules" {
+	if a, o := listed(platform.Info{Kind: platform.Kind("rds")}); a != "pg_monitor connect" || o != "server_log_list server_log_read hba_rules subscription_oid" {
 		t.Errorf("a managed platform: apply %q, off %q", a, o)
 	}
 }

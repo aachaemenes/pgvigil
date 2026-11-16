@@ -71,8 +71,9 @@ lists its own audit reader (`msdb.dbo.rds_fn_get_audit_file`).
 | EXECUTE on pg_ls_logdir() | the server log's files listed (pg_monitor gives it) |
 | the server log's read door | the log's content on a self-managed server: the function `pgvigil roles` prints, which a superuser creates |
 | SELECT on pg_hba_file_rules | pg_hba.conf's rules on the Roles page |
+| SELECT on pg_subscription's oid (PostgreSQL 13) | the logical replication read's subscriptions and their tables (13 grants the column to superusers only; 14 to all) |
 
-The last three are listed on a self-managed server only. Not in the list: an extension's own functions where it is
+The last four are listed on a self-managed server only. Not in the list: an extension's own functions where it is
 installed (pg_buffercache, amcheck, system_stats - the collection that reads it names its GRANT in its skip note),
 pg_cron's schema and BYPASSRLS (`pgvigil roles` prints them), and the actions and explain logins, which have their
 own pages ([sqlserver-actions.md](sqlserver-actions.md), `pgvigil roles`).
