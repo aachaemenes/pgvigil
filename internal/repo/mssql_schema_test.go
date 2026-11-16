@@ -266,7 +266,7 @@ func (s *schemaStore) traceDDL(at time.Time, db, sub, object, typ, login string)
 	}
 	if _, err := s.pool.Exec(s.ctx, `INSERT INTO pgvigil.mssql_trace_events (instance_id, event_at, event_key, snapshot_at, logged_local,
 	    event_class, kind, sub, database_name, login_name, host_name, program_name, object_name, object_type)
-	  VALUES ($1, $2, $3, $2, $2::timestamp, 164, 'ddl', $4, $5, $6, $6 || '-host', $6 || '-app', $7, $8)`,
+	  VALUES ($1, $2, $3, $2, $2::timestamptz AT TIME ZONE 'UTC', 164, 'ddl', $4, $5, $6, $6 || '-host', $6 || '-app', $7, $8)`,
 		s.id, at, fmt.Sprintf("%s-%s-%d", object, login, at.UnixNano()), sub, db, login, object, typ); err != nil {
 		s.t.Fatal(err)
 	}
