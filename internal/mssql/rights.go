@@ -81,8 +81,9 @@ func azureServerState(i Info) bool {
 const rightsNoAccessWhere = `d.state = 0 AND d.user_access = 0 AND d.name NOT IN (N'rdsadmin', N'gcloud_cloudsqladmin') AND HAS_DBACCESS(d.name) = 0`
 
 // msdbReaderTables: the msdb tables the collectors ask msdbReadable about - backups.go's backupFileTables, jobs.go's
-// jobTables and log shipping's two (TestRightsMsdbTables holds the list to every call); msdb_reader's check asks each.
-var msdbReaderTables = append(append(append([]string{}, backupFileTables...), jobTables...), "log_shipping_monitor_primary", "log_shipping_monitor_secondary")
+// jobTables, log shipping's two and its restores' restorehistory (TestRightsMsdbTables holds the list to every call);
+// msdb_reader's check asks each.
+var msdbReaderTables = append(append(append([]string{}, backupFileTables...), jobTables...), "log_shipping_monitor_primary", "log_shipping_monitor_secondary", "restorehistory")
 
 // msdbReaderCheck: msdb is entered and every table of msdbReaderTables is readable.
 func msdbReaderCheck() string {
@@ -127,16 +128,21 @@ var Rights = []Right{
 			return ""
 		}},
 	{Key: "view_any_definition", Name: "VIEW ANY DEFINITION", Core: true,
-		For:    "every database's metadata: the audits and their specifications, the definitions of objects and jobs",
-		Check:  "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')",
-		Grant:  "USE master;\nGRANT VIEW ANY DEFINITION TO {p};",
-		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')"}, On: notAzureDB},
+		For:   "every database's metadata: the audits and their specifications, the definitions of objects and jobs",
+		Check: "HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')",
+		Grant: "USE master;\nGRANT VIEW ANY DEFINITION TO {p};",
+		Checks: []string{"HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION')",
+			// the schema and maintenance reads' per-database probe: VIEW ANY DEFINITION gives every database's VIEW DEFINITION
+			"HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')", "HAS_PERMS_BY_NAME(DB_NAME(), ''DATABASE'', ''VIEW DEFINITION'')"}, On: notAzureDB},
 	{Key: "msdb_reader", Name: "msdb: a user with db_datareader", Core: true,
 		For:   "msdb: the Agent jobs and their history, the backup history",
 		Check: msdbReaderCheck(),
 		Grant: "ALTER ROLE db_datareader ADD MEMBER {p};", UserDB: "msdb",
-		Checks: []string{"HAS_DBACCESS('msdb')", `HAS_PERMS_BY_NAME(N'msdb.dbo."+table+"', 'OBJECT', 'SELECT')`},
-		On:     notAzureDB},
+		Checks: []string{"HAS_DBACCESS('msdb')", `HAS_PERMS_BY_NAME(N'msdb.dbo."+table+"', 'OBJECT', 'SELECT')`,
+			// the security read's msdb tables (db_datareader in msdb reads them)
+			"HAS_PERMS_BY_NAME('msdb.dbo.backupset', 'OBJECT', 'SELECT')", "HAS_PERMS_BY_NAME('msdb.dbo.sysproxies', 'OBJECT', 'SELECT')",
+			"HAS_PERMS_BY_NAME('msdb.dbo.sysproxylogin', 'OBJECT', 'SELECT')"},
+		On: notAzureDB},
 	{Key: "database_access", Name: "CONNECT ANY DATABASE", Core: true,
 		For:    "each database's own reads: indexes, storage and files, Query Store, the database options, the database audit specifications, replication",
 		Check:  "CASE WHEN ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'CONNECT ANY DATABASE'), 0) = 1 THEN 1 WHEN EXISTS (SELECT 1 FROM sys.databases d WHERE " + rightsNoAccessWhere + ") THEN 0 ELSE 1 END",
@@ -160,7 +166,8 @@ var Rights = []Right{
 		For:   "Properties: the TCP port, the protocols and the encryption settings where the registry view does not hold them",
 		Check: "HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')",
 		Grant: "GRANT EXECUTE ON dbo.xp_instance_regread TO {p};", UserDB: "master",
-		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')"}, On: hostOnly},
+		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')",
+			"HAS_PERMS_BY_NAME('master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')"}, On: hostOnly},
 	{Key: "registry_machine", Name: "EXECUTE on master.dbo.xp_regread",
 		For:   "Properties: Win32PrioritySeparation and the power plan (a Windows host)",
 		Check: "HAS_PERMS_BY_NAME(N'master.dbo.xp_regread', 'OBJECT', 'EXECUTE')",
@@ -218,6 +225,15 @@ var RightsExceptions = map[string]string{
 	"HAS_PERMS_BY_NAME(N'master.dbo.pgvigil_evict_plan', N'OBJECT', N'EXECUTE')": "the actions login's (docs/sqlserver-actions.md)",
 	"IS_SRVROLEMEMBER('sysadmin')":                                               "the actions door's refusal of a sysadmin login",
 	"HAS_PERMS_BY_NAME(NULL, NULL, ...)":                                         "a comment's ellipsis, not a statement",
+	// the j16 join: the checks of slices that met this catalogue there, each read in its own code
+	"IS_SRVROLEMEMBER(N'sysadmin')":                                 "the Agent alerts script's own check of the login that runs it (a DBA's: msdb.dbo.sp_add_alert needs sysadmin, error 15003); pgvigil prints the script and never runs it",
+	"HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LINKED SERVER')":      "looked for, never asked for: whether the read login sees every linked server's login mappings (the linked-server checks say when it does not)",
+	"HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LOGIN')":              "looked for, never asked for: the linked-server and security reads' alternative to VIEW ANY DEFINITION (it lets a login change logins)",
+	"IS_SRVROLEMEMBER('setupadmin')":                                "looked for, never asked for: the linked-server checks' alternative to VIEW ANY DEFINITION",
+	"HAS_PERMS_BY_NAME(''dbo.CommandLog'', ''OBJECT'', ''SELECT'')": "the maintenance read's probe of Ola Hallengren's dbo.CommandLog in the database it is installed in (its own words when it is not readable); that database differs per server, so no fixed grant row",
+	"IS_SRVROLEMEMBER('dbcreator')":                                 "the actions login's (the verify door: RESTORE VERIFYONLY; docs/sqlserver-actions.md)",
+	"HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY DATABASE')":           "the actions login's (the verify door: RESTORE VERIFYONLY; docs/sqlserver-actions.md)",
+	"HAS_PERMS_BY_NAME(N'master', 'DATABASE', 'CREATE DATABASE')":   "the actions login's (the verify door: RESTORE VERIFYONLY; docs/sqlserver-actions.md)",
 }
 
 // RightState is one right as the server answered it for the login.
