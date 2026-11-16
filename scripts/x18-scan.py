@@ -37,7 +37,7 @@ REVIEWED = {
     ('alert_page.ts', 'severity'): 'badges 084d1cd5',
     ('alert_page.ts', 'status'): 'badges f09c04a0',
     ('alert_rules.ts', 'outcome'): 'badges b39648c8',
-    ('alert_rules.ts', 'state'): 'badges 648d21db',
+    ('alert_rules.ts', 'state'): 'badges 648d21db 169eaada',
     ('alerts.ts', 'last_outcome'): 'badges 495d4926',
     ('alerts.ts', 'min_severity'): 'badges 21678a64',
     ('alerts.ts', 'outcome'): 'badges b39648c8 d9db3c19',
@@ -56,6 +56,9 @@ REVIEWED = {
     ('corruption.ts', 'events_24h'): 'empty ce973907',
     ('corruption.ts', 'severity'): 'badges 084d1cd5',
     ('corruption.ts', 'status'): 'badges 5e43e02c',
+    ('collectionperf.ts', 'outcome'): 'empty 952dc45a',
+    ('collector.ts', 'outcome'): 'badges 98b66f60',
+    ('collectorerrors.ts', 'type'): 'badges 6308aba5',
     ('custom.ts', 'status_rank'): 'badges f1586db7',
     ('customreports.ts', 'outcome'): 'badges c8ff2184',
     ('dbadash.ts', 'status'): 'badges 90f8e80d',
@@ -72,6 +75,7 @@ REVIEWED = {
     ('indexes.ts', 'problems'): 'badges 64ff6f8d',
     ('indexes.ts', 'readable'): 'empty bf2c7132',
     ('indexes.ts', 'severity'): 'badges 084d1cd5',
+    ('investigate.ts', 'state'): 'badges 6389c105',
     ('io.ts', 'cause'): 'badges fbfeb6f0',
     ('io.ts', 'severity'): 'badges 084d1cd5',
     ('jobs_running.ts', 'outcome'): 'badges 223bc7c8',
@@ -503,7 +507,7 @@ def wide(src):
             n += 1
             why = WIDE_REVIEWED.get((name, key))
             if why is None:
-                print(f"FAIL {name}:{line} '{key}': {kind}, not reviewed")
+                print(f"FAIL {name}:{line} '{key}': {kind}, not reviewed (its pin once read: {pin(body + (ct or '') + ''.join(okh[h] for h in oku))})")
                 bad += 1
                 continue
             seen.add((name, key))
@@ -549,7 +553,7 @@ def main():
                 continue
             why = REVIEWED.get((name, key))
             if why is None:
-                print(f"FAIL {name}:{line} '{key}': a status column without a cls, not reviewed")
+                print(f"FAIL {name}:{line} '{key}': a status column without a cls, not reviewed (its pin once read: {pin(body + ''.join(hs[h] for h in used))})")
                 bad += 1
                 continue
             seen.add((name, key))
