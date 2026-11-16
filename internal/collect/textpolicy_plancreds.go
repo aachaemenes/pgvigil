@@ -123,7 +123,7 @@ func nextPlanTag(s string, i, opens int, noEnd *bool) (at, n int, ok bool) {
 		}
 		i += lt
 		rest := s[i:]
-		end := -1 // the length of the raw section rest begins with
+		var end int // the length of the raw section rest begins with (each case below sets it)
 		switch {
 		case strings.HasPrefix(rest, "<!--"):
 			if end = strings.Index(rest[4:], "-->"); end >= 0 {
