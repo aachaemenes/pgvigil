@@ -383,7 +383,6 @@ func TestDatabaseRules(t *testing.T) {
 		// BLITZ-GAP (the lead 05:2x): replication in use, TDE, a database snapshot
 		{collect.Row{"published": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"merge_published": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
-		{collect.Row{"subscribed": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"distributor": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"encrypted": int64(1)}, "encrypted", "warn", "info", AreaDBOptions, "sp_Blitz 21"},
 		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "snapshot_of", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
@@ -461,7 +460,6 @@ func TestBlitzGapWords(t *testing.T) {
 	}{
 		{collect.Row{"published": int64(1)}, "app: published for transactional or snapshot replication"},
 		{collect.Row{"published": int64(1), "merge_published": int64(1)}, "app: published for transactional or snapshot replication; published for merge replication"},
-		{collect.Row{"subscribed": int64(1)}, "app: subscribed to a publication"},
 		{collect.Row{"database_name": "distribution", "distributor": int64(1)}, "distribution: the distribution database"},
 		{collect.Row{"encrypted": int64(1)}, "app: TDE is on: a restore on another server needs the certificate that protects its key, with its private key"},
 		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "app: a database snapshot of src: each page changed in src after it was taken is first copied into it"},
@@ -474,6 +472,10 @@ func TestBlitzGapWords(t *testing.T) {
 	// tempdb is encrypted whenever a database uses TDE: not a finding of its own
 	if _, fs := judgeDatabase(db(collect.Row{"database_id": int64(2), "database_name": "tempdb", "encrypted": int64(1)}), srv); len(fs) != 0 {
 		t.Errorf("tempdb encrypted: %+v", fs)
+	}
+	// Azure SQL Managed Instance encrypts with a key the service holds: no certificate to carry (review-24 S1)
+	if _, fs := judgeDatabase(db(collect.Row{"encrypted": int64(1)}), serverFactsOf(Info{Kind: KindAzureMI, Major: 12}, "")); len(fs) != 0 {
+		t.Errorf("Managed Instance encrypted: %+v", fs)
 	}
 }
 
@@ -490,7 +492,10 @@ func TestDatabasesQuery(t *testing.T) {
 	}
 	// the replication flags (sp_Blitz 19, BLITZ-GAP) are asked for only where the server has them
 	repl := databasesQuery(map[string]bool{"is_published": true, "is_merge_published": true, "is_subscribed": true, "is_distributor": true})
-	for _, c := range []string{"d.is_published", "d.is_merge_published", "d.is_subscribed", "d.is_distributor"} {
+	if strings.Contains(repl, "is_subscribed") {
+		t.Error("is_subscribed is always 0 (Microsoft): it must not be read")
+	}
+	for _, c := range []string{"d.is_published", "d.is_merge_published", "d.is_distributor"} {
 		if !strings.Contains(repl, c) || strings.Contains(old, c) {
 			t.Errorf("%s: asked %v where the server has it, %v where it does not", c, strings.Contains(repl, c), strings.Contains(old, c))
 		}

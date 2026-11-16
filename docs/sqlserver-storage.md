@@ -47,8 +47,8 @@ One database at a time, chosen from a list (the largest first): a ring of each f
 | a file within one growth of its max size | warning | at most one growth step is left |
 | a percentage growth on a file over 10 GB | info | any per cent growth on a file over 10 GiB: the step grows with the file |
 | a log file larger than its data files | info | per database, from 1 GiB of log (a decision of this build: smaller logs are not raised) |
-| a user database file on the C: drive | warning | sp_Blitz 26 (BLITZ-GAP): a full system drive stops Windows and SQL Server together; never on Azure SQL Managed Instance; SQL Server on Linux keeps a C:\ name as given and maps it to /, its root filesystem, so it is judged there too |
-| a database file on a network share | info | sp_Blitz 148: a UNC path - every read and write crosses the network |
+| a user database file on the C: drive | warning | sp_Blitz 26 (BLITZ-GAP): on Windows a full system drive stops Windows and SQL Server together. SQL Server on Linux keeps a C:\ name as given and maps C:\ to the / directory, so there the name is judged and the words say so |
+| a database file on a network share | info | sp_Blitz 148: a UNC path - every read and write crosses the network. None of the three on Azure SQL Managed Instance, whose files are the service's |
 | a database file in Azure blob storage | info | sp_Blitz 149: an https URL - the storage account's latency and throttling are the file's |
 
 A file set not to grow has no maximum to reach and raises neither max size finding. A read older than three hours raises nothing; the Collections page says the collection is stale.

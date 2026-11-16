@@ -89,7 +89,8 @@
 #     text, on by default, rule 'sp_Blitz 55'; RED ON THE BASE: no such key) and its rows over each user database's owner
 #     (0090's options): with no scope, sa is expected - a database owned by another login is 'info' ('the owner is <x>;
 #     the expected owner is sa (the default)'), sa's 'ok', and no finding row (info); the instance expecting <x>: the two
-#     swap; 'off': every row off; inherit: back; a database left out: no row. Until joined, scripts/blitzgap-join-draft-
+#     swap; 'OFF' (any case): every row off; inherit: back; a database left out: no row. The default grid (A and V) counts
+#     the owner rows apart and asks them 'ok' (sa owns every user database there) once the key exists (review-24 B1). Until joined, scripts/blitzgap-join-draft-
 #     config.sql gives the keys and the checks their lines.
 #  V. the version run: each further image repeats A, the default grid and the recovery, scoped MAXDOP and event
 #     session deviations.
@@ -216,7 +217,10 @@ mkdb() {  # $1 name [$2 extra CREATE DATABASE text]: a database with the monitor
   sq "CREATE DATABASE [$1] ${2:-}; " >/dev/null && sq "CREATE USER [$MON] FOR LOGIN [$MON];" "$1" >/dev/null
 }
 BASE="mssql_instance mssql_services mssql_traceflags mssql_checks mssql_jobs mssql_confcheck"
-grid() { pq "SELECT string_agg(status || ' ' || n, ', ' ORDER BY status) FROM (SELECT status, count(*) AS n FROM pgvigil.mssql_config_checks_of(${1:-$IID}) GROUP BY status) s"; }
+# (sp_Blitz 55's 'database owner' rows, one per user database, are counted apart: owners() - review-24 B1)
+grid() { pq "SELECT string_agg(status || ' ' || n, ', ' ORDER BY status) FROM (SELECT status, count(*) AS n FROM pgvigil.mssql_config_checks_of(${1:-$IID}) WHERE check_name <> 'database owner' GROUP BY status) s"; }
+owners() { pq "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pgvigil.mssql_config_expect_keys() WHERE kind = 'database' AND key = 'owner') THEN 'no key'
+  ELSE coalesce((SELECT string_agg(DISTINCT status || ' ' || source, ', ') FROM pgvigil.mssql_config_checks_of(${1:-$IID}) WHERE check_name = 'database owner'), 'no row') END"; }
 # good_practice: max server memory under the machine's memory and MAXDOP at the advised value (read from the first
 # mssql_confcheck run), so the rules on by default have nothing to say
 good_practice() {
@@ -235,9 +239,11 @@ default_grid() {  # $1 label
   rule "$1 scan for startup procs off" "scan for startup procs" ok
   rule "$1 no linked server" "linked server connection test" ok
   eqv "$1 the default grid: every policy rule off, the Linux-only rows not applicable" "$(grid)" "not applicable 3, not read 1, off 20, ok 6"
-  check "$1 ... the not applicable and not read rows by name" "SELECT string_agg(status || ': ' || check_name, '; ' ORDER BY status, check_name) FROM pgvigil.mssql_config_checks_of($IID) WHERE status IN ('not applicable', 'not read')" "not applicable: SQL Server Browser start mode; not applicable: SQL Server Browser state; not applicable: Windows processor scheduling (Win32PrioritySeparation); not read: engine start mode"
-  check "$1 every off row says 'set an expectation' and every row names its source" "SELECT bool_and(status <> 'off' OR detail = 'set an expectation') AND bool_and(source IN ('Microsoft', 'dbatools formula', 'dbachecks policy')) FROM pgvigil.mssql_config_checks_of($IID)" t
+  check "$1 ... the not applicable and not read rows by name" "SELECT string_agg(status || ': ' || check_name, '; ' ORDER BY status, check_name) FROM pgvigil.mssql_config_checks_of($IID) WHERE status IN ('not applicable', 'not read') AND check_name <> 'database owner'" "not applicable: SQL Server Browser start mode; not applicable: SQL Server Browser state; not applicable: Windows processor scheduling (Win32PrioritySeparation); not read: engine start mode"
+  check "$1 every off row says 'set an expectation' and every row names its source" "SELECT bool_and(status <> 'off' OR detail = 'set an expectation') AND bool_and(source IN ('Microsoft', 'dbatools formula', 'dbachecks policy') OR check_name = 'database owner') FROM pgvigil.mssql_config_checks_of($IID)" t
   check "$1 no finding" "SELECT count(*) FROM pgvigil.mssql_config_check_findings WHERE instance_id = $IID" 0
+  # sp_Blitz 55 (BLITZ-GAP): every user database here is sa's - ok where the key is there (the join draft or the joined lines)
+  case "$(owners)" in "no key"|"ok sp_Blitz") ok "$1 the database owner rows ($(owners))" ;; *) bad "$1 the database owner rows: $(owners)" ;; esac
 }
 db_devs() {  # $1 label: the recovery, scoped MAXDOP and event session deviations (every image)
   eqv "$1 setup: FULL, scoped MAXDOP 0 expected" "$(exi '"kind":"database","key":"recovery_model","value":"FULL"') $(exi '"kind":"database","key":"scoped_maxdop","value":0')" "done done"
@@ -712,7 +718,7 @@ eqv "C7 its words" "$(det 'database owner' pgv_own_x)" "the owner is $OWN; the e
 eqv "C7 info makes no finding row" "$(pq "SELECT count(*) FROM pgvigil.mssql_config_check_findings WHERE instance_id = $IID AND check_name = 'database owner'")" 0
 eqv "C7 the expected owner set to $OWN on the instance" "$(exi "\"kind\":\"database\",\"key\":\"owner\",\"value\":\"$OWN\"")" done
 eqv "C7 ... then sa's database is info and $OWN's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa info, pgv_own_x ok"
-eqv "C7 set off: every row off" "$(exi '"kind":"database","key":"owner","value":"off"') $(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "done pgv_own_sa off, pgv_own_x off"
+eqv "C7 set OFF (any case): every row off" "$(exi '"kind":"database","key":"owner","value":"OFF"') $(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "done pgv_own_sa off, pgv_own_x off"
 eqv "C7 back to the default" "$(exn '"kind":"database","key":"owner"') $(st 'database owner' pgv_own_x)" "done pgv_own_x info"
 eqv "C7 a database left out" "$(exi '"kind":"database","key":"owner","value":"sa","exclusions":["pgv_own_x"]') $(st 'database owner' pgv_own_x)" "done no row"
 exn '"kind":"database","key":"owner"' >/dev/null

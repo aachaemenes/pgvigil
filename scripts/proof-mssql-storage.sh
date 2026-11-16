@@ -16,8 +16,9 @@
 #     made on the server with C:\ file names (SQL Server on Linux keeps them as given): two findings 'a user database
 #     file on the C: drive' (warning, sp_Blitz 26), one per file, and none on a /var/opt path. Imported rows on an
 #     instance of their own: a UNC path -> 'a database file on a network share' (info, 148), an https blob URL -> 'a
-#     database file in Azure blob storage' (info, 149), tempdb on C:\ -> nothing (26 is user databases). NOT PROVEN
-#     HERE: a real share or blob file on a server, and Azure SQL Managed Instance's exclusion.
+#     database file in Azure blob storage' (info, 149), tempdb on C:\ -> nothing (26 is user databases); an Azure SQL
+#     Managed Instance's blob and C:\ files -> nothing (review-24 S2). NOT PROVEN
+#     HERE: a real share or blob file on a server, and a real Managed Instance.
 #  A. as the login with VIEW SERVER STATE and VIEW ANY DEFINITION and a user in the proof's database: `collect -once
 #     mssql_storage` stores the database's three files with the size, the used space, the maximum, the growth (a
 #     size on two files, 10 per cent on one) and the filegroup sa reads in that database, used_read true; each
@@ -407,5 +408,12 @@ GOT_P=$(q "select severity || '|' || check_name || '|' || object || '|' || detai
 WANT_P='info|a database file in Azure blob storage|inblob: inblob_data|https://acct.blob.core.windows.net/data/inblob.mdf: in Azure blob storage - its latency and throttling are the storage account'"'"'s
 info|a database file on a network share|onshare: onshare_data|\\fs01\sql\onshare.mdf: on a network share - every read and write crosses the network, and an outage of the share is the database'"'"'s'
 [ "$GOT_P" = "$WANT_P" ] || { echo "$GOT_P"; fail "Z: 148 / 149 on imported rows (and tempdb on C: is not 26's)"; }
+# Azure SQL Managed Instance: its files are the service's, in blob storage by design - none of the three (review-24 S2)
+mid=$(q "select pgvigil.ensure_instance('proof-mssql-placemi-$SUF', 'azuresqlmi', 'x', 160000, false, '{}', 'sqlserver')")
+q "select pgvigil.import_mssql_storage($mid, now(), '[
+  {\"kind\":\"file\",\"database_id\":5,\"database_name\":\"midb\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"midb_data\",\"type_desc\":\"ROWS\",\"physical_name\":\"https://mi.blob.core.windows.net/x/midb.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0},
+  {\"kind\":\"file\",\"database_id\":6,\"database_name\":\"midc\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"midc_data\",\"type_desc\":\"ROWS\",\"physical_name\":\"C:\\\\midc.mdf\",\"size_bytes\":1048576,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0}
+ ]'::jsonb)" >/dev/null
+[ "$(q "select count(*) from pgvigil.mssql_file_place_findings where instance_id = $mid")" = 0 ] || fail "Z: Managed Instance's files judged: $(q "select check_name || ' ' || object from pgvigil.mssql_file_place_findings where instance_id = $mid")"
 echo "Z: OK"
 echo "proof-mssql-storage: PASS (A-H, V, W, X, Y, Z)"

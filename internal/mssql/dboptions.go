@@ -86,7 +86,7 @@ var bitOptions = []string{"read_only", "auto_close", "auto_shrink", "auto_create
 // 2019, ledger with 2022, optimized locking with 2025).
 const databasesColsSQL = `SELECT CAST(name AS nvarchar(128)) AS name FROM sys.all_columns WHERE object_id = OBJECT_ID(N'sys.databases')`
 
-// databasesSQL: one row per database. The first three %s are the columns newer servers have, or NULL; the next five
+// databasesSQL: one row per database. The first three %s are the columns newer servers have, or NULL; the next four
 // the replication flags and their words for the grid (sp_Blitz 19; 'replicated': REPLICATION is a T-SQL keyword, and the
 // words say 'published (merge)': the read-only test refuses a statement holding 'MERGE '), NULL where a platform lacks
 // them. The last good CHECKDB is the server's local time in the database's boot page: its age is taken on the server, its instant moved
@@ -112,7 +112,7 @@ var databasesSQL = `SELECT d.database_id, d.name AS database_name, CAST(d.state_
   %s AS adr, %s AS optimized_locking, %s AS ledger,
   CAST(CASE WHEN d.source_database_id IS NULL THEN 0 ELSE 1 END AS int) AS is_snapshot,
   CAST(DB_NAME(d.source_database_id) AS nvarchar(128)) AS snapshot_of,
-  %s AS published, %s AS merge_published, %s AS subscribed, %s AS distributor, %s AS replicated,
+  %s AS published, %s AS merge_published, %s AS distributor, %s AS replicated,
   CAST(d.log_reuse_wait_desc AS nvarchar(60)) AS log_reuse_wait,
   CAST(SERVERPROPERTY('Collation') AS nvarchar(128)) AS server_collation,
   DATEDIFF(day, d.create_date, GETDATE()) AS age_days,
@@ -168,10 +168,11 @@ type serverFacts struct {
 	Level     int64  // the compatibility level of the server's own version; 0 = not known
 	Collation string // the server's collation
 	Major     int
+	Kind      Kind // the server's kind (Azure SQL Managed Instance holds TDE's key itself: sp_Blitz 21 is not its)
 }
 
 func serverFactsOf(info Info, collation string) serverFacts {
-	s := serverFacts{Collation: collation, Major: info.Major}
+	s := serverFacts{Collation: collation, Major: info.Major, Kind: info.Kind}
 	// Azure SQL Managed Instance answers 12 as its major and runs the current engine: no level to hold a database to
 	if info.Kind != KindAzureMI && info.Major >= 13 && info.Major <= 17 {
 		s.Level = int64(info.Major) * 10
@@ -299,7 +300,7 @@ var databaseRules = []dbRule{
 		var on []string
 		for _, f := range []struct{ key, words string }{
 			{"published", "published for transactional or snapshot replication"}, {"merge_published", "published for merge replication"},
-			{"subscribed", "subscribed to a publication"}, {"distributor", "the distribution database"},
+			{"distributor", "the distribution database"}, // is_subscribed is always 0 (Microsoft): a subscriber cannot be seen here
 		} {
 			if d.on(f.key) {
 				on = append(on, f.words)
@@ -310,8 +311,10 @@ var databaseRules = []dbRule{
 		}
 		return sevInfo, "sp_Blitz 19", strings.Join(on, "; ")
 	}},
-	{"encrypted", AreaDBOptions, "database encrypted", func(d dbFacts, _ serverFacts) (string, string, string) {
-		if d.user() && d.on("encrypted") { // tempdb is encrypted whenever a database uses TDE: not a finding of its own
+	{"encrypted", AreaDBOptions, "database encrypted", func(d dbFacts, s serverFacts) (string, string, string) {
+		// tempdb is encrypted whenever a database uses TDE: not a finding of its own; Azure SQL Managed Instance encrypts
+		// with a key the service holds, so there is no certificate to carry (review-24 S1)
+		if d.user() && d.on("encrypted") && s.Kind != KindAzureMI {
 			return sevInfo, "sp_Blitz 21", "TDE is on: a restore on another server needs the certificate that protects its key, " +
 				"with its private key (the Security tab lists master's certificates and their use)"
 		}
@@ -612,11 +615,12 @@ func databasesQuery(have map[string]bool) string {
 		}
 		return "CAST(NULL AS int)"
 	}
-	pub, mrg, sub, dis := col("is_published"), col("is_merge_published"), col("is_subscribed"), col("is_distributor")
+	// is_subscribed is left out: Microsoft documents it as always 0 (review-24 S4)
+	pub, mrg, dis := col("is_published"), col("is_merge_published"), col("is_distributor")
 	repl := "CAST(STUFF(CASE WHEN " + pub + " = 1 THEN ', published' ELSE '' END + CASE WHEN " + mrg + " = 1 THEN ', published (merge)' ELSE '' END + " +
-		"CASE WHEN " + sub + " = 1 THEN ', subscribed' ELSE '' END + CASE WHEN " + dis + " = 1 THEN ', distributor' ELSE '' END, 1, 2, '') AS nvarchar(100))"
+		"CASE WHEN " + dis + " = 1 THEN ', distributor' ELSE '' END, 1, 2, '') AS nvarchar(100))"
 	return fmt.Sprintf(databasesSQL, col("is_accelerated_database_recovery_on"), col("is_optimized_locking_on"), col("is_ledger_on"),
-		pub, mrg, sub, dis, repl)
+		pub, mrg, dis, repl)
 }
 
 // suspectCap is the number of rows msdb.dbo.suspect_pages holds before SQL Server stops recording; a table this

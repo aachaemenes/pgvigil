@@ -11,11 +11,16 @@
 -- 3. pgvigil.mssql_config_checks_of(int) (0160's):
 --    a. the list rules' own-row part leaves the key out (55 has its own part): src's WHERE
 --       ... OR (k.kind = 'database' AND k.key <> 'owner')
---    b. one more part, after the last: each user database's owner against the expected owner (sa unless a scope names
---       another; 'off' off; 'info' when it differs, so no finding row; 'not applicable' when the SID maps to no login) -
---       as in scripts/blitzgap-join-draft-config.sql's 'line 3b'
+--    b. two more parts, after the last: each user database's owner against the expected owner (the original sa, sid 0x01
+--       from 0159's logins - 'sa' while they are not read - unless a scope names another; 'off' in any case off; 'info' when
+--       it differs, so no finding row; 'not applicable' when the SID maps to no login; rdsadmin and gcloud_cloudsqladmin
+--       left out), and one 'not read' row while no database is read - as scripts/blitzgap-join-draft-config.sql's 'line 3b'
+--    c. (web, with the join) web/src/mssql_config.ts's hint for the new text key says the default (the original sa) and
+--       that 'off' turns it off (review-24 N4).
 
 -- 4. (docs, the join note as 72's) rel-b20's docs/sqlserver-checks.md 'sp_Blitz weekly' section says 'pgvigil has no rule for
 --    19, 21, 26, 55, 72, 77, 148 and 149': once rel-blitzgap is joined, that sentence keeps 72 only, and the seven are named
 --    where pgvigil judges them - 19 / 21 / 77 the Checks tab's database options, 55 the configuration checks' 'database
 --    owner', 26 / 148 / 149 the Storage tab.
+--    The docs of 26 / 148 / 149 and 55 (docs/sqlserver-storage.md, docs/sqlserver-checks.md) describe them as shown; they reach
+--    the Storage tab and the configuration grid only with lines 1-3, so the docs and the lines join together (review-24 N5).
