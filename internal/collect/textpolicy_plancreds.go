@@ -17,8 +17,9 @@ import (
 // of those expression attributes masked (strings, numbers and binary values alike: a number may be the secret) and the
 // listed values of its auto-parameters and of its credential-named parameters (one with a non-ASCII letter in its name
 // too), whether or not its plan lists the parameter (a live plan may carry both); and so does a statement whose text is
-// cut at the plan's length and that lists no parameter (planStmtCut). The statement's text, every other attribute, and
-// every other statement of the plan keep their bytes. The words are read from the document as it came in, before the
+// cut at the plan's length and that lists no parameter (planStmtCut), or that has no text at all and lists none (a live
+// plan, sys.dm_exec_query_statistics_xml, writes no StatementText: its constants are masked). The statement's text,
+// every other attribute, and every other statement of the plan keep their bytes. The words are read from the document as it came in, before the
 // tag pass masks it: that pass writes 'PasswordHash = @PasswordHash' as 'PasswordHash = <masked>'.
 //
 // The rule goes by the words in the statement's own text: a value copied into a variable or a parameter of a statement
@@ -74,8 +75,9 @@ const planStmtCut = 3999
 
 // maskPlanCredStatements is the statement pass of MaskXML, run over the document as it came in, before the tag pass:
 // each showplan statement (a Stmt... start tag, up to the next one) whose StatementText holds a credential word - or is
-// at the showplan's cut (planStmtCut) and which lists no parameter, the shape a credential compiled in past the cut
-// leaves (the lead 11-16 04:2x: locked down by default, Q15) - has its expression attributes' literals masked
+// at the showplan's cut (planStmtCut) or absent (a live plan) and which lists no parameter, the shapes a credential
+// compiled in where no word can be read leaves (the lead 11-16 04:2x / 04:4x: locked down by default, Q15) - has its
+// expression attributes' literals masked
 // (maskPlanLiterals) and the listed values of its auto-parameters and credential-named parameters. The start tags are read as maskXML reads them (nextPlanTag); a tag
 // the text ends inside ends the pass. One pass and no list of tags (a statement at the cut reads ahead to the next
 // statement once); s itself comes back when nothing is masked. Idempotent: a masked literal reads back as itself.
@@ -94,7 +96,9 @@ func maskPlanCredStatements(s string) string {
 		tag := s[at : at+e]
 		if strings.HasPrefix(tag, "<Stmt") {
 			text, _ := planAttr(tag, "StatementText")
-			in = planCredWordRE.MatchString(text) || utf16Len(text) >= planStmtCut && !planListsParams(s, at+e, opens, noEnd)
+			// the words; a text cut at the plan's length, or no text at all (a live plan: sys.dm_exec_query_statistics_xml
+			// writes none), with no ParameterList: the words cannot be read (the lead 11-16 04:2x and 04:4x, Q15)
+			in = planCredWordRE.MatchString(text) || (text == "" || utf16Len(text) >= planStmtCut) && !planListsParams(s, at+e, opens, noEnd)
 		}
 		if in {
 			m := tag
