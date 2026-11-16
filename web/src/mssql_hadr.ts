@@ -127,7 +127,11 @@ const shipCols: Col[] = [
 const statusCls = (v: unknown) => v === 6 ? 'crit' : v === 5 ? 'warn' : '';
 const pubCols: Col[] = [
   { key: 'publisher' }, { key: 'publisher_db', label: 'database' }, { key: 'publication' },
-  { key: 'publication_type', label: 'type' }, { key: 'articles', num: true }, { key: 'distribution_db', label: 'distribution database' },
+  { key: 'publication_type', label: 'type' },
+  // the distributor keeps no article of a merge publication: said in words, never a 0 or an empty cell
+  { key: 'articles', num: true, fmt: (v, r) => v == null && r.publication_type === 'merge'
+      ? "a merge publication's articles are kept in its publication database, not at the distributor" : v == null ? '' : fmtNum(v) },
+  { key: 'distribution_db', label: 'distribution database' },
 ];
 const subCols: Col[] = [
   { key: 'publication' }, { key: 'publisher_db', label: 'from' },
