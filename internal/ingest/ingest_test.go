@@ -18,6 +18,19 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
 )
 
+// streamIDs: the rows' streams by short name; a manifest's stream is 16 to 64 lower-case hex digits
+var streamIDs = map[string]string{"st1": "aaaaaaaaaaaaaaaa", "st2": "bbbbbbbbbbbbbbbb"}
+
+// streamName: a stream id back to the rows' short name
+func streamName(id string) string {
+	for k, v := range streamIDs {
+		if v == id {
+			return k
+		}
+	}
+	return id
+}
+
 // memHub is the repository's side in memory: what ingest loaded and marked, in order.
 type memHub struct {
 	loaded map[string]string // site/coll/key/stream/seq -> digest
@@ -57,7 +70,7 @@ func (h *memHub) Load(_ context.Context, s Site, b *Bundle) error {
 			h.newest[nk] = n
 		}
 	}
-	h.order = append(h.order, fmt.Sprintf("%s/%d", m.Stream, m.Seq))
+	h.order = append(h.order, fmt.Sprintf("%s/%d", streamName(m.Stream), m.Seq))
 	h.loads = append(h.loads, b)
 	return nil
 }
@@ -76,7 +89,7 @@ func (h *memHub) Mark(_ context.Context, m Mark) error {
 func (h *memHub) markKinds() []string {
 	var out []string
 	for _, m := range h.marks {
-		out = append(out, fmt.Sprintf("%s/%d:%s", m.Stream, m.Seq, m.Kind))
+		out = append(out, fmt.Sprintf("%s/%d:%s", streamName(m.Stream), m.Seq, m.Kind))
 	}
 	return out
 }
@@ -97,7 +110,7 @@ func newDrop(t *testing.T) *drop {
 func (d *drop) write(stream string, seq uint64, view string, key ed25519.PrivateKey) format.Ref {
 	d.t.Helper()
 	to := d.base.Add(time.Duration(seq) * 5 * time.Minute)
-	b, err := remote.OpenBundle(remote.BundleOptions{Outbox: d.root, Site: "site1", Collector: "c1", Stream: stream, Seq: seq,
+	b, err := remote.OpenBundle(remote.BundleOptions{Outbox: d.root, Site: "site1", Collector: "c1", Stream: streamIDs[stream], Seq: seq,
 		From: to.Add(-5 * time.Minute), To: to, QueryText: "hash", PgvigilVersion: "v0.4.0", SchemaLevel: "0329_remote", Key: key,
 		Instance: format.Instance{Engine: "sqlserver", Name: `HOST\INST`, Platform: "onprem", ServerVersion: "16.0", VersionNum: 16}})
 	if err != nil {
@@ -128,7 +141,11 @@ func (d *drop) edit(ref format.Ref, file string, f func([]byte) []byte) {
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	if err := os.WriteFile(p, f(b), 0o600); err != nil {
+	out := f(append([]byte(nil), b...))
+	if string(out) == string(b) {
+		d.t.Fatalf("the edit of %s changed nothing: the row would test nothing", file)
+	}
+	if err := os.WriteFile(p, out, 0o600); err != nil {
 		d.t.Fatal(err)
 	}
 }
