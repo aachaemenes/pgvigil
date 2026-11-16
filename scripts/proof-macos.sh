@@ -80,6 +80,7 @@ psql "$ADMIN" -XAtqc "CREATE EXTENSION pg_stat_statements" >/dev/null
 ok "M2: $PGV on 127.0.0.1:$PGPORT_ ($(psql "$ADMIN" -XAtc 'show server_version'))"
 
 echo "== M3. install, migrate, a UI user"
+# shellcheck disable=SC2024 # the output goes to this run's own file, written as this user
 sudo "$W/pgvigil" install >"$W/install.out" 2>&1 || { cat "$W/install.out"; fail "M3: sudo pgvigil install"; }
 INSTALLED=1
 grep -q 'no service manager is wired on this system' "$W/install.out" || { cat "$W/install.out"; fail "M3: install did not say 'no service manager is wired on this system'"; }
@@ -230,9 +231,10 @@ sudo rm -f "$PLIST"; sleep 2
 ok "M7: launchd ran 'pgvigil run' as $(id -un) (state running; $NEWER collection(s) newer than before it); booted out, the plist removed"
 
 echo "== M8. uninstall"
+# shellcheck disable=SC2024 # the output goes to this run's own file, written as this user
 sudo "$BIN" uninstall -purge >"$W/uninstall.out" 2>&1 || { cat "$W/uninstall.out"; fail "M8: sudo pgvigil uninstall -purge"; }
 [ ! -e /usr/local/bin/pgvigil ] || fail "M8: /usr/local/bin/pgvigil is still there"
-[ ! -e /usr/local/etc/pgvigil ] || fail "M8: /usr/local/etc/pgvigil is still there ($(ls -A /usr/local/etc/pgvigil | tr '\n' ' '))"
+[ ! -e /usr/local/etc/pgvigil ] || fail "M8: /usr/local/etc/pgvigil is still there ($(find /usr/local/etc/pgvigil -mindepth 1 | tr '\n' ' '))"
 INSTALLED=
 "$PGBIN/pg_ctl" -D "$PGD" -m fast stop >/dev/null || fail "M8: pg_ctl stop"; PGD=
 ok "M8: uninstall -purge removed the binary and the config folder; the cluster stopped (its folder goes with this run's)"
