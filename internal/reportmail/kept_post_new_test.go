@@ -1,0 +1,101 @@
+package reportmail
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// B20-4: the Daily checks mail also posts its counts through webhook channels - the block's post: list (each a
+// webhook channel of the same file's alerts: block), the keep's post_channels, the post's text and the numbers a page
+// sends back (checked before they are queued).
+const postAlerts = `alerts:
+  - {name: mail, kind: smtp, smtp: {host: 127.0.0.1, port: 25, from: a@b.org, to: [a@b.org]}}
+  - {name: hook, kind: webhook, webhook: {url: env:X, format: json}}
+  - {name: chat, kind: webhook, webhook: {url: env:Y, format: slack}}
+`
+
+func postBlock(post string) []byte {
+	return []byte(postAlerts + "reports:\n  daily_checks:\n    enabled: true\n    at: 07:00\n    tz: UTC\n    to: [dba@example.org]\n    as: dba\n    channel: mail\n" + post)
+}
+
+func TestDailyChecksPostList(t *testing.T) {
+	d, err := ParseDailyChecks(postBlock("    post: [hook, chat]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(d.Post) != "[hook chat]" || fmt.Sprint(d.Request().Post) != "[hook chat]" {
+		t.Errorf("post %v, the request's %v", d.Post, d.Request().Post)
+	}
+	pay, key, err := d.Request().Payload(time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(pay["post_channels"]) != "[hook chat]" {
+		t.Errorf("the payload's post_channels %v", pay["post_channels"])
+	}
+	_, key2, _ := KeptRequest{At: "07:00", TZ: "UTC", As: "dba", Channel: "mail", To: []string{"dba@example.org"}, AttachXLSX: true}.Payload(time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC))
+	if key == key2 {
+		t.Error("a keep with posts and one without have one key: a changed post list would read as kept")
+	}
+	if d, err := ParseDailyChecks(postBlock("")); err != nil || len(d.Post) != 0 {
+		t.Errorf("no post: %v %v", d, err)
+	}
+	for _, c := range []struct{ post, want string }{
+		{"    post: [mail]\n", "reports.daily_checks: post: mail is not a webhook channel of alerts:"},
+		{"    post: [hook, nope]\n", "reports.daily_checks: post: nope is not a webhook channel of alerts:"},
+		{"    post: hook\n", "reports.daily_checks: post is a list of webhook channel names of the alerts: block, as [team-chat] (line 13 of the file)"},
+	} {
+		if _, err := ParseDailyChecks(postBlock(c.post)); err == nil || err.Error() != c.want {
+			t.Errorf("post %q: %v, want %q", strings.TrimSpace(c.post), err, c.want)
+		}
+	}
+	// an off block is checked for enabled alone: its post list may stay for the day it is turned on again
+	if _, err := ParseDailyChecks([]byte(postAlerts + "reports:\n  daily_checks:\n    enabled: false\n    post: [mail]\n")); err != nil {
+		t.Errorf("an off block with post: [mail]: %v", err)
+	}
+}
+
+func TestDailyPostText(t *testing.T) {
+	p := DailyPost{Instances: 12, Critical: 3, Warnings: 4, Worst: []DailyWorst{{"sql01", 2, 0}, {"pg02", 1, 4}, {"pg03", 0, 1}}}
+	got := p.Post("2026-11-16")
+	if got.Kind != "daily checks" || got.Route != DailyChecksRoute || got.Title != "Daily checks 2026-11-16: 3 critical, 4 warnings on 12 instances" {
+		t.Errorf("post %+v", got)
+	}
+	if strings.Join(got.Lines, "|") != "1. sql01: 2 critical|2. pg02: 1 critical, 4 warnings|3. pg03: 1 warning" {
+		t.Errorf("lines %q", got.Lines)
+	}
+	if got.Fields["critical"] != 3 || got.Fields["warnings"] != 4 || got.Fields["instances"] != 12 || len(got.Fields["worst"].([]DailyWorst)) != 3 {
+		t.Errorf("fields %v", got.Fields)
+	}
+	if z := (DailyPost{Instances: 5}).Post("2026-11-16"); z.Title != "Daily checks 2026-11-16: all checks pass on 5 instances" || len(z.Lines) != 0 {
+		t.Errorf("a green day %+v", z)
+	}
+	if one := (DailyPost{Instances: 1, Critical: 1, Worst: []DailyWorst{{"a", 1, 0}}}).Post("2026-11-16"); one.Title != "Daily checks 2026-11-16: 1 critical, 0 warnings on 1 instance" {
+		t.Errorf("one instance %q", one.Title)
+	}
+}
+
+func TestCheckDailyPost(t *testing.T) {
+	ok := `{"instances": 12, "critical": 3, "warnings": 4, "worst": [{"name": "sql01", "critical": 2, "warnings": 0}]}`
+	var p DailyPost
+	if err := json.Unmarshal([]byte(ok), &p); err != nil || p.Check() != nil {
+		t.Fatalf("a good post: %v %v", err, p.Check())
+	}
+	for _, c := range []struct{ body, want string }{
+		{`{"instances": -1}`, "the post's counts are not counts"},
+		{`{"instances": 2, "critical": 1, "worst": [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]}`, "the post names 4 instances: at most 3"},
+		{`{"instances": 2, "critical": 1, "worst": [{"name": "` + strings.Repeat("x", 201) + `"}]}`, "the post's instance 1 has a name over 200 characters"},
+		{`{"instances": 2, "critical": 1, "worst": [{"name": ""}]}`, "the post's instance 1 has no name"},
+	} {
+		var p DailyPost
+		if err := json.Unmarshal([]byte(c.body), &p); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Check(); err == nil || err.Error() != c.want {
+			t.Errorf("%.60s: %v, want %q", c.body, err, c.want)
+		}
+	}
+}
