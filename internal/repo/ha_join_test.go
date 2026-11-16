@@ -63,6 +63,11 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     slot_safe_wal, slot_growth) and 0150 one as a count (standby_conflicts); the join's 0190 runs after both and sets
 //     the keys' unit check again for the slow-connect tier's 'seconds': its list holds every unit a stored key has
 //     (a list of seconds, minutes, hours and days alone fails on the stored rows and ends the migrate at 0190).
+//  2. A threshold key is taken at the instance and database level by an instance of the key's engines (0142's
+//     pg_threshold_keys.engines): a SQL Server key (0142's repl_latency, 0143's ag_data_loss and logship_restore_age)
+//     by a SQL Server instance and not by a PostgreSQL one, a PostgreSQL key the other way round, and uptime and the
+//     slow-connect tier's connect_time by both. 0142 and 0190 each re-create import_pg_threshold whole and 0190 runs
+//     last: its function reads the engines too, and its connect_time row names both.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -101,4 +106,37 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		str(`SELECT string_agg(key || '=' || unit, ' ' ORDER BY key) FROM pgvigil.pg_threshold_keys
 		      WHERE unit IN ('MB', 'count') OR key = 'connect_time'`),
 		"connect_time=seconds slot_growth=MB slot_safe_wal=MB standby_conflicts=count standby_lag_bytes=MB")
+
+	// 2. the engines rule of import_pg_threshold, as the store ends with it
+	sfx := time.Now().UnixNano() % 1_000_000
+	var ms, pg int
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'sqlserver', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+		fmt.Sprintf("hajoin-ms-%d", sfx)).Scan(&ms); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '17.0', 170000, false, '{}'::text[], 'postgres')`,
+		fmt.Sprintf("hajoin-pg-%d", sfx)).Scan(&pg); err != nil {
+		t.Fatal(err)
+	}
+	set := func(key, level string, inst int, db, warn, crit string) string {
+		t.Helper()
+		return str(`SELECT x->>'outcome' || ': ' || (x->>'detail')
+		              FROM pgvigil.import_pg_threshold(now(), jsonb_strip_nulls(jsonb_build_object('op', 'set', 'ui_user', 'ha-join-test',
+		                     'key', $1::text, 'level', $2::text, 'instance_id', $3::text, 'datname', nullif($4::text, ''),
+		                     'warn', $5::text, 'crit', $6::text))) x`, key, level, fmt.Sprint(inst), db, warn, crit)
+	}
+	want("the engines of the two keys both engines take",
+		str(`SELECT string_agg(key || '=' || array_to_string(engines, '+'), ' ' ORDER BY key) FROM pgvigil.pg_threshold_keys
+		      WHERE key IN ('uptime', 'connect_time')`), "connect_time=postgres+sqlserver uptime=postgres+sqlserver")
+	want("0142's repl_latency at a SQL Server instance", set("repl_latency", "instance", ms, "", "5", "30"), "done: set")
+	want("0142's repl_latency at a PostgreSQL instance", set("repl_latency", "instance", pg, "", "5", "30"),
+		fmt.Sprintf("refused: no SQL Server instance %d", pg))
+	want("0143's ag_data_loss at a SQL Server instance", set("ag_data_loss", "instance", ms, "", "1", "5"), "done: set")
+	want("0143's logship_restore_age at a SQL Server instance's database", set("logship_restore_age", "database", ms, "db1", "60", "120"), "done: set")
+	want("0141's standby_replay_lag at a SQL Server instance", set("standby_replay_lag", "instance", ms, "", "30", "300"),
+		fmt.Sprintf("refused: no PostgreSQL instance %d", ms))
+	want("0141's standby_replay_lag at a PostgreSQL instance", set("standby_replay_lag", "instance", pg, "", "30", "300"), "done: set")
+	want("connect_time at a SQL Server instance", set("connect_time", "instance", ms, "", "1", "2"), "done: set")
+	want("connect_time at a PostgreSQL instance", set("connect_time", "instance", pg, "", "1", "2"), "done: set")
+	want("uptime at a SQL Server instance", set("uptime", "instance", ms, "", "48", "12"), "done: set")
 }
