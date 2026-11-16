@@ -228,6 +228,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
 	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
+	// the collector's error log (0198)
+	api.HandleFunc("GET /api/collectorerrors", s.CollectorErrors)
 	api.HandleFunc("GET /api/collector", s.Collector) // task 201
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
@@ -373,6 +375,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/plansources", s.MSSQLPlanSources)
 	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
 	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
+	// the fleet's SQL Server error stream (mssql_errorlog + AlwaysOn_health)
+	api.HandleFunc("GET /api/mssql/errorfleet", s.MSSQLErrorFleet)
 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
 	api.HandleFunc("GET /api/mssql/syshealth", s.MSSQLSysHealth)
 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)

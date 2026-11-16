@@ -539,6 +539,14 @@ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection str
 	return err
 }
 
+// LogCollectionStage is LogCollection with where the run failed (0198): 'import' when the write into the repository
+// failed, a batch collection's refused part included; "" names none (the stage is then read from the note).
+func (r *Repo) LogCollectionStage(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note, stage string) error {
+	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6, $7::text)`,
+		instanceID, collection, snapshotAt, int(d.Milliseconds()), status, nullIfEmpty(note), nullIfEmpty(stage))
+	return err
+}
+
 // LogConnectFailure records a collection that could not connect to its instance (task 177 D30, the 'server unreachable'
 // finding of 0118): the instance found by its name, the collection's row an error noted 'connect: <err>'. An instance
 // with no row (one of pgvigil.yaml never reached) gets it with the configuration's engine, platform and tags, so it is

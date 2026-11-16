@@ -295,6 +295,18 @@ type BatchRunner interface {
 	RunBatches(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc, emit func([]Row) error) error
 }
 
+// LeadNote is a run's note led by the repository's error that set its stage to 'import' (0198), the run's own first
+// collector_error note after it: a run whose part was refused after a read had failed is not noted by the read alone.
+func LeadNote(lead, note string) string {
+	switch {
+	case lead == "":
+		return note
+	case note == "":
+		return lead
+	}
+	return lead + "; " + note
+}
+
 // runBatched is RunOnce's path for a BatchRunner: each part through the instance's text policy into the import, the
 // collection's log line from the parts' collector_error rows. A part's failed import is the collector's to report (the
 // next parts go on); an error returned by RunBatches fails the run.
@@ -302,11 +314,19 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 	conn *pgx.Conn, info platform.Info, instanceID int, start time.Time) Result {
 	n, parts := 0, 0 // n: the data rows (the last call's seen and end rows are bookkeeping)
 	status, note := "ok", ""
+	// a part whose import failed makes the run's stage 'import' (0198), whether RunBatches returned the error or turned
+	// it into a collector_error row and went on (schemaCollector's per-database parts do); the first such error leads
+	// the run's note (LeadNote), so the note and the stage tell of the same failure
+	stage, importErr := "", ""
 	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
 		return r.LogCursor(ctx, instanceID, source)
 	}, func(rows []Row) error {
 		applyTextPolicy(rows, in.QueryText)
 		if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+			stage = "import"
+			if importErr == "" {
+				importErr = "import: " + err.Error()
+			}
 			return err
 		}
 		parts++
@@ -321,11 +341,11 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 		return nil
 	})
 	if err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		_ = r.LogCollectionStage(ctx, instanceID, name, start, time.Since(start), "error", err.Error(), stage)
 		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)
-	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
+	_ = r.LogCollectionStage(ctx, instanceID, name, start, d, status, LeadNote(importErr, note), stage)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
 	return Result{Rows: n, Duration: d}
 }

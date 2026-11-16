@@ -88,6 +88,8 @@ import { diffView } from './diff';
 import { tableSizeView } from './tablesize';
 import { dbFilesView, dbSpaceView, drivePerfView, drivesView, pgTempView } from './drives';
 import { collectionDatesView } from './collectiondates';
+import { collectorErrorsView } from './collectorerrors';
+import { mssqlErrorFleetView } from './mssql_errorfleet';
 import { collectorView } from './collector';
 import { aboutLink, aboutView } from './about';
 import { adminInstancesView } from './admin_instances';
@@ -106,13 +108,13 @@ const mssqlPages: Record<string, Render> = {
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
   mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
-  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
+  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlpool: mssqlPoolView, mssqlazure: mssqlAzureView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
   mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
-  mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
+  mssqlerrorlog: mssqlErrorLogView, mssqlerrors: mssqlErrorFleetView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
 };
@@ -164,7 +166,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, ...reportPages, admin: adminView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, ...reportPages, admin: adminView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -187,7 +189,7 @@ const instancePages: Record<string, Render> = {
   connections: connectionsView, dbchanges: c => dbChangesView(c),
   customreports: customReportsView, community: communityView,
   ...reportPages,
-  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, pgtemp: pgTempView, collectiondates: collectionDatesView,
+  drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, pgtemp: pgTempView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs', 'running']);

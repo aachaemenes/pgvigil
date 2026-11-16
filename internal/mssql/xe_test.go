@@ -555,6 +555,7 @@ type fakeStore struct {
 	calls    int
 	status   string
 	note     string
+	stage    string
 }
 
 func (f *fakeStore) MSSQLCursor(_ context.Context, _ int, source string) (string, int64, time.Time, int64, bool, error) {
@@ -576,8 +577,8 @@ func (f *fakeStore) Import(_ context.Context, _ int, _ string, _ time.Time, rows
 	return nil
 }
 
-func (f *fakeStore) LogCollection(_ context.Context, _ int, _ string, _ time.Time, _ time.Duration, status, note string) error {
-	f.status, f.note = status, note
+func (f *fakeStore) LogCollectionStage(_ context.Context, _ int, _ string, _ time.Time, _ time.Duration, status, note, stage string) error {
+	f.status, f.note, f.stage = status, note, stage
 	return nil
 }
 
@@ -585,6 +586,7 @@ func (f *fakeStore) LogCollection(_ context.Context, _ int, _ string, _ time.Tim
 type fakeBatches struct {
 	total, size int
 	tail        []collect.Row
+	swallow     bool // a failed batch's import becomes a collector_error row and the run goes on, as xe's fail() does
 }
 
 func (fakeBatches) Name() string                   { return Prefix + "fake" }
@@ -610,7 +612,10 @@ func (b fakeBatches) RunBatches(ctx context.Context, _ *sql.Conn, _ Info, opt Ba
 		}
 		rows = append(rows, Cursor{LastSeq: int64(end)}.Row("src"))
 		if err := emit(rows); err != nil {
-			return err
+			if !b.swallow {
+				return err
+			}
+			return emit(append(b.tail, collect.Row{"kind": "collector_error", "source": "src", "message": err.Error()}))
 		}
 		at = end
 	}
@@ -644,8 +649,22 @@ func TestRunBatched(t *testing.T) {
 	// the second batch's import fails: the run is an error, the first batch and ITS cursor are stored, nothing of the second
 	st = &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
 	res = run(st, fakeBatches{total: 25, size: 10})
-	if res.Err == nil || res.Rows != 10 || st.cursors["src"].LastSeq != 10 || st.status != "error" || !strings.Contains(st.note, "the repository is away") {
-		t.Fatalf("a failed batch: %+v, cursor %d, status %s (%s)", res, st.cursors["src"].LastSeq, st.status, st.note)
+	if res.Err == nil || res.Rows != 10 || st.cursors["src"].LastSeq != 10 || st.status != "error" || !strings.Contains(st.note, "the repository is away") || st.stage != "import" {
+		t.Fatalf("a failed batch: %+v, cursor %d, status %s (%s), stage %q", res, st.cursors["src"].LastSeq, st.status, st.note, st.stage)
+	}
+	// a reader that swallows a failed batch's import (a collector_error row, the run goes on, as xe's fail() does): the
+	// run is partial and its stage still 'import' (0198)
+	sw := &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
+	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true})
+	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || !strings.HasPrefix(sw.note, "import: the repository is away") {
+		t.Fatalf("a swallowed failed batch: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
+	}
+	// a read that failed before the swallowed import (its collector_error row first in the tail): the note still leads
+	// with the import's error, so the note and the stage tell of the same failure
+	sw = &fakeStore{cursors: map[string]Cursor{}, failAt: 2}
+	res = run(sw, fakeBatches{total: 25, size: 10, swallow: true, tail: []collect.Row{{"kind": "collector_error", "source": "src_read", "message": "the ring buffer is gone"}}})
+	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || sw.note != "import: the repository is away; src_read: the ring buffer is gone" {
+		t.Fatalf("a read error before a swallowed import: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
 	}
 	// the next run goes on from the stored cursor: events 11 to 25, none twice
 	st.failAt = 0
@@ -669,8 +688,8 @@ func TestRunBatched(t *testing.T) {
 	// a source's error row makes the run partial with its note
 	st = &fakeStore{cursors: map[string]Cursor{}}
 	res = run(st, fakeBatches{total: 3, size: 10, tail: []collect.Row{{"kind": "collector_error", "source": "pgvigil_x_slow", "message": "the file is gone"}}})
-	if res.Err != nil || st.status != "partial" || st.note != "pgvigil_x_slow: the file is gone" || !strings.Contains(res.Note, "partial") {
-		t.Errorf("a partial run: %+v, status %s (%s)", res, st.status, st.note)
+	if res.Err != nil || st.status != "partial" || st.note != "pgvigil_x_slow: the file is gone" || !strings.Contains(res.Note, "partial") || st.stage != "" {
+		t.Errorf("a partial run: %+v, status %s (%s), stage %q", res, st.status, st.note, st.stage)
 	}
 }
 
