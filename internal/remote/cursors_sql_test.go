@@ -76,6 +76,80 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "cursor", "source": "restore_history", "last_id": int64(4), "mark": int64(9)},
 			}},
 		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq", "restore_history_mark": "seq"}},
+		// part 2: the SQL's conditions. mssql_hadr_read (0066 L134-153): a batch older than the collection's last read
+		// moves nothing; import_mssql_jobs moves its cursor only when v_newest (0094 L161, L217-222).
+		{"mssql jobs older batch", "sqlserver", []sqlBatch{
+			{"mssql_jobs", t0, []map[string]any{{"kind": "read", "cursor": true}, {"kind": "cursor", "last_history_id": int64(900), "mark": int64(7)}}},
+			{"mssql_jobs", t0.Add(-time.Hour), []map[string]any{{"kind": "read", "cursor": true}, {"kind": "cursor", "last_history_id": int64(950), "mark": int64(8)}}},
+		}, map[string]string{"jobs": "seq", "jobs_mark": "seq"}},
+		// a re-run of one read (the same snapshot time) is the newest: it moves (v_last > p_snapshot_at only refuses)
+		{"mssql jobs same time", "sqlserver", []sqlBatch{
+			{"mssql_jobs", t0, []map[string]any{{"kind": "read", "cursor": true}, {"kind": "cursor", "last_history_id": int64(900), "mark": int64(7)}}},
+			{"mssql_jobs", t0, []map[string]any{{"kind": "read", "cursor": true}, {"kind": "cursor", "last_history_id": int64(960), "mark": int64(9)}}},
+		}, map[string]string{"jobs": "seq", "jobs_mark": "seq"}},
+		// import_mssql_backup_history (0191 L154-276): a cursor read (from_set_id > 0) that lists a database the last
+		// read did not list sends last_set_id to 0 (v_again) and keeps the row's mark; restores move only when
+		// restore_read = 'read'; an older batch moves nothing; a read listing databases replaces the list.
+		{"mssql backup history again", "sqlserver", []sqlBatch{
+			{"mssql_backup_history", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "database", "database_name": "app", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "read", "from_set_id": int64(0), "restore_read": "read"},
+				{"kind": "cursor", "source": "restore_history", "last_id": int64(4), "mark": int64(9)},
+				{"kind": "cursor", "source": "backup_history", "last_id": int64(10), "mark": int64(1)},
+			}},
+			{"mssql_backup_history", t0, []map[string]any{
+				{"kind": "database", "database_name": "app", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "database", "database_name": "crm", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "read", "from_set_id": int64(10), "restore_read": "no right"},
+				{"kind": "cursor", "source": "restore_history", "last_id": int64(5), "mark": int64(10)},
+				{"kind": "cursor", "source": "backup_history", "last_id": int64(20), "mark": int64(2)},
+			}},
+			{"mssql_backup_history", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "database", "database_name": "app"},
+				{"kind": "read", "from_set_id": int64(0), "restore_read": "read"},
+				{"kind": "cursor", "source": "backup_history", "last_id": int64(30), "mark": int64(3)},
+			}},
+		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq", "restore_history_mark": "seq"}},
+		{"mssql backup history list", "sqlserver", []sqlBatch{
+			{"mssql_backup_history", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "database", "database_name": "app"}, {"kind": "database", "database_name": "crm"},
+				{"kind": "read", "from_set_id": int64(0), "restore_read": "read"},
+				{"kind": "cursor", "source": "backup_history", "last_id": int64(10), "mark": int64(1)},
+			}},
+			{"mssql_backup_history", t0, []map[string]any{
+				{"kind": "database", "database_name": "crm"}, {"kind": "database", "database_name": "app"},
+				{"kind": "read", "from_set_id": int64(10), "restore_read": "read"},
+				{"kind": "cursor", "source": "backup_history", "last_id": int64(40), "mark": int64(4)},
+			}},
+		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq"}},
+		// import_mssql_backup_files (0140 L328-510): a database whose stored sets a read deleted because it did not
+		// list it joins 'unlisted'; a cursor read ('from' > 0) that lists one of them again sends the cursor to 0 and
+		// its mark to NULL (v_back); an older batch moves nothing.
+		{"mssql backup files back", "sqlserver", []sqlBatch{
+			{"mssql_backup_files", t0.Add(-2 * time.Hour), []map[string]any{
+				{"kind": "database", "database_name": "app", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "database", "database_name": "crm", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "set", "database_name": "crm", "backup_type": "full", "is_copy_only": 0, "backup_set_id": int64(50), "finish_utc": t0.Add(-3 * time.Hour)},
+				{"kind": "read", "cursor": true, "from": int64(0)},
+				{"kind": "cursor", "last_set_id": int64(55), "mark": int64(2)},
+			}},
+			{"mssql_backup_files", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "database", "database_name": "app", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "read", "cursor": true, "from": int64(55)},
+				{"kind": "cursor", "last_set_id": int64(60), "mark": int64(3)},
+			}},
+			{"mssql_backup_files", t0, []map[string]any{
+				{"kind": "database", "database_name": "app", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "database", "database_name": "crm", "created_utc": t0.Add(-240 * time.Hour)},
+				{"kind": "read", "cursor": true, "from": int64(60)},
+				{"kind": "cursor", "last_set_id": int64(70), "mark": int64(4)},
+			}},
+			{"mssql_backup_files", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "database", "database_name": "app"},
+				{"kind": "read", "cursor": true, "from": int64(0)},
+				{"kind": "cursor", "last_set_id": int64(80), "mark": int64(5)},
+			}},
+		}, map[string]string{"backup_sets": "seq", "backup_sets_mark": "seq"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var tag [4]byte
@@ -95,6 +169,7 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 			}
 			for src, reader := range c.sources {
 				g, ok := cur[src]
+				ok = ok && g.Kind != "null" // a source the rule cleared: the store's reader answers not found
 				switch reader {
 				case "log":
 					at, found, err := r.LogCursor(ctx, id, src)
