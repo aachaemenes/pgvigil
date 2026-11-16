@@ -21,6 +21,7 @@ import (
 // a migrated repository (PGVIGIL_REPO_TEST_DSN, skipped without it; the box runs it on a 13 store and an 18 one):
 //
 //	/api/mssql/jobs, the part running: pct_of_avg (the run so far as a percentage of the average)
+//	/api/mssql/backup_files for a database, the part history: mb_s and write_mb_s (a backup's size over its duration)
 //
 // An empty instance is enough: the function is resolved at parse.
 func TestRoundedRatesOnEveryVersionOnAStore(t *testing.T) {
@@ -51,6 +52,7 @@ func TestRoundedRatesOnEveryVersionOnAStore(t *testing.T) {
 		path string
 	}{
 		{s.MSSQLJobs, fmt.Sprintf("/api/mssql/jobs?instance=%d&part=running", id)},
+		{s.MSSQLBackupFiles, fmt.Sprintf("/api/mssql/backup_files?instance=%d&db=master&part=history", id)},
 	} {
 		rec := httptest.NewRecorder()
 		c.h(rec, httptest.NewRequest(http.MethodGet, c.path, nil))
