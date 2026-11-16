@@ -345,6 +345,9 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 # collection and its row count, written by the import the seed goes through): click-check calls an HA/DR folder page with
 # no Instance link 'not proven' only for a kind the seed holds no row of, a FAIL for every other
 SEEDED=$(q "select coalesce(string_agg(collection, ' ' order by collection), '') from (select distinct r.collection from pgvigil.mssql_hadr_reads r join pgvigil.instances i using (instance_id) where i.is_active and i.engine = 'sqlserver' and r.row_count > 0) x") || fail "the demo's HA/DR reads could not be read"
+# the demo seeds an availability group (mssql_demo.go: sql01 / sql02): without its rows every HA/DR folder would read
+# 'not proven' and the drill would prove nothing
+[[ " $SEEDED " == *" mssql_ag "* ]] || fail "the demo's seed holds no mssql_ag row ($SEEDED): the HA/DR folders' drill proves nothing"
 export CLICK_SEEDED="$SEEDED"
 echo "the demo's seed holds rows of: ${SEEDED:-no HA/DR collection}"
 node scripts/click-check.mjs "$CDP" "$U/" "${PGVIGIL_CLICK_OUT:-$WORK/click.json}" | tee "$WORK/click.txt" || fail "the click map has a FAIL (above)"
