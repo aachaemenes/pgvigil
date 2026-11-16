@@ -1,20 +1,20 @@
-diff --git i/THIRD-PARTY-NOTICES.md w/THIRD-PARTY-NOTICES.md
-index d3a338a2..0e154847 100644
---- i/THIRD-PARTY-NOTICES.md
-+++ w/THIRD-PARTY-NOTICES.md
-@@ -119,6 +119,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
+diff --git c/THIRD-PARTY-NOTICES.md i/THIRD-PARTY-NOTICES.md
+index c25af12a..202aed1e 100644
+--- c/THIRD-PARTY-NOTICES.md
++++ i/THIRD-PARTY-NOTICES.md
+@@ -121,6 +121,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
  | The memory reads and their shapes (the grants with their queries, the semaphores, the grant cap and reduced grants, the largest clerks and caches, stolen memory, the resource monitor's low-memory records, the plan cache by cache and object type with its bloat level) and the memory findings' rules (sp_Blitz 145 / 146, sp_BlitzFirst 45 / 46, grant timeouts), ported from the procedures' text and PerformanceMonitor's collectors | DarlingData (darlingdata-20261101): sp_PressureDetector (its memory section); PerformanceMonitor 3.12.0: MemoryGrantsCollector, MemoryPressureEventsCollector, PlanCacheStatsCollector and the Memory tab's columns; SQL Server First Responder Kit 8.34: sp_BlitzFirst (45, 46), sp_Blitz (145, 146) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/mssql/memory.go, internal/repo/sql/0119_darling_memory.sql, web/src/mssql_perf.ts |
  | The performance counter list and its storage per series (a cumulative counter as its rate and its total), the CPU details, the thread row with its runnable line and THREADPOOL waits, the scheduler pressure line beside pgvigil's own level, the sessions by application, host and database with their totals, tempdb space per session, SLEEP_TASK kept at an average of 1,000 ms or more, the remote admin connections line, and the findings on other processes holding the CPU, a long open transaction and slow data file writes | DarlingData (darlingdata-20261101): sp_PressureDetector (its perfmon list, CPU and thread usage sections, tempdb per session); PerformanceMonitor 3.12.0: PerfmonStatsCollector, CpuSchedulerStatsCollector, SessionStatsCollector, SessionSummaryStatsCollector, ClassifyCpuSchedulerPressure, the perfmon panel's and the Activity tab's columns | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/cpu.go, internal/mssql/activity.go, internal/mssql/waits.go (sleepTaskSpills), internal/mssql/checks.go, internal/repo/sql/0124_darling_cpu.sql, web/src/mssql_perf.ts, web/src/metrics.ts |
- | PerformanceMonitor's alert defaults as findings (dead tuples, replay lag, slot WAL, a volume under 5 / 2 GB free, AG secondary 300 s, runnable queue 8 / 16 per scheduler, long-running requests at 30 min with its exclusions as data, Server Unreachable on any failed connect) and the Admin page's five tabs | PerformanceMonitor 3.12.0: CustomAlertTemplates.cs, DarlingConfig.cs, RunnableQueueEvaluator.cs, DarlingAlertReadAdapter.cs, LongRunningQueryExclusions.cs, ConnectionAlertPolicy.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0118_darling_alerts.sql, web/src/alerts.ts (builtIn, adminView) |
+ | PerformanceMonitor's alert defaults as findings (dead tuples, slot WAL, a volume under 5 / 2 GB free, runnable queue 8 / 16 per scheduler, long-running requests at 30 min with its exclusions as data, Server Unreachable on any failed connect; its replay lag tiers of 30 s / 5 min are the defaults of the threshold keys standby_replay_lag and logical_sender_lag, the 'standby lag' and 'replay lag' rules) and the Admin page's five tabs | PerformanceMonitor 3.12.0: CustomAlertTemplates.cs, DarlingConfig.cs, RunnableQueueEvaluator.cs, DarlingAlertReadAdapter.cs, LongRunningQueryExclusions.cs, ConnectionAlertPolicy.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0118_darling_alerts.sql, internal/repo/sql/0141_hadr_pg.sql (standby_replay_lag, logical_sender_lag), web/src/alerts.ts (builtIn, adminView) |
 +| The Client Timeouts rate (the reads back to 3 minutes, the attentions over the span, at least a minute; its floors 10 and 60 a minute) and its left-out events (the SSMS IntelliSense prefix and suffix, the five VS Code mssql metadata names, the 1 ms floor with a missing duration counted (pgvigil applies it only to an event that came with no statement), Azure Data Studio's two metadata statement shapes), as data | PerformanceMonitor 3.13.0: AttentionEvaluator.cs, AttentionWindowSql.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0153_mssql_counter_checks.sql (mssql_attention_left_out, mssql_attention_points, the seed) |
  | The Query Store regression tests (cost: Regular CPU per run more than 25 % above the baseline's adding at least 1,000 ms over the window; timeouts / errors: at least 3 Aborted / Exception runs at twice the baseline's per-hour rate, or any where the baseline had none), the 7-day baseline, a row placed by its last run, the severity bands, the order and the 200-row cap with the failures' third; the compare picks (Previous period, Yesterday, Last week) and their column labels; the plan cache's hashes and handles and the procedures' spilled pages | PerformanceMonitor 3.12.0: QueryStoreRegressionRules.cs, PerformanceMonitor.Darling.Storage/QueryStoreRegressionBaseline.cs, top-compare.js, server-tabs.js, DarlingDataReader.cs, DarlingMcpDataTools.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_querystore.go (qsRegBase, sqlMSSQLQSRegressed, sqlMSSQLQSCompare), internal/web/q_mssql_plancache.go (sqlMSSQLPCCompare), internal/web/q_mssql_procs.go (sqlMSSQLProcCompare, sqlMSSQLProcs), internal/web/q_mssql_plancache.go (sqlMSSQLPCTop), web/src/mssql_querystore.ts, web/src/mssql_plancache.ts, web/src/mssql_procs.ts |
  | The Queries view's section order, the query heatmap (its bins aiming at 144 columns, seven log10 buckets per metric, eight log-scale shades, its legend, cell words and 'Show as table', 'Show Active Queries at This Time' at the bin's middle, the 7-day reach), the time strips over Active queries and the Query Store grid with a row's overlay, the wait filter's words, the per-query trend and the procedure history's four metrics, the Query Store overhead's sleep waits and its memory clerk line | PerformanceMonitor 3.12.0: server-tabs.js, query-heatmap.js, query-heatmap-model.js, time-slicer.js, stats-history.js, charts.js, DarlingQueryHeatmapReader.cs, DarlingMcpQueryHeatmapTools.cs, DarlingMcpTrendTools.cs, ViewerDataService.QueryStoreClutter.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_plancache.go, web/src/mssql_queries.ts, web/src/mssql_querystore.ts, web/src/timestrip.ts, and the wiring's mssql_running.ts, mssql_procs.ts |
  
-diff --git i/docs/alerts.md w/docs/alerts.md
-index bbc51aaf..e7efacba 100644
---- i/docs/alerts.md
-+++ w/docs/alerts.md
-@@ -247,6 +247,26 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
+diff --git c/docs/alerts.md i/docs/alerts.md
+index f7f169a5..74dfde88 100644
+--- c/docs/alerts.md
++++ i/docs/alerts.md
+@@ -325,6 +325,26 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
    stores. A level is reached when the newest sample is beyond its value **and** the unbroken run of samples beyond
    it spans the rule's minutes, measured from the run's first sample to its newest: a single late sample never fires
    a rule by the clock alone. Until then the rule is *pending*. With 0 minutes the first sample beyond the value fires.
@@ -41,7 +41,7 @@ index bbc51aaf..e7efacba 100644
  - **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
    15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
    no fresh sample came: the collector may be down, or the instance. When the samples come back still beyond the
-@@ -409,7 +429,7 @@ tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and ex
+@@ -671,7 +691,7 @@ tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and ex
  | `pgvigil.metric_catalog` | Every metric a rule may name (`family.metric`): engine, label, unit, whether it has a per-database series, how old its newest sample may be. |
  | `pgvigil.alert_rules` | The rules; an edit ends a row and writes its successor (`replaces`), so the table is its own history. |
  | `pgvigil.alert_rule_log` | Every attempt from the UI, done or refused: who, from where, what. Not purged, like the acknowledge log. |
@@ -50,10 +50,10 @@ index bbc51aaf..e7efacba 100644
  | `pgvigil.alert_rule_fired` | Per rule: when it last began to fire, on which instance, how often. |
  | `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
  | `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |
-diff --git i/docs/metrics.md w/docs/metrics.md
+diff --git c/docs/metrics.md i/docs/metrics.md
 index 1026fd6d..262e9be3 100644
---- i/docs/metrics.md
-+++ w/docs/metrics.md
+--- c/docs/metrics.md
++++ i/docs/metrics.md
 @@ -12,10 +12,10 @@ One row per counter, over the time range picked in the header:
  |---|---|
  | counter | The counter's name; its key (`sessions.idle_in_txn`) and unit are in the cell's title. |
@@ -75,11 +75,11 @@ index 1026fd6d..262e9be3 100644
  | both | Host | CPU, CPU in IO wait, memory used and free, swap, load (where the instance has a host source). |
  
  A cumulative counter is shown as its **rate over each collection interval**. An interval in which the counter was
-diff --git i/internal/mssql/xe.go w/internal/mssql/xe.go
-index 7015820b..241e2fa9 100644
---- i/internal/mssql/xe.go
-+++ w/internal/mssql/xe.go
-@@ -754,7 +754,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+diff --git c/internal/mssql/xe.go i/internal/mssql/xe.go
+index 129dd473..044604dc 100644
+--- c/internal/mssql/xe.go
++++ i/internal/mssql/xe.go
+@@ -800,7 +800,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
  		return items[i].seq < items[j].seq
  	})
  	wanted := nameSet(events)
@@ -91,7 +91,7 @@ index 7015820b..241e2fa9 100644
  	if c.source != "product" {
  		var n int64
  		for _, it := range items {
-@@ -762,7 +765,7 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+@@ -808,7 +811,7 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
  				n++
  			}
  		}
@@ -100,7 +100,7 @@ index 7015820b..241e2fa9 100644
  	}
  	var notes []string
  	if cur.Found && !oldest.IsZero() && oldest.After(cur.LastEventAt) {
-@@ -786,6 +789,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
+@@ -832,6 +835,10 @@ func (r *xeRun) ringRows(source string, ring xeRing, sessionDropped int64, event
  			return fmt.Errorf("import a batch of %s: %w", source, err)
  		}
  	}
@@ -111,10 +111,10 @@ index 7015820b..241e2fa9 100644
  	state["unknown_events"] = unknown
  	if old > 0 {
  		notes = append(notes, fmt.Sprintf("%d event(s) older than %d days were not stored", old, int(xeMaxAge.Hours()/24)))
-diff --git i/internal/mssql/xe_ring_test.go w/internal/mssql/xe_ring_test.go
+diff --git c/internal/mssql/xe_ring_test.go i/internal/mssql/xe_ring_test.go
 index a2948039..ebed8c29 100644
---- i/internal/mssql/xe_ring_test.go
-+++ w/internal/mssql/xe_ring_test.go
+--- c/internal/mssql/xe_ring_test.go
++++ i/internal/mssql/xe_ring_test.go
 @@ -110,3 +110,44 @@ func TestRingRowsSysHealth(t *testing.T) {
  		t.Fatalf("no wrap note: %v", side)
  	}
@@ -160,10 +160,10 @@ index a2948039..ebed8c29 100644
 +		}
 +	}
 +}
-diff --git i/internal/mssql/xe_shred.go w/internal/mssql/xe_shred.go
+diff --git c/internal/mssql/xe_shred.go i/internal/mssql/xe_shred.go
 index 1b2d8ab0..cc1beed9 100644
---- i/internal/mssql/xe_shred.go
-+++ w/internal/mssql/xe_shred.go
+--- c/internal/mssql/xe_shred.go
++++ i/internal/mssql/xe_shred.go
 @@ -907,6 +907,11 @@ func parseAttention(e *xeEvent, c xeContext) collect.Row {
  	// the event's duration is the time the interrupt itself took (microseconds), not how long the request ran
  	row["interrupt_us"] = e.num("duration")
@@ -176,11 +176,11 @@ index 1b2d8ab0..cc1beed9 100644
  	row["login_name"] = e.act("server_principal_name")
  	if row["login_name"] == nil {
  		row["login_name"] = e.act("username")
-diff --git i/internal/mssql/xe_test.go w/internal/mssql/xe_test.go
-index 5be274f2..6051d124 100644
---- i/internal/mssql/xe_test.go
-+++ w/internal/mssql/xe_test.go
-@@ -363,6 +363,26 @@ func TestParseRingAndAttention(t *testing.T) {
+diff --git c/internal/mssql/xe_test.go i/internal/mssql/xe_test.go
+index d8fa99db..4c68c6c0 100644
+--- c/internal/mssql/xe_test.go
++++ i/internal/mssql/xe_test.go
+@@ -373,6 +373,26 @@ func TestParseRingAndAttention(t *testing.T) {
  			t.Errorf("%s = %#v, want %#v", k, row[k], v)
  		}
  	}
@@ -207,190 +207,10 @@ index 5be274f2..6051d124 100644
  	if empty, err := parseRing(""); err != nil || len(empty.Events) != 0 {
  		t.Errorf("an empty ring: %v", err)
  	}
-diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 2ea63181..75f3d046 100644
---- i/internal/repo/sql/0190_join_release2.sql
-+++ w/internal/repo/sql/0190_join_release2.sql
-@@ -349,6 +349,9 @@ BEGIN
-   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-   DELETE FROM pgvigil.mssql_xe_state WHERE snapshot_at < now() - make_interval(days => p_days);
-   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-+  -- task 402 (0153, B24 Fixed 1): the attention capture's reads, a plain table (no partition is made inside 0065's import)
-+  DELETE FROM pgvigil.mssql_attention_reads WHERE snapshot_at < now() - make_interval(days => p_days);
-+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-   -- a cursor goes only with an instance no collection has reached for the whole window: a quiet source (no deadlock
-   -- in a month) of a server still read keeps its place, or its file would be read again from the start
-   -- the instance's own error-log search strings ('errorlog:search', 0091) are a setting, not a place in a file: they
-@@ -776,7 +779,17 @@ SELECT v.family || '.' || v.metric AS key, v.engine, v.family, v.family_label, v
-   -- task 401 (0152): the SQL Server counters family
-   UNION ALL
-   SELECT m.engine, m.family, m.family_label, m.family_sort, m.metric, m.label, m.unit, m.per_database, m.fresh_secs, m.sort
--    FROM pgvigil.mssql_counter_metrics m) AS v;
-+    FROM pgvigil.mssql_counter_metrics m
-+  -- task 402 (0153, B24 Fixed 1): the attention capture's client timeouts rate (mssql_attention_points); fresh 10
-+  -- minutes, so an mssql_xe interval up to 5 minutes keeps its points fresh
-+  UNION ALL
-+  SELECT * FROM (VALUES
-+    ('sqlserver', 'xe', 'Extended Events', 55, 'client_timeouts_per_min',
-+     'client timeouts per minute (tools, pgvigil and cancels under 1 ms with no statement left out)', 'per_min', false, 600, 1),
-+    ('sqlserver', 'xe', 'Extended Events', 55, 'client_timeouts_left_out_per_min',
-+     'attentions left out per minute (SSMS IntelliSense, VS Code metadata, under 1 ms with no statement, Azure Data Studio metadata, pgvigil)',
-+     'per_min', false, 600, 2)
-+  ) AS x(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort)) AS v;
- 
- CREATE OR REPLACE FUNCTION pgvigil.metric_points(p_instance_id int, p_family text, p_from timestamptz, p_to timestamptz,
-                                                  p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
-@@ -976,6 +989,9 @@ BEGIN
-   ELSIF p_family = 'counters' THEN
-     -- task 401 (0152): the SQL Server counters family
-     RETURN QUERY SELECT * FROM pgvigil.mssql_counter_points(p_instance_id, p_from, p_to, p_lookback, p_database);
-+  ELSIF p_family = 'xe' THEN
-+    -- task 402 (0153, B24 Fixed 1): a point per done read of the attention capture, PerformanceMonitor's 3-minute rate
-+    RETURN QUERY SELECT * FROM pgvigil.mssql_attention_points(p_instance_id, p_from, p_to);
-   ELSE
-     RAISE EXCEPTION 'metric_points: no metric family %', p_family USING ERRCODE = '22023';
-   END IF;
-@@ -1021,3 +1037,136 @@ LANGUAGE sql STABLE AS $$
-     CROSS JOIN LATERAL pgvigil.mssql_sched_levels(s.runnable_tasks, s.schedulers, s.work_queue, s.current_workers, s.max_workers,
-                                                   s.cpu_count, wg.q::int) l
- $$;
-+
-+-- task 402 (B4, the lead's owner line of 11-14 14:0x): a seeded rule (0153: created_by 'pgvigil', client '0153 seed')
-+-- colours the Metrics grid and a row's chart whether it is on or off, as DBA Dash colours its counters with no alert
-+-- set (Allen 11-11 12:18); it notifies only when on (alert_rule_scope keeps enabled rules only). A user's own disabled
-+-- rule never colours. The rule in force wins: the seeded row is read only when no enabled rule covers the series, and
-+-- its name says it is off.
-+-- An Edit of an off seed keeps its colours (402 S2, the lead's 11-14 22:0x): the live, off fleet rule of the series
-+-- colours too when its replaces chain leads back to this metric's seed and no rule of the chain was ever on. An edit
-+-- copies on / off from the rule it replaces and the seed is made off, so a chain was ever on exactly when one of its
-+-- rules has a done 'enable' in alert_rule_log (never purged). A rule a user switched on and later off is that user's
-+-- own off rule and colours nothing, nor does an edit of it; the seed itself colours on or off (the owner line).
-+-- the walk's read of the switches: a done 'enable' by rule
-+CREATE INDEX IF NOT EXISTS alert_rule_log_enable_idx ON pgvigil.alert_rule_log (rule_id) WHERE op = 'enable' AND outcome = 'done';
-+CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_database text DEFAULT NULL)
-+RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
-+               rule_scope text, rule_target text, rule_database text)
-+LANGUAGE sql STABLE AS $$
-+  WITH RECURSIVE e AS (
-+    SELECT e.rule_id, e.name, e.op, e.warning, e.critical, e.for_minutes, e.scope, coalesce(e.tag, e.instance_name), e.database
-+      FROM pgvigil.alert_rules_effective e
-+     WHERE e.instance_id = p_instance_id AND e.metric = p_key AND e.database IS NOT DISTINCT FROM p_database),
-+  o AS (       -- the series' live, off fleet rule (one at most: alert_rules_live_uq)
-+    SELECT r.rule_id, r.name, r.metric, r.op, r.warning, r.critical, r.for_minutes, r.scope, r.database, r.replaces,
-+           r.created_by, r.client
-+      FROM pgvigil.alert_rules r
-+     WHERE r.metric = p_key AND r.scope = 'fleet' AND r.ended_at IS NULL AND NOT r.enabled
-+       AND r.database IS NOT DISTINCT FROM p_database),
-+  ch AS (      -- that rule and each rule it replaces, back to the first (a successor's id is always the higher)
-+    SELECT o.rule_id, o.replaces, o.created_by, o.client, o.metric FROM o
-+    UNION ALL
-+    SELECT a.rule_id, a.replaces, a.created_by, a.client, a.metric
-+      FROM ch JOIN pgvigil.alert_rules a ON a.rule_id = ch.replaces AND a.rule_id < ch.rule_id)
-+  SELECT * FROM e
-+  UNION ALL
-+  SELECT o.rule_id, coalesce(o.name, o.metric) || ' (off: colours only, no alert)', o.op, o.warning, o.critical,
-+         o.for_minutes, o.scope, NULL::text, o.database
-+    FROM o
-+    JOIN pgvigil.instances i ON i.instance_id = p_instance_id AND i.is_active
-+    JOIN pgvigil.metric_catalog c ON c.key = o.metric AND c.engine IN (i.engine, 'any')
-+   WHERE NOT EXISTS (SELECT 1 FROM e)
-+     AND (   (o.created_by = 'pgvigil' AND o.client = '0153 seed')
-+          OR (    EXISTS (SELECT 1 FROM ch WHERE ch.replaces IS NULL AND ch.created_by = 'pgvigil' AND ch.client = '0153 seed'
-+                             AND ch.metric = p_key)
-+              AND NOT EXISTS (SELECT 1 FROM ch JOIN pgvigil.alert_rule_log l ON l.rule_id = ch.rule_id
-+                               WHERE l.op = 'enable' AND l.outcome = 'done')))
-+$$;
-+
-+-- ---- task 402 (0152 / 0153, the floors: the lead's 19:4x and 19:5x) -------------------------------------------------
-+-- alert_rule_state's states gain 'na': a floored metric (0152's metric_floors) whose newest fresh point has no value is
-+-- not judged. alert_rule_eval is 0085's whole with its two changes marked 'task 402 change n of 2'; alert_rules_run
-+-- needs none: its hold covers 'nodata' only, a 'na' row is beyond no level (change 1), and alert_rule_findings lists
-+-- warning and critical only - a FIRING rule that goes to 'na' leaves the findings and alert_due sends its normal
-+-- 'resolved' after the channel's clear delay (the lead's 19:5x), one that was not firing changes nothing. A rule that
-+-- flaps across a floor resolves and fires again (two events a flap); docs/alerts.md says so (the lead's 21:4x).
-+ALTER TABLE pgvigil.alert_rule_state DROP CONSTRAINT IF EXISTS alert_rule_state_state_check;
-+ALTER TABLE pgvigil.alert_rule_state ADD CONSTRAINT alert_rule_state_state_check
-+  CHECK (state IN ('ok', 'pending', 'warning', 'critical', 'nodata', 'na'));
-+
-+CREATE OR REPLACE FUNCTION pgvigil.alert_rule_eval(p_at timestamptz)
-+RETURNS TABLE (rule_id bigint, instance_id int, metric text, database text, state text, value double precision,
-+               threshold double precision, sample_at timestamptz, beyond_since timestamptz,
-+               crit_beyond boolean, crit_within_at timestamptz, warn_beyond boolean, warn_within_at timestamptz)
-+LANGUAGE plpgsql STABLE SET jit = off AS $$
-+#variable_conflict use_column
-+DECLARE
-+  g record;
-+BEGIN
-+  FOR g IN
-+    SELECT e.instance_id, c.family, e.database, max(e.for_minutes) AS max_for
-+      FROM pgvigil.alert_rules_effective e JOIN pgvigil.metric_catalog c ON c.key = e.metric
-+     GROUP BY e.instance_id, c.family, e.database
-+  LOOP
-+    RETURN QUERY
-+    WITH p AS MATERIALIZED (
-+      SELECT x.at, x.metric, x.value
-+        FROM pgvigil.metric_points(g.instance_id, g.family, p_at - make_interval(mins => g.max_for + 60), p_at,
-+                                   interval '1 hour', g.database) x
-+    ), lv AS (          -- each rule of this instance, family and series at each level it sets
-+      SELECT e.rule_id, e.metric AS key, c.metric AS m, e.op, e.for_minutes, c.fresh_secs, l.sev, l.thr
-+        FROM pgvigil.alert_rules_effective e
-+        JOIN pgvigil.metric_catalog c ON c.key = e.metric
-+        CROSS JOIN LATERAL (VALUES ('critical', e.critical), ('warning', e.warning)) AS l(sev, thr)
-+       WHERE e.instance_id = g.instance_id AND c.family = g.family AND e.database IS NOT DISTINCT FROM g.database
-+         AND l.thr IS NOT NULL
-+    ), j AS (
-+      SELECT lv.*, z.last_at, z.last_value, z.last_within,
-+             (SELECT min(p2.at) FROM p p2
-+               WHERE p2.metric = lv.m AND (z.last_within IS NULL OR p2.at > z.last_within)) AS run_from
-+        FROM lv
-+        LEFT JOIN LATERAL (
-+          SELECT max(p1.at) AS last_at, (array_agg(p1.value ORDER BY p1.at DESC))[1] AS last_value,
-+                 -- task 402 change 1 of 2: a point with no value (a floored ratio under its floor) is inside every level,
-+                 -- so it breaks a run beyond (0085 counted it beyond: NOT alert_beyond(op, NULL, thr) is NULL)
-+                 max(p1.at) FILTER (WHERE p1.value IS NULL OR NOT pgvigil.alert_beyond(lv.op, p1.value, lv.thr)) AS last_within
-+            FROM p p1 WHERE p1.metric = lv.m) z ON true
-+    ), k AS (
-+      SELECT j.*,
-+             (j.last_at IS NOT NULL AND p_at - j.last_at <= make_interval(secs => j.fresh_secs)) AS fresh,
-+             (j.run_from IS NOT NULL AND j.last_at - j.run_from >= make_interval(mins => j.for_minutes)) AS long_enough
-+        FROM j
-+    ), x AS (
-+      SELECT k.rule_id, k.key,
-+             CASE WHEN NOT bool_or(k.fresh) THEN 'nodata'
-+                  -- task 402 change 2 of 2: the newest fresh point has no value (a floored ratio under its floor,
-+                  -- 0152's metric_floors): not judged, 'na', before the levels
-+                  WHEN bool_or(k.fresh AND k.last_value IS NULL) THEN 'na'
-+                  WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'critical') THEN 'critical'
-+                  WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'warning') THEN 'warning'
-+                  WHEN bool_or(k.run_from IS NOT NULL) THEN 'pending'
-+                  ELSE 'ok' END AS st,
-+             max(k.last_value) AS last_value, max(k.last_at) AS last_at,
-+             max(k.thr) FILTER (WHERE k.sev = 'critical') AS crit_thr, max(k.thr) FILTER (WHERE k.sev = 'warning') AS warn_thr,
-+             min(k.run_from) FILTER (WHERE k.sev = 'critical') AS crit_from, min(k.run_from) FILTER (WHERE k.sev = 'warning') AS warn_from,
-+             bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'critical') AS crit_run,
-+             max(k.last_within) FILTER (WHERE k.sev = 'critical') AS crit_in,
-+             bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'warning') AS warn_run,
-+             max(k.last_within) FILTER (WHERE k.sev = 'warning') AS warn_in
-+        FROM k
-+       GROUP BY k.rule_id, k.key
-+    )
-+    SELECT x.rule_id, g.instance_id, x.key, g.database, x.st,
-+           -- 'na' (change 2): the value is the floor's input at the same read and the threshold the floor (no floor
-+           -- row: both NULL)
-+           CASE WHEN x.st = 'na' THEN (SELECT p3.value FROM p p3 WHERE p3.metric = split_part(f.input_key, '.', 2) AND p3.at = x.last_at)
-+                ELSE x.last_value END,
-+           -- the value and the run of the level the state names (no level reached: the lower one set)
-+           CASE x.st WHEN 'na' THEN f.floor WHEN 'critical' THEN x.crit_thr WHEN 'warning' THEN x.warn_thr ELSE coalesce(x.warn_thr, x.crit_thr) END,
-+           x.last_at,
-+           CASE x.st WHEN 'na' THEN NULL WHEN 'critical' THEN x.crit_from WHEN 'warning' THEN x.warn_from ELSE coalesce(x.warn_from, x.crit_from) END,
-+           x.crit_run, x.crit_in, x.warn_run, x.warn_in
-+      FROM x LEFT JOIN pgvigil.metric_floors f ON f.key = x.key;
-+  END LOOP;
-+END $$;
-diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
-index 25a49aaf..eeae7ba8 100644
---- i/internal/web/q_alert_rules.go
-+++ w/internal/web/q_alert_rules.go
+diff --git c/internal/web/q_alert_rules.go i/internal/web/q_alert_rules.go
+index 2e76b44a..8c455f50 100644
+--- c/internal/web/q_alert_rules.go
++++ i/internal/web/q_alert_rules.go
 @@ -38,6 +38,7 @@ WITH sc AS (
           count(*) FILTER (WHERE s.state IN ('warning', 'critical')) AS firing,
           count(*) FILTER (WHERE s.state = 'pending') AS pending,
@@ -429,10 +249,10 @@ index 25a49aaf..eeae7ba8 100644
            i.name, s.metric, s.database
   LIMIT 5000`
  
-diff --git i/internal/web/q_metrics.go w/internal/web/q_metrics.go
+diff --git c/internal/web/q_metrics.go i/internal/web/q_metrics.go
 index 62f936bf..e3841456 100644
---- i/internal/web/q_metrics.go
-+++ w/internal/web/q_metrics.go
+--- c/internal/web/q_metrics.go
++++ i/internal/web/q_metrics.go
 @@ -26,8 +26,17 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
         pgvigil.metric_status(g.op, g.avg_value, g.warning, g.critical) AS avg_status,
         pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
@@ -452,10 +272,10 @@ index 62f936bf..e3841456 100644
    LEFT JOIN pgvigil.alert_rule_state s
      ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
   ORDER BY g.family_sort, g.sort`
-diff --git i/internal/web/q_mssql_xe.go w/internal/web/q_mssql_xe.go
+diff --git c/internal/web/q_mssql_xe.go i/internal/web/q_mssql_xe.go
 index 90dfddb4..077197c8 100644
---- i/internal/web/q_mssql_xe.go
-+++ w/internal/web/q_mssql_xe.go
+--- c/internal/web/q_mssql_xe.go
++++ i/internal/web/q_mssql_xe.go
 @@ -138,7 +138,8 @@ SELECT e.event_at, e.event_name, e.duration_ms, e.cpu_ms, e.logical_reads, e.phy
   LIMIT 500`
  
@@ -466,10 +286,10 @@ index 90dfddb4..077197c8 100644
    FROM pgvigil.mssql_attentions a
   WHERE a.instance_id = $1 AND a.event_at > $2 AND a.event_at <= $3
   ORDER BY a.event_at DESC
-diff --git i/internal/web/q_perfsummary.go w/internal/web/q_perfsummary.go
-index 08bfdcaf..fee8172f 100644
---- i/internal/web/q_perfsummary.go
-+++ w/internal/web/q_perfsummary.go
+diff --git c/internal/web/q_perfsummary.go i/internal/web/q_perfsummary.go
+index 14543d13..8ae43fe8 100644
+--- c/internal/web/q_perfsummary.go
++++ i/internal/web/q_perfsummary.go
 @@ -32,8 +32,9 @@ import (
  //                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
  //                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
@@ -495,7 +315,7 @@ index 08bfdcaf..fee8172f 100644
 @@ -192,8 +194,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
         round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
         round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
-        h.cpu_sql_avg, t.batch_s,
+        h.cpu_sql_avg, h.cpu_source, t.batch_s,
 -       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL THEN NULL WHEN t.batch_raw < 1 THEN 0
 +       CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL OR t.batch_raw < cf.floor THEN NULL
              ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
@@ -503,7 +323,7 @@ index 08bfdcaf..fee8172f 100644
         m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
         NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
         CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
-@@ -221,6 +224,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
+@@ -237,6 +240,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
             (sum(x.compiles_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.compiles_s IS NOT NULL), 0))::numeric AS compiles_s
        FROM pgvigil.mssql_sched_sample x
       WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
@@ -513,10 +333,10 @@ index 08bfdcaf..fee8172f 100644
    LEFT JOIN LATERAL (
      SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
             (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
-diff --git i/web/src/alert_rules.ts w/web/src/alert_rules.ts
-index 751c72e1..95db08e3 100644
---- i/web/src/alert_rules.ts
-+++ w/web/src/alert_rules.ts
+diff --git c/web/src/alert_rules.ts i/web/src/alert_rules.ts
+index 10385ec0..3fba67d5 100644
+--- c/web/src/alert_rules.ts
++++ i/web/src/alert_rules.ts
 @@ -28,7 +28,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null
  // what a rule's values are counted in, as the dialog and the grids say it
  const unitWords: Record<string, string> = {
@@ -534,7 +354,7 @@ index 751c72e1..95db08e3 100644
      case 'bytes_per_s': return fmtBytes(n) + '/s';
      case 'bytes': return fmtBytes(n);
      case 'mb': return fmtNum(n) + ' MB';
-@@ -72,11 +73,14 @@ export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = fa
+@@ -100,11 +101,14 @@ export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = fa
      + (narrower ? ', each where no narrower rule on the same metric overrides it (an instance rule over a tag rule over a fleet rule).' : '.');
  }
  
@@ -551,7 +371,7 @@ index 751c72e1..95db08e3 100644
    return badge(held ? `${words}, held (no fresh sample)` : words, kind);
  };
  
-@@ -359,7 +363,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -485,7 +489,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
          : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
          : r.evaluated_at == null ? 'not judged yet'
          : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
@@ -562,7 +382,7 @@ index 751c72e1..95db08e3 100644
        { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
        { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
        { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
-@@ -379,13 +385,14 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
+@@ -505,13 +511,14 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
    }
  
    const stateCols: Col[] = [
@@ -581,11 +401,11 @@ index 751c72e1..95db08e3 100644
      { key: 'sample_at', label: 'sample', fmt: fmtTime },
      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(r.scope, r.target)})` },
      { key: 'since', label: 'in this state since', fmt: fmtTime },
-diff --git i/web/src/mssql_xe.ts w/web/src/mssql_xe.ts
-index 87040eb5..688210c3 100644
---- i/web/src/mssql_xe.ts
-+++ w/web/src/mssql_xe.ts
-@@ -300,6 +300,8 @@ const attentionCols: Col[] = [
+diff --git c/web/src/mssql_xe.ts i/web/src/mssql_xe.ts
+index e988bb86..a4177464 100644
+--- c/web/src/mssql_xe.ts
++++ i/web/src/mssql_xe.ts
+@@ -363,6 +363,8 @@ const attentionCols: Col[] = [
    { key: 'database_name', label: 'database' },
    { key: 'interrupt_us', label: 'interrupt took (microseconds)', num: true },
    { key: 'statement', label: 'the cancelled statement', wide: true },
@@ -594,7 +414,7 @@ index 87040eb5..688210c3 100644
  ];
  
  async function openShape(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
-@@ -347,7 +349,10 @@ export async function mssqlSlow(ctx: Ctx): Promise<HTMLElement> {
+@@ -413,7 +415,10 @@ export async function mssqlSlow(ctx: Ctx): Promise<HTMLElement> {
  
      const att = el('section', {}, el('h3', {}, 'Attentions'), captureNote(d, 'attention', 'attention'),
        el('p', { class: 'meta' }, 'An attention is a client cancelling its request: a command timeout in the application, or a user pressing cancel. '
@@ -606,10 +426,10 @@ index 87040eb5..688210c3 100644
        grid(rowsOf(d.attentions), attentionCols, 'No attention in this window.'));
      sec.append(att);
    } catch (e) {
-diff --git i/web/src/perfsummary.ts w/web/src/perfsummary.ts
-index 038cb291..efcfb652 100644
---- i/web/src/perfsummary.ts
-+++ w/web/src/perfsummary.ts
+diff --git c/web/src/perfsummary.ts i/web/src/perfsummary.ts
+index 8d535c72..1da82172 100644
+--- c/web/src/perfsummary.ts
++++ i/web/src/perfsummary.ts
 @@ -77,7 +77,7 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
      el('li', {}, `CPU max: warning over ${thresholds.cpu_max[0]} %, critical over ${thresholds.cpu_max[1]} %`),
      el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
@@ -617,9 +437,9 @@ index 038cb291..efcfb652 100644
 -    el('li', {}, 'compilations per 100 batches: a muted 0 under 1 batch request a second (not a ratio)'),
 +    el('li', {}, 'compilations per 100 batches: N/A under 5 batch requests a second over the range (too few to judge)'),
      el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
-     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only')));
-   sec.append(th);
-@@ -108,8 +108,11 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
+     el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only'),
+     el('li', {}, 'Azure SQL Database: CPU is the database\'s share of its limit from sys.dm_db_resource_stats (mssql_azuredb_resources, VIEW DATABASE STATE), the minutes weighed by their 15-second samples')));
+@@ -110,8 +110,11 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
      { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
      { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
      { key: 'compiles_per_100', label: 'compilations per 100 batches', num: true,
