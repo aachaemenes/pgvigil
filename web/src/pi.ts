@@ -10,7 +10,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { fmtClock } from './tz';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 const SVG = 'http://www.w3.org/2000/svg';
 

@@ -13,7 +13,7 @@ import { thresholdDialog, ThresholdPlace } from './pg_backups';
 
 type Parts = 'replicas' | 'databases' | 'distributed' | 'series' | 'failovers' | 'mirroring' | 'logshipping' | 'replication' | 'replseries' | 'repllimits' | 'findings' | 'limits' | 'reads';
 
-export const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+export const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 // the findings grid of the SQL Server tabs (the views' own columns)
 export const mssqlFindingCols: Col[] = [
@@ -36,7 +36,7 @@ const kbs = (v: unknown) => v == null ? '' : fmtBytes(Number(v) * 1024) + '/s';
 
 // a state cell is marked by its word AND its colour: never by colour alone
 const stateCls = (good: string[], warn: string[] = []) => (v: unknown) =>
-  v == null ? '' : good.includes(String(v)) ? '' : warn.includes(String(v)) ? 'warn' : 'crit';
+  v == null ? '' : good.includes(String(v)) ? 'status ok' : warn.includes(String(v)) ? 'warn' : 'crit';
 
 const replicaCols: Col[] = [
   { key: 'group_name', label: 'group' },
@@ -58,11 +58,11 @@ const replicaCols: Col[] = [
 
 // dbStateCls: SYNCHRONIZING is the healthy state of an asynchronous-commit replica and amber only on a synchronous one
 // (as the finding 'a synchronous replica is not synchronized'); a row whose commit mode is not known (a server without
-// that column in its API) leaves SYNCHRONIZING unmarked. Suspended, and any state but the two, is red whatever the mode
+// that column in its API) shows SYNCHRONIZING N/A (grey). Suspended, and any state but the two, is red whatever the mode
 // (as the finding 'a database is not synchronizing').
 const dbStateCls = (v: unknown, r: Row) => r.is_suspended === true ? 'crit'
-  : v == null || v === 'SYNCHRONIZED' ? ''
-  : v === 'SYNCHRONIZING' ? (r.availability_mode === 'SYNCHRONOUS_COMMIT' ? 'warn' : '')
+  : v == null ? '' : v === 'SYNCHRONIZED' ? 'status ok'
+  : v === 'SYNCHRONIZING' ? (r.availability_mode === 'SYNCHRONOUS_COMMIT' ? 'warn' : r.availability_mode === 'ASYNCHRONOUS_COMMIT' ? 'status ok' : 'status none')
   : 'crit';
 
 const dbCols: Col[] = [
@@ -120,7 +120,7 @@ const shipCols: Col[] = [
   { key: 'last_backup_at', label: 'last backup', fmt: fmtTime }, { key: 'last_copied_at', label: 'last copy', fmt: fmtTime },
   { key: 'last_restored_at', label: 'last restore', fmt: fmtTime },
   // an empty cell is never filled: a secondary with no restore yet says so in words
-  { key: 'age_minutes', label: 'age at the read (min)', num: true, fmt: (v, r) => v == null ? (late(v, r) ? 'none read' : '') : fmtNum(v), cls: late },
+  { key: 'age_minutes', label: 'age at the read (min)', num: true, fmt: (v, r) => v == null ? (late(v, r) ? 'none read' : '') : fmtNum(v), cls: (v, r) => late(v, r) ? 'warn' : v == null ? '' : r.threshold_minutes != null && Number(r.threshold_minutes) > 0 ? 'status ok' : 'status none' },
   { key: 'threshold_minutes', label: 'threshold (min)', num: true },
   { key: 'alert_enabled', label: 'alert', fmt: yes },
   { key: 'last_restored_file', label: 'last file', wide: true, fmt: (v, r) => String(v ?? r.last_backup_file ?? r.last_copied_file ?? '') },
@@ -146,7 +146,7 @@ const subCols: Col[] = [
   { key: 'subscription_type', label: 'type' }, { key: 'subscription_status', label: 'subscription' },
   // a merge agent is read as its subscription (agent 'merge': no subscription status, commands or latency at the distributor)
   { key: 'agent_type', label: 'agent' },
-  { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
+  { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok') },
   { key: 'job_state', label: 'job', fmt: jobCell, cls: jobCls },
   { key: 'undistributed', label: 'undistributed commands', num: true },
   { key: 'latency_s', label: 'latency (oldest waiting)', num: true, fmt: fmtSecs },
@@ -158,7 +158,7 @@ const subCols: Col[] = [
 ];
 const agentCols: Col[] = [
   { key: 'agent_type', label: 'agent' }, { key: 'agent_name', label: 'name' }, { key: 'publisher_db', label: 'database' },
-  { key: 'publication' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
+  { key: 'publication' }, { key: 'status', cls: (v, r) => statusCls(r.runstatus) || (v == null || v === '' ? '' : r.runstatus == null ? 'status none' : 'status ok') },
   { key: 'job_state', label: 'job', fmt: jobCell, cls: jobCls },
   { key: 'failing_since', label: 'failing since', fmt: fmtTime, cls: v => v == null ? '' : 'crit' },
   { key: 'last_run_at', label: 'last report', fmt: fmtTime }, { key: 'status_text', label: 'message', wide: true },

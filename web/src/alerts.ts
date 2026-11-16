@@ -26,10 +26,10 @@ interface AlertsData {
   history?: Table | null; tests?: Table | null; dismissed?: Table | null; mutes?: Table | null; fixes?: Table | null;
 }
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 const outcomeBadge = (v: unknown) =>
-  v == null ? '' : badge(String(v), v === 'sent' || v === 'test' ? 'ok' : v === 'failed' || v === 'refused' || v === 'no answer' ? 'crit' : v === 'capped' || v === 'waiting' ? 'warn' : '');
+  v == null ? '' : badge(String(v), v === 'sent' || v === 'test' ? 'ok' : v === 'failed' || v === 'refused' || v === 'no answer' ? 'crit' : v === 'capped' || v === 'waiting' ? 'warn' : 'none');
 
 const list = (v: unknown): string => Array.isArray(v) && v.length ? v.join(', ') : '';
 
@@ -231,7 +231,7 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
   const cols: Col[] = [
     { key: 'fired_at', label: 'fired', fmt: fmtTime },
     { key: 'cleared_at', label: 'cleared', fmt: (v, r) => v == null ? (r.missing_since != null ? `gone since ${fmtTime(r.missing_since)}` : '') : fmtTime(v) },
-    { key: 'status', fmt: v => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : '') },
+    { key: 'status', fmt: v => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : 'none') },
     { key: 'severity', fmt: sevBadge },
     { key: 'instance' },
     { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.fired_at, ctx) }, [r.source, v].filter(x => x != null && x !== '').map(String).join(': ')) },
@@ -487,7 +487,7 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   const draw = () => {
     const vis = rows.filter(r => showEnded || r.state !== 'ended' && r.state !== 'expired');
     const cols: Col[] = [
-      { key: 'state', fmt: (v, r) => badge(String(v ?? '') + (v === 'paused' ? ` by ${String(r.paused_by ?? '')}` : ''), v === 'in force' ? 'ok' : v === 'upcoming' || v === 'paused' ? 'warn' : '') },
+      { key: 'state', fmt: (v, r) => badge(String(v ?? '') + (v === 'paused' ? ` by ${String(r.paused_by ?? '')}` : ''), v === 'in force' ? 'ok' : v === 'upcoming' || v === 'paused' ? 'warn' : 'none') },
       { key: 'check_key', label: 'check' },
       { key: 'instance' },
       { key: 'tag' },
@@ -757,7 +757,7 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
       }
       return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
         grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
-          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
+          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
     }],
   ];
   let cur = new URLSearchParams(location.hash.split('?')[1] ?? '').get('atab') ?? 'servers';

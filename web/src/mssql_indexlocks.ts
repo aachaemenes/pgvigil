@@ -91,7 +91,7 @@ export async function mssqlIndexLocksView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'page_lock_wait_ms', label: 'page lock wait (ms)', num: true, fmt: ms },
       { key: 'avg_page_lock_wait_ms', label: 'avg page lock wait (ms)', num: true, fmt: ms },
       { key: 'escalation_attempts', label: 'escalation attempts', num: true },
-      { key: 'escalations', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0' },
+      { key: 'escalations', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0', cls: v => Number(v) > 0 ? '' : 'status ok' },
       { key: 'last_seen', label: 'last waited before', fmt: fmtTime },
     ];
     out.push(el('h3', {}, 'Indexes, the most lock wait first'),

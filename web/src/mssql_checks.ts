@@ -57,7 +57,7 @@ const verdict = (status: unknown, severity: unknown): string => {
     default: return 'no rule';
   }
 };
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'info');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
 const titled = (text: string, title: string): Node => title ? el('span', { title }, text) : document.createTextNode(text);
 
@@ -95,8 +95,8 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
 function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
   const cols: Col[] = [
     { key: 'area', fmt: v => link(areaNames[String(v)] ?? String(v), x => x.set('cv', areaView[String(v)] ?? 'summary')) },
-    // an area the last run could not read is not coloured: its findings are the last known, its cell says so
-    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? '' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
+    // an area the last run could not read is N/A (grey): its findings are the last known, its cell says so
+    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? 'status none' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
       fmt: (v, r) => r.sampled !== true ? el('span', { class: 'meta' }, 'not read')
         : titled(r.is_read !== true ? `not read now (last read ${fmtTime(r.read_at)}): ${String(v ?? '')}` : String(v ?? ''), Array.isArray(r.detail) ? r.detail.map(String).join('\n') : '') },
     { key: 'verdict', fmt: (_v, r) => r.sampled !== true ? '' : r.is_read !== true ? 'not read now'
@@ -118,12 +118,12 @@ function optionsView(rows: Row[]): HTMLElement[] {
   const n = (s: string) => rows.filter(r => r.is_present !== false && r.status === s).length;
   const cols: Col[] = [
     { key: 'name', label: 'option' },
-    { key: 'value_in_use', label: 'in use', num: true, cls: (_v, r) => statusCls(r.status),
+    { key: 'value_in_use', label: 'in use', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status none'),
       fmt: (v, r) => titled(fmtNum(v), 'best practice: ' + verdict(r.status, r.severity)) },
     { key: 'default_value', label: 'default', num: true, fmt: fmtNum },
     { key: 'advised', label: 'advised', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? String(v ?? '') : '' },
     { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
-    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v) },
+    { key: 'value_set', label: 'set', num: true, fmt: (v, r) => r.pending === true ? el('span', {}, fmtNum(v), ' ', badge('not in use yet', 'warn')) : fmtNum(v), cls: (v, r) => r.pending === true || v == null ? '' : r.status === 'ok' ? 'status ok' : 'status none' },
     { key: 'detail', label: 'why', wide: true },
     { key: 'rule' },
   ];
@@ -148,7 +148,7 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] 
     const key = String(c.key);
     cols.push({
       key: 'opt_' + key, label: String(c.label),
-      cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] != null && c.best ? 'status ok' : ''; },
+      cls: (_v, r) => { const x = dev(r)[key]; return x ? statusCls(x.status) : opts(r)[key] == null || opts(r)[key] === '' ? '' : c.best ? 'status ok' : 'status none'; },
       fmt: (_v, r) => {
         const v = opts(r)[key], x = dev(r)[key];
         const text = v == null ? '' : key === 'last_good_checkdb' && v !== 'never' ? fmtTime(v) : typeof v === 'number' ? fmtNum(v) : String(v);
@@ -164,7 +164,7 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] 
     el('p', { class: 'meta' }, risk
       ? el('span', {}, `${fmtNum(shown.length)} database(s) whose ${label} deviates. `, link('All databases', x => x.delete('risk')))
       : `${fmtNum(dbs.length)} databases. Green: the value meets its rule. Yellow: a warning or an advice rule is broken. Red: a critical `
-        + 'rule is broken. Uncoloured: a column shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
+        + 'rule is broken. Grey (N/A): a value shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
         + 'it is held to.'),
     grid(shown.map(flatten), cols, risk ? 'No database deviates on this option.' : 'No database read yet.'),
   ];
@@ -182,7 +182,7 @@ const flatten = (r: Row): Row => {
 function flagsView(rows: Row[]): HTMLElement[] {
   const cols: Col[] = [
     { key: 'flag', num: true },
-    { key: 'is_on', label: 'state', cls: (_v, r) => statusCls(r.status), fmt: (v, r) => r.is_present === false ? 'no longer on' : v === true ? 'on' : 'off' },
+    { key: 'is_on', label: 'state', cls: (_v, r) => statusCls(r.status) || 'status none', fmt: (v, r) => r.is_present === false ? 'no longer on' : v === true ? 'on' : 'off' },
     { key: 'status', label: 'verdict', fmt: (v, r) => verdict(v, r.severity) },
     { key: 'detail', label: 'what it does', wide: true }, { key: 'rule' },
     { key: 'first_seen', label: 'in this state since', fmt: fmtTime },
@@ -251,7 +251,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined, script: HTMLE
     grid(alerts, [
       { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true, fmt: errorCell },
       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
-      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => r.enabled === true && Number(v) === 0 && r.has_job !== true ? 'status warn' : '' },
+      { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => v == null || v === '' ? '' : r.enabled !== true ? 'status none' : Number(v) === 0 && r.has_job !== true ? 'status warn' : 'status ok' },
       { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },
       { key: 'has_job', label: 'starts a job', fmt: yn }, { key: 'include_event_description', label: 'error text in the message', fmt: yn },
       { key: 'occurrence_count', label: 'raised', num: true }, { key: 'last_occurrence_at', label: 'last raised', fmt: fmtTime },
@@ -277,7 +277,7 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
     grid(cols, [
       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
       { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
-      { key: 'pct_used', label: '% used', num: true, cls: (_v, r) => statusCls(r.status), fmt: fmtNum },
+      { key: 'pct_used', label: '% used', num: true, cls: (v, r) => statusCls(r.status) || (v == null || v === '' ? '' : 'status ok'), fmt: fmtNum },
       { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical (90 % and more)' : v === 'warn' ? 'warning (75 % and more)' : 'under 75 %' },
       { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
       { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
@@ -331,9 +331,9 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
     ...risks.map(([k, , risk]) => count(k, risk)),
     { key: 'max_vlf', label: 'max VLF count', num: true, fmt: fmtNum },
     // an instance whose options were never read has no count to colour
-    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status crit' : 'status ok',
+    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? 'status none' : Number(v) > 0 ? 'status crit' : 'status ok',
       fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
-    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status warn' : 'status ok',
+    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? 'status none' : Number(v) > 0 ? 'status warn' : 'status ok',
       fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
     { key: 'option_advice', label: 'options off their default', num: true, fmt: fmtNum },
     { key: 'databases_read_at', label: 'read', fmt: v => v == null ? 'not yet' : fmtTime(v) },
@@ -357,7 +357,7 @@ export async function mssqlChecksFleetView(ctx: Ctx): Promise<HTMLElement> {
   });
   const pcols: Col[] = [{ key: 'name', label: 'option' }, ...insts.map(([id, name]): Col => ({
     key: 'i' + id, label: name, num: true,
-    cls: (_v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status),
+    cls: (v, r) => statusCls(by.get(`${String(r.name)}|${id}`)?.status) || (v == null || v === '' ? '' : 'status none'),
     fmt: (v, r) => { const o = by.get(`${String(r.name)}|${id}`); return o ? titled(fmtNum(v), `${verdict(o.status, o.severity)}${o.detail ? ': ' + String(o.detail) : ''}`) : ''; },
   })), { key: 'differs', label: `differs ${across}`, fmt: yn }];
   sec.append(el('h3', {}, `Server options ${across}`),

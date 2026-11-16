@@ -59,7 +59,7 @@ const settingCols: Col[] = [
 
 const dbCols: Col[] = [
   { key: 'datname', label: 'database' },
-  { key: 'created', label: 'pgaudit extension', fmt: v => v ? 'created' : badge('not created', 'warn') },
+  { key: 'created', label: 'pgaudit extension', fmt: v => v ? 'created' : badge('not created', 'warn'), cls: v => v ? 'status ok' : '' },
   { key: 'version' },
   { key: 'read_at', label: 'read', fmt: fmtTime },
 ];
@@ -69,8 +69,12 @@ const windowText = (m: unknown): string => {
   return n % 1440 === 0 ? `${n / 1440} d` : n % 60 === 0 ? `${n / 60} h` : `${n} min`;
 };
 
-const ruleCols: Col[] = [
-  { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : 'quiet' },
+// ruleCols: logRead = the instance's audit-line read (h.log_read): a rule other than failed sign-ins counts those lines,
+// so where they are not read it is not checked (N/A), never 'quiet'. Failed sign-ins count the log readers' rows, whose
+// state this page does not hold: their 'quiet' is OK even where the server log is not read (a known limit)
+const ruleCols = (logRead: unknown): Col[] => [
+  // the state: a rule that is off, one firing at info, or one not checked is not judged warning or critical (N/A); a quiet rule OK
+  { key: 'fires', label: 'state', fmt: (v, r) => !r.is_enabled ? badge('off', '') : v ? badge('firing', r.severity === 'critical' ? 'crit' : r.severity === 'info' ? '' : 'warn') : r.what !== 'AUTH_FAIL' && logRead !== 'ok' ? 'not checked: the audit lines are not read' : 'quiet', cls: (v, r) => !r.is_enabled || (v && r.severity === 'info') || (!v && r.what !== 'AUTH_FAIL' && logRead !== 'ok') ? 'status none' : v ? '' : 'status ok' },
   { key: 'name', label: 'rule' },
   { key: 'what', label: 'entries', fmt: (v, r) => (v === 'AUTH_FAIL' ? 'failed sign-ins' : String(v))
       + (r.command_like ? `, command like ${String(r.command_like)}` : '') + (r.object_like ? `, object like ${String(r.object_like)}` : '') },
@@ -199,7 +203,7 @@ export async function pgauditView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, 'Alert rules'),
       el('p', { class: 'meta' }, 'A rule that fires is a finding of this instance and reaches the alert channels like any other. '
         + 'The rules are rows of pgvigil.pgaudit_rules in the repository (docs/audit.md says how to change one).'),
-      grid(rowsOf(d.rules), ruleCols, 'No rule.'));
+      grid(rowsOf(d.rules), ruleCols(h.log_read), 'No rule.'));
 
     sec.append(el('h3', {}, 'Role, DDL and audited SET entries'),
       el('p', { class: 'meta' }, 'pgaudit\'s ROLE and DDL entries, and each SET or RESET of a setting that changes who the session is, what is '

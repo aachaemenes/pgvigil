@@ -66,6 +66,8 @@ const stepWord = (meta: Row | undefined) => {
 };
 const secs = (v: unknown) => v == null ? '' : fmtSecs(v);
 const stateCell = (v: unknown) => String(v ?? '').startsWith('idle in transaction') ? badge(String(v), 'warn') : String(v ?? '');
+// stateCls: a state other than idle in transaction is OK (the column's check judged it); none stays plain
+const stateCls = (v: unknown) => v == null || v === '' || String(v).startsWith('idle in transaction') ? '' : 'status ok';
 
 export async function pgBlockingHistory(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'blocking-history' }, el('h3', {}, `Blocking history (${rangeLabel(ctx)}) `, whatIsThis(sampledNote, 'Blocking history')));
@@ -96,7 +98,7 @@ export async function pgBlockingHistory(ctx: Ctx): Promise<HTMLElement> {
       { key: 'first_at', label: 'first seen', fmt: fmtTime },
       { key: 'head_pid', label: 'root pid', num: true, fmt: v => String(v) },
       { key: 'head_datname', label: 'database' }, { key: 'head_usename', label: 'user' }, { key: 'head_application', label: 'application' },
-      { key: 'last_state', label: 'root state', fmt: stateCell },
+      { key: 'last_state', label: 'root state', fmt: stateCell, cls: stateCls },
       { key: 'idle_in_txn_samples', label: 'idle in transaction', num: true, fmt: (v, r) => Number(v) ? `${fmtNum(v)} of ${fmtNum(r.samples)}` : 'no' },
       { key: 'xact_secs', label: 'transaction age', num: true, fmt: secs },
       { key: 'victims', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
@@ -137,7 +139,7 @@ function xminSection(d: Record<PgParts, Table | null>): HTMLElement {
     { key: 'pinned_samples', label: 'held the oldest xmin', num: true, fmt: v => `${fmtNum(v)} of ${fmtNum(withX)}` },
     { key: 'peak_xmin_age', label: 'peak xmin age', num: true },
     { key: 'peak_at', label: 'at', fmt: fmtTime },
-    { key: 'state_at_peak', label: 'state then', fmt: stateCell },
+    { key: 'state_at_peak', label: 'state then', fmt: stateCell, cls: stateCls },
     { key: 'xact_secs_at_peak', label: 'transaction age then', num: true, fmt: secs },
     { key: 'usename', label: 'user' }, { key: 'datname', label: 'database' }, { key: 'application_name', label: 'application' },
     { key: 'backend_type', label: 'backend' }, { key: 'samples', label: 'captures with an xmin', num: true },
@@ -202,7 +204,7 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
         { key: 'wait_types', label: 'wait types', fmt: v => waitList(v) }, { key: 'wait_resources', label: 'resources', wide: true },
         { key: 'database_name', label: 'database' }, { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_program', label: 'blocked program' },
         { key: 'blocking_login', label: 'blocking login' }, { key: 'blocking_program', label: 'blocking program' },
-        { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? '') },
+        { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? ''), cls: v => v == null || v === '' || v === 'sleeping' ? '' : 'status ok' },
         { key: 'first_at', label: 'first seen', fmt: fmtTime },
         // the SQL Server tab reads at= from the address itself (href writes it for the PostgreSQL tab only; running_fleet.ts)
         { key: 'last_at', label: 'last seen', fmt: (v) => el('a', { href: `${href(ctx, { tab: 'mssql_running' })}&at=${encodeURIComponent(String(v))}`, title: 'The Running queries snapshot where this pair was last seen' }, fmtTime(v)) },

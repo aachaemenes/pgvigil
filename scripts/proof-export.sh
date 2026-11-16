@@ -46,8 +46,9 @@
 #   colours    (X0) every cell of every row the page draws (a grid draws its first 200 rows; the read must return
 #              exactly those), against the page: the status the screen shows on it (read by the driver's own code, not
 #              export_colours.ts: the cell's status, else a badge's in it, a link) is its named pair in the file, any
-#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size cells the driver gives
-#              a bare class (crit, warn) take their named pairs (export.ts statusOf reads a bare class as its status).
+#              other cell plain - no fill, no text colour of its own, not bold; the two Table Size columns the driver gives
+#              a bare class (crit, warn on the first row, ok on the others: a whole column, as X18 wants) take their
+#              named pairs (export.ts statusOf reads a bare class as its status).
 #              Counted per sheet (the lines 'cells:')
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0%', DBA Dash's P1) whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
@@ -163,7 +164,11 @@
 #              passes scripts/xlsx-check.py rules: the file rules DBA Dash's own exports pass (a grid sheet per grid, the
 #              named colour pairs only, the fixed header, one table each, no pane, the formats General / '0' / '0.0%' /
 #              '0.00%' / 'yyyy-MM-dd HH:mm' / 'yyyy-MM-dd' and a fixed count of decimals '0.0' .., booleans, widths, no app
-#              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook
+#              link, no picture); 'ok xcheck Xn' only on one PASS line per workbook. X18 (a status column has a status
+#              or N/A on every cell) on every page; scripts/x18-scan.py first: every BADGE-DRAWN status column of
+#              web/src (a warning or critical badge, inline or through a helper) has a cls (its values read by review) or
+#              is on its reviewed list with each badge of class ok / none; then --wide: every column coloured by a cls
+#              alone or by an OK badge alone is on its WIDE_REVIEWED list (read one by one)
 #   decimals   (X13) no number cell shows more decimals than its column shows on the screen (nor fewer under a fixed
 #              format): the read-back takes each grid column's most decimals from the screen's text (a grid drawn whole;
 #              not a chart's series: the driver reads one point of it) into page-<lang>.json and runs
@@ -203,6 +208,11 @@ ok "sheet names: $(tail -1 "$WORK/names-unit.out")"
 echo "== the X rules' own tests (scripts/xlsx-check.test.py: built workbooks, a probe per shape)"
 python3 -I scripts/xlsx-check.test.py "$XCHECK" > "$WORK/xcheck-unit.out" 2>&1 || { cat "$WORK/xcheck-unit.out"; fail "the X rules' own tests"; }
 ok "X rules' tests: $(tail -1 "$WORK/xcheck-unit.out")"
+echo "== a status column's other cells on the screen (scripts/x18-scan.py)"
+python3 -I scripts/x18-scan.py web/src > "$WORK/x18-scan.out" 2>&1 || { cat "$WORK/x18-scan.out"; fail "a status column's other cells (scripts/x18-scan.py)"; }
+ok "x18-scan: $(tail -1 "$WORK/x18-scan.out")"
+python3 -I scripts/x18-scan.py --wide web/src > "$WORK/x18-wide.out" 2>&1 || { cat "$WORK/x18-wide.out"; fail "a cls- or OK-badge-coloured column's other cells (scripts/x18-scan.py --wide)"; }
+ok "x18-scan --wide: $(tail -1 "$WORK/x18-wide.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
@@ -457,10 +467,13 @@ const page = async (hash, sortBy, filterNone) => {
     // the page's last grid filtered to nothing: a grid without rows keeps the plain sheet filter, no Excel table
     await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); t.querySelector('thead .filter-btn').click(); const i = t.querySelector('thead tr.filters input'); i.value = 'zzzz-no-such-row'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await sleep(600);
-    // and two cells of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to the
-    // cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
+    // and two columns of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to
+    // the cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
     const drawn = await ev(`(() => { const t = document.querySelector('main table.grid'); if (Number(t.dataset.rows ?? 0) > 200) return false;   // past its page the export builds the rows off the screen
-      const tr = t.querySelector(':scope > tbody > tr'); tr.children[1].classList.add('crit'); tr.children[2].classList.add('warn'); return true; })()`);
+      // every row of the two columns classed, as a page's rule classes its whole column (X18: a status column has a
+      // status on every cell): the first row crit / warn, the others ok
+      const trs = [...t.querySelectorAll(':scope > tbody > tr')]; trs[0].children[1].classList.add('crit'); trs[0].children[2].classList.add('warn');
+      trs.slice(1).forEach(tr => { tr.children[1].classList.add('ok'); tr.children[2].classList.add('ok'); }); return true; })()`);
     if (!drawn) throw new Error('the first grid of the Table Size tab has over 200 rows: the class check needs a grid drawn whole');
   }
   if (sortBy) {
@@ -1679,6 +1692,21 @@ for key, tab, inst in PAGES:
                         goff.append(f"{colname(j)} '{g['head'][j]}': {len(gr_)} cell(s) under a grouped format, no screen figure grouped")
                 if ngrp or goff:
                     check(not goff, f"{key}: sheet '{names[gsheet[i] - 1]}' a grouped number format only where the screen groups the column's figures ({ngrp} grouped column(s); {goff[:3]})")
+                # (X14) a percent column's share = the screen's figure / 100 within its shown precision: the file alone cannot
+                # tell 13.4 % from 1,340 % (a query's +4,900 % is a real share of 49, a run at 15 times its average 15.0)
+                poff, npct = [], 0
+                for j, c_ in enumerate(cols):
+                    if '%' not in (c_ or ''): continue
+                    for k_, r_ in enumerate(g['cells']):
+                        if j >= len(r_): continue
+                        _sid, v_, _t = cells.get((k_ + 2, j), (0, None, None)); mp = re.fullmatch(r'\+?(-?[\d.,\s\u202f\u00a0]*\d)\s?%?', r_[j]['t'] or '')
+                        if v_ is None or not mp: continue
+                        e_, kd = digits_(mp.group(1))
+                        if e_ is None: continue
+                        npct += 1
+                        if abs(v_ - e_ / 100) > 0.5 * 10 ** -kd / 100 + 1e-9: poff.append(f"{colname(j)}{k_ + 2} '{r_[j]['t']}' -> {v_}, want {e_ / 100:.6g}")
+                if npct or poff:
+                    check(not poff, f"{key}: sheet '{names[gsheet[i] - 1]}' {npct} share(s) in its percent columns = the screen's figure / 100, within the shown precision ({poff[:3]})")
                 # (X13) the most decimals the screen shows in each column of this grid, for xlsx-check's page - a grid the
                 # screen drew whole only (a long grid's rows past the drawn ones can show more: the writer reads them all)
                 if len(g['cells']) == g['rows']:
@@ -1901,7 +1929,9 @@ for key, tab, inst in PAGES:
         # the screen read marks it; the audit above held both cells to that)
         x0 = z.read(f'xl/worksheets/sheet{gsheet[0]}.xml').decode(); c0 = cells_of(x0, sst)
         two = [cx[c0.get((2, j), (0, None, None))[0]] for j in (1, 2)]
-        check(classed == 2 and [q['fill'] for q in two] == [fill['crit'], fill['warn']], f"empty: the two cells given a bare class (crit, warn) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]})")
+        rest = [cx[c0.get((k + 3, j), (0, None, None))[0]]['fill'] for k in range(tg[0]['rows'] - 1) for j in (1, 2)]
+        check(classed == 2 * tg[0]['rows'] and [q['fill'] for q in two] == [fill['crit'], fill['warn']] and all(f == fill['ok'] for f in rest),
+              f"empty: the two columns given a bare class (crit, warn on the first row, ok on the {tg[0]['rows'] - 1} others) take their named pairs (X0 ({classed} cells, {[q['fill'] for q in two]}, {len(rest)} ok cells: {sorted(set(map(str, rest)))})")
     if openpyxl is not None:
         try:
             wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
@@ -2114,6 +2144,46 @@ else:
         big = [r for r in api_rows((d.get('dbs_api_p') or {}).get('databases')) if float(r.get('allocated_bytes') or 0) >= 1.1 * 1024 ** 3]
         if big: print(f"the TB divisor: the dbspace_ptb row above holds TB / 3 against the API's bytes / 1024^4 on {len(big)} PostgreSQL database(s) of 1.1 GB or more")
         else: print("not checked: the TB divisor: no PostgreSQL database of 1.1 GB or more in the demo (TB divisor not proven)")
+# (X17) the measured cell carries its row's status, as DBA Dash colours it: the map from the workbooks' own headers - a
+# 'Drives' sheet's free % (its status column's colour) and free in a size unit (N/A: no size threshold), a job grid's job
+# and last failure (its status) and the time since (any status) - handed to scripts/xlsx-check.py rules --measured; the
+# Drives sheet and a job grid found, every mapped workbook PASS
+import importlib.util
+_xs = importlib.util.spec_from_file_location('xlsx_check', 'scripts/xlsx-check.py'); _xc = importlib.util.module_from_spec(_xs); _xs.loader.exec_module(_xc)
+MEASURED = {}
+_n17 = {}   # (file, sheet) -> [data rows, the mapped columns' cells that hold a value]: what X17 can judge on each sheet
+for _n in sorted(os.listdir(dl)):
+    if not _n.endswith('.xlsx'): continue
+    try: _bk = _xc.Book(f"{dl}/{_n}")
+    except Exception: continue
+    for _s in _bk.sheets:
+        if not _s['grid']: continue
+        _h = [str(c['v'] if c['v'] is not None else '').strip() for c in _s['cells'] if c['row'] == 1]
+        _m = {}
+        if _s['name'] == 'Drives' and 'free %' in _h and 'status' in _h:
+            _m['free %'] = 'status'
+            _m.update({h: 'N/A' for h in _h if re.fullmatch(r'free \((?:B|KB|MB|GB|TB|PB)\)', h)})
+        if {'job', 'status', 'last failure'} <= set(_h):
+            _m.update({'job': 'status', 'last failure': 'status'})
+            if 'since last failure (minutes)' in _h: _m['since last failure (minutes)'] = '*'
+        if _m:
+            MEASURED.setdefault(_n, {})[_s['name']] = _m
+            _mc = {c['col'] for c in _s['cells'] if c['row'] == 1 and str(c['v'] if c['v'] is not None else '').strip() in _m}
+            _n17[(_n, _s['name'])] = [len({c['row'] for c in _s['cells'] if c['row'] > 1}),
+                                      sum(1 for c in _s['cells'] if c['row'] > 1 and c['col'] in _mc and str(c['v'] if c['v'] is not None else '').strip())]
+_mg = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), f'measured-{want}.json')
+json.dump(MEASURED, open(_mg, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+if os.environ.get('PGVIGIL_EXPORT_OUT') and os.path.isdir(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want)):   # kept beside the downloads
+    json.dump(MEASURED, open(os.path.join(os.environ['PGVIGIL_EXPORT_OUT'], want, os.path.basename(_mg)), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+_r17 = subprocess.run([sys.executable, '-I', 'scripts/xlsx-check.py', 'rules', '--measured', _mg] + [f"{dl}/{n}" for n in MEASURED], capture_output=True, text=True)
+_p17 = [l for l in _r17.stdout.splitlines() if l.startswith('PASS X17 ')]; _f17 = [l for l in _r17.stdout.splitlines() if l.startswith('FAIL X17 ')]
+_c17 = sum(int(m_.group(1)) for m_ in (re.search(r': (\d+) cells', l) for l in _p17) if m_)
+_s17 = sorted({s for v in MEASURED.values() for s in v})
+# every mapped sheet with rows judged on cells of its own: the Drives cells alone never carry the job grids
+_none17 = [f"{n}:{sn}" for (n, sn), (nr, nc) in _n17.items() if nr and not nc]
+_drv17 = sum(nc for (n, sn), (nr, nc) in _n17.items() if sn == 'Drives'); _job17 = sum(nc for (n, sn), (nr, nc) in _n17.items() if sn != 'Drives')
+check('Drives' in _s17 and any(s != 'Drives' for s in _s17) and len(_p17) == len(MEASURED) and not _f17 and _drv17 > 0 and _job17 > 0 and not _none17,
+      f"measured cells (X17): the Drives sheet's free % / free and the job grids' job / last failure carry their row's status - {len(_p17)} of {len(MEASURED)} workbooks PASS on sheets {_s17}, {_c17} cells judged ({_drv17} on Drives, {_job17} on the job grids; a sheet with rows and none judged: {_none17[:3]}); map in {os.path.basename(_mg)}; {(_f17 or [''])[0][:300]}")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
@@ -2408,6 +2478,7 @@ for L in en-US fr-FR; do
   echo "== the X rules on every workbook ($L): scripts/xlsx-check.py rules"
   XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$WORK/drive-$L.json" "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; }
+  # every rule on every page (X18 too); any other exit than 0 / 1 is the check's own failure
   { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
   NW=$(ls "$DL"/*.xlsx | wc -l)
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do

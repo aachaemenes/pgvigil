@@ -41,7 +41,7 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'value_in_use', label: 'in use', fmt: num },
     // a dynamic option waits for RECONFIGURE, any other for a restart of the service; a value no longer listed waits for nothing
     { key: 'value', label: 'set', fmt: (v, r) => r.pending === true && r.is_present !== false
-      ? el('span', {}, num(v), ' ', badge(r.is_dynamic === true ? 'needs RECONFIGURE' : r.is_dynamic === false ? 'needs a restart' : 'not in use yet', 'warn')) : num(v) },
+      ? el('span', {}, num(v), ' ', badge(r.is_dynamic === true ? 'needs RECONFIGURE' : r.is_dynamic === false ? 'needs a restart' : 'not in use yet', 'warn')) : num(v), cls: (v, r) => (r.pending === true && r.is_present !== false) || v == null ? '' : 'status ok' },
     { key: 'minimum', fmt: num }, { key: 'maximum', fmt: num },
     { key: 'is_dynamic', label: 'dynamic', fmt: yn }, { key: 'is_advanced', label: 'advanced', fmt: yn },
     { key: 'is_present', label: 'listed', fmt: v => v === false ? 'no longer' : 'yes' },
@@ -73,10 +73,10 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
     ], `No trace flag is on (read ${fmtTime(rowsOf(tf.read)[0].snapshot_at)}).`),
     el('h4', {}, 'History'),
     grid(rowsOf(tf.history), [{ key: 'changed_at', label: 'change date', fmt: fmtTime }, { key: 'trace_flag', label: 'trace flag', num: true },
-      { key: 'change', fmt: v => v === 'removed' ? badge('removed', 'warn') : 'added' }], 'No flag was added or removed since the first read.'));
+      { key: 'change', fmt: v => v === 'removed' ? badge('removed', 'warn') : 'added', cls: v => v === 'removed' ? '' : 'status ok' }], 'No flag was added or removed since the first read.'));
   const svcCols: Col[] = [
     { key: 'service_name', label: 'service' },
-    { key: 'status', fmt: (v, r) => r.is_present === false ? 'no longer listed' : v === 'Running' ? String(v) : badge(String(v ?? ''), 'warn') },
+    { key: 'status', fmt: (v, r) => r.is_present === false ? 'no longer listed' : v === 'Running' ? String(v) : badge(String(v ?? ''), 'warn'), cls: (v, r) => r.is_present === false ? 'status none' : v === 'Running' ? 'status ok' : '' },
     { key: 'startup_type', label: 'start mode' }, { key: 'service_account', label: 'account' },
     { key: 'last_startup_at', label: 'started', fmt: fmtTime },
     { key: 'ifi_enabled', label: 'instant file initialization', fmt: yn }, { key: 'is_clustered', label: 'clustered', fmt: yn },

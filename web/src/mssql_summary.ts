@@ -8,7 +8,7 @@ import { badge, el, fmtTime, grid, props, Col } from './ui';
 import { buildDocs } from './doclinks';
 import { healthCalendar } from './healthcal';
 
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const findingCols: Col[] = [
   { key: 'severity', fmt: sev }, { key: 'setting', label: 'check' }, { key: 'value', label: 'object' },
   { key: 'detail' }, { key: 'at', label: 'seen', fmt: fmtTime },

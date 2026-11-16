@@ -45,8 +45,10 @@ const outcomeBadge = (v: unknown): string | Node => {
 // the level of an outcome by outcomeBadge's own rule, as a status cell's class ('' = not judged)
 const outcomeCls = (v: unknown): string => {
   const s = String(v ?? '');
-  return s === 'failed' ? 'status crit' : s === 'cancelled' || s === 'retry' ? 'status warn' : s === 'succeeded' ? 'status ok' : '';
+  return s === 'failed' ? 'status crit' : s === 'cancelled' || s === 'retry' ? 'status warn' : s === 'succeeded' ? 'status ok' : s ? 'status none' : '';
 };
+// a job's level against its thresholds as a status cell's class: 'excluded' (not checked) is N/A, as 'none'
+const levelCls = (v: unknown): string => `status ${v === 'excluded' ? 'none' : String(v)}`;
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(Math.round(Number(v) * 10) / 10) + ' s' : fmtSecs(v);
 
 // strip: the runs' durations over time as bars (oldest left); a failed or cancelled run is a hollow bar with a mark,
@@ -88,7 +90,7 @@ function strip(runs: Row[]): HTMLElement {
 const runCols: Col[] = [
   { key: 'start_time', label: 'start', fmt: fmtTime },
   { key: 'duration_s', label: 'took', num: true, fmt: dur },
-  { key: 'outcome', fmt: outcomeBadge },
+  { key: 'outcome', fmt: outcomeBadge, cls: v => v === 'succeeded' ? 'status ok' : v == null || v === '' || ['failed', 'cancelled', 'retry'].includes(String(v)) ? '' : 'status none' },
   { key: 'failed_step', label: 'step that failed' },
   { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
   { key: 'sql_severity', label: 'severity', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
@@ -405,7 +407,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   // status: the job against the thresholds in force for it, and the door to its three levels
   const statusCol = (t: Thresholds): Col => ({
     key: '_status', label: 'status',
-    cls: (_v, r) => { const x = st(r); return x && !r.dropped_at ? `status ${String(x.status)}` : ''; },
+    cls: (_v, r) => { const x = st(r); return x && !r.dropped_at ? levelCls(x.status) : ''; },
     fmt: (_v, r) => {
       const x = st(r);
       if (r.dropped_at || !x) return '';
@@ -415,27 +417,31 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
         el('span', { title: x.reason ? String(x.reason) : `judged by the ${String(x.level)} level` }, statusWord(x) + (x.reason ? `: ${String(x.reason)}` : '')), ' ', b);
     },
   });
+  // the measured cells carry the job's status, as DBA Dash colours its Job Name and Last Failed (the status column
+  // stays): the status the thresholds give, or N/A where they give none; no thresholds in force: plain, as the status
+  const jobCls = (r: Row) => { if (!th) return ''; const x = st(r); return x && !r.dropped_at ? levelCls(x.status) : 'status none'; };
   const cols: Col[] = [
     { key: 'name', label: 'job', fmt: (v, r) => {
       const b = el('button', { class: 'link', type: 'button' }, String(v ?? ''));
       b.addEventListener('click', () => { void pick(r); });
       return b;
-    } },
-    { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
+    }, cls: (_v, r) => jobCls(r) },
+    { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
     { key: 'schedule', fmt: oneLine },
     // the value cells carry the outcome's level, so the screen and the export show one colour
-    { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null || r.dropped_at ? '' : outcomeCls(r.last_outcome) },
+    { key: 'last_run_at', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.dropped_at ? 'status none' : outcomeCls(r.last_outcome) || 'status none' },
     { key: 'last_duration_s', label: 'took', num: true, fmt: dur },
     { key: 'last_outcome', label: 'outcome', cls: (v, r) => r.dropped_at ? '' : outcomeCls(v),
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
-    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.last_failed_outcome === 'cancelled' ? ' (cancelled)' : ''}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
+    { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.last_failed_outcome === 'cancelled' ? ' (cancelled)' : ''}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)), cls: (v, r) => v == null ? '' : jobCls(r) },
     { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), lastFailOf(r), ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
     // failed or cancelled runs in the range (0137's judge: run_status 0 or 3; PostgreSQL failed, internal error or
-    // aborted); a job the judge holds critical or warning is never green here
-    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : judged(r) ? '' : 'status ok',
+    // aborted); a job the judge holds critical or warning is never green here: N/A; an acknowledged count its
+    // Acknowledged pair (every cell of the column carries a status)
+    { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? 'status none ack' : 'status crit') : judged(r) ? 'status none' : 'status ok',
       fmt: (v, r) => Number(v) > 0 ? (jobAcked(r) ? `${fmtNum(v)} (acknowledged)` : badge(fmtNum(v), 'crit')) : '0' },
     { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
     { key: 'max_s', label: 'longest', num: true, fmt: dur },
@@ -469,8 +475,8 @@ const failedCols: Col[] = [
 const stepCols: Col[] = [
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' }, { key: 'subsystem' },
   { key: 'database_name', label: 'database' },
-  { key: 'last_outcome', label: 'last outcome', cls: v => v === 0 ? 'status crit' : v === 1 ? 'status ok' : '', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
-  { key: 'last_run_utc', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.last_outcome === 0 ? 'status crit' : r.last_outcome === 1 ? 'status ok' : '' },
+  { key: 'last_outcome', label: 'last outcome', cls: v => v === 0 ? 'status crit' : v === 1 ? 'status ok' : v == null ? '' : 'status none', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
+  { key: 'last_run_utc', label: 'last run', fmt: fmtTime, cls: (v, r) => v == null ? '' : r.last_outcome === 0 ? 'status crit' : r.last_outcome === 1 ? 'status ok' : 'status none' },
   { key: 'last_duration_s', label: 'took', num: true, fmt: fmtSecs },
   { key: 'on_success', label: 'on success' }, { key: 'on_fail', label: 'on failure' },
   { key: 'command', fmt: oneLine },

@@ -128,7 +128,7 @@ function settingsBlock(d: Record<string, Table | null>, engine: string, note: st
     { key: 'name', label: 'setting' },
     { key: 'a_value', label: 'A', wide: true, fmt: v => v == null ? missing : String(v) },
     { key: 'b_value', label: 'B', wide: true, fmt: v => v == null ? missing : String(v) },
-    { key: 'status', fmt: statusCell },
+    { key: 'status', fmt: statusCell, cls: v => v === 'same' ? 'status ok' : '' },
   ];
   return el('div', {}, el('h3', {}, 'Settings'),
     el('p', { class: 'meta' }, `${countsText(d.settings_counts)}. Compared: ${note}.`),
@@ -147,7 +147,7 @@ function jobsBlock(d: Record<string, Table | null>, note: string): HTMLElement {
   const cols: Col[] = [
     { key: 'scheduler' },
     { key: 'job_name', label: 'job', fmt: (v, r) => String(v ?? r.a_job_id ?? r.b_job_id ?? '') },
-    { key: 'status', fmt: statusCell },
+    { key: 'status', fmt: statusCell, cls: v => v === 'same' ? 'status ok' : '' },
     { key: 'fields', label: 'what differs', fmt: fields },
     { key: 'a_valid_from', label: 'A: version from', fmt: fmtTime },
     { key: 'b_valid_from', label: 'B: version from', fmt: fmtTime },
@@ -176,7 +176,7 @@ function schemaBlock(d: Record<string, Table | null>, cap: number, note: string,
     { key: 'datname_a', label: 'database', fmt: (v, r) => v != null && r.datname_b != null && v !== r.datname_b ? `${String(v)} / ${String(r.datname_b)}` : String(v ?? r.datname_b ?? '') },
     { key: 'kind' },
     { key: 'identity', label: 'object' },
-    { key: 'status', fmt: statusCell },
+    { key: 'status', fmt: statusCell, cls: v => v === 'same' ? 'status ok' : '' },
     { key: 'differs', label: 'what differs', fmt: (v, r) => r.status === 'different' ? String(v ?? '')
       // a database on one side only: why (one instance at two times), and its object count
       : r.kind === 'database' ? `the database${Number(r.children) > 0 ? ` (${fmtNum(r.children)} objects)` : ''}${v ? ': ' + String(v) : ''}`

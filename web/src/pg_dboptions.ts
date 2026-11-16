@@ -28,7 +28,7 @@ const verdict = (status: unknown, severity: unknown): string => {
     default: return 'not judged';
   }
 };
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'info');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const titled = (text: string, title: string): Node => title ? el('span', { title }, text) : document.createTextNode(text);
 const str = (v: unknown): string => v == null ? '' : String(v);
 
@@ -138,7 +138,7 @@ function overridesGrid(all: Row[], read: Row | undefined, brokenOnly: boolean): 
   const unitOf = (r: Row) => r.unit ? ` ${str(r.unit)}` : '';
   // the value as written, and as the rules read it where that differs (256MB = 262144 kB)
   const valueText = (r: Row): string => str(r.raw_value) + (r.value_read === true && str(r.value) !== str(r.raw_value) ? ` = ${str(r.value)}${unitOf(r)}` : '');
-  // the server's value: uncoloured where the instance read takes this very override as the server's (ALTER ROLE ALL SET,
+  // the server's value: N/A (grey) where the instance read takes this very override as the server's (ALTER ROLE ALL SET,
   // an override of the database the collector connects to)
   const serverStatus = (r: Row): unknown => r.server_from_override === true ? null : r.server_status;
   const serverText = (r: Row): string => r.server_value == null ? '' : str(r.server_value) + unitOf(r) + (r.server_is_set === true ? '' : ' (default)');
@@ -147,9 +147,9 @@ function overridesGrid(all: Row[], read: Row | undefined, brokenOnly: boolean): 
   const cols: Col[] = [
     { key: 'setting' },
     { key: 'statement', label: 'set by' },
-    { key: 'value_text', label: 'value', cls: (_v, r) => statusCls(r.status),
+    { key: 'value_text', label: 'value', cls: (_v, r) => statusCls(r.status) || (valueText(r) ? 'status none' : ''),
       fmt: (_v, r) => titled(valueText(r), `${shownVerdict(r)}${r.detail && (r.status === 'warn' || r.status === 'crit') ? ': ' + str(r.detail) : ''}`) },
-    { key: 'server_text', label: 'the server\'s value', cls: (_v, r) => statusCls(serverStatus(r)),
+    { key: 'server_text', label: 'the server\'s value', cls: (_v, r) => statusCls(serverStatus(r)) || (serverText(r) ? 'status none' : ''),
       fmt: (_v, r) => titled(serverText(r), serverVerdict(r)) },
     { key: 'suggested', fmt: (v, r) => r.status === 'warn' || r.status === 'crit' ? str(v) : '' },
     // the colours in words: the override's verdict and the server's

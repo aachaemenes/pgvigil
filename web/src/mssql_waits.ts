@@ -32,7 +32,7 @@ const paletteNow = () => [...seriesColors(), neutralColor()];
 const msSecs = (v: unknown) => v == null ? '' : fmtSecs(Math.round(Number(v) / 1000));
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const kb = (v: unknown) => v == null ? '' : fmtBytes(Number(v) * 1024);
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 
 // the findings over the range: each with its source's check and priority in the text
 const findingCols: Col[] = [
@@ -69,7 +69,7 @@ const poolCols: Col[] = [
 
 const eventCols: Col[] = [
   { key: 'wait_type', label: 'wait type', fmt: v => el('span', {}, waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)), ' ',
-    runningWaitLink(String(v), 'requests'), waitDocs(v)) },
+    runningWaitLink(String(v), 'requests'), waitDocs(v)), cls: v => v == null || String(v).startsWith('LCK_') ? '' : 'status ok' },
   { key: 'category', fmt: (v, r) => r.is_benign ? badge(String(v), '') : String(v ?? '') },
   { key: 'wait_ms', label: 'wait time', num: true, fmt: msSecs },
   { key: 'pct', label: 'share', num: true, fmt: pct },

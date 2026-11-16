@@ -106,9 +106,10 @@ export function willAlert(rules: Row[], name: (r: Row) => string, noChannel = fa
 export const stateBadge = (v: unknown, held?: unknown, naWhy?: unknown): HTMLElement | string => {
   if (v == null) return '';
   const s = String(v);
-  const kind = s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : '';
-  // task 402: 'na' is grey (no kind), never OK: under the metric's floor, too few to judge - or the metric's own reason
-  // (0152's metric_na_reasons: never a bare N/A)
+  // pending = judged beyond its threshold, not yet held for its minutes: a warning (judged, so not N/A; not OK)
+  const kind = s === 'critical' ? 'crit' : s === 'warning' || s === 'pending' ? 'warn' : s === 'ok' ? 'ok' : 'none';
+  // task 402: 'na' is grey (kind none), never OK: under the metric's floor, too few to judge - or the metric's own
+  // reason (0152's metric_na_reasons: never a bare N/A)
   const words = s === 'nodata' ? 'no data' : s === 'pending' ? 'pending (beyond, not yet for its minutes)'
     : s === 'na' ? (naWhy != null && String(naWhy) !== '' ? `N/A (${String(naWhy)})` : 'N/A (too few to judge)') : s;
   return badge(held ? `${words}, held (no fresh sample)` : words, kind);
@@ -493,7 +494,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
         : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
         : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : '',
            // 'na' is a floor or a reason of the metric's own (0152's metric_na_reasons): the count names neither
-           Number(r.na) ? `${fmtNum(r.na)} not judged (N/A: State per instance says why)` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
+           Number(r.na) ? `${fmtNum(r.na)} not judged (N/A: State per instance says why)` : ''].filter(Boolean).join(', ') || badge('ok', 'ok'), cls: (v, r) => !r.live || !r.enabled ? ''
+        : Number(r.covers) === 0 || Number(r.in_force) === 0 || r.evaluated_at == null ? 'status none'
+        : Number(v) > 0 ? '' : Number(r.pending) ? 'status warn' : Number(r.nodata) ? 'status none' : '' },
       { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },
       { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces rule ${String(r.replaces)})` : '') },
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` },
@@ -753,7 +756,7 @@ function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
   };
   const cols: Col[] = [
     { key: 'instance' },
-    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : '') },
+    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : 'none') },
     { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
     { key: 'database', fmt: v => String(v ?? '') },
     { key: 'op', label: 'rule', fmt: (_v, r) => {

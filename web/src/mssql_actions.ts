@@ -244,7 +244,7 @@ export async function mssqlActionsLogView(ctx: Ctx): Promise<HTMLElement> {
   }));
   sec.append(el('h3', {}, 'What is on for this instance'), grid(rows, [
     { key: 'action' }, { key: 'what' },
-    { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') },
+    { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : 'none') },
     { key: 'reason', label: 'why off', wide: true },
   ]));
   // task 406: the rights of the actions login when plan_evict is on its list (docs/sqlserver-actions.md)

@@ -25,7 +25,7 @@ const yes = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
 const poolCols: Col[] = [
   { key: 'database' }, { key: 'user' },
   { key: 'cl_active', label: 'clients active', num: true },
-  { key: 'cl_waiting', label: 'clients waiting', num: true, cls: v => Number(v) > 0 ? 'warn' : '' },
+  { key: 'cl_waiting', label: 'clients waiting', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok' },
   { key: 'sv_active', label: 'servers active', num: true },
   { key: 'sv_idle', label: 'servers idle', num: true },
   { key: 'sv_used', label: 'servers used', num: true },
@@ -135,11 +135,11 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
     if (heads.length) {
       out.push(grid(heads, [
         { key: 'head_pid', label: 'head', fmt: v => runningLink(ctx, actAt, v) },
-        { key: 'head_state', label: 'head state', fmt: v => String(v ?? '') === 'idle in transaction' ? badge(String(v), 'crit') : String(v ?? 'not in the sample') },
+        { key: 'head_state', label: 'head state', fmt: v => String(v ?? '') === 'idle in transaction' ? badge(String(v), 'crit') : String(v ?? 'not in the sample'), cls: v => v === 'idle in transaction' ? '' : v == null || v === '' ? 'status none' : 'status ok' },
         { key: 'head_application', label: 'head application' },
         { key: 'head_via_pooler', label: 'head through the pooler', fmt: (v, r) => v === true ? `yes: serves ${String(r.head_client_application ?? 'a client')}` : v === false ? 'no (a direct session)' : '' },
         { key: 'servers_behind', label: 'pooler servers blocked behind it', num: true },
-        { key: 'clients_waiting', label: 'clients waiting in those pools', num: true, cls: v => Number(v) > 0 ? 'warn' : '' },
+        { key: 'clients_waiting', label: 'clients waiting in those pools', num: true, cls: v => v == null || v === '' ? '' : Number(v) > 0 ? 'warn' : 'status ok' },
         { key: 'longest_wait_us', label: 'longest client wait', num: true, fmt: waitUs },
         { key: 'pools', fmt: pids },
         { key: 'head_query', label: 'head\'s last statement', fmt: (v, r) => sqlCell(v, { heading: `pid ${String(r.head_pid)}: last statement` }) },
@@ -156,7 +156,7 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
     el('p', { class: 'meta' }, `${fmtNum(read.clients_read)} client(s) read; ${fmtNum(read.clients_kept)} kept (not idle, the longest waits first`
       + `${cut > 0 ? `; ${fmtNum(cut)} idle or past the cap not stored` : ''}). A waiting client has no server yet: pg_stat_activity cannot see it.`),
     grid(clients, [
-      { key: 'state', fmt: stateCell },
+      { key: 'state', fmt: stateCell, cls: v => v == null || v === '' || String(v).startsWith('waiting') ? '' : 'status ok' },
       { key: 'wait_us', label: 'waiting for', num: true, fmt: (v, r) => String(r.state ?? '').startsWith('waiting') ? waitUs(v) : '' },
       { key: 'application_name', label: 'application' }, { key: 'database' }, { key: 'user' },
       { key: 'addr', label: 'client address', fmt: (v, r) => v == null ? '' : `${String(v)}:${String(r.port ?? '')}` },
@@ -164,7 +164,7 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
       { key: 'connect_time', label: 'connected', fmt: fmtTime },
       { key: 'backend_pid', label: 'served by backend', fmt: (v, r) => runningLink(ctx, actAt, v, r) },
       { key: 'backend_state', label: 'backend state', fmt: backendCell },
-      { key: 'role', label: 'in a chain', fmt: roleCell },
+      { key: 'role', label: 'in a chain', fmt: roleCell, cls: v => v == null || v === '' || v === 'head' || v === 'blocked' ? '' : 'status none' },
       { key: 'head_pid', label: 'chain head', fmt: (v, r) => r.role === 'head' ? '' : runningLink(ctx, actAt, v) },
     ], 'No client other than idle ones at this read.'));
   out.push(el('h3', {}, 'Servers (SHOW SERVERS)'),
@@ -175,10 +175,10 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
       { key: 'paired_application', label: 'serving client', fmt: (v, r) => v == null && r.paired_addr == null ? '' : `${String(v ?? '')}${r.paired_addr ? ` (${String(r.paired_addr)})` : ''}` },
       { key: 'database' }, { key: 'user' },
       { key: 'backend_state', label: 'backend state', fmt: backendCell },
-      { key: 'backend_wait', label: 'backend wait', fmt: waitCell },
+      { key: 'backend_wait', label: 'backend wait', fmt: waitCell, cls: (_v, r) => r.backend_wait_type == null || r.backend_wait_type === 'Lock' ? '' : 'status ok' },
       { key: 'backend_query_secs', label: 'query age', num: true, fmt: fmtSecs },
       { key: 'backend_xact_secs', label: 'transaction age', num: true, fmt: fmtSecs },
-      { key: 'role', label: 'in a chain', fmt: roleCell },
+      { key: 'role', label: 'in a chain', fmt: roleCell, cls: v => v == null || v === '' || v === 'head' || v === 'blocked' ? '' : 'status none' },
       { key: 'blocking_pids', label: 'blocked by', fmt: pids },
       { key: 'head_pid', label: 'chain head', fmt: (v, r) => r.role === 'head' ? '' : runningLink(ctx, actAt, v) },
       { key: 'backend_query', label: 'statement', fmt: (v, r) => sqlCell(v, { heading: `pid ${String(r.backend_pid)}: ${String(r.backend_state ?? '').startsWith('idle') ? 'last statement' : 'statement'}` }) },

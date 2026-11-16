@@ -45,7 +45,7 @@ function bestPractice(rules: Row[]): HTMLElement[] {
   const n = (k: string) => rules.filter(r => statusOfRule(r) === k).length;
   const cols: Col[] = [
     { key: 'setting' },
-    { key: 'value', label: 'value in use', cls: (_v, r) => { const s = statusOfRule(r); return s ? 'status ' + s : ''; },
+    { key: 'value', label: 'value in use', cls: (_v, r) => { const s = statusOfRule(r); return s ? 'status ' + s : 'status none'; },
       fmt: (v, r) => { const c = valueCell(v); return r.is_set === true ? c : el('span', { title: 'the built-in default: nothing sets it' }, c, ' (default)'); } },
     // the value a broken rule asks for; a met rule asks for nothing, so its cell stays empty
     { key: 'suggested', label: 'suggested', fmt: (v, r) => { const s = statusOfRule(r); return s === 'crit' || s === 'warn' ? valueCell(v) : ''; } },
@@ -73,8 +73,9 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
   } catch (e) { box.append(el('h3', {}, 'Settings'), errorBox(e)); return box; }
   box.append(...bestPractice(rules), ...await changeLog(ctx), el('h3', {}, 'Settings'));
   const ruleOf = new Map(rules.map(r => [String(r.setting), r]));
-  // a setting a rule covers carries the rule's colour on its value here too (grey 'not for this platform' stays plain)
-  const valueCls = (_v: unknown, r: Row) => { const s = statusOfRule(ruleOf.get(String(r.name))); return s && s !== 'none' ? 'status ' + s : ''; };
+  // a setting a rule covers carries the rule's colour on its value here too; one no rule judges here (none covers it,
+  // or its rule is not for this platform) is N/A (grey)
+  const valueCls = (v: unknown, r: Row) => { const s = statusOfRule(ruleOf.get(String(r.name))); return s && s !== 'none' ? 'status ' + s : v == null || v === '' ? '' : 'status none'; };
   // the colour never stands alone: the verdict is the value's title and a column of its own (the export carries it)
   const ruleVerdict = (r: Row): string => { const x = ruleOf.get(String(r.name)); return x && statusOfRule(x) !== 'none' ? verdict(x) : ''; };
   const valueFmt = (v: unknown, r: Row): string | Node => { const t = ruleVerdict(r); return t ? el('span', { title: 'best practice: ' + t }, valueCell(v)) : valueCell(v); };

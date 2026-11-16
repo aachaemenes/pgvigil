@@ -15,7 +15,7 @@ export const mssqlFileIOTab = 'mssqlfileio';
 export const mssqlTempdbTab = 'mssqltempdb';
 export const mssqlConnectionsTab = 'mssqlconnections';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '-' : fmtNum(v) + ' %';
 const kb = (v: unknown) => v == null ? '-' : fmtBytes(Number(v) * 1024);
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
@@ -286,12 +286,13 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'database_name', label: 'database' },
     { key: 'file_name', label: 'file' },
     { key: 'type_desc', label: 'type' },
-    { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => row.type_desc !== 'LOG' && Number(v) >= 50 ? 'warn' : '' },
+    { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc === 'LOG' ? 'status none' : Number(v) >= 50 ? 'warn' : 'status ok' },
     { key: 'reads', num: true },
     { key: 'read_bytes', label: 'read', num: true, fmt: fmtBytes },
     // task 177 D14: sp_PressureDetector's KB per read and per write (file stats)
     { key: '_kb_read', label: 'KB per read', num: true, fmt: (_v, row) => Number(row.reads) > 0 ? fmtNum(Math.round(10 * Number(row.read_bytes) / 1024 / Number(row.reads)) / 10) : '' },
-    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => row.type_desc === 'LOG' && Number(v) >= 20 ? 'warn' : '' },
+    { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => v == null ? '' : row.type_desc === 'LOG' ? (Number(v) >= 20 ? 'warn' : 'status ok')
+      : row.type_desc === 'ROWS' ? (Number(v) > 100 ? 'warn' : 'status ok') : 'status none' },   // data files as the check 'slow data file writes' (0124)
     { key: 'writes', num: true },
     { key: 'write_bytes', label: 'written', num: true, fmt: fmtBytes },
     { key: '_kb_write', label: 'KB per write', num: true, fmt: (_v, row) => Number(row.writes) > 0 ? fmtNum(Math.round(10 * Number(row.write_bytes) / 1024 / Number(row.writes)) / 10) : '' },
@@ -308,11 +309,11 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
 const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
   ...(fleet ? [{ key: 'instance', fmt: (v: unknown, row: Row) => el('a', { href: href(ctx, { tab: mssqlTempdbTab, instance: Number(row.instance_id) }) }, String(v ?? '')) }] : []),
   { key: 'data_files', label: '# data files', num: true },
-  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no' },
+  { key: 'insufficient_files', label: 'insufficient files', fmt: v => v == null ? 'not weighed' : v ? badge('yes', 'warn') : 'no', cls: v => v == null ? 'status none' : v ? '' : 'status ok' },
   { key: 'recommended_files', label: 'recommended (minimum)', num: true },
   { key: 'log_files', label: '# log files', num: true },
-  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn') },
-  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn') },
+  { key: 'even_size', label: 'even sized', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
+  { key: 'even_growth', label: 'even growth', fmt: v => v ? 'yes' : badge('no', 'warn'), cls: v => v ? 'status ok' : '' },
   { key: 'total_mb', label: 'total size (MB)', num: true },
   { key: 'log_mb', label: 'log (MB)', num: true },
   { key: 'file_mb', label: 'file size (MB)', num: true },

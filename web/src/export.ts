@@ -37,7 +37,8 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
   jump?: number;   // the page sheet: a link to grid k's own sheet ('{sheet}' in the words is its name)
   fmt?: string;   // the page sheet (E2-15, F2): the number format that shows the value as the page's words ('#,##0.0', a size's unit, the page's date form)
   sheets?: number[];   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
-  grp?: boolean }   // (X7) the page's figure groups its thousands ('1,672.00'): its column's fixed decimals grouped ('#,##0.00')
+  grp?: boolean;   // (X7) the page's figure groups its thousands ('1,672.00'): its column's fixed decimals grouped ('#,##0.00')
+  bare?: Pick<Cell, 'v' | 'kind' | 'stamp' | 'per'> & { text: string } }   // (X15) a status cell's figure without its status word: what a grid sheet writes (gridSection)
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
 export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle'; halign?: 'right' | 'center' }   // valign: as the page aligns the cell (a cell with a look and none: top)
@@ -316,6 +317,14 @@ export function readGrid(table: HTMLTableElement, all = false): Pick<Section, 'c
     // a text whose words the screen collapsed ('line1\nline2' shows 'line1 line2'): its own value kept beside them (review-15 gm3 B4)
     const own = typeof raw === 'string' && t !== '' && raw !== t && norm(raw) === t ? { raw } : {};
     const c: Cell = { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : yesNo(t) ?? dayCell(t) ?? { v: t, kind: 'text' as Kind }), ...own, status: statusOf(td), link: linkOf(td), text: t };
+    // (X15) a status cell that writes its status word after its figure ('463.71 warning', '92 % critical'; the screen keeps
+    // the word for a reader who cannot tell the colours apart): the grid sheet writes the figure, its status the fill (an
+    // activity mark ' *' goes with the word, or alone on a cell with no word: '0 *'); the CSV, which has no fill, keeps
+    // the page's words
+    if (c.status && typeof c.v === 'string' && raw !== undefined) {
+      const fig = /^(.*?)(?: \*(?: (?:ok|warning|critical))?| (?:ok|warning|critical))$/.exec(t);
+      if (fig) { const n = typed(raw, fig[1]); if (typeof n.v === 'number') c.bare = { ...n, text: fig[1] }; }
+    }
     // a status cell's model holds its level (the fleet Summary's 0 / 1 / 2), not its figure: words that are a bare number
     // are that number ('3' collection errors; on DBA Dash 4.25.0 '3' collections at warning or critical), as DBA Dash
     // writes its 'DBA Dash Errors (24hrs)' / 'Collection Health'
@@ -709,7 +718,7 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
   };
   // (X13) a grid sheet's number under its column's decimals as the page shows them: '0', '0.0' .. (a share: Excel's '0%')
   const fmtFor = (c: Cell) => c.fmt && typeof c.v === 'number' ? st.code(c.fmt)
-    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? 9 : st.code((c.grp ? '#,##' : '') + (c.dp ? '0.' + '0'.repeat(c.dp) : '0'))) : fmtOf(c);
+    : c.dp !== undefined && typeof c.v === 'number' ? (c.kind === 'pct' ? ([9, 167, 10][c.dp] ?? 10) : st.code((c.grp ? '#,##' : '') + (c.dp ? '0.' + '0'.repeat(c.dp) : '0'))) : fmtOf(c);
   const styleOf = (c: Cell) => c.look ? st.look(fmtFor(c), c.look) : st.id(fmtFor(c), c.status, !!c.head, c.link);
   // a row's height: as tall as its largest font and, for a cell that wraps (a header the page wraps, a long text the page
   // shows on several lines, a card's line), as its lines at the column's width (each line measured as the width rule
@@ -779,7 +788,10 @@ const sizeUnit = (n: number) => { let i = 0; for (let a = Math.abs(n); a >= 1024
 const dotless = (c: Cell): string | number => typeof c.v === 'string' && c.runs?.length === 2 && c.v === c.runs[0].text + c.runs[1].text ? c.runs[1].text : c.v;
 // (X7) a decimal read straight from the page's figure keeps whether that figure groups its thousands (a size, a duration
 // or a rate converted to its column's unit later is a figure of another unit: never grouped)
-const plainCell = (c: Cell): Cell => ({ v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}), ...((c.kind === 'dec' || c.kind === 'int') && typeof c.v === 'number' && grouped(c.text) ? { grp: true } : {}) });
+const plainCell = (cell: Cell): Cell => {
+  const c: Cell = cell.bare ? { ...cell, ...cell.bare } : cell;   // (X15) the figure of a status cell that writes its word after it
+  return { v: dotless(c), kind: c.kind, text: c.text, ...(c.status ? { status: c.status } : c.link ? { link: true } : {}), ...(c.stamp !== undefined ? { stamp: c.stamp } : {}), ...(c.per ? { per: c.per } : {}), ...((c.kind === 'dec' || c.kind === 'int') && typeof c.v === 'number' && grouped(c.text) ? { grp: true } : {}) };
+};
 // gridSection: a section as its grid sheet holds it. X7: a size column in ONE unit - its largest value's, as the page
 // writes it - every size cell converted and unrounded, the unit in the header ('size (GB)'); a millisecond column the same
 // with its time unit ('took (s)'). X8: a seconds column is numbers - in its one unit, or in seconds when the page mixes
@@ -820,6 +832,21 @@ export function gridSection(s: Section): Section {
   };
   for (let j = 0; j < ncol; j++) {
     const nums = rows.map(r => r[j]).filter((c): c is Cell => !!c && typeof c.v === 'number');
+    // (X14) a percent column the page writes as bare figures (its header names the percent: 'free %', 'signal wait %'):
+    // the shares Excel's percent format draws, as DBA Dash writes every '%' column (13.4 -> 0.134 under '0.0%'), under
+    // the decimals the page shows (0, 1, 2: '0%', '0.0%', '0.00%')
+    // a column that mixes them with shares already typed ('12 %' badges beside a bare '0': tempdb's max growth %): one
+    // format for the column, the most decimals any of its figures shows
+    if (j < cols.length && cols[j].includes('%') && nums.some(c => c.kind === 'int' || c.kind === 'dec')) {
+      const k = Math.min(Math.max(0, ...nums.filter(c => ['int', 'dec', 'pct'].includes(c.kind)).map(c => decimalsOf(c.text, c.kind === 'pct' ? undefined : c.v) ?? 0)), 2);
+      for (const c of nums) if (c.kind === 'int' || c.kind === 'dec') { c.v = (c.v as number) / 100; c.kind = 'pct'; c.dp = k; } else if (c.kind === 'pct') c.dp = k;
+    }
+    // (X8) a date column's cell with no date in it ('none in the last 7 days', 'never'): empty, as DBA Dash leaves a date
+    // with no value; the page keeps its words. A date with a note in brackets after it (an availability group's backup
+    // '<time> (on SQL02)', a password's '<time> (expired)', a first read '(inside the range)') keeps the page's words:
+    // the date and its note are both the cell's
+    const dated = (t: string) => { const m = /^(.+?) \([^()]+\)$/.exec(t); return !!m && !!(shownTime(m[1]) ?? dayCell(m[1])); };
+    if (nums.some(c => c.kind === 'date' || c.kind === 'day')) for (const r of rows) { const c = r[j]; if (c && typeof c.v === 'string' && c.v !== '' && !dated(c.v)) { c.v = ''; c.kind = 'text'; } }
     const largest = (k: Kind, per = false) => nums.filter(c => c.kind === k && !!c.per === per).reduce<Cell | undefined>((a, c) => !a || Math.abs(c.v as number) > Math.abs(a.v as number) ? c : a, undefined);
     // a size per day: the unit the column's figures show most (zero left out of the count; a tie: the largest's)
     const rate = nums.filter(c => c.kind === 'bytes' && c.per);

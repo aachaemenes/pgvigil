@@ -199,16 +199,16 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
 const stepCols: Col[] = [
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' },
   { key: 'runs', num: true, fmt: fmtNum }, { key: 'succeeded', num: true, fmt: fmtNum },
-  { key: 'failed', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : fmtNum(v) },
+  { key: 'failed', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : fmtNum(v), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
   { key: 'ignored', label: 'failed, ignored', num: true, fmt: fmtNum }, { key: 'aborted', num: true, fmt: fmtNum },
   { key: 'avg_secs', label: 'average', num: true, fmt: fmtSecs }, { key: 'max_secs', label: 'longest', num: true, fmt: fmtSecs },
-  { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' ? badge('aborted', 'warn') : text(v) },
+  { key: 'last_status', label: 'last', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' || v === 'ignored' ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' || v === 'ignored' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
   { key: 'last_start', label: 'last run', fmt: fmtTime },
 ];
 const stepRunCols: Col[] = [
   { key: 'start_time', label: 'start', fmt: fmtTime }, { key: 'run_id', label: 'run', num: true },
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' },
-  { key: 'status', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' || v === 'ignored' ? badge(text(v), 'warn') : text(v) },
+  { key: 'status', fmt: v => v === 'failed' ? badge('failed', 'crit') : v === 'aborted' || v === 'ignored' ? badge(text(v), 'warn') : text(v), cls: v => v == null || v === '' || v === 'failed' || v === 'aborted' || v === 'ignored' ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
   { key: 'result', num: true }, { key: 'duration_secs', label: 'took', num: true, fmt: fmtSecs },
   { key: 'output', wide: true, fmt: v => text(v).replace(/\s+/g, ' ').slice(0, 300) },
 ];
@@ -304,7 +304,7 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
     const cols: Col[] = [
       { key: 'job_name', label: 'job' }, { key: 'scheduler' }, { key: 'run_id', label: 'run', num: true },
       { key: 'start_time', label: 'started', fmt: fmtTime },
-      { key: 'running_secs', label: 'running for', num: true, fmt: (v, r) => r.over_average === true ? badge(fmtSecs(v), 'warn') : fmtSecs(v) },
+      { key: 'running_secs', label: 'running for', num: true, fmt: (v, r) => r.over_average === true ? badge(fmtSecs(v), 'warn') : fmtSecs(v), cls: (v, r) => v == null || r.over_average === true ? '' : r.over_average === false ? 'status ok' : 'status none' },
       { key: 'avg_secs', label: 'average', num: true, fmt: (v, r) => v == null ? 'no successful run in 30 days' : `${fmtSecs(v)} (${fmtNum(r.ok_runs)} runs)` },
       {
         key: 'estimated_end', label: 'estimated end', fmt: (v, r) => {
@@ -312,6 +312,8 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
           const shown = Date.parse(String(v)) < Date.now() ? `${fmtTime(v)} (passed)` : fmtTime(v);
           return r.over_average === true ? badge(shown, 'warn') : shown;
         },
+        // as 'running for': past its average a warning, within it OK, no average (or no estimate) N/A
+        cls: (v, r) => r.over_average === true ? '' : v != null && r.over_average === false ? 'status ok' : 'status none',
       },
       { key: 'current_step', label: 'current step', fmt: (v, r) => v == null ? (r.scheduler === 'pgagent' ? '-' : 'no steps') : `${text(v)} (since ${fmtTime(r.current_step_start)})` },
       { key: 'job_pid', label: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },

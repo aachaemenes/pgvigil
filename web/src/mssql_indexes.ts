@@ -11,7 +11,7 @@ import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid } from './ui'
 export const mssqlIndexesTab = 'mssqlindexes';
 
 type Parts = Record<'state' | 'databases' | 'indexes' | 'verdicts' | 'missing' | 'statsdbs' | 'stats' | 'findings', Table | null>;
-const sev = (v: unknown) => v ? badge(String(v), v === 'warning' ? 'warn' : 'info') : '';
+const sev = (v: unknown) => v ? badge(String(v), v === 'warning' ? 'warn' : 'none') : '';
 const yes = (v: unknown) => v ? 'yes' : '';
 // the review text: shown whole in a code block with a copy button; never run from here
 const script = (v: unknown) => {
@@ -80,7 +80,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       grid(missing, [
         { key: 'database' }, { key: 'table_ref', label: 'table' }, { key: 'equality_columns', label: 'equality' }, { key: 'inequality_columns', label: 'inequality' },
         { key: 'included_columns', label: 'included' }, { key: 'user_seeks', label: 'seeks', num: true }, { key: 'user_scans', label: 'scans', num: true },
-        { key: 'avg_impact', label: 'impact %', num: true }, { key: 'benefit_per_day', label: 'benefit / day', num: true, cls: v => Number(v) >= 100000 ? 'warn' : '' },
+        { key: 'avg_impact', label: 'impact %', num: true }, { key: 'benefit_per_day', label: 'benefit / day', num: true, cls: v => v == null || v === '' ? '' : Number(v) >= 100000 ? 'warn' : 'status ok' },
         { key: 'last_request', label: 'last asked', fmt: fmtTime }], 'No missing-index request.'));
     out.push(el('h3', {}, 'Statistics'), grid(rowsOf(d.statsdbs), [
       { key: 'database' }, { key: 'statistics', num: true }, { key: 'statistics_with_props', label: 'with properties', num: true },
@@ -94,7 +94,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       'No statistic is flagged.'));
     const cols: Col[] = [
       { key: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' }, { key: 'index_name', label: 'index' },
-      { key: 'index_type', label: 'type', fmt: v => String(v ?? '').toLowerCase() }, { key: 'rule', fmt: (v, r) => v ? badge(String(v), r.severity === 'warning' ? 'warn' : 'info') : '' },
+      { key: 'index_type', label: 'type', fmt: v => String(v ?? '').toLowerCase() }, { key: 'rule', fmt: (v, r) => v ? badge(String(v), r.severity === 'warning' ? 'warn' : 'none') : '' },
       { key: 'keys' }, { key: 'includes' }, { key: 'filter_definition', label: 'filter' },
       { key: 'is_unique', label: 'unique', fmt: yes }, { key: 'is_primary_key', label: 'PK', fmt: yes }, { key: 'ignore_dup_key', label: 'IGNORE_DUP_KEY', fmt: yes },
       { key: 'size_mb', label: 'size (MB)', num: true }, { key: 'row_count', label: 'rows', num: true },

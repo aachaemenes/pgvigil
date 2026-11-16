@@ -26,7 +26,6 @@ const statusCls = (v: unknown) => v === 'never' ? 'crit' : v === 'late' ? 'warn'
 const critIfFull = (v: unknown) => v === 'late' ? 'crit' : statusCls(v);
 const follows = (status: string, full = false) => (v: unknown, r: Row) => v == null || v === '' ? '' : full ? critIfFull(r[status]) : statusCls(r[status]);
 const hours = (v: unknown) => v == null ? '' : Number(v) >= 48 ? fmtNum(Math.round(Number(v) / 2.4) / 10) + ' d' : fmtNum(Math.round(Number(v) * 10) / 10) + ' h';
-const minutes = (v: unknown) => v == null ? '' : fmtSecs(Number(v) * 60);
 // when: the time, and on an availability group the instance whose msdb holds the backup
 const when = (from: string) => (v: unknown, r: Row) => !v ? '' : fmtTime(v) + (r.ag_name && r[from] ? ` (on ${String(r[from])})` : '');
 
@@ -48,16 +47,18 @@ const cols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'recovery_model', label: 'recovery model', fmt: words },
   { key: 'ag_name', label: 'availability group', fmt: (v, r) => !v ? '' : `${String(v)} (${String(r.replicas_monitored ?? 0)} of ${String(r.replicas_total ?? 0)} replicas monitored)`,
-    cls: (_, r) => r.replicas_unseen === true ? 'warn' : '' },
+    cls: (v, r) => !v ? '' : r.replicas_unseen === true ? 'warn' : 'ok' },
   { key: 'not_judged', label: 'judged', fmt: v => v ? `no: ${String(v)}` : 'yes' },
   { key: 'full_status', label: 'full', cls: critIfFull },
   { key: 'full_at', label: 'last full', fmt: when('full_from'), cls: follows('full_status', true) },
-  { key: 'full_age_hours', label: 'full age', num: true, fmt: hours, cls: follows('full_status', true) },
+  // the ages as numbers under their unit, on this tab and the fleet's (a unit in a cell is text in the export, X16; a
+  // fmtSecs '1m 9s' under a unit header too, X15): hours to two places, whole minutes
+  { key: 'full_age_hours', label: 'full age (hours)', num: true, fmt: v => v == null ? '' : fmtNum(v), cls: follows('full_status', true) },
   { key: 'diff_status', label: 'differential', cls: statusCls },
   { key: 'diff_at', label: 'last differential', fmt: when('diff_from'), cls: follows('diff_status') },
   { key: 'log_status', label: 'log', cls: statusCls },
   { key: 'log_at', label: 'last log', fmt: when('log_from'), cls: follows('log_status') },
-  { key: 'log_age_minutes', label: 'log age', num: true, fmt: minutes, cls: follows('log_status') },
+  { key: 'log_age_minutes', label: 'log age (minutes)', num: true, fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))), cls: follows('log_status') },
   { key: 'nul_at', label: 'backup to NUL', fmt: (v, r) => !v ? '' : `${String(r.nul_type ?? '')} ${fmtTime(v)}`, cls: v => v ? 'warn' : '' },
   // DBA Dash's Is Full / Diff / Log Damaged (Detail 15-17): of the newest set of the type (task 301's read)
   ...(['full', 'diff', 'log'] as const).map((t): Col => ({ key: `${t}_damaged`, label: `${typeWord[t]} damaged`, fmt: yesNo, cls: v => v === true ? 'crit' : '' })),
@@ -524,7 +525,8 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
 
 type FleetParts = 'by_instance' | 'databases' | 'findings';
 const n0 = (v: unknown) => v == null ? 0 : Number(v);
-const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => bad && n0(v) > 0 ? bad : '' });
+// a count judged by its rule (bad over 0) is OK at 0: every cell of a status column carries a status, as DBA Dash's grids do
+const count = (bad = '') => ({ num: true, fmt: (v: unknown) => v == null ? '' : fmtNum(v), cls: (v: unknown) => !bad || v == null ? '' : n0(v) > 0 ? bad : 'ok' });
 // a rate under a header that names its unit ('full MB/s'): the cell is the number, so the export keeps a number (X7)
 const rate = (v: unknown) => v == null ? '' : fmtNum(v);
 // where the thresholds are set, for the Configure control that cannot act here
@@ -533,7 +535,7 @@ const configureWhy = 'Backup thresholds are not set from this page: they are eac
 
 const byInstanceCols = (ctx: Ctx): Col[] => [
   { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
-  { key: 'findings', fmt: (v, r) => !n0(v) ? '' : badge(`${fmtNum(v)} ${String(r.worst)}`, r.worst === 'critical' ? 'crit' : r.worst === 'warning' ? 'warn' : '') },
+  { key: 'findings', fmt: (v, r) => !n0(v) ? '' : badge(`${fmtNum(v)} ${String(r.worst)}`, r.worst === 'critical' ? 'crit' : r.worst === 'warning' ? 'warn' : 'none') },
   { key: 'databases', ...count() },
   { key: 'full_ok', label: 'full ok', ...count() }, { key: 'full_late', label: 'full late', ...count('crit') },
   { key: 'full_never', label: 'full never', ...count('crit') }, { key: 'full_not_judged', label: 'full not judged', ...count() },
@@ -562,7 +564,7 @@ const byInstanceCols = (ctx: Ctx): Col[] => [
   // no read: the tab's own line; a collection that last failed says its status and note beside its last read
   { key: 'snapshot_at', label: 'read', fmt: (v, r) => !v ? (r.status ? `${String(r.status)}: ${String(r.note ?? '')}` : 'mssql_backups has not run on this server yet')
     : fmtTime(v) + (r.status && r.status !== 'ok' ? ` (last run ${String(r.status)}: ${String(r.note ?? '')})` : ''),
-    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : '' },
+    cls: (v, r) => !v || (r.status && r.status !== 'ok') ? 'warn' : 'ok' },
 ];
 
 export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
@@ -609,16 +611,10 @@ export async function mssqlBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
     if (findings.length) sec.append(el('h3', {}, 'SQL Server backup findings'),
       el('div', { id: 'mssql-backups-fleet-findings' }, grid(findings, [{ key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) }, ...mssqlFindingCols])));
 
-    // the ages as numbers under their unit (the tab writes '16.3 h' / '2.4 d' and '1h 5m'; a unit in a cell is text in
-    // the export, X7): hours to two places, whole minutes; their colours as the tab's
-    const ageNums: Record<string, Partial<Col>> = {
-      full_age_hours: { label: 'full age (hours)', fmt: v => v == null ? '' : fmtNum(v) },
-      log_age_minutes: { label: 'log age (minutes)', fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) },
-    };
     const fleetCols: Col[] = [
       { key: 'instance', fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', {}, Number(r.instance_id)) }, String(v ?? '')) },
       { ...cols[0], fmt: (v, r) => el('a', { href: hrefWith(ctx, 'mssqlbackups', { db: String(v ?? '') }, Number(r.instance_id)) }, String(v ?? '')) },
-      ...cols.slice(1).map(c => ageNums[c.key] ? { ...c, ...ageNums[c.key] } : c),
+      ...cols.slice(1),
     ];
     const total = sum('databases');
     const pick = el('select', { id: 'mssql-backups-fleet-filter' }, el('option', { value: 'problems' }, 'Problems'), el('option', { value: 'all' }, 'All')) as HTMLSelectElement;

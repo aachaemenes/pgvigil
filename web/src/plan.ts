@@ -45,7 +45,7 @@ function hashParams(): URLSearchParams {
   return new URLSearchParams(location.hash.split('?')[1] ?? '');
 }
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const msTxt = (v: unknown) => v == null || v === '' ? '' : Number(v) >= 1000 ? fmtNum(Number(v) / 1000) + ' s' : fmtNum(v) + ' ms';
 const clip = (v: unknown, n = 200) => { const s = v == null ? '' : String(v).replace(/\s+/g, ' '); return s.length > n ? s.slice(0, n) + '...' : s; };
 const sources: Record<string, string> = { pg_store_plans: 'pg_store_plans', auto_explain: 'auto_explain (log)', explain: 'EXPLAIN', explain_analyze: 'EXPLAIN ANALYZE' };
@@ -73,7 +73,7 @@ export async function plansView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'calls', num: true },
     { key: 'total_ms', label: 'total time', num: true, fmt: msTxt },
     { key: 'analyzed', label: 'actual', fmt: v => v ? 'yes' : 'estimate' },
-    { key: 'hits', label: 'rule hits', num: true, fmt: (v, r) => Number(v) > 0 ? badge(String(v), 'warn') : el('span', { class: 'meta', title: String(r.plan_note ?? '') }, '0') },
+    { key: 'hits', label: 'rule hits', num: true, fmt: (v, r) => Number(v) > 0 ? badge(String(v), 'warn') : el('span', { class: 'meta', title: String(r.plan_note ?? '') }, '0'), cls: v => Number(v) > 0 ? '' : 'status ok' },
     { key: 'rules', wide: true },
     { key: 'query', label: 'statement', wide: true, fmt: v => clip(v) },
   ];

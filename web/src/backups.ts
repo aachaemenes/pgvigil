@@ -11,7 +11,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const ageTxt = (v: unknown) => v == null ? '' : fmtSecs(v) + ' ago';
 const snapAge = (v: unknown) => v == null ? '' : Number(v) > 86400 ? badge(ageTxt(v), 'warn') : ageTxt(v);
@@ -130,8 +130,8 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
       { key: 'platform' },
       { key: 'worst', label: 'findings', fmt: (v, r) => v == null ? '' : badge(`${fmtNum(r.findings)} ${String(v)}`, v === 'critical' ? 'crit' : 'warn') },
-      { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; } },
-      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
+      { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; }, cls: (_v, r) => archiverState(r)[1] ? '' : 'status none' },
+      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] || 'status none' },
       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
       { key: 'failed_count', label: 'failed', num: true },
       { key: 'retention_days', label: 'retention', num: true, fmt: (v, r) => heldOn(r) ?? retTxt(v),

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """xlsx-check.py - the grid export's file rules, read from the .xlsx as a zip of XML (no package).
 
-  python3 -I scripts/xlsx-check.py rules [--page PAGE.json] FILE.xlsx [FILE.xlsx ...]
-      X0-X13 on each workbook: one 'PASS Xn <file>' or 'FAIL Xn <file>: <count> - <first problems>' line per rule, then
+  python3 -I scripts/xlsx-check.py rules [--page PAGE.json] [--measured MAP.json] FILE.xlsx [FILE.xlsx ...]
+      X0-X18 on each workbook: one 'PASS Xn <file>' or 'FAIL Xn <file>: <count> - <first problems>' line per rule, then
       '<file>: PASS' or '<file>: FAIL Xa,Xb'. Exit 1 when any rule fails. X13 needs the page: PAGE.json maps a file's
       name to {sheet: {column header: the most decimals the page shows in that column}}; a file it does not name (or no
-      --page) gets 'SKIP X13 <file>: ...' and no verdict on X13.
+      --page) gets 'SKIP X13 <file>: ...' and no verdict on X13. X17 needs the page too: MAP.json maps a file's name to
+      {sheet: {measured column header: source}}; no entry = 'SKIP X17 <file>: ...'.
   python3 -I scripts/xlsx-check.py same REFERENCE.xlsx FILE.xlsx
       the reference (DBA Dash's file of a grid) against pgvigil's file of the same grid: one 'SAME <property>' or
       'DIFF <property>: <reference> | <file>' line per property; the sheets paired by name (then by order) on 'PAIR' lines,
@@ -55,6 +56,23 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
       alone. A sheet or a column the page names that the file lacks fails. DBA Dash stores a value
       rounded to what its grid shows (1.6 under General), pgvigil keeps the value exact under the page's decimals
       ('0.0': the cell reads 1.6, the formula bar 1.6328125) - both pass; a file alone cannot say what its page showed
+  X14 a column whose header names a percent ('%') holds fractions under '0%' / '0.0%' / '0.00%' (13.4 % is 0.134): no
+      percent number under another format. A share's size is the page's (a query's +4,900 % is 49, a run at 15 times its
+      average 15.0): proof-export.sh holds it against the screen's figure
+  X15 a column whose header ends with its unit in brackets ('(ms/s)', '(s)', '(GB)', a unit's name) holds no text that
+      starts with a number ('463.71 warning', '1m 9s'): the number is the cell, its unit the header, its status the fill;
+      a bracket of other words ('held by session (mode)': '62 (X)') names no unit
+  X16 no text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'): a number with its unit in
+      the header; an age in words ('1 day', '41 minutes, 16 seconds') is prose, as DBA Dash's Summary writes it; a column
+      that mixes a size and a percent ('64 MB' beside '10 %', a file's growth) has no one unit and passes
+  X17 (with the page's map) a mapped column's cell carries its row's status, as DBA Dash colours the measured cell: the
+      fill of the row's status column (a header), any status or N/A ('*'), or N/A ('N/A'); an empty cell is not judged
+  X18 a column with a status fill (OK, Warning, Critical, Acknowledged) on any row has a status or N/A on every cell that
+      holds a value: no plain cell beside coloured ones (DBA Dash paints N/A where no threshold applies)
+  X8 also: a date column (a number cell under the date or day format) holds no words: a date with no value is an empty
+      cell; a date with a note in brackets after it ('<time> (on SQL02)', an availability group's replica) is the page's
+      words and passes. An Item | Value sheet's Value column is typed by its own content and is not judged by X8's date-column part,
+      X15 or X16.
 Not checkable from a file (proof-export.sh holds them): the page order of a page's sheets, a grid's own export holding
 that grid alone, a chart's series as its sheet, a number being the one the grid shows.
 """
@@ -94,12 +112,27 @@ PAIRS = {
 # a plain cell: no fill, the default text (no colour of its own, Excel's automatic black, theme 1 = Text 1, index 8 / 64)
 PLAIN_TEXT = {None, 'FF000000', 'auto', 'theme:1', 'indexed:8', 'indexed:64'}
 MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71
-RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12', 'X13']
+RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12', 'X13', 'X14', 'X15', 'X16', 'X17', 'X18']
+# (X15) a header that names its unit in brackets at its end: '(ms/s)', '(s)', '(GB)', '(hours)', '(MB/day)'; a bracket of
+# other words ('(mode)', '(server)', '(estimate)') names no unit
+UNIT_HEAD = re.compile(r'\((?:ms|s|secs?|seconds|min|mins|minutes|h|hrs?|hours|d|days|B|KB|MB|GB|TB|PB|%)(?:/(?:s|sec|min|h|hr|day|d))?\)\s*$', re.I)
+NUM_START = re.compile(r'\s*[-+]?\d')
+# (X16) a whole text cell that is one number and a unit symbol ('0 h', '12 min', '1.5 GB', '13.4 %'); words ('1 day') are prose
+UNIT_TEXT = re.compile(r'\s*[-+]?\d[\d,]*(?:\.\d+)?\s?(?:ms|s|sec|min|h|hr|d|B|KB|MB|GB|TB|%)\s*', re.I)
+def unit_family(t):
+    # (X16) the family of a number-and-unit text's unit: a size, a percent or a time
+    u = re.sub(r'^[\s\d.,+-]+', '', t).strip().lower()
+    return 'pct' if u == '%' else 'size' if u in ('b', 'kb', 'mb', 'gb', 'tb') else 'time'
+# (X17, X18) the status fills (OK, Critical, Warning, Acknowledged pgvigil / DBA Dash) and N/A
+STATUS_FILLS = {'FF006638': 'OK', 'FFAB1F26': 'Critical', 'FFE49325': 'Warning', 'FF1B6AA3': 'Acknowledged', 'FF217CBB': 'Acknowledged'}
+NA_FILL = 'FFE0E1E9'
 # a whole cell that reads as one date-time or one day (a message that starts with a time, or a range of two, is words)
 SEP_ = r'(?:[/-]|\.\s?)'   # a day's separator: '/', '-', '.' or '. ' (cs-CZ, hu-HU, hr-HR)
 DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?'   # ISO
                        r'|\d{1,4}' + SEP_ + r'\d{1,2}' + SEP_ + r'\d{1,4}\.?,?(?:\s+|T)\d{1,2}[:h.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?'   # a locale date-time
                        r'|\d{1,2}' + SEP_ + r'\d{1,2}' + SEP_ + r'\d{4}\.?|\d{4}/\d{1,2}/\d{1,2})\s*$')                     # a locale day
+# (X8) a date followed by a note in brackets ('<time> (on SQL02)', '<time> (expired)'): a date column may hold it as words
+DATED_NOTE = re.compile(r'\s*(.+?) \([^()]+\)\s*')
 BOOL_TEXT = re.compile(r'\s*(true|false|yes|no)\s*', re.I)
 # a read time in a sheet name: a day with a 4-digit year and a clock after it (its ':' refused, a space or a dot), the
 # export's compact stamp, a clock of hours, minutes and seconds; not an address, a version or a day alone (a job's own words)
@@ -384,8 +417,9 @@ def overlap(r1, r2):
     return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
 
 
-def check(book, page=None):
-    """the rules' problems on one workbook; page: {sheet: {column header: decimals}} for X13 (None: X13 not judged)"""
+def check(book, page=None, measured=None):
+    """the rules' problems on one workbook; page: {sheet: {column header: decimals}} for X13 (None: X13 not judged);
+    measured: {sheet: {column header: source}} for X17 (None: X17 not judged)"""
     out = {r: [] for r in RULES}
     grids = [s for s in book.sheets if s['grid']]
     # X1
@@ -544,6 +578,44 @@ def check(book, page=None):
                 out['X10'].append("'%s' column %s width %.2f over 150" % (nm, col_letters(j), w))
             if j in widest and w + 1e-9 < widest[j]:
                 out['X10'].append("'%s' column %s width %.2f under its widest number (%.1f)" % (nm, col_letters(j), w, widest[j]))
+        # X14 / X15 / X16 / X18 and X8's date columns, per column
+        hdr = {c['col']: str(c['v'] if c['v'] is not None else '').strip() for c in s['cells'] if c['row'] == 1}
+        item_value = [hdr.get(1), hdr.get(2)] == ['Item', 'Value']
+        by_col = {}
+        for c in s['cells']:
+            if c['row'] > 1:
+                by_col.setdefault(c['col'], []).append(c)
+        for j, cells in sorted(by_col.items()):
+            h = hdr.get(j, '')
+            free_value = item_value and h == 'Value'   # an Item | Value sheet's Value is typed by its own content
+            texts = [c for c in cells if c['t'] in ('s', 'inlineStr', 'str') and str(c['v'] or '').strip()]
+            nums = [c for c in cells if c['t'] == 'n' and c['v'] not in (None, '')]
+            if '%' in h:
+                for c in nums:
+                    fmt = c['xf']['fmt'] or 'General'
+                    if not PERCENT.fullmatch(fmt):
+                        out['X14'].append("'%s'!%s '%s' %s under %s: not a fraction under a percent format" % (nm, c['ref'], h, c['v'], fmt))
+            if UNIT_HEAD.search(h) and not free_value:
+                for c in texts:
+                    if NUM_START.match(c['v']):
+                        out['X15'].append("'%s'!%s '%s' text '%s': the number of a unit column as text" % (nm, c['ref'], h, c['v'][:40]))
+            if not free_value:
+                hits = [c for c in texts if UNIT_TEXT.fullmatch(c['v'])]
+                # a column that mixes a size and a percent ('64 MB' beside '10 %': a file's growth) has no one unit to head
+                # it: the page's words, as export.ts keeps them (two times, '12.5 h' beside '2.1 d', still have one)
+                if {unit_family(c['v']) for c in hits} == {'size', 'pct'}:
+                    hits = []
+                for c in hits:
+                    out['X16'].append("'%s'!%s '%s' text '%s': a number and its unit as text" % (nm, c['ref'], h, c['v']))
+            if any(c['xf']['fill'] in STATUS_FILLS for c in cells):
+                for c in cells:
+                    if str(c['v'] if c['v'] is not None else '').strip() and c['xf']['fill'] not in STATUS_FILLS and c['xf']['fill'] != NA_FILL:
+                        out['X18'].append("'%s'!%s '%s' %s without a status in a status column" % (nm, c['ref'], h, str(c['v'])[:20]))
+            if not free_value and any((c['xf']['fmt'] or '') in (DATE_FMT, DAY_FMT) for c in nums):
+                for c in texts:
+                    if DATED_NOTE.fullmatch(c['v']) and DATE_TEXT.match(DATED_NOTE.fullmatch(c['v']).group(1)):
+                        continue   # a date with its note in brackets ('<time> (on SQL02)'): the page's words, the date in them
+                    out['X8'].append("'%s'!%s '%s' words in a date column '%s'" % (nm, c['ref'], h, c['v'][:40]))
     # X13 the decimals the page shows, per column
     book.judged = None
     if page is not None:
@@ -576,6 +648,48 @@ def check(book, page=None):
                                       % (sn, c['ref'], h, k, c['xf']['fmt'], cols[h]))
             book.judged[1] += len(seen)
             book.judged[2] += sum(1 for k in seen.values() if k >= 1)
+    # X17 (with the proof's map) the measured cell carries its row's status: source = a column header (the same fill as
+    # that column's cell on the row, when it carries a status), '*' (any status or N/A) or 'N/A'
+    book.measured_judged = None
+    if measured is not None:
+        book.measured_judged = [0, 0]   # cells judged, columns judged
+        by_name = {s['name']: s for s in grids}
+        for sn, want in measured.items():
+            s = by_name.get(sn)
+            if s is None:
+                out['X17'].append("the map names sheet '%s', not a grid sheet of the file" % sn)
+                continue
+            col_of = {str(c['v'] if c['v'] is not None else '').strip(): c['col'] for c in s['cells'] if c['row'] == 1}
+            rows = {}
+            for c in s['cells']:
+                if c['row'] > 1:
+                    rows.setdefault(c['row'], {})[c['col']] = c
+            for h, src in want.items():
+                if h not in col_of:
+                    out['X17'].append("the map names column '%s', not on '%s'" % (h, sn))
+                    continue
+                if src not in ('*', 'N/A') and src not in col_of:
+                    out['X17'].append("the map's source column '%s' is not on '%s'" % (src, sn))
+                    continue
+                book.measured_judged[1] += 1
+                for rn, row in sorted(rows.items()):
+                    c = row.get(col_of[h])
+                    if c is None or not str(c['v'] if c['v'] is not None else '').strip():
+                        continue
+                    got = c['xf']['fill']
+                    if src == 'N/A':
+                        ok, wanted = got == NA_FILL, 'N/A'
+                    elif src == '*':
+                        ok, wanted = got in STATUS_FILLS or got == NA_FILL, 'a status or N/A'
+                    else:
+                        sc = row.get(col_of[src])
+                        sf = sc['xf']['fill'] if sc is not None else None
+                        if sf not in STATUS_FILLS and sf != NA_FILL:
+                            continue   # the source carries no status on this row
+                        ok, wanted = got == sf, "'%s''s %s" % (src, STATUS_FILLS.get(sf, 'N/A'))
+                    book.measured_judged[0] += 1
+                    if not ok:
+                        out['X17'].append("'%s'!%s '%s' fill %s, want %s" % (sn, c['ref'], h, STATUS_FILLS.get(got, 'N/A' if got == NA_FILL else (got or 'none')), wanted))
     for n in book.filter_names:
         out['X5'].append('defined name %s' % n)
     # X5 across the workbook: table ids and names unique (names ignoring case), a name Excel accepts
@@ -597,13 +711,14 @@ def check(book, page=None):
     return out
 
 
-def rules(paths, pages=None):
+def rules(paths, pages=None, measures=None):
     bad = 0
     for p in paths:
         page = (pages or {}).get(posixpath.basename(p))
+        measured = (measures or {}).get(posixpath.basename(p))
         try:
             book = Book(p)
-            res = check(book, page)
+            res = check(book, page, measured)
         except Exception as e:   # a file the check cannot read fails every rule
             for r in RULES:
                 print('FAIL %s %s: unreadable (%s: %s)' % (r, p, type(e).__name__, e))
@@ -613,6 +728,12 @@ def rules(paths, pages=None):
         failed = []
         for r in RULES:
             probs = res[r]
+            if r == 'X17' and measured is None:
+                print('SKIP X17 %s: no measured-cell map given (which cell carries a row\'s status is the page\'s)' % p)
+                continue
+            if r == 'X17' and not probs:
+                print('PASS X17 %s: %d cells in %d columns judged' % (p, book.measured_judged[0], book.measured_judged[1]))
+                continue
             if r == 'X13' and page is None:
                 print('SKIP X13 %s: no page given (the decimals its page shows are not in the file)' % p)
                 continue
@@ -735,17 +856,18 @@ def same(ref_path, file_path):
 
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == 'rules':
-        args, pages = sys.argv[2:], None
-        if '--page' in args:
-            i = args.index('--page')
-            if i + 1 >= len(args):
-                print('--page needs a file', file=sys.stderr)
-                return 2
-            import json
-            with open(args[i + 1], encoding='utf-8') as f:
-                pages = json.load(f)
-            args = args[:i] + args[i + 2:]
-        return rules(args, pages) if args else 2
+        args, maps = sys.argv[2:], {'--page': None, '--measured': None}
+        for flag in maps:
+            if flag in args:
+                i = args.index(flag)
+                if i + 1 >= len(args):
+                    print('%s needs a file' % flag, file=sys.stderr)
+                    return 2
+                import json
+                with open(args[i + 1], encoding='utf-8') as f:
+                    maps[flag] = json.load(f)
+                args = args[:i] + args[i + 2:]
+        return rules(args, maps['--page'], maps['--measured']) if args else 2
     if len(sys.argv) == 4 and sys.argv[1] == 'same':
         return same(sys.argv[2], sys.argv[3])
     print(__doc__.split('\n\n')[0], file=sys.stderr)

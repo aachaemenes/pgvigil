@@ -13,8 +13,8 @@ type SchemaData = Record<'state' | 'databases' | 'changes' | 'ddl' | 'findings',
 
 const changesCap = 2000, ddlCap = 1000;   // the API's limits (q_schema.go, 0058's schema_changes_window)
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const changeBadge = (v: unknown) => badge(String(v ?? ''), v === 'dropped' ? 'warn' : v === 'added' ? 'ok' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
+const changeBadge = (v: unknown) => badge(String(v ?? ''), v === 'dropped' ? 'warn' : v === 'added' ? 'ok' : 'none');
 // longText: a short text as it is; a long one as a disclosure (keyboard-reachable) whose summary is the start and whose
 // body is the whole text, so a change past the start can be read
 function longText(v: unknown, n = 400): string | Node {
@@ -33,7 +33,7 @@ const ddlText: Record<string, string> = {
 function ddlBadge(v: unknown): HTMLElement | string {
   const s = String(v ?? '');
   if (s === 'installed') return badge(ddlText[s], 'ok');
-  if (s === 'not installed' || s === '') return ddlText['not installed'];
+  if (s === 'not installed' || s === '') return badge(ddlText['not installed'], 'none');   // opt-in, not installed: nothing checked (N/A)
   return badge(ddlText[s] ?? s, 'warn');
 }
 

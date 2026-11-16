@@ -39,7 +39,7 @@ export async function jobsPgView(ctx: Ctx): Promise<HTMLElement> {
     const runCols: Col[] = [
       { key: 'start_time', label: 'start', fmt: fmtTime },
       { key: 'duration_secs', label: 'took', num: true, fmt: fmtSecs },
-      { key: 'status', fmt: runBadge },
+      { key: 'status', fmt: runBadge, cls: v => v == null || v === '' || ['failed', 'internal error', 'aborted'].includes(String(v)) ? '' : v === 'succeeded' ? 'status ok' : 'status none' },
       { key: 'scheduler' }, { key: 'job_name', label: 'job', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) },
       { key: 'run_id', label: 'run', num: true }, { key: 'datname', label: 'db' },
       { key: 'return_message', label: 'message', fmt: oneLine },

@@ -87,7 +87,7 @@ export async function dbinfoView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'owner' }, { key: 'encoding' },
     { key: 'lc_collate', label: 'collation' }, { key: 'lc_ctype', label: 'ctype' },
     { key: 'locale_provider', label: 'provider', fmt: (v, r) => String(v ?? '') + (r.locale && r.locale !== r.lc_collate ? ` (${String(r.locale)})` : '') },
-    { key: 'collation_recorded', label: 'collation version', fmt: (v, r) => r.collation_mismatch ? badge(`${String(v)} -> ${String(r.collation_actual)}`, 'warn') : String(v ?? '') },
+    { key: 'collation_recorded', label: 'collation version', fmt: (v, r) => r.collation_mismatch ? badge(`${String(v)} -> ${String(r.collation_actual)}`, 'warn') : String(v ?? ''), cls: (v, r) => r.collation_mismatch || v == null || v === '' ? '' : 'status ok' },
     { key: 'conn_limit', label: 'conn limit', num: true, fmt: limitTxt },
     { key: 'tablespace', fmt: (v, r) => String(v ?? '') + (r.tablespace_bytes != null ? ` (${fmtBytes(r.tablespace_bytes)})` : '') },
     { key: 'allow_conn', label: 'allow conn', fmt: yesNo },

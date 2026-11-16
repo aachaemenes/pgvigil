@@ -21,11 +21,11 @@ import { pgBackupDestFleet, pgBackupDestFleetCols, pgBackupDestSection } from '.
 
 type Parts<K extends string> = Record<K, Table | null>;
 
-const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const yes = (v: unknown, bad = false) => v == null ? '' : v === true ? badge('yes', bad ? 'crit' : 'ok') : badge('no', bad ? '' : 'warn');
+const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
+const yes = (v: unknown, bad = false) => v == null ? '' : v === true ? badge('yes', bad ? 'crit' : 'ok') : badge('no', bad ? 'ok' : 'warn');
 const num = (v: unknown) => v == null || v === '' ? NaN : Number(v);
 const hours = (v: unknown) => isNaN(num(v)) ? '' : num(v) < 48 ? `${fmtNum(v)} h` : `${(num(v) / 24).toFixed(1)} d`;
-const stateBadge = (v: unknown) => badge(String(v ?? ''), v === 'ok' ? 'ok' : v === 'error' ? 'crit' : v === 'running' || v === 'no_binary' ? 'warn' : '');
+const stateBadge = (v: unknown) => badge(String(v ?? ''), v === 'ok' ? 'ok' : v === 'error' ? 'crit' : v === 'running' || v === 'no_binary' ? 'warn' : 'none');
 
 function instLink(ctx: Ctx, name: unknown, id: unknown, tab: string): Node {
   return el('a', { href: href(ctx, { tab, instance: Number(id), tag: undefined }) }, String(name ?? ''));
@@ -261,7 +261,7 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> 
 const changeCols = (ctx: Ctx, withInstance: boolean): Col[] => [
   ...(withInstance ? [{ key: 'instance', fmt: (v: unknown, r: Row) => instLink(ctx, v, r.instance_id, 'pgstate') } as Col] : []),
   { key: 'changed_at', label: 'when', fmt: fmtTime }, { key: 'changed_at_source', label: 'time from' },
-  { key: 'change', fmt: v => badge(String(v), v === 'promotion' || v === 'demotion' ? 'warn' : v === 'another cluster' ? 'crit' : '') },
+  { key: 'change', fmt: v => badge(String(v), v === 'promotion' || v === 'demotion' ? 'warn' : v === 'another cluster' ? 'crit' : 'none') },
   { key: 'from_role', label: 'from' }, { key: 'to_role', label: 'to' }, { key: 'from_timeline', label: 'timeline before', num: true }, { key: 'to_timeline', label: 'timeline', num: true },
   { key: 'postmaster_restarted', label: 'restarted', fmt: v => v ? 'yes' : 'no' },
   { key: 'held_secs', label: 'role held for', num: true, fmt: v => v == null ? 'since before the first read' : fmtSecs(v) },
@@ -371,10 +371,10 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   }
   const cols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
-    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : '') }, { key: 'timeline_id', label: 'timeline', num: true },
+    { key: 'role', fmt: v => badge(String(v), v === 'primary' ? 'ok' : 'none') }, { key: 'timeline_id', label: 'timeline', num: true },
     { key: 'role_since', label: 'role since', fmt: fmtTime },
     { key: 'has_receiver', label: 'fed by', fmt: (v, r) => r.role === 'primary' ? '' : v ? `streaming from ${String(r.sender_host ?? '?')}` : 'restore_command (file shipping)' },
-    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : '') },
+    { key: 'sync_state', label: 'sync', fmt: v => v == null ? '' : badge(String(v), v === 'sync' || v === 'quorum' ? 'ok' : 'none') },
     { key: 'sender_state', label: 'sender' },
     { key: 'replay_lag_bytes', label: 'replay lag', num: true, fmt: (v, r) => v == null ? '' : `${fmtBytes(v)}${r.replay_lag_secs != null ? `, ${fmtSecs(Math.round(num(r.replay_lag_secs)))}` : ''}` },
     { key: 'replay_delay_secs', label: 'replay delay', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },

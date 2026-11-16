@@ -75,7 +75,7 @@ yellow or red even where the server's value is green, and the server's value sta
   measurement, never by a default rule).
 - `ALTER ROLE ALL SET` and an override of the database the collector connects to are also seen by the `instance`
   collection as server-level values (`pg_settings` sources `global` and `database`), so the Best practice grid can
-  show the same value. On such a row the server's value is shown uncoloured, marked as read under the override.
+  show the same value. On such a row the server's value is shown N/A (grey), marked as read under the override.
 - Values that can carry a credential are masked as the server's are.
 
 **Findings.** Every override that breaks a rule is a finding with the rule's severity. The database cells raise

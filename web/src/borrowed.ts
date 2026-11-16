@@ -10,7 +10,7 @@ import { alertCol } from './alerts';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { sqlCell, whatIsThis } from './sqlview';
 
-const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
+const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'none');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const never = (v: unknown) => v == null ? 'never' : fmtTime(v);
 
@@ -46,7 +46,7 @@ export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLEleme
     { key: 'datname', label: 'db' },
     { key: 'schema_name', label: 'schema' },
     { key: 'table_name', label: 'table', fmt: (v, r) => ctx ? tableLink(ctx, String(v ?? ''), r.dbid, r.relid) : String(v ?? '') },
-    { key: 'total_bytes', label: 'total', num: true, fmt: sizeWithTag },
+    { key: 'total_bytes', label: 'total', num: true, fmt: sizeWithTag, cls: (v, r) => v == null || isUnused(r) ? '' : 'status ok' },
     { key: 'heap_bytes', label: 'heap', num: true, fmt: fmtBytes },
     { key: 'toast_bytes', label: 'TOAST', num: true, fmt: fmtBytes },
     { key: 'index_bytes', label: 'indexes', num: true, fmt: fmtBytes },
@@ -62,7 +62,7 @@ export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLEleme
     { key: 'xid_age', label: 'xid age', num: true },
     { key: 'seq_scan', label: 'seq scans', num: true },
     { key: 'idx_scan', label: 'index scans', num: true },
-    { key: 'autovacuum_off', label: 'autovacuum', fmt: v => v ? badge('off', 'warn') : 'on' },
+    { key: 'autovacuum_off', label: 'autovacuum', fmt: v => v ? badge('off', 'warn') : 'on', cls: v => v ? '' : 'status ok' },
   ];
   const unused = tabs.filter(isUnused).length;
   return el('section', {}, el('h2', {}, 'Tables'),
@@ -103,7 +103,9 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
       return el('div', {}, el('h4', {}, title), grid(rs, [{ key: 'datname', label: 'db' }, { key: 'table_name', label: 'table', fmt: name }, lead, ...extra,
         { key: 'first_at', label: 'counted from', fmt: fmtTime }], 'No table moved by this measure in the window.'));
     };
-    const pctHot = (v: unknown, r: Row) => Number(r.n_tup_upd) > 0 ? fmtNum(Math.round(1000 * Number(v ?? 0) / Number(r.n_tup_upd)) / 10) + ' %' : '';
+    // the HOT share as the row's own value (the export types '80 %' over 80 as Excel's 0.8, not text over a count)
+    rows.forEach(r => { r.hot_pct = Number(r.n_tup_upd) > 0 ? Math.round(1000 * Number(r.n_tup_hot_upd ?? 0) / Number(r.n_tup_upd)) / 10 : null; });
+    const pctHot = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
     body.replaceChildren(
       el('p', { class: 'meta' }, `Over ${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)} (at most the last 7 days of the range): the sum of the rises between the table activity reads (every 5 minutes; ${fmtNum(meta.reads)} in the window, the newest `
         + `${fmtTime(meta.last_read) || 'none'}), the read before the window as the base. A table read first inside the window counts from that read (counted from). `
@@ -113,7 +115,7 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
           [{ key: 'seq_tup_read', label: 'rows read by them', num: true }, { key: 'idx_scan', label: 'index scans', num: true }]),
         part('Most inserts', 'rank_ins', { key: 'n_tup_ins', label: 'rows inserted', num: true }, []),
         part('Most updates', 'rank_upd', { key: 'n_tup_upd', label: 'rows updated', num: true },
-          [{ key: 'n_tup_hot_upd', label: 'HOT', num: true, fmt: pctHot }]),
+          [{ key: 'hot_pct', label: 'HOT', num: true, fmt: pctHot }]),
         part('Most deletes', 'rank_del', { key: 'n_tup_del', label: 'rows deleted', num: true }, [])));
   }
   sel.addEventListener('change', () => {
@@ -212,11 +214,11 @@ export function dmsDrainView(rows: Row[]): HTMLElement {
     { key: 'rows_in_s', label: 'rows in / s', num: true },
     { key: 'rows_out_s', label: 'rows out / s', num: true },
     { key: 'eta_rows_secs', label: 'rows drained in', num: true, fmt: v => v == null ? '' : fmtSecs(v) },
-    { key: 'spilling', label: 'spill', fmt: (v, r) => v ? badge(`disk ${fmtNum(r.disk_source)} / ${fmtNum(r.disk_target)}`, 'warn') : 'none' },
+    { key: 'spilling', label: 'spill', fmt: (v, r) => v ? badge(`disk ${fmtNum(r.disk_source)} / ${fmtNum(r.disk_target)}`, 'warn') : 'none', cls: v => v ? '' : 'status ok' },
     { key: 'validated', label: 'validated', num: true },
     { key: 'pending', label: 'pending', num: true },
-    { key: 'failed', label: 'failed', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : fmtNum(v) },
-    { key: 'suspended', label: 'suspended', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : fmtNum(v) },
+    { key: 'failed', label: 'failed', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : fmtNum(v), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
+    { key: 'suspended', label: 'suspended', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : fmtNum(v), cls: v => v == null || Number(v) > 0 ? '' : 'status ok' },
     { key: 'pending_records', label: 'records pending', num: true },
   ];
   return el('div', {}, el('h3', {}, 'Drain and validation ', whatIsThis('Speed compares the target latency with the sample 10-30 minutes older (1x = keeping pace). Do not stop or restart a task while it spills to disk.', 'Drain and validation')),
