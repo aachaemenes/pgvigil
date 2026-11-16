@@ -152,7 +152,15 @@ func remotePurgeGuard(o installOptions) error {
 // removeRemoteParent removes the outbox's and the state folder's shared parent once both are gone, only when it is
 // named pgvigil-remote and empty (Linux's /var/lib/pgvigil-remote; on Windows the parent is the config folder, which
 // purgeFolder handles); any other parent is never touched.
-func removeRemoteParent(log *slog.Logger, outbox, stateDir string) {}
+func removeRemoteParent(log *slog.Logger, outbox, stateDir string) {
+	parent := filepath.Dir(filepath.Clean(outbox))
+	if parent != filepath.Dir(filepath.Clean(stateDir)) || filepath.Base(parent) != "pgvigil-remote" {
+		return
+	}
+	if err := os.Remove(parent); err == nil { // only an empty folder goes
+		log.Info("removed", "folder", parent)
+	}
+}
 
 // uninstallRemote is `pgvigil uninstall -remote [-purge [-force]]` (the lead's 12:2x): the remote collector's service
 // stopped and removed - never the hub's; with -purge its outbox, its state folder, its config folder's own files and
@@ -193,6 +201,9 @@ func uninstallRemote(log *slog.Logger, o installOptions) error {
 		for _, k := range kept {
 			fmt.Printf("kept, not the collector's: %s\n", filepath.Join(stateDir, k))
 		}
+	}
+	if outbox != "" && stateDir != "" {
+		removeRemoteParent(log, outbox, stateDir)
 	}
 	base := filepath.Base(o.Config)
 	if err := purgeFolder(log, cfgDir, base, strings.TrimSuffix(base, filepath.Ext(base))+".env"); err != nil {
