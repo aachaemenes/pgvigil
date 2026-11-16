@@ -29,6 +29,7 @@ interface RuleResult { outcome: string; detail: string; rule_id?: number | null 
 const unitWords: Record<string, string> = {
   count: 'a count', pct: 'percent', secs: 'seconds', xids: 'transaction ids', per_s: 'per second',
   bytes_per_s: 'bytes per second', ms: 'milliseconds', mb: 'MB', bytes: 'bytes', per_min: 'per minute',
+  s_core_min: 'wait seconds per core per minute',
 };
 export const unitWord = (unit: unknown): string => unitWords[String(unit ?? '')] ?? String(unit ?? '');
 
@@ -46,6 +47,7 @@ export function fmtMetric(v: unknown, unit: unknown): string {
     case 'bytes_per_s': return fmtBytes(n) + '/s';
     case 'bytes': return fmtBytes(n);
     case 'mb': return fmtNum(n) + ' MB';
+    case 's_core_min': return fmtNum(n) + ' s/core/min';
     default: return fmtNum(n);
   }
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -574,6 +575,7 @@ type buildRow struct {
 	Release      time.Time
 	Mainstream   time.Time // the end of mainstream support of this build's branch
 	Extended     time.Time // the end of extended support
+	URL          string    // Microsoft's page of this build (its KB or release notes) as the source lists it; may be empty
 }
 
 // BuildsAsOf is the version and date of the catalogue's source.
@@ -596,7 +598,7 @@ func parseBuilds(text string) map[int][]buildRow {
 	}
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		f := strings.Split(line, "|")
-		if len(f) != 7 {
+		if len(f) != 8 {
 			panic("build catalogue: " + line)
 		}
 		major, err1 := strconv.Atoi(f[0])
@@ -604,7 +606,8 @@ func parseBuilds(text string) map[int][]buildRow {
 		if err1 != nil || err2 != nil {
 			panic("build catalogue: " + line)
 		}
-		row := buildRow{Major: major, Build: build, Branch: f[2], Name: f[6], Release: day(f[3]), Mainstream: day(f[4]), Extended: day(f[5])}
+		row := buildRow{Major: major, Build: build, Branch: f[2], Name: f[6], Release: day(f[3]), Mainstream: day(f[4]), Extended: day(f[5]),
+			URL: strings.TrimSpace(f[7])}
 		rows := out[major]
 		if n := len(rows); n > 0 && rows[n-1].Build == build {
 			if row.Release.Before(rows[n-1].Release) {
@@ -618,6 +621,64 @@ func parseBuilds(text string) map[int][]buildRow {
 		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Build > rows[j].Build })
 	}
 	return out
+}
+
+// buildListURL is Microsoft's list of every SQL Server build, linked where the catalogue has no page of a build's own.
+const buildListURL = "https://support.microsoft.com/kb/321185"
+
+// BuildDocs: the documentation links of an instance's build (task 412, the lead's 11-15 B1 (a)): its own page only when
+// the catalogue lists this very build (the nearest lower row is another build's page); a build of the catalogue with no
+// page of its own (an RTM row: empty; a preview or RTM of 2025: a product page) links Microsoft's build list, said in
+// words; a build newer than the catalogue's newest says so. The newest build of the major is linked beside it. Read at
+// serve time from the catalogue in this binary (no column stored). Keys: build_url, build_url_words, newest_build,
+// newest_url, newest_url_words; none for a major the catalogue lacks.
+func BuildDocs(major, build int) map[string]any {
+	rows := builds[major]
+	if len(rows) == 0 || build <= 0 {
+		return nil
+	}
+	link := func(r buildRow) (string, string) {
+		u := r.URL
+		if u == "" || strings.Contains(u, "info.microsoft.com") {
+			return buildListURL, "Microsoft's list of SQL Server builds (no page of " + r.Name + "'s own)"
+		}
+		return u, "Microsoft: " + r.Name + " (" + strconv.Itoa(r.Major) + ".0." + strconv.Itoa(r.Build) + ")"
+	}
+	out := map[string]any{}
+	newest := rows[0]
+	switch {
+	case build > newest.Build:
+		out["build_url"], out["build_url_words"] = buildListURL, "a build newer than the catalogue ("+BuildsAsOf+"): Microsoft's list of SQL Server builds"
+	default:
+		for _, r := range rows {
+			if r.Build == build {
+				out["build_url"], out["build_url_words"] = link(r)
+				break
+			}
+		}
+		if out["build_url"] == nil {
+			out["build_url"], out["build_url_words"] = buildListURL, "a build the catalogue does not list: Microsoft's list of SQL Server builds"
+		}
+	}
+	out["newest_build"] = strconv.Itoa(newest.Major) + ".0." + strconv.Itoa(newest.Build)
+	out["newest_url"], out["newest_url_words"] = link(newest)
+	return out
+}
+
+// buildInVersion finds the dotted build in a version text ('16.0.4325.4', with or without its fourth part).
+var buildInVersion = regexp.MustCompile(`\b\d+\.\d+\.\d+(?:\.\d+)?\b`)
+
+// BuildDocsOf is BuildDocs over the version an instance row holds: the first line of @@VERSION, which the collector
+// stores as server_version ('Microsoft SQL Server 2022 (RTM-CU28) (KB5125472) - 16.0.4325.4 (X64)'), or a bare
+// product version as SERVERPROPERTY('ProductVersion') gives it ('16.0.4325.4'): the first dotted build in the text is
+// the one read (box run 412proof1: the whole line read as a product version gave major 0 and no link). An empty map
+// for a version the catalogue cannot place (the API's part then reads one row of nulls).
+func BuildDocsOf(version string) map[string]any {
+	major, _, build := parseVersion(buildInVersion.FindString(version))
+	if d := BuildDocs(major, build); d != nil {
+		return d
+	}
+	return map[string]any{}
 }
 
 // buildVerdict is an instance's build against the catalogue.
@@ -911,222 +972,223 @@ var configDefaultList = []struct {
 }
 
 // buildCatalogue: every build of SQL Server 2016 to 2025 with its release date and the support ends of its branch,
-// one build a line: major|build|branch|released|mainstream support ends|extended support ends|name. The rows are
+// one build a line: major|build|branch|released|mainstream support ends|extended support ends|name|page (the source's
+// [Url], trimmed: a KB or release-notes page, a product page, or empty; task 412). The rows are
 // SqlServerVersions.sql's (SQL Server First Responder Kit 8.34, MIT; the script by Josh Darnell, MIT;
 // THIRD-PARTY-NOTICES), ported as data.
 const buildCatalogue = `
-17|4055|CU6|2026-06-17|2031-01-06|2036-01-06|Cumulative Update 6
-17|4045|CU5|2026-05-20|2031-01-06|2036-01-06|Cumulative Update 5
-17|4040|CU4 GDR|2026-05-12|2031-01-06|2036-01-06|Cumulative Update 4 GDR
-17|4035|CU4|2026-04-16|2031-01-06|2036-01-06|Cumulative Update 4
-17|4030|CU3 GDR|2026-04-14|2031-01-06|2036-01-06|Cumulative Update 3 GDR
-17|4025|CU3|2026-03-12|2031-01-06|2036-01-06|Cumulative Update 3
-17|4020|CU2 GDR|2026-03-10|2031-01-06|2036-01-06|Cumulative Update 2 GDR
-17|4015|CU2|2026-02-12|2031-01-06|2036-01-06|Cumulative Update 2
-17|4006|CU1 v2|2026-01-29|2031-01-06|2036-01-06|Cumulative Update 1 v2
-17|4005|CU1|2026-01-15|2031-01-06|2036-01-06|Cumulative Update 1 (Removed)
-17|1000|RTM|2025-11-18|2031-01-06|2036-01-06|RTM
-17|925|RC1|2025-09-17|2025-11-18|2025-11-18|Preview RC1
-17|900|RC0|2025-08-20|2025-11-18|2025-11-18|Preview RC0
-17|800|CTP 2.1|2025-06-16|2025-11-18|2025-11-18|Preview CTP 2.1
-17|700|CTP 2.0|2025-05-19|2025-11-18|2025-11-18|Preview CTP 2.0
-16|4255|CU25|2026-05-20|2028-01-11|2033-01-11|Cumulative Update 25
-16|4250|CU24 GDR|2026-04-14|2028-01-11|2033-01-11|Cumulative Update 24 GDR
-16|4245|CU24|2026-03-12|2028-01-11|2033-01-11|Cumulative Update 24
-16|4236|CU23 GDR|2026-03-10|2028-01-11|2033-01-11|Cumulative Update 23 GDR
-16|4236|CU23 v2|2026-01-29|2028-01-11|2033-01-11|Cumulative Update 23 v2
-16|4235|CU23|2026-01-15|2028-01-11|2033-01-11|Cumulative Update 23 (Removed)
-16|4225|CU22|2025-11-13|2028-01-11|2033-01-11|Cumulative Update 22
-16|4215|CU21|2025-09-11|2028-01-11|2033-01-11|Cumulative Update 21
-16|4205|CU20|2025-07-10|2028-01-11|2033-01-11|Cumulative Update 20
-16|4200|CU19 GDR|2025-07-08|2028-01-11|2033-01-11|Cumulative Update 19 GDR
-16|4195|CU19|2025-05-19|2028-01-11|2033-01-11|Cumulative Update 19
-16|4185|CU18|2025-03-13|2028-01-11|2033-01-11|Cumulative Update 18
-16|4175|CU17|2025-01-16|2028-01-11|2033-01-11|Cumulative Update 17
-16|4165|CU16|2024-11-14|2028-01-11|2033-01-11|Cumulative Update 16
-16|4150|CU15 GDR|2024-10-08|2028-01-11|2033-01-11|Cumulative Update 15 GDR
-16|4145|CU15|2024-09-25|2028-01-11|2033-01-11|Cumulative Update 15
-16|4140|CU14 GDR|2024-09-10|2028-01-11|2033-01-11|Cumulative Update 14 GDR
-16|4135|CU14|2024-07-23|2028-01-11|2033-01-11|Cumulative Update 14
-16|4125|CU13|2024-05-16|2028-01-11|2033-01-11|Cumulative Update 13
-16|4115|CU12|2024-03-14|2028-01-11|2033-01-11|Cumulative Update 12
-16|4105|CU11|2024-01-11|2028-01-11|2033-01-11|Cumulative Update 11
-16|4100|CU10 GDR|2024-01-09|2028-01-11|2033-01-11|Cumulative Update 10 GDR
-16|4095|CU10|2023-11-16|2028-01-11|2033-01-11|Cumulative Update 10
-16|4085|CU9|2023-10-12|2028-01-11|2033-01-11|Cumulative Update 9
-16|4075|CU8|2023-09-14|2028-01-11|2033-01-11|Cumulative Update 8
-16|4065|CU7|2023-08-10|2028-01-11|2033-01-11|Cumulative Update 7
-16|4055|CU6|2023-07-13|2028-01-11|2033-01-11|Cumulative Update 6
-16|4045|CU5|2023-06-15|2028-01-11|2033-01-11|Cumulative Update 5
-16|4035|CU4|2023-05-11|2028-01-11|2033-01-11|Cumulative Update 4
-16|4025|CU3|2023-04-13|2028-01-11|2033-01-11|Cumulative Update 3
-16|4015|CU2|2023-03-15|2028-01-11|2033-01-11|Cumulative Update 2
-16|4003|CU1|2023-02-16|2028-01-11|2033-01-11|Cumulative Update 1
-16|1050|RTM GDR|2023-02-14|2028-01-11|2033-01-11|RTM
-16|1000|RTM|2022-11-15|2028-01-11|2033-01-11|RTM
-15|4470|CU32 GDR|2026-05-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4465|CU32 GDR|2026-04-14|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4460|CU32 GDR|2026-03-10|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4455|CU32 GDR|2025-11-11|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4445|CU32 GDR|2025-09-09|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4440|CU32 GDR|2025-08-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4435|CU32 GDR|2025-07-08|2025-01-07|2030-01-08|Cumulative Update 32 GDR
-15|4430|CU32|2025-02-27|2025-01-07|2030-01-08|Cumulative Update 32
-15|4420|CU31|2025-02-13|2025-01-07|2030-01-08|Cumulative Update 31
-15|4415|CU30|2024-12-13|2025-01-07|2030-01-08|Cumulative Update 30
-15|4405|CU29|2024-10-31|2025-01-07|2030-01-08|Cumulative Update 29
-15|4395|CU28 GDR|2024-10-08|2025-01-07|2030-01-08|Cumulative Update 28 GDR
-15|4390|CU28 GDR|2024-09-10|2025-01-07|2030-01-08|Cumulative Update 28 GDR
-15|4385|CU28|2024-08-01|2025-01-07|2030-01-08|Cumulative Update 28
-15|4375|CU27|2024-06-14|2025-01-07|2030-01-08|Cumulative Update 27
-15|4365|CU26|2024-04-11|2025-01-07|2030-01-08|Cumulative Update 26
-15|4355|CU25|2024-02-15|2025-01-07|2030-01-08|Cumulative Update 25
-15|4345|CU24|2023-12-14|2025-01-07|2030-01-08|Cumulative Update 24
-15|4335|CU23|2023-10-12|2025-01-07|2030-01-08|Cumulative Update 23
-15|4322|CU22|2023-08-14|2025-01-07|2030-01-08|Cumulative Update 22
-15|4316|CU21|2023-06-15|2025-01-07|2030-01-08|Cumulative Update 21
-15|4312|CU20|2023-04-13|2025-01-07|2030-01-08|Cumulative Update 20
-15|4298|CU19|2023-02-16|2025-01-07|2030-01-08|Cumulative Update 19
-15|4280|CU18 GDR|2023-02-14|2025-01-07|2030-01-08|Cumulative Update 18 GDR
-15|4261|CU18|2022-09-28|2025-01-07|2030-01-08|Cumulative Update 18
-15|4249|CU17|2022-08-11|2025-01-07|2030-01-08|Cumulative Update 17
-15|4236|CU16 GDR|2022-06-14|2025-01-07|2030-01-08|Cumulative Update 16 GDR
-15|4223|CU16|2022-04-18|2025-01-07|2030-01-08|Cumulative Update 16
-15|4198|CU15|2022-01-07|2025-01-07|2030-01-08|Cumulative Update 15
-15|4188|CU14|2021-11-22|2025-01-07|2030-01-08|Cumulative Update 14
-15|4178|CU13|2021-10-05|2025-01-07|2030-01-08|Cumulative Update 13
-15|4153|CU12|2021-08-04|2025-01-07|2030-01-08|Cumulative Update 12
-15|4138|CU11|2021-06-10|2025-01-07|2030-01-08|Cumulative Update 11
-15|4123|CU10|2021-04-06|2025-01-07|2030-01-08|Cumulative Update 10
-15|4102|CU9|2021-02-11|2025-01-07|2030-01-08|Cumulative Update 9
-15|4073|CU8 GDR|2021-01-12|2025-01-07|2030-01-08|Cumulative Update 8 GDR
-15|4073|CU8|2020-10-01|2025-01-07|2030-01-08|Cumulative Update 8
-15|4063|CU7|2020-09-02|2025-01-07|2030-01-08|Cumulative Update 7
-15|4053|CU6|2020-08-04|2025-01-07|2030-01-08|Cumulative Update 6
-15|4043|CU5|2020-06-22|2025-01-07|2030-01-08|Cumulative Update 5
-15|4033|CU4|2020-03-31|2025-01-07|2030-01-08|Cumulative Update 4
-15|4023|CU3|2020-03-12|2025-01-07|2030-01-08|Cumulative Update 3
-15|4013|CU2|2020-02-13|2025-01-07|2030-01-08|Cumulative Update 2
-15|4003|CU1|2020-01-07|2025-01-07|2030-01-08|Cumulative Update 1
-15|2070|GDR|2019-11-04|2025-01-07|2030-01-08|RTM GDR
-15|2000|RTM|2019-11-04|2025-01-07|2030-01-08|RTM
-14|3530|RTM CU31 GDR|2026-05-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3525|RTM CU31 GDR|2026-04-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3520|RTM CU31 GDR|2026-03-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3515|RTM CU31 GDR|2025-11-11|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3505|RTM CU31 GDR|2025-09-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3500|RTM CU31 GDR|2025-08-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3495|RTM CU31 GDR|2025-07-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3485|RTM CU31 GDR|2024-11-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3480|RTM CU31 GDR|2024-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3475|RTM CU31 GDR|2024-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3471|RTM CU31 GDR|2024-07-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3465|RTM CU31 GDR|2023-10-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3460|RTM CU31 GDR|2023-02-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR
-14|3456|RTM CU31|2022-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 31
-14|3451|RTM CU30|2022-07-13|2022-10-11|2027-10-12|RTM Cumulative Update 30
-14|3445|RTM CU29 GDR|2022-06-14|2022-10-11|2027-10-12|RTM Cumulative Update 29 GDR
-14|3436|RTM CU29|2022-03-31|2022-10-11|2027-10-12|RTM Cumulative Update 29
-14|3430|RTM CU28|2022-01-13|2022-10-11|2027-10-12|RTM Cumulative Update 28
-14|3421|RTM CU27|2021-10-27|2022-10-11|2027-10-12|RTM Cumulative Update 27
-14|3411|RTM CU26|2021-09-14|2022-10-11|2027-10-12|RTM Cumulative Update 26
-14|3401|RTM CU25|2021-07-12|2022-10-11|2027-10-12|RTM Cumulative Update 25
-14|3391|RTM CU24|2021-05-10|2022-10-11|2027-10-12|RTM Cumulative Update 24
-14|3381|RTM CU23|2021-02-25|2022-10-11|2027-10-12|RTM Cumulative Update 23
-14|3370|RTM CU22 GDR|2021-01-12|2022-10-11|2027-10-12|RTM Cumulative Update 22 GDR
-14|3356|RTM CU22|2020-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 22
-14|3335|RTM CU21|2020-07-01|2022-10-11|2027-10-12|RTM Cumulative Update 21
-14|3294|RTM CU20|2020-04-07|2022-10-11|2027-10-12|RTM Cumulative Update 20
-14|3257|RTM CU19|2020-02-05|2022-10-11|2027-10-12|RTM Cumulative Update 19
-14|3257|RTM CU18|2019-12-09|2022-10-11|2027-10-12|RTM Cumulative Update 18
-14|3238|RTM CU17|2019-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 17
-14|3223|RTM CU16|2019-08-01|2022-10-11|2027-10-12|RTM Cumulative Update 16
-14|3162|RTM CU15|2019-05-24|2022-10-11|2027-10-12|RTM Cumulative Update 15
-14|3076|RTM CU14|2019-03-25|2022-10-11|2027-10-12|RTM Cumulative Update 14
-14|3048|RTM CU13|2018-12-18|2022-10-11|2027-10-12|RTM Cumulative Update 13
-14|3045|RTM CU12|2018-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 12
-14|3038|RTM CU11|2018-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 11
-14|3037|RTM CU10|2018-08-27|2022-10-11|2027-10-12|RTM Cumulative Update 10
-14|3030|RTM CU9|2018-07-18|2022-10-11|2027-10-12|RTM Cumulative Update 9
-14|3029|RTM CU8|2018-06-21|2022-10-11|2027-10-12|RTM Cumulative Update 8
-14|3026|RTM CU7|2018-05-23|2022-10-11|2027-10-12|RTM Cumulative Update 7
-14|3025|RTM CU6|2018-04-17|2022-10-11|2027-10-12|RTM Cumulative Update 6
-14|3023|RTM CU5|2018-03-20|2022-10-11|2027-10-12|RTM Cumulative Update 5
-14|3022|RTM CU4|2018-02-20|2022-10-11|2027-10-12|RTM Cumulative Update 4
-14|3015|RTM CU3|2018-01-04|2022-10-11|2027-10-12|RTM Cumulative Update 3
-14|3008|RTM CU2|2017-11-28|2022-10-11|2027-10-12|RTM Cumulative Update 2
-14|3006|RTM CU1|2017-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 1
-14|1000|RTM|2017-10-02|2022-10-11|2027-10-12|RTM
-13|7055|SP3 Azure Feature Pack GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7045|SP3 Azure Feature Pack GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7040|SP3 Azure Feature Pack GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7037|SP3 Azure Feature Pack GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7029|SP3 Azure Feature Pack GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7024|SP3 Azure Feature Pack GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7016|SP3 Azure Feature Pack GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR
-13|7000|SP3 Azure Feature Pack|2022-05-19|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack
-13|6490|SP3 GDR|2026-05-12|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6485|SP3 GDR|2026-04-14|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6480|SP3 GDR|2026-03-10|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6475|SP3 GDR|2025-11-11|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6470|SP3 GDR|2025-09-09|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6465|SP3 GDR|2025-08-12|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6460|SP3 GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6455|SP3 GDR|2024-11-12|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6450|SP3 GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6445|SP3 GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6441|SP3 GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6435|SP3 GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6430|SP3 GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6419|SP3 GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6404|SP3 GDR|2021-10-27|2021-07-13|2026-07-14|Service Pack 3 GDR
-13|6300|SP3|2021-09-15|2021-07-13|2026-07-14|Service Pack 3
-13|5888|SP2 CU17|2021-03-29|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 17
-13|5882|SP2 CU16|2021-02-11|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 16
-13|5865|SP2 CU15 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15 GDR
-13|5850|SP2 CU15|2020-09-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15
-13|5830|SP2 CU14|2020-08-06|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 14
-13|5820|SP2 CU13|2020-05-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 13
-13|5698|SP2 CU12|2020-02-25|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 12
-13|5598|SP2 CU11|2019-12-09|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 11
-13|5492|SP2 CU10|2019-10-08|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 10
-13|5479|SP2 CU9|2019-09-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 9
-13|5426|SP2 CU8|2019-07-31|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 8
-13|5337|SP2 CU7|2019-05-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 7
-13|5292|SP2 CU6|2019-03-19|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 6
-13|5264|SP2 CU5|2019-01-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 5
-13|5233|SP2 CU4|2018-11-13|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 4
-13|5216|SP2 CU3|2018-09-20|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 3
-13|5201|SP2 CU2 + Security Update|2018-08-21|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2 + Security Update
-13|5153|SP2 CU2|2018-07-16|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2
-13|5149|SP2 CU1|2018-05-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 1
-13|5103|SP2 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 GDR
-13|5026|SP2|2018-04-24|2021-07-13|2026-07-14|Service Pack 2
-13|4574|SP1 CU15|2019-05-16|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 15
-13|4560|SP1 CU14|2019-03-19|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 14
-13|4550|SP1 CU13|2019-01-23|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 13
-13|4541|SP1 CU12|2018-11-13|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 12
-13|4528|SP1 CU11|2018-09-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 11
-13|4514|SP1 CU10|2018-07-16|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10
-13|4502|SP1 CU9|2018-05-30|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 9
-13|4474|SP1 CU8|2018-03-19|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 8
-13|4466|SP1 CU7|2018-01-04|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 7
-13|4457|SP1 CU6|2017-11-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 6
-13|4451|SP1 CU5|2017-09-18|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 5
-13|4446|SP1 CU4|2017-08-08|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 4
-13|4435|SP1 CU3|2017-05-15|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 3
-13|4422|SP1 CU2|2017-03-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 2
-13|4411|SP1 CU1|2017-01-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 1
-13|4224|SP1 CU10 + Security Update|2018-08-22|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10 + Security Update
-13|4001|SP1|2016-11-16|2019-07-09|2019-07-09|Service Pack 1
-13|2216|RTM CU9|2017-11-20|2018-01-09|2018-01-09|RTM Cumulative Update 9
-13|2213|RTM CU8|2017-09-18|2018-01-09|2018-01-09|RTM Cumulative Update 8
-13|2210|RTM CU7|2017-08-08|2018-01-09|2018-01-09|RTM Cumulative Update 7
-13|2204|RTM CU6|2017-05-15|2018-01-09|2018-01-09|RTM Cumulative Update 6
-13|2197|RTM CU5|2017-03-20|2018-01-09|2018-01-09|RTM Cumulative Update 5
-13|2193|RTM CU4|2017-01-17|2018-01-09|2018-01-09|RTM Cumulative Update 4
-13|2186|RTM CU3|2016-11-16|2018-01-09|2018-01-09|RTM Cumulative Update 3
-13|2164|RTM CU2|2016-09-22|2018-01-09|2018-01-09|RTM Cumulative Update 2
-13|2149|RTM CU1|2016-07-25|2018-01-09|2018-01-09|RTM Cumulative Update 1
-13|1601|RTM|2016-06-01|2019-01-09|2019-01-09|RTM
+17|4055|CU6|2026-06-17|2031-01-06|2036-01-06|Cumulative Update 6|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate6
+17|4045|CU5|2026-05-20|2031-01-06|2036-01-06|Cumulative Update 5|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate5
+17|4040|CU4 GDR|2026-05-12|2031-01-06|2036-01-06|Cumulative Update 4 GDR|https://support.microsoft.com/kb/5089899
+17|4035|CU4|2026-04-16|2031-01-06|2036-01-06|Cumulative Update 4|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate4
+17|4030|CU3 GDR|2026-04-14|2031-01-06|2036-01-06|Cumulative Update 3 GDR|https://support.microsoft.com/kb/5083245
+17|4025|CU3|2026-03-12|2031-01-06|2036-01-06|Cumulative Update 3|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate3
+17|4020|CU2 GDR|2026-03-10|2031-01-06|2036-01-06|Cumulative Update 2 GDR|https://support.microsoft.com/help/5077466
+17|4015|CU2|2026-02-12|2031-01-06|2036-01-06|Cumulative Update 2|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate2
+17|4006|CU1 v2|2026-01-29|2031-01-06|2036-01-06|Cumulative Update 1 v2|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate1
+17|4005|CU1|2026-01-15|2031-01-06|2036-01-06|Cumulative Update 1 (Removed)|https://learn.microsoft.com/troubleshoot/sql/releases/sqlserver-2025/cumulativeupdate1
+17|1000|RTM|2025-11-18|2031-01-06|2036-01-06|RTM|https://info.microsoft.com/ww-landing-sql-server-2025.html
+17|925|RC1|2025-09-17|2025-11-18|2025-11-18|Preview RC1|https://info.microsoft.com/ww-landing-sql-server-2025.html
+17|900|RC0|2025-08-20|2025-11-18|2025-11-18|Preview RC0|https://info.microsoft.com/ww-landing-sql-server-2025.html
+17|800|CTP 2.1|2025-06-16|2025-11-18|2025-11-18|Preview CTP 2.1|https://info.microsoft.com/ww-landing-sql-server-2025.html
+17|700|CTP 2.0|2025-05-19|2025-11-18|2025-11-18|Preview CTP 2.0|https://info.microsoft.com/ww-landing-sql-server-2025.html
+16|4255|CU25|2026-05-20|2028-01-11|2033-01-11|Cumulative Update 25|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate25
+16|4250|CU24 GDR|2026-04-14|2028-01-11|2033-01-11|Cumulative Update 24 GDR|https://support.microsoft.com/kb/5083252
+16|4245|CU24|2026-03-12|2028-01-11|2033-01-11|Cumulative Update 24|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate24
+16|4236|CU23 GDR|2026-03-10|2028-01-11|2033-01-11|Cumulative Update 23 GDR|https://support.microsoft.com/help/5077464
+16|4236|CU23 v2|2026-01-29|2028-01-11|2033-01-11|Cumulative Update 23 v2|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate23
+16|4235|CU23|2026-01-15|2028-01-11|2033-01-11|Cumulative Update 23 (Removed)|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate23
+16|4225|CU22|2025-11-13|2028-01-11|2033-01-11|Cumulative Update 22|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate22
+16|4215|CU21|2025-09-11|2028-01-11|2033-01-11|Cumulative Update 21|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate21
+16|4205|CU20|2025-07-10|2028-01-11|2033-01-11|Cumulative Update 20|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate20
+16|4200|CU19 GDR|2025-07-08|2028-01-11|2033-01-11|Cumulative Update 19 GDR|https://support.microsoft.com/help/5058721
+16|4195|CU19|2025-05-19|2028-01-11|2033-01-11|Cumulative Update 19|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate19
+16|4185|CU18|2025-03-13|2028-01-11|2033-01-11|Cumulative Update 18|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate18
+16|4175|CU17|2025-01-16|2028-01-11|2033-01-11|Cumulative Update 17|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/cumulativeupdate17
+16|4165|CU16|2024-11-14|2028-01-11|2033-01-11|Cumulative Update 16|https://support.microsoft.com/help/5048033
+16|4150|CU15 GDR|2024-10-08|2028-01-11|2033-01-11|Cumulative Update 15 GDR|https://support.microsoft.com/help/5046059
+16|4145|CU15|2024-09-25|2028-01-11|2033-01-11|Cumulative Update 15|https://support.microsoft.com/help/5041321
+16|4140|CU14 GDR|2024-09-10|2028-01-11|2033-01-11|Cumulative Update 14 GDR|https://support.microsoft.com/help/5042578
+16|4135|CU14|2024-07-23|2028-01-11|2033-01-11|Cumulative Update 14|https://support.microsoft.com/help/5038325
+16|4125|CU13|2024-05-16|2028-01-11|2033-01-11|Cumulative Update 13|https://support.microsoft.com/help/5036432
+16|4115|CU12|2024-03-14|2028-01-11|2033-01-11|Cumulative Update 12|https://support.microsoft.com/help/5033663
+16|4105|CU11|2024-01-11|2028-01-11|2033-01-11|Cumulative Update 11|https://support.microsoft.com/help/5032679
+16|4100|CU10 GDR|2024-01-09|2028-01-11|2033-01-11|Cumulative Update 10 GDR|https://support.microsoft.com/help/5033592
+16|4095|CU10|2023-11-16|2028-01-11|2033-01-11|Cumulative Update 10|https://support.microsoft.com/help/5031778
+16|4085|CU9|2023-10-12|2028-01-11|2033-01-11|Cumulative Update 9|https://support.microsoft.com/help/5030731
+16|4075|CU8|2023-09-14|2028-01-11|2033-01-11|Cumulative Update 8|https://support.microsoft.com/help/5029666
+16|4065|CU7|2023-08-10|2028-01-11|2033-01-11|Cumulative Update 7|https://support.microsoft.com/help/5028743
+16|4055|CU6|2023-07-13|2028-01-11|2033-01-11|Cumulative Update 6|https://support.microsoft.com/help/5027505
+16|4045|CU5|2023-06-15|2028-01-11|2033-01-11|Cumulative Update 5|https://support.microsoft.com/help/5026806
+16|4035|CU4|2023-05-11|2028-01-11|2033-01-11|Cumulative Update 4|https://support.microsoft.com/help/5026717
+16|4025|CU3|2023-04-13|2028-01-11|2033-01-11|Cumulative Update 3|https://support.microsoft.com/help/5024396
+16|4015|CU2|2023-03-15|2028-01-11|2033-01-11|Cumulative Update 2|https://support.microsoft.com/help/5023127
+16|4003|CU1|2023-02-16|2028-01-11|2033-01-11|Cumulative Update 1|https://support.microsoft.com/help/5022375
+16|1050|RTM GDR|2023-02-14|2028-01-11|2033-01-11|RTM|https://support.microsoft.com/kb/5021522
+16|1000|RTM|2022-11-15|2028-01-11|2033-01-11|RTM|
+15|4470|CU32 GDR|2026-05-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5090407
+15|4465|CU32 GDR|2026-04-14|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5084816
+15|4460|CU32 GDR|2026-03-10|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/help/5077469
+15|4455|CU32 GDR|2025-11-11|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/help/5068404
+15|4445|CU32 GDR|2025-09-09|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5065222
+15|4440|CU32 GDR|2025-08-12|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5063757
+15|4435|CU32 GDR|2025-07-08|2025-01-07|2030-01-08|Cumulative Update 32 GDR|https://support.microsoft.com/kb/5058722
+15|4430|CU32|2025-02-27|2025-01-07|2030-01-08|Cumulative Update 32|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2019/cumulativeupdate32
+15|4420|CU31|2025-02-13|2025-01-07|2030-01-08|Cumulative Update 31|https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2019/cumulativeupdate31
+15|4415|CU30|2024-12-13|2025-01-07|2030-01-08|Cumulative Update 30|https://support.microsoft.com/kb/5049235
+15|4405|CU29|2024-10-31|2025-01-07|2030-01-08|Cumulative Update 29|https://support.microsoft.com/kb/5046365
+15|4395|CU28 GDR|2024-10-08|2025-01-07|2030-01-08|Cumulative Update 28 GDR|https://support.microsoft.com/kb/5046060
+15|4390|CU28 GDR|2024-09-10|2025-01-07|2030-01-08|Cumulative Update 28 GDR|https://support.microsoft.com/kb/5042749
+15|4385|CU28|2024-08-01|2025-01-07|2030-01-08|Cumulative Update 28|https://support.microsoft.com/kb/5039747
+15|4375|CU27|2024-06-14|2025-01-07|2030-01-08|Cumulative Update 27|https://support.microsoft.com/kb/5037331
+15|4365|CU26|2024-04-11|2025-01-07|2030-01-08|Cumulative Update 26|https://support.microsoft.com/kb/5035123
+15|4355|CU25|2024-02-15|2025-01-07|2030-01-08|Cumulative Update 25|https://support.microsoft.com/kb/5033688
+15|4345|CU24|2023-12-14|2025-01-07|2030-01-08|Cumulative Update 24|https://support.microsoft.com/kb/5031908
+15|4335|CU23|2023-10-12|2025-01-07|2030-01-08|Cumulative Update 23|https://support.microsoft.com/kb/5030333
+15|4322|CU22|2023-08-14|2025-01-07|2030-01-08|Cumulative Update 22|https://support.microsoft.com/kb/5027702
+15|4316|CU21|2023-06-15|2025-01-07|2030-01-08|Cumulative Update 21|https://support.microsoft.com/kb/5025808
+15|4312|CU20|2023-04-13|2025-01-07|2030-01-08|Cumulative Update 20|https://support.microsoft.com/kb/5024276
+15|4298|CU19|2023-02-16|2025-01-07|2030-01-08|Cumulative Update 19|https://support.microsoft.com/kb/5023049
+15|4280|CU18 GDR|2023-02-14|2025-01-07|2030-01-08|Cumulative Update 18 GDR|https://support.microsoft.com/kb/5021124
+15|4261|CU18|2022-09-28|2025-01-07|2030-01-08|Cumulative Update 18|https://support.microsoft.com/help/5017593
+15|4249|CU17|2022-08-11|2025-01-07|2030-01-08|Cumulative Update 17|https://support.microsoft.com/help/5016394
+15|4236|CU16 GDR|2022-06-14|2025-01-07|2030-01-08|Cumulative Update 16 GDR|https://support.microsoft.com/help/5014353
+15|4223|CU16|2022-04-18|2025-01-07|2030-01-08|Cumulative Update 16|https://support.microsoft.com/help/5011644
+15|4198|CU15|2022-01-07|2025-01-07|2030-01-08|Cumulative Update 15|https://support.microsoft.com/help/5008996
+15|4188|CU14|2021-11-22|2025-01-07|2030-01-08|Cumulative Update 14|https://support.microsoft.com/help/5007182
+15|4178|CU13|2021-10-05|2025-01-07|2030-01-08|Cumulative Update 13|https://support.microsoft.com/help/5005679
+15|4153|CU12|2021-08-04|2025-01-07|2030-01-08|Cumulative Update 12|https://support.microsoft.com/help/5004524
+15|4138|CU11|2021-06-10|2025-01-07|2030-01-08|Cumulative Update 11|https://support.microsoft.com/help/5003249
+15|4123|CU10|2021-04-06|2025-01-07|2030-01-08|Cumulative Update 10|https://support.microsoft.com/help/5001090
+15|4102|CU9|2021-02-11|2025-01-07|2030-01-08|Cumulative Update 9|https://support.microsoft.com/help/5000642
+15|4073|CU8 GDR|2021-01-12|2025-01-07|2030-01-08|Cumulative Update 8 GDR|https://support.microsoft.com/help/4583459
+15|4073|CU8|2020-10-01|2025-01-07|2030-01-08|Cumulative Update 8|https://support.microsoft.com/help/4577194
+15|4063|CU7|2020-09-02|2025-01-07|2030-01-08|Cumulative Update 7|https://support.microsoft.com/help/4570012
+15|4053|CU6|2020-08-04|2025-01-07|2030-01-08|Cumulative Update 6|https://support.microsoft.com/help/4563110
+15|4043|CU5|2020-06-22|2025-01-07|2030-01-08|Cumulative Update 5|https://support.microsoft.com/help/4548597
+15|4033|CU4|2020-03-31|2025-01-07|2030-01-08|Cumulative Update 4|https://support.microsoft.com/help/4548597
+15|4023|CU3|2020-03-12|2025-01-07|2030-01-08|Cumulative Update 3|https://support.microsoft.com/help/4538853
+15|4013|CU2|2020-02-13|2025-01-07|2030-01-08|Cumulative Update 2|https://support.microsoft.com/help/4536075
+15|4003|CU1|2020-01-07|2025-01-07|2030-01-08|Cumulative Update 1|https://support.microsoft.com/help/4527376
+15|2070|GDR|2019-11-04|2025-01-07|2030-01-08|RTM GDR|https://support.microsoft.com/help/4517790
+15|2000|RTM|2019-11-04|2025-01-07|2030-01-08|RTM|
+14|3530|RTM CU31 GDR|2026-05-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5090354
+14|3525|RTM CU31 GDR|2026-04-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5084818
+14|3520|RTM CU31 GDR|2026-03-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5077471
+14|3515|RTM CU31 GDR|2025-11-11|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/help/5068402
+14|3505|RTM CU31 GDR|2025-09-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5065225
+14|3500|RTM CU31 GDR|2025-08-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5063759
+14|3495|RTM CU31 GDR|2025-07-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5058714
+14|3485|RTM CU31 GDR|2024-11-12|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5046858
+14|3480|RTM CU31 GDR|2024-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5046061
+14|3475|RTM CU31 GDR|2024-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5042215
+14|3471|RTM CU31 GDR|2024-07-09|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5040940
+14|3465|RTM CU31 GDR|2023-10-10|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5029376
+14|3460|RTM CU31 GDR|2023-02-14|2022-10-11|2027-10-12|RTM Cumulative Update 31 GDR|https://support.microsoft.com/kb/5021126
+14|3456|RTM CU31|2022-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 31|https://support.microsoft.com/help/5016884
+14|3451|RTM CU30|2022-07-13|2022-10-11|2027-10-12|RTM Cumulative Update 30|https://support.microsoft.com/help/5013756
+14|3445|RTM CU29 GDR|2022-06-14|2022-10-11|2027-10-12|RTM Cumulative Update 29 GDR|https://support.microsoft.com/help/5014553
+14|3436|RTM CU29|2022-03-31|2022-10-11|2027-10-12|RTM Cumulative Update 29|https://support.microsoft.com/help/5010786
+14|3430|RTM CU28|2022-01-13|2022-10-11|2027-10-12|RTM Cumulative Update 28|https://support.microsoft.com/help/5006944
+14|3421|RTM CU27|2021-10-27|2022-10-11|2027-10-12|RTM Cumulative Update 27|https://support.microsoft.com/help/5006944
+14|3411|RTM CU26|2021-09-14|2022-10-11|2027-10-12|RTM Cumulative Update 26|https://support.microsoft.com/help/5005226
+14|3401|RTM CU25|2021-07-12|2022-10-11|2027-10-12|RTM Cumulative Update 25|https://support.microsoft.com/help/5003830
+14|3391|RTM CU24|2021-05-10|2022-10-11|2027-10-12|RTM Cumulative Update 24|https://support.microsoft.com/help/5001228
+14|3381|RTM CU23|2021-02-25|2022-10-11|2027-10-12|RTM Cumulative Update 23|https://support.microsoft.com/help/5000685
+14|3370|RTM CU22 GDR|2021-01-12|2022-10-11|2027-10-12|RTM Cumulative Update 22 GDR|https://support.microsoft.com/help/4583457
+14|3356|RTM CU22|2020-09-10|2022-10-11|2027-10-12|RTM Cumulative Update 22|https://support.microsoft.com/help/4577467
+14|3335|RTM CU21|2020-07-01|2022-10-11|2027-10-12|RTM Cumulative Update 21|https://support.microsoft.com/help/4557397
+14|3294|RTM CU20|2020-04-07|2022-10-11|2027-10-12|RTM Cumulative Update 20|https://support.microsoft.com/help/4541283
+14|3257|RTM CU19|2020-02-05|2022-10-11|2027-10-12|RTM Cumulative Update 19|https://support.microsoft.com/help/4535007
+14|3257|RTM CU18|2019-12-09|2022-10-11|2027-10-12|RTM Cumulative Update 18|https://support.microsoft.com/help/4527377
+14|3238|RTM CU17|2019-10-08|2022-10-11|2027-10-12|RTM Cumulative Update 17|https://support.microsoft.com/help/4515579
+14|3223|RTM CU16|2019-08-01|2022-10-11|2027-10-12|RTM Cumulative Update 16|https://support.microsoft.com/help/4508218
+14|3162|RTM CU15|2019-05-24|2022-10-11|2027-10-12|RTM Cumulative Update 15|https://support.microsoft.com/help/4498951
+14|3076|RTM CU14|2019-03-25|2022-10-11|2027-10-12|RTM Cumulative Update 14|https://support.microsoft.com/help/4484710
+14|3048|RTM CU13|2018-12-18|2022-10-11|2027-10-12|RTM Cumulative Update 13|https://support.microsoft.com/help/4466404
+14|3045|RTM CU12|2018-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 12|https://support.microsoft.com/help/4464082
+14|3038|RTM CU11|2018-09-20|2022-10-11|2027-10-12|RTM Cumulative Update 11|https://support.microsoft.com/help/4462262
+14|3037|RTM CU10|2018-08-27|2022-10-11|2027-10-12|RTM Cumulative Update 10|https://support.microsoft.com/help/4524334
+14|3030|RTM CU9|2018-07-18|2022-10-11|2027-10-12|RTM Cumulative Update 9|https://support.microsoft.com/help/4515435
+14|3029|RTM CU8|2018-06-21|2022-10-11|2027-10-12|RTM Cumulative Update 8|https://support.microsoft.com/help/4338363
+14|3026|RTM CU7|2018-05-23|2022-10-11|2027-10-12|RTM Cumulative Update 7|https://support.microsoft.com/help/4229789
+14|3025|RTM CU6|2018-04-17|2022-10-11|2027-10-12|RTM Cumulative Update 6|https://support.microsoft.com/help/4101464
+14|3023|RTM CU5|2018-03-20|2022-10-11|2027-10-12|RTM Cumulative Update 5|https://support.microsoft.com/help/4092643
+14|3022|RTM CU4|2018-02-20|2022-10-11|2027-10-12|RTM Cumulative Update 4|https://support.microsoft.com/help/4056498
+14|3015|RTM CU3|2018-01-04|2022-10-11|2027-10-12|RTM Cumulative Update 3|https://support.microsoft.com/help/4052987
+14|3008|RTM CU2|2017-11-28|2022-10-11|2027-10-12|RTM Cumulative Update 2|https://support.microsoft.com/help/4052574
+14|3006|RTM CU1|2017-10-24|2022-10-11|2027-10-12|RTM Cumulative Update 1|https://support.microsoft.com/help/4038634
+14|1000|RTM|2017-10-02|2022-10-11|2027-10-12|RTM|
+13|7055|SP3 Azure Feature Pack GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5058717
+13|7045|SP3 Azure Feature Pack GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5046062
+13|7040|SP3 Azure Feature Pack GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5042209
+13|7037|SP3 Azure Feature Pack GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5040944
+13|7029|SP3 Azure Feature Pack GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5029187
+13|7024|SP3 Azure Feature Pack GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5021128
+13|7016|SP3 Azure Feature Pack GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack GDR|https://support.microsoft.com/help/5015371
+13|7000|SP3 Azure Feature Pack|2022-05-19|2021-07-13|2026-07-14|Service Pack 3 Azure Feature Pack|https://support.microsoft.com/help/5014242
+13|6490|SP3 GDR|2026-05-12|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5089271
+13|6485|SP3 GDR|2026-04-14|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5084821
+13|6480|SP3 GDR|2026-03-10|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5077474
+13|6475|SP3 GDR|2025-11-11|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5068401
+13|6470|SP3 GDR|2025-09-09|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5065226
+13|6465|SP3 GDR|2025-08-12|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5063762
+13|6460|SP3 GDR|2025-07-08|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5058718
+13|6455|SP3 GDR|2024-11-12|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5046855
+13|6450|SP3 GDR|2024-10-08|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5046063
+13|6445|SP3 GDR|2024-09-10|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5042207
+13|6441|SP3 GDR|2024-07-09|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5040946
+13|6435|SP3 GDR|2023-10-10|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5029186
+13|6430|SP3 GDR|2023-02-14|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/kb/5021129
+13|6419|SP3 GDR|2022-06-14|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/help/5014355
+13|6404|SP3 GDR|2021-10-27|2021-07-13|2026-07-14|Service Pack 3 GDR|https://support.microsoft.com/help/5006943
+13|6300|SP3|2021-09-15|2021-07-13|2026-07-14|Service Pack 3|https://support.microsoft.com/help/5003279
+13|5888|SP2 CU17|2021-03-29|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 17|https://support.microsoft.com/help/5001092
+13|5882|SP2 CU16|2021-02-11|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 16|https://support.microsoft.com/help/5000645
+13|5865|SP2 CU15 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15 GDR|https://support.microsoft.com/help/4583461
+13|5850|SP2 CU15|2020-09-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 15|https://support.microsoft.com/help/4577775
+13|5830|SP2 CU14|2020-08-06|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 14|https://support.microsoft.com/help/4564903
+13|5820|SP2 CU13|2020-05-28|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 13|https://support.microsoft.com/help/4549825
+13|5698|SP2 CU12|2020-02-25|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 12|https://support.microsoft.com/help/4536648
+13|5598|SP2 CU11|2019-12-09|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 11|https://support.microsoft.com/help/4527378
+13|5492|SP2 CU10|2019-10-08|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 10|https://support.microsoft.com/help/4505830
+13|5479|SP2 CU9|2019-09-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 9|https://support.microsoft.com/help/4505830
+13|5426|SP2 CU8|2019-07-31|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 8|https://support.microsoft.com/help/4505830
+13|5337|SP2 CU7|2019-05-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 7|https://support.microsoft.com/help/4495256
+13|5292|SP2 CU6|2019-03-19|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 6|https://support.microsoft.com/help/4488536
+13|5264|SP2 CU5|2019-01-23|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 5|https://support.microsoft.com/help/4475776
+13|5233|SP2 CU4|2018-11-13|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 4|https://support.microsoft.com/help/4464106
+13|5216|SP2 CU3|2018-09-20|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 3|https://support.microsoft.com/help/4458871
+13|5201|SP2 CU2 + Security Update|2018-08-21|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2 + Security Update|https://support.microsoft.com/help/4458621
+13|5153|SP2 CU2|2018-07-16|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 2|https://support.microsoft.com/help/4340355
+13|5149|SP2 CU1|2018-05-30|2021-07-13|2026-07-14|Service Pack 2 Cumulative Update 1|https://support.microsoft.com/help/4135048
+13|5103|SP2 GDR|2021-01-12|2021-07-13|2026-07-14|Service Pack 2 GDR|https://support.microsoft.com/help/4583460
+13|5026|SP2|2018-04-24|2021-07-13|2026-07-14|Service Pack 2|https://support.microsoft.com/help/4052908
+13|4574|SP1 CU15|2019-05-16|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 15|https://support.microsoft.com/help/4495257
+13|4560|SP1 CU14|2019-03-19|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 14|https://support.microsoft.com/help/4488535
+13|4550|SP1 CU13|2019-01-23|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 13|https://support.microsoft.com/help/4475775
+13|4541|SP1 CU12|2018-11-13|2021-07-13|2026-07-14|Service Pack 1 Cumulative Update 12|https://support.microsoft.com/help/4464343
+13|4528|SP1 CU11|2018-09-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 11|https://support.microsoft.com/help/4459676
+13|4514|SP1 CU10|2018-07-16|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10|https://support.microsoft.com/help/4341569
+13|4502|SP1 CU9|2018-05-30|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 9|https://support.microsoft.com/help/4100997
+13|4474|SP1 CU8|2018-03-19|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 8|https://support.microsoft.com/help/4077064
+13|4466|SP1 CU7|2018-01-04|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 7|https://support.microsoft.com/help/4057119
+13|4457|SP1 CU6|2017-11-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 6|https://support.microsoft.com/help/4037354
+13|4451|SP1 CU5|2017-09-18|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 5|https://support.microsoft.com/help/4024305
+13|4446|SP1 CU4|2017-08-08|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 4|https://support.microsoft.com/help/4024305
+13|4435|SP1 CU3|2017-05-15|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 3|https://support.microsoft.com/help/4019916
+13|4422|SP1 CU2|2017-03-20|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 2|https://support.microsoft.com/help/4013106
+13|4411|SP1 CU1|2017-01-17|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 1|https://support.microsoft.com/help/3208177
+13|4224|SP1 CU10 + Security Update|2018-08-22|2019-07-09|2019-07-09|Service Pack 1 Cumulative Update 10 + Security Update|https://support.microsoft.com/help/4458842
+13|4001|SP1|2016-11-16|2019-07-09|2019-07-09|Service Pack 1|https://support.microsoft.com/help/3182545
+13|2216|RTM CU9|2017-11-20|2018-01-09|2018-01-09|RTM Cumulative Update 9|https://support.microsoft.com/help/4037357
+13|2213|RTM CU8|2017-09-18|2018-01-09|2018-01-09|RTM Cumulative Update 8|https://support.microsoft.com/help/4024304
+13|2210|RTM CU7|2017-08-08|2018-01-09|2018-01-09|RTM Cumulative Update 7|https://support.microsoft.com/help/4024304
+13|2204|RTM CU6|2017-05-15|2018-01-09|2018-01-09|RTM Cumulative Update 6|https://support.microsoft.com/help/4019914
+13|2197|RTM CU5|2017-03-20|2018-01-09|2018-01-09|RTM Cumulative Update 5|https://support.microsoft.com/help/4013105
+13|2193|RTM CU4|2017-01-17|2018-01-09|2018-01-09|RTM Cumulative Update 4|https://support.microsoft.com/help/3205052
+13|2186|RTM CU3|2016-11-16|2018-01-09|2018-01-09|RTM Cumulative Update 3|https://support.microsoft.com/help/3205413
+13|2164|RTM CU2|2016-09-22|2018-01-09|2018-01-09|RTM Cumulative Update 2|https://support.microsoft.com/help/3182270
+13|2149|RTM CU1|2016-07-25|2018-01-09|2018-01-09|RTM Cumulative Update 1|https://support.microsoft.com/help/3164674
+13|1601|RTM|2016-06-01|2019-01-09|2019-01-09|RTM|
 `

@@ -14,6 +14,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { sqlCell } from './sqlview';
 import { rereadStrip, stripOverlay, timeStrip } from './timestrip';
 import { Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { waitDocs } from './doclinks';
 
 export const mssqlQueriesTab = 'mssqlqueries';
 const HEAD = 10;   // a section's rows: the head of its full tab's own read
@@ -286,7 +287,7 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
     const snaps = rowsOf(d.snapshots), rows = rowsOf(d.rows);
     const t0 = Date.parse(win.from), t1 = Date.parse(win.to);
     const headGrid = (rs: Row[], empty = 'No request in the newest snapshot of this range.') => grid(rs.slice(0, HEAD), [
-      { key: 'session_id', label: 'session', num: true, fmt: v => String(v) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on' },
+      { key: 'session_id', label: 'session', num: true, fmt: v => String(v) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on', fmt: v => v == null ? '' : el('span', {}, String(v), waitDocs(v)) },
       { key: 'elapsed_ms', label: 'running for', num: true, fmt: dur }, { key: 'database_name', label: 'database' }, { key: 'statement', fmt: stmt },
     ], empty);
     // the rows part reads the newest snapshot at or before 'to' with no lower bound: a snapshot older than the range is
@@ -393,7 +394,7 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
         + (text(c.latest_clerk_capture) === text(c.latest_capture) ? ' It is in the newest capture\'s top 25.' : ' It has since dropped out of the collector\'s top 25, so the latest figure is its last observed footprint, not its current one.');
     body.replaceChildren(el('p', { class: 'qs-overhead-line' }, line), el('p', { class: 'qs-memory-line' }, clerk),
       grid(types, [
-        { key: 'wait_type', label: 'wait type' }, { key: 'wait_ms_per_hour', label: 'wait ms per hour', num: true },
+        { key: 'wait_type', label: 'wait type', fmt: v => v == null ? '' : el('span', {}, String(v), waitDocs(v)) }, { key: 'wait_ms_per_hour', label: 'wait ms per hour', num: true },
         { key: 'wait_ms', label: 'wait ms', num: true }, { key: 'waiting_tasks', label: 'waiting tasks', num: true },
         { key: 'measured_secs', label: 'measured seconds', num: true, fmt: v => fmtNum(Math.round(Number(v))) }, { key: 'rows', num: true },
         { key: 'last_seen', label: 'last seen', fmt: fmtTime },

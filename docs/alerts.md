@@ -345,6 +345,13 @@ A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric
   its statement counts at any duration. Whether the server sent a statement is recorded as `has_text` before the
   instance's `query_text` policy runs, so under `none` (no text stored) a real timeout still counts, and the flag
   holds no text.
+- **Wait seconds per core per minute (SQLMonitor's figure).** The seeded rule (off) warns above 180, SQLMonitor's
+  dashboard flag, and is critical from 300, its red; each point already spans five minutes of reads, so the rule's
+  minutes are 0. Where pgvigil differs from SQLMonitor's procedure: the scheduler count is the newest read at or before
+  the point (SQLMonitor counts at its call); a SLEEP_TASK the collector marked a hash spill counts (SQLMonitor leaves
+  every SLEEP_TASK out); the figure keeps 2 decimals (SQLMonitor rounds up to a whole second); a restart's read gives
+  no point. A point with no value (no scheduler count) is not judged, and says so: *N/A: not judged: no scheduler
+  count (the mssql_cpu collection is off, or Azure SQL Database)*.
 - **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
   15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
   no fresh sample came: the collector may be down, or the instance. When the samples come back still beyond the

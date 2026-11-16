@@ -14,12 +14,13 @@ import { get, Row, rowsOf, Table } from './api';
 import { tagScopeIds, tagWords } from './fleet';
 import type { Ctx } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
+import { buildDocs, errorCell } from './doclinks';
 
 // The tab key of the instance page and of the fleet page (the router's entries carry the same keys).
 export const mssqlChecksTab = 'mssqlchecks';
 export const mssqlChecksFleetTab = 'mssqlrisks';
 
-type Parts = Record<'state' | 'areas' | 'findings' | 'options' | 'flags' | 'build' | 'databases' | 'columns' | 'suspect'
+type Parts = Record<'state' | 'areas' | 'findings' | 'options' | 'flags' | 'build' | 'build_docs' | 'databases' | 'columns' | 'suspect'
   | 'alerts' | 'operators' | 'alerting' | 'identity' | 'identity_scan', Table | null>;
 type FleetParts = Record<'risks' | 'cells' | 'options', Table | null>;
 
@@ -81,7 +82,7 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
     case 'options': sec.append(...optionsView(rowsOf(d.options))); break;
     case 'databases': sec.append(...databasesView(rowsOf(d.databases), rowsOf(d.columns), q.get('risk') ?? '')); break;
     case 'flags': sec.append(...flagsView(rowsOf(d.flags))); break;
-    case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect))); break;
+    case 'build': sec.append(...buildView(rowsOf(d.build)[0], rowsOf(d.suspect), rowsOf(d.build_docs)[0] ?? {})); break;
     case 'alerts': sec.append(...alertsView(rowsOf(d.alerts), rowsOf(d.operators), rowsOf(d.alerting)[0], alertsScript(ctx, rowsOf(d.findings), rowsOf(d.areas)))); break;
     case 'identity': sec.append(...identityView(rowsOf(d.identity), rowsOf(d.identity_scan))); break;
     case 'findings': sec.append(findingsGrid(rowsOf(d.findings))); break;
@@ -190,13 +191,13 @@ function flagsView(rows: Row[]): HTMLElement[] {
     grid(rows, cols, 'No trace flag is on globally.')];
 }
 
-function buildView(b: Row | undefined, suspect: Row[]): HTMLElement[] {
+function buildView(b: Row | undefined, suspect: Row[], docs: Row): HTMLElement[] {
   const out: HTMLElement[] = [el('h3', {}, 'Build')];
   if (!b) out.push(el('p', { class: 'empty' }, 'No read yet.'));
   else {
     const st = el('span', { class: statusCls(b.status) }, b.known !== true ? 'not weighed' : b.newer === true ? 'newer than the catalogue' : Number(b.behind) === 0 ? 'the newest build' : `${String(b.behind)} build(s) behind, ${String(b.cus_behind)} cumulative update(s)`);
     out.push(props([
-      ['version', String(b.product_version ?? '')], ['state', st],
+      ['version', el('span', {}, String(b.product_version ?? ''), ' ', buildDocs(docs))], ['state', st],
       ['update', [b.branch, b.update_name ? `(${String(b.update_name)})` : ''].filter(Boolean).map(String).join(' ')],
       ['released', String(b.release_date ?? '')],
       ['newest of the major', b.newest_build == null ? '' : `${String(b.newest_branch)}, build ${String(b.newest_build)}, released ${String(b.newest_release_date)}`],
@@ -248,7 +249,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined, script: HTMLE
   return [
     el('h3', {}, 'Alerts'),
     grid(alerts, [
-      { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true },
+      { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true, fmt: errorCell },
       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
       { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => r.enabled === true && Number(v) === 0 && r.has_job !== true ? 'status warn' : '' },
       { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },

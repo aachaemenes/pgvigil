@@ -9,6 +9,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl, props, tile } from './ui';
+import { errorCell } from './doclinks';
 import { stripGrid } from './timestrip';
 import { planSourcesCol } from './mssql_plancache';
 
@@ -434,7 +435,7 @@ const agCols: Col[] = [
   { key: 'is_failover', label: 'failover', fmt: v => v === true ? badge('failover', 'crit') : '' },
   { key: 'event_name', label: 'event' }, { key: 'ag_name', label: 'group' }, { key: 'replica_name', label: 'replica' },
   { key: 'previous_state', label: 'from' }, { key: 'current_state', label: 'to' },
-  { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) }, { key: 'family' },
+  { key: 'error_number', label: 'error', num: true, fmt: errorCell }, { key: 'family' },
   { key: 'ddl_phase', label: 'DDL phase' },
   { key: 'statement', label: 'DDL', wide: true }, { key: 'message', wide: true },
 ];

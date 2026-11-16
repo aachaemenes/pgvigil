@@ -6,6 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { waitDocs } from './doclinks';
 
 // The tab keys of the slice's pages (the router's entries carry the same keys).
 export const mssqlCpuTab = 'mssqlcpu';
@@ -509,7 +510,7 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
     { key: 'is_next_candidate', label: 'next candidate', fmt: yes },
     { key: 'is_small', label: 'small query', fmt: yes },
     { key: 'pool_id', label: 'pool', num: true },
-    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : String(v) + ' ' + ms(r.wait_ms) },
+    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : el('span', {}, String(v) + ' ' + ms(r.wait_ms), waitDocs(v)) },
     { key: 'statement', label: 'statement', wide: true },
   ], 'No query held or waited for a memory grant at the newest read.'));
 

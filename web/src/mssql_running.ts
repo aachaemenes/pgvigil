@@ -17,6 +17,7 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
+import { waitDocs } from './doclinks';
 import { foldedGrid } from './running';
 import { firstChars, sqlCell, whatIsThis } from './sqlview';
 import { mssqlBlockingTrend } from './blocking_history';
@@ -50,7 +51,7 @@ const coord = (v: unknown, r: Row) => v == null ? '' : parallel(r)
   ? el('span', { title: 'A parallel request: this counter is its coordinator task\'s alone. The sums over its tasks are in the columns "tasks CPU" and "tasks IO".' }, fmtNum(v) + ' (coordinator)')
   : fmtNum(v);
 const waitCell = (_v: unknown, r: Row) => r.wait_type == null ? ''
-  : el('span', {}, String(r.wait_type).startsWith('LCK_') ? badge(String(r.wait_type), 'warn') : String(r.wait_type), ' ' + ms(r.wait_ms));
+  : el('span', {}, String(r.wait_type).startsWith('LCK_') ? badge(String(r.wait_type), 'warn') : String(r.wait_type), ' ' + ms(r.wait_ms), waitDocs(r.wait_type));
 const sessionWaits = (v: unknown) => {
   if (typeof v !== 'string' || !v) return '';
   try {

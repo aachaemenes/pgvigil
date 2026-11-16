@@ -116,6 +116,11 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
         : r.compiles_under_floor === true ? (w => muted(w, w))(`N/A: too few batch requests/s over the range to judge (${Number(r.batch_s) < Number(r.compiles_floor) ? `${fmtNum(r.batch_s)}/s, ` : 'under '}the floor ${fmtNum(r.compiles_floor)}/s)`)
         : v == null ? absent(r, '', 'no two mssql_cpu reads in the range: a rate needs two')
         : el('span', { title: 'SQL Compilations per 100 Batch Requests over the range' }, fmtNum(v)) },
+    // task 412: SQLMonitor's figure over the range (its dashboard flags above 180)
+    { key: 'wait_s_core_min', label: 'wait s per core per minute', num: true,
+      fmt: (v, r) => !isMs(r) ? na('a SQL Server figure')
+        : v == null ? absent(r, '', 'no scheduler count (mssql_cpu off, or Azure SQL Database) or under 5 minutes of wait reads in the range')
+        : el('span', { title: 'the waits of the range, benign waits and SQLMonitor\'s per-core list left out, in seconds per scheduler per minute (SQLMonitor flags above 180)' }, fmtNum(v)) },
     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')

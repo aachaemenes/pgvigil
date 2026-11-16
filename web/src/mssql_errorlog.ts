@@ -9,6 +9,7 @@ import { waitingLink } from './darling_waiting';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { errorCell, waitDocs } from './doclinks';
 
 type Part = Table | null;
 const text = (v: unknown) => v == null ? '' : String(v);
@@ -64,7 +65,7 @@ function readerNote(t: Part, reader: string): HTMLElement {
 const lineCols: Col[] = [
   { key: 'log_at', label: 'when', fmt: fmtTime },
   { key: 'severity', num: true, fmt: v => v == null ? '' : String(v), cls: v => Number(v) >= 20 ? 'crit' : Number(v) >= 17 ? 'warn' : '' },
-  { key: 'error_number', label: 'error', num: true, fmt: v => v == null ? '' : String(v) },
+  { key: 'error_number', label: 'error', num: true, fmt: errorCell },
   { key: 'class', fmt: v => v === 'corruption' ? badge('corruption', 'crit') : text(v) },
   { key: 'message', label: 'line', wide: true },
   { key: 'process' },
@@ -324,7 +325,7 @@ const schedulerCols: Col[] = [
 ];
 const waitCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime },
-  { key: 'wait_type', label: 'wait type', fmt: v => v ? waitingLink(text(v), text(v)) : '' },
+  { key: 'wait_type', label: 'wait type', fmt: v => v ? el('span', {}, waitingLink(text(v), text(v)), waitDocs(v)) : '' },
   { key: 'duration_ms', label: 'duration', num: true, fmt: ms }, { key: 'signal_duration_ms', label: 'signal duration', num: true, fmt: ms },
   { key: 'wait_resource', label: 'wait resource', wide: true }, { key: 'session_id', label: 'session', num: true },
   { key: 'statement', wide: true },

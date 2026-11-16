@@ -11,6 +11,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, window_ } from './router';
 import { hashParam } from './dbinfo';
 import { Col, el, fmtNum, fmtTime, grid, tile } from './ui';
+import { waitDocs } from './doclinks';
 
 interface WaitingData { snapshots?: Table | null; tasks?: Table | null; bytype?: Table | null; pg?: Table | null; pgbytype?: Table | null }
 
@@ -90,7 +91,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   const cols: Col[] = [
     { key: 'session_id', label: 'session', num: true, fmt: (v, r) => Number(r.tasks_of_session) > 1 ? `${String(v)} (${String(r.tasks_of_session)} tasks)` : String(v ?? '') },
     { key: 'exec_context_id', label: 'context', num: true, fmt: v => String(v ?? '') },
-    { key: 'wait_type', label: 'wait', fmt: v => el('a', { href: waitingHref(ctx, 'mssql_waiting', cur, String(v)), title: `the tasks waiting on ${String(v)}` }, String(v)) },
+    { key: 'wait_type', label: 'wait', fmt: v => el('span', {}, el('a', { href: waitingHref(ctx, 'mssql_waiting', cur, String(v)), title: `the tasks waiting on ${String(v)}` }, String(v)), waitDocs(v)) },
     { key: 'wait_ms', label: 'waited', num: true, fmt: v => ms(v) },
     { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: (v, r) => v == null ? '' : !byOther(r)
       ? `own context ${String(r.blocking_exec_context_id ?? '')}`
@@ -108,7 +109,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Wait types over the range'),
     el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, counted read by read (a session waiting in two reads counts twice; a session id can go to a later session once its session ends), in how many reads, the longest wait seen and when it was last seen. A wait type opens the read where it was last seen, filtered to it.'),
     grid(types, [
-      { key: 'wait_type', label: 'wait', fmt: (v, r) => el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)) },
+      { key: 'wait_type', label: 'wait', fmt: (v, r) => el('span', {}, el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)), waitDocs(v)) },
       { key: 'tasks', num: true }, { key: 'sessions', num: true }, { key: 'reads', num: true },
       { key: 'longest_ms', label: 'longest', num: true, fmt: v => ms(v) },
       { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },

@@ -10,6 +10,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
+import { errorCell } from './doclinks';
 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlAuditTab = 'mssqlaudit';
@@ -115,7 +116,8 @@ const eventCols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'object_name', label: 'object', fmt: (v, r) => [text(r.schema_name), text(v)].filter(Boolean).join('.') },
   { key: 'client_ip', label: 'from' }, { key: 'application' }, { key: 'host' },
-  { key: 'reason', fmt: (v, r) => prose(r.error_state != null ? `${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})` : reasonOf(v)) },
+  { key: 'reason', fmt: (v, r) => r.error_state != null ? el('span', {}, prose(`${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})`), ' ', errorCell(r.error_number))
+    : prose(reasonOf(v)) },
   { key: 'statement', wide: true },
   { key: 'audit_name', label: 'audit' },
 ];

@@ -16,6 +16,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, offControl, tile } from './ui';
+import { errorCell } from './doclinks';
 import { AckData, ackOn, ackWhy, jobAckCell, jobAcks, loadAckSafe, onDoor, seatWhy } from './ack';
 import { fleet } from './fleet';
 import { jobChartSection } from './jobs_chart';
@@ -89,7 +90,7 @@ const runCols: Col[] = [
   { key: 'duration_s', label: 'took', num: true, fmt: dur },
   { key: 'outcome', fmt: outcomeBadge },
   { key: 'failed_step', label: 'step that failed' },
-  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
+  { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
   { key: 'sql_severity', label: 'severity', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
   { key: 'retries', num: true, fmt: v => v == null ? '' : fmtNum(v) },
   { key: 'message', fmt: oneLine },
@@ -461,7 +462,7 @@ const failedCols: Col[] = [
   { key: 'run_at', label: 'run', fmt: fmtTime }, { key: 'job' }, { key: 'outcome', cls: outcomeCls, fmt: outcomeBadge },
   { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'step name' },
   { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs },
-  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
+  { key: 'sql_message_id', label: 'error', num: true, fmt: errorCell },
   { key: 'message', fmt: oneLine },
 ];
 

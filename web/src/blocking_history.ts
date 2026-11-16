@@ -14,7 +14,14 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { waitDocs } from './doclinks';
 import { sqlCell, whatIsThis } from './sqlview';
+
+// a cell's list of wait types (an array, or text with ', ' between), each with its documentation links (task 412)
+const waitList = (v: unknown): HTMLElement | string => {
+  const ts = (Array.isArray(v) ? v.map(String) : String(v ?? '').split(',')).map(t => t.trim()).filter(Boolean);
+  return ts.length ? el('span', {}, ...ts.flatMap((t, i) => [i ? ', ' : '', t, waitDocs(t)])) : '';
+};
 
 type PgParts = 'meta' | 'summary' | 'episodes' | 'trend' | 'xmin_summary' | 'xmin_pins' | 'xmin_now';
 type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs' | 'by_login' | 'by_program' | 'chains';
@@ -192,7 +199,7 @@ export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
         { key: 'head_session_id', label: 'head of its chain', num: true, fmt: v => v == null ? '' : String(v) },
         { key: 'snapshots', label: 'snapshots', num: true },
         { key: 'longest_wait_ms', label: 'longest wait', num: true, fmt: v => v == null ? '' : fmtSecs(Math.floor(Number(v) / 1000)) },
-        { key: 'wait_types', label: 'wait types' }, { key: 'wait_resources', label: 'resources', wide: true },
+        { key: 'wait_types', label: 'wait types', fmt: v => waitList(v) }, { key: 'wait_resources', label: 'resources', wide: true },
         { key: 'database_name', label: 'database' }, { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_program', label: 'blocked program' },
         { key: 'blocking_login', label: 'blocking login' }, { key: 'blocking_program', label: 'blocking program' },
         { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? '') },

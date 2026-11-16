@@ -35,6 +35,9 @@ import (
 //                    Compilations per 100 Batch Requests over the range from the same reads; NULL under the 'counters'
 //                    metric compiles_per_100_batches' floor (0152's metric_floors, 5 Batch Requests/s, task 402), with
 //                    compiles_under_floor true and compiles_floor the floor, judged on the unrounded rate.
+//                    wait_s_core_min (SQL Server only, task 412, SQLMonitor C53): the range's waits not left out (the
+//                    benign ones and SQLMonitor's per-core list) in seconds per scheduler per minute, time-weighted
+//                    (0152's mssql_wait_core_summary); NULL with no scheduler count or under 300 s of wait reads.
 //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
 //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
 //                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
@@ -80,7 +83,7 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        NULL::numeric AS signal_pct,
        NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS compiles_per_100, NULL::boolean AS compiles_under_floor,
-       NULL::double precision AS compiles_floor, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+       NULL::double precision AS compiles_floor, NULL::double precision AS wait_s_core_min, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
        NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
@@ -197,6 +200,9 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        CASE WHEN t.batch_raw IS NULL OR t.compiles_s IS NULL OR t.batch_raw < cf.floor THEN NULL
             ELSE round(100 * t.compiles_s / t.batch_raw, 1) END AS compiles_per_100,
        t.batch_raw < cf.floor AS compiles_under_floor, cf.floor AS compiles_floor,
+       -- task 412: SQLMonitor's wait seconds per core per minute over the range, time-weighted (0152); NULL with no
+       -- scheduler count or under 300 s of wait reads
+       pgvigil.mssql_wait_core_summary(inst.instance_id, $1, $2) AS wait_s_core_min,
        m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
        NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
        CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
