@@ -388,6 +388,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/waitfindings", s.MSSQLWaitFindings) // the Waits tab's findings, shares, roll-up and grant semaphores (task 177 D03)
 	api.HandleFunc("GET /api/waiting", s.Waiting)                      // the Waiting tasks tab of either engine (task 177)
 	api.HandleFunc("GET /api/mssql/availability", s.MSSQLAvailability)
+	api.HandleFunc("GET /api/mssql/hadr/fleet", s.MSSQLHADRFleet)
 	api.HandleFunc("GET /api/mssql/jobs", s.MSSQLJobs)
 	api.HandleFunc("GET /api/jobs/history", s.JobsHistory)
 	api.HandleFunc("GET /api/config/changes", s.ConfigChanges)
