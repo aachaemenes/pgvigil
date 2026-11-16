@@ -64,7 +64,9 @@ func TestCHRate24FollowsTheAckOnAStore(t *testing.T) {
 		t.Helper()
 		var x row
 		n := 0
-		rows, err := tx.Query(ctx, `SELECT q.status, coalesce(q.status_reason, ''), q.runs::int, q.failed::int, q.failed_pct_24h::float8 FROM (`+sqlCHInstance+`) q`,
+		// sqlCHInstance's last line is a '--' comment (its ORDER BY's words): the subquery's ')' goes on a line of its own,
+		// as collection_health_cost_store_test.go wraps sqlCHCollection - else ') q' is commented out (42601 at the end)
+		rows, err := tx.Query(ctx, `SELECT q.status, coalesce(q.status_reason, ''), q.runs::int, q.failed::int, q.failed_pct_24h::float8 FROM (`+sqlCHInstance+"\n"+`) q`,
 			time.Now().Add(-24*time.Hour), time.Now(), id, []int32(nil), "c2", []string(nil), "{}")
 		if err != nil {
 			t.Fatal(err)
