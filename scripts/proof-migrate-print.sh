@@ -71,6 +71,9 @@ mapfile -t FILES < <(find internal/repo/sql -maxdepth 1 -name '*.sql' -printf '%
 NFILES=${#FILES[@]}
 FIRST=${FILES[0]}; SECOND=${FILES[1]}; NEWEST=${FILES[$((NFILES - 1))]}; MIDDLE=${FILES[$((NFILES / 2))]}
 K=$((NFILES - 3))
+# a file's header in the printed script, matched whole: a migration's own comment may start '-- file ' too
+# (0126_darling_queries.sql L35 '-- file fails whole ...'), so a bare '^-- file ' prefix miscounts the files
+HDR='^-- file [0-9][0-9][0-9][0-9]_[^ ]+[.]sql [(][0-9]+ of [0-9]+[)]$'
 
 echo "== T go test =="
 go test -count=1 -run TestMigratePrint ./internal/repo/ > "$WORK/t.out" 2>&1 || { cat "$WORK/t.out" >&2; fail "T: go test"; }
@@ -118,7 +121,7 @@ after=$(state)
 [ "$before" = "$after" ] || fail "E: the print changed the repository"
 grep -qx -- "-- pending: 2 file(s): $MIDDLE .. $NEWEST" "$WORK/atn.sql" || fail "E: header: $(grep -- '-- pending' "$WORK/atn.sql")"
 grep -qF "unnest(ARRAY['$MIDDLE', '$NEWEST']::text[])" "$WORK/atn.sql" || fail "E: the guard does not name exactly the two"
-[ "$(grep -c '^-- file ' "$WORK/atn.sql")" = 2 ] || fail "E: not two files"
+[ "$(grep -cE "$HDR" "$WORK/atn.sql")" = 2 ] || fail "E: not two files"
 { grep -q "^-- file $MIDDLE (1 of 2)$" "$WORK/atn.sql" && grep -q "^-- file $NEWEST (2 of 2)$" "$WORK/atn.sql"; } || fail "E: the files are not $MIDDLE then $NEWEST"
 ok "E at N: $MIDDLE and $NEWEST pending, the repository unchanged by the print"
 
@@ -160,11 +163,14 @@ ok "H exits: closed port 1, no config 3, nothing on stdout"
 
 echo "== I at N, applied =="
 psql "$ADMIN" -XAtq -v ON_ERROR_STOP=1 -c "alter database $PARTIAL set jit = on" >/dev/null
-awk -v k="$K" '/^-- file /{n++} n <= k' "$WORK/fresh.sql" > "$WORK/part.sql"
-[ "$(grep -c '^-- file ' "$WORK/part.sql")" = "$K" ] || fail "I: the cut holds $(grep -c '^-- file ' "$WORK/part.sql") files, not $K"
+awk -v k="$K" -v re="$HDR" '$0 ~ re {n++} n <= k' "$WORK/fresh.sql" > "$WORK/part.sql"
+[ "$(grep -cE "$HDR" "$WORK/part.sql")" = "$K" ] || fail "I: the cut holds $(grep -cE "$HDR" "$WORK/part.sql") files, not $K"
+# the cut's last file is the K-th of the tree, its COMMIT the cut's last statement
+grep -qx -- "-- file ${FILES[$((K - 1))]} ($K of $NFILES)" "$WORK/part.sql" || fail "I: the cut's last file is not ${FILES[$((K - 1))]}"
+[ "$(grep -v '^[[:space:]]*$' "$WORK/part.sql" | tail -1)" = "COMMIT;" ] || fail "I: the cut does not end on a file's COMMIT"
 rc=0; psql "$ADMIN dbname=$PARTIAL" -X -q -f "$WORK/part.sql" > "$WORK/i1.out" 2>&1 || rc=$?
 [ "$rc" = 0 ] || { tail -20 "$WORK/i1.out" >&2; fail "I: the cut script: psql exit $rc"; }
-[ "$(q "$PARTIAL" "select count(*) from pgvigil.schema_version")" = "$K" ] || fail "I: schema_version does not hold $K files"
+n=$(q "$PARTIAL" "select count(*) from pgvigil.schema_version"); [ "$n" = "$K" ] || fail "I: schema_version holds $n files, not $K"
 PGVIGIL_REPO_DSN="$ADMIN dbname=$PARTIAL" "$BIN" migrate -config "$CFG" -print > "$WORK/rest.sql" 2>/dev/null || fail "I: -print"
 grep -qx -- "-- pending: 3 file(s): ${FILES[$K]} .. $NEWEST" "$WORK/rest.sql" || fail "I: header: $(grep -- '-- pending' "$WORK/rest.sql")"
 rc=0; psql "$ADMIN dbname=$PARTIAL" -X -q -f "$WORK/rest.sql" > "$WORK/i2.out" 2>&1 || rc=$?
