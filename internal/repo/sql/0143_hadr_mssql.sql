@@ -163,7 +163,16 @@ BEGIN
   v_newest := pgvigil.mssql_hadr_read(p_instance_id, 'mssql_ag', p_snapshot_at,
                 (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'replica'));
 
+  -- The three sample parents are taken here, in NAME order, before any of them is written: purge() drops old months
+  -- by parent name and holds each parent to its end, so an import that wrote mssql_ag_sample first and reached
+  -- mssql_ag_dbcounter_sample last met it head on (one of the two ended with 40P01, and purge has no retry). The
+  -- month's partitions first, in the same order - making one takes ACCESS EXCLUSIVE on its parent, and a parent already
+  -- held in ROW EXCLUSIVE by two imports could not be raised by either (the month's first reads of two instances).
+  PERFORM pgvigil.ensure_month_partition('mssql_ag_dbcounter_sample', p_snapshot_at);
+  PERFORM pgvigil.ensure_month_partition('mssql_ag_replica_sample', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_ag_sample', p_snapshot_at);
+  LOCK TABLE pgvigil.mssql_ag_dbcounter_sample, pgvigil.mssql_ag_replica_sample, pgvigil.mssql_ag_sample IN ROW EXCLUSIVE MODE;
+
   DELETE FROM pgvigil.mssql_ag_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;   -- a re-run of one read
   INSERT INTO pgvigil.mssql_ag_sample (instance_id, snapshot_at, group_name, replica_server, database_name, synchronization_state,
       is_suspended, log_send_queue_kb, log_send_rate_kb_s, redo_queue_kb, redo_rate_kb_s, est_data_loss_s, est_recovery_s)
@@ -174,7 +183,6 @@ BEGIN
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' = 'database' AND r->>'group_name' IS NOT NULL AND r->>'replica_server' IS NOT NULL AND r->>'database_name' IS NOT NULL;
 
-  PERFORM pgvigil.ensure_month_partition('mssql_ag_replica_sample', p_snapshot_at);
   DELETE FROM pgvigil.mssql_ag_replica_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
   INSERT INTO pgvigil.mssql_ag_replica_sample (instance_id, snapshot_at, replica_server, flow_control_ms_total, flow_controls_total,
       resent_messages_total, flow_control_ms_per_s, flow_controls_per_s, resent_messages_per_s)
@@ -192,7 +200,6 @@ BEGIN
                         ORDER BY s.snapshot_at DESC LIMIT 1) p ON true
    WHERE r->>'kind' = 'replica_counters' AND r->>'counter_instance' IS NOT NULL;
 
-  PERFORM pgvigil.ensure_month_partition('mssql_ag_dbcounter_sample', p_snapshot_at);
   DELETE FROM pgvigil.mssql_ag_dbcounter_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
   INSERT INTO pgvigil.mssql_ag_dbcounter_sample (instance_id, snapshot_at, database_name, db_flow_control_delay_total, db_flow_controls_total,
       redo_blocked_total, db_flow_control_ms_per_s, db_flow_controls_per_s, redo_blocked_per_s)
