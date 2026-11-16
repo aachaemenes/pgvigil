@@ -29,3 +29,14 @@ func TestSummaryCollectPre0166(t *testing.T) {
 		t.Errorf("the pre-0166 form: %s", sqlSummaryCollectPre0166)
 	}
 }
+
+// TestSummaryCollectNoFailedLines: the collect part's detail holds the stale lines the Snapshot Age cell shows and
+// nothing else - the failing collections are Collection Health's (ch_detail, which honours the acknowledgement of the
+// collector errors itself), so the part reads no acknowledgement and lists no failed run
+func TestSummaryCollectNoFailedLines(t *testing.T) {
+	for _, bad := range []string{"the last run failed", "collector errors", "pgvigil.acks", "acked"} {
+		if strings.Contains(sqlSummaryCollectBase, bad) {
+			t.Errorf("the collect part still holds %q", bad)
+		}
+	}
+}

@@ -57,12 +57,14 @@
 #     count of 9 fail; the instance=, below-0256 and no-write rows pass. RED (96ff6ed1, dated at the start, the failure
 #     first): the export behind then failing dated at its failure, each row dated at its start (not the range's end), no
 #     'since' in the notes, the export rows not the newest; the rest pass.
-#  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n: the row moved there from the
-#     errors_24h / failing columns B6G-N's Collection Health replaced): X's 1 / 1 (c2 warning) / detail 'c2: the last
-#     run failed'; acknowledged up to its newest log_id -> 0 / 0 / no such line, the error view's rows acked; an
-#     older-started run logged after it -> 1 / 1; a second acknowledgement -> 0 / 0; Unacknowledge (every live row
-#     ended) -> 1 / 2 (c2, c3); a live row with seen_state 'x' -> the part still answers, 1 / 2; ack_log holds every add
-#     and end. RED (before the cell read the mark): the cell stays 1 / 1 after the acknowledgement on a Collection Health that reads no ack.
+#  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n and its detail ch_detail: the Summary's
+#     failing collections are Collection Health's, which reads the acknowledgement itself as DBA Dash's Summary_Upd
+#     L123 - a collection's stored failures in a row count once a failure is logged past the mark, then whole): X's
+#     1 / 1 (c2 warning) / ch_detail naming c2; acknowledged up to its newest log_id -> 0 / 0 / c2 not named, the error
+#     view's rows acked; an older-started run logged after it -> 1 / 1; a second acknowledgement -> 0 / 0; Unacknowledge
+#     (every live row ended) -> 1 / 2 (c2, c3); a live row with seen_state 'x' -> the part still answers, 1 / 2; ack_log
+#     holds every add and end. RED: the cell stays 1 / 1 after the acknowledgement on a Collection Health that reads no
+#     acknowledgement.
 #  E. a skip only with skipped=1; no Retry anywhere (no 'retries' column). RED: no route.
 #  F. the stream, own seeded rows: 824 (sev 24, page (1:178064), database ID 5 -> 'database ID 5 (now inv)'), 9002 on
 #     two instances ('salesdb', 'hr'), 823 (no database: empty), 1480 from AlwaysOn_health (sev 10, a listed number:
@@ -346,12 +348,12 @@ X=$(syn ack postgres)
 lc "$X" c1 30 error "c1 failed"; lc "$X" c2 20 error "c2 failed"; lc "$X" c2 10 error "c2 failed again"
 q "select pgvigil.log_collection($X, 'c1', now() - interval '5 minutes', 10, 'ok', NULL)" >/dev/null
 summ() { curl -s "$U2/api/mssql/summary?part=collect" > "$WORK/r.json"; py "'|'.join(str(one(T('collect'), instance_id=$X).get(k)) for k in ('ch_level','ch_n'))"; }
-dline() { curl -s "$U2/api/mssql/summary?part=collect" > "$WORK/r.json"; py "any('c2: the last run failed' in s for s in (one(T('collect'), instance_id=$X).get('detail') or []))"; }
-check "$(summ)|$(dline)" "1|1|True" "D: before - Collection Health warning, one collection (c2: two failures in a row), its detail line"
+dline() { curl -s "$U2/api/mssql/summary?part=collect" > "$WORK/r.json"; py "'c2 ' in (one(T('collect'), instance_id=$X).get('ch_detail') or '')"; }
+check "$(summ)|$(dline)" "1|1|True" "D: before - Collection Health warning, one collection (c2: two failures in a row), c2 in the cell's detail"
 L0=$(q "select count(*) from pgvigil.ack_log")
 M=$(q "select max(log_id) from pgvigil.collection_log where instance_id = $X")
 A1=$(post /api/ack "{\"kind\":\"ack\",\"instance_id\":$X,\"check_key\":\"collector errors\",\"seen_state\":\"log_id:$M\",\"until_change\":true}" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("ack_id"))' 2>/dev/null || echo none)
-check "$(summ)|$(dline)" "0|0|False" "D: acknowledged up to log_id $M - Collection Health counts nothing, no detail line"
+check "$(summ)|$(dline)" "0|0|False" "D: acknowledged up to log_id $M - Collection Health counts nothing, c2 not in the cell's detail"
 get "/api/collectorerrors?view=error&instance=$X&$W"
 check "$(py "all(r['acked'] for r in T('rows'))")|$(py "len(T('rows'))")" "True|3" "D: the error view marks the acknowledged rows (all three)"
 q "select pgvigil.log_collection($X, 'c3', now() - interval '40 minutes', 10, 'error', 'c3 started before the others, logged after the acknowledgement')" >/dev/null

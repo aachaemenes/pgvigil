@@ -150,3 +150,20 @@ func TestCHFoldB6f3Shapes(t *testing.T) {
 		t.Errorf("sqlCHInstance's tie-break is not the collection, then the instance")
 	}
 }
+
+// TestCollectionHealthRate24FromTheAck: the page's Failed % 24hrs reads the period DBA Dash's summary rates - the last
+// 24 hours, or from the instance's acknowledgement of its collector errors if that is later, from the start of the next
+// hour (CollectionHealthRateFrom.sql; CollectionHealth_Get.sql L154-169) - through pgvigil.collection_errors_ack(), the
+// one reader of that acknowledgement Collection Health shares; the constant 24-hour bound stays its own predicate (the
+// hourly table's key range)
+func TestCollectionHealthRate24FromTheAck(t *testing.T) {
+	if !strings.Contains(sqlCHRows, "pgvigil.collection_errors_ack()") {
+		t.Errorf("sqlCHRows' 24-hour rate does not read the acknowledgement (pgvigil.collection_errors_ack())")
+	}
+	if !strings.Contains(sqlCHRows, "h.hour >= date_trunc('hour', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '23 hours'") {
+		t.Errorf("sqlCHRows' 24-hour rate lost its constant bound")
+	}
+	if !strings.Contains(sqlCHRows, "a.rate_from IS NULL OR h.hour >= a.rate_from") {
+		t.Errorf("sqlCHRows' 24-hour rate does not start at the acknowledgement's hour")
+	}
+}
