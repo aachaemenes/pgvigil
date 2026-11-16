@@ -55,11 +55,17 @@ func TestMigratePrintFresh(t *testing.T) {
 		"-- pgvigil migrate -print", "-- build: pgvigil test", "-- repository: database pgv on PostgreSQL 18.1",
 		"-- applied: none (no pgvigil.schema_version: a fresh repository)",
 		fmt.Sprintf("-- pending: %d file(s): %s .. %s", len(names), names[0], names[len(names)-1]),
-		"-- run it as the repository owner: psql -X -v ON_ERROR_STOP=1",
+		"-- run it with psql as the repository owner", "--   psql -X -v ON_ERROR_STOP=1",
+		"\n\\set ON_ERROR_STOP on\nSET client_encoding = 'UTF8';\n",
 		fmt.Sprintf("SELECT pg_advisory_lock(%d);", migrateLockKey),
+		ownerBlock,
 		schemaVersionDDL,
 		"DO $pgvigil_jit$", "ALTER DATABASE %I SET jit = off", "WHEN insufficient_privilege", "$pgvigil_jit$;",
-		"DO $pgvigil_guard$", "ARRAY['"+names[0]+"'", "'"+names[len(names)-1]+"']", "$pgvigil_guard$;")
+		"DO $pgvigil_guard$", "unnest(ARRAY['"+names[0]+"'", "'"+names[len(names)-1]+"']::text[])",
+		"unnest(ARRAY[]::text[])", "gone since then", "$pgvigil_guard$;")
+	if strings.Index(out, "\\set ON_ERROR_STOP on") > strings.Index(out, "SELECT pg_advisory_lock") {
+		t.Fatal("ON_ERROR_STOP is not set before the first statement")
+	}
 	var parts []string
 	for i, n := range names {
 		body, err := migrations.ReadFile("sql/" + n)
@@ -87,7 +93,7 @@ func TestMigratePrintAtN(t *testing.T) {
 		t.Fatal(err)
 	}
 	inOrder(t, out, "-- applied: 2 of this build's 4 files (newest 0003_c.sql)", "-- pending: 2 file(s): 0002_b.sql .. 0004_d.sql",
-		"ARRAY['0002_b.sql', '0004_d.sql']",
+		"unnest(ARRAY['0002_b.sql', '0004_d.sql']::text[])", "unnest(ARRAY['0001_a.sql', '0003_c.sql']::text[])",
 		"-- file 0002_b.sql (1 of 2)\nBEGIN;\nSELECT 'b2';\nINSERT INTO pgvigil.schema_version (version) VALUES ('0002_b.sql');\n",
 		"-- file 0004_d.sql (2 of 2)\nBEGIN;\nSELECT 'd4';\n")
 	for _, gone := range []string{"'a1'", "'c3'", "-- file 0001_a.sql", "-- file 0003_c.sql"} {
@@ -152,8 +158,13 @@ func TestMigratePrintRefuses(t *testing.T) {
 	if out != "" {
 		t.Fatalf("output after a refusal: %q", out)
 	}
-	_, err = printFor(t, migratePrintMeta{}, []string{"0001_a.sql"}, nil, map[string]string{})
+	// the read's own error names no file, so the name must come from the writer (review-st7 NIT 7)
+	var buf bytes.Buffer
+	err = migrateScript(&buf, migratePrintMeta{}, []string{"0001_a.sql"}, nil, func(string) ([]byte, error) { return nil, fmt.Errorf("unreadable") })
 	if err == nil || !strings.Contains(err.Error(), "0001_a.sql") {
 		t.Fatalf("an unreadable file not named: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("output after an unreadable file: %q", buf.String())
 	}
 }

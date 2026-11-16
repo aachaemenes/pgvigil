@@ -70,11 +70,12 @@ func migrateScript(w io.Writer, meta migratePrintMeta, names, applied []string, 
 		have[v] = true
 	}
 	known := make(map[string]bool, len(names))
-	var pending []string
+	var pending, appliedKnown []string
 	newest := ""
 	for _, n := range names {
 		known[n] = true
 		if have[n] {
+			appliedKnown = append(appliedKnown, n)
 			if n > newest {
 				newest = n
 			}
@@ -124,23 +125,30 @@ func migrateScript(w io.Writer, meta migratePrintMeta, names, applied []string, 
 		return err
 	}
 	fmt.Fprintf(&s, "-- pending: %d file(s): %s .. %s\n", len(pending), pending[0], pending[len(pending)-1])
-	s.WriteString("-- printed for the repository as read now: a migrate run in between makes the guard below stop the script before any file.\n")
-	s.WriteString("-- run it as the repository owner: psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f <this file>\n")
+	s.WriteString("-- printed for the repository as read now: the guard below stops the script before any file on any other state of it.\n")
+	s.WriteString("-- run it with psql as the repository owner (the owner of schema pgvigil; SET ROLE to it first otherwise):\n")
+	s.WriteString("--   psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f <this file>\n")
 	s.WriteString("-- (each file commits on its own, as migrate commits them: a failure stops at that file, the ones before it stay applied)\n\n")
 
+	// psql only, and the first statement: a run without ON_ERROR_STOP would go on past a failed file (and leave a gap a
+	// later migrate fills out of order); a tool that is not psql fails on this line before anything runs
+	s.WriteString("\\set ON_ERROR_STOP on\n")
+	s.WriteString("SET client_encoding = 'UTF8';\n") // as pgx sends the files, whatever psql's own locale or code page
 	fmt.Fprintf(&s, "SELECT pg_advisory_lock(%d);\n\n", migrateLockKey)
+	s.WriteString(ownerBlock + "\n")
 	s.WriteString(schemaVersionDDL + "\n\n")
 	s.WriteString(jitBlock + "\n")
-	s.WriteString("DO $pgvigil_guard$\nDECLARE done text;\nBEGIN\n")
-	s.WriteString("  SELECT string_agg(version, ', ' ORDER BY version) INTO done FROM pgvigil.schema_version\n   WHERE version = ANY (ARRAY[")
-	for i, n := range pending {
-		if i > 0 {
-			s.WriteString(", ")
-		}
-		s.WriteString(sqlLiteral(n))
-	}
-	s.WriteString("]);\n  IF done IS NOT NULL THEN\n")
-	s.WriteString("    RAISE EXCEPTION 'pgvigil migrate -print: % applied since this script was printed: print it again', done;\n")
+	// the guard: the repository must be exactly the one printed for - none of the pending files recorded since, and every
+	// file of this build that was applied still recorded (a script printed on one store and run on an older one, or after
+	// a version row was taken out, would otherwise run files on a schema without the ones before them)
+	s.WriteString("DO $pgvigil_guard$\nDECLARE added text; gone text;\nBEGIN\n")
+	s.WriteString("  SELECT string_agg(v, ', ' ORDER BY v) INTO added FROM unnest(" + sqlTextArray(pending) + ") v\n")
+	s.WriteString("   WHERE v IN (SELECT version FROM pgvigil.schema_version);\n")
+	s.WriteString("  SELECT string_agg(v, ', ' ORDER BY v) INTO gone FROM unnest(" + sqlTextArray(appliedKnown) + ") v\n")
+	s.WriteString("   WHERE v NOT IN (SELECT version FROM pgvigil.schema_version);\n")
+	s.WriteString("  IF added IS NOT NULL OR gone IS NOT NULL THEN\n")
+	s.WriteString("    RAISE EXCEPTION 'pgvigil migrate -print: the repository changed since this script was printed (applied since then: %; gone since then: %): print it again',\n")
+	s.WriteString("      coalesce(added, 'none'), coalesce(gone, 'none');\n")
 	s.WriteString("  END IF;\nEND\n$pgvigil_guard$;\n")
 	for i, n := range pending {
 		fmt.Fprintf(&s, "\n-- file %s (%d of %d)\nBEGIN;\n", n, i+1, len(pending))
@@ -173,6 +181,9 @@ BEGIN
    WHERE d.datname = current_database() AND s.setdatabase = d.oid AND s.setrole = 0 AND x LIKE 'jit=%'
    LIMIT 1;
   IF entry IS NOT NULL THEN
+    IF lower(trim(entry)) NOT IN ('off', 'false', 'no', '0') THEN
+      RAISE NOTICE 'the repository database % sets jit = % itself: left alone, as migrate leaves it', current_database(), entry;
+    END IF;
     RETURN; -- the database's own jit setting is left alone
   END IF;
   EXECUTE stmt;
@@ -182,6 +193,31 @@ EXCEPTION WHEN insufficient_privilege THEN
 END
 $pgvigil_jit$;
 `
+
+// ownerBlock runs first after the lock: on a repository whose schema pgvigil exists, the script runs only as that
+// schema's owner (a reviewed change script run as another role, a superuser above all, would leave the new objects
+// owned by it - the SECURITY DEFINER imports then run with its rights, and the next migrate as the owner fails on
+// them); SET ROLE to the owner first passes it. A fresh repository's schema is made by the bootstrap after it.
+const ownerBlock = `DO $pgvigil_owner$
+DECLARE owner text;
+BEGIN
+  SELECT r.rolname INTO owner FROM pg_namespace n JOIN pg_roles r ON r.oid = n.nspowner WHERE n.nspname = 'pgvigil';
+  IF owner IS NOT NULL AND owner <> current_user THEN
+    RAISE EXCEPTION 'pgvigil migrate -print: schema pgvigil is owned by %, this session runs as %: run the script as its owner (SET ROLE %)',
+      owner, current_user, quote_ident(owner);
+  END IF;
+END
+$pgvigil_owner$;
+`
+
+// sqlTextArray is a text[] literal of ss (ARRAY[]::text[] when empty).
+func sqlTextArray(ss []string) string {
+	q := make([]string, len(ss))
+	for i, v := range ss {
+		q[i] = sqlLiteral(v)
+	}
+	return "ARRAY[" + strings.Join(q, ", ") + "]::text[]"
+}
 
 // endsWithSemicolon: the file's last statement ends with ';' once trailing blank lines and whole-line '--' comments are
 // set aside (a block comment or a comment after the semicolon on the last line is not looked into: such a file fails

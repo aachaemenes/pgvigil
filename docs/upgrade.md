@@ -204,15 +204,19 @@ psql -X -v ON_ERROR_STOP=1 -d <the repository database> -f pgvigil-migrate-vX.Y.
 
 `-print` only reads the repository (one read-only transaction: its database, its server version and the versions
 `pgvigil.schema_version` holds), so any login that can read `pgvigil.schema_version` may print it; it applies nothing,
-takes no lock and sets no jit. The script does what `pgvigil migrate` would do to that repository, in its order: the
-advisory lock, the `pgvigil.schema_version` bootstrap, the jit step (run as the owner it sets `jit = off` when the
-database has no jit setting of its own; refused, it is a WARNING naming the statement, as migrate warns), then each file
-the repository does not hold yet - a fresh repository gets every file - in its own transaction with its
-`schema_version` row and the `apply_roles()` re-apply, as migrate commits them. Its header names the build, the
-repository, how many files are applied and pending, and any version a newer pgvigil recorded. A guard before the first
-file stops the script when one of its files was applied after it was printed (print it again). With nothing pending the
-script is its header alone. `-print` exits 0 when the script is written, 1 when the repository cannot be read (nothing
-on stdout), 3 on a configuration error.
+takes no advisory lock and sets no jit. The script is for psql: its first line is `\set ON_ERROR_STOP on` (another SQL
+tool stops on that line before anything runs), then `SET client_encoding = 'UTF8'`, and then what `pgvigil migrate`
+would do to that repository, in its order: the advisory lock, the `pgvigil.schema_version` bootstrap, the jit step (it
+sets `jit = off` when the database has no jit setting of its own; refused, it is a WARNING naming the statement, as
+migrate warns), then each file the repository does not hold yet - a fresh repository gets every file - in its own
+transaction with its `schema_version` row and the `apply_roles()` re-apply, as migrate commits them. Two checks run
+before any change: on a repository whose schema `pgvigil` exists the script runs only as that schema's owner (`SET ROLE`
+to it first: objects a superuser made would belong to the superuser, and the next `migrate` as the owner fails on
+them), and a guard stops it unless the repository is exactly the one it was printed for - none of its files recorded
+since and none of the recorded ones gone (print it again). Its header names the build, the repository, how many files
+are applied and pending, and any version a newer pgvigil recorded. With nothing pending the script is its header alone.
+`-print` exits 0 when the script is written, 1 when the repository cannot be read or a flag is wrong (nothing on
+stdout), 3 on a configuration error.
 
 ## The way back
 
