@@ -44,6 +44,8 @@ THE SOFTWARE.
 
 pgvigil's pg_hba.conf change detection (a checksum of the rules between two reads) follows the idea of pgMonitor's monitor.pg_hba_checksum (https://github.com/CrunchyData/pgmonitor). No code is copied. pgMonitor is licensed under the Apache License 2.0; Copyright (c) 2017-2025 Crunchy Data Solutions, Inc. and Copyright (c) 2025-2026 Snowflake, Inc.
 
+The `standby lag` rule's byte tiers - the defaults of the threshold key `standby_lag_bytes`, warning 50 MB and critical 100 MB (internal/repo/sql/0141_hadr_pg.sql; a megabyte there is 1,048,576 bytes) - are the thresholds of pgMonitor 5.3.0's alert rule `PGReplicationByteLag` (prometheus/common/alert-rules.d/crunchy-alert-rules-pg.yml.example at the tag v5.3.0: `ccp_replication_lag_size_bytes` over 5.24288e+07 and over 1.048576e+08, each for 60 s). The two numbers are ported as data; the rule is pgvigil's own (the smaller of two reads in a row of the sending server's replay position, per link). That tag's LICENSE file reads: Copyright (c) 2017-2025 Crunchy Data Solutions, Inc. All Rights Reserved; licensed under the Apache License, Version 2.0.
+
 ## pev2 and the plan viewer's bundle
 
 The Plan page draws a plan with pev2 (https://github.com/dalibo/pev2), bundled into `internal/web/dist/pev2/pev2.js` by `web/package.json`'s `build:pev2` and loaded only when a plan is opened, inside a shadow root so its styles never reach the rest of the UI. It is used as published; no code of it is changed.
