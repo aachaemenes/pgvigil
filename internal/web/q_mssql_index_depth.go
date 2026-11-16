@@ -114,7 +114,7 @@ func (s *Server) histogramOff(ctx context.Context, ds *doorSet, name string) str
 		return histogramOffWords
 	}
 	if qt := ds.planPolicy(name); qt != "full" {
-		return fmt.Sprintf("off: this instance's query_text policy is %q, and a histogram's keys are the column's real values, so it is read under \"full\" only", qt)
+		return fmt.Sprintf("off: %s, and a histogram's keys are the column's real values, so it is read under \"full\" only", textPolicyWords(qt))
 	}
 	if g.StatsConfigured && strings.TrimSpace(g.StatsDSN) == "" {
 		return "off: the statistics login's dsn (stats_dsn) resolved to an empty string on this server"

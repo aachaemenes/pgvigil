@@ -5,15 +5,16 @@
 // interval_secs and expected_every_secs for a remote instance and none of them for any other.
 import type { Row } from './api';
 
-export interface Remote { asOf: number; site: string; collector: string; everySecs: number; expectedSecs: number }
+export interface Remote { asOf: number; loadedAt: number; site: string; collector: string; everySecs: number; expectedSecs: number }
 
 // remoteOf: the live row's remote fields, or null for an instance the hub reads itself
 export function remoteOf(r: Row | undefined): Remote | null {
   if (!r || r.as_of == null || r.site == null) return null;
   const asOf = Date.parse(String(r.as_of));
   if (isNaN(asOf)) return null;
-  return { asOf, site: String(r.site), collector: String(r.collector ?? ''), everySecs: Number(r.interval_secs ?? 0) || 0,
-    expectedSecs: Number(r.expected_every_secs ?? 0) || 300 };
+  const loaded = Date.parse(String(r.loaded_at ?? ''));
+  return { asOf, loadedAt: isNaN(loaded) ? asOf : loaded, site: String(r.site), collector: String(r.collector ?? ''),
+    everySecs: Number(r.interval_secs ?? 0) || 0, expectedSecs: Number(r.expected_every_secs ?? 0) || 300 };
 }
 
 // PerformanceMonitor's rule: no healthy collection for 30 minutes is offline (for a remote instance: in the 30 minutes
@@ -21,7 +22,9 @@ export function remoteOf(r: Row | undefined): Remote | null {
 export const OFFLINE_MIN = 30;
 // the site goes quiet at 2 x expected_every (its silence finding's warning)
 const QUIET_TIMES = 2, OFFLINE_BEFORE_MIN = OFFLINE_MIN;
-const quiet = (rem: Remote, now: number) => now - rem.asOf > QUIET_TIMES * rem.expectedSecs * 1000;
+// quiet: no bundle LOADED by the hub (its clock, never the site's: review C S4) for 2 x max(expected_every, the bundle
+// interval) (review C N4: an hourly bundle on a site that says 5 minutes is not quiet between bundles)
+const quiet = (rem: Remote, now: number) => now - rem.loadedAt > QUIET_TIMES * Math.max(rem.expectedSecs, rem.everySecs) * 1000;
 // an age in words: Nm ago, Nh ago, Nd ago
 function ago(ms: number): string {
   const min = Math.floor(ms / 60000);
@@ -56,12 +59,16 @@ export function freshness(r: Row | undefined, now = Date.now()): Freshness {
   return Number(r.coll_stale ?? 0) > 0 ? 'stale' : 'online';
 }
 
-// asOfLine: 'as of <clock> (remote collector <c> of site <s>, a bundle every <interval>)' - 'a remote collector of
-// site <s>' while its collector is not known yet (no bundle loaded); '' for another instance
-export function asOfLine(r: Row | undefined): string {
+// asOfLine: 'as of <clock> (remote collector <c> of site <s>, a bundle every <interval>)' - its day too when it is not
+// today (review C S5: a daily site's 'as of 09:00' is yesterday's); 'a remote collector of site <s>' while its collector
+// is not known yet (no bundle loaded); '' for another instance
+export function asOfLine(r: Row | undefined, now = Date.now()): string {
   const rem = remoteOf(r);
   if (!rem) return '';
-  const clock = new Date(rem.asOf).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const at = new Date(rem.asOf);
+  const sameDay = at.toDateString() === new Date(now).toDateString();
+  const clock = (sameDay ? '' : at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ')
+    + at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const every = rem.everySecs > 0 ? `a bundle every ${Math.round(rem.everySecs / 60)} min` : 'its bundle interval not known yet';
   const from = rem.collector ? `remote collector ${rem.collector} of site ${rem.site}` : `a remote collector of site ${rem.site}`;
   return `as of ${clock} (${from}, ${every})`;
@@ -71,5 +78,5 @@ export function asOfLine(r: Row | undefined): string {
 // bundle came for 2 x expected_every; '' otherwise
 export function quietLine(r: Row | undefined, now = Date.now()): string {
   const rem = remoteOf(r);
-  return rem && quiet(rem, now) ? `site ${rem.site} has gone quiet: last bundle ${ago(now - rem.asOf)}` : '';
+  return rem && quiet(rem, now) ? `site ${rem.site} has gone quiet: last bundle ${ago(now - rem.loadedAt)}` : '';
 }

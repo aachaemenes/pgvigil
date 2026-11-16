@@ -836,7 +836,7 @@ func (s *Server) MSSQLQueryStorePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	// TEXT-NOW: the policy as the doors hold it now, not as the plan was stored under (textread.go)
 	if qt := s.doorsNow().planPolicy(deref(name)); qt != "full" {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("not shown: this instance's query_text policy is %q, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", qt))
+		writeErr(w, http.StatusNotFound, fmt.Errorf("not shown: %s, and a plan carries the statement's text and its compiled values, so plans are shown under \"full\" only", textPolicyWords(qt)))
 		return
 	}
 	var qid int64

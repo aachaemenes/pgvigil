@@ -68,7 +68,7 @@ func (s *Server) MSSQLSessions(w http.ResponseWriter, r *http.Request) {
 	// the statement text follows the instance's query_text policy as this serve reads it now: under 'none' no text is
 	// returned, whatever an earlier policy stored
 	policy := s.doorsNow().planPolicy(name)
-	showText := policy != "none"
+	showText := policy != "none" && policy != "hash" // hash: a remote collector's fingerprints, not text (review C B1)
 	pol := part{"policy", `SELECT $1::text AS query_text`, []any{policy}}
 	if q.Get("part") == "top" {
 		tfrom, tend, cut := topWindow(from, to)

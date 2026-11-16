@@ -61,7 +61,8 @@ func (s *Server) FrameStatus(w http.ResponseWriter, r *http.Request) {
 const sqlFrameStatus = `
 WITH c AS (
   SELECT c.status, c.note, c.snapshot_at, coalesce(r.as_of, now()) AS ref_at,
-         coalesce(x.interval_secs, ($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
+         coalesce(x.interval_secs, CASE WHEN r.instance_id IS NULL THEN ($1::jsonb -> 'instances' -> i.name ->> c.collection)::int END,
+                  CASE WHEN r.instance_id IS NULL THEN ($1::jsonb -> 'defaults' ->> c.collection)::int END) AS iv
     FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
     LEFT JOIN pgvigil.remote_instance_state r ON r.instance_id = c.instance_id
     LEFT JOIN pgvigil.remote_collection_interval x ON x.instance_id = c.instance_id AND x.collection = c.collection

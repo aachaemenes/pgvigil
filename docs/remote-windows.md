@@ -14,7 +14,8 @@ delay does to it (read from the findings' definitions of v0.4.0; the minute, hou
 | **may fire falsely**: reads an age against the hub's clock | the six age tests (below) | rarely | possible | likely |
 | **fires on time, may fire after a renewal**: compares a stored date with the hub's clock | the deadline tests (below) | as a direct read | a renewal inside the hour still shows | a renewal inside the day still shows |
 
-The site's own silence is judged by its cadence, not by these: no bundle for twice `expected_every` is a warning and
+The site's own silence is judged by its cadence and the hub's own clock, not by these: no bundle LOADED for twice the
+longer of `expected_every` and the bundle interval is a warning and
 six times critical, per site and per instance. A finding of a remote instance clears no sooner than its bundle
 interval plus its site's `expected_every`, so a windowed finding that cannot see the newest rows does not clear and
 fire again with each bundle.

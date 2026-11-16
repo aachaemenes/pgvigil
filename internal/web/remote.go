@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,17 +51,18 @@ func (ds *doorSet) remoteWhy(name string) string {
 	return ""
 }
 
-// remoteRow is one row of pgvigil.remote_instance_state (migration 0329).
+// remoteRow is one row of pgvigil.remote_instance_state (migration 0329); QueryText: its newest loaded bundle's
+// statement-text mode (contract 3: hash or none; 'hash' before any bundle loaded, the remote default)
 type remoteRow struct {
-	Name, Engine string
-	Door         remoteDoor
+	Name, Engine, QueryText string
+	Door                    remoteDoor
 }
 
 // sqlRemoteInstances: every instance a site owns, as of its newest loaded bundle (0329's view, granted to serve's
 // reader role); a column the view leaves NULL (an instance whose collector no bundle has named yet) reads empty, so
 // one row never fails the read (review B S2)
 const sqlRemoteInstances = `SELECT coalesce(name, ''), coalesce(engine, ''), coalesce(site, ''), coalesce(collector, ''), as_of,
-       coalesce(interval_secs, 0), coalesce(expected_every_secs, 0)
+       coalesce(interval_secs, 0), coalesce(expected_every_secs, 0), coalesce(nullif(query_text, ''), 'hash')
   FROM pgvigil.remote_instance_state ORDER BY name`
 
 // readRemote reads the remote instances; a store before 0329 (no such view) has none; a login with no SELECT on the
@@ -82,7 +84,7 @@ func readRemote(ctx context.Context, pool *pgxpool.Pool) ([]remoteRow, error) {
 		var r remoteRow
 		var asOf *time.Time
 		var every, expected int
-		if err := rows.Scan(&r.Name, &r.Engine, &r.Door.Site, &r.Door.Collector, &asOf, &every, &expected); err != nil {
+		if err := rows.Scan(&r.Name, &r.Engine, &r.Door.Site, &r.Door.Collector, &asOf, &every, &expected, &r.QueryText); err != nil {
 			return nil, err
 		}
 		if r.Name == "" || r.Door.Site == "" {
@@ -109,6 +111,22 @@ func noRemoteGrant(err error) bool {
 	return errors.As(err, &pe) && pe.Code == "42501"
 }
 
+// remoteSafe: a read that joins 0329's views, written for a repository before 0329 (a new serve started before 'pgvigil
+// migrate': review C S1) - each view stood in by an empty set with its columns, so the page answers with no remote
+// instance instead of failing; s.query runs it when the view is not there (42P01)
+func remoteSafe(sql string) string {
+	return strings.NewReplacer(
+		"pgvigil.remote_instance_state", `(SELECT NULL::int AS instance_id, NULL::text AS name, NULL::text AS engine, NULL::text AS site,
+		   NULL::text AS collector, NULL::timestamptz AS as_of, NULL::int AS interval_secs, NULL::int AS expected_every_secs,
+		   NULL::timestamptz AS loaded_at, NULL::text AS query_text WHERE false)`,
+		"pgvigil.remote_collection_interval", `(SELECT NULL::int AS instance_id, NULL::text AS collection, NULL::int AS interval_secs WHERE false)`,
+		"pgvigil.remote_collector_state", `(SELECT NULL::text AS site, NULL::text AS collector, NULL::text AS pgvigil_version, NULL::text AS host,
+		   NULL::timestamptz AS heartbeat_at, NULL::int AS instances, NULL::int AS fail_streak, NULL::timestamptz AS newest_bundle_at,
+		   NULL::int AS gaps, NULL::int AS set_aside, NULL::text AS newest_set_aside_reason, NULL::int AS late, NULL::int AS conflicts,
+		   NULL::int AS expected_every_secs, NULL::timestamptz AS newest_loaded_at, NULL::boolean AS configured WHERE false)`,
+	).Replace(sql)
+}
+
 // remoteWarned: the remote names already logged as colliding with an instance of this server (once per name and
 // site, not at every rebuild: review B N2)
 var remoteWarned sync.Map
@@ -120,6 +138,14 @@ var remoteWarned sync.Map
 func withRemote(ds *doorSet, rows []remoteRow, log *slog.Logger) *doorSet {
 	cp := *ds
 	cp.PG, cp.MS, cp.Remote = map[string]actions.Door{}, map[string]mssql.Door{}, map[string]remoteDoor{}
+	// the statement-text policies: the set's own, a remote instance's from its bundles (review C B1: never the hub's
+	// default - a remote column holds a fingerprint under hash, nothing under none)
+	cp.QueryText = map[string]string{}
+	for k, v := range ds.QueryText {
+		if _, wasRemote := ds.Remote[k]; !wasRemote {
+			cp.QueryText[k] = v
+		}
+	}
 	for k, v := range ds.PG {
 		if v.Remote == "" {
 			cp.PG[k] = v
@@ -140,6 +166,11 @@ func withRemote(ds *doorSet, rows []remoteRow, log *slog.Logger) *doorSet {
 			continue
 		}
 		cp.Remote[r.Name] = r.Door
+		qt := r.QueryText
+		if qt == "" {
+			qt = "hash"
+		}
+		cp.QueryText[r.Name] = qt
 		if r.Engine == config.EngineSQLServer {
 			cp.MS[r.Name] = mssql.Door{Remote: r.Door.from()}
 		} else {

@@ -37,6 +37,7 @@ import type { AttentionBox } from './export';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
 import { AckBody, AckData, ackDialog, ackHolds, ackOn, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { healthCalendar } from './healthcal';
+import { asOfLine } from './asof';
 import { bandClass, cellState, Chip, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
 export type { Ctx };
@@ -394,8 +395,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     { key: 'm_measured', label: 'Measured', num: true, fmt: (_v, r) => { const [a, b] = measured(r._chips as Chip[]); return el('span', { 'data-text': `${a} of ${b}` }, `${a} of ${b}`); } },
     { key: '_fresh', label: 'Collection', fmt: (_v, r) => {
       const lv = r._live as Row | undefined, fr = r._fresh as ReturnType<typeof freshness>;
-      const t = fr === 'awaiting' ? statusWord.awaiting : fr === 'offline' ? `${statusWord.offline} · ${lastCollected(lv, nowMs)}`
-        : `${statusWord[fr]} · last collect ${clockOf(lv?.last_collect_at)}`;
+      // a remote instance's cell says 'as of' its newest bundle (review C N2, R10), as its header does
+      const t = fr === 'awaiting' ? statusWord.awaiting : fr === 'offline' ? `${statusWord.offline} · ${asOfLine(lv, nowMs) || lastCollected(lv, nowMs)}`
+        : `${statusWord[fr]} · ${asOfLine(lv, nowMs) || `last collect ${clockOf(lv?.last_collect_at)}`}`;
       return el('span', { class: fr === 'offline' ? 'muted' : fr === 'online' ? '' : 'warn' }, t);
     } },
     { key: '_silence', label: 'Alerts', fmt: (_v, r) => {

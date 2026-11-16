@@ -145,6 +145,8 @@ func (s *Server) adviseOff(ds *doorSet, name string) string {
 		return ds.remoteWhy(name)
 	case s.actions == nil:
 		return "the index advisor needs the actions door, which is off on this server"
+	case s.actions.off != "": // review C S2: the door's own words when it is off
+		return s.actions.off
 	case ok && door.Page:
 		return fileOnly(name) // the index advisor stays on pgvigil.yaml's instances
 	case !ok || strings.TrimSpace(door.Monitor) == "":

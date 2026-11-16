@@ -49,6 +49,8 @@ export async function collectionDatesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'status', fmt: v => badge(word[String(v)] ?? String(v), kind[String(v)] ?? '') },
       { key: 'snapshot_at', label: 'snapshot date', fmt: fmtTime },
       { key: 'age_secs', label: 'snapshot age', num: true, fmt: v => v == null ? '' : fmtSecs(v) },
+      // a remote instance's rows are judged against its newest bundle's end (review C S6): that 'as of' shown beside them
+      ...(rows.some(r => r.as_of != null) ? [{ key: 'as_of', label: 'judged as of', fmt: (v: unknown) => v == null ? '' : fmtTime(v) } as Col] : []),
       { key: 'stale_secs', label: 'warning threshold', num: true, fmt: (v, r) => r.status === 'disabled' ? '' : `older than ${fmtSecs(v)}` },
       { key: 'last_status', label: 'critical threshold', fmt: (_v, r) => r.status === 'disabled' ? '' : 'the last run failed' },
       { key: 'interval_secs', label: 'schedule', num: true, fmt: v => v == null ? 'not known' : Number(v) === 0 ? 'disabled' : `every ${fmtSecs(v)}` },

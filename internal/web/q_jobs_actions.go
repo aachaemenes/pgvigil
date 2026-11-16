@@ -100,6 +100,8 @@ func toggleAuditOff(ctx context.Context, q rowQuerier, pg bool) string {
 func (s *Server) pgJobOff(ds *doorSet, instance, kind, auditOff string) string {
 	a := s.actions
 	switch {
+	case ds.remoteWhy(instance) != "": // R13's words before the server's own (review C S3)
+		return ds.remoteWhy(instance)
 	case a == nil:
 		return "actions are off on this server"
 	case a.off != "":

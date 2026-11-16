@@ -604,6 +604,9 @@ type table struct {
 
 func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, error) {
 	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil && noRemoteView(err) && strings.Contains(sql, "pgvigil.remote_") {
+		rows, err = s.pool.Query(ctx, remoteSafe(sql), args...) // a repository before 0329 (remote.go)
+	}
 	if err != nil {
 		return nil, err
 	}

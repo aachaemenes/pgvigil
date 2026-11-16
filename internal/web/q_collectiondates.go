@@ -19,7 +19,8 @@ import (
 const sqlCollectionDates = `
 WITH c AS (
   SELECT c.instance_id, i.name AS instance, i.engine, c.collection, c.status AS last_status, c.snapshot_at, c.duration_ms, c.note,
-         coalesce(x.interval_secs, ($1::jsonb -> 'instances' -> i.name ->> c.collection)::int, ($1::jsonb -> 'defaults' ->> c.collection)::int) AS interval_secs,
+         coalesce(x.interval_secs, CASE WHEN r.instance_id IS NULL THEN ($1::jsonb -> 'instances' -> i.name ->> c.collection)::int END,
+                  CASE WHEN r.instance_id IS NULL THEN ($1::jsonb -> 'defaults' ->> c.collection)::int END) AS interval_secs,
          coalesce(r.as_of, now()) AS ref_at, r.as_of
     FROM pgvigil.collection_dates c
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
@@ -32,7 +33,7 @@ SELECT c.instance_id, c.instance, c.engine, c.collection,
             WHEN c.last_status = 'error' THEN 'critical'
             WHEN c.ref_at - c.snapshot_at > make_interval(secs => CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END) THEN 'warning'
             ELSE 'ok' END AS status,
-       c.last_status, c.snapshot_at, greatest(0, extract(epoch FROM c.ref_at - c.snapshot_at))::bigint AS age_secs, c.as_of,
+       c.last_status, c.snapshot_at, greatest(0, extract(epoch FROM now() - c.snapshot_at))::bigint AS age_secs, c.as_of,
        c.interval_secs, CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END AS stale_secs,
        CASE WHEN c.interval_secs > 0 THEN c.snapshot_at + make_interval(secs => c.interval_secs) END AS next_run,
        CASE WHEN c.last_status = 'ok' THEN c.snapshot_at END AS last_success,

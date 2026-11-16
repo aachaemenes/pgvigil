@@ -45,7 +45,7 @@ remote:
   state_dir: /var/lib/pgvigil-remote/state
   keep_days: 7                # a bundle stays this long after it was pushed (or written, without push:)
   max_mb: 2048                # the outbox's cap: past it the oldest bundle goes first, logged ERROR
-  sign: false                 # true: each manifest signed with this box's Ed25519 key (pgvigil remote init)
+  sign: false                 # true: each manifest signed with this box's Ed25519 key (pgvigil-remote remote init)
   # push:                     # optional: the direct push to Azure Blob (below)
 query_text: hash              # hash (default) or none
 instances:
@@ -56,12 +56,21 @@ instances:
     dsn: file:/etc/pgvigil-remote/pg-orders.dsn
 ```
 
-- Linux: `sudo ./install.sh --remote` installs the service with write access to the outbox and the state folder only
-  (the unit keeps `ProtectSystem=strict` and `ProtectHome=yes`: a folder under `/home` is refused).
-- Windows: `.\install.ps1 -Remote` installs the Windows service and makes the two folders with an ACL for the service
-  account only.
+The remote collector is its own binary, `pgvigil-remote`, and its own service, apart from any pgvigil on the box:
 
-`pgvigil bundle inspect [-key ed25519:<public key>]... [-max-mb N] <bundle folder>` prints a bundle's manifest, the
+- Linux: `sudo ./install.sh --remote` installs `/usr/local/bin/pgvigil-remote`, the unit `pgvigil-remote.service` under
+  the account `pgvigil-remote`, the configuration `/etc/pgvigil-remote/pgvigil-remote.yaml` (its secrets in
+  `/etc/pgvigil-remote/pgvigil-remote.env`) and the two folders `/var/lib/pgvigil-remote/outbox` and
+  `/var/lib/pgvigil-remote/state`, read from the file's `remote:` block (no second flag). The unit writes those two
+  folders only (`ReadWritePaths=`, `ProtectSystem=strict`, `ProtectHome=yes`): a folder under `/home` is refused at
+  install, in words.
+- Windows: `.\install.ps1 -Remote` installs `%ProgramFiles%\pgvigil-remote\pgvigil.exe` (put on the machine's PATH), the
+  service `pgvigil-remote` under `NT SERVICE\pgvigil-remote`, and `C:\ProgramData\pgvigil-remote\pgvigil-remote.yaml`
+  with its `outbox` and `state` folders, their ACL SYSTEM, Administrators and the service account only.
+
+Its commands read as that binary's: `pgvigil-remote remote init`, `pgvigil-remote bundle inspect ...`.
+
+`pgvigil-remote bundle inspect [-key ed25519:<public key>]... [-max-mb N] <bundle folder>` prints a bundle's manifest, the
 result of its sums and row counts, and its signature's: checked only against a key given with `-key` (without one a
 signed bundle reads 'signed, not checked (no -key given)'). Only a bundle that passes its checks has every line
 printed, as plain JSON; `-max-mb` (512 by default) caps what a view file may uncompress to. It is what a security
@@ -97,9 +106,10 @@ remote:
 **(b) The outbox folder, moved by the site's own tool** (a box that may not reach cloud storage): an Azure Blob
 container, an S3 or GCS bucket the hub reads with a read-only key; an SMB / NFS share or an SFTP drop the hub reads; a
 one-way copy or USB for a closed network. Whatever moves it must leave out `*.part` folders and should upload under a
-temporary name where it can; a bundle copied half-way is retried by the hub, never loaded half-way (below). It must
-add no file of its own: a file the manifest does not list (`Thumbs.db`, `desktop.ini`, `.DS_Store`) sets the bundle
-aside ('extra').
+temporary name where it can; a bundle copied half-way is waited for by the hub, never loaded half-way (below). An
+operating system's litter in a bundle's folder (`._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`) is ignored and never
+read; any other file the manifest does not list (a copy tool's temp file left behind) sets the bundle aside ('extra')
+once the settle time is past.
 Filebeat may carry the files where a log pipeline is the only way out, only if it delivers them unchanged (the sums
 prove it): there is no second format.
 
@@ -121,7 +131,7 @@ remote_sites:
     gap_wait: 15m           # a missing bundle is waited for this long (3 x expected_every by default)
     collectors:
       - name: c1
-        keys: []            # 'ed25519:<public key>' as pgvigil remote init prints it, when the collector signs
+        keys: []            # 'ed25519:<public key>' as pgvigil-remote remote init prints it, when the collector signs
   - name: plant-west
     drop:                                   # a GCS bucket through its S3 endpoint (or any S3 bucket)
       type: s3
@@ -139,26 +149,48 @@ mix with anything else kept there); a folder drop is read where it is. Each site
 two sites on one drop are refused at start, and on S3 or GCS each site reads with its own `profile:`, never one
 environment key shared by two sites.
 
-Inside `pgvigil run` (and `pgvigil ingest -once`) the hub runs one loop per site, one at a time across every hub
-process on the repository:
+**Ingest's own login.** The hub reads its sites on a login of its own, a member of the role `pgvigil_ingest` (0329
+makes the role) and of nothing else - never the collector's login (a collector login could otherwise load a batch and
+hide a site's data), never the repository's owner, never a superuser. Make it as the repository's owner and name it
+beside `remote_sites:`:
 
-- lists `<site>/<collector>/` once a round for its instance keys (a lifecycle rule on the drop keeps that listing
-  short), then each key's `<day>/` folders from the day of its newest loaded bundle to today; it never writes, moves or
+```sql
+CREATE ROLE pgvigil_ingest_hub LOGIN PASSWORD '<a password>' IN ROLE pgvigil_ingest;
+```
+
+```yaml
+ingest_dsn: env:PGVIGIL_INGEST_DSN   # host=... dbname=<the repository> user=pgvigil_ingest_hub (env: / file:)
+```
+
+`pgvigil run` and `pgvigil ingest` check that login at start and refuse, in words, the owner, a superuser, a member of
+`pgvigil_collector` or a login outside `pgvigil_ingest`; with no `ingest_dsn:` the sites are not read (said in the log).
+
+Inside `pgvigil run` (and `pgvigil ingest -once`) the hub runs one loop per site - each site on its own, one at a time
+across every hub process on the repository, so a site catching up never delays another:
+
+- lists the site's folder once a round: its instance keys, and any collector folder the site does not list (marked
+  by name, its bundles not read); then each key's `<day>/` folders from the day of its newest loaded bundle (and the
+  days of its retried bundles) to today; a folder marker key (`<folder>/`) is skipped; it never writes, moves or
   deletes anything in a drop;
 - checks each bundle in order: the signature first when the collector lists keys; the manifest's site, collector,
   instance and sequence against the configuration and the folder; the format version (a newer one is set aside and
   read after the hub's upgrade); every view against pgvigil's own list (an unknown view is refused); each file's
-  size, sum and row count. A file missing or short while the bundle is younger than the settle time (`gap_wait`,
-  counted from the bundle's window end) is a copy still running: retried. Past it the bundle is set aside 'missing' or
-  'short', and read again by itself once it appears whole with the same manifest. Every other failure sets the bundle
-  aside with its reason, kept in the repository until `pgvigil ingest -retry <site>/<collector>/<instance-key>/<day>/<seq>-<end>`
-  (the bundle's folder in its drop), run once the drop's copy is put right, clears its mark and reads the site again;
-  the batches already in stay in;
+  size, sum and row count; a bundle whose views uncompress past 2 GiB in all is set aside ('too_big'). The **settle
+  time** (`gap_wait`) runs from when the hub FIRST SAW the bundle's folder, never from the bundle's window end, so a
+  backlog copied late is not past it on arrival: inside it, any problem - a file missing or short, a signature not there
+  yet, a copy tool's temp file - is a copy still running and is waited for (the bundles after it wait too); past it
+  the bundle is set aside with its reason. A bundle set aside as missing, short, a newer format, a signature the hub
+  could not check, an unknown view or a name owned elsewhere is read again by itself once the hub (or the copy) is put
+  right. Any other is kept until `pgvigil ingest -retry <site>/<collector>/<instance-key>/<day>/<seq>-<end>` (the
+  bundle's folder, relative to the drop), run once the copy is put right, clears its mark and reads the site again -
+  even a bundle older than its stream's newest, which then loads after a gap; the batches already in stay in. A drop
+  error or a load the repository refuses holds that instance alone, never the round, and past the settle time is
+  marked ('drop error', 'load') with its text;
 - loads the batches in their order, **each batch in its own transaction with its ledger row**, so a bundle that stops
   part-way resumes at its first batch not loaded, and a bundle seen twice is loaded once;
 - keeps each instance's bundles in sequence: a missing one is waited for `gap_wait`, then the gap is recorded and the
   instance goes on; a stalled bundle holds its instance's later ones for `gap_wait`, then is set aside. A bundle older
-  than one already loaded is marked late and never loaded, `-retry` or not.
+  than one already loaded is marked late and loads only through `-retry`.
 
 The site's instances are named `<site>/<name>` (`plant-east/SQL01`), so two sites' `SQL01` never meet, and carry the
 site's tags. A name another site or the hub's own file holds is refused and its bundle set aside ('instance
@@ -171,8 +203,10 @@ boundary): a repository per client is the way to keep clients apart.
 - **As of the last bundle.** Every page of a remote instance says `as of <time> (remote collector <c> of site <s>, a
   bundle every <interval>)`. Its collections are judged fresh or stale against that time, with the intervals its
   collector reported, never against the hub's clock: a site that copies once an hour is not 'offline' between
-  copies. Its header turns Offline when the site sends nothing for twice `expected_every` ('site <s> has gone quiet:
-  last bundle <time>'), or when its collector collected nothing healthy in the 30 minutes before its newest bundle.
+  copies. An 'as of' that is not today names its day. Its header turns Offline when the hub has LOADED nothing of
+  the site for twice the longer of `expected_every` and the bundle interval (the hub's clock, never the site's: a site
+  clock that runs slow or fast changes nothing) - 'site <s> has gone quiet: last bundle <time>', said on the instance's
+  Summary too - or when its collector collected nothing healthy in the 30 minutes before its newest bundle.
 - **A failed read shows as failed.** A read that failed on the site (a login refused, a secret not found, a query that
   failed) shows as failed with its reason, from the bundle's manifest, as for an instance the hub reads itself: never
   as healthy, never as a gap.
@@ -181,18 +215,23 @@ boundary): a repository per client is the way to keep clients apart.
   on the instance, a histogram, a fragmentation read and a plan read by its handle are off on it, each with the same
   sentence: `instance <n> is read from remote collector <c> of site <s>: no live connection reaches it`. A custom
   report that reads only the repository runs as for any instance.
-- **Statement text** is its fingerprint (`hash`) or nothing (`none`): numbers, waits, states and groupings work as for
-  any instance; a statement's text, a plan's text, a deadlock's input buffer, a job step's command and a module's body
-  do not.
-- **The Collector page** lists each remote collector: its site's silence (sending; a warning past twice
-  `expected_every`; critical past six times), its newest bundle, its heartbeat, and the bundles ingest found missing,
-  set aside (with the newest reason), late or in conflict.
+- **Statement text** is its fingerprint (`hash`) or nothing (`none`), as its bundles say: numbers, waits, states and
+  groupings work as for any instance, and a statement shows as `fingerprint <hex>` (the SHA-256 of its normalized
+  text); a statement's text, a plan's text, a deadlock's graph, a job step's command and a module's body do not, and the
+  page says why ('this instance's query_text policy is "hash" (a remote collector's) ...'); the text search skips it.
+- **The Collector page** lists each remote collector, a configured one that never sent included: its silence by the
+  hub's newest load of it (sending; a warning past twice the longer of `expected_every` and the bundle interval;
+  critical past six times; 'not in remote_sites:' once the configuration no longer lists it), its newest bundle, its
+  heartbeat, and the bundles ingest found missing, set aside (with the newest reason), late or in conflict.
 
 ## Alerts and findings
 
-- A site that sends nothing raises its silence finding: per site, a warning after twice `expected_every` and critical
-  after six times (`site <s> has gone quiet: last bundle <time>`), and the same per instance (`instance <site>/<name>
-  of site <s> has gone quiet: last bundle <time>`).
+- A site the hub has loaded nothing of raises its silence finding - by the hub's newest load (its own clock), a
+  warning after twice the longer of `expected_every` and the bundle interval, critical after six times: per site
+  (`site <s> has gone quiet: last bundle <time>`, sent as an alert like any repository-wide finding; a site that never
+  sent is judged from its first sync), per configured collector of a site that still sends (`collector <c> of site <s>
+  has gone quiet`), and per instance (`instance <site>/<name> of site <s> has gone quiet: last bundle <time>`). A site
+  taken out of `remote_sites:` raises none.
 - Every other finding of a remote instance is computed from its bundles as they arrive, so it fires as late as the
   bundle interval plus the transfer. A finding judged over a recent window cannot fire at all once the delay is longer
   than its window. [remote-windows.md](remote-windows.md) lists which findings fire late, which cannot fire past a
@@ -207,10 +246,21 @@ boundary): a repository per client is the way to keep clients apart.
 The sums and the row counts catch a file damaged, cut or changed on the way. They do not say who wrote a bundle: anyone
 who can write the drop can change a file and its sum together. Who may write a drop is its access rights: each site its
 own drop and its own read key, the site's identity the only writer, the hub's credential read-only. A collector may
-also sign (`remote.sign: true`): `pgvigil remote init` makes an Ed25519 key on the collector's box (mode 0600, never
+also sign (`remote.sign: true`): `pgvigil-remote remote init` makes an Ed25519 key on the collector's box (mode 0600, never
 printed) and prints the public key for the hub's `keys:`; the hub checks the signature before it reads any other file.
 pgvigil does not encrypt the files: in transit the transport's encryption protects them (HTTPS, SFTP), at rest the
 store's own.
+
+## Removing the remote collector
+
+- `pgvigil-remote uninstall -remote` removes the service (the Linux unit, the Windows service) only - never a hub's or
+  another pgvigil's on the box.
+- `-purge` also removes the outbox's bundles, the state folder's own files, the configuration folder's own files and the
+  binary, each folder once it is empty; anything else in them is kept and named.
+- `-purge` refuses while the outbox holds a bundle not yet pushed - it says how many and the newest one's window end:
+  'a bundle not yet carried to the hub is lost' - unless `-force` is given (a bundle with its `.pushed` marker counts as
+  carried).
+- On Linux the account `pgvigil-remote` stays, named in the output; `userdel pgvigil-remote` removes it.
 
 ## Retention
 
@@ -233,6 +283,10 @@ store's own.
   are absent rather than late, and an alert on a missing series fires between bundles.
   `pgvigil_sample_timestamp_seconds{server, family}` gives its newest sample's time.
 - An Event Grid notification instead of polling is a later option.
+- Each round lists the site's whole folder (one level at a time with a delimiter is a later change of the drop's
+  reader): give the drop a lifecycle rule, or let the site's clean-up remove old bundles, so the listing stays short.
+- A view file is fetched whole before its size is checked against the manifest (a bounded read is a later change of
+  the drop's reader); the 2 GiB cap per bundle is checked from the manifest before any view file is fetched.
 - A remote collector in a Kubernetes pod is not in v0.4.0, and nothing in it precludes one: a read-only root with the
   two folders set where the pod may write, and credentials by `env:` / `file:`.
 
