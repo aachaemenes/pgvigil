@@ -3,23 +3,28 @@
 //   - Running now: every pg_cron / pgAgent run the newest read still saw running - started, running for, the job's
 //     average over its successful runs of 30 days, the estimated end from it, over twice the average marked, pgAgent's
 //     current step - with Stop (the run's backend cancelled through the actions door);
-//   - pgJobActionCol: the jobs grid's column with Run now on a pgAgent job (jobnextrun = now());
+//   - pgJobActionCol: the jobs grid's column with Run now on a pgAgent job (jobnextrun = now()) and (B9c) Enable or
+//     Disable (pgAgent's jobenabled; pg_cron's active through cron.alter_job, offered for the actions login's own jobs);
 //   - the pgAgent step log: per step of each pgAgent job its runs, outcomes and durations in the range, and its runs;
 //   - Exclusions: the patterns that leave pg_cron / pgAgent jobs out of the job checks, fleet-wide or this instance's;
 //   - the job actions' audit rows.
-// Stop and Run now are off by default (the instance's actions: list in the config) and every attempt is audited.
-// Data: /api/jobs/running, /api/jobs/actions/stop|start, /api/jobs/steps, /api/jobs/exclusions, /api/jobs/history.
+// Stop, Run now, Enable and Disable are off by default (the instance's actions: list in the config) and every attempt
+// is audited.
+// Data: /api/jobs/running, /api/jobs/actions/stop|start|enable|disable, /api/jobs/steps, /api/jobs/exclusions,
+// /api/jobs/history.
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, props } from './ui';
 import { loadAckSafe, offBeside, onDoor, seatWhy } from './ack';
 import { fleet } from './fleet';
 
-type Kind = 'job_stop' | 'job_start';
+type Kind = 'job_stop' | 'job_start' | 'job_enable' | 'job_disable';
 interface OnOff { on: boolean; reason?: string }
 // notes: per action, the page's one visible sentence where it is off for the WHOLE instance (every row's button shares
 // that reason and points at it); a row's own reason stands beside its button
-interface RunningState { actions: Record<Kind, OnOff>; running: Table | null; log: Table | null; notes?: Partial<Record<Kind, HTMLElement>> }
+// actions_login: the role the instance's actions login connects as (a pg_cron job's Enable / Disable is offered where the
+// job's owner is that role)
+interface RunningState { actions: Record<Kind, OnOff>; running: Table | null; log: Table | null; actions_login?: string; notes?: Partial<Record<Kind, HTMLElement>> }
 // an actions column and, where its action is off for the whole instance and a row shows it, the sentence that says why:
 // the page places it by the grid. stopNote: that same sentence where it also speaks for Stop (both off for one reason:
 // the page says it once, and the Running now panel is given it instead of saying it again). rows: the page's rows,
@@ -28,7 +33,12 @@ interface RunningState { actions: Record<Kind, OnOff>; running: Table | null; lo
 type ActionCol = Col & { readonly offNote?: HTMLElement; readonly stopNote?: HTMLElement; rows?(all: Row[]): void };
 const offWhy = (st: RunningState, kind: Kind): string => st.actions?.[kind]?.on ? '' : st.actions?.[kind]?.reason || 'job actions are off for this instance';
 
-const labels: Record<Kind, string> = { job_stop: 'Stop', job_start: 'Run now' };
+const labels: Record<Kind, string> = { job_stop: 'Stop', job_start: 'Run now', job_enable: 'Enable', job_disable: 'Disable' };
+const andList = (xs: string[]) => xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+const buttonTitles: Record<Kind, string> = {
+  job_stop: 'cancel the backend that runs this run (pg_cancel_backend)', job_start: 'run the job now (jobnextrun = now())',
+  job_enable: 'enable the job: its scheduler runs it again at its schedule', job_disable: 'disable the job: its scheduler starts no new run of it',
+};
 const text = (v: unknown) => v == null ? '' : String(v);
 const outcomeBadge = (v: unknown) => badge(text(v), v === 'done' ? 'ok' : v === 'refused' ? 'warn' : 'crit');
 
@@ -91,50 +101,84 @@ export async function runningState(instance: number | undefined): Promise<Runnin
   return get<RunningState>('jobs/running', { instance });
 }
 
-function actButton(ctx: Ctx, st: RunningState, kind: Kind, why: string, r: Row, after: () => void): HTMLButtonElement {
+function actButton(ctx: Ctx, st: RunningState, kind: Kind, why: string, r: Row, after: () => void, own?: HTMLElement): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'act-' + kind, style: 'font-size:12px;padding:0 .4rem;margin-right:.2rem' }, labels[kind]);
   const reason = why || offWhy(st, kind);
   if (reason) {
     // off: reachable by keyboard, its reason words on the page - the page's one sentence where the action is off for
     // the whole instance, beside the button where the reason is this row's own
-    offBeside(b, reason, why ? undefined : st.notes?.[kind]);
+    offBeside(b, reason, why ? own : st.notes?.[kind]);
     b.style.opacity = '.55';
     b.style.cursor = 'not-allowed';
   } else {
-    b.title = kind === 'job_stop' ? 'cancel the backend that runs this run (pg_cancel_backend)' : 'run the job now (jobnextrun = now())';
+    b.title = buttonTitles[kind];
     b.addEventListener('click', () => { void confirmJobAction(ctx, kind, r, after); });
   }
   return b;
 }
 
-// pgJobActionCol is the PostgreSQL jobs grid's column: Run now on a pgAgent job (pg_cron has no run-now call).
+// pgJobActionCol is the PostgreSQL jobs grid's column: Run now on a pgAgent job (pg_cron has no run-now call) and (B9c)
+// Disable on an enabled job, Enable on a disabled one (by the row's enabled as last read; the server reads the job
+// again), a pg_cron job's only where its owner is the actions login (pg_cron lets only a job's owner or a superuser
+// change it, and the actions login is never a superuser).
 export async function pgJobActionCol(ctx: Ctx, after: () => void): Promise<ActionCol> {
   let st: RunningState;
   try { st = await runningState(ctx.instance); } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    st = { actions: { job_stop: { on: false, reason: why }, job_start: { on: false, reason: why } }, running: null, log: null };
+    st = { actions: { job_stop: { on: false, reason: why }, job_start: { on: false, reason: why }, job_enable: { on: false, reason: why }, job_disable: { on: false, reason: why } }, running: null, log: null };
   }
-  // Run now off for the whole instance: its one sentence, handed to the page only where a pgAgent row shows the button
-  // (a pg_cron job has no run-now call: its cell reads '-'). Where Stop is off for the same reason the sentence names
-  // both, so the page says that reason once (stopNote)
-  const startWhy = offWhy(st, 'job_start'), both = startWhy !== '' && startWhy === offWhy(st, 'job_stop');
-  const note = startWhy ? el('p', { class: 'meta' }, `${both ? 'Run now and Stop are' : 'Run now is'} off for this instance: ${startWhy}`) : undefined;
-  // what the sentence says, for the Running now panel's own read to compare (a page reads the state twice)
-  if (note) { note.dataset.why = startWhy; note.dataset.stop = both ? '1' : '0'; }
-  st.notes = { ...st.notes, job_start: note };
-  // a row's own reason for an off Run now, '' when the row has none
-  const rowWhy = (r: Row): string => r.dropped_at != null ? 'the job is no longer on the server' : r.enabled === false ? 'the job is disabled: pgAgent runs no disabled job' : '';
-  let shown = false;
+  // the kinds this column shows that are off for the WHOLE instance, one sentence per reason ('Run now, Enable and
+  // Disable are off for this instance: R'), each handed to the page only where a row shows a button pointing at it.
+  // Where Stop is off for the reason of one of them, that sentence names Stop too and is the page's stopNote, so the
+  // Running now panel does not say that reason again (data-lead: the sentence's words without Stop, for the panel to
+  // cut it back to when its own read of Stop differs)
+  const mine: Kind[] = ['job_start', 'job_enable', 'job_disable'];
+  const stopWhy = offWhy(st, 'job_stop');
+  const groups = new Map<string, Kind[]>();
+  for (const k of mine) { const w = offWhy(st, k); if (w) groups.set(w, [...(groups.get(w) ?? []), k]); }
+  const sentence = new Map<string, HTMLElement>();
+  let stopNoteEl: HTMLElement | undefined;
+  for (const [why, ks] of groups) {
+    const lead = `${andList(ks.map(k => labels[k]))} ${ks.length > 1 ? 'are' : 'is'}`;
+    const withStop = why === stopWhy;
+    const p = el('p', { class: 'meta' }, `${withStop ? `${andList([...ks.map(k => labels[k]), 'Stop'])} are` : lead} off for this instance: ${why}`);
+    p.dataset.why = why; p.dataset.stop = withStop ? '1' : '0'; p.dataset.lead = lead;
+    if (withStop) stopNoteEl = p;
+    sentence.set(why, p);
+    for (const k of ks) st.notes = { ...st.notes, [k]: p };
+  }
+  const me = st.actions_login;
+  // a row's own reason for an off button of kind k, '' when the row has none (the instance's reason is the sentence's)
+  const rowWhy = (r: Row, k: Kind): string => {
+    if (r.dropped_at != null) return 'the job is no longer on the server';
+    if (k === 'job_start') return r.enabled === false ? 'the job is disabled: pgAgent runs no disabled job' : '';
+    if (r.scheduler === 'pg_cron' && offWhy(st, k) === '' && me && text(r.run_as) !== me) {
+      return `pg_cron lets only a job's owner or a superuser change it: this job belongs to ${text(r.run_as) || 'another role'}, the actions login is ${me}`;
+    }
+    return '';
+  };
+  // the toggle a row shows: Disable on an enabled job, Enable on a disabled one, none where the row carries no flag
+  const flip = (r: Row): Kind | undefined => r.enabled === true ? 'job_disable' : r.enabled === false ? 'job_enable' : undefined;
+  const used = new Set<HTMLElement>();
+  const point = (r: Row, k: Kind) => { const n = st.notes?.[k]; if (n && rowWhy(r, k) === '') used.add(n); };
+  const mark = (r: Row) => { if (r.scheduler === 'pgagent') point(r, 'job_start'); const f = flip(r); if (f) point(r, f); };
+  let handed = false;
+  const said = () => [...sentence.values()].filter(p => used.has(p));
   return {
     key: '_actions', label: 'action',
-    rows(all: Row[]) { shown = all.some(r => r.scheduler === 'pgagent' && rowWhy(r) === ''); },
-    get offNote() { return shown ? note : undefined; },
-    get stopNote() { return shown && both ? note : undefined; },
+    rows(all: Row[]) { handed = true; used.clear(); all.forEach(mark); },
+    get offNote() { const ps = said(); return ps.length === 0 ? undefined : ps.length === 1 ? ps[0] : el('div', {}, ...ps); },
+    get stopNote() { return stopNoteEl && used.has(stopNoteEl) ? stopNoteEl : undefined; },
     fmt: (_v, r) => {
-      if (r.scheduler !== 'pgagent') return el('span', { class: 'meta', title: 'pg_cron runs a job at its schedule only: it has no run-now call' }, '-');
-      const why = rowWhy(r);
-      if (!why) shown = true;   // a caller that hands over no rows: the first such row drawn
-      return el('span', { style: 'white-space:nowrap' }, actButton(ctx, st, 'job_start', why, { ...r, job_name: r.name }, after));
+      if (!handed) mark(r);   // a caller that hands over no rows: the rows drawn so far
+      const row = { ...r, job_name: r.name };
+      const run = el('span', { class: 'meta', title: 'pg_cron runs a job at its schedule only: it has no run-now call', style: 'margin-right:.2rem' }, '-');
+      const f = flip(r);
+      // one reason the row's two buttons share (a dropped job) is said once in the cell, both buttons pointing at it
+      const wr = r.scheduler === 'pgagent' ? rowWhy(r, 'job_start') : '', wf = f ? rowWhy(r, f) : '';
+      const own = wr !== '' && wr === wf ? el('span', { class: 'off-reason' }, wr) : undefined;
+      const runB = r.scheduler !== 'pgagent' ? run : actButton(ctx, st, 'job_start', wr, row, after, own);
+      return el('span', { style: 'white-space:nowrap' }, runB, ...(f ? [actButton(ctx, st, f, wf, row, after, own)] : []), ...(own ? [' ', own] : []));
     },
   };
 }
@@ -143,7 +187,9 @@ export async function pgJobActionCol(ctx: Ctx, after: () => void): Promise<Actio
 // target again before it sends anything.
 export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
   const job = text(r.job_name ?? r.name).trim();
-  const what = kind === 'job_stop' ? `Stop the running job ${job}` : `Run the pgAgent job ${job} now`;
+  const sched = r.scheduler === 'pg_cron' ? 'pg_cron' : 'pgAgent';
+  const what = kind === 'job_stop' ? `Stop the running job ${job}` : kind === 'job_start' ? `Run the pgAgent job ${job} now`
+    : `${labels[kind]} the ${sched} job ${job}`;
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status' });
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
@@ -157,13 +203,27 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
     ? props([['job', job], ['scheduler', text(r.scheduler)], ['run', text(r.run_id)], ['started', fmtTime(r.start_time)],
       ['running for', fmtSecs(r.running_secs)], ['backend', r.scheduler === 'pg_cron' ? `pid ${text(r.job_pid)} (the run's job_pid)` : 'found by the server: the session running the current step\'s code'],
       ['current step', text(r.current_step) || '-'], ['database', text(r.datname)], ['run as', text(r.run_as)]])
-    : props([['job', job], ['job id', text(r.job_id)], ['scheduler', 'pgAgent']]);
+    : kind === 'job_start' ? props([['job', job], ['job id', text(r.job_id)], ['scheduler', 'pgAgent']])
+      : props([['job', job], ['job id', text(r.job_id)], ['scheduler', sched],
+        ['enabled as last read', r.enabled === true ? 'yes' : r.enabled === false ? 'no' : 'not read'],
+        ...(r.scheduler === 'pg_cron' ? [['owner', text(r.run_as) || '-'] as [string, string]] : [])]);
+  const toggleWords: Record<'job_enable' | 'job_disable', Record<'pgagent' | 'pg_cron', string>> = {
+    job_enable: {
+      pgagent: 'Enable sets the job\'s jobenabled to true (UPDATE pgagent.pga_job SET jobenabled = true): pgAgent runs it again at its schedules, its next run computed from them.',
+      pg_cron: 'Enable calls cron.alter_job(job_id, active := true): pg_cron runs the job again at its schedule.',
+    },
+    job_disable: {
+      pgagent: 'Disable sets the job\'s jobenabled to false (UPDATE pgagent.pga_job SET jobenabled = false): pgAgent starts no new run of it; a run going now goes on (Stop ends it).',
+      pg_cron: 'Disable calls cron.alter_job(job_id, active := false): pg_cron starts no new run of the job; a run going now goes on (Stop ends it).',
+    },
+  };
   const body = el('div', {},
     el('p', {}, kind === 'job_stop'
       ? (r.scheduler === 'pg_cron'
         ? 'Stop cancels the run\'s statement (pg_cancel_backend on the run\'s backend): the run ends failed with "canceling statement due to user request". The job runs again at its next schedule.'
         : 'Stop cancels the running step\'s statement (pg_cancel_backend): the step fails, and the job goes on or fails by the step\'s "on error".')
-      : 'Run now sets the job\'s next run to now (UPDATE pgagent.pga_job SET jobnextrun = now()): pgAgent starts it at its next poll, from its first step.'),
+      : kind === 'job_start' ? 'Run now sets the job\'s next run to now (UPDATE pgagent.pga_job SET jobnextrun = now()): pgAgent starts it at its next poll, from its first step.'
+        : toggleWords[kind][r.scheduler === 'pg_cron' ? 'pg_cron' : 'pgagent']),
     shown,
     el('label', {}, 'Reason', el('br'), reason), el('br'),
     el('label', {}, 'Type the job\'s name to confirm ', typed), el('br'), msg);
@@ -182,7 +242,8 @@ export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () =
     go.disabled = true; reason.readOnly = true; typed.readOnly = true;
     msg.textContent = 'Sending...';
     try {
-      const out = await post<{ outcome: string; detail: string; statement?: string }>(kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start', {
+      const path = ({ job_stop: 'stop', job_start: 'start', job_enable: 'enable', job_disable: 'disable' } as const)[kind];
+      const out = await post<{ outcome: string; detail: string; statement?: string }>(`jobs/actions/${path}`, {
         instance_id: ctx.instance, scheduler: r.scheduler, job_id: Number(r.job_id), job_name: text(r.job_name ?? r.name), run_id: Number(r.run_id ?? 0),
         job_pid: Number(r.job_pid ?? 0), reason: reason.value, confirm: typed.value.trim(),
       });
@@ -280,7 +341,7 @@ function exclusionForm(ctx: Ctx, after: () => void, rootWhy = ''): HTMLElement {
 }
 
 const logCols: Col[] = [
-  { key: 'at', label: 'when', fmt: fmtTime }, { key: 'action', fmt: v => v === 'job_stop' ? 'Stop' : v === 'job_start' ? 'Run now' : text(v) },
+  { key: 'at', label: 'when', fmt: fmtTime }, { key: 'action', fmt: v => labels[v as Kind] ?? text(v) },
   { key: 'outcome', fmt: outcomeBadge }, { key: 'job' }, { key: 'target_id', label: 'job id' }, { key: 'pid', num: true },
   { key: 'statement', wide: true }, { key: 'ui_user', label: 'by' }, { key: 'client', label: 'from' },
   { key: 'reason', wide: true }, { key: 'detail', wide: true },
@@ -333,7 +394,7 @@ export async function jobsRunningPanel(ctx: Ctx, stopNote?: HTMLElement): Promis
     // the sentence above speaks for Stop only while this panel's own read gives the same reason; where it does not (a
     // read failed on one side), the sentence above is cut back to Run now and this panel says Stop's state itself
     const same = !!stopNote && stopWhy !== '' && stopNote.dataset.stop === '1' && stopNote.dataset.why === stopWhy;
-    if (stopNote && !same && stopNote.dataset.stop === '1') { stopNote.textContent = `Run now is off for this instance: ${stopNote.dataset.why ?? ''}`; stopNote.dataset.stop = '0'; }
+    if (stopNote && !same && stopNote.dataset.stop === '1') { stopNote.textContent = `${stopNote.dataset.lead ?? 'Run now is'} off for this instance: ${stopNote.dataset.why ?? ''}`; stopNote.dataset.stop = '0'; }
     const above = same ? stopNote : undefined;
     const stopSaid = above ? null : el('span', {}, stopWhy ? `Stop is off: ${stopWhy}` : 'Stop is on for this instance.');
     if (stopWhy) st.notes = { ...st.notes, job_stop: above ?? stopSaid! };

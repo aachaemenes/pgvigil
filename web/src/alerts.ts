@@ -753,7 +753,7 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
       for (let i = 0; i < ms.length; i += 8) {      // eight at a time: a large fleet in a few round trips, the server not flooded
         const part = ms.slice(i, i + 8);
         const sts = await Promise.all(part.map(r => mssqlActionsState(Number(r.instance_id))));
-        part.forEach((r, j) => { for (const k of ['kill', 'job_start', 'job_stop'] as const) rows.push({ instance: r.name, instance_id: r.instance_id, action: k, state: sts[j].actions[k]?.enabled ? 'on' : 'off', reason: sts[j].actions[k]?.reason ?? '' }); });
+        part.forEach((r, j) => { for (const k of ['kill', 'job_start', 'job_stop', 'job_enable', 'job_disable'] as const) rows.push({ instance: r.name, instance_id: r.instance_id, action: k, state: sts[j].actions[k]?.enabled ? 'on' : 'off', reason: sts[j].actions[k]?.reason ?? '' }); });
       }
       return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
         grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
