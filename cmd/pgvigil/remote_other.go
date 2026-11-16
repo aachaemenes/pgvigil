@@ -13,7 +13,13 @@ func remoteBinDefault() string     { return "/usr/local/bin/pgvigil-remote" }
 
 func remoteFolderDefaults() (outbox, stateDir string) { return "", "" }
 
-func removeRemoteService(_ *slog.Logger) error {
+func stopRemoteService(_ *slog.Logger) (bool, error) {
+	return false, errors.New("uninstall -remote: Linux and Windows only (stop and remove the service under the platform's own service manager)")
+}
+
+func startRemoteService(_ *slog.Logger) error { return nil }
+
+func removeRemoteService(_ *slog.Logger, _ string) error {
 	return errors.New("uninstall -remote: Linux and Windows only (stop and remove the service under the platform's own service manager)")
 }
 

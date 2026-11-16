@@ -127,15 +127,10 @@ func remoteFolders(cfgPath string) (outbox, stateDir string) {
 	return remoteFolderDefaults()
 }
 
-// remotePurgeGuard is uninstall -remote -purge's refusal while the outbox holds bundles not pushed (the lead's 12:2x):
-// the collector cannot know whether the site's own transfer carried them; -force removes them too. Nothing is changed
-// when it refuses.
-func remotePurgeGuard(o installOptions) error {
-	if !o.Purge || o.Force {
-		return nil
-	}
-	outbox, _ := remoteFolders(o.Config)
-	if outbox == "" {
+// guardOutbox is uninstall -remote -purge's refusal while the outbox holds bundles not pushed (the lead's 12:2x): the
+// collector cannot know whether the site's own transfer carried them; -force removes them too.
+func guardOutbox(outbox string, force bool) error {
+	if force || outbox == "" {
 		return nil
 	}
 	n, newest, err := remote.OutboxHolds(outbox)
@@ -147,6 +142,36 @@ func remotePurgeGuard(o installOptions) error {
 	}
 	return fmt.Errorf("uninstall -remote -purge: the outbox %s holds %d bundle(s) not pushed, the newest ending %s: a bundle not yet carried to the hub is lost - let the site's transfer carry them first, or give -force to remove them too; nothing was removed",
 		outbox, n, newest.UTC().Format("2006-01-02 15:04:05 UTC"))
+}
+
+// remotePurgeGuard is the guard on o's config (no -purge or -force: none).
+func remotePurgeGuard(o installOptions) error {
+	outbox, _ := remoteFolders(o.Config)
+	return guardOutbox(outbox, !o.Purge || o.Force)
+}
+
+// remotePurgeFolders are what -purge may remove (W review B2 / S2): never with the hub's config folder or binary, and
+// only from a config that loads with a remote: block and absolute folders - otherwise its outbox and state folder are
+// unknown and nothing is removed.
+func remotePurgeFolders(o installOptions) (outbox, stateDir string, err error) {
+	hub := defaultInstallOptions()
+	if filepath.Clean(filepath.Dir(o.Config)) == filepath.Clean(filepath.Dir(hub.Config)) {
+		return "", "", fmt.Errorf("uninstall -remote -purge: %s is in the hub's config folder %s: nothing was removed (the remote's config is %s)", o.Config, filepath.Dir(hub.Config), remoteConfigDefault())
+	}
+	if filepath.Clean(o.Bin) == filepath.Clean(hub.Bin) {
+		return "", "", fmt.Errorf("uninstall -remote -purge: -bin %s is the hub's binary: nothing was removed (the remote's is %s)", o.Bin, remoteBinDefault())
+	}
+	cfg, err := config.Load(o.Config)
+	if err != nil {
+		return "", "", fmt.Errorf("uninstall -remote -purge: %s cannot be read (%v): its outbox and state folder are unknown, nothing was removed - put the config back, or remove the service with uninstall -remote and the folders by hand", o.Config, err)
+	}
+	if cfg.Remote == nil {
+		return "", "", fmt.Errorf("uninstall -remote -purge: %s has no remote: block - not a remote collector's config: nothing was removed", o.Config)
+	}
+	if err := checkRemoteFolders(cfg.Remote.Outbox, cfg.Remote.StateDir); err != nil {
+		return "", "", fmt.Errorf("uninstall -remote -purge: %w: nothing was removed", err)
+	}
+	return cfg.Remote.Outbox, cfg.Remote.StateDir, nil
 }
 
 // removeRemoteParent removes the outbox's and the state folder's shared parent once both are gone, only when it is
@@ -170,65 +195,79 @@ type remoteServiceOps struct {
 	remove func(log *slog.Logger, account string) error
 }
 
-var remoteOps = remoteServiceOps{
-	stop:   func(*slog.Logger) (bool, error) { return false, nil },
-	start:  func(*slog.Logger) error { return nil },
-	remove: func(log *slog.Logger, _ string) error { return removeRemoteService(log) },
-}
+var remoteOps = remoteServiceOps{stop: stopRemoteService, start: startRemoteService, remove: removeRemoteService}
 
 // remoteOut takes uninstall -remote's lines for the operator.
 var remoteOut io.Writer = os.Stdout
 
 // uninstallRemote is `pgvigil uninstall -remote [-purge [-force]]` (the lead's 12:2x): the remote collector's service
 // stopped and removed - never the hub's; with -purge its outbox, its state folder, its config folder's own files and
-// its binary, each folder removed once empty and anything else in them kept and named.
+// its binary, each folder removed once empty and anything else in them kept and named. The guard runs before anything
+// changes and again once the service is stopped (the collector closes a final bundle at shutdown, never pushed): a
+// refusal then starts the service again and removes nothing.
 func uninstallRemote(log *slog.Logger, o installOptions) error {
-	outbox, stateDir := remoteFolders(o.Config)
-	if err := remotePurgeGuard(o); err != nil {
+	var outbox, stateDir string
+	if o.Purge {
+		var err error
+		if outbox, stateDir, err = remotePurgeFolders(o); err != nil {
+			return err
+		}
+		if err := guardOutbox(outbox, o.Force); err != nil {
+			return err
+		}
+	} else {
+		outbox, stateDir = remoteFolders(o.Config)
+	}
+	wasRunning, err := remoteOps.stop(log)
+	if err != nil {
 		return err
 	}
-	if err := removeRemoteService(log); err != nil {
+	held := 0
+	if o.Purge {
+		if err := guardOutbox(outbox, o.Force); err != nil {
+			if wasRunning {
+				if serr := remoteOps.start(log); serr != nil {
+					return fmt.Errorf("%w (and the service did not start again: %v)", err, serr)
+				}
+			}
+			return err
+		}
+		held, _, _ = remote.OutboxHolds(outbox)
+	}
+	if err := remoteOps.remove(log, o.User); err != nil {
 		return err
 	}
-	// counted once the service is stopped: a running collector may finish another bundle between the guard and now
-	held, _, _ := remote.OutboxHolds(outbox)
 	cfgDir := filepath.Dir(o.Config)
 	if !o.Purge {
-		fmt.Printf("the remote collector's service is gone; kept: %s, %s, %s and %s (uninstall -remote -purge removes them).\n", cfgDir, outbox, stateDir, o.Bin)
+		fmt.Fprintf(remoteOut, "the remote collector's service is gone; kept: %s, %s, %s and %s (uninstall -remote -purge removes them).\n", cfgDir, outbox, stateDir, o.Bin)
 		return nil
 	}
-	if outbox != "" {
-		n, kept, err := remote.PurgeOutbox(outbox)
-		if err != nil {
-			return fmt.Errorf("the outbox %s: %w", outbox, err)
-		}
-		if held > 0 {
-			fmt.Printf("removed with -force: %d bundle(s) not pushed (a bundle not yet carried to the hub is lost)\n", held)
-		}
-		log.Info("outbox purged", "path", outbox, "bundles", n)
-		for _, k := range kept {
-			fmt.Printf("kept, not the collector's: %s\n", k)
-		}
+	n, kept, err := remote.PurgeOutbox(outbox)
+	if err != nil {
+		return fmt.Errorf("the outbox %s: %w", outbox, err)
 	}
-	if stateDir != "" {
-		kept, err := remote.PurgeState(stateDir)
-		if err != nil {
-			return fmt.Errorf("the state folder %s: %w", stateDir, err)
-		}
-		log.Info("state folder purged", "path", stateDir)
-		for _, k := range kept {
-			fmt.Printf("kept, not the collector's: %s\n", filepath.Join(stateDir, k))
-		}
+	if o.Force && held > 0 {
+		fmt.Fprintf(remoteOut, "removed with -force: %d bundle(s) not pushed (a bundle not yet carried to the hub is lost)\n", held)
 	}
-	if outbox != "" && stateDir != "" {
-		removeRemoteParent(log, outbox, stateDir)
+	log.Info("outbox purged", "path", outbox, "bundles", n)
+	for _, k := range kept {
+		fmt.Fprintf(remoteOut, "kept, not the collector's: %s\n", k)
 	}
+	skept, err := remote.PurgeState(stateDir)
+	if err != nil {
+		return fmt.Errorf("the state folder %s: %w", stateDir, err)
+	}
+	log.Info("state folder purged", "path", stateDir)
+	for _, k := range skept {
+		fmt.Fprintf(remoteOut, "kept, not the collector's: %s\n", filepath.Join(stateDir, k))
+	}
+	removeRemoteParent(log, outbox, stateDir)
 	base := filepath.Base(o.Config)
 	if err := purgeFolder(log, cfgDir, base, strings.TrimSuffix(base, filepath.Ext(base))+".env"); err != nil {
 		return err
 	}
 	if err := os.Remove(o.Bin); err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Printf("%s could not be removed (%v): delete it by hand once this process has exited.\n", o.Bin, err)
+		fmt.Fprintf(remoteOut, "%s could not be removed (%v): delete it by hand once this process has exited.\n", o.Bin, err)
 	} else {
 		log.Info("removed", "binary", o.Bin)
 		if runtime.GOOS == "windows" { // its own folder under Program Files; never a shared bin folder
@@ -236,6 +275,9 @@ func uninstallRemote(log *slog.Logger, o installOptions) error {
 				log.Info("folder kept: it still holds other files", "path", filepath.Dir(o.Bin))
 			}
 		}
+	}
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(remoteOut, "the machine PATH entry %s stays: remove it by hand when nothing else lives there.\n", filepath.Dir(o.Bin))
 	}
 	return nil
 }

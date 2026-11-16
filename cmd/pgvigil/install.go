@@ -108,7 +108,7 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	} else {
 		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
-		fs.BoolVar(&o.Remote, "remote", false, "remove the remote collector's service, never the hub's; with -purge also its config folder, outbox, state folder and binary (docs/remote-collector.md)")
+		fs.BoolVar(&o.Remote, "remote", false, "remove the remote collector's service, never the hub's (its config "+remoteConfigDefault()+" and binary "+remoteBinDefault()+" unless -config / -bin say otherwise); with -purge also its config folder's own files, outbox, state folder and binary (docs/remote-collector.md)")
 		fs.BoolVar(&o.Force, "force", false, "with -remote -purge: remove the bundles still in the outbox too (a bundle not yet carried to the hub is lost)")
 		fs.BoolVar(&o.All, "all", false, "remove everything of pgvigil on this host: the service, the binaries, the configuration, the account the install made, the Windows app (docs/uninstall.md)")
 		fs.BoolVar(&o.DryRun, "dry-run", false, "with -all: list every item, present or absent, and what would be done; change nothing")
@@ -359,13 +359,14 @@ var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "reports.dsn"
 // folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold
 // nothing but the installer's files: a flat /etc/pgvigil.yaml would hand /etc to the service account
 // and a C:\pgvigil.yaml would rewrite the ACL of C:\.
-// dedicatedFolderOwn is dedicatedFolder for an installer whose own folder is named own (the remote's pgvigil-remote).
-func dedicatedFolderOwn(dir, cfgName, own string) error { return dedicatedFolder(dir, cfgName) }
+// dedicatedFolder is the hub installer's rule: its own folder is named pgvigil.
+func dedicatedFolder(dir, cfgName string) error { return dedicatedFolderOwn(dir, cfgName, "pgvigil") }
 
-func dedicatedFolder(dir, cfgName string) error {
-	// a folder named for the hub's or the remote collector's install is that installer's own: install -remote again
-	// over a new binary finds its env file (Linux) or its outbox and state folder (Windows) there
-	if b := filepath.Base(dir); b == "pgvigil" || b == "pgvigil-remote" {
+// dedicatedFolderOwn holds a config folder to an installer whose own folder is named own: a folder of that name is the
+// installer's (install -remote again finds its env file, or on Windows its outbox and state folder, there), never the
+// other installer's (W review S3: the hub's install would chown the remote's folder to its own account).
+func dedicatedFolderOwn(dir, cfgName, own string) error {
+	if filepath.Base(dir) == own {
 		return nil
 	}
 	entries, err := os.ReadDir(dir)

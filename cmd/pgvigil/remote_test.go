@@ -478,7 +478,7 @@ func TestUninstallRemotePurgeRefusesWhatIsNotItsOwn(t *testing.T) {
 	p, _ := remotePurgeConfig(t, dir)
 	broken := filepath.Join(dir, "broken", "pgvigil-remote.yaml")
 	hubish := filepath.Join(dir, "hubish", "pgvigil-remote.yaml")
-	for _, f := range []struct{ path, body string }{{broken, "remote: [\n"}, {hubish, "instances: []\n"}} {
+	for _, f := range []struct{ path, body string }{{broken, "remote: [\n"}, {hubish, "repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n"}} {
 		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
 			t.Fatal(err)
 		}

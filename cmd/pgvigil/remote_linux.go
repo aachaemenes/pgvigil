@@ -83,9 +83,37 @@ func remoteBinDefault() string     { return remoteBin }
 
 func remoteFolderDefaults() (outbox, stateDir string) { return remoteOutbox, remoteStateDir }
 
+// stopRemoteService stops pgvigil-remote.service (never pgvigil.service) and says whether it was running.
+func stopRemoteService(_ *slog.Logger) (bool, error) {
+	if os.Geteuid() != 0 {
+		return false, errors.New("uninstall needs root: run it with sudo")
+	}
+	if !systemdRunning() {
+		return false, nil
+	}
+	unit := filepath.Base(remoteUnitPath)
+	out, _ := systemctl("is-active", unit)
+	running := strings.TrimSpace(out) == "active"
+	if running {
+		if out, err := systemctl("stop", unit); err != nil {
+			return true, fmt.Errorf("systemctl stop %s: %v: %s", unit, err, out)
+		}
+	}
+	return running, nil
+}
+
+// startRemoteService starts pgvigil-remote.service again (a refused -purge leaves it as it was).
+func startRemoteService(_ *slog.Logger) error {
+	unit := filepath.Base(remoteUnitPath)
+	if out, err := systemctl("start", unit); err != nil {
+		return fmt.Errorf("systemctl start %s: %v: %s", unit, err, out)
+	}
+	return nil
+}
+
 // removeRemoteService is uninstall -remote's service part on Linux: pgvigil-remote.service stopped, disabled and its
 // unit removed - never pgvigil.service; the account stays (named), as the hub's uninstall leaves its own.
-func removeRemoteService(log *slog.Logger) error {
+func removeRemoteService(log *slog.Logger, account string) error {
 	if os.Geteuid() != 0 {
 		return errors.New("uninstall needs root: run it with sudo")
 	}
@@ -103,7 +131,7 @@ func removeRemoteService(log *slog.Logger) error {
 		_, _ = systemctl("daemon-reload")
 		_, _ = systemctl("reset-failed", unit)
 	}
-	fmt.Printf("the account %s is kept; remove it with: userdel %s\n", remoteAccount, remoteAccount)
+	fmt.Fprintf(remoteOut, "the account %s is kept; remove it with: userdel %s\n", account, account)
 	return nil
 }
 
@@ -116,7 +144,7 @@ func installRemoteService(log *slog.Logger, o installOptions) error {
 	}
 	cfgDir := filepath.Dir(o.Config)
 	envFile := filepath.Join(cfgDir, strings.TrimSuffix(filepath.Base(o.Config), filepath.Ext(o.Config))+".env")
-	if err := dedicatedFolder(cfgDir, filepath.Base(o.Config)); err != nil {
+	if err := dedicatedFolderOwn(cfgDir, filepath.Base(o.Config), "pgvigil-remote"); err != nil {
 		return err
 	}
 	uid, gid, err := ensureAccount(log, o.User)

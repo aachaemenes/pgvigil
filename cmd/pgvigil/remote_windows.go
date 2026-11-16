@@ -29,16 +29,58 @@ func remoteDataDir() string        { return filepath.Join(programData(), "pgvigi
 func remoteConfigDefault() string  { return filepath.Join(remoteDataDir(), "pgvigil-remote.yaml") }
 func remoteAccountDefault() string { return remoteAccountName }
 
-// remoteBinDefault is its own binary (the lead's 12:2x): never the hub's %ProgramFiles%\pgvigil\pgvigil.exe.
-func remoteBinDefault() string { return filepath.Join(programFiles(), "pgvigil-remote", "pgvigil.exe") }
+// remoteBinDefault is its own binary under its own name (the lead's 12:2x and 12:5x): never the hub's
+// %ProgramFiles%\pgvigil\pgvigil.exe, and never a second pgvigil.exe on the machine PATH.
+func remoteBinDefault() string {
+	return filepath.Join(programFiles(), "pgvigil-remote", "pgvigil-remote.exe")
+}
 
 func remoteFolderDefaults() (outbox, stateDir string) {
 	return filepath.Join(remoteDataDir(), "outbox"), filepath.Join(remoteDataDir(), "state")
 }
 
+// stopRemoteService stops the service pgvigil-remote (never pgvigil) and says whether it was running.
+func stopRemoteService(log *slog.Logger) (bool, error) {
+	m, err := connectSCM()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = m.Disconnect() }()
+	s, err := m.OpenService(remoteServiceName)
+	if err != nil {
+		return false, nil
+	}
+	defer func() { _ = s.Close() }()
+	st, err := s.Query()
+	if err != nil {
+		return false, err
+	}
+	running := st.State == svc.Running
+	return running, stopIfRunning(log, s)
+}
+
+// startRemoteService starts the service pgvigil-remote again (a refused -purge leaves it as it was).
+func startRemoteService(_ *slog.Logger) error {
+	m, err := connectSCM()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.Disconnect() }()
+	s, err := m.OpenService(remoteServiceName)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Start(); err != nil {
+		return err
+	}
+	_, err = waitState(s, svc.Running, 15*time.Second)
+	return err
+}
+
 // removeRemoteService is uninstall -remote's service part on Windows: the service pgvigil-remote stopped and deleted -
 // never the service pgvigil.
-func removeRemoteService(log *slog.Logger) error {
+func removeRemoteService(log *slog.Logger, _ string) error {
 	m, err := connectSCM()
 	if err != nil {
 		return err
@@ -66,7 +108,7 @@ func removeRemoteService(log *slog.Logger) error {
 // under its virtual account with restart on failure; started when the config is ready. Proven on dba-lab-win (task 14).
 func installRemoteService(log *slog.Logger, o installOptions) error {
 	dataDir := filepath.Dir(o.Config)
-	if err := dedicatedFolder(dataDir, filepath.Base(o.Config)); err != nil {
+	if err := dedicatedFolderOwn(dataDir, filepath.Base(o.Config), "pgvigil-remote"); err != nil {
 		return err
 	}
 	m, err := connectSCM()
