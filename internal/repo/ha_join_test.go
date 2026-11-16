@@ -68,6 +68,12 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     by a SQL Server instance and not by a PostgreSQL one, a PostgreSQL key the other way round, and uptime and the
 //     slow-connect tier's connect_time by both. 0142 and 0190 each re-create import_pg_threshold whole and 0190 runs
 //     last: its function reads the engines too, and its connect_time row names both.
+//  3. purge() reaches what the HA files store without end: the monthly partitions of mssql_repl_sample (0142) and of
+//     mssql_ag_replica_sample, mssql_ag_dbcounter_sample, mssql_mirroring_sample and mssql_logrestore_sample (0143)
+//     go with purge()'s other sample parents; the role changes of a mirrored database, the owner changes of a failover
+//     cluster instance and the seeding rows no read has replaced go by their time, as mssql_ag_failovers does; and
+//     replication_hourly's months go by their own age through replication_hourly_purge() in purge()'s last block
+//     (0150), named among the run's dropped partitions. A row or a month inside the age stays.
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -139,4 +145,37 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	want("connect_time at a SQL Server instance", set("connect_time", "instance", ms, "", "1", "2"), "done: set")
 	want("connect_time at a PostgreSQL instance", set("connect_time", "instance", pg, "", "1", "2"), "done: set")
 	want("uptime at a SQL Server instance", set("uptime", "instance", ms, "", "48", "12"), "done: set")
+
+	// 3. purge(): an old month of each sample parent and of the hours table, an old and a new row of each dated table
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := r.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%v\n%s", err, sql)
+		}
+	}
+	parents := []string{"mssql_ag_dbcounter_sample", "mssql_ag_replica_sample", "mssql_logrestore_sample", "mssql_mirroring_sample",
+		"mssql_repl_sample", "replication_hourly"}
+	for _, p := range parents {
+		exec(`SELECT pgvigil.ensure_month_partition($1, '2019-03-15 00:00+00')`, p)
+		want("March 2019's partition of "+p+" before the purge", str(`SELECT (to_regclass('pgvigil.' || $1 || '_201903') IS NOT NULL)::text`, p), "true")
+	}
+	exec(`INSERT INTO pgvigil.mssql_mirroring_role_changes (instance_id, database_name, at)
+	      VALUES ($1, 'db1', now() - interval '400 days'), ($1, 'db1', now() - interval '1 day')`, ms)
+	exec(`INSERT INTO pgvigil.mssql_fci_owner_changes (instance_id, at, old_node, new_node)
+	      VALUES ($1, now() - interval '400 days', 'n1', 'n2'), ($1, now() - interval '1 day', 'n2', 'n1')`, ms)
+	exec(`INSERT INTO pgvigil.mssql_ag_seeding (instance_id, group_id, database_name, remote_replica, snapshot_at, group_name)
+	      VALUES ($1, 'g-old', 'db1', '', now() - interval '400 days', 'ag1'), ($1, 'g-new', 'db1', '', now() - interval '1 day', 'ag1')`, ms)
+	exec(`SELECT pgvigil.purge(30)`)
+	dropped := str(`SELECT coalesce(array_to_string(partitions_dropped, ' '), '') FROM pgvigil.purge_runs ORDER BY finished_at DESC LIMIT 1`)
+	for _, p := range parents {
+		want("March 2019's partition of "+p+" after purge(30)", str(`SELECT (to_regclass('pgvigil.' || $1 || '_201903') IS NOT NULL)::text`, p), "false")
+		if !strings.Contains(" "+dropped+" ", " "+p+"_201903 ") {
+			t.Errorf("the purge run's dropped partitions lack %s_201903: %s", p, dropped)
+		}
+	}
+	for _, c := range [][2]string{{"mssql_mirroring_role_changes", "at"}, {"mssql_fci_owner_changes", "at"}, {"mssql_ag_seeding", "snapshot_at"}} {
+		want("the rows of "+c[0]+" after purge(30) (all / inside the age)",
+			str(fmt.Sprintf(`SELECT count(*) || ' / ' || count(*) FILTER (WHERE %s > now() - interval '30 days') FROM pgvigil.%s WHERE instance_id = $1`,
+				c[1], c[0]), ms), "1 / 1")
+	}
 }
