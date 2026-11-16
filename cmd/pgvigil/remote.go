@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -65,6 +68,64 @@ func readSigningKey(stateDir string) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("remote.sign: %s is not an Ed25519 private key", filepath.Join(stateDir, signingKeyFile))
 	}
 	return ed25519.PrivateKey(k), nil
+}
+
+// remoteInit makes the collector's Ed25519 signing key in its state folder once (the 64-byte private key in hex, mode
+// 0600, never printed) and prints its public key as the hub's remote_sites keys: take it, 'ed25519:<base64>'; a key
+// already there is kept and its public key printed again. It returns that line.
+func remoteInit(stateDir string, out io.Writer) (string, error) {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return "", fmt.Errorf("remote.state_dir %s: %w", stateDir, err)
+	}
+	path := filepath.Join(stateDir, signingKeyFile)
+	key, err := readSigningKey(stateDir)
+	made := false
+	if err != nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return "", err // a file there that is no key: never overwritten
+		}
+		if _, key, err = ed25519.GenerateKey(rand.Reader); err != nil {
+			return "", err
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return "", fmt.Errorf("the signing key %s: %w", path, err)
+		}
+		if _, err := f.WriteString(hex.EncodeToString(key) + "\n"); err != nil {
+			_ = f.Close()
+			return "", err
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return "", err
+		}
+		if err := f.Close(); err != nil {
+			return "", err
+		}
+		made = true
+	}
+	line := "ed25519:" + base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	if made {
+		fmt.Fprintf(out, "made the signing key %s (mode 0600; keep it on this box only)\n", path)
+	} else {
+		fmt.Fprintf(out, "the signing key %s is kept as it is\n", path)
+	}
+	fmt.Fprintf(out, "its public key, for the hub's remote_sites: collectors: keys: and remote.sign: true here:\n%s\n", line)
+	return line, nil
+}
+
+// runRemoteInit is `pgvigil remote init -config <file>`: the signing key of the file's remote: block (its dispatch line
+// in main.go is task 15's WIRING).
+func runRemoteInit(args []string) error {
+	cfg, _, err := loadConfig(args, false)
+	if err != nil {
+		return err
+	}
+	if cfg.Remote == nil {
+		return &configError{fmt.Errorf("pgvigil remote init: the config has no remote: block")}
+	}
+	_, err = remoteInit(cfg.Remote.StateDir, os.Stdout)
+	return err
 }
 
 // runRemote runs the collector-only mode until ctx ends.
