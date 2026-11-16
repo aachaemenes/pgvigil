@@ -383,7 +383,7 @@ export async function collectionHealthView(ctx: Ctx): Promise<HTMLElement> {
       } catch (e) { list.replaceChildren(errorBox(e)); }
     };
     qBox.addEventListener('change', () => void read());
-    // B6g-5 (the lead's 10:2x B6G-5 (a): no second roll-up): the same errors on the Collector errors page - its types,
+    // B6g-5 (B6G-5 (a): no second roll-up): the same errors on the Collector errors page - its types,
     // stages, the service's own failures and Acknowledge Errors (B24o's, DBA Dash's ErrorLog) - this list's scope,
     // collection and window, a row per error
     // the list's window once, for the list and the link alike (the review of B6g part c #9); type=Error: the failed runs

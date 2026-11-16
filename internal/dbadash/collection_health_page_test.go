@@ -49,8 +49,8 @@ func TestCollectionHealthPage(t *testing.T) {
 			t.Errorf("%s = %v, want true (DBA Dash's default)", k, got[k])
 		}
 	}
-	// the gate's words name no source product (task 168, Allen 11-11 16:25: the source named once, on the import's
-	// settings line; the lead 11-15 06:0x B6 DOOR GATE WORDS = (a)): the version stands beside the screen's own version line
+	// the gate's words name no source product (task 168: the source named once, on the import's
+	// settings line B6 DOOR GATE WORDS = (a)): the version stands beside the screen's own version line
 	noProc := "not read: dbo.CollectionHealth_Get is not in this repository (it came with version 4.25.0)"
 	noExec := "not read: this login has no EXECUTE on dbo.CollectionHealth_Get (the GRANT in docs/dbadash.md, version 4.25.0 and later)"
 	for _, c := range []struct {

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// The Data Retention page's words for the tables the collector's beats trim themselves (the lead's 11-15 17:4x (c),
+// The Data Retention page's words for the tables the collector's beats trim themselves ((c),
 // RETENTION FORM (i) at 18:1x): the page reads the beat functions' installed text as it reads purge()'s, so its words
 // follow the functions. Unit rows over the migrations' own text - a function's body as its file writes it is what
 // pg_proc.prosrc holds once installed.
@@ -44,7 +44,7 @@ func sqlBody(t *testing.T, file, name string) string {
 // collector_runs / collector_load / collector_probe (minute, by collector_trim), collector_spells (an expression: no
 // column), collector_instances (seen_at), collector_streaks (last_run_at, with its conditions), collector_heartbeat
 // (beat_at); a beat's delete of its own late rows (minute = p_minute) is no rule; collector_streaks has two (its host's
-// trim and a gone host's rows, the lead's 19:2x). Then every '8 days' in the three texts
+// trim and a gone host's rows). Then every '8 days' in the three texts
 // changed to '9 days': the words follow (a page that kept '8 days' fails here). RED on q_retention.go as it was: those
 // deletes read as 'rows older than the age, under conditions (see purge())', collector_trim's tables as its parity line.
 func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
@@ -55,7 +55,7 @@ func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
 	}
 	want := map[string]string{"collector_beats": "at", "collector_runs": "minute", "collector_load": "minute", "collector_probe": "minute",
 		"collector_spells": "", "collector_instances": "seen_at", "collector_streaks": "last_run_at", "collector_heartbeat": "beat_at"}
-	// two rules since the gone host's delete (the lead's 19:2x): the host's own trim, and a host none of whose runs beat
+	// two rules since the gone host's delete: the host's own trim, and a host none of whose runs beat
 	streaks := "2 rules: rows older than %[1]s days that collector_instances no longer names, under conditions, whatever the age; " +
 		"rows older than %[1]s days that collector_heartbeat no longer names, under conditions, whatever the age"
 	for _, days := range []string{"8", "9"} {

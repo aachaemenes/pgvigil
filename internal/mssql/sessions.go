@@ -12,7 +12,7 @@ import (
 // row of counts for the Connections page's series:
 //
 //   - sessions by user / system x status: sys.dm_exec_sessions.is_user_process (1 user, 0 system) over ALL sessions,
-//     the page's one rule (the lead 11-15 09:4x; not 'session_id > 50'), and a session's own statuses (running,
+//     the page's one rule (not 'session_id > 50'), and a session's own statuses (running,
 //     sleeping, dormant, preconnect; anything else 'other');
 //   - requests by user / system x status: sys.dm_exec_requests with its session's is_user_process (background,
 //     running, runnable, sleeping, suspended; anything else 'other');

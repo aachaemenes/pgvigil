@@ -25,7 +25,7 @@
 --     o.hash = EXCLUDED.hash and keeps last_changed (EXCLUDED carries no hash_prev). Its aliases are o and i, never d:
 --     d is import_schema's own loop record (as A26's arm uses sd).
 --
--- Why (the lead's 17:1x, A26's finding): the schema collection took a PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC,
+-- Why (A26's finding): the schema collection took a PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC,
 -- RETURN) from prosrc, which is empty for it, so its changes were never recorded; it now reads pg_get_function_sqlbody
 -- and sends hash_prev (the old code's hash of the same row) beside each such body, and this arm makes the upgrade's
 -- first read the body's baseline instead of one false 'changed' row per such function.

@@ -740,7 +740,7 @@ func maskBody(s string) string {
 	return maskConnRE.ReplaceAllString(s, "${1}=<masked>")
 }
 
-// schemaFinishMode turns each object row into its stored shape (task A26, the lead's 13:4x): the hashed form is the
+// schemaFinishMode turns each object row into its stored shape (task A26): the hashed form is the
 // definition with its body's hash at the end ('body sha256:<16 hex>'), and the hash of kind, hashed form, owner and
 // ACL, and def_hash, are taken over it - the same bytes as before A26 under every policy, so a change of query_text
 // (or the upgrade) records no change. The definition stored is the hashed form, followed under query_text 'full' (or

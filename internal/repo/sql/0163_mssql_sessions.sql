@@ -1,7 +1,7 @@
 -- 0163: sessions and connections (task 413, B22; internal/mssql/sessions.go, the activity.go WIRING patch;
 -- internal/web/q_mssql_sessions.go; web/src/mssql_sessions.ts).
 --
--- ONE user / system rule across the Connections page (the lead 11-15 09:4x): a session is a user session when
+-- ONE user / system rule across the Connections page: a session is a user session when
 -- sys.dm_exec_sessions.is_user_process = 1 and a system session when it is 0, over ALL sessions (not 'session_id > 50',
 -- PerformanceMonitor's rule, which the activity read's total used before 413: its WIRING patch moves the total too).
 --

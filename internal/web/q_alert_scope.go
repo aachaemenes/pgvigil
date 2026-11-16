@@ -226,7 +226,7 @@ func (s *Server) AlertWindowWrite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	// the role (B24f, the lead 11-15 16:3x, as ackWrite's mute): an operator makes or edits a window over ONE instance
+	// the role (B24f, as ackWrite's mute): an operator makes or edits a window over ONE instance
 	// that ends at most 7 days after now or its start (openEnded); a fleet or tag window, one with no end or a later
 	// one, and one that copies a rule's scope without naming its own (from_rule_id: fail closed) need admin. Ending a
 	// window is open to an operator. WindowPayload has checked the op and both times.

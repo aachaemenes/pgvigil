@@ -1,6 +1,6 @@
 // metricfam.ts - the Metrics page's Collection family (B6g-4, N30 / N31): DBA Dash's collection counters, hidden from
 // the Metrics page until its toolbar's 'Collection Metrics' is ticked (kept per browser), each series one collection -
-// the sub-series slot every per-database family uses (the lead's 07:4x SERIES (a)), cut on the page by its own
+// the sub-series slot every per-database family uses (SERIES (a)), cut on the page by its own
 // address key so a Database cut and a Collection cut never mix; with no cut, the worst collection each hour. Pure but
 // tickStore's storage: the Node rows are metricfam.test.mjs.
 
@@ -30,7 +30,7 @@ export function subSeries(family: string, mdb?: string, mcol?: string): string |
 }
 
 // subWords: the picker's words for a family's sub-series; none = what the series with no cut is (a rule naming none
-// watches it). The Collection family's is the worst collection each hour (the lead's 14:5x #6 (a)).
+// watches it). The Collection family's is the worst collection each hour (#6 (a)).
 export function subWords(family: string): { noun: string; all: string; label: string; none: string } {
   return family === COLLECTION_FAMILY
     ? { noun: 'collection', all: 'the worst collection', label: 'Collection', none: 'the worst collection each hour' }

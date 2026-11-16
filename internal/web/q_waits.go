@@ -97,7 +97,7 @@ SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
  ORDER BY q.samples DESC, q.queryid
  LIMIT 50`
 
-// sqlWaitsPoison (task 405, Changed 19; the lead's 11-14 22:4x on S4): PerformanceMonitor's poison wait at the window's
+// sqlWaitsPoison (task 405, Changed 19 on S4): PerformanceMonitor's poison wait at the window's
 // end (0156's pg_poison_wait_findings): each finding with its top statements, their text from statement_text as the
 // collector stored it (the query_text policy and the credential mask applied there, before the store: never a raw
 // text; the instance's policy now applied again at read: TEXT-NOW's stmt), or the one info row 'not judged: needs

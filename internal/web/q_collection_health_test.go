@@ -101,7 +101,7 @@ func TestCollectionHealthErrorsOnAsk(t *testing.T) {
 	}
 }
 
-// TestCollectionHealthRangeShape (the review of B6.2, part a #6 and #9a, the lead's 00:5x calls): the page reads its hourly
+// TestCollectionHealthRangeShape (the review of B6.2, part a #6 and #9a calls): the page reads its hourly
 // rows from the hour that holds the range's start (DBA Dash's @FromHour, rounded down) and passes collection_health its
 // scope; the rows are ordered as DBA Dash's: Status (critical, warning, N/A, OK), the range's Failed % down, the name
 func TestCollectionHealthRangeShape(t *testing.T) {

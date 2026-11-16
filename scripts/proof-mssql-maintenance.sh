@@ -26,7 +26,7 @@
 #     every database the login can enter, the four procedures and dbo.CommandLog present, each version '2026-09-12
 #     15:02:38' as the file's own line. A second database with dbo.CommandExecute alone -> a partial install naming
 #     what is missing (warning). A database the login cannot enter is named in the 'not installed' row ('not looked
-#     into: <db> (no access)') and does not hold it 'not read' (the departure C1, the lead's 13:3x).
+#     into: <db> (no access)') and does not hold it 'not read' (the departure C1).
 #  O2 the jobs as installed on Linux (ten; no 'Output File Cleanup'): each matched by what its step calls (the
 #     procedure with @BackupType and @Databases, the CommandLog clean-up's DELETE, the two msdb history procedures),
 #     shown under Ola's name; ten 'no enabled schedule' warnings. Schedules added -> ok. One job disabled, one schedule

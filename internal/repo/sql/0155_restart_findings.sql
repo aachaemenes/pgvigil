@@ -11,14 +11,14 @@
 --                     11: a replica started within 120 s of the old primary is a failover too); on the same machine the
 --                     start moved by over 120 s (the start is SYSUTCDATETIME() less the ticks since the start, read by
 --                     instance.go, so a host's clock step moves it too) and after the read before = 'restart', any other
---                     move no event (a clock step: the lead's 11-14 22:5x, F16's clock rule (a)); product_version
+--                     move no event (a clock step: F16's clock rule (a)); product_version
 --                     changed = 'build' (old and new with the update level). 'The read before' is the server's own
 --                     clock at that read (server_utc, SYSUTCDATETIME() in instance.go's sysinfo read), the collector's
 --                     read time only where it is missing: the start is on the server's clock (404 review B, 8).
 --     instance_state  postmaster_start moved (exact: no tolerance), the read newer than the stored one: a new start
 --                     after the read before (its server_now, the server's clock; the collector's read time where it
 --                     is missing) = 'restart'; a start at or before it = 'failover' (a node already up took over),
---                     whatever the address (the lead's 11-14 23:1x, finding 7 (a): inet_server_addr() no longer
+--                     whatever the address (finding 7 (a): inet_server_addr no longer
 --                     decides, so a recreated container or pod reads 'restart', and a VIP or a Unix socket, which keep
 --                     one address or none, reads a promotion as 'failover'; server_addr stays in the words). The edges
 --                     read 'restart' (the timeline is not read): a standby created and promoted between two reads, and
@@ -36,7 +36,7 @@
 --                     one key (instance, kind, at).
 --     'at' is the new start when it is after the read before (a restart, a build that came with it), else the read
 --     that saw it (a failover onto a node already up, a build through it, a crash restart: between that read and the
---     one before): the lead's 11-14 22:5x, F17 (a) - a node up for days is not dated days back. prev_at is the read
+--     one before): F17 (a) - a node up for days is not dated days back. prev_at is the read
 --     before, seen_at the read that saw it. A first read is an INSERT and
 --     writes nothing: a new instance never reads as restarted. The events keep 365 days (the longest chart range):
 --     purge()'s line is in the join file. A later migration that rewrites mssql_instance.started_at / product_version

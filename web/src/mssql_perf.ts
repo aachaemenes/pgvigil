@@ -205,7 +205,7 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(props([
     ['max server memory', l.max_server_memory_mb == null ? 'not read (mssql_instance)' : `${fmtNum(l.max_server_memory_mb)} MB`
       + (l.physical_kb ? ` (${fmtNum(Math.round(100 * Number(l.max_server_memory_mb) * 1024 / Number(l.physical_kb)))} % of physical)` : '')],
-    // task 405 (Fixed 8; the lead's 22:4x on S4): PerformanceMonitor's number beside the setting (0156's
+    // task 405 (Fixed 8 on S4): PerformanceMonitor's number beside the setting (0156's
     // mssql_memory_suggestion, the one the Server options check states; none on a Managed Instance)
     ...rowsOf(d.suggestion).slice(0, 1).map(sg => ['PerformanceMonitor\'s suggestion', `${fmtNum(sg.suggested_mb)} MB (${String(sg.status)}; `
       + `leaving ${fmtNum(sg.reserve_mb)} MB of ${fmtNum(sg.ram_mb)} MB for the OS): ${String(sg.message ?? '')}`] as [string, string]),

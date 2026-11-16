@@ -176,7 +176,7 @@ func DatabaseAllowed(perm string) bool {
 // HAS_PERMS_BY_NAME reads an unquoted 'CORP\sql.admin' as a two-part name and answers 0), and every grant on a server
 // object (a login, an endpoint, an availability group) to the login or a server role of its token, but CONNECT and
 // VIEW DEFINITION (public's CONNECT on the TSQL endpoints). Every column in the database's collation: the catalog's
-// names and a literal may differ (Msg 451 on the sandbox, 12:5x).
+// names and a literal may differ (Msg 451 on the sandbox).
 const sqlServerRights = `SELECT CAST('role sysadmin' AS nvarchar(300)) COLLATE DATABASE_DEFAULT WHERE IS_SRVROLEMEMBER('sysadmin') = 1
 UNION ALL SELECT CAST(permission_name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.fn_my_permissions(NULL, 'SERVER')
 UNION ALL SELECT CAST(N'IMPERSONATE on login ' + p.name AS nvarchar(300)) COLLATE DATABASE_DEFAULT FROM sys.server_principals p

@@ -279,8 +279,8 @@ func chPartNames(part string) []string {
 
 // CHThresholdWrite is POST /api/collectionhealth/thresholds (B6g-2, N33 / N41): DBA Dash's per-collection thresholds,
 // set or inherited at one scope - an instance's collection, every collection of an instance, a collection on every
-// instance, everything (instance_id / collection left out). Any signed-in user writes them (the lead's 07:4x ROLE (a)),
-// audited in the table's history - admin-gated once B24f's role gate lands (the lead's 07:4x: on B24f's list); the demo door carries one demo instance's scopes and refuses the two wider ones in
+// instance, everything (instance_id / collection left out). Any signed-in user writes them (ROLE (a)),
+// audited in the table's history - admin-gated once B24f's role gate lands (on B24f's list); the demo door carries one demo instance's scopes and refuses the two wider ones in
 // words. import_collection_health_threshold answers done or refused (409 with its words).
 func (s *Server) CHThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "Collection Health thresholds", 1))

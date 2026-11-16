@@ -212,7 +212,7 @@ listed() { pq "SELECT count(*) FROM jsonb_array_elements(pgvigil.import_mssql_co
 readat() { pq "SELECT count(*) FROM pgvigil.mssql_counter_series k JOIN pgvigil.mssql_counter_last l ON l.series_id = k.series_id
   WHERE k.instance_id = $SB AND k.object = '$1' AND k.counter = '$2'
     AND l.server_utc = (SELECT server_utc FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = pgvigil.mssql_counter_scope('$1') ORDER BY snapshot_at DESC LIMIT 1)"; }
-# The logins rows' own witness (the lead's 11-15 10:5x): an event session of the proof's own on login, logout and the
+# The logins rows' own witness: an event session of the proof's own on login, logout and the
 # failed login's error (18456), by program, started before a logins phase's first read and read ONLY when the count is
 # not the one wanted. Its rows go into the FAIL line, so a red names the program of an extra login: box run 401m1 read
 # +42 / +42 once and no log named it (a failed login moves both counters, one each, and the 2022 image makes no login by

@@ -79,7 +79,7 @@ BEGIN
      SET first_probed = least(h.first_probed, EXCLUDED.first_probed),
          last_answered = greatest(h.last_answered, EXCLUDED.last_answered),
          host = EXCLUDED.host, last_method = EXCLUDED.last_method;
-  -- an opened connection is a TCP answer (the review of B24h-1 part a #1, the lead's 12:4x (a)): the host's last answer is
+  -- an opened connection is a TCP answer (the review of B24h-1 part a #1 (a)): the host's last answer is
   -- the newest open, probed or not ('never answered' never stands for a server a connection reached); first_probed is
   -- then the first time the address was seen
   INSERT INTO pgvigil.collector_probe_host AS h (collector_id, host, address, first_probed, last_answered, last_method)
@@ -93,7 +93,7 @@ BEGIN
          last_answered = greatest(h.last_answered, EXCLUDED.last_answered), host = EXCLUDED.host;
   -- the probe rows are kept 8 days, trimmed here (the review of B24h-1 part b #9: until the join's purge() line, a
   -- store under probe_every_minute grew without end) by the table's mark (0121's collector_trim: 10 minutes at most a
-  -- beat from the mark; TRIMMARK, the lead's 11-15 17:4x (a)). A store whose 0121 was applied before the mark existed
+  -- beat from the mark; TRIMMARK (a)). A store whose 0121 was applied before the mark existed
   -- (first migrated by an untagged build: migrate skips the edited 0121, and such a store is made fresh - the lead's
   -- B6F4 #1 rule) has no collector_trim: the old whole-key trim, so the import never fails there on a missing function
   -- (the review of TRIMMARK #2: heartbeat.go reads that 42883 as 'no 0254' and stops sending the probes)
@@ -219,7 +219,7 @@ SELECT collector_host, host, address, max(method) FILTER (WHERE k <= 5) AS metho
 -- instance's connection to the host, so an instance read every 5 minutes does not flap) - a host that never answered
 -- (ICMP blocked: a cloud endpoint) is words on the page only, never a finding (B24h-b, the fold's #6a); ping_crossed =
 -- ping slow now and not in the 5 before the newest (the fold's forming wait, collector_probe_forming_hosts). ONE pass
--- (part b #4, the lead's 12:4x (a)): the pings read once and joined (a host reached at more than one address: the address
+-- (part b #4 (a)): the pings read once and joined (a host reached at more than one address: the address
 -- probed newest - an endpoint's failover moves it: the review of the fold #7 - then the most answers, then by name,
 -- speaks for it), never a lateral read of the windowed view per instance. Every join on ONE key, the collector host and
 -- the host (address, instance) joined by a unit separator (#b4's attempt 3, vis-bj2plan2: matched on two columns, the

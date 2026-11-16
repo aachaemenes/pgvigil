@@ -228,7 +228,7 @@ export function ackDialog(o: AckDialog) {
   }
   const build = (): AckBody[] => (Array.isArray(o.body) ? o.body : [o.body]).map(b => {
     const x: AckBody = { ...b };
-    // the 7-day choice ends 10 minutes short of 168 h (the lead 11-15 19:3x): the server measures the ceiling by its own
+    // the 7-day choice ends 10 minutes short of 168 h: the server measures the ceiling by its own
     // clock, and a browser clock ahead of it would else make an operator's 7-day mute open-ended
     if (o.expiry && Number(untilSel.value) > 0) x.until = new Date(Date.now() + Number(untilSel.value) * 3600000 - (Number(untilSel.value) >= 168 ? 600e3 : 0)).toISOString();
     if (o.untilChange) x.until_change = change.checked;
@@ -240,7 +240,7 @@ export function ackDialog(o: AckDialog) {
     return x;
   });
   const noteOK = () => (o.noteField !== 'required' && o.noteField !== 'label') || note.value.trim().length > 0;
-  // a blackout's end at most 7 days after its start (or now) below admin (the lead 13:3x)
+  // a blackout's end at most 7 days after its start (or now) below admin
   const inCeiling = () => !o.blackout || !openEnded
     || fromInput(to.value).getTime() - Math.max(Date.now(), fromInput(from.value).getTime()) <= 7 * 86400e3 - 600e3;   // 10 minutes of margin for the browser's clock (review-21 N1)
   const valid = () => noteOK() && inCeiling();

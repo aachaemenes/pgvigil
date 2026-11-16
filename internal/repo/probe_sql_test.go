@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestProbeMigration (B24h-1c; the B24h fold's B24h-d, #5; the lead's 03:3x join-file rule): 0254 creates B24h's own
+// TestProbeMigration (B24h-1c; the B24h fold's B24h-d, #5 join-file rule): 0254 creates B24h's own
 // objects and adds collector_load's three round-trip columns; it re-creates nothing made below 0190
 func TestProbeMigration(t *testing.T) {
 	b, err := os.ReadFile("sql/0254_probe.sql")

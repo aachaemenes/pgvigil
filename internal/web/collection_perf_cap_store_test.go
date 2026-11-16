@@ -47,7 +47,7 @@ SELECT x.at, x.instance_id, i.name AS instance, i.engine, x.collection, x.period
 // again, so a function that ignored its cap read right through sqlCollPerfRows)
 var sqlCollPerfRowsOwn = `SELECT * FROM pgvigil.collection_perf_rows($1::timestamptz, $2::timestamptz, $3::int, $4::int[], coalesce($5::text, ''), $6::int)`
 
-// TestCollectionPerfCapOrderOnAStore (J5 after the index, the lead's 16:0x (a): 'a cap that keeps the wrong 5,001 is a
+// TestCollectionPerfCapOrderOnAStore (J5 after the index (a): 'a cap that keeps the wrong 5,001 is a
 // wrong page'; a box row: PGVIGIL_REPO_TEST_DSN): the capped rows read (pgvigil.collection_perf_rows, walking the range
 // newest first and stopping at the cap) equals the whole-range form ROW FOR ROW - every column, in order - for every
 // scope (the root, one collection, one instance, an instance list) and cap (0, 1, 5, 17, 60, 10000), over five ranges:

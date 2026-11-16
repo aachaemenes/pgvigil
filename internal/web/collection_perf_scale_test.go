@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestCollectionPerfScaleJ5 (the review of B6g-3 #6, the lead's 13:3x (a): measure first; a box row on a store seeded
+// TestCollectionPerfScaleJ5 (the review of B6g-3 #6 (a): measure first; a box row on a store seeded
 // at fleet scale by .vis/scale-seed.sql, PGVIGIL_SCALE_DSN - skipped without it): the Collection Performance report's
 // read over 8 days - at the root for one collection and for every collection, then one instance and a sparse scope
 // (the review of J5 (a) #6) - as the page reads it: one GET runs rows, charts

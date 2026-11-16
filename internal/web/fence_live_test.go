@@ -14,7 +14,7 @@ import (
 //   - custom reports (ST6's one fence, mssqlread.Fence): the documented read login runs; a login with one right more
 //     (ALTER ANY CONNECTION) is refused by that right's name; a sysadmin is refused;
 //
-//   - community tools keep openMS as it was (the lead 11-15 12:5x: they run named procedures pgvigil knows, some
+//   - community tools keep openMS as it was (they run named procedures pgvigil knows, some
 //     needing rights outside a read-only allowlist): the same login with one right more is let in, a sysadmin is not.
 //
 //     PGVIGIL_ST6_MON_DSN    the documented read login

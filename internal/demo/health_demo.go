@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// The demo's hourly collection health (B6.2, the lead's 23:2x call B6.2-b and 00:5x call on the review's #3): the demo
+// The demo's hourly collection health (B6.2 B6.2-b and 00:5x call on the review's #3): the demo
 // has no heartbeat, so the fleet writes collection_health_hour itself, under the collector id 'demo', from the same
 // per-minute rule its logged runs follow (runStatus): the seed writes the last 24 hours with one collection_log error
 // per failed minute (logHistoryErrors), and each Tick adds the minute it logged. Only the minutes known to be run are

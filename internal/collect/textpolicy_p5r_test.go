@@ -194,7 +194,7 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 			`<![CDATA[<StmtSimple StatementText="x @pwd"><Const ConstValue="(31337)" />]]>` +
 			`<?note <StmtSimple StatementText="y @secret"><Const ConstValue="(42424)" /> ?>`
 	)
-	// M3 (the lead 04:2x, (a)): a showplan keeps 3,999 characters of a statement's text (read on SQL Server 2022
+	// M3 (a): a showplan keeps 3,999 characters of a statement's text (read on SQL Server 2022
 	// 16.0.4325.4), so a long statement's credential name can stand past the cut; a statement at that length that lists
 	// no parameter is masked as one that names a credential. Lengths in SQL Server's characters (UTF-16 code units).
 	const pre = "SELECT id FROM dbo.T WHERE "
@@ -340,7 +340,7 @@ func TestMaskPlanCredStatementsCost(t *testing.T) {
 }
 
 // TestMaskXMLLivePlan: a live plan carries no StatementText (and here no ParameterList), so nothing names the
-// parameter its RECOMPILE value came from: every literal of its expressions is masked (the lead 11-16 04:4x, (a): under
+// parameter its RECOMPILE value came from: every literal of its expressions is masked ((a): under
 // every policy, locked down by default), and every other attribute keeps its bytes.
 func TestMaskXMLLivePlan(t *testing.T) {
 	live := readPlanFixture(t, "live-p5r")

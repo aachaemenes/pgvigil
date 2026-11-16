@@ -14,7 +14,7 @@
 #            reportmail/rendered
 #   operator actions/cancel, actions/terminate, mssql/actions/run (KILL, job start / stop, plan evict), jobs/actions/
 #            stop and start, ack, ack/end, alerts/dismiss, alerts/mute, alerts/test, plans/explain, plans/analyze,
-#            plans/hypo, indexes/advise (the lead 13:3x), community/run, reportmail/send, reportmail/test
+#            plans/hypo, indexes/advise, community/run, reportmail/send, reportmail/test
 #   admin    admin/instances, admin/sources, admin/proposals, admin/dbadash_moves, admin/applications (and contacts,
 #            assign, routes, import), alertrules, alertrules/end, drives/thresholds, pg/thresholds, jobs/thresholds,
 #            jobs/exclusions, customreports, reportmail
@@ -31,7 +31,7 @@
 #   R1 (each route x viewer / operator / admin): every row below its need FAIL - the route answers as it does today
 #     (its own words, never 'needs the <role> role'); every row at or above its need ok. Counted: 41 routes, the two
 #     'anyone' ones by the login and logout rows.
-#   SRC (SourcesAdminWrite, the lead 00:1x): an operator's and a viewer's add / edit / enable / disable / remove / sync
+#   SRC (SourcesAdminWrite): an operator's and a viewer's add / edit / enable / disable / remove / sync
 #     / sweep FAIL (not refused); the source rows unchanged ok.
 #   S5 (a fleet-wide or open-ended mute or blackout needs admin): the operator's four wide rows FAIL (a mute on every
 #     instance, over a tag, with no end; a blackout with no end); the operator's one-instance blackout with an end ok;
@@ -41,7 +41,7 @@
 #     FAIL (not refused: the edit is role-checked no further than operator); the operator's edit of a one-instance
 #     rule that keeps its instance and an end ok; the admin's edit to every instance ok.
 #   The fold of review-18 (b24f1 N5 / S4; written before the run that carries it): S5 the operator's one-alert mute
-#     (finding_key, no instance) with an end: its own answer, not the role's words; the 7-day ceiling (the lead 13:3x):
+#     (finding_key, no instance) with an end: its own answer, not the role's words; the 7-day ceiling:
 #     the operator's mute of one instance ending in 30 days and blackout ending 9999-12-31 refused with the admin
 #     words, its edit to an end 30 days away refused; R1's indexes/advise row at operator; review-18 part 3: R1's
 #     routes read from docs/roles.md's table (39), the admin's row first and every row at or above the need held to
@@ -199,7 +199,7 @@ for r in "${ROUTES[@]}"; do
   for u in o$SUF v$SUF; do grade "$u" ${r%% *} "${r#* }" '{}' "${r#* }" "$REF"; done
 done
 
-# ---- SRC: SourcesAdminWrite's ops (the lead 00:1x) ------------------------------------------------------------------
+# ---- SRC: SourcesAdminWrite's ops ------------------------------------------------------------------
 before=$(q "select count(*) from pgvigil.admin_sources" 2>&1)
 for op in add edit enable disable remove sync sweep; do
   for u in o$SUF v$SUF; do grade "$u" admin /api/admin/sources "{\"op\":\"$op\",\"name\":\"src$SUF\",\"kind\":\"aws\"}" "admin/sources op $op"; done
@@ -209,7 +209,7 @@ done
 # ---- S5: a fleet-wide or open-ended mute or blackout needs admin ----------------------------------------------------
 # an instance registered for the rows that write (S5, S5e)
 IID=$(q "select pgvigil.ensure_instance('roles-i$SUF', 'onprem', '18', 180000, false, '{}')")
-# an end inside the 7-day ceiling (the lead 13:3x: an end more than 7 days away is open-ended), and one past it
+# an end inside the 7-day ceiling (an end more than 7 days away is open-ended), and one past it
 END="\"until\":\"$(date -u -d '+2 days' +%Y-%m-%dT%H:%M:%SZ)\""
 FAR="\"until\":\"$(date -u -d '+30 days' +%Y-%m-%dT%H:%M:%SZ)\""
 s5() {   # s5 <user> <want: admin|own|done> <body> <what>
@@ -274,7 +274,7 @@ else
 fi
 
 # ---- S5w: an alert window over every instance, a tag, with no end or a later end needs admin (the join wiring's
-# rel-sqltb-s2 section, the lead 11-15 16:3x; review-20 jw1 S2). Only on a tree with POST /api/alertwindows.
+# rel-sqltb-s2 section; review-20 jw1 S2). Only on a tree with POST /api/alertwindows.
 WD="\"action\":\"blackout\",\"weekdays\":[1,2,3,4,5,6,7],\"start_local\":\"01:00\",\"end_local\":\"02:00\",\"zone\":\"UTC\""
 wend() { echo "\"until\":\"$(date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ)\""; }
 WWORDS="a fleet-wide, tag-wide or open-ended alert window needs the admin role"

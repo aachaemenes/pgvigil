@@ -16,7 +16,7 @@
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on the base 6178b52 the build has no 0154 and part M fails):
-#  M. migration order (the lead 22:4x: until v0.4.0 the join edits 0190 in place; a store already at 0190 is rebuilt or
+#  M. migration order (until v0.4.0 the join edits 0190 in place; a store already at 0190 is rebuilt or
 #     has 0190's functions re-created by hand at the join). Store 1, migrated fresh by BIN (the wiring applied to its
 #     tree): 0154 applied BEFORE 0190 (schema_version.applied_at); alert_due's definition calls alert_hold and
 #     alert_checks_match and no longer ack_hold; purge's names findings_history and greatest(p_days, 90). Store 2,

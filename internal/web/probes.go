@@ -10,7 +10,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
-// The probes (B6.4, PM Added 27; the B6 pass's X5; the lead's 23:4x B6.4-d): /livez - this process answers, nothing
+// The probes (B6.4, PM Added 27; the B6 pass's X5 B6.4-d): /livez - this process answers, nothing
 // read; /readyz - this process can serve: the repository answers and its schema is current (the check 'pgvigil run'
 // makes at its start). Neither needs the login nor says more than its words: no version, no instance, no driver error
 // (a connect error names the login and the address). /readyz is open while the login is off; with the login on only

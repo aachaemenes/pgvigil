@@ -462,7 +462,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.cloud_replica_events (
 );
 CREATE INDEX IF NOT EXISTS cloud_replica_events_at_idx ON pgvigil.cloud_replica_events (at);
 
--- P3 (task 14, the lead's 00:2x): the provider's own failover events of the reading instance's resource - RDS
+-- P3 (task 14): the provider's own failover events of the reading instance's resource - RDS
 -- DescribeEvents (category failover: RDS-EVENT-0013 started; 0015 / 0049 completed; 0050 / 0051 an activation) and
 -- Cloud SQL FAILOVER operations (start; end when DONE) - each phase once. The import hands them to 404's
 -- instance_events (0155) where that table exists: the provider's word wins (an RDS Multi-AZ DB instance's or a Cloud SQL

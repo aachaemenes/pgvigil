@@ -282,7 +282,7 @@ func TestSchemaPayloadCap(t *testing.T) {
 // proof's section G runs it end to end.
 var _ = runBatched
 
-// A26 (the lead's 13:4x): under query_text full a function's body is stored as text after its hashed form, with what
+// A26: under query_text full a function's body is stored as text after its hashed form, with what
 // may be a password masked; the hash and def_hash are the same bytes as under none (and as before A26), so a change of
 // the policy, or the upgrade, records no change; the hashed form rides for the payload cap's fall-back and never
 // reaches the import.

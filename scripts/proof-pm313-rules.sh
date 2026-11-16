@@ -111,7 +111,7 @@
 #     finding 4: the words reach the Findings page and a channel set to info; red on 234aacc: the info row left out).
 #     NOT PROVEN live: no PostgreSQL image on
 #     the box carries pg_wait_sampling.
-#  R10. the readers (the lead's 11-14 22:4x on S4: nothing a collection stores goes without a page; red on 3a36717: no
+#  R10. the readers (on S4: nothing a collection stores goes without a page; red on 3a36717: no
 #     poison part, no suggestion part, nothing on the pages), with the wiring patch under pgvigil serve: R10a GET
 #     /api/waits at R4's time gives a poison part - pgsyn1's warning on IPC:BufferIO with 'queryid 42: SELECT pgv_poison
 #     FROM t' (statement_text's text, as the collector's text policy and credential mask stored it), pgsyn4's one info

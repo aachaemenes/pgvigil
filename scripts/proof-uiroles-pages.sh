@@ -34,7 +34,7 @@
 #     new mail schedule (openers that need admin: off for the viewer and the operator with the role's words, a click
 #     opens nothing; the admin's opens the dialog, no control off for the role).
 #     'PASS: proof-uiroles-pages'.
-#   The 7-day rows (the lead 11-15 19:3x, review-21; written before the run that carries them; scripts/roles-mute-week.mjs):
+#   The 7-day rows (review-21; written before the run that carries them; scripts/roles-mute-week.mjs):
 #     as the operator, the page's clock 60 s ahead of the server's, on one PostgreSQL instance (not roles-check's): the
 #     header's Silence with '7 days' picked, and the Alerts page's New mute rule on that instance with '7 days after the
 #     start' (start at once), each saved and graded by its own POST /api/ack (the body's until, the answer) - on

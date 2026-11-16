@@ -32,7 +32,7 @@
 #     'build' event at the new start, the build's words naming OLD's and NEW's SERVERPROPERTY('ProductVersion');
 #     frame marks: restart 2, build 1; findings: 'instance restarted' 2, 'build changed' 1.
 #  D. built rows on a second instance (an INSERT, then UPDATEs of its mssql_instance row, the reads a minute apart;
-#     the lead's 11-14 22:5x, F17 (a) and F16's clock rule (a); red on 168ca53 at D's first physical_machine update, the
+#, F17 (a) and F16's clock rule (a); red on 168ca53 at D's first physical_machine update, the
 #     column being 0155's - T4's own red was shown in a sandbox run of 0155 over stand-in tables): the INSERT = no event; the start
 #     60 s later = none; T4 the start 5 minutes later and T4b 5 minutes earlier on the same machine (a clock step: the
 #     new start before the read before) = none; a new start 30 s after the read before = 'restart' at that start; FCI

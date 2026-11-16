@@ -63,7 +63,7 @@ func TestSchemaIdentities(t *testing.T) {
 	}
 }
 
-// A1 (the lead's 13:4x) and B2: a body is text under full (masked), a sha line otherwise; the hash and def_hash are
+// A1 and B2: a body is text under full (masked), a sha line otherwise; the hash and def_hash are
 // the same under every policy, so a change of query_text is never a schema change; a view's text is kept always. The
 // B+C review's B2: a body that names a password or a secret (the DDL log's own test) is never kept as text, under any
 // policy - its sha line and the words (red on d3ea6294: its masked text was stored).

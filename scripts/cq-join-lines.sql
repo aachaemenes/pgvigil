@@ -16,7 +16,7 @@
   DELETE FROM pgvigil.cq_workers WHERE coalesce(beat_at, stopped_at, started_at) < now() - interval '8 days';
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
 --
--- actions_log's CHECKs (the lead's 03:3x: BOTH): CQ-A adds no action to actions_log - its audit rows are the queue's
+-- actions_log's CHECKs (BOTH): CQ-A adds no action to actions_log - its audit rows are the queue's
 -- own (action_requests) - so it widens no CHECK and lists none here; a later CQ slice that writes actions_log rows of a
 -- new kind widens the CHECKs in its own migration and names its kinds here.
 -- No other joined object: 0200 creates its own tables and functions only; apply_roles' general rules (import_*, ui_*)

@@ -20,11 +20,11 @@
 --                               its baseline and no false 'dropped' row is written; a rename keeps the snapshot -
 --                               then import_schema with the same payload, then, at 'end', a database named by no row
 --                               is 'gone' here.
---   import_schema               0058's, RE-CREATED WHOLE here with one arm (the lead's 14:4x S10, both engines): at the
+--   import_schema               0058's, RE-CREATED WHOLE here with one arm (S10, both engines): at the
 --                               run's 'end', the objects of every database it marks gone are marked gone too (0058
 --                               marked the database row only: its objects stayed present on the page and purge's NOT
 --                               is_present line never took them). scripts/a26-join-lines.sql records the arm for the
---                               next join's own file (03:3x), as 0194 did for 0102's import_pg_job_actions_log.
+--                               next join's own file, as 0194 did for 0102's import_pg_job_actions_log.
 --   import_mssql_schema_due     the collection's question before a pass (a collector door by its import_ name: it
 --                               writes nothing): which of the databases it lists are due a whole read, and why - 'new',
 --                               'restore', 'ddl' (a committed CREATE / ALTER / DROP of the default trace's in that

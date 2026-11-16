@@ -27,7 +27,7 @@
 #       severity warning, detail 'alert channel failing: webhook to http://127.0.0.1:<port> (json), the last 3 sends
 #       failed, ...; last error: ... 500 ...', source 'pgvigil repository', sender 'pgvigil' (the file's envelope);
 #     - hook2 never gets its own: no sink body on /c names 'alert channel failing', no alert_state row of hook2 for it;
-#     - hook (floor critical) gets none either (K3 at warning: a critical-only channel is not told; the lead's 23:4x);
+#     - hook (floor critical) gets none either (K3 at warning: a critical-only channel is not told);
 #     - alert_channel_failing's at for hook2 is its first failed attempt (the streak's start), not the third;
 #     - a further pass: no second firing file on drop;
 #     - the sink answers 200, one more test: its alert_log row is 'test'; that same pass (alert_mark marks the finding
@@ -50,7 +50,7 @@
 #     Through `pgvigil mcp` (the reader login): tools/list names alert_history; tools/call {instance A, hours 2160}: 2
 #     alerts (not the 100-day-old one) and a findings_history list; {hours 2161}: an error result naming 1..2160;
 #     {from, to 91 days apart}: an error naming 90 days.
-#  L. (PGVIGIL_PROOF_PART=L only, on the laptop, the lead's 22:0x rules: F3 (a)) one Send test each through the changed
+#  L. (PGVIGIL_PROOF_PART=L only, on the laptop rules: F3 (a)) one Send test each through the changed
 #     senders to the lab's REAL destinations this run has a secret for: slack-live (the lab's Slack incoming webhook,
 #     PGV_LIVE_SLACK), po-live (Pushover's Messages API, PGV_LIVE_PO_TOKEN and PGV_LIVE_PO_USER) and az-live (the Azure
 #     lab's Logs Ingestion endpoint, PGV_LIVE_AZ_SECRET with the rule's and the app's ids in PGV_LIVE_AZ_ENDPOINT, _DCR,

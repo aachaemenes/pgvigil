@@ -680,7 +680,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		logStage(instanceID, "error", err.Error(), "import")
 		// the HADR thresholds are configuration, not collected rows: a plain error in the hour (its log row's stage is
-		// 'import', the repository's side; the lead 11-15 11:2x)
+		// 'import', the repository's side)
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped

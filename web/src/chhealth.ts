@@ -7,7 +7,7 @@ import type { Row } from './api';
 // DBA Dash 4.24.1's tooltip of its errors column (Checks/Summary.Designer.cs L433), word for word
 export const collectionErrorsTip241 = 'Count of errors encountered by the DBA Dash service during data collection or import for the instance.  Retries are highlighted as warning, failures are critical.';
 // B6.3: DBA Dash 4.25.0's own tooltip for its Summary's Collection Health column, quoted from its GUI
-// (DBADashGUI/Checks/Summary.Designer.cs L433, CollectionErrorStatus.ToolTipText) - the lead's 23:4x call B6.3-c
+// (DBADashGUI/Checks/Summary.Designer.cs L433, CollectionErrorStatus.ToolTipText) - B6.3-c
 export const collectionHealthTip = 'Collections at warning or critical: failing in a row for long enough, or a high failure rate since errors were acknowledged (24hrs at most) - thresholds configured in the Collection Health tab.  For an instance whose DBA Dash service predates collection health, the count of collection and import errors in the last 24hrs.  Click to see collection health.';
 
 // a repository version at 4.25.0 or later: 0138's dbadash_health_version, word for word in its rule

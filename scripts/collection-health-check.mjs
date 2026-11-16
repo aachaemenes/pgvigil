@@ -106,7 +106,7 @@ for (const [lvl, hash, want] of [['root', '#/collectionhealth?w=24h', COLS], ['t
   say(eq(p.heads, want), 'CH6 ' + lvl + ' columns', p.heads.join(' | '));
   say(eq(p.show?.labels, ['Row per collection per instance', 'Row per collection']) && p.show?.value === 'instance', 'CH6 ' + lvl + ' Show', JSON.stringify(p.show));
   say(eq(p.status.map(s => s.v).sort(), ['critical', 'na', 'ok', 'warning']) && p.status.every(s => s.on), 'CH6 ' + lvl + ' Status filter', JSON.stringify(p.status));
-  // the charts: Runs and Cost drawn, Import Lag in words where DBA Dash shows it (the lead's 23:2x words), never dropped silently
+  // the charts: Runs and Cost drawn, Import Lag in words where DBA Dash shows it (words), never dropped silently
   const charts = await ev(`(() => { const sec = [...document.querySelectorAll('main section')].find(s => s.querySelector('h2')?.textContent.trim() === 'Collection Health');
     return { titles: [...(sec?.querySelectorAll('.chart-title, figcaption, h3') ?? [])].map(e => e.textContent.trim()), lag: (sec?.textContent ?? '').includes(${JSON.stringify(LAG)}) }; })()`);
   say(charts.titles.some(t => /^Runs/.test(t)) && charts.titles.some(t => /Time spent collecting/.test(t)) && charts.lag, 'CH6 ' + lvl + ' charts', JSON.stringify(charts));
@@ -214,7 +214,7 @@ const allRows = await api({});
     await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: U + href }); await sleep(2000);
     const listed = await ev(`document.querySelectorAll('main .ch-errors tbody tr').length`);
     say(listed === 3, `CH17 ${col} -> the error list`, `${listed} listed, the fixture's 3 errors (${href})`);
-    // CH25 (B6g-5, the lead's 10:2x B6G-5 (a)): the list links to the same errors on the Collector errors page (B24o's:
+    // CH25 (B6g-5 B6G-5 (a)): the list links to the same errors on the Collector errors page (B24o's:
     // its types, stages and Acknowledge) - its instance, the collection, a row per error, the list's own window. The
     // page itself joins with B24o: its landing is proven on the joined tree, the address here
     if (col === 'Failed') {

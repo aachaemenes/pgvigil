@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestCollectorStreaksGoneHostOnAStore (the lead's 11-15 19:2x, red first): collector_streaks rows of a host that never
+// TestCollectorStreaksGoneHostOnAStore (red first): collector_streaks rows of a host that never
 // beats again - uninstalled, renamed, its machine gone - were never deleted: the beat's trim takes only the BEATING
 // host's rows and purge() never names the table. A beat of a live collector now removes a host's streak rows when every
 // run of that host last beat 8 days ago or more (its last heartbeat row goes in the same beat); a host with one run still

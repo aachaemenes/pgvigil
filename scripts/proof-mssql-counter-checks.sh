@@ -31,7 +31,7 @@
 #     carries the seed's rule_id, 2 and 5, a name ending '(off: colours only, no alert)', and metric_status
 #     'critical'; alert_rules_run writes no state and no finding for counters.logins_s; a user's own fleet rule on
 #     counters.latch_waits_s added and then switched off: metric_rule gives no row for it.
-#     B2 (402 S2, the lead's 22:0x; red on df1ffdc at B2a: 'none', the sandbox run s2-test of 11-14 22:2x read 10 of 14
+#     B2 (402 S2; red on df1ffdc at B2a: 'none', the sandbox run s2-test of 11-14 22:2x read 10 of 14
 #     there and 14 of 14 on this metric_rule): the seed of counters.lock_timeouts_gt0_s (the one seeded row the proof
 #     edits, against F20: F leaves it out) edited to 0.5 / 2 while off: metric_rule gives the successor, 0.5 and 2, its
 #     name ending '(off: colours only, no alert)'; edited again (never on): the second successor; that one switched on
@@ -48,7 +48,7 @@
 #     (compiles_per_100_batches, page_splits_per_100_batches, page_lookups_per_batch, recompiles_per_100_compiles) the
 #     proof's own batches and RPCs (its program, read by APP_NAME() at the setup) outnumber those of every program but
 #     pgvigil, else red; then warning or critical with one finding. The clear leg: two quiet reads, the second 60 s
-#     after the first (the product's interval, the lead's 19:0x; a run with QUIET other than 60 ends PARTIAL), the
+#     after the first (the product's interval; a run with QUIET other than 60 ends PARTIAL), the
 #     window named (batches and RPCs by program, statistics updates, scans and seeks per object): ok with no finding,
 #     or 'na' under a floor. A clear held up prints 'NOT PROVEN clear: <names>' only for a metric named background can
 #     move (the batch ratios, full_scans_per_search, page_reads_s, readahead_pct; finding 2) and only after three more
@@ -69,14 +69,14 @@
 #  E. not provokable on a box, the rule's path only: free_list_stalls_s, lazy_writes_s, buffer_cache_hit_pct,
 #     ple_per_4gb, errors_offline_s - an instance rule with a threshold the newest point crosses fires (the point
 #     printed); NOT PROVEN live at the seeded threshold.
-#  D with the floors (FL6, the lead's 19:4x / 19:5x; red on fd7b9bb at GC, on 3e745fa in D at compiles_per_100_batches:
+#  D with the floors (FL6; red on fd7b9bb at GC, on 3e745fa in D at compiles_per_100_batches:
 #     0085's eval counts its NULL newest point as beyond, critical with a finding after the quiet reads - the floors'
 #     review part B, finding 4): each floored check's load reads at its floor or more (5 Batch Requests/s; 1 Full
 #     Scan/s), else it fails as too small; its clear leg reads ok, or 'na' with no finding and metric_floors' input
 #     under its floor (the proof's own floored() line; the product's page words are NOT PROVEN, as G says) - a hard
 #     clear either way, no NOT PROVEN for it; a clear read over its floor that still holds takes up to two more quiet
 #     pairs, each printed, and stays hard (finding 6).
-#  G7 (the lead's 11-15 06:4x, written before its first run): with a metric_na_reasons row for compiles_per_100_batches
+#  G7 (written before its first run): with a metric_na_reasons row for compiles_per_100_batches
 #     made in the run's own repository while that rule reads 'na', GET /api/metrics' grid row and GET /api/alertrules
 #     ?part=state's row carry na_why "not judged: the proof's own words" (the state 'na'); the view's own definition
 #     put back after. G7 proves a metric with both a floor and a reason (the reason's words win over the floor's); a
@@ -96,7 +96,7 @@
 #     seed's 9.999 / 59.999 goes critical at that read; a quiet read after it: still critical (the 3-minute window holds
 #     the burst), as PerformanceMonitor's own text says of a storm. T2 built rows (chkxs2: a done read, a read cut
 #     before the capture (no new_events) storing 6 rows, a done read storing 4): one point per metric, at the last read,
-#     counted 5 (10 rows over 2 minutes), none at the cut read. T4 (the lead's 22:4x, F1 S3: PerformanceMonitor's
+#     counted 5 (10 rows over 2 minutes), none at the cut read. T4 (F1 S3: PerformanceMonitor's
 #     judged count; red on bfb184d: 50.00, warning) built reads a minute apart: 50 rows stored while the event_counter
 #     moved 300: 300.00, critical at the seed's thresholds (a storm past the ring buffer); no row stored and the counter
 #     +30: 30.00; the counter gone down (the session made again) with 20 rows: 20.00. The built reads' counters move
@@ -724,7 +724,7 @@ echo "   T2: $P2"
 [[ "$P2" == "1m client_timeouts_left_out_per_min 0.00, 1m client_timeouts_per_min 5.00" ]] || fail "T2: the points around a cut read [$P2]"
 ok "T2: a cut read gives no point and its 6 rows count in the next done read's span (10 over 2 minutes)"
 
-# T4 (the lead's 22:4x, F1 S3; red on bfb184d: 50.00, warning): PerformanceMonitor's judged count - a storm past the
+# T4 (F1 S3; red on bfb184d: 50.00, warning): PerformanceMonitor's judged count - a storm past the
 # ring buffer (the read stores 50 rows, the event_counter moved 300) reads 300 a minute, critical; T4b no row stored,
 # the counter +30: 30 (the whole change); T4c the counter gone down (the session made again), 20 rows: 20 (the rows alone)
 XS4=$(xinst chkxs4); [[ "$XS4" =~ ^[0-9]+$ ]] || fail "T4: the built instance [$XS4]"
@@ -1060,7 +1060,7 @@ got = ((g[0].get('current_value'), g[0].get('floor'), g[0].get('floor_unit'), g[
 print(f'   FL4: the grid row (current, floor, unit, input) and the state row (state, unit): {got}')
 sys.exit(0 if got == ((None, 5, 'batch requests', 'counters.batch_requests_s'), ('na', 'batch requests')) else 1)
 PY2
-    # G7 (the lead's 11-15 06:4x, red on 799423e4: no na_why): a metric's own N/A reason (0152's metric_na_reasons, a
+    # G7 (red on 799423e4: no na_why): a metric's own N/A reason (0152's metric_na_reasons, a
     # slice's join line in a release) reaches the state row and the grid row; the view's own definition put back after
     # (a later slice's rows in it stay: boxfix N4)
     G7DEF=$(pq "SELECT pg_get_viewdef('pgvigil.metric_na_reasons'::regclass, true)"); [[ -n "$G7DEF" ]] || fail "G7: metric_na_reasons' definition"

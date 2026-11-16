@@ -13,7 +13,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// 390b ID (a), the lead's 07:1x (the review's part a finding 2 and part b finding 1): an AWS resource's key is its
+// 390b ID (a) (the review's part a finding 2 and part b finding 1): an AWS resource's key is its
 // lower-cased DBInstanceArn - unique across regions, accounts and partitions, where the bare identifier is unique only
 // inside one account and region. From the recorded answers' shape (each DescribeDBInstances row carries its ARN):
 //   - a cross-region replica named as its source ('orders' in two regions) is two resources, not one flipping role;

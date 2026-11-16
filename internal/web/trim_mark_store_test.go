@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TRIMMARK (the lead's 11-15 17:4x (a); BJf8L): the beats' trims of the minute-led tables - collector_load and
+// TRIMMARK ((a); BJf8L): the beats' trims of the minute-led tables - collector_load and
 // collector_runs in 0121's import_collector_beat, collector_probe in 0254's import_collector_probe - go by a mark
 // (pgvigil.collector_trim_mark): from the mark to 10 minutes past the first row at or after it, never past 8 days
 // back, the mark moved in the trim's own transaction. BJf8L D measured the old 'minute < now() - 8 days' on statistics 10

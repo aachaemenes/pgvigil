@@ -16,7 +16,7 @@ import (
 //   - 'stale': probes 15 to 19 minutes old, answered at 30 ms (over the 10 ms warning), none since: no ping slow (#7c:
 //     an old reading never stands);
 //   - 'deflt': the default mode's probes (scheduled false) of the last 4 minutes, none answered, the host answered
-//     once: neither ping slow nor not answering (#7, the lead's 12:4x (a): per-minute rows only);
+//     once: neither ping slow nor not answering (#7 (a): per-minute rows only);
 //   - 'opened': per-minute probes of the last 3 minutes, none answered, the host answered once - and a connection of
 //     its instance opened a minute ago: not answering is false (#12: an opened connection is an answer).
 //

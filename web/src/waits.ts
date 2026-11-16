@@ -97,7 +97,7 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, 'Statements that waited most'), grid(rowsOf(d.queries), queryCols,
       'No statement identified (query ids need compute_query_id, on by default with pg_stat_statements).'));
   }
-  // task 405 (Changed 19; the lead's 22:4x on S4): the poison wait at the window's end; without pg_wait_sampling the
+  // task 405 (Changed 19 on S4): the poison wait at the window's end; without pg_wait_sampling the
   // page says it is not judged, in words, never an empty grid
   const poison = rowsOf(d.poison), judged = poison.filter(r => r.severity !== 'info');
   sec.append(el('h3', {}, 'Poison waits'));

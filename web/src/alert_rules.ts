@@ -622,7 +622,7 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
   ceiling.value = String(w?.severity_ceiling ?? 'warning');
   const ceilBox = el('label', {}, 'Holds ', ceiling, ' (a critical always pages at once)');
   const scope = el('select', {}, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tags' }, 'a tag list'), el('option', { value: 'instance' }, 'one instance'));
-  // the role (B24f, the lead 11-15 16:3x, as the mute dialog): below admin a window covers one instance and ends at
+  // the role (B24f, as the mute dialog): below admin a window covers one instance and ends at
   // most 7 days away - every instance, a tag and 'no end' are not offered, and an edit of a wider window says why
   const wideWhy = roleWhy('admin', wideWindow, door.can);
   if (wideWhy) for (const o of scope.options) o.disabled = o.value !== 'instance';

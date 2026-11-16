@@ -694,7 +694,7 @@ func TestRunBatched(t *testing.T) {
 	if res.Err != nil || sw.status != "partial" || sw.stage != "import" || !strings.HasPrefix(sw.note, "import: the repository is away") {
 		t.Fatalf("a swallowed failed batch: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
 	}
-	// B6g-1 (the lead 11-15 10:3x, (a)): a batch refused while the run WENT ON leaves the run partial for the hour as
+	// B6g-1 (a): a batch refused while the run WENT ON leaves the run partial for the hour as
 	// its log row says - one outcome for the rate and the streak; never 'import failed' (the stage is on the error log)
 	if res.Outcome != collect.OutcomePartial || !res.Imported {
 		t.Errorf("a swallowed failed batch: outcome %q, imported %v - want 'partial' with its imports timed", res.Outcome, res.Imported)
@@ -707,7 +707,7 @@ func TestRunBatched(t *testing.T) {
 		t.Fatalf("a read error before a swallowed import: %+v, status %s (%s), stage %q", res, sw.status, sw.note, sw.stage)
 	}
 	// B6g-1 (the review of part a, #2 / #3): a run that ended as an error at a READ is a plain error - with every batch
-	// imported, and also after a batch that was refused and swallowed (the lead 11-15 10:3x: 'import failed' only when
+	// imported, and also after a batch that was refused and swallowed ('import failed' only when
 	// the run ENDED as an error at an import; the refused batch's stage stays 'import' on its log row)
 	rd := &fakeStore{cursors: map[string]Cursor{}}
 	res = run(rd, fakeBatches{total: 25, size: 10, readErr: errors.New("the ring buffer is gone")})

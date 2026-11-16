@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// TestProbes (B6.4, PM Added 27; the pass's X5, the lead's 23:4x B6.4-d): /livez answers 'ok' whatever the login and
+// TestProbes (B6.4, PM Added 27; the pass's X5 B6.4-d): /livez answers 'ok' whatever the login and
 // reads nothing; /readyz answers 'ok' while the repository answers with its schema current, 503 'not ready: <why>'
 // otherwise, cached about 5 s (one check for a burst); without the login it is open, with the login on it is 404
 // unless web.readyz_without_login is set; neither says more than those words, and /api/ stays behind the login

@@ -11,7 +11,7 @@
 --
 -- (its alias is sd, never d: d is import_schema's own loop record, which PL/pgSQL would bind 'd.instance_id' to)
 --
--- Why (the lead's 14:4x, S10 of A26's design pass): 0058 marked only the database row, so a dropped or no longer
+-- Why (S10 of A26's design pass): 0058 marked only the database row, so a dropped or no longer
 -- connectable database's objects stayed present on the Schema tab and in the Diff page's compares, and purge's
 -- 'DELETE FROM pgvigil.schema_objects WHERE NOT is_present ...' line (0190 L317) never took them. Both engines.
 -- Nothing else of import_schema changes. No other joined object: A26 adds no findings arm (schema_findings already

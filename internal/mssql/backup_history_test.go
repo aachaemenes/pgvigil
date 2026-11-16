@@ -13,7 +13,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
-// TestBackupCheckDBRows: sys.databases decides which databases' recovery status is read (task 301b, the lead's 04:5x
+// TestBackupCheckDBRows: sys.databases decides which databases' recovery status is read (task 301b
 // AUTO_CLOSE rule): an AUTO_CLOSE database is left out unless the instance opts in, its cell says why; offline,
 // snapshot, standby and a secondary replica's copy are not judged; every other database is read by its id.
 func TestBackupCheckDBRows(t *testing.T) {

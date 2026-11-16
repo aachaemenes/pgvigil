@@ -25,7 +25,7 @@
 -- pgvigil.findings arm, and the actions_log lists. On this branch mssql_hadr_cursor does not know the cursors (a whole
 -- pass every read); the store test and the proof apply scripts/inv-301b-joined-cursor.sql, the function as the joined
 -- tree holds it.
--- actions_log's three CHECKs are widened HERE too (the lead's 03:3x: BOTH), so this branch's action verify_backup can be
+-- actions_log's three CHECKs are widened HERE too (BOTH), so this branch's action verify_backup can be
 -- written: the lists copy 0157's (task 406, plan_evict) whole and add verify_backup (no pid) and the outcomes started,
 -- cut by shutdown and ended unknown; 0194 (B9c) copies these, 0300 re-creates each CHECK once with every slice's list.
 -- Lock footprint: three new tables' worth of CREATE, and an ACCESS EXCLUSIVE lock on actions_log while each CHECK is

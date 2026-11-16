@@ -414,7 +414,7 @@ BEGIN
                        JOIN pgvigil.instances i ON i.name = ci.instance
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
   -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
-  -- its streak rows when its last run's row goes below (the lead's 11-15 19:2x: the trim above takes only the beating
+  -- its streak rows when its last run's row goes below (the trim above takes only the beating
   -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0 - with no
   -- other collector beating meanwhile its rows stay, and import_collector_streaks leaves them out). The guard reads only
   -- the heartbeat rows, so a beat with no host leaving pays nothing for it. The beats of the minute the guard turns
@@ -1234,7 +1234,7 @@ SELECT x.instance_id
           FROM pgvigil.collector_connects c) x
  WHERE x.crossed AND x.n >= 3;
 
--- collection_dont_monitor (B6g-2, the lead's 07:4x DONT-MONITOR (a)): a collection its Collection Health threshold sets
+-- collection_dont_monitor (B6g-2 DONT-MONITOR (a)): a collection its Collection Health threshold sets
 -- Don't monitor raises no 'collection failing' (below). Its body is 0166's (the thresholds' table is made there, after
 -- this file): this stub lets the view name it on a fresh store, and 0166's CREATE OR REPLACE gives it the body
 -- (made only where it is absent: a re-run of this file after 0166 keeps 0166's body - the review of B6g-2's fold part a #5)

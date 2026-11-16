@@ -956,7 +956,7 @@ eqv "P12 without VIEW ANY DEFINITION: mssql_tables skipped, naming the right" "$
 sed 's/^    dsn: env:PGV_SD_MON$/    dsn: env:PGV_SD_MON\n    disabled: [mssql_tables]/' "$TMPD/m.yaml" > "$TMPD/m3.yaml"
 grep -q 'disabled: \[mssql_tables\]' "$TMPD/m3.yaml" && "$BIN" collect -config "$TMPD/m3.yaml" -once mssql_storage -instance sqlbox > "$TMPD/m3.out" 2>&1 \
   && ok "P12 'disabled: [mssql_tables]' in an instance's entry is a valid configuration" || bad "P12 the off switch's configuration: $(tail -2 "$TMPD/m3.out" 2>/dev/null)"
-# the off switch's behaviour (the lead's 20:4x row): the scheduler with mssql_tables off for sqlbox runs 30 s - no new
+# the off switch's behaviour (row): the scheduler with mssql_tables off for sqlbox runs 30 s - no new
 # mssql_tables run, read marker or sample, while mssql_storage_depth (on) runs; the depth API says 'off' for it
 offstate() { pq "SELECT coalesce((SELECT snapshot_at::text FROM pgvigil.collection_dates WHERE instance_id = $IID AND collection = 'mssql_tables'), '-') || ' '
   || coalesce((SELECT max(read_at)::text FROM pgvigil.mssql_tables_db_read WHERE instance_id = $IID), '-') || ' '
