@@ -375,9 +375,12 @@ func maybeRunAsService(args []string) (bool, int) {
 	if err != nil || !isSvc || len(args) == 0 || args[0] != "run" {
 		return false, 0
 	}
-	logPath := filepath.Join(programData(), "pgvigil", "logs", logFileName)
+	logPath, name := filepath.Join(programData(), "pgvigil", "logs", logFileName), serviceName
 	if cfgPath := flagValue(args[1:], "-config"); cfgPath != "" {
 		logPath = filepath.Join(filepath.Dir(cfgPath), "logs", logFileName)
+		if p, ok := remoteServiceLog(cfgPath); ok { // a remote collector writes only its outbox and its state folder (R2)
+			logPath, name = p, remoteServiceName
+		}
 	}
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
 	w := io.Writer(io.Discard)
@@ -388,7 +391,7 @@ func maybeRunAsService(args []string) (bool, int) {
 	log := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	secrets.Default.SetLog(log) // B24e review 10
 	log.Info("service starting", "version", version)
-	if err := svc.Run(serviceName, &pgvigilService{args: args[1:], log: log}); err != nil {
+	if err := svc.Run(name, &pgvigilService{args: args[1:], log: log}); err != nil {
 		log.Error("service run failed", "err", err)
 		return true, 1
 	}

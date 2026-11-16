@@ -107,6 +107,16 @@ func remoteReady(path string) (bool, string) {
 	return true, ""
 }
 
+// remoteServiceLog is where a remote collector's service writes its log when no terminal takes stderr (Windows): its
+// state folder, the one place besides the outbox it may write (R2); ok false for a config without a remote: block.
+func remoteServiceLog(cfgPath string) (string, bool) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil || cfg.Remote == nil || cfg.Remote.StateDir == "" {
+		return "", false
+	}
+	return filepath.Join(cfg.Remote.StateDir, "pgvigil-remote.log"), true
+}
+
 func sweepOutbox(outbox string, keepDays, maxMB int, now time.Time) int {
 	aged, capped := remote.SweepOutbox(outbox, keepDays, maxMB, now)
 	return aged + capped
