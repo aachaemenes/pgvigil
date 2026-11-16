@@ -539,6 +539,11 @@ const searchBudget = "4s"
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // MSSQLSearch is GET /api/mssql/search.
+// searchShown drops from a statement search's rows those of an instance read as normalized whose shown (normalized)
+// statement does not hold the searched text, and gives the count dropped (TEXT-NOW-L row 3). Not yet built: the row
+// first.
+func searchShown(t *table, text string, normalized map[int]bool) int { return 0 }
+
 func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	text := strings.TrimSpace(q.Get("q"))
