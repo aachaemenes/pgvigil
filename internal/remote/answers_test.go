@@ -22,13 +22,16 @@ type counterEntry struct {
 	Except  []string `json:"except,omitempty"`
 }
 
-// canonCounters reads a counter list as a set: sorted by object, counter and inst (the SQL orders by the store's
-// collation; the collector reads the list as a set).
+// canonCounters reads a counter list as a set: sorted by object, counter and inst, each except list sorted (the SQL
+// orders both by the store's collation; the collector reads them as sets).
 func canonCounters(t *testing.T, b []byte) []counterEntry {
 	t.Helper()
 	var l []counterEntry
 	if err := json.Unmarshal(b, &l); err != nil {
 		t.Fatalf("a counter list that is no JSON list: %v: %s", err, b)
+	}
+	for i := range l {
+		sort.Strings(l[i].Except)
 	}
 	sort.Slice(l, func(i, j int) bool {
 		if l[i].Object != l[j].Object {
