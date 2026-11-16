@@ -52,9 +52,20 @@ func TestReplicationStatementsLive(t *testing.T) {
 		t.Fatalf("the server map: %v %v", m, err)
 	}
 	mapped := m[0]["mapped"] == int64(1)
+	// the probe the collector runs before the subscriptions statement (q10repl3: its alias was the keyword MERGE); its
+	// has_sub_names picks the merge arm's subscriber match, as the collector does
+	hasMerge, hasNames := true, false
+	if mt, err := QueryRows(ctx, conn, replMergeTablesSQL(dist)); err != nil || len(mt) != 1 {
+		t.Errorf("merge tables: %v %v", mt, err)
+	} else if v, n := mt[0]["has_merge"], mt[0]["has_sub_names"]; (v != int64(0) && v != int64(1)) || (n != int64(0) && n != int64(1)) {
+		t.Errorf("merge tables: has_merge %v, has_sub_names %v (want 0 or 1 each)", v, n)
+	} else {
+		hasMerge, hasNames = v == int64(1), n == int64(1)
+		t.Logf("merge tables: has_merge %v, has_sub_names %v", v, n)
+	}
 	for name, q := range map[string]string{
 		"published": replPublishedSQL(info.ViewServerState), "jobs": replJobsSQL(dist, info.ViewServerState),
-		"publications": replPublicationsFor(dist, mapped), "subscriptions": replSubscriptionsFor(dist, mapped), "agents": replAgentsFor(dist, mapped),
+		"publications": replPublicationsFor(dist, mapped), "subscriptions": replSubscriptionsWith(dist, mapped, hasMerge, hasNames), "agents": replAgentsFor(dist, mapped),
 	} {
 		rows, err := QueryRows(ctx, conn, q)
 		if err != nil {
@@ -62,14 +73,6 @@ func TestReplicationStatementsLive(t *testing.T) {
 			continue
 		}
 		t.Logf("%s: %d row(s)", name, len(rows))
-	}
-	// the probe the collector runs before the subscriptions statement (q10repl3: its alias was the keyword MERGE)
-	if mt, err := QueryRows(ctx, conn, replMergeTablesSQL(dist)); err != nil || len(mt) != 1 {
-		t.Errorf("merge tables: %v %v", mt, err)
-	} else if v := mt[0]["has_merge"]; v != int64(0) && v != int64(1) {
-		t.Errorf("merge tables: has_merge %v (want 0 or 1)", v)
-	} else {
-		t.Logf("merge tables: has_merge %v", v)
 	}
 }
 

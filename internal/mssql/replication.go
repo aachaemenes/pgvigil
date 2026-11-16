@@ -164,11 +164,15 @@ func replProbeError(name string, err error) collect.Row {
 
 // replMergeTablesSQL asks whether a distribution database has the four merge tables the merge arm reads (has_merge =
 // 1): the subscriptions statement carries its merge arm only then, so a database without them still reads its
-// transactional subscriptions. (Never the alias 'merge': MERGE is a T-SQL keyword, Msg 156.)
+// transactional subscriptions. (Never the alias 'merge': MERGE is a T-SQL keyword, Msg 156.) has_sub_names = 1 where
+// MSmerge_subscriptions names its subscriber (the column subscriber, beside subscriber_id): SQL Server 2022 leaves both
+// subscriber ids NULL for a merge subscription and keeps the name (read on a Windows lab; Microsoft's page lists no
+// such column, so it is read only where it is there).
 func replMergeTablesSQL(db string) string {
 	n := func(t string) string { return `OBJECT_ID(` + literal(quoteName(db)+".dbo."+t) + `)` }
 	return `SELECT CASE WHEN ` + n("MSmerge_agents") + ` IS NULL OR ` + n("MSmerge_sessions") + ` IS NULL OR ` + n("MSmerge_history") +
-		` IS NULL OR ` + n("MSmerge_subscriptions") + ` IS NULL THEN 0 ELSE 1 END AS has_merge`
+		` IS NULL OR ` + n("MSmerge_subscriptions") + ` IS NULL THEN 0 ELSE 1 END AS has_merge,
+  CASE WHEN COL_LENGTH(` + literal(quoteName(db)+".dbo.MSmerge_subscriptions") + `, 'subscriber') IS NULL THEN 0 ELSE 1 END AS has_sub_names`
 }
 
 func replPublicationsFor(db string, mapped bool) string {
@@ -177,7 +181,10 @@ func replPublicationsFor(db string, mapped bool) string {
   CAST(srv.name AS nvarchar(128)) AS publisher, CAST(p.publisher_db AS nvarchar(128)) AS publisher_db,
   CAST(p.publication AS nvarchar(128)) AS publication,
   CASE p.publication_type WHEN 0 THEN 'transactional' WHEN 1 THEN 'snapshot' WHEN 2 THEN 'merge' ELSE CAST(p.publication_type AS varchar(12)) END AS publication_type,
-  (SELECT COUNT(*) FROM ` + d + `.dbo.MSarticles a WHERE a.publisher_id = p.publisher_id AND a.publisher_db = p.publisher_db AND a.publication_id = p.publication_id) AS articles
+  -- publication type 2's articles (merge's) are kept in its publication database (sysmergearticles), never at the
+  -- distributor: NULL, not 0
+  CASE WHEN p.publication_type <> 2 THEN
+    (SELECT COUNT(*) FROM ` + d + `.dbo.MSarticles a WHERE a.publisher_id = p.publisher_id AND a.publisher_db = p.publisher_db AND a.publication_id = p.publication_id) END AS articles
 FROM ` + d + `.dbo.MSpublications p
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = p.publisher_id
 ORDER BY 3, 4, 5`
@@ -195,11 +202,16 @@ func replSubscriptionsFor(db string, mapped bool) string {
 }
 
 func replSubscriptionsOf(db string, mapped, merge bool) string {
+	return replSubscriptionsWith(db, mapped, merge, false)
+}
+
+// replSubscriptionsWith: names = MSmerge_subscriptions has its subscriber column (replMergeTablesSQL's has_sub_names).
+func replSubscriptionsWith(db string, mapped, merge, names bool) string {
 	d := quoteName(db)
 	mergeArm := ``
 	if merge {
 		mergeArm = `
-UNION ALL` + replMergeSubscriptions(db, mapped)
+UNION ALL` + replMergeSubscriptions(db, mapped, names)
 	}
 	return `SELECT 'subscription' AS kind, ` + literal(db) + ` AS distribution_db, a.id AS agent_id,
   CAST(srv.name AS nvarchar(128)) AS publisher, CAST(a.publisher_db AS nvarchar(128)) AS publisher_db,
@@ -215,7 +227,7 @@ UNION ALL` + replMergeSubscriptions(db, mapped)
   CASE WHEN h.delivery_rate > 0 THEN u.undistributed / h.delivery_rate END AS est_catchup_s,
   ` + utcText("old.entry_time") + ` AS oldest_pending_utc,
   CASE WHEN old.entry_time IS NOT NULL THEN DATEDIFF(second, old.entry_time, GETDATE()) END AS oldest_pending_age_s,
-  ` + replFailingCols() + `
+  ` + replFailingCols() + `, CAST(NULL AS int) AS failing_untimed
 FROM ` + d + `.dbo.MSdistribution_agents a
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
 LEFT JOIN ` + replServers(d, mapped) + ` sub ON sub.server_id = a.subscriber_id
@@ -238,15 +250,32 @@ ORDER BY 4, 5, 6, 7, 8`
 // replMergeSubscriptions is the merge arm of replSubscriptionsFor: one row per merge agent (MSmerge_agents), its
 // newest session (MSmerge_sessions: runstatus 1 start, 2 succeed, 3 in progress, 4 idle, 5 retry, 6 fail; the time
 // is its end, or its start while it runs) and that session's newest message (MSmerge_history), the subscription's
-// type (MSmerge_subscriptions, matched to the agent's publication where the publication ids allow). The distributor
-// keeps no status for a merge subscription (MSmerge_subscriptions.status is no longer used: Microsoft's page; it
-// lives in the publication database's sysmergesubscriptions) and no commands or latency for it (merge keeps its
-// changes in the publication and subscription databases): those columns are NULL.
-// Failing: the agent is failing when a retry or failed session (5, 6) is newer than its newest succeeded or idle one
-// (2, 4); since = the start of the first such session; the error = the newest MSmerge_history row of those sessions
-// that names an error id, its MSrepl_errors row with an error code first.
-func replMergeSubscriptions(db string, mapped bool) string {
+// type (MSmerge_subscriptions, matched to the agent's publication where the publication ids allow; by the subscriber's
+// name where both subscriber ids are NULL and the table has the name: names). The distributor keeps no status for a
+// merge subscription (MSmerge_subscriptions.status is no longer used: Microsoft's page; it lives in the publication
+// database's sysmergesubscriptions) and no commands or latency for it (merge keeps its changes in the publication and
+// subscription databases): those columns are NULL.
+// Failing (read on a Windows lab: a continuous merge agent's healthy session stays 3, in progress, until its job
+// stops; every start also writes a session of runstatus 1 and no duration): a session is healthy when it ended 2 / 4,
+// or is in progress (3) and its own history holds no error row; it is failing when it is 5 / 6, or in progress with an
+// error row. The agent is failing while a failing session is newer than its newest healthy one (the streak); since =
+// the earliest MSrepl_errors time of the streak's error rows, so a retry carries the first failure's time and a
+// session healthy for hours before its first error starts the streak at that error, never at its own start. A retry's
+// first seconds, before its first error row, read healthy (the known limit: the agent reads 'not failing' then).
+// failing_untimed = 1: failing, and no error row of the streak names an MSrepl_errors row (no time at the distributor:
+// the import takes the first read that saw it). The error = the newest MSmerge_history row of the streak that names an
+// error id, its MSrepl_errors row with an error code first.
+func replMergeSubscriptions(db string, mapped, names bool) string {
 	d := quoteName(db)
+	subMatch := `m.subscriber_id = a.subscriber_id`
+	if names {
+		subMatch = `(m.subscriber_id = a.subscriber_id
+                     OR (a.subscriber_id IS NULL AND m.subscriber_id IS NULL AND UPPER(m.subscriber) = UPPER(a.subscriber_name)))`
+	}
+	// errorRow: a history row of session x that names an error
+	errorRow := func(x string) string {
+		return `EXISTS (SELECT 1 FROM ` + d + `.dbo.MSmerge_history h0 WHERE h0.agent_id = ` + x + `.agent_id AND h0.session_id = ` + x + `.session_id AND ISNULL(h0.error_id, 0) <> 0)`
+	}
 	return `
 SELECT 'subscription', ` + literal(db) + `, a.id,
   CAST(srv.name AS nvarchar(128)), CAST(a.publisher_db AS nvarchar(128)), CAST(a.publication AS nvarchar(128)),
@@ -256,25 +285,29 @@ SELECT 'subscription', ` + literal(db) + `, a.id,
   h.runstatus, CAST(LEFT(c.comments, 1000) AS nvarchar(1000)),
   ` + utcText("COALESCE(h.end_time, h.start_time)") + `, ` + utcText("h.start_time") + `,
   CAST(NULL AS int), h.delivery_rate, CAST(NULL AS bigint), CAST(NULL AS float), CAST(NULL AS varchar(33)), CAST(NULL AS int),
-  ` + utcText("mf.since") + `, NULLIF(me.error_code, N''), me.error_text
+  ` + utcText("mt.since") + `, NULLIF(me.error_code, N''), me.error_text,
+  CASE WHEN mf.first_id IS NOT NULL AND mt.since IS NULL THEN 1 END
 FROM ` + d + `.dbo.MSmerge_agents a
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
 LEFT JOIN ` + replServers(d, mapped) + ` sub ON sub.server_id = a.subscriber_id
 OUTER APPLY (SELECT TOP (1) m.subscription_type FROM ` + d + `.dbo.MSmerge_subscriptions m
                LEFT JOIN ` + d + `.dbo.MSpublications p ON p.publication_id = m.publication_id AND p.publisher_id = m.publisher_id AND p.publisher_db = m.publisher_db
-              WHERE m.publisher_id = a.publisher_id AND m.publisher_db = a.publisher_db AND m.subscriber_id = a.subscriber_id AND m.subscriber_db = a.subscriber_db
+              WHERE m.publisher_id = a.publisher_id AND m.publisher_db = a.publisher_db AND m.subscriber_db = a.subscriber_db
+                AND ` + subMatch + `
               ORDER BY CASE WHEN p.publication = a.publication THEN 0 ELSE 1 END) ms
 OUTER APPLY (SELECT TOP (1) x.session_id, x.runstatus, x.start_time, x.end_time, x.delivery_rate
                FROM ` + d + `.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) h
 OUTER APPLY (SELECT TOP (1) y.comments
                FROM ` + d + `.dbo.MSmerge_history y WHERE y.agent_id = a.id AND y.session_id = h.session_id ORDER BY y.timestamp DESC) c
-OUTER APPLY (SELECT MAX(y.session_id) AS ok_id FROM ` + d + `.dbo.MSmerge_sessions y WHERE y.agent_id = a.id AND y.runstatus IN (2, 4)) mok
-OUTER APPLY (SELECT MIN(z.start_time) AS since FROM ` + d + `.dbo.MSmerge_sessions z
-              WHERE z.agent_id = a.id AND z.runstatus IN (5, 6) AND z.session_id > ISNULL(mok.ok_id, -2147483648)) mf
+OUTER APPLY (SELECT MAX(y.session_id) AS ok_id FROM ` + d + `.dbo.MSmerge_sessions y
+              WHERE y.agent_id = a.id AND (y.runstatus IN (2, 4) OR (y.runstatus = 3 AND NOT ` + errorRow("y") + `))) mok
+-- the streak: every session in progress newer than the newest healthy one holds an error row (else it would be that one)
+OUTER APPLY (SELECT MIN(z.session_id) AS first_id FROM ` + d + `.dbo.MSmerge_sessions z
+              WHERE z.agent_id = a.id AND z.runstatus IN (3, 5, 6) AND z.session_id > ISNULL(mok.ok_id, -2147483648)) mf
+OUTER APPLY (SELECT MIN(e1.time) AS since FROM ` + d + `.dbo.MSmerge_history y1 JOIN ` + d + `.dbo.MSrepl_errors e1 ON e1.id = y1.error_id
+              WHERE mf.first_id IS NOT NULL AND y1.agent_id = a.id AND y1.session_id >= mf.first_id AND ISNULL(y1.error_id, 0) <> 0) mt
 OUTER APPLY (SELECT TOP (1) y.error_id FROM ` + d + `.dbo.MSmerge_history y
-               JOIN ` + d + `.dbo.MSmerge_sessions z ON z.agent_id = y.agent_id AND z.session_id = y.session_id
-              WHERE mf.since IS NOT NULL AND y.agent_id = a.id AND ISNULL(y.error_id, 0) <> 0
-                AND z.runstatus IN (5, 6) AND z.session_id > ISNULL(mok.ok_id, -2147483648)
+              WHERE mf.first_id IS NOT NULL AND y.agent_id = a.id AND y.session_id >= mf.first_id AND ISNULL(y.error_id, 0) <> 0
               ORDER BY y.session_id DESC, y.timestamp DESC) mh
 OUTER APPLY (SELECT TOP (1) CAST(e0.error_code AS nvarchar(128)) AS error_code,
                     CAST(LEFT(CAST(e0.error_text AS nvarchar(max)), 1000) AS nvarchar(1000)) AS error_text
@@ -387,7 +420,7 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 		// a failed probe is said (a source that keeps no rows: the import keeps a kind's last rows only for
 		// '<database>.dbo.<table>' or '<database>' alone) and the merge arm stays on: where the merge tables really are
 		// missing, the subscriptions read then fails under its own source and its last rows are kept
-		hasMerge := true
+		hasMerge, hasNames := true, false
 		if m, err := QueryRows(ctx, conn, replMergeTablesSQL(name)); err != nil {
 			if ctx.Err() != nil {
 				return nil, err
@@ -396,6 +429,8 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 		} else if len(m) == 1 {
 			v, _ := m[0]["has_merge"].(int64)
 			hasMerge = v == 1
+			n, _ := m[0]["has_sub_names"].(int64)
+			hasNames = n == 1
 		}
 		mapped := false
 		if m, err := QueryRows(ctx, conn, replServersSQL(name)); err != nil {
@@ -410,7 +445,7 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, info Info) 
 		}
 		reads := []struct{ what, text string }{
 			{"MSpublications", replPublicationsFor(name, mapped)},
-			{"MSdistribution_agents", replSubscriptionsOf(name, mapped, hasMerge)},
+			{"MSdistribution_agents", replSubscriptionsWith(name, mapped, hasMerge, hasNames)},
 			{"MSlogreader_agents", replAgentsFor(name, mapped)},
 		}
 		if jobsWhy == "" {

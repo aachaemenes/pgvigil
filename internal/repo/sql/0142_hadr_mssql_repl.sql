@@ -148,6 +148,7 @@ ALTER TABLE pgvigil.mssql_replication_state
   ADD COLUMN IF NOT EXISTS subscription_status  text,          -- subscription: active | subscribed | inactive (MSsubscriptions)
   ADD COLUMN IF NOT EXISTS session_start_at     timestamptz,   -- the start of the agent's run its last history row belongs to
   ADD COLUMN IF NOT EXISTS failing_since        timestamptz,   -- the first row after its last healthy one, while it fails or retries
+  ADD COLUMN IF NOT EXISTS failing_seen         boolean,       -- true: failing_since is the first read that saw it failing (merge: no error time at the distributor)
   ADD COLUMN IF NOT EXISTS error_code           text,          -- MSrepl_errors of that failure
   ADD COLUMN IF NOT EXISTS error_text           text,
   ADD COLUMN IF NOT EXISTS oldest_pending_at    timestamptz,   -- subscription: the oldest transaction waiting for it (entry time)
@@ -183,6 +184,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_repl_sample (
   job_state         text,
   continuous        boolean,
   failing_since     timestamptz,
+  failing_seen      boolean,            -- failing_since is the first read that saw it failing (no error time at the distributor)
   last_run_at       timestamptz,
   latency_s         double precision,   -- subscription: the judged latency (the oldest waiting command's age; 0 when none waits)
   agent_latency_ms  bigint,             -- the agent's own last delivery latency (its history row)
@@ -192,6 +194,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_repl_sample (
   repl_trans_total  bigint,
   trans_per_s       double precision    -- published_db: transactions read out per second since the series' previous read
 ) PARTITION BY RANGE (snapshot_at);
+ALTER TABLE pgvigil.mssql_repl_sample ADD COLUMN IF NOT EXISTS failing_seen boolean;   -- a repository that ran this file before Q10W
 -- the findings, the import's previous read and the trend read one series of one instance over a window
 CREATE INDEX IF NOT EXISTS mssql_repl_sample_series_idx ON pgvigil.mssql_repl_sample (instance_id, series, snapshot_at);
 
@@ -264,13 +267,17 @@ BEGIN
   INSERT INTO pgvigil.mssql_replication_state (instance_id, snapshot_at, kind, distribution_db, publisher, publisher_db, publication,
       publication_type, articles, subscriber, subscriber_db, subscription_type, agent_type, agent_name, runstatus, status_text,
       last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s,
-      agent_id, subscription_status, session_start_at, failing_since, error_code, error_text, oldest_pending_at, pending_age_s,
+      agent_id, subscription_status, session_start_at, failing_since, failing_seen, error_code, error_text, oldest_pending_at, pending_age_s,
       job_state, continuous, job_stopped_at, database_name, distributor, distributor_local, log_reuse_wait, pending_xacts, repl_trans_total)
   SELECT p_instance_id, p_snapshot_at, r->>'kind', coalesce(r->>'distribution_db', ''), r->>'publisher', r->>'publisher_db', r->>'publication',
          r->>'publication_type', (r->>'articles')::int, r->>'subscriber', r->>'subscriber_db', r->>'subscription_type',
          r->>'agent_type', r->>'agent_name', (r->>'runstatus')::int, r->>'status_text', (r->>'last_run_utc')::timestamptz,
          (r->>'latency_ms')::bigint, (r->>'delivery_rate')::float8, (r->>'undistributed')::bigint, (r->>'est_catchup_s')::float8,
-         (r->>'agent_id')::int, r->>'subscription_status', (r->>'session_start_utc')::timestamptz, (r->>'failing_since_utc')::timestamptz,
+         (r->>'agent_id')::int, r->>'subscription_status', (r->>'session_start_utc')::timestamptz,
+         -- failing with no error time (a merge agent whose failing sessions name no MSrepl_errors row): the series'
+         -- previous read's failing time while that read saw it failing, else this read's time - said in the findings
+         CASE WHEN (r->>'failing_untimed')::int = 1 THEN coalesce(pv.failing_since, p_snapshot_at) ELSE (r->>'failing_since_utc')::timestamptz END,
+         CASE WHEN (r->>'failing_untimed')::int = 1 THEN CASE WHEN pv.failing_since IS NOT NULL THEN pv.failing_seen ELSE true END END,
          nullif(r->>'error_code', ''), nullif(r->>'error_text', ''), (r->>'oldest_pending_utc')::timestamptz, (r->>'oldest_pending_age_s')::int,
          j.job->>'job_state', (j.job->>'continuous')::int = 1, (j.job->>'job_stopped_utc')::timestamptz,
          r->>'database_name', r->>'distributor', (r->>'distributor_local')::int = 1, r->>'log_reuse_wait',
@@ -281,6 +288,11 @@ BEGIN
                           AND x->>'distribution_db' = r->>'distribution_db' AND x->>'agent_type' = r->>'agent_type'
                           AND x->>'agent_name' = r->>'agent_name'
                         LIMIT 1) j ON true
+    LEFT JOIN LATERAL (SELECT p.failing_since, p.failing_seen FROM pgvigil.mssql_repl_sample p
+                        WHERE (r->>'failing_untimed')::int = 1 AND p.instance_id = p_instance_id
+                          AND p.series = coalesce(r->>'distribution_db', '') || ':' || coalesce(r->>'agent_name', '?')
+                          AND p.snapshot_at < p_snapshot_at
+                        ORDER BY p.snapshot_at DESC LIMIT 1) pv ON true
    WHERE (r->>'kind' IN ('publication', 'subscription', 'agent') AND r->>'distribution_db' IS NOT NULL)
       OR (r->>'kind' = 'published_db' AND r->>'database_name' IS NOT NULL);
 
@@ -289,10 +301,10 @@ BEGIN
   DELETE FROM pgvigil.mssql_repl_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
   GET DIAGNOSTICS v_again = ROW_COUNT;
   INSERT INTO pgvigil.mssql_repl_sample (instance_id, snapshot_at, series, kind, agent_type, publisher, publisher_db, publication,
-      subscriber, subscriber_db, runstatus, job_state, continuous, failing_since, last_run_at, latency_s, agent_latency_ms,
+      subscriber, subscriber_db, runstatus, job_state, continuous, failing_since, failing_seen, last_run_at, latency_s, agent_latency_ms,
       delivery_rate, undistributed, pending_xacts, repl_trans_total, trans_per_s)
   SELECT s.instance_id, s.snapshot_at, x.series, s.kind, s.agent_type, s.publisher, s.publisher_db, s.publication,
-         s.subscriber, s.subscriber_db, s.runstatus, s.job_state, s.continuous, s.failing_since, s.last_run_at,
+         s.subscriber, s.subscriber_db, s.runstatus, s.job_state, s.continuous, s.failing_since, s.failing_seen, s.last_run_at,
          CASE WHEN s.kind = 'subscription' AND s.agent_type IS DISTINCT FROM 'merge' THEN pgvigil.mssql_repl_latency(s.undistributed, s.pending_age_s) END,
          s.latency_ms, s.delivery_rate, s.undistributed, s.pending_xacts, s.repl_trans_total,
          (SELECT CASE WHEN s.repl_trans_total >= p.repl_trans_total
@@ -403,7 +415,8 @@ WITH fresh AS (
   SELECT st.*, format('the %s agent %s (publisher %s, database %s%s%s)', st.agent_type, coalesce(st.agent_name, '?'), coalesce(st.publisher, '?'),
                       coalesce(st.publisher_db, '?'), coalesce(', publication ' || st.publication, ''),
                       coalesce(', subscriber ' || st.subscriber || '.' || st.subscriber_db, '')) AS who,
-         coalesce(' Error ' || st.error_code || ': ' || st.error_text, ' ' || st.error_text, '') AS err
+         coalesce(' Error ' || st.error_code || ': ' || st.error_text, ' ' || st.error_text, '') AS err,
+         CASE WHEN st.failing_seen THEN ' (the first read that saw it failing: the distributor holds no error time for it)' ELSE '' END AS seen
     FROM st
 ), lat AS (
   -- a subscription whose agent runs continuously (or whose job was not read): a scheduled agent's commands wait for
@@ -430,7 +443,7 @@ WITH fresh AS (
 SELECT c.instance_id, 'warning'::text AS severity, 'a replication agent failed'::text AS check_name, c.obj AS object, c.snapshot_at AS at,
        format('%s %s %s. Its newest message (%s): %s%s', c.who,
               CASE WHEN c.runstatus = 5 THEN 'is retrying since' WHEN c.failing_since IS NOT NULL THEN 'has failed or retried since' ELSE 'failed at' END,
-              coalesce(to_char(coalesce(c.failing_since, c.last_run_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), '?'),
+              coalesce(to_char(coalesce(c.failing_since, c.last_run_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), '?') || c.seen,
               coalesce(to_char(c.last_run_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), '?'), coalesce(c.status_text, 'none'), c.err) AS detail
   FROM ctx c
  WHERE (c.runstatus = 6 OR c.failing_since IS NOT NULL)
@@ -439,7 +452,7 @@ UNION ALL
 SELECT c.instance_id, CASE WHEN c.rt_crit IS NOT NULL AND c.failing_since <= c.snapshot_at - make_interval(secs => c.rt_crit * 60) THEN 'critical' ELSE 'warning' END,
        'a replication agent keeps failing or retrying', c.obj, c.snapshot_at,
        format('%s has failed or retried since %s (%s minutes before the read; threshold %s). Its last message: %s%s',
-              c.who, to_char(c.failing_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
+              c.who, to_char(c.failing_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"') || c.seen,
               round(extract(epoch FROM c.snapshot_at - c.failing_since) / 60), c.rt_min, coalesce(c.status_text, 'none'), c.err)
          || CASE WHEN coalesce(c.undistributed, 0) > 0 THEN format(' %s commands wait for it.', c.undistributed) ELSE '' END
   FROM ctx c
