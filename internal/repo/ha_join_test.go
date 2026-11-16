@@ -254,6 +254,11 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 	}()
 	waits := false
 	for i := 0; i < 100 && !waits; i++ { // 10 s at most: the import reaches its wait on the parent the transaction holds
+		select {
+		case err := <-imported:
+			t.Fatalf("the AG import ended before it could wait for the parent the transaction holds: %v", err)
+		default:
+		}
 		waits = str(`SELECT (count(*) > 0)::text FROM pg_locks WHERE relation = 'pgvigil.mssql_ag_dbcounter_sample'::regclass AND NOT granted
 		                AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`) == "true"
 		if !waits {
@@ -283,13 +288,17 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		return str(`SELECT (EXISTS (SELECT 1 FROM pgvigil.replication_hourly_pending() i WHERE i = $1))::text`, pg)
 	}
 	want("the instance with samples and no first build, before the heal: pending", pending(), "true")
+	// the INSERT's own trigger has already written the two hours (0150's replication_hourly_touch): they are taken out,
+	// so the hours counted after the heal are the heal's
+	exec(`DELETE FROM pgvigil.replication_hourly WHERE instance_id = $1`, pg)
+	want("its hours before the heal (the trigger's taken out)", str(`SELECT count(*)::text FROM pgvigil.replication_hourly WHERE instance_id = $1`, pg), "0")
 	built, hourRows, failedHeals, err := r.ReplicationHourlyHeal(ctx)
-	if err != nil || failedHeals != 0 || built < 1 {
-		t.Errorf("ReplicationHourlyHeal = %d instance(s), %d hour rows, %d failed, %v; want 1 or more built, none failed", built, hourRows, failedHeals, err)
+	if err != nil || failedHeals != 0 || built < 1 || hourRows < 2 {
+		t.Errorf("ReplicationHourlyHeal = %d instance(s), %d hour rows, %d failed, %v; want 1 or more built, 2 or more hour rows, none failed", built, hourRows, failedHeals, err)
 	}
 	want("after the heal: pending", pending(), "false")
-	want("after the heal: its first build queued and its slot's hours stored",
+	want("after the heal: its first build queued / its slot's two hours stored again",
 		str(`SELECT (EXISTS (SELECT 1 FROM pgvigil.replication_hourly_first_build b WHERE b.instance_id = $1))::text || ' / ' ||
-		            (EXISTS (SELECT 1 FROM pgvigil.replication_hourly h WHERE h.instance_id = $1 AND h.kind = 'slot' AND h.key = 'hajoin_slot'))::text`, pg),
-		"true / true")
+		            (SELECT count(*) FROM pgvigil.replication_hourly h WHERE h.instance_id = $1 AND h.kind = 'slot' AND h.key = 'hajoin_slot')::text`, pg),
+		"true / 2")
 }
