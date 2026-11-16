@@ -13,11 +13,13 @@ package web
 //     per-address limiter (5 a minute); a request with no credentials logs one WARN per address per minute; every
 //     refusal counts in pgvigil_metrics_refused_total. A token in the URL is refused. Under -no-login (s.auth nil) no
 //     session is read, so a stale cookie never reaches the nil login state.
-//   - The figures: pgvigil.metrics_newest (0196, one set-based statement) in the Metrics grid's units, converted here
-//     to base units by the frozen name table (promNames: one row per metric_catalog key; a key without a row fails
-//     TestPromNamesCoverTheCatalog unless its family is on promNotExported); gauges only, no explicit timestamps, a stale point left out and the newest sample's
-//     time per family given as pgvigil_sample_timestamp_seconds. The database family's instance totals always; each
-//     database's own series with metrics.databases on.
+//   - The figures: pgvigil.metrics_newest (0196; 0323 adds the SQL Server counters, xe, waits and collection families,
+//     PROMEXPORT) in the Metrics grid's units, converted here to base units by the frozen name table (promNames: one
+//     row per metric_catalog key; a key without a row fails TestPromNamesCoverTheCatalog unless it is on
+//     promNotExported); gauges only, no explicit timestamps, a stale point left out, a newest point with no value left
+//     out (never an older one), and the newest sample's time per family given as pgvigil_sample_timestamp_seconds.
+//     The database family's instance totals always; each database's own series with metrics.databases on; the
+//     collection family one series per collection (label collection), never cut by metrics.max_databases.
 //   - The body is rendered in the background ahead of expiry (one render at a time), the previous body served while a
 //     render runs, never a body older than 2 x cache_seconds: a scrape with nothing fresh enough waits for the render
 //     up to its X-Prometheus-Scrape-Timeout-Seconds and gets 503 when it fails or does not end (Prometheus: up = 0).
@@ -456,9 +458,10 @@ type promName struct {
 	key, name, dbName, unit string
 }
 
-// promNames: the 62 rows of the B24d name table (notes '### The name table'); TestPromNamesCoverTheCatalog fails on a
-// catalog key without a row whose family is not on promNotExported. unit 'interval' = a count per interval exported
-// per second.
+// promNames: the 62 rows of the B24d name table (notes '### The name table') and PROMEXPORT's 51 (D5, S6: 43 counters,
+// 2 xe, 1 waits, 5 collection, each by the name rule of TestPromNamesCoverTheCatalog but five frozen exceptions);
+// TestPromNamesCoverTheCatalog fails on a catalog key without a row that is not on promNotExported. unit 'interval' = a
+// count per interval exported per second; 'per_100' = a count per 100 exported per one.
 var promNames = []promName{
 	{"sessions.total", "pgvigil_sessions", "", "count"},
 	{"sessions.active", "pgvigil_sessions_active", "", "count"},
@@ -522,17 +525,82 @@ var promNames = []promName{
 	{"host.mem_free", "pgvigil_host_memory_free_bytes", "", "bytes"},
 	{"host.swap_used", "pgvigil_host_swap_used_bytes", "", "bytes"},
 	{"host.load1", "pgvigil_host_load1", "", "count"},
+	// PROMEXPORT (0323): the SQL Server counters - the newest read of each scope; the six per-database metrics the
+	// server's _Total (percent_log_used on promNotExported)
+	{"counters.logins_s", "pgvigil_counters_logins_per_second", "", "per_s"},
+	{"counters.logouts_s", "pgvigil_counters_logouts_per_second", "", "per_s"},
+	{"counters.connection_resets_s", "pgvigil_counters_connection_resets_per_second", "", "per_s"},
+	{"counters.user_connections", "pgvigil_counters_user_connections", "", "count"},
+	{"counters.errors_user_s", "pgvigil_counters_errors_user_per_second", "", "per_s"},
+	{"counters.errors_kill_s", "pgvigil_counters_errors_kill_per_second", "", "per_s"},
+	{"counters.errors_offline_s", "pgvigil_counters_errors_offline_per_second", "", "per_s"},
+	{"counters.errors_info_s", "pgvigil_counters_errors_info_per_second", "", "per_s"},
+	{"counters.errors_total_s", "pgvigil_counters_errors_per_second", "", "per_s"},
+	{"counters.batch_requests_s", "pgvigil_counters_batch_requests_per_second", "", "per_s"},
+	{"counters.full_scans_s", "pgvigil_counters_full_scans_per_second", "", "per_s"},
+	{"counters.index_searches_s", "pgvigil_counters_index_searches_per_second", "", "per_s"},
+	{"counters.compiles_per_100_batches", "pgvigil_counters_compilations_per_batch_ratio", "", "pct"},
+	{"counters.recompiles_per_100_compiles", "pgvigil_counters_recompilations_per_compilation_ratio", "", "pct"},
+	{"counters.page_splits_per_100_batches", "pgvigil_counters_page_splits_per_batch", "", "per_100"},
+	{"counters.page_lookups_per_batch", "pgvigil_counters_page_lookups_per_batch", "", "count"},
+	{"counters.full_scans_per_search", "pgvigil_counters_full_scans_per_search", "", "count"},
+	{"counters.readahead_pct", "pgvigil_counters_readahead_ratio", "", "pct"},
+	{"counters.page_reads_s", "pgvigil_counters_page_reads_per_second", "", "per_s"},
+	{"counters.page_writes_s", "pgvigil_counters_page_writes_per_second", "", "per_s"},
+	{"counters.lazy_writes_s", "pgvigil_counters_lazy_writes_per_second", "", "per_s"},
+	{"counters.free_list_stalls_s", "pgvigil_counters_free_list_stalls_per_second", "", "per_s"},
+	{"counters.lock_requests_s", "pgvigil_counters_lock_requests_per_second", "", "per_s"},
+	{"counters.lock_waits_s", "pgvigil_counters_lock_waits_per_second", "", "per_s"},
+	{"counters.lock_timeouts_gt0_s", "pgvigil_counters_lock_timeouts_gt0_per_second", "", "per_s"},
+	{"counters.avg_lock_wait_ms", "pgvigil_counters_avg_lock_wait_seconds", "", "ms"},
+	{"counters.latch_waits_s", "pgvigil_counters_latch_waits_per_second", "", "per_s"},
+	{"counters.avg_latch_wait_ms", "pgvigil_counters_avg_latch_wait_seconds", "", "ms"},
+	{"counters.buffer_cache_hit_pct", "pgvigil_counters_buffer_cache_hit_ratio", "", "pct"},
+	{"counters.ple_per_4gb", "pgvigil_counters_page_life_expectancy_per_4gb_seconds", "", "secs"},
+	{"counters.misguided_plans_s", "pgvigil_counters_misguided_plans_per_second", "", "per_s"},
+	{"counters.update_conflict_pct", "pgvigil_counters_update_conflict_ratio", "", "pct"},
+	{"counters.memory_commit_pct", "pgvigil_counters_memory_commit_ratio", "", "pct"},
+	{"counters.failed_to_create_worker", "pgvigil_counters_failed_to_create_worker", "", "count"},
+	{"counters.agent_active_jobs", "pgvigil_counters_agent_active_jobs", "", "count"},
+	{"counters.agent_jobs_started", "pgvigil_counters_agent_jobs_started", "", "count"},
+	{"counters.agent_jobs_failed", "pgvigil_counters_agent_jobs_failed", "", "count"},
+	{"counters.agent_jobs_succeeded", "pgvigil_counters_agent_jobs_succeeded", "", "count"},
+	{"counters.write_transactions_s", "pgvigil_counters_write_transactions_per_second", "", "per_s"},
+	{"counters.log_flush_waits_s", "pgvigil_counters_log_flush_waits_per_second", "", "per_s"},
+	{"counters.log_flush_wait_ms_s", "pgvigil_counters_log_flush_wait_seconds_per_second", "", "ms"},
+	{"counters.active_transactions", "pgvigil_counters_active_transactions", "", "count"},
+	{"counters.log_growths", "pgvigil_counters_log_growths", "", "count"},
+	// the attention capture's client timeouts, the waits per core, each collection's own health
+	{"xe.client_timeouts_per_min", "pgvigil_xe_client_timeouts_per_second", "", "per_min"},
+	{"xe.client_timeouts_left_out_per_min", "pgvigil_xe_client_timeouts_left_out_per_second", "", "per_min"},
+	{"waits.wait_s_per_core_min", "pgvigil_waits_wait_per_core_ratio", "", "s_core_min"},
+	{"collection.duration_ms", "pgvigil_collection_duration_seconds", "", "ms"},
+	{"collection.cpu_ms", "pgvigil_collection_cpu_seconds", "", "ms"},
+	{"collection.logical_reads", "pgvigil_collection_logical_reads", "", "count"},
+	{"collection.failed_pct", "pgvigil_collection_failed_ratio", "", "pct"},
+	{"collection.import_ms", "pgvigil_collection_import_seconds", "", "ms"},
 }
 
-// promNotExported: the metric_catalog families /metrics does not export yet, each with its words why - one rule per
-// family, so every key of such a family is left out and none has a promNames row. metrics_newest (0196) reads the
-// points of the nine families of 0085's catalog; the families the catalog gained after it carry no value series here
-// until it reads theirs (their pgvigil_sample_timestamp_seconds is given).
+// promHelpMore is a key's or a family's words after its HELP line's common part (a key's own first, then its family's).
+var promHelpMore = map[string]string{
+	"counters":                      " The newest read's value: a metric with no point at the newest read has no sample, never an older read's value.",
+	"counters.write_transactions_s": " Counted as the server's total (_Total), never one database's.",
+	"counters.log_flush_waits_s":    " Counted as the server's total (_Total), never one database's.",
+	"counters.log_flush_wait_ms_s":  " Counted as the server's total (_Total), never one database's.",
+	"counters.active_transactions":  " Counted as the server's total (_Total), never one database's.",
+	"counters.log_growths":          " Counted as the server's total (_Total), never one database's; a count per read (every 5 min); never sum_over_time.",
+	"counters.agent_jobs_started":   " A count per read (every 5 min); never sum_over_time.",
+	"counters.agent_jobs_failed":    " A count per read (every 5 min); never sum_over_time.",
+	"counters.agent_jobs_succeeded": " A count per read (every 5 min); never sum_over_time.",
+	"collection":                    " One series per collection (label collection), the hour that ended last; the instance's worst collection is max by (server).",
+}
+
+// promNotExported: the metric_catalog KEYS /metrics does not export, each with its words why; such a key has no
+// promNames row (metrics_newest may still give its points: the render skips a key without a row). Every family is
+// read since 0323 (PROMEXPORT).
 var promNotExported = map[string]string{
-	"counters":   "SQL Server's performance counters: metrics_newest reads no counter points yet",
-	"xe":         "the Extended Events capture's client timeouts: metrics_newest reads no attention points yet",
-	"waits":      "SQL Server's wait seconds per core per minute: metrics_newest reads no wait points yet",
-	"collection": "the collections' own health, a series per collection: metrics_newest reads no collection points yet",
+	"counters.percent_log_used": "per database only; the _Total misleads: it is the server's whole log space, so one " +
+		"database's log near full among empty ones reads low (PROMEXPORT DECIDE 2; per-database series are a later change)",
 }
 
 // promUnitWords is a HELP line's account of the conversion from the Metrics grid's unit.
@@ -540,7 +608,10 @@ var promUnitWords = map[string]string{
 	"count": "", "xids": " (a count of transaction ids)", "secs": " in seconds", "per_s": " per second",
 	"bytes_per_s": " in bytes per second", "bytes": " in bytes", "pct": " as a ratio (the grid's percent / 100)",
 	"ms": " in seconds (the grid's milliseconds / 1000)", "mb": " in bytes (the grid's MB x 1048576)",
-	"interval": " per second (the grid's count per collection interval / the interval's seconds)",
+	"interval":   " per second (the grid's count per collection interval / the interval's seconds)",
+	"per_min":    " per second (the grid's count per minute / 60)",
+	"s_core_min": " as a ratio: wait seconds per core per second (the grid's wait seconds per core per minute / 60)",
+	"per_100":    " per one (the grid's count per 100 / 100)",
 }
 
 // promValue converts a grid value; ok false = no value to give (an interval count without its interval, NaN, Inf).
@@ -552,6 +623,10 @@ func promValue(unit string, v float64, secs *int32) (float64, bool) {
 		v /= 1000
 	case "mb":
 		v *= 1048576
+	case "per_min", "s_core_min":
+		v /= 60
+	case "per_100":
+		v /= 100
 	case "interval":
 		if secs == nil || *secs <= 0 {
 			return 0, false
@@ -689,7 +764,8 @@ func (s *Server) renderMetrics(ctx context.Context, st *promState) ([]byte, erro
 	byKey := map[string]promName{}
 	for _, p := range promNames {
 		byKey[p.key] = p
-		b.declare(p.name, "gauge", "pgvigil's metric "+p.key+promUnitWords[p.unit]+"; the newest collected value, left out when older than its freshness.")
+		b.declare(p.name, "gauge", "pgvigil's metric "+p.key+promUnitWords[p.unit]+"; the newest collected value, left out when older than its freshness."+
+			promHelpMore[p.key]+promHelpMore[strings.SplitN(p.key, ".", 2)[0]])
 	}
 	for _, p := range promNames {
 		if p.dbName != "" {
@@ -798,7 +874,7 @@ func (s *Server) promNewest(ctx context.Context, b *promBody, insts map[int32]pr
 		var id int32
 		var family, metric string
 		var database *string
-		var value float64
+		var value *float64 // a point with no value: metrics_newest leaves it out (0323); scanned nullable so one never fails the render
 		var secs *int32
 		if err := rows.Scan(&id, &family, &metric, &database, &value, &secs); err != nil {
 			rows.Close()
@@ -808,29 +884,43 @@ func (s *Server) promNewest(ctx context.Context, b *promBody, insts map[int32]pr
 		if !ok {
 			continue
 		}
-		if family == "database" && metric == "cut" {
-			b.add("pgvigil_metrics_databases_cut", [][2]string{{"server", in.name}}, value)
-			continue
-		}
-		p, ok := byKey[family+"."+metric]
-		if !ok {
-			continue // a key the table does not name (a family on promNotExported, or a gap the test fails on): the endpoint stays up
-		}
-		v, ok := promValue(p.unit, value, secs)
-		if !ok {
-			continue
-		}
-		if database != nil {
-			if p.dbName != "" {
-				b.add(p.dbName, [][2]string{{"server", in.name}, {"engine", in.engine}, {"database", *database}}, v)
-			}
-			continue
-		}
-		b.add(p.name, [][2]string{{"server", in.name}, {"engine", in.engine}}, v)
+		promRow(b, in, byKey, family, metric, database, value, secs)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("metrics_newest: %w", err)
 	}
 	return nil
+}
+
+// promRow writes one metrics_newest row of an instance into the body: no value = no sample; the database family's cut
+// row; a key without a promNames row skipped (promNotExported, or a gap the test fails on: the endpoint stays up); a
+// database family row of one database under its per-database name (label database); a collection family row under
+// the key's own name with the label collection (never database: S7); every other row the instance's figure.
+func promRow(b *promBody, in promInst, byKey map[string]promName, family, metric string, database *string, value *float64, secs *int32) {
+	if value == nil {
+		return
+	}
+	if family == "database" && metric == "cut" {
+		b.add("pgvigil_metrics_databases_cut", [][2]string{{"server", in.name}}, *value)
+		return
+	}
+	p, ok := byKey[family+"."+metric]
+	if !ok {
+		return
+	}
+	v, ok := promValue(p.unit, *value, secs)
+	if !ok {
+		return
+	}
+	switch {
+	case database != nil && family == "collection":
+		b.add(p.name, [][2]string{{"server", in.name}, {"engine", in.engine}, {"collection", *database}}, v)
+	case database != nil:
+		if p.dbName != "" {
+			b.add(p.dbName, [][2]string{{"server", in.name}, {"engine", in.engine}, {"database", *database}}, v)
+		}
+	default:
+		b.add(p.name, [][2]string{{"server", in.name}, {"engine", in.engine}}, v)
+	}
 }

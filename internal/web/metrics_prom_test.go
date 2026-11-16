@@ -424,6 +424,54 @@ func TestPromValueAndEscape(t *testing.T) {
 	}
 }
 
+// TestPromRow (PROMEXPORT task 4, S7, B2; the row function came with the render, so this row has no red of its own): a
+// collection row under its own name with the label collection, never database; a row with no value no sample (the
+// nullable scan); a key on promNotExported skipped; the counters' and xe's conversions; a database family row of one
+// database under its per-database name; the cut row.
+func TestPromRow(t *testing.T) {
+	byKey := map[string]promName{}
+	for _, p := range promNames {
+		byKey[p.key] = p
+	}
+	var b promBody
+	for _, p := range promNames {
+		b.declare(p.name, "gauge", "x")
+		if p.dbName != "" {
+			b.declare(p.dbName, "gauge", "x")
+		}
+	}
+	b.declare("pgvigil_metrics_databases_cut", "gauge", "x")
+	in := promInst{"s1", "sqlserver"}
+	f := func(v float64) *float64 { return &v }
+	str := func(v string) *string { return &v }
+	promRow(&b, in, byKey, "collection", "duration_ms", str("activity"), f(1500), nil)
+	promRow(&b, in, byKey, "counters", "buffer_cache_hit_pct", nil, f(87.5), nil)
+	promRow(&b, in, byKey, "counters", "compiles_per_100_batches", nil, nil, nil) // a floored ratio: no value
+	promRow(&b, in, byKey, "counters", "percent_log_used", nil, f(95), nil)       // on promNotExported
+	promRow(&b, in, byKey, "xe", "client_timeouts_per_min", nil, f(30), nil)
+	promRow(&b, promInst{"p1", "postgres"}, byKey, "database", "backends", str("db1"), f(4), nil)
+	promRow(&b, promInst{"p1", "postgres"}, byKey, "database", "cut", nil, f(2), nil)
+	got := string(b.bytes())
+	for _, want := range []string{
+		"pgvigil_collection_duration_seconds{server=\"s1\",engine=\"sqlserver\",collection=\"activity\"} 1.5\n",
+		"pgvigil_counters_buffer_cache_hit_ratio{server=\"s1\",engine=\"sqlserver\"} 0.875\n",
+		"pgvigil_xe_client_timeouts_per_second{server=\"s1\",engine=\"sqlserver\"} 0.5\n",
+		"pgvigil_database_backends{server=\"p1\",engine=\"postgres\",database=\"db1\"} 4\n",
+		"pgvigil_metrics_databases_cut{server=\"p1\"} 2\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the body lacks %q:\n%s", strings.TrimSpace(want), got)
+		}
+	}
+	if b.n != 5 {
+		t.Errorf("%d samples, want 5 (no value and promNotExported give none):\n%s", b.n, got)
+	}
+	if strings.Contains(got, "compilations_per_batch") || strings.Contains(got, "log_used") || strings.Contains(got, `collection="activity",database`) ||
+		strings.Contains(got, `pgvigil_collection_duration_seconds{server="s1",engine="sqlserver",database=`) {
+		t.Errorf("a sample that must not be there:\n%s", got)
+	}
+}
+
 // TestPromBodyLayout: metric-first - one HELP and one TYPE per name, every sample of a name together even when added
 // apart, a name without a sample left out.
 func TestPromBodyLayout(t *testing.T) {
