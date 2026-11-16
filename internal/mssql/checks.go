@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -231,13 +232,13 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
 			return optionVerdict{Status: "none", Explain: "Azure SQL Managed Instance sets its own memory limit"}
 		case v == unlimitedMemoryMB:
 			return broken(sevWarning, "a limit under the machine's memory", "dbachecks MaxMemory",
-				"max server memory is at its default (2147483647 MB): SQL Server sets itself no limit and can take the memory the operating system needs")
+				"max server memory is at its default (2147483647 MB): SQL Server sets itself no limit and can take the memory the operating system needs"+pmMemorySuggestion(m.PhysMB))
 		case m.PhysMB > 0 && v > m.PhysMB:
 			return broken(sevWarning, "a limit under the machine's memory", "sp_Blitz 50",
 				fmt.Sprintf("max server memory is %d MB, more than the machine's %d MB: the setting limits nothing", v, m.PhysMB))
 		case m.PhysMB > 0 && v*100 >= m.PhysMB*95:
 			return broken(sevWarning, "under 95 % of the machine's memory", "sp_PerfCheck 1002",
-				fmt.Sprintf("max server memory is %d MB, %s %% of the machine's %d MB: 95 %% or more leaves the operating system too little", v, pctText(v, m.PhysMB), m.PhysMB))
+				fmt.Sprintf("max server memory is %d MB, %s %% of the machine's %d MB: 95 %% or more leaves the operating system too little", v, pctText(v, m.PhysMB), m.PhysMB)+pmMemorySuggestion(m.PhysMB))
 		case m.PhysMB == 0:
 			return met("a limit is set; not weighed against the machine's memory, which was not read")
 		}
@@ -371,6 +372,18 @@ func advisedMaxDOP(m machineFacts) int64 {
 		return min64(m.CPUs, 8)
 	}
 	return min64(max64(m.CPUs/m.NUMANodes, 1), 16)
+}
+
+// pmMemorySuggestion: PerformanceMonitor 3.13.0's max server memory number (ConfigAuditGuidance.cs: the machine's
+// memory less the larger of 4,096 MB and 10 %, never more than half), the same number as 0156's
+// mssql_memory_suggestion (which no page reads yet); "" when the machine's memory was not read. The 95 % rule above
+// is sp_PerfCheck 1002's (95 % or more); PerformanceMonitor's own review starts over 95 %.
+func pmMemorySuggestion(physMB int64) string {
+	if physMB <= 0 {
+		return ""
+	}
+	reserve := math.Min(math.Max(4096, float64(physMB)*0.10), float64(physMB)/2)
+	return fmt.Sprintf("; PerformanceMonitor's suggestion: about %d MB (leaving %.0f MB for the operating system)", int64(float64(physMB)-reserve), reserve)
 }
 
 func min64(a, b int64) int64 {

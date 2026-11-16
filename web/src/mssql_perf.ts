@@ -148,7 +148,7 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
 // (sp_PressureDetector's) and the plan cache by type with its bloat level.
 type MemoryParts = 'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks' | 'pools_window' | 'semaphores_window' | 'pools_newest'
   | 'semaphores_newest' | 'pool_series' | 'rmon' | 'rmon_hourly' | 'caches' | 'plancache' | 'plancache_types' | 'plancache_trend'
-  | 'grants_now' | 'rg' | 'skipped';
+  | 'grants_now' | 'rg' | 'skipped' | 'suggestion';
 const mbOf = (v: unknown) => v == null ? '-' : fmtNum(Math.round(Number(v) / 102.4) / 10) + ' MB';
 const grantWindowCols = (bySem: boolean): Col[] => [
   { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
@@ -204,6 +204,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(props([
     ['max server memory', l.max_server_memory_mb == null ? 'not read (mssql_instance)' : `${fmtNum(l.max_server_memory_mb)} MB`
       + (l.physical_kb ? ` (${fmtNum(Math.round(100 * Number(l.max_server_memory_mb) * 1024 / Number(l.physical_kb)))} % of physical)` : '')],
+    // task 405 (Fixed 8; the lead's 22:4x on S4): PerformanceMonitor's number beside the setting (0156's
+    // mssql_memory_suggestion, the one the Server options check states; none on a Managed Instance)
+    ...rowsOf(d.suggestion).slice(0, 1).map(sg => ['PerformanceMonitor\'s suggestion', `${fmtNum(sg.suggested_mb)} MB (${String(sg.status)}; `
+      + `leaving ${fmtNum(sg.reserve_mb)} MB of ${fmtNum(sg.ram_mb)} MB for the OS): ${String(sg.message ?? '')}`] as [string, string]),
     ['SQL Server process working set', kb(l.process_kb) + (l.process_low ? ' - the process had a low-memory notification' : '')],
     ['committed / target', `${kb(l.committed_kb)} of ${kb(l.committed_target_kb)}`],
     ['memory grants', `${fmtNum(l.sem_granted ?? 0)} granted (${kb(l.sem_granted_kb)} of a ${kb(l.sem_target_kb)} target), ${fmtNum(l.sem_waiting ?? 0)} waiting; `
@@ -439,6 +443,11 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
   grid(rmon, [
     { key: 'sample_at', label: 'time', fmt: fmtTime },
     { key: 'notification', label: 'notification' },
+    // PerformanceMonitor 3.13.0's Node column (sql-memory.js pressureColumns): each memory node writes its own record of
+    // one event, so the column shows only when the rows hold 2 or more distinct nodes (a record read before the node
+    // column has none: 'not read')
+    ...(new Set(rmon.map(r => r.memory_node_id).filter(v => v != null)).size >= 2
+      ? [{ key: 'memory_node_id', label: 'node', num: true, fmt: (v: unknown) => v == null ? 'not read' : String(v) }] : []),
     { key: 'ind_process', label: 'process', num: true },
     { key: 'ind_system', label: 'system', num: true },
     { key: 'avail_phys_kb', label: 'available physical', num: true, fmt: mbOf },

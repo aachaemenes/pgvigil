@@ -97,6 +97,15 @@ SELECT q.queryid, q.samples, q.wait_secs, q.top_wait,
  ORDER BY q.samples DESC, q.queryid
  LIMIT 50`
 
+// sqlWaitsPoison (task 405, Changed 19; the lead's 11-14 22:4x on S4): PerformanceMonitor's poison wait at the window's
+// end (0156's pg_poison_wait_findings): each finding with its top statements, their text from statement_text as the
+// collector stored it (the query_text policy and the credential mask applied there, before the store: never a raw
+// text), or the one info row 'not judged: needs pg_wait_sampling' where no wait_sample row was written in a day.
+const sqlWaitsPoison = `
+SELECT p.severity, p.check_name, p.object, p.at, p.detail, p.query
+  FROM pgvigil.pg_poison_wait_findings($1, $2) p
+ ORDER BY CASE p.severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, p.object`
+
 // sqlWaitsState: the waits collection's last run on the instance (why it is skipped, where it is).
 const sqlWaitsState = `
 SELECT c.status, c.note, c.snapshot_at
@@ -124,6 +133,7 @@ func (s *Server) Waits(w http.ResponseWriter, r *http.Request) {
 		{"series", sqlWaitsSeries, []any{id, from, to}},
 		{"queries", sqlWaitsQueries, []any{id, from, to}},
 		{"locktree", sqlWaitsLockTree, []any{id, to}},
+		{"poison", sqlWaitsPoison, []any{id, to}},
 	})
 }
 

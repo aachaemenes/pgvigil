@@ -55,6 +55,50 @@ func TestBackupJudged0129Is0066PlusManagedInstance(t *testing.T) {
 	}
 }
 
+// 0156 (task 405, Changed 46) re-creates mssql_backup_judged judged by mssql_protection_limits (Admin's tag and
+// database ages): with the resolver taken back out (the two ages from the limits view again, its LATERAL join and the
+// two appended columns gone) 0156's view is 0129's, character for character.
+func TestBackupJudged0156Is0129PlusResolver(t *testing.T) {
+	view := func(file string) string {
+		t.Helper()
+		b, err := migrations.ReadFile("sql/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		i := strings.Index(s, "CREATE OR REPLACE VIEW pgvigil.mssql_backup_judged AS")
+		if i < 0 {
+			t.Fatalf("%s: no mssql_backup_judged", file)
+		}
+		j := strings.Index(s[i:], "  FROM j;")
+		if j < 0 {
+			t.Fatalf("%s: mssql_backup_judged has no end", file)
+		}
+		return s[i : i+j]
+	}
+	got := view("0156_pm313_rules.sql")
+	for _, r := range [][2]string{
+		{"pl.full_backup_hours, l.diff_backup_hours, pl.log_backup_minutes,", "l.full_backup_hours, l.diff_backup_hours, l.log_backup_minutes,"},
+		{"AS excluded_by,\n         pl.full_from AS full_hours_from, pl.log_from AS log_minutes_from\n", "AS excluded_by\n"},
+		{"    CROSS JOIN LATERAL pgvigil.mssql_protection_limits(s.instance_id, s.database_name) pl\n", ""},
+		{",\n       -- where each age the database is judged by comes from (0156: an override, pgvigil.yaml or the default)\n       j.full_hours_from, j.log_minutes_from", ""},
+	} {
+		if strings.Count(got, r[0]) != 1 {
+			t.Fatalf("0156's mssql_backup_judged holds %q %d times, want once", r[0], strings.Count(got, r[0]))
+		}
+		got = strings.Replace(got, r[0], r[1], 1)
+	}
+	if want := view("0129_mssql_mi_backups.sql"); got != want {
+		gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
+		for k := 0; k < len(gl) && k < len(wl); k++ {
+			if gl[k] != wl[k] {
+				t.Fatalf("0156's mssql_backup_judged differs from 0129's beyond the resolver at its line %d:\n0156: %s\n0129: %s", k+1, gl[k], wl[k])
+			}
+		}
+		t.Fatalf("0156's mssql_backup_judged has %d lines, 0129's %d", len(gl), len(wl))
+	}
+}
+
 // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): a Managed Instance's master, model and msdb are
 // not judged, with Microsoft's reason, and its user database is judged as anywhere; on a server someone runs, model
 // with no backup is still 'never'.

@@ -57,8 +57,8 @@
 #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
 #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
 #     raises, 49.9 % or 9 records none; 'a transaction open for a long time' idle 30 min warning, 29 min none, 4 h
-#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' at 100.1 ms over
-#     1,000 writes raises, 100 ms or 999 writes none; Running now's p95 and % of average equal a hand computation on the
+#     critical, running 4 h warning (never critical), running 3 h 59 none; 'slow data file writes' never on a user
+#     database (task 405 D1), on tempdb at 10 ms over 250 writes (9.96 ms or 249 writes none); Running now's p95 and % of average equal a hand computation on the
 #     stored job runs.
 #  H. pgvigil serve: GET /api/mssql/cpu, /connections, /counters (one series picked), /fileio, /tempdb answer every
 #     part, the counted ones equal to their functions.
@@ -567,8 +567,19 @@ wr() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND d
   fnd 'slow data file writes'; }
 W1=$(wr 1000 100100); W2=$(wr 1000 100000); W3=$(wr 999 999000)
 pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND database_name = 'pgvproof'" >/dev/null
-[[ "$W1/$W2/$W3" == "1/0/0" ]] || fail "G: slow data file writes: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 1/0/0)"
-echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes 100.1 ms over 1,000 writes raises, 100 ms or 999 writes none"
+# task 405 D1 (0156, PerformanceMonitor 3.13's Changed 2): a user database's data file is never judged on its write
+# latency (was: 100.1 ms over 1,000 writes raised); tempdb's data files are, at 10 / 30 ms over 250 writes
+# (proof-pm313-rules.sh R1)
+[[ "$W1/$W2/$W3" == "0/0/0" ]] || fail "G: slow data file writes on a user database: 100.1 ms x1000 $W1, 100 ms x1000 $W2, 1000 ms x999 $W3 (want 0/0/0: D1)"
+# the rule still raises on tempdb (405 review part A, finding 10: the zeros above pass if the arm dies): a tempdb data
+# file of its own name at 10 ms over 250 writes raises one warning; 9.96 ms or 249 writes none
+wt() { pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
+  pq "INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, file_name, type_desc, reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs) VALUES ($SB, now() - interval '5 minutes', 2, 99, 'tempdb', 'pgvproof_tmp', 'ROWS', 0, 0, 0, $1, $1 * 8192, $2, 60)" >/dev/null
+  pq "SELECT count(*) || ':' || coalesce(max(severity), 'none') FROM pgvigil.mssql_cpu_findings WHERE instance_id = $SB AND check_name = 'slow data file writes' AND object = 'tempdb: pgvproof_tmp'"; }
+WT1=$(wt 250 2500); WT2=$(wt 250 2490); WT3=$(wt 249 2490)
+pq "DELETE FROM pgvigil.mssql_fileio_sample WHERE instance_id = $SB AND file_name = 'pgvproof_tmp'" >/dev/null
+[[ "$WT1/$WT2/$WT3" == "1:warning/0:none/0:none" ]] || fail "G: slow tempdb data file writes: 10 ms x250 $WT1, 9.96 ms x250 $WT2, 10 ms x249 $WT3 (want 1:warning/0:none/0:none)"
+echo "ok   G: the levels table; other processes 50 % x10 raises, 49 % or 9 records none; a long transaction idle 30 min warning, 29 min none, 4 h critical, running 4 h warning, 3 h 59 none, 30 h warning; slow data file writes on a user database never raised, on tempdb at 10 ms over 250 writes (task 405 D1)"
 
 echo "== H. the API under pgvigil serve =="
 (cd web && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "H: the web build"; }

@@ -353,7 +353,7 @@ const (
 	sqlMSSQLPoolSeries       = `SELECT at AS snapshot_at, pool_id, coalesce(pool_name, 'pool ' || pool_id) AS pool, waiters,
        round(granted_kb / 1024.0, 1) AS granted_mb, round(available_kb / 1024.0, 1) AS available_mb, timeouts, forced_grants
   FROM pgvigil.mssql_grant_series_between($1, $2, $3, $4)`
-	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
+	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, memory_node_id, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
   FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
  ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
 	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
@@ -418,6 +418,9 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
 		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
 		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
 		{"rg", sqlMSSQLResourceGovernor, []any{id}},
+		// task 405 (Fixed 8; the lead's 22:4x on S4): PerformanceMonitor's max server memory number, 0156's, the one the
+		// Server options check states in its words (checks.go pmMemorySuggestion)
+		{"suggestion", `SELECT * FROM pgvigil.mssql_memory_suggestion($1)`, []any{id}},
 		{"skipped", sqlMSSQLMemorySkipped, []any{id}},
 	})
 }

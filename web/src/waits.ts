@@ -7,7 +7,7 @@ import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
-interface WaitsData { state: Table | null; events: Table | null; series: Table | null; queries: Table | null; locktree: Table | null }
+interface WaitsData { state: Table | null; events: Table | null; series: Table | null; queries: Table | null; locktree: Table | null; poison: Table | null }
 
 const sourceText: Record<string, string> = {
   pg_wait_sampling: 'pg_wait_sampling: every backend sampled every profile period (10 ms by default)',
@@ -33,6 +33,14 @@ const queryCols: Col[] = [
   { key: 'wait_secs', label: 'wait time', num: true, fmt: secs },
   { key: 'top_wait', label: 'mostly' },
   { key: 'query', wide: true },
+];
+
+// task 405 (Changed 19): PerformanceMonitor's poison waits, each with its top statements as the collector stored them
+const poisonCols: Col[] = [
+  { key: 'severity', fmt: v => badge(String(v ?? ''), v === 'critical' ? 'crit' : 'warn') },
+  { key: 'object', label: 'event' },
+  { key: 'detail', label: 'what it means', wide: true },
+  { key: 'query', label: 'top statements (as stored: the text policy and the credential mask applied)', wide: true },
 ];
 
 const treeCols: Col[] = [
@@ -89,6 +97,15 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('h3', {}, 'Statements that waited most'), grid(rowsOf(d.queries), queryCols,
       'No statement identified (query ids need compute_query_id, on by default with pg_stat_statements).'));
   }
+  // task 405 (Changed 19; the lead's 22:4x on S4): the poison wait at the window's end; without pg_wait_sampling the
+  // page says it is not judged, in words, never an empty grid
+  const poison = rowsOf(d.poison), judged = poison.filter(r => r.severity !== 'info');
+  sec.append(el('h3', {}, 'Poison waits'));
+  if (poison.length && !judged.length) sec.append(el('p', { class: 'meta' }, String(poison[0].detail ?? '')));
+  else sec.append(el('p', { class: 'meta' }, 'PerformanceMonitor\'s poison waits: IPC:BtreePage and IPC:BufferIO, the backends '
+    + 'waiting on them on average over the newest 10 minutes of the window (1.0 or more there and in the 10 before: a warning; '
+    + '10.0 or more: critical at once).'),
+    grid(judged, poisonCols, 'No poison wait: IPC:BtreePage and IPC:BufferIO under 1.0 waiting backends on average over the newest 10 minutes of the window.'));
   const tree = rowsOf(d.locktree);
   sec.append(el('h3', {}, 'Lock tree'), el('p', { class: 'meta' },
     (tree.length ? `The activity snapshot of ${fmtTime(tree[0].snapshot_at)}. ` : '')
