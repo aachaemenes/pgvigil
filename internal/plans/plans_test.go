@@ -303,14 +303,14 @@ func TestMaskMoreKeys(t *testing.T) {
 
 // TestMaskGroupingSets (TEXT-NOW-L row 2, review 3 L2): PostgreSQL writes a GROUPING SETS key's expression in a JSON
 // plan as an array of arrays under each set - "Group Keys" for a sorted set, "Hash Keys" for a hashed one (read on
-// PostgreSQL 18.6 and 13.23: the plans in testdata/groupingsets_*.json are PostgreSQL 18.6's EXPLAIN (FORMAT JSON) of a
+// PostgreSQL 18.6 and 13.23: the plans in testdata/mask/groupingsets_*.json are PostgreSQL 18.6's EXPLAIN (FORMAT JSON) of a
 // statement of this row's own, SELECT a || 'kGlit' ... GROUP BY GROUPING SETS ((a || 'kGlit'), (b), ()), captured on a
 // scratch container). Under normalized the literal is gone from the stored JSON and its text; the text form's
 // 'Group Key:' / 'Hash Key:' lines are masked as before.
 func TestMaskGroupingSets(t *testing.T) {
 	up := func(s string) string { return "#" + strings.ToUpper(s) + "#" }
 	for _, f := range []string{"groupingsets_sorted.json", "groupingsets_hashed.json"} {
-		b, err := os.ReadFile("testdata/" + f)
+		b, err := os.ReadFile("testdata/mask/" + f) // not testdata/*.json: TestTextMatchesJSON pairs those with a text plan
 		if err != nil || !strings.Contains(string(b), "kGlit") {
 			t.Fatalf("%s: not the capture this row reads (%v)", f, err)
 		}

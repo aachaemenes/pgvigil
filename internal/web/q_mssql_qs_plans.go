@@ -540,53 +540,6 @@ const searchBudget = "4s"
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // MSSQLSearch is GET /api/mssql/search.
-// searchShown drops from a statement search's rows those of an instance read as normalized whose shown (normalized)
-// statement does not hold the searched text, and gives the count dropped (TEXT-NOW-L row 3): the repository matches
-// the stored text, and a stored full text's literal would otherwise answer a search the page then shows normalized - a
-// side channel. Case-insensitive, as the repository's ILIKE; % and _ as they are. The count is not shown to the caller
-// (it too would say a literal matched).
-func searchShown(t *table, text string, normalized map[int]bool) int {
-	if t == nil || len(normalized) == 0 {
-		return 0
-	}
-	si, ii := -1, -1
-	for i, c := range t.Columns {
-		switch c {
-		case "statement":
-			si = i
-		case "instance_id":
-			ii = i
-		}
-	}
-	if si < 0 || ii < 0 {
-		return 0
-	}
-	want := strings.ToLower(text)
-	kept, n := t.Rows[:0], 0
-	for _, r := range t.Rows {
-		var id int
-		switch v := r[ii].(type) {
-		case int:
-			id = v
-		case int16:
-			id = int(v)
-		case int32:
-			id = int(v)
-		case int64:
-			id = int(v)
-		}
-		if normalized[id] {
-			if st, _ := r[si].(string); !strings.Contains(strings.ToLower(collect.NormalizeSQL(st)), want) {
-				n++
-				continue
-			}
-		}
-		kept = append(kept, r)
-	}
-	t.Rows = kept
-	return n
-}
-
 func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	text := strings.TrimSpace(q.Get("q"))
@@ -705,6 +658,53 @@ func (s *Server) MSSQLSearch(w http.ResponseWriter, r *http.Request) {
 		out["note"] = pgNotHere
 	}
 	s.reply(w, r, out, nil)
+}
+
+// searchShown drops from a statement search's rows those of an instance read as normalized whose shown (normalized)
+// statement does not hold the searched text, and gives the count dropped (TEXT-NOW-L row 3): the repository matches
+// the stored text, and a stored full text's literal would otherwise answer a search the page then shows normalized - a
+// side channel. Case-insensitive, as the repository's ILIKE; % and _ as they are. The count is not shown to the caller
+// (it too would say a literal matched).
+func searchShown(t *table, text string, normalized map[int]bool) int {
+	if t == nil || len(normalized) == 0 {
+		return 0
+	}
+	si, ii := -1, -1
+	for i, c := range t.Columns {
+		switch c {
+		case "statement":
+			si = i
+		case "instance_id":
+			ii = i
+		}
+	}
+	if si < 0 || ii < 0 {
+		return 0
+	}
+	want := strings.ToLower(text)
+	kept, n := t.Rows[:0], 0
+	for _, r := range t.Rows {
+		var id int
+		switch v := r[ii].(type) {
+		case int:
+			id = v
+		case int16:
+			id = int(v)
+		case int32:
+			id = int(v)
+		case int64:
+			id = int(v)
+		}
+		if normalized[id] {
+			if st, _ := r[si].(string); !strings.Contains(strings.ToLower(collect.NormalizeSQL(st)), want) {
+				n++
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	t.Rows = kept
+	return n
 }
 
 // ---- the plans of one statement's hashes (SQLWATCH COL#27) ----------------------------------------------------------
