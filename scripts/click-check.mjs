@@ -838,8 +838,8 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
 // SQL Server options
 {
   // router.ts pageEngine's PostgreSQL pages; custom left it with ST6 (mssql_custom writes the same tables: both engines'),
-  // jobs and backups with j16 (25)'s PAGEENGINE (the fleet Jobs page's SQL Agent rows, 4bfd03b0; the root Backups page's
-  // SQL Server section, a606c77d): a SQL Server-only folder offers both (TAGALL: every root page under every tag folder)
+  // jobs and backups when both pages listed SQL Server rows too (the fleet Jobs page's SQL Agent rows, 4bfd03b0; the root
+  // Backups page's SQL Server section, a606c77d): a SQL Server-only folder offers both (TAGALL: every root page under every tag folder)
   const pgOnly = new Set(['pgrisks', 'pgreplication', 'extensions', 'corruption', 'versions', 'tablesize', 'roles', 'dms', 'disks', 'storage', 'growth', 'indexes']);
   const bothEngines = [['backups', 'hadr', 'mssqllogshipping'], ['jobs', 'jobs', 'jobstimeline']];   // [page, its group, a SQL Server page of that group's strip]
   await go('#/summary');

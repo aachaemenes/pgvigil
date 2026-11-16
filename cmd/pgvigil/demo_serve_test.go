@@ -19,12 +19,12 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/web"
 )
 
-// TestDemoServeXECapturesScriptOnAStore (j16 (26)): on a migrated repository (PGVIGIL_REPO_TEST_DSN, skipped without
-// it) the server `pgvigil demo -serve` opens (demoServe) answers a SQL Server instance's XE captures script
+// TestDemoServeXECapturesScriptOnAStore: on a migrated repository (PGVIGIL_REPO_TEST_DSN, skipped without it) the
+// server `pgvigil demo -serve` opens (demoServe) answers a SQL Server instance's XE captures script
 // (GET /api/mssql/xecaptures part=script) with the script under the configuration's default statement-text policy,
 // never 'text must be full, normalized or none': the handler refuses an empty policy (fail closed), so the demo must
-// hold the default an install with no query_text line holds, as serve's SetPlans gives it. sqltoolsbuild-s2's walk w4
-// read the error box on every XE page of the demo's SQL Server instances (i=13, i=15).
+// hold the default an install with no query_text line holds, as serve's SetPlans gives it (the demo's XE pages drew
+// that error box before demoServe set it).
 func TestDemoServeXECapturesScriptOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
