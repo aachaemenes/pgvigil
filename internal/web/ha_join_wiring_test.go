@@ -118,3 +118,107 @@ func TestSummaryLogShippingCellOnAStore(t *testing.T) {
 		t.Errorf("the Summary's critical counts: Log Shipping %d, Availability Groups %d; want 1 and 0", got["logship"], got["availability"])
 	}
 }
+
+// TestReplicationTabNamesPatroniNoLeader (the wiring review's #8; the rule the lead relays as Allen's: a click lands
+// where its cause shows). The Summary's Replication cell counts the overview checks 'replication' and 'patroni' and
+// lands on the instance's Replication tab, which reads GET /api/replication. On a migrated repository
+// (PGVIGIL_REPO_TEST_DSN, skipped without it) a Patroni cluster that two reads 70 s apart find without a leader
+// (scripts/proof-patroni.sh's seeded case s1) is critical 'patroni no leader' in 0144's own view - the control - and
+// the Replication tab's parts name it: a part 'patroni_checks' whose rows hold that check, beside a part 'patroni'
+// (the read's line and the members the block is drawn from). Without them the cell is red and its landing page
+// says 'No replication problems in the newest snapshot.'
+func TestReplicationTabNamesPatroniNoLeader(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := fmt.Sprint(time.Now().UnixNano() % 1000000000)
+	var id int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'onprem', '18.0', 180000, false, '{}'::text[], 'postgres')`,
+		"patwire-"+sfx).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id); err != nil {
+			t.Error(err)
+		}
+	}()
+	// a cluster of its own (scope and system identifier), so this instance is the one that judges it
+	scope := "patwire" + sfx
+	read := func(leader string) string {
+		return `{"kind":"patroni_read","url":"u","ok":true,"cluster_ok":true,"scope":"` + scope + `","members":2,"leader":` + leader +
+			`,"system_identifier":"s-` + scope + `"}`
+	}
+	member := func(name, role, state string) string {
+		return `{"kind":"patroni","member":"` + name + `","role":"` + role + `","state":"` + state + `","api_ok":true}`
+	}
+	for _, r := range []struct {
+		secondsAgo int
+		payload    string
+	}{
+		{140, "[" + read(`"m1"`) + "," + member("m1", "leader", "running") + "," + member("m2", "replica", "streaming") + "]"},
+		{70, "[" + read("null") + "," + member("m2", "replica", "running") + "]"},
+		{0, "[" + read("null") + "," + member("m2", "replica", "running") + "]"},
+	} {
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_patroni($1, now() - $2::int * interval '1 second', $3::jsonb)`, id, r.secondsAgo, r.payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var own string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(severity || '|' || check_name, ',' ORDER BY check_name), '')
+	                               FROM pgvigil.pg_patroni_checks WHERE instance_id = $1`, id).Scan(&own); err != nil {
+		t.Fatal(err)
+	}
+	if own != "critical|patroni member down,critical|patroni no leader" {
+		t.Fatalf("the control, 0144's own view: %q; want the two critical checks of a cluster without a leader", own)
+	}
+	now := time.Now()
+	parts := map[string]part{}
+	for _, p := range replicationParts(id, now.Add(-time.Hour), now, 60) {
+		parts[p.name] = p
+	}
+	if _, ok := parts["patroni"]; !ok {
+		t.Error("GET /api/replication reads no part 'patroni': the Replication tab cannot draw the Patroni block")
+	}
+	chk, ok := parts["patroni_checks"]
+	if !ok {
+		t.Fatal("GET /api/replication reads no part 'patroni_checks': the Summary's Replication cell is red on 'patroni no leader' and its landing page names no Patroni check")
+	}
+	rows, err := pool.Query(ctx, chk.sql, chk.args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	col := -1
+	for i, f := range rows.FieldDescriptions() {
+		if f.Name == "check_name" {
+			col = i
+		}
+	}
+	if col < 0 {
+		t.Fatal("the part 'patroni_checks' has no column check_name")
+	}
+	named := false
+	for rows.Next() {
+		v, err := rows.Values()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s, _ := v[col].(string); s == "patroni no leader" {
+			named = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !named {
+		t.Error("the Replication tab's part 'patroni_checks' does not name 'patroni no leader' for a cluster without a leader")
+	}
+}

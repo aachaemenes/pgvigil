@@ -1050,12 +1050,18 @@ func (s *Server) replication(w http.ResponseWriter, r *http.Request) {
 	if step < 60 {
 		step = 60
 	}
-	s.multi(w, r, []part{
+	s.multi(w, r, replicationParts(id, from, to, step))
+}
+
+// replicationParts are the parts of GET /api/replication: what the instance's Replication tab reads - the page the
+// Summary's Replication cell lands on (web/src/fleet.ts: its groups' tab).
+func replicationParts(id int, from, to time.Time, step int) []part {
+	return []part{
 		{"latest", sqlReplLatest, []any{id}},
 		{"checks", sqlReplChecks, []any{id}},
 		{"series", sqlReplSeries, []any{id, from, to, step}},
 		{"series_meta", `SELECT $1::int AS step_secs, $2::int AS cap`, []any{step, replSeriesCap}},
-	})
+	}
 }
 
 // jobs: the instance's scheduled jobs and their runs that started in the window.
