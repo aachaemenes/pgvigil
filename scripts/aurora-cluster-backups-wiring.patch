@@ -1,0 +1,391 @@
+# WIRING for the lead (the HA join; the lead's call #4: 07:3x, the ARN 07:4x, the review 08:05 folded, the stable holder 08:1x): an Aurora cluster's
+# backups are the cluster's - 'retention under N days' and 'no snapshot in 24 h' fire once per cluster, on a stable member (the lowest id read in the last hour, not necessarily
+# the writer: a failover moves nothing). 0190 (the join's file): backup_state.arn, import_backups stores it, the view backup_cluster_holders (one holder per cluster key: the
+# lower-cased ARN; a row without one takes the one ARN its identifier carries, else the identifier), backup_status.cluster_backups_on, backup_rule_hits held to it; backups.go
+# sends the ARN (its test and fixture); q_backups.go and queries.go (sqlInstances) select the holder; backups.ts and fleet.ts (Backup FULL) name it on the other instances;
+# README's backups row. Apply with git apply, before or after q7-aurora-reader-wiring.patch (both touch backups.go, different hunks); rebuild the web bundle at the join;
+# judged by proof-pg-hadr.sh AB-AB9.
+diff --git c/README.md w/README.md
+index ce7458c5..65263826 100644
+--- c/README.md
++++ w/README.md
+@@ -51,7 +51,7 @@ The demo fleet (`pgvigil demo`): the Summary (the instances that need attention
+ | pi | hourly, RDS and Aurora with Performance Insights on | pi:GetResourceMetrics (db.load.avg by db.wait_event and by db.sql_tokenized, the top 25) and pi:GetDimensionKeyDetails for the top SQL's whole text (the metric cuts it at 500 bytes; a digest's text is its heaviest statement's), rds:DescribeDBInstances / DescribeDBClusters for the PI state (read hourly); the query_text policy applies; not proven live: proven on recorded answers of the API's documented shape, as the lab cluster's Performance Insights is off | `pi_state`, `pi_load`, `pi_sql` (kept past PI's seven days, purged with the statements' retention); the Load tab (DB load by wait as a stacked chart, the top SQL grid, a point opens that hour) |
+ | serverless | 5 min, Aurora Serverless v2 | cloudwatch:GetMetricData: ServerlessDatabaseCapacity, ACUUtilization, BufferCacheHitRatio per instance, the cluster's ACU range from DescribeDBClusters; a paused instance reads capacity 0 (AWS documents 0 for capacity, ACU and CPU when paused) | `serverless_sample`, `serverless_scaling`, `pi_findings`: 'cache starved by the ACU floor' (the capacity on the running floor greatest(min, 0.5) over the window, BufferCacheHitRatio under 95 %, ReadIOPS high at low CPU; the three figures in the finding), the Summary's Host cell and the Host tab's Capacity section |
+ | host | 1 min | on-prem: the `system_stats` extension where the server's DBA installed it (EDB, PostgreSQL licence, built from source: not in PGDG; `GRANT monitor_system_stats TO <login>` is the one opt-in beyond pg_monitor): OS, CPU, memory, load, every mount, device IO; RDS / Aurora: CloudWatch CPUUtilization, FreeableMemory, SwapUsage, DatabaseConnections, FreeStorageSpace / FreeLocalStorage plus DescribeDBInstances (IAM `cloudwatch:GetMetricData`, `rds:DescribeDBInstances`); skipped with its reason where neither door exists | `host_state` current, `host_sample` and `host_io` partitions, `host_disks` (absent volumes kept with `is_present = false`) with `host_disk_history`, `host_checks` / `host_findings` (CPU over 90 % for 10 minutes, swap used, a volume under 10 % free), the fleet `disk_report` |
+-| backups | 5 min | the WAL archiver everywhere (pg_stat_archiver: archived and failed counts, the last archived and failed WAL and their times, the archive lag against `pg_current_wal_lsn()`, on a standby against the WAL received); on Aurora through the AWS door (RDS on constructed answers only, not proven live) the backup retention, the latest restorable time and the newest automated and manual snapshots (`rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `rds:DescribeDBSnapshots`, `rds:DescribeDBClusterSnapshots`, read only); `backups: archive_warn_minutes` per instance (60 by default); pgBackRest and barman are not read (their catalogs live outside the server) | `backup_state` (the current rows) and `backup_sample` (monthly partitions), `backup_checks` and `backup_findings` (the archiver failing, the last archive older than the threshold while WAL waits, retention under 7 days, no snapshot in 24 h) |
++| backups | 5 min | the WAL archiver everywhere (pg_stat_archiver: archived and failed counts, the last archived and failed WAL and their times, the archive lag against `pg_current_wal_lsn()`, on a standby against the WAL received); on Aurora through the AWS door (RDS on constructed answers only, not proven live) the backup retention, the latest restorable time and the newest automated and manual snapshots (`rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `rds:DescribeDBSnapshots`, `rds:DescribeDBClusterSnapshots`, read only); `backups: archive_warn_minutes` per instance (60 by default); pgBackRest and barman are not read (their catalogs live outside the server) | `backup_state` (the current rows) and `backup_sample` (monthly partitions), `backup_checks` and `backup_findings` (the archiver failing, the last archive older than the threshold while WAL waits, retention under 7 days, no snapshot in 24 h; on Aurora the last two once per cluster, on a stable member - the lowest-id instance of the cluster read in the last hour, not necessarily the writer, so a failover does not move them - and the other instances' backups cells and Summary Backup FULL name that holder; the cluster matched by its ARN, a read without one by the ARN its identifier carries, else by its identifier: two clusters of one name in two accounts or regions, neither read with an ARN, then read as one) |
+ | amcheck | opt-in: an instance schedule names it (daily, say) | per connectable database, `bt_index_check` on every ready B-tree and `verify_heapam` on PG 14+ with amcheck 1.3+, where the extension exists and the login was granted EXECUTE on the two functions (`GRANT EXECUTE ON FUNCTION bt_index_check(regclass, boolean) TO <login>; GRANT EXECUTE ON FUNCTION verify_heapam(regclass, boolean, boolean, text, bigint, bigint) TO <login>`; a skip names the missing grant), in oid order from a start that moves each UTC day, under a budget (5 min per relation, 30 min per run; the rest is noted), inside the read-only session; the check reads every page it checks, so it is off until named | `amcheck_runs` (monthly partitions) and the Corruption column: with the log reader's corruption classes (page verification failed, invalid page, could not read block, missing or unexpected TOAST chunk, xmin before relfrozenxid and the rest, from both readers, as `log_events` kind `corruption`) and three settings (`data_checksums`, `ignore_checksum_failure`, `zero_damaged_pages`), `corruption_findings` (checksums off: a warning self-managed, info on managed platforms, none on Aurora; ignore_checksum_failure on; a corruption event in 24 h; amcheck damage) |
+ | plans | 15 min (pg_store_plans), with the log readers (auto_explain), on demand (EXPLAIN) | `pg_store_plans` where installed: the top 100 plans by total time (skipped with the reason where absent; not proven live: unit-tested on a constructed answer, as no proof builds pg_store_plans); every auto_explain line the two log readers see (`duration: N ms  plan:` in text or JSON) parsed into the same shape; the Plan page's EXPLAIN without execution through the monitoring login (a read-only transaction rolled back; a `$n` statement in the generic form) and, opt-in, EXPLAIN ANALYZE through the instance's `explain_dsn` login (`explain_analyze: true`, `explain_timeout` 30 s by default) inside the actions door: the UI login, a confirmation, every attempt in `actions_log`; the viewer is pev2 | `plans` (a current table, one row per plan key, rows older than the window purged), `plan_findings` (the last 7 days: estimates off by 10x, a sort or hash spilled to disk, a nested loop over a large outer, a filter removing most rows of a large table, a lossy bitmap heap scan, index-only scan heap fetches, JIT time, trigger time, workers planned but not launched, a CTE scanned twice, each with why it matters) |
+ | storage | 15 min | the WAL directory (`pg_ls_waldir()`), the tablespaces, the RDS allocated storage with its autoscaling maximum, the Aurora cluster volume (VolumeBytesUsed against 128 TiB); growth from the host volumes, the database and table sizes | `storage_state` current, `storage_sample` partitions, `volume_forecast()` (growth per day over 7 and 30 days, days until full), `database_growth()` (days to double), `table_growth()`, `storage_checks` / `storage_findings` (a volume full within 30 days warns, within 7 is critical) |
+diff --git c/internal/collect/backups.go w/internal/collect/backups.go
+index 23d74b2d..a5ee2816 100644
+--- c/internal/collect/backups.go
++++ w/internal/collect/backups.go
+@@ -146,7 +146,7 @@ type backupSnap struct {
+ // backupsCloudRows reads the platform's backups: on RDS the instance's retention and restorable time and its
+ // snapshots; on Aurora the cluster's (the cluster from the config, else from the instance). Rows:
+ // {kind:'cloud', name:<resource id>, resource_kind:'instance'|'cluster', retention_days, latest_restorable_time,
+-// earliest_restorable_time, backup_window} and {kind:'snapshot', name:<snapshot id>, snapshot_type, status,
++// earliest_restorable_time, backup_window, arn (a cluster's DBClusterArn: its instances' rows name one cluster)} and {kind:'snapshot', name:<snapshot id>, snapshot_type, status,
+ // created_at, allocated_gib, encrypted}, the newest backupSnapshotsKept per type; a failed call is a
+ // collector_error row and the parts that answered still land.
+ func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, id, cluster string) []Row {
+@@ -178,7 +178,7 @@ func backupsCloudRows(ctx context.Context, api backupsAPI, kind platform.Kind, i
+ 			c := dc.DBClusters[0]
+ 			out = append(out, Row{"kind": "cloud", "name": cluster, "resource_kind": "cluster", "retention_days": c.BackupRetentionPeriod,
+ 				"latest_restorable_time": utcPtr(c.LatestRestorableTime), "earliest_restorable_time": utcPtr(c.EarliestRestorableTime),
+-				"backup_window": nilIfEmpty(aws.ToString(c.PreferredBackupWindow))})
++				"backup_window": nilIfEmpty(aws.ToString(c.PreferredBackupWindow)), "arn": nilIfEmpty(aws.ToString(c.DBClusterArn))})
+ 		}
+ 		p := rds.NewDescribeDBClusterSnapshotsPaginator(api, &rds.DescribeDBClusterSnapshotsInput{DBClusterIdentifier: aws.String(cluster)})
+ 		for p.HasMorePages() {
+diff --git c/internal/collect/backups_test.go w/internal/collect/backups_test.go
+index aa37e759..d9292cf8 100644
+--- c/internal/collect/backups_test.go
++++ w/internal/collect/backups_test.go
+@@ -156,6 +156,9 @@ func TestBackupsAuroraCluster(t *testing.T) {
+ 			if c["backup_window"] != "07:22-07:52" {
+ 				t.Errorf("backup_window = %v", c["backup_window"])
+ 			}
++			if c["arn"] != "arn:aws:rds:us-east-1:123456789012:cluster:dba-lab-pg" {
++				t.Errorf("arn = %v", c["arn"])
++			}
+ 			want := []string{"before-upgrade", "rds:dba-lab-pg-2026-11-09-07-30", "rds:dba-lab-pg-2026-11-08-07-31"}
+ 			if got := snapNames(k["snapshot"]); fmt.Sprint(got) != fmt.Sprint(want) {
+ 				t.Errorf("snapshots = %v, want %v (the newest first)", got, want)
+diff --git c/internal/collect/testdata/backups/clusters-constructed.json w/internal/collect/testdata/backups/clusters-constructed.json
+index 63301c6d..a6061d4d 100644
+--- c/internal/collect/testdata/backups/clusters-constructed.json
++++ w/internal/collect/testdata/backups/clusters-constructed.json
+@@ -2,6 +2,7 @@
+   "DBClusters": [
+     {
+       "DBClusterIdentifier": "dba-lab-pg",
++      "DBClusterArn": "arn:aws:rds:us-east-1:123456789012:cluster:dba-lab-pg",
+       "Engine": "aurora-postgresql",
+       "EngineVersion": "17.5",
+       "BackupRetentionPeriod": 1,
+diff --git c/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index aa3316fb..353dfa25 100644
+--- c/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -11,6 +11,10 @@
+ --   task 177 D14 (0124): the mssql_cpu_findings arm; mssql_counter_sample, mssql_counter_read, mssql_session_summary,
+ --     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
+ --   CLOUDSQL C4 (0128): mssql_pool_minute among purge()'s monthly partition parents (an elastic pool's minutes).
++--   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
++--     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
++--     (backup_cluster_holders, new: the cluster keyed by its ARN, backup_state.arn; import_backups is 0022's with it),
++--     at the end of this file.
+ -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
+ 
+ CREATE OR REPLACE VIEW pgvigil.findings AS
+@@ -593,3 +597,160 @@ BEGIN
+     FROM jsonb_to_recordset(v_items) AS x(event text, finding_key text)
+    WHERE x.event IN ('resolved', 'cleared') AND s.channel = v_chan AND s.finding_key = x.finding_key AND s.cleared_at IS NULL;
+ END $$;
++
++-- An Aurora cluster's backups are the cluster's: every instance with an aws: block reads the same cluster (its
++-- retention and snapshots), so 0103's two cloud rules fired on the writer and again on each reader; now once, on the
++-- cluster's holder (a stable member: backup_cluster_holders). backup_status is
++-- 0103's with cluster_backups_on at the end: the instance that holds the cluster's backups when it is another one
++-- (NULL: not a cluster, or this instance holds them); backup_rule_hits is 0103's with the two cloud arms held to the
++-- holder (backup_cluster_holders). A cluster's key is its lower-cased DBClusterArn (backup_state.arn, read since this
++-- file); a row with no ARN (a collector before it, one read after the upgrade) takes the one ARN its identifier carries
++-- among the rows, else keeps its identifier: two clusters of one name, neither read with an ARN, read as one. One
++-- holder per key, so a mix of rows never silences a cluster (it may raise twice until the next read). import_backups
++-- is 0022's with arn stored.
++ALTER TABLE pgvigil.backup_state ADD COLUMN IF NOT EXISTS arn text;   -- cloud: a cluster's DBClusterArn
++
++CREATE OR REPLACE FUNCTION pgvigil.import_backups(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
++RETURNS void LANGUAGE plpgsql AS $$
++BEGIN
++  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_backups'), p_instance_id);
++  PERFORM pgvigil.ensure_month_partition('backup_sample', p_snapshot_at);
++
++  INSERT INTO pgvigil.backup_state AS s (instance_id, kind, name, snapshot_at, archive_mode, archive_timeout, archive_set, archived_count,
++                                         last_archived_wal, last_archived_time, failed_count, last_failed_wal, last_failed_time, stats_reset,
++                                         is_replica, wal_segment_bytes, current_lsn, archive_lag_bytes, archive_warn_minutes, resource_kind,
++                                         retention_days, latest_restorable_time, earliest_restorable_time, backup_window, snapshot_type,
++                                         status, created_at, allocated_gib, encrypted, first_seen, is_present, arn)
++  SELECT p_instance_id, r->>'kind', r->>'name', p_snapshot_at, r->>'archive_mode', r->>'archive_timeout', (r->>'archive_set')::boolean,
++         (r->>'archived_count')::bigint, r->>'last_archived_wal', (r->>'last_archived_time')::timestamptz, (r->>'failed_count')::bigint,
++         r->>'last_failed_wal', (r->>'last_failed_time')::timestamptz, (r->>'stats_reset')::timestamptz, (r->>'is_replica')::boolean,
++         (r->>'wal_segment_bytes')::bigint, r->>'current_lsn', (r->>'archive_lag_bytes')::bigint,
++         coalesce((r->>'archive_warn_minutes')::int, CASE WHEN r->>'kind' = 'archiver' THEN 60 END), r->>'resource_kind',
++         (r->>'retention_days')::int, (r->>'latest_restorable_time')::timestamptz, (r->>'earliest_restorable_time')::timestamptz,
++         r->>'backup_window', r->>'snapshot_type', r->>'status', (r->>'created_at')::timestamptz, (r->>'allocated_gib')::int,
++         (r->>'encrypted')::boolean, p_snapshot_at, true, nullif(r->>'arn', '')
++    FROM (SELECT DISTINCT ON (r->>'kind', r->>'name') r FROM jsonb_array_elements(p_payload) r
++           WHERE r->>'kind' IN ('archiver', 'cloud', 'snapshot') AND r->>'name' IS NOT NULL) x
++  ON CONFLICT (instance_id, kind, name) DO UPDATE SET
++    snapshot_at = EXCLUDED.snapshot_at, archive_mode = EXCLUDED.archive_mode, archive_timeout = EXCLUDED.archive_timeout,
++    archive_set = EXCLUDED.archive_set, archived_count = EXCLUDED.archived_count, last_archived_wal = EXCLUDED.last_archived_wal,
++    last_archived_time = EXCLUDED.last_archived_time, failed_count = EXCLUDED.failed_count, last_failed_wal = EXCLUDED.last_failed_wal,
++    last_failed_time = EXCLUDED.last_failed_time, stats_reset = EXCLUDED.stats_reset, is_replica = EXCLUDED.is_replica,
++    wal_segment_bytes = EXCLUDED.wal_segment_bytes, current_lsn = EXCLUDED.current_lsn, archive_lag_bytes = EXCLUDED.archive_lag_bytes,
++    archive_warn_minutes = EXCLUDED.archive_warn_minutes, resource_kind = EXCLUDED.resource_kind, retention_days = EXCLUDED.retention_days,
++    latest_restorable_time = EXCLUDED.latest_restorable_time, earliest_restorable_time = EXCLUDED.earliest_restorable_time,
++    backup_window = EXCLUDED.backup_window, snapshot_type = EXCLUDED.snapshot_type, status = EXCLUDED.status,
++    created_at = EXCLUDED.created_at, allocated_gib = EXCLUDED.allocated_gib, encrypted = EXCLUDED.encrypted, is_present = true,
++    arn = EXCLUDED.arn;
++
++  -- absence: a cloud resource no longer named (the config moved to another), a snapshot no longer listed by a
++  -- list that was read in full this run
++  UPDATE pgvigil.backup_state s SET is_present = false
++   WHERE s.instance_id = p_instance_id AND s.is_present AND s.kind IN ('cloud', 'archiver')
++     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = s.kind)
++     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = s.kind AND r->>'name' = s.name);
++  UPDATE pgvigil.backup_state s SET is_present = false
++   WHERE s.instance_id = p_instance_id AND s.is_present AND s.kind = 'snapshot'
++     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'snapshots_read')
++     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'snapshot' AND r->>'name' = s.name);
++
++  INSERT INTO pgvigil.backup_sample (instance_id, snapshot_at, archived_count, failed_count, archive_lag_bytes, last_archived_time, restorable_age_s)
++  SELECT p_instance_id, p_snapshot_at, (a->>'archived_count')::bigint, (a->>'failed_count')::bigint, (a->>'archive_lag_bytes')::bigint,
++         (a->>'last_archived_time')::timestamptz,
++         round(extract(epoch FROM p_snapshot_at - (c->>'latest_restorable_time')::timestamptz)::numeric, 0)
++    FROM (SELECT (SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'archiver' LIMIT 1) AS a,
++                 (SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'cloud' LIMIT 1) AS c) x
++   WHERE x.a IS NOT NULL OR x.c IS NOT NULL;
++END $$;
++
++-- backup_cluster_holders: per active instance with a cluster cloud row, the instance that holds its cluster's backups -
++-- a STABLE member (the lead's call): the lowest instance id among the cluster's active instances read in the last hour
++-- (the lowest id when none is), not necessarily the writer, so a failover neither moves, resolves nor reopens the
++-- cluster's findings; cluster_backups_on is the holder's name when it is another instance (backup_status and the
++-- Summary's row).
++CREATE OR REPLACE VIEW pgvigil.backup_cluster_holders AS
++WITH cl AS (
++  SELECT c.instance_id, lower(c.name) AS cname, lower(c.arn) AS arn, c.snapshot_at > now() - interval '1 hour' AS fresh
++    FROM pgvigil.backup_state c
++    JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
++   WHERE c.kind = 'cloud' AND c.is_present AND c.resource_kind = 'cluster'
++), ck AS (
++  SELECT cl.*, coalesce(cl.arn, n.arn, 'id:' || cl.cname) AS ckey
++    FROM cl LEFT JOIN (SELECT cname, min(arn) AS arn FROM cl GROUP BY cname HAVING count(DISTINCT arn) = 1) n USING (cname)
++), hold AS (
++  SELECT DISTINCT ON (ckey) ckey, instance_id AS holder_id FROM ck ORDER BY ckey, fresh DESC, instance_id
++)
++SELECT ck.instance_id, ck.ckey AS cluster_key, h.holder_id, hi.name AS holder,
++       CASE WHEN h.holder_id <> ck.instance_id THEN hi.name END AS cluster_backups_on
++  FROM ck JOIN hold h USING (ckey) JOIN pgvigil.instances hi ON hi.instance_id = h.holder_id;
++
++CREATE OR REPLACE VIEW pgvigil.backup_status AS
++WITH snap AS (
++  SELECT instance_id,
++         max(created_at) FILTER (WHERE snapshot_type = 'automated' AND status = 'available') AS newest_automated_at,
++         max(created_at) FILTER (WHERE snapshot_type = 'manual' AND status = 'available') AS newest_manual_at,
++         max(created_at) FILTER (WHERE status = 'available') AS newest_snapshot_at,
++         count(*) FILTER (WHERE snapshot_type = 'automated') AS automated_count,
++         count(*) FILTER (WHERE snapshot_type = 'manual') AS manual_count
++    FROM pgvigil.backup_state WHERE kind = 'snapshot' AND is_present GROUP BY instance_id
++)
++SELECT i.instance_id, i.name AS instance, i.platform,
++       a.archive_mode, a.archive_set, a.is_replica,
++       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))) AS archiving,
++       a.archived_count, a.failed_count, a.last_archived_wal, a.last_archived_time, a.last_failed_wal, a.last_failed_time,
++       a.stats_reset, a.archive_lag_bytes, a.wal_segment_bytes,
++       CASE WHEN aw.level <> 'default' AND aw.warn IS NOT NULL THEN aw.warn::int ELSE a.archive_warn_minutes END AS archive_warn_minutes,
++       round(extract(epoch FROM a.snapshot_at - a.last_archived_time)::numeric, 0) AS archive_age_s,
++       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))
++        AND a.last_failed_time IS NOT NULL AND (a.last_archived_time IS NULL OR a.last_failed_time > a.last_archived_time)) AS archiver_failing,
++       (a.archive_lag_bytes > a.wal_segment_bytes) AS wal_waiting,
++       a.snapshot_at AS archiver_read_at,
++       c.name AS cloud_resource, c.resource_kind, c.retention_days, c.latest_restorable_time, c.earliest_restorable_time, c.backup_window,
++       round(extract(epoch FROM c.snapshot_at - c.latest_restorable_time)::numeric, 0) AS restorable_age_s,
++       c.snapshot_at AS cloud_read_at,
++       s.newest_automated_at, s.newest_manual_at, s.newest_snapshot_at,
++       round(extract(epoch FROM c.snapshot_at - s.newest_snapshot_at)::numeric, 0) AS newest_snapshot_age_s,
++       coalesce(s.automated_count, 0) AS automated_count, coalesce(s.manual_count, 0) AS manual_count,
++       h.cluster_backups_on
++  FROM pgvigil.instances i
++  LEFT JOIN pgvigil.backup_state a ON a.instance_id = i.instance_id AND a.kind = 'archiver' AND a.is_present
++  LEFT JOIN pgvigil.backup_state c ON c.instance_id = i.instance_id AND c.kind = 'cloud' AND c.is_present
++  LEFT JOIN snap s ON s.instance_id = i.instance_id
++  LEFT JOIN pgvigil.backup_cluster_holders h ON h.instance_id = i.instance_id
++  CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'archive_age') aw
++ WHERE i.is_active AND (a.instance_id IS NOT NULL OR c.instance_id IS NOT NULL);
++
++
++CREATE OR REPLACE VIEW pgvigil.backup_rule_hits AS
++SELECT b.instance_id, 'critical' AS severity, 'archiver failing' AS check_name, coalesce(b.last_failed_wal, 'pg_stat_archiver') AS object,
++       b.archiver_read_at AS at,
++       'archive of ' || coalesce(b.last_failed_wal, '?') || ' failed at ' || to_char(b.last_failed_time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'
++       || coalesce(', after the last success at ' || to_char(b.last_archived_time AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', ', no success since the stats reset')
++       || ' (' || b.failed_count || ' failed, ' || b.archived_count || ' archived)' AS detail
++  FROM pgvigil.backup_status b
++ WHERE b.archiver_failing AND b.platform <> 'aurora'
++UNION ALL
++SELECT b.instance_id, 'warning', 'last archive older than ' || b.archive_warn_minutes || ' min', coalesce(b.last_archived_wal, 'pg_stat_archiver'), b.archiver_read_at,
++       coalesce('last archived ' || round(b.archive_age_s / 60) || ' min before the read', 'nothing archived since the stats reset')
++       || '; ' || pg_size_pretty(b.archive_lag_bytes) || ' of WAL waiting'
++  FROM pgvigil.backup_status b
++ WHERE b.archiving AND b.wal_waiting AND b.platform <> 'aurora'
++   AND (b.last_archived_time IS NULL OR b.archive_age_s > b.archive_warn_minutes * 60)
++UNION ALL
++SELECT b.instance_id, CASE WHEN r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days THEN 'critical' ELSE 'warning' END,
++       CASE WHEN r.warn_days IS NOT NULL THEN 'retention under ' || trim_scale(r.warn_days) || ' days'
++            ELSE 'retention at or under ' || trim_scale(r.crit_days) || ' days' END, b.cloud_resource, b.cloud_read_at,
++       CASE WHEN b.retention_days = 0 THEN 'automated backups are off (retention 0 days)'
++            ELSE 'backup retention ' || b.retention_days || ' days' END
++  FROM pgvigil.backup_status b JOIN pgvigil.backup_retention r USING (instance_id)
++ WHERE ((r.warn_days IS NOT NULL AND b.retention_days < r.warn_days) OR (r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days))
++   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
++   AND b.cluster_backups_on IS NULL
++UNION ALL
++SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.cloud_read_at,
++       coalesce('newest snapshot ' || to_char(b.newest_snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC, '
++                || round(b.newest_snapshot_age_s / 3600) || ' h before the read', 'no available snapshot listed')
++  FROM pgvigil.backup_status b
++ WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400)
++   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
++   AND b.cluster_backups_on IS NULL;
+diff --git c/internal/web/q_backups.go w/internal/web/q_backups.go
+index 8c9e412b..f729d27a 100644
+--- c/internal/web/q_backups.go
++++ w/internal/web/q_backups.go
+@@ -13,13 +13,14 @@ SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
+  WHERE i.is_active`})
+ }
+ 
+-// sqlBackupsStatus is the instance's one status row: the archiver, the cloud side, the newest snapshots.
++// sqlBackupsStatus is the instance's one status row: the archiver, the cloud side, the newest snapshots (on an Aurora
++// instance that does not hold its cluster's backups, cluster_backups_on names the one that holds and judges them).
+ const sqlBackupsStatus = `
+ SELECT archive_mode, archive_set, is_replica, archiving, archived_count, failed_count, last_archived_wal, last_archived_time,
+        last_failed_wal, last_failed_time, stats_reset, archive_lag_bytes, wal_segment_bytes, archive_warn_minutes, archive_age_s,
+        archiver_failing, wal_waiting, archiver_read_at, cloud_resource, resource_kind, retention_days, latest_restorable_time,
+        earliest_restorable_time, backup_window, restorable_age_s, cloud_read_at, newest_automated_at, newest_manual_at,
+-       newest_snapshot_at, newest_snapshot_age_s, automated_count, manual_count
++       newest_snapshot_at, newest_snapshot_age_s, automated_count, manual_count, cluster_backups_on
+   FROM pgvigil.backup_status
+  WHERE instance_id = $1`
+ 
+@@ -59,7 +60,7 @@ SELECT severity, setting, value, suggested, detail, at
+ // sqlBackupsFleet is every active instance's status row with its count of rule hits, the failing first.
+ const sqlBackupsFleet = `
+ SELECT b.instance_id, b.instance, b.platform, b.archive_mode, b.is_replica, b.archiving, b.wal_waiting, b.archive_warn_minutes, b.archived_count, b.failed_count, b.last_archived_time, b.archive_age_s,
+-       b.archive_lag_bytes, b.archiver_failing, b.retention_days, b.restorable_age_s, b.newest_snapshot_at, b.newest_snapshot_age_s,
++       b.archive_lag_bytes, b.archiver_failing, b.retention_days, b.restorable_age_s, b.newest_snapshot_at, b.newest_snapshot_age_s, b.cluster_backups_on,
+        (SELECT count(*) FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS findings,
+        (SELECT CASE WHEN bool_or(h.severity = 'critical') THEN 'critical' WHEN count(*) > 0 THEN 'warning' END
+           FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS worst,
+diff --git c/internal/web/queries.go w/internal/web/queries.go
+index 40862a0f..a2f6fe82 100644
+--- c/internal/web/queries.go
++++ w/internal/web/queries.go
+@@ -1,6 +1,7 @@
+ package web
+ 
+-// sqlInstances lists the active instances with their state and the latest session summary.
++// sqlInstances lists the active instances with their state and the latest session summary (cluster_backups_on: on an
++// Aurora instance that does not hold its cluster's backups, the one that does - the Summary's Backup FULL cell names it).
+ // $1 = the stale check's expectations: a collection disabled or gated off for an instance (0) is not
+ // counted as failing there, so an error row an earlier build left behind does not alarm for ever.
+ // A row never read (no server_version: an instance added on Admin > Instances whose server has not answered yet)
+@@ -11,7 +12,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
+        CASE WHEN i.server_version IS NULL THEN i.first_seen END AS added_at,
+        i.engine, st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
+        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
+-       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,
++       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at, cb.cluster_backups_on,
+        (SELECT count(*) FROM pgvigil.collection_dates c
+          WHERE c.instance_id = i.instance_id AND c.status = 'error'
+            AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
+@@ -20,6 +21,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
+   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
+   LEFT JOIN pgvigil.instance_tags_merged tm ON tm.instance_id = i.instance_id
+   LEFT JOIN pgvigil.host_state h ON h.instance_id = i.instance_id
++  LEFT JOIN pgvigil.backup_cluster_holders cb ON cb.instance_id = i.instance_id
+   LEFT JOIN LATERAL (SELECT * FROM pgvigil.activity_summary x
+                       WHERE x.instance_id = i.instance_id
+                       ORDER BY x.snapshot_at DESC LIMIT 1) a ON true
+diff --git c/web/src/backups.ts w/web/src/backups.ts
+index b9cef006..9b58c0b7 100644
+--- c/web/src/backups.ts
++++ w/web/src/backups.ts
+@@ -1,7 +1,10 @@
+ // The Backups tab and the fleet Backups root (task 33): the WAL archiver (pg_stat_archiver: archived and failed
+ // files, the last of each, the archive lag, the trend), and through the AWS door on RDS and Aurora the backup
+ // retention, the latest restorable time and the snapshots; the four rules (the archiver failing, the last archive
+-// older than the threshold, retention under 7 days, no snapshot in 24 h). pgBackRest and barman are not read.
++// older than the threshold, retention under 7 days, no snapshot in 24 h; on Aurora the last two once per cluster, on
++// the instance that holds its backups - a stable member, the lowest id read in the last hour, not necessarily the
++// writer - and the other instances' cells name it: cluster_backups_on).
++// pgBackRest and barman are not read.
+ // Data from /api/backups and /api/backups/fleet.
+ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
+@@ -13,6 +16,8 @@ const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
+ const ageTxt = (v: unknown) => v == null ? '' : fmtSecs(v) + ' ago';
+ const snapAge = (v: unknown) => v == null ? '' : Number(v) > 86400 ? badge(ageTxt(v), 'warn') : ageTxt(v);
+ const retTxt = (v: unknown) => v == null ? '' : Number(v) === 0 ? badge('off (0 days)', 'crit') : Number(v) < 7 ? badge(fmtNum(v) + ' days', 'warn') : fmtNum(v) + ' days';
++// heldOn is the text of an Aurora instance's backups cell when the cluster's backups are judged on another instance.
++const heldOn = (r: Row) => r.cluster_backups_on == null ? null : `the cluster's backups: read on ${String(r.cluster_backups_on)}`;
+ 
+ // archiverState is the archiver's one-word state for a tile and the fleet grid.
+ function archiverState(s: Row): [string, string] {
+@@ -34,12 +39,12 @@ export async function backupsView(ctx: Ctx): Promise<HTMLElement> {
+     return sec;
+   }
+   const [state, kind] = archiverState(s);
+-  const cloud = s.cloud_resource != null;
++  const cloud = s.cloud_resource != null, held = heldOn(s);
+   sec.append(el('div', { class: 'tiles' },
+     tile('WAL archiver', state, kind),
+     tile('last archived', s.archive_age_s == null ? '-' : fmtSecs(s.archive_age_s) + ' ago'),
+     tile('archive lag', s.archive_lag_bytes == null ? '-' : fmtBytes(s.archive_lag_bytes)),
+-    ...(cloud ? [
++    ...(cloud && held ? [tile('retention and snapshots', held)] : cloud ? [
+       tile('retention', s.retention_days == null ? '-' : fmtNum(s.retention_days) + ' days',
+         s.retention_days == null ? '' : Number(s.retention_days) === 0 ? 'crit' : Number(s.retention_days) < 7 ? 'warn' : 'ok'),
+       tile('newest snapshot', s.newest_snapshot_age_s == null ? 'none' : fmtSecs(s.newest_snapshot_age_s) + ' ago',
+@@ -74,6 +79,7 @@ export async function backupsView(ctx: Ctx): Promise<HTMLElement> {
+     sec.append(el('h3', {}, s.resource_kind === 'cluster' ? 'Aurora cluster backups' : 'RDS backups'),
+       props([
+         [s.resource_kind === 'cluster' ? 'cluster' : 'DB instance', String(s.cloud_resource)],
++        ...(held ? [['findings', `${held}: its retention and snapshot findings are raised there`] as [string, string]] : []),
+         ['backup retention', retTxt(s.retention_days)],
+         ['backup window (UTC)', String(s.backup_window ?? '-')],
+         ['latest restorable time', s.latest_restorable_time == null ? 'none' : `${fmtTime(s.latest_restorable_time)} (${ageTxt(s.restorable_age_s)})`],
+@@ -103,8 +109,9 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
+   let rows = rowsOf(d.instances);
+   if (keep) rows = rows.filter(keep);
+   const failing = rows.filter(r => r.archiver_failing).length;
+-  const short = rows.filter(r => r.retention_days != null && Number(r.retention_days) < 7).length;
+-  const stale = rows.filter(r => r.retention_days != null && (r.newest_snapshot_age_s == null || Number(r.newest_snapshot_age_s) > 86400)).length;
++  const own = rows.filter(r => heldOn(r) == null);   // an Aurora cluster counts once: on the instance that holds its backups
++  const short = own.filter(r => r.retention_days != null && Number(r.retention_days) < 7).length;
++  const stale = own.filter(r => r.retention_days != null && (r.newest_snapshot_age_s == null || Number(r.newest_snapshot_age_s) > 86400)).length;
+   return el('section', {}, el('h2', {}, 'Backups'),
+     el('div', { class: 'tiles' },
+       tile('instances', String(rows.length)),
+@@ -119,9 +126,11 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
+       { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
+       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
+       { key: 'failed_count', label: 'failed', num: true },
+-      { key: 'retention_days', label: 'retention', num: true, fmt: retTxt, cls: v => v == null ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },
++      { key: 'retention_days', label: 'retention', num: true, fmt: (v, r) => heldOn(r) ?? retTxt(v),
++        cls: (v, r) => v == null || heldOn(r) ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },
+       { key: 'restorable_age_s', label: 'restorable', num: true, fmt: ageTxt },
+-      { key: 'newest_snapshot_age_s', label: 'newest snapshot', num: true, fmt: snapAge, cls: v => v == null ? '' : Number(v) > 86400 ? 'warn' : 'ok' },
++      { key: 'newest_snapshot_age_s', label: 'newest snapshot', num: true, fmt: (v, r) => heldOn(r) ? '' : snapAge(v),
++        cls: (v, r) => v == null || heldOn(r) ? '' : Number(v) > 86400 ? 'warn' : 'ok' },
+       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+     ], 'No backups read yet.'));
+ }
+diff --git c/web/src/fleet.ts w/web/src/fleet.ts
+index 373bc556..f882de04 100644
+--- c/web/src/fleet.ts
++++ w/web/src/fleet.ts
+@@ -297,6 +297,8 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
+       ...(g.key === 'dumps' && hit.length ? { since: hit.map(c => String(c.at ?? '')).filter(Boolean).sort().pop() } : {}),
+       detail: hit.map(c => `${checkLabel(c.check_name)}: ${c.object ?? ''} ${c.detail ?? ''}`.trim()),
+     };
++    // an Aurora instance that does not hold its cluster's backups: Backup FULL says where they are read and judged
++    if (g.key === 'full' && r.cluster_backups_on != null) out[g.key].detail.push(`the cluster's backups: read on ${String(r.cluster_backups_on)}`);
+   }
+   return out;
+ }
