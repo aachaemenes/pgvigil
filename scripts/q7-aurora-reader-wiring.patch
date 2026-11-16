@@ -1,7 +1,14 @@
-# WIRING for the lead (task 374 / Q7, the lead 06:2x): on platform aurora the rolechange and backups collectors skip the
-# calls a real Aurora PostgreSQL 17.9 reader rejects (SQLSTATE 0A000: pg_stat_get_wal_receiver, pg_last_wal_receive_lsn,
-# pg_last_wal_replay_lsn) and say so in the collection log; collect.go keeps collector_note rows out of the import (aurora_sql_test.go pins the Aurora SQL).
-# Apply with git apply; judged by scripts/proof-pg-hadr.sh row AF2.
+# WIRING for the lead (task 374 / Q7, the lead 06:2x; REBUILT 2026-11-15 for the HA join against rel-ha389-prep a2f58a1e =
+# rel-j15dl 72b53713 + the five HA merges + the 0190 edits): on platform aurora the rolechange and backups collectors
+# skip the calls a real Aurora PostgreSQL 17.9 reader rejects (SQLSTATE 0A000: pg_stat_get_wal_receiver,
+# pg_last_wal_receive_lsn, pg_last_wal_replay_lsn) and say so in the collection log; collect.go keeps collector_note
+# rows out of the import (aurora_sql_test.go pins the Aurora SQL).
+# The rebuild: rolechange.go's last hunk. rel-hadr-s2 (376) replaced the three-line Patroni call the old patch sat on
+# with 'seen, _ := r["patroni_session"].(bool)' and a call under !info.Kind.Managed(): the Aurora-reader note block
+# now goes before s2's line and the old call is gone (Aurora is managed: s2's guard keeps Patroni off it, as the old
+# line's own test did). The other hunks are the old patch's, at the join's line numbers.
+# Apply with git apply on that tree (before or after aurora-cluster-backups-wiring.patch: both touch backups.go,
+# different hunks); judged by scripts/proof-pg-hadr.sh row AF2.
 diff --git c/internal/collect/aurora_sql_test.go i/internal/collect/aurora_sql_test.go
 new file mode 100644
 index 00000000..09db3be0
@@ -90,10 +97,10 @@ index 23d74b2d..1eb7bbc0 100644
  	if (info.Kind != platform.RDS && info.Kind != platform.Aurora) || in.AWS == nil {
  		return out, nil
 diff --git c/internal/collect/collect.go i/internal/collect/collect.go
-index ae6cb94b..dbb55211 100644
+index 0308e3ed..4fdfd794 100644
 --- c/internal/collect/collect.go
 +++ i/internal/collect/collect.go
-@@ -212,15 +212,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+@@ -215,15 +215,30 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
  		}
  	}
  	applyTextPolicy(rows, in.QueryText)
@@ -126,10 +133,10 @@ index ae6cb94b..dbb55211 100644
  		}
  	}
 diff --git c/internal/collect/rolechange.go i/internal/collect/rolechange.go
-index 81d56f34..fedb54bc 100644
+index 5d84be66..cefbcbdc 100644
 --- c/internal/collect/rolechange.go
 +++ i/internal/collect/rolechange.go
-@@ -58,6 +58,17 @@ SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmast
+@@ -48,6 +48,17 @@ SELECT pg_is_in_recovery() AS is_replica, pg_postmaster_start_time() AS postmast
         (SELECT w.received_tli FROM pg_stat_wal_receiver w WHERE w.pid IS NOT NULL LIMIT 1) AS receiver_timeline,
         EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.application_name LIKE 'Patroni%') AS patroni_session`
  
@@ -147,8 +154,8 @@ index 81d56f34..fedb54bc 100644
  // roleControlSQL: pg_control_system / pg_control_checkpoint (superuser or pg_monitor on most platforms).
  const roleControlSQL = `
  SELECT (pg_control_system()).system_identifier::text AS system_identifier, (pg_control_checkpoint()).timeline_id AS checkpoint_timeline`
-@@ -73,7 +84,11 @@ const (
- )
+@@ -61,7 +72,11 @@ func (r rolechangeCollector) Run(ctx context.Context, conn *pgx.Conn, info platf
+ }
  
  func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
 -	base, err := conn.Query(ctx, roleBaseSQL)
@@ -160,7 +167,7 @@ index 81d56f34..fedb54bc 100644
  	if err != nil {
  		return nil, fmt.Errorf("rolechange: %w", err)
  	}
-@@ -108,6 +123,14 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
+@@ -96,6 +111,14 @@ func (rolechangeCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info
  	delete(r, "wal_timeline")
  	delete(r, "receiver_timeline")
  	out := []Row{r}
@@ -172,6 +179,6 @@ index 81d56f34..fedb54bc 100644
 +		out = append(out, Row{"kind": "collector_note", "source": "rolechange",
 +			"message": "not read on Aurora: pg_stat_get_wal_receiver() is not supported (" + from + ")"})
 +	}
- 	if p, _ := r["patroni_session"].(bool); p && info.Kind != platform.RDS && info.Kind != platform.Aurora && in.DSNRaw != "" {
- 		out = append(out, patroniRows(ctx, patroniURL(in.DSN()))...)
- 	}
+ 	seen, _ := r["patroni_session"].(bool)
+ 	delete(r, "patroni_session")
+ 	if !info.Kind.Managed() {
