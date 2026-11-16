@@ -1401,14 +1401,15 @@ if (mode === 'live') {
 } else if (mode === 'state') {
   // U3: each step opens a community page (or the fleet page and its picker), optionally types the database and clicks
   // Look again (until a tool is on, when asked), then reads every tool: on or off, the reason it is described by, the
-  // 'before it runs' cell; and optionally clicks a tool, fills its parameters, runs it and reads what the page drew
+  // 'before it runs' cell (found by its column's heading: the grid's columns are not fixed - KITWATCH's version column
+  // stands before it); and optionally clicks a tool, fills its parameters, runs it and reads what the page drew
   const [U, cookie, specFile, shots] = a;
   await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
   const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
   out.steps = [];
   const tools = () => ev(`[...document.querySelectorAll('main table.grid button.link')].map(b => ({ name: b.textContent.trim(), off: b.getAttribute('aria-disabled') === 'true',
     desc: (b.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent ?? '').join(' ').replace(/\\s+/g, ' ').trim().slice(0, 400),
-    cell: (b.closest('tr')?.cells?.[2]?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 400) }))`);
+    cell: (b.closest('tr')?.cells?.[[...(b.closest('table')?.querySelectorAll('thead th') ?? [])].findIndex(h => /before it runs/.test(h.textContent))]?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 400) }))`);
   const lookAgain = async () => {
     const t0 = Date.now();
     await ev(`(() => { window.__old = document.querySelector('main table.grid'); [...document.querySelectorAll('main button')].find(b => b.textContent === 'Look again').click(); return 1; })()`);
