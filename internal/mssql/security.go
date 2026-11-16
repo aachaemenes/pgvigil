@@ -280,6 +280,10 @@ var secRegistryKeys = map[string]string{
 	"HideInstance": `Software\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib`,
 }
 
+// secRegreadOff: why the security read does not call xp_instance_regread on this platform ("" = it may): the same
+// platforms the rights page lists registry_instance as not applying to (hostOnly).
+func secRegreadOff(_ Info) string { return "" }
+
 func (r *secRun) registry() {
 	if r.skip("registry") {
 		return

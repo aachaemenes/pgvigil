@@ -62,3 +62,21 @@ func TestSecAuthOwnSQLNeedsNoRight(t *testing.T) {
 		t.Errorf("the own connection's read: %s", secAuthOwnSQL)
 	}
 }
+
+// TestSecurityRegistryOffWhereHostOnly (the j16 join review's #5): on a platform that runs the host - Azure SQL
+// Database, Managed Instance, Amazon RDS, Google Cloud SQL - the security read never calls xp_instance_regread and never
+// prints a GRANT for it; the rights page says the same there (hostOnly). A server someone runs reads it.
+func TestSecurityRegistryOffWhereHostOnly(t *testing.T) {
+	for _, k := range []Kind{KindAzureDB, KindAzureMI, KindRDS, KindCloudSQL} {
+		why := secRegreadOff(Info{Kind: k, Major: 16})
+		if !strings.Contains(why, "the registry is not read there") {
+			t.Errorf("%s: secRegreadOff = %q, want the platform's words ('... the registry is not read there')", k, why)
+		}
+		if on := hostOnly(Info{Kind: k, Major: 16}); on == "" {
+			t.Errorf("%s: hostOnly lists the registry right as applying, the read skips it", k)
+		}
+	}
+	if why := secRegreadOff(Info{Kind: KindServer, Major: 16}); why != "" {
+		t.Errorf("a server someone runs: secRegreadOff = %q, want it read", why)
+	}
+}
