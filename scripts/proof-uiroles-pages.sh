@@ -34,11 +34,13 @@
 #     new mail schedule (openers that need admin: off for the viewer and the operator with the role's words, a click
 #     opens nothing; the admin's opens the dialog, no control off for the role).
 #     'PASS: proof-uiroles-pages'.
-#   The 7-day row (the lead 11-15 19:3x; written before its first run; scripts/roles-mute-week.mjs): as the operator,
-#     the page's clock 60 s ahead of the server's, the Silence of one PostgreSQL instance (not roles-check's) with
-#     '7 days' picked in its dialog and saved - on rel-roles f421753c (the dialog's 7 days = 168 h, past the server's
-#     ceiling by the clock's lead): 'FAIL week: ... 403 {"error":"a fleet-wide or open-ended mute needs the admin
-#     role: ..."}'; with the dialog's 7 days ending 10 minutes short of 168 h: 'ok   week: ... done (200 ...)'.
+#   The 7-day rows (the lead 11-15 19:3x, review-21; written before the run that carries them; scripts/roles-mute-week.mjs):
+#     as the operator, the page's clock 60 s ahead of the server's, on one PostgreSQL instance (not roles-check's): the
+#     header's Silence with '7 days' picked, and the Alerts page's New mute rule on that instance with '7 days after the
+#     start' (start at once), each saved and graded by its own POST /api/ack (the body's until, the answer) - on
+#     rel-roles f421753c (each dialog's 7 days = 168 h by the page's clock): two 'FAIL week: ... 403 {"error":"a
+#     fleet-wide or open-ended mute needs the admin role: ..."}; its end ... 168.0167 h ...' lines; with the dialogs'
+#     7 days 10 minutes short: two 'ok   week: ... 200 {..."outcome":"done"...}; its end ... 167.85 h ...' lines.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -107,4 +109,4 @@ echo "== week as ${USER[operator]} (operator)"
 timeout 300 node scripts/roles-mute-week.mjs "$CDP" "$U/" "${USER[operator]}" "$(PW "${USER[operator]}")"; rc=$?
 (( rc == 0 )) || { WEEKBAD=1; echo "FAIL roles-mute-week: rc $rc"; }
 if (( BADROLES || WEEKBAD )); then echo "proof-uiroles-pages: $BADROLES role(s) FAIL, the 7-day row $( (( WEEKBAD )) && echo FAIL || echo ok)"; exit 1; fi
-echo "PASS: proof-uiroles-pages"
+echo "PASS: proof-uiroles-pages$([[ ${PGVIGIL_PAGES_ONLY:-} == week ]] && echo " (the 7-day rows only)")"
