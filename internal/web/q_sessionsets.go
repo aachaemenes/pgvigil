@@ -15,7 +15,7 @@ import (
 const sqlSessionSetsState = `
 SELECT snapshot_at, status, reason, track_utility FROM pgvigil.session_sets_state WHERE instance_id = $1`
 
-const sqlSessionSetsRows = `SELECT * FROM pgvigil.session_sets_window($1, $2, $3) /* text: query=stmt */`
+const sqlSessionSetsRows = `SELECT * FROM pgvigil.session_sets_window($1, $2, $3) /* text: query=stmt, value=setval, planner=planner */`
 
 // SessionSets serves the session SETs of one instance over the window.
 func (s *Server) SessionSets(w http.ResponseWriter, r *http.Request) {

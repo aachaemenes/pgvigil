@@ -33,6 +33,9 @@ import (
 //	          detail is gone under normalized); logmsg its message (gone under none)
 //	inst      the row's instance_id (kept when named, dropped when the tag has no name: "@inst")
 //	keep      true on a row that holds no stored statement text (a union's other branch): its columns stay as read
+//	setval    a session SET's value: kept for a planner setting (the row's planner column), else under full only - the
+//	          capture's rule (collect's sessionsets.go: a custom setting can carry an application's data)
+//	planner   whether the row's setting is a planner one (kept)
 //	fcheck    a finding's check (its setting or check_name); fdetail, fvalue, ffix its detail, value and fix: for a check
 //	          that quotes a statement (findText), the text from the quote on follows the rule, the words before it stay;
 //	          fsummary the Summary's cell lines ("<check>: <value> - <detail>"), each by its check
@@ -125,6 +128,9 @@ func (tr *textRule) allFull() bool {
 // instance's own, else the file's, else full).
 func (s *Server) textRuleOf(ctx context.Context, ds *doorSet) (*textRule, error) {
 	tr := &textRule{byID: map[int]string{}, def: ds.planPolicy("")}
+	if doorsAllFull(ds) {
+		return tr, nil // every policy full (allFull): no instance read, the names back only
+	}
 	rows, err := s.pool.Query(ctx, `SELECT instance_id, name FROM pgvigil.instances`)
 	if err != nil {
 		return nil, err
@@ -141,24 +147,22 @@ func (s *Server) textRuleOf(ctx context.Context, ds *doorSet) (*textRule, error)
 	return tr, rows.Err()
 }
 
-// doorsKey carries a handler's door set to reply, so a request reads one generation of the doors (TestDoorsReadOnce).
-type doorsKey struct{}
-
-// withDoors is r carrying ds for reply's text rule.
-func withDoors(r *http.Request, ds *doorSet) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), doorsKey{}, ds))
-}
-
-// doorsOf is the door set a handler put on r, else the one reply reads now.
-func (s *Server) doorsOf(r *http.Request) *doorSet {
-	if ds, ok := r.Context().Value(doorsKey{}).(*doorSet); ok && ds != nil {
-		return ds
+// doorsAllFull: every instance's policy on this door set is full (each instance's own, the file's default for the rest).
+func doorsAllFull(ds *doorSet) bool {
+	if ds.DefaultQT != "" && ds.DefaultQT != "full" {
+		return false
 	}
-	return s.doorsNow()
+	for _, p := range ds.QueryText {
+		if p != "" && p != "full" {
+			return false
+		}
+	}
+	return true
 }
 
 // tablesIn lists the tables a reply value holds: a table, or one inside a map, a slice or a struct's exported fields,
-// to a few levels (the replies are a table, a map of tables, or a struct or map beside other values).
+// to textWalkDepth levels (the replies are a table, a map of tables, or a struct or map beside other values, three
+// levels at most today; the proof's walk fails on any column name with '@' left in a reply).
 func tablesIn(v any) []*table {
 	var out []*table
 	walkTables(reflect.ValueOf(v), 0, &out)
@@ -167,8 +171,11 @@ func tablesIn(v any) []*table {
 
 var tableType = reflect.TypeOf(&table{})
 
+// textWalkDepth bounds the walk (a reply value is a tree; the bound only guards against a cycle).
+const textWalkDepth = 16
+
 func walkTables(v reflect.Value, depth int, out *[]*table) {
-	if !v.IsValid() || depth > 4 {
+	if !v.IsValid() || depth > textWalkDepth {
 		return
 	}
 	if v.Type() == tableType {
@@ -221,7 +228,9 @@ func (s *Server) applyTextNow(r *http.Request, v any) error {
 	if len(ts) == 0 {
 		return nil
 	}
-	tr, err := s.textRuleOf(r.Context(), s.doorsOf(r))
+	// the door set as reply reads it now: a handler that read its own a moment before reads the same policies while the
+	// serve runs (the file's, page instances the file's default), so the two reads agree
+	tr, err := s.textRuleOf(r.Context(), s.doorsNow())
 	if err != nil {
 		return err
 	}
@@ -333,6 +342,14 @@ func (tr *textRule) table(t *table, def int, defKnown bool) {
 						lines[k] = textnow.SummaryLine(l, pol)
 					}
 				}
+			case "setval":
+				// a session SET's value: a planner setting's is kept under every policy, another's under full only
+				if pol != "full" {
+					pl, _ := at(row, "planner")
+					if b, _ := pl.(bool); !b {
+						row[c.i] = nil
+					}
+				}
 			case "logmsg":
 				if pol == "none" {
 					row[c.i] = nil
@@ -391,6 +408,18 @@ func (tr *textRule) pgPlan(row []any, roleAt map[string]int, pol string) {
 	if (!hq && !hj && !ht) || pol == "full" {
 		return
 	}
+	// a list row that carries the query alone (no plan column): the capture's rule on the query - none keeps no plan
+	// row, normalized the query normalized (plans.Mask's own step for the query)
+	if !hj && !ht {
+		if q, ok := row[iq].(string); ok && q != "" {
+			if pol == "none" {
+				row[iq] = nil
+			} else {
+				row[iq] = collect.NormalizeSQL(q)
+			}
+		}
+		return
+	}
 	var pr plans.Row
 	if hq {
 		pr.Query, _ = row[iq].(string)
@@ -413,6 +442,11 @@ func (tr *textRule) pgPlan(row []any, roleAt map[string]int, pol string) {
 	}
 	if i, ok := roleAt["pgfmt"]; ok {
 		pr.Format, _ = row[i].(string)
+	}
+	// a JSON plan read as its text alone (the plan page): masked from that text, as the collector masks the JSON plan
+	// (Mask rebuilds the text from the masked JSON; a text that does not parse keeps no plan)
+	if pr.Plan == nil && pr.Format == "json" && pr.PlanText != "" {
+		pr.Plan = json.RawMessage(pr.PlanText)
 	}
 	if !collect.MaskPlan(&pr, pol) {
 		for _, i := range []int{iq, ij, it} {

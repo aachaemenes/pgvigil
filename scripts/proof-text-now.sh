@@ -27,6 +27,14 @@
 #  A. the alert sends (the lead's T1 red row): `pgvigil alerts` with a file-drop channel under full drops at least one
 #     alert whose value or detail is a stored text (a head statement: decisive); under none no dropped file holds a
 #     stored text or the start of one (the head statement cut to "(not shown: ...)").
+#  J1 (review 1 H1, added before its first run): erp01's JSON plan (the demo's EXPLAIN ANALYZE of the name search,
+#     a Filter with '%acme%') on /api/plan: under full its text holds the literal (decisive); under normalized its
+#     text is shown masked (not empty, no 'acme'); under none (and mixed: erp01 is none) no text.
+#  S1 (review 1 H2, added before its first run): erp01's session SETs (PostgreSQL 16: values kept): under full a
+#     custom (non-planner) setting's value is shown (decisive); under normalized, none and mixed every custom value is
+#     NULL (the capture's rule), a planner setting's value kept.
+#  L4 (review 1 L4, added before its first run): under every policy no reply carries a column name with '@' in it (a
+#     tagged column the rule did not reach).
 #  Red on d04bc70a (rel-j15dl): N, Z, M and A (none) fail - the routes and the sends return the texts stored under full.
 # The judge's two corrections after green run 1 (the expectations above unchanged): M - a route that ignores instance=
 # (Running fleet, Alerts, the ack's open alerts) answers every instance's rows to a call naming erp01 or sql01, so a
@@ -118,7 +126,7 @@ walk() {   # $1 = the policy name: writes $WORK/walk-$1.json
 import json, sys, urllib.request, urllib.parse, urllib.error
 pol, base, pgi, msi, frm, to, work = sys.argv[1:8]
 routes = [l.strip() for l in open(f"{work}/routes.txt") if l.strip() and "{" not in l]
-out = {"calls": [], "skipped": [], "downloads": {}}
+out = {"calls": [], "skipped": [], "downloads": {}, "probes": {}, "atcols": []}
 def get(path, params):
     url = base + path + "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     try:
@@ -191,6 +199,15 @@ s = first("/api/mssql/xe", "slow", "ms", {"part": "slow"})
 if s: call("/api/mssql/xe/slow", {**win, "instance": msi, "shape": s.get("shape_key")}, "ms")
 g = first("/api/logs/groups", None, "pg") or first("/api/logs/groups", "groups", "pg")
 if g and g.get("group_key"): call("/api/logs/groups/rows", {**win, "instance": pgi, "group": g["group_key"]}, "pg")
+# J1: erp01's JSON plan (format json), its page
+jp = next((r for rec in out["calls"] if rec["path"] == "/api/plans" and rec["who"] == "pg" and rec["status"] == 200
+           for r in rows(rec, "plans") if r.get("format") == "json"), None)
+if jp and jp.get("plan_id"):
+    rec = call("/api/plan", {"id": jp["plan_id"]}, "pg")
+    out["probes"]["jsonplan"] = {"status": rec["status"], "json": rec.get("json")}
+# S1: erp01's session SETs
+ss = next((rec for rec in out["calls"] if rec["path"] == "/api/sessionsets" and rec["who"] == "pg" and rec["status"] == 200), None)
+if ss: out["probes"]["sets"] = rows(ss, "sets")
 pl = first("/api/plans", "plans", "pg")
 if pl and pl.get("plan_id"):
     call("/api/plan", {"id": pl["plan_id"]}, "pg")
@@ -202,6 +219,17 @@ for rep in ("deadlocks", "failed", "flushed", "audit", "queries"):
 for g in ("text", "instance"):
     call("/api/slow/groups", {**win, "group": g}, "fleet")
 call("/api/slow/events", {**win}, "fleet")
+# L4: a column name with '@' left in any reply (a tagged column the rule did not reach)
+def cols(v, acc):
+    if isinstance(v, dict):
+        if isinstance(v.get("columns"), list): acc.extend(c for c in v["columns"] if isinstance(c, str))
+        for x in v.values(): cols(x, acc)
+    elif isinstance(v, list):
+        for x in v: cols(x, acc)
+    return acc
+for rec in out["calls"]:
+    for c in cols(rec.get("json"), []):
+        if "@" in c: out["atcols"].append(f"{rec['path']} [{rec['who']}]: {c}")
 for rec in out["calls"]:
     # mixed keeps the replies of the calls naming erp01 or sql01 too: a fleet-wide route's rows are judged by their instance
     if rec["who"] != "fleet" and not (pol == "mixed" and rec["who"] in ("pg", "ms")): rec.pop("json", None)
@@ -290,11 +318,32 @@ print("   example leaks: " + " | ".join(bad[:3]))
 alert_hits = sum(1 for c in walk["calls"] if c["who"] == "alert" for s in c.get("strings", []) if hits(s))
 if any(c["who"] == "alert" for c in walk["calls"]):
     print(f"   the alert sends: {alert_hits} dropped string(s) are stored texts")
+# J1, S1, L4 (review 1)
+pr = walk.get("probes", {})
+ptxt = None
+for t in tables((pr.get("jsonplan") or {}).get("json"), []):
+    if "plan_text" in t["columns"] and t["rows"]: ptxt = t["rows"][0][t["columns"].index("plan_text")]
+custom = [r for r in (pr.get("sets") or []) if r.get("planner") is False]
+planner = [r for r in (pr.get("sets") or []) if r.get("planner") is True]
+print(f"   J1: JSON plan {'read' if pr.get('jsonplan') else 'NOT FOUND'}, text {'none' if ptxt is None else repr(ptxt[:90])}; S1: {len(custom)} custom SET row(s), values {[r.get('value') for r in custom][:4]}; L4: {len(walk.get('atcols', []))} '@' column(s)")
+for c in sorted(set(walk.get("atcols", [])))[:10]: bad.append(f"L4: {c}")
+undecided = []
 if pol == "full":
+    if not ptxt or "acme" not in ptxt.lower(): undecided.append("J1: no JSON plan text with its literal under full")
+    if not any(r.get("value") is not None for r in custom): undecided.append("S1: no custom SET value shown under full")
+elif pol == "normalized":
+    if not ptxt: bad.append("J1: the JSON plan's text is empty under normalized (blanked, not masked)")
+    elif "acme" in ptxt.lower(): bad.append("J1: the JSON plan keeps its literal under normalized")
+else:
+    if ptxt: bad.append(f"J1: the JSON plan's text shown under {pol}")
+if pol != "full":
+    if any(r.get("value") is not None for r in custom): bad.append(f"S1: a custom SET value shown under {pol}: {[r.get('value') for r in custom if r.get('value') is not None][:3]}")
+if pol == "full":
+    for u in undecided: print(f"   {u}: NOT DECISIVE")
     if not alert_hits: print("   the alert sends under full drop no stored text: A is NOT DECISIVE")
     sites = sorted(set(t[0] for t in texts))
     print("   sites the seed filled and no reply showed: " + ", ".join(s for s in sites if not shown[s]) or "none")
-    sys.exit(0 if sum(shown.values()) else 1)
+    sys.exit(0 if sum(shown.values()) and not undecided and not bad else 1)
 if pol == "none":
     for k, v in walk["downloads"].items():
         if v[0] != 404 or "not shown" not in v[1]: bad.append(f"download {k}: {v[0]} {v[1][:80]!r}")

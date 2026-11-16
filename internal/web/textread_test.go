@@ -24,6 +24,8 @@ var storedText = map[string][]string{
 	"mssql_attentions": {"statement"}, "mssql_ag_events": {"statement"}, "mssql_trace_events": {"statement"},
 	"mssql_audit_events": {"statement"}, "mssql_memory_grant_query": {"statement"}, "mssql_running_plan": {"plan_xml"},
 	"mssql_live_plan": {"plan_xml"}, "mssql_statement_text": {"statement"},
+	// a session SET's value: a custom setting's can carry an application's data (kept under full only, as captured)
+	"session_sets": {"value"},
 	// a finding's value and detail: the checks that quote a statement (internal/textnow's findText) carry stored text
 	"alert_state": {"value"}, "ack_suppressed": {"value"}, "alert_occurrences": {"value"}, "alert_sent": {"value"},
 	"findings": {"detail", "value"}, "alert_findings": {"detail", "value"}, "findings_alerts": {"detail", "value"},
@@ -306,6 +308,47 @@ func TestTextRule(t *testing.T) {
 	all.table(tb, 0, false)
 	if tb.Columns[0] != "q" || tb.Rows[0][0] != "SELECT 4" {
 		t.Errorf("all full: %v %v", tb.Columns, tb.Rows)
+	}
+	// a JSON plan read as its text alone (the plan page) under normalized: masked from the text, not blanked (review 1 H1)
+	tb = &table{Columns: []string{"format@pgfmt", "plan_text@pgplantext", "query@pgq"},
+		Rows: [][]any{{"json", `{"Plan": {"Node Type": "Seq Scan", "Filter": "(a = 'secret-42')"}}`, "SELECT 1 FROM t WHERE a = 'secret-42'"}}}
+	tr.table(tb, 2, true)
+	if pt, _ := tb.Rows[0][1].(string); pt == "" || strings.Contains(pt, "secret-42") || !strings.Contains(pt, "Seq Scan") {
+		t.Errorf("a JSON plan's text under normalized: %v", tb.Rows[0])
+	}
+	if q, _ := tb.Rows[0][2].(string); q == "" || strings.Contains(q, "secret-42") {
+		t.Errorf("a JSON plan's query under normalized: %v", tb.Rows[0])
+	}
+	// the Plans list's row: the query and the format, no plan column - the query normalized, not blanked
+	tb = &table{Columns: []string{"format@pgfmt", "query@pgq"}, Rows: [][]any{{"json", "SELECT 1 FROM t WHERE a = 'secret-42'"}, {"text", "SELECT 2 WHERE b = 7"}}}
+	tr.table(tb, 2, true)
+	for _, row := range tb.Rows {
+		if q, _ := row[1].(string); q == "" || strings.Contains(q, "secret-42") || strings.Contains(q, "= 7") {
+			t.Errorf("a list row's query under normalized: %v", row)
+		}
+	}
+	tb = &table{Columns: []string{"format@pgfmt", "query@pgq"}, Rows: [][]any{{"json", "SELECT 1"}}}
+	tr.table(tb, 3, true)
+	if tb.Rows[0][1] != nil {
+		t.Errorf("a list row's query under none: %v", tb.Rows[0])
+	}
+	// a session SET's value: a planner setting's kept under every policy, a custom one's under full only (review 1 H2)
+	mkSets := func() *table {
+		return &table{Columns: []string{"setting", "value@setval", "planner@planner"},
+			Rows: [][]any{{"app.tenant", "acme", false}, {"enable_hashjoin", "off", true}}}
+	}
+	for id, want := range map[int]any{1: "acme", 2: nil, 3: nil} {
+		tb = mkSets()
+		tr.table(tb, id, true)
+		if tb.Rows[0][1] != want || tb.Rows[1][1] != "off" || tb.Columns[1] != "value" || tb.Columns[2] != "planner" {
+			t.Errorf("session SETs under %s: %v %v", tr.byID[id], tb.Columns, tb.Rows)
+		}
+	}
+	// the door set alone says every policy is full (no instance read)
+	if !doorsAllFull(&doorSet{QueryText: map[string]string{"a": "full", "b": ""}, DefaultQT: ""}) ||
+		doorsAllFull(&doorSet{QueryText: map[string]string{"a": "none"}, DefaultQT: "full"}) ||
+		doorsAllFull(&doorSet{QueryText: map[string]string{}, DefaultQT: "normalized"}) {
+		t.Error("doorsAllFull")
 	}
 	// the tables of a reply: inside a struct and a map
 	out := struct {

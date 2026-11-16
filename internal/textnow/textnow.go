@@ -12,7 +12,8 @@ import (
 )
 
 // findRule: where a finding's detail and value quote a statement (the text from the match's end on); nil = none quoted.
-type findRule struct{ detail, value *regexp.Regexp }
+// keep: a quoted part that matches it is the server's own words (not a statement), kept under every policy.
+type findRule struct{ detail, value, keep *regexp.Regexp }
 
 // findText: the findings arms that put stored statement text into a detail or a value (the inventory of TEXT-NOW;
 // the views of 0029, 0054, 0061, 0064, 0065, 0114, 0119, 0124, 0145), by their check name.
@@ -22,13 +23,15 @@ var findText = map[string]findRule{
 	"a session idle in a transaction over an hour holding locks": {detail: regexp.MustCompile(`Its last batch: `)},
 	"a request running over an hour":                             {detail: regexp.MustCompile(`Statement: `)},
 	"blocked-process reports naming the same head statement":     {value: regexp.MustCompile(`^`)},
-	"an availability replica changed role or state":              {detail: regexp.MustCompile(`in the last hour(?:, a failover among them)?; `)},
-	"an implicit transaction blocking":                           {detail: regexp.MustCompile(`Its (?:last batch|statement): `)},
-	"a lead blocker":                                             {detail: regexp.MustCompile(`The statement: `)},
-	"a transaction open for a long time":                         {detail: regexp.MustCompile(`its last statement: `)},
-	"a memory grant over 15 % of max workspace":                  {detail: regexp.MustCompile(`over 15 %\)(?: in [^:]*)?: `)},
-	"the version store grows while cleanup is at zero":           {detail: regexp.MustCompile(`last statement: `)},
-	"the version store over a third of tempdb":                   {detail: regexp.MustCompile(`last statement: `)},
+	// last_change is '<replica>: <previous> to <current>' (the server's words) and only falls back to the event's statement
+	"an availability replica changed role or state": {detail: regexp.MustCompile(`in the last hour(?:, a failover among them)?; `),
+		keep: regexp.MustCompile(`^(?:[^:]*: )?(?:[A-Za-z_]+ to )?[A-Za-z_]+$`)},
+	"an implicit transaction blocking":                 {detail: regexp.MustCompile(`Its (?:last batch|statement): `)},
+	"a lead blocker":                                   {detail: regexp.MustCompile(`The statement: `)},
+	"a transaction open for a long time":               {detail: regexp.MustCompile(`its last statement: `)},
+	"a memory grant over 15 % of max workspace":        {detail: regexp.MustCompile(`over 15 %\)(?: in .*?)?: `)},
+	"the version store grows while cleanup is at zero": {detail: regexp.MustCompile(`last statement: `)},
+	"the version store over a third of tempdb":         {detail: regexp.MustCompile(`last statement: `)},
 }
 
 var (
@@ -61,16 +64,19 @@ func findRuleOf(check string) (findRule, bool) {
 const textCut = "(not shown: this instance's query_text policy is none)"
 
 // cutStmt keeps a finding's words up to where it quotes a statement and puts the statement under the policy: none =
-// textCut in its place, normalized = its normalized form; no quote found = the text as it is.
-func cutStmt(s string, re *regexp.Regexp, pol string) string {
-	if re == nil {
+// textCut in its place, normalized = its normalized form. A field that quotes one but whose quote is not found (a
+// name with the marker's own characters in it, a reworded message) fails closed: the whole field is the statement.
+func cutStmt(s string, re, keep *regexp.Regexp, pol string) string {
+	if re == nil || s == "" {
 		return s
 	}
-	loc := re.FindStringIndex(s)
-	if loc == nil {
+	head, tail := "", s
+	if loc := re.FindStringIndex(s); loc != nil {
+		head, tail = s[:loc[1]], s[loc[1]:]
+	}
+	if keep != nil && keep.MatchString(tail) {
 		return s
 	}
-	head, tail := s[:loc[1]], s[loc[1]:]
 	if pol == "none" {
 		return head + textCut
 	}
@@ -84,7 +90,7 @@ func Finding(check, value, detail, mode string) (string, string) {
 	if !ok || mode == "" || mode == "full" {
 		return value, detail
 	}
-	return cutStmt(value, fr.value, mode), cutStmt(detail, fr.detail, mode)
+	return cutStmt(value, fr.value, fr.keep, mode), cutStmt(detail, fr.detail, fr.keep, mode)
 }
 
 // Listed reports whether a finding's check quotes a statement.
@@ -107,11 +113,11 @@ func SummaryLine(line, mode string) string {
 		}
 		if fr.value != nil {
 			if v, ok := strings.CutPrefix(rest, ": "); ok {
-				return check + ": " + cutStmt(v, fr.value, mode)
+				return check + ": " + cutStmt(v, fr.value, fr.keep, mode)
 			}
-			return line
+			return check + cutStmt(rest, fr.value, fr.keep, mode) // no ': ' after the check: fail closed
 		}
-		return check + cutStmt(rest, fr.detail, mode)
+		return check + cutStmt(rest, fr.detail, fr.keep, mode)
 	}
 	return line
 }
