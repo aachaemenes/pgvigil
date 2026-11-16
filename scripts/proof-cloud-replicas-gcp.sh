@@ -61,7 +61,7 @@ LAB=scripts/lab/gcp-cloudsql-pg-replica.sh
 STATE=${PGVIGIL_LAB_DIR:-.lab}/gcp-cloudsql-pg-replica.env
 for t in psql jq python3 gcloud curl; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
 [ -r "$STATE" ] || { echo "FAIL: no lab state file $STATE (gcp-cloudsql-pg-replica.sh up, allow, logins)" >&2; exit 1; }
-gcloud auth application-default print-access-token >/dev/null 2>&1 || { echo "FAIL: no Application Default Credentials on this machine (gcloud auth application-default login: Allen's step)" >&2; exit 1; }
+gcloud auth application-default print-access-token >/dev/null 2>&1 || { echo "FAIL: no Application Default Credentials on this machine (gcloud auth application-default login: an operator's step on this machine)" >&2; exit 1; }
 # shellcheck disable=SC1090
 . "$STATE"
 : "${PRI_INSTANCE:?} ${REP_INSTANCE:?} ${PRI_IP:?} ${ADMIN_USER:?} ${ADMIN_PW:?} ${MON_USER:?} ${MON_PW:?}"

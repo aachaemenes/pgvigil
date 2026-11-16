@@ -299,7 +299,7 @@ fi
 NOTPROVEN+=("P3 (the provider's failover event): an RDS Multi-AZ DB instance is billed and not approved; the Go cases and the store row prove the hand-off")
 
 echo "--- C-A..C-F (Cloud SQL)"
-NOTPROVEN+=("C-A..C-F: run by scripts/proof-cloud-replicas-gcp.sh on lab CP (scripts/lab/gcp-cloudsql-pg-replica.sh; Allen's Q37 YES), not here")
+NOTPROVEN+=("C-A..C-F: run by scripts/proof-cloud-replicas-gcp.sh on lab CP (scripts/lab/gcp-cloudsql-pg-replica.sh; an approved lab), not here")
 
 echo
 for n in "${NOTPROVEN[@]}"; do echo "NOT PROVEN: $n"; done
