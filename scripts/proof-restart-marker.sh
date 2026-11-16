@@ -370,6 +370,18 @@ ws.close();
 JS
 W="from=$(urlq "$RUN_FROM")&to=$(urlq "$WTO")"
 PAGES="[{\"instance\":$MSI,\"hash\":\"#/mssqlcpu?i=$MSI&$W\"},{\"instance\":$MSI,\"hash\":\"#/mssqlmemory?i=$MSI&$W\"},{\"instance\":$PGI,\"hash\":\"#/performance?i=$PGI&$W\"}]"
+# DIAG F (the j16 LAST run's diagnostic of j16d3's red, where the PostgreSQL page drew 0 charts): what that page reads
+# over the walk's window, printed whatever F's result - the row count of each part of GET /api/performance, and
+# pgvigil.dbstats_rate's rows (the 'db' part's source) - so a page with no chart names its empty read
+if curl -fs -m 60 "$U/api/performance?instance=$PGI&$W" > "$TMPD/perf.json"; then
+  python3 - "$TMPD/perf.json" <<'PYD' || echo "DIAG F: the reply of GET /api/performance did not parse"
+import json, sys
+d = json.load(open(sys.argv[1]))
+print('DIAG F: GET /api/performance (the PostgreSQL instance, the walk\'s window): ' + ', '.join(
+    f"{k} {len(v['rows'])} rows" if isinstance(v, dict) and isinstance(v.get('rows'), list) else f"{k} {type(v).__name__}" for k, v in d.items()))
+PYD
+else echo "DIAG F: GET /api/performance?instance=$PGI did not answer"; fi
+echo "DIAG F: pgvigil.dbstats_rate($PGI) from $RUN_FROM to $WTO: $(pq "SELECT count(*) || ' rows, ' || count(DISTINCT datname) || ' databases, ' || count(*) FILTER (WHERE reset) || ' reset, ' || coalesce(min(snapshot_at)::text, '-') || ' .. ' || coalesce(max(snapshot_at)::text, '-') FROM pgvigil.dbstats_rate($PGI, '$RUN_FROM', '$WTO')" 2>&1 | tr '\n' ' ' | cut -c1-300)"
 node "$TMPD/f.mjs" "$CDP" "$U/" "$TMPD/node_modules/axe-core/axe.min.js" "$W" "$PAGES" > "$TMPD/f.out" || { cat "$TMPD/f.out" >&2; fail "F: the Chromium walk stopped"; }
 python3 - "$TMPD/f.out" "$MSI" "$PGI" <<'PY' || fail "F: see above"
 import json, sys
