@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -476,6 +477,10 @@ var rules = []func(*wctx){
 	ruleFunctions, ruleBlitzScalarUDF, ruleComputedFilter, ruleComputedScalar, ruleMSTVF, ruleTVFJoin, ruleTableVariable,
 	ruleCursor, ruleNearParallel, ruleForcedSerial, ruleIndexSpool, ruleTableSpool, ruleSortExpensive, ruleRemoteQuery,
 	ruleBigSpills,
+	// part 2
+	ruleRowGoal, ruleBadEstimate, ruleAdaptive, ruleSwitch, ruleScans, ruleColumnstoreRowMode, ruleIndexOps, ruleDDL,
+	ruleLowCostHighCPU, ruleSelectWithWrites, ruleStaleStats, ruleTraceFlagsSession, ruleCompileTimeout, ruleLongCompile,
+	ruleNonSargable, ruleUnparameterized, rulePlanWarnings, ruleRelopWarnings, ruleBusyLoops,
 }
 
 // #22: a PlanAffectingConvert warning naming CONVERT_IMPLICIT (sp_BlitzCache 8.34 L3449-3453); its issue and expression
@@ -881,5 +886,354 @@ func ruleRemoteQuery(c *wctx) {
 func ruleBigSpills(c *wctx) {
 	if v, ok := c.rt("is_big_spills", "spill average", func(r *MSSQLRuntime) *float64 { return r.AvgSpillPages }); ok && v/128 > 499 {
 		c.add("is_big_spills", "#62", c.s.n, fmt.Sprintf(">500mb Spills (%.0f MB per run)", v/128), "sp_BlitzCache 8.34 L4952")
+	}
+}
+
+// ---- part 2 ----
+
+// rtOpt is a runtime number of the statement under judgement when given, with no not-judged note (an optional input).
+func (c *wctx) rtOpt(pick func(*MSSQLRuntime) *float64) (float64, bool) {
+	r := c.in.Runtime
+	if r == nil || (r.Stmt > 0 && r.Stmt != c.s.ord) || (r.Stmt <= 0 && c.nstmt > 1) {
+		return 0, false
+	}
+	if p := pick(r); p != nil {
+		return *p, true
+	}
+	return 0, false
+}
+
+// #61: an operator whose estimate a row goal lowered (sp_BlitzCache 8.34 L4021-4024).
+func ruleRowGoal(c *wctx) {
+	for _, r := range c.s.relops {
+		if v, ok := r.num("EstimateRowsWithoutRowGoal"); ok && v > 0 {
+			c.add("is_row_goal", "#61", r, fmt.Sprintf("Row Goals (estimated %g rows, %g without the goal)", numOr(r, "EstimateRows", 0), v), "sp_BlitzCache 8.34 L4021-4024")
+			return
+		}
+	}
+}
+
+// #59: the statement's estimated rows a thousand times off the rows a run returns, either way (sp_BlitzCache 8.34
+// L4951; the estimate L3319-3322).
+func ruleBadEstimate(c *wctx) {
+	rows, ok := c.rt("is_bad_estimate", "rows returned", func(r *MSSQLRuntime) *float64 { return r.AvgRows })
+	if !ok {
+		return
+	}
+	est, ok := c.s.n.num("StatementEstRows")
+	if !ok {
+		c.notJudged("is_bad_estimate", "the plan holds no StatementEstRows")
+		return
+	}
+	if rows > 0 && (est*1000 < rows || est > rows*1000) {
+		c.add("is_bad_estimate", "#59", c.s.n, fmt.Sprintf("Row Estimate Mismatch (estimated %g, %g returned per run)", est, rows), "sp_BlitzCache 8.34 L4951, L3319-3322")
+	}
+}
+
+// #54: an adaptive join (sp_BlitzCache 8.34 L4000-4004).
+func ruleAdaptive(c *wctx) {
+	for _, r := range c.s.relops {
+		if r.flag("IsAdaptive") {
+			c.add("is_adaptive", "#54", r, "Adaptive Joins", "sp_BlitzCache 8.34 L4000-4004")
+			return
+		}
+	}
+}
+
+// #60: a Switch operator (sp_BlitzCache 8.34 L4172-4176).
+func ruleSwitch(c *wctx) {
+	if sw := c.s.ops("Switch", ""); len(sw) > 0 {
+		c.add("is_paul_white_electric", "#60", sw[0], "Switch Operators", "sp_BlitzCache 8.34 L4172-4176")
+	}
+}
+
+// #37, #38, #39: a table scan, a backward scan, a forced index - on any operator that reads one (sp_BlitzCache 8.34
+// L3677-3702).
+func ruleScans(c *wctx) {
+	var back, forced, table *xnode
+	for _, r := range c.s.relops {
+		for _, sc := range append(kidsPath(r, "IndexScan"), kidsPath(r, "TableScan")...) {
+			if back == nil && sc.attr("ScanDirection") == "BACKWARD" {
+				back = r
+			}
+			if forced == nil && sc.flag("ForcedIndex") {
+				forced = r
+			}
+			if table == nil && sc.name == "TableScan" {
+				table = r
+			}
+		}
+	}
+	if table != nil {
+		c.add("is_table_scan", "#37", table, "Table Scans (heaps)", "sp_BlitzCache 8.34 L3677, L3696-3702")
+	}
+	if back != nil {
+		c.add("backwards_scan", "#38", back, "Backwards Scans", "sp_BlitzCache 8.34 L3678, L3687, L3697")
+	}
+	if forced != nil {
+		c.add("forced_index", "#39", forced, "Forced Indexes", "sp_BlitzCache 8.34 L3679, L3688, L3698")
+	}
+}
+
+// #42: a columnstore index read in row mode (sp_BlitzCache 8.34 L3916-3922).
+func ruleColumnstoreRowMode(c *wctx) {
+	for _, r := range c.s.relops {
+		if r.attr("EstimatedExecutionMode") != "Row" {
+			continue
+		}
+		for _, sc := range kidsPath(r, "IndexScan") {
+			if sc.attr("Storage") == "ColumnStore" {
+				c.add("columnstore_row_mode", "#42", r, "ColumnStore Row Mode", "sp_BlitzCache 8.34 L3916-3922")
+				return
+			}
+		}
+	}
+}
+
+// indexDMLOps are the nine operators sp_BlitzCache counts as index modifications (8.34 L3752-3779).
+var indexDMLOps = map[string]bool{"Index Insert": true, "Index Update": true, "Index Delete": true,
+	"Clustered Index Insert": true, "Clustered Index Update": true, "Clustered Index Delete": true,
+	"Table Insert": true, "Table Update": true, "Table Delete": true}
+
+// #46: five or more indexes modified - each modifying operator counted once per row of its OUTER APPLYs over its
+// ScalarInsert, Update and SimpleUpdate Objects, as sp_BlitzCache's rows multiply (8.34 L3752-3792, L5049).
+func ruleIndexOps(c *wctx) {
+	n := 0
+	var at *xnode
+	for _, r := range c.s.relops {
+		if !indexDMLOps[r.attr("PhysicalOp")] {
+			continue
+		}
+		n += max(1, len(kidsPath(r, "ScalarInsert", "Object"))) * max(1, len(kidsPath(r, "Update", "Object"))) * max(1, len(kidsPath(r, "SimpleUpdate", "Object")))
+		if at == nil {
+			at = r
+		}
+	}
+	if n >= 5 {
+		c.add("index_ops", "#46", at, fmt.Sprintf(">= 5 Indexes Modified (%d)", n), "sp_BlitzCache 8.34 L3752-3792, L5049")
+	}
+}
+
+// #49, #50: index and table DDL (sp_BlitzCache 8.34 L3274-3280, L3296-3302).
+func ruleDDL(c *wctx) {
+	switch c.s.typ {
+	case "CREATE INDEX", "DROP INDEX":
+		c.add("index_dml", "#49", c.s.n, "Index DML ("+c.s.typ+")", "sp_BlitzCache 8.34 L3274-3280")
+	case "CREATE TABLE", "DROP OBJECT":
+		c.add("table_dml", "#50", c.s.n, "Table DML ("+c.s.typ+")", "sp_BlitzCache 8.34 L3296-3302")
+	}
+}
+
+// #51: a cheap plan (cost 10 or less) over 5 seconds of CPU a run (sp_BlitzCache 8.34 L4946).
+func ruleLowCostHighCPU(c *wctx) {
+	if cpu, ok := c.rt("low_cost_high_cpu", "CPU average", func(r *MSSQLRuntime) *float64 { return r.AvgCPUMS }); ok && c.s.cost <= 10 && cpu > 5000 {
+		c.add("low_cost_high_cpu", "#51", c.s.n, fmt.Sprintf("Low Cost Query With High CPU (cost %.4g, %.0f ms a run)", c.s.cost, cpu), "sp_BlitzCache 8.34 L4946")
+	}
+}
+
+// #69: a SELECT with no spool writing over 1,024 pages a run, the integer part compared (sp_BlitzCache 8.34
+// L3885-3890; its is_big_spills test runs before that column is set, L4952, so spills never exclude).
+func ruleSelectWithWrites(c *wctx) {
+	if c.s.typ != "SELECT" || len(c.s.ops("Index Spool", "Eager Spool")) > 0 || len(c.s.ops("Table Spool", "Lazy Spool")) > 0 {
+		return
+	}
+	if w, ok := c.rt("select_with_writes", "writes average", func(r *MSSQLRuntime) *float64 { return r.AvgWritePages }); ok && math.Floor(w) > 1024 {
+		c.add("select_with_writes", "#69", c.s.n, fmt.Sprintf("Selects w/ Writes (%.0f pages a run)", w), "sp_BlitzCache 8.34 L3885-3890")
+	}
+}
+
+// #53: the statement's statistics all a week old or more, modified 100,000 times on average (sp_BlitzCache 8.34
+// L3976-3981), against the server's clock the caller gives.
+func ruleStaleStats(c *wctx) {
+	if c.in.Now.IsZero() {
+		c.notJudged("stale_stats", "no server clock given")
+		return
+	}
+	st := c.s.n.all("StatisticsInfo")
+	if len(st) == 0 {
+		return
+	}
+	var newest time.Time
+	sum, n := 0.0, 0
+	for _, s := range st {
+		if t, ok := statTime(s.attr("LastUpdate")); ok && t.After(newest) {
+			newest = t
+		}
+		if m, ok := s.num("ModificationCount"); ok {
+			sum += m
+			n++
+		}
+	}
+	if newest.IsZero() || n == 0 {
+		return
+	}
+	if avg := sum / float64(n); !newest.After(c.in.Now.Add(-7*24*time.Hour)) && avg >= 100000 {
+		c.add("stale_stats", "#53", c.s.n, fmt.Sprintf("Statistics Not Updated Recently (newest %s, %.0f modifications on average)", newest.Format("2006-01-02 15:04"), avg), "sp_BlitzCache 8.34 L3976-3981")
+	}
+}
+
+// #29: trace flags set in the session, listed (sp_BlitzCache 8.34 L4105-4132).
+func ruleTraceFlagsSession(c *wctx) {
+	var flags []string
+	var at *xnode
+	for _, qp := range c.s.plans {
+		for _, tf := range kidsPath(qp, "TraceFlags", "TraceFlag") {
+			if tf.attr("Scope") == "Session" && !slicesContains(flags, tf.attr("Value")) {
+				flags = append(flags, tf.attr("Value"))
+				if at == nil {
+					at = qp
+				}
+			}
+		}
+	}
+	if len(flags) > 0 {
+		c.add("trace_flags_session", "#29", at, "Session Level Trace Flag(s) Enabled: "+strings.Join(flags, ", "), "sp_BlitzCache 8.34 L4105-4132")
+	}
+}
+
+// #2: the optimizer stopped at its timeout (sp_BlitzCache 8.34 L3225-3230).
+func ruleCompileTimeout(c *wctx) {
+	if c.s.n.attr("StatementOptmEarlyAbortReason") == "TimeOut" {
+		c.add("compile_timeout", "#2", c.s.n, "Compilation Timeout", "sp_BlitzCache 8.34 L3225-3230")
+	}
+}
+
+// #66: a compile over 5 seconds - the plan's CompileTime (sp_BlitzCache 8.34 L3211, L5069), or, when given, Query
+// Store's average compile duration at the same 5,000 ms (pgvigil's own: sp_BlitzCache reads no Query Store).
+func ruleLongCompile(c *wctx) {
+	for _, qp := range c.s.plans {
+		if v, ok := qp.num("CompileTime"); ok && v > 5000 {
+			c.add("long_compile", "#66", qp, fmt.Sprintf("Long Compile Time (%.0f ms)", v), "sp_BlitzCache 8.34 L3211, L5069")
+			return
+		}
+	}
+	if v, ok := c.rtOpt(func(r *MSSQLRuntime) *float64 { return r.AvgCompileMS }); ok && v > 5000 {
+		c.add("long_compile", "#66", c.s.n, fmt.Sprintf("Long Compile Time (Query Store's average %.0f ms)", v), "pgvigil (sp_BlitzCache 8.34 L5069's 5000 ms)")
+	}
+}
+
+// #65: a non-SARGable predicate - a function or an IF compared in a scan's predicate, a computed expression in a join,
+// a LIKE with a leading wildcard - each read over the operator's whole subtree, as sp_BlitzCache's '//' reads it
+// (8.34 L4188-4215).
+func ruleNonSargable(c *wctx) {
+	for _, r := range c.s.relops {
+		var fnIf, like, expr bool
+		var consts []string
+		r.own(func(d *xnode) {
+			if d.name != "ScalarOperator" {
+				if d.name == "Const" {
+					consts = append(consts, d.attr("ConstValue"))
+				}
+				return
+			}
+			for _, k := range d.kids {
+				fnIf = fnIf || (k.name == "Intrinsic" && k.attr("FunctionName") != "") || k.name == "IF"
+				like = like || (k.name == "Intrinsic" && k.attr("FunctionName") == "like")
+			}
+			expr = expr || strings.Contains(d.attr("ScalarString"), "Expr")
+		})
+		pred := kidsPath(r, "IndexScan", "Predicate", "ScalarOperator")
+		why := ""
+		switch {
+		case fnIf && len(kidsPath(r, "IndexScan", "Predicate", "ScalarOperator", "Compare", "ScalarOperator")) > 0:
+			why = "a function in a scan's predicate"
+		case expr && strings.Contains(r.attr("LogicalOp"), "Join"):
+			why = "a computed expression in a join"
+		case like && len(pred) > 0 && leadingWildcard(consts):
+			why = "a LIKE with a leading wildcard"
+		}
+		if why != "" {
+			c.add("is_nonsargable", "#65", r, "Non-SARGables ("+why+")", "sp_BlitzCache 8.34 L4188-4215")
+			return
+		}
+	}
+}
+
+// leadingWildcard reports a constant written '%...' or N'%...' as the plan spells it ('(N'%x')' keeps its quote).
+func leadingWildcard(consts []string) bool {
+	for _, v := range consts {
+		if (len(v) > 1 && v[0] != 'N' && v[1] == '%') || (len(v) > 2 && v[0] == 'N' && v[2] == '%') {
+			return true
+		}
+	}
+	return false
+}
+
+// #7: a FULL-optimized statement with literals and no parameters: a ParameterList without a column, or none and a
+// local variable read in an operator's expression (sp_BlitzCache 8.34 L3250-3258).
+func ruleUnparameterized(c *wctx) {
+	if c.s.n.name != "StmtSimple" || c.s.n.attr("StatementOptmLevel") != "FULL" {
+		return
+	}
+	pl := kidsPath(c.s.n, "QueryPlan", "ParameterList")
+	fire := false
+	if len(pl) > 0 {
+		fire = true
+		for _, p := range pl {
+			if len(p.all("ColumnReference")) > 0 {
+				fire = false
+			}
+		}
+	} else {
+		for _, top := range kidsPath(c.s.n, "QueryPlan", "RelOp") {
+			top.own(func(d *xnode) {
+				if d.name == "ScalarOperator" {
+					for _, cr := range kidsPath(d, "Identifier", "ColumnReference") {
+						fire = fire || strings.Contains(cr.attr("Column"), "@")
+					}
+				}
+			})
+		}
+	}
+	if fire {
+		c.add("unparameterized_query", "#7", c.s.n, "Unparameterized Query", "sp_BlitzCache 8.34 L3250-3258")
+	}
+}
+
+// warningKinds names a Warnings element's children and its set flags ('NoJoinPredicate').
+func warningKinds(w *xnode) string {
+	var k []string
+	for _, x := range w.kids {
+		if !slicesContains(k, x.name) {
+			k = append(k, x.name)
+		}
+	}
+	for a := range w.attrs {
+		if w.flag(a) && !slicesContains(k, a) {
+			k = append(k, a)
+		}
+	}
+	return strings.Join(k, ", ")
+}
+
+// #18: the plan's own warnings (sp_BlitzCache 8.34 L3439-3443).
+func rulePlanWarnings(c *wctx) {
+	for _, qp := range c.s.plans {
+		if w := qp.child("Warnings"); w != nil {
+			c.add("plan_warnings", "#18", qp, "Plan Warnings ("+warningKinds(w)+")", "sp_BlitzCache 8.34 L3439-3443")
+			return
+		}
+	}
+}
+
+// #36: an operator's warnings (sp_BlitzCache 8.34 L3498-3505).
+func ruleRelopWarnings(c *wctx) {
+	for _, r := range c.s.relops {
+		if w := r.child("Warnings"); w != nil {
+			c.add("relop_warnings", "#36", r, "Operator Warnings ("+r.attr("PhysicalOp")+": "+warningKinds(w)+")", "sp_BlitzCache 8.34 L3498-3505")
+			return
+		}
+	}
+}
+
+// #4: an operator run over 100 times as often as the rows it is estimated to return ((rewinds + rebinds + 1) / 100 >
+// rows) (sp_BlitzCache 8.34 L3462-3467).
+func ruleBusyLoops(c *wctx) {
+	for _, r := range c.s.relops {
+		ex := numOr(r, "EstimateRewinds", 0) + numOr(r, "EstimateRebinds", 0) + 1
+		if rows := numOr(r, "EstimateRows", 0); ex/100 > rows {
+			c.add("busy_loops", "#4", r, fmt.Sprintf("Busy Loops (%.0f executions estimated, %g rows)", ex, rows), "sp_BlitzCache 8.34 L3462-3467")
+			return
+		}
 	}
 }

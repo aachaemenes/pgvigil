@@ -545,12 +545,21 @@ var oracleSkip = map[string]string{
 	"is_cursor":               "sp_BlitzCache's Cursor rests on plan attributes and zero hashes (8.34 L4980-4995), not the plan",
 }
 
-// oneSpool are the codes sp_BlitzCache judges on one of a statement's spools: its spools CTE keeps each distinct spool
-// row and the UPDATE ... JOIN on QueryHash takes one of them (8.34 L3825-3870), where pgvigil judges each. On a
-// statement holding more than one such spool the compare is one way: sp_BlitzCache fires = pgvigil fires.
-var oneSpool = map[string][2]string{
-	"is_spool_expensive": {"Index Spool", "Eager Spool"}, "is_spool_more_rows": {"Index Spool", "Eager Spool"},
-	"is_table_spool_expensive": {"Table Spool", "Lazy Spool"}, "is_table_spool_more_rows": {"Table Spool", "Lazy Spool"},
+// oneOf are the codes sp_BlitzCache judges on one of a statement's candidate operators where pgvigil judges each (the
+// design's 'any node' departure, F3): the spools (its spools CTE keeps each distinct spool row and the UPDATE ... JOIN
+// on QueryHash takes one, 8.34 L3825-3870), the busy loop (one operator's CASE per statement, L3461-3470) and the scan
+// flags (L3677-3702, L3916-3922). On a statement holding more than one candidate the compare is one way: sp_BlitzCache
+// fires = pgvigil fires.
+var oneOf = map[string]func(*mstmt) int{
+	"is_spool_expensive":       func(s *mstmt) int { return len(s.ops("Index Spool", "Eager Spool")) },
+	"is_spool_more_rows":       func(s *mstmt) int { return len(s.ops("Index Spool", "Eager Spool")) },
+	"is_table_spool_expensive": func(s *mstmt) int { return len(s.ops("Table Spool", "Lazy Spool")) },
+	"is_table_spool_more_rows": func(s *mstmt) int { return len(s.ops("Table Spool", "Lazy Spool")) },
+	"busy_loops":               func(s *mstmt) int { return len(s.relops) },
+	"is_table_scan":            func(s *mstmt) int { return len(s.relops) },
+	"backwards_scan":           func(s *mstmt) int { return len(s.relops) },
+	"forced_index":             func(s *mstmt) int { return len(s.relops) },
+	"columnstore_row_mode":     func(s *mstmt) int { return len(s.relops) },
 }
 
 // The capture's oracle rows: 49 cases, a cursor's batch two rows (its DECLARE and its FETCH).
@@ -581,10 +590,10 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 					}
 					wantFire := oc.fire(r[oc.col])
 					have := has(warns, plan, code, s.ord)
-					if op, ok := oneSpool[code]; ok && len(s.ops(op[0], op[1])) > 1 {
+					if cand, ok := oneOf[code]; ok && cand(s) > 1 {
 						oneWay++
 						if wantFire && !have {
-							t.Errorf("%s (statement %d, %d spools): sp_BlitzCache 8.34 fires (%s = %q), pgvigil does not", code, s.ord, len(s.ops(op[0], op[1])), oc.col, r[oc.col])
+							t.Errorf("%s (statement %d, %d candidates): sp_BlitzCache 8.34 fires (%s = %q), pgvigil does not", code, s.ord, cand(s), oc.col, r[oc.col])
 						}
 						continue
 					}
@@ -596,7 +605,7 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 			})
 		}
 	}
-	t.Logf("oracle rows %d, compared %d, one-way spool compares %d", rows, compared, oneWay)
+	t.Logf("oracle rows %d, compared %d, one-way compares %d", rows, compared, oneWay)
 	if rows < oracleRowsAtLeast || compared != rows {
 		t.Errorf("compared %d of %d oracle rows (the capture holds at least %d)", compared, rows, oracleRowsAtLeast)
 	}
