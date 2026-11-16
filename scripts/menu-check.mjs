@@ -738,7 +738,10 @@ await guard('G-file', async () => {
   const xl = await gmExcel(td);
   const f = {};
   for (const [label, ext] of [['CSV', 'csv'], ['JSON', 'json'], ['Markdown', 'md'], ['HTML', 'html'], ['SQL (INSERT) for PostgreSQL', 'pg.sql'], ['SQL (INSERT) for SQL Server', 'mssql.sql']]) f[label] = await gmFile(td, label, ext);
-  const named = !!xl && Object.values(f).every(x => x && stem(x) === stem(xl));
+  // one name for every format: stem() drops the window's end minute, base() its start too (each export names the relative
+  // window to the minute at its own click, so seven exports may straddle a minute: both ends move), each name keeping one
+  const start = /_\d{8}-\d{4}$/, base = x => stem(x).replace(start, '');
+  const named = !!xl && start.test(stem(xl)) && Object.values(f).every(x => x && start.test(stem(x)) && base(x) === base(xl));
   const csv = csvRows(f.CSV?.text ?? '');
   let js = null; try { js = JSON.parse(f.JSON?.text ?? ''); } catch { /* no file, or not JSON */ }
   const md = (f.Markdown?.text ?? '').replace(/\r/g, '').split('\n').filter(Boolean);
