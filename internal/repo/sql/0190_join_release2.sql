@@ -23,10 +23,11 @@
 --   HA join (0141-0144, 0150): purge()'s monthly partition parents gain mssql_repl_sample (0142) and
 --     mssql_ag_replica_sample, mssql_ag_dbcounter_sample, mssql_mirroring_sample, mssql_logrestore_sample (0143);
 --     mssql_mirroring_role_changes, mssql_fci_owner_changes and mssql_ag_seeding (0143) go by their time, as
---     mssql_ag_failovers; purge()'s last block calls pgvigil.replication_hourly_purge() (0150) beside 0139's. No line,
---     on purpose: mssql_repl_hourly (its import keeps a year of an instance's hours), mssql_logship_foreign_logs and
---     mssql_logship_errors (current rows of 24 hours, replaced by each read), replication_hourly_dirty (working
---     ranges a heal removes). The threshold keys' unit check and import_pg_threshold: at their lines below.
+--     mssql_ag_failovers; mssql_repl_hourly (0142) loses the hours past a year of an instance no import reaches (a
+--     live instance's are trimmed by its import); purge()'s last block calls pgvigil.replication_hourly_purge()
+--     (0150) beside 0139's. No line, on purpose: mssql_logship_foreign_logs and mssql_logship_errors (current rows of
+--     24 hours, replaced by each read), replication_hourly_dirty (working ranges a heal removes). The threshold
+--     keys' unit check and import_pg_threshold: at their lines below.
 --   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
 --     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster
 --     (backup_cluster_holders, new: the cluster keyed by its ARN, backup_state.arn; import_backups is 0022's with it),
@@ -399,6 +400,10 @@ BEGIN
   DELETE FROM pgvigil.mssql_fci_owner_changes WHERE at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_ag_seeding WHERE snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- the HA join (0142): the replication hours keep a year - the import trims them per instance; this takes the rest
+  -- of an instance no import reaches any more (as pgaudit_count_secs below), never under that year
+  DELETE FROM pgvigil.mssql_repl_hourly WHERE hour < now() - make_interval(days => greatest(p_days, 366));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- Query Store (0083): a query or a plan no read has listed within the window goes once no kept runtime row names it
   -- (the runtime partitions go by whole months, so a query's text stays as long as a runtime row of it does); a
