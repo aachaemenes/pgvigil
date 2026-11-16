@@ -19,9 +19,12 @@
 #  B bundle    package-offline.sh --unsigned writes pgvigil-offline-<v>-linux-amd64.tar.gz (8 files: the plain and FIPS
 #              binaries, the SBOM, install.sh, airgap.md, upgrade.md, uninstall.md, SHA256SUMS) and -windows-amd64.zip (10:
 #              the two exes, the app zip, two SBOMs, install.ps1, the three docs, SHA256SUMS), each under one top folder;
+#              and the remote collector's two (task 11, R15): pgvigil-remote-<v>-linux-amd64.tar.gz (8: the plain and FIPS
+#              binaries, the SBOM, install.sh, remote-collector.md, airgap.md, pgvigil-remote.yaml, SHA256SUMS) and
+#              -windows-amd64.zip (8: the two exes, the SBOM, install.ps1, the same three, SHA256SUMS), exactly those names;
 #              every tar entry owned 0/0; every file but SHA256SUMS has its line in SHA256SUMS; a second run gives the same
-#              bytes; without --unsigned it refuses (the signature files missing); with a file left out of SHA256SUMS it
-#              refuses
+#              bytes (all four); without --unsigned it refuses (the signature files missing); with a file left out of
+#              SHA256SUMS it refuses
 #  N no network inside: /sys/class/net holds lo only, github.com does not resolve; the bundle extracted by root is
 #              root's, file by file
 #  A fresh     a copy of the bundle with one byte of the binary changed: 'checksum mismatch for pgvigil_<v>_linux_amd64:
@@ -66,6 +69,14 @@
 #              nothing changed
 #  W way back  the dump restored by the owner into a new database holds every instance table's rows as before the
 #              upgrade (outside the live instance); .previous prints v0.3.0 and fips140 on
+#  S remote    the remote collector from its own archive beside the FIPS hub (W review S4: its flavour is its own unit's,
+#              never the hub's): the archive's pgvigil-remote.yaml copied to /etc/pgvigil-remote (interval 1m, its
+#              PostgreSQL instance only, the dsn in the env file); install.sh --from <the remote's folder> --remote:
+#              '(plain build) checksum verified', 'installed and running', /usr/local/bin/pgvigil-remote fips140 off while
+#              the hub's is on, a bundle in the outbox within 150 s (no network); --remote --fips: 'the installed build is
+#              plain; --fips installs the fips build in its place', fips140 on; --remote again with no switch: '(fips
+#              build) checksum verified', still fips140 on; uninstall -remote -purge -force removes the unit, its folders
+#              and binary; the hub's binary sha256, main PID and start time the same throughout
 # NOT PROVEN HERE: the signature (the bundle is unsigned; proof-upgrade C verifies a real release offline), Windows
 # (proof-offline-windows.ps1 on the Windows sandbox), a free-space shortfall on the default folder, a password with
 # special characters through the password file (unit tests only), the installer from a share or a USB mount.
@@ -87,6 +98,7 @@ trap 'FAILED=1; echo "FAIL: line $LINENO ended the run: $BASH_COMMAND" >&2' ERR
 fail() {
   FAILED=1; echo "FAIL: $*" >&2
   docker exec "$SYS" journalctl -u pgvigil --no-pager -n 15 2>/dev/null | sed 's/^/  journal: /' >&2 || true
+  docker exec "$SYS" journalctl -u pgvigil-remote --no-pager -n 15 2>/dev/null | sed 's/^/  remote journal: /' >&2 || true
   exit 1
 }
 ok() { echo "ok   $*"; }
@@ -132,6 +144,7 @@ for t in linux/amd64 windows/amd64; do
 done
 (cd "$WORK/src/app" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 cyclonedx-gomod app -json -licenses -main . -output "$D/pgvigil-app_${V}_windows_amd64.cdx.json" .) >"$WORK/sbom.log" 2>&1 || fail "cyclonedx-gomod (the app): $(tail -n 3 "$WORK/sbom.log")"
 cp docs/install.sh docs/install.ps1 docs/airgap.md docs/upgrade.md docs/uninstall.md "$D/"
+cp docs/remote-collector.md deploy/pgvigil-remote.yaml "$D/"   # the remote collector's archives (release.yml's step)
 (cd "$D" && sha256sum -- * > SHA256SUMS)
 bash scripts/package-offline.sh "$D" "$V" --unsigned >"$WORK/pkg.out" 2>&1 || { cat "$WORK/pkg.out" >&2; fail "package-offline.sh --unsigned"; }
 LT="$D/pgvigil-offline-$V-linux-amd64.tar.gz"; WZ="$D/pgvigil-offline-$V-windows-amd64.zip"; TOPL="pgvigil-offline-$V-linux-amd64"
@@ -141,20 +154,31 @@ own=$(tar -tvzf "$LT" | awk '{print $2}' | sort -u)
 [[ "$own" == "0/0" ]] || fail "the tar's owners: $own (want 0/0 only)"
 read -r nw wtops <<<"$(python3 -I -c 'import sys,zipfile; n=zipfile.ZipFile(sys.argv[1]).namelist(); print(sum(1 for x in n if not x.endswith("/")), " ".join(sorted({x.split("/")[0] for x in n})))' "$WZ")"
 [[ "$nw" == 10 && "$wtops" == "pgvigil-offline-$V-windows-amd64" ]] || fail "the Windows bundle: $nw files under '$wtops' (want 10)"
+# the remote collector's two archives (task 11, R15): exactly these names under one top folder each
+RLT="$D/pgvigil-remote-$V-linux-amd64.tar.gz"; RWZ="$D/pgvigil-remote-$V-windows-amd64.zip"; RTOPL="pgvigil-remote-$V-linux-amd64"; RTOPW="pgvigil-remote-$V-windows-amd64"
+[[ -f "$RLT" && -f "$RWZ" ]] || fail "no $(basename "$RLT") or $(basename "$RWZ"): $(cat "$WORK/pkg.out")"
+want="$RTOPL/SHA256SUMS $RTOPL/airgap.md $RTOPL/install.sh $RTOPL/pgvigil-remote.yaml $RTOPL/pgvigil_${V}_linux_amd64 $RTOPL/pgvigil_${V}_linux_amd64.cdx.json $RTOPL/pgvigil_${V}_linux_amd64_fips $RTOPL/remote-collector.md"
+got=$(tar -tzf "$RLT" | grep -v '/$' | sort | tr '\n' ' ' | sed 's/ $//')
+[[ "$got" == "$want" ]] || fail "the remote's Linux archive holds: $got (want: $want)"
+[[ "$(tar -tvzf "$RLT" | awk '{print $2}' | sort -u)" == "0/0" ]] || fail "the remote tar's owners: $(tar -tvzf "$RLT" | awk '{print $2}' | sort -u)"
+want="$RTOPW/SHA256SUMS $RTOPW/airgap.md $RTOPW/install.ps1 $RTOPW/pgvigil-remote.yaml $RTOPW/pgvigil_${V}_windows_amd64.cdx.json $RTOPW/pgvigil_${V}_windows_amd64.exe $RTOPW/pgvigil_${V}_windows_amd64_fips.exe $RTOPW/remote-collector.md"
+got=$(python3 -I -c 'import sys,zipfile; print(" ".join(sorted(x for x in zipfile.ZipFile(sys.argv[1]).namelist() if not x.endswith("/"))))' "$RWZ")
+[[ "$got" == "$want" ]] || fail "the remote's Windows archive holds: $got (want: $want)"
 # every file but SHA256SUMS has its line; read back from inside the archives
 mkdir -p "$WORK/x" && tar -C "$WORK/x" -xzf "$LT" && python3 -I -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$WZ" "$WORK/x"
-for top in "$WORK/x/$TOPL" "$WORK/x/pgvigil-offline-$V-windows-amd64"; do
+tar -C "$WORK/x" -xzf "$RLT" && python3 -I -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$RWZ" "$WORK/x"
+for top in "$WORK/x/$TOPL" "$WORK/x/pgvigil-offline-$V-windows-amd64" "$WORK/x/$RTOPL" "$WORK/x/$RTOPW"; do
   (cd "$top" && for f in *; do [[ "$f" == SHA256SUMS ]] && continue; grep -q "  $f\$" SHA256SUMS || exit 1; done && sha256sum -c SHA256SUMS --ignore-missing --quiet) || fail "a file of $(basename "$top") is not in its SHA256SUMS or does not match it"
 done
-s1=$(sha256sum "$LT" "$WZ" | cut -c1-64 | tr '\n' ' ')
+s1=$(sha256sum "$LT" "$WZ" "$RLT" "$RWZ" | cut -c1-64 | tr '\n' ' ')
 bash scripts/package-offline.sh "$D" "$V" --unsigned >/dev/null 2>&1 || fail "the second package run"
-[[ "$(sha256sum "$LT" "$WZ" | cut -c1-64 | tr '\n' ' ')" == "$s1" ]] || fail "a second package run gave other bytes"
+[[ "$(sha256sum "$LT" "$WZ" "$RLT" "$RWZ" | cut -c1-64 | tr '\n' ' ')" == "$s1" ]] || fail "a second package run gave other bytes"
 if bash scripts/package-offline.sh "$D" "$V" >"$WORK/pkg2.out" 2>&1; then fail "package-offline.sh without --unsigned packed an unsigned folder"; fi
 grep -q 'SHA256SUMS.sig is missing' "$WORK/pkg2.out" || fail "the signed run's refusal: $(cat "$WORK/pkg2.out")"
 cp -a "$D" "$WORK/dist2" && sed -i "/  install.sh\$/d" "$WORK/dist2/SHA256SUMS"
 if bash scripts/package-offline.sh "$WORK/dist2" "$V" --unsigned >"$WORK/pkg3.out" 2>&1; then fail "a file without its SHA256SUMS line was packed"; fi
 grep -q 'install.sh has no line in SHA256SUMS' "$WORK/pkg3.out" || fail "the unlisted file's refusal: $(cat "$WORK/pkg3.out")"
-ok "the bundles: Linux 8 files, Windows 10, one top folder each, the tar's entries 0/0, every file in SHA256SUMS and matching it, the same bytes twice; refused unsigned without --unsigned and with a file left out of SHA256SUMS"
+ok "the bundles: Linux 8 files, Windows 10; the remote's Linux 8, Windows 8 (exactly their names); one top folder each, the tars' entries 0/0, every file in SHA256SUMS and matching it, the same bytes twice; refused unsigned without --unsigned and with a file left out of SHA256SUMS"
 
 echo "== the released $OLD (fetched here: the connected side) and the image =="
 curl -fsSL -o "$WORK/old.sums" "$REL/$OLD/SHA256SUMS" || fail "SHA256SUMS of $OLD"
@@ -394,4 +418,33 @@ if bad: sys.exit(", ".join(bad))
 PY
 pv=$(insys "$OB.previous" version); [[ "$pv" == "pgvigil $OLD ("* && "$pv" == *"fips140 on"* ]] || fail "W: .previous says $pv"
 ok "the dump restored into pgvigil_back holds every instance table's rows as before; .previous runs ($pv)"
-echo "proof-offline: OK (the bundles laid out and checked; a fresh install and an upgrade of $OLD FIPS with its history from the bundle with no network; seven refusals, a downgrade, a failed migrate and a failed dump change nothing they should not; the re-run keeps the way back; the way back restores)"
+
+echo "== S the remote collector from its own archive, beside the FIPS hub =="
+docker cp "$RLT" "$SYS:/root/" >/dev/null
+insys sh -c "mkdir -p /opt/rbundle && tar -C /opt/rbundle -xzf /root/$(basename "$RLT")"
+RB=/opt/rbundle/$RTOPL
+hubs() { insys sh -c "sha256sum $OB; systemctl show -p MainPID -p ActiveEnterTimestampMonotonic pgvigil"; }
+[[ "$(insys "$OB" version)" == *"fips140 on"* ]] || fail "S: the hub is not the FIPS build here: $(insys "$OB" version)"
+H0=$(hubs)
+# the archive's sample, its interval 1m and its PostgreSQL instance alone, the dsn in the env file the unit reads
+insys sh -c "mkdir -p /etc/pgvigil-remote && sed -e 's/^  interval: 5m/  interval: 1m/' -e '/^  - name: SQL01/,\$d' $RB/pgvigil-remote.yaml > /etc/pgvigil-remote/pgvigil-remote.yaml && printf 'PG_ORDERS_DSN=host=127.0.0.1 port=5432 user=pgvigil_monitor password=$MPW dbname=postgres sslmode=disable\n' > /etc/pgvigil-remote/pgvigil-remote.env"
+insys sh "$RB/install.sh" --from "$RB" --remote >"$WORK/s1.out" 2>&1 || fail "S: install.sh --from --remote: $(cat "$WORK/s1.out")"
+for l in "pgvigil $V (plain build) checksum verified" 'remote collector is installed and running'; do grep -qF "$l" "$WORK/s1.out" || fail "S: the remote's first install did not say '$l' (the hub is FIPS: did it take the hub's flavour?): $(cat "$WORK/s1.out")"; done
+rv=$(insys /usr/local/bin/pgvigil-remote version)
+[[ "$rv" == "pgvigil $V ("* && "$rv" == *"fips140 off"* ]] || fail "S: the remote took the hub's flavour: $rv"
+nb=0; for _ in $(seq 1 150); do nb=$(insys sh -c "find /var/lib/pgvigil-remote/outbox -name manifest.json -not -path '*.part/*' | wc -l"); [[ "$nb" -ge 1 ]] && break; sleep 1; done
+[[ "$nb" -ge 1 ]] || fail "S: no finished bundle in 150 s from the archive's sample config"
+[[ "$(hubs)" == "$H0" ]] || fail "S: the remote's install changed the hub: $(diff <(echo "$H0") <(hubs))"
+insys sh "$RB/install.sh" --from "$RB" --remote --fips >"$WORK/s2.out" 2>&1 || fail "S: --remote --fips: $(cat "$WORK/s2.out")"
+grep -qF 'the installed build is plain; --fips installs the fips build in its place' "$WORK/s2.out" || fail "S: --remote --fips did not name the switch from the remote's own plain build: $(cat "$WORK/s2.out")"
+[[ "$(insys /usr/local/bin/pgvigil-remote version)" == *"fips140 on"* ]] || fail "S: --remote --fips: $(insys /usr/local/bin/pgvigil-remote version)"
+insys sh "$RB/install.sh" --from "$RB" --remote >"$WORK/s3.out" 2>&1 || fail "S: --remote again: $(cat "$WORK/s3.out")"
+grep -qF "pgvigil $V (fips build) checksum verified" "$WORK/s3.out" || fail "S: --remote again with no switch did not keep the remote's own fips build: $(cat "$WORK/s3.out")"
+[[ "$(insys /usr/local/bin/pgvigil-remote version)" == *"fips140 on"* ]] || fail "S: --remote again: $(insys /usr/local/bin/pgvigil-remote version)"
+[[ "$(insys systemctl is-active pgvigil-remote)" == active ]] || fail "S: pgvigil-remote is not active after its third install"
+[[ "$(hubs)" == "$H0" ]] || fail "S: the remote's installs changed the hub: $(diff <(echo "$H0") <(hubs))"
+insys /usr/local/bin/pgvigil-remote uninstall -remote -purge -force >"$WORK/s4.out" 2>&1 || fail "S: uninstall -remote -purge -force: $(cat "$WORK/s4.out")"
+for p in /etc/systemd/system/pgvigil-remote.service /etc/pgvigil-remote /var/lib/pgvigil-remote /usr/local/bin/pgvigil-remote; do insys test ! -e "$p" || fail "S: $p is still there: $(cat "$WORK/s4.out")"; done
+[[ "$(hubs)" == "$H0" ]] || fail "S: the remote's uninstall changed the hub: $(diff <(echo "$H0") <(hubs))"
+ok "the remote from its own archive beside the FIPS hub: plain by default ($rv), $nb bundle(s) with no network from the archive's sample config, --fips switched it, a re-run with no switch kept its own fips build; removed with -force; the hub's binary, main PID and start time the same throughout"
+echo "proof-offline: OK (the bundles laid out and checked, the remote collector's two with them; the remote from its own archive beside the FIPS hub keeping its own flavour; a fresh install and an upgrade of $OLD FIPS with its history from the bundle with no network; seven refusals, a downgrade, a failed migrate and a failed dump change nothing they should not; the re-run keeps the way back; the way back restores)"

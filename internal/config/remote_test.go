@@ -161,3 +161,22 @@ func TestRemoteSitesRefusals(t *testing.T) {
 		})
 	}
 }
+
+// deploy/pgvigil-remote.yaml is the sample the remote archives carry (task 11, R15): a site that copies it and edits
+// the names gets a remote collector's file the installer takes - it loads as one, with the docs' defaults.
+func TestRemoteSampleLoads(t *testing.T) {
+	c, err := Load(filepath.Join("..", "..", "deploy", "pgvigil-remote.yaml"))
+	if err != nil {
+		t.Fatalf("the sample does not load: %v", err)
+	}
+	r := c.Remote
+	if r == nil || r.Site != "site-name" || r.Collector != "c1" || r.Interval.Duration != 5*time.Minute || r.KeepDays != 7 || r.MaxMB != 2048 || r.Sign || r.Push != nil {
+		t.Fatalf("the sample's remote: block: %+v", r)
+	}
+	if r.Outbox != "/var/lib/pgvigil-remote/outbox" || r.StateDir != "/var/lib/pgvigil-remote/state" {
+		t.Errorf("the sample's folders are not the installer's own: %q, %q", r.Outbox, r.StateDir)
+	}
+	if c.QueryText != "hash" || len(c.Instances) != 2 || c.Instances[0].QueryText != "hash" || c.Instances[1].QueryText != "hash" {
+		t.Errorf("the sample's instances / query_text: %d instance(s), %q", len(c.Instances), c.QueryText)
+	}
+}
