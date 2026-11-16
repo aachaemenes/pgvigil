@@ -23,11 +23,14 @@
 --   HA join (0141-0144, 0150): purge()'s monthly partition parents gain mssql_repl_sample (0142) and
 --     mssql_ag_replica_sample, mssql_ag_dbcounter_sample, mssql_mirroring_sample, mssql_logrestore_sample (0143);
 --     mssql_mirroring_role_changes, mssql_fci_owner_changes and mssql_ag_seeding (0143) go by their time, as
---     mssql_ag_failovers; mssql_repl_hourly (0142) loses the hours past a year of an instance no import reaches (a
---     live instance's are trimmed by its import); purge()'s last block calls pgvigil.replication_hourly_purge()
---     (0150) beside 0139's. No line, on purpose: mssql_logship_foreign_logs and mssql_logship_errors (current rows of
---     24 hours, replaced by each read), replication_hourly_dirty (working ranges a heal removes). The threshold
---     keys' unit check and import_pg_threshold: at their lines below.
+--     mssql_ag_failovers (mssql_ag_seeding holds current rows, replaced whole by each newest read of its instance -
+--     0143's import_mssql_ag - so its line only takes the last rows of an instance no read reaches any more: not
+--     needed, kept as a bound); mssql_repl_hourly (0142) loses the hours past a year of an instance no import
+--     reaches (a live instance's are trimmed by its import); purge()'s last block calls
+--     pgvigil.replication_hourly_purge() (0150) beside 0139's. No line, on purpose: mssql_logship_foreign_logs and
+--     mssql_logship_errors (current rows of 24 hours) and mssql_logship_idle, each replaced by every read of its
+--     instance (0143 L604-627); replication_hourly_dirty (working ranges a heal removes). The threshold keys' unit
+--     check and import_pg_threshold: at their lines below.
 --   HA join, 376 (0144): the pg_patroni_findings arm of the findings view (0144 L19-20 leaves it to this file).
 --   HA join (rel-hadr-s1, the lead's call #4 on Q7): backup_status (0103's) gains cluster_backups_on and
 --     backup_rule_hits (0103's) raises 'retention under N days' and 'no snapshot in 24 h' once per Aurora cluster

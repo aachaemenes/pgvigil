@@ -171,8 +171,8 @@ BEGIN
   PERFORM pgvigil.ensure_month_partition('mssql_ag_dbcounter_sample', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_ag_replica_sample', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_ag_sample', p_snapshot_at);
-  -- the parents ONLY, never their partitions, as every import's lock in this tree (0067's reason: a drop in purge()
-  -- holds a partition and asks for its parent)
+  -- the parents ONLY, never their partitions, as every import's lock in this tree (0067 L103-110, 0074 L231-238):
+  -- without ONLY the LOCK would take every month's partition of the three on every import
   LOCK TABLE ONLY pgvigil.mssql_ag_dbcounter_sample, ONLY pgvigil.mssql_ag_replica_sample, ONLY pgvigil.mssql_ag_sample IN ROW EXCLUSIVE MODE;
 
   DELETE FROM pgvigil.mssql_ag_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;   -- a re-run of one read
