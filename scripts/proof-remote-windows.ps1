@@ -27,7 +27,8 @@
 #  R  install.ps1 -From -Remote again over the running install: exit 0, the service Running again (eaf80b4f)
 #  G  uninstall -remote -purge with bundles in the outbox: refused (exit not 0) naming the bundles, 'lost' and -force;
 #     the service still there and Running
-#  U  uninstall -remote -purge -force: the service gone, 'removed with -force', the outbox and the state folder gone,
+#  U  uninstall -remote -purge -force: the service gone, 'removed with -force: N' equal to the purge's count (no push
+#     here; run 2 of 4491579d said 2 against 3: the count was read while the service still wrote), the outbox and the state folder gone,
 #     Program Files\pgvigil-remote gone; ProgramData\pgvigil-remote KEPT holding only sqlw.dsn (the site's own file),
 #     named in a 'folder kept' line; the hub's binary path as at P
 #  X  the login dropped, the PATH entry removed; the last line 'proof-remote-windows: PASS' (or FAIL <letter> first)
@@ -236,7 +237,10 @@ instances:
     $res = Invoke-Native { & $fromExe uninstall -remote -purge -force }
     Write-Host $res.Out
     if ($res.Code -ne 0) { Fail 'U' "uninstall -remote -purge -force exited $($res.Code)" }
-    if ($res.Out -notlike '*removed with -force*') { Fail 'U' "the output does not name the bundles removed with -force" }
+    if ($res.Out -notmatch 'removed with -force: (\d+) bundle') { Fail 'U' "the output does not name the bundles removed with -force" }
+    $forced = [int]$Matches[1]
+    if ($res.Out -notmatch 'outbox purged.*bundles=(\d+)') { Fail 'U' "the output does not count the bundles purged" }
+    if ([int]$Matches[1] -ne $forced) { Fail 'U' "'removed with -force' says $forced bundle(s), the purge removed $($Matches[1]) (no push here: the two counts are equal)" }
     if (Get-Service -Name $svcName -ErrorAction SilentlyContinue) { Fail 'U' "$svcName is still there" }
     foreach ($dir in @($outbox, $stateDir, $remoteBinDir)) { if (Test-Path -LiteralPath $dir) { Fail 'U' "$dir is still there: $((Get-ChildItem -LiteralPath $dir -Recurse -Force | ForEach-Object { $_.FullName }) -join ', ')" } }
     $left = @(Get-ChildItem -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
