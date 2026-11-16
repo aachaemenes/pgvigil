@@ -271,14 +271,14 @@ echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
 RUNS=(mssql_instance mssql_requests mssql_waits mssql_xe mssql_waiting_tasks mssql_azuredb_resources mssql_azuredb_governance mssql_storage)
 B2ARUNS=(mssql_azuredb_resources mssql_azuredb_governance mssql_storage)
-SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
+SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_fci mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
   mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
   mssql_reports mssql_activity mssql_pool)
 # the word a skip's note must hold: the platform's name, or for mssql_pool on a database outside a pool its own reason
-declare -A SKIPWORD=([mssql_pool]="not in an elastic pool")
+declare -A SKIPWORD=([mssql_pool]="not in an elastic pool" [mssql_fci]="a managed service runs its own failover")
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${RUNS[@]}" "${SKIPS[@]}" | sort | tr '\n' ' ')" ] \
   || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
-declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mssql_ag_state mssql_ag_database_state" [mssql_mirroring]="mssql_mirroring_state"
+declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mssql_ag_state mssql_ag_database_state" [mssql_mirroring]="mssql_mirroring_state" [mssql_fci]="mssql_fci_nodes"
   [mssql_logshipping]="mssql_logshipping_state" [mssql_replication]="mssql_replication_state" [mssql_jobs]="mssql_jobs mssql_job_runs" [mssql_backups]="mssql_backup_state"
   [mssql_versionstore]="mssql_versionstore_db mssql_versionstore_sample" [mssql_cpu]="mssql_cpu_sample mssql_sched_sample"
   [mssql_memory]="mssql_memory_sample mssql_memory_clerk" [mssql_fileio]="mssql_fileio_last" [mssql_tempdb]="mssql_tempdb mssql_tempdb_files"
