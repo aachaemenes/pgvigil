@@ -63,6 +63,9 @@ func findRuleOf(check string) (findRule, bool) {
 // textCut is what stands for a statement a finding quoted, under none.
 const textCut = "(not shown: this instance's query_text policy is none)"
 
+// NotShown is what stands for a statement the policy none hides, on a finding and on a page that shows one.
+const NotShown = textCut
+
 // cutStmt keeps a finding's words up to where it quotes a statement and puts the statement under the policy: none =
 // textCut in its place, normalized = its normalized form. A field that quotes one but whose quote is not found (a
 // name with the marker's own characters in it, a reworded message) fails closed: the whole field is the statement.

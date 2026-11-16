@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
+	"github.com/aachaemenes/pgvigil/internal/textnow"
 )
 
 // The DBADash door's API (task 55): DBADash's own instances and Summary statuses, read from the DBADash repositories the
@@ -209,5 +211,86 @@ func (s *Server) dbadashPage(w http.ResponseWriter, r *http.Request, repo *strin
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	if out.HasStatements() {
+		// the statement text a screen shows follows the instance's query_text now, as every stored text does
+		mode, err := s.dbadashTextMode(ctx, *repo, id, out.Instance)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		out.Statements(func(st string) any { return dbadashStatement(mode, st) })
+	}
 	s.reply(w, r, out, nil)
+}
+
+// sqlDBADashTextInstances is the pgvigil instances whose query_text governs the statements of one repository
+// instance's screen: sqlDBADashImported's matches of that instance ($2, $3: the repository's name compared as the
+// screen's own read resolves it, without case - the stored row keeps the configuration's spelling), and every active
+// SQL Server instance pgvigil collects under the server name the screen itself read from the repository ($4). The
+// second arm needs no stored row of the door: the door's read may not have reached a server the source added since,
+// or may be failing, while the screen - a call of its own - answers.
+const sqlDBADashTextInstances = `
+SELECT x.name FROM (` + sqlDBADashImported + `) x WHERE lower(x.repository) = lower($2::text) AND x.source_id = $3
+UNION
+SELECT i.name
+  FROM pgvigil.mssql_instance m
+  JOIN pgvigil.instances i ON i.instance_id = m.instance_id AND i.engine = 'sqlserver' AND i.is_active
+ WHERE $4::text <> '' AND upper(m.server_name) = upper($4::text)`
+
+// dbadashTextMode is the query_text policy the statements of a repository instance's screen are shown under now: of
+// the pgvigil instances that are that server (sqlDBADashTextInstances: collected under its server name - the one the
+// door stored or the one the screen read as instance - imported under its display name, or its move), each as this
+// request's door set holds its policy, the strictest; with no such instance the file's own (planPolicy of no name).
+func (s *Server) dbadashTextMode(ctx context.Context, repo string, id int, instance string) (string, error) {
+	ds := s.doorsNow()
+	rows, err := s.pool.Query(ctx, sqlDBADashTextInstances, nil, repo, id, instance)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var modes []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return "", err
+		}
+		modes = append(modes, ds.planPolicy(name))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(modes) == 0 {
+		return ds.planPolicy(""), nil
+	}
+	return strictestText(modes), nil
+}
+
+// strictestText is the strictest of some query_text policies: none, then normalized, then full (an unknown word
+// counts as none).
+func strictestText(modes []string) string {
+	out := "full"
+	for _, m := range modes {
+		switch m {
+		case "full":
+		case "normalized":
+			if out == "full" {
+				out = "normalized"
+			}
+		default:
+			return "none"
+		}
+	}
+	return out
+}
+
+// dbadashStatement is a statement text of a screen under a policy: none = the read rule's words in its place,
+// normalized = the collector's normalized form, full = as read.
+func dbadashStatement(mode, st string) any {
+	switch mode {
+	case "full":
+		return st
+	case "normalized":
+		return collect.NormalizeSQL(st)
+	}
+	return textnow.NotShown
 }
