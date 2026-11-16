@@ -167,6 +167,16 @@ const patroniMemberCols: Col[] = [{ key: 'member' }, { key: 'role' }, { key: 'st
   { key: 'dcs_age_s', label: 'DCS last seen', num: true, fmt: (v, r) => v == null ? '' : `${fmtSecs(v)} before the read${r.failsafe_active === true ? ' (failsafe mode holds the leader)' : ''}` },
   { key: 'api_ok', label: 'own API', fmt: (v, r) => v == null ? '' : v === true ? String(r.version ?? 'ok') : badge(String(r.api_message ?? 'no answer'), 'warn') },
   { key: 'snapshot_at', label: 'seen', fmt: fmtTime }];
+// patroniSection: the Patroni block of one instance - the read's line, the checks of its cluster (pg_patroni_checks)
+// and its members - or null where the instance has no Patroni read. ONE renderer for the two pages that show it: the
+// Server state tab and the Replication tab (where the Summary's Replication cell lands: that cell counts Patroni's
+// checks, so its landing page names them).
+export function patroniSection(patroni: Row[], patroniChecks: Row[]): HTMLElement | null {
+  if (!patroni.length) return null;
+  return el('section', {}, el('h3', {}, 'Patroni'), el('p', { class: 'meta' }, patroniLine(patroni[0])),
+    patroniChecks.length ? grid(patroniChecks, checkCols) : null,
+    grid(patroni.filter(r => r.member != null), patroniMemberCols, 'No member listed.'));
+}
 const patroniMemberText = (m: Row): string => [String(m.member), String(m.role ?? ''), m.down_since != null ? `DOWN (${String(m.down_reason ?? '')})` : String(m.state ?? ''),
   m.lag_bytes != null ? `lag ${fmtBytes(m.lag_bytes)}` : '', m.pending_restart === true ? 'pending restart' : '',
   m.dcs_age_s != null && Number(m.dcs_age_s) > 60 ? `DCS ${fmtSecs(m.dcs_age_s)} ago` : '', m.failsafe_active === true ? 'failsafe' : ''].filter(x => x).join(' ');
@@ -275,13 +285,8 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     ]) : el('p', { class: 'meta' }, 'Not read yet (the rolechange collection, every minute).')));
     const ch = rowsOf(d.changes);
     out.push(el('section', {}, el('h3', {}, `Role changes (${ch.length})`), grid(ch, changeCols(ctx, false), 'No role change seen since pgvigil first read the server.')));
-    const pat = rowsOf(d.patroni).filter(r => r.member != null);
-    if (rowsOf(d.patroni).length) {
-      const p0 = rowsOf(d.patroni)[0], pchk = rowsOf(d.patroni_checks);
-      out.push(el('section', {}, el('h3', {}, 'Patroni'), el('p', { class: 'meta' }, patroniLine(p0)),
-        pchk.length ? grid(pchk, checkCols) : null,
-        grid(pat, patroniMemberCols, 'No member listed.')));
-    }
+    const patroni = patroniSection(rowsOf(d.patroni), rowsOf(d.patroni_checks));
+    if (patroni) out.push(patroni);
     // crashes
     const crashes = rowsOf(d.crashes);
     // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on

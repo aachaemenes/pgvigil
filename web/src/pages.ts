@@ -10,6 +10,7 @@ import { functionsView, statementDepthView } from './statements';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl, props, showMenu, tile } from './ui';
 import { dailyMailControl } from './reportmail';
 import { diskReportView } from './host';
+import { patroniSection } from './pg_backups';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
 import { sessionSetsSection } from './sessionsets';
@@ -743,13 +744,19 @@ function pivot(rows: Row[], name: (r: Row) => string, val: (r: Row) => number | 
 
 export async function replication(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
-  const d = await get<Record<'latest' | 'checks' | 'series' | 'series_meta', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
+  const d = await get<Record<'latest' | 'checks' | 'patroni' | 'patroni_checks' | 'series' | 'series_meta', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
   const sec = el('section', {}, el('h2', {}, 'Replication'));
   const checkCols: Col[] = [
     { key: 'check_name', label: 'check', fmt: (v, r) => badge(String(v), r.severity === 'critical' || String(v).startsWith('slot WAL status') ? 'crit' : 'warn') },
     { key: 'object' }, { key: 'value', num: true }, { key: 'unit' }, { key: 'state' }, { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
   ];
-  sec.append(el('h3', {}, 'Checks'), grid(rowsOf(d.checks), checkCols, 'No replication problems in the newest snapshot.'));
+  // Patroni's checks are counted in the Summary's Replication cell, which lands here: its block is drawn right under
+  // the replication checks (pg_backups.ts' patroniSection, the Server state tab's own)
+  const patroni = patroniSection(rowsOf(d.patroni), rowsOf(d.patroni_checks));
+  sec.append(el('h3', {}, 'Checks'), grid(rowsOf(d.checks), checkCols,
+    rowsOf(d.patroni_checks).length ? 'No replication check is hit in the newest snapshot; Patroni\'s checks are below.'
+      : 'No replication problems in the newest snapshot.'));
+  if (patroni) sec.append(patroni);
   const latest = rowsOf(d.latest);
   const cols: Col[] = [
     { key: 'kind' }, { key: 'key', label: 'name' }, { key: 'state' },

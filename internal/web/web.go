@@ -1054,11 +1054,15 @@ func (s *Server) replication(w http.ResponseWriter, r *http.Request) {
 }
 
 // replicationParts are the parts of GET /api/replication: what the instance's Replication tab reads - the page the
-// Summary's Replication cell lands on (web/src/fleet.ts: its groups' tab).
+// Summary's Replication cell lands on (web/src/fleet.ts: its groups' tab). That cell counts the overview checks
+// 'replication' and 'patroni', so the page reads Patroni's read, members and checks too (the Server state tab's two
+// parts, the same queries): a cell red on 'patroni no leader' alone lands on a page that names it.
 func replicationParts(id int, from, to time.Time, step int) []part {
 	return []part{
 		{"latest", sqlReplLatest, []any{id}},
 		{"checks", sqlReplChecks, []any{id}},
+		{"patroni", sqlPgPatroniOf, []any{id}},
+		{"patroni_checks", sqlPgPatroniChecksFor, []any{id}},
 		{"series", sqlReplSeries, []any{id, from, to, step}},
 		{"series_meta", `SELECT $1::int AS step_secs, $2::int AS cap`, []any{step, replSeriesCap}},
 	}
