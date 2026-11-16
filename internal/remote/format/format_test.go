@@ -200,6 +200,13 @@ func TestDecodeManifest(t *testing.T) {
 	if _, err := DecodeManifest(bytes.Replace(b, []byte(`"interval_secs": 60`), []byte(`"interval_secs": -1`), 1)); err == nil {
 		t.Errorf("a negative interval: no error")
 	}
+	// a bundle holds hash or none: the hub refuses any other text mode (the lead's 11:3x named check; H's ingest decodes
+	// through DecodeManifest)
+	for _, mode := range []string{"full", "normalized", ""} {
+		if _, err := DecodeManifest(bytes.Replace(b, []byte(`"query_text": "hash"`), []byte(`"query_text": "`+mode+`"`), 1)); err == nil {
+			t.Errorf("query_text %q: no error", mode)
+		}
+	}
 	bad := bytes.Replace(b, []byte(`"status": "ran"`), []byte(`"status": "maybe"`), 1)
 	if _, err := DecodeManifest(bad); err == nil {
 		t.Errorf("a read status that is not ran / failed / skipped: no error")
