@@ -251,113 +251,117 @@ func TestTextPolicyMessageOnEventsOnly(t *testing.T) {
 	}
 }
 
-// Task 415: the credential mask runs under every text policy, full included, on both engines' text. Each case names
-// the secret that must be gone; want, when set, is the whole masked text (the rest of the statement is kept).
+// maskCredentialCases are 415's cases of the credential mask: TestMaskCredentials runs them through MaskCredentials,
+// TestMaskJobTextComposed through MaskJobText (jobs_mask_compose_test.go). Each case names the secret that must be
+// gone; want, when set, is MaskCredentials' whole masked text (the rest of the statement is kept).
+var maskCredentialCases = []struct{ name, in, secret, want string }{
+	// T-SQL: a PASSWORD / SECRET literal and a password-named parameter (MaskJobText's set, which maskText missed)
+	{"tsql login", "CREATE LOGIN app WITH PASSWORD = N'Tq1secret', CHECK_POLICY = ON", "Tq1secret",
+		"CREATE LOGIN app WITH PASSWORD = '<masked>', CHECK_POLICY = ON"},
+	{"tsql credential", "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='Tq2secret'", "Tq2secret",
+		"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='<masked>'"},
+	{"tsql parameter", "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = N'Tq3secret'", "Tq3secret",
+		"EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = '<masked>'"},
+	{"positional linked login", "EXEC sp_addlinkedsrvlogin 'srv', 'false', NULL, 'u', 'Ps7secret'", "Ps7secret",
+		"EXEC sp_addlinkedsrvlogin '<masked>', '<masked>', NULL, '<masked>', '<masked>'"},
+	{"tsql named parameter", "EXEC dbo.p @user = N'x', @password = N'Tq5secret'", "Tq5secret", "EXEC dbo.p @user = N'x', @password = '<masked>'"},
+	{"tsql hashed", "CREATE LOGIN app WITH PASSWORD = 0x0200AB12CD34EF HASHED", "0x0200AB12CD34EF",
+		"CREATE LOGIN app WITH PASSWORD = '<masked>' HASHED"},
+	// finding 10: a statement cut by the text cap inside the literal keeps nothing of the secret
+	{"tsql unterminated", "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'Tq4secretcutby", "Tq4secret",
+		"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = '<masked>'"},
+	// a command line inside a T-SQL literal: sqlcmd / bcp / osql / isql -P, the doubled-quote form (finding 10)
+	{"sqlcmd -P", "EXEC xp_cmdshell 'sqlcmd -S . -U app -P Cl1secret -Q \"select 1\"'", "Cl1secret",
+		"EXEC xp_cmdshell 'sqlcmd -S . -U app -P <masked> -Q \"select 1\"'"},
+	{"sqlcmd -P doubled quotes", "EXEC xp_cmdshell 'sqlcmd -S . -P''Cl2secret'' -Q x'", "Cl2secret",
+		"EXEC xp_cmdshell 'sqlcmd -S . -P<masked> -Q x'"},
+	{"bcp -P at the end", "EXEC xp_cmdshell 'bcp db.dbo.t out f.dat -c -U app -P Cl3secret'", "Cl3secret",
+		"EXEC xp_cmdshell 'bcp db.dbo.t out f.dat -c -U app -P <masked>'"},
+	{"osql -P", "osql -E -S . -P Cl4secret", "Cl4secret", "osql -E -S . -P <masked>"},
+	{"SQLCMDPASSWORD with spaces", "SET SQLCMDPASSWORD = Cl5secret && sqlcmd -S .", "Cl5secret",
+		"SET SQLCMDPASSWORD = <masked> && sqlcmd -S ."},
+	{"SQLCMDPASSWORD bare", "SQLCMDPASSWORD=Cl6secret sqlcmd -S .", "Cl6secret", "SQLCMDPASSWORD=<masked> sqlcmd -S ."},
+	// connection strings and URIs
+	{"connection string", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=Cs1secret;', 'SELECT 1')", "Cs1secret",
+		"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=<masked>;', 'SELECT 1')"},
+	{"uri", "select dblink('postgresql://app:Cs2secret@db/x', 'select 1')", "Cs2secret",
+		"select dblink('postgresql://app:<masked>@db/x', 'select 1')"},
+	{"libpq keyword", "select dblink_connect('host=h user=u password=Cs3secret dbname=d')", "Cs3secret",
+		"select dblink_connect('host=h user=u password=<masked> dbname=d')"},
+	// SQL Server passphrase functions with a literal
+	{"encryptbypassphrase", "SELECT ENCRYPTBYPASSPHRASE('Pp1secret', N'data') FROM t", "Pp1secret",
+		"SELECT ENCRYPTBYPASSPHRASE('<masked>', '<masked>') FROM t"},
+	{"decryptbypassphrase N", "select DecryptByPassPhrase(N'Pp2secret', c) from t", "Pp2secret",
+		"select DecryptByPassPhrase('<masked>', c) from t"},
+	{"passphrase variable stays", "SELECT ENCRYPTBYPASSPHRASE(@p, @x)", "", "SELECT ENCRYPTBYPASSPHRASE(@p, @x)"},
+	// PostgreSQL: roles, pgcrypto with every literal form (finding 10)
+	{"pg role", "ALTER ROLE app PASSWORD 'Pg1secret' VALID UNTIL 'infinity'", "Pg1secret",
+		"ALTER ROLE app PASSWORD '<masked>' VALID UNTIL 'infinity'"},
+	{"pg role escape", "CREATE ROLE a LOGIN ENCRYPTED PASSWORD E'Pg2\\'secret'", "Pg2", "CREATE ROLE a LOGIN ENCRYPTED PASSWORD '<masked>'"},
+	{"pgp_sym_encrypt", "select pgp_sym_encrypt('data', 'Pg3secret')", "Pg3secret", "select pgp_sym_encrypt('<masked>', '<masked>')"},
+	{"pgp dollar quote", "select pgp_sym_decrypt(col, $k$Pg4secret$k$) from t", "Pg4secret", "select pgp_sym_decrypt(col, '<masked>') from t"},
+	{"encrypt E''", "select encrypt('d'::bytea, E'Pg5secret'::bytea, 'aes')", "Pg5secret",
+		"select encrypt('<masked>'::bytea, '<masked>'::bytea, '<masked>')"},
+	{"crypt", "select crypt('Pg6secret', gen_salt('bf'))", "Pg6secret", "select crypt('<masked>', gen_salt('<masked>'))"},
+	{"hmac nested", "SELECT HMAC(convert_to(x, 'UTF8'), 'Pg7secret', 'sha256') FROM t", "Pg7secret",
+		"SELECT HMAC(convert_to(x, '<masked>'), '<masked>', '<masked>') FROM t"},
+	{"pgcrypto unterminated", "select pgp_sym_encrypt('data', 'Pg8secretcut", "Pg8secret", "select pgp_sym_encrypt('<masked>', '<masked>'"},
+	// private key blocks: whole, or from BEGIN to the end of a text cut before END
+	{"pgp block", "select dearmor('-----BEGIN PGP PRIVATE KEY BLOCK-----\nKb1secret\n-----END PGP PRIVATE KEY BLOCK-----') as k",
+		"Kb1secret", "select dearmor('<masked>') as k"},
+	{"pgp block cut", "select length('-----BEGIN PGP PRIVATE KEY BLOCK----- Kb2secret xxxxxxxx", "Kb2secret", "select length('<masked>"},
+	{"pem key", "-----BEGIN RSA PRIVATE KEY-----\nKb3secret\n-----END RSA PRIVATE KEY----- after", "Kb3secret", "<masked> after"},
+	// the PowerShell and Windows forms MaskJobText covers
+	{"securestring", "ConvertTo-SecureString 'Ps1secret' -AsPlainText -Force", "Ps1secret", "ConvertTo-SecureString <masked> -AsPlainText -Force"},
+	{"net use", `net use \\h\s Ps2secret /user:u`, "Ps2secret", `net use \\h\s <masked> /user:u`},
+	// nothing to mask: text unchanged (a column whose name holds 'password' compared with a column, not a literal)
+	{"plain", "SELECT a, b FROM t WHERE k = 'value' AND n = 3", "", "SELECT a, b FROM t WHERE k = 'value' AND n = 3"},
+	{"loginproperty", "SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins", "",
+		"SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins"},
+	// the 415 review, finding 3: a value in T-SQL's doubled quotes inside a literal is one value
+	{"doubled SQLCMDPASSWORD", "EXEC xp_cmdshell 'set SQLCMDPASSWORD=''od3 secret'' && sqlcmd -S .'", "od3",
+		"EXEC xp_cmdshell 'set SQLCMDPASSWORD=''<masked>'' && sqlcmd -S .'"},
+	// the join with 406 (its TestMaskPlanXML): a value in double quotes inside a literal, an OLE DB connection string's
+	{"double-quoted PWD", "SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;Uid=u;Pwd=\"dq1secret\";', 'SELECT 1')", "dq1secret",
+		"SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;Uid=u;Pwd=<masked>;', 'SELECT 1')"},
+	{"doubled PWD", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''od1;secret'';', 'SELECT 1')", "od1",
+		"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''<masked>'';', 'SELECT 1')"},
+	{"doubled provstr", "EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''od2 secret'''", "od2",
+		"EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''<masked>'''"},
+	{"doubled libpq", "select dblink('host=h password=''dq15secret'' dbname=d', 'select 1')", "dq15secret",
+		"select dblink('host=h password=''<masked>'' dbname=d', 'select 1')"},
+	{"doubled -Password", `EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password ''od5secret'' -Query x"'`, "od5secret",
+		`EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password <masked> -Query x"'`},
+	// finding 4: the quote that closes the enclosing literal never starts a value
+	{"closing quote 1", "UPDATE t SET kind = 'password' WHERE id = 5", "", "UPDATE t SET kind = 'password' WHERE id = 5"},
+	{"closing quote 2", "SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'", "",
+		"SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'"},
+	{"closing quote 3", "SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3", "",
+		"SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3"},
+	{"closing quote 4", "select dblink_connect('host=h password=') , 'abc'", "", "select dblink_connect('host=h password=') , 'abc'"},
+	// finding 5: a named argument (a plan's parameter values are MaskXML's: TestMaskXML)
+	{"named argument", "SELECT app.set_password(p_user => 'u', p_password => 'na1secret')", "na1secret",
+		"SELECT app.set_password(p_user => 'u', p_password => '<masked>')"},
+	// finding 6: no false positives on arithmetic, -Path or a cast
+	{"arithmetic", "SELECT Total -Paid AS due FROM inv", "", "SELECT Total -Paid AS due FROM inv"},
+	{"powershell -Path", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`, "", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`},
+	{"cast", "SELECT password::text, name FROM t", "", "SELECT password::text, name FROM t"},
+	// finding 7: the certificate and key functions, KEY_SOURCE / IDENTITY_VALUE, positional procedure calls
+	{"decryptbycert", "SELECT DECRYPTBYCERT(CERT_ID('c'), ct, N'Cp1secret') FROM t", "Cp1secret",
+		"SELECT DECRYPTBYCERT(CERT_ID('<masked>'), ct, '<masked>') FROM t"},
+	{"open key", "OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = 'Cp2secret'", "Cp2secret", "OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = '<masked>'"},
+	{"key source", "CREATE SYMMETRIC KEY k WITH KEY_SOURCE = 'Cp3secret', IDENTITY_VALUE = 'Cp4secret', ALGORITHM = AES_256", "secret",
+		"CREATE SYMMETRIC KEY k WITH KEY_SOURCE = '<masked>', IDENTITY_VALUE = '<masked>', ALGORITHM = AES_256"},
+	{"sp_addlogin", "EXEC sp_addlogin 'appuser', 'Cp5secret'\nSELECT 'kept'", "Cp5secret", "EXEC sp_addlogin '<masked>', '<masked>'\nSELECT 'kept'"},
+	{"sp_password", "EXEC sp_password NULL, 'Cp6secret', 'u'", "Cp6secret", "EXEC sp_password NULL, '<masked>', '<masked>'"},
+	{"multi-byte", "SELECT N'Grüße', ENCRYPTBYPASSPHRASE('Mb1secrét', N'ünïcode')", "Mb1", "SELECT N'Grüße', ENCRYPTBYPASSPHRASE('<masked>', '<masked>')"},
+	{"dynamic sql", "EXEC (N'SELECT ENCRYPTBYPASSPHRASE(''Dy1secret'', x) FROM t; ALTER LOGIN a WITH PASSWORD = ''Dy2secret''')", "Dy",
+		"EXEC (N'SELECT ENCRYPTBYPASSPHRASE(''<masked>'', x) FROM t; ALTER LOGIN a WITH PASSWORD = ''<masked>''')"},
+}
+
+// Task 415: the credential mask runs under every text policy, full included, on both engines' text.
 func TestMaskCredentials(t *testing.T) {
-	cases := []struct{ name, in, secret, want string }{
-		// T-SQL: a PASSWORD / SECRET literal and a password-named parameter (MaskJobText's set, which maskText missed)
-		{"tsql login", "CREATE LOGIN app WITH PASSWORD = N'Tq1secret', CHECK_POLICY = ON", "Tq1secret",
-			"CREATE LOGIN app WITH PASSWORD = '<masked>', CHECK_POLICY = ON"},
-		{"tsql credential", "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='Tq2secret'", "Tq2secret",
-			"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET='<masked>'"},
-		{"tsql parameter", "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = N'Tq3secret'", "Tq3secret",
-			"EXEC sp_addlinkedsrvlogin @rmtsrvname = N'x', @rmtpassword = '<masked>'"},
-		{"positional linked login", "EXEC sp_addlinkedsrvlogin 'srv', 'false', NULL, 'u', 'Ps7secret'", "Ps7secret",
-			"EXEC sp_addlinkedsrvlogin '<masked>', '<masked>', NULL, '<masked>', '<masked>'"},
-		{"tsql named parameter", "EXEC dbo.p @user = N'x', @password = N'Tq5secret'", "Tq5secret", "EXEC dbo.p @user = N'x', @password = '<masked>'"},
-		{"tsql hashed", "CREATE LOGIN app WITH PASSWORD = 0x0200AB12CD34EF HASHED", "0x0200AB12CD34EF",
-			"CREATE LOGIN app WITH PASSWORD = '<masked>' HASHED"},
-		// finding 10: a statement cut by the text cap inside the literal keeps nothing of the secret
-		{"tsql unterminated", "CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'Tq4secretcutby", "Tq4secret",
-			"CREATE CREDENTIAL c WITH IDENTITY = 'u', SECRET = '<masked>'"},
-		// a command line inside a T-SQL literal: sqlcmd / bcp / osql / isql -P, the doubled-quote form (finding 10)
-		{"sqlcmd -P", "EXEC xp_cmdshell 'sqlcmd -S . -U app -P Cl1secret -Q \"select 1\"'", "Cl1secret",
-			"EXEC xp_cmdshell 'sqlcmd -S . -U app -P <masked> -Q \"select 1\"'"},
-		{"sqlcmd -P doubled quotes", "EXEC xp_cmdshell 'sqlcmd -S . -P''Cl2secret'' -Q x'", "Cl2secret",
-			"EXEC xp_cmdshell 'sqlcmd -S . -P<masked> -Q x'"},
-		{"bcp -P at the end", "EXEC xp_cmdshell 'bcp db.dbo.t out f.dat -c -U app -P Cl3secret'", "Cl3secret",
-			"EXEC xp_cmdshell 'bcp db.dbo.t out f.dat -c -U app -P <masked>'"},
-		{"osql -P", "osql -E -S . -P Cl4secret", "Cl4secret", "osql -E -S . -P <masked>"},
-		{"SQLCMDPASSWORD with spaces", "SET SQLCMDPASSWORD = Cl5secret && sqlcmd -S .", "Cl5secret",
-			"SET SQLCMDPASSWORD = <masked> && sqlcmd -S ."},
-		{"SQLCMDPASSWORD bare", "SQLCMDPASSWORD=Cl6secret sqlcmd -S .", "Cl6secret", "SQLCMDPASSWORD=<masked> sqlcmd -S ."},
-		// connection strings and URIs
-		{"connection string", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=Cs1secret;', 'SELECT 1')", "Cs1secret",
-			"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=<masked>;', 'SELECT 1')"},
-		{"uri", "select dblink('postgresql://app:Cs2secret@db/x', 'select 1')", "Cs2secret",
-			"select dblink('postgresql://app:<masked>@db/x', 'select 1')"},
-		{"libpq keyword", "select dblink_connect('host=h user=u password=Cs3secret dbname=d')", "Cs3secret",
-			"select dblink_connect('host=h user=u password=<masked> dbname=d')"},
-		// SQL Server passphrase functions with a literal
-		{"encryptbypassphrase", "SELECT ENCRYPTBYPASSPHRASE('Pp1secret', N'data') FROM t", "Pp1secret",
-			"SELECT ENCRYPTBYPASSPHRASE('<masked>', '<masked>') FROM t"},
-		{"decryptbypassphrase N", "select DecryptByPassPhrase(N'Pp2secret', c) from t", "Pp2secret",
-			"select DecryptByPassPhrase('<masked>', c) from t"},
-		{"passphrase variable stays", "SELECT ENCRYPTBYPASSPHRASE(@p, @x)", "", "SELECT ENCRYPTBYPASSPHRASE(@p, @x)"},
-		// PostgreSQL: roles, pgcrypto with every literal form (finding 10)
-		{"pg role", "ALTER ROLE app PASSWORD 'Pg1secret' VALID UNTIL 'infinity'", "Pg1secret",
-			"ALTER ROLE app PASSWORD '<masked>' VALID UNTIL 'infinity'"},
-		{"pg role escape", "CREATE ROLE a LOGIN ENCRYPTED PASSWORD E'Pg2\\'secret'", "Pg2", "CREATE ROLE a LOGIN ENCRYPTED PASSWORD '<masked>'"},
-		{"pgp_sym_encrypt", "select pgp_sym_encrypt('data', 'Pg3secret')", "Pg3secret", "select pgp_sym_encrypt('<masked>', '<masked>')"},
-		{"pgp dollar quote", "select pgp_sym_decrypt(col, $k$Pg4secret$k$) from t", "Pg4secret", "select pgp_sym_decrypt(col, '<masked>') from t"},
-		{"encrypt E''", "select encrypt('d'::bytea, E'Pg5secret'::bytea, 'aes')", "Pg5secret",
-			"select encrypt('<masked>'::bytea, '<masked>'::bytea, '<masked>')"},
-		{"crypt", "select crypt('Pg6secret', gen_salt('bf'))", "Pg6secret", "select crypt('<masked>', gen_salt('<masked>'))"},
-		{"hmac nested", "SELECT HMAC(convert_to(x, 'UTF8'), 'Pg7secret', 'sha256') FROM t", "Pg7secret",
-			"SELECT HMAC(convert_to(x, '<masked>'), '<masked>', '<masked>') FROM t"},
-		{"pgcrypto unterminated", "select pgp_sym_encrypt('data', 'Pg8secretcut", "Pg8secret", "select pgp_sym_encrypt('<masked>', '<masked>'"},
-		// private key blocks: whole, or from BEGIN to the end of a text cut before END
-		{"pgp block", "select dearmor('-----BEGIN PGP PRIVATE KEY BLOCK-----\nKb1secret\n-----END PGP PRIVATE KEY BLOCK-----') as k",
-			"Kb1secret", "select dearmor('<masked>') as k"},
-		{"pgp block cut", "select length('-----BEGIN PGP PRIVATE KEY BLOCK----- Kb2secret xxxxxxxx", "Kb2secret", "select length('<masked>"},
-		{"pem key", "-----BEGIN RSA PRIVATE KEY-----\nKb3secret\n-----END RSA PRIVATE KEY----- after", "Kb3secret", "<masked> after"},
-		// the PowerShell and Windows forms MaskJobText covers
-		{"securestring", "ConvertTo-SecureString 'Ps1secret' -AsPlainText -Force", "Ps1secret", "ConvertTo-SecureString <masked> -AsPlainText -Force"},
-		{"net use", `net use \\h\s Ps2secret /user:u`, "Ps2secret", `net use \\h\s <masked> /user:u`},
-		// nothing to mask: text unchanged (a column whose name holds 'password' compared with a column, not a literal)
-		{"plain", "SELECT a, b FROM t WHERE k = 'value' AND n = 3", "", "SELECT a, b FROM t WHERE k = 'value' AND n = 3"},
-		{"loginproperty", "SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins", "",
-			"SELECT LOGINPROPERTY(name, 'PasswordLastSetTime') FROM sys.sql_logins"},
-		// the 415 review, finding 3: a value in T-SQL's doubled quotes inside a literal is one value
-		{"doubled SQLCMDPASSWORD", "EXEC xp_cmdshell 'set SQLCMDPASSWORD=''od3 secret'' && sqlcmd -S .'", "od3",
-			"EXEC xp_cmdshell 'set SQLCMDPASSWORD=''<masked>'' && sqlcmd -S .'"},
-		// the join with 406 (its TestMaskPlanXML): a value in double quotes inside a literal, an OLE DB connection string's
-		{"double-quoted PWD", "SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;Uid=u;Pwd=\"dq1secret\";', 'SELECT 1')", "dq1secret",
-			"SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;Uid=u;Pwd=<masked>;', 'SELECT 1')"},
-		{"doubled PWD", "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''od1;secret'';', 'SELECT 1')", "od1",
-			"SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=x;UID=sa;PWD=''<masked>'';', 'SELECT 1')"},
-		{"doubled provstr", "EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''od2 secret'''", "od2",
-			"EXEC sp_addlinkedserver @server = N'x', @provstr = N'Server=y;Password=''<masked>'''"},
-		{"doubled libpq", "select dblink('host=h password=''dq15secret'' dbname=d', 'select 1')", "dq15secret",
-			"select dblink('host=h password=''<masked>'' dbname=d', 'select 1')"},
-		{"doubled -Password", `EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password ''od5secret'' -Query x"'`, "od5secret",
-			`EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password <masked> -Query x"'`},
-		// finding 4: the quote that closes the enclosing literal never starts a value
-		{"closing quote 1", "UPDATE t SET kind = 'password' WHERE id = 5", "", "UPDATE t SET kind = 'password' WHERE id = 5"},
-		{"closing quote 2", "SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'", "",
-			"SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'"},
-		{"closing quote 3", "SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3", "",
-			"SELECT 'Reset your password' AS msg, name FROM users WHERE id = 3"},
-		{"closing quote 4", "select dblink_connect('host=h password=') , 'abc'", "", "select dblink_connect('host=h password=') , 'abc'"},
-		// finding 5: a named argument (a plan's parameter values are MaskXML's: TestMaskXML)
-		{"named argument", "SELECT app.set_password(p_user => 'u', p_password => 'na1secret')", "na1secret",
-			"SELECT app.set_password(p_user => 'u', p_password => '<masked>')"},
-		// finding 6: no false positives on arithmetic, -Path or a cast
-		{"arithmetic", "SELECT Total -Paid AS due FROM inv", "", "SELECT Total -Paid AS due FROM inv"},
-		{"powershell -Path", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`, "", `EXEC xp_cmdshell 'powershell Get-ChildItem -Path C:\x'`},
-		{"cast", "SELECT password::text, name FROM t", "", "SELECT password::text, name FROM t"},
-		// finding 7: the certificate and key functions, KEY_SOURCE / IDENTITY_VALUE, positional procedure calls
-		{"decryptbycert", "SELECT DECRYPTBYCERT(CERT_ID('c'), ct, N'Cp1secret') FROM t", "Cp1secret",
-			"SELECT DECRYPTBYCERT(CERT_ID('<masked>'), ct, '<masked>') FROM t"},
-		{"open key", "OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = 'Cp2secret'", "Cp2secret", "OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = '<masked>'"},
-		{"key source", "CREATE SYMMETRIC KEY k WITH KEY_SOURCE = 'Cp3secret', IDENTITY_VALUE = 'Cp4secret', ALGORITHM = AES_256", "secret",
-			"CREATE SYMMETRIC KEY k WITH KEY_SOURCE = '<masked>', IDENTITY_VALUE = '<masked>', ALGORITHM = AES_256"},
-		{"sp_addlogin", "EXEC sp_addlogin 'appuser', 'Cp5secret'\nSELECT 'kept'", "Cp5secret", "EXEC sp_addlogin '<masked>', '<masked>'\nSELECT 'kept'"},
-		{"sp_password", "EXEC sp_password NULL, 'Cp6secret', 'u'", "Cp6secret", "EXEC sp_password NULL, '<masked>', '<masked>'"},
-		{"multi-byte", "SELECT N'Grüße', ENCRYPTBYPASSPHRASE('Mb1secrét', N'ünïcode')", "Mb1", "SELECT N'Grüße', ENCRYPTBYPASSPHRASE('<masked>', '<masked>')"},
-		{"dynamic sql", "EXEC (N'SELECT ENCRYPTBYPASSPHRASE(''Dy1secret'', x) FROM t; ALTER LOGIN a WITH PASSWORD = ''Dy2secret''')", "Dy",
-			"EXEC (N'SELECT ENCRYPTBYPASSPHRASE(''<masked>'', x) FROM t; ALTER LOGIN a WITH PASSWORD = ''<masked>''')"},
-	}
+	cases := maskCredentialCases
 	for _, c := range cases {
 		got := MaskCredentials(c.in)
 		if c.secret != "" && strings.Contains(got, c.secret) {
