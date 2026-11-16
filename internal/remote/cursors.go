@@ -23,7 +23,7 @@ import (
 //     (cursors_mssql.go) behind mssql_hadr_read's guard: mssql_jobs (0094), mssql_backup_files (0140) and
 //     mssql_backup_history (0191);
 //   - the per-database snapshot sources (cursors_perdb.go): st:<db> (mssql_stats, 0092), ct:<db> (mssql_constraints,
-//     0164), qs_since:<db> (mssql_querystore, 0083) and azdb_since (mssql_azuredb_resources, 0145);
+//     0164), ix:<db> (mssql_indexes, 0092 under 0164 / 0169), qs_since:<db> (mssql_querystore, 0083) and azdb_since (mssql_azuredb_resources, 0145);
 //   - amcheck: the batch's time when it holds a 'run' row, never back (0023 L51-56);
 //   - schema_ddl:<database>: the newest ddl logged_at or ddl_cursor read_to per database, forward only (0300
 //     L2316-2322).
@@ -44,6 +44,9 @@ func cursorMoves(view string, at time.Time, rows []map[string]any, cur func(stri
 		return sorted(out)
 	case "mssql_constraints":
 		constraintsMoves(at, rows, cur, out)
+		return sorted(out)
+	case "mssql_indexes":
+		indexesMoves(at, rows, cur, out)
 		return sorted(out)
 	case "mssql_querystore":
 		queryStoreMoves(at, rows, cur, out)

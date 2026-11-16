@@ -29,6 +29,8 @@ var cursorSources = []cursorSource{
 	{Name: "defaulttrace", Reader: "mssql", Rule: "row"},
 	{Name: "syshealth", Reader: "mssql", Rule: "row"},
 	{Name: "audit:", Prefix: true, Reader: "mssql", Rule: "row"},
+	{Name: "pgvigil_", Prefix: true, Reader: "mssql", Rule: "row"}, // the product's own xe sessions (XESessionName)
+	{Name: "system_health", Reader: "mssql", Rule: "row"},          // the system_health session's file / ring (xe.go)
 	{Name: "mssql_tables", Reader: "mssql", Rule: "row"},
 	{Name: "mssql_linkedserver_test", Reader: "mssql", Rule: "row"},
 	{Name: "mssql_maintenance:", Prefix: true, Reader: "mssql", Rule: "row"},
@@ -36,6 +38,7 @@ var cursorSources = []cursorSource{
 	{Name: "mssql_maintenance_purity:", Prefix: true, Reader: "mssql", Rule: "row"},
 	{Name: "st:", Prefix: true, Reader: "mssql", Rule: "view:mssql_stats", SQL: []string{"import_mssql_stats"}},
 	{Name: "ct:", Prefix: true, Reader: "mssql", Rule: "view:mssql_constraints", SQL: []string{"import_mssql_constraints"}},
+	{Name: "ix:", Prefix: true, Reader: "mssql", Rule: "view:mssql_indexes", SQL: []string{"import_mssql_indexes_0092"}},
 	// SQL Server one-number cursors (mssql_hadr_cursor)
 	{Name: "jobs", Reader: "seq", Rule: "view:mssql_jobs", SQL: []string{"import_mssql_jobs"}},
 	{Name: "jobs_mark", Reader: "seq", Rule: "view:mssql_jobs", SQL: []string{"import_mssql_jobs"}},

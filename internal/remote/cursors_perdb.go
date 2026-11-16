@@ -145,18 +145,28 @@ func statsMoves(at time.Time, rows []map[string]any, cur func(string) (format.Cu
 	}
 }
 
-// constraintsMoves is import_mssql_constraints (0164 L244-290): mssql_perf_check refuses a batch without a state row
-// carrying server_utc (nothing moves); per 'db' row the same guard ('constraint_dbs'), a database not read takes the
-// read's time and no cursor, a read one also 'ct:<db>' (kept as 'ct_dbs'). The first 'databases' row drops every ct:
-// cursor of a database it does not name (one this batch read too) and the guard rows older than this read of those.
+// constraintsMoves is import_mssql_constraints (0164 L244-290) and indexesMoves import_mssql_indexes (0169 -> 0164 ->
+// 0092 L544-640, each wrapper calling its base unchanged), one rule over two names: mssql_perf_check refuses a batch
+// without a state row carrying server_utc (nothing moves); per 'db' row a per-database guard (mssql_constraint_db /
+// mssql_index_db, kept as 'constraint_dbs' / 'index_dbs'): a database not read takes the read's time and no cursor, a
+// read one also 'ct:<db>' / 'ix:<db>' (kept as 'ct_dbs' / 'ix_dbs'). The first 'databases' row drops every such cursor of
+// a database it does not name (one this batch read too) and the guard rows older than this read of those.
 func constraintsMoves(at time.Time, rows []map[string]any, cur func(string) (format.Cursor, bool), out map[string]format.Cursor) {
+	perDBDropMoves("ct:", "constraint_dbs", "ct_dbs", at, rows, cur, out)
+}
+
+func indexesMoves(at time.Time, rows []map[string]any, cur func(string) (format.Cursor, bool), out map[string]format.Cursor) {
+	perDBDropMoves("ix:", "index_dbs", "ix_dbs", at, rows, cur, out)
+}
+
+func perDBDropMoves(prefix, guardKey, listKey string, at time.Time, rows []map[string]any, cur func(string) (format.Cursor, bool), out map[string]format.Cursor) {
 	if !perfChecked(rows) {
 		return
 	}
 	at = at.UTC().Truncate(time.Microsecond)
-	was, _ := cur("constraint_dbs")
+	was, _ := cur(guardKey)
 	m := decodeDBTimes(was)
-	ctWas, _ := cur("ct_dbs")
+	ctWas, _ := cur(listKey)
 	ct := map[string]bool{}
 	for _, n := range ctWas.Names {
 		ct[n] = true
@@ -172,14 +182,14 @@ func constraintsMoves(at time.Time, rows []map[string]any, cur func(string) (for
 		}
 		m[db] = at
 		if toBool(r["read"]) {
-			out["ct:"+db] = format.Cursor{Source: "ct:" + db, Kind: "mssql", LastEventAt: &at}
+			out[prefix+db] = format.Cursor{Source: prefix + db, Kind: "mssql", LastEventAt: &at}
 			ct[db] = true
 		}
 	}
 	if names, ok := namedDatabases(rows); ok {
 		for db := range ct {
 			if !names[db] {
-				out["ct:"+db] = format.Cursor{Source: "ct:" + db, Kind: "null"}
+				out[prefix+db] = format.Cursor{Source: prefix + db, Kind: "null"}
 				delete(ct, db)
 			}
 		}
@@ -189,11 +199,11 @@ func constraintsMoves(at time.Time, rows []map[string]any, cur func(string) (for
 			}
 		}
 	}
-	if now := encodeDBTimes("constraint_dbs", m); !sameNames(now, was) {
-		out["constraint_dbs"] = now
+	if now := encodeDBTimes(guardKey, m); !sameNames(now, was) {
+		out[guardKey] = now
 	}
-	if now := plainList("ct_dbs", ct); !sameNames(now, ctWas) {
-		out["ct_dbs"] = now
+	if now := plainList(listKey, ct); !sameNames(now, ctWas) {
+		out[listKey] = now
 	}
 }
 
