@@ -27,7 +27,8 @@ interface Tool {
   // a procedure's version from its own text against the one pgvigil was tested with (q_community.go, community_versions.go)
   version?: string | null; version_date?: string; tested?: string; version_word?: string;
   // KITWATCH K4.3: the version installed here (the server's definition, read daily) beside the one pgvigil was checked against
-  version?: { installed?: string; installed_date?: string; database?: string; readable: boolean; present?: boolean; read_at?: string; checked: string; checked_date: string; newer?: boolean };
+  // (its own key: 'version' above is the page-time read, community_versions.go)
+  kit_version?: { installed?: string; installed_date?: string; database?: string; readable: boolean; present?: boolean; read_at?: string; checked: string; checked_date: string; newer?: boolean };
 }
 // a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export carries (a demo
 // serve mails nothing)
@@ -169,7 +170,7 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
   // KITWATCH K4.3: the fleet's procedures newer than pgvigil was checked against, one line per version
   if (d.kit_fleet?.length) box.append(el('ul', { class: 'meta' }, ...d.kit_fleet.map(l => el('li', {}, l))));
   const versionCell = (t: Tool): HTMLElement | string => {
-    const v = t.version;
+    const v = t.kit_version;
     if (!v) return '';
     const checked = `checked ${v.checked}`;
     // never read (mssql_kits reads each day) and read but not found are two things, each said
@@ -189,7 +190,7 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const table = grid(tools as unknown as Row[], [
       { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, d, () => void openTool(r as unknown as Tool), cells.get(String(r.id)), above) },
       { key: 'description', wide: true },
-      { key: 'version', label: 'version', fmt: (_v, r) => versionCell(r as unknown as Tool) },
+      { key: 'kit_version', label: 'installed (daily read)', fmt: (_v, r) => versionCell(r as unknown as Tool) },
       { key: 'state', label: 'before it runs', wide: true, fmt: (_v, r) => cells.get(String(r.id)) ?? '' },
     ]);
     for (const t of tools) tables.set(t.id, table);

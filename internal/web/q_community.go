@@ -394,12 +394,13 @@ type toolState struct {
 	// a demo instance only: the tool's stored sample (GET /api/community/sample has its result sets)
 	Sample *sampleMark `json:"sample,omitempty"`
 	// KITWATCH K4.3: the version installed here (mssql_kits' daily read of the definitions; the page's database, else
-	// master) beside the one pgvigil was checked against
-	Version *toolVersion `json:"version,omitempty"`
+	// master) beside the one pgvigil was checked against - its own key: 'version' is the page-time read above (j16)
+	KitVersion *kitVersion `json:"kit_version,omitempty"`
 }
 
-// toolVersion: a tool's installed version as mssql_kits last read it and the version pgvigil was checked against
-type toolVersion struct {
+// kitVersion: a tool's installed version as mssql_kits last read it and the version pgvigil was checked against (named
+// apart from community_versions.go's toolVersion, the version read from the procedure's text at page time)
+type kitVersion struct {
 	Installed     string     `json:"installed,omitempty"`
 	InstalledDate string     `json:"installed_date,omitempty"`
 	Database      string     `json:"database,omitempty"`
@@ -420,10 +421,10 @@ func (s *Server) kitVersions(ctx context.Context, id int, db string, tools []too
 		s.log.Debug("community: the kits' versions were not read", "err", err)
 		return nil
 	}
-	got := map[string]toolVersion{}
+	got := map[string]kitVersion{}
 	for rows.Next() {
 		var proc string
-		var v toolVersion
+		var v kitVersion
 		var at time.Time
 		if rows.Scan(&proc, &v.Database, &v.Installed, &v.InstalledDate, &v.Readable, &at) != nil {
 			continue
@@ -452,7 +453,7 @@ func (s *Server) kitVersions(ctx context.Context, id int, db string, tools []too
 		}
 		v.Checked, v.CheckedDate = c.Version, c.Date
 		v.Newer = kits.NewerThanChecked(tools[i].Name, v.InstalledDate)
-		tools[i].Version = &v
+		tools[i].KitVersion = &v
 	}
 	var lines []string
 	fl, err := s.pool.Query(ctx, `SELECT procedure_name, version, version_date, instances FROM pgvigil.kit_versions_fleet ORDER BY procedure_name, version_date`)
