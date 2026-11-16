@@ -1,21 +1,7 @@
-B24f's join wiring, section rel-304b / rel-inv (301b's verify_backup, 302's backup destinations; the lead 11-15 16:3x).
-The files it touches are the same blobs on rel-304b a93150b1 and rel-inv 4c155a56; apply it once, on the joined tree that
-holds rel-roles and either branch (its inv-301b / inv-302 wiring patches applied):
-  git apply -3 scripts/b24f-join-wiring-rel-304b.patch
-Built on a pre-join copy of each file: rel-roles f421753c x rel-304b + its two wiring patches' web.go hunks (local commit
-4cb804a5, ref jw-pre-304b; web.go's actions lines merged by hand), so -3 merges it onto the join's own resolution.
-What it does: s.post for POST /api/mssql/actions/verify/preview and /verify/run (operator: RESTORE VERIFYONLY reads the
-backup's files on the monitored server) and /api/pg/backup_dest (admin: an entered destination is configuration others
-live with); their words in roles_wiring_304b.go, needs.ts and docs/roles.md rows; pg_backup_dest.ts (its own fetch) in
-roles_test.go's pageOtherRts. The Verify button carries its need; the verify dialog's go is dialogRole's (off with the
-role's words whatever is typed; an Enter refused too). The destination's Edit and Save carry the need, the role folded
-into the section's one 'read only here' sentence after the door's and the seat's.
-Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
-
-diff --git a/docs/roles.md b/docs/roles.md
-index 118b5eee..16721849 100644
---- a/docs/roles.md
-+++ b/docs/roles.md
+diff --git c/docs/roles.md i/docs/roles.md
+index c75654d9..f8774a05 100644
+--- c/docs/roles.md
++++ i/docs/roles.md
 @@ -102,6 +102,8 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/actions/cancel` | operator | cancel a PostgreSQL query |
  | `POST /api/actions/terminate` | operator | end a PostgreSQL session |
@@ -25,19 +11,19 @@ index 118b5eee..16721849 100644
  | `POST /api/jobs/actions/stop` | operator | stop a job |
  | `POST /api/jobs/actions/start` | operator | start a job |
  | `POST /api/ack` | operator | acknowledge, note, mute or black out one instance with an end (wider or open-ended: admin) |
-@@ -130,6 +132,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+@@ -133,6 +135,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/drives/thresholds` | admin | a drive threshold |
  | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
  | `POST /api/jobs/thresholds` | admin | a job threshold |
 +| `POST /api/pg/backup_dest` | admin | where a PostgreSQL server's backups go, as a person enters it (beside the value read) |
  | `POST /api/jobs/exclusions` | admin | a job exclusion |
- | `POST /api/customreports` | admin | a custom report or folder (SQL run against servers, a view others share) |
- | `POST /api/reportmail` | admin | a report mail schedule (add, edit, end, enable, disable) |
-diff --git a/internal/web/roles_test.go b/internal/web/roles_test.go
-index a0f67487..58d76827 100644
---- a/internal/web/roles_test.go
-+++ b/internal/web/roles_test.go
-@@ -246,6 +246,7 @@ var (
+ | `POST /api/mssql/security/config` | admin | a SQL Server security setting (add, end) |
+ | `POST /api/mssql/xecaptures/config` | admin | an XE capture setting (add, end) |
+diff --git c/internal/web/roles_test.go i/internal/web/roles_test.go
+index 26c719da..9eb088de 100644
+--- c/internal/web/roles_test.go
++++ i/internal/web/roles_test.go
+@@ -268,6 +268,7 @@ var (
  		"app_import.ts":      {"admin/applications/import"},
  		"uptimedialog.ts":    {"pg/thresholds"},
  		"pg_backups.ts":      {"pg/thresholds"},
@@ -45,11 +31,11 @@ index a0f67487..58d76827 100644
  	}
  )
  
-diff --git a/internal/web/roles_wiring_304b.go b/internal/web/roles_wiring_304b.go
+diff --git c/internal/web/roles_wiring_304b.go i/internal/web/roles_wiring_304b.go
 new file mode 100644
 index 00000000..f85e9076
 --- /dev/null
-+++ b/internal/web/roles_wiring_304b.go
++++ i/internal/web/roles_wiring_304b.go
 @@ -0,0 +1,9 @@
 +package web
 +
@@ -60,11 +46,11 @@ index 00000000..f85e9076
 +	routeWhat["POST /api/mssql/actions/verify/run"] = "verifying a backup"
 +	routeWhat["POST /api/pg/backup_dest"] = "entering where the backups go"
 +}
-diff --git a/internal/web/web.go b/internal/web/web.go
-index 762e185f..49547ded 100644
---- a/internal/web/web.go
-+++ b/internal/web/web.go
-@@ -320,7 +320,7 @@ func (s *Server) Handler() http.Handler {
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 3c6813cf..42e01ff7 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -353,7 +353,7 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/pg/backups/fleet", s.PgBackupsFleet)
  	api.HandleFunc("GET /api/pg/backup_dest", s.PgBackupDest)
  	api.HandleFunc("GET /api/pg/backup_dest/fleet", s.PgBackupDestFleet)
@@ -73,7 +59,7 @@ index 762e185f..49547ded 100644
  	api.HandleFunc("GET /api/pg/state", s.PgState)
  	api.HandleFunc("GET /api/pg/replication", s.PgReplicationFleet)
  	api.HandleFunc("GET /api/pg/thresholds", s.PgThresholds)
-@@ -396,8 +396,8 @@ func (s *Server) Handler() http.Handler {
+@@ -442,8 +442,8 @@ func (s *Server) Handler() http.Handler {
  	s.post(api, "POST /api/mssql/actions/preview", needViewer, s.MSSQLActionPreview)
  	s.post(api, "POST /api/mssql/actions/run", needOperator, s.MSSQLActionRun)
  	// task 301b: verify_backup has its own two routes (a detached run; actions_verify.go)
@@ -84,10 +70,10 @@ index 762e185f..49547ded 100644
  	api.HandleFunc("GET /api/plans", s.Plans)
  	api.HandleFunc("GET /api/plan", s.Plan)
  	api.HandleFunc("GET /api/mssql/summary", s.MSSQLSummary)
-diff --git a/web/src/mssql_backups.ts b/web/src/mssql_backups.ts
-index 096c02e9..abb3abb4 100644
---- a/web/src/mssql_backups.ts
-+++ b/web/src/mssql_backups.ts
+diff --git c/web/src/mssql_backups.ts i/web/src/mssql_backups.ts
+index 3ae3c48b..6577e365 100644
+--- c/web/src/mssql_backups.ts
++++ i/web/src/mssql_backups.ts
 @@ -16,6 +16,7 @@ import { fleet, tagsOf } from './fleet';
  import { Ctx } from './router';
  import { mssqlFindingCols, words } from './mssql_hadr';
@@ -96,7 +82,7 @@ index 096c02e9..abb3abb4 100644
  
  type Parts = 'databases' | 'findings' | 'limits';
  type FileParts = 'sets' | 'files' | 'writers' | 'roots' | 'findings' | 'read' | 'checks' | 'path' | 'check_findings';
-@@ -348,7 +349,7 @@ const verifyCell = (on: VerifyOnOff, open: (r: Row) => void) => (v: unknown, r:
+@@ -349,7 +350,7 @@ const verifyCell = (on: VerifyOnOff, open: (r: Row) => void) => (v: unknown, r:
    } else if (on.enabled) {
      const b = el('button', { type: 'button', class: 'act-verify', style: 'font-size:12px;padding:0 .4rem;margin-left:.4rem', title: 'RESTORE VERIFYONLY of this backup' }, 'Verify');
      b.addEventListener('click', () => open(r));
@@ -105,7 +91,7 @@ index 096c02e9..abb3abb4 100644
    }
    return out;
  };
-@@ -485,8 +486,10 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
+@@ -486,8 +487,10 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
    const reason = el('textarea', { rows: '3', maxlength: '500', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
    const typed = el('input', { type: 'text', placeholder: s.database, autocomplete: 'off' });
    const go = el('button', { type: 'submit', disabled: '' }, 'Verify');
@@ -117,7 +103,7 @@ index 096c02e9..abb3abb4 100644
    reason.addEventListener('input', check);
    typed.addEventListener('input', check);
    body.replaceChildren(
-@@ -496,12 +499,12 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
+@@ -497,12 +500,12 @@ async function verifyDialog(ctx: Ctx, r: Row, dbName: string, after: () => void)
      el('p', { class: 'meta' }, 'The statement (the paths are parameters): ', el('code', {}, p.statement ?? '')),
      el('label', {}, 'Reason', el('br'), reason), el('br'),
      el('label', {}, 'Type the database\'s name to confirm ', typed), el('br'),
@@ -132,10 +118,10 @@ index 096c02e9..abb3abb4 100644
      sent = true; // one send per dialog: a second click, or an edit after the reply, sends nothing
      go.disabled = true;
      msg.textContent = 'Sending...';
-diff --git a/web/src/needs.ts b/web/src/needs.ts
-index f3a5ff8c..f7d222af 100644
---- a/web/src/needs.ts
-+++ b/web/src/needs.ts
+diff --git c/web/src/needs.ts i/web/src/needs.ts
+index e630059a..72d2f76e 100644
+--- c/web/src/needs.ts
++++ i/web/src/needs.ts
 @@ -19,6 +19,8 @@ export const routeNeeds = {
    'actions/cancel': ['operator', 'cancelling a query'],
    'actions/terminate': ['operator', 'ending a session'],
@@ -145,18 +131,18 @@ index f3a5ff8c..f7d222af 100644
    'jobs/actions/stop': ['operator', 'stopping a job'],
    'jobs/actions/start': ['operator', 'starting a job'],
    'ack': ['operator', 'acknowledging'],
-@@ -46,6 +48,7 @@ export const routeNeeds = {
+@@ -49,6 +51,7 @@ export const routeNeeds = {
    'drives/thresholds': ['admin', 'changing a drive threshold'],
    'pg/thresholds': ['admin', 'changing a PostgreSQL threshold'],
    'jobs/thresholds': ['admin', 'changing a job threshold'],
 +  'pg/backup_dest': ['admin', 'entering where the backups go'],
    'jobs/exclusions': ['admin', 'changing a job exclusion'],
-   'customreports': ['admin', 'changing a custom report'],
-   'reportmail': ['admin', 'changing a report mail schedule'],
-diff --git a/web/src/pg_backup_dest.ts b/web/src/pg_backup_dest.ts
+   'mssql/security/config': ['admin', 'changing a SQL Server security setting'],
+   'mssql/xecaptures/config': ['admin', 'changing an XE capture setting'],
+diff --git c/web/src/pg_backup_dest.ts i/web/src/pg_backup_dest.ts
 index 7cd1c811..993540b4 100644
---- a/web/src/pg_backup_dest.ts
-+++ b/web/src/pg_backup_dest.ts
+--- c/web/src/pg_backup_dest.ts
++++ i/web/src/pg_backup_dest.ts
 @@ -6,6 +6,7 @@
  import { get, Row, rowsOf, Table } from './api';
  import { AckData, offBeside, seatWhy } from './ack';
