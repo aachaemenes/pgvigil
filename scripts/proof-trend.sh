@@ -239,7 +239,7 @@ else:
 PY
 jq() { python3 "$WORK/chk.py" jq "$1" "$2"; }
 FROM2=$(q "select '$T0'::timestamptz - interval '2 days'"); TO=$T0
-ISO() { q "select to_char($1 at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"; }
+ISO() { q "select to_char(($1) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"; }
 F2=$(ISO "'$FROM2'::timestamptz"); TT=$(ISO "'$TO'::timestamptz")
 
 # ---- V1-V6: every metric, hour buckets, p95 over 2 days ---------------------------------------------------------------
