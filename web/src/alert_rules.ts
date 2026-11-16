@@ -379,18 +379,33 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   let d: RulesData;
   try { d = await get<RulesData>('alertrules', window_(ctx)); } catch (e) { sec.append(errorBox(e)); return sec; }
   // under a tag folder (TAGALL): the rules that cover one of its instances - every instance's, a tag's that one of them
-  // carries (the folder's own tag too) and an instance's own -, their state and log, and the thresholds in force on them
-  let ids: Set<number> | null = null, folderTags = new Set<string>();
+  // carries (the folder's own tag too), a tag list's that matches one of them (0154) and an instance's own -, their
+  // state and log, and the thresholds in force on them
+  let ids: Set<number> | null = null, folderTags = new Set<string>(), mineTags: string[][] = [];
   try {
     const f = scoped ? await fleet() : null;
     if (f && scoped) {
       const mine = f.instances.filter(r => inTagScope(scoped, r));
       ids = new Set(mine.map(r => Number(r.instance_id)));
       folderTags = new Set([...mine.flatMap(tagsOf), ...(writtenTag(scoped) ? [scoped] : [])]);
+      mineTags = mine.map(tagsOf);
     }
   } catch (e) { sec.append(errorBox(new Error(`the instances of ${tagWords(scoped!)} could not be read: ${e instanceof Error ? e.message : String(e)}`))); return sec; }
-  const ruleIn = (r: Row) => r.scope === 'fleet' || (r.scope === 'tag' && folderTags.has(String(r.tag))) || (r.scope === 'instance' && !!ids?.has(Number(r.instance_id)));
   const rulesAll = rowsOf(d.rules), logAll = rowsOf(d.log);
+  // 0154's fields of each rule (the tag list, the family, the baseline's band and zone, the flapping opt-out) and the
+  // overrides, read beside 0085's page; a repository before 0154 answers without them and the page is 0085's. Read
+  // before the folder's filter: a rule on a tag list (0154's scope 'tags') covers the folder when the list matches one
+  // of its instances' tags, as 0154's alert_tags_match judges it (tagsMatch)
+  let overrides: Row[] = [];
+  try {
+    const x = await get<{ rules?: Table | null }>('alertscope', { ...window_(ctx), part: 'rules' });
+    const by = new Map(rowsOf(x.rules).map(e => [String(e.rule_id), e]));
+    for (const r of rulesAll) Object.assign(r, by.get(String(r.rule_id)) ?? {});
+    overrides = rowsOf((await get<{ overrides?: Table | null }>('alertscope', { part: 'overrides' })).overrides);
+  } catch { /* the scope parts are 0154's: without them the rules read as 0085 wrote them */ }
+  const ruleIn = (r: Row) => r.scope === 'fleet' || (r.scope === 'tag' && folderTags.has(String(r.tag)))
+    || (r.scope === 'tags' && mineTags.some(t => tagsMatch(Array.isArray(r.scope_tags) ? r.scope_tags.map(String) : [], t)))
+    || (r.scope === 'instance' && !!ids?.has(Number(r.instance_id)));
   const all = ids ? rulesAll.filter(ruleIn) : rulesAll;
   const ruleIds = new Set(all.map(r => Number(r.rule_id)));
   const state = ids ? rowsOf(d.state).filter(r => ids!.has(Number(r.instance_id))) : rowsOf(d.state);
@@ -399,15 +414,6 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   const sender = rowsOf(d.sender)[0] ?? {};
   // a new rule under a folder of a written tag starts on that tag (the folders of no tag are no rule's scope)
   const newTag = writtenTag(scoped);
-  // 0154's fields of each rule (the tag list, the family, the baseline's band and zone, the flapping opt-out) and the
-  // overrides, read beside 0085's page; a repository before 0154 answers without them and the page is 0085's
-  let overrides: Row[] = [];
-  try {
-    const x = await get<{ rules?: Table | null }>('alertscope', { ...window_(ctx), part: 'rules' });
-    const by = new Map(rowsOf(x.rules).map(e => [String(e.rule_id), e]));
-    for (const r of all) Object.assign(r, by.get(String(r.rule_id)) ?? {});
-    overrides = rowsOf((await get<{ overrides?: Table | null }>('alertscope', { part: 'overrides' })).overrides);
-  } catch { /* the scope parts are 0154's: without them the rules read as 0085 wrote them */ }
   const live = all.filter(r => r.live), off = live.filter(r => !r.enabled).length;
   const firing = state.filter(r => r.state === 'warning' || r.state === 'critical').length;
   const newRule = () => el('span', {}, ruleButton(d, 'New rule', 'New rule', () => { void ruleDialog({ door: d, tag: newTag, after: redraw }); }), ' ', starterButton(d, () => redraw(), newTag));
