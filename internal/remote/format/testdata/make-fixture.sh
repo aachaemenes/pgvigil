@@ -35,8 +35,8 @@ cat > "$D/manifest.json" <<JSON
   ],
   "sums_sha256": "$(sum "$D/SHA256SUMS")",
   "reads": [
-    {"collection": "mssql_activity", "status": "ran", "runs": 2},
-    {"collection": "mssql_ag", "status": "failed", "runs": 2, "failed": 1},
+    {"collection": "mssql_activity", "status": "ran", "runs": 2, "interval_secs": 60},
+    {"collection": "mssql_ag", "status": "failed", "runs": 2, "failed": 1, "interval_secs": 120},
     {"collection": "mssql_jobs", "status": "skipped", "reason": "not_due"}
   ],
   "runs": [

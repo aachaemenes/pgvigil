@@ -59,7 +59,7 @@ sum of SHA256SUMS itself.
 | `instance` | `engine` (postgres, sqlserver), `name`, `platform`, `server_version`, `version_num`, `is_replica`, `tags` |
 | `files` | per view file: `view`, `name` (`<view>.ndjson.gz`), `batches`, `rows`, `bytes`, `raw_bytes` (uncompressed), `sha256` |
 | `sums_sha256` | the sha256 of SHA256SUMS |
-| `reads` | every collection of the instance's schedule: `status` `ran`, `failed` (`runs`, `failed` count them) or `skipped` (`reason`: `off`, `not_due`, `not_applicable`, `running`) |
+| `reads` | every collection of the instance's schedule: `status` `ran`, `failed` (`runs`, `failed` count them) or `skipped` (`reason`: `off`, `not_due`, `not_applicable`, `running`), and `interval_secs`, the collection's interval on the collector (the hub judges the collection's staleness by it) |
 | `runs` | every run: `collection`, `at`, `ms`, `status`, `note`, `stage` |
 | `failures` | every run that never reached its rows: `kind` (`connect`, `secret`, `run`), `collection`, `at`, `ms`, `cause` |
 | `cursors` | how far each source was read when the bundle closed: `kind` `log` (`at`), `mssql` (`file_name`, `file_offset`, `last_event_at`, `last_seq`) or `seq` (`seq`) |
@@ -101,5 +101,15 @@ encryption (HTTPS, SFTP), at rest the store's own.
   ledgers: a bundle, and each of its batches by view and `n`), each stream's high-water seq, set-aside and late
   bundles with their reason, `instances.as_of` (the window end of the newest bundle loaded) and the instance's
   owner (the site), `pgvigil.import_remote_ensure` and the silence findings per site and per instance.
-- The hub's pages read a remote instance's `as_of` and its site and collector through 0329's views, say 'as of
-  <time>' and keep every live door shut in words.
+- The hub's pages read 0329's three views (SELECT granted to the reader role serve reads with) and say 'as of
+  <time>', judge a remote collection's staleness by its interval and keep every live door shut in words:
+  - `pgvigil.remote_instance_state`: one row per instance a site owns - `instance_id`, `name` (`<site>/<name>`),
+    `engine`, `site`, `collector`, `as_of` (the newest loaded bundle's `window_to`), `interval_secs` (that bundle's
+    window), `expected_every_secs` (the site's, as ingest last synced `remote_sites:`), `loaded_at`.
+  - `pgvigil.remote_collector_state`: one row per collector - `site`, `collector`, `pgvigil_version`, `host`,
+    `heartbeat_at`, `instances`, `fail_streak`, `newest_bundle_at`, and the counts of `gaps`, `set_aside` (with
+    `newest_set_aside_reason`), `late` and `conflicts`.
+  - `pgvigil.remote_collection_interval`: `instance_id`, `collection`, `interval_secs` - the newest bundle's
+    `reads[].interval_secs` per collection.
+- A remote instance's alerts do not clear between bundles: 0329's `alert_due` holds an owned instance's clear time
+  to at least its interval plus its site's `expected_every` (the channel's `clear_after` when that is longer).
