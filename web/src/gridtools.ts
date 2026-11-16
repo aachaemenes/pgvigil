@@ -95,7 +95,9 @@ export function setLayer(ls: Layout[] | null) {
   layer = ls ? new Map(ls.filter(l => l && typeof l.grid === 'string').map(l => [l.grid, {
     hidden: Array.isArray(l.hidden) ? l.hidden.filter(x => typeof x === 'string') : [],
     frozen: Math.max(0, Math.min(MAX_FROZEN, Math.floor(Number(l.frozen) || 0))),
-    bars: Array.isArray(l.bars) ? l.bars.filter(x => typeof x === 'string') : [] }])) : null;
+    // a view keeps its barred columns as a list of names (0259's stored form): each is GM's default style, 'behind',
+    // as GM reads its own older list form (prefs below); a view does not keep a bar's other style
+    bars: Array.isArray(l.bars) ? Object.fromEntries(l.bars.filter(x => typeof x === 'string').map(n => [n, 'behind' as BarStyle])) as Record<string, BarStyle> : {} }])) : null;
   layerSeen.clear();
   layerEdited = false;
   for (const t of document.querySelectorAll<HTMLTableElement>('table.grid')) apply(t);
@@ -103,7 +105,7 @@ export function setLayer(ls: Layout[] | null) {
 // layerState: a view's layer is on; it was changed since it was set; the layouts it names whose grid has not been drawn
 export function layerState(): { on: boolean; edited: boolean; missing: string[] } {
   // missing: only a layout that holds something (an empty one asks nothing of the page)
-  return { on: layer !== null, edited: layerEdited, missing: layer ? [...layer.entries()].filter(([n, p]) => !layerSeen.has(n) && (p.hidden.length || p.frozen || p.bars.length)).map(([n]) => n) : [] };
+  return { on: layer !== null, edited: layerEdited, missing: layer ? [...layer.entries()].filter(([n, p]) => !layerSeen.has(n) && (p.hidden.length || p.frozen || Object.keys(p.bars).length)).map(([n]) => n) : [] };
 }
 // layoutsOf: the grids of the page as a view keeps them (what the layer or the browser draws them with now): a grid the
 // page names (data-grid-name) always, any other only when something is hidden, frozen or barred on it - a heading that
@@ -114,8 +116,8 @@ export function layoutsOf(root: ParentNode = document): Layout[] {
     const n = gridName(t);
     if (!n || out.has(n)) continue;
     const p = load(t);
-    if (!t.dataset.gridName && !p.hidden.length && !p.frozen && !p.bars.length) continue;
-    out.set(n, { grid: n, columns: names(t), hidden: p.hidden, frozen: p.frozen, bars: p.bars });
+    if (!t.dataset.gridName && !p.hidden.length && !p.frozen && !Object.keys(p.bars).length) continue;
+    out.set(n, { grid: n, columns: names(t), hidden: p.hidden, frozen: p.frozen, bars: Object.keys(p.bars) });
   }
   return [...out.values()];
 }
