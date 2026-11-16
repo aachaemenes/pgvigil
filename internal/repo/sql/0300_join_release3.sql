@@ -332,13 +332,14 @@ SELECT i.instance_id, p.severity, 'poison wait', p.object, true, 'under 1.0 wait
 --   #1 P S2 09661906: 09661906:scripts/proof-mssql-security-wiring.patch (0190_join_release2.sql hunks, pre blob 40526c2)
 --   #2 P S2 09661906: 09661906:scripts/proof-mssql-xe-captures-wiring.patch (0190_join_release2.sql hunks, pre blob a994399)
 --   #3 P 404 1cb5f703: 1cb5f703:scripts/proof-restart-marker-wiring.patch (0190_join_release2.sql hunks, pre blob 40526c2)
---   #4 P 409-410 03f74d79: 03f74d79:scripts/sqltb-s4-wiring.patch (0190_join_release2.sql hunks, pre blob 40526c28), the patch file read at aa8265de
+--   #4 P 409-410 03f74d79: aa8265de:scripts/sqltb-s4-wiring.patch (item 03f74d79; 0190_join_release2.sql hunks, pre blob 40526c28)
 --   #5 T B6G-N 17e6d3f7: 0190_join_release2.sql L22 (merge-base e4af7c3e 0190_join_release2.sql) - in place (0121 / 0190)
 --   #6 H INV(301b) 4c155a56: scripts/inv-301b-join-lines.sql L15-19 (line 2) - after task 301's mssql_backup_loc arm (the mssql_* arms' shape)
 --   #7 H INV(302) 4c155a56: scripts/inv-302-join-lines.sql L5-9 (line 1) - beside the pg_* arms: after pg_backups_findings
 --   #8 H KITWATCH 32460ec2: scripts/kitwatch-join-lines.sql L6-10 - after collector_findings' arm
 --   #9 H B24e f6f83845: scripts/b24e-join-lines.sql L5-11 - after collector_findings' arm (after KITWATCH's)
 --   #10 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L5-7 (line 1) - after B24e's (the collector's own arms)
+--   #11 H 409-410 03f74d79: review A #9 (02:50) - the comment names 0190's mssql_checks_findings
 --   merge conflict at arm #3 (404), block 1, resolved by hand: both arms: the base's 301 / 304 arms, then 404's
 -- ====================================================================================================================
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -491,8 +492,8 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_stats', at FROM pgvigil.mssql_stats_findings
     UNION ALL
-    -- [j16 #4 409-410 03f74d79]
-    -- (task 409: mssql_checks_findings leaves out a server option an expected value judges; above)
+    -- [j16 #11 409-410 03f74d79]
+    -- (task 409: mssql_checks_findings leaves out a server option an expected value judges; 0190's mssql_checks_findings)
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_checks', at FROM pgvigil.mssql_checks_findings
     -- [j16 #4 409-410 03f74d79]
     UNION ALL
@@ -1163,7 +1164,7 @@ END $$;
 --   #4 P S2 09661906: 09661906:scripts/proof-alert-scope-wiring.patch (0190_join_release2.sql hunks, pre blob a994399a)
 --   #5 P 402 0d029a1a: 0d029a1a:scripts/proof-mssql-counter-checks-wiring.patch (0190_join_release2.sql hunks, pre blob 2ea63181)
 --   #6 P 404 1cb5f703: 1cb5f703:scripts/proof-restart-marker-wiring.patch (0190_join_release2.sql hunks, pre blob 40526c2)
---   #7 P 409-410 03f74d79: 03f74d79:scripts/sqltb-s4-wiring.patch (0190_join_release2.sql hunks, pre blob 40526c28), the patch file read at aa8265de
+--   #7 P 409-410 03f74d79: aa8265de:scripts/sqltb-s4-wiring.patch (item 03f74d79; 0190_join_release2.sql hunks, pre blob 40526c28)
 --   #8 P N4 280368a5: 280368a5:scripts/n4-wiring.patch (0190_join_release2.sql hunks, pre blob 9dbcf660)
 --   #9 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L37-39 (line 5) - collector_probe_host rows of a retired collector
 --   #10 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L20-23 (line 2) - beside the other self-trimming tables
