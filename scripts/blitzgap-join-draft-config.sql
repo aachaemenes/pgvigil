@@ -472,12 +472,13 @@ SELECT b.rule, b.label, '', NULL, NULL, NULL, 'dbachecks policy',
 UNION ALL
 -- line 3b of scripts/blitzgap-join-lines.sql: sp_Blitz 55 (BLITZ-GAP) - each database's owner (0090's options, the
 -- mssql_checks collection) against the expected owner: the original sa (sid 0x01, 0159's logins: a renamed sa keeps its
--- place) unless a scope names another, 'sa' while the logins are not read; master, model, msdb and tempdb against the
--- original sa always, a scope's owner never (sp_Blitz 8.35 L3831); 'off' (any case) turns it off and exclusions leave a
--- database out, system ones too; info, so no finding row; an owner whose SID maps to no login is sp_Blitz 213's (the
--- Checks tab); rdsadmin and gcloud_cloudsqladmin are the cloud's (as dboptions.go's user()); none on Azure SQL Managed
+-- place) unless a scope names another; before the logins are read, master's own owner (it cannot change: Msg 15109),
+-- else 'sa'; master, model, msdb and tempdb against the original sa always, a scope's owner never (sp_Blitz 8.35 L3831);
+-- 'off' (any case) turns it off and exclusions leave a database out, system ones too; info, so no finding row; an owner
+-- whose SID maps to no login is sp_Blitz 213's (the Checks tab); dbatools, dbadmin, dbmaintenance, gcloud_cloudsqladmin
+-- and rdsadmin left out by name, as sp_Blitz 8.35 L590-596 leaves them out of every check; none on Azure SQL Managed
 -- Instance (sp_Blitz 8.35 L870: sa is disabled there and the admin named at its creation); no database read yet = one
--- 'not read' row (review-24 S3, N1-N3; FOLD-55)
+-- 'not read' row (review-24 S3, N1-N3; FOLD-55, review-25 S1 / S2)
 SELECT 'sp_Blitz 55', 'database owner', o.database_name, o.options ->> 'owner', CASE WHEN want.off THEN NULL ELSE want.v END,
        CASE WHEN o.is_system AND NOT want.off THEN 'default' ELSE coalesce(ex.set_at, 'default') END, 'sp_Blitz',
        CASE WHEN want.off THEN 'off'
@@ -490,11 +491,13 @@ SELECT 'sp_Blitz 55', 'database owner', o.database_name, o.options ->> 'owner', 
        o.snapshot_at
   FROM x
   JOIN pgvigil.mssql_database_option o ON o.instance_id = x.instance_id AND o.is_present AND NOT o.is_snapshot
-                                      AND lower(o.database_name) NOT IN ('rdsadmin', 'gcloud_cloudsqladmin')
+                                      AND lower(o.database_name) NOT IN ('dbatools', 'dbadmin', 'dbmaintenance', 'gcloud_cloudsqladmin', 'rdsadmin')
   LEFT JOIN e ex ON ex.kind = 'database' AND ex.key = 'owner'
   CROSS JOIN LATERAL (SELECT lower(ex.value #>> '{}') = 'off' AS off,
-                             (SELECT l.login_name FROM pgvigil.mssql_security_logins l
-                               WHERE l.instance_id = x.instance_id AND l.is_original_sa AND l.is_present LIMIT 1) AS sa0) want0
+                             coalesce((SELECT l.login_name FROM pgvigil.mssql_security_logins l
+                                        WHERE l.instance_id = x.instance_id AND l.is_original_sa AND l.is_present LIMIT 1),
+                                      (SELECT m.options ->> 'owner' FROM pgvigil.mssql_database_option m
+                                        WHERE m.instance_id = x.instance_id AND m.database_id = 1 AND m.is_present)) AS sa0) want0
   CROSS JOIN LATERAL (SELECT coalesce(want0.off, false) AS off,
                              CASE WHEN o.is_system THEN coalesce(want0.sa0, 'sa')
                                   ELSE coalesce(CASE WHEN want0.off THEN NULL ELSE ex.value #>> '{}' END, want0.sa0, 'sa') END AS v,

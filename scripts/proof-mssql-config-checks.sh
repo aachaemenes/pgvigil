@@ -86,11 +86,11 @@
 #     critical; a warning line not under the critical one is refused when the file is read (the run does not start,
 #     the stored verdict stays); without the two names the default lines judge it again.
 #  C7 BLITZ-GAP (the lead 05:2x / 06:3x): sp_Blitz 55 as a configuration expectation - the key ('database', 'owner',
-#     text, on by default, rule 'sp_Blitz 55'; RED ON THE BASE: no such key) and its rows over each user database's owner
+#     text, on by default, rule 'sp_Blitz 55'; RED ON THE BASE: no such key) and its rows over each database's owner
 #     (0090's options): with no scope, sa is expected - a database owned by another login is 'info' ('the owner is <x>;
 #     the expected owner is sa (the default)'), sa's 'ok', and no finding row (info); the instance expecting <x>: the two
 #     swap; 'OFF' (any case): every row off; inherit: back; a database left out: no row. The default grid (A and V) counts
-#     the owner rows apart and asks them 'ok' (sa owns every user database there) once the key exists (review-24 B1). Until joined, scripts/blitzgap-join-draft-
+#     the owner rows apart and asks them 'ok' (sa owns every database there) once the key exists (review-24 B1). Until joined, scripts/blitzgap-join-draft-
 #     config.sql gives the keys and the checks their lines. FOLD-55 (sp_Blitz 8.35 read, the lead 07:5x): master, model,
 #     msdb and tempdb against the original sa always - msdb owned by <x> is 'info' even while the instance expects <x>
 #     ('... (a system database: always the original sa)'), OFF and exclusions apply to them; a Managed Instance has no
@@ -220,7 +220,7 @@ mkdb() {  # $1 name [$2 extra CREATE DATABASE text]: a database with the monitor
   sq "CREATE DATABASE [$1] ${2:-}; " >/dev/null && sq "CREATE USER [$MON] FOR LOGIN [$MON];" "$1" >/dev/null
 }
 BASE="mssql_instance mssql_services mssql_traceflags mssql_checks mssql_jobs mssql_confcheck"
-# (sp_Blitz 55's 'database owner' rows, one per user database, are counted apart: owners() - review-24 B1)
+# (sp_Blitz 55's 'database owner' rows, one per database, are counted apart: owners() - review-24 B1)
 grid() { pq "SELECT string_agg(status || ' ' || n, ', ' ORDER BY status) FROM (SELECT status, count(*) AS n FROM pgvigil.mssql_config_checks_of(${1:-$IID}) WHERE check_name <> 'database owner' GROUP BY status) s"; }
 owners() { pq "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pgvigil.mssql_config_expect_keys() WHERE kind = 'database' AND key = 'owner') THEN 'no key'
   ELSE coalesce((SELECT string_agg(DISTINCT status || ' ' || source, ', ') FROM pgvigil.mssql_config_checks_of(${1:-$IID}) WHERE check_name = 'database owner'), 'no row') END"; }
@@ -245,7 +245,7 @@ default_grid() {  # $1 label
   check "$1 ... the not applicable and not read rows by name" "SELECT string_agg(status || ': ' || check_name, '; ' ORDER BY status, check_name) FROM pgvigil.mssql_config_checks_of($IID) WHERE status IN ('not applicable', 'not read') AND check_name <> 'database owner'" "not applicable: SQL Server Browser start mode; not applicable: SQL Server Browser state; not applicable: Windows processor scheduling (Win32PrioritySeparation); not read: engine start mode"
   check "$1 every off row says 'set an expectation' and every row names its source" "SELECT bool_and(status <> 'off' OR detail = 'set an expectation') AND bool_and(source IN ('Microsoft', 'dbatools formula', 'dbachecks policy') OR check_name = 'database owner') FROM pgvigil.mssql_config_checks_of($IID)" t
   check "$1 no finding" "SELECT count(*) FROM pgvigil.mssql_config_check_findings WHERE instance_id = $IID" 0
-  # sp_Blitz 55 (BLITZ-GAP): every user database here is sa's - ok where the key is there (the join draft or the joined lines)
+  # sp_Blitz 55 (BLITZ-GAP): every database here is sa's - ok where the key is there (the join draft or the joined lines)
   case "$(owners)" in "no key"|"ok sp_Blitz") ok "$1 the database owner rows ($(owners))" ;; *) bad "$1 the database owner rows: $(owners)" ;; esac
 }
 db_devs() {  # $1 label: the recovery, scoped MAXDOP and event session deviations (every image)
@@ -708,7 +708,7 @@ eqv "C6 ... and the stored verdict is as it was" "$(idc)" "crit 60 / critical, w
 collect mssql_identity || true
 eqv "C6 without the two names: the default lines judge it again" "$(idc)" "ok 60 / no finding"
 
-echo "== C7: sp_Blitz 55 - each user database's owner against an expected owner (BLITZ-GAP; scripts/blitzgap-join-draft-config.sql until lines 2 / 3 are joined)"
+echo "== C7: sp_Blitz 55 - each database's owner against an expected owner (BLITZ-GAP; scripts/blitzgap-join-draft-config.sql until lines 2 / 3 are joined)"
 C7ROOT=$(cd "$(dirname "$0")/.." && pwd)
 if [[ $(pq "SELECT count(*) FROM pgvigil.mssql_config_expect_keys() WHERE kind = 'database' AND key = 'owner'") != 1 && -f $C7ROOT/scripts/blitzgap-join-draft-config.sql ]]; then
   psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$C7ROOT/scripts/blitzgap-join-draft-config.sql" >/dev/null && echo "  the join draft applied (scripts/blitzgap-join-draft-config.sql: lines 2 / 3 are not joined yet)" || bad "C7: the join draft did not apply"

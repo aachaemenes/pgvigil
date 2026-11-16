@@ -12,13 +12,15 @@
 --    a. the list rules' own-row part leaves the key out (55 has its own part): src's WHERE
 --       ... OR (k.kind = 'database' AND k.key <> 'owner')
 --    b. two more parts, after the last: each database's owner against the expected owner (the original sa, sid 0x01
---       from 0159's logins - 'sa' while they are not read - unless a scope names another; master, model, msdb and tempdb
+--       from 0159's logins - master's own owner while they are not read, else 'sa' - unless a scope names another; master, model, msdb and tempdb
 --       against the original sa always, a scope's owner never - sp_Blitz 8.35 L3831; 'off' in any case off, exclusions
 --       leave any database out; 'info' when it differs, so no finding row; 'not applicable' when the SID maps to no login;
---       rdsadmin and gcloud_cloudsqladmin left out; no row at all on Azure SQL Managed Instance - sp_Blitz 8.35 L870), and
+--       dbatools, dbadmin, dbmaintenance, gcloud_cloudsqladmin and rdsadmin left out by name - sp_Blitz 8.35 L590-596;
+--       no row at all on Azure SQL Managed Instance - sp_Blitz 8.35 L870), and
 --       one 'not read' row while no database is read - as scripts/blitzgap-join-draft-config.sql's 'line 3b' (FOLD-55)
 --    c. (web, with the join) web/src/mssql_config.ts's hint for the new text key says the default (the original sa), that
---       the system databases are always held to the original sa, and that 'off' turns it off (review-24 N4; FOLD-55).
+--       the system databases are always held to the original sa, that 'off' turns it off, and that Azure SQL Managed
+--       Instance has no rows (review-24 N4; FOLD-55, review-25 N3).
 
 -- 4. (docs, the join note as 72's) rel-b20's docs/sqlserver-checks.md 'sp_Blitz weekly' section says 'pgvigil has no rule for
 --    19, 21, 26, 55, 72, 77, 148 and 149': once rel-blitzgap is joined, that sentence keeps 72 only, and the seven are named
