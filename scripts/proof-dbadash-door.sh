@@ -687,7 +687,7 @@ print(sum(1 for r in (t.get("rows") or []) if r[c.index("source_id")] == int(sys
   echo "ok   D1t: no pgvigil instance matches (part=imported: no row of instance $ID); under the file's query_text none, sqlbox at full, session $C2SID's batch_text, text and cursor_text read '$WORDS'"
   serve "$TMPD/d.yaml"
 else
-  echo "not run here: D1t and D2t (the instance's query_text on the statements a page shows) need a tree whose internal/web/q_dbadash.go calls Statements (scripts/importmasklive-wiring.patch over the read rule)"
+  echo "not run here: D1t and D2t (the instance's query_text on the statements a page shows) need a tree whose internal/web/q_dbadash.go calls Statements (scripts/door-textrule-wiring.patch over the read rule)"
 fi
 if [[ -n "${PGVIGIL_DBADASH_BAK:-}" ]]; then
   echo "not proven: D2-D4 (the restored repository's instance is another server than this run's container; run without PGVIGIL_DBADASH_BAK for them)"
