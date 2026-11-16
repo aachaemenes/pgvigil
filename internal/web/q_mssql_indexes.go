@@ -12,7 +12,11 @@ import (
 //	  state      the two collections' last runs
 //	  databases  each database's usage window, its guard ('too early' under 7 days) and its read
 //	  indexes    one row per index (db= one database's; 5,000 at most, the largest first): definition, size, rows,
-//	             reads, writes, and the rule that names it with its text (never run)
+//	             reads, writes, and the rule that names it with its text (never run); the object type (V an indexed
+//	             view), the data space and partition function, the partitioning column, the table's create date, the
+//	             operational counters and the filter columns (D404; NULL: not read)
+//	  heaps      one row per heap of a user table (db= one database's; 5,000 at most, the largest first): size, rows,
+//	             reads, writes, forwarded fetches, deletes, the table's create date (D404)
 //	  verdicts   only the indexes a rule names, the warnings first
 //	  missing    the missing-index requests, the most benefit first, with the benefit per day of uptime: hints
 //	  statsdbs   each database's statistics summary
@@ -21,8 +25,10 @@ import (
 
 const sqlMSSQLIxDatabases = `
 SELECT b.database_id, b.database_name AS database, b.read_at, b.note, b.usage_since, b.usage_reason, round(b.usage_days::numeric, 1) AS usage_days,
-       b.judged, b.guard, b.readable_secondary, b.restore_read, b.auto_close, b.reset_at, b.indexes, b.capped, b.server_start, b.created_at, b.last_restore
+       b.judged, b.guard, b.readable_secondary, b.restore_read, b.auto_close, b.reset_at, b.indexes, b.capped, b.server_start, b.created_at, b.last_restore,
+       p.parts_read, p.parts_capped, p.note AS parts_note
   FROM pgvigil.mssql_index_db_status b
+  LEFT JOIN pgvigil.mssql_index_parts p ON p.instance_id = b.instance_id AND p.database_name = b.database_name
  WHERE b.instance_id = $1
  ORDER BY b.database_name`
 
@@ -32,6 +38,11 @@ SELECT x.database_id, x.database_name AS database, x.object_id, x.index_id, x.sc
        array_to_string(x.key_columns, ', ') AS keys, array_to_string(x.include_columns, ', ') AS includes, x.filter_definition,
        x.row_count, round(x.size_kb / 1024.0, 1) AS size_mb, x.user_seeks, x.user_scans, x.user_lookups,
        x.user_seeks + x.user_scans + x.user_lookups AS reads, x.user_updates AS writes, x.last_read, x.last_write,
+       x.table_created, x.object_type, x.data_space_name, x.data_space_type, x.partition_function, x.pf_type, x.pf_partitions, x.pf_range,
+       x.partition_column, x.any_uncompressed, array_to_string(x.filter_columns, ', ') AS filter_columns,
+       array_to_string(x.cs_rebuild_columns, ', ') AS cs_rebuild_columns, x.row_lock_wait_count, x.row_lock_wait_ms, x.page_lock_wait_count,
+       x.page_lock_wait_ms, x.page_latch_wait_count, x.page_latch_wait_ms, x.page_io_latch_wait_count, x.page_io_latch_wait_ms,
+       x.forwarded_fetch_count, x.leaf_delete_count,
        v.rule, v.severity, v.detail, v.script, v.keeper,
        pgvigil.mssql_index_definition(x.index_type, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.schema_name, x.table_name, x.index_name,
                                       x.key_columns, x.include_columns, x.filter_definition, x.fill_factor, x.compression, x.ignore_dup_key,
@@ -41,6 +52,16 @@ SELECT x.database_id, x.database_name AS database, x.object_id, x.index_id, x.sc
   LEFT JOIN pgvigil.mssql_index_verdicts($1) v ON v.database_name = x.database_name AND v.object_id = x.object_id AND v.index_id = x.index_id
  WHERE x.instance_id = $1 AND ($2::int IS NULL OR x.database_id = $2)
  ORDER BY x.size_kb DESC NULLS LAST, x.database_name, x.object_id, x.index_id
+ LIMIT 5000`
+
+const sqlMSSQLIxHeaps = `
+SELECT h.database_id, h.database_name AS database, h.object_id, h.schema_name, h.table_name, h.row_count, round(h.size_kb / 1024.0, 1) AS size_mb,
+       h.partitions, h.compression, h.data_space_name, h.data_space_type, h.partition_column, h.user_seeks, h.user_scans, h.user_lookups,
+       h.user_seeks + h.user_scans + h.user_lookups AS reads, h.user_updates AS writes, h.last_read, h.last_write, h.table_created,
+       h.forwarded_fetch_count, h.leaf_delete_count
+  FROM pgvigil.mssql_heap h
+ WHERE h.instance_id = $1 AND ($2::int IS NULL OR h.database_id = $2)
+ ORDER BY h.size_kb DESC NULLS LAST, h.database_name, h.schema_name, h.table_name
  LIMIT 5000`
 
 const sqlMSSQLIxVerdicts = `
@@ -98,6 +119,7 @@ func (s *Server) MSSQLIndexes(w http.ResponseWriter, r *http.Request) {
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_indexes", "mssql_stats"}}},
 		{"databases", sqlMSSQLIxDatabases, []any{id}},
 		{"indexes", sqlMSSQLIxIndexes, []any{id, database}},
+		{"heaps", sqlMSSQLIxHeaps, []any{id, database}},
 		{"verdicts", sqlMSSQLIxVerdicts, []any{id, database}},
 		{"missing", sqlMSSQLIxMissing, []any{id, database}},
 		{"statsdbs", sqlMSSQLIxStatsDBs, []any{id, database}},

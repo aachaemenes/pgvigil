@@ -264,3 +264,145 @@ func (c statsCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Inf
 	}
 	return emit(last)
 }
+
+// ---- a histogram on demand (task 414; SQLWATCH COL#22) -------------------------------------------------------------
+
+// HistogramBuild says whether the server has sys.dm_db_stats_histogram: SQL Server 2016 SP1 CU2 (13.0.4422.0) and
+// later, and Azure SQL Managed Instance (Learn); no DBCC SHOW_STATISTICS fallback (task 414's FOLD: it would serve only
+// 2016 SP1 RTM and CU1, and it would need the statistic's name in the text of a statement).
+func HistogramBuild(major, build, engineEdition int) (bool, string) {
+	switch {
+	case engineEdition == 5:
+		return false, "not on Azure SQL Database (the read enters the database through its sys.sp_executesql)"
+	case engineEdition == 8:
+		return true, ""
+	case major == 13 && build < 4422:
+		return false, fmt.Sprintf("off on SQL Server 2016 before SP1 CU2 (build 13.0.%d; CU2 is 13.0.4422.0): sys.dm_db_stats_histogram came with it", build)
+	case major > 0 && major < 13:
+		return false, "SQL Server before 2016 SP1 CU2 has no sys.dm_db_stats_histogram"
+	}
+	return true, ""
+}
+
+// histogramStatSQL runs inside the database: the statistic by its table and name (both parameters), its header and
+// what it is on. no_histogram names an index type that has none (XML, spatial, columnstore) or a leading column of a
+// type with none.
+const histogramStatSQL = `SELECT CAST(s.object_id AS bigint) AS object_id, CAST(s.stats_id AS int) AS stats_id, CAST(s.name AS nvarchar(128)) AS stats_name,
+  CAST(i.type_desc AS nvarchar(60)) AS index_type,
+  -- a CLR type (geography, geometry, hierarchyid: system_type_id 240) is named by its user_type_id
+  CAST(CASE WHEN c.system_type_id = 240 THEN TYPE_NAME(c.user_type_id) ELSE TYPE_NAME(c.system_type_id) END AS nvarchar(128)) AS lead_type,
+  CAST(c.name AS nvarchar(128)) AS lead_column, CAST(s.has_filter AS int) AS has_filter,
+  CAST(sp.rows AS bigint) AS rows, CAST(sp.rows_sampled AS bigint) AS rows_sampled, CAST(sp.steps AS int) AS steps,
+  TODATETIMEOFFSET(DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), sp.last_updated), 0) AS last_updated,
+  CAST(sp.modification_counter AS bigint) AS modifications
+FROM sys.stats s
+LEFT JOIN sys.indexes i ON i.object_id = s.object_id AND i.index_id = s.stats_id
+LEFT JOIN sys.stats_columns sc ON sc.object_id = s.object_id AND sc.stats_id = s.stats_id AND sc.stats_column_id = 1
+LEFT JOIN sys.columns c ON c.object_id = sc.object_id AND c.column_id = sc.column_id
+OUTER APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+WHERE s.object_id = OBJECT_ID(QUOTENAME(@schema) + N'.' + QUOTENAME(@table)) AND s.name = @stats`
+
+// histogramIndexSQL runs inside the database: an index by its table and name, for a name sys.stats does not list
+const histogramIndexSQL = `SELECT CAST(i.name AS nvarchar(128)) AS stats_name, CAST(i.type_desc AS nvarchar(60)) AS index_type
+FROM sys.indexes i WHERE i.object_id = OBJECT_ID(QUOTENAME(@schema) + N'.' + QUOTENAME(@table)) AND i.name = @stats`
+
+// histogramStepsSQL runs inside the database: the steps, each key as text by its base type (binary as 0x..., a date or
+// time in ISO 8601, a float in full, the rest as CONVERT writes it).
+const histogramStepsSQL = `SELECT CAST(h.step_number AS int) AS step,
+  CAST(SQL_VARIANT_PROPERTY(h.range_high_key, 'BaseType') AS nvarchar(128)) AS key_type,
+  CASE WHEN h.range_high_key IS NULL THEN NULL
+       WHEN SQL_VARIANT_PROPERTY(h.range_high_key, 'BaseType') IN ('binary', 'varbinary') THEN CONVERT(nvarchar(4000), CONVERT(varbinary(8000), h.range_high_key), 1)
+       WHEN SQL_VARIANT_PROPERTY(h.range_high_key, 'BaseType') IN ('datetime2', 'datetime', 'smalldatetime', 'date') THEN CONVERT(nvarchar(64), CONVERT(datetime2(7), h.range_high_key), 126)
+       WHEN SQL_VARIANT_PROPERTY(h.range_high_key, 'BaseType') = 'datetimeoffset' THEN CONVERT(nvarchar(64), CONVERT(datetimeoffset(7), h.range_high_key), 126)
+       WHEN SQL_VARIANT_PROPERTY(h.range_high_key, 'BaseType') = 'time' THEN CONVERT(nvarchar(64), CONVERT(time(7), h.range_high_key))
+       WHEN SQL_VARIANT_PROPERTY(h.range_high_key, 'BaseType') IN ('float', 'real') THEN CONVERT(nvarchar(64), CONVERT(float, h.range_high_key), 3)
+       ELSE CONVERT(nvarchar(4000), h.range_high_key) END AS range_high_key,
+  CAST(h.range_rows AS float) AS range_rows, CAST(h.equal_rows AS float) AS equal_rows,
+  CAST(h.distinct_range_rows AS bigint) AS distinct_range_rows, CAST(h.average_range_rows AS float) AS average_range_rows
+FROM sys.dm_db_stats_histogram(@obj, @sid) h
+ORDER BY h.step_number`
+
+// Histogram is one statistic's histogram as read: its header and its steps, or why there is none.
+type Histogram struct {
+	Header collect.Row
+	Steps  []collect.Row
+	Off    string // the statistic has no histogram to read here (its index type, its column's type), or none was readable
+}
+
+// noHistogramIndex: the index types with no histogram to draw (task 414's FOLD F13; measured on the box, proof F5)
+func noHistogramIndex(indexType, leadType string) string {
+	t := strings.ToUpper(indexType)
+	switch {
+	case strings.Contains(t, "COLUMNSTORE"):
+		return "a columnstore index keeps no histogram of its own: read the statistics of its columns"
+	case strings.Contains(t, "XML"):
+		return "an XML index keeps no histogram pgvigil can draw"
+	case strings.Contains(t, "SPATIAL"):
+		return "a spatial index keeps no histogram pgvigil can draw"
+	}
+	switch strings.ToLower(leadType) {
+	case "xml", "geography", "geometry", "hierarchyid":
+		return "a statistic on a " + strings.ToLower(leadType) + " column has no histogram pgvigil can draw"
+	}
+	return ""
+}
+
+// ReadHistogram reads the statistic (schema, table and name as parameters, never in the statement's text) of a
+// database: sys.dm_db_stats_histogram, which answers only for a statistic whose columns the login may SELECT (or that
+// it owns): without that right the server returns no step, and the result says so. quoted is the database's QUOTENAME.
+func ReadHistogram(ctx context.Context, conn *sql.Conn, quoted, schema, table, stats string) (Histogram, error) {
+	var h Histogram
+	hd, err := qsRead(ctx, conn, quoted, histogramStatSQL, "@schema sysname, @table sysname, @stats sysname",
+		sql.Named("schema", schema), sql.Named("table", table), sql.Named("stats", stats))
+	if err != nil {
+		return h, err
+	}
+	if len(hd) == 0 {
+		// an index of that name whose type keeps no statistic of its own (XML, spatial) answers its type's reason
+		ix, err := qsRead(ctx, conn, quoted, histogramIndexSQL, "@schema sysname, @table sysname, @stats sysname",
+			sql.Named("schema", schema), sql.Named("table", table), sql.Named("stats", stats))
+		if err == nil && len(ix) > 0 {
+			it, _ := ix[0]["index_type"].(string)
+			if why := noHistogramIndex(it, ""); why != "" {
+				h.Header, h.Off = ix[0], why
+				return h, nil
+			}
+		}
+		return h, fmt.Errorf("no statistic %s on %s.%s that the read login can see", quoteName(stats), quoteName(schema), quoteName(table))
+	}
+	h.Header = hd[0]
+	it, _ := h.Header["index_type"].(string)
+	lt, _ := h.Header["lead_type"].(string)
+	if why := noHistogramIndex(it, lt); why != "" {
+		h.Off = why
+		return h, nil
+	}
+	obj, _ := h.Header["object_id"].(int64)
+	sid, _ := h.Header["stats_id"].(int64)
+	h.Steps, err = qsRead(ctx, conn, quoted, histogramStepsSQL, "@obj int, @sid int", sql.Named("obj", obj), sql.Named("sid", sid))
+	if err != nil {
+		return h, err
+	}
+	if len(h.Steps) == 0 {
+		if h.Header["steps"] == nil {
+			h.Off = "no step was readable: the login may not SELECT the statistic's columns (sys.dm_db_stats_histogram answers only then, or for the table's owner), or the statistic was never built"
+		} else {
+			h.Off = "the statistic has no histogram (it was created empty, or its table has no rows)"
+		}
+	}
+	return h, nil
+}
+
+// ServerBuild reads the server's version and engine edition for an on-demand read (the collectors take them from
+// Info; a read on demand has its own connection).
+func ServerBuild(ctx context.Context, conn *sql.Conn) (major, build, edition int, product string, err error) {
+	if err = conn.QueryRowContext(ctx, `SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), CAST(SERVERPROPERTY('EngineEdition') AS int)`).Scan(&product, &edition); err != nil {
+		return 0, 0, 0, "", err
+	}
+	parts := strings.Split(product, ".")
+	if len(parts) >= 3 {
+		_, _ = fmt.Sscan(parts[0], &major)
+		_, _ = fmt.Sscan(parts[2], &build)
+	}
+	return major, build, edition, product, nil
+}
