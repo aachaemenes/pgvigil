@@ -44,6 +44,7 @@ const isOff = (b, words) => b.off === 'true' && !!b.note && (typeof words === 's
 const ent = await (await fetch(`${U}api/mssql/plancache/entries?instance=${ms}&db=5&key=${encodeURIComponent(QH)}`)).json();
 const FO = String(ent.fetch_off ?? '');
 if (!FO) fail(`the stage does not reach the off path: the entries reply says the plan read is on (${JSON.stringify(ent).slice(0, 200)})`);
+else if (!/^not read: /.test(FO)) fail(`the server's reason is not the expected 'not read: ...' (no read login on the demo): ${FO}`);
 else console.log(`     the server's reason: ${FO}`);
 // what the scope holds instead, for a FAIL line
 const holds = scope => ev(`(document.querySelector(${JSON.stringify(scope)})?.innerText ?? '(no such element)').replace(/\\s+/g, ' ').slice(-600)`);
@@ -77,6 +78,9 @@ else {
         await sleep(600);
         const dlg = await ev(`[...document.querySelectorAll('dialog[open]')].map(d => d.querySelector('h3,h2')?.textContent ?? 'a dialog').join(' | ')`);
         if (dlg) why.push(`a click on an off button opened: ${dlg}`);
+        // a read handler that ran says 'Reading the plan on demand ...' in the box's status line before any request
+        const said = await ev(`[...document.querySelectorAll('main [data-offc="o1"] p[role=status]')].map(p => p.textContent.trim()).filter(Boolean).join(' | ')`);
+        if (said) why.push(`a click on an off button ran its handler: the status line says '${said}'`);
       }
       if (why.length) fail(`O1: ${why.join('; ')} (the box: ${await holds('main [data-offc="o1"]')})`);
       else console.log(`ok   O1: the Cached plans row's four plan reads off ('${reads[0].note.slice(0, 120)}'), Evict off ('${e.note.slice(0, 120)}'); a click opened nothing`);
@@ -105,9 +109,10 @@ else {
         else if (!isOff(b, `Plan cache: ${FO}`)) why.push(`'${t}: the plan cache plan' ${JSON.stringify(b)}`);
       }
       const ro = run.find(x => x.text === 'Open');
-      if (ro && ro.off === 'true') why.push(`the running row's Open is off: ${JSON.stringify(ro)}`);
+      if (!ro) why.push("no 'running' row's Open (the expected names it on: sql01's session 63 keeps its running plan)");
+      else if (ro.off === 'true') why.push(`the running row's Open is off: ${JSON.stringify(ro)}`);
       if (!row) { /* said above */ } else if (why.length) fail(`O2: ${why.join('; ')} (the sources: ${String(listed).replace(/\s+/g, ' ').slice(-600)})`);
-      else console.log(`ok   O2: the 'plan cache' row's Download .sqlplan and Open off ('${pc[0].note.slice(0, 120)}'); ${ro ? "the 'running' row's Open on" : "no 'running' row for these hashes"}`);
+      else console.log(`ok   O2: the 'plan cache' row's Download .sqlplan and Open off ('${pc[0].note.slice(0, 120)}'); the 'running' row's Open on`);
     }
   }
 }
