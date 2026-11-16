@@ -6,14 +6,15 @@
 --                 personal (its owner's alone) or shared (every signed-in user reads it); at most one default per owner
 --                 and page among personal views and one per page among shared ones; a version each write moves (a
 --                 save names the version it read: a stale one is refused); the state a JSON object of at most 64 KB.
---   ui_view_log   every write attempt from the UI, done or refused, who and from where; never purged.
+--   ui_view_log   every write attempt from the UI that reaches the store, done or refused, who and from where; never purged.
 --
 -- Owner-only BY NAME: apply_roles() grants a reader login every relation not named ui_* and EXECUTE on every function
 -- not named ui_* or import_*, and a store custom report or a Grafana login is a reader: a personal view would leak.
 -- Reads go through ui_view_list / ui_view_get (SECURITY DEFINER, the UI's door pgvigil_auth, on serve's read-only
 -- pool); writes through import_view_save / import_view_delete on the actions door's audit login (serve's read pool is
 -- read-only: a write there fails), the session's user and client in the payload, as import_alert_rule (0085) does.
--- A shared write needs serve's shared_ok: the admin role (B24f's 'change shared views' right; serve refuses first in the role's words).
+-- A shared write needs serve's shared_ok: the admin role (B24f's 'change shared views' right). The store refuses one without it and
+-- logs the attempt as it logs every refusal; serve answers that refusal in the role's words.
 -- A removed user's personal views go with it (UIUserRemove deletes them first, in its transaction); a shared view stays
 -- with no owner (ON DELETE SET NULL; the CHECK refuses a personal view without one, so a bare DELETE of a user who still
 -- owns personal views fails rather than leaving them ownerless).
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.ui_view_log (
   detail   text
 );
 CREATE INDEX IF NOT EXISTS ui_view_log_at_idx ON pgvigil.ui_view_log (at DESC);
-COMMENT ON TABLE pgvigil.ui_view_log IS 'Every write attempt on ui_views from the UI, done or refused (0259); never purged. Owner only.';
+COMMENT ON TABLE pgvigil.ui_view_log IS 'Every write attempt on ui_views from the UI that reaches the store, done or refused (0259); never purged. Owner only.';
 
 -- ui_view_list: the user's personal views and every shared one (p_page NULL = every page), without their state;
 -- loads_by_default marks the one a page opens with: the user's default for the page, else the shared one.
