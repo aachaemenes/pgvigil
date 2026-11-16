@@ -142,6 +142,27 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     } catch (e) { checked.replaceChildren(errorBox(e)); offControl(again, null, checked); }
   });
   if (!d.demo) box.append(el('div', { class: 'toolbar' }, el('label', {}, d.engine === 'sqlserver' ? 'Procedures installed in the database ' : 'Reads run in the database ', db), again, checked));
+  // the runs grid (CQ-RUNSGRID: never a run that seems to do nothing) is drawn again whenever a run, a help ask or a
+  // form's read ends on this page: the page's own read once more, not fresh (the checks' answer is kept 60 s, after
+  // that the same read-only check the page's open makes; in queue mode the collector's published list), and only this
+  // grid is replaced - the open panel and its result stay. The latest end's read wins; a read that fails says so above
+  // the grid as last drawn, never silently
+  const logGrid = (t: Table | null) => grid(rowsOf(t), logCols, 'No community tool ran here yet.');
+  let shown = logGrid(d.log), relogs = 0;
+  const runs = el('div', { class: 'community-runs' }, shown);
+  const relog = async (): Promise<void> => {
+    if (d.demo) return;   // nothing runs on a demo instance
+    const mine = ++relogs;
+    try {
+      const n = await get<Tools>('community', { instance, database });
+      if (mine !== relogs) return;
+      shown = logGrid(n.log);
+      runs.replaceChildren(shown);
+    } catch (e) {
+      if (mine !== relogs) return;
+      runs.replaceChildren(errorBox(new Error(`the runs below could not be read again (${e instanceof Error ? e.message : String(e)}); they are as last drawn, before the newest end`)), shown);
+    }
+  };
   // a tool's panel opens directly under the tool's own table, in view (inView); a click on another tool moves it there
   const tables = new Map<string, HTMLElement>();
   let firstGroup: HTMLElement | undefined;
@@ -160,7 +181,9 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     }
     shownTool = `${navs}:${instance}:${t.id}`;
     let panel: HTMLElement;
-    try { panel = await panelOf(t, instance, d); } catch (e) { panel = errorBox(e); }
+    try { panel = await panelOf(t, instance, d, relog); } catch (e) { panel = errorBox(e); }
+    // the form's read is audited on the direct path (its @help run, or the refusal): the grid shows it
+    void relog();
     if (mine !== seq) return;
     out.replaceChildren(panel);
     inView(out);
@@ -181,7 +204,7 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     firstGroup ??= head;
     box.append(head, table);
   }
-  box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
+  box.append(out, el('h3', {}, 'Runs on this instance'), runs);
   // the address named a tool: on a demo instance its sample is open when the page has drawn (a linked page opens it
   // again); on a real instance the address opens nothing - a tool's form runs its help on the server, which only a
   // click asks
@@ -189,7 +212,7 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     const t = d.tools.find(x => x.id === open);
     if (t) {
       tables.get(t.id)?.after(out);
-      try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
+      try { out.replaceChildren(await panelOf(t, instance, d, relog)); } catch (e) { out.replaceChildren(errorBox(e)); }
       // in view once per navigation and tool: a redraw of the same page stays where the person is
       if (shownTool !== `${navs}:${instance}:${t.id}`) { shownTool = `${navs}:${instance}:${t.id}`; inView(out); }
     } else {
@@ -202,10 +225,11 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
   return box;
 }
 
-// panelOf: the tool's panel - on a demo instance its stored sample, else its form (Glenn's: the file step)
-function panelOf(t: Tool, instance: number, d: Tools): Promise<HTMLElement> {
+// panelOf: the tool's panel - on a demo instance its stored sample, else its form (Glenn's: the file step); ended is
+// called when each run or help ask of the panel ends, however it ended (the page's runs grid is drawn again)
+function panelOf(t: Tool, instance: number, d: Tools, ended: () => Promise<void>): Promise<HTMLElement> {
   if (d.demo) return demoPanel(t, instance, d);
-  return t.kind === 'script' ? Promise.resolve(glennPanel(t, instance, d.database ?? '')) : toolPanel(t, instance, d);
+  return t.kind === 'script' ? Promise.resolve(glennPanel(t, instance, d.database ?? '', ended)) : toolPanel(t, instance, d, ended);
 }
 
 function needLine(n: Need): (Node | string)[] {
@@ -256,7 +280,7 @@ function openButton(t: Tool, d: Tools, open: () => void, cell: HTMLElement | und
 }
 
 // toolPanel: one procedure's (or read's) form, Run and its result
-async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLElement> {
+async function toolPanel(t: Tool, instance: number, d: Tools, ended: () => Promise<void>): Promise<HTMLElement> {
   const p = await post<Params>('community/params', { instance_id: instance, tool: t.id, database: d.database ?? '' });
   const sec = el('section', {}, el('h3', {}, t.name), el('p', {}, t.description));
   if (t.url) sec.append(el('p', { class: 'meta' }, 'Its documentation: ', el('a', { href: t.url, rel: 'noopener noreferrer', target: '_blank' }, t.url)));
@@ -314,7 +338,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
         status.textContent = `Ran at ${fmtTime(r.ran_at)}.`;
       }
     } catch (e) { res.replaceChildren(errorBox(e)); status.textContent = ''; }
-    finally { offControl(run, null, status); }
+    finally { offControl(run, null, status); void ended(); }
   });
   if (p.help_via === 'queue' && t.help) {
     // queue mode: the procedure's own help is a request of its own, run by the collector
@@ -335,7 +359,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
             if (c && v && !c[0].textContent) { c[0].textContent = v; c[1].title = v; }
           }
         }
-      } catch (e) { hb.replaceChildren(errorBox(e)); hs.textContent = ''; } finally { offControl(ask, null, hs); }
+      } catch (e) { hb.replaceChildren(errorBox(e)); hs.textContent = ''; } finally { offControl(ask, null, hs); void ended(); }
     });
     det.append(ask, hs, hb);
     sec.append(det);
@@ -402,7 +426,7 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
 }
 
 // glennPanel: the DBA's own copy of Glenn Berry's script, cut into its queries; pick one, run it
-function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
+function glennPanel(t: Tool, instance: number, database: string, ended: () => Promise<void>): HTMLElement {
   const sec = el('section', {}, el('h3', {}, t.name), el('p', {}, t.description));
   sec.append(el('p', { class: 'meta' }, 'pgvigil ships none of these queries: download the script for the server\'s version from ',
     el('a', { href: t.url ?? '#', rel: 'noopener noreferrer', target: '_blank' }, t.url ?? ''), ' and pick it here. The file is cut into its queries on the server and kept nowhere; '
@@ -443,7 +467,7 @@ function glennPanel(t: Tool, instance: number, database: string): HTMLElement {
         } else view = resultView(r.runs, undefined, title);
         res.replaceChildren(el('details', {}, el('summary', {}, `Query ${q.n}: the text sent`), el('pre', { class: 'sql', tabindex: '0' }, q.text)),
           ...cut, view);
-      } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); }
+      } catch (e) { res.replaceChildren(errorBox(e)); } finally { offControl(b, null, busy); void ended(); }
     });
     return b;
   };
