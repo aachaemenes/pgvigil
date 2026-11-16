@@ -167,13 +167,14 @@ func removeRemoteParent(log *slog.Logger, outbox, stateDir string) {
 // its binary, each folder removed once empty and anything else in them kept and named.
 func uninstallRemote(log *slog.Logger, o installOptions) error {
 	outbox, stateDir := remoteFolders(o.Config)
-	held, _, _ := remote.OutboxHolds(outbox)
 	if err := remotePurgeGuard(o); err != nil {
 		return err
 	}
 	if err := removeRemoteService(log); err != nil {
 		return err
 	}
+	// counted once the service is stopped: a running collector may finish another bundle between the guard and now
+	held, _, _ := remote.OutboxHolds(outbox)
 	cfgDir := filepath.Dir(o.Config)
 	if !o.Purge {
 		fmt.Printf("the remote collector's service is gone; kept: %s, %s, %s and %s (uninstall -remote -purge removes them).\n", cfgDir, outbox, stateDir, o.Bin)
