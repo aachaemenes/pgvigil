@@ -4,6 +4,8 @@ import (
 	"encoding/csv"
 	"errors"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -119,6 +121,97 @@ func TestCatalogEqualsTheCensus(t *testing.T) {
 		if _, ok := want[name]; !ok {
 			t.Errorf("%s: in the map, not in the census", name)
 		}
+	}
+}
+
+// Every table the migrations create (the migrator's own in internal/repo/repo.go, then internal/repo/sql in file
+// order: a later DROP TABLE takes it out, a RENAME TO follows it; a partition is never a table of its own) has its
+// line in the map, and every line of the map is such a table. A slice that adds a table without classing it fails
+// here, in its own unit run, before a repository with that table refuses every export.
+func TestEveryMigrationTableIsClassed(t *testing.T) {
+	files, err := filepath.Glob("../repo/sql/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	if len(files) < 100 {
+		t.Fatalf("%d migrations read from ../repo/sql: the path is wrong", len(files))
+	}
+	files = append([]string{"../repo/repo.go"}, files...) // the migrator makes schema_version before the first migration
+	var (
+		comment = regexp.MustCompile(`--[^\n]*`)
+		// a literal name only: pgvigil.%I or pgvigil.name_' || ... is a partition made at run time
+		create = regexp.MustCompile(`(?i)\bcreate\s+(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?pgvigil\.([a-z0-9_]+)(\s+partition\s+of)?[\s(]`)
+		drop   = regexp.MustCompile(`(?i)\bdrop\s+table\s+(?:if\s+exists\s+)?(pgvigil\.[a-z0-9_]+(?:\s*,\s*pgvigil\.[a-z0-9_]+)*)[\s;]`)
+		rename = regexp.MustCompile(`(?i)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?pgvigil\.([a-z0-9_]+)\s+rename\s+to\s+(?:pgvigil\.)?([a-z0-9_]+)[\s;]`)
+		named  = regexp.MustCompile(`(?i)pgvigil\.([a-z0-9_]+)`)
+	)
+	type event struct {
+		at       int
+		op, a, b string
+	}
+	made := map[string]string{} // table -> the migration that made it
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := comment.ReplaceAllString(string(b), "")
+		var evs []event
+		for _, m := range create.FindAllStringSubmatchIndex(s, -1) {
+			if m[4] < 0 {
+				evs = append(evs, event{m[0], "create", strings.ToLower(s[m[2]:m[3]]), ""})
+			}
+		}
+		for _, m := range drop.FindAllStringSubmatchIndex(s, -1) {
+			for _, n := range named.FindAllStringSubmatch(s[m[2]:m[3]], -1) {
+				evs = append(evs, event{m[0], "drop", strings.ToLower(n[1]), ""})
+			}
+		}
+		for _, m := range rename.FindAllStringSubmatchIndex(s, -1) {
+			evs = append(evs, event{m[0], "rename", strings.ToLower(s[m[2]:m[3]]), strings.ToLower(s[m[4]:m[5]])})
+		}
+		sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
+		for _, e := range evs {
+			switch e.op {
+			case "create":
+				made[e.a] = filepath.Base(f)
+			case "drop":
+				delete(made, e.a)
+			case "rename":
+				if from, ok := made[e.a]; ok {
+					delete(made, e.a)
+					made[e.b] = from
+				}
+			}
+		}
+	}
+	if len(made) < 300 {
+		t.Fatalf("%d tables read from the migrations: the reading is wrong", len(made))
+	}
+	inMap := map[string]bool{}
+	for _, x := range Catalog() {
+		inMap[x.Name] = true
+	}
+	var unclassed []string
+	for name, from := range made {
+		if !inMap[name] {
+			unclassed = append(unclassed, name+" ("+from+")")
+		}
+	}
+	sort.Strings(unclassed)
+	for _, u := range unclassed {
+		t.Errorf("%s is made by the migrations and has no class in the map (internal/export/catalog.go): class it from how its import writes it", u)
+	}
+	var stale []string
+	for name := range inMap {
+		if _, ok := made[name]; !ok {
+			stale = append(stale, name)
+		}
+	}
+	sort.Strings(stale)
+	for _, s := range stale {
+		t.Errorf("%s is in the map and no migration makes it (or one drops it): its line goes", s)
 	}
 }
 
