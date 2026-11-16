@@ -51,7 +51,24 @@ const (
 	KindMismatch    = "mismatch"             // the manifest names another site, collector, instance, seq or window than its folder
 	KindUnknownView = "unknown view"         // a view outside pgvigil's own list (R9)
 	KindOwned       = "name owned elsewhere" // the instance's name is another site's or the hub's own configuration's
+	KindLoad        = "load"                 // the repository refused the load past the settle time (its error kept)
+	KindDropError   = "drop error"           // the drop refused a file past the settle time (its error kept)
+	KindUnlisted    = "unlisted"             // a collector folder the site does not list, or an instance key not in its form
+	KindRetry       = "retry"                // 'pgvigil ingest -retry' asked: read again, past the stream's newest
 )
+
+// DefaultMaxBundle: a bundle whose views' uncompressed sizes sum past this is set aside 'too_big' before any view file is
+// fetched (docs/remote-collector.md)
+const DefaultMaxBundle = 2 << 30
+
+// osLitter: files an operating system or a desktop leaves in a folder - ignored from the listing, never fetched
+func osLitter(name string) bool {
+	switch strings.ToLower(name) {
+	case ".ds_store", "thumbs.db", "desktop.ini":
+		return true
+	}
+	return strings.HasPrefix(name, "._")
+}
 
 // Batch is one line of one view file.
 type Batch struct {
@@ -67,9 +84,12 @@ type Bundle struct {
 	Manifest *format.Manifest
 	Digest   string  // the sha256 of manifest.json's bytes: two bundles of one seq with other digests are a conflict
 	Batches  []Batch // every line of every view file, in n order
-	// AfterGap: the bundle comes after seqs ingest went past (a gap or a bundle set aside): its audit batches move the
-	// audit cursor to their start (0329's import_remote_batch), recorded as an 'audit gap'
+	// AfterGap: the bundle comes after seqs ingest went past (a gap, a bundle set aside, a retry past the newest): its
+	// audit batches move the audit cursor to their start (0329's remote_batch), recorded as an 'audit gap'
 	AfterGap bool
+	// Gap: the seqs ingest went past to load this one, in words - recorded in the load's own transaction, so a load that
+	// fails records no gap
+	Gap string
 }
 
 // Mark is a bundle the hub did not load (or a gap before one), with its reason.
@@ -87,18 +107,23 @@ type Newest struct {
 	End    time.Time
 }
 
-// Hub is the repository's side (0329); load.go is its implementation on serve's or run's pool.
+// Hub is the repository's side (0329's ingest door); load.go is its implementation on ingest's own pool.
 type Hub interface {
 	// Newest: the newest loaded bundle of (site, collector, key) in stream ("" = in any stream)
 	Newest(ctx context.Context, site, collector, key, stream string) (Newest, bool, error)
-	// Recorded: a bundle of this seq already loaded or marked: its digest and its kind ("loaded" or a Kind)
+	// Recorded: what the ledger holds for this seq: its digest and its kind ("loaded", "loading" - begun and stopped
+	// part-way - or an open mark's Kind)
 	Recorded(ctx context.Context, site, collector, key, stream string, seq uint64) (digest, kind string, found bool, err error)
-	// Load loads a checked bundle: the instance, every batch once (its own transaction with its ledger row), each
-	// read's status, the runs and failures, the heartbeat, then the bundle's ledger row, the stream's high-water and
-	// the instance's as_of in one transaction
+	// Load loads a checked bundle: the instance, every batch once (its own transaction with its ledger row), then in one
+	// transaction the runs and failures, the gap it went past, the heartbeat, each read's interval, the bundle's ledger
+	// row, the stream's high-water and the instance's as_of
 	Load(ctx context.Context, site Site, b *Bundle) error
-	// Mark records a bundle not loaded, or a gap
-	Mark(ctx context.Context, m Mark) error
+	// Mark records a bundle not loaded; true = a new mark (an open one of that kind was not there)
+	Mark(ctx context.Context, m Mark) (bool, error)
+	// Seen: the hub's first sight of a bundle folder (recorded at now when new) - the settle clock
+	Seen(ctx context.Context, site, collector, key, dir string, now time.Time) (time.Time, error)
+	// Retries: the window ends of a key's bundles with an open retry ('pgvigil ingest -retry'), whose days are listed
+	Retries(ctx context.Context, site, collector, key string) ([]time.Time, error)
 }
 
 // Ingester is one site's loop.
@@ -107,9 +132,11 @@ type Ingester struct {
 	Hub    Hub
 	Allow  map[string]bool // the views a bundle may carry (AllowList)
 	Now    func() time.Time
-	MaxRaw int64  // a view file's uncompressed cap
-	Work   string // a folder a bundle is copied into to be checked
-	Log    *slog.Logger
+	MaxRaw int64 // a view file's uncompressed cap
+	// MaxBundle: a bundle's views' uncompressed cap, all together (0 = DefaultMaxBundle)
+	MaxBundle int64
+	Work      string // a folder a bundle is copied into to be checked
+	Log       *slog.Logger
 }
 
 // Result counts one round: Skipped = loaded before, Kept = set aside before and still so (`pgvigil ingest -retry` reads
@@ -125,11 +152,14 @@ type candidate struct {
 	files  map[string]bool // the file names the listing holds
 	man    []byte          // manifest.json's bytes (nil: not there yet)
 	digest string
-	stream string // the manifest's, read loosely so a newer format still has one
+	stream string    // the manifest's, read loosely so a newer format still has one
+	seen   time.Time // the hub's first sight of the folder: the settle runs from here
 }
 
 // Round reads the site's drop once and loads what is due: per collector the site lists, per instance key found under
-// it, the bundles from the day of the newest loaded one to today, in window order.
+// it, the bundles from the day of the newest loaded one (and the days of its open retries) to today, in order. One
+// key's trouble - a drop error, a load the repository refuses - holds that key alone: the round goes on with the
+// others and returns the errors it met, joined. A collector folder the site does not list is marked, by name.
 func (in *Ingester) Round(ctx context.Context) (Result, error) {
 	var res Result
 	colls := make([]string, 0, len(in.Site.Collectors))
@@ -137,52 +167,92 @@ func (in *Ingester) Round(ctx context.Context) (Result, error) {
 		colls = append(colls, c)
 	}
 	sort.Strings(colls)
+	all, err := in.Site.Drop.List(ctx, in.Site.Name+"/")
+	if err != nil {
+		return res, fmt.Errorf("ingest %s: the drop's listing: %w", in.Site.Name, err)
+	}
+	in.markUnlisted(ctx, all)
+	var errs []error
 	for _, c := range colls {
-		keys, err := in.instanceKeys(ctx, c)
-		if err != nil {
-			return res, err
-		}
-		for _, k := range keys {
+		for _, k := range in.instanceKeys(ctx, c, all) {
 			if err := in.group(ctx, c, k, &res); err != nil {
-				return res, fmt.Errorf("ingest %s/%s/%s: %w", in.Site.Name, c, k, err)
+				errs = append(errs, fmt.Errorf("ingest %s/%s/%s: %w", in.Site.Name, c, k, err))
+				in.Log.Error("remote ingest: one instance key held this round", "site", in.Site.Name, "collector", c, "instance", k, "err", err)
 			}
 		}
 	}
-	return res, nil
+	return res, errors.Join(errs...)
 }
 
-// instanceKeys: the instance keys under <site>/<collector>/ (a drop's lifecycle rule keeps this listing short)
-func (in *Ingester) instanceKeys(ctx context.Context, coll string) ([]string, error) {
-	pfx := in.Site.Name + "/" + coll + "/"
-	all, err := in.Site.Drop.List(ctx, pfx)
-	if err != nil {
-		return nil, err
+// markUnlisted marks once a round each collector folder the site does not list (its bundles are never read)
+func (in *Ingester) markUnlisted(ctx context.Context, all []string) {
+	seen := map[string]bool{}
+	for _, k := range all {
+		parts := strings.SplitN(strings.TrimPrefix(k, in.Site.Name+"/"), "/", 2)
+		if len(parts) < 2 || parts[0] == "" || seen[parts[0]] {
+			continue
+		}
+		seen[parts[0]] = true
+		if _, ok := in.Site.Collectors[parts[0]]; ok {
+			continue
+		}
+		why := fmt.Sprintf("collector %s is not one site %s lists in remote_sites: - its bundles are not read", parts[0], in.Site.Name)
+		if isNew, err := in.Hub.Mark(ctx, Mark{Site: in.Site.Name, Collector: parts[0], Kind: KindUnlisted, Reason: why}); err == nil && isNew {
+			in.Log.Warn("remote ingest: an unlisted collector", "site", in.Site.Name, "collector", parts[0])
+		}
 	}
+}
+
+// instanceKeys: the instance keys under <site>/<collector>/ in the site's listing; a key not in its form is marked
+func (in *Ingester) instanceKeys(ctx context.Context, coll string, all []string) []string {
+	pfx := in.Site.Name + "/" + coll + "/"
 	seen := map[string]bool{}
 	var out []string
 	for _, k := range all {
-		parts := strings.SplitN(strings.TrimPrefix(k, pfx), "/", 2)
-		if len(parts) == 2 && !seen[parts[0]] {
-			if _, err := format.InstanceName(parts[0]); err == nil {
-				seen[parts[0]] = true
-				out = append(out, parts[0])
-			}
+		if !strings.HasPrefix(k, pfx) {
+			continue
 		}
+		parts := strings.SplitN(strings.TrimPrefix(k, pfx), "/", 2)
+		if len(parts) != 2 || seen[parts[0]] {
+			continue
+		}
+		seen[parts[0]] = true
+		if _, err := format.InstanceName(parts[0]); err != nil {
+			why := fmt.Sprintf("instance key %s under %s is not in its form (%v): not read", parts[0], pfx, err)
+			if isNew, merr := in.Hub.Mark(ctx, Mark{Site: in.Site.Name, Collector: coll, Key: parts[0], Kind: KindUnlisted, Reason: why}); merr == nil && isNew {
+				in.Log.Warn("remote ingest: an instance key not in its form", "site", in.Site.Name, "collector", coll, "key", parts[0])
+			}
+			continue
+		}
+		out = append(out, parts[0])
 	}
 	sort.Strings(out)
-	return out, nil
+	return out
 }
 
-// candidates: the bundle folders of one instance key from day 'from' (zero: every day) to today, in window order
-func (in *Ingester) candidates(ctx context.Context, coll, key string, from time.Time) ([]*candidate, error) {
+// candidates: the bundle folders of one instance key from day 'from' (zero: every day) to today and on the days given,
+// in order - within one stream by seq, across streams by window end. A key ending in '/', '.' or '..' (a folder
+// marker some drops make) and an operating system's litter are skipped.
+func (in *Ingester) candidates(ctx context.Context, coll, key string, from time.Time, days []time.Time) ([]*candidate, error) {
 	base := in.Site.Name + "/" + coll + "/" + key + "/"
 	var prefixes []string
 	if from.IsZero() {
 		prefixes = []string{base}
 	} else {
+		have := map[string]bool{}
+		add := func(d time.Time) {
+			p := base + d.UTC().Format("2006-01-02") + "/"
+			if !have[p] {
+				have[p] = true
+				prefixes = append(prefixes, p)
+			}
+		}
 		today := in.Now().UTC().Truncate(24 * time.Hour)
 		for d := from.UTC().Truncate(24 * time.Hour); !d.After(today); d = d.Add(24 * time.Hour) {
-			prefixes = append(prefixes, base+d.Format("2006-01-02")+"/")
+			add(d)
+		}
+		for _, d := range days {
+			add(d)
 		}
 	}
 	byDir := map[string]*candidate{}
@@ -197,6 +267,9 @@ func (in *Ingester) candidates(ctx context.Context, coll, key string, from time.
 				continue
 			}
 			dir, file := k[:i], k[i+1:]
+			if file == "" || file == "." || file == ".." {
+				continue // a folder marker: nothing to read
+			}
 			ref, err := format.ParseDir(dir)
 			if err != nil {
 				continue // a .part folder, a stray file: nobody reads it
@@ -205,6 +278,9 @@ func (in *Ingester) candidates(ctx context.Context, coll, key string, from time.
 			if c == nil {
 				c = &candidate{ref: ref, files: map[string]bool{}}
 				byDir[dir] = c
+			}
+			if osLitter(file) {
+				continue
 			}
 			c.files[file] = true
 		}
@@ -227,16 +303,20 @@ func (in *Ingester) candidates(ctx context.Context, coll, key string, from time.
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if !out[i].ref.End.Equal(out[j].ref.End) {
-			return out[i].ref.End.Before(out[j].ref.End)
+		a, b := out[i], out[j]
+		if a.stream != "" && a.stream == b.stream && a.ref.Seq != b.ref.Seq {
+			return a.ref.Seq < b.ref.Seq
 		}
-		return out[i].ref.Seq < out[j].ref.Seq
+		if !a.ref.End.Equal(b.ref.End) {
+			return a.ref.End.Before(b.ref.End)
+		}
+		return a.ref.Seq < b.ref.Seq
 	})
 	return out, nil
 }
 
-// group takes one instance key's bundles in order; a bundle that must wait (a missing seq, a copy still running) holds
-// the ones after it until the next round.
+// group takes one instance key's bundles in order; a bundle that must wait (a missing seq, a copy still running, any
+// problem inside the settle time) holds the ones after it until the next round.
 func (in *Ingester) group(ctx context.Context, coll, key string, res *Result) error {
 	var from time.Time
 	if n, ok, err := in.Hub.Newest(ctx, in.Site.Name, coll, key, ""); err != nil {
@@ -244,11 +324,18 @@ func (in *Ingester) group(ctx context.Context, coll, key string, res *Result) er
 	} else if ok {
 		from = n.End
 	}
-	cands, err := in.candidates(ctx, coll, key, from)
+	days, err := in.Hub.Retries(ctx, in.Site.Name, coll, key)
+	if err != nil {
+		return err
+	}
+	cands, err := in.candidates(ctx, coll, key, from, days)
 	if err != nil {
 		return err
 	}
 	for _, c := range cands {
+		if c.seen, err = in.Hub.Seen(ctx, in.Site.Name, coll, key, c.ref.Dir(), in.Now()); err != nil {
+			return err
+		}
 		wait, err := in.take(ctx, coll, key, c, res)
 		if err != nil {
 			return err
@@ -261,36 +348,46 @@ func (in *Ingester) group(ctx context.Context, coll, key string, res *Result) er
 	return nil
 }
 
-// settling: the bundle is younger than the settle time (gap_wait from its window's end)
-func (in *Ingester) settling(c *candidate) bool { return in.Now().Sub(c.ref.End) < in.Site.GapWait }
+// settling: the hub first saw the bundle's folder less than the settle time (gap_wait) ago - a copy may still be running
+func (in *Ingester) settling(c *candidate) bool { return in.Now().Sub(c.seen) < in.Site.GapWait }
 
-// retryKinds: a bundle marked so is read again when it appears with the same manifest (a copy that finished, a hub
-// that was upgraded)
-var retryKinds = map[string]bool{format.KindMissing: true, format.KindShort: true, KindNewerFormat: true}
+// retryKinds: a bundle marked so is read again when it appears with the same manifest - a copy that finished, a hub
+// that was upgraded, a key or a name the hub's configuration has since put right
+var retryKinds = map[string]bool{format.KindMissing: true, format.KindShort: true, KindNewerFormat: true,
+	KindSignature: true, KindUnknownView: true, KindOwned: true}
 
-// take checks one bundle and loads or marks it; wait = it, and the bundles after it, wait for the next round.
+// take checks one bundle and loads or marks it; wait = it, and the bundles after it, wait for the next round. Inside the
+// settle time any problem with the bundle itself waits; it is marked only past it.
 func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, res *Result) (bool, error) {
 	site := in.Site.Name
 	mark := func(kind, reason string) error {
+		isNew, err := in.Hub.Mark(ctx, Mark{Site: site, Collector: coll, Key: key, Stream: c.stream, Seq: c.ref.Seq, End: c.ref.End, Kind: kind, Reason: reason, Digest: c.digest})
+		if err != nil || !isNew {
+			return err
+		}
 		switch kind {
 		case KindLate:
 			res.Late++
 		case KindConflict:
 			res.Conflicts++
-		case KindGap:
-			res.Gaps++
 		default:
 			res.SetAside++
 		}
 		in.Log.Warn("remote bundle not loaded", "site", site, "bundle", c.ref.Dir(), "kind", kind, "reason", reason)
-		return in.Hub.Mark(ctx, Mark{Site: site, Collector: coll, Key: key, Stream: c.stream, Seq: c.ref.Seq, End: c.ref.End, Kind: kind, Reason: reason, Digest: c.digest})
+		return nil
 	}
-	if c.man == nil { // no manifest yet: a copy still running, or one that never finished
+	// aside: a problem with the bundle - waited for inside the settle time, marked past it
+	aside := func(kind, reason string) (bool, error) {
 		if in.settling(c) {
+			in.Log.Info("remote bundle waits (inside the settle time)", "site", site, "bundle", c.ref.Dir(), "kind", kind, "reason", reason)
 			return true, nil
 		}
-		return false, mark(format.KindMissing, "manifest.json is not in the drop")
+		return false, mark(kind, reason)
 	}
+	if c.man == nil { // no manifest yet: a copy still running, or one that never finished
+		return aside(format.KindMissing, "manifest.json is not in the drop")
+	}
+	retried := false
 	if digest, kind, found, err := in.Hub.Recorded(ctx, site, coll, key, c.stream, c.ref.Seq); err != nil {
 		return false, err
 	} else if found {
@@ -298,8 +395,12 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 		case kind == "loaded" && digest == c.digest:
 			res.Skipped++
 			return false, nil
-		case kind == "loaded":
-			return false, mark(KindConflict, fmt.Sprintf("seq %d is loaded with manifest %s; this one is %s", c.ref.Seq, short(digest), short(c.digest)))
+		case kind == "loaded", kind == "loading" && digest != c.digest:
+			return false, mark(KindConflict, fmt.Sprintf("seq %d is %s with manifest %s; this one is %s", c.ref.Seq, kind, short(digest), short(c.digest)))
+		case kind == "loading":
+			// begun and stopped part-way with this manifest: it resumes at its first batch not loaded
+		case kind == KindRetry:
+			retried = true
 		case digest == c.digest && !retryKinds[kind]:
 			res.Kept++
 			return false, nil
@@ -308,54 +409,71 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 	// 1. the signature, before any other file is read
 	if keys := in.Site.Collectors[coll]; len(keys) > 0 {
 		if !c.files[format.SigFile] {
-			return false, mark(KindSignature, "the collector signs and the bundle has no manifest.sig")
+			return aside(KindSignature, "the collector signs and the bundle has no manifest.sig")
 		}
 		sig, err := in.Site.Drop.Get(ctx, c.ref.Dir()+"/"+format.SigFile)
 		if err != nil {
-			return false, err
+			return aside(KindDropError, err.Error())
 		}
 		if err := format.VerifySignature(keys, c.man, sig); err != nil {
-			return false, mark(KindSignature, err.Error())
+			return aside(KindSignature, err.Error())
 		}
 	}
 	// 2. the manifest: its format, then its names against the configuration and its folder
 	m, err := format.DecodeManifest(c.man)
 	switch {
 	case errors.Is(err, format.ErrNewerFormat):
-		return false, mark(KindNewerFormat, err.Error())
+		return aside(KindNewerFormat, err.Error())
 	case err != nil:
-		return false, mark(format.KindMalformed, err.Error())
+		return aside(format.KindMalformed, err.Error())
 	}
 	if err := m.Matches(c.ref); err != nil {
-		return false, mark(KindMismatch, err.Error())
+		return aside(KindMismatch, err.Error())
 	}
 	if m.Site != site || m.Collector != coll {
-		return false, mark(KindMismatch, fmt.Sprintf("the manifest names site %s, collector %s; the drop's is %s / %s", m.Site, m.Collector, site, coll))
+		return aside(KindMismatch, fmt.Sprintf("the manifest names site %s, collector %s; the drop's is %s / %s", m.Site, m.Collector, site, coll))
 	}
-	// 3. every view on pgvigil's own list
+	// 3. every view on pgvigil's own list, and the bundle's size within the cap
+	var raw int64
+	known := map[string]bool{format.ManifestFile: true, format.SigFile: true, format.SumsFile: true}
 	for _, f := range m.Files {
 		if !in.Allow[f.View] {
-			return false, mark(KindUnknownView, fmt.Sprintf("view %s is not one a bundle may carry", f.View))
+			return aside(KindUnknownView, fmt.Sprintf("view %s is not one a bundle may carry", f.View))
+		}
+		raw += f.RawBytes
+		known[f.Name] = true
+	}
+	max := in.MaxBundle
+	if max <= 0 {
+		max = DefaultMaxBundle
+	}
+	if raw > max {
+		return false, mark(format.KindTooBig, fmt.Sprintf("its views uncompress to %d bytes, past the hub's cap of %d for one bundle", raw, max))
+	}
+	for name := range c.files {
+		if !known[name] {
+			return aside(format.KindExtra, fmt.Sprintf("%s is not a file the manifest lists", name))
 		}
 	}
-	// 4. its place in the stream: an older seq than the newest loaded is late; a missing seq waits gap_wait
-	afterGap, gapReason := false, ""
+	// 4. its place in the stream: an older seq than the newest loaded is late (unless retried); a missing seq waits
+	// gap_wait from the hub's first sight of this bundle
+	afterGap, gapReason := retried, ""
 	n, ok, err := in.Hub.Newest(ctx, site, coll, key, m.Stream)
 	if err != nil {
 		return false, err
 	}
 	next := uint64(1)
-	if ok {
+	if ok && !retried {
 		if m.Seq <= n.Seq {
 			return false, mark(KindLate, fmt.Sprintf("seq %d after seq %d was loaded", m.Seq, n.Seq))
 		}
 		next = n.Seq + 1
-	} else if in.Log != nil {
+	} else if !ok && in.Log != nil {
 		if p, had, _ := in.Hub.Newest(ctx, site, coll, key, ""); had && p.Stream != m.Stream {
 			in.Log.Info("remote collector started a new stream", "site", site, "collector", coll, "instance", key, "stream", m.Stream, "previous", p.Stream)
 		}
 	}
-	if m.Seq > next {
+	if !retried && m.Seq > next {
 		if in.settling(c) {
 			return true, nil
 		}
@@ -366,21 +484,21 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 			gapReason = fmt.Sprintf("seqs %d to %d missing past gap_wait (%s)", next, m.Seq-1, in.Site.GapWait)
 		}
 	}
-	// 5. the files, copied here and checked against the manifest
+	// 5. the files the manifest lists, copied here and checked against it
 	dir, err := os.MkdirTemp(in.Work, "bundle-")
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	for name := range c.files {
-		if name == format.ManifestFile {
+		if name == format.ManifestFile || !known[name] {
 			continue
 		}
 		b, err := in.Site.Drop.Get(ctx, c.ref.Dir()+"/"+name)
 		if err != nil {
-			return false, err
+			return aside(KindDropError, err.Error())
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(name)), b, 0o600); err != nil {
 			return false, err
 		}
 	}
@@ -391,36 +509,32 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 	if err := format.Verify(fsys, m, in.MaxRaw); err != nil {
 		var p *format.Problem
 		if errors.As(err, &p) {
-			if (p.Kind == format.KindMissing || p.Kind == format.KindShort) && in.settling(c) {
-				return true, nil
-			}
-			return false, mark(p.Kind, p.Error())
+			return aside(p.Kind, p.Error())
 		}
 		return false, err
 	}
-	b := &Bundle{Ref: c.ref, Manifest: m, Digest: c.digest, AfterGap: afterGap}
+	b := &Bundle{Ref: c.ref, Manifest: m, Digest: c.digest, AfterGap: afterGap, Gap: gapReason}
 	for _, f := range m.Files {
 		lines, err := format.ReadLines(fsys, f, in.MaxRaw)
 		if err != nil {
-			return false, mark(format.KindMalformed, err.Error())
+			return aside(format.KindMalformed, err.Error())
 		}
 		for _, l := range lines {
 			b.Batches = append(b.Batches, Batch{View: f.View, N: l.N, At: l.At, Rows: l.Rows})
 		}
 	}
 	sort.Slice(b.Batches, func(i, j int) bool { return b.Batches[i].N < b.Batches[j].N })
-	if afterGap {
-		if err := mark(KindGap, gapReason); err != nil {
-			return false, err
-		}
-	}
 	if err := in.Hub.Load(ctx, in.Site, b); err != nil {
 		if errors.Is(err, ErrOwned) {
-			return false, mark(KindOwned, err.Error())
+			return aside(KindOwned, err.Error())
 		}
-		return false, err
+		return aside(KindLoad, err.Error())
 	}
 	res.Loaded++
+	if gapReason != "" {
+		res.Gaps++
+		in.Log.Warn("remote ingest went past a gap", "site", site, "bundle", c.ref.Dir(), "reason", gapReason)
+	}
 	return false, nil
 }
 

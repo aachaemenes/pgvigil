@@ -43,13 +43,13 @@ func TestRemoteObjectsOnAStore(t *testing.T) {
 	}
 	ensure := func(name string) (int, error) {
 		var id int
-		err := pool.QueryRow(ctx, `SELECT pgvigil.import_remote_ensure($1, 'sqlserver', $2, 'onprem', '16.0.4295.3', 160000, false, '{env:prod}'::text[])`, site, name).Scan(&id)
+		err := pool.QueryRow(ctx, `SELECT pgvigil.remote_ensure_instance($1, 'sqlserver', $2, 'onprem', '16.0.4295.3', 160000, false, '{env:prod}'::text[])`, site, name).Scan(&id)
 		return id, err
 	}
 	// (a) the instance: '<site>/<name>', owned by the site, the manifest's and the site's tags; once
 	id, err := ensure("SQL01")
 	if err != nil {
-		t.Fatalf("import_remote_ensure: %v", err)
+		t.Fatalf("remote_ensure_instance: %v", err)
 	}
 	if again, err := ensure("SQL01"); err != nil || again != id {
 		t.Errorf("a second ensure: %d %v, want %d", again, err, id)
@@ -96,7 +96,7 @@ func TestRemoteObjectsOnAStore(t *testing.T) {
 	}
 	batch := func(b int64, view string, n int, gap bool, rows string) (bool, error) {
 		var loaded bool
-		err := pool.QueryRow(ctx, `SELECT pgvigil.import_remote_batch($1, $2, $3, $4, $5, $6::jsonb, $7)`, b, view, n, id, end.Add(-time.Minute), rows, gap).Scan(&loaded)
+		err := pool.QueryRow(ctx, `SELECT pgvigil.remote_batch($1, $2, $3, $4, $5, $6::jsonb, $7)`, b, view, n, id, end.Add(-time.Minute), rows, gap).Scan(&loaded)
 		return loaded, err
 	}
 	agRows := `[{"group_name":"ag1","role":"PRIMARY","synchronization_health":"HEALTHY"}]`
@@ -150,7 +150,11 @@ func TestRemoteObjectsOnAStore(t *testing.T) {
 	if v := one("the marks' counts", `SELECT late || '|' || set_aside || '|' || newest_set_aside_reason FROM pgvigil.remote_collector_state WHERE site = $1 AND collector = 'c1'`, site); !strings.HasPrefix(fmt.Sprint(v), "1|1|checksum") {
 		t.Errorf("remote_collector_state's marks: %v, want 1|1|checksum...", v)
 	}
-	// (f) the silence: the site's newest bundle ended 3 minutes ago, expected every minute: past 2 x, a warning
+	// (f) the silence, by the hub's newest load (its clock, FOLD 1+2+3): loaded 15 minutes ago, expected every minute and a
+	// bundle of 5 minutes - quiet past 2 x max(60, 300) s, a warning (critical past 6 x)
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.remote_streams SET high_loaded_at = now() - interval '15 minutes' WHERE site = $1`, site); err != nil {
+		t.Fatal(err)
+	}
 	if v := one("the site's silence", `SELECT severity || '|' || setting FROM pgvigil.remote_silence_findings WHERE value = $1 AND instance_id IS NULL`, site); fmt.Sprint(v) != "warning|remote site quiet" {
 		t.Errorf("the site's silence finding: %v, want warning|remote site quiet", v)
 	}
@@ -168,7 +172,7 @@ func TestRemoteObjectsOnAStore(t *testing.T) {
 	// an instance whose only bundle is still loading names its collector
 	id2, err := ensure("SQL02")
 	if err != nil {
-		t.Fatalf("import_remote_ensure SQL02: %v", err)
+		t.Fatalf("remote_ensure_instance SQL02: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.remote_bundle_begin($1, 'c2', 'SQL02', 'st2', 1, $2, $3, 'd9', $4)`, site, end.Add(-5*time.Minute), end, id2); err != nil {
 		t.Fatalf("remote_bundle_begin SQL02: %v", err)
@@ -205,18 +209,21 @@ func TestRemoteJoinDraftOnAStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
+	if os.Getenv("PGVIGIL_REMOTE_DRAFT") != "1" {
+		t.Skip("PGVIGIL_REMOTE_DRAFT=1 is not set: the join draft's rows run where the box job applied scripts/remote-join-draft.sql")
+	}
 	var drafted bool
 	if err := pool.QueryRow(ctx, `SELECT pg_get_viewdef('pgvigil.findings'::regclass) LIKE '%remote_silence_findings%'`).Scan(&drafted); err != nil {
 		t.Fatal(err)
 	}
 	if !drafted {
-		t.Skip("scripts/remote-join-draft.sql is not applied on this store")
+		t.Fatal("PGVIGIL_REMOTE_DRAFT=1 and pgvigil.findings has no remote_silence_findings arm: join line 1 is missing")
 	}
 	site := fmt.Sprintf("h1j%d", time.Now().UnixNano()%1000000000)
 	if _, err := pool.Exec(ctx, `SELECT pgvigil.remote_site_sync($1, '{}'::text[], 60, 180)`, site); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE pgvigil.remote_sites SET synced_at = now() - interval '10 minutes' WHERE name = $1`, site); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE pgvigil.remote_sites SET first_synced_at = now() - interval '10 minutes' WHERE name = $1`, site); err != nil {
 		t.Fatal(err)
 	}
 	var sev string

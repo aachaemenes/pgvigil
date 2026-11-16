@@ -90,6 +90,8 @@ type Config struct {
 	Remote *Remote `yaml:"remote"`
 	// RemoteSites are a hub's remote sites (remote.go): the drops it ingests remote collectors' bundles from.
 	RemoteSites []RemoteSite `yaml:"remote_sites"`
+	// IngestDSNRaw is the login ingest reads remote_sites: with (remote.go: a login in pgvigil_ingest, env: / file:)
+	IngestDSNRaw string `yaml:"ingest_dsn"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }

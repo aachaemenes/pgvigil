@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -29,13 +30,36 @@ func OpenDrop(ctx context.Context, d config.ExportDestination) (Drop, error) {
 	return export.NewFolder(d.Path), nil
 }
 
+// blobAccount: the storage account an azure_blob drop reads - its account_url's host, else its SAS URL's host, else its
+// connection string's AccountName (a SAS or a connection string drop names no account_url) - lower case
+func blobAccount(d config.ExportDestination) string {
+	host := func(raw string) string {
+		if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Host != "" {
+			return strings.ToLower(u.Host)
+		}
+		return ""
+	}
+	if h := host(d.AccountURL); h != "" {
+		return h
+	}
+	if h := host(d.SASURL()); h != "" {
+		return h
+	}
+	for _, part := range strings.Split(d.ConnectionString(), ";") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(part), "="); ok && strings.EqualFold(k, "AccountName") {
+			return strings.ToLower(v) + ".blob.core.windows.net"
+		}
+	}
+	return ""
+}
+
 // dropID names the place a drop reads, so two sites never read one
 func dropID(d config.ExportDestination) string {
 	switch d.Type {
 	case "s3":
 		return "s3 " + strings.TrimRight(d.Endpoint, "/") + " " + d.Bucket + "/" + strings.Trim(d.Prefix, "/")
 	case "azure_blob":
-		return "azure_blob " + strings.ToLower(strings.TrimRight(d.AccountURL, "/")) + " " + d.Container + "/" + strings.Trim(d.Prefix, "/")
+		return "azure_blob " + blobAccount(d) + " " + d.Container + "/" + strings.Trim(d.Prefix, "/")
 	}
 	return "folder " + filepath.Clean(d.Path)
 }

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/aachaemenes/pgvigil/internal/remote"
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
 )
@@ -63,7 +66,28 @@ func TestIngestCommand(t *testing.T) {
 	if dsn == "" {
 		t.Skip("PGVIGIL_REPO_TEST_DSN is not set: the store half of the row is skipped")
 	}
+	if os.Getenv("PGVIGIL_REMOTE_DRAFT") != "1" {
+		t.Skip("PGVIGIL_REMOTE_DRAFT=1 is not set: the store half runs where the box job applied scripts/remote-join-draft.sql (the ingest door)")
+	}
 	t.Setenv("PGVIGIL_INGEST_ROW_DSN", dsn)
+	// ingest's own login: a member of pgvigil_ingest (FOLD 1+2+3: never the collector's or the owner's)
+	pc, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	role := fmt.Sprintf("h5ing_%d", time.Now().UnixNano()%1000000000)
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN IN ROLE pgvigil_ingest`, role)); err != nil {
+		t.Fatalf("an ingest login: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP ROLE IF EXISTS %s`, role)) })
+	t.Setenv("PGVIGIL_INGEST_LOGIN_DSN", fmt.Sprintf("host=%s port=%d user=%s dbname=%s", pc.Host, pc.Port, role, pc.Database))
+	sites = file("sites-ingest.yaml", fmt.Sprintf("repository:\n  dsn: env:PGVIGIL_INGEST_ROW_DSN\ninstances: []\ningest_dsn: env:PGVIGIL_INGEST_LOGIN_DSN\nremote_sites:\n"+
+		"  - name: %s\n    drop: {type: folder, path: '%s'}\n    collectors: [{name: c1}]\n", site, drop))
 	to := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Minute)
 	write := func(seq uint64) format.Ref {
 		t.Helper()

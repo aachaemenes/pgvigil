@@ -810,3 +810,105 @@ BEGIN
   VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
   RETURN n;
 END $$;
+
+-- pgvigil.apply_roles: 0300's, whole, with REMOTE line 4 (the ingest door), then run so the grants take
+CREATE OR REPLACE FUNCTION pgvigil.apply_roles()
+ RETURNS void
+ LANGUAGE plpgsql
+AS $$
+DECLARE
+  f record;
+  t record;
+BEGIN
+  REVOKE ALL ON SCHEMA pgvigil FROM PUBLIC;
+  -- REMOTE line 4 (0329): pgvigil_ingest's USAGE beside the others
+  GRANT USAGE ON SCHEMA pgvigil TO pgvigil_collector, pgvigil_reader, pgvigil_auth, pgvigil_ingest;
+
+  FOR f IN
+    SELECT p.oid::regprocedure AS sig, p.proname
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'pgvigil'
+  LOOP
+    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', f.sig);
+    IF f.proname IN ('remote_site_sync', 'remote_sites_retire', 'remote_ensure_instance', 'remote_seen', 'remote_newest',
+                     'remote_recorded', 'remote_retries', 'remote_retry', 'remote_bundle_begin', 'remote_batch',
+                     'remote_bundle_done', 'remote_mark', 'remote_purge') THEN
+      -- REMOTE line 4 (0329): the ingest door - runs as the owner, pgvigil_ingest's alone (never the collector's, never the reader's)
+      EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
+      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader, pgvigil_collector', f.sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_ingest', f.sig);
+    ELSIF f.proname LIKE 'import\_%' OR f.proname IN ('ensure_instance', 'log_collection', 'schema_latest', 'schema_missing', 'log_cursor', 'mssql_hadr_cursor') THEN
+      -- the collector's door: runs as the owner, sees only its arguments
+      EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_collector', f.sig);
+    ELSIF f.proname LIKE 'ui\_%' THEN
+      -- the UI login's door: one named user's hash and the user count, never the table
+      EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
+      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
+    ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
+                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
+                        -- task 406, 0157: they delete or write for the imports, and the reader never calls them
+                        'mssql_qs_plans_purge', 'mssql_plan_stats_store', 'mssql_plans_policy_drop',
+                        -- [#6 the join 0300 --------]
+                        -- B2a-N2, 0167: the Azure SQL Database hours' writers - the import's trigger and 'pgvigil purge' run them as the owner
+                        -- [#1 B2a-N2 8aecbb2b]
+                        'mssql_azuredb_hour_partition', 'mssql_azuredb_hour_recompute', 'mssql_azuredb_hour_rebuild', 'mssql_azuredb_hour_heal',
+                        'mssql_azuredb_hour_failed', 'mssql_azuredb_hour_pending', 'mssql_azuredb_hour_heal_one', 'mssql_azuredb_hour_tg',
+                        'mssql_azuredb_hour_purge',
+                        -- [#2 413 7184f8ea]
+                        'mssql_index_depth_purge', 'mssql_fragmentation_stale',
+                        -- [#6 the join 0300 --------]
+                        -- the Parquet export, 0256: the exporter's door, not the reader's
+                        -- [#3 PARQUET 16659e64]
+                        'export_run_record', 'export_off',
+                        -- [#6 the join 0300 --------]
+                        -- the agent door, 0268: the agent's functions, not the reader's
+                        -- [#4 81-AGENT 654a9cd5]
+                        'agent_investigation_list', 'agent_investigation_claim', 'agent_investigation_renew', 'agent_investigation_release',
+                        'agent_investigation_report', 'agent_investigation_journal_select', 'agent_investigation_journal_done',
+                        'investigations_purge', 'investigations_settle', 'investigation_journal_add', 'agent_claim_row',
+                        -- [#6 the join 0300 --------]
+                        -- 403a, 0154: the history's month partition, made as the owner for the alert sender, which keeps
+                        -- 0154's own grant - this branch takes back only the reader's
+                        'findings_history_partition') THEN
+      -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
+      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+    ELSE
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_reader', f.sig);
+    END IF;
+  END LOOP;
+-- [#3 PARQUET 16659e64]
+
+  -- the Parquet export (0256): its two functions are the exporter's (parquet-join-lines.sql 1)
+  GRANT EXECUTE ON FUNCTION pgvigil.export_run_record(text, text, timestamptz, timestamptz, text, timestamptz, text, int, int, bigint, bigint, text) TO pgvigil_exporter;
+  GRANT EXECUTE ON FUNCTION pgvigil.export_off(text) TO pgvigil_exporter;
+-- [#4 81-AGENT 654a9cd5]
+
+  -- the agent door (0268): the seven agent_investigation_* are the agent's (0268's own GRANT, kept; agent-join-lines.sql 1)
+  GRANT EXECUTE ON FUNCTION pgvigil.agent_investigation_list(text, text, int), pgvigil.agent_investigation_claim(bigint, text),
+    pgvigil.agent_investigation_renew(bigint, text), pgvigil.agent_investigation_release(bigint, text, text),
+    pgvigil.agent_investigation_report(bigint, text, text, text, text, jsonb, jsonb, text),
+    pgvigil.agent_investigation_journal_select(bigint, text, text),
+    pgvigil.agent_investigation_journal_done(bigint, bigint, int, text) TO pgvigil_agent;
+
+  -- [#5 81-AGENT 654a9cd5]
+  -- the agent door x the request queue (0268 x 0200): a queue-mode serve writes the asks through pgvigil_requester
+  -- (agent-join-lines.sql 3); apply_roles revokes a function's grants only from PUBLIC and the reader, so this grant stands
+  GRANT EXECUTE ON FUNCTION pgvigil.import_investigation_request(timestamptz, jsonb),
+    pgvigil.import_investigation_event(timestamptz, jsonb) TO pgvigil_requester;
+
+  FOR t IN
+    SELECT c.oid::regclass AS rel, c.relname
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p', 'v')
+  LOOP
+    EXECUTE format('REVOKE ALL ON %s FROM PUBLIC, pgvigil_collector, pgvigil_auth', t.rel);
+    IF t.relname LIKE 'ui\_%' THEN
+      EXECUTE format('REVOKE ALL ON %s FROM pgvigil_reader', t.rel);
+    ELSE
+      EXECUTE format('GRANT SELECT ON %s TO pgvigil_reader', t.rel);
+    END IF;
+  END LOOP;
+END $$;
+SELECT pgvigil.apply_roles();

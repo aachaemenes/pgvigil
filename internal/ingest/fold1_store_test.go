@@ -56,13 +56,21 @@ func (f *fold1) one(q string, args ...any) (any, error) {
 	return v, err
 }
 
+// drafted: the join draft's rows run only where the box job applied scripts/remote-join-draft.sql and says so
+// (PGVIGIL_REMOTE_DRAFT=1, part 3 S8); with the flag a missing arm fails, never skips
 func (f *fold1) drafted() bool {
 	f.t.Helper()
+	if os.Getenv("PGVIGIL_REMOTE_DRAFT") != "1" {
+		f.t.Skip("PGVIGIL_REMOTE_DRAFT=1 is not set: the join draft's rows run where the box job applied scripts/remote-join-draft.sql")
+	}
 	v, err := f.one(`SELECT pg_get_viewdef('pgvigil.findings'::regclass) LIKE '%remote_silence_findings%'`)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return v == true
+	if v != true {
+		f.t.Fatal("PGVIGIL_REMOTE_DRAFT=1 and pgvigil.findings has no remote_silence_findings arm: join line 1 is missing")
+	}
+	return true
 }
 
 // ensure: the site's instance through the remote ensure under the name this tree has (remote_ensure_instance since
@@ -208,7 +216,7 @@ func TestRemoteIntervalsFromTheNewestOnAStore(t *testing.T) {
 
 // remoteWriters: every function the ingest door holds (FOLD 1, B5 as answered: an ingest login's alone)
 var remoteWriters = []string{"remote_site_sync", "remote_sites_retire", "remote_ensure_instance", "remote_bundle_begin", "remote_batch",
-	"remote_bundle_done", "remote_mark", "remote_retry", "remote_purge"}
+	"remote_bundle_done", "remote_mark", "remote_retry", "remote_purge", "remote_seen", "remote_newest", "remote_recorded", "remote_retries"}
 
 // B5: after migrate (the join draft applied, as the join will be) every remote writer is the ingest door's -
 // SECURITY DEFINER, EXECUTE for pgvigil_ingest, none for pgvigil_collector or pgvigil_reader; a collector login calling

@@ -43,6 +43,7 @@ type memHub struct {
 	retry  map[string]time.Time // a key's open -retry (FOLD 1 B4): its window end
 	fail   map[string]error     // an instance key whose Load fails (FOLD 1 S5)
 	seen   map[string]time.Time // a folder's first sight by the hub (FOLD 2 B1)
+	open   map[string]bool      // the open marks: bundle key|kind|digest
 	// sightNow: a folder's first sight is the round that first lists it (the hub's real rule); false = its window's end,
 	// the settle clock every row before FOLD 2 was written against
 	sightNow bool
@@ -74,6 +75,9 @@ func (h *memHub) Load(_ context.Context, s Site, b *Bundle) error {
 	m := b.Manifest
 	k := hk(s.Name, m.Collector, b.Ref.InstanceKey, m.Stream, m.Seq)
 	delete(h.retry, k)
+	if b.Gap != "" { // the gap ingest went past, recorded with the load
+		h.marks = append(h.marks, Mark{Site: s.Name, Collector: m.Collector, Key: b.Ref.InstanceKey, Stream: m.Stream, Seq: m.Seq, End: m.WindowTo, Kind: KindGap, Reason: b.Gap, Digest: b.Digest})
+	}
 	h.loaded[k], h.kinds[k] = b.Digest, "loaded"
 	n := Newest{Stream: m.Stream, Seq: m.Seq, End: m.WindowTo}
 	for _, nk := range []string{s.Name + "/" + m.Collector + "/" + b.Ref.InstanceKey + "/" + m.Stream, s.Name + "/" + m.Collector + "/" + b.Ref.InstanceKey + "/"} {
@@ -86,21 +90,33 @@ func (h *memHub) Load(_ context.Context, s Site, b *Bundle) error {
 	return nil
 }
 
-func (h *memHub) Mark(_ context.Context, m Mark) error {
+func (h *memHub) Mark(_ context.Context, m Mark) (bool, error) {
+	k := hk(m.Site, m.Collector, m.Key, m.Stream, m.Seq)
+	if h.open == nil {
+		h.open = map[string]bool{}
+	}
+	if ok := h.open[k+"|"+m.Kind+"|"+m.Digest]; ok { // one open mark per bundle and kind, as 0329's index
+		return false, nil
+	}
+	h.open[k+"|"+m.Kind+"|"+m.Digest] = true
 	h.marks = append(h.marks, m)
 	if m.Kind != KindGap {
-		k := hk(m.Site, m.Collector, m.Key, m.Stream, m.Seq)
 		if _, ok := h.kinds[k]; !ok {
 			h.loaded[k], h.kinds[k] = m.Digest, m.Kind
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // retryBundle is pgvigil ingest -retry on the hub's side: the bundle's mark cleared and a retry recorded (stream st1)
 func (h *memHub) retryBundle(site, coll string, ref format.Ref) {
 	k := hk(site, coll, ref.InstanceKey, streamIDs["st1"], ref.Seq)
 	h.kinds[k], h.retry[k] = "retry", ref.End
+	for o := range h.open {
+		if strings.HasPrefix(o, k+"|") {
+			delete(h.open, o)
+		}
+	}
 }
 
 // Seen: the hub's first sight of a bundle folder (the settle clock: FOLD 2 B1)

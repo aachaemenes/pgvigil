@@ -96,7 +96,7 @@ func (c *Config) validateRemote() error {
 	for _, k := range []struct {
 		key string
 		set bool
-	}{{"remote_sites", len(c.RemoteSites) > 0}, {"export", c.Export != nil}, {"dbadash", len(c.DBADash) > 0}, {"reports_dsn", c.ReportsDSNRaw != ""}} {
+	}{{"remote_sites", len(c.RemoteSites) > 0}, {"ingest_dsn", c.IngestDSNRaw != ""}, {"export", c.Export != nil}, {"dbadash", len(c.DBADash) > 0}, {"reports_dsn", c.ReportsDSNRaw != ""}} {
 		if k.set {
 			return fmt.Errorf("remote: %s: needs a repository, and a remote collector has none", k.key)
 		}
@@ -171,8 +171,16 @@ func (c *Config) checkQueryText(v, where string) error {
 	return nil
 }
 
-// validateRemoteSites checks a hub's remote_sites: each site's name, drop, tags, cadence and collectors.
+// IngestDSN is ingest's login (ingest_dsn: resolved from env: / file:): a login in pgvigil_ingest, checked at start by
+// ingest.CheckIngestLogin. Empty = remote_sites: is not read (pgvigil run says so; pgvigil ingest refuses).
+func (c Config) IngestDSN() string { return Resolve(strings.TrimSpace(c.IngestDSNRaw)) }
+
+// validateRemoteSites checks a hub's remote_sites: each site's name, drop, tags, cadence and collectors; ingest_dsn
+// without remote_sites: is refused (it would read nothing).
 func (c *Config) validateRemoteSites() error {
+	if strings.TrimSpace(c.IngestDSNRaw) != "" && len(c.RemoteSites) == 0 {
+		return fmt.Errorf("ingest_dsn: set without remote_sites: - ingest reads the sites remote_sites: lists (docs/remote-collector.md)")
+	}
 	seen := map[string]bool{}
 	for i := range c.RemoteSites {
 		s := &c.RemoteSites[i]
