@@ -50,15 +50,26 @@
 #     computes a few cells from the clock at the call (BackupStatus.SnapshotAge as 'dd hh:mm:ss', ages in whole
 #     minutes or days): such a cell is equal within 300 s, or 1 unit, and their number is printed. The exact snapshot:
 #     the sessions page called with one SnapshotDateUTC as pgvigil's page printed it (7 digits) returns the same rows as
-#     RunningQueries_Get called with that exact literal, 1 row or more.
+#     RunningQueries_Get called with that exact literal, 1 row or more. A page's text columns (a statement, a job's
+#     description, an alert's notification message: the list in internal/dbadash/pages.go, handed to this proof by
+#     TestMaskCells) are shown through the credential mask, so the second client's cells of those columns pass the same
+#     mask before the comparison (TestMaskCells again: the package's own mask, no second copy of it here), and a text
+#     cell that differs is named by its column and its length, never printed.
 #     C2 (the text a page shows passes the collection's credential mask) after the comparison, as sa: a new dbo.QueryText
 #     handle on the first session of the instance's latest running-queries snapshot (its offsets NULL, so text is the
-#     batch), the description of the instance's first job (dbo.Jobs) and the notification message of its first alert
-#     (dbo.Alerts), each holding one credential form with a token made at run time; the pages read again: the sessions
-#     page's batch_text and text are "CREATE LOGIN pgv_c2 WITH PASSWORD = '<masked>'; SELECT 1", the jobs page's
+#     batch), a cursor of that session (dbo.RunningQueriesCursors, uniqueifier 1, created a minute before the snapshot)
+#     on a second new handle, the description of the instance's first job (dbo.Jobs) and the notification message of its
+#     first alert (dbo.Alerts), each holding one credential form with a token made at run time; the pages read again: the
+#     sessions page's batch_text and text are "CREATE LOGIN pgv_c2 WITH PASSWORD = '<masked>'; SELECT 1", its
+#     cursor_text "ALTER LOGIN pgv_c2 WITH PASSWORD = '<masked>'", the jobs page's
 #     description "loads the warehouse; Server=db1;Database=app;User Id=etl;Password=<masked>;", the alerts page's
 #     Notification Message 'page the DBA: sqlcmd -S db1 -U ops -P <masked> -Q "EXEC dbo.ack"', and no page's reply holds
-#     a token; DBA Dash's three tables still hold their tokens (read as sa): the mask is the page's, not the source's.
+#     a token; DBA Dash's tables still hold their four tokens (read as sa): the mask is the page's, not the source's. A
+#     job or an alert name with a quote in it is seeded as it is; with PGVIGIL_DBADASH_BAK an instance without a job or
+#     without an alert has that text said as not run.
+#     C3 the comparison of C again for the sessions, jobs and alerts pages as C2 read them, the seeded credentials in
+#     DBA Dash's tables: the three pages equal (the second client's text cells through the same mask), and no line the
+#     comparison prints holds a token.
 #  D. the actions, through the API of a running `pgvigil serve` as a signed-in UI user:
 #     D1 the DBADash read (TestLive) stores the instance; GET /api/dbadash?repo=lab&id=<id>&part=pgvigil answers 200
 #        with 0 rows while pgvigil monitors no SQL Server of that @@SERVERNAME;
@@ -72,15 +83,20 @@
 #        takes the 24 h branch, and D1s / D1p are not run (a restored repository's history is the site's);
 #     D1t (the instance's query_text on the statements a page shows; run on a tree whose internal/web/q_dbadash.go
 #        calls Statements, or with PGVIGIL_DOOR_TEXTRULE=1, else said as not run) while no pgvigil instance matches
-#        the DBA Dash instance, serve under the file's query_text none: the sessions page's batch_text and text of C2's
-#        session both read '(not shown: this instance's query_text policy is none)';
+#        the DBA Dash instance (part=imported holds no row for it), serve under the file's query_text none with the
+#        instance sqlbox at full (a wrong match would show the statements): the sessions page's batch_text, text and
+#        cursor_text of C2's session all read '(not shown: this instance's query_text policy is none)';
 #     D2 after `pgvigil collect -once mssql_instance` of a pgvigil SQL Server instance on the same server it returns
 #        that instance (its instance_id and name); D2x a session named DBADash_T206 (stopped, a ring buffer) made on the
 #        server, then `collect -once mssql_xe`: pgvigil.mssql_xe_foreign holds it 'false|ring_buffer' and the read's count
 #        equals the server's own count of DBADash_% sessions; the session dropped;
-#     D2t (as D1t) with the matched instance sqlbox: at query_text none under the file's full the two cells read the
-#        same words; at normalized under the file's none both read 'CREATE LOGIN pgv_c2 WITH PASSWORD = ?; SELECT ?'
-#        (the masked text through the collector's normalizer); serve then runs D3's configuration again;
+#     D2t (as D1t) with the matched instance sqlbox: at query_text none under the file's full the three cells read the
+#        same words; the same with the repository named in another case (repo=LAB: the page answers it, so the rule
+#        must); the same with the door's stored row of the instance deleted (a server DBA Dash added after the door's
+#        last read: the screen's own Instance is the server name pgvigil collects sqlbox under), the row then read
+#        again by TestLive; at normalized under the file's none batch_text and text read 'CREATE LOGIN pgv_c2 WITH
+#        PASSWORD = ?; SELECT ?' and cursor_text 'ALTER LOGIN pgv_c2 WITH PASSWORD = ?' (the masked text through the
+#        collector's normalizer); serve then runs D3's configuration again;
 #     D3 without an actions_dsn on it, a kill of the proof's own application session is 409, outcome refused, the
 #        detail names 'actions_dsn', one audit row 'refused' is in pgvigil.actions_log and the session is still
 #        connected;
@@ -296,6 +312,7 @@ cat > "$TMPD/grids.py" <<'PY'
 import datetime, decimal, glob, json, os, sys, uuid
 import pymssql
 idn, frm, to, snap = int(os.environ["ID"]), os.environ["FROM"][:19], os.environ["TO"][:19], os.environ["SNAP"]
+label, only = os.environ.get("LABEL", "C"), os.environ.get("ONLY", "").split()
 ids = f"DECLARE @i dbo.IDs; INSERT @i VALUES ({idn}); "
 st = "@IncludeCritical = 1, @IncludeWarning = 1, @IncludeNA = 1, @IncludeOK = 1"
 calls = {  # DBA Dash GUI's parameters for one instance, every status ticked (DBADashGUI source, 4.24.1)
@@ -370,6 +387,7 @@ assert not near("N2", "N3", "FailCount7Days") and near("N4", "N3", "TimeSinceLas
     and near("N4", "N3", "Days since Last Occurrence") and not near("N2", "N3", "JobStepFails7Days"), "near() self-test"
 clockcells[0] = 0
 print(f"read at {int(datetime.datetime.now(datetime.timezone.utc).timestamp())} (the pymssql side; the doorage review, finding 2: the gap to the page read)", flush=True)
+if only: calls = {p: c for p, c in calls.items() if p in only}
 for page, sqltext in calls.items():
     cur = con.cursor()
     cur.execute("SET NOCOUNT ON; " + sqltext)
@@ -407,35 +425,66 @@ for page, sqltext in calls.items():
         rows_seen += len(rows)
     if page == "sessions@snapshot" and rows_seen == 0: bad.append(f"{page}: 0 rows for the snapshot {snap}")
     nonempty += rows_seen > 0
-    print(f"ok   C: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL C: {page}")
+    print(f"ok   {label}: {page}: {len(sets)} set(s), rows {[len(r) for _, r in sets]}, equal" if not any(x.startswith(page) for x in bad) else f"FAIL {label}: {page}")
 if bad: print("\n".join("FAIL " + x for x in bad)); sys.exit(1)
+if only:
+    print(f"ok   {label}: {len(calls)} page(s) ({', '.join(calls)}) equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
+    sys.exit(0)
 if nonempty < 7: print(f"FAIL C: only {nonempty - 1} of 9 pages and the snapshot call returned rows"); sys.exit(1)
 print(f"ok   C: 9 pages and the exact snapshot {snap} equal to DBA Dash's own procedure output through pymssql; {nonempty} with rows; {clockcells[0]} clock-relative cell(s) equal within 300 s or 1 unit")
 PY
-docker run --rm --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES=/w/pages \
-  -v "$TMPD:/w:ro" "$IMG_PY" sh -c 'pip install -q --disable-pip-version-check --root-user-action=ignore "pymssql>=2.3,<2.4" 2>&1 | tail -3 && python /w/grids.py' | tee "$TMPD/grids.out" || true
-grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
+# the second client's container stays for C and C3 (one install of pymssql) and goes after C3
+docker run -d --name "$PYC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" -v "$TMPD:/w:ro" "$IMG_PY" sleep 3600 >/dev/null
+docker exec "$PYC" pip install -q --disable-pip-version-check --root-user-action=ignore "pymssql>=2.3,<2.4" 2>&1 | tail -3 || true
+docker exec "$PYC" python -c 'import pymssql' || fail "C: pymssql did not install in the second client's container"
+# grids <label> <the pages' folder under $TMPD> [<pages>]: the second client's call of each page's procedure against the
+# page's reply in that folder (every page and the exact snapshot, or the pages named); its lines in grids-<label>.out
+grids() {
+  docker exec -e ID="$ID" -e FROM="$FROM" -e TO="$TO" -e SNAP="$SNAPTXT" -e SQLHOST="$SQL" -e DDB="$DDB" -e PAGES="/w/$2" -e LABEL="$1" -e ONLY="${3:-}" \
+    "$PYC" python /w/grids.py | tee "$TMPD/grids-$1.out" || true
+}
+grids C pages
+grep -q "^ok   C: 9 pages and the exact snapshot" "$TMPD/grids-C.out" || fail "C: the pages are not DBA Dash's grids (the lines above)"
 # C2: the text a page shows passes the collection's credential mask (the seeds after the comparison; tokens made now)
-C2A="tk$RANDOM$RANDOM"; C2B="tk$RANDOM$RANDOM"; C2C="tk$RANDOM$RANDOM"
+C2A="tk$RANDOM$RANDOM"; C2B="tk$RANDOM$RANDOM"; C2C="tk$RANDOM$RANDOM"; C2D="tk$RANDOM$RANDOM"
 C2SNAP=$(sq "SELECT CONVERT(varchar(33), MAX(SnapshotDateUTC), 126) FROM dbo.RunningQueries WHERE InstanceID = $ID" "$DDB")
 [[ "$C2SNAP" =~ ^[0-9]{4}- ]] || fail "C2: no running-queries snapshot of instance $ID: '$C2SNAP'"
 C2SID=$(sq "SELECT MIN(session_id) FROM dbo.RunningQueries WHERE InstanceID = $ID AND SnapshotDateUTC = '$C2SNAP'" "$DDB")
 [[ "$C2SID" =~ ^[0-9]+$ ]] || fail "C2: no session in the snapshot $C2SNAP: '$C2SID'"
-C2H="0x$(python3 -c 'import secrets; print(secrets.token_hex(20))')"
+C2H="0x$(python3 -c 'import secrets; print(secrets.token_hex(20))')"; C2HC="0x$(python3 -c 'import secrets; print(secrets.token_hex(20))')"
 sqok "C2: the statement" "INSERT INTO dbo.QueryText (sql_handle, text, SnapshotDate) VALUES ($C2H, N'CREATE LOGIN pgv_c2 WITH PASSWORD = ''$C2A''; SELECT 1', SYSUTCDATETIME());
   UPDATE dbo.RunningQueries SET sql_handle = $C2H, statement_start_offset = NULL, statement_end_offset = NULL
    WHERE InstanceID = $ID AND SnapshotDateUTC = '$C2SNAP' AND session_id = $C2SID" "$DDB"
+# the session's first cursor (the screen shows uniqueifier 1, created at or before the snapshot): its statement by its
+# own handle, the offsets NULL, so cursor_text is the whole text
+sqok "C2: the cursor's statement" "INSERT INTO dbo.QueryText (sql_handle, text, SnapshotDate) VALUES ($C2HC, N'ALTER LOGIN pgv_c2 WITH PASSWORD = ''$C2D''', SYSUTCDATETIME());
+  DELETE dbo.RunningQueriesCursors WHERE InstanceID = $ID AND SnapshotDateUTC = '$C2SNAP' AND session_id = $C2SID AND uniqueifier = 1;
+  INSERT INTO dbo.RunningQueriesCursors (InstanceID, SnapshotDateUTC, session_id, uniqueifier, sql_handle, creation_time_utc)
+  VALUES ($ID, '$C2SNAP', $C2SID, 1, $C2HC, DATEADD(minute, -1, CAST('$C2SNAP' AS datetime2(7))))" "$DDB"
 C2JOB=$(sq "SELECT TOP (1) name FROM dbo.Jobs WHERE InstanceID = $ID AND IsActive = 1 ORDER BY name" "$DDB")
 C2ALERT=$(sq "SELECT TOP (1) name FROM dbo.Alerts WHERE InstanceID = $ID ORDER BY name" "$DDB")
-[[ -n "$C2JOB" && -n "$C2ALERT" ]] || fail "C2: instance $ID has no job ('$C2JOB') or no alert ('$C2ALERT') to carry a text"
-sqok "C2: the job's description" "UPDATE dbo.Jobs SET description = N'loads the warehouse; Server=db1;Database=app;User Id=etl;Password=$C2B;' WHERE InstanceID = $ID AND name = N'$C2JOB'" "$DDB"
-sqok "C2: the alert's message" "UPDATE dbo.Alerts SET notification_message = N'page the DBA: sqlcmd -S db1 -U ops -P $C2C -Q \"EXEC dbo.ack\"' WHERE InstanceID = $ID AND name = N'$C2ALERT'" "$DDB"
+# a restored repository's instance may have no job or no alert: that text is said as not run (the lab's has both)
+if [[ -z "$C2JOB" || -z "$C2ALERT" ]]; then
+  [[ -n "${PGVIGIL_DBADASH_BAK:-}" ]] || fail "C2: instance $ID has no job ('$C2JOB') or no alert ('$C2ALERT') to carry a text"
+  [[ -n "$C2JOB" ]] || echo "not run: C2's job description (instance $ID has no job in the restored repository)"
+  [[ -n "$C2ALERT" ]] || echo "not run: C2's alert message (instance $ID has no alert in the restored repository)"
+fi
+# a name goes into the T-SQL with its quotes doubled
+QT="'"; C2JOBQ=${C2JOB//$QT/$QT$QT}; C2ALERTQ=${C2ALERT//$QT/$QT$QT}; c2want=2
+if [[ -n "$C2JOB" ]]; then
+  sqok "C2: the job's description" "UPDATE dbo.Jobs SET description = N'loads the warehouse; Server=db1;Database=app;User Id=etl;Password=$C2B;' WHERE InstanceID = $ID AND name = N'$C2JOBQ'" "$DDB"; c2want=$((c2want + 1))
+fi
+if [[ -n "$C2ALERT" ]]; then
+  sqok "C2: the alert's message" "UPDATE dbo.Alerts SET notification_message = N'page the DBA: sqlcmd -S db1 -U ops -P $C2C -Q \"EXEC dbo.ack\"' WHERE InstanceID = $ID AND name = N'$C2ALERTQ'" "$DDB"; c2want=$((c2want + 1))
+fi
 src=$(sq "SELECT (SELECT COUNT(*) FROM dbo.QueryText WHERE sql_handle = $C2H AND text LIKE N'%$C2A%') + (SELECT COUNT(*) FROM dbo.Jobs WHERE InstanceID = $ID AND description LIKE N'%$C2B%')
-  + (SELECT COUNT(*) FROM dbo.Alerts WHERE InstanceID = $ID AND notification_message LIKE N'%$C2C%')" "$DDB")
-[[ "$src" == 3 ]] || fail "C2: DBA Dash's tables hold $src of the three seeded tokens (want 3)"
+  + (SELECT COUNT(*) FROM dbo.Alerts WHERE InstanceID = $ID AND notification_message LIKE N'%$C2C%')
+  + (SELECT COUNT(*) FROM dbo.RunningQueriesCursors C JOIN dbo.QueryText T ON T.sql_handle = C.sql_handle
+      WHERE C.InstanceID = $ID AND C.SnapshotDateUTC = '$C2SNAP' AND C.session_id = $C2SID AND C.uniqueifier = 1 AND T.text LIKE N'%$C2D%')" "$DDB")
+[[ "$src" == "$c2want" ]] || fail "C2: DBA Dash's tables hold $src of the $c2want seeded tokens"
 mkdir -p "$TMPD/pages-c2"
 pages "$TMPD/pages-c2" | grep -c ' ok ' | grep -qx 9 || fail "C2: not every page answered after the seeds"
-c2=$(python3 - "$TMPD/pages-c2" "$C2SID" "$C2JOB" "$C2ALERT" "$C2A" "$C2B" "$C2C" <<'PY'
+c2=$(python3 - "$TMPD/pages-c2" "$C2SID" "$C2JOB" "$C2ALERT" "$C2A" "$C2B" "$C2C" "$C2D" <<'PY'
 import json, os, sys
 d, sid, job, alert, toks = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5:]
 def cell(page, keycol, key, col):
@@ -446,11 +495,14 @@ def cell(page, keycol, key, col):
             return row[n.index(col)]
     return "NO ROW"
 stmt = "CREATE LOGIN pgv_c2 WITH PASSWORD = '<masked>'; SELECT 1"
-want = {"sessions batch_text": stmt, "sessions text": stmt,
-        "jobs description": "loads the warehouse; Server=db1;Database=app;User Id=etl;Password=<masked>;",
-        "alerts Notification Message": 'page the DBA: sqlcmd -S db1 -U ops -P <masked> -Q "EXEC dbo.ack"'}
-got = {"sessions batch_text": cell("sessions", "session_id", sid, "batch_text"), "sessions text": cell("sessions", "session_id", sid, "text"),
-       "jobs description": cell("jobs", "name", job, "description"), "alerts Notification Message": cell("alerts", "Alert Name", alert, "Notification Message")}
+want = {"sessions batch_text": stmt, "sessions text": stmt, "sessions cursor_text": "ALTER LOGIN pgv_c2 WITH PASSWORD = '<masked>'"}
+got = {k: cell("sessions", "session_id", sid, k.split()[1]) for k in want}
+if job:
+    want["jobs description"] = "loads the warehouse; Server=db1;Database=app;User Id=etl;Password=<masked>;"
+    got["jobs description"] = cell("jobs", "name", job, "description")
+if alert:
+    want["alerts Notification Message"] = 'page the DBA: sqlcmd -S db1 -U ops -P <masked> -Q "EXEC dbo.ack"'
+    got["alerts Notification Message"] = cell("alerts", "Alert Name", alert, "Notification Message")
 bad = ["%s reads %r" % (k, got[k]) for k in want if got[k] != want[k]]
 for p in ("sessions", "jobs", "alerts"):
     raw = open(os.path.join(d, p + ".json")).read()
@@ -459,7 +511,13 @@ print("ok" if not bad else "; ".join(bad))
 PY
 )
 [[ "$c2" == ok ]] || fail "C2: $c2"
-echo "ok   C2: session $C2SID's batch_text and text, job $C2JOB's description and alert $C2ALERT's Notification Message are shown with their credential as <masked> and the words around it; no page's reply holds a token; DBA Dash's tables hold all three"
+echo "ok   C2: session $C2SID's batch_text, text and cursor_text, job ${C2JOB:-(none)}'s description and alert ${C2ALERT:-(none)}'s Notification Message are shown with their credential as <masked> and the words around it; no page's reply holds a token; DBA Dash's tables hold all $c2want"
+# C3: the comparison again over the seeded pages (the second client reads the credentials as stored, the pages show them masked)
+grids C3 pages-c2 "sessions jobs alerts"
+grep -q "^ok   C3: 3 page(s)" "$TMPD/grids-C3.out" || fail "C3: the seeded pages are not DBA Dash's grids (the lines above)"
+for t in "$C2A" "$C2B" "$C2C" "$C2D"; do ! grep -qF -- "$t" "$TMPD/grids-C3.out" || fail "C3: a line of the comparison holds a seeded token"; done
+docker rm -f "$PYC" >/dev/null
+echo "ok   C3: the sessions, jobs and alerts pages with the seeded credentials equal DBA Dash's own procedure output; no line of the comparison holds a token"
 
 echo "== D. the actions, through pgvigil serve =="
 go build -o "$TMPD/pgvigil" ./cmd/pgvigil
@@ -571,17 +629,26 @@ else
 fi
 # D1t / D2t: the instance's query_text on the statements a page shows (the read rule's wiring in q_dbadash.go)
 textrule=0; grep -q 'Statements(' internal/web/q_dbadash.go 2>/dev/null && textrule=1; [[ "${PGVIGIL_DOOR_TEXTRULE:-}" == 1 ]] && textrule=1
-stmts() { local code; code=$(curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" "$U/api/dbadash?repo=lab&id=$ID&page=sessions")
-  [[ "$code" == 200 ]] || fail "$1: GET page=sessions answered $code: $(cat "$BODY")"
+# stmts <row> [<repo>]: the three statement cells of C2's session on the sessions page, as serve answers them
+stmts() { local code; code=$(curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" "$U/api/dbadash?repo=${2:-lab}&id=$ID&page=sessions")
+  [[ "$code" == 200 ]] || fail "$1: GET page=sessions (repo=${2:-lab}) answered $code: $(cat "$BODY")"
   python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["results"][0]; n=[c["name"] for c in r["columns"]]
 row=[x for x in r["rows"] if x[n.index("session_id")] == int(sys.argv[2])]
-print((str(row[0][n.index("batch_text")]) + "|" + str(row[0][n.index("text")])) if row else "NO ROW")' "$BODY" "$C2SID"; }
-WORDS="(not shown: this instance's query_text policy is none)"
+print("|".join(str(row[0][n.index(c)]) for c in ("batch_text", "text", "cursor_text")) if row else "NO ROW")' "$BODY" "$C2SID"; }
+WORDS="(not shown: this instance's query_text policy is none)"; WORDS3="$WORDS|$WORDS|$WORDS"
 if [[ $textrule == 1 ]]; then
-  { echo "query_text: none"; cfg ""; } > "$TMPD/d-qt1.yaml"
+  # the file at none, sqlbox at full: a wrong match of the instance to sqlbox would show the statements
+  { echo "query_text: none"; cfg "    query_text: full"; } > "$TMPD/d-qt1.yaml"
   serve "$TMPD/d-qt1.yaml"
-  got=$(stmts D1t); [[ "$got" == "$WORDS|$WORDS" ]] || fail "D1t: no pgvigil instance matches and the file's query_text is none: the cells read '$got' (want the words '$WORDS' in both)"
-  echo "ok   D1t: no pgvigil instance matches; under the file's query_text none session $C2SID's batch_text and text read '$WORDS'"
+  code=$(curl -s -o "$BODY" -w '%{http_code}' -b "$CJ" "$U/api/dbadash?repo=lab&part=imported")
+  [[ "$code" == 200 ]] || fail "D1t: GET part=imported answered $code: $(cat "$BODY")"
+  nimp=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))
+if "imported" not in d: print("NOKEY"); sys.exit(0)
+t=d["imported"] or {}; c=t.get("columns") or []
+print(sum(1 for r in (t.get("rows") or []) if r[c.index("source_id")] == int(sys.argv[2])))' "$BODY" "$ID")
+  [[ "$nimp" == 0 ]] || fail "D1t: part=imported holds '$nimp' row(s) for instance $ID before pgvigil collects the server (want 0)"
+  got=$(stmts D1t); [[ "$got" == "$WORDS3" ]] || fail "D1t: no pgvigil instance matches and the file's query_text is none: the cells read '$got' (want the words '$WORDS' in all three)"
+  echo "ok   D1t: no pgvigil instance matches (part=imported: no row of instance $ID); under the file's query_text none, sqlbox at full, session $C2SID's batch_text, text and cursor_text read '$WORDS'"
   serve "$TMPD/d.yaml"
 else
   echo "not run here: D1t and D2t (the instance's query_text on the statements a page shows) need a tree whose internal/web/q_dbadash.go calls Statements (scripts/importmasklive-wiring.patch over the read rule)"
@@ -605,12 +672,21 @@ echo "ok   D2x: the collector's XE read stored DBA Dash's sessions as the server
 if [[ $textrule == 1 ]]; then
   cfg "    query_text: none" > "$TMPD/d-qt2.yaml"
   serve "$TMPD/d-qt2.yaml"
-  got=$(stmts D2t); [[ "$got" == "$WORDS|$WORDS" ]] || fail "D2t: the matched sqlbox at query_text none under the file's full: the cells read '$got' (want the words in both)"
+  got=$(stmts D2t); [[ "$got" == "$WORDS3" ]] || fail "D2t: the matched sqlbox at query_text none under the file's full: the cells read '$got' (want the words in all three)"
+  # the repository named in another case: the page answers it, so the rule finds the same instance
+  got=$(stmts D2t LAB); [[ "$got" == "$WORDS3" ]] || fail "D2t: repo=LAB, the matched sqlbox at query_text none under the file's full: the cells read '$got' (want the words in all three)"
+  # the door's stored row of the instance gone (a server DBA Dash added after the door's last read): the screen's own
+  # Instance is the server name pgvigil collects sqlbox under
+  pq "DELETE FROM pgvigil.dbadash_instances WHERE repository = 'lab' AND instance_id = $ID" >/dev/null
+  [[ "$(pq "SELECT count(*) FROM pgvigil.dbadash_instances WHERE repository = 'lab' AND instance_id = $ID")" == 0 ]] || fail "D2t: the door's stored row of instance $ID was not deleted"
+  got=$(stmts D2t); [[ "$got" == "$WORDS3" ]] || fail "D2t: the door's stored row of the instance deleted, sqlbox (collected as $SERVERNAME) at query_text none under the file's full: the cells read '$got' (want the words in all three)"
+  PGVIGIL_DBADASH_CONFIG="$TMPD/d.yaml" go test -count=1 -run '^TestLive$' ./internal/dbadash >/dev/null 2>&1 || fail "D2t: the door's read again"
+  [[ "$(pq "SELECT count(*) FROM pgvigil.dbadash_instances WHERE repository = 'lab' AND instance_id = $ID")" == 1 ]] || fail "D2t: the door's read did not store instance $ID again"
   { echo "query_text: none"; cfg "    query_text: normalized"; } > "$TMPD/d-qt3.yaml"
   serve "$TMPD/d-qt3.yaml"
-  NORM="CREATE LOGIN pgv_c2 WITH PASSWORD = ?; SELECT ?"
-  got=$(stmts D2t); [[ "$got" == "$NORM|$NORM" ]] || fail "D2t: the matched sqlbox at query_text normalized under the file's none: the cells read '$got' (want '$NORM' in both)"
-  echo "ok   D2t: the matched sqlbox at query_text none (the file's full): the words; at normalized (the file's none): '$NORM'"
+  NORM="CREATE LOGIN pgv_c2 WITH PASSWORD = ?; SELECT ?"; NORMC="ALTER LOGIN pgv_c2 WITH PASSWORD = ?"
+  got=$(stmts D2t); [[ "$got" == "$NORM|$NORM|$NORMC" ]] || fail "D2t: the matched sqlbox at query_text normalized under the file's none: the cells read '$got' (want '$NORM' twice, then '$NORMC')"
+  echo "ok   D2t: the matched sqlbox at query_text none (the file's full): the words, also under repo=LAB and with the door's stored row of the instance deleted (read again after); at normalized (the file's none): '$NORM' and the cursor's '$NORMC'"
   serve "$TMPD/d.yaml"
 fi
 # the proof's own application session, an open transaction, waiting

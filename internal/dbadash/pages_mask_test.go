@@ -52,6 +52,14 @@ func TestPageTextMasked(t *testing.T) {
 		t.Errorf("sessions, a statement in a processing instruction's shape: %q", got)
 	}
 
+	// the statement of a session's cursor (cursor_text: dbo.QueryText's text by the cursor's handle) is a statement as
+	// the batch is
+	cur := pageOf("sessions", []string{"cursor_text", "session_id"}, []any{"ALTER LOGIN app WITH PASSWORD = '" + t1 + "'", int64(54)})
+	maskPage(&cur)
+	if got := cur.Results[0].Rows[0]; got[0] != "ALTER LOGIN app WITH PASSWORD = '<masked>'" || got[1] != int64(54) {
+		t.Errorf("sessions cursor_text: %v", got)
+	}
+
 	jobs := pageOf("jobs", []string{"name", "description"}, []any{"nightly", desc})
 	maskPage(&jobs)
 	if got := jobs.Results[0].Rows[0]; got[1] != "loads the warehouse; Server=db1;Database=app;User Id=etl;Password=<masked>;" || got[0] != "nightly" {
@@ -75,7 +83,7 @@ func TestPageTextMasked(t *testing.T) {
 		}
 	}
 	for _, s := range []string{t1, t2, t3} {
-		for _, p := range []PageReply{sessions, jobs, alerts} {
+		for _, p := range []PageReply{sessions, pi, cur, jobs, alerts} {
 			if strings.Contains(fmt.Sprint(p.Results), s) {
 				t.Errorf("%s: a credential is still shown", p.Page)
 			}
@@ -83,9 +91,9 @@ func TestPageTextMasked(t *testing.T) {
 	}
 }
 
-// TestPageStatements: Statements gives the web each statement text of the reply (the sessions page's batch_text and
-// text) for the instance's query_text: what f answers is shown; an empty cell, another column and another page's text
-// are not given; a nil f changes nothing.
+// TestPageStatements: Statements gives the web each statement text of the reply (the sessions page's batch_text, text
+// and cursor_text) for the instance's query_text: what f answers is shown; an empty cell, another column and another
+// page's text are not given; a nil f changes nothing.
 func TestPageStatements(t *testing.T) {
 	var seen []string
 	f := func(s string) any { seen = append(seen, s); return "X:" + s }
@@ -99,6 +107,11 @@ func TestPageStatements(t *testing.T) {
 	}
 	if len(seen) != 2 {
 		t.Errorf("f saw %q, want the two statements", seen)
+	}
+	cur := pageOf("sessions", []string{"cursor_text", "login_name"}, []any{"SELECT 4", "sa"})
+	cur.Statements(func(s string) any { return "X:" + s })
+	if got := cur.Results[0].Rows[0]; got[0] != "X:SELECT 4" || got[1] != "sa" {
+		t.Errorf("sessions cursor_text: a cursor's statement is a statement: %v", got)
 	}
 	jobs := pageOf("jobs", []string{"name", "description"}, []any{"nightly", "SELECT 3"})
 	jobs.Statements(f)
