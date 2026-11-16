@@ -853,3 +853,81 @@ DO $do$ BEGIN
       CHECK (metric NOT LIKE 'collection.%' OR op = 'above' OR database IS NOT NULL) NOT VALID;
   END IF;
 END $do$;
+
+-- collection_perf_rows: the Collection Performance report's rows (B6g-3; J5 after the index, the lead's 16:0x (a)) -
+-- the Hour rows (an instance, a collection and an hour, summed over the collectors that wrote it) and the Run rows
+-- (collection_log's failed and partial runs; 0139's job statistics rollup rows are not runs), the NEWEST p_cap + 1 by
+-- the page's own order (at DESC, the instance's name, the collection, the period). The read stops at its cap: it walks
+-- the range newest first in windows - the hour holding p_to, then 1, 2, 4 ... hours before it (a window widens only
+-- while the rows so far fall short: a sparse scope reads a 30-day range in about 11 windows, not 720) - each window's
+-- hour rows read through the hour-led key and aggregated with the window's Run rows, sorted, the first still owed kept.
+-- Every row of a window is newer than every row of the window after it (an Hour row's at is its hour, inside it; a Run
+-- row's at is its snapshot), so the windows' rows in turn ARE the range's rows in the page's order. J5 measured the
+-- whole-range form at 2,124 instances x 60 collections x 8 days: 2,079 ms for one collection with the (collection,
+-- hour) index, 96 s for every collection (a hash aggregate of 24.5 M groups spilling 2.6 GB) - a page over its 15 s.
+-- The averages as the Collection Health grid's: the duration over the runs that ran (ok, partial, failed: skips left
+-- out), the CPU and logical reads over the runs that read their session at their end, the import over the runs that
+-- wrote or tried to. Failed holds the import's failures too (DBA Dash's FailedCount + ImportFailedCount); pgvigil has no
+-- retries, so its Partial is DBA Dash's 'Retried / Partial'. Scope: p_instance (0 = any), p_instances (NULL = any),
+-- p_collection ('' = every collection); the hour rows from the hour that holds p_from, the runs from p_from.
+CREATE OR REPLACE FUNCTION pgvigil.collection_perf_rows(p_from timestamptz, p_to timestamptz, p_instance int, p_instances int[],
+                                                        p_collection text, p_cap int)
+RETURNS TABLE (at timestamptz, instance_id int, instance text, engine text, collection text, period text, outcome text, stage text,
+               runs bigint, failed bigint, partial bigint, duration_ms bigint, max_duration_ms bigint, cpu_ms bigint,
+               logical_reads bigint, import_ms bigint)
+LANGUAGE plpgsql STABLE SET jit = off AS $$
+#variable_conflict use_column
+DECLARE
+  v_first timestamptz := date_trunc('hour', p_from AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';     -- the first hour row's hour
+  v_hi    timestamptz := p_to;                                                                   -- a window's end (excluded)
+  v_lo    timestamptz := date_trunc('hour', (p_to - interval '1 microsecond') AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
+  v_span  interval := interval '1 hour';
+  v_out   bigint := 0;
+  v_got   bigint;
+BEGIN
+  IF p_to <= p_from OR p_cap IS NULL OR p_cap < 0 THEN
+    RETURN;
+  END IF;
+  LOOP
+    v_lo := greatest(v_lo, v_first);
+    RETURN QUERY
+    WITH h AS (
+      SELECT h.hour AS at, h.instance_id, h.collection, 'Hour'::text AS period, NULL::text AS outcome, NULL::text AS stage,
+             sum(h.runs)::bigint AS runs, sum(h.failed)::bigint AS failed, sum(h.partial)::bigint AS partial,
+             round(sum(h.dur_ms_sum)::numeric / nullif(sum(h.ok + h.partial + h.failed), 0))::bigint AS duration_ms,
+             max(h.dur_ms_max)::bigint AS max_duration_ms,
+             round(sum(h.cpu_ms_sum)::numeric / nullif(sum(h.cpu_runs), 0))::bigint AS cpu_ms,
+             round(sum(h.reads_sum)::numeric / nullif(sum(h.cpu_runs), 0))::bigint AS logical_reads,
+             round(sum(h.import_ms_sum)::numeric / nullif(sum(h.import_runs), 0))::bigint AS import_ms
+        FROM pgvigil.collection_health_hour h
+       WHERE h.hour >= v_lo AND h.hour < v_hi
+         AND (p_instance = 0 OR h.instance_id = p_instance) AND (p_instances IS NULL OR h.instance_id = ANY (p_instances))
+         AND (p_collection = '' OR h.collection = p_collection)
+       GROUP BY h.hour, h.instance_id, h.collection
+    ), r AS (
+      SELECT l.snapshot_at, l.instance_id, l.collection, 'Run'::text,
+             -- Failed or Partial; the stage in the Collector errors page's words (0198's collection_error_class), never
+             -- 'Import Failed' by the log's stage (the review of B6g part c #1)
+             CASE l.status WHEN 'error' THEN 'Failed' ELSE 'Partial' END, (pgvigil.collection_error_class(l.status, l.note, l.stage)).error_stage,
+             1::bigint, (l.status = 'error')::int::bigint, (l.status = 'partial')::int::bigint,
+             l.duration_ms::bigint, l.duration_ms::bigint, NULL::bigint, NULL::bigint, NULL::bigint
+        FROM pgvigil.collection_log l
+       WHERE l.status IN ('error', 'partial') AND l.collection <> 'job_stats_hourly'
+         AND l.snapshot_at >= greatest(v_lo, p_from) AND l.snapshot_at < v_hi
+         AND (p_instance = 0 OR l.instance_id = p_instance) AND (p_instances IS NULL OR l.instance_id = ANY (p_instances))
+         AND (p_collection = '' OR l.collection = p_collection)
+    )
+    SELECT x.at, x.instance_id, i.name, i.engine, x.collection, x.period, x.outcome, x.stage, x.runs, x.failed, x.partial,
+           x.duration_ms, x.max_duration_ms, x.cpu_ms, x.logical_reads, x.import_ms
+      FROM (SELECT * FROM h UNION ALL SELECT * FROM r) x
+      JOIN pgvigil.instances i ON i.instance_id = x.instance_id AND i.is_active
+     ORDER BY x.at DESC, i.name, x.collection, x.period
+     LIMIT p_cap + 1 - v_out;
+    GET DIAGNOSTICS v_got = ROW_COUNT;
+    v_out := v_out + v_got;
+    EXIT WHEN v_out > p_cap OR v_lo <= v_first;
+    v_hi := v_lo;
+    v_lo := v_lo - v_span;
+    v_span := v_span * 2;
+  END LOOP;
+END $$;

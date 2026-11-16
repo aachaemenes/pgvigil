@@ -22,41 +22,16 @@ const collPerfCap = 5000
 // every part shares Collection Health's scope (chScope: $1 from, $2 to, $3 instance, $4 instance ids, $5 collection)
 
 // sqlCollPerfRows: the Hour rows (an instance, a collection and an hour, summed over the collectors that wrote it) and
-// the Run rows (collection_log's failed and partial runs of the range; 0139's job statistics rollup rows are not runs),
-// newest first, $6 + 1 at most. The averages as the Collection Health grid's: the duration over the runs that ran (ok,
-// partial, failed: skips left out), the CPU and logical reads over the runs that read their session at their end, the
-// import over the runs that wrote or tried to. Failed holds the import's failures too (DBA Dash's FailedCount +
-// ImportFailedCount); pgvigil has no retries, so its Partial is DBA Dash's 'Retried / Partial'.
+// the Run rows (collection_log's failed and partial runs of the range), newest first, $6 + 1 at most - read by
+// pgvigil.collection_perf_rows (0166), which walks the range newest first and stops at the cap (J5 after the index, the
+// lead's 16:0x (a): the whole-range form aggregated every hour before keeping 5,001 - 96 s at the root for every
+// collection at 2,124 instances x 60 collections x 8 days); its rows sorted again here in the page's own order.
+// TestCollectionPerfCapOrderOnAStore holds it to the whole-range form, row for row.
 var sqlCollPerfRows = `
-WITH h AS (
-  SELECT h.hour AS at, h.instance_id, h.collection, 'Hour'::text AS period, NULL::text AS outcome, NULL::text AS stage,
-         sum(h.runs)::bigint AS runs, sum(h.failed)::bigint AS failed, sum(h.partial)::bigint AS partial,
-         round(sum(h.dur_ms_sum)::numeric / nullif(sum(h.ok + h.partial + h.failed), 0))::bigint AS duration_ms,
-         max(h.dur_ms_max)::bigint AS max_duration_ms,
-         round(sum(h.cpu_ms_sum)::numeric / nullif(sum(h.cpu_runs), 0))::bigint AS cpu_ms,
-         round(sum(h.reads_sum)::numeric / nullif(sum(h.cpu_runs), 0))::bigint AS logical_reads,
-         round(sum(h.import_ms_sum)::numeric / nullif(sum(h.import_runs), 0))::bigint AS import_ms
-    FROM pgvigil.collection_health_hour h
-   WHERE h.hour >= date_trunc('hour', $1::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND h.hour < $2::timestamptz
-     AND ` + chScopeOf("h") + `
-   GROUP BY h.hour, h.instance_id, h.collection
-), r AS (
-  SELECT l.snapshot_at, l.instance_id, l.collection, 'Run'::text,
-         -- Failed or Partial; the stage in the Collector errors page's words (0198's collection_error_class). Not 'Import
-         -- Failed' by the log's stage: the log calls every repository-side failure 'import' (a cursor read, a thresholds
-         -- store), which the hour counts as plain failures - Import Failed is the hour's (the review of B6g part c #1)
-         CASE l.status WHEN 'error' THEN 'Failed' ELSE 'Partial' END, (pgvigil.collection_error_class(l.status, l.note, l.stage)).error_stage,
-         1::bigint, (l.status = 'error')::int::bigint, (l.status = 'partial')::int::bigint,
-         l.duration_ms::bigint, l.duration_ms::bigint, NULL::bigint, NULL::bigint, NULL::bigint
-    FROM pgvigil.collection_log l
-   WHERE l.status IN ('error', 'partial') AND l.collection <> 'job_stats_hourly'
-     AND l.snapshot_at >= $1::timestamptz AND l.snapshot_at < $2::timestamptz AND ` + chScopeOf("l") + `
-)
-SELECT x.at, x.instance_id, i.name AS instance, i.engine, x.collection, x.period, x.outcome, x.stage, x.runs, x.failed, x.partial,
+SELECT x.at, x.instance_id, x.instance, x.engine, x.collection, x.period, x.outcome, x.stage, x.runs, x.failed, x.partial,
        x.duration_ms, x.max_duration_ms, x.cpu_ms, x.logical_reads, x.import_ms
-  FROM (SELECT * FROM h UNION ALL SELECT * FROM r) x
-  JOIN pgvigil.instances i ON i.instance_id = x.instance_id AND i.is_active
- ORDER BY x.at DESC, i.name, x.collection, x.period
+  FROM pgvigil.collection_perf_rows($1::timestamptz, $2::timestamptz, $3::int, $4::int[], coalesce($5::text, ''), $6::int) x
+ ORDER BY x.at DESC, x.instance, x.collection, x.period
  LIMIT $6::int + 1`
 
 // sqlCollPerfCharts: the four charts' points, one an hour over every instance in scope (DBA Dash's #Buckets from the
