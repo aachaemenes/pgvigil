@@ -43,7 +43,8 @@ func sqlBody(t *testing.T, file, name string) string {
 // page's words with its fixed age and its time column, never judged against the purge age: collector_beats (at),
 // collector_runs / collector_load / collector_probe (minute, by collector_trim), collector_spells (an expression: no
 // column), collector_instances (seen_at), collector_streaks (last_run_at, with its conditions), collector_heartbeat
-// (beat_at); a beat's delete of its own late rows (minute = p_minute) is no rule. Then every '8 days' in the three texts
+// (beat_at); a beat's delete of its own late rows (minute = p_minute) is no rule; collector_streaks has two (its host's
+// trim and a gone host's rows, the lead's 19:2x). Then every '8 days' in the three texts
 // changed to '9 days': the words follow (a page that kept '8 days' fails here). RED on q_retention.go as it was: those
 // deletes read as 'rows older than the age, under conditions (see purge())', collector_trim's tables as its parity line.
 func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
@@ -54,7 +55,9 @@ func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
 	}
 	want := map[string]string{"collector_beats": "at", "collector_runs": "minute", "collector_load": "minute", "collector_probe": "minute",
 		"collector_spells": "", "collector_instances": "seen_at", "collector_streaks": "last_run_at", "collector_heartbeat": "beat_at"}
-	streaks := "rows older than %s days that collector_instances no longer names, under conditions, whatever the age"
+	// two rules since the gone host's delete (the lead's 19:2x): the host's own trim, and a host none of whose runs beat
+	streaks := "2 rules: rows older than %[1]s days that collector_instances no longer names, under conditions, whatever the age; " +
+		"rows older than %[1]s days that collector_heartbeat no longer names, under conditions, whatever the age"
 	for _, days := range []string{"8", "9"} {
 		texts := make([]string, len(srcs))
 		for i, s := range srcs {
@@ -71,7 +74,7 @@ func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
 		}
 		for tbl, col := range want {
 			words, column, _, judged := retentionWords(rules[tbl])
-			if !strings.Contains(words, "older than "+days+" days") || strings.Contains(words, "rules:") || column != col || judged {
+			if !strings.Contains(words, "older than "+days+" days") || (strings.Contains(words, "rules:") && tbl != "collector_streaks") || column != col || judged {
 				t.Errorf("at %s days, %s: words %q, column %q, judged %v; want one rule 'older than %s days', column %q, not judged",
 					days, tbl, words, column, judged, days, col)
 			}

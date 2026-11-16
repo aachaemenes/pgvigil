@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_trim_mark (
 -- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
 -- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
 -- (collector_streaks_now). A renamed host starts at 0. Trimmed by the beat when its host has not named the instance
--- for 8 days.
+-- for 8 days, and every row of a host none of whose runs has beaten for 8 days (a host gone: uninstalled, renamed).
 CREATE TABLE IF NOT EXISTS pgvigil.collector_streaks (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   collection    text NOT NULL,
@@ -407,6 +407,16 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_instances ci JOIN pgvigil.collector_heartbeat h USING (collector_id)
                        JOIN pgvigil.instances i ON i.name = ci.instance
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
+  -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
+  -- its streak rows when its last run's row goes below (the lead's 11-15 19:2x: the trim above takes only the beating
+  -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0). The guard
+  -- reads only the heartbeat rows, so a beat with no host leaving pays nothing for it
+  IF EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
+              AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days')) THEN
+    DELETE FROM pgvigil.collector_streaks s
+     WHERE s.host IN (SELECT g.host FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
+                        AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days'));
+  END IF;
   DELETE FROM pgvigil.collector_heartbeat WHERE beat_at < now() - interval '8 days';
   RETURN true;
 END $$;
