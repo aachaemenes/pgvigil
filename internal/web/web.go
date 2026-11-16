@@ -706,7 +706,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return
@@ -716,7 +716,7 @@ func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return
@@ -1006,10 +1006,11 @@ func (s *Server) counters(w http.ResponseWriter, r *http.Request) {
 // else the collection default). So a cadence set above 15 minutes (schedules: iostats: 30m) keeps
 // its first point in every preset instead of an empty 15-minute chart (review 20a).
 func (s *Server) rateLookback(ctx context.Context, id int, collection string) int {
-	secs := s.expected.Defaults[collection]
+	exp := s.expectedNow()
+	secs := exp.Defaults[collection]
 	var name string
 	if err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name); err == nil {
-		if m, ok := s.expected.Instances[name]; ok {
+		if m, ok := exp.Instances[name]; ok {
 			if v, ok := m[collection]; ok && v > 0 {
 				secs = v
 			}

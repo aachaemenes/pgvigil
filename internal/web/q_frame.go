@@ -31,7 +31,7 @@ const noPermission = `permission denied|must be superuser|must be a member|insuf
 
 // FrameStatus is the footer's one row.
 func (s *Server) FrameStatus(w http.ResponseWriter, r *http.Request) {
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return

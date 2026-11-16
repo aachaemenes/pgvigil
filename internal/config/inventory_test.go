@@ -558,3 +558,25 @@ func TestWatchInventoryRawWakesAndHandsTheRawRows(t *testing.T) {
 		}
 	}
 }
+
+// TestMergePageSettings (ST5a): Merge reads a page instance's settings (admin_instances.settings, 0263) and applies them;
+// a value that does not parse (a hand edit: the page refuses it on write) leaves the instance out with its reason.
+func TestMergePageSettings(t *testing.T) {
+	page := func(name, raw string) PageInstance {
+		return PageInstance{Name: name, Engine: EnginePostgres, DSNRef: "file:/etc/pgvigil/" + name, SettingsRaw: []byte(raw)}
+	}
+	all, skipped := Merge(nil, []PageInstance{
+		page("p1", `{"schedules": {"statements": 60, "activity": 0}, "query_text": "none"}`),
+		page("p2", ``),
+		page("p3", `{"schedules": {"statements": "soon"}}`),
+	}, "full", CounterEdits{})
+	if len(all) != 2 || len(skipped) != 1 || !strings.HasPrefix(skipped[0], "p3: its settings in Admin > Instances do not parse: ") {
+		t.Fatalf("merged %d, skipped %v (want p1 and p2; p3 left out with its reason)", len(all), skipped)
+	}
+	if all[0].QueryText != "none" || all[0].Schedules["statements"].Duration != time.Minute || strings.Join(all[0].Disabled, ",") != "activity" {
+		t.Errorf("p1: %+v", all[0])
+	}
+	if all[1].QueryText != "full" || len(all[1].Schedules) != 0 || len(all[1].Disabled) != 0 {
+		t.Errorf("p2: %+v", all[1])
+	}
+}

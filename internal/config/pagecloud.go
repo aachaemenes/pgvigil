@@ -231,7 +231,8 @@ func pageCloud(p PageInstance, in *Instance) string {
 
 // InventorySQL is the page's list read by both readers - the collector's (repo.Inventory) and serve's own
 // (web/doorset.go): one statement, one scan (B24p's fold 5), so a column the store adds reaches both.
-const InventorySQL = `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans, host, aws, azure FROM pgvigil.admin_inventory()`
+// ST5a (0263): each instance's own settings beside it (admin_instance_settings(), SECURITY DEFINER as admin_inventory())
+const InventorySQL = `SELECT i.name, i.engine, i.platform, i.dsn_ref, i.tags, i.disabled, i.auth, i.options, i.generation, i.running_plans, i.host, i.aws, i.azure, s.settings FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) ORDER BY i.name`
 
 // InventoryRows is what ScanInventory reads (pgx.Rows is one)
 type InventoryRows interface {
@@ -250,15 +251,15 @@ func ScanInventory(rows InventoryRows) ([]PageInstance, int64, error) {
 		var name, engine, platform, ref, auth, options, host *string
 		var tags []string
 		var disabled, runningPlans *bool
-		var aws, azure []byte
-		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans, &host, &aws, &azure); err != nil {
+		var aws, azure, settings []byte
+		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &auth, &options, &gen, &runningPlans, &host, &aws, &azure, &settings); err != nil {
 			return nil, 0, err
 		}
 		if name == nil {
 			continue
 		}
 		p := PageInstance{Name: *name, Tags: tags, Engine: deref(engine), Platform: deref(platform), DSNRef: deref(ref),
-			Auth: deref(auth), Options: deref(options), Host: deref(host)}
+			Auth: deref(auth), Options: deref(options), Host: deref(host), SettingsRaw: settings}
 		if disabled != nil {
 			p.Disabled = *disabled
 		}

@@ -44,7 +44,10 @@ func TestReaderRunsNoOtherSecurityDefiner(t *testing.T) {
 		"alert_log_partition(timestamp with time zone)": true, "mssql_hadr_cursor(integer, text)": true,
 		"alert_contact_routes()": true,
 		"dbadash_import_stored(integer, text, timestamp with time zone, timestamp with time zone)": true,
-		"dbadash_import_target(jsonb)": true}
+		"dbadash_import_target(jsonb)": true,
+		// ST5a, 0263: a page instance's name and its own schedules and query_text, STABLE, no secret, from admin_instances,
+		// which the reader SELECTs anyway; SECURITY DEFINER for the collector's login, which has no SELECT
+		"admin_instance_settings()": true}
 	// the signature without the schema (oidvectortypes: argument types as format_type writes them), whatever the
 	// connection's search_path
 	rows, err := conn.Query(ctx, `SELECT p.proname || '(' || oidvectortypes(p.proargtypes) || ')' FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

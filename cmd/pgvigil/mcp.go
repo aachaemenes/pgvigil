@@ -46,10 +46,11 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	} else {
 		return &configError{errors.New("-dsn does not parse as a PostgreSQL connection string")}
 	}
-	exp := expectedIntervals(&config.Config{}) // every collection's default interval
+	cfg := &config.Config{}
+	exp := expectedIntervals(cfg) // every collection's default interval
 	if *path != "" {
-		cfg, err := config.Load(*path)
-		if err != nil {
+		var err error
+		if cfg, err = config.Load(*path); err != nil {
 			return &configError{err}
 		}
 		// the custom: list (task 61): the stale check counts the custom collection where a check applies
@@ -68,6 +69,8 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
+	// a page instance's own intervals for the stale check, as serve's (ST5a's review F1); mcp's doors stay the file's
+	go srv.WatchPageIntervals(ctx, log, cfg, web.DoorEvery, func(in config.Instance) map[string]int { return instanceIntervals(cfg, in) })
 	log.Info("pgvigil mcp ready on stdio", "login", user, "version", version)
 	return mcp.New(srv.Handler(), version, secret).Serve(ctx, os.Stdin, os.Stdout)
 }

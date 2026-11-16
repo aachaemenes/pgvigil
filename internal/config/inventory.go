@@ -56,6 +56,8 @@ type PageInstance struct {
 	// PageCloudRefusal (pagecloud.go)
 	AWS   *PageAWS
 	Azure *PageAzure
+	// SettingsRaw is admin_instances.settings (0263, ST5a: its own schedules and query_text); Merge reads it
+	SettingsRaw []byte
 }
 
 // InventoryReader is the repository's side: the generation alone (cheap, polled) and the list with its generation.
@@ -115,6 +117,10 @@ func MergeNotes(file []Instance, page []PageInstance, queryText string, root Cou
 				why = err.Error()
 			}
 		}
+		ps, psErr := ParsePageSettings(p.SettingsRaw)
+		if psErr != nil && why == "" {
+			why = psErr.Error()
+		}
 		if why != "" {
 			skipped = append(skipped, p.Name+": "+why)
 			continue
@@ -124,6 +130,7 @@ func MergeNotes(file []Instance, page []PageInstance, queryText string, root Cou
 			plat = "auto"
 		}
 		all = append(all, Instance{Name: p.Name, Engine: p.Engine, Platform: plat, DSNRaw: p.DSNRef, Tags: slices.Clone(p.Tags), QueryText: queryText, MSSQLCountersRoot: root})
+		ps.apply(&all[len(all)-1]) // ST5a: its own schedules, off and query_text, as the file's are for its instances
 		// task 406: an instance whose running plans box is ticked on the page (off for every instance until an admin ticks
 		// it, Q15) reads them each minute, unless the file's global schedules: names mssql_running_plans (0 = off for all)
 		if p.Engine == EngineSQLServer && p.RunningPlans {

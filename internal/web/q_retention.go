@@ -406,12 +406,13 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	own := s.expected.Instances[name]
+	exp := s.expectedNow() // one read per request: the file's and the page instances' intervals
+	own := exp.Instances[name]
 	interval := func(c string) any {
 		if v, ok := own[c]; ok {
 			return v
 		}
-		if v, ok := s.expected.Defaults[c]; ok {
+		if v, ok := exp.Defaults[c]; ok {
 			return v
 		}
 		return nil
@@ -419,10 +420,10 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 	// default_s: the collector's own interval; 0 = an opt-in collection (off until a schedule gives it one), which a
 	// disabled: line has nothing to do with
 	def := func(c string) any {
-		if v, ok := s.expected.Builtin[c]; ok {
+		if v, ok := exp.Builtin[c]; ok {
 			return v
 		}
-		if v, ok := s.expected.Defaults[c]; ok {
+		if v, ok := exp.Defaults[c]; ok {
 			return v
 		}
 		return nil

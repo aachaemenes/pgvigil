@@ -372,7 +372,8 @@ func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
 
 // Inventory is the page's instance list and its generation, read in one statement (0193's admin_inventory(),
 // SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty) and
-// one scan shared with serve's reader (config.InventorySQL / ScanInventory: B24p's fold 5).
+// one scan shared with serve's reader (config.InventorySQL / ScanInventory: B24p's fold 5), with each instance's own
+// settings (0263's admin_instance_settings(), ST5a) in the same snapshot.
 func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
 	rows, err := r.pool.Query(ctx, config.InventorySQL)
 	if err != nil {

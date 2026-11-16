@@ -11,6 +11,7 @@ import { fleet, fleetWideNote, inTagScope, tagWords, writtenTag } from './fleet'
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
 import { moveSection } from './migrate';
 import { instanceChecks } from './admin_checks';
+import { instanceSettings } from './admin_settings';
 
 // the page's one sentence where this server cannot write ('Read only: ...'): every control that is off for it is
 // described by that sentence (its id), so the reason is words on the page for each of them
@@ -104,6 +105,8 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
   };
   // ST1 and ST2: Check all, the last test and last collected cells of both tables, the Rights read (admin_checks.ts)
   const checks = instanceChecks({ send, say, draw: () => draw(), lock: c => lock(c), why });
+  // ST5a: an instance added here gets its own schedules and query_text (admin_settings.ts)
+  const settings = instanceSettings({ send, say, draw: () => draw(), lock: c => lock(c), why });
 
   let cloudNotes: Record<string, string> = {}; // B24p: why a row's cloud block is not used (the latest draw's)
   async function draw(): Promise<void> {
@@ -120,6 +123,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
     whyNot = d.writable ? '' : String(d.why_not ?? '');
     cloudNotes = d.cloud_blocks?.notes ?? {};
     checks.set(d);
+    settings.set(d);
     root.replaceChildren(
       el('h2', {}, 'Instances' + (scoped ? ` - ${tagWords(scoped)}` : '')),
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
@@ -141,6 +145,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
         + 'Off for every instance until an admin ticks it here; an instance of pgvigil.yaml takes schedules: mssql_running_plans: 1m in the file. '
         + 'The file\'s global schedules: line for mssql_running_plans comes before this box: 0 turns it off for every instance here, and any other value reads every SQL Server instance here, ticked or not.'),
       grid(page, pageCols, 'No instance was added here yet.'),
+      settings.box,
       el('h3', {}, 'Instances from pgvigil.yaml'),
       el('p', { class: 'meta' }, 'Changed in the file, not here; the collector reads the file when it starts.'),
       grid(file, checks.fileCols(), 'pgvigil.yaml lists no instance.'),
@@ -340,7 +345,7 @@ export async function adminInstancesView(ctx: Ctx): Promise<HTMLElement> {
       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.disabled ? 'Enable' : 'Disable'} ${n}` }, r.disabled ? 'Enable' : 'Disable');
       toggle.addEventListener('click', () => { void act('admin/instances', { op: r.disabled ? 'enable' : 'disable', name: n }, r.disabled ? `${n} enabled: collected again within 15 seconds.` : `${n} disabled: its collections stop within 15 seconds.`); });
       const rm = removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); });
-      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm, ' ', checks.rightsButton(n)));
+      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm, ' ', checks.rightsButton(n), ' ', settings.settingsButton(n, String(r.engine))));
     } },
   ];
 

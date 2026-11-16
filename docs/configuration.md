@@ -134,7 +134,8 @@ file and the page, and what the mail holds: `docs/reportmail.md`, *The Daily che
 Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
 approves or ignores: a SQL Server Central Management Server (its login needs msdb's `ServerGroupReaderRole`), a DBA Dash
 repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
-marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
+marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. An instance added here has its own
+schedules and statement-text policy in its Settings ([instance-settings.md](instance-settings.md)). The collector takes a change within
 15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
 checks until it is enabled. An instance enabled, or added (again), while its server is down is reported at its first
 read: 'server unreachable' and a failing collection, as for any instance that cannot be reached; so is an instance of `pgvigil.yaml` whose server has never answered (its row is made at that first read, with the file's engine, platform and tags). Until a read of an added instance connects, Admin > Servers, the fleet list, its Summary card and `pgvigil report` say 'not read yet (added <time>)': beside its name on the fleet list (which shows no last-seen time), in place of a last-seen time elsewhere; its 'history from' (the Diff page) is that first read. Removing a page instance no read ever reached (and `pgvigil import dbadash` never filled) removes its row too, so the name can be added again with the other engine; an instance read once, or imported, keeps its row and its history. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on

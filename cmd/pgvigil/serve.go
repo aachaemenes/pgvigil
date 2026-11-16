@@ -247,6 +247,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	go srv.RunInstanceSync(ctx)
 	// the read doors of each inventory generation (pgvigil.yaml's, and Admin > Instances' when doors.page_instance_reads
 	// is on), after every Set* call above: serve alone watches (demo and mcp keep the file's doors)
+	// ST5a: Admin > Instances' Settings (serve_settings.go), before the watcher's first set
+	srv.SetPageSettings(pageSettingsConfig(cfg))
 	go srv.WatchDoors(ctx, log, cfg, web.DoorEvery)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender); the Daily checks
 	// mail's block is applied by the same loop, at its start
@@ -293,17 +295,8 @@ func expectedIntervals(cfg *config.Config) web.Expected {
 		e.Builtin[c.Name] = int(c.Default / time.Second)
 	}
 	for _, in := range cfg.Instances {
-		m := map[string]int{}
-		for _, c := range all {
-			// a collection of another engine, or one gated off by the instance's config (no aws: block), never
-			// writes a row: 0 keeps the stale check from flagging the row an earlier build left behind
-			if skip, _ := engines.Gated(in, c.Name); skip {
-				m[c.Name] = 0
-				continue
-			}
-			m[c.Name] = int(cfg.Interval(in, c.Name, c.Default) / time.Second)
-		}
-		e.Instances[in.Name] = m
+		// ST5a: the rule a page instance's intervals follow too (serve_settings.go)
+		e.Instances[in.Name] = instanceIntervals(cfg, in)
 	}
 	return e
 }

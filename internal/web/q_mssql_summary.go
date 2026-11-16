@@ -324,7 +324,7 @@ SELECT k.key, k.label, k.unit, k.warn_default, k.crit_default, k.max_value,
 // database state of the PostgreSQL ones (the Summary column both engines share), the collection ages and errors of
 // every instance and the root's uptime and memory dump thresholds.
 func (s *Server) MSSQLSummary(w http.ResponseWriter, r *http.Request) {
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return

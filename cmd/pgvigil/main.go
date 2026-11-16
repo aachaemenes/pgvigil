@@ -292,12 +292,12 @@ func checkCollectionNames(cfg *config.Config) error {
 	for _, in := range cfg.Instances {
 		// an instance names only its own engine's collections
 		check := func(where, n string) error {
-			e, ok := engines.EngineOf(n)
-			if !ok {
-				return fmt.Errorf("instance %q %s: unknown collection %q; known: %v", in.Name, where, n, engines.Names())
-			}
-			if e != in.Engine {
-				return fmt.Errorf("instance %q %s: %q is a %s collection and the instance's engine is %s", in.Name, where, n, e, in.Engine)
+			// the page's Settings judge a name with the same check (engines.CheckPageSettings)
+			if err := engines.CheckCollection(in.Engine, n); err != nil {
+				if _, ok := engines.EngineOf(n); !ok {
+					return fmt.Errorf("instance %q %s: %v; known: %v", in.Name, where, err, engines.Names())
+				}
+				return fmt.Errorf("instance %q %s: %v", in.Name, where, err)
 			}
 			return nil
 		}

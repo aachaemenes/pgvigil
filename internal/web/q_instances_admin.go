@@ -271,6 +271,8 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, fmt.Errorf("checks: %w", err))
 		return
 	}
+	// ST5a (Settings): each page instance's own schedules and query_text, the catalogue and the floor
+	s.instanceSettingsView(ctx, out)
 	var gen int64
 	if err := s.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&gen); err != nil {
 		s.reply(w, r, nil, err)
@@ -606,6 +608,11 @@ func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user str
 		s.instanceRights(w, r, user, in)
 		return
 	}
+	if op == "settings" {
+		// ST5a: an instance added here gets its own schedules and query_text (q_instances_settings.go)
+		s.instanceSettings(w, r, user, in, pay)
+		return
+	}
 	if op == "test" {
 		// ST1 (Check all): an instance of pgvigil.yaml is tested as the file's own dsn (q_instances_checks.go)
 		if s.fileInstanceTest(w, r, user, in) {
@@ -736,7 +743,7 @@ func (s *Server) instancesWrite(w http.ResponseWriter, r *http.Request, user str
 			previous = have.Ref
 		}
 	default:
-		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, cloud_clear or test"))
+		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove, running_plans, settings, rights, cloud_clear or test"))
 		return
 	}
 	var ans importAnswer

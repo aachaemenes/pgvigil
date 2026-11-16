@@ -297,7 +297,7 @@ func (s *Server) Ack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		s.reply(w, r, nil, err)
 		return

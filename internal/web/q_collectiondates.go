@@ -50,7 +50,7 @@ func (s *Server) CollectionDates(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	exp, err := json.Marshal(s.expected)
+	exp, err := json.Marshal(s.expectedNow())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
