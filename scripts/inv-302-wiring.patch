@@ -1,30 +1,30 @@
-diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
-index 63414bdf..56af0bca 100644
---- i/cmd/pgvigil/report.go
-+++ w/cmd/pgvigil/report.go
-@@ -285,7 +285,7 @@ func osRelease() string {
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index d4e6235b..3e292cef 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -289,7 +289,7 @@ func osRelease() string {
  // key this list does not know (a new one, a misspelt one) is masked, never shown.
  var keepKeys = map[string]bool{
  	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
 -	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
 +	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
- 	// alerts:
- 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
- 	"clear_after": true, "port": true, "tls": true, "format": true,
-@@ -307,7 +307,7 @@ var knownKeys = map[string]bool{
+ 	// doors: (the page door's switch, on or off; task 403b K5: the Slack door's switch)
+ 	"page_instance_reads": true, "slack_actions": true,
+ 	// tasks 403a / B24k: a channel's digest hour, the Zabbix mode and plain opt-in, the Azure cloud
+@@ -320,7 +320,7 @@ var knownKeys = map[string]bool{
  	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
  	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
  	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
--	"latency_warn_secs": true, "archive_warn_minutes": true,
-+	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true,
+-	"latency_warn_secs": true, "archive_warn_minutes": true, "import": true, "gmsa": true,
++	"latency_warn_secs": true, "archive_warn_minutes": true, "read_tools": true, "import": true, "gmsa": true,
  	"alerts_dsn": true, "alerts": true, "kind": true, "min_severity": true, "quiet_hours": true, "timezone": true,
  	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
  	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
-diff --git i/deploy/examples/pgvigil.example.yaml w/deploy/examples/pgvigil.example.yaml
-index b7d86755..2d3c29d1 100644
---- i/deploy/examples/pgvigil.example.yaml
-+++ w/deploy/examples/pgvigil.example.yaml
-@@ -37,6 +37,7 @@ instances:
+diff --git c/deploy/examples/pgvigil.example.yaml i/deploy/examples/pgvigil.example.yaml
+index 9606289a..92041770 100644
+--- c/deploy/examples/pgvigil.example.yaml
++++ i/deploy/examples/pgvigil.example.yaml
+@@ -42,6 +42,7 @@ instances:
      #                                  # Audit); they can carry data: absent = the class, command and object only
      # backups:
      #   archive_warn_minutes: 60         # the last archived WAL older than this while WAL waits is a finding
@@ -32,11 +32,11 @@ index b7d86755..2d3c29d1 100644
      schedules:
        instance: 30m
      # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the
-diff --git i/internal/collect/backup_readtools_wiring.go w/internal/collect/backup_readtools_wiring.go
+diff --git c/internal/collect/backup_readtools_wiring.go i/internal/collect/backup_readtools_wiring.go
 new file mode 100644
 index 00000000..28576a7e
 --- /dev/null
-+++ w/internal/collect/backup_readtools_wiring.go
++++ i/internal/collect/backup_readtools_wiring.go
 @@ -0,0 +1,8 @@
 +package collect
 +
@@ -46,11 +46,11 @@ index 00000000..28576a7e
 +func init() {
 +	backupReadTools = func(in config.Instance) bool { return in.Backups != nil && in.Backups.ReadTools }
 +}
-diff --git i/internal/config/config.go w/internal/config/config.go
-index d8b09d7a..b32669ac 100644
---- i/internal/config/config.go
-+++ w/internal/config/config.go
-@@ -347,6 +347,10 @@ func (d *DMS) LatencyWarn() int {
+diff --git c/internal/config/config.go i/internal/config/config.go
+index dfc66f19..dd022809 100644
+--- c/internal/config/config.go
++++ i/internal/config/config.go
+@@ -407,6 +407,10 @@ func (d *DMS) LatencyWarn() int {
  type Backups struct {
  	// ArchiveWarnMinutes is the age of the last archived WAL file past which a finding is raised while WAL waits; 0 = 60.
  	ArchiveWarnMinutes int `yaml:"archive_warn_minutes"`
@@ -61,11 +61,11 @@ index d8b09d7a..b32669ac 100644
  }
  
  // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
-diff --git i/internal/web/web.go w/internal/web/web.go
-index 4e1430c7..878c193a 100644
---- i/internal/web/web.go
-+++ w/internal/web/web.go
-@@ -279,6 +279,9 @@ func (s *Server) Handler() http.Handler {
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 255e1b54..9201209f 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -312,6 +312,9 @@ func (s *Server) Handler() http.Handler {
  	// task 162 (q_pg_backups.go): base backups, server state, the fleet Replication page, the thresholds
  	api.HandleFunc("GET /api/pg/backups", s.PgBackups)
  	api.HandleFunc("GET /api/pg/backups/fleet", s.PgBackupsFleet)
@@ -75,11 +75,11 @@ index 4e1430c7..878c193a 100644
  	api.HandleFunc("GET /api/pg/state", s.PgState)
  	api.HandleFunc("GET /api/pg/replication", s.PgReplicationFleet)
  	api.HandleFunc("GET /api/pg/thresholds", s.PgThresholds)
-diff --git i/scripts/proof-pg-backups-roles.sh w/scripts/proof-pg-backups-roles.sh
-index c160b610..edfd0883 100755
---- i/scripts/proof-pg-backups-roles.sh
-+++ w/scripts/proof-pg-backups-roles.sh
-@@ -188,10 +188,16 @@ instances:
+diff --git c/scripts/proof-pg-backups-roles.sh i/scripts/proof-pg-backups-roles.sh
+index c0bcf41b..ae7a4b8f 100755
+--- c/scripts/proof-pg-backups-roles.sh
++++ i/scripts/proof-pg-backups-roles.sh
+@@ -190,10 +190,16 @@ instances:
    - name: pv-primary
      dsn: env:MON_DSN
      tags: [proofpg]
@@ -96,10 +96,10 @@ index c160b610..edfd0883 100755
  EOF
  "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
  SHIM=$WORK/shim; mkdir -p "$SHIM"
-diff --git i/web/src/fleet.ts w/web/src/fleet.ts
-index 61fb3eb1..9bd14c2f 100644
---- i/web/src/fleet.ts
-+++ w/web/src/fleet.ts
+diff --git c/web/src/fleet.ts i/web/src/fleet.ts
+index 0715431a..af89c18c 100644
+--- c/web/src/fleet.ts
++++ i/web/src/fleet.ts
 @@ -10,7 +10,7 @@ import { versionCell } from './versions';
  // pgaudit: the PostgreSQL instances' pgaudit cells (readAuditFleet); pgauditFailed: that read failed
  // collect: every instance's collection ages and errors (Snapshot Age, Collection Errors (24hrs)); roots: the root's uptime
@@ -136,19 +136,19 @@ index 61fb3eb1..9bd14c2f 100644
      // Host and Disk read "no sample" on an instance the host collection has never reached (no system_stats, no
      // CloudWatch door: Azure, Cloud SQL): an empty check list there is not OK
      if ((g.key === 'host' || g.key === 'disk') && r.host_at == null && hit.length === 0) {
-diff --git i/web/src/pg_backups.ts w/web/src/pg_backups.ts
-index 5a5b5bb7..9c565da0 100644
---- i/web/src/pg_backups.ts
-+++ w/web/src/pg_backups.ts
-@@ -15,6 +15,7 @@ import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, w
+diff --git c/web/src/pg_backups.ts i/web/src/pg_backups.ts
+index b8b7d4c8..b0fd6292 100644
+--- c/web/src/pg_backups.ts
++++ i/web/src/pg_backups.ts
+@@ -17,6 +17,7 @@ import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, w
  import { Ctx, href } from './router';
- import { fleet, inTagScope } from './fleet';
+ import { fleet, fleetWideNote, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
  import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 +import { pgBackupDestFleet, pgBackupDestFleetCols, pgBackupDestSection } from './pg_backup_dest';
  
  type Parts<K extends string> = Record<K, Table | null>;
  
-@@ -185,6 +186,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
+@@ -218,6 +219,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
            ['threshold', thresholdLine({ warn: rep.warn_min, crit: rep.crit_min, unit: 'minutes', direction: 'over', level: rep.threshold_level })],
          ])));
      }
@@ -156,7 +156,7 @@ index 5a5b5bb7..9c565da0 100644
      out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw(), ad));
      box.replaceChildren(...out);
    };
-@@ -194,12 +196,14 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
+@@ -227,12 +229,14 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
  
  // pgBaseBackupsFleetSection: every self-managed instance's base backups by tool and every standby's replay.
  export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
@@ -173,7 +173,7 @@ index 5a5b5bb7..9c565da0 100644
      { key: 'last_label', label: 'last backup' }, { key: 'last_type', label: 'kind' }, { key: 'last_age_h', label: 'age', num: true, fmt: hours },
      { key: 'full_age_h', label: 'full age', num: true, fmt: hours }, { key: 'last_db_size_bytes', label: 'size', num: true, fmt: fmtBytes },
      { key: 'wal_since_bytes', label: 'WAL since', num: true, fmt: fmtBytes }, { key: 'message', wide: true },
-@@ -213,6 +217,9 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement>
+@@ -246,6 +250,9 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement>
    return el('section', {}, el('h2', {}, 'Base backups (pgBackRest, barman)'),
      el('p', { class: 'meta' }, `${tools.length} tool read(s) on ${new Set(tools.map(t => t.instance_id)).size} instance(s); ${rep.length} standby(s).`),
      grid(tools, cols, 'No self-managed server names pgBackRest or barman in its archive_command or restore_command.'),
