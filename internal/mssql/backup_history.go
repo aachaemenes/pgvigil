@@ -371,13 +371,24 @@ const (
 // openBackupFilePool opens the file check's own pool on the instance's DSN, as Connect opens the collection's, with
 // backupFileDialer: no idle connection is kept (each Conn is a fresh short-lived one, F3) and each connection ends at
 // the deadline its caller put on the context (backupFileUntil). Its connections run no sessionSetup: they only call
-// sys.dm_os_file_exists, which takes no lock. The caller closes it.
-func openBackupFilePool(in config.Instance) (*sql.DB, error) {
+// sys.dm_os_file_exists, which takes no lock. The instance's password_secret (B24e) is read first and its login and
+// password set on the parsed string, as Connect's. The caller closes it.
+func openBackupFilePool(ctx context.Context, in config.Instance) (*sql.DB, error) {
 	dsn := in.DSN()
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("the dsn resolved to an empty string")
 	}
-	db, err := mssqlopen.OpenDialer(withAppName(dsn), backupFileDialer{keepAlive: 30 * time.Second})
+	sec, err := readSecret(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	dl := backupFileDialer{keepAlive: 30 * time.Second}
+	var db *sql.DB
+	if sec.ref == nil {
+		db, err = mssqlopen.OpenDialer(withAppName(dsn), dl)
+	} else {
+		db, err = mssqlopen.OpenDialerCredentials(withAppName(dsn), sec.user, sec.val.Password, dl)
+	}
 	if err != nil {
 		return nil, err
 	}

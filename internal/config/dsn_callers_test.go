@@ -42,6 +42,11 @@ func TestEveryInstanceDSNCallerIsKnown(t *testing.T) {
 		"internal/web/q_plans.go":           "plans.Explain / plans.Hypo with the door's Secret; L121 an emptiness check",
 		"internal/web/q_instances_admin.go": "testConfigured: testConnectionList with the door's Secret",
 		"internal/web/doorset.go":           "readLogin refuses a Secret door in words; the rest copies or checks strings",
+		// the j16 join: four callers of other slices met password_secret first here
+		"internal/collect/logical.go":      "an emptiness check; each other database read through onDatabase: connectCounted",
+		"internal/collect/patroni.go":      "the Patroni REST host from the dsn: no database dial",
+		"internal/mssql/backup_history.go": "openBackupFilePool: readSecret, the secret's login and password on the file check's pool",
+		"internal/mssql/verify_backup.go":  "the verify's read-login checks and watch: openMonitor with the door's Secret",
 	}
 	root := filepath.Join("..", "..")
 	use := regexp.MustCompile(`\bin\.DSN\(\)|\.Monitor\b`)

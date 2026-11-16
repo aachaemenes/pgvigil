@@ -168,7 +168,7 @@ func TestBackupFileCheckOffWithoutPool(t *testing.T) {
 // none kept idle (each Conn a fresh short-lived one) - never RunOnce's, which Connect caps at the collection's one.
 // Opening it parses the DSN only; nothing is dialled.
 func TestBackupFilePoolIsItsOwn(t *testing.T) {
-	db, err := openBackupFilePool(config.Instance{DSNRaw: "sqlserver://pgv:secret@127.0.0.1:1?database=master"})
+	db, err := openBackupFilePool(context.Background(), config.Instance{DSNRaw: "sqlserver://pgv:secret@127.0.0.1:1?database=master"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestBackupFilePoolIsItsOwn(t *testing.T) {
 	if got := db.Stats().MaxOpenConnections; got != backupFilePoolConns || got < 2 {
 		t.Errorf("the file check's pool takes %d connections, want %d", got, backupFilePoolConns)
 	}
-	if _, err := openBackupFilePool(config.Instance{}); err == nil {
+	if _, err := openBackupFilePool(context.Background(), config.Instance{}); err == nil {
 		t.Error("an empty DSN opened a pool")
 	}
 }
