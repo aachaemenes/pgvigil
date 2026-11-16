@@ -33,7 +33,7 @@ func forcedWithoutVolumes(flags string) bool {
 
 // TestDockerRmRemovesAnonymousVolumes: every script under scripts/ that force-removes a container also removes its
 // anonymous volumes ('docker rm -fv'). A 'docker rm -f' leaves each image's anonymous data volume (postgres, mssql)
-// behind on the box at every run (VOLLEAK: 22.8 GB of them on dba-lab-box, 2026-11-16). -v removes anonymous volumes
+// behind on the box at every run (VOLLEAK: 22.8 GB of them on one lab machine). -v removes anonymous volumes
 // only; a named volume or a bind mount is never touched by it.
 func TestDockerRmRemovesAnonymousVolumes(t *testing.T) {
 	var bad []string
@@ -54,7 +54,7 @@ func TestDockerRmRemovesAnonymousVolumes(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for n := 1; sc.Scan(); n++ {
