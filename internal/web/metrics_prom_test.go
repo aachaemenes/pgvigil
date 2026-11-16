@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -26,7 +27,10 @@ import (
 // every promNames row names a catalog key; the names are Prometheus names, unique, never '_total' (gauges), a
 // per-database name only on the database family, and every unit has its conversion words.
 func TestPromNamesCoverTheCatalog(t *testing.T) {
-	cat, base := promCatalogKeys(t)
+	cat, base, err := promCatalog(filepath.Join("..", "repo", "sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(base) != 62 {
 		t.Fatalf("metric_catalog's VALUES in 0085: %d keys read (want 62: the table was written for 62)", len(base))
 	}
@@ -105,83 +109,104 @@ func TestPromNamesCoverTheCatalog(t *testing.T) {
 	t.Logf("not exported: %v", off)
 }
 
-// promCatalogKeys reads metric_catalog's keys (key -> family, unit) as the migrations leave them, and 0085's own keys:
+// promKey is a metric_catalog key's family and unit.
+type promKey struct{ family, unit string }
+
+// promCatalog reads metric_catalog's keys (key -> family, unit) as the migrations in dir leave it, and 0085's own keys:
 // the files that define the view, in their order - a full CREATE OR REPLACE VIEW replaces the set, a DO block that
 // appends rows to the live definition (pg_get_viewdef) adds them; a definition that reads another view of catalog rows
 // (FROM pgvigil.<view>) takes that view's rows from its newest definer. Each part's rows begun are counted against its
-// rows read, so a row the pattern misses fails here, not as a quiet gap.
-func promCatalogKeys(t *testing.T) (cat, base map[string]struct{ family, unit string }) {
-	t.Helper()
-	type key = struct{ family, unit string }
-	files, err := filepath.Glob(filepath.Join("..", "repo", "sql", "*.sql"))
+// rows read, so a row the pattern misses is an error, not a quiet gap.
+func promCatalog(dir string) (cat, base map[string]promKey, err error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.sql"))
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, err
 	}
 	sort.Strings(files)
-	read := func(f string) string {
+	srcs := map[string]string{}
+	for _, f := range files {
 		b, err := os.ReadFile(f)
 		if err != nil {
-			t.Fatal(err)
+			return nil, nil, err
 		}
-		return string(b)
+		srcs[f] = string(b)
 	}
+	end := regexp.MustCompile(`;[ \t]*\n`)
 	// a view's text: from its CREATE to the first line ending in ';' (a DO block's EXECUTE: to its $u$; line)
-	viewText := func(src, view string) []string {
+	viewText := func(src, view string) ([]string, error) {
 		var out []string
 		marker := "VIEW pgvigil." + view + " AS"
 		for i := strings.Index(src, marker); i >= 0; {
 			rest := src[i:]
-			end := regexp.MustCompile(`;[ \t]*\n`).FindStringIndex(rest)
-			if end == nil {
-				t.Fatalf("view %s: no end after its CREATE", view)
+			e := end.FindStringIndex(rest)
+			if e == nil {
+				return nil, fmt.Errorf("view %s: no end after its CREATE", view)
 			}
-			out = append(out, rest[:end[1]])
-			j := strings.Index(rest[end[1]:], marker)
+			out = append(out, rest[:e[1]])
+			j := strings.Index(rest[e[1]:], marker)
 			if j < 0 {
 				break
 			}
-			i += end[1] + j
+			i += e[1] + j
 		}
-		return out
+		return out, nil
 	}
 	row := regexp.MustCompile(`\('(postgres|sqlserver|any)',\s*'([a-z_]+)',\s*'(?:[^']|'')*',\s*\d+,\s*'([a-z_0-9]+)',\s*'(?:[^']|'')*',\s*'([a-z_]+)',`)
 	begun := regexp.MustCompile(`(?m)^\s*\('(postgres|sqlserver|any)',`)
-	rows := func(where, text string) map[string]key {
-		got := map[string]key{}
+	rows := func(where, text string) (map[string]promKey, error) {
+		got := map[string]promKey{}
 		for _, m := range row.FindAllStringSubmatch(text, -1) {
-			got[m[2]+"."+m[3]] = key{m[2], m[4]}
+			got[m[2]+"."+m[3]] = promKey{m[2], m[4]}
 		}
 		if n := len(begun.FindAllString(text, -1)); n != len(got) {
-			t.Fatalf("%s: %d catalog rows begun, %d read", where, n, len(got))
+			return nil, fmt.Errorf("%s: %d catalog rows begun, %d read", where, n, len(got))
 		}
-		return got
+		return got, nil
 	}
-	newest := func(view string) (string, string) {
+	newest := func(view string) (string, string, error) {
 		var name, text string
 		for _, f := range files {
-			if v := viewText(read(f), view); len(v) > 0 {
+			v, err := viewText(srcs[f], view)
+			if err != nil {
+				return "", "", err
+			}
+			if len(v) > 0 {
 				name, text = filepath.Base(f), v[len(v)-1]
 			}
 		}
-		return name, text
+		return name, text, nil
 	}
 	from := regexp.MustCompile(`FROM pgvigil\.([a-z_0-9]+)`)
-	cat = map[string]key{}
+	cat = map[string]promKey{}
 	for _, f := range files {
-		src := read(f)
-		for _, v := range viewText(src, "metric_catalog") {
-			part := rows(filepath.Base(f), v)
+		src := srcs[f]
+		views, err := viewText(src, "metric_catalog")
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, v := range views {
+			part, err := rows(filepath.Base(f), v)
+			if err != nil {
+				return nil, nil, err
+			}
 			for _, m := range from.FindAllStringSubmatch(v, -1) {
-				name, text := newest(m[1])
-				if text == "" {
-					t.Fatalf("%s: metric_catalog reads pgvigil.%s, which no migration defines as a view", filepath.Base(f), m[1])
+				name, text, err := newest(m[1])
+				if err != nil {
+					return nil, nil, err
 				}
-				for k, c := range rows(name+" ("+m[1]+")", text) {
+				if text == "" {
+					return nil, nil, fmt.Errorf("%s: metric_catalog reads pgvigil.%s, which no migration defines as a view", filepath.Base(f), m[1])
+				}
+				inner, err := rows(name+" ("+m[1]+")", text)
+				if err != nil {
+					return nil, nil, err
+				}
+				for k, c := range inner {
 					part[k] = c
 				}
 			}
 			if !strings.Contains(src, "pg_get_viewdef('pgvigil.metric_catalog'") {
-				cat = map[string]key{} // a full definition: its rows alone (a copy: base keeps 0085's own)
+				cat = map[string]promKey{} // a full definition: its rows alone (a copy: base keeps 0085's own)
 			}
 			for k, c := range part {
 				cat[k] = c
@@ -191,7 +216,53 @@ func promCatalogKeys(t *testing.T) (cat, base map[string]struct{ family, unit st
 			}
 		}
 	}
-	return cat, base
+	return cat, base, nil
+}
+
+// TestPromCatalogReadsEveryForm: promCatalog over small folders of migrations - a definer it cannot cut is an error,
+// never a quiet pass; a '--' comment ending in ';' inside a definition does not cut it short; a full definition is
+// full even when a comment in its file quotes the append's pg_get_viewdef call.
+func TestPromCatalogReadsEveryForm(t *testing.T) {
+	const head = "CREATE OR REPLACE VIEW pgvigil.metric_catalog AS\nSELECT * FROM (VALUES\n"
+	row := func(metric string) string {
+		return "    ('any', 'f', 'F', 1, '" + metric + "', 'a label', 'count', false, 600, 1),\n"
+	}
+	last := func(metric string) string {
+		return "    ('any', 'f', 'F', 1, '" + metric + "', 'a label', 'count', false, 600, 1)\n  ) AS v(engine, family, family_label, family_sort, metric, label, unit, per_database, fresh_secs, sort);\n"
+	}
+	write := func(t *testing.T, files map[string]string) string {
+		t.Helper()
+		dir := t.TempDir()
+		for n, body := range files {
+			if err := os.WriteFile(filepath.Join(dir, n), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	base := head + row("a") + last("b")
+	t.Run("a definer it cannot cut", func(t *testing.T) {
+		dir := write(t, map[string]string{"0001_a.sql": base,
+			"0002_b.sql": "CREATE OR REPLACE VIEW pgvigil.metric_catalog (key, engine)\nAS SELECT * FROM (VALUES\n" + last("c")})
+		if _, _, err := promCatalog(dir); err == nil {
+			t.Fatalf("a definer written with a column list and AS on its next line was read as nothing (want an error naming it)")
+		}
+	})
+	t.Run("a comment ending in a semicolon", func(t *testing.T) {
+		dir := write(t, map[string]string{"0001_a.sql": head + row("a") + "    -- the next row (one more);\n" + last("b")})
+		cat, _, err := promCatalog(dir)
+		if err != nil || len(cat) != 2 {
+			t.Fatalf("a definition with a comment ending in ';' above its last row: %d keys, %v (want 2)", len(cat), err)
+		}
+	})
+	t.Run("a full definition whose comment quotes the append", func(t *testing.T) {
+		dir := write(t, map[string]string{"0001_a.sql": base,
+			"0002_b.sql": "-- unlike pg_get_viewdef('pgvigil.metric_catalog'::regclass), this file re-creates the view whole\n" + head + last("c")})
+		cat, _, err := promCatalog(dir)
+		if _, stale := cat["f.a"]; err != nil || stale || len(cat) != 1 {
+			t.Fatalf("a full definition after a comment quoting the append: keys %v, %v (want f.c alone)", cat, err)
+		}
+	})
 }
 
 func TestPromValueAndEscape(t *testing.T) {
