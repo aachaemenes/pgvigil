@@ -257,7 +257,7 @@ docker run -d --name "$TAG-second" --network "container:$SYS" -e "PGVIGIL_REPO_D
 sleep 5; [[ "$(docker inspect -f '{{.State.Running}}' "$TAG-second" 2>/dev/null)" == true ]] || fail "the second collector exited: $(docker logs --tail 5 "$TAG-second" 2>&1)"
 refused "second collector" "another collector writes into pgvigil" "${ALLDROP[@]}"
 grep -q 'the service runs again, nothing else was changed' "$WORK/c.out" || fail "the second collector's refusal did not start the service again: $(cat "$WORK/c.out")"
-docker rm -f "$TAG-second" >/dev/null 2>&1 || fail "the second collector's container was not removed"
+docker rm -fv "$TAG-second" >/dev/null 2>&1 || fail "the second collector's container was not removed"
 same "a second collector"
 ok "refused with nothing changed, before the stop: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN naming another database (with an env: and with a file: dsn), a dsn that resolves to nothing, the configuration gone with the database there, a drop-in's EnvironmentFile= and a drop-in's ExecStart= (each named), a -bin that disagrees, a serve on the installed binary (named, 'running' in the dry run; idle and -no-login it held $IDLE repository session(s) after 9 s with a 2 s idle limit), serves from copies at other paths (the release asset's name, pid $SQ, and a name without pgvigil, pid $SR, each named), a role without ADMIN OPTION (PostgreSQL $PGMAJ); after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
 

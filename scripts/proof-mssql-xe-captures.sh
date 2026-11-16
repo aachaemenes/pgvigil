@@ -146,7 +146,7 @@ MADE_DB=; SRV=; SRV2=; CHR=
 cleanup() {
   rc=$?
   for p in $SRV $SRV2 $CHR; do kill "$p" 2>/dev/null; done
-  docker rm -f "$SQL" >/dev/null 2>&1
+  docker rm -fv "$SQL" >/dev/null 2>&1
   if [ -n "$MADE_DB" ]; then psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped"; fi
   rm -rf "$TMPD"
   exit $rc

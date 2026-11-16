@@ -177,8 +177,8 @@ sq() { local out rc=0
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
-  [ -n "$WAITER" ] && { docker rm -f "$WAITER" >/dev/null 2>&1 || true; }
-  for c in ${HOLDER:-} ${WTR:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  [ -n "$WAITER" ] && { docker rm -fv "$WAITER" >/dev/null 2>&1 || true; }
+  for c in ${HOLDER:-} ${WTR:-}; do docker rm -fv "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form azuresqldb -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null \
     && docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$AZ_HOST,${AZ_PORT:-1433}" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -i /dev/stdin < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
@@ -330,7 +330,7 @@ elif run_ok mssql_requests; then
   GOT=$(q "select session_id || '|' || command || '|' || wait_type from pgvigil.mssql_requests where instance_id=$iid and session_id=$WSID order by snapshot_at desc limit 1")
   [ -n "$GOT" ] && [ "$GOT" = "$HAND" ] && VERDICT[mssql_requests]="PASS" || { VERDICT[mssql_requests]="FAIL"; bad "B: mssql_requests stored '$GOT' for session $WSID, the setup login reads '$HAND'"; }
 fi
-docker rm -f "$WAITER" >/dev/null 2>&1 || true; WAITER=
+docker rm -fv "$WAITER" >/dev/null 2>&1 || true; WAITER=
 # mssql_waits: bracketed by the setup login's reads before and after the run
 WSQL="SELECT wait_type + '|' + CAST(waiting_tasks_count AS varchar(20)) + '|' + CAST(wait_time_ms AS varchar(20)) FROM sys.dm_db_wait_stats WHERE waiting_tasks_count > 0 OR wait_time_ms > 0"
 sq "$WSQL" > "$WORK/w-before.txt"
@@ -395,7 +395,7 @@ else
     else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: stored [$(tr '\n' ' ' < "$WORK/wt-s.txt")], the setup login read [$(tr '\n' ' ' < "$WORK/wt-b.txt")] before and [$(tr '\n' ' ' < "$WORK/wt-a.txt")] after (want '$WSID2|LCK_M_X|$HSID|$AZ_DB' on all three); the newest read '$GOT'"; fi
   fi
 fi
-docker rm -f "$WTR" "$HOLDER" >/dev/null 2>&1 || true; WTR=; HOLDER=
+docker rm -fv "$WTR" "$HOLDER" >/dev/null 2>&1 || true; WTR=; HOLDER=
 # mssql_xe: one state per capture, as the setup login reads the sessions
 if run_ok mssql_xe; then
   HAND=$(sq "SELECT c.capture + '|' + CASE WHEN x.name IS NOT NULL THEN 'running' WHEN d.name IS NOT NULL THEN 'stopped' ELSE 'not installed' END

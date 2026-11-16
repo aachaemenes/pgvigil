@@ -194,7 +194,7 @@ cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$APPPID" ]] && kill "$APPPID" 2>/dev/null || true
   [[ -n "$CHRPID" ]] && kill "$CHRPID" 2>/dev/null || true
-  docker rm -f "$SVC" "$CFGC" "$PYC" "$SQL" >/dev/null 2>&1 || true
+  docker rm -fv "$SVC" "$CFGC" "$PYC" "$SQL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   if compgen -G "$CACHE/ServiceConfig.json*" >/dev/null; then echo "WARN: $CACHE holds a ServiceConfig.json* (remove it by hand)" >&2; fi
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || true
@@ -273,7 +273,7 @@ else
   docker run -d --name "$SVC" --network "$NET" --label "$LBL" --env-file "$TMPD/sa.env" --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$DD:/dd" -w /dd "$IMG_NET" dotnet DBADashService.dll >/dev/null
   sleep "$SVC_SECS"
   docker logs "$SVC" 2>&1 | grep -E '\[(ERR|FTL)\]' | head -5 | sed 's/^/note /' || true
-  docker rm -f "$SVC" >/dev/null
+  docker rm -fv "$SVC" >/dev/null
   rm -rf "$DD"
   ! compgen -G "$CACHE/ServiceConfig.json*" >/dev/null || fail "A: the cache holds a ServiceConfig.json*"
   echo "ok   A: DBA Dash's service collected for $SVC_SECS s as a console process in this run's own copy of the release, now removed; the cache holds no service config"
@@ -590,7 +590,7 @@ echo "ok   C2: session $C2SID's batch_text, text and cursor_text, job ${C2JOB:-(
 grids C3 pages-c2 "sessions jobs alerts"
 grep -q "^ok   C3: 3 page(s)" "$TMPD/grids-C3.out" || fail "C3: the seeded pages are not DBA Dash's grids (the lines above)"
 for t in "$C2A" "$C2B" "$C2C" "$C2D"; do ! grep -qF -- "$t" "$TMPD/grids-C3.out" || fail "C3: a line of the comparison holds a seeded token"; done
-docker rm -f "$PYC" >/dev/null
+docker rm -fv "$PYC" >/dev/null
 echo "ok   C3: the sessions, jobs and alerts pages with the seeded credentials equal DBA Dash's own procedure output, the second client's text cells through the page's mask; no line of the comparison holds a token"
 
 echo "== D. the actions, through pgvigil serve =="

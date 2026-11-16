@@ -99,7 +99,7 @@ cleanup() {
   rc=$?; set +e
   [ -n "$SRV" ] && kill "$SRV" >/dev/null 2>&1
   [ -n "$SRV2" ] && kill "$SRV2" >/dev/null 2>&1
-  docker rm -f "$RCT" "$TCT" >/dev/null 2>&1 || echo "CLEANUP: containers $RCT / $TCT not removed" >&2
+  docker rm -fv "$RCT" "$TCT" >/dev/null 2>&1 || echo "CLEANUP: containers $RCT / $TCT not removed" >&2
   rm -rf "$WORK"
   exit $rc
 }

@@ -210,7 +210,7 @@ cleanup() {
   for p in "$SRV_PID" "$GRANT_PID" "$HOLD_PID" "$CHR_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   [ -n "$CHR_PID" ] && { wait "$CHR_PID" 2>/dev/null || true; }   # Chromium writes its profile folder until it is gone
   if [ -n "$MADE_CT" ]; then
-    docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
+    docker rm -fv "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
   else
     # on a sandbox that stays: the sorting session outlives its docker client
     [ -n "$SORTING" ] && kill_sort
@@ -220,7 +220,7 @@ cleanup() {
       sq "IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1 || echo "CLEANUP: login $l not dropped" >&2
     done
   fi
-  [ -n "$MADE_PG13" ] && { docker rm -f "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
+  [ -n "$MADE_PG13" ] && { docker rm -fv "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
   [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
   rm -rf "$WORK" || echo "CLEANUP: $WORK not removed" >&2
   exit $rc
@@ -312,7 +312,7 @@ else
   [ "$V13" = "13|$VMAIN" ] || fail "M: PostgreSQL major|schema version $V13, want 13|$VMAIN"
   F13=$(p13 "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ('import_mssql_properties', 'import_mssql_procstats', 'import_mssql_indexlocks', 'mssql_tempdb_page_kind', 'mssql_reads_purge')" "pgvigil_p4s2_pg13_$SUF")
   [ "$F13" = 5 ] || fail "M: $F13 of 0084's 5 functions exist on PostgreSQL 13"
-  docker rm -f "$PG13" >/dev/null 2>&1 && MADE_PG13=
+  docker rm -fv "$PG13" >/dev/null 2>&1 && MADE_PG13=
   echo "M: OK (schema version $VMAIN on PostgreSQL 13)"; M_NOTE="M"
 fi
 

@@ -116,7 +116,7 @@ cleanup() {
         [ "$(S "$x" "SELECT COUNT(*) FROM sys.server_principals WHERE name = '$LM'" 2>/dev/null)" = 0 ] || { echo "CLEANUP: login $LM left on ${NAME[$x]}" >&2; [ $rc = 0 ] && rc=1; }
       done
     fi
-    docker rm -f "$TAG" >/dev/null 2>&1
+    docker rm -fv "$TAG" >/dev/null 2>&1
   fi
   [ -n "$MADE_REPO" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
   rm -rf "$WORK"
@@ -144,7 +144,7 @@ ok "M1: principal '$SP'; mirror '$SM'; the witness lists pgvmirror"
 for x in p m w; do left=$(S "$x" "SELECT ISNULL(STRING_AGG(name, ','), '') FROM sys.server_principals WHERE name LIKE 'pgvmir[_]mon[_]%'")
   [ -z "$left" ] || fail "M1: ${NAME[$x]} has a monitoring login of an earlier run: $left (drop it by hand)"; done
 left=$(docker ps -a --filter label=pgvmirp --format '{{.Names}}' | { grep -vx "$TAG" || true; } | tr '\n' ' ')   # none left: grep exits 1
-[ -z "$left" ] || fail "M1: helper containers of an earlier run: $left (docker rm -f them)"
+[ -z "$left" ] || fail "M1: helper containers of an earlier run: $left (docker rm -fv them)"
 
 for x in p m w; do
   Sin "$x" <<<"CREATE LOGIN [$LM] WITH PASSWORD = '$PM', CHECK_POLICY = OFF;" >"$WORK/sin" 2>&1 || { cat "$WORK/sin"; fail "the monitoring login on ${NAME[$x]}"; }; MADE_LOGIN=1

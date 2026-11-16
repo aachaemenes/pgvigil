@@ -24,7 +24,7 @@ cd "$(dirname "$0")/.."
 [[ -n "${PGVIGIL_ADMIN_DSN:-}" ]] || { echo "FAIL: PGVIGIL_ADMIN_DSN is not set"; exit 2; }
 OUT="${PGVIGIL_GRIDMENU_OUT:-$(mktemp -d)}"; mkdir -p "$OUT"
 SQLC=""; ENVF=""
-cleanup() { [[ -n "$SQLC" ]] && docker rm -f "$SQLC" >/dev/null 2>&1; [[ -n "$ENVF" ]] && rm -f "$ENVF"; return 0; }
+cleanup() { [[ -n "$SQLC" ]] && docker rm -fv "$SQLC" >/dev/null 2>&1; [[ -n "$ENVF" ]] && rm -f "$ENVF"; return 0; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 echo "== proof-gridmenu: node $(node --version), go $(go env GOVERSION 2>/dev/null), $(chromium --version 2>/dev/null | head -1); out $OUT"

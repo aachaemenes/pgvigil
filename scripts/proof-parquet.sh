@@ -117,7 +117,7 @@ SUF=$RANDOM; ROWS=${PROOF_ROWS:-I A A2 B B2 C D E F G H J}
 WORK=$(mktemp -d); chmod 755 "$WORK"
 S3C=pgvigil-pqproof-s3-$SUF; AZC=pgvigil-pqproof-az-$SUF; PYC=pgvigil-pqproof-py-$SUF
 cleanup() {
-  docker rm -f "$PYC" "$S3C" "$AZC" >/dev/null 2>&1 || true
+  docker rm -fv "$PYC" "$S3C" "$AZC" >/dev/null 2>&1 || true
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists pgvigil_pqproof_$SUF with (force)" >/dev/null 2>&1 || true
   for r in $(psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "select rolname from pg_roles where rolname like 'pqp\_%\_$SUF'" 2>/dev/null); do
     psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists \"$r\"" >/dev/null 2>&1 || true

@@ -652,7 +652,7 @@ cleanup() {
     if [ -n "$MADE_LOGIN" ]; then
       drop_login && echo "cleanup: login $LM dropped (read back)" || { echo "CLEANUP: login $LM left on PGVPRINCIPAL" >&2; [ $rc = 0 ] && rc=1; }
     fi
-    docker rm -f "$TAG" >/dev/null 2>&1
+    docker rm -fv "$TAG" >/dev/null 2>&1
     [ -z "$(docker ps -a -q --filter "label=pgvmrgw=$TAG")" ] || { echo "CLEANUP: the helper $TAG is left" >&2; [ $rc = 0 ] && rc=1; }
   fi
   [ -n "$MADE_REPO" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
@@ -666,7 +666,7 @@ trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2; exit 1' ERR
 BIN=${PGVIGIL_BIN:-}
 if [ -z "$BIN" ]; then CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil || fail "the build"; BIN=$WORK/pgvigil; fi
 left=$(docker ps -a --filter label=pgvmrgw --format '{{.Names}}' | tr '\n' ' ')
-[ -z "$left" ] || fail "MG1: helper containers of an earlier run: $left (docker rm -f them)"
+[ -z "$left" ] || fail "MG1: helper containers of an earlier run: $left (docker rm -fv them)"
 docker run -d --name "$TAG" --network host --label "pgvmrgw=$TAG" --entrypoint sleep "$IMG" infinity >/dev/null; HELPER=1
 
 echo "--- MG1. the lab as sa"
