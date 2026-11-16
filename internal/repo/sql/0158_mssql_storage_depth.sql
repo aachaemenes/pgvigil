@@ -508,7 +508,7 @@ LANGUAGE sql STABLE AS $$
      WHERE t.instance_id = p_instance_id AND t.is_present AND (p_db IS NULL OR t.database_name = p_db))
   SELECT b.database_name, b.schema_name, b.table_name, b.table_type, b.compression, b.row_count, b.used_kb, b.reserved_kb,
          b.row_count - b.base_rows, b.used_kb - b.base_used,
-         round((b.used_kb - b.base_used) / greatest(extract(epoch FROM b.snapshot_at - b.start_at) / 86400.0, 1 / 24.0), 1),
+         round((b.used_kb - b.base_used) / greatest(extract(epoch FROM b.snapshot_at - b.start_at)::numeric / 86400.0, 1 / 24.0), 1),
          b.start_at
     FROM b
    WHERE b.base_known
