@@ -116,7 +116,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_trim_mark (
 -- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
 -- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
 -- (collector_streaks_now). A renamed host starts at 0. Trimmed by the beat when its host has not named the instance
--- for 8 days, and every row of a host none of whose runs has beaten for 8 days (a host gone: uninstalled, renamed).
+-- for 8 days, and every row of a host none of whose runs has beaten for 8 days (a host gone: uninstalled, renamed) -
+-- while any collector still beats: a repository whose last collector is uninstalled keeps that host's rows (one host's,
+-- as its heartbeat rows). Kept as a limit: a repository restored from a backup older than 8 days, or back after an
+-- outage of 8 days, sees every other host as gone at the first beat and drops their rows; a host's streak at 0 is not
+-- written again while it stays 0, so until it changes the lowest of the hosts still reading may be a failing one.
 CREATE TABLE IF NOT EXISTS pgvigil.collector_streaks (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   collection    text NOT NULL,
@@ -409,10 +413,15 @@ BEGIN
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
   -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
   -- its streak rows when its last run's row goes below (the lead's 11-15 19:2x: the trim above takes only the beating
-  -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0). The guard
-  -- reads only the heartbeat rows, so a beat with no host leaving pays nothing for it
+  -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0 - with no
+  -- other collector beating meanwhile its rows stay, and import_collector_streaks leaves them out). The guard reads only
+  -- the heartbeat rows, so a beat with no host leaving pays nothing for it. The beats of the minute the guard turns
+  -- true take one lock in turn (the STREAKS review's #2: two DELETEs of one host's rows by synchronized seq scans can
+  -- deadlock and lose a beat's minute); a beat after the first finds the rows gone. Never a try-lock: a beat that
+  -- skipped would still delete the host's heartbeat rows below, and if the holder then failed the streaks would stay
   IF EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
               AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days')) THEN
+    PERFORM pg_advisory_xact_lock(31638955663386483);   -- 0x7067766961_6773: "pgvia" "gs" (alerts.go and deliver.go's form)
     DELETE FROM pgvigil.collector_streaks s
      WHERE s.host IN (SELECT g.host FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
                         AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days'));
@@ -422,12 +431,16 @@ BEGIN
 END $$;
 
 -- import_collector_streaks: the failed runs in a row the repository holds for host p_host (a collector started again
--- on that host counts on from them; a collector on another host never takes them)
+-- on that host counts on from them; a collector on another host never takes them), written in the last 8 days: a host
+-- back after 8 days counts from 0 (the STREAKS review's #1: with one collector nothing beats while it is away, so its
+-- rows are still there). A failing streak is written at every run of its host; one older than a day sends no alert
+-- ('collection failing', 'server unreachable'), so a collection read less often than every 8 days loses only a count
+-- that alerted nothing. Its first result after the start replaces the stored row (the collector's fresh mark)
 CREATE OR REPLACE FUNCTION pgvigil.import_collector_streaks(p_host text)
 RETURNS TABLE (instance text, collection text, fail_streak int, last_error text) LANGUAGE sql STABLE AS $$
   SELECT i.name, s.collection, s.fail_streak, s.last_error
     FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
-   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host
+   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host AND s.last_run_at >= now() - interval '8 days'
 $$;
 
 -- import_collector_retire: the host's collector is uninstalled and its repository kept (uninstall calls it; the
