@@ -97,9 +97,9 @@ func MaskCredentials(s string) string {
 // blocked process report pages parse it). Each attribute value and each text node is decoded, masked as MaskCredentials
 // masks a text, and written back escaped only when the mask changed it (<masked> as &lt;masked&gt;), so the document
 // stays XML and every value the mask leaves alone keeps its bytes. A showplan's ColumnReference of a password-named @
-// parameter has its compiled and runtime values masked, and a statement whose text names such a parameter has its
-// expressions' literals masked (OPTION (RECOMPILE) compiles the value in as a constant; maskPlanCredStatements, run
-// first, over the names as they came in).
+// parameter has its compiled and runtime values masked, and a statement whose text names such a parameter - or is cut
+// at the showplan's length and lists no parameter - has its expressions' literals masked (OPTION (RECOMPILE) compiles
+// the value in as a constant; maskPlanCredStatements, run first, over the names as they came in).
 //
 // A CDATA section, a comment and a processing instruction hold raw text and are masked as they stand (<masked> inside
 // one keeps the document XML). An instruction can be a whole cell: sp_WhoIsActive's formatted output writes a

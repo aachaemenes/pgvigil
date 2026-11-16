@@ -63,28 +63,67 @@ func hasPlanExprAttr(tag string) bool {
 	return false
 }
 
+// planStmtCut is the length a showplan keeps of a statement's text (SQL Server 2022 16.0.4325.4 writes 3,999
+// characters): a statement at it may name its credential parameter past the cut.
+const planStmtCut = 3999
+
 // maskPlanCredStatements is the statement pass of MaskXML, run over the document as it came in, before the tag pass:
 // each showplan statement (a Stmt... start tag, up to the next one) whose StatementText names a credential-named
-// @parameter has its expression attributes' literals masked (maskPlanLiterals). The start tags are read as maskXML
-// reads them: a comment's, a CDATA section's and an instruction's body is raw text, not tags, and an instruction ends
-// where piEnd says (a showplan an instruction wraps is masked by the plan's own maskXML inside it, maskRaw); a tag the
-// text ends inside ends the pass. One pass and no list of tags; s itself comes back when nothing is masked.
-// Idempotent: a masked literal reads back as itself.
+// @parameter - or whose StatementText is at the showplan's cut (planStmtCut) and which lists no parameter, the shape a
+// credential compiled in past the cut leaves (the lead 11-16 04:2x: locked down by default, Q15) - has its expression
+// attributes' literals masked (maskPlanLiterals). The start tags are read as maskXML reads them (nextPlanTag); a tag
+// the text ends inside ends the pass. One pass and no list of tags (a statement at the cut reads ahead to the next
+// statement once); s itself comes back when nothing is masked. Idempotent: a masked literal reads back as itself.
 func maskPlanCredStatements(s string) string {
 	if !strings.Contains(s, "StatementText=") {
 		return s
 	}
 	var b strings.Builder
-	pos, in, changed := 0, false, false // pos: s is written up to here; in: the tags read belong to a statement that names one
+	pos, in, changed := 0, false, false // pos: s is written up to here; in: the tags read belong to a statement masked
 	opens, noEnd := len(s)-len(strings.TrimLeft(s, " \t\r\n")), false
-	for i := 0; i < len(s); {
+	for i := 0; ; {
+		at, e, ok := nextPlanTag(s, i, opens, &noEnd)
+		if !ok {
+			break
+		}
+		tag := s[at : at+e]
+		if strings.HasPrefix(tag, "<Stmt") {
+			text, _ := planAttr(tag, "StatementText")
+			in = planCredParamRE.MatchString(text) || utf16Len(text) >= planStmtCut && !planListsParams(s, at+e, opens, noEnd)
+		}
+		if in && hasPlanExprAttr(tag) {
+			if m := maskPlanExprAttrs(tag); m != tag {
+				if !changed {
+					b.Grow(len(s) + len(s)/8)
+					changed = true
+				}
+				b.WriteString(s[pos:at])
+				b.WriteString(m)
+				pos = at + e
+			}
+		}
+		i = at + e
+	}
+	if !changed {
+		return s
+	}
+	b.WriteString(s[pos:])
+	return b.String()
+}
+
+// nextPlanTag is the next start tag of s from i on, read as maskXML reads a document: where it begins and its length.
+// A comment's, a CDATA section's and an instruction's body is raw text, not tags (an instruction ends where piEnd
+// says; opens and noEnd are piEnd's), and an end tag or a declaration holds no attributes of a statement. ok is false
+// at the text's end, or where it ends inside a tag or a section.
+func nextPlanTag(s string, i, opens int, noEnd *bool) (at, n int, ok bool) {
+	for i < len(s) {
 		lt := strings.IndexByte(s[i:], '<')
 		if lt < 0 {
-			break
+			return 0, 0, false
 		}
 		i += lt
 		rest := s[i:]
-		end := 0 // the length of a raw section rest begins with (a comment, a CDATA section, an instruction)
+		end := -1 // the length of the raw section rest begins with
 		switch {
 		case strings.HasPrefix(rest, "<!--"):
 			if end = strings.Index(rest[4:], "-->"); end >= 0 {
@@ -95,47 +134,53 @@ func maskPlanCredStatements(s string) string {
 				end += 9 + 3
 			}
 		case strings.HasPrefix(rest, "<?"):
-			end = piEnd(rest, i == opens, &noEnd)
+			end = piEnd(rest, i == opens, noEnd)
 		case len(rest) < 2 || !isASCIILetter(rest[1]):
-			i++ // an end tag, a declaration: no attributes of a statement
+			i++
 			continue
 		default:
-			end = -2
-		}
-		if end == -1 {
-			break // the text ends inside the section: the rest is raw
-		}
-		if end > 0 {
-			i += end
-			continue
-		}
-		e := xmlTagEnd(rest)
-		if e < 0 {
-			break
-		}
-		tag := rest[:e]
-		if strings.HasPrefix(tag, "<Stmt") {
-			text, _ := planAttr(tag, "StatementText")
-			in = planCredParamRE.MatchString(text)
-		}
-		if in && hasPlanExprAttr(tag) {
-			if m := maskPlanExprAttrs(tag); m != tag {
-				if !changed {
-					b.Grow(len(s) + len(s)/8)
-					changed = true
-				}
-				b.WriteString(s[pos:i])
-				b.WriteString(m)
-				pos = i + e
+			if e := xmlTagEnd(rest); e > 0 {
+				return i, e, true
 			}
+			return 0, 0, false
 		}
-		i += e
+		if end < 0 {
+			return 0, 0, false
+		}
+		i += end
 	}
-	if !changed {
-		return s
+	return 0, 0, false
+}
+
+// planListsParams: the statement whose start tag ends at i has a ParameterList before the next statement begins (its
+// own QueryPlan holds it, before any statement nested in it). noEnd is a copy: the look ahead leaves the pass's own.
+func planListsParams(s string, i, opens int, noEnd bool) bool {
+	for {
+		at, e, ok := nextPlanTag(s, i, opens, &noEnd)
+		if !ok {
+			return false
+		}
+		tag := s[at : at+e]
+		if strings.HasPrefix(tag, "<Stmt") {
+			return false
+		}
+		if strings.HasPrefix(tag, "<ParameterList") {
+			return true
+		}
+		i = at + e
 	}
-	b.WriteString(s[pos:])
-	return b.String()
+}
+
+// utf16Len is the length of s in SQL Server's characters (UTF-16 code units: a character past U+FFFF is two).
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++
+		}
+	}
+	return n
 }
 
 // maskPlanExprAttrs is a start tag with the literals of its expression attributes masked, written back escaped only
