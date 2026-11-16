@@ -95,10 +95,12 @@ func MaskCredentials(s string) string {
 // or a text node, and the stored document would no longer be XML (the Plan cache's .sqlplan, the deadlock graph and the
 // blocked process report pages parse it). Each attribute value and each text node is decoded, masked as MaskCredentials
 // masks a text, and written back escaped only when the mask changed it (<masked> as &lt;masked&gt;), so the document
-// stays XML and every value the mask leaves alone keeps its bytes. A CDATA section and a comment hold raw text and are
-// masked as they stand; a processing instruction is kept. A showplan's ColumnReference of a password-named @ parameter
-// has its compiled and runtime values masked. A tag the text ends inside (a cut document, no longer XML) is masked as
-// a text. Idempotent, as MaskCredentials is.
+// stays XML and every value the mask leaves alone keeps its bytes. A CDATA section, a comment and a processing
+// instruction hold raw text and are masked as they stand: sp_WhoIsActive writes a session's sql_text and sql_command
+// as an instruction (<?query -- ... --?>), a statement like any other, and <masked> inside one keeps the document
+// XML (only "?>" ends an instruction). A showplan's ColumnReference of a password-named @ parameter has its compiled
+// and runtime values masked. A tag, a comment, a CDATA section or an instruction the text ends inside (a cut document,
+// no longer XML) is masked as a text. Idempotent, as MaskCredentials is.
 func MaskXML(s string) string {
 	if s == "" {
 		return s
@@ -121,7 +123,7 @@ func MaskXML(s string) string {
 		case strings.HasPrefix(rest, "<![CDATA["):
 			open, closing, raw = "<![CDATA[", "]]>", true
 		case strings.HasPrefix(rest, "<?"):
-			open, closing = "<?", "?>"
+			open, closing, raw = "<?", "?>", true
 		}
 		end := -1
 		if open != "" {
@@ -135,12 +137,9 @@ func MaskXML(s string) string {
 			b.WriteString(maskXMLCut(rest))
 			break
 		}
-		switch {
-		case raw:
+		if raw {
 			b.WriteString(open + MaskCredentials(rest[len(open):end-len(closing)]) + closing)
-		case open != "":
-			b.WriteString(rest[:end])
-		default:
+		} else {
 			b.WriteString(maskXMLTag(rest[:end]))
 		}
 		i += end
