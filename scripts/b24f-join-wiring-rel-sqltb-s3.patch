@@ -1,0 +1,115 @@
+B24f's join wiring, section rel-sqltb-s3 (the SQL Server index depth: histograms and on-demand fragmentation; the lead 11-15 16:3x).
+Apply on the joined tree that holds rel-roles and rel-sqltb-s3 (its proof-mssql-index-depth-wiring patch applied):
+  git apply -3 scripts/b24f-join-wiring-rel-sqltb-s3.patch
+Built on a pre-join copy of each file: rel-roles f421753c x rel-sqltb-s3 7184f8ea + that wiring patch's web.go hunk (local
+commit 89d3df9d, ref jw-pre-s3; merged clean), so -3 merges it onto the join's own resolution.
+What it does: s.post with needOperator for POST /api/mssql/stats/histogram, /api/mssql/indexes/fragmentation, /cost and
+/cancel (each runs on the monitored server, as plain EXPLAIN does: the lead's D2); their words in roles_wiring_sqltb_s3.go,
+needs.ts and docs/roles.md rows; the histogram link, Read LIMITED / SAMPLED, Show the heap size and Cancel carry the need
+(a reason already on them stays first).
+Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
+
+diff --git a/docs/roles.md b/docs/roles.md
+index 118b5eee..dc4102bb 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -112,6 +112,10 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/plans/explain` | operator | EXPLAIN (stores a plan row) |
+ | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |
+ | `POST /api/plans/hypo` | operator | try a hypothetical index |
++| `POST /api/mssql/stats/histogram` | operator | read a statistic's histogram on the monitored server (DBCC SHOW_STATISTICS) |
++| `POST /api/mssql/indexes/fragmentation` | operator | read one database's index fragmentation (sys.dm_db_index_physical_stats, LIMITED or SAMPLED) |
++| `POST /api/mssql/indexes/fragmentation/cost` | operator | read the heap size a fragmentation read would scan |
++| `POST /api/mssql/indexes/fragmentation/cancel` | operator | cancel a running fragmentation read |
+ | `POST /api/indexes/advise` | operator | run the index advisor (hypothetical indexes and EXPLAIN on the monitored server; nothing is created) |
+ | `POST /api/community/run` | operator | run a community tool (a script runs as the read login in a rolled-back transaction) |
+ | `POST /api/reportmail/send` | operator | send a report by mail now |
+diff --git a/internal/web/roles_wiring_sqltb_s3.go b/internal/web/roles_wiring_sqltb_s3.go
+new file mode 100644
+index 00000000..630bd66e
+--- /dev/null
++++ b/internal/web/roles_wiring_sqltb_s3.go
+@@ -0,0 +1,10 @@
++package web
++
++// B24f's join wiring for rel-sqltb-s3 (the lead 11-15 16:3x): the refusal words of its writes, kept beside roles.go's
++// routeWhat in a file of their own so each branch's wiring touches no line another branch's does
++func init() {
++	routeWhat["POST /api/mssql/stats/histogram"] = "reading a statistic's histogram"
++	routeWhat["POST /api/mssql/indexes/fragmentation"] = "reading index fragmentation"
++	routeWhat["POST /api/mssql/indexes/fragmentation/cost"] = "reading the heap size before a fragmentation read"
++	routeWhat["POST /api/mssql/indexes/fragmentation/cancel"] = "cancelling a fragmentation read"
++}
+diff --git a/internal/web/web.go b/internal/web/web.go
+index e004c139..c1c74838 100644
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -388,10 +388,10 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
+ 	// task 414 (B23): indexes and statistics on demand (q_mssql_index_depth.go)
+ 	api.HandleFunc("GET /api/mssql/indexes/depth", s.MSSQLIndexDepth)
+-	api.HandleFunc("POST /api/mssql/stats/histogram", s.MSSQLHistogram)
+-	api.HandleFunc("POST /api/mssql/indexes/fragmentation/cost", s.MSSQLFragCost)
+-	api.HandleFunc("POST /api/mssql/indexes/fragmentation/cancel", s.MSSQLFragCancel)
+-	api.HandleFunc("POST /api/mssql/indexes/fragmentation", s.MSSQLFragStart)
++	s.post(api, "POST /api/mssql/stats/histogram", needOperator, s.MSSQLHistogram)
++	s.post(api, "POST /api/mssql/indexes/fragmentation/cost", needOperator, s.MSSQLFragCost)
++	s.post(api, "POST /api/mssql/indexes/fragmentation/cancel", needOperator, s.MSSQLFragCancel)
++	s.post(api, "POST /api/mssql/indexes/fragmentation", needOperator, s.MSSQLFragStart)
+ 	api.HandleFunc("GET /api/mssql/indexes/fragmentation", s.MSSQLFragRead)
+ 	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
+ 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
+diff --git a/web/src/mssql_indexes.ts b/web/src/mssql_indexes.ts
+index 672d7491..0a476a77 100644
+--- a/web/src/mssql_indexes.ts
++++ b/web/src/mssql_indexes.ts
+@@ -12,6 +12,7 @@ import { get, post, rowsOf, Row, Table } from './api';
+ import { lineChart, seriesColors } from './chart';
+ import { Ctx, window_ } from './router';
+ import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
++import { needControl } from './needs';
+ 
+ // The tab key of the page (the router's entry carries the same key).
+ export const mssqlIndexesTab = 'mssqlindexes';
+@@ -125,7 +126,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
+       if (none) return none;
+       const b = el('button', { type: 'button', class: 'link' }, 'histogram');
+       b.addEventListener('click', () => { void showHistogram(String(r.database), String(r.schema_name), String(r.table_name), String(r[statsKey])); });
+-      return b;
++      return needControl(b, 'mssql/stats/histogram');   // the role (B24f): a read on the monitored server, an operator's
+     };
+     out.push(el('h3', {}, 'Statistics'), grid(rowsOf(d.statsdbs), [
+       { key: 'database' }, { key: 'statistics', num: true }, { key: 'statistics_with_props', label: 'with properties', num: true },
+@@ -326,6 +327,8 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
+     const note = offControl(lim, why || null);
+     offControl(smp, why || null, note);
+     offControl(cost, (off.startsWith('off: a fragmentation read runs only') || !dbName) ? (why || null) : null, note);
++    // the role (B24f): each read runs on the monitored server, an operator's (a reason already above stays first)
++    needControl(lim, 'mssql/indexes/fragmentation'); needControl(smp, 'mssql/indexes/fragmentation'); needControl(cost, 'mssql/indexes/fragmentation/cost');
+     const costOut = el('span', { class: 'meta' });
+     cost.addEventListener('click', () => {
+       costOut.textContent = 'Reading...';
+@@ -362,7 +365,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
+         const r = rowsOf(f.read)[0];
+         if (!r) { status.replaceChildren(el('p', { class: 'meta' }, 'No such read.')); return; }
+         if (r.state === 'running') {
+-          const cancel = el('button', { type: 'button' }, 'Cancel');
++          const cancel = needControl(el('button', { type: 'button' }, 'Cancel'), 'mssql/indexes/fragmentation/cancel');
+           cancel.addEventListener('click', () => {
+             post<Row>('mssql/indexes/fragmentation/cancel', { instance_id: ctx.instance, read_id: id })
+               .then(c => status.append(el('p', { class: 'meta' }, String(c.words ?? c.state)))).catch((e: unknown) => status.append(errorBox(e)));
+diff --git a/web/src/needs.ts b/web/src/needs.ts
+index f3a5ff8c..c410a177 100644
+--- a/web/src/needs.ts
++++ b/web/src/needs.ts
+@@ -29,6 +29,10 @@ export const routeNeeds = {
+   'plans/explain': ['operator', 'running EXPLAIN'],
+   'plans/analyze': ['operator', 'running EXPLAIN ANALYZE'],
+   'plans/hypo': ['operator', 'trying a hypothetical index'],
++  'mssql/stats/histogram': ['operator', "reading a statistic's histogram"],
++  'mssql/indexes/fragmentation': ['operator', 'reading index fragmentation'],
++  'mssql/indexes/fragmentation/cost': ['operator', 'reading the heap size before a fragmentation read'],
++  'mssql/indexes/fragmentation/cancel': ['operator', 'cancelling a fragmentation read'],
+   'community/run': ['operator', 'running a community tool'],
+   'reportmail/send': ['operator', 'sending a report by mail'],
+   'reportmail/test': ['operator', 'sending a test report mail'],
