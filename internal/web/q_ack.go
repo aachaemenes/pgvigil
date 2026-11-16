@@ -268,7 +268,7 @@ SELECT i.instance_id, i.name AS instance, i.engine,
 // one channel - a channel in quiet hours or with a higher minimum sends one episode later, under its own first send -
 // the most of any channel) and the sends. A finding never sent (no channel, or below every rule) has no row.
 const sqlAckSeen = `
-SELECT c.source, c.setting, c.value, min(c.first_seen) AS first_seen, max(c.last_seen) AS last_seen,
+SELECT c.source, c.setting AS "setting@fcheck", c.value AS "value@fvalue", min(c.first_seen) AS first_seen, max(c.last_seen) AS last_seen,
        max(c.episodes) AS occurrences, sum(c.sends)::bigint AS sends
   FROM (SELECT s.channel, s.source, s.setting, s.value, min(s.first_sent_at) AS first_seen, max(s.last_sent_at) AS last_seen,
                count(*) AS episodes, sum(s.send_count) AS sends

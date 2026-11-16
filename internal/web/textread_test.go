@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -23,6 +24,9 @@ var storedText = map[string][]string{
 	"mssql_attentions": {"statement"}, "mssql_ag_events": {"statement"}, "mssql_trace_events": {"statement"},
 	"mssql_audit_events": {"statement"}, "mssql_memory_grant_query": {"statement"}, "mssql_running_plan": {"plan_xml"},
 	"mssql_live_plan": {"plan_xml"}, "mssql_statement_text": {"statement"},
+	// a finding's value and detail: the checks that quote a statement (internal/textnow's findText) carry stored text
+	"alert_state": {"value"}, "ack_suppressed": {"value"}, "alert_occurrences": {"value"}, "alert_sent": {"value"},
+	"findings": {"detail", "value"}, "alert_findings": {"detail", "value"}, "findings_alerts": {"detail", "value"},
 }
 
 // textReadAllowed: a SQL text that names a stored text column without returning it, by its constant's name: why.
@@ -37,6 +41,12 @@ var textReadAllowed = map[string]string{
 	"sqlMSSQLXEDeadlockGraph": "scanned by its .xdl handler under planPolicy now",
 	"sqlPgDeadlockEvents":     "scanned by PgDeadlocks through textRule.row",
 	"sqlPlanForSuggest":       "scanned by planForSuggest through textRule.row",
+	"sqlPoolerConnTrace":      "counts over pgvigil.pooler_conns; returns no text",
+}
+
+// textFuncAllowed: a repository function whose body names a stored text column but whose result carries none: why.
+var textFuncAllowed = map[string]string{
+	"mssql_plan_sources": "returns has_plan, never the plan",
 }
 
 var sqlTableRE = regexp.MustCompile(`pgvigil\.(\w+)\s+(?:AS\s+)?([a-z][a-z0-9_]*)\b`)
@@ -94,7 +104,7 @@ func TestStoredTextTagged(t *testing.T) {
 			if err != nil || !strings.Contains(sql, "SELECT") {
 				return true
 			}
-			if strings.Contains(sql, textRoleSep) && regexp.MustCompile(`"[a-z_]*@[a-z]+"`).MatchString(sql) {
+			if strings.Contains(sql, textRoleSep) && regexp.MustCompile(`"[a-z_]*@[a-z]+"`).MatchString(sql) || textMarkRE.MatchString(sql) {
 				return true
 			}
 			for _, m := range sqlTableRE.FindAllStringSubmatch(sql, -1) {
@@ -113,6 +123,114 @@ func TestStoredTextTagged(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+// TestStoredTextFuncsMarked: a 'SELECT * FROM pgvigil.<function>(' whose function (its last definition in the
+// migrations) returns stored statement text - its body names a storedText column through a table's alias - carries
+// the text marker ('/* text: col=role */', textread.go) or a role tag, else it is listed with why (textFuncAllowed by
+// function, textReadAllowed by constant). web.go's three reads get their markers from the WIRING patch
+// (scripts/textnow-wiring.patch): without it this test fails on them. A function that reads the text through another
+// function is not seen here (the proof's walk is the check of those).
+func TestStoredTextFuncsMarked(t *testing.T) {
+	migrations, err := filepath.Glob(filepath.Join("..", "repo", "sql", "*.sql"))
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("the migrations: %v", err)
+	}
+	defRE := regexp.MustCompile(`CREATE (?:OR REPLACE )?FUNCTION pgvigil\.(\w+)\s*\(`)
+	endRE := regexp.MustCompile(`\n(?:CREATE|DROP|ALTER|GRANT|REVOKE|COMMENT|DO )`)
+	body := map[string]string{}
+	for _, f := range migrations { // Glob's order is the name order, the order they apply in
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		for _, m := range defRE.FindAllStringSubmatchIndex(src, -1) {
+			rest := src[m[1]:]
+			end := len(rest)
+			if e := endRE.FindStringIndex(rest); e != nil {
+				end = e[0]
+			}
+			body[src[m[2]:m[3]]] = src[m[0] : m[1]+end]
+		}
+	}
+	readsText := func(b string) string {
+		for _, m := range sqlTableRE.FindAllStringSubmatch(b, -1) {
+			for _, c := range storedText[m[1]] {
+				if regexp.MustCompile(`\b` + m[2] + `\.` + c + `\b`).MatchString(b) {
+					return m[1] + "." + c
+				}
+			}
+		}
+		return ""
+	}
+	callRE := regexp.MustCompile(`SELECT (?:[a-z]\.)?\* FROM pgvigil\.(\w+)\(`)
+	tagRE := regexp.MustCompile(`"[a-z_]*@[a-z]+"`)
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("the package's files: %v", err)
+	}
+	seen := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := map[*ast.BasicLit]string{}
+		ast.Inspect(af, func(n ast.Node) bool {
+			if x, ok := n.(*ast.ValueSpec); ok && len(x.Names) > 0 {
+				for _, v := range x.Values {
+					ast.Inspect(v, func(m ast.Node) bool {
+						if bl, ok := m.(*ast.BasicLit); ok {
+							name[bl] = x.Names[0].Name
+						}
+						return true
+					})
+				}
+			}
+			return true
+		})
+		ast.Inspect(af, func(n ast.Node) bool {
+			bl, ok := n.(*ast.BasicLit)
+			if !ok || bl.Kind != token.STRING {
+				return true
+			}
+			sql, err := strconv.Unquote(bl.Value)
+			if err != nil {
+				return true
+			}
+			for _, m := range callRE.FindAllStringSubmatch(sql, -1) {
+				b, ok := body[m[1]]
+				if !ok {
+					continue
+				}
+				col := readsText(b)
+				if col == "" {
+					continue
+				}
+				seen++
+				if textMarkRE.MatchString(sql) || tagRE.MatchString(sql) {
+					continue
+				}
+				if _, ok := textFuncAllowed[m[1]]; ok {
+					continue
+				}
+				if _, ok := textReadAllowed[name[bl]]; ok {
+					continue
+				}
+				t.Errorf("%s: %s reads pgvigil.%s(), which returns %s, with no text marker: add '/* text: <col>=<role> */' (textread.go), or list it with why (web.go: apply scripts/textnow-wiring.patch)",
+					fset.Position(bl.Pos()), name[bl], m[1], col)
+			}
+			return true
+		})
+	}
+	if seen == 0 {
+		t.Error("no read of a function that returns stored text was found: the test reads nothing (the migrations' path?)")
 	}
 }
 

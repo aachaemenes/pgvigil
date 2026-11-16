@@ -34,7 +34,7 @@ SELECT d.dbid, d.datname, d.objects, d.ddl_log, d.ddl_log_table, d.ddl_log_note,
  WHERE d.instance_id = $1 AND ($4::bigint IS NULL AND d.is_present OR d.dbid = $4)
  ORDER BY d.datname`
 
-const sqlSchemaChanges = `SELECT * FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint)`
+const sqlSchemaChanges = `SELECT * FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint) /* text: statement=stmt */`
 
 const sqlSchemaDDL = `
 SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_type, l.object_identity, l.role_name, l.statement AS "statement@stmt"

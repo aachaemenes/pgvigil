@@ -28,6 +28,10 @@
 #     alert whose value or detail is a stored text (a head statement: decisive); under none no dropped file holds a
 #     stored text or the start of one (the head statement cut to "(not shown: ...)").
 #  Red on d04bc70a (rel-j15dl): N, Z, M and A (none) fail - the routes and the sends return the texts stored under full.
+# The judge's two corrections after green run 1 (the expectations above unchanged): M - a route that ignores instance=
+# (Running fleet, Alerts, the ack's open alerts) answers every instance's rows to a call naming erp01 or sql01, so a
+# row that carries its instance_id is judged by that instance, as the fleet's rows are; Z - a text plan's figures
+# (cost, rows, time) are not literals: a plan's literals are judged on its expression lines only (plans.Mask's exprKeys).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -199,7 +203,8 @@ for g in ("text", "instance"):
     call("/api/slow/groups", {**win, "group": g}, "fleet")
 call("/api/slow/events", {**win}, "fleet")
 for rec in out["calls"]:
-    if rec["who"] != "fleet": rec.pop("json", None)
+    # mixed keeps the replies of the calls naming erp01 or sql01 too: a fleet-wide route's rows are judged by their instance
+    if rec["who"] != "fleet" and not (pol == "mixed" and rec["who"] in ("pg", "ms")): rec.pop("json", None)
 json.dump(out, open(f"{work}/walk-{pol}.json", "w"))
 print(f"{pol}: {len(out['calls'])} calls, {sum(1 for c in out['calls'] if c['status'] == 200)} answered 200, {len(out['skipped'])} skipped")
 EOF
@@ -216,18 +221,61 @@ for l in open(f"{work}/texts.tsv", encoding="utf-8", errors="replace"):
 by = collections.defaultdict(list)
 for t in texts: by[t[2][:24]].append(t)
 lit = re.compile(r"'[^']+'|(?<![\w$])\d+(?![\w])")
+# a plan's expression keys (internal/plans/mask.go exprKeys): only these carry the statement's literals
+ek = set(re.findall(r'"([A-Za-z -]+)": true', re.search(r"var exprKeys = map\[string\]bool\{(.*?)\n\}", open("internal/plans/mask.go").read(), re.S).group(1)))
+def exprs(v, acc):
+    if isinstance(v, dict):
+        for k, x in v.items():
+            if k in ek and isinstance(x, str): acc.append(x)
+            else: exprs(x, acc)
+    elif isinstance(v, list):
+        for x in v: exprs(x, acc)
+    return acc
+def has_lit(site, t):
+    if site == "plans.plan_text":
+        try: t = "\n".join(exprs(json.loads(t), []))
+        except ValueError:
+            t = "\n".join(l.strip().split(": ", 1)[1] for l in t.split("\n") if l.strip().split(": ", 1)[0] in ek and ": " in l)
+    return lit.search(t)
 walk = json.load(open(f"{work}/walk-{pol}.json"))
 def hits(s):
     if len(s) < 24: return []
     return [t for t in by.get(s[:24], []) if t[2].startswith(s) or s.startswith(t[2])]
-shown, leaks, qmarks = collections.Counter(), [], 0
+def tables(v, acc):
+    if isinstance(v, dict):
+        if "columns" in v and "rows" in v: acc.append(v)
+        else:
+            for x in v.values(): tables(x, acc)
+    elif isinstance(v, list):
+        for x in v: tables(x, acc)
+    return acc
+def strs(v, acc):
+    if isinstance(v, str): acc.append(v)
+    elif isinstance(v, dict):
+        for x in v.values(): strs(x, acc)
+    elif isinstance(v, list):
+        for x in v: strs(x, acc)
+    return acc
+shown, leaks, qmarks, placed = collections.Counter(), [], 0, 0
 for c in walk["calls"]:
-    for s in c.get("strings", []):
+    ss = c.get("strings", [])
+    if pol == "mixed" and c["who"] in ("pg", "ms") and "json" in c:
+        # a fleet-wide route answers every instance's rows: a row of another instance is judged by its own instance
+        other = collections.Counter()
+        for t in tables(c["json"], []):
+            if "instance_id" not in t["columns"]: continue
+            ii = t["columns"].index("instance_id")
+            for r in t["rows"]:
+                if str(r[ii]) not in (pgi, msi): other.update(strs(r, []))
+        kept = collections.Counter(ss) - other
+        placed += sum(1 for s in other.elements() if hits(s))
+        ss = list(kept.elements())
+    for s in ss:
         if "?" in s and re.search(r"\b(SELECT|UPDATE|INSERT|DELETE)\b", s, re.I): qmarks += 1
         for site, inst, t in hits(s):
             shown[site] += 1
             # mixed: erp01's and sql01's own routes show no stored text at all; the fleet's rows are judged by their instance below
-            if pol == "none" or (pol == "normalized" and lit.search(t)) or (pol == "mixed" and c["who"] in ("pg", "ms")):
+            if pol == "none" or (pol == "normalized" and has_lit(site, t)) or (pol == "mixed" and c["who"] in ("pg", "ms")):
                 leaks.append(f"{c['path']} [{c['who']}] shows {site} of instance {inst or '?'}: {t[:80]!r}")
 print(f"== {pol}: {sum(shown.values())} reply strings are stored texts; sites shown: {dict(shown)}")
 print(f"   skipped (4xx): {len(walk['skipped'])}; downloads: {walk['downloads']}")
@@ -252,15 +300,8 @@ if pol == "none":
         if v[0] != 404 or "not shown" not in v[1]: bad.append(f"download {k}: {v[0]} {v[1][:80]!r}")
 if pol == "normalized" and qmarks == 0: bad.append("no reply shows a normalized statement ('?')")
 if pol == "mixed":
+    print(f"   rows of other instances in the replies to calls naming erp01 / sql01 (a fleet-wide route), judged as the fleet's: {placed} stored-text string(s)")
     # each fleet table row by its instance_id: a row of erp01 or sql01 shows no stored text, another's may
-    def tables(v, acc):
-        if isinstance(v, dict):
-            if "columns" in v and "rows" in v: acc.append(v)
-            else:
-                for x in v.values(): tables(x, acc)
-        elif isinstance(v, list):
-            for x in v: tables(x, acc)
-        return acc
     others = 0
     for c in walk["calls"]:
         if c["who"] != "fleet" or "json" not in c: continue
