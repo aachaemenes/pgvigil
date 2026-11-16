@@ -45,6 +45,15 @@ func TestActivityRows(t *testing.T) {
 	if len(got) != 3 || got[0]["grp"] != "total" || got[1]["name"] != "app1" || got[2]["name"] != "web01" {
 		t.Fatalf("activityRows = %v", got)
 	}
+	// task 413: a 'session_by' row's NULL name is a bucket of its own (the sessions without a connection) and is kept
+	by := activityRows([]collect.Row{
+		{"kind": "session_by", "dimension": "interface", "name": nil, "sessions": int64(42)},
+		{"kind": "session_by", "dimension": "interface", "name": "TCP / TSQL", "sessions": int64(9)},
+		{"kind": "sessions", "grp": "program", "name": nil, "sessions": int64(30)},
+	})
+	if len(by) != 2 || by[0]["name"] != nil || by[1]["name"] != "TCP / TSQL" {
+		t.Fatalf("activityRows (session_by) = %v", by)
+	}
 }
 
 // sp_PressureDetector's CPU details: only the columns the server has, in its order; none = no statement.

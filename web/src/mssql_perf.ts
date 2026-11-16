@@ -4,6 +4,7 @@
 // mssql_tempdb hourly). Every chart shares the range's time axis.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { mssqlSessionsPart } from './mssql_sessions';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
 import { waitDocs } from './doclinks';
@@ -625,8 +626,9 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
   const s = rowsOf(d.summary)[0], series = rowsOf(d.series);
   const sec = el('section', {}, el('h2', {}, `Connections (${rangeLabel(ctx)})`));
   if (!s) { sec.append(empty('sessions', 'mssql_activity', 'every 5 minutes')); return sec; }
-  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count the sessions over 50; the groups count the user sessions over 50 '
-    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions and Sessions by Application). Waiting for memory: the requests '
+  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count every session, background being the system sessions '
+    + '(the server\'s is_user_process flag, the one rule of this page; PerformanceMonitor counts the sessions over 50); the groups count the user sessions '
+    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions by Application). Waiting for memory: the requests '
     + 'whose wait type names memory at the requests read nearest the sessions read.'));
   sec.append(el('h3', {}, `Sessions (${fmtTime(s.snapshot_at)})`), el('div', { class: 'tiles' },
     tile('connections', fmtNum(s.sessions)), tile('running', fmtNum(s.running)), tile('sleeping', fmtNum(s.sleeping)),
@@ -649,6 +651,7 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Sessions by application'), grid(rowsOf(d.applications), cols('application'), 'No user session with a program name at the newest read.'));
   sec.append(el('h3', {}, 'Sessions by host'), grid(rowsOf(d.hosts), cols('host'), 'No user session with a host name at the newest read.'));
   sec.append(el('h3', {}, 'Sessions by database'), grid(rowsOf(d.databases), cols('database'), 'No user session at the newest read.'));
+  sec.append(await mssqlSessionsPart(ctx)); // task 413
   sec.append(el('p', { class: 'meta' }, 'The sessions running now: ', el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), '.'));
   return sec;
 }

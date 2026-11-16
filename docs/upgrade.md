@@ -97,6 +97,10 @@ what happens in the other order, and what the project's own proof showed (`scrip
   counts the imports taken again per collection over 24 hours ('retried after a deadlock'). `pgvigil dbadash import`
   makes each batch's months before the batch and takes a batch ended by a deadlock again (its line and the Migrate
   page's import result say `retried N time(s) after a deadlock`). Nothing to do by hand.
+- **The SQL Server Connections page counts every session.** Its totals counted the sessions over 50 (PerformanceMonitor's
+  rule); from this version they count every session, background being the system sessions (the server's
+  `is_user_process` flag, one rule on the whole page), so on the same server the total and background read higher
+  after the upgrade. Reads stored before it keep their numbers.
 - **Files and stored rows.** The config file and the env file are kept byte for byte. From v0.3.0 to this version no
   migration changes a stored row: the proof compares, table by table, the row count and a hash of the rows before and
   after.

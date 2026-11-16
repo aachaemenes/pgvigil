@@ -407,6 +407,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/dbio", s.MSSQLDBIO)               // task 407
 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
 	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+	api.HandleFunc("GET /api/mssql/sessions", s.MSSQLSessions) // task 413 (q_mssql_sessions.go)
 	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
 	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
 	s.post(api, "POST /api/mssql/counteradmin", needAdmin, s.MSSQLCounterAdminWrite)
