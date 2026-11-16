@@ -176,6 +176,9 @@ func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("session setup %s: %w", in.Name, err)
 	}
+	if nc := conn.PgConn().Conn(); nc != nil && nc.RemoteAddr() != nil {
+		NoteRemote(in.Name, nc.RemoteAddr().String()) // B24h-1b: the probe's target is the address this connection used
+	}
 	return conn, nil
 }
 
@@ -215,6 +218,8 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return Result{Err: err, Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(ctx) }()
+	// the minute's query round trip on this connection, when no collection of the instance took it yet (B24h-1a)
+	MeasurePgRoundTrip(ctx, in.Name, conn)
 
 	info, err := platform.Detect(ctx, conn, in.Platform)
 	if err != nil {

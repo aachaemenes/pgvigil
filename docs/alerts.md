@@ -126,6 +126,30 @@ One collector sends alerts: name the `alerts:` list in one configuration. A coll
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
 column; renamed, it is a new channel and sends the standing findings again.
 
+## The round trip and the ping (B24h)
+
+Three findings come from the collector's own measures (warnings, settable per root, tag or instance as
+`round_trip_time` and `ping_time`, in seconds to three places, each settable empty: off):
+
+- **query round trip slow** - an instance's 'SELECT 1' round trip (the network and the server's answer) averaged over
+  its last 5 measured minutes is over its threshold (40 ms by default);
+- **ping slow** and **host not answering ping** - under `probe_every_minute` only, the host's answer to the probe
+  (until B24h-2 the TCP handshake to the port the instance's connection used) over its last 5 probed minutes, the
+  newest within 8 minutes, is over its threshold (10 ms by default), or none of its last 3 probed minutes answered
+  though the host answered before and no connection to the host opened since the first of them (an opened
+  connection is an answer). A host reached at a new address (an endpoint's failover) is judged by the address probed
+  newest. One alert a host (source `pgvigil repository`, the host as its value), the instances' own rows held under
+  it;
+- **network slow from this collector** - 3 or more of a collector's probed hosts slow, and more than half of them: its
+  own network or host is the likelier cause; the instances' probe findings are held under it, and it is held itself
+  while 'collector or network' or the slow-connect fold stands for the same collector (one alert, not three). While
+  3 or more of a collector's instances (a round trip) or hosts (a ping) turn slow in the same minute, their new alerts
+  wait a pass for the fold to form; one that turns slow a pass before the others is sent first.
+
+By default a host is probed only after a connection to it got no answer (never after a login or a query the server
+refused): the probe's answer then goes into the words of 'server unreachable' and 'server not answering' (the host
+answers: the service is down, not the host).
+
 ## When many instances fail at once
 
 A network cut, the collector's host in trouble or a shared login gone wrong fails many instances at once. pgvigil

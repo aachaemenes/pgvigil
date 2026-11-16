@@ -171,6 +171,7 @@ type deadlineDialer struct {
 	until     time.Time
 	keepAlive time.Duration
 	conns     []*watchedConn
+	lastAddr  string // the address of the TCP connection it opened last, whatever its deadline (B24h-1's probe target)
 	netErr    error
 	over      bool
 	held      bool // Hold: the deadline lifted while the sign-in waits on a third party
@@ -217,6 +218,11 @@ func (d *deadlineDialer) DialContext(ctx context.Context, network, addr string) 
 	w := &watchedConn{Conn: c, d: d}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// every TCP connection's address, with or without the dialer's deadline (the review of B24h-1 part a #2: a DSN with
+	// its own 'connection timeout' kept none, so it was never probed); the Browser's UDP dial is not one
+	if strings.HasPrefix(network, "tcp") && c.RemoteAddr() != nil {
+		d.lastAddr = c.RemoteAddr().String()
+	}
 	if !d.until.IsZero() {
 		_ = c.SetDeadline(d.until)
 		d.conns = append(d.conns, w)
@@ -428,8 +434,16 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("session setup %s: %w", in.Name, err)
 	}
+	collect.NoteRemote(in.Name, dl.lastRemote()) // B24h-1b: the probe's target is the address this connection used
 	dl.done()
 	return db, conn, nil
+}
+
+// lastRemote: the address (ip:port) of the TCP connection the dialer opened last ("" when none)
+func (d *deadlineDialer) lastRemote() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastAddr
 }
 
 // QueryRows runs one statement and returns its rows keyed by the result's column names as written. The contract
@@ -605,6 +619,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	// context.DeadlineExceeded for a broken connection), so there is nothing left to read (proven on SQL Server 2022:
 	// TestSessionCostLive); such a run is not a cpu run and the hour's averages are over the runs that were read
 	defer func() { endRead(ctx, conn, &res) }()
+	// the minute's query round trip on this connection (B24h-1a): one batch with no parameters - one TDS round trip
+	// (go-mssqldb sends sp_executesql only for a statement with arguments)
+	collect.TimeRoundTrip(in.Name, func() error { _, err := conn.ExecContext(sctx, "SELECT 1"); return err })
 
 	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {

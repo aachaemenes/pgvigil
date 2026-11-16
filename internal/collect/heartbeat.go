@@ -42,6 +42,10 @@ type HeartbeatInfo struct {
 	// SendsAlerts: this run sends alerts (its alerts: list names a channel); each beat says so ('alert sender idle'
 	// counts only the live runs that send: B6.2 part c #3)
 	SendsAlerts bool
+	// the reachability probe (B24h-1b, probe.go): 'tcp', 'icmp' (B24h-2; read as tcp until then), 'off'; "" = icmp;
+	// ProbeEveryMinute probes every known address each minute (the opt-in), else only after a failed collection
+	Probe            string
+	ProbeEveryMinute bool
 }
 
 const histBuckets = 19 // b 0 = under 1 ms, b n = 2^(n-1) to 2^n ms, b 18 = 131 s and over
@@ -62,6 +66,12 @@ type loadAgg struct {
 	timed     int
 	connMsSum int64
 	connMsMax int
+	// the query round trip (B24h-1a, roundtrip.go): the minute's measures (one an instance), their ms summed and the
+	// longest; rtClaimed while a collection measures
+	rtCount   int
+	rtMsSum   int64
+	rtMsMax   int
+	rtClaimed bool
 }
 
 type streak struct {
@@ -87,6 +97,9 @@ type Heartbeat struct {
 	hourNew  time.Time                // the newest hour counted
 	seen     map[string]time.Time     // instance name: when this run last named it in the repository (seenDue)
 	targets  map[string]string        // instance name: its dial target (InstanceTarget: N8)
+	probe    *prober                  // the reachability probe (B24h-1b); nil when 'off'
+	// noProbeImport: the repository has no import_collector_probe (0254): not asked again this run
+	noProbeImport bool
 }
 
 var current atomic.Pointer[Heartbeat]
@@ -393,6 +406,13 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.health(instance, collection, res, now, every) // B6.1's hourly counts: every outcome, a skip too
+	// B24h-1b: the default mode probes an address after a collection got no answer - a dial refused or timed out, a
+	// deadline, a dropped connection (NoAnswer reads through connectError) - never after an error the server sent: a
+	// query it refused on an opened connection (the review of B24h-1 part a #3: a missing grant probed every minute) or a
+	// login it refused at the connect (28P01, 18456: the review of the fold #2 - a rotated password probed every minute)
+	if res.Err != nil && h.probe != nil && NoAnswer(res.Err) {
+		h.probe.noteFailed(instance)
+	}
 	if skipped(res) {
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
 		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
@@ -485,6 +505,10 @@ type beatLoad struct {
 	Timed        int   `json:"timed,omitempty"`
 	ConnectMsSum int64 `json:"connect_ms_sum,omitempty"`
 	ConnectMsMax int   `json:"connect_ms_max,omitempty"`
+	// the query round trip (B24h-1a): read by import_collector_probe (0254), which import_collector_beat leaves alone
+	RtCount int   `json:"rt_count,omitempty"`
+	RtMsSum int64 `json:"rt_ms_sum,omitempty"`
+	RtMsMax int   `json:"rt_ms_max,omitempty"`
 }
 
 type beatStreak struct {
@@ -505,6 +529,11 @@ type beat struct {
 	Load        []beatLoad   `json:"load"`
 	Streaks     []beatStreak `json:"streaks"`
 	Health      []beatHealth `json:"-"` // B6.1: running totals per instance, collection and UTC hour - their own body (healthBody)
+	// the probe's rows since the last beat (B24h-1b; read by import_collector_probe, 0254; import_collector_beat leaves it)
+	Probes []beatProbe `json:"probes"`
+	// the addresses a connection opened to since the last beat (the review of B24h-1 part a #1: a TCP answer;
+	// import_collector_probe sets the host's last answer from them)
+	Opened []beatOpened `json:"opened"`
 }
 
 // take empties the minute's counts into a beat (the streaks keep their counts; only the changed ones are sent).
@@ -515,7 +544,11 @@ func (h *Heartbeat) take() beat {
 	runtime.ReadMemStats(&ms)
 	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
 	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load), SendsAlerts: h.info.SendsAlerts,
-		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Health: h.takeHealth()}
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}, Health: h.takeHealth(), Probes: []beatProbe{}, Opened: []beatOpened{}}
+	if h.probe != nil {
+		b.Probes = append(b.Probes, h.probe.take()...)
+		b.Opened = append(b.Opened, h.probe.takeOpened()...)
+	}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
@@ -524,7 +557,7 @@ func (h *Heartbeat) take() beat {
 	for name, l := range h.load {
 		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth,
 			IntervalS: int(l.every / time.Second), NoAnswer: l.noanswer, Target: h.targets[name],
-			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax})
+			Timed: l.timed, ConnectMsSum: l.connMsSum, ConnectMsMax: l.connMsMax, RtCount: l.rtCount, RtMsSum: l.rtMsSum, RtMsMax: l.rtMsMax})
 		if h.seen == nil {
 			h.seen = map[string]time.Time{}
 		}
@@ -608,6 +641,12 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 		return nil, err
 	}
 	h.loadStreaks(ctx)
+	switch info.Probe {
+	case "off":
+	case "", "icmp", "tcp":
+		h.probe = newProber("tcp", info.ProbeEveryMinute) // B24h-1: the TCP measure ('icmp' lands in B24h-2)
+		go h.probe.loop(ctx)
+	}
 	current.Store(h)
 	log.Info("heartbeat started", "collector", h.id, "runs_as", runsAs())
 	done := make(chan struct{})
@@ -722,7 +761,31 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 		if err := h.claim(ctx); err != nil {
 			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
 		}
+		return
 	}
+	// B24h (0254): the round trips and the probe's rows, through B24h's own import function with the same body (no
+	// joined function changes); a repository without it (42883: not migrated to 0254) is not asked again
+	if !h.noProbeImport && (len(b.Probes) > 0 || len(b.Opened) > 0 || anyRoundTrip(b.Load)) {
+		if _, err := h.pool.Exec(bctx, `SELECT pgvigil.import_collector_probe($1, $2, $3::jsonb)`, h.id, minute, string(body)); err != nil {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "42883" {
+				h.noProbeImport = true
+				h.log.Warn("heartbeat: the repository has no import_collector_probe (0254): the round trips and probes are not kept until it is migrated")
+			} else {
+				h.log.Warn("heartbeat: the round trips and probes were not written", "err", err)
+			}
+		}
+	}
+}
+
+// anyRoundTrip: a load row with a round trip measured
+func anyRoundTrip(load []beatLoad) bool {
+	for _, l := range load {
+		if l.RtCount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // healthWrite: the hourly rows' statement and its arguments as beat() sends them - their own body (healthBody), never

@@ -104,10 +104,24 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
 -- an instance's rows in time order (collector_server_down_at: the row before a spell, rows between two minutes)
 CREATE INDEX IF NOT EXISTS collector_load_instance ON pgvigil.collector_load (instance_id, minute);
 
+-- the trim mark of each minute-led table the beats trim (collector_load, collector_runs; collector_probe in 0254): the
+-- trims have reached every row before trimmed_to. A beat trims from the mark - never 'minute < now() - 8 days' over
+-- the whole key, whose estimate counts every row deleted since the last analyze as still there (BJf8L: on statistics
+-- 10 hours old, collector_load's trim read its 6.2 GB by a Seq Scan, 3.2 s a beat at 2,124 instances). A row is
+-- written once per table (collector_trim, at the table's first trim)
+CREATE TABLE IF NOT EXISTS pgvigil.collector_trim_mark (
+  tbl         text PRIMARY KEY,
+  trimmed_to  timestamptz NOT NULL
+);
+
 -- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
 -- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
 -- (collector_streaks_now). A renamed host starts at 0. Trimmed by the beat when its host has not named the instance
--- for 8 days.
+-- for 8 days, and every row of a host none of whose runs has beaten for 8 days (a host gone: uninstalled, renamed) -
+-- while any collector still beats: a repository whose last collector is uninstalled keeps that host's rows (one host's,
+-- as its heartbeat rows). Kept as a limit: a repository restored from a backup older than 8 days, or back after an
+-- outage of 8 days, sees every other host as gone at the first beat and drops their rows; a host's streak at 0 is not
+-- written again while it stays 0, so until it changes the lowest of the hosts still reading may be a failing one.
 CREATE TABLE IF NOT EXISTS pgvigil.collector_streaks (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   collection    text NOT NULL,
@@ -248,6 +262,56 @@ RETURNS void LANGUAGE sql AS $$
    WHERE c.collector_id = p_id
 $$;
 
+-- collector_trim: one beat's trim of a minute-led table past 8 days, by its mark (collector_trim_mark). The first row
+-- at or after the mark is read on the key (an empty stretch - a store whose collectors stopped - is passed in one read,
+-- and the executor never walks the dead entries below the mark); from the mark to 10 minutes past that row at most,
+-- never past now() - 8 days, is deleted, planned with its bounds each time (EXECUTE), so the estimate is those minutes
+-- at most (the review of TRIMMARK #6: 10 minutes, not an hour - a backlog's step must end inside the beat's 30 s at
+-- many collectors; a 13-hour backlog is 78 beats); the mark moves to the step's end in the same transaction (a beat
+-- that fails after it leaves the rows and the mark as they were). No mark yet - '-infinity', or no row (the first trim
+-- of the table): from its first row, 10 minutes a beat. A beat that finds the mark held by another beat's trim -
+-- locked or already moved, not committed - skips its own without waiting (that beat trims): the plain read sees the
+-- committed row (the review #4: an INSERT ... ON CONFLICT here waited on a moved mark). Returns the rows deleted.
+-- On a server older than 16 the planner's own read of the key's low end (get_actual_variable_range) may still walk the
+-- dead entries once per plan (the review #7: not measured; the box runs 18, which caps that read).
+CREATE OR REPLACE FUNCTION pgvigil.collector_trim(p_tbl text)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_cut  timestamptz := now() - interval '8 days';
+  v_mark timestamptz;
+  v_lo   timestamptz;
+  v_hi   timestamptz;
+  v_n    bigint;
+BEGIN
+  IF p_tbl IS NULL OR p_tbl NOT IN ('collector_load', 'collector_runs', 'collector_probe') THEN
+    RAISE EXCEPTION 'collector_trim: % is not a minute-led table the beats trim', p_tbl;
+  END IF;
+  SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
+  IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl) THEN
+      RETURN 0;
+    END IF;
+    INSERT INTO pgvigil.collector_trim_mark (tbl, trimmed_to) VALUES (p_tbl, '-infinity') ON CONFLICT (tbl) DO NOTHING;
+    SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
+    IF NOT FOUND THEN
+      RETURN 0;
+    END IF;
+  END IF;
+  EXECUTE format('SELECT min(minute) FROM pgvigil.%I WHERE minute >= $1', p_tbl) INTO v_lo USING v_mark;
+  IF v_lo IS NULL OR v_lo >= v_cut THEN
+    RETURN 0;
+  END IF;
+  v_hi := least(v_cut, v_lo + interval '10 minutes');
+  -- from the mark itself when it is a time (the review #5: a row committed between the read and the delete with a
+  -- minute between the mark and v_lo is not left below the new mark); from v_lo at '-infinity' (the first trim: the
+  -- whole key's low end would bring back the estimate the mark is for)
+  EXECUTE format('DELETE FROM pgvigil.%I WHERE minute >= $1 AND minute < $2', p_tbl)
+    USING CASE WHEN isfinite(v_mark) THEN v_mark ELSE v_lo END, v_hi;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  UPDATE pgvigil.collector_trim_mark SET trimmed_to = v_hi WHERE tbl = p_tbl;
+  RETURN v_n;
+END $$;
+
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
 --   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
 --   load: [{instance, attempts, opened, runs, failures, auth, interval_s}],  (interval_s: the fastest configured interval, absent when not known)
@@ -329,10 +393,16 @@ BEGIN
   SELECT now(), p_id, (p_beat->>'mem_bytes')::bigint, (p_beat->>'goroutines')::int, v_conns, pg_database_size(current_database()),
          coalesce(sum(r.runs), 0), coalesce(sum(r.failures), 0), coalesce(sum(r.rows), 0)
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(runs int, failures int, rows bigint);
-  -- the history this file keeps: 8 days (the page reads 24 h and 7 days)
+  -- the history this file keeps: 8 days (the page reads 24 h and 7 days); the two minute-led tables by their marks
+  -- (collector_trim), and a beat whose own minute is already past 8 days (a collector clock that far behind) takes its
+  -- rows back at once - they sit below the mark, where no trim reaches (the old whole-key trim removed them here too)
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
-  DELETE FROM pgvigil.collector_runs WHERE minute < now() - interval '8 days';
-  DELETE FROM pgvigil.collector_load WHERE minute < now() - interval '8 days';
+  PERFORM pgvigil.collector_trim('collector_runs');
+  PERFORM pgvigil.collector_trim('collector_load');
+  IF p_minute < now() - interval '8 days' THEN
+    DELETE FROM pgvigil.collector_runs WHERE minute = p_minute AND collector_id = p_id;
+    DELETE FROM pgvigil.collector_load WHERE minute = p_minute AND collector_id = p_id;
+  END IF;
   DELETE FROM pgvigil.collector_spells WHERE coalesce(ended_at, last) < now() - interval '8 days';
   DELETE FROM pgvigil.collector_instances WHERE seen_at < now() - interval '8 days';
   -- this host's streaks of an instance it has not named for 8 days, written 8 days ago or more (never by the streak's
@@ -343,17 +413,36 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_instances ci JOIN pgvigil.collector_heartbeat h USING (collector_id)
                        JOIN pgvigil.instances i ON i.name = ci.instance
                       WHERE h.host = s.host AND i.instance_id = s.instance_id);
+  -- a host gone 8 days - every run of it last beat 8 days ago or more: uninstalled, renamed, its machine gone - loses
+  -- its streak rows when its last run's row goes below (the lead's 11-15 19:2x: the trim above takes only the beating
+  -- host's rows, so a host that never beat again kept them for good; a host back after 8 days counts from 0 - with no
+  -- other collector beating meanwhile its rows stay, and import_collector_streaks leaves them out). The guard reads only
+  -- the heartbeat rows, so a beat with no host leaving pays nothing for it. The beats of the minute the guard turns
+  -- true take one lock in turn (the STREAKS review's #2: two DELETEs of one host's rows by synchronized seq scans can
+  -- deadlock and lose a beat's minute); a beat after the first finds the rows gone. Never a try-lock: a beat that
+  -- skipped would still delete the host's heartbeat rows below, and if the holder then failed the streaks would stay
+  IF EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
+              AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days')) THEN
+    PERFORM pg_advisory_xact_lock(31638955663386483);   -- 0x7067766961_6773: "pgvia" "gs" (alerts.go and deliver.go's form)
+    DELETE FROM pgvigil.collector_streaks s
+     WHERE s.host IN (SELECT g.host FROM pgvigil.collector_heartbeat g WHERE g.beat_at < now() - interval '8 days'
+                        AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat f WHERE f.host = g.host AND f.beat_at >= now() - interval '8 days'));
+  END IF;
   DELETE FROM pgvigil.collector_heartbeat WHERE beat_at < now() - interval '8 days';
   RETURN true;
 END $$;
 
 -- import_collector_streaks: the failed runs in a row the repository holds for host p_host (a collector started again
--- on that host counts on from them; a collector on another host never takes them)
+-- on that host counts on from them; a collector on another host never takes them), written in the last 8 days: a host
+-- back after 8 days counts from 0 (the STREAKS review's #1: with one collector nothing beats while it is away, so its
+-- rows are still there). A failing streak is written at every run of its host; one older than a day sends no alert
+-- ('collection failing', 'server unreachable'), so a collection read less often than every 8 days loses only a count
+-- that alerted nothing. Its first result after the start replaces the stored row (the collector's fresh mark)
 CREATE OR REPLACE FUNCTION pgvigil.import_collector_streaks(p_host text)
 RETURNS TABLE (instance text, collection text, fail_streak int, last_error text) LANGUAGE sql STABLE AS $$
   SELECT i.name, s.collection, s.fail_streak, s.last_error
     FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
-   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host
+   WHERE i.is_active AND s.fail_streak > 0 AND s.host = p_host AND s.last_run_at >= now() - interval '8 days'
 $$;
 
 -- import_collector_retire: the host's collector is uninstalled and its repository kept (uninstall calls it; the
