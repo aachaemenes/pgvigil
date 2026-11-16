@@ -574,6 +574,7 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 	}
 	sort.Strings(names)
 	rows, compared, oneWay := 0, 0, 0
+	var pgvigilOnly []string // one-way compares where pgvigil fires and sp_BlitzCache's kept operator did not
 	for _, name := range names {
 		for i, r := range oracle[name] {
 			rows++
@@ -595,6 +596,9 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 						if wantFire && !have {
 							t.Errorf("%s (statement %d, %d candidates): sp_BlitzCache 8.34 fires (%s = %q), pgvigil does not", code, s.ord, cand(s), oc.col, r[oc.col])
 						}
+						if have && !wantFire {
+							pgvigilOnly = append(pgvigilOnly, fmt.Sprintf("%s/%d:%s", name, i+1, code))
+						}
 						continue
 					}
 					if have != wantFire {
@@ -605,7 +609,7 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 			})
 		}
 	}
-	t.Logf("oracle rows %d, compared %d, one-way compares %d", rows, compared, oneWay)
+	t.Logf("oracle rows %d, compared %d, one-way compares %d; pgvigil alone fires on %d: %v", rows, compared, oneWay, len(pgvigilOnly), pgvigilOnly)
 	if rows < oracleRowsAtLeast || compared != rows {
 		t.Errorf("compared %d of %d oracle rows (the capture holds at least %d)", compared, rows, oracleRowsAtLeast)
 	}
