@@ -1,0 +1,98 @@
+B24f's join wiring, section rel-b6g (B6g-2, the Collection Health thresholds write; the lead 11-15 16:3x).
+Apply on the joined tree that holds rel-roles and rel-b6g:
+  git apply -3 scripts/b24f-join-wiring-rel-b6g.patch
+Built on a pre-join copy of each file it touches: rel-roles f421753c x rel-b6g 037a99b2 (local commit cd38a04b, ref jw-pre-b6g; web.go's
+probes and login lines merged by hand), so -3 merges it onto the join's own resolution.
+What it does: s.post for POST /api/collectionhealth/thresholds (admin: configuration others live with), its words in
+roles_wiring_b6g.go, its needs.ts and docs/roles.md rows; the thresholds dialog folds the role into its own reason after
+the seat's (Save and Inherit All marked with the need).
+B6g-6's acknowledge of collection errors is on no branch (grep 0 on every ref, 11-15 16:3x): when built, operator, as
+POST /api/ack - through s.post with needOperator, its routeWhat words, its needs.ts and docs/roles.md rows, a needControl
+on its button.
+Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
+
+diff --git a/docs/roles.md b/docs/roles.md
+index 118b5eee..2cb82f4b 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -129,6 +129,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/alertrules/end` | admin | end an alert rule |
+ | `POST /api/drives/thresholds` | admin | a drive threshold |
+ | `POST /api/pg/thresholds` | admin | a PostgreSQL threshold |
++| `POST /api/collectionhealth/thresholds` | admin | a Collection Health threshold (a level's own values, or Inherit All) |
+ | `POST /api/jobs/thresholds` | admin | a job threshold |
+ | `POST /api/jobs/exclusions` | admin | a job exclusion |
+ | `POST /api/customreports` | admin | a custom report or folder (SQL run against servers, a view others share) |
+diff --git a/internal/web/roles_wiring_b6g.go b/internal/web/roles_wiring_b6g.go
+new file mode 100644
+index 00000000..0d3dfa60
+--- /dev/null
++++ b/internal/web/roles_wiring_b6g.go
+@@ -0,0 +1,7 @@
++package web
++
++// B24f's join wiring for rel-b6g (the lead 11-15 16:3x): the refusal words of its write, kept beside roles.go's
++// routeWhat in a file of their own so each branch's wiring touches no line another branch's does
++func init() {
++	routeWhat["POST /api/collectionhealth/thresholds"] = "changing a Collection Health threshold"
++}
+diff --git a/internal/web/web.go b/internal/web/web.go
+index eba46930..359eb292 100644
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -253,10 +253,10 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
+ 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
+ 	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
+-	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)             // B6.2
+-	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                 // B6g-3: WIRING for the join (web.go is the lead's)
+-	api.HandleFunc("POST /api/collectionhealth/thresholds", s.CHThresholdWrite) // B6g-2: WIRING for the join (web.go is the lead's)
+-	api.HandleFunc("GET /api/collector", s.Collector)                           // task 201
++	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)                     // B6.2
++	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                         // B6g-3: WIRING for the join (web.go is the lead's)
++	s.post(api, "POST /api/collectionhealth/thresholds", needAdmin, s.CHThresholdWrite) // B6g-2 (admin, B24f)
++	api.HandleFunc("GET /api/collector", s.Collector)                                   // task 201
+ 	// task 204: Admin > Instances (q_instances_admin.go)
+ 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
+ 	s.post(api, "POST /api/admin/instances", needAdmin, s.InstancesAdminWrite)
+diff --git a/web/src/collection_health.ts b/web/src/collection_health.ts
+index c47baf8f..76e3fb25 100644
+--- a/web/src/collection_health.ts
++++ b/web/src/collection_health.ts
+@@ -10,6 +10,7 @@
+ import { get, post, Row, rowsOf, Table } from './api';
+ import type { AckData } from './ack';
+ import { loadAckSafe, offBeside, seatWhy } from './ack';
++import { markNeed, routeWhy } from './needs';
+ import type { CHScope, CHSettingKey } from './chthresholds';
+ import { chFormat, chPayload, chScopes, chSettings, chValue, inheritedOf, ownRow } from './chthresholds';
+ import type { Ctx } from './router';
+@@ -84,12 +85,15 @@ function thresholdsDialog(ad: AckData, r: Row, after: () => void, pageMsg?: (wor
+     const c = ctl.get(k)!;
+     if (c.val.type === 'checkbox') c.val.checked = v === true; else c.val.value = String(v);
+   };
+-  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined);
++  // the seat's reason first, then the role (B24f: a Collection Health threshold is configuration others live with, admin)
++  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined)
++    || routeWhy('collectionhealth/thresholds');
+   const btns = el('div', { style: 'margin-top:.6rem' });
+   // the buttons of the level picked (DBA Dash's order: Close, Save, Inherit All): Save and Inherit All off with the
+   // level's reason where it cannot be written
+   const drawButtons = () => {
+     const close = el('button', { type: 'button' }, 'Close'), save = el('button', { type: 'submit' }, 'Save'), all = el('button', { type: 'button' }, 'Inherit All');
++    markNeed(save, 'collectionhealth/thresholds'); markNeed(all, 'collectionhealth/thresholds');
+     close.addEventListener('click', shut);
+     const why = !readOk ? 'the thresholds could not be read' : whyOf();
+     offNote.hidden = !why;
+diff --git a/web/src/needs.ts b/web/src/needs.ts
+index f3a5ff8c..6141105e 100644
+--- a/web/src/needs.ts
++++ b/web/src/needs.ts
+@@ -45,6 +45,7 @@ export const routeNeeds = {
+   'alertrules/end': ['admin', 'ending an alert rule'],
+   'drives/thresholds': ['admin', 'changing a drive threshold'],
+   'pg/thresholds': ['admin', 'changing a PostgreSQL threshold'],
++  'collectionhealth/thresholds': ['admin', 'changing a Collection Health threshold'],
+   'jobs/thresholds': ['admin', 'changing a job threshold'],
+   'jobs/exclusions': ['admin', 'changing a job exclusion'],
+   'customreports': ['admin', 'changing a custom report'],
