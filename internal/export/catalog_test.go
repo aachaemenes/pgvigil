@@ -4,6 +4,8 @@ import (
 	"encoding/csv"
 	"errors"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -118,6 +120,185 @@ func TestCatalogEqualsTheCensus(t *testing.T) {
 	for name := range got {
 		if _, ok := want[name]; !ok {
 			t.Errorf("%s: in the map, not in the census", name)
+		}
+	}
+}
+
+// Every table the migrations create (the migrator's own in internal/repo/repo.go, then internal/repo/sql in file
+// order: a later DROP TABLE takes it out, a RENAME TO follows it; a partition is never a table of its own) has its
+// line in the map, and every line of the map is such a table. A slice that adds a table without classing it fails
+// here, in its own unit run, before a repository with that table refuses every export.
+func TestEveryMigrationTableIsClassed(t *testing.T) {
+	files, err := filepath.Glob("../repo/sql/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	if len(files) < 100 {
+		t.Fatalf("%d migrations read from ../repo/sql: the path is wrong", len(files))
+	}
+	files = append([]string{"../repo/repo.go"}, files...) // the migrator makes schema_version before the first migration
+	var (
+		comment = regexp.MustCompile(`--[^\n]*`)
+		// a literal name only: pgvigil.%I or pgvigil.name_' || ... is a partition made at run time
+		create = regexp.MustCompile(`(?i)\bcreate\s+(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?pgvigil\.([a-z0-9_]+)(\s+partition\s+of)?[\s(]`)
+		drop   = regexp.MustCompile(`(?i)\bdrop\s+table\s+(?:if\s+exists\s+)?(pgvigil\.[a-z0-9_]+(?:\s*,\s*pgvigil\.[a-z0-9_]+)*)[\s;]`)
+		rename = regexp.MustCompile(`(?i)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?pgvigil\.([a-z0-9_]+)\s+rename\s+to\s+(?:pgvigil\.)?([a-z0-9_]+)[\s;]`)
+		named  = regexp.MustCompile(`(?i)pgvigil\.([a-z0-9_]+)`)
+	)
+	type event struct {
+		at       int
+		op, a, b string
+	}
+	made := map[string]string{} // table -> the migration that made it
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := comment.ReplaceAllString(string(b), "")
+		var evs []event
+		for _, m := range create.FindAllStringSubmatchIndex(s, -1) {
+			if m[4] < 0 {
+				evs = append(evs, event{m[0], "create", strings.ToLower(s[m[2]:m[3]]), ""})
+			}
+		}
+		for _, m := range drop.FindAllStringSubmatchIndex(s, -1) {
+			for _, n := range named.FindAllStringSubmatch(s[m[2]:m[3]], -1) {
+				evs = append(evs, event{m[0], "drop", strings.ToLower(n[1]), ""})
+			}
+		}
+		for _, m := range rename.FindAllStringSubmatchIndex(s, -1) {
+			evs = append(evs, event{m[0], "rename", strings.ToLower(s[m[2]:m[3]]), strings.ToLower(s[m[4]:m[5]])})
+		}
+		sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
+		for _, e := range evs {
+			switch e.op {
+			case "create":
+				made[e.a] = filepath.Base(f)
+			case "drop":
+				delete(made, e.a)
+			case "rename":
+				if from, ok := made[e.a]; ok {
+					delete(made, e.a)
+					made[e.b] = from
+				}
+			}
+		}
+	}
+	if len(made) < 300 {
+		t.Fatalf("%d tables read from the migrations: the reading is wrong", len(made))
+	}
+	inMap := map[string]bool{}
+	for _, x := range Catalog() {
+		inMap[x.Name] = true
+	}
+	var unclassed []string
+	for name, from := range made {
+		if !inMap[name] {
+			unclassed = append(unclassed, name+" ("+from+")")
+		}
+	}
+	sort.Strings(unclassed)
+	for _, u := range unclassed {
+		t.Errorf("%s is made by the migrations and has no class in the map (internal/export/catalog.go): class it from how its import writes it", u)
+	}
+	var stale []string
+	for name := range inMap {
+		if _, ok := made[name]; !ok {
+			stale = append(stale, name)
+		}
+	}
+	sort.Strings(stale)
+	for _, s := range stale {
+		t.Errorf("%s is in the map and no migration makes it (or one drops it): its line goes", s)
+	}
+}
+
+// Columns read to hold a statement's or a server's words, a login, a client host or address, or a credential: none leaves
+// by default - each is on the text or audit list, dropped, under the table's audit-rows predicate, or its table leaves
+// only with a carry. And a table an import rewrites after its row's hour is state: a window's final pass is at 24 h.
+func TestHeldByDefault(t *testing.T) {
+	held := map[string][]string{
+		"alert_held":              {"detail"},                                           // a plan finding's detail quotes its statement
+		"mssql_db_confcheck":      {"scoped_note"},                                      // 'not read: ' and the server's error
+		"mssql_replication_state": {"status_text", "error_text"},                        // the agents' history and error words
+		"mssql_xe_modules":        {"login_name", "host_name"},                          // who ran a module, from where
+		"pg_patroni_members":      {"api_url", "api_message", "pending_restart_reason"}, // the address as held; settings' values unmasked
+		// a session's, a request's, an event's or a chain's login, its client host and its client address, and an
+		// owner's or a role's name: held unless the audit carry is on
+		"activity_sample":           {"usename", "client"},
+		"conn_sources":              {"usename", "client"},
+		"databases":                 {"owner"},
+		"export_runs":               {"login"},
+		"instance_state":            {"connected_user"},
+		"log_events":                {"usename", "client"},
+		"mssql_attentions":          {"login_name", "host_name"},
+		"mssql_blocked_reports":     {"blocked_login", "blocked_host", "blocking_login", "blocking_host"},
+		"mssql_blocking":            {"head_login", "head_host"},
+		"mssql_deadlocks":           {"victim_login"},
+		"mssql_jobs":                {"owner"},
+		"mssql_requests":            {"login_name", "host_name"},
+		"mssql_security_auth":       {"client_address"},
+		"mssql_service":             {"service_account"},
+		"mssql_session_tempdb":      {"login_name", "host_name"},
+		"mssql_slow_events":         {"login_name", "host_name"},
+		"mssql_trace_events":        {"login_name", "host_name"},
+		"mssql_versionstore_sample": {"holder_login", "holder_host"},
+		"mssql_xe_waits":            {"login_name", "host_name"},
+		"mssql_xe_warning_samples":  {"login_name", "host_name"},
+		"pg_db_role_settings":       {"rolname"},
+		"pg_repl_link_seen":         {"client_addr"},
+		"pgaudit_settings":          {"rolname"},
+		"pgaudit_state":             {"forged_by"},
+		"pooler_conn_sample":        {"addr"},
+		"role_state":                {"login_name"},
+		"schema_objects":            {"owner"},
+		"session_sets":              {"rolname"},
+		"statements_delta":          {"usename"},
+		"temp_sample":               {"usename"},
+	}
+	rows := map[string]string{"mssql_session_by": "dimension IN ('login', 'address')"}
+	rewritten := []string{"instance_events", "investigations", "mssql_ola_commandlog"}
+	byName := map[string]Table{}
+	for _, x := range Catalog() {
+		byName[x.Name] = x
+	}
+	names := make([]string, 0, len(held))
+	for name := range held {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		x, ok := byName[name]
+		if !ok {
+			t.Errorf("%s: not in the map", name)
+			continue
+		}
+		if x.Class == LeftOut || x.Carry != "" {
+			continue
+		}
+		on := map[string]bool{}
+		for _, c := range append(append([]string{}, x.Text...), x.Audit...) {
+			on[c] = true
+		}
+		for _, d := range x.Drop {
+			on[d.Column] = true
+		}
+		for _, c := range held[name] {
+			if !on[c] {
+				t.Errorf("%s.%s leaves by default", name, c)
+			}
+		}
+	}
+	for name, p := range rows {
+		if x := byName[name]; x.Class != LeftOut && x.Carry == "" && x.AuditRows != p {
+			t.Errorf("%s: the rows %s leave by default", name, p)
+		}
+	}
+	for _, name := range rewritten {
+		if x := byName[name]; x.Class != State {
+			t.Errorf("%s: an import rewrites its rows after their hour - state, not %q", name, x.Class)
 		}
 	}
 }
