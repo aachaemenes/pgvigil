@@ -235,6 +235,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/diff", s.Diff)
 	api.HandleFunc("GET /api/tablesize", s.TableSize)
 	api.HandleFunc("GET /api/reports", s.Reports)
+	api.HandleFunc("GET /api/trend", s.Trend) // B20-1: the Trend report (q_trend.go)
 	api.HandleFunc("GET /api/drives", s.Drives)
 	s.post(api, "POST /api/drives/thresholds", needAdmin, s.DriveThresholdWrite)
 	api.HandleFunc("GET /api/drives/history", s.DriveHistory)
