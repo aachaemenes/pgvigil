@@ -41,6 +41,8 @@ type MSSQLWarnInput struct {
 // MSSQLRuntime is a statement's runtime averages per execution. A nil field was not given: the rule that needs it is
 // not judged and says which number it lacked.
 type MSSQLRuntime struct {
+	// Stmt is the statement the numbers belong to, as MSSQLWarning.Stmt counts; 0 = the plan's only statement.
+	Stmt          int
 	Executions    *float64 // completed executions in the window
 	AvgCPUMS      *float64 // CPU per execution, ms
 	AvgRows       *float64 // rows returned per execution

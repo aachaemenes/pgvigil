@@ -5,11 +5,13 @@
 #   in         the inputs, space-separated: ctp=<cost threshold for parallelism> (- = 0, the five ctp rules not judged),
 #              now=+<n>d (LastUpdate of the plan's newest statistic plus n days; - = zero, stale_stats not judged),
 #              rt=bc (the runtime numbers of the case's row in captured/blitzcache-8.34.tsv) or
-#              rt=<k>:<v>,... with k in exec cpu rows writes spill compile (ms, rows, 8 KB pages); rt=- = none
-#   raise      codes the warnings must hold (comma-separated; - = none required)
-#   not        codes they must not hold
+#              rt=<k>:<v>,... with k in stmt exec cpu rows writes spill compile (stmt: the statement the numbers belong
+#              to; ms, rows, 8 KB pages); rt=- = none
+#   raise      codes the warnings must hold (comma-separated; - = none required); code@<n> = on statement n of the
+#              document (MSSQLWarning.Stmt); a line naming a statement is not run again on the Query Store plan
+#   not        codes they must not hold (code@<n> = not on statement n)
 #   notjudged  codes the not-judged list must hold
-#   rows       the C01 rows the line proves (L<n> #<id> in the re-grade: the design names each)
+#   rows       the check numbers the line proves (MSSQLWarning.Row)
 #   note       the side of the threshold, or the trial the capture settles
 case	src	in	raise	not	notjudged	rows	note
 clean	cache	ctp=5 now=- rt=-	-	implicit_conversions,blitz_implicit_conversion,is_key_lookup_expensive,lookup,missing_index_count,function_count,blitz_scalar_udf,clr_function_count,is_computed_filter,is_computed_scalar,is_mstvf,tvf_join,is_table_variable,is_cursor,cursor_not_forward_only,is_cursor_dynamic,is_forced_serial,is_spool_expensive,is_table_spool_expensive,is_sort_expensive,is_remote_query_expensive,is_row_goal,is_adaptive,is_paul_white_electric,backwards_scan,is_table_scan,forced_index,columnstore_row_mode,index_ops,index_dml,table_dml,trace_flags_session,compile_timeout,long_compile,is_nonsargable,unparameterized_query,plan_warnings,relop_warnings,busy_loops	is_big_spills,low_cost_high_cpu,is_bad_estimate,select_with_writes,stale_stats	-	the near miss of every plan-only rule; a trivial PK seek
@@ -29,7 +31,7 @@ lookup_cheap	cache	ctp=5 now=- rt=-	lookup	is_key_lookup_expensive	-	#27,#176	th
 rid_lookup	cache	ctp=5 now=- rt=-	lookup	-	-	#176	trial: a heap's RID Lookup carries IndexScan Lookup
 missing_ix	cache	ctp=5 now=- rt=-	missing_index_count,missing_index_hint	-	-	#8,#177,#15	an unindexed equality column; the hint names big2 (v) EQUALITY
 udf_scalar	cache	ctp=5 now=- rt=-	function_count,blitz_scalar_udf,is_forced_serial	clr_function_count	-	#31,#179,#26	a non-inlined scalar UDF in the select list; the plan's NonParallelPlanReason
-udf_clr	cache	ctp=5 now=- rt=-	-	clr_function_count	-	#32	hierarchyid's GetLevel is no CLR UDF in the plan (sp_BlitzCache 8.34 counts 0, capture 1): the CLR hit side needs a user assembly - NOT PROVEN
+udf_clr	cache	ctp=5 now=- rt=-	-	clr_function_count	-	#32	hierarchyid's GetLevel is no CLR UDF in the plan (sp_BlitzCache 8.34 counts 0, measured): the CLR hit side needs a user assembly - NOT PROVEN
 udf_filter	cache	ctp=5 now=- rt=-	is_computed_filter,blitz_scalar_udf	-	-	#45	trial: the UDF in a Filter, not pushed into the scan
 udf_computed	cache	ctp=5 now=- rt=-	is_computed_scalar,function_count	-	-	#43	a computed column over the UDF
 mstvf_fixed	cache	ctp=5 now=- rt=-	is_mstvf,tvf_join	-	-	#63,#23	interleaved execution off: the fixed 100-row estimate
@@ -37,31 +39,31 @@ mstvf_interleaved	cache	ctp=5 now=- rt=-	tvf_join	is_mstvf	-	#63,#23	the near mi
 table_var	qs	ctp=5 now=- rt=-	is_table_variable	-	-	#34	a table variable in the batch
 cursor_dynamic	cache	ctp=5 now=- rt=-	is_cursor,cursor_not_forward_only,is_cursor_dynamic	-	-	#10,#12,#13	a DYNAMIC cursor
 cursor_ff	cache	ctp=5 now=- rt=-	is_cursor	cursor_not_forward_only,is_cursor_dynamic	-	#10,#12,#13	the near miss: a FAST_FORWARD cursor
-cursor_ff	cache	ctp=5 now=- rt=-	-	is_paul_white_electric	-	#60	no Switch in a FAST_FORWARD cursor's plan (capture 2): #60 NOT PROVEN
-cursor_keyset	cache	ctp=5 now=- rt=-	is_cursor	is_paul_white_electric,is_cursor_dynamic	-	#60	no Switch in a KEYSET cursor's plan (capture 2): #60 NOT PROVEN
-np_a	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.12 (capture 1): under the band 4.5 - 5
-np_b	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.4466 (capture 1; predicted 4.67): under 4.5
+cursor_ff	cache	ctp=5 now=- rt=-	-	is_paul_white_electric	-	#60	no Switch in a FAST_FORWARD cursor's plan (measured): #60 NOT PROVEN
+cursor_keyset	cache	ctp=5 now=- rt=-	is_cursor	is_paul_white_electric,is_cursor_dynamic	-	#60	no Switch in a KEYSET cursor's plan (measured): #60 NOT PROVEN
+np_a	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.12: under the band 4.5 - 5
+np_b	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.4466: under 4.5
 np_d	cache	ctp=6 now=- rt=-	-	near_parallel	-	#16	the in-band plan (4.8717), ctp 6: the band 5.4 - 6
-np_c	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.491 (capture 1; predicted 4.83): under 4.5
-np_d	cache	ctp=5 now=- rt=-	near_parallel	-	-	#16	measured cost 4.8717, serial (capture 1; predicted 5.24 and parallel): in the band
+np_c	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.491: under 4.5
+np_d	cache	ctp=5 now=- rt=-	near_parallel	-	-	#16	measured cost 4.8717, serial: in the band
 sort_big	cache	ctp=5 now=- rt=-	is_sort_expensive	-	-	#44	a full sort of 50,000 wide rows: cost >= 2, the sort >= half
 sort_topn	cache	ctp=5 now=- rt=-	-	is_sort_expensive	-	#44	the near miss: a TOP 10 sort, cost under 2
 idx_spool	cache	ctp=5 now=- rt=-	is_spool_expensive	-	-	#55	trial: an eager index spool on an unindexed heap, cost > ctp / 5 = 1
 idx_spool	cache	ctp=500 now=- rt=-	-	is_spool_expensive	-	#55	the same plan, ctp 500: cost not > 100
 idx_spool	cache	ctp=5 now=- rt=exec:1,rows:1	is_spool_more_rows	-	-	#56	spool rows >= 1 / 1
 idx_spool	cache	ctp=5 now=- rt=exec:1,rows:1000000000	-	is_spool_more_rows	-	#56	spool rows < 1e9 / 1
-win_spool	cache	ctp=5 now=- rt=-	-	is_table_spool_expensive	-	#57	its lazy spool's IO * CPU * rows * rebinds is 0 (sp_BlitzCache's table_spool_cost 0, capture 1): the near miss
+win_spool	cache	ctp=5 now=- rt=-	-	is_table_spool_expensive	-	#57	its lazy spool's IO * CPU * rows * rebinds is 0 (sp_BlitzCache's table_spool_cost 0, measured): the near miss
 win_spool	cache	ctp=500 now=- rt=-	-	is_table_spool_expensive	-	#57	the same plan, ctp 500
 win_spool	cache	ctp=5 now=- rt=exec:1,rows:1	is_table_spool_more_rows	-	-	#58	spool rows * rebinds >= 1
 win_spool	cache	ctp=5 now=- rt=exec:1,rows:1000000000000	-	is_table_spool_more_rows	-	#58	not >= 1e12
 remote_all	cache	ctp=5 now=- rt=-	is_remote_query_expensive	-	-	#28	trial: a loopback linked server, the whole statement remote
 remote_small	cache	ctp=5 now=- rt=-	-	is_remote_query_expensive	-	#28	trial: a 10-row remote table beside a 300,000-row local scan (remote under 5 %)
-row_goal	cache	ctp=5 now=- rt=-	-	is_row_goal	-	#61	the trial's EXISTS became a hash semi join with no row goal (capture 1): the near miss
+row_goal	cache	ctp=5 now=- rt=-	-	is_row_goal	-	#61	the trial's EXISTS became a hash semi join with no row goal (measured): the near miss
 stale_hit	cache	ctp=5 now=+8d rt=-	stale_stats	-	-	#53	200,000 rows changed since a NORECOMPUTE statistic
 stale_hit	cache	ctp=5 now=- rt=-	-	stale_stats	stale_stats	#53	no clock: not judged
 stale_hit	cache	ctp=5 now=+6d rt=-	-	stale_stats	-	#53	6 days: not 7
 stale_low	cache	ctp=5 now=+8d rt=-	-	stale_stats	-	#53	the near miss: 50,000 changed
-bad_est	cache	ctp=5 now=- rt=bc	is_bad_estimate	unparameterized_query	-	#59,#7	a local variable on a skewed column: density estimate about 67 rows, 197,000 returned; sp_BlitzCache 8.34 does not call the batch unparameterized either (capture 1)
+bad_est	cache	ctp=5 now=- rt=bc	is_bad_estimate	unparameterized_query	-	#59,#7	a local variable on a skewed column: density estimate about 67 rows, 197,000 returned; sp_BlitzCache 8.34 does not call the batch unparameterized either (measured)
 adaptive	cache	ctp=5 now=- rt=-	is_adaptive	-	-	#54	trial: a columnstore build side, a seekable rowstore probe
 back_scan	cache	ctp=5 now=- rt=-	backwards_scan,is_row_goal	-	-	#38,#61	TOP ... ORDER BY id DESC: a backward scan with a row goal
 heap_scan	cache	ctp=5 now=- rt=-	is_table_scan	-	-	#37	a heap's Table Scan
@@ -75,16 +77,25 @@ ddl_drop_index	est	ctp=5 now=- rt=-	index_dml	-	-	#49	DROP INDEX
 ddl_create_table	est	ctp=5 now=- rt=-	table_dml	-	-	#50	CREATE TABLE
 ddl_drop_table	est	ctp=5 now=- rt=-	table_dml	-	-	#50	DROP TABLE (StatementType DROP OBJECT: trial)
 slow_udf	cache	ctp=5 now=- rt=bc	low_cost_high_cpu	-	-	#51	a looping scalar UDF: a near-zero cost, over 5 s of CPU per run
-sort_spill	cache	ctp=5 now=- rt=bc	-	select_with_writes	-	#69	a sort spill is not a logical write: 5 pages written, 19,936 spilled (capture 1)
+sort_spill	cache	ctp=5 now=- rt=bc	-	select_with_writes	-	#69	a sort spill is not a logical write: 5 pages written, 19,936 spilled (measured)
 sort_spill	cache	ctp=5 now=- rt=exec:1,writes:1024.9	-	select_with_writes	-	#69	the integer part 1024 is not > 1024
 sort_spill	cache	ctp=5 now=- rt=exec:1,writes:1025	select_with_writes	-	-	#69	1025 > 1024
 tf_session	cache	ctp=5 now=- rt=-	trace_flags_session	-	-	#29	trial: DBCC TRACEON (9481, 4199) in the session, listed in the plan's TraceFlags
 compile_to	est	ctp=5 now=- rt=-	compile_timeout	long_compile	-	#2,#66	trial: a 20-table join stops at the optimizer's timeout
-long_compile	est	ctp=5 now=- rt=-	long_compile,compile_timeout	-	-	#66	13 tables under trace flag 8780: CompileTime 11,796 ms (capture 2)
+long_compile	est	ctp=5 now=- rt=-	long_compile,compile_timeout	-	-	#66	13 tables under trace flag 8780: CompileTime 11,796 ms (measured)
 nonsarg_fn	cache	ctp=5 now=- rt=-	is_nonsargable	-	-	#65	LEFT() on an indexed column
 nonsarg_like	cache	ctp=5 now=- rt=-	is_nonsargable	-	-	#65	LIKE with a leading wildcard
-nojoin	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	a CROSS JOIN with no aggregate (capture 1's aggregate was pushed under the join: no warning)
-nostat	cache	ctp=5 now=- rt=-	-	relop_warnings	-	#36	no operator warning on its scan (sp_BlitzCache 8.34 none, capture 2)
-cte_writes	cache	ctp=5 now=- rt=bc	-	select_with_writes	-	#69	a recursive CTE's stack spool wrote 0 pages (capture 2): the #69 hit side NOT PROVEN yet
-tspool_hit	cache	ctp=5 now=- rt=-	is_spool_expensive	is_table_spool_expensive	-	#57,#55	its lazy table spool costs 0.0015 against cost 12.31 / 4 (capture 2): the #57 hit side NOT PROVEN; an eager index spool beside it
-unparam	cache	ctp=5 now=- rt=-	-	unparameterized_query	-	#7	the procedure's SELECT is not FULL-optimized, so the rule does not apply (sp_BlitzCache 8.34 does not fire, capture 2)
+nojoin	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	a CROSS JOIN with no aggregate (with an aggregate it was pushed under the join: no warning)
+nostat	cache	ctp=5 now=- rt=-	-	relop_warnings	-	#36	no operator warning on its scan (sp_BlitzCache 8.34 none, measured)
+cte_writes	cache	ctp=5 now=- rt=bc	-	select_with_writes	-	#69	a recursive CTE's stack spool wrote 0 pages (measured): the #69 hit side NOT PROVEN yet
+tspool_hit	cache	ctp=5 now=- rt=-	is_spool_expensive	is_table_spool_expensive	-	#57,#55	its lazy table spool costs 0.0015 against cost 12.31 / 4 (measured): the #57 hit side NOT PROVEN; an eager index spool beside it
+unparam	cache	ctp=5 now=- rt=-	-	unparameterized_query	-	#7	the procedure's SELECT is not FULL-optimized, so the rule does not apply (sp_BlitzCache 8.34 does not fire, measured)
+cursor_ff	cache	ctp=5 now=- rt=-	is_cursor@1	is_cursor@2,is_cursor@3,is_cursor@4,is_cursor@5	-	#10	one warning per cursor, at its DECLARE: not its OPEN, FETCH, CLOSE, DEALLOCATE
+cursor_dynamic	cache	ctp=5 now=- rt=exec:1,spill:64000	-	is_big_spills	is_big_spills	#62	a batch of five cursor statements, the runtime naming none of them: not judged
+bad_est	cache	ctp=5 now=- rt=stmt:2,exec:1,spill:64000	is_big_spills@2	is_big_spills@1	-	#62	the numbers are the SELECT's (statement 2): judged there, not on the assignment before it
+idx_spool	cache	ctp=5 now=- rt=rows:1	-	is_spool_more_rows	is_spool_more_rows	#56	rows without an execution count: not judged
+idx_spool	cache	ctp=5 now=- rt=exec:0,rows:1	is_spool_more_rows	-	-	#56	an execution count of 0 divides as 1: 1 >= 1 / 1
+win_spool	cache	ctp=5 now=- rt=rows:1	-	is_table_spool_more_rows	is_table_spool_more_rows	#58	rows without an execution count: not judged
+lookup_hit	cache	ctp=-1 now=- rt=-	lookup	is_key_lookup_expensive	is_key_lookup_expensive	#27	a threshold under 1 is none: not judged
+mstvf_fixed	est	ctp=5 now=- rt=-	is_mstvf@1,tvf_join@1,missing_index_count@1,is_table_variable@2,is_forced_serial@2	is_table_variable@1,is_forced_serial@1,missing_index_count@2	-	#63,#23,#8,#34,#26	the function's INSERT nests under the SELECT in the estimated plan: each judged on its own operators
+udf_scalar	est	ctp=5 now=- rt=-	function_count@1,blitz_scalar_udf@1,is_forced_serial@1	function_count@2,blitz_scalar_udf@2	-	#31,#179,#26	the function's RETURN nests under the SELECT: the call is the SELECT's
