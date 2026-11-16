@@ -1185,6 +1185,7 @@ END $$;
 --   #10 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L20-23 (line 2) - beside the other self-trimming tables
 --   #11 H CQ-A 322675cc: scripts/cq-join-lines.sql L9-17 - before the hours tables (0139's block)
 --   #12 H the join 0300 --------: the 18 tests: TestRetentionRowsOfTheHAJoin - no bracket in a comment inside the parent list (the Retention page reads the list up to its first closing bracket)
+--   #13 H the join 0300 --------: j16d1's purge red: TestPurgeTakesTheJoinedRetentionOnAStore - 0151's and 0162's retention: four partition parents, 0151's events, 0162's warning tables, 0151's two hour purges
 --   merge conflict at arm #1 (B2a-N2), block 1, resolved by hand: both blocks: the replication hours' (0150), then B2a-N2's mssql_azuredb_hour (0167)
 --   merge conflict at arm #2 (413), block 1, resolved by hand: parents list = the union (mssql_index_usage_read added)
 --   merge conflict at arm #2 (413), block 2, resolved by hand: both lines: the current text's, then 413's
@@ -1233,7 +1234,11 @@ BEGIN
                          -- [#3 413 7184f8ea]
                          'mssql_session_count', 'mssql_session_by',
                          -- [#4 S2 09661906]
-                         'findings_history')
+                         'findings_history',
+                         -- [#13 the join 0300 --------]
+                         -- 0151 and 0162 leave their retention to the join: geo-replication's and the provider replicas'
+                         -- samples, the optional captures' waits and modules - by month with the rest
+                         'mssql_georepl_sample', 'cloud_replica_sample', 'mssql_xe_waits', 'mssql_xe_modules')
        -- [#8 N4 280368a5]
        -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
        -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
@@ -1253,6 +1258,26 @@ BEGIN
     v_dropped := v_dropped || v_part.relname::text;
     n := n + 1;
   END LOOP;
+  -- [#13 the join 0300 --------]
+  -- 0151: geo-replication's and the provider replicas' events past the history's window; the provider failover
+  -- events 14 days, RDS's own keep and the window 0151's read looks back over
+  DELETE FROM pgvigil.mssql_georepl_events WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_failover_group_events WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.cloud_replica_events WHERE at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.cloud_failover_events WHERE at < now() - interval '14 days';
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- 0162: the optional captures' warning tables past the window, as an event table
+  DELETE FROM pgvigil.mssql_xe_warning_samples WHERE hour_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_xe_warning_keys WHERE hour_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_xe_warning_hours WHERE hour_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.mssql_xe_warning_counts WHERE snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.job_runs WHERE start_time < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- [#4 S2 09661906]
@@ -1547,6 +1572,19 @@ BEGIN
   IF to_regprocedure('pgvigil.mssql_azuredb_hour_purge()') IS NOT NULL THEN
     n := n - cardinality(v_dropped);
     v_dropped := v_dropped || pgvigil.mssql_azuredb_hour_purge();
+    n := n + cardinality(v_dropped);
+  END IF;
+  -- [#13 the join 0300 --------]
+  -- 0151: geo-replication's and the provider replicas' hours by their own age (hour_purge_0151, hours_retention);
+  -- a pending key is rebuilt by its next import (0151's rollup)
+  IF to_regprocedure('pgvigil.cloud_replica_hour_purge()') IS NOT NULL THEN
+    n := n - cardinality(v_dropped);
+    v_dropped := v_dropped || pgvigil.cloud_replica_hour_purge();
+    n := n + cardinality(v_dropped);
+  END IF;
+  IF to_regprocedure('pgvigil.mssql_georepl_hour_purge()') IS NOT NULL THEN
+    n := n - cardinality(v_dropped);
+    v_dropped := v_dropped || pgvigil.mssql_georepl_hour_purge();
     n := n + cardinality(v_dropped);
   END IF;
   -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
