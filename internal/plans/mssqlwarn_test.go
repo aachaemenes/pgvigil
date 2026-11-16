@@ -562,6 +562,13 @@ var oneOf = map[string]func(*mstmt) int{
 	"columnstore_row_mode":     func(s *mstmt) int { return len(s.relops) },
 }
 
+// anyNodeSeen are the one-way compares where pgvigil fires and sp_BlitzCache's kept operator did not, each read: a
+// statement where some operator meets the rule and sp_BlitzCache's UPDATE kept another's 0 (the busy loop's inner
+// side, a heap's Table Scan under a spool or a function). A new one fails until it is read and named here.
+var anyNodeSeen = []string{"adaptive/1:busy_loops", "cursor_ff/1:busy_loops", "cursor_ff/2:busy_loops",
+	"forced_ix/1:busy_loops", "idx_spool/1:is_table_scan", "lookup_cheap/1:busy_loops", "mstvf_interleaved/1:is_table_scan",
+	"tspool_hit/1:is_table_scan", "win_spool/1:busy_loops"}
+
 // The capture's oracle rows: 49 cases, a cursor's batch two rows (its DECLARE and its FETCH).
 const oracleRowsAtLeast = 52
 
@@ -610,6 +617,10 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 		}
 	}
 	t.Logf("oracle rows %d, compared %d, one-way compares %d; pgvigil alone fires on %d: %v", rows, compared, oneWay, len(pgvigilOnly), pgvigilOnly)
+	sort.Strings(pgvigilOnly)
+	if !slices.Equal(pgvigilOnly, anyNodeSeen) {
+		t.Errorf("pgvigil alone fires on %v; the read ones are %v", pgvigilOnly, anyNodeSeen)
+	}
 	if rows < oracleRowsAtLeast || compared != rows {
 		t.Errorf("compared %d of %d oracle rows (the capture holds at least %d)", compared, rows, oracleRowsAtLeast)
 	}
