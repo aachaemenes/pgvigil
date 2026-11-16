@@ -52,6 +52,7 @@ import { mssqlBlocked, mssqlSlow, mssqlAgEvents, mssqlXEWaits, mssqlXEWarnings, 
 import { mssqlDeadlocksView } from './mssql_deadlocks';
 import { hasAvailability, mssqlAgView, mssqlAvailability, mssqlLogShippingView, mssqlMirroringView } from './mssql_hadr';
 import { geoReplBlock, hasGeoRepl } from './georepl';
+import { cloudReplicasBlock, hasCloudReplicas } from './cloud_replicas';
 import { mssqlBackups, mssqlBackupsFleetSection } from './mssql_backups';
 import { mssqlRestore } from './mssql_restore';
 import { mssqlJobs } from './mssql_jobs';
@@ -110,7 +111,7 @@ const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_xewaits: mssqlXEWaits, mssql_xewarnings: mssqlXEWarnings, mssql_xemodules: mssqlXEModules, mssql_xecaptures: mssqlXECaptures, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
-  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); return s; },
+  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
   mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView,
@@ -175,7 +176,7 @@ const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView, backups: async c => { const v = await backups(c); v.append(...(v.dataset.noPostgres ? [] : [await pgBaseBackupsFleetSection(c)]), ...(v.dataset.noSqlServer ? [] : [await mssqlBackupsFleetSection(c)])); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, azuresummary: azureSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collectorerrors: collectorErrorsView, mssqlerrors: mssqlErrorFleetView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, admin_applications: adminApplicationsView, admin_counters: adminCountersView, admin_backupages: adminProtectionView, ...reportPages, admin: adminView };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
+  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication: async c => { const s = await replication(c); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; }, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, pgbackups: pgBackupsView, pgstate: pgStateView, corruption: c => corruptionView(c.instance!),
@@ -446,7 +447,7 @@ async function render(force = false) {
   const offStrip = new Set<string>();
   if (ctx.instance && isMssql(engine)) {
     // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
-    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false)) && !(await hasGeoRepl(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false)) && !(await hasGeoRepl(ctx.instance).catch(() => false)) && !(await hasCloudReplicas(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
     // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
     // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
     // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)

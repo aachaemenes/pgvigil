@@ -5,7 +5,7 @@
 // through the instance's azure: block). A failover is seen as a role change between two reads (or, behind a failover
 // group's listener, as the partner changing); the view cannot tell a planned failover from a forced one - the Activity
 // Log's operations, when they are read, can.
-import { get, rowsOf, Table } from './api';
+import { get, rowsOf, Row, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
@@ -89,10 +89,25 @@ export async function geoReplBlock(ctx: Ctx): Promise<HTMLElement> {
   else sec.append(el('p', { class: 'empty' }, read.groups_status === 'skipped' ? `mssql_failover_groups is skipped: ${String(read.groups_note ?? '')}.`
     : read.groups_status === 'error' ? `mssql_failover_groups failed: ${String(read.groups_note ?? '')}.`
     : 'No failover group read for this database\'s server (the azure: block names its server for the Resource Manager read).'));
-  const series = rowsOf(d.series);
-  if (series.length) sec.append(lineChart('Replication lag and unsent window (the primary\'s)', series, [
-    { key: 'replication_lag_sec', label: 'lag' }, { key: 'unsent_s', label: 'unsent window' },
-  ], v => `${fmtNum(v)} s`));
+  // the chart's x axis runs oldest first (uPlot's aligned data): the read answers newest first; a lag and an unsent line
+  // a link - a database with two geo-secondaries has a row of each link at one time (part c finding 6)
+  const partner = new Map(links.map(l => [String(l.link_guid), `${String(l.partner_server ?? '')}/${String(l.partner_database ?? '')}`]));
+  const byAt = new Map<string, Row>();
+  const guids = new Set<string>();
+  for (const r of rowsOf(d.series)) {
+    const at = String(r.snapshot_at), g = String(r.link_guid);
+    guids.add(g);
+    const row = byAt.get(at) ?? { snapshot_at: at };
+    row[`lag_${g}`] = r.replication_lag_sec;
+    row[`unsent_${g}`] = r.unsent_s;
+    byAt.set(at, row);
+  }
+  const series = [...byAt.values()].sort((a, b) => Date.parse(String(a.snapshot_at)) - Date.parse(String(b.snapshot_at)));
+  const gs = [...guids].sort();
+  const name = (g: string): string => gs.length > 1 ? ` (${partner.get(g) ?? g})` : '';
+  if (series.length) sec.append(lineChart('Replication lag and unsent window (the primary\'s)', series,
+    gs.flatMap(g => [{ key: `lag_${g}`, label: `lag${name(g)}` }, { key: `unsent_${g}`, label: `unsent window${name(g)}` }]),
+    v => `${fmtNum(v)} s`));
   sec.append(el('h4', {}, 'Changes'), grid(rowsOf(d.events), eventCols, 'No link or failover group changed in this window.'));
   return sec;
 }

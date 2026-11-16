@@ -121,6 +121,9 @@ type Instance struct {
 	// PasswordSecret reads the read login's password from AWS Secrets Manager at connect (task B24e); nil = the dsn
 	// holds the sign-in as today. Configuration-file instances only.
 	PasswordSecret *PasswordSecret `yaml:"password_secret"`
+	// GCP names a Cloud SQL for PostgreSQL instance for the provider replica read (cloud_replicas, task 390b P2); nil =
+	// no Google door (no call to Google). PostgreSQL only.
+	GCP *GCP `yaml:"gcp"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
 	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
@@ -467,6 +470,29 @@ type AWS struct {
 	// DMS names the replication tasks whose state rides on this instance (the tasks that feed it or read
 	// from it); nil = the dms collection skips this instance.
 	DMS *DMS `yaml:"dms"`
+	// Replicas switches on the provider replica door (task 390b P1): rds:DescribeDBInstances for the DB instance's
+	// read replicas and their status, cloudwatch:GetMetricData for each replica's ReplicaLag, rds:DescribeEvents for
+	// the instance's own failover events (P3). Off by default (the
+	// lead's Q8: its own door; the io, logs and dms reads of the same block keep theirs); it needs db_instance.
+	Replicas bool `yaml:"replicas"`
+}
+
+// GCP is an instance's door to Google Cloud (task 390b P2): the Cloud SQL for PostgreSQL instance whose replicas and
+// replication metrics are read (Cloud SQL Admin instances.get, Cloud Monitoring timeSeries.list). The credential is
+// Application Default Credentials (the attached service account through the metadata server, a workload identity
+// federation file, gcloud's application-default sign-in) or the file CredentialsFile names (a service account key is a
+// stored secret: the docs say so); nothing is stored here. The identity needs cloudsql.instances.get,
+// cloudsql.instances.list (operations.list, P3: Google's table names both) and monitoring.timeSeries.list
+// (roles/cloudsql.viewer and roles/monitoring.viewer, or a custom role with the three).
+type GCP struct {
+	Project         string `yaml:"project"`
+	Instance        string `yaml:"instance"`         // the Cloud SQL instance's name (not its connection name)
+	CredentialsFile string `yaml:"credentials_file"` // optional: else Application Default Credentials
+}
+
+// ResourceID names the Cloud SQL instance as Cloud Monitoring's database_id label does: project:instance.
+func (g GCP) ResourceID() string {
+	return strings.ToLower(g.Project + ":" + g.Instance)
 }
 
 // Azure is an instance's door to Azure Resource Manager (task 390a): the logical server whose failover groups are read.

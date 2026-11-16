@@ -54,7 +54,8 @@ func TestGeoReplPageOnAStore(t *testing.T) {
 			`DELETE FROM pgvigil.mssql_failover_group_reads WHERE server_key = $1`} {
 			_, _ = pool.Exec(context.Background(), q, key)
 		}
-		for _, q := range []string{`DELETE FROM pgvigil.mssql_georepl_sample WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
+		for _, q := range []string{`DELETE FROM pgvigil.mssql_georepl_sample WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.mssql_georepl_hour WHERE instance_id = ANY($1)`,
+			`DELETE FROM pgvigil.mssql_georepl_hour_dirty WHERE instance_id = ANY($1)`, `DELETE FROM pgvigil.instances WHERE instance_id = ANY($1)`} {
 			if _, err := pool.Exec(context.Background(), q, all); err != nil {
 				t.Error(err)
 			}
@@ -76,6 +77,11 @@ func TestGeoReplPageOnAStore(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	// s's reads of 30 hours, one every 10 minutes, before the reads below (part c finding 10: the page's series past a day)
+	h0 := now.Truncate(time.Hour).Add(-30 * time.Hour)
+	for m := 0; m < 30*60; m += 10 {
+		geo(ids["s"], h0.Add(time.Duration(m)*time.Minute), srvB, 1, srvA, true)
+	}
 	// p: the primary database itself; l: the same database through the listener; s: the secondary on B
 	geo(ids["p"], now.Add(-4*time.Minute), srvA, 0, srvB, true)
 	geo(ids["l"], now.Add(-4*time.Minute), srvA, 0, srvB, true)
@@ -103,6 +109,22 @@ func TestGeoReplPageOnAStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		return out
+	}
+	// a window past a day reads the hours (6 reads each) between its whole hours h0+1h .. h0+25h and its edges' samples
+	// (h0+10..50 min, h0+26h+0..20 min): 25 + 8 rows, as the page's sqlGeoSeries answers it
+	var hourRows, sampleRows int
+	for _, r := range rows(sqlGeoSeries, ids["s"], h0.Add(7*time.Minute), h0.Add(26*time.Hour+23*time.Minute)) {
+		switch fmt.Sprint(r["reads"]) {
+		case "6":
+			hourRows++
+		case "1":
+			sampleRows++
+		default:
+			t.Errorf("a series row with %v reads: want an hour's 6 or a sample's 1", r["reads"])
+		}
+	}
+	if hourRows != 25 || sampleRows != 8 {
+		t.Errorf("s's series over 26 hours: %d hour rows (want 25), %d edge samples (want 8)", hourRows, sampleRows)
 	}
 	links := rows(sqlGeoLinks, ids["p"])
 	if len(links) != 1 || links[0]["partner_instance_id"] != int32(ids["s"]) {

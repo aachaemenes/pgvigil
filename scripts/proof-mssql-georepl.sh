@@ -8,6 +8,8 @@
 # 2026-11-14), against a repository reached from there (the A1-E form: the box's PostgreSQL through a tunnel).
 # Needs: docker (sqlcmd from PGVIGIL_SQLCMD_IMAGE), psql, jq, python3, az signed in (the faults, and G2's token through
 # azidentity's default chain: the Azure CLI's sign-in), PGVIGIL_BIN (a built pgvigil) or a go toolchain, and
+# Every run makes its own repository database and drops it (0151 is edited in place before the tag: a store that
+# once applied 390a's 0151 would skip 390b's Part P, so no run reuses one).
 #   PGVIGIL_ADMIN_DSN    a superuser connection to a PostgreSQL in KEYWORD form, no dbname (the repository is made there)
 #   PGVIGIL_LAB_STATE    the lab's state file, default .lab/azure-sqldb.env (a basic lab: up, allow, logins)
 #   PGVIGIL_PROOF_MY_IP  this machine's public IPv4 (allow is run again for both servers after geo-up)
