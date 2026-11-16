@@ -37,8 +37,8 @@ mstvf_interleaved	cache	ctp=5 now=- rt=-	tvf_join	is_mstvf	-	#63,#23	the near mi
 table_var	cache	ctp=5 now=- rt=-	is_table_variable	-	-	#34	a table variable in the batch
 cursor_dynamic	cache	ctp=5 now=- rt=-	is_cursor,cursor_not_forward_only,is_cursor_dynamic	-	-	#10,#12,#13	a DYNAMIC cursor
 cursor_ff	cache	ctp=5 now=- rt=-	is_cursor	cursor_not_forward_only,is_cursor_dynamic	-	#10,#12,#13	the near miss: a FAST_FORWARD cursor
-cursor_ff	cache	ctp=5 now=- rt=-	is_paul_white_electric	-	-	#60	trial: a FAST_FORWARD cursor's plan holds a Switch
-cursor_keyset	cache	ctp=5 now=- rt=-	is_paul_white_electric,is_cursor	is_cursor_dynamic	-	#60	trial: a KEYSET cursor's plan holds a Switch
+cursor_ff	cache	ctp=5 now=- rt=-	-	is_paul_white_electric	-	#60	no Switch in a FAST_FORWARD cursor's plan (capture 2): #60 NOT PROVEN
+cursor_keyset	cache	ctp=5 now=- rt=-	is_cursor	is_paul_white_electric,is_cursor_dynamic	-	#60	no Switch in a KEYSET cursor's plan (capture 2): #60 NOT PROVEN
 np_a	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.12 (capture 1): under the band 4.5 - 5
 np_b	cache	ctp=5 now=- rt=-	-	near_parallel	-	#16	measured cost 4.4466 (capture 1; predicted 4.67): under 4.5
 np_d	cache	ctp=6 now=- rt=-	-	near_parallel	-	#16	the in-band plan (4.8717), ctp 6: the band 5.4 - 6
@@ -80,11 +80,11 @@ sort_spill	cache	ctp=5 now=- rt=exec:1,writes:1024.9	-	select_with_writes	-	#69	
 sort_spill	cache	ctp=5 now=- rt=exec:1,writes:1025	select_with_writes	-	-	#69	1025 > 1024
 tf_session	cache	ctp=5 now=- rt=-	trace_flags_session	-	-	#29	trial: DBCC TRACEON (9481, 4199) in the session, listed in the plan's TraceFlags
 compile_to	est	ctp=5 now=- rt=-	compile_timeout	long_compile	-	#2,#66	trial: a 20-table join stops at the optimizer's timeout
-long_compile	est	ctp=5 now=- rt=-	long_compile	-	-	#66	trial: trace flag 8780 (no timeout) on another 20-table join compiles over 5 s
+long_compile	est	ctp=5 now=- rt=-	long_compile,compile_timeout	-	-	#66	13 tables under trace flag 8780: CompileTime 11,796 ms (capture 2)
 nonsarg_fn	cache	ctp=5 now=- rt=-	is_nonsargable	-	-	#65	LEFT() on an indexed column
 nonsarg_like	cache	ctp=5 now=- rt=-	is_nonsargable	-	-	#65	LIKE with a leading wildcard
 nojoin	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	a CROSS JOIN with no aggregate (capture 1's aggregate was pushed under the join: no warning)
-nostat	cache	ctp=5 now=- rt=-	relop_warnings	-	-	#36	trial: a column with no statistics (AUTO_CREATE_STATISTICS OFF in warnlab2)
-cte_writes	cache	ctp=5 now=- rt=bc	select_with_writes	-	-	#69	trial: a recursive CTE's stack spool writes over 1,024 pages (not an eager index spool or a lazy table spool)
-tspool_hit	cache	ctp=5 now=- rt=-	is_table_spool_expensive	-	-	#57	trial: a correlated lazy table spool under nested loops, IO * CPU * rows * rebinds >= cost / 4
-unparam	cache	ctp=5 now=- rt=-	unparameterized_query	-	-	#7	trial: a procedure with no parameters reads a local variable: no ParameterList, an '@' column
+nostat	cache	ctp=5 now=- rt=-	-	relop_warnings	-	#36	no operator warning on its scan (sp_BlitzCache 8.34 none, capture 2)
+cte_writes	cache	ctp=5 now=- rt=bc	-	select_with_writes	-	#69	a recursive CTE's stack spool wrote 0 pages (capture 2): the #69 hit side NOT PROVEN yet
+tspool_hit	cache	ctp=5 now=- rt=-	is_spool_expensive	is_table_spool_expensive	-	#57,#55	its lazy table spool costs 0.0015 against cost 12.31 / 4 (capture 2): the #57 hit side NOT PROVEN; an eager index spool beside it
+unparam	cache	ctp=5 now=- rt=-	-	unparameterized_query	-	#7	the procedure's SELECT is not FULL-optimized, so the rule does not apply (sp_BlitzCache 8.34 does not fire, capture 2)
