@@ -46,7 +46,7 @@ func TestCompareIOAndFirstNames(t *testing.T) {
 	if len(got.Rows) != 4 {
 		t.Fatalf("rows: %v", got.Rows)
 	}
-	name, mb, mbBefore, reads, readsBefore := colIndex(got, "name"), colIndex(got, "mb_s"), colIndex(got, "mb_s_before"), colIndex(got, "reads"), colIndex(got, "reads_before")
+	name, mb, mbBefore, reads, readsBefore := tableColIndex(got, "name"), tableColIndex(got, "mb_s"), tableColIndex(got, "mb_s_before"), tableColIndex(got, "reads"), tableColIndex(got, "reads_before")
 	order := []string{}
 	for _, r := range got.Rows {
 		order = append(order, r[name].(string))

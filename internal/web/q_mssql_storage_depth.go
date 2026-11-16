@@ -310,7 +310,7 @@ func (s *Server) MSSQLDBIO(w http.ResponseWriter, r *http.Request) {
 
 // firstNames: the 'name' column of a table's first n rows (the grid is ordered by bytes moved).
 func firstNames(t *table, n int) []string {
-	k := colIndex(t, "name")
+	k := tableColIndex(t, "name")
 	out := []string{}
 	for _, row := range t.Rows {
 		if len(out) == n || k < 0 {
@@ -323,8 +323,8 @@ func firstNames(t *table, n int) []string {
 	return out
 }
 
-// colIndex: a column's index in a table, -1 when absent.
-func colIndex(t *table, name string) int {
+// tableColIndex: a column's index in a table, -1 when absent.
+func tableColIndex(t *table, name string) int {
 	for i, c := range t.Columns {
 		if c == name {
 			return i
@@ -342,13 +342,13 @@ func compareIO(now, before *table) *table {
 		if row == nil {
 			return nil
 		}
-		if k := colIndex(t, c); k >= 0 {
+		if k := tableColIndex(t, c); k >= 0 {
 			return row[k]
 		}
 		return nil
 	}
 	out := &table{Columns: cols, Rows: [][]any{}}
-	na, nb := colIndex(now, "name"), colIndex(before, "name")
+	na, nb := tableColIndex(now, "name"), tableColIndex(before, "name")
 	if na < 0 || nb < 0 {
 		return out
 	}
