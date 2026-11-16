@@ -1,0 +1,63 @@
+name: macos
+
+# pgvigil on macOS: scripts/proof-macos.sh on GitHub's macos-15 (Apple silicon) and macos-15-intel (x86_64) runners -
+# the binary built from the tree, PostgreSQL 18 from Homebrew, install, the collections, serve, every page's API read,
+# the UI in the runner's Google Chrome, the collector under launchd for one round, uninstall. Its OK and NOT PROVEN
+# lines are the job summary. A release gate: dispatched on the release's commit before its tag. Nothing secret is used:
+# every password is made in the job.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/macos.yml
+      - scripts/proof-macos.sh
+      - cmd/pgvigil/service_other.go
+      - cmd/pgvigil/open*.go
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  proof:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: proof-macos (${{ matrix.os }})
+        run: |
+          set -o pipefail
+          mkdir -p shots
+          scripts/proof-macos.sh shots 2>&1 | tee proof-macos.log
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "### proof-macos on ${{ matrix.os }}"
+            echo '```'
+            grep -E '^(== |ok   |  (skipped|status|not 200 json|NOT ok): |NOT PROVEN|FAIL|proof-macos:)' proof-macos.log || echo "no proof lines (the job stopped before the proof)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proof-macos-${{ matrix.os }}
+          path: |
+            proof-macos.log
+            shots/
+          if-no-files-found: ignore
+          retention-days: 14
