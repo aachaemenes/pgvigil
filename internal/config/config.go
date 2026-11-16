@@ -793,17 +793,29 @@ func (c *Config) Validate() error {
 
 // validateCloud is the aws: and azure: blocks' rules, one function for pgvigil.yaml's instances (Validate) and the
 // page's (Merge, after PageCloudShape: task B24p's fold 6): the azure: block is SQL Server's with its three names and a
-// known cloud, the aws: block PostgreSQL's (on SQL Server it waits for 390b), DMS's task names.
+// known cloud, the aws: block PostgreSQL's (on SQL Server only 390b's provider replica door: replicas and db_instance),
+// the gcp: block PostgreSQL's with its project and instance (390b), DMS's task names.
 func validateCloud(in Instance) error {
 	switch {
 	case in.Engine == EnginePostgres && in.Azure != nil:
 		return fmt.Errorf("instance %q: the azure: block is SQL Server's (an Azure SQL Database's failover groups)", in.Name)
-	case in.Engine == EngineSQLServer && in.AWS != nil:
-		return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
+	case in.Engine == EngineSQLServer && in.AWS != nil && (strings.TrimSpace(in.AWS.Cluster) != "" || strings.TrimSpace(in.AWS.LogGroup) != "" || in.AWS.DMS != nil):
+		return fmt.Errorf("instance %q: the aws: block on engine sqlserver takes region, profile, db_instance and replicas (cluster, log_group and dms are PostgreSQL's)", in.Name)
+	case in.Engine == EngineSQLServer && in.AWS != nil && (!in.AWS.Replicas || strings.TrimSpace(in.AWS.DBInstance) == ""):
+		// its one reader on SQL Server is the provider replica door (390b review part a, finding 1)
+		return fmt.Errorf("instance %q: the aws: block on engine sqlserver is the provider replica door: it needs replicas: true and db_instance", in.Name)
+	case in.Engine == EngineSQLServer && in.GCP != nil:
+		return fmt.Errorf("instance %q: the gcp: block is PostgreSQL's (Cloud SQL for SQL Server's replicas are not read)", in.Name)
 	case in.Azure != nil && (strings.TrimSpace(in.Azure.Subscription) == "" || strings.TrimSpace(in.Azure.ResourceGroup) == "" || strings.TrimSpace(in.Azure.Server) == ""):
 		return fmt.Errorf("instance %q: the azure: block names subscription, resource_group and server", in.Name)
 	case in.Azure != nil && !validAzureCloud(in.Azure.Cloud):
 		return fmt.Errorf("instance %q: azure.cloud is public, usgov or china, not %q", in.Name, in.Azure.Cloud)
+	}
+	if in.AWS != nil && in.AWS.Replicas && strings.TrimSpace(in.AWS.DBInstance) == "" {
+		return fmt.Errorf("instance %q: aws.replicas reads an RDS DB instance's read replicas: it needs aws.db_instance (Aurora's replicas are not this door)", in.Name)
+	}
+	if in.GCP != nil && (strings.TrimSpace(in.GCP.Project) == "" || strings.TrimSpace(in.GCP.Instance) == "") {
+		return fmt.Errorf("instance %q: the gcp: block names project and instance", in.Name)
 	}
 	if in.AWS != nil && in.AWS.DMS != nil {
 		for _, t := range in.AWS.DMS.Tasks {
