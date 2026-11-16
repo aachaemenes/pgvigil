@@ -87,6 +87,7 @@ func TestSiteRoundHeldOnAStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer conn.Release() // before pool.Close (deferred earlier, run later): Close waits for every acquired connection
 	if !lock(conn) {
 		t.Fatal("the row's own session could not take the site's lock")
 	}
@@ -125,7 +126,6 @@ func TestSiteRoundHeldOnAStore(t *testing.T) {
 	} else if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('pgvigil remote ingest'), hashtext($1))`, site); err != nil {
 		t.Fatal(err)
 	}
-	conn.Release()
 	// (c) the next round: already in, nothing loaded twice
 	res, held, err = SiteRound(ctx, pool, s, log)
 	if err != nil || held || res.Loaded != 0 || res.Skipped != 1 {
