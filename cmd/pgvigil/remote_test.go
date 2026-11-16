@@ -142,6 +142,38 @@ func TestInstallRemoteArgs(t *testing.T) {
 	}
 }
 
+// install -remote again over a new binary (the upgrade path -remote -upgrade's refusal names) finds its folder as the
+// first install left it: Linux /etc/pgvigil-remote with the env file, Windows ProgramData\pgvigil-remote with the outbox
+// and the state folder inside, and a site's own dsn file (docs/remote-collector.md's sample) - the folder is the
+// remote installer's own, as a folder named pgvigil is the hub installer's. A folder of another name stays refused.
+func TestRemoteInstallAgain(t *testing.T) {
+	root := t.TempDir()
+	own := filepath.Join(root, "pgvigil-remote")
+	for _, d := range []string{"outbox", "state"} {
+		if err := os.MkdirAll(filepath.Join(own, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"pgvigil-remote.yaml", "pgvigil-remote.env", "pg-orders.dsn"} {
+		if err := os.WriteFile(filepath.Join(own, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dedicatedFolder(own, "pgvigil-remote.yaml"); err != nil {
+		t.Errorf("install -remote again over the first install's folder: %v", err)
+	}
+	other := filepath.Join(root, "srv")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "hosts"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := dedicatedFolder(other, "pgvigil-remote.yaml"); err == nil || !strings.Contains(err.Error(), "hosts") {
+		t.Errorf("a shared folder was accepted for the remote config: %v", err)
+	}
+}
+
 // The remote sample config the installer writes is not ready until its site and an instance are filled in (the service
 // is enabled, not started); a filled one is ready.
 func TestRemoteReady(t *testing.T) {
