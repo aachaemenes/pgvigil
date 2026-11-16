@@ -319,12 +319,71 @@ func procCall(engine, name string, params []reportParam, given map[string]any) s
 
 // ---- results ----------------------------------------------------------------------------------------------------
 
-// resultSet is one result set of a run as the page draws it: types says per column number, time or text.
+// resultSet is one result set of a run as the page draws it: types says per column number, time or text. A card set
+// (markCards) carries its cards too: the page draws them in place of its grid.
 type resultSet struct {
 	Columns   []string `json:"columns"`
 	Types     []string `json:"types"`
 	Rows      [][]any  `json:"rows"`
 	Truncated bool     `json:"truncated,omitempty"`
+	// nil = not a card set (no key); a card set with no rows answers [] (no rows, no cards)
+	Cards *[]insightCard `json:"cards,omitempty"`
+}
+
+// insightCard is one row of an insight set (B20-3, DBA Dash N49 - its CustomReport.cs does it for its own reports; here
+// any report or community run): a result set of exactly two columns InsightSeverity and Insight, in either order and
+// any case (PostgreSQL lowers an unquoted alias), is drawn as one card per row above the grids.
+type insightCard struct {
+	Severity string `json:"severity"` // Info, Warning or Critical (read case-insensitively; anything else, NULL too, Info)
+	Insight  string `json:"insight"`  // as stored: the page makes a link only of [text](http or https url)
+}
+
+// markCards marks a card set with its cards, in row order; a row whose Insight is NULL or blank is left out.
+func (set *resultSet) markCards() {
+	if len(set.Columns) != 2 {
+		return
+	}
+	si, ii := -1, -1
+	for i, c := range set.Columns {
+		switch strings.ToLower(c) {
+		case "insightseverity":
+			si = i
+		case "insight":
+			ii = i
+		}
+	}
+	if si < 0 || ii < 0 {
+		return
+	}
+	cards := []insightCard{}
+	for _, r := range set.Rows {
+		if len(r) != 2 || r[ii] == nil {
+			continue
+		}
+		text := cellText(r[ii])
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		sev := "Info"
+		if r[si] != nil {
+			switch strings.ToLower(strings.TrimSpace(cellText(r[si]))) {
+			case "warning":
+				sev = "Warning"
+			case "critical":
+				sev = "Critical"
+			}
+		}
+		cards = append(cards, insightCard{Severity: sev, Insight: text})
+	}
+	set.Cards = &cards
+}
+
+// cellText is a cell's value as text (a driver's []byte as its bytes)
+func cellText(v any) string {
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	return fmt.Sprint(v)
 }
 
 // instanceRun is one run on one instance (or the store).
@@ -1336,8 +1395,9 @@ func (run *instanceRun) finish(t0 time.Time, sets []resultSet, why string, err e
 	if run.Sets == nil {
 		run.Sets = []resultSet{}
 	}
-	for _, s := range run.Sets {
-		run.Rows += len(s.Rows)
+	for i := range run.Sets {
+		run.Rows += len(run.Sets[i].Rows)
+		run.Sets[i].markCards() // B20-3: an InsightSeverity + Insight set carries its cards
 	}
 	switch {
 	case why != "":

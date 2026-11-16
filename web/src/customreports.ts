@@ -13,6 +13,7 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 import { Can, markNeed, routeWhy } from './needs';
+import { Card, cardList } from './cards';
 
 export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean }
 export interface ColFmt { set: number; column: string; label?: string; format?: string; decimals?: number; hidden?: boolean }
@@ -21,7 +22,8 @@ export interface ReportDef {
   report_id?: number; name: string; description?: string; folder: string; engine: string; kind: string; body: string;
   params: Param[]; columns: ColFmt[]; rules: Rule[]; timeout_secs: number; max_rows: number; version?: number;
 }
-export interface ResultSet { columns: string[]; types: string[]; rows: unknown[][]; truncated?: boolean }
+// cards: the server's mark of a card set (InsightSeverity + Insight, B20-3): drawn as cards, never as a grid
+export interface ResultSet { columns: string[]; types: string[]; rows: unknown[][]; truncated?: boolean; cards?: Card[] }
 export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean }
 // store: why a report on the store cannot run here (REPORT ROLE: reports_dsn, a login IN ROLE pgvigil_reader alone),
 // absent when it can
@@ -160,22 +162,25 @@ export function setGrid(set: ResultSet, idx: number, cols: ColFmt[] = [], rules:
   return grid(rows, gcols, 'The result set has no rows.');
 }
 
-// resultView draws a run's answer: per instance its outcome, its error, and each result set as a grid
+// resultView draws a run's answer: per instance its outcome, its error, its card sets' cards (B20-3) above its grids,
+// and each other result set as a grid, numbered without the card sets (a set's formats and rules keep its own index)
 export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' | 'rules'>, title = 'Result'): HTMLElement {
   const box = el('section', { class: 'report-result' });
   for (const run of runs) {
     const many = runs.length > 1 || run.instance !== 'store';
+    const grids = run.sets.map((s, i) => ({ s, i })).filter(x => !x.s.cards);
     const head = el('h3', {}, many ? `${title}: ${run.instance}` : title);
     // declined: a community procedure looked at this server and said no in its own words (stored failed: it ran)
     const plain = run.outcome === 'refused' || !!run.declined;
     const kind = run.outcome === 'done' ? 'ok' : plain ? 'warn' : 'crit';
     box.append(head, el('p', { class: 'meta' }, badge(run.declined ? 'declined' : run.outcome, kind),
-      ` ${fmtNum(run.rows)} rows in ${fmtNum(run.duration_ms)} ms${run.sets.length > 1 ? `, ${run.sets.length} result sets` : ''}`));
+      ` ${fmtNum(run.rows)} rows in ${fmtNum(run.duration_ms)} ms${grids.length > 1 ? `, ${grids.length} result sets` : ''}`));
     // refused = pgvigil sent nothing (a login, a right, a setting it knows); declined = the procedure's own no: their
     // words as a plain note; failed = the call broke: an error box
     if (run.error) box.append(plain ? el('p', { class: 'meta refused', role: 'note' }, run.error) : errorBox(run.error));
-    run.sets.forEach((s, i) => {
-      if (run.sets.length > 1) box.append(el('h3', {}, `${many ? run.instance + ': ' : ''}result set ${i + 1}`));
+    for (const s of run.sets) if (s.cards) box.append(cardList(s.cards, `${many ? run.instance + ': ' : ''}insights`) ?? '');
+    grids.forEach(({ s, i }, n) => {
+      if (grids.length > 1) box.append(el('h3', {}, `${many ? run.instance + ': ' : ''}result set ${n + 1}`));
       if (s.truncated) box.append(el('p', { class: 'meta' }, `Cut at ${fmtNum(s.rows.length)} rows (the report's row cap, or the run's 24 MB).`));
       box.append(setGrid(s, i, def?.columns, def?.rules));
     });

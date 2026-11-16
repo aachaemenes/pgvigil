@@ -493,3 +493,9 @@ button.link.silence-btn:hover:not(:disabled):not([aria-disabled="true"]) { color
 .healthcal-word { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); }
 .healthcal-day h4 { margin: var(--sp-3) 0 var(--sp-1); }
 .healthcal-drills a { margin-right: var(--sp-3); }
+/* B20-3: a report's insight cards (web/src/cards.ts) - one per row above its grids, the severity's badge first, a
+   stripe in the severity's colour (Info none); the text wraps anywhere (a long url) */
+.insight-cards { display: grid; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.insight-card { background: var(--surface-card); border-left: 4px solid var(--line); border-radius: var(--r-sm); padding: var(--sp-2) var(--sp-3); }
+.insight-card.warn { border-left-color: var(--warn); } .insight-card.crit { border-left-color: var(--crit); }
+.insight-card .insight-text { overflow-wrap: anywhere; }
