@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -52,6 +54,7 @@ func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
 	}
 	want := map[string]string{"collector_beats": "at", "collector_runs": "minute", "collector_load": "minute", "collector_probe": "minute",
 		"collector_spells": "", "collector_instances": "seen_at", "collector_streaks": "last_run_at", "collector_heartbeat": "beat_at"}
+	streaks := "rows older than %s days that collector_instances no longer names, under conditions, whatever the age"
 	for _, days := range []string{"8", "9"} {
 		texts := make([]string, len(srcs))
 		for i, s := range srcs {
@@ -72,15 +75,35 @@ func TestRetentionReadsTheBeatsTrimsOnText(t *testing.T) {
 				t.Errorf("at %s days, %s: words %q, column %q, judged %v; want one rule 'older than %s days', column %q, not judged",
 					days, tbl, words, column, judged, days, col)
 			}
+			// the conditions said (the review of RETENTION #1: the delete takes only the beating host's rows)
+			if w := fmt.Sprintf(streaks, days); tbl == "collector_streaks" && words != w {
+				t.Errorf("at %s days, collector_streaks: %q, want %q", days, words, w)
+			}
 		}
 	}
 }
 
 // TestRetentionPurgeWordsKeptOnText (RETENTION row 2, a regression row - PASS before and after): purge()'s own text
-// (0190) keeps its words - an age rule, an 'absent' rule, a 'no longer names' rule - and none of its tables reads a
-// fixed age.
+// (0190) and the *_purge functions it calls (each defined once) keep their words - an age rule, an 'absent' rule, a
+// 'no longer names' rule - every table a DELETE of theirs names keeps a rule (none dropped as a call's own rows: the
+// review of RETENTION #3), and none reads a fixed age.
 func TestRetentionPurgeWordsKeptOnText(t *testing.T) {
-	rules := purgeRules([]string{sqlBody(t, "0190_join_release2.sql", "purge")})
+	srcs := []string{sqlBody(t, "0190_join_release2.sql", "purge"), sqlBody(t, "0064_mssql_running.sql", "mssql_running_purge"),
+		sqlBody(t, "0084_mssql_reads.sql", "mssql_reads_purge"), sqlBody(t, "0092_mssql_plancache_indexes.sql", "mssql_plancache_purge"),
+		sqlBody(t, "0157_qs_plans.sql", "mssql_qs_plans_purge"), sqlBody(t, "0139_job_stats_hourly.sql", "job_stats_hourly_purge")}
+	rules := purgeRules(srcs)
+	named := 0
+	for _, src := range srcs {
+		for _, m := range regexp.MustCompile(`(?i)DELETE\s+FROM\s+pgvigil\.([a-z_][a-z0-9_]*)`).FindAllStringSubmatch(src, -1) {
+			named++
+			if rules[m[1]] == nil {
+				t.Errorf("%s: a DELETE of the purge functions names it, and it has no rule", m[1])
+			}
+		}
+	}
+	if named < 40 {
+		t.Errorf("the purge functions' text names %d DELETEs, want 40 or more (a body not found whole?)", named)
+	}
 	for tbl, want := range map[string]string{
 		"job_runs":                 "rows older than the age",
 		"dms_table_stats":          "rows absent longer than the age",

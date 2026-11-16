@@ -115,7 +115,8 @@ Configuration > Data retention lists every table of the repository's `pgvigil` s
 indexes and TOAST included), its estimated rows, what the retention does to it, the time column a row delete compares,
 the table whose rows keep it ("same as": a query text stays while a sample names it), its partitions, its oldest
 partition or oldest row, the days that oldest row is from now (the actual retention), and what a purge with a given age
-would drop. The rules are read from `pgvigil.purge()` as installed, so the page follows the function:
+would drop. The rules are read from `pgvigil.purge()` and the collector's beat functions as installed, so the page
+follows the functions:
 
 | Retention | Meaning |
 | --- | --- |
@@ -125,7 +126,7 @@ would drop. The rules are read from `pgvigil.purge()` as installed, so the page 
 | rows absent longer than the age | rows no longer present at the source, older than the age, are deleted |
 | rows *table* no longer names | rows are deleted once the other table no longer refers to them (with "older than the age": both) |
 | rows older than the age, under conditions | the age and conditions of its own (a channel no longer configured, the newest row of each instance kept) |
-| rows older than *n* days, whatever the age | a fixed age of its own: the collector's beat trims its `collector_*` tables at 8 days itself, every minute, whatever the purge age (with "under conditions" or "that *table* no longer names" where it has them); a purge drops none of them and the page does not judge them |
+| rows older than *n* days, whatever the age | a fixed age of its own: the collector's beat trims collector_beats, _runs, _load, _probe, _spells, _instances, _streaks and _heartbeat at 8 days itself, every minute, whatever the purge age (with "under conditions" or "that *table* no longer names" where it has them); a purge drops none of them and the page does not judge them |
 | *n* rules | the purge deletes from it in more than one way, each listed |
 | kept whole | the purge never deletes from it (inventories, settings, the current state) |
 

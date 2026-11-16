@@ -248,7 +248,9 @@ func retentionWords(r *rule) (words, column, sameAs string, judged bool) {
 		case d.days > 0 && d.whole:
 			parts = append(parts, fmt.Sprintf("rows older than %d days, whatever the age", d.days))
 		case d.days > 0 && d.sameAs != "":
-			parts = append(parts, fmt.Sprintf("rows older than %d days that %s no longer names, whatever the age", d.days, d.sameAs))
+			// never alone: a NOT EXISTS beside a fixed age is always more than the comparison (the review of RETENTION #1:
+			// collector_streaks' delete also takes only the beating host's rows)
+			parts = append(parts, fmt.Sprintf("rows older than %d days that %s no longer names, under conditions, whatever the age", d.days, d.sameAs))
 		case d.days > 0:
 			parts = append(parts, fmt.Sprintf("rows older than %d days, under conditions, whatever the age", d.days))
 		case d.pure && d.absent:
