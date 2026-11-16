@@ -160,3 +160,25 @@ func TestRemoteReady(t *testing.T) {
 		t.Errorf("a filled config: not ready (%s)", why)
 	}
 }
+
+// A remote collector's service log goes into its state folder - the one place besides the outbox it may write (R2) -
+// as pgvigil-remote.log; a config without a remote: block keeps the hub's log place (ok false).
+func TestRemoteServiceLog(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pgvigil-remote.yaml")
+	cfg := strings.Replace(remoteConfigTemplate(filepath.Join(dir, "outbox"), filepath.Join(dir, "state")), `site: ""`, `site: plant1`, 1)
+	cfg = strings.Replace(cfg, `collector: ""`, `collector: box1`, 1)
+	if err := os.WriteFile(p, []byte(cfg), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := remoteServiceLog(p); !ok || got != filepath.Join(dir, "state", "pgvigil-remote.log") {
+		t.Errorf("the remote log: %q %v", got, ok)
+	}
+	hub := filepath.Join(dir, "pgvigil.yaml")
+	if err := os.WriteFile(hub, []byte("repository:\n  dsn: host=x\ninstances: []\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := remoteServiceLog(hub); ok {
+		t.Errorf("a hub config took the remote log place")
+	}
+}
