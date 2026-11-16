@@ -1,0 +1,100 @@
+B24f's join wiring, section rel-sqltb-s1-405 (405's per-database backup thresholds, Admin > Protection; the lead 11-15 16:3x).
+Apply on the joined tree that holds rel-roles and rel-sqltb-s1-405 (its proof-pm313-rules-wiring patch applied: the route,
+q_mssql_protection.go and admin_protection.ts come in through it):
+  git apply -3 scripts/b24f-join-wiring-rel-sqltb-s1-405.patch
+Built on a pre-join copy of each file: rel-roles f421753c x rel-sqltb-s1-405 2370bd1c + that wiring patch whole (local commit
+476a1221, ref jw-pre-405; web.go's alert lines merged by hand), so -3 merges it onto the join's own resolution.
+What it does: s.post for POST /api/mssql/protection (admin: a database's backup thresholds are configuration others live
+with), its words in roles_wiring_sqltb_s1_405.go, needs.ts and docs/roles.md rows; the page folds the role into its
+'Edits are off here' sentence after the server's reason; Save row and each End carry the need.
+Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
+
+diff --git a/docs/roles.md b/docs/roles.md
+index 118b5eee..70493d66 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -119,6 +119,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/admin/instances` | admin | add, edit, enable, disable, remove an instance |
+ | `POST /api/admin/sources` | admin | a discovery source and its cloud settings (add, edit, enable, disable, remove, sync, sweep) |
+ | `POST /api/admin/proposals` | admin | approve or ignore a proposed instance |
++| `POST /api/mssql/protection` | admin | a SQL Server database's backup thresholds by tag or database (add, end) |
+ | `POST /api/admin/dbadash_moves` | admin | move a DBA Dash instance |
+ | `POST /api/admin/applications` | admin | an application |
+ | `POST /api/admin/applications/contacts` | admin | an application's contacts |
+diff --git a/internal/web/roles_wiring_sqltb_s1_405.go b/internal/web/roles_wiring_sqltb_s1_405.go
+new file mode 100644
+index 00000000..94297872
+--- /dev/null
++++ b/internal/web/roles_wiring_sqltb_s1_405.go
+@@ -0,0 +1,7 @@
++package web
++
++// B24f's join wiring for rel-sqltb-s1-405 (the lead 11-15 16:3x): the refusal words of its write, kept beside roles.go's
++// routeWhat in a file of their own so each branch's wiring touches no line another branch's does
++func init() {
++	routeWhat["POST /api/mssql/protection"] = "changing a database's backup thresholds"
++}
+diff --git a/internal/web/web.go b/internal/web/web.go
+index f595c2f9..a14039c8 100644
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -275,7 +275,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
+ 	s.post(api, "POST /api/alertrules", needAdmin, s.AlertRuleWrite)
+ 	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
+-	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
++	s.post(api, "POST /api/mssql/protection", needAdmin, s.MSSQLProtectionWrite)
+ 	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
+ 	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
+ 	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)
+diff --git a/web/src/admin_protection.ts b/web/src/admin_protection.ts
+index 597b22f8..ef03abd8 100644
+--- a/web/src/admin_protection.ts
++++ b/web/src/admin_protection.ts
+@@ -6,13 +6,15 @@
+ import { get, post, Row, rowsOf, Table } from './api';
+ import { Ctx } from './router';
+ import { el, errorBox, fmtTime, grid, offControl } from './ui';
++import { markNeed, routeWhy } from './needs';
+ 
+ export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
+   const sec = el('section', {}, el('h2', {}, 'Backup ages (SQL Server)'));
+   type Data = { writable?: boolean; reason?: string; overrides: Table | null; log: Table | null };
+   let d: Data;
+   try { d = await get<Data>('mssql/protection'); } catch (e) { sec.append(errorBox(e)); return sec; }
+-  const off = d.writable ? null : (d.reason ?? 'not writable here');
++  // the server's reason first, then the role (B24f: a database's backup thresholds are configuration others live with, admin)
++  const off = d.writable ? routeWhy('mssql/protection') : (d.reason ?? 'not writable here');
+   sec.append(el('p', { class: 'meta' }, 'A database is judged late when its newest full backup is older than its full backup hours, or its newest log backup older than its log backup minutes. Set them here for a tag or for one database; an instance\'s own ages are set in pgvigil.yaml (mssql_thresholds). The narrowest wins: a database row, then the instance\'s pgvigil.yaml, then its tags (the strictest when two disagree), then the default of 168 hours and 60 minutes. 0 = not judged.'),
+     ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
+   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+@@ -38,7 +40,7 @@ export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
+   } catch { /* the instance list is needed for a database row only */ }
+   showScope();
+   const num = (i: HTMLInputElement): number | null => i.value.trim() === '' ? null : Number(i.value);
+-  const save = el('button', { type: 'button' }, 'Save row') as HTMLButtonElement;
++  const save = markNeed(el('button', { type: 'button' }, 'Save row') as HTMLButtonElement, 'mssql/protection');
+   save.addEventListener('click', () => {
+     if (num(full) === null && num(logm) === null) { said.textContent = 'Set the full backup hours, the log backup minutes, or both.'; return; }
+     void send({ op: 'add', scope: scope.value, tag: tag.value.trim(), instance_id: Number(inst.value || 0), database_name: db.value.trim(),
+@@ -48,7 +50,7 @@ export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
+   sec.append(el('h3', {}, 'Set an age'),
+     el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, db, full, logm, note, save, saveNote), said);
+   const endCell = (_v: unknown, r: Row) => {
+-    const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.override_id)}` }, 'End') as HTMLButtonElement;
++    const b = markNeed(el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.override_id)}` }, 'End') as HTMLButtonElement, 'mssql/protection');
+     b.addEventListener('click', () => { void send({ op: 'end', override_id: Number(r.override_id) }); });
+     const short = off ? el('span', { class: 'off-reason' }, 'off here: the line above says why') : undefined;
+     return el('span', {}, b, ' ', offControl(b, off, short));
+diff --git a/web/src/needs.ts b/web/src/needs.ts
+index f3a5ff8c..b41f8d7b 100644
+--- a/web/src/needs.ts
++++ b/web/src/needs.ts
+@@ -35,6 +35,7 @@ export const routeNeeds = {
+   'admin/instances': ['admin', 'changing an instance'],
+   'admin/sources': ['admin', 'changing a discovery source'],
+   'admin/proposals': ['admin', 'approving or ignoring a proposed instance'],
++  'mssql/protection': ['admin', "changing a database's backup thresholds"],
+   'admin/dbadash_moves': ['admin', 'moving a DBA Dash instance'],
+   'admin/applications': ['admin', 'changing an application'],
+   'admin/applications/contacts': ['admin', "changing an application's contacts"],
