@@ -61,6 +61,9 @@ BEGIN
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'probes') = 'array' THEN p_beat->'probes' ELSE '[]'::jsonb END))
          AS r(host text, address text, method text, at timestamptz, sent int, answered int, ms_sum bigint, ms_max int, scheduled boolean)
    WHERE r.address IS NOT NULL AND r.method IN ('icmp', 'tcp')
+     -- a probe already past 8 days (a collector clock that far behind) is not kept: it would sit below the trim's mark,
+     -- where no trim reaches (the old whole-key trim removed it in the same beat)
+     AND date_trunc('minute', coalesce(r.at, p_minute)) >= now() - interval '8 days'
   ON CONFLICT (minute, collector_id, address) DO UPDATE
      SET sent = p.sent + EXCLUDED.sent, answered = CASE WHEN EXCLUDED.answered IS NULL THEN p.answered ELSE coalesce(p.answered, 0) + EXCLUDED.answered END,
          ms_sum = p.ms_sum + EXCLUDED.ms_sum, ms_max = greatest(p.ms_max, EXCLUDED.ms_max), method = EXCLUDED.method, host = EXCLUDED.host,
@@ -89,8 +92,9 @@ BEGIN
      SET first_probed = least(h.first_probed, EXCLUDED.first_probed),
          last_answered = greatest(h.last_answered, EXCLUDED.last_answered), host = EXCLUDED.host;
   -- the probe rows are kept 8 days, trimmed here (the review of B24h-1 part b #9: until the join's purge() line, a
-  -- store under probe_every_minute grew without end); the key's leading minute serves the delete
-  DELETE FROM pgvigil.collector_probe WHERE minute < now() - interval '8 days';
+  -- store under probe_every_minute grew without end) by the table's mark (0121's collector_trim: an hour at most a
+  -- beat from the first row at or after the mark; TRIMMARK, the lead's 11-15 17:4x (a))
+  PERFORM pgvigil.collector_trim('collector_probe');
 END
 $$;
 

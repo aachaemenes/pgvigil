@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_load (
 -- an instance's rows in time order (collector_server_down_at: the row before a spell, rows between two minutes)
 CREATE INDEX IF NOT EXISTS collector_load_instance ON pgvigil.collector_load (instance_id, minute);
 
+-- the trim mark of each minute-led table the beats trim (collector_load, collector_runs; collector_probe in 0254): every
+-- row before trimmed_to is gone. A beat trims from the first row at or after the mark - never 'minute < now() - 8
+-- days' over the whole key, whose estimate counts every row deleted since the last analyze as still there (BJf8L: on
+-- statistics 10 hours old, collector_load's trim read its 6.2 GB by a Seq Scan, 3.2 s a beat at 2,124 instances)
+CREATE TABLE IF NOT EXISTS pgvigil.collector_trim_mark (
+  tbl         text PRIMARY KEY,
+  trimmed_to  timestamptz NOT NULL
+);
+
 -- per instance, collection and collector (host): the failed runs in a row now. By host: two hosts reading one
 -- instance (a move, a second collector) each keep their own count, and the lowest of the hosts still reading speaks
 -- (collector_streaks_now). A renamed host starts at 0. Trimmed by the beat when its host has not named the instance
@@ -247,6 +256,41 @@ RETURNS void LANGUAGE sql AS $$
    WHERE c.collector_id = p_id
 $$;
 
+-- collector_trim: one beat's trim of a minute-led table past 8 days, by its mark (collector_trim_mark). The first row
+-- at or after the mark is read on the key (an empty stretch - a store whose collectors stopped - is passed in one read,
+-- and the dead entries below the mark are never walked); from it, an hour at most, never past now() - 8 days, is
+-- deleted, planned with its two bounds each time (EXECUTE), so the estimate is that hour at most; the mark moves to the
+-- hour's end in the same transaction (a beat that fails after it leaves the rows and the mark as they were). No mark
+-- yet (the first beat after the upgrade): from the table's first row, an hour a beat. A beat that finds the mark taken
+-- by another beat's trim of the same table skips its own (that beat trims). Returns the rows deleted.
+CREATE OR REPLACE FUNCTION pgvigil.collector_trim(p_tbl text)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_cut  timestamptz := now() - interval '8 days';
+  v_mark timestamptz;
+  v_lo   timestamptz;
+  v_hi   timestamptz;
+  v_n    bigint;
+BEGIN
+  IF p_tbl IS NULL OR p_tbl NOT IN ('collector_load', 'collector_runs', 'collector_probe') THEN
+    RAISE EXCEPTION 'collector_trim: % is not a minute-led table the beats trim', p_tbl;
+  END IF;
+  INSERT INTO pgvigil.collector_trim_mark (tbl, trimmed_to) VALUES (p_tbl, '-infinity') ON CONFLICT (tbl) DO NOTHING;
+  SELECT trimmed_to INTO v_mark FROM pgvigil.collector_trim_mark WHERE tbl = p_tbl FOR UPDATE SKIP LOCKED;
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+  EXECUTE format('SELECT min(minute) FROM pgvigil.%I WHERE minute >= $1', p_tbl) INTO v_lo USING v_mark;
+  IF v_lo IS NULL OR v_lo >= v_cut THEN
+    RETURN 0;
+  END IF;
+  v_hi := least(v_cut, v_lo + interval '1 hour');
+  EXECUTE format('DELETE FROM pgvigil.%I WHERE minute >= $1 AND minute < $2', p_tbl) USING v_lo, v_hi;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  UPDATE pgvigil.collector_trim_mark SET trimmed_to = v_hi WHERE tbl = p_tbl;
+  RETURN v_n;
+END $$;
+
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
 --   runs: [{engine, collection, runs, failures, rows, dur_sum, dur_max, hist: [19 ints]}],
 --   load: [{instance, attempts, opened, runs, failures, auth, interval_s}],  (interval_s: the fastest configured interval, absent when not known)
@@ -327,10 +371,16 @@ BEGIN
   SELECT now(), p_id, (p_beat->>'mem_bytes')::bigint, (p_beat->>'goroutines')::int, v_conns, pg_database_size(current_database()),
          coalesce(sum(r.runs), 0), coalesce(sum(r.failures), 0), coalesce(sum(r.rows), 0)
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(runs int, failures int, rows bigint);
-  -- the history this file keeps: 8 days (the page reads 24 h and 7 days)
+  -- the history this file keeps: 8 days (the page reads 24 h and 7 days); the two minute-led tables by their marks
+  -- (collector_trim), and a beat whose own minute is already past 8 days (a collector clock that far behind) takes its
+  -- rows back at once - they sit below the mark, where no trim reaches (the old whole-key trim removed them here too)
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
-  DELETE FROM pgvigil.collector_runs WHERE minute < now() - interval '8 days';
-  DELETE FROM pgvigil.collector_load WHERE minute < now() - interval '8 days';
+  PERFORM pgvigil.collector_trim('collector_runs');
+  PERFORM pgvigil.collector_trim('collector_load');
+  IF p_minute < now() - interval '8 days' THEN
+    DELETE FROM pgvigil.collector_runs WHERE minute = p_minute AND collector_id = p_id;
+    DELETE FROM pgvigil.collector_load WHERE minute = p_minute AND collector_id = p_id;
+  END IF;
   DELETE FROM pgvigil.collector_spells WHERE coalesce(ended_at, last) < now() - interval '8 days';
   DELETE FROM pgvigil.collector_instances WHERE seen_at < now() - interval '8 days';
   -- this host's streaks of an instance it has not named for 8 days, written 8 days ago or more (never by the streak's
