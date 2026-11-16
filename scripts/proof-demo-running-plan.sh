@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of the demo's running plans (Allen 11-15 06:01 'I dont see execution plan in running query'): the demo (12
+# Proof of the demo's running plans (task 406: a running query's plan on Running queries): the demo (12
 # PostgreSQL and 3 SQL Server instances, one day) in a scratch database, served on loopback, with a headless Chromium.
 # Needs go, node, chromium, psql, curl, python3 and a superuser connection without dbname.
 #   PGVIGIL_ADMIN_DSN     the superuser connection (creates and drops the scratch database)

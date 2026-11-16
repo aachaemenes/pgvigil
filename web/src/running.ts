@@ -279,7 +279,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   const after = () => { location.hash = href(ctx, { tab: TAB, at: undefined }); };
   const actions = actionsCol(ctx, act, after);
   // SQL Server's page offers the plan a running query was kept with (task 406); PostgreSQL has none to keep: said in
-  // words, never an empty button (Allen 11-15 06:01), where a session (and its plan link) is drawn
+  // words, never an empty button, where a session (and its plan link) is drawn
   if (sessions.length) sec.append(el('p', { class: 'meta' }, 'PostgreSQL keeps no plan of a running statement: the plan link opens the plans stored for its statement and EXPLAIN.'));
   // Cancel and Terminate off for the whole instance: one sentence above the grids, and every off button points at it
   // (placed only where a session of this read draws the pair: with no session the sentence would point at nothing)
