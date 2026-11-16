@@ -228,7 +228,9 @@ export function ackDialog(o: AckDialog) {
   }
   const build = (): AckBody[] => (Array.isArray(o.body) ? o.body : [o.body]).map(b => {
     const x: AckBody = { ...b };
-    if (o.expiry && Number(untilSel.value) > 0) x.until = new Date(Date.now() + Number(untilSel.value) * 3600000).toISOString();
+    // the 7-day choice ends 10 minutes short of 168 h (the lead 11-15 19:3x): the server measures the ceiling by its own
+    // clock, and a browser clock ahead of it would else make an operator's 7-day mute open-ended (as alert_rules.ts' Ends)
+    if (o.expiry && Number(untilSel.value) > 0) x.until = new Date(Date.now() + Number(untilSel.value) * 3600000 - (Number(untilSel.value) >= 168 ? 600e3 : 0)).toISOString();
     if (o.untilChange) x.until_change = change.checked;
     if (o.noteField && note.value.trim()) x.note = note.value.trim();
     if (o.matchFields) {
