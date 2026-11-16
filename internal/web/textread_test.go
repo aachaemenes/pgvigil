@@ -63,6 +63,8 @@ var textFuncAllowed = map[string]string{
 var (
 	// a table's read: its name, and its alias when it has one (an un-aliased read names its columns bare)
 	sqlTableRE = regexp.MustCompile(`pgvigil\.(\w+)(?:\s+(?:AS\s+)?([a-z][a-z0-9_]*))?`)
+	// a CTE that selects a table's every column: the CTE's name and the table (a function's read is sqlCallRE's)
+	sqlStarCTERE = regexp.MustCompile(`(\w+)\s+AS\s+(?:(?:NOT\s+)?MATERIALIZED\s+)?\(\s*SELECT\s+(?:DISTINCT\s+)?(?:\w+\.)?\*\s+FROM\s+pgvigil\.(\w+)\b(?:[^(\w]|$)`)
 	// a function's read, whatever columns the SQL takes from it
 	sqlCallRE = regexp.MustCompile(`pgvigil\.(\w+)\(`)
 	textTagRE = regexp.MustCompile(`"[a-z_]*@[a-z]+"`)
@@ -71,8 +73,9 @@ var (
 // textTagged: a SQL text carries a role tag or the text marker (the rule then applies to every tagged column it returns).
 func textTagged(sql string) bool { return textTagRE.MatchString(sql) || textMarkRE.MatchString(sql) }
 
-// readsStoredText lists the storedText columns a SQL text names: through a table's alias, or bare beside an
-// un-aliased table.
+// readsStoredText lists the storedText columns a SQL text names: through a table's alias, bare beside an
+// un-aliased table, or through a CTE that selects a table's every column ('lg AS (SELECT g.* FROM pgvigil.t g ...)'
+// then 'lg.col', or the CTE under an alias of its own).
 func readsStoredText(sql string) []string {
 	var out []string
 	for _, m := range sqlTableRE.FindAllStringSubmatch(sql, -1) {
@@ -83,6 +86,20 @@ func readsStoredText(sql string) []string {
 			}
 			if regexp.MustCompile(pat).MatchString(sql) {
 				out = append(out, "pgvigil."+m[1]+"."+c)
+			}
+		}
+	}
+	for _, m := range sqlStarCTERE.FindAllStringSubmatch(sql, -1) {
+		names := []string{m[1]}
+		for _, a := range regexp.MustCompile(`(?:FROM|JOIN)\s+`+m[1]+`\s+(?:AS\s+)?([a-z][a-z0-9_]*)`).FindAllStringSubmatch(sql, -1) {
+			names = append(names, a[1])
+		}
+		for _, c := range storedText[m[2]] {
+			for _, n := range names {
+				if regexp.MustCompile(`\b` + n + `\.` + c + `\b`).MatchString(sql) {
+					out = append(out, "pgvigil."+m[2]+"."+c+" (through "+m[1]+")")
+					break
+				}
 			}
 		}
 	}
@@ -246,17 +263,27 @@ func TestStoredTextFuncsMarked(t *testing.T) {
 }
 
 // TestTextGuardsFlag: the read shapes the two guards missed before review 2 (an un-aliased table's bare column,
-// explicit columns over a function, a table added since) are flagged; their tagged forms pass.
+// explicit columns over a function, a table added since) and before the closing run (a column read through a CTE
+// that selects a table's every column: 0119's mssql_memory_findings_between reads its statement as lg.statement)
+// are flagged; their tagged forms pass; a CTE over a stored text table that returns none of its text is not flagged.
 func TestTextGuardsFlag(t *testing.T) {
 	body := funcBodies(t)
 	for _, sql := range []string{
 		"SELECT snapshot_at AS at, usename, detail\n  FROM pgvigil.log_events\n WHERE kind = 'auth_fail'",
 		"SELECT x.setting, x.value FROM pgvigil.session_sets x WHERE x.instance_id = $1",
 		"SELECT m.detail FROM pgvigil.mssql_running_findings m",
+		"WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g WHERE g.instance_id = $1)\nSELECT lg.session_id, lg.statement FROM lg",
+		"WITH q AS MATERIALIZED (SELECT * FROM pgvigil.mssql_requests) SELECT r.session_id, r.statement FROM q r",
 	} {
 		if len(readsStoredText(sql)) == 0 || textTagged(sql) {
 			t.Errorf("not flagged: %q", sql)
 		}
+	}
+	if none := "WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g) SELECT lg.session_id, lg.granted_kb FROM lg"; len(readsStoredText(none)) != 0 {
+		t.Errorf("flagged with no stored text returned: %q (%v)", none, readsStoredText(none))
+	}
+	if ok := "WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g) SELECT lg.statement AS \"statement@stmt\" FROM lg"; !textTagged(ok) {
+		t.Errorf("a tagged CTE read not seen as tagged: %q", ok)
 	}
 	fn := "SELECT f.check_name, f.detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3) f"
 	if len(funcsReadingText(fn, body)) == 0 || textTagged(fn) {
