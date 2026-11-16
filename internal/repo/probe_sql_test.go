@@ -64,9 +64,22 @@ func TestProbeFindingsShape(t *testing.T) {
 		t.Fatalf("scripts/b24h-join-lines.sql: %v", err)
 	}
 	for _, want := range []string{"pgvigil.collector_probe_findings", "'query round trip slow', 'ping slow', 'host not answering ping'",
-		"pgvigil.collector_probe_held", "'round_trip_time', 'ping_time'"} {
+		"scripts/b24h-join-draft-alertdue.sql", "'round_trip_time', 'ping_time'"} {
 		if !regexp.MustCompile(regexp.QuoteMeta(want)).Match(j) {
 			t.Errorf("the join lines lack %s", want)
+		}
+	}
+	// line 3's terms are in the alert_due draft the join lines name (the B24h-1 fold, F9 part d): collector_probe_state
+	// read once a pass, the held rows and hosts as CTEs from that read in place of the views collector_probe_held /
+	// collector_probe_held_hosts
+	d, err := os.ReadFile("../../scripts/b24h-join-draft-alertdue.sql")
+	if err != nil {
+		t.Fatalf("scripts/b24h-join-draft-alertdue.sql: %v", err)
+	}
+	for _, want := range []string{"FROM pgvigil.collector_probe_state", "probe_held AS MATERIALIZED (     -- B24h line 3: as collector_probe_held",
+		"probe_held_hosts AS MATERIALIZED (   -- B24h line 3: as collector_probe_held_hosts"} {
+		if !regexp.MustCompile(regexp.QuoteMeta(want)).Match(d) {
+			t.Errorf("the alert_due draft lacks %s", want)
 		}
 	}
 }
