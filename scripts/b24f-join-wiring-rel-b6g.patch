@@ -6,9 +6,10 @@ probes and login lines merged by hand), so -3 merges it onto the join's own reso
 What it does: s.post for POST /api/collectionhealth/thresholds (admin: configuration others live with), its words in
 roles_wiring_b6g.go, its needs.ts and docs/roles.md rows; the thresholds dialog folds the role into its own reason after
 the seat's (Save and Inherit All marked with the need).
-B6g-6's acknowledge of collection errors is on no branch (grep 0 on every ref, 11-15 16:3x): when built, operator, as
-POST /api/ack - through s.post with needOperator, its routeWhat words, its needs.ts and docs/roles.md rows, a needControl
-on its button.
+B6g-6's acknowledge of collection errors is on no branch (grep 0 on every ref, 11-15 16:3x): when built, operator. If it
+rides POST /api/ack (the lead 07:4x: 'as POST /api/ack'), that route already holds its s.post, routeWhat words, needs.ts
+and docs/roles.md rows - only a needControl on its button (review-20 jw1 N7: a second row of each fails the duplicate
+checks); a route of its own would add those four. The dialog reads its role from the server's can (review-20 jw1 N2).
 Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
 
 diff --git a/docs/roles.md b/docs/roles.md
@@ -56,7 +57,7 @@ index eba46930..359eb292 100644
  	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
  	s.post(api, "POST /api/admin/instances", needAdmin, s.InstancesAdminWrite)
 diff --git a/web/src/collection_health.ts b/web/src/collection_health.ts
-index c47baf8f..76e3fb25 100644
+index c47baf8f..24481d9b 100644
 --- a/web/src/collection_health.ts
 +++ b/web/src/collection_health.ts
 @@ -10,6 +10,7 @@
@@ -74,7 +75,7 @@ index c47baf8f..76e3fb25 100644
 -  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined);
 +  // the seat's reason first, then the role (B24f: a Collection Health threshold is configuration others live with, admin)
 +  const whyOf = () => seatWhy(ad, thNoun, cur.instance_id ?? undefined, cur.instance_id != null ? name : undefined)
-+    || routeWhy('collectionhealth/thresholds');
++    || routeWhy('collectionhealth/thresholds', ad.can);   // the server's own answer first (review-20 jw1 N2)
    const btns = el('div', { style: 'margin-top:.6rem' });
    // the buttons of the level picked (DBA Dash's order: Close, Save, Inherit All): Save and Inherit All off with the
    // level's reason where it cannot be written

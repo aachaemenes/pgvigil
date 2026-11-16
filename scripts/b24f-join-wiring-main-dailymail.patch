@@ -1,18 +1,22 @@
 B24f's join wiring, section main 32c7aace (s2's DAILYMAIL, the Daily checks mail, on main since 11-15 12:46; the lead 12:0x / 16:3x).
 Apply on the joined tree that holds rel-roles and main 32c7aace (or at this branch's rebase onto main):
   git apply -3 scripts/b24f-join-wiring-main-dailymail.patch
-Both files are main's alone (rel-roles has neither change): the hunks are against main 32c7aace (ref jw-pre-main).
+q_reportmail_kept.go and proof-reportmail-kept.sh are main's alone (rel-roles has neither change); reportmail.ts is changed by
+rel-roles too, but not in main's Daily checks lines this hunk touches (its markNeed import is rel-roles' L19): the hunks
+are against main 32c7aace (ref jw-pre-main).
 What it does: GET /api/reportmail?part=daily answers writable false below admin with roleWords("keeping or turning off the
-Daily checks mail", needAdmin, ...) after the part's own reasons (its ops daily_keep / daily_drop ride POST /api/reportmail,
-admin already through s.post); proof-reportmail-kept.sh's new row K5b: a viewer (U2USER, the second user B24f makes a
-viewer) reads the part read only with 'needs the admin role', its daily_keep 403 in the same words, nothing kept.
+Daily checks mail", needAdmin, ...) after the part's own reasons (a role read error says so in its own words, review-20 jw1 N4; its ops daily_keep /
+daily_drop ride POST /api/reportmail, admin already through s.post); the Mail daily / Change / Turn off buttons carry
+the reportmail need (N1); proof-reportmail-kept.sh's new row K5b: a viewer of its own (KVUSER, 'user add -role viewer', a fresh
+jar - part S's U2USER is an admin and disabled by part K: review-20 jw1 B1) reads the part read only with 'needs the
+admin role', its daily_keep 403 with the admin role's words, nothing kept.
 Proof: proof-reportmail (part K) on the joined tree.
 
 diff --git a/internal/web/q_reportmail_kept.go b/internal/web/q_reportmail_kept.go
-index c1bec076..f51329be 100644
+index c1bec076..086fa419 100644
 --- a/internal/web/q_reportmail_kept.go
 +++ b/internal/web/q_reportmail_kept.go
-@@ -272,6 +272,14 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
+@@ -272,6 +272,18 @@ func (s *Server) dailyChecksPart(ctx context.Context, r *http.Request) (map[stri
  		}
  	case channels == 0 && live.id == 0:
  		reason = "Mailing the Daily checks needs an smtp channel: the sender has recorded none (the alerts: block of pgvigil.yaml, and pgvigil run)."
@@ -23,32 +27,57 @@ index c1bec076..f51329be 100644
 +		if !ok {
 +			wh = s.sessionWho(r)
 +		}
-+		reason = roleWords("keeping or turning off the Daily checks mail", needAdmin, wh)
++		if wh.err != nil { // roleCan reads a role read error as no role (review-20 jw1 N4): its own words, as roleOK's 503
++			reason = fmt.Sprintf("the role could not be read: %v", wh.err)
++		} else {
++			reason = roleWords("keeping or turning off the Daily checks mail", needAdmin, wh)
++		}
  	}
  	out["writable"], out["reason"] = reason == "", reason
  	if reportmail.FindBrowser() == "" {
 diff --git a/scripts/proof-reportmail-kept.sh b/scripts/proof-reportmail-kept.sh
-index 93964e71..28ac02ef 100644
+index 93964e71..c2fad5f6 100644
 --- a/scripts/proof-reportmail-kept.sh
 +++ b/scripts/proof-reportmail-kept.sh
-@@ -21,6 +21,8 @@
+@@ -21,6 +21,9 @@
  #       -no-login serve writable false with the reason naming -no-login, and its POST 403. (A -no-login serve answers
  #       the part to any caller, with a kept row's addresses, channel and user: the exposure its schedules part has
  #       there already, not a new one; this row checks writable and the reason only.)
-+#   K5b a viewer (U2USER: B24f makes the second user a viewer) reads the part writable false with 'needs the admin role'
-+#       in its reason; its daily_keep 403 in the same words; nothing kept (B24f, the lead 11-15 12:0x).
++#   K5b a viewer of its own (KVUSER, added '-role viewer' with a fresh jar: part S's U2USER is an admin and disabled by
++#       part K) reads the part writable false with 'needs the admin role' in its reason; its daily_keep 403 with the admin
++#       role's words; nothing kept (B24f, the lead 11-15 12:0x).
  #   K6  the page's keep through the door (op daily_keep as the signed-in user): a row kept_by page, drawn as that user,
  #       next send the next 07:00 UTC; the Report mail door's end of it 409 with the setting's words.
  #   K7  the control on the Daily checks page (a headless Chromium): the line says 'Mail daily: on, next send ...,
-@@ -151,6 +153,11 @@ kget() { code -b "${2:-$JAR}" "$1/api/reportmail?part=daily"; }
+@@ -151,6 +154,13 @@ kget() { code -b "${2:-$JAR}" "$1/api/reportmail?part=daily"; }
  c=$(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}' "$U2/api/reportmail")
  [[ $c == 403 && $(nlive) == 0 ]] || fail "K5: the -no-login serve's daily_keep answered $c"
  ok "K5: the page's state: owner page, off and writable when signed in; read only with its reason on a serve with -no-login (its POST 403)"
-+login "$JAR2" "$U2USER" "$U2PW"
-+[[ $(kget "$U" "$JAR2") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"needs the admin role"* ]] || fail "K5b: a viewer's state: $(cat "$WORK/body")"
-+c=$(code -b "$JAR2" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
++KVUSER=proofkview; KVPW=$(openssl rand -hex 12); KVJAR=$WORK/jarkv
++PGVIGIL_PASSWORD=$KVPW "$BIN" user add -config "$CFG" -role viewer $KVUSER >/dev/null 2>&1 || fail "K5b: user add -role viewer"
++login "$KVJAR" "$KVUSER" "$KVPW"
++[[ $(kget "$U" "$KVJAR") == 200 && $(jget "d['daily']['writable']") == False && $(jget "d['daily']['reason']") == *"needs the admin role"* ]] || fail "K5b: a viewer's state: $(cat "$WORK/body")"
++c=$(code -b "$KVJAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data-binary '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}' "$U/api/reportmail")
 +[[ $c == 403 && $(jget "d['error']") == *"needs the admin role"* && $(nlive) == 0 ]] || fail "K5b: a viewer's daily_keep answered $c: $(cat "$WORK/body"), live $(nlive)"
-+ok "K5b: a viewer ($U2USER) reads the Daily checks mail read only with the admin role's words; its daily_keep 403 in the same words, nothing kept"
++ok "K5b: a viewer ($KVUSER) reads the Daily checks mail read only with the admin role's words; its daily_keep 403 with the admin role's words, nothing kept"
  c=$(postj reportmail '{"op":"daily_keep","at":"07:00","timezone":"UTC","recipients":["page@pgvigil.test"],"channel":"mail"}')
  [[ $c == 200 && $(jget "d['outcome']") == done && $(klive kept_by) == page && $(klive created_by) == "$UIUSER" && $(klive cron) == "0 7 * * *" ]] || fail "K6: daily_keep: $c $(cat "$WORK/body")"
  [[ $(klive "next_at = (date_trunc('day', now() at time zone 'UTC') + interval '7 hours' + case when (now() at time zone 'UTC')::time >= time '07:00' then interval '1 day' else interval '0' end) at time zone 'UTC'") == true ]] || fail "K6: next_at $(klive next_at) is not the next 07:00 UTC"
+diff --git a/web/src/reportmail.ts b/web/src/reportmail.ts
+index 1acc8dc5..a00d42ab 100644
+--- a/web/src/reportmail.ts
++++ b/web/src/reportmail.ts
+@@ -461,11 +461,11 @@ export async function dailyMailControl(ctx: Ctx): Promise<HTMLElement | null> {
+   const why = el('span', { class: 'off-reason' });
+   const off = d.writable ? null : (d.reason || 'the Daily checks mail cannot be changed here');
+   if (off) why.textContent = off;
+-  const keep = el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...');
++  const keep = markNeed(el('button', { type: 'button', class: 'link' }, d.kept ? 'Change...' : 'Mail daily...'), 'reportmail');   // the role (B24f): an admin's (review-20 jw1 N1)
+   if (off) offControl(keep, off, why); else keep.addEventListener('click', () => { void dailyMailDialog(d); });
+   line.append(keep, ' ');
+   if (d.kept) {
+-    const drop = el('button', { type: 'button', class: 'link' }, 'Turn off');
++    const drop = markNeed(el('button', { type: 'button', class: 'link' }, 'Turn off'), 'reportmail');
+     if (off) offControl(drop, off, why);
+     else drop.addEventListener('click', () => {
+       dialog('Turn off the daily mail', 'The Daily checks page is no longer mailed; its sends stay in the Report mail log.', 'Turn off', [],

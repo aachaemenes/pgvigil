@@ -2,20 +2,26 @@ B24f's join wiring, section rel-sqltb-s2 (403a / 403b, the SQL Server security a
 Apply on the joined tree that holds rel-roles and rel-sqltb-s2 (its three wiring patches applied):
   git apply -3 scripts/b24f-join-wiring-rel-sqltb-s2.patch
 Built on a pre-join copy of each file it touches: rel-roles f421753c x rel-sqltb-s2 a326eea2 + proof-alert-scope-wiring,
-proof-mssql-security-wiring and proof-mssql-xe-captures-wiring's web.go hunks (local commit 6e421b3e, ref jw-pre-sqltb:
-web.go's alert lines and alert_rules.ts's rule dialog call merged by hand), so -3 merges it onto the join's own resolution.
+proof-mssql-security-wiring and proof-mssql-xe-captures-wiring's web.go hunks (local commits 6e421b3e +
+ee4e6011, ref jw-pre-sqltb: web.go's alert lines and alert_rules.ts's rule dialog call merged by hand; scripts/proof-uiroles.sh
+rel-roles f421753c's alone), so -3 merges it onto the join's own resolution.
 What it does:
 - s.post for POST /api/alertwindows (operator), /api/mssql/security/config and /api/mssql/xecaptures/config (admin);
   their words in roles_wiring_sqltb_s2.go (an init beside routeWhat: no line another section touches), needs.ts and docs/roles.md rows.
 - AlertWindowWrite: add / edit over one instance ending at most 7 days after now or its start = operator; every instance, a
   tag, no end, a later end, or a from_rule_id copy without a scope (fail closed) = admin ('a fleet-wide, tag-wide or
   open-ended alert window'); end open to an operator (the lead's ALERTWINDOWS (a)).
-- The window dialog: an Ends choice (1 day, 7 days, no end; an edit keeps its end); below admin 'no end', every instance
+- The window dialog: an Ends choice (1 day, 7 days - 10 minutes short of 168 h, so a browser clock ahead of the server's
+  still passes the server's ceiling (review-20 jw1 S1) - no end; an edit keeps its end); below admin 'no end', every instance
   and a tag are off, and Save says the admin words; the window buttons and Save carry the 'alertwindows' need.
 - The security and XE capture settings pages: the role folded into the page's one off sentence; each write control marked.
 - POST /api/slack/actions stays on mux: roles_test.go's outsideRoles exempts it with its reason; docs/roles.md says a Slack
-  button acts without a pgvigil role.
-Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
+  button acts without a pgvigil role. TestRolesDocMatches checks each outsideRoles route: registered once, and in
+  docs/roles.md in backticks (review-20 jw1 N3).
+- proof-uiroles.sh part S5w (review-20 jw1 S2): the window rule's rows as an operator and an admin (add, edit, end), the
+  ceiling's edge by the server's clock (168 h + 5 s refused, 167 h done); skipped with a line on a tree without the route.
+Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there;
+proof-uiroles.sh (S5w) there.
 
 diff --git a/docs/roles.md b/docs/roles.md
 index 118b5eee..2c06fb0f 100644
@@ -78,10 +84,10 @@ index 56582f75..31ae7f78 100644
  	b, _ := json.Marshal(pay)
  	var res struct {
 diff --git a/internal/web/roles_test.go b/internal/web/roles_test.go
-index a0f67487..0a31d583 100644
+index a0f67487..26c719da 100644
 --- a/internal/web/roles_test.go
 +++ b/internal/web/roles_test.go
-@@ -16,6 +16,12 @@ import (
+@@ -16,6 +16,15 @@ import (
  // operator, admin), and docs/roles.md's table is the same list. Both checks read the source, so a route added
  // without a need fails here, not on a box.
  
@@ -91,18 +97,49 @@ index a0f67487..0a31d583 100644
 +	"POST /api/slack/actions": "403b's Slack door: Slack signs each button press (no X-Pgvigil header, no pgvigil session); doors.slack_actions is off by default and set in the site's file",
 +}
 +
++// outsideSeen counts each outsideRoles route's registrations in the last postNeeds read (TestRolesDocMatches wants one)
++var outsideSeen map[string]int
++
  // needNames are the need constants an s.post call may name (roles.go)
  var needNames = map[string]string{"needAnyone": "anyone", "needViewer": "viewer", "needOperator": "operator", "needAdmin": "admin"}
  
-@@ -108,7 +114,7 @@ func inspectRegs(t *testing.T, fset *token.FileSet, d ast.Decl, needs map[string
+@@ -31,6 +40,7 @@ func postNeeds(t *testing.T) (needs map[string]string, outside []string) {
+ 		t.Fatal(err)
+ 	}
+ 	needs = map[string]string{}
++	outsideSeen = map[string]int{}
+ 	for _, e := range ents {
+ 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+ 			continue
+@@ -108,8 +118,10 @@ func inspectRegs(t *testing.T, fset *token.FileSet, d ast.Decl, needs map[string
  			switch {
  			case !hasMethod && pat != "/" && pat != "/api/":
  				*outside = append(*outside, at+": a method-less pattern "+pat)
 -			case hasMethod && method != "GET" && method != "HEAD":
 +			case hasMethod && method != "GET" && method != "HEAD" && outsideRoles[pat] == "":
  				*outside = append(*outside, at+": "+pat+" is registered outside s.post")
++			case hasMethod && outsideRoles[pat] != "":
++				outsideSeen[pat]++
  			}
  		}
+ 		return true
+@@ -166,6 +178,16 @@ func TestRolesDocMatches(t *testing.T) {
+ 			t.Errorf("%s: web.go says %s, docs/roles.md says %s", k, code, docs)
+ 		}
+ 	}
++	// a write outside the roles by design (outsideRoles): registered once, and said in docs/roles.md's words below the
++	// table with its route in backticks (review-20 jw1 N3: the exemption had no check of its own)
++	for k := range outsideRoles {
++		if outsideSeen[k] != 1 {
++			t.Errorf("%s (outside the roles by design) is registered %d times in web.go, not once", k, outsideSeen[k])
++		}
++		if !strings.Contains(string(b), "`"+k+"`") {
++			t.Errorf("%s is outside the roles by design, but docs/roles.md does not say so (its route in backticks below the table)", k)
++		}
++	}
+ }
+ 
+ // ---- the pages (review-16 S6 / S8): a write control carries its route's need and is off below it with the server's
 diff --git a/internal/web/roles_wiring_sqltb_s2.go b/internal/web/roles_wiring_sqltb_s2.go
 new file mode 100644
 index 00000000..aa62b6c6
@@ -145,8 +182,75 @@ index 783b97dc..5131aea6 100644
  	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
  	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
  	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)
+diff --git a/scripts/proof-uiroles.sh b/scripts/proof-uiroles.sh
+index c9475970..c58328c6 100644
+--- a/scripts/proof-uiroles.sh
++++ b/scripts/proof-uiroles.sh
+@@ -52,6 +52,14 @@
+ #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
+ #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
+ #     (unchanged); logout ok.
++#   S5w (POST /api/alertwindows, the join wiring's rel-sqltb-s2 section; review-20 jw1 S2 / box jobs C and D; written
++#     before its first run, on the joined tree only): an operator's add over every instance (an end 2 days away), over a
++#     tag, of one instance with no end, of one instance ending 8 days away, and a scope taken from a rule (from_rule_id,
++#     no scope of its own) each 403 with 'a fleet-wide, tag-wide or open-ended alert window needs the admin role'; the
++#     operator's add of one instance ending 6 days away done, its end done; the admin's add over every instance with no
++#     end done; the same five wide bodies as an edit of the operator's own window 403; an edit to one instance ending 6
++#     days away done; the operator's edit of the admin's fleet-wide window to one instance with an end done (judged by
++#     its successor, as the mute edit); the ceiling's edge by the server's clock: an end 168 h + 5 s away 403, 167 h done.
+ #   The last line: 'proof-uiroles: <n> FAIL' and rc 1.
+ set -uo pipefail
+ cd "$(dirname "$0")/.."
+@@ -265,6 +273,47 @@ else
+   s5e a$SUF own "{\"op\":\"edit\",\"ack_id\":$(one),\"any_instance\":true,\"check_key\":\"z\",$END}" "an edit to every instance"
+ fi
+ 
++# ---- S5w: an alert window over every instance, a tag, with no end or a later end needs admin (the join wiring's
++# rel-sqltb-s2 section, the lead 11-15 16:3x; review-20 jw1 S2). Only on a tree with POST /api/alertwindows.
++WD="\"action\":\"blackout\",\"weekdays\":[1,2,3,4,5,6,7],\"start_local\":\"01:00\",\"end_local\":\"02:00\",\"zone\":\"UTC\""
++wend() { echo "\"until\":\"$(date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ)\""; }
++WWORDS="a fleet-wide, tag-wide or open-ended alert window needs the admin role"
++s5w() {   # s5w <user> <want: admin|done> <body> <what>; the reply's window_id ('' for none) in $WORK/s5w.id
++  local res code; res=$(post "$1" /api/alertwindows "$3"); code=${res%% *}
++  python3 -c "import json; print(json.load(open('$WORK/post.body')).get('window_id') or '')" > "$WORK/s5w.id" 2>/dev/null || : > "$WORK/s5w.id"
++  if [[ $2 == admin ]]; then
++    [[ $code == 403 && $res == *"$WWORDS"* && $res == *"$1 is"* ]] && ok "S5w ${ROLE[$1]} $4: refused ($res)" || bad "S5w ${ROLE[$1]} $4: $res"
++  else
++    [[ $code == 200 && $res == *'"outcome":"done"'* ]] && ok "S5w ${ROLE[$1]} $4: done ($res)" || bad "S5w ${ROLE[$1]} $4: $res"
++  fi
++}
++c=$(post a$SUF /api/alertwindows '{}'); c=${c%% *}
++if [[ $c == 404 || $c == 405 ]]; then echo "S5w: no POST /api/alertwindows on this tree ($c): not run"
++else
++  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"fleet\",$(wend '+2 days')}" "an add over every instance"
++  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"tags\",\"scope_tags\":[\"prod\"],$(wend '+2 days')}" "an add over a tag"
++  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID}" "an add of one instance with no end"
++  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+8 days')}" "an add of one instance ending 8 days away"
++  # the role is read before the store reads the rule: a rule id that does not exist is refused the same (fail closed)
++  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"\",\"from_rule_id\":999999,$(wend '+2 days')}" "a scope taken from a rule"
++  s5w o$SUF done "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+6 days')}" "an add of one instance ending 6 days away"; OW=$(cat "$WORK/s5w.id")
++  s5w a$SUF done "{\"op\":\"add\",$WD,\"scope\":\"fleet\"}" "an add over every instance with no end"; AW=$(cat "$WORK/s5w.id")
++  if [[ -z $OW || -z $AW ]]; then bad "S5w: no window_id from the done adds (operator '$OW', admin '$AW'): no edit row ran"
++  else
++    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"fleet\",$(wend '+2 days')}" "an edit to every instance"
++    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"tags\",\"scope_tags\":[\"prod\"],$(wend '+2 days')}" "an edit to a tag"
++    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"instance\",\"instance_id\":$IID}" "an edit with no end"
++    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+8 days')}" "an edit ending 8 days away"
++    s5w o$SUF admin "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"\",\"from_rule_id\":999999,$(wend '+2 days')}" "an edit to a rule's scope"
++    s5w o$SUF done "{\"op\":\"edit\",\"window_id\":$OW,$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+6 days')}" "an edit of one instance ending 6 days away"; OW2=$(cat "$WORK/s5w.id")
++    s5w o$SUF done "{\"op\":\"edit\",\"window_id\":$AW,$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+2 days')}" "an edit of the admin's fleet-wide window to one instance with an end (its successor decides)"
++    s5w o$SUF done "{\"op\":\"end\",\"window_id\":${OW2:-$OW}}" "the end of its window"
++  fi
++  # the ceiling's edge by the server's clock (box job D): the dialog's 7-day choice now ends 10 minutes short of it
++  s5w o$SUF admin "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+168 hours +5 seconds')}" "an add ending 168 h + 5 s away"
++  s5w o$SUF done "{\"op\":\"add\",$WD,\"scope\":\"instance\",\"instance_id\":$IID,$(wend '+167 hours')}" "an add ending 167 h away"
++fi
++
+ # ---- S9 --------------------------------------------------------------------------------------------------------------
+ aud0=$(q "select count(*) from pgvigil.admin_audit"); ack0=$(q "select count(*) from pgvigil.acks")
+ c=$(curl -s -o "$WORK/h.body" -w '%{http_code}' -b "$WORK/a$SUF.jar" -H 'Content-Type: application/json' --data '{"kind":"note","note":"x"}' "$U/api/ack")
 diff --git a/web/src/alert_rules.ts b/web/src/alert_rules.ts
-index d052d3e1..316c98fa 100644
+index d052d3e1..5eb97242 100644
 --- a/web/src/alert_rules.ts
 +++ b/web/src/alert_rules.ts
 @@ -15,7 +15,13 @@ import { Ctx, rangeLabel, window_ } from './router';
@@ -226,7 +330,7 @@ index d052d3e1..316c98fa 100644
    const instSel = el('select', {}, ...insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
    if (w?.instance_name != null) {
      const m = insts.find(i => i.name === w.instance_name);
-@@ -604,6 +614,15 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -604,6 +614,18 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
    const zone = el('input', { type: 'text', maxlength: '64', style: 'width:14em', value: String(w?.zone ?? browserZone) });
    const note = el('textarea', { rows: '2', maxlength: '500', style: 'width:100%' });
    note.value = String(w?.note ?? '');
@@ -237,12 +341,15 @@ index d052d3e1..316c98fa 100644
 +  if (wideWhy) for (const o of ends.options) o.disabled = o.value === '0';
 +  ends.value = w?.until != null ? 'keep' : wideWhy ? '168' : '0';
 +  const startsMs = () => Math.max(Date.now(), w?.starts_at != null ? new Date(String(w.starts_at)).getTime() : 0);
++  // the 7-day choice ends 10 minutes short of 168 h (review-20 jw1 S1): the server measures the ceiling by its own clock,
++  // and a browser clock ahead of it by a second would else make an operator's one-instance 7-day window open-ended
++  const skewMs = (h: number) => h >= 168 ? 600e3 : 0;
 +  const untilOf = (): string | undefined => ends.value === 'keep' ? String(w!.until) : Number(ends.value) > 0
-+    ? new Date(startsMs() + Number(ends.value) * 3600e3).toISOString() : undefined;
++    ? new Date(startsMs() + Number(ends.value) * 3600e3 - skewMs(Number(ends.value))).toISOString() : undefined;
    const sync = () => {
      ceilBox.hidden = action.value !== 'digest'; tagsBox.hidden = scope.value !== 'tags'; instBox.hidden = scope.value !== 'instance';
      start.disabled = end.disabled = wholeDay.checked;
-@@ -615,6 +634,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -615,6 +637,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
      el('span', {}, ...days.map(x => x.label)),
      el('span', {}, el('label', {}, wholeDay, ' the whole day'), ' ', el('label', {}, 'from ', start), ' ', el('label', {}, 'to ', end), ' ', el('label', {}, 'in ', zone)),
      el('p', { class: 'meta' }, 'An end before the start runs across midnight, as part of the day it starts; an end of 00:00 runs to midnight. A digest window holds alerts only on channels that have a daily digest (digest_hour).'),
@@ -251,7 +358,7 @@ index d052d3e1..316c98fa 100644
      el('label', {}, 'Name (optional) ', name),
      el('label', {}, 'Note (optional)', el('br'), note),
    ];
-@@ -624,6 +645,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -624,6 +648,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
      zone.value.trim() === '' ? 'a time zone' : '',
      scope.value === 'tags' && picked.size === 0 ? 'at least one tag' : '',
      scope.value === 'instance' && instSel.value === '' ? 'an instance' : '',
@@ -260,7 +367,7 @@ index d052d3e1..316c98fa 100644
    ].filter(Boolean).join(', ');
    const body = () => ({
      op: w ? 'edit' : 'add', window_id: w ? Number(w.window_id) : undefined,
-@@ -636,7 +659,7 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -636,7 +662,7 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
      note: note.value.trim() || undefined,
      // an edit keeps what the form does not show: its start, its end date and the rule its scope came from
      starts_at: w?.starts_at != null ? String(w.starts_at) : undefined,
@@ -269,7 +376,7 @@ index d052d3e1..316c98fa 100644
      from_rule_id: w?.from_rule_id != null ? Number(w.from_rule_id) : undefined,
    });
    formDialog(w ? `Edit window ${String(w.window_id)}` : 'New window',
-@@ -644,7 +667,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
+@@ -644,7 +670,8 @@ async function windowDialog(door: RulesDoor, w: Row | undefined, after: () => vo
        : 'The alert sender reads the window from its next pass. Held sends are logged; the Alerts page says why each was held.',
      'Save', () => post<WindowResult>('alertwindows', body()) as Promise<RuleResult>, after, fields,
      () => door.writable ? invalid() : `a server where alert windows can be written (${door.reason ?? 'read only here'})`,
