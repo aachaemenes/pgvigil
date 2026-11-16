@@ -13,7 +13,7 @@ import (
 
 // On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it): stubbed reads of mssql_backup_history and
 // mssql_backup_checks through their imports (task 301b, migration 0191; the design fold's F1, F4-F6, F10, F12, the
-// probes' facts and the lead's AUTO_CLOSE rule): the newest N sets per database, type and copy-only, 0066's two guards,
+// probes' facts and the AUTO_CLOSE rule): the newest N sets per database, type and copy-only, 0066's two guards,
 // the cursor (through the joined tree's mssql_hadr_cursor, scripts/inv-301b-joined-cursor.sql) and a database listed
 // again, the newest M restores per destination and restore type, a restore read without the right, the three findings
 // and the cells that are not judged or not read, and actions_log taking verify_backup with its three new outcomes.

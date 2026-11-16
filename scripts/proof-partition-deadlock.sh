@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of the import deadlock at a new month's partition, and of its fix (partitions made ahead, each in its own short
 # transaction, by pgvigil.import_partition_make; repo.Import's retry of an import ended by SQLSTATE 40P01, up to three
-# tries, from rel-j15dl). It runs on a throwaway
+# tries). It runs on a throwaway
 # repository database and reads the server's own log for 'deadlock detected'.
 #
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a SUPERUSER (the proof creates pgvigil_proof_pd_<n>, an
@@ -206,7 +206,7 @@ if [[ $RA == 0 && $RB == 0 && $D1 == 0 && $AW == yes ]]; then
 else
   bad "R1 A waited: $AW; A rc $RA, B rc $RB, 'deadlock detected' $D1 time(s); B: $(grep -m1 -E 'ERROR|FATAL' "$WORK/r1-b.out" | cut -c1-120); A: $(grep -m1 -E 'ERROR|FATAL' "$WORK/r1-a.out" | cut -c1-120)"
 fi
-if [[ $D1 -gt 0 ]]; then   # the lead's [inferred] relation: read while the database lives
+if [[ $D1 -gt 0 ]]; then   # the [inferred] relation: read while the database lives
   rel=$(logsince "$P1" | grep -m1 -oE 'waits for RowExclusiveLock on relation [0-9]+' | grep -oE '[0-9]+$')
   [[ -n "$rel" ]] && echo "read: R1 the logged RowExclusiveLock wait is on $(q "select coalesce(($rel)::oid::regclass::text, 'oid $rel')") (activity_sample's oid $(q "select 'pgvigil.activity_sample'::regclass::oid"))"
   logsince "$P1" | grep -A3 'deadlock detected' | head -6 | cut -c1-220 | sed 's/^/read: R1 log: /'

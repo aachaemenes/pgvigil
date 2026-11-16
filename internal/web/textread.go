@@ -577,7 +577,7 @@ func markText(sql string, t *table) {
 func (s *Server) TextPolicy(name string) string { return s.doorsNow().planPolicy(name) }
 
 // textNoneWords: why EXPLAIN, EXPLAIN ANALYZE, the index suggestion and its planner check are off for an instance
-// whose policy is none now (the lead's T4): they would show or use a statement's text, the text stored before included.
+// whose policy is none now (decision T4): they would show or use a statement's text, the text stored before included.
 const textNoneWords = `off: this instance's query_text policy is "none": no statement text is shown or used, the text stored before included (EXPLAIN, EXPLAIN ANALYZE and the index suggestion read it)`
 
 // textNormalizedHypoWords: why the planner check (a hypothetical index) is off under normalized: the statement it
@@ -587,6 +587,6 @@ const textNormalizedHypoWords = `off: this instance's query_text policy is "norm
 // errTextNone is textNoneWords as a refusal.
 var errTextNone = errors.New(textNoneWords)
 
-// storeTextWords: the Custom reports page's line while an instance's policy is not full (the lead's T3: the store
+// storeTextWords: the Custom reports page's line while an instance's policy is not full (decision T3: the store
 // report is the admin's own door, docs/security.html).
 const storeTextWords = "A store report reads stored statement text whatever an instance's query_text policy is now: its SQL reads the repository's tables as the reports login (an admin's grant), not through the pages' rule (docs/security.html)."

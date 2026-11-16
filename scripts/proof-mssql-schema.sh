@@ -32,7 +32,7 @@
 #  P6. a restore over shop: diffed, not a baseline (the table made after the backup 'dropped').
 #  S10. a dropped database: its objects marked not present.
 #  S9. a 2,000-procedure database's whole re-read: the collect's run time (the catalog read and the import, so the
-#      import's own time is within it) and the repository's WAL printed against the lead's bound (15 s of 30 s;
+#      import's own time is within it) and the repository's WAL printed against the agreed bound (15 s of 30 s;
 #      100 MB), over = a note, never a FAIL.
 #  A.  the API: /api/schema on the SQL Server instance has the trace, mssql_dbs and who parts; part=change gives
 #      f_two's whole before / after text, and p_key's without its text or its password.

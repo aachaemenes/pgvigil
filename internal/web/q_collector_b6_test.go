@@ -146,7 +146,7 @@ func TestCollectorFindingsReadsItsArms(t *testing.T) {
 	}
 }
 
-// k3Join: 403b's three views as rel-sqltb-s2 759e28e0's 0154 defines them (L1324, L1416, L1428; bodies cut to their
+// k3Join: 403b's three views as 759e28e0's 0154 defines them (L1324, L1416, L1428; bodies cut to their
 // source lines) and 0190's alert_findings with the third arm its wiring patch adds (proof-alert-scope-wiring.patch)
 const k3Join = `CREATE OR REPLACE VIEW pgvigil.alert_channel_failing AS
 SELECT NULL::int AS instance_id, 'warning'::text AS severity, 'alert channel failing'::text AS setting, c.name AS value,

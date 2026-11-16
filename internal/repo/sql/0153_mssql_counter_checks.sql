@@ -101,11 +101,11 @@ SELECT now(), 'pgvigil', '0153 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 --     'pgvigil', a pgvigil departure). The attention's duration is the time the interrupt itself took: 30 real client
 --     timeouts on the box (402full3, 11-15) took 255-713 us each, so PerformanceMonitor's floor on every event (#7061)
 --     would leave every real timeout out; the floor keeps to the noise PerformanceMonitor names (a cancel of a command
---     that had already finished carries no statement: the lead's 11-15 F1 FLOOR (a)). 'No statement' is has_text false,
+--     that had already finished carries no statement: decision F1 FLOOR (a)). 'No statement' is has_text false,
 --     else, for a row stored before the flag (NULL), a blank stored statement.
 --   mssql_attentions.has_text  whether the server sent the event's statement, recorded by the collector before the
---     instance's text policy runs (query_text none stores no statement and keeps the flag; the flag holds no text: the
---     lead's 11-15 F1 FLOOR EDGE (1)); set by import_mssql_xe, wrapped here the way 0116 wraps it.
+--     instance's text policy runs (query_text none stores no statement and keeps the flag; the flag holds no text: decision
+--     F1 FLOOR EDGE (1)); set by import_mssql_xe, wrapped here the way 0116 wraps it.
 --   mssql_attention_points(instance, from, to)  per done read R of a running session in (from, to]: the base B = the
 --     newest done read at or before R - 3 minutes, else the oldest done read before R (a short history), both within
 --     the 60 minutes before R (PerformanceMonitor's ReadLookbackMinutes: after a gap the first read back gives no point

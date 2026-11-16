@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TRIMMARK ((a); BJf8L): the beats' trims of the minute-led tables - collector_load and
+// TRIMMARK (decision (a); BJf8L): the beats' trims of the minute-led tables - collector_load and
 // collector_runs in 0121's import_collector_beat, collector_probe in 0254's import_collector_probe - go by a mark
 // (pgvigil.collector_trim_mark): from the mark to 10 minutes past the first row at or after it, never past 8 days
 // back, the mark moved in the trim's own transaction. BJf8L D measured the old 'minute < now() - 8 days' on statistics 10
@@ -127,7 +127,7 @@ func tmMarks(t *testing.T, ctx context.Context, tx pgx.Tx, marked bool) map[stri
 	return out
 }
 
-// TestTrimMarkBacklogOnAStore (TRIMMARK row 1, the lead's case (1): the first beats with no mark yet - a store
+// TestTrimMarkBacklogOnAStore (TRIMMARK row 1, case (1): the first beats with no mark yet - a store
 // upgraded, or one whose collectors stopped - with the mark at '-infinity' and with no mark row at all): 7 rows a table
 // past 8 days, every 5 minutes from 35 to 5 minutes before date_trunc('minute', now()) - 8 days, and 2 recent rows.
 // Each beat trims 10 minutes from the oldest row only - 2 rows, 2, 2, then the last 1 (the fourth step ends at now() -
@@ -188,7 +188,7 @@ func TestTrimMarkReadsFromTheMarkOnAStore(t *testing.T) {
 	}
 }
 
-// TestTrimMarkFailedBeatOnAStore (TRIMMARK row 2, the lead's case (2)): a beat that fails AFTER its trims - a stale
+// TestTrimMarkFailedBeatOnAStore (TRIMMARK row 2, case (2)): a beat that fails AFTER its trims - a stale
 // heartbeat row (beat_at 9 days back) whose delete, the beat's last statement, raises - leaves the rows and the mark
 // where they were: the mark and the DELETE are in the beat's one transaction (any order of the two inside the function
 // passes; the row proves the transaction, not the order). The control: the same beat without the failure trims the

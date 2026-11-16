@@ -20,7 +20,7 @@
 # Expected (written before the first run):
 #  M. migrate exits 0; import_mssql_xe_captures, import_mssql_xe_capture_config, mssql_xe_slow_trend and
 #     mssql_xe_captures_findings exist.
-# Changed after the first green run (sqltb-s2-411-green1; the product's answers held, the proof's own slips fixed):
+# Changed after the first green run (411-green1; the product's answers held, the proof's own slips fixed):
 # sp_pgvproof is made through stdin (CREATE PROCEDURE must open its batch: it was never made, so C7's 'not sp_pgvproof'
 # proved nothing); the hand reads run with QUOTED_IDENTIFIER on (sqlcmd -I: XML methods need it) and count only the
 # events up to the stored cursor's last event (sa's own reads raise plan_affecting_convert after pgvigil's read); C8's
@@ -47,16 +47,16 @@
 #  E. the drop script drops the four sessions and leaves a session of another name (other_waits) running.
 #  F. the trend: login trend_a runs 3 batches of WAITFOR 1.2 s and trend_b 2, under pgvigil's slow session (the
 #     four-session script); mssql_xe_slow_trend by login counts 3 and 2 completions for them.
-# Parts G and S, written after green2 (sqltb-s2-411-green2: MABCDEF OK) and before their first run - the rest of the
+# Parts G and S, written after green2 (411-green2: MABCDEF OK) and before their first run - the rest of the
 # design's provocations and the API with the page. G runs before E (E drops the sessions); the container runs SQL
 # Server Agent (MSSQL_AGENT_ENABLED) for G5. The hand reads now compare each event's own XML timestamp with the
 # cursor's at microseconds (timestamp_utc carries more digits than the XML the reader stores); C5 now needs at least 1
 # of each (green2 raised both: a 0 = 0 would pass on nothing).
-# Changed after green3 (sqltb-s2-411-green3; the product's answers held): G1's two hash statements carry
+# Changed after green3 (411-green3; the product's answers held): G1's two hash statements carry
 # USE HINT('DISALLOW_BATCH_MODE') - on 2022 at compatibility 160 they ran in batch mode over rowstore, whose spills
 # raise no hash_warning (the file and the store both held 0) [inferred: the hint's run says]; S registers xc_lost with
 # one collect (an instance's row is made when a collect first connects, not by migrate or serve).
-# Changed after green4 (sqltb-s2-411-green4; every other check passed): hash_warning was still 0 in the file and the
+# Changed after green4 (411-green4; every other check passed): hash_warning was still 0 in the file and the
 # store. The old join carried only its int key (COUNT(*)), so its build rows were about 12 bytes and may never have
 # spilled; and Hash Warning is documented for recursion (a partition that still does not fit) and bailout (the deepest
 # level reached, data skew), so a spill that fits after one partitioning may raise none. G1 now runs three statements,
@@ -67,7 +67,7 @@
 # (evidence for the grade, never graded): the event's description and data columns from sys.dm_xe_objects /
 # dm_xe_object_columns, each statement's total_spills from sys.dm_exec_query_stats, and the file's hash_warning rows by
 # type and level. Expected: G1c raises hash_warning (recursion, then bailout) and G1-G3 passes with at least 1.
-# Result green5 (sqltb-s2-411-green5: PROOF OK MABCDEFGS, go test ok): G1-G3 passed with 16, every one 'Recursion level
+# Result green5 (411-green5: PROOF OK MABCDEFGS, go test ok): G1-G3 passed with 16, every one 'Recursion level
 # 1', and they came from G1b (6,144 spills); G1c spilled 0 (total_spills 0, 3 s), not the bailout expected [unverified
 # why]. G1c stays as run until the review's fold.
 #  V (written before its first run): PGVIGIL_VERSION_PASS=1, PGVIGIL_PARTS=MABC on SQL Server 2017 and 2019 (the CU
@@ -93,7 +93,7 @@
 #    instance, p_slow run: stored (the schema is dbo); then ["xcdb.dbo.p_slo%"], p_slow run: in the file, not stored.
 #  - G10 (review 11): the counts session stopped and started, then more page splits than its total before: the next
 #    read says restarted, its delta the new total.
-#    Changed after the fold's first run (sqltb-s2-411-run1: G9's second row stored the module, G10's new total was not
+#    Changed after the fold's first run (411-run1: G9's second row stored the module, G10's new total was not
 #    past the old one; the product's answers held, both rows' fixtures were short): G9 first proves the login the
 #    proof had (no way into xcdb: the schema is not read, a three-part entry keeps the module), then grants CONNECT ANY
 #    DATABASE (pgvigil's documented login) and runs the two rows with the schema read ('dbo'); G10 restarts the counts

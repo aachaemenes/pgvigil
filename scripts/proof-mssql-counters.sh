@@ -10,7 +10,7 @@
 #   PGVIGIL_IMAGES     the SQL Server images, the first the full run, the others the version run (default
 #                      '2022-latest 2019-latest').
 #   PGVIGIL_SHOTS      where the page shots go (default: a folder of the run, removed with it).
-#   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the lead's files) to the run's own copy
+#   PGVIGIL_WIRING     1 (default) applies scripts/proof-mssql-counters-wiring.patch (the join's files) to the run's own copy
 #                      of the tree (under its folder) when it lacks the counters' runner hook; 0 = the copy as it is. The
 #                      web bundle and the binary are built in that copy; the tree the proof runs from is never changed.
 #   PGVIGIL_LOGINS_WANT  the count the logins rows of D and L want (default 41: the 40 provoked and the collector's
@@ -488,7 +488,7 @@ sq "$(printf "RAISERROR('pgvigil proof user error', 16, 1);\n%.0s" $(seq 1 12))"
 sq "$(printf "RAISERROR('pgvigil proof info message', 10, 1);\n%.0s" $(seq 1 7))" >/dev/null 2>&1 || true
 col mssql_counters
 EU=$(chg 'SQL Errors' 'Errors/sec' 'User Errors'); EI=$(chg 'SQL Errors' 'Errors/sec' 'Info Errors')
-# the severe errors in a phase of their own: in one phase with the 12 above, User Errors read +15 (sqltb-s1-proof3)
+# the severe errors in a phase of their own: in one phase with the 12 above, User Errors read +15 (run proof3)
 for _ in 1 2 3; do sq "RAISERROR('pgvigil proof severe error', 20, 1) WITH LOG;" >/dev/null 2>&1 || true; done
 col mssql_counters
 EKAT=$(pq "SELECT snapshot_at FROM pgvigil.mssql_counter_read WHERE instance_id = $SB AND scope = 'instance' ORDER BY snapshot_at DESC LIMIT 1")   # H reads errors_kill_s here

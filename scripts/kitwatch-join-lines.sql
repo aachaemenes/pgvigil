@@ -1,4 +1,4 @@
--- kitwatch-join-lines.sql - KITWATCH's arms of the joined views (the lead's JOIN-FILE RULE, 2026-11-15 03:3x): its
+-- kitwatch-join-lines.sql - KITWATCH's arms of the joined views (the join-file rule): its
 -- migration 0253 is above 0190, so it creates only its own objects (pgvigil.kit_findings, mssql_kit_versions,
 -- import_mssql_kits, kit_versions_fleet) and this file holds the lines the next join (0300_join_release3.sql) puts into
 -- the views it re-creates whole. Not a migration: nothing runs this file; the join copies each arm in place.

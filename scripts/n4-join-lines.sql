@@ -5,7 +5,7 @@
 -- The fault: a month test on c.relname inside a WHERE may be tested on every pg_class row before the join to
 -- pg_inherits (no evaluation order is promised), and a TOAST table pg_toast_<six digits> whose last two digits are no
 -- month (13-99 or 00: the database past OID 100,000) makes to_date fail the whole purge with SQLSTATE 22008
--- ('date/time field value out of range: "10001701"', box job sqltb-s2-n4-2, purge -days 30 under hash joins and scans
+-- ('date/time field value out of range: "10001701"', box job n4-2, purge -days 30 under hash joins and scans
 -- only). The fix: a strict month pattern, and the parse inside a CASE on it.
 
 -- (1) 0190_join_release2.sql, pgvigil.purge(): the two lines
@@ -31,7 +31,7 @@
 -- FILTER guarded by the CASE (today's shapes passed on PostgreSQL 18.6 under a forced plan in the code review's probe;
 -- a CTE read once with a month test outside it failed with 22008 there, so the safety is made explicit).
 
--- (3) N4 T9 (the lead's (d)): 0121_collector_health.sql, pgvigil.import_collector_beat() - the beat's runs[].retries into
+-- (3) N4 T9 (decision (d)): 0121_collector_health.sql, pgvigil.import_collector_beat() - the beat's runs[].retries into
 --     0271's collector_runs.retries. A join line, not a CREATE OR REPLACE in 0271: rel-b6g (B6.4 / B6g-2) edits this
 --     function in place too (its sends_alerts arm), and a later replace would drop the other slice's arm. In the
 --     INSERT INTO pgvigil.collector_runs of the runs:

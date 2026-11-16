@@ -1,4 +1,4 @@
--- A26 (migration 0267, above 0190): the lines for the next join's own file 0300_join_release3.sql (the 03:3x rule).
+-- A26 (migration 0267, above 0190): the lines for the next join's own file 0300_join_release3.sql (the join-file rule).
 -- Not a migration of its own; the record of what the join places.
 --
 -- import_schema (0058's; re-created WHOLE in 0267 so this branch's proof runs it, as 0194 did for 0102's

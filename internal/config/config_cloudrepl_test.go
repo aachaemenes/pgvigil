@@ -7,7 +7,7 @@ import (
 
 // Task 390b: the doors of the provider replica metrics. An aws: block on a SQL Server instance takes region, profile,
 // db_instance and replicas, never cluster, log_group or dms (the design fold 3); aws.replicas (P1's own door for its new
-// calls, off by default: the lead's Q8) needs a db_instance; a gcp: block (P2: project, instance, an optional
+// calls, off by default: decision Q8) needs a db_instance; a gcp: block (P2: project, instance, an optional
 // credentials_file) is PostgreSQL's alone (Cloud SQL for SQL Server's replicas are not read).
 func TestCloudReplicaBlocks(t *testing.T) {
 	base := func(engine string, a *AWS, g *GCP) Config {

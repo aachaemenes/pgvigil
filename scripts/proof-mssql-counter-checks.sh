@@ -31,7 +31,7 @@
 #     carries the seed's rule_id, 2 and 5, a name ending '(off: colours only, no alert)', and metric_status
 #     'critical'; alert_rules_run writes no state and no finding for counters.logins_s; a user's own fleet rule on
 #     counters.latch_waits_s added and then switched off: metric_rule gives no row for it.
-#     B2 (402 S2; red on df1ffdc at B2a: 'none', the sandbox run s2-test of 11-14 22:2x read 10 of 14
+#     B2 (402 S2; red on df1ffdc at B2a: 'none', the sandbox run s2-test read 10 of 14
 #     there and 14 of 14 on this metric_rule): the seed of counters.lock_timeouts_gt0_s (the one seeded row the proof
 #     edits, against F20: F leaves it out) edited to 0.5 / 2 while off: metric_rule gives the successor, 0.5 and 2, its
 #     name ending '(off: colours only, no alert)'; edited again (never on): the second successor; that one switched on
@@ -86,7 +86,7 @@
 #     PerformanceMonitor's order: 'under 1 ms|counts|SSMS IntelliSense|counts|VS Code mssql metadata|Azure Data Studio
 #     metadata|Azure Data Studio metadata|counts|Azure Data Studio metadata|pgvigil's own reads|counts|counts|counts|under
 #     1 ms|under 1 ms' (a NULL duration counts; a name rule before the 1 ms floor, the floor before azdata's shapes; the
-#     lead's 11-15 F1 FLOOR (a) + EDGE (1): the floor only for an event that came with no statement - has_text false, or
+#     F1 FLOOR (a) + EDGE (1): the floor only for an event that came with no statement - has_text false, or
 #     for a row stored before the flag a blank statement - so a short azdata metadata statement reads azdata's reason, a
 #     short event with its text or with has_text true counts; red on ccbed981: no four-argument function). T6 the
 #     import's path: four attentions through import_mssql_xe on a built instance, at 500 us each: has_text true with no
@@ -116,7 +116,7 @@
 #     metadata, 10 query-editor batches counted; the counted point as recomputed. The XE API's attentions carry
 #     left_out with those reasons. Every live cancel under 1 ms of the proof's own batches came with its statement and is
 #     not left out by the 1 ms floor; another cancel under 1 ms on the server is printed with its reasons, not judged (a
-#     cancel with no statement is proven on the function and the import only, T0 / T6). T3n (the lead's 11-15 F1 FLOOR EDGE (1), the
+#     cancel with no statement is proven on the function and the import only, T0 / T6). T3n (F1 FLOOR EDGE (1), the
 #     red row: on ccbed981 the four-argument call fails, no such function; through its three arguments the 10 would read
 #     'under 1 ms'): the same server read as a second instance chkboxnone under
 #     query_text none (its own config file), 10 cancels under 'proof-none': 10 rows, no statement stored, has_text on
@@ -392,8 +392,8 @@ echo "== C. on by an instance rule (F20) =="
 # load, a read, the run (warning or critical); two quiet reads, the run (ok); the instance rule ended
 SEEDOF() { grep "^counters.$1|" "$TMPD/seed-a"; }
 # the quiet reads' spacing: the rule judges the newest point, so the first quiet read comes 2 s after the load's (it
-# takes what SQL Server publishes late) and the second QUIET s after it, the product's own 60 s interval (the lead's
-# 19:0x: runs chk3, chk9 and chk10 at 3, 12 and 30 s read the collector's own batches and an unnamed background over
+# takes what SQL Server publishes late) and the second QUIET s after it, the product's own 60 s interval (runs chk3,
+# chk9 and chk10 at 3, 12 and 30 s read the collector's own batches and an unnamed background over
 # the ratios' thresholds).
 QUIET=${QUIET:-60}
 # the clear leg's window (between the scope's two newest reads) is named: every batch and RPC by program and the
@@ -752,7 +752,7 @@ echo "   T5: the reads table after four imports: $P5"
 pq "UPDATE pgvigil.instances SET is_active = false WHERE instance_id = $XS5" >/dev/null
 ok "T5: through import_mssql_xe a cut read is not done, a done read keeps its counter, a repeat and another capture add no row"
 
-# T6 (the lead's 11-15 F1 FLOOR EDGE (1)): has_text through import_mssql_xe - four attentions at 500 us on a built instance
+# T6 (F1 FLOOR EDGE (1)): has_text through import_mssql_xe - four attentions at 500 us on a built instance
 XS6=$(xinst chkxs6); [[ "$XS6" =~ ^[0-9]+$ ]] || fail "T6: the built instance [$XS6]"
 XE6=$(pq "SELECT to_char(('$XT'::timestamptz - interval '61 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 [[ "$XE6" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "T6: the event time [$XE6]"
@@ -972,7 +972,7 @@ PY
 xend "$RX"
 ok "T3: one mssql_attention_reads row per read, all done; the XE API names each left-out reason"
 
-# T3n (the lead's 11-15 F1 FLOOR EDGE (1), the red row): the same server read as a second instance under query_text none
+# T3n (F1 FLOOR EDGE (1), the red row): the same server read as a second instance under query_text none
 CFGN=$TMPD/n.yaml
 printf 'repository:\n  dsn: "%s"\ninstances:\n  - name: chkboxnone\n    engine: sqlserver\n    dsn: env:PGV_CHK_MON\n    query_text: none\n' "$PGDSN" > "$CFGN"
 coln() { timeout 180 "$TMPD/pgvigil" collect -config "$CFGN" -instance chkboxnone -once mssql_xe > "$TMPD/coln.out" 2>&1 \

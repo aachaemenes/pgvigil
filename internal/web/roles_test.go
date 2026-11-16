@@ -139,9 +139,9 @@ func TestEveryPostHasANeed(t *testing.T) {
 	}
 }
 
-// TestJoinedWritesHaveTheirNeed: the writes two j16 items registered outside s.post (B9c's job enable and disable,
+// TestJoinedWritesHaveTheirNeed: the writes two joined items registered outside s.post (B9c's job enable and disable,
 // task 409's expected values) go through it with their need - a viewer could enable or disable a job and set an
-// expected value (the j16 candidate's review B #1). Enable and disable are operator, as stop and start; an expected
+// expected value (the candidate's review B #1). Enable and disable are operator, as stop and start; an expected
 // value is admin, as every other threshold and setting write.
 func TestJoinedWritesHaveTheirNeed(t *testing.T) {
 	needs, _ := postNeeds(t)

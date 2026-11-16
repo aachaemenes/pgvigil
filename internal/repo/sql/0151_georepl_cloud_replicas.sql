@@ -1,4 +1,4 @@
--- 0151_georepl_cloud_replicas: task 390 (Allen's Q9, 2026-11-14 13:12: in v0.4.0). Part G (390a): Azure SQL Database's
+-- 0151_georepl_cloud_replicas: task 390 (decision Q9: in v0.4.0). Part G (390a): Azure SQL Database's
 -- active geo-replication links as each database sees them (mssql_georepl). Part P (390b, below the G2 section): the
 -- provider replica metrics of RDS and Cloud SQL. DBA Dash reads none of this (4.25.0): the shape is its availability
 -- group grid, as pgvigil's AG rows already follow it (0066).
@@ -28,8 +28,8 @@
 --
 -- The threshold: pg_threshold_keys 'georepl_data_loss' (minutes; warning 1 = sp_Blitz check 268's 60 s for an AG
 -- secondary, critical 5 = pgvigil's own, the numbers 0143 gives ag_data_loss; root and tag: on this base
--- import_pg_threshold refuses an instance level for a SQL Server instance, which 0142 teaches). 0143's ag_data_loss (the
--- lead's Q2) is not on this file's base; when 0142 / 0143 join, the key gains engines '{sqlserver}' and the instance
+-- import_pg_threshold refuses an instance level for a SQL Server instance, which 0142 teaches). 0143's ag_data_loss
+-- (decision Q2) is not on this file's base; when 0142 / 0143 join, the key gains engines '{sqlserver}' and the instance
 -- level (WIRING).
 -- "For 5 minutes" is 0066's rule: in every read of the last 5.5 minutes, the first at least 4 minutes old and the last
 -- at most 2 minutes old. A state row older than 5 minutes fires nothing (the Collections page says the read is stale).

@@ -88,7 +88,7 @@ SELECT pg_last_xact_replay_timestamp() AS last_replay_at, now() AS server_now,
 var lookTool = exec.LookPath
 
 // backupReadTools says whether an instance opted in to the tool reads (`backups: read_tools: true`). The field is the
-// lead's WIRING in config.go; until it lands, nothing is read (the gate is closed by default).
+// WIRING in config.go; until it lands, nothing is read (the gate is closed by default).
 var backupReadTools = func(config.Instance) bool { return false }
 
 // backupNotRead is the words of a tool the gate kept closed.

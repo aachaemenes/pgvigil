@@ -94,7 +94,7 @@ BEGIN
   -- the probe rows are kept 8 days, trimmed here (the review of B24h-1 part b #9: until the join's purge() line, a
   -- store under probe_every_minute grew without end) by the table's mark (0121's collector_trim: 10 minutes at most a
   -- beat from the mark; TRIMMARK (a)). A store whose 0121 was applied before the mark existed
-  -- (first migrated by an untagged build: migrate skips the edited 0121, and such a store is made fresh - the lead's
+  -- (first migrated by an untagged build: migrate skips the edited 0121, and such a store is made fresh - the
   -- B6F4 #1 rule) has no collector_trim: the old whole-key trim, so the import never fails there on a missing function
   -- (the review of TRIMMARK #2: heartbeat.go reads that 42883 as 'no 0254' and stops sending the probes)
   IF to_regprocedure('pgvigil.collector_trim(text)') IS NOT NULL THEN
@@ -188,7 +188,7 @@ SELECT x.instance_id
 
 -- collector_pings: per collector host and probed address, its probed minutes of the last 5 of the 20 (answered or not;
 -- 'not probed' rows left out) of the per-minute rounds only (probe_every_minute: the review of B24h-1 part b #7, the
--- lead's 12:4x (a) - the default mode's probes after a failure feed the parent's words, never ping slow or silence):
+-- call (a) - the default mode's probes after a failure feed the parent's words, never ping slow or silence):
 -- rounds, answered, the answered average and longest in seconds, the newest probed minute; silent3 = none answered in
 -- each of its 3 newest probed minutes, the oldest of them within 6 minutes; the 5 before the newest (answered_prev,
 -- avg_s_prev: a ping 'crossed' in the judged view - the review of the fold #4) and the silence's oldest minute

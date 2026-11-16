@@ -19,7 +19,7 @@ import (
 )
 
 // Which names the door an instance's configuration opens for the provider replica read: "aws" (P1: the aws: block's
-// replicas switch with its db_instance; off by default, the lead's Q8) or "gcp" (P2: a gcp: block), else "" and why.
+// replicas switch with its db_instance; off by default, decision Q8) or "gcp" (P2: a gcp: block), else "" and why.
 func Which(in config.Instance) (provider, why string) {
 	switch {
 	case in.GCP != nil:

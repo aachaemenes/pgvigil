@@ -27,7 +27,7 @@
 -- Source (MIT): PerformanceMonitor 3.13.0 (Erik Darling, Darling Data LLC), PerformanceMonitor.Common/
 -- PlanCacheBloatRule.cs L30-108, PerformanceMonitor.Analysis/FactAdvice.cs L736-827, ConfigAuditGuidance.cs L15-85,
 -- AlertEngine.cs L1045-1404, RunnableQueueEvaluator.cs L55-125, MemoryPressureEventsCollector.cs L35-126, PoisonWaitEvaluator.cs L20-90.
--- The lead's calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
+-- The calls on the design pass (20261114-141436-reviewer) are the build's shape; each behaviour change at an
 -- upgraded site has its release-note line (no site runs pgvigil before v0.4.0).
 
 -- ---- plan cache bloat (Fixed 10) -------------------------------------------------------------------------------------
@@ -169,7 +169,7 @@ $$;
 
 -- mssql_advised_maxdop: the MAXDOP pgvigil advises from the stored processor facts (mssql_cpu_info: sys.dm_os_sys_info
 -- as last read) - checks.go's advisedMaxDOP, dbatools' rule: min(CPUs, 8) on one NUMA node, the CPUs of one node up to
--- 16 on several (the lead's F10: one advisor for the Checks page and the waits advice; PerformanceMonitor's min(cores
+-- 16 on several (decision F10: one advisor for the Checks page and the waits advice; PerformanceMonitor's min(cores
 -- per socket, 8) is a stated departure). No row when the CPUs were not read.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_advised_maxdop(p_instance_id int)
 RETURNS TABLE (maxdop bigint, basis text)
@@ -421,7 +421,7 @@ $$;
 
 -- mssql_protection_overrides: the full backup and log backup ages a database is judged by, set from Admin for a tag
 -- or for one database of one instance (the instance's own ages stay in pgvigil.yaml's mssql_thresholds). Precedence
--- (the lead's F2): a database row > the instance's yaml > the instance's tags (the strictest when they disagree: the
+-- (decision F2): a database row > the instance's yaml > the instance's tags (the strictest when they disagree: the
 -- lowest age over 0; 0 only when every tag row says 0) > the default (168 h, 60 min). 0 = not judged; no clamp.
 -- Written through import_mssql_protection_override only.
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_protection_overrides (
@@ -679,7 +679,7 @@ SELECT j.instance_id, j.instance, j.database_name, j.snapshot_at, j.state, j.rec
 -- ---- High CPU (Changed 12, Release 5) --------------------------------------------------------------------------------
 
 -- PerformanceMonitor 3.13.0's High CPU alert (AlertEngine.cs L1045-1404: 5 samples in a row at or over 80 %, critical
--- at 95 %) as a starter rule, seeded OFF (the lead's D2 a: 0074's 'CPU at 90 % or more' already alerts; a second CPU
+-- at 95 %) as a starter rule, seeded OFF (decision D2 a: 0074's 'CPU at 90 % or more' already alerts; a second CPU
 -- page at upgrade would double it). 0153's seed rule: written only when the fleet has never had a fleet-scope rule on
 -- cpu.sql_pct, live or ended, so an upgrade never brings back a rule a DBA ended or replaced, and a re-run adds nothing
 -- (a DBA's tag or instance rule does not stop it: that rule is the more specific and wins where it covers, and the seed
@@ -710,7 +710,7 @@ SELECT now(), 'pgvigil', '0156 seed', 'seed', m.rule_id, m.metric, 'done', m.nam
 
 -- PerformanceMonitor 3.13.0 judges write latency on log files and tempdb's data files only (PgAnomalyDetector.cs
 -- L401-426, PgFactCollector.Storage.cs L174-262), scored concerning at 10 ms and critical at 30 ms (FactScorer.cs L397)
--- over 250 writes (IoVolumeFloor.cs L42); a user data file is a sentence of its own, never scored. The lead's calls
+-- over 250 writes (IoVolumeFloor.cs L42); a user data file is a sentence of its own, never scored. The decisions
 -- (F6, F7, D1 a): 0124's 'slow data file writes' judges tempdb's data files only at 10 / 30 ms over 250 writes an
 -- hour, its text giving the user data files' average; 0074's 'slow log writes' moves to 10 / 30 ms over 250 writes
 -- (from 20 ms over 1,000, warning only: more alerts at an upgraded site, a release-note line); each stays per file
@@ -894,7 +894,7 @@ SELECT now(), r.instance_id, r.channel, count(*), 'cleared',
 -- judged); else no row - an open alert's finding is then missing (0059's alert_mark) and it clears after the channel's
 -- clear delay, as 0118's arm has it (405 review part A, finding 7). darling_alert_findings' runnable arm reads
 -- it (WIRING: 0118's view is not this task's file); the warning stays a warning and paging at critical only waits on
--- task 403's digest (the lead's D3 b); PerformanceMonitor's 30-minute stale resolve is not built (the lead's F3).
+-- task 403's digest (decision D3 b); PerformanceMonitor's 30-minute stale resolve is not built (decision F3).
 CREATE OR REPLACE FUNCTION pgvigil.mssql_runnable_queue(p_instance_id int, p_at timestamptz)
 RETURNS TABLE (per_sched numeric, reads bigint, first_at timestamptz, at timestamptz, schedulers int, window_text text)
 LANGUAGE sql STABLE AS $$
@@ -1016,7 +1016,7 @@ BEGIN
      WHERE m.snapshot_at <= EXCLUDED.snapshot_at;
   END IF;
 
-  -- 0156 (Fixed 20, the lead's F4): the resource monitor's records past the newest stored for the same server start and
+  -- 0156 (Fixed 20, decision F4): the resource monitor's records past the newest stored for the same server start and
   -- memory node (each node numbers its own records: /Record/@id with its NodeId); a copy of one event on another node
   -- (the same ring time and notification) is stored once, the lowest node's. A record with no node (a collector
   -- before 0156's read, or a store's rows from before it) is a node of its own: the old watermark rmon_last_id is its,
@@ -1141,7 +1141,7 @@ END $$;
 -- their waiting backends on average over a 10-minute window (the wait seconds pg_wait_sampling or Azure's
 -- pgms_wait_sampling stored in wait_sample, over the window's 600 s of wall clock: a partly covered window counts
 -- low, the safe way for a page); 1.0 or more in the newest window and the one before it = warning, 10.0 or more in
--- the newest = critical at once. The lead's D4: wait_sample only (activity_sample's one-minute snapshots cannot stand
+-- the newest = critical at once. Decision D4: wait_sample only (activity_sample's one-minute snapshots cannot stand
 -- in for accumulated wait time); an instance with no wait_sample row in a day gets one info row 'not judged: needs
 -- pg_wait_sampling'. The finding's words are in detail; the top statements (up to 3, by wait on the event, their
 -- text from statement_text) are in query (task 415's mask covers the two keys): no page reads query yet (WIRING still

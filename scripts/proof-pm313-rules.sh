@@ -97,8 +97,8 @@
 #     ctrsyn over the hours of R8's records answers 200 with a memory_node_id column, the 5 records per node
 #     '0:3 1:1 none:1' (node 1's own 52; 103 read before the node column). Red without the patch: no such column. The
 #     page's Node column itself (shown with 2+ nodes) waits for a page shot.
-#     R8c (405 review part A, finding 3; red on 234aacc: 3 7 9, the sandbox run of the import's two statements of 11-14
-#     22:5x read 3 7 9 there and 3 4 5 on the fold) a server start of its own on ctrsyn: read A from a collector without
+#     R8c (405 review part A, finding 3; red on 234aacc: 3 7 9, the sandbox run of the import's two statements
+#     read 3 7 9 there and 3 4 5 on the fold) a server start of its own on ctrsyn: read A from a collector without
 #     nodes, records 200-202 -> 3; read B from the new collector, the same ids on node 0 at times 0.3 ms later with
 #     their ring_ms, and a new 203 -> 4; read C node 1's copy of 203 (id 70, the same ring_ms, its time 0.3 ms later)
 #     and node 1's own 71 -> 5; the watermark {"0": 203, "1": 71}.

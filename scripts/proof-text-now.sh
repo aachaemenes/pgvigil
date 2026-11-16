@@ -24,7 +24,7 @@
 #  M. mixed: no reply string is a stored text of erp01 or sql01 (their own routes and the fleet's: Running, Slow
 #     queries, Reports); the fleet routes still show a stored text of another instance (the rule places each row by
 #     its own instance, it does not hide the fleet).
-#  A. the alert sends (the lead's T1 red row): `pgvigil alerts` with a file-drop channel under full drops at least one
+#  A. the alert sends (the T1 red row): `pgvigil alerts` with a file-drop channel under full drops at least one
 #     alert whose value or detail is a stored text (a head statement: decisive); under none no dropped file holds a
 #     stored text or the start of one (the head statement cut to "(not shown: ...)").
 #  J1 (review 1 H1, added before its first run): erp01's JSON plan (the demo's EXPLAIN ANALYZE of the name search,
@@ -38,7 +38,7 @@
 #     is shown (decisive); under none every signin's detail is NULL.
 #  L4 (review 1 L4, added before its first run): under every policy no reply carries a column name with '@' in it (a
 #     tagged column the rule did not reach).
-#  Red on d04bc70a (rel-j15dl): N, Z, M and A (none) fail - the routes and the sends return the texts stored under full.
+#  Red on d04bc70a: N, Z, M and A (none) fail - the routes and the sends return the texts stored under full.
 # The judge's two corrections after green run 1 (the expectations above unchanged): M - a route that ignores instance=
 # (Running fleet, Alerts, the ack's open alerts) answers every instance's rows to a call naming erp01 or sql01, so a
 # row that carries its instance_id is judged by that instance, as the fleet's rows are; Z - a text plan's figures
@@ -74,7 +74,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 PATCHED=""
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
-  # the lead's files back as they were (the patch is this run's, never the tree's)
+  # the join's files back as they were (the patch is this run's, never the tree's)
   [[ -n "$PATCHED" ]] && { git apply -R scripts/textnow-wiring.patch 2>/dev/null || patch -R -p1 --no-backup-if-mismatch < scripts/textnow-wiring.patch >/dev/null 2>&1 || echo "WARN: the wiring patch could not be taken back out" >&2; }
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
   rm -rf "$WORK"
@@ -85,7 +85,7 @@ PORT=""
 for _ in $(seq 1 20); do p=$((21000 + RANDOM % 9000)); if ! ss -ltnH "( sport = :$p )" | grep -q .; then PORT=$p; break; fi; done
 [[ -n "$PORT" ]] || fail "no free port"
 
-# the lead's file web.go changes only through the WIRING patch (the reply hook, query's marker, three inline reads):
+# the join's file web.go changes only through the WIRING patch (the reply hook, query's marker, three inline reads):
 # applied to this run's copy when the tree holds textread.go and web.go lacks the hook (a red tree has neither)
 if [[ -f scripts/textnow-wiring.patch && -f internal/web/textread.go ]] && ! grep -q applyTextNow internal/web/web.go; then
   git apply scripts/textnow-wiring.patch 2>/dev/null || patch -p1 --no-backup-if-mismatch < scripts/textnow-wiring.patch >/dev/null || fail "the wiring patch does not apply"

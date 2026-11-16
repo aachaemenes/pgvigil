@@ -21,7 +21,7 @@
 #      (no aria-disabled), as before.
 #   O1 and O2 first find the staged entry (its handle in the Cached plans grid; a 'plan cache' row in the sources), so a
 #   missing button is told apart from a stage that did not reach the page.
-#   Red on 75c72186 (rel-j15): O1 and O2 find no off button where they belong (offControl's note stands in the cell; a
+#   Red on 75c72186: O1 and O2 find no off button where they belong (offControl's note stands in the cell; a
 #   note shared by every row stays only in the last place it was put).
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -1951,7 +1951,7 @@ func (s *Server) testConfigured(ctx context.Context, name string) (testResult, b
 // (aws:<account>:<region>:instance:<id>), its cluster from its cluster: tag (an Aurora member reads the cluster's log
 // group); azure only for an azuresqldb proposal of an Azure source - the subscription and resource group from its tags,
 // the logical server from its key (azure:<sub>:sql:<server>/<db>), the source's cloud. The source's AWS profile is
-// copied only while doors.page_cloud_blocks is on AND doors.page_aws_profiles lists it (the lead's Q5); note says why
+// copied only while doors.page_cloud_blocks is on AND doors.page_aws_profiles lists it (decision Q5); note says why
 // it was not. The block's target is the proposal's own host (the provider's endpoint), so the name match holds.
 func proposalCloud(sr *sourceRow, server, engine, platform string, tags []string) (*config.PageAWS, *config.PageAzure, string) {
 	tag := func(k string) string {

@@ -1,4 +1,4 @@
--- 0269 DBA Dash's custom check on SQL Server (ST6b; the number is the lead's to confirm): a custom: check with
+-- 0269 DBA Dash's custom check on SQL Server (ST6b; the number is to be confirmed): a custom: check with
 -- rule: status (a procedure: such as dbo.DBADash_CustomCheck, or a sql: batch) returns rows that judge themselves -
 -- Test, Context, Status (1 critical, 2 warning, 3 N/A, 4 OK) and Info - as DBA Dash's custom check does.
 --

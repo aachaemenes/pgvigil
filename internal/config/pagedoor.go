@@ -26,10 +26,10 @@ type Doors struct {
 	SlackActions bool `yaml:"slack_actions"`
 	// PageCloudBlocks lets an instance of Admin > Instances (added on the page or approved from discovery) carry an
 	// aws: or azure: block (task B24p): its cloud reads run under THIS collector host's own cloud identity, so they
-	// are an admin's opt-in here (Allen's Q15: the locked-down default). Off by default: every page block is dropped
+	// are an admin's opt-in here (decision Q15: the locked-down default). Off by default: every page block is dropped
 	// (its reason logged and on the page) and the instance keeps collecting.
 	PageCloudBlocks bool `yaml:"page_cloud_blocks"`
-	// PageAWSProfiles are the AWS profiles a page block may name (a discovered instance's source profile: the lead's
+	// PageAWSProfiles are the AWS profiles a page block may name (a discovered instance's source profile: decision
 	// Q5); empty (the default) = none, the host's default chain only.
 	PageAWSProfiles []string `yaml:"page_aws_profiles"`
 	// PrometheusMetrics turns on GET /metrics on serve (B24d): every active instance's newest figures in the Prometheus

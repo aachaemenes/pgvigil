@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// The demo's hourly collection health (B6.2 B6.2-b and 00:5x call on the review's #3): the demo
+// The demo's hourly collection health (B6.2: calls B6.2-b and on the review's #3): the demo
 // has no heartbeat, so the fleet writes collection_health_hour itself, under the collector id 'demo', from the same
 // per-minute rule its logged runs follow (runStatus): the seed writes the last 24 hours with one collection_log error
 // per failed minute (logHistoryErrors), and each Tick adds the minute it logged. Only the minutes known to be run are
@@ -178,7 +178,7 @@ ON CONFLICT (hour, instance_id, collection, collector_id) DO UPDATE
 
 // logHistoryErrors logs, in order, one collection_log error per minute from .. to (both included) whose run fails by
 // runStatus (a StmtBroken instance's statements): the 24 hours the hourly rows cover hold the errors they count (the
-// lead's 00:5x call on the review of B6.2, #3). One statement per failing collection.
+// call on the review of B6.2, #3). One statement per failing collection.
 func (m *importer) logHistoryErrors(ctx context.Context, id int, g *Gen, from, to time.Time) error {
 	for _, c := range g.Collections() {
 		var ats []time.Time

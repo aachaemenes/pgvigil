@@ -121,7 +121,7 @@ func (s *Server) planButtonsOn(ds *doorSet, name string) planButtons {
 	case ds.PG[name].Monitor == "":
 		b.ExplainReason = fmt.Sprintf("instance %s has no monitoring dsn in this server's config", name)
 	case ds.planPolicy(name) == "none":
-		// TEXT-NOW (the lead's T4): no statement text is shown or used under none, the stored text of before included
+		// TEXT-NOW (decision T4): no statement text is shown or used under none, the stored text of before included
 		b.ExplainReason = textNoneWords
 	default:
 		b.Explain = true

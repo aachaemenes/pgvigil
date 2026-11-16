@@ -1,6 +1,6 @@
 package web
 
-// Where a PostgreSQL server's base backups and WAL go (task 302; migration 0148). The lead's WIRING (scripts/inv-302-
+// Where a PostgreSQL server's base backups and WAL go (task 302; migration 0148). The WIRING (scripts/inv-302-
 // wiring.patch) adds the routes in Handler (no demodoor.go hunk: the demo door refuses the write, and the GET says so):
 //	GET  /api/pg/backup_dest         s.PgBackupDest       one instance: base backups to, WAL to, restore from (read beside
 //	                                                      entered), every destination with its source, the tool reads, the findings

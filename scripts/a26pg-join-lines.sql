@@ -1,4 +1,4 @@
--- A26-PG (migration 0275, above 0190): the lines for the next join's own file 0300_join_release3.sql (the 03:3x rule).
+-- A26-PG (migration 0275, above 0190): the lines for the next join's own file 0300_join_release3.sql (the join-file rule).
 -- Not a migration of its own; the record of what the join places.
 --
 -- WHEN: A26-PG joins in the SAME join file as A26's 0267 (or that file is numbered above both). 'pgvigil migrate'
@@ -34,5 +34,5 @@
 -- Server's rows (import_mssql_schema calls import_schema) carry none: the arm is inert for them.
 --
 -- Nothing else joined changes: schema_findings, schema_changes_window, diff_schema / diff_schema_snapshots (0086),
--- purge (0190) and apply_roles are untouched; no new object, no CHECK widened (the baseline is silent, the lead's G4).
+-- purge (0190) and apply_roles are untouched; no new object, no CHECK widened (the baseline is silent, decision G4).
 -- Not read here: whether B20's migrations 0273 / 0274 re-create import_schema too - the join's check.

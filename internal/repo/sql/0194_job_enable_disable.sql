@@ -5,14 +5,14 @@
 -- target_id = its id, as job_start's row). Nothing is created, changed or switched on on a monitored server by this
 -- file; the actions stay off until an instance's actions: list names them.
 --
---   actions_log_action_check   dropped and added again: 0157's list (task 406, rel-j15: plan_evict on SQL Server) and
+--   actions_log_action_check   dropped and added again: 0157's list (task 406: plan_evict on SQL Server) and
 --                              0191's (inv's 301b, rel-inv 0c55b7b5: verify_backup on SQL Server), which sort before
 --                              it, with job_enable and job_disable on both engines, so this branch's proof accepts
 --                              them; the two kinds are named again in scripts/b9c-join-lines.sql for the join's 0300,
 --                              which re-creates the CHECKs once with every slice's actions (BOTH).
 --   actions_log_pid_check      dropped and added again: 0191's list (0157's plus verify_backup) with the two kinds (no
 --                              pid). actions_log_outcome_check is not touched: 0191's stands.
---   import_pg_job_actions_log  replaced WHOLE (0102's text, its only definition on every branch read 11-14 23:5x): its
+--   import_pg_job_actions_log  replaced WHOLE (0102's text, its only definition on every branch read): its
 --                              action list takes job_enable and job_disable; nothing else changes.
 --   import_mssql_actions_log   unchanged (0067): it filters no action; the CHECK decides.
 --

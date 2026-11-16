@@ -262,7 +262,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   // reason first, then the role (B24f: a report is a shared view written against servers; changing one needs admin)
   const off = d.state.enabled ? (routeWhy('customreports', d.state.can) ?? '') : (d.state.reason || 'Saving or running a report is off on this server.');
   const offNote = el('p', { class: 'meta off-reason' }, off);
-  // TEXT-NOW (the lead's T3): a store report reads stored statement text as stored, whatever an instance's policy is now
+  // TEXT-NOW (decision T3): a store report reads stored statement text as stored, whatever an instance's policy is now
   const storeText = d.state.store_text ? el('p', { class: 'meta said' }, d.state.store_text) : null;
   if (off) for (const b of [newBtn, folderBtn]) offControl(b, off, offNote);
   newBtn.addEventListener('click', () => go({ new: '1' }));

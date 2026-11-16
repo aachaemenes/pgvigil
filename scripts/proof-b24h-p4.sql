@@ -5,7 +5,7 @@
 -- B24h-1 rows P4a / P4b / P4c on a migrated scratch repository (each case one transaction rolled back; now() holds).
 -- They read B24h's own views (0254): the findings arm and alert_due's hold term are join lines
 -- (scripts/b24h-join-lines.sql), so 'held' here is pgvigil.collector_probe_held / _held_hosts, not a send.
--- RED on rel-j15 539172c9 (B24h's base, no 0254): every row 'n/a (<error>)'.
+-- RED on 539172c9 (B24h's base, no 0254): every row 'n/a (<error>)'.
 \set ON_ERROR_STOP 1
 \pset footer off
 SET jit = off;

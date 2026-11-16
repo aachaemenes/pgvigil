@@ -64,7 +64,7 @@ INSERT INTO pgvigil.action_kinds (kind, engine, class, lifetime_s, max_timeout_s
   ('mssql_kill',         'sqlserver', 'action',  30, NULL, true,  '{"session_id": "int", "login_time": "ts", "login": "text", "reason": "text"}', NULL, 'kill a SQL Server session'),
   ('mssql_job_start',    'sqlserver', 'action',  30, NULL, false, '{"job_id": "uuid", "job_name": "text", "reason": "text"}', 'job_name', 'start a SQL Server Agent job'),
   ('mssql_job_stop',     'sqlserver', 'action',  30, NULL, true,  '{"job_id": "uuid", "job_name": "text", "reason": "text"}', 'job_name', 'stop a SQL Server Agent job'),
-  -- s3's task 406 (rel-sqltb-s3): its body is aligned at 406's join; no runner registers it before then
+  -- task 406: its body is aligned at 406's join; no runner registers it before then
   ('mssql_plan_evict',   'sqlserver', 'action',  30, NULL, false, '{"plan_handle": "hex", "confirm": "text", "reason": "text"}', NULL, 'evict a SQL Server plan'),
   ('community_run',      'any',       'read',    30,   60, false, '{"tool": "text", "?database": "text", "?params": "object", "?timeout_secs": "int", "?query_name": "text", "?text": "text"}', 'tool', 'run a community tool'),
   ('community_help',     'any',       'read',    30,   30, false, '{"tool": "text", "?database": "text"}', 'tool', 'a community tool''s @help'),

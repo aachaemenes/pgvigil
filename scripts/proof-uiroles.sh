@@ -19,7 +19,7 @@
 #            assign, routes, import), alertrules, alertrules/end, drives/thresholds, pg/thresholds, jobs/thresholds,
 #            jobs/exclusions, customreports, reportmail
 #
-# Expected (written before its first run; the RED run on rel-j15-fix 48fe228c, no role anywhere yet):
+# Expected (written before its first run; the RED run on 48fe228c, no role anywhere yet):
 #   M (the migration and the CLI, R2): M1 the column (ui_users.role text NOT NULL, default 'viewer', a CHECK of the three
 #     names) FAIL - no column; M2 a user that existed before the role migration reads admin after it FAIL - no
 #     *_ui_roles.sql; M3 the first 'user add' without -role makes an admin and says 'first enabled admin', the second a
@@ -52,7 +52,7 @@
 #   S9: the header row ok (403 'X-Pgvigil'; admin_audit and acks unchanged); the demoted user FAIL (no 'user role'); the
 #     disabled user ok (401, as today); the lookup error FAIL (no ui_login_of to move aside); -no-login's words ok
 #     (unchanged); logout ok.
-#   S5w (POST /api/alertwindows, the join wiring's rel-sqltb-s2 section; review-20 jw1 S2 / box jobs C and D; written
+#   S5w (POST /api/alertwindows, the join wiring's alert-window section; review-20 jw1 S2 / box jobs C and D; written
 #     before its first run, on the joined tree only): an operator's add over every instance (an end 2 days away), over a
 #     tag, of one instance with no end, of one instance ending 8 days away, and a scope taken from a rule (from_rule_id,
 #     no scope of its own) each 403 with 'a fleet-wide, tag-wide or open-ended alert window needs the admin role'; the
@@ -274,7 +274,7 @@ else
 fi
 
 # ---- S5w: an alert window over every instance, a tag, with no end or a later end needs admin (the join wiring's
-# rel-sqltb-s2 section; review-20 jw1 S2). Only on a tree with POST /api/alertwindows.
+# alert-window section; review-20 jw1 S2). Only on a tree with POST /api/alertwindows.
 WD="\"action\":\"blackout\",\"weekdays\":[1,2,3,4,5,6,7],\"start_local\":\"01:00\",\"end_local\":\"02:00\",\"zone\":\"UTC\""
 wend() { echo "\"until\":\"$(date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ)\""; }
 WWORDS="a fleet-wide, tag-wide or open-ended alert window needs the admin role"

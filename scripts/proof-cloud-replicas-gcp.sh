@@ -3,10 +3,10 @@
 # scripts/proof-cloud-replicas.sh): the provider replica read (cloud_replicas: Cloud SQL Admin instances.get and Cloud
 # Monitoring's replica_lag / replica_byte_lag) as pgvigil reads, stores, judges and shows it, each fault made, its
 # finding read, cleared and the clear read. Drives lab CP (scripts/lab/gcp-cloudsql-pg-replica.sh: up, allow and
-# logins done before; replica, repl-off, repl-on and promote here). Allen's word for CP: his Q37, YES (2026-11-15 04:43).
+# logins done before; replica, repl-off, repl-on and promote here). Decision Q37 for CP: YES.
 #
 # Runs on the machine that holds the gcloud sign-in AND Application Default Credentials (the collector's gcp: door reads
-# with them: `gcloud auth application-default login`, Allen's own step): no credential or token goes to a cloud box (the
+# with them: `gcloud auth application-default login`, the user's own step): no credential or token goes to a cloud box (the
 # lab rule of 2026-11-14). Needs psql, jq, python3, gcloud, PGVIGIL_BIN (a built pgvigil) or a go toolchain, and
 #   PGVIGIL_ADMIN_DSN        a superuser connection to a PostgreSQL in KEYWORD form, no dbname (the repository is made there)
 #   PGVIGIL_LAB_GCP_PROJECT, PGVIGIL_LAB_PROOF   as the lab script (its state file .lab/gcp-cloudsql-pg-replica.env)
@@ -48,7 +48,7 @@
 # Length (review 055507 finding 5; an ESTIMATE): up, allow and logins about 10-15 minutes before the proof; the proof
 # about 75-145 minutes (C-B's create 10-20 and up to 15 more; C-C 17-19 and up to 10; C-D 16; C-E two restarts and up
 # to 30; C-F up to 15); down about 5-10 - the primary stands about 1.6-2.7 h, the replica about 1.3-2.2 h, about USD
-# 0.15-0.40 at about USD 0.07 an hour each plus the disks: longer than the 'about 1 h' of Allen's Q37, under the
+# 0.15-0.40 at about USD 0.07 an hour each plus the disks: longer than the 'about 1 h' of decision Q37, under the
 # USD 5 stop.
 set -Eeuo pipefail
 # the line only at the top level: inside $(...) errexit is off and the run goes on, so a line there would be false

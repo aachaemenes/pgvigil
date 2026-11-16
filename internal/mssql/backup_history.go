@@ -65,7 +65,7 @@ const (
 	// RestoreHistoryMarkSource names the restore cursor's mark: CHECKSUM(restore_date, destination_database_name,
 	// backup_set_id) of that row.
 	RestoreHistoryMarkSource = "restore_history_mark"
-	// backupHistoryN and restoreHistoryM: the lead's E2 (the repository keeps the same numbers, 0191).
+	// backupHistoryN and restoreHistoryM: decision E2 (the repository keeps the same numbers, 0191).
 	backupHistoryN  = 10
 	restoreHistoryM = 20
 	// backupPathTimeout caps the default backup path's one existence call (a share that does not answer).
@@ -74,7 +74,7 @@ const (
 
 // backupCheckOptions says what an instance opted in to: reading AUTO_CLOSE databases' recovery status
 // (reads.auto_close_databases) and checking the newest backups' files (Database#7). Both are an admin's opt-in, off by
-// default (Allen's Q15: the locked-down default has the fewest side effects); the WIRING patch
+// default (decision Q15: the locked-down default has the fewest side effects); the WIRING patch
 // (scripts/inv-301b-wiring.patch) sets this from the instance's configuration.
 var backupCheckOptions = func(Info) (autoClose, files bool) { return false, false }
 

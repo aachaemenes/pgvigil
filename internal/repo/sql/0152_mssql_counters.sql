@@ -864,8 +864,8 @@ COMMENT ON VIEW pgvigil.metric_na_reasons IS 'A metric not judged under a condit
 -- mssql_counter_points: the family's samples in (p_from, p_to] as (at, metric, value), for metric_points. p_database
 -- names one database's series of the per-database metrics; NULL = the server's _Total. A rate read at raw 0 is 0 (the
 -- read's zero_series); an average with no event in the read is 0. A floored ratio (metric_floors, above) gives a point
--- with NO value (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0 (the
--- lead's 19:4x); no rate read = no point. Full scans per search over no index search is the scans over one search
+-- with NO value (NULL) under its floor, kept, beside its rates' points of the same read: not judged, never 0; no
+-- rate read = no point. Full scans per search over no index search is the scans over one search
 -- (every access a scan). The other ratios under their floor are 0.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_counter_points(p_instance_id int, p_from timestamptz, p_to timestamptz,
                                                          p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
@@ -1134,7 +1134,7 @@ INSERT INTO pgvigil.mssql_clerk_names (clerk_type, name) VALUES
 -- mssql_wait_percore_ignored: SQLMonitor's per-core list beyond pgvigil's benign waits (is_benign, sp_BlitzFirst 8.34's
 -- Ignorable, waits.go). SQLMonitor's BlitzFirst_WaitStats_Categories (DDLs/SCH-Create-All-Objects.sql at de87d37, 543 rows)
 -- marks 84 types IgnorableOnPerCoreMetric: pgvigil's 57 and these 27, as data, for this figure only (the Waits page's
--- per-type figures keep them; the lead's 11-15 D-412-1 (b)).
+-- per-type figures keep them; decision D-412-1 (b)).
 CREATE OR REPLACE VIEW pgvigil.mssql_wait_percore_ignored AS
 SELECT v.wait_type FROM (VALUES
     ('CHKPT'), ('CXCONSUMER'), ('EXECSYNC'), ('FSAGENT'), ('MEMORY_ALLOCATION_EXT'), ('PREEMPTIVE_OS_FLUSHFILEBUFFERS'),

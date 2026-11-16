@@ -28,7 +28,7 @@
 #  rs1 (RESTORE ... PASSWORD = N'...'), rgc (SQLBackupC's -SQL "... PASSWORD = '...'") and for keep1 / keep2 (a
 #  certificate's name, @KeyColumns, @EncryptionKeyPlaceholder, -KeepAlive: readable in the version); 'PROOF FAILED'.
 #  After the fix: every row ok, 'PROOF OK'.
-#  H (a run's output; outside S16's order, its own commit, asked of the lead): a job whose step PRINTs a backup
+#  H (a run's output; outside S16's order, its own commit, asked for): a job whose step PRINTs a backup
 #  command with its key, run once. Red run (maskred1, a NOTE then): the token in msdb's history 1, stored in
 #  pgvigil.mssql_job_runs 1, in the step's version 1, the dump 3. Expected after the H commit (maskRunText in
 #  internal/mssql/jobs.go): the history still holds it (1), stored nowhere (mssql_job_runs 0, the step's version 0,

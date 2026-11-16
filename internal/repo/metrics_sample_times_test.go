@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// The j16 review's A15: metrics_sample_times (0196) names each family's newest sample by a CASE with no ELSE, and its
+// The review's A15: metrics_sample_times (0196) names each family's newest sample by a CASE with no ELSE, and its
 // WHERE drops a NULL time, so a family the CASE does not name is silently missing from pgvigil_sample_timestamp_seconds.
 // (1) every DISTINCT metric_catalog family has its WHEN arm in the function's body; (2) the arms the joined store adds
 // (scripts/b24d-join-lines.sql: counters, xe, waits, collection), each for a family the store's catalog carries, give

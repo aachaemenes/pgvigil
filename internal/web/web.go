@@ -262,7 +262,7 @@ func (s *Server) Handler() http.Handler {
 	// the collector's error log (0198)
 	api.HandleFunc("GET /api/collectorerrors", s.CollectorErrors)
 	api.HandleFunc("GET /api/collectionhealth", s.CollectionHealth)                     // B6.2
-	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                         // B6g-3: WIRING for the join (web.go is the lead's)
+	api.HandleFunc("GET /api/collectionperf", s.CollectionPerf)                         // B6g-3: WIRING for the join (web.go is the join's)
 	s.post(api, "POST /api/collectionhealth/thresholds", needAdmin, s.CHThresholdWrite) // B6g-2 (admin, B24f)
 	api.HandleFunc("GET /api/collector", s.Collector)                                   // task 201
 	api.HandleFunc("GET /api/export", s.Export)

@@ -31,8 +31,8 @@ const chScope = `($3::int = 0 OR %[1]s.instance_id = $3) AND ($4::int[] IS NULL 
 
 func chScopeOf(alias string) string { return strings.ReplaceAll(chScope, "%[1]s", alias) }
 
-// the hour that holds the range's start (rounded DOWN, as DBA Dash's page: CollectionHealth_Get @FromHour; the lead's
-// 00:5x call on the review's #6) - the Summary's rate keeps rounding up (collection_health_summary)
+// the hour that holds the range's start (rounded DOWN, as DBA Dash's page: CollectionHealth_Get @FromHour; the
+// call on the review's #6) - the Summary's rate keeps rounding up (collection_health_summary)
 const chHourFrom = `date_trunc('hour', $1::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
 
 // the end of the hour that holds the range's end: 0166 counts the hours that begin before it, so Failed's window is

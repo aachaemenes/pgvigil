@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// The Data Retention page's words for the tables the collector's beats trim themselves ((c),
-// RETENTION FORM (i) at 18:1x): the page reads the beat functions' installed text as it reads purge()'s, so its words
+// The Data Retention page's words for the tables the collector's beats trim themselves (decision (c),
+// RETENTION FORM (i)): the page reads the beat functions' installed text as it reads purge()'s, so its words
 // follow the functions. Unit rows over the migrations' own text - a function's body as its file writes it is what
 // pg_proc.prosrc holds once installed.
 

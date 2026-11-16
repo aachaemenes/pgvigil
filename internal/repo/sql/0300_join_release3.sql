@@ -350,7 +350,7 @@ SELECT s.instance_id, s.severity, s.check_name AS setting, s.object AS value, tr
 --   #8 H KITWATCH 32460ec2: scripts/kitwatch-join-lines.sql L6-10 - after collector_findings' arm
 --   #9 H B24e f6f83845: scripts/b24e-join-lines.sql L5-11 - after collector_findings' arm (after KITWATCH's)
 --   #10 H B24H-STREAKS c937e891: scripts/b24h-join-lines.sql L5-7 (line 1) - after B24e's (the collector's own arms)
---   #11 H 409-410 03f74d79: review A #9 (02:50) - the comment names 0190's mssql_checks_findings
+--   #11 H 409-410 03f74d79: review A #9 - the comment names 0190's mssql_checks_findings
 --   #12 H the join 0300 --------: the 18 tests: TestCollectorFindingsReadsItsArms - B24e's arm reads its own view (collector_secret_findings) in place of the inline source
 --   merge conflict at arm #3 (404), block 1, resolved by hand: both arms: the base's 301 / 304 arms, then 404's
 -- ====================================================================================================================

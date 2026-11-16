@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// B24p: the aws: and azure: blocks of a page instance (0193). The doors (the lead's Q4 = (a), Allen's Q15): every
+// B24p: the aws: and azure: blocks of a page instance (0193). The doors (decisions Q4 = (a) and Q15): every
 // page block is dropped while doors.page_cloud_blocks is off; a block's target must be the instance's own host by
 // name; a profile only when doors.page_aws_profiles lists it (Q5). A dropped block never drops the instance.
 

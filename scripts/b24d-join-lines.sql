@@ -1,8 +1,8 @@
--- B24d (migration 0196, above 0190): the lines for the next join's own file 0300_join_release3.sql (the 03:3x rule).
+-- B24d (migration 0196, above 0190): the lines for the next join's own file 0300_join_release3.sql (the join-file rule).
 -- Not a migration of its own; the record of what the join places.
 --
 -- metrics_sample_times (0196's): re-created WHOLE in 0300 with an arm for each family the joined metric_catalog
--- carries beyond 0085's (the j16 review's A15): 0196's CASE names nine families and has no ELSE, and its WHERE drops a
+-- carries beyond 0085's (the review's A15): 0196's CASE names nine families and has no ELSE, and its WHERE drops a
 -- NULL time, so on the joined store /metrics would give the 'counters', 'xe', 'waits' and 'collection' value series
 -- with no pgvigil_sample_timestamp_seconds beside them - a staleness alert on time() - that series never firing for
 -- them. Each new arm reads the newest sample of the table its family's points come from, as its points count it:

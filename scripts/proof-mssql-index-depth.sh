@@ -7,7 +7,7 @@
 #   MSSQL_IMAGE     the SQL Server image (default mcr.microsoft.com/mssql/server:2022-latest)
 #   PGVIGIL_PARTS   the parts to run (default every part this file has: ABCDEFGHI)
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-mssql-index-depth-wiring.patch (config, serve, the door set,
-#                   web.go: the lead's files) to this copy when the tree has the handlers and web.go lacks their routes.
+#                   web.go: the join's files) to this copy when the tree has the handlers and web.go lacks their routes.
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment.
 #

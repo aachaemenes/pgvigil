@@ -16,7 +16,7 @@ import (
 
 // mssql_xe_captures (task 411, B18; migration 0162): the optional Extended Events captures SQLWATCH and SQLMonitor have
 // and pgvigil's four sessions (xe.go) do not. Each is a session of its own, pgvigil_<install id>_<capture>, made only by
-// the DBA running the printed script (Allen Q5: the sessions stay a script the DBA runs; a site profile that lets
+// the DBA running the printed script (decision Q5: the sessions stay a script the DBA runs; a site profile that lets
 // pgvigil make them is task 330's), off until then:
 //
 //	waits       sqlos.wait_info and wait_info_external that END after a threshold (default 1,000 ms; wait_info's

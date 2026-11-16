@@ -3,7 +3,7 @@ package config
 // The cloud blocks of a page instance (task B24p, 0193): the aws: and azure: blocks an instance of Admin > Instances
 // carries, kept in pgvigil.admin_instance_cloud and read through admin_inventory(). A cloud block runs the COLLECTOR
 // HOST's own SDK chain (CloudWatch, Performance Insights, Resource Manager), while a page instance may be added by any
-// signed-in user (pagedoor.go: its door reaches only what its user typed). So, the lead's Q4 = (a) under Allen's Q15:
+// signed-in user (pagedoor.go: its door reaches only what its user typed). So, decision Q4 = (a) under decision Q15:
 //
 //   - pgvigil.yaml's doors.page_cloud_blocks, off by default, lets a page block be used at all;
 //   - a block's target must be the instance's own host BY NAME at the merge: an RDS instance endpoint
@@ -63,7 +63,7 @@ func PageCloudOn() bool {
 	return d != nil && d.PageCloudBlocks
 }
 
-// PageAWSProfileListed says whether pgvigil.yaml's doors.page_aws_profiles lists the profile (the lead's Q5).
+// PageAWSProfileListed says whether pgvigil.yaml's doors.page_aws_profiles lists the profile (decision Q5).
 func PageAWSProfileListed(profile string) bool {
 	d := pageCloudDoor.Load()
 	return d != nil && slices.Contains(d.PageAWSProfiles, profile)

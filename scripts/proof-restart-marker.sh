@@ -32,7 +32,7 @@
 #     'build' event at the new start, the build's words naming OLD's and NEW's SERVERPROPERTY('ProductVersion');
 #     frame marks: restart 2, build 1; findings: 'instance restarted' 2, 'build changed' 1.
 #  D. built rows on a second instance (an INSERT, then UPDATEs of its mssql_instance row, the reads a minute apart;
-#, F17 (a) and F16's clock rule (a); red on 168ca53 at D's first physical_machine update, the
+#     F17 (a) and F16's clock rule (a); red on 168ca53 at D's first physical_machine update, the
 #     column being 0155's - T4's own red was shown in a sandbox run of 0155 over stand-in tables): the INSERT = no event; the start
 #     60 s later = none; T4 the start 5 minutes later and T4b 5 minutes earlier on the same machine (a clock step: the
 #     new start before the read before) = none; a new start 30 s after the read before = 'restart' at that start; FCI
@@ -40,8 +40,8 @@
 #     machine_name up 3 days = 'failover' at its read (not 3 days back) and a 'instance failed over' finding; the
 #     product_version changed with the start unchanged = 'build' at that read's time. D2 built rows on a PostgreSQL
 #     instance (T1 / T2): over onto a standby up 3 days, back, over again onto it = three 'failover' events at their
-#     reads and three findings (red on 168ca53: two events, at the starts, no finding). Finding 7 (the lead's 11-14
-#     23:1x, (a): a new start after the read before = restart, else failover, whatever the address; red on 81f943d,
+#     reads and three findings (red on 168ca53: two events, at the starts, no finding). Finding 7 (decision
+#     (a): a new start after the read before = restart, else failover, whatever the address; red on 81f943d,
 #     where the address decided): T9 a new address with a start 30 s after the read before = 'restart' (81f943d:
 #     'failover'); T10 one address (a VIP) and T11 none (a Unix socket), the standby up 3 days and started after the
 #     old primary = 'failover' (81f943d: 'restart').

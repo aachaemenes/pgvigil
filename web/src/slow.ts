@@ -262,7 +262,7 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
     if (hk.has('fit') && !['0', '1'].includes(hk.get('fit')!)) typed.fit = fit ? '1' : '0';
     if (Object.keys(typed).length) noteAddress(typed);
   }
-  // Auto Size Columns (D26; the lead's C: the one-line toggle, fit=1, said in words): this panel's grids alone - the
+  // Auto Size Columns (D26; decision C: the one-line toggle, fit=1, said in words): this panel's grids alone - the
   // Group-by grid and the events below it - show each statement on one line up to 400 characters (what the server keeps
   // of an example), the grid scrolling sideways, its title the same 400; off: the first 80 characters (review M4, L6)
   const fitWords = 'Auto Size Columns: statements on one line, up to 400 characters (the grid scrolls sideways); off: their first 80 characters';

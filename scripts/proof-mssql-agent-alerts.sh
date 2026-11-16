@@ -8,7 +8,7 @@
 # connection to a PostgreSQL sandbox in keyword form) for part G. What it makes carries this run's suffix or the
 # '(pgvigil) ...' prefix and is dropped on every exit path: the alerts, two operators, one login, the repository database.
 #
-# Expected (written before its first run 2026-11-15; the Linux stop is the lead's open question of 00:2x, option (a)):
+# Expected (written before its first run; the Linux stop is option (a) of an open question):
 #  S. the script as printed, on this Linux container: 'pgvigil: STOPPED, nothing was created, changed or dropped: SQL
 #     Server on Linux ...', and msdb holds no '(pgvigil) ...' alert after it. From here on the proof runs ITS OWN COPY
 #     with that one WHEN line taken out (said in the output): as a login that is not sysadmin it stops with 'not a
@@ -27,12 +27,12 @@
 #     'notifies:' lines; 16 notification rows on the 8 pgvigil alerts.
 #  F. firing, measured: RAISERROR(N'pgvigil proof <suf>', 19, 1) WITH LOG; '(pgvigil) Severity 19''s occurrence_count
 #     60 s later is printed - expected 0 (Microsoft lists Agent alerts as unsupported on Linux); a count above 0 is
-#     printed as a measured fact for the lead, not a failure.
+#     printed as a measured fact, not a failure.
 #  G. pgvigil's read after run 2 (collect -once mssql_instance and mssql_checks, sa as the read login): the stored rows
 #     of pgvigil.mssql_agent_alert - the 8 '(pgvigil) ...' alerts enabled, notifies 2 (both operators after E),
-#     include_event_description true; the two site alerts notifies 0 (amended 02:5x 11-15 by the build review: not the
+#     include_event_description true; the two site alerts notifies 0 (amended by the build review: not the
 #     findings, which B9a's Linux line turns 'not applicable' on this container; they are printed only).
-#  Before A (amended 02:5x 11-15): SQL Server Agent up - its 'SQLAgent - %' sessions seen within 120 s, then 10 s more
+#  Before A (amended): SQL Server Agent up - its 'SQLAgent - %' sessions seen within 120 s, then 10 s more
 #  (sp_add_alert and sp_delete_alert are refused with 14258 while the Agent starts); never up = 'setup: the Agent is not
 #  running'. F prints the Agent's session count beside its count.
 #  H. the drop script (-print -drop, the proof's copy): 8 'dropped:' lines and pgvigil_alerts_left 0; the site alerts

@@ -21,7 +21,7 @@
 # Expected (written before the first run):
 #  M. migrate exits 0 and creates import_mssql_security, import_mssql_security_config, import_mssql_security_parts,
 #     mssql_security_rule_state and mssql_security_findings; the rule catalogue holds 26 judged rules and 9 'not enabled'.
-# Changed after the first green run (sqltb-s2-408-green1, without the wiring): E1's order (the findings sort by login
+# Changed after the first green run (408-green1, without the wiring): E1's order (the findings sort by login
 # name) and D's fleet row for proxy_public ended at D's end (E's findings had it); the wiring's lines (A0, A3, A6, C0)
 # were written before the first wired run. The unwired path's A0 / A3 lines are the ones green1 passed.
 #  A. as sa, after the proof plants: a database secdb (compatibility 120) owned by the SQL login sec_owner (CHECK_POLICY
@@ -47,7 +47,7 @@
 #  B. cleared by sa (secdb back to sa, c_old and c_soon dropped, the orphaned user dropped) and read again: the findings
 #     are sa_exists alone.
 #  C. lesser logins (proxy_public on at the fleet for C, so the proxies part is asked for): sec_lp (VIEW SERVER STATE, VIEW ANY DEFINITION, a user in msdb) - logins and databases read,
-#     proxies 'no right' naming GRANT SELECT ON msdb.dbo.sysproxies (P6 of the 13:38 probe); sec_bare (no right beyond
+#     proxies 'no right' naming GRANT SELECT ON msdb.dbo.sysproxies (P6 of the probe); sec_bare (no right beyond
 #     public) - logins 'no right' naming GRANT VIEW ANY DEFINITION, and orphaned_user 'not read' (pass F3).
 # Changed after the review 20261114-193737-reviewer (written before its first run): A grants VIEW SERVER STATE to public
 # (for public_server_perm), so C's logins held it through public and the paths without it never ran. C now revokes it

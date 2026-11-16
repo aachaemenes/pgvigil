@@ -410,7 +410,7 @@ sqv "Q5 setup: a command whose password crosses the 4,000th character" "INSERT d
 col mssql_maintenance
 Q5T=$(pq "SELECT right(command, 40) FROM pgvigil.mssql_ola_commandlog WHERE instance_id = $IID AND database_name = 'pgvdba' AND command LIKE 'xxxxxxxxxx%' ORDER BY snapshot_at DESC LIMIT 1")
 # (on the code before the fold the import's own cut takes the end of an unmasked tail: '<masked>'Q5c' - the key's
-# first characters stored, probe sqltb-s4-probeq5): the stored text ends with the masked literal itself
+# first characters stored, probe q5): the stored text ends with the masked literal itself
 eqv "Q5 the command masked before it is cut: the stored text ends with the masked literal (the tail printed when not)" "$([[ $Q5T == *"PASSWORD = '<masked>'" ]] && echo masked || echo "[$Q5T]")" masked
 # Q6 (P3-1): a full backup of a database whose name holds 'Differential', a full and a 40-file differential of pgvp1
 # (its command past 4,000 characters): read through the API's last part in W

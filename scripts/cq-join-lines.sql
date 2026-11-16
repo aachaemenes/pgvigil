@@ -1,5 +1,5 @@
--- CQ slice A (migration 0200, above 0190): the lines for the next join's own file 0300_join_release3.sql (the lead's
--- JOIN-FILE RULE, 03:3x 11-15: 0190 applies before 0200, so these lines can never go into 0190). Not a migration of
+-- CQ slice A (migration 0200, above 0190): the lines for the next join's own file 0300_join_release3.sql (the
+-- join-file rule: 0190 applies before 0200, so these lines can never go into 0190). Not a migration of
 -- its own; the record of what the join places when it re-creates each joined function whole.
 --
 -- purge(): beside the other per-table deletes, before the hours tables (0139's block). In 0300 action_requests and

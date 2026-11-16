@@ -9,7 +9,7 @@ import (
 
 // TestEveryMSSQLTabHasAPage: every tab of a SQL Server instance (web/src/router.ts mssqlInstanceTabs) has its page in
 // web/src/main.ts mssqlPages, or in reports.ts reportPages, which mssqlPages spreads in. A tab without one opens the
-// Summary (main.ts falls back to it), as the Schema tab did on the j16 candidate (review B #4: A26-PG listed the tab and
+// Summary (main.ts falls back to it), as the Schema tab did on the candidate (review B #4: A26-PG listed the tab and
 // the page map kept only the PostgreSQL entry). The check reads the source.
 func TestEveryMSSQLTabHasAPage(t *testing.T) {
 	block := func(file, head string) string {

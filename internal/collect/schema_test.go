@@ -158,7 +158,7 @@ func TestSchemaObjectsSQL(t *testing.T) {
 	}
 }
 
-// TestSchemaBodyChoice: the probe's outcomes (task A26-PG, the pass's S1 and the lead's 'fails if absent'): 13 reads as
+// TestSchemaBodyChoice: the probe's outcomes (task A26-PG, the pass's S1 and the 'fails if absent' decision): 13 reads as
 // before with no note; 14 / 18 with the function read SQL-standard bodies; a 14+ server without it, or where the login
 // may not run it (the build review's S3: the probe asks for EXECUTE), reads as before and says so.
 func TestSchemaBodyChoice(t *testing.T) {

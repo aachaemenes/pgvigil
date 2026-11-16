@@ -584,7 +584,7 @@ SELECT h.instance_id,
  GROUP BY h.instance_id, h.collection
 HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 
--- 'collections run long' (B6.4 #4 (a) and 04:2x (i)-(iii); source 'pgvigil repository', the value the
+-- 'collections run long' (B6.4 #4 (a) and calls (i)-(iii); source 'pgvigil repository', the value the
 -- collector's HOST): a host slow while its runs succeed (CPU-starved) forms no 'collector or network' parent, so each
 -- of its instances would send its own 'collection runs long' - one alert per host instead, on the slow-connect fold's
 -- shape (0121 collector_slow_folds). Over the finding's own window (the current and the previous UTC hour) and the
@@ -598,7 +598,7 @@ HAVING sum(h.runs) >= 5 AND sum(h.runs_over_half) * 20 > sum(h.runs);
 -- term, 0190 WIRING, through collection_runs_long_held); one above it is sent on its own, and a new one waits while 3
 -- or more of the host's instances turned long within its span and a minute (collection_runs_long_forming). Its alert is
 -- not resolved while the host's own 'collector or network' stands (alert_due). An arm of 0190's pgvigil.findings
--- (WIRING). What is judged (B6f7, the review of the fold / 07:5x calls; B6f10): the host's
+-- (WIRING). What is judged (B6f7, the review of the fold and its calls; B6f10): the host's
 -- runs not retired, and the host only while a run of it beat within its span + 3 minutes (a stopped, retired or renamed
 -- host folds nothing from its old rows); never an instance a 'collector or network' holds now (collector_held_instances,
 -- as collector_connects: a cut slows the runs it does not fail); and no NEW fold for a host whose 'collector or network'

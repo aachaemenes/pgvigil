@@ -63,7 +63,7 @@ func TestDetectCache(t *testing.T) {
 // Every collection gives the same Applies answer on the cached detect as on the fresh one, for each Kind with the
 // login's rights on and off and with and without a pool tag or the linked server test tag (Applies reads only the
 // Info; the cache keeps the detect's Info and sets both tags from the configuration: task 409's
-// mssql_linkedserver_test applies by the tag - review B #6 of the j16 candidate: undoing a8fe3d0d stayed green).
+// mssql_linkedserver_test applies by the tag - review B #6 of the candidate: undoing a8fe3d0d stayed green).
 func TestCachedSkipEveryCollection(t *testing.T) {
 	at := time.Now()
 	for _, kind := range []Kind{KindServer, KindRDS, KindAzureDB, KindAzureMI, KindCloudSQL} {

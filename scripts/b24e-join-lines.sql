@@ -1,4 +1,4 @@
--- b24e-join-lines.sql - B24e's arms of the joined views (the lead's JOIN-FILE RULE, 2026-11-15 03:3x): its migration
+-- b24e-join-lines.sql - B24e's arms of the joined views (the join-file rule): its migration
 -- 0192 is above 0190, so it creates only its own objects (pgvigil.secret_findings) and this file holds the line the next
 -- join (0300_join_release3.sql) puts into the view it re-creates whole. Not a migration: nothing runs this file.
 

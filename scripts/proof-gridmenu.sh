@@ -13,7 +13,7 @@
 # container failed, 2 = no DSN.
 #
 # Expected (the red run, on main 1aba474 with this file and menu-check.mjs copied in - written before it, after the
-# lead's fold of the design pass; case G of task 172 retired into G-select): the build green; the container answers;
+# fold of the design pass; case G of task 172 retired into G-select): the build green; the container answers;
 # G-chart ok (the chart's menu is unchanged by design); every other GM row FAIL - G-menu, G-select, G-header, G-copy,
 # G-copy JSON values, G-copy empty, G-file, G-hidden, G-order, G-rownum, G-transpose, G-filters, G-filters quoting,
 # G-in, G-bars, G-keys (Tab lands on the grid's scroll box), G-grouped, G-empty0, G-dialog, G-sql (no SQL file),

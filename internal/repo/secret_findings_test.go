@@ -13,7 +13,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/secrets"
 )
 
-// 0192 (task B24e, the lead's Q7): an instance whose newest runs could not read their password from AWS Secrets
+// 0192 (task B24e, decision Q7): an instance whose newest runs could not read their password from AWS Secrets
 // Manager has its own critical finding naming the refusal (never 'server unreachable'); a good run after it clears it.
 func TestSecretFindingsOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")

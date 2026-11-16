@@ -9,8 +9,8 @@
 #                      database and two logins, all named pgvigil_s2chan_*_<random>, and drops them at the end. Not
 #                      dropped: the cluster-wide group roles `pgvigil migrate` makes.
 #   The proof builds BIN from a copy of this tree (go build) with scripts/proof-alert-scope-wiring.patch applied (the
-#   lead's lines in 0190, web.go, q_alert_rules.go, tools.go; skipped when the tree already holds them, or holds them in a
-#   join's own words: the j16 join routes POST /api/alertwindows through s.post; one line of each of the 12 hunks).
+#   join's lines in 0190, web.go, q_alert_rules.go, tools.go; skipped when the tree already holds them, or holds them in a
+#   join's own words: the join routes POST /api/alertwindows through s.post; one line of each of the 12 hunks).
 #   Needs: psql, curl, python3, ss, go, tar, git (git apply only).
 #
 # Expected (written before the first run; red first: on 5e53c86 the build has no alert_channel_failing, part M fails):
@@ -265,7 +265,7 @@ for t in psql curl python3 ss go tar git; do command -v $t >/dev/null || fail "$
 # ---- the binary -------------------------------------------------------------------------------------------------------
 TREE=$WORK/tree; mkdir -p "$TREE"
 tar --exclude=./.git --exclude=./web/node_modules --exclude=./bin -cf - . | tar -xf - -C "$TREE"
-# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the j16 join's B24F-JOIN-WIRING routes POST
+# joined_wiring <tree>: the patch's 12 hunks in a join's own words (the join's B24F-JOIN-WIRING routes POST
 # /api/alertwindows through s.post, so the patch neither applies nor reverses there): one line of each hunk, as text
 joined_wiring() { local f s
   while read -r f s; do grep -qF -- "$s" "$1/$f" || return 1; done <<'EOF'

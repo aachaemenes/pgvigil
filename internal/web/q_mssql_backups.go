@@ -159,7 +159,7 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail, f.instance_id, i.name
  WHERE ($1::int IS NULL OR f.instance_id = $1)
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.at DESC, i.name, f.object`
 
-// MSSQLBackupFiles serves GET /api/mssql/backup_files (the route is the lead's wiring in web.go). Task 301b's parts
+// MSSQLBackupFiles serves GET /api/mssql/backup_files (the route is the wiring in web.go). Task 301b's parts
 // ride it: checks, path and check_findings with an instance; history and restores only with a database too (a
 // server's whole history is never one answer); check_findings with no instance for the fleet.
 func (s *Server) MSSQLBackupFiles(w http.ResponseWriter, r *http.Request) {

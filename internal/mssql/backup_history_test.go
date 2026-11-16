@@ -56,7 +56,7 @@ func TestBackupCheckDBRows(t *testing.T) {
 // TestBackupHistorySQLReadsOnly: every statement the two collections send reads - 301b's own and 301's / 301c's they
 // call (the databases, the 2022 column, the newest set and its mark, msdb's right, 301c's gate); none writes, backs
 // up, restores or calls xp_fileexist (it answers 0 / 0 / 0 to a login that is not sysadmin: probe 301bP1); the one
-// EXEC is xp_instance_regread behind 301c's gate. The newest N and M are the lead's E2.
+// EXEC is xp_instance_regread behind 301c's gate. The newest N and M are decision E2.
 func TestBackupHistorySQLReadsOnly(t *testing.T) {
 	texts := map[string]string{
 		"sets": backupSetHistorySQL(true), "sets 2019": backupSetHistorySQL(false), "restores": restoreHistorySQL,

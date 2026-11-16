@@ -1,4 +1,4 @@
--- inv-301b-join-lines.sql - task 301b's lines for the joined objects (the lead's JOIN-FILE RULE, 2026-11-15 03:3x): its
+-- inv-301b-join-lines.sql - task 301b's lines for the joined objects (the join-file rule): its
 -- migration 0191 is above 0190, so it creates only its own objects; the next join (0300_join_release3.sql) re-creates
 -- each object below WHOLE with these lines in it. Not a migration: `pgvigil migrate` never applies it (scripts/ is not
 -- embedded).

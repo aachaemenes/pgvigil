@@ -4,7 +4,7 @@
 # (tempdb's pages), dboptions.go (the log's holder), GET /api/mssql/storage_depth and /api/mssql/dbio - against hand
 # reads of the same SQL Server at the same moments, and against hand computations on rows the proof writes into its
 # own repository.
-# Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, curl, python3, the lead's wiring patch applied to the
+# Needs: docker (mcr.microsoft.com/mssql/server images), go, psql, curl, python3, the wiring patch applied to the
 # tree first (web.go's two routes, 0190's findings arm and purge lines, q_mssql_summary.go's Disk mapping: the API, P4's
 # purge and the Summary rows read them; without it those rows fail as the branch's own fault), and
 #   ADMIN_DSN        a superuser connection to a PostgreSQL in keyword form (default 'host=127.0.0.1 port=5432 user=postgres

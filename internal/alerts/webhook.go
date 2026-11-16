@@ -132,7 +132,7 @@ func (s *webhookSender) lineCost(a Alert) int {
 }
 
 // teamsAlertBlocks is one alert on a Teams card: its line, colored by its state, and for a firing alert with a page
-// address an 'Open in pgvigil' button (task 403b, A38, the lead's D1 = a: it opens the alert's own page in pgvigil,
+// address an 'Open in pgvigil' button (task 403b, A38, decision D1 = a: it opens the alert's own page in pgvigil,
 // where the UI login and its roles apply and the acknowledge is done; a Teams button that acts by itself would need
 // a bot app registered in the tenant).
 func teamsAlertBlocks(a Alert) []map[string]any {

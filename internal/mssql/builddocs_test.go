@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestBuildDocs (task 412, the lead's 11-15 B1 (a)): a build's own page only when the catalogue lists that very build;
+// TestBuildDocs (task 412, decision B1 (a)): a build's own page only when the catalogue lists that very build;
 // an RTM row with no page and a 2025 product page link Microsoft's build list in words; an unlisted or newer build says
 // so; a major the catalogue lacks gets nothing.
 func TestBuildDocs(t *testing.T) {
