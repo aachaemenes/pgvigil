@@ -232,7 +232,9 @@ func pageCloud(p PageInstance, in *Instance) string {
 // InventorySQL is the page's list read by both readers - the collector's (repo.Inventory) and serve's own
 // (web/doorset.go): one statement, one scan (B24p's fold 5), so a column the store adds reaches both.
 // ST5a (0263): each instance's own settings beside it (admin_instance_settings(), SECURITY DEFINER as admin_inventory())
-const InventorySQL = `SELECT i.name, i.engine, i.platform, i.dsn_ref, i.tags, i.disabled, i.auth, i.options, i.generation, i.running_plans, i.host, i.aws, i.azure, s.settings FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) ORDER BY i.name`
+// The columns are bare (TestInventoryColumns reads them as words): USING (name) makes name one column, and
+// admin_instance_settings() returns only name and settings.
+const InventorySQL = `SELECT name, engine, platform, dsn_ref, tags, disabled, auth, options, generation, running_plans, host, aws, azure, settings FROM pgvigil.admin_inventory() i LEFT JOIN pgvigil.admin_instance_settings() s USING (name) ORDER BY name`
 
 // InventoryRows is what ScanInventory reads (pgx.Rows is one)
 type InventoryRows interface {
