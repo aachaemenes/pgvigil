@@ -97,7 +97,7 @@ echo "ok   a deadlock in system_health, the workload ran, Query Store flushed"
 
 # ---- PostgreSQL: a cluster of its own ------------------------------------------------------------------------------
 echo "--- PostgreSQL: a cluster of its own"
-INITDB=$(command -v initdb || ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null | sort -V | tail -1)
+INITDB=$(command -v initdb || ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null | sort -V | tail -1 || true)   # none found: the check below says so
 [[ -x "$INITDB" ]] || fail "initdb is not on this machine"
 PGCTL=$(dirname "$INITDB")/pg_ctl; PP=$(freeport)
 "$INITDB" -D "$PGD" -U postgres --auth-local=trust --auth-host=scram-sha-256 >"$WORK/initdb.log" 2>&1 || fail "initdb: $(tail -3 "$WORK/initdb.log")"
