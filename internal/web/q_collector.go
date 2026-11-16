@@ -32,7 +32,7 @@ const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 // reads findings), so the guard walks the arms of both views and names K3 by its view (TestCollectorFindingsReadsItsArms;
 // TestCollectorFindingsK3AtTheJoin shows the walk finds both of 403b's views as own arms; TestCollectorFindingsReadsItsArms
 // is red at the join until they are read here and named in the claim CASE below). The claim ('why') is the collector parents' only.
-// The j16 join reads every own arm of both views here: KITWATCH's, B24e's (its own view collector_secret_findings since
+// The join reads every own arm of both views here: KITWATCH's, B24e's (its own view collector_secret_findings since
 // 0300), B24h's probe and K3's two.
 const sqlCollectorFindings = `
 WITH f AS (

@@ -2432,7 +2432,7 @@ END $$;
 --   #3 H PARQUET 16659e64: scripts/parquet-join-lines.sql L4-10 (line 1) - export_run_record / export_off owner-only, then their GRANT to pgvigil_exporter
 --   #4 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L4-18 (line 1) - the agent's eleven owner-only, then the seven agent_investigation_* to pgvigil_agent
 --   #5 H 81-AGENT 654a9cd5: scripts/agent-join-lines.sql L25-30 (line 3); CQ-A 322675cc 0200 L36-37 makes pgvigil_requester - the queue-mode serve writes investigation asks through pgvigil_requester (the review's #2)
---   #6 H the join 0300 --------: the 18 tests: TestSchemaMissingIsTheCollectorsDoor, TestReaderRunsNoOtherSecurityDefiner - no bracket in a comment inside the owner-only list; findings_history_partition owner-only (the lead's rule 2)
+--   #6 H the join 0300 --------: the 18 tests: TestSchemaMissingIsTheCollectorsDoor, TestReaderRunsNoOtherSecurityDefiner - no bracket in a comment inside the owner-only list; findings_history_partition owner-only (its DDL is the owner's; the alerter keeps its grant)
 --   merge conflict at arm #2 (413), block 1, resolved by hand: owner-only list = the union (mssql_index_depth_purge, mssql_fragmentation_stale added)
 -- ====================================================================================================================
 CREATE OR REPLACE FUNCTION pgvigil.apply_roles()
