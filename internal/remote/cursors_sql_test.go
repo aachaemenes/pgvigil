@@ -46,6 +46,7 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 	}
 	defer pool.Close()
 	a, b := t0.Add(-time.Hour), t0
+	qsBase := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
 	for _, c := range []struct {
 		name, engine string
 		batches      []sqlBatch
@@ -231,6 +232,29 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 			{"mssql_azuredb_resources", t1, []map[string]any{{"kind": "minute", "minute": t0.Add(-10 * time.Minute), "samples": 4}}},
 			{"mssql_azuredb_resources", t1.Add(time.Minute), []map[string]any{{"kind": "note"}}},
 		}, map[string]string{"azdb_since": "seq"}},
+		// round B: qs_plan:<id>:<db> (0083 L369-424 and mssql_hadr_cursor's 24 h for a policy state, read at now():
+		// the batches sit within the last hours so both sides read inside the day)
+		{"mssql qs plan", "sqlserver", []sqlBatch{
+			{"mssql_querystore", qsBase, []map[string]any{
+				{"kind": "store", "database_name": "app"}, {"kind": "forced_read", "database_name": "app", "statement": nil},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(11), "query_id": int64(3), "query_hash_hex": "0xAA", "plan_hash_n": int64(777)},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(12), "query_id": int64(4), "query_hash_hex": "0xBB", "plan_hash_n": int64(888)},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(13), "query_id": int64(5), "query_hash_hex": "0xCC", "plan_hash_n": int64(999), "xml_note": "too large"},
+				{"kind": "plan_xml", "database_name": "app", "plan_id": int64(11), "statement": nil},
+				{"kind": "plan_xml", "database_name": "app", "plan_id": int64(12), "statement": "<ShowPlanXML/>"},
+			}},
+			{"mssql_querystore", qsBase.Add(time.Hour), []map[string]any{
+				{"kind": "store", "database_name": "app"},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(11), "query_id": int64(3), "query_hash_hex": "0xAA", "plan_hash_n": int64(777)},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(12), "query_id": int64(4), "query_hash_hex": "0xBB", "plan_hash_n": int64(889)},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(13), "query_id": int64(5), "query_hash_hex": "0xCC", "plan_hash_n": int64(999)},
+				{"kind": "plan", "database_name": "app", "plan_id": int64(15), "query_id": int64(7), "query_hash_hex": "0xDD", "plan_hash_n": int64(555)},
+				{"kind": "plan_xml", "database_name": "app", "plan_id": int64(15), "statement": "<ShowPlanXML/>"},
+			}},
+			{"mssql_querystore", qsBase.Add(2 * time.Hour), []map[string]any{
+				{"kind": "store", "database_name": "app"}, {"kind": "plan_xml", "database_name": "app", "plan_id": int64(13), "statement": nil},
+			}},
+		}, map[string]string{"qs_plan:11:app": "qsplan", "qs_plan:12:app": "qsplan", "qs_plan:13:app": "qsplan", "qs_plan:15:app": "qsplan"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var tag [4]byte
@@ -292,6 +316,12 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 					}
 					if err != nil || found != ok || (ok && s != want) {
 						t.Errorf("%s: the store %q %v (%v), the rule %v %q %+v", src, s, found, err, ok, want, g)
+					}
+				case "qsplan":
+					n, found, err := r.MSSQLSeqCursor(ctx, id, src)
+					want, wok := qsPlanAnswer(cur["qs_plan_state:"+strings.TrimPrefix(src, "qs_plan:")], time.Now())
+					if err != nil || found != wok || (wok && n != want) {
+						t.Errorf("%s: the store %d %v (%v), the rule %d %v", src, n, found, err, want, wok)
 					}
 				case "seq":
 					n, found, err := r.MSSQLSeqCursor(ctx, id, src)

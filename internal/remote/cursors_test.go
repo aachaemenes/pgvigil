@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
 )
 
@@ -409,4 +410,89 @@ func atOf(c format.Cursor) time.Time {
 		return time.Time{}
 	}
 	return *c.At
+}
+
+// A remote collector never sends plan XML: its query_text is hash or none (config refuses full on a remote), and
+// every mode but full drops a plan row's statement (textpolicy.go). So no plan of a remote instance holds XML, and
+// import_mssql_querystore's policy update (0083 L410-413: a forced_read marker clears the XML a plan holds) never
+// moves one - the qs_plan rule needs no list of a database's plans. This row holds the premise.
+func TestRemotePlanXMLNeverKept(t *testing.T) {
+	for _, mode := range []string{"hash", "none"} {
+		rows := []collect.Row{
+			{"kind": "plan_xml", "kind_of": "plan", "database_name": "app", "plan_id": int64(1), "statement": "<ShowPlanXML/>"},
+			{"kind": "forced_read", "kind_of": "plan", "database_name": "app", "statement": "kept"},
+		}
+		collect.ApplyTextPolicy(rows, mode)
+		for _, r := range rows {
+			if v, has := r["statement"]; !has || v != nil {
+				t.Errorf("%s: %s kept its statement %v", mode, r["kind"], v)
+			}
+		}
+	}
+}
+
+// qs_plan:<id>:<db> (mssql_hadr_cursor 0300 L1688-1693) answers a plan's hash when its XML is stored, or was looked
+// at under the text policy within 24 h. The plan's row follows 0083 L369-424: a plan row upserts it (a changed hash,
+// query id or query hash clears the XML state and its check time; xml_note marks it 'too large', cleared by the next
+// plain row), a plan_xml row sets 'stored' or 'policy' at the read's time on a plan that has a row. Kept as
+// 'qs_plan_state:<id>:<db>'. One difference on the safe side: a state whose last plan row is over 24 h old counts as
+// absent (the hub's purge keeps a plan at least a day), so the remote never says stored where the hub may not.
+func TestCursorMovesQSPlan(t *testing.T) {
+	store := map[string]any{"kind": "store", "database_name": "app"}
+	plan := func(id, hash, qid int64, qh string) map[string]any {
+		return map[string]any{"kind": "plan", "database_name": "app", "plan_id": id, "query_id": qid, "query_hash_hex": qh, "plan_hash_n": hash}
+	}
+	xml := func(id int64, stmt any) map[string]any {
+		return map[string]any{"kind": "plan_xml", "database_name": "app", "plan_id": id, "statement": stmt}
+	}
+	big := plan(13, 999, 5, "0xCC")
+	big["xml_note"] = "too large"
+	s := overlay(nil, moves(t, "mssql_querystore", t0, []map[string]any{store, plan(11, 777, 3, "0xAA"), plan(12, 888, 4, "0xBB"), big,
+		xml(11, nil), xml(12, "<ShowPlanXML/>"), xml(99, nil), {"kind": "plan", "database_name": "app", "plan_id": int64(20), "plan_hash_n": int64(1)}}, nil))
+	answer := func(id string, now time.Time) (int64, bool) { return qsPlanAnswer(s["qs_plan_state:"+id+":app"], now) }
+	for _, c := range []struct {
+		id   string
+		now  time.Time
+		want int64
+		ok   bool
+	}{
+		{"11", t0.Add(time.Minute), 777, true},    // policy, checked within 24 h
+		{"12", t0.Add(time.Minute), 888, true},    // stored
+		{"13", t0.Add(time.Minute), 0, false},     // too large
+		{"99", t0.Add(time.Minute), 0, false},     // a plan_xml row for a plan with no row
+		{"20", t0.Add(time.Minute), 0, false},     // a plan row without its query_id
+		{"11", t0.Add(25 * time.Hour), 0, false},  // policy checked over 24 h ago
+		{"12", t0.Add(25 * time.Hour), 0, false},  // stored, but its last plan row is over 24 h old (the safe side)
+		{"12", t0.Add(23 * time.Hour), 888, true}, // within the day
+	} {
+		if n, ok := answer(c.id, c.now); ok != c.ok || n != c.want {
+			t.Errorf("plan %s at %s: %d %v, want %d %v", c.id, c.now.Format(time.RFC3339), n, ok, c.want, c.ok)
+		}
+	}
+	if _, kept := s["qs_plan_state:99:app"]; kept {
+		t.Errorf("a plan_xml row made a plan's row: %+v", s["qs_plan_state:99:app"])
+	}
+	b := t0.Add(time.Hour)
+	s = overlay(s, moves(t, "mssql_querystore", b, []map[string]any{store, plan(11, 777, 3, "0xAA"), plan(12, 889, 4, "0xBB"), plan(13, 999, 5, "0xCC")}, s))
+	if n, ok := answer("11", b); !ok || n != 777 {
+		t.Errorf("an unchanged plan row kept its policy state: %d %v", n, ok)
+	}
+	if _, ok := answer("12", b); ok {
+		t.Errorf("a changed hash kept its stored state")
+	}
+	if _, ok := answer("13", b); ok {
+		t.Errorf("'too large' cleared by a plain row is no state")
+	}
+	s = overlay(s, moves(t, "mssql_querystore", b.Add(time.Hour), []map[string]any{store, xml(13, "")}, s))
+	if n, ok := answer("13", b.Add(time.Hour)); !ok || n != 999 {
+		t.Errorf("an empty statement is policy (nullif): %d %v", n, ok)
+	}
+	late := t0.Add(30 * time.Hour)
+	s = overlay(s, moves(t, "mssql_querystore", late, []map[string]any{store, plan(13, 999, 5, "0xCC")}, s))
+	if _, ok := answer("13", late.Add(time.Minute)); ok {
+		t.Errorf("a plan row over 24 h after the last one takes a fresh row (no XML state)")
+	}
+	if got := moves(t, "mssql_querystore", b, []map[string]any{store, xml(11, "<ShowPlanXML/>")}, s); len(got) != 0 {
+		t.Errorf("an older batch moved: %+v", got)
+	}
 }
