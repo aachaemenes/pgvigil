@@ -1,31 +1,31 @@
-diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
-index 466e959..8d5c097 100644
---- i/cmd/pgvigil/report.go
-+++ w/cmd/pgvigil/report.go
-@@ -285,6 +285,7 @@ func osRelease() string {
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index d200cdec..03570ed2 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -289,6 +289,7 @@ func osRelease() string {
  // key this list does not know (a new one, a misspelt one) is masked, never shown.
  var keepKeys = map[string]bool{
  	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
 +	"histogram": true, "index_fragmentation": true,
- 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
- 	// doors: (the page door's switch, on or off)
- 	"page_instance_reads": true,
-@@ -308,6 +309,7 @@ var knownKeys = map[string]bool{
- 	"doors": true, "page_instance_reads": true, "reports_dsn": true,
+ 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true, "read_tools": true,
+ 	// doors: (the page door's switch, on or off; task 403b K5: the Slack door's switch)
+ 	"page_instance_reads": true, "slack_actions": true,
+@@ -326,6 +327,7 @@ var knownKeys = map[string]bool{
  	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
+ 	"gcp": true, "project": true, "instance": true, "credentials_file": true, "replicas": true,
  	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 +	"histogram": true, "stats_dsn": true, "index_fragmentation": true,
  	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
  	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
- 	"latency_warn_secs": true, "archive_warn_minutes": true,
-diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
-index 812798e..d0ce4e7 100644
---- i/cmd/pgvigil/serve.go
-+++ w/cmd/pgvigil/serve.go
-@@ -176,6 +176,15 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
- 		pc.Hypo[in.Name] = in.HypoIndex
- 	}
+ 	"azure": true, "subscription": true, "resource_group": true, // B24p; "server" and "cloud" are S2's alert channel keys below
+diff --git c/cmd/pgvigil/serve.go i/cmd/pgvigil/serve.go
+index 5b6aab3d..8a31d564 100644
+--- c/cmd/pgvigil/serve.go
++++ i/cmd/pgvigil/serve.go
+@@ -238,6 +238,15 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
  	srv.SetPlans(pc)
+ 	// TEXT-NOW: serve's alert sends follow each instance's query_text policy as its doors hold it now (page instances too)
+ 	alerts.SetTextPolicy(srv.TextPolicy)
 +	// task 414: the histogram and fragmentation switches of the file's SQL Server instances (off by default)
 +	idc := web.IndexDepthConfig{Gates: map[string]web.IndexDepthGate{}}
 +	for _, in := range cfg.Instances {
@@ -38,11 +38,11 @@ index 812798e..d0ce4e7 100644
  	doors := map[string]mssql.Door{}
  	for _, in := range cfg.Instances {
  		if in.Engine == config.EngineSQLServer {
-diff --git i/docs/sqlserver-indexes.md w/docs/sqlserver-indexes.md
-index 7e7b0cc..e7a75c2 100644
---- i/docs/sqlserver-indexes.md
-+++ w/docs/sqlserver-indexes.md
-@@ -89,6 +89,47 @@ A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `
+diff --git c/docs/sqlserver-indexes.md i/docs/sqlserver-indexes.md
+index f91bd72b..7b45c787 100644
+--- c/docs/sqlserver-indexes.md
++++ i/docs/sqlserver-indexes.md
+@@ -120,6 +120,47 @@ A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `
  
  Missing-index requests are what the optimizer asked for, one query shape at a time, since the server started. They show the equality, inequality and included columns, how often each was asked for, and the benefit per day of uptime. They are **hints**. They know nothing of the indexes that already exist or of the other requests, so pgvigil never writes them as a `CREATE INDEX`. A request worth 100,000 or more a day of uptime raises an info finding.
  
@@ -90,35 +90,35 @@ index 7e7b0cc..e7a75c2 100644
  ## Statistics (`mssql_stats`)
  
  For each database the read stores:
-diff --git i/docs/sqlserver.md w/docs/sqlserver.md
-index 3ec1c5e..5236b7a 100644
---- i/docs/sqlserver.md
-+++ w/docs/sqlserver.md
+diff --git c/docs/sqlserver.md i/docs/sqlserver.md
+index 12885947..07ebfbd1 100644
+--- c/docs/sqlserver.md
++++ i/docs/sqlserver.md
 @@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
  
  ## Collections
  
--Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
-+Thirty-five collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+-Forty collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
++Forty-one collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
  
  | collection | every | reads | needs | Azure SQL Database | page |
  | --- | --- | --- | --- | --- | --- |
-@@ -88,6 +88,7 @@ Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one che
- | `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
- | `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+@@ -96,6 +96,7 @@ Forty collections; `mssql_checks` and `mssql_identity` are on [day-one checks](s
+ | `mssql_running_plans` | off (1 min once on) | the plan of a running query past DBA Dash 4.25.0's thresholds (1 s of CPU, 50 MB granted, 10 s running, or two requests on one plan), kept once an hour per plan; off for every instance until an admin ticks its running plans box on Admin > Instances, or an instance of this file names it in `schedules: {mssql_running_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
+ | `mssql_live_plans` | off (1 min once on) | the plan with its operator counters of a request past 60 s of CPU or 5 minutes running unblocked, 10 a read at most; SQL Server 2016 SP1, 2017 CU26, 2019 CU12 and later, Managed Instance, Azure SQL Database; before 2019 lightweight profiling needs trace flag 7412; switched on with `schedules: {mssql_live_plans: 1m}` | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md#plans-of-running-queries) |
  | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 +| `mssql_constraints` | 6 hours | each user database's untrusted foreign keys and check constraints (dbachecks' rules) | VIEW ANY DEFINITION, CONNECT ANY DATABASE | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
  | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
  | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
  | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
-diff --git i/docs/upgrade.md w/docs/upgrade.md
-index e803d2c..6dd5430 100644
---- i/docs/upgrade.md
-+++ w/docs/upgrade.md
-@@ -28,6 +28,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
-   `%ProgramData%\pgvigil\app\pgvigil.yaml`, [app.md](app.md)), its connection string in that serve's environment or
-   file, never only in the collector's unit (`pgvigil serve` is not part of it). `serve` reads `reports_dsn` when it
-   starts: restart it after the line is in.
+diff --git c/docs/upgrade.md i/docs/upgrade.md
+index 672d0a84..4d40737e 100644
+--- c/docs/upgrade.md
++++ i/docs/upgrade.md
+@@ -44,6 +44,13 @@ what happens in the other order, and what the project's own proof showed (`scrip
+   A change above a user's role is refused with its words, and the pages show its control off with them. Until the
+   per-login instance scope lands, every role sees every instance. A `pgvigil serve` of an older version on the
+   upgraded repository signs in admins only: upgrade it with the repository ([roles.md](roles.md)).
 +- **SQL Server indexes (task 414).** A new collection, `mssql_constraints`, reads each user database's untrusted
 +  foreign keys and check constraints every six hours on every SQL Server instance (catalog views only; not on Azure
 +  SQL Database); `mssql_indexes` keeps what each read added to the usage counters and the missing-index requests (the
@@ -129,14 +129,14 @@ index e803d2c..6dd5430 100644
  - **EXPLAIN asks the same check.** Plain EXPLAIN (Plans > a statement's EXPLAIN) and the index advisor's hypothetical
    index now refuse, in words, a monitoring login that is a superuser or a member of `pg_execute_server_program`,
    `pg_write_server_files` or `pg_read_server_files`, besides the logins above: they plan the DBA's statement on that
-diff --git i/internal/config/config.go w/internal/config/config.go
-index 07e6a24..6b5cbe8 100644
---- i/internal/config/config.go
-+++ w/internal/config/config.go
-@@ -119,6 +119,19 @@ type Instance struct {
- 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
- 	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
- 	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
+diff --git c/internal/config/config.go i/internal/config/config.go
+index 1be371d6..b3733a0d 100644
+--- c/internal/config/config.go
++++ i/internal/config/config.go
+@@ -187,6 +187,19 @@ type Instance struct {
+ 	MSSQLCountersRoot CounterEdits `yaml:"-"`
+ 	// MSSQLSchema turns the SQL Server schema history on for the databases it names (docs/schema.md, task A26).
+ 	MSSQLSchema *MSSQLSchema `yaml:"mssql_schema"`
 +	// Histogram turns on the Indexes tab's histogram of a statistic for this sqlserver instance (task 414): it shows
 +	// the column's real values (each step's key), read when asked, never stored, audited and under query_text full
 +	// only; false (the default) = off.
@@ -152,8 +152,8 @@ index 07e6a24..6b5cbe8 100644
 +	IndexFragmentation bool `yaml:"index_fragmentation"`
  }
  
- // DBADashRepo is one DBADash repository of the dbadash: list.
-@@ -310,6 +323,15 @@ func (i Instance) ExplainDSN() string {
+ // Patroni is the patroni: block of a postgres instance: URL is http(s)://host:port (another port, or https); CAFile
+@@ -476,6 +489,15 @@ func (i Instance) ExplainDSN() string {
  	return Resolve(strings.TrimSpace(i.ExplainDSNRaw))
  }
  
@@ -169,7 +169,7 @@ index 07e6a24..6b5cbe8 100644
  // PgBouncerDSN resolves the pooler's admin console; "" = none configured (or an unset variable / unreadable file).
  func (i Instance) PgBouncerDSN() string {
  	if strings.TrimSpace(i.PgBouncerDSNRaw) == "" {
-@@ -512,7 +534,14 @@ func (c *Config) Validate() error {
+@@ -764,7 +786,14 @@ func (c *Config) Validate() error {
  			if len(in.Actions) > 0 && strings.TrimSpace(in.ActionsDSNRaw) == "" {
  				return fmt.Errorf("instance %q: actions: names %s but the instance has no actions_dsn", in.Name, strings.Join(in.Actions, ", "))
  			}
@@ -184,48 +184,13 @@ index 07e6a24..6b5cbe8 100644
  			switch in.Platform {
  			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
  			default:
-diff --git i/internal/repo/sql/0110_join_release.sql w/internal/repo/sql/0110_join_release.sql
-index 68128c5..b831a2f 100644
---- i/internal/repo/sql/0110_join_release.sql
-+++ w/internal/repo/sql/0110_join_release.sql
-@@ -425,7 +425,8 @@ BEGIN
-       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
-       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
-     ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
--                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set') THEN
-+                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set',
-+                        'mssql_index_depth_purge', 'mssql_fragmentation_stale') THEN
-       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
-       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
-     ELSE
-diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
-index 40526c2..b587fef 100644
---- i/internal/repo/sql/0190_join_release2.sql
-+++ w/internal/repo/sql/0190_join_release2.sql
-@@ -187,7 +187,7 @@ BEGIN
-                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
-                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
-                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
--                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute')
-+                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_index_usage_read')
-        AND c.relname ~ '_[0-9]{6}$'
-        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
-      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
-@@ -332,6 +332,7 @@ BEGIN
-   n := n + pgvigil.mssql_running_purge(p_days);
-   n := n + pgvigil.mssql_reads_purge(p_days);
-   n := n + pgvigil.mssql_plancache_purge(p_days);
-+  n := n + pgvigil.mssql_index_depth_purge(p_days);   -- task 414 (0164)
-   -- the PostgreSQL job step runs (161, 0102) past the retention, as job_runs
-   DELETE FROM pgvigil.job_step_runs WHERE start_time < now() - make_interval(days => p_days);
-   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-diff --git i/internal/web/web.go w/internal/web/web.go
-index 6b3933a..f5b7b8b 100644
---- i/internal/web/web.go
-+++ w/internal/web/web.go
-@@ -345,6 +345,13 @@ func (s *Server) Handler() http.Handler {
- 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
- 	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 5a2372fc..08c96650 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -442,6 +442,13 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/mssql/search", s.MSSQLSearch)
+ 	api.HandleFunc("GET /api/mssql/plansources", s.MSSQLPlanSources)
  	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
 +	// task 414 (B23): indexes and statistics on demand (q_mssql_index_depth.go)
 +	api.HandleFunc("GET /api/mssql/indexes/depth", s.MSSQLIndexDepth)
@@ -235,5 +200,5 @@ index 6b3933a..f5b7b8b 100644
 +	api.HandleFunc("POST /api/mssql/indexes/fragmentation", s.MSSQLFragStart)
 +	api.HandleFunc("GET /api/mssql/indexes/fragmentation", s.MSSQLFragRead)
  	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
- 	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
- 	api.HandleFunc("GET /api/mssql/syshealth", s.MSSQLSysHealth)
+ 	// the fleet's SQL Server error stream (mssql_errorlog + AlwaysOn_health)
+ 	api.HandleFunc("GET /api/mssql/errorfleet", s.MSSQLErrorFleet)
