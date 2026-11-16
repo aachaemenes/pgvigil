@@ -1,0 +1,79 @@
+# D401 WIRING (the lead's at the join; never applied by the slice): the notices row on the release's tree, the three
+# KITWATCH pin rows on rel-kitwatch's internal/community/kits/ports.json (sha256 and items computed as kitshape pin does,
+# from sp_BlitzCache.sql 8.34 at tag 20260708; the lead's re-baseline recomputes them).
+diff --git a/THIRD-PARTY-NOTICES.md b/THIRD-PARTY-NOTICES.md
+index 43f36e2..67e9bfa 100644
+--- a/THIRD-PARTY-NOTICES.md
++++ b/THIRD-PARTY-NOTICES.md
+@@ -112,6 +112,7 @@ Each piece below is named in a comment beside it in the file. Where only a shape
+ | The wait list grouped by what it points at, as data | DarlingData 6.11, sp_PressureDetector.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/waits.go (waitCategories) |
+ | The default of every sys.configurations option (the #ConfigurationDefaults table) and sp_Blitz's CheckIDs, as data; the database options its #DatabaseDefaults table holds off, as rules; the notes on global trace flags (CheckID 74), in this project's words | SQL Server First Responder Kit 8.34, sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited; portions of sp_Blitz Copyright Microsoft (tigertoolbox, MIT) | internal/mssql/checks.go (configDefaultList, traceFlagNotes), internal/mssql/dboptions.go (databaseRules) |
+ | The catalogue of SQL Server builds 2016-2025 with their release and support end dates, as data | SQL Server First Responder Kit 8.34, SqlServerVersions.sql (the script by Josh Darnell, SqlServerVersionScript, MIT) | MIT, Copyright (c) 2022 Brent Ozar Unlimited; Copyright for SqlServerVersionScript held by Josh Darnell | internal/mssql/checks.go (buildCatalogue) |
++| The SQL Server plan-warning rules' thresholds and words (the cost, runtime and plan checks of the plan cache's warnings: implicit conversions, lookups, missing indexes, UDFs, multi-statement TVFs, table variables, cursors, nearly parallel plans, forced serialization, spools, sorts, remote queries, spills, row goals, estimates, adaptive joins, scans, forced indexes, columnstore row mode, index operations, DDL, CPU, writes, stale statistics, trace flags, compile time and timeouts, non-SARGable predicates, parameterization, operator warnings) and sp_Blitz's plan checks 63, 65, 67 and 118, read and written anew in Go (no SQL of theirs is used) | SQL Server First Responder Kit 8.34, sp_BlitzCache.sql and sp_Blitz.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited (portions of sp_Blitz Microsoft's, tigertoolbox, MIT) | internal/plans/mssqlwarn.go |
+ | The error log's match list and noise list (the search strings of its @custom_message_only = 0 run less 'Microsoft SQL Server' and 'Server name is', and the line patterns it deletes after the search), as data | DarlingData (darlingdata-20261101), sp_LogHunter.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/errorlog.go (errorLogMatches, errorLogNoise*) |
+ | The waiting-tasks read (its query and WHERE: sessions 50 and up, not the collector's own, a wait type, not PerformanceMonitor's own database; the collector's own session dropped as a blocker) and the ignored-wait list (IgnoredWaitDefaults.All, 126 types), as data; THREADPOOL waiters counted with no filter as sp_PressureDetector reads them | PerformanceMonitor 3.12.0, PerformanceMonitor.Collectors/WaitingTasksCollector.cs and IgnoredWaitDefaults.cs; DarlingData (darlingdata-20261101), sp_PressureDetector.sql | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/darling_waiting.go (waitingSQL, pmIgnoredWaits, threadpoolSQL), internal/repo/sql/0108_darling_waiting_tasks.sql |
+ | The blocking findings' rules and words (an implicit transaction blocking, sessions in implicit transactions, a lead blocker's share of the blocked wait at 10 %), the wait findings' thresholds and words (wait share, signal wait ratio, SOS_SCHEDULER_YIELD, tempdb page latch, forced grants, poison waits, range locks, CMEMTHREAD on NUMA), and the blocked-process reports' checks 1-10, 1000 and 1001 with the lead walk, ported from the procedures' text | DarlingData (darlingdata-20261101): sp_HumanEventsBlockViewer 5.11 (checks 1-10, 1000, 1001), sp_PerfCheck 2.11 (6001, 6101, 6102, 2010, 4101), sp_HealthParser 3.11 (system_health's blockingTasks); SQL Server First Responder Kit 8.34: sp_BlitzFirst (30, 37), sp_Blitz (117, 121, 162, 215) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/repo/sql/0114_darling_blocking.sql, 0115_darling_waits.sql, 0116_darling_blocking_history.sql, internal/mssql/xe_shred.go (blockingTasks) |
+diff --git a/internal/community/kits/ports.json b/internal/community/kits/ports.json
+index 5c7395d..e07c101 100644
+--- a/internal/community/kits/ports.json
++++ b/internal/community/kits/ports.json
+@@ -1670,5 +1670,59 @@
+     "begin": "return \"\\nCREATE EVENT SESSION [\" + sessionName + \"]\\n\"",
+     "end": "+ \");\\n\";",
+     "sha256": "01bc11377ea1cac2e62e99a9f534d8986d8755b55f5eaa18880a79841667ad20"
++  },
++  {
++    "name": "blitzCacheCostThresholds",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's cost and runtime warning thresholds (D401's and D402's low cost high CPU and row estimate mismatch)",
++    "begin": "near_parallel = CASE WHEN",
++    "end": "is_big_spills = CASE WHEN (AvgSpills / 128.) \u003e 499. THEN 1 END",
++    "sha256": "5cced7efc92b4b34f8a9d3387126d9d47d5e60fe544e69532326c49750b8d859",
++    "item_re": "(?m)^\\s*(\\w+ = CASE WHEN [^\\r\\n]*? THEN 1 END)",
++    "items": [
++      "near_parallel = CASE WHEN is_parallel \u003c\u003e 1 AND QueryPlanCost BETWEEN @ctp * (1 - (@ctp_threshold_pct / 100.0)) AND @ctp THEN 1 END",
++      "is_key_lookup_expensive = CASE WHEN QueryPlanCost \u003e= (@ctp / 2) AND key_lookup_cost \u003e= QueryPlanCost * .5 THEN 1 END",
++      "is_sort_expensive = CASE WHEN QueryPlanCost \u003e= (@ctp / 2) AND sort_cost \u003e= QueryPlanCost * .5 THEN 1 END",
++      "is_remote_query_expensive = CASE WHEN remote_query_cost \u003e= QueryPlanCost * .05 THEN 1 END",
++      "is_unused_grant = CASE WHEN PercentMemoryGrantUsed \u003c= @memory_grant_warning_percent AND MinGrantKB \u003e @MinMemoryPerQuery THEN 1 END",
++      "long_running_low_cpu = CASE WHEN AverageDuration \u003e AverageCPU * 4 AND AverageCPU \u003c 500. THEN 1 END",
++      "low_cost_high_cpu = CASE WHEN QueryPlanCost \u003c= 10 AND AverageCPU \u003e 5000. THEN 1 END",
++      "is_spool_expensive = CASE WHEN QueryPlanCost \u003e (@ctp / 5) AND index_spool_cost \u003e= QueryPlanCost * .1 THEN 1 END",
++      "is_spool_more_rows = CASE WHEN index_spool_rows \u003e= (AverageReturnedRows / ISNULL(NULLIF(ExecutionCount, 0), 1)) THEN 1 END",
++      "is_table_spool_expensive = CASE WHEN QueryPlanCost \u003e (@ctp / 5) AND table_spool_cost \u003e= QueryPlanCost / 4 THEN 1 END",
++      "is_table_spool_more_rows = CASE WHEN table_spool_rows \u003e= (AverageReturnedRows / ISNULL(NULLIF(ExecutionCount, 0), 1)) THEN 1 END",
++      "is_bad_estimate = CASE WHEN AverageReturnedRows \u003e 0 AND (estimated_rows * 1000 \u003c AverageReturnedRows OR estimated_rows \u003e AverageReturnedRows * 1000) THEN 1 END",
++      "is_big_spills = CASE WHEN (AvgSpills / 128.) \u003e 499. THEN 1 END"
++    ]
++  },
++  {
++    "name": "blitzCacheMSTVFEstimate",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's fixed MSTVF estimates",
++    "begin": "SET b.is_mstvf = 1",
++    "end": "OPTION (RECOMPILE);",
++    "sha256": "401b7d7cf585b523c763227acb158ca866e0a49d13e981cc617381a07790b1cd",
++    "item_re": "(@EstimateRows=\\\"[0-9]+\\\" or @EstimateRows=\\\"[0-9]+\\\")",
++    "items": [
++      "@EstimateRows=\"100\" or @EstimateRows=\"1\""
++    ]
++  },
++  {
++    "name": "blitzCacheNearParallelPct",
++    "go_file": "internal/plans/mssqlwarn.go",
++    "repo": "BrentOzarULTD/SQL-Server-First-Responder-Kit",
++    "path": "sp_BlitzCache.sql",
++    "follows": "8.34 (20260702), sp_BlitzCache's nearly-parallel band",
++    "begin": "@ctp_threshold_pct TINYINT = ",
++    "end": ",",
++    "sha256": "a83959f03adec06f992aa46f567928a2d2247f95266fb25129d07b5cc2811de2",
++    "item_re": "TINYINT = ([0-9]+)",
++    "items": [
++      "10"
++    ]
+   }
+ ]
