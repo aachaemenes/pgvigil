@@ -376,11 +376,16 @@ func dedicatedFolderOwn(dir, cfgName, own string) error {
 	if err != nil {
 		return err
 	}
+	// the hub's own file names count for the hub's installer only; the remote's are its config and its env file
+	owned := ownFiles
+	if own != "pgvigil" {
+		owned = []string{strings.TrimSuffix(cfgName, filepath.Ext(cfgName)) + ".env"}
+	}
 	for _, e := range entries {
-		if e.Name() == cfgName || slices.Contains(ownFiles, e.Name()) {
+		if e.Name() == cfgName || slices.Contains(owned, e.Name()) {
 			continue
 		}
-		return fmt.Errorf("-config %s: its folder %s holds other files (%s); the installer owns that folder (its permissions, -purge), so put the config in a folder of its own, e.g. %s", cfgName, dir, e.Name(), filepath.Join(dir, "pgvigil", cfgName))
+		return fmt.Errorf("-config %s: its folder %s holds other files (%s); the installer owns that folder (its permissions, -purge), so put the config in a folder of its own, e.g. %s", cfgName, dir, e.Name(), filepath.Join(dir, own, cfgName))
 	}
 	return nil
 }
