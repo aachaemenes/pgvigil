@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -50,6 +51,23 @@ func lockStateDir(dir string) (*stateLock, error) {
 		return nil, fmt.Errorf("remote.state_dir %s: another remote collector holds it (%v) - one collector per state folder", dir, err)
 	}
 	return &stateLock{f: f}, nil
+}
+
+// checkRemoteFolders holds install --remote's two folders to the unit's rules: absolute, two different folders, and on
+// Linux never under /home (ProtectHome=yes hides it from the service).
+func checkRemoteFolders(outbox, stateDir string) error {
+	for _, d := range []string{outbox, stateDir} {
+		if !filepath.IsAbs(d) {
+			return fmt.Errorf("remote.outbox and remote.state_dir must be absolute paths for the service (got %q)", d)
+		}
+		if runtime.GOOS == "linux" && (d == "/home" || strings.HasPrefix(filepath.Clean(d), "/home/")) {
+			return fmt.Errorf("%s is under /home, which the service cannot see (ProtectHome=yes): put the outbox and the state folder under /var/lib", d)
+		}
+	}
+	if filepath.Clean(outbox) == filepath.Clean(stateDir) {
+		return fmt.Errorf("remote.outbox and remote.state_dir must be two folders (both %s)", outbox)
+	}
+	return nil
 }
 
 func sweepOutbox(outbox string, keepDays, maxMB int, now time.Time) int {
