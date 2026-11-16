@@ -60,13 +60,13 @@ func TestRemoteUnitMatchesDeployFile(t *testing.T) {
 		t.Errorf("the remote unit drifted from deploy/pgvigil-remote.service:\n%s", got)
 	}
 	for _, line := range []string{"ReadWritePaths=/var/lib/pgvigil-remote/outbox /var/lib/pgvigil-remote/state", "ProtectSystem=strict", "ProtectHome=yes",
-		"User=pgvigil-remote", "ExecStart=/usr/local/bin/pgvigil run -config /etc/pgvigil-remote/pgvigil-remote.yaml", "RestartPreventExitStatus=3"} {
+		"User=pgvigil-remote", "ExecStart=/usr/local/bin/pgvigil-remote run -config /etc/pgvigil-remote/pgvigil-remote.yaml", "RestartPreventExitStatus=3"} {
 		if !strings.Contains(got, line+"\n") {
 			t.Errorf("the remote unit lacks %q", line)
 		}
 	}
-	if remoteUnitPath == unitPath || remoteAccount == defaultInstallOptions().User {
-		t.Errorf("the remote unit shares the hub collector's name or account")
+	if remoteUnitPath == unitPath || remoteAccount == defaultInstallOptions().User || remoteBin == defaultInstallOptions().Bin {
+		t.Errorf("the remote unit shares the hub collector's name, account or binary")
 	}
 }
 

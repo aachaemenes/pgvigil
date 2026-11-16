@@ -76,6 +76,7 @@ type installOptions struct {
 	NoStart bool   // write everything, start nothing
 	Remote  bool   // install: the remote collector's service (R14: its own names, the outbox and the state folder)
 	Purge   bool   // uninstall: remove the config folder and the binary too
+	Force   bool   // uninstall -remote -purge: remove the bundles still in the outbox too
 
 	Upgrade      bool   // install: upgrade the installed collector (stop, dump, migrate, swap, start)
 	OwnerDSNEnv  string // the variable holding the repository owner's connection string

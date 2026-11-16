@@ -140,6 +140,75 @@ func TestInstallRemoteArgs(t *testing.T) {
 	if o, err := parseInstallArgs("install", nil, defaultInstallOptions()); err != nil || o.Remote || o.Config == remoteConfigDefault() {
 		t.Errorf("no -remote: %+v %v", o, err)
 	}
+	// its own binary (the lead's 12:2x, the 11:5x rule for the binary too): never the hub's, so install -remote leaves
+	// a hub collector's binary on the same box as it was
+	o, _ = parseInstallArgs("install", []string{"-remote"}, defaultInstallOptions())
+	if o.Bin == defaultInstallOptions().Bin || !strings.Contains(o.Bin, "pgvigil-remote") {
+		t.Errorf("install -remote installs to %s, the hub's binary is %s", o.Bin, defaultInstallOptions().Bin)
+	}
+	if o, err := parseInstallArgs("install", []string{"-remote", "-bin", "/opt/r/pgvigil"}, defaultInstallOptions()); err != nil || o.Bin != "/opt/r/pgvigil" {
+		t.Errorf("-remote with -bin: %+v %v", o, err)
+	}
+}
+
+// uninstall -remote [-purge [-force]] (the lead's 12:2x): the remote names by default, its own binary; -force goes with
+// -remote -purge only; -remote is not -all's.
+func TestUninstallRemoteArgs(t *testing.T) {
+	o, err := parseInstallArgs("uninstall", []string{"-remote", "-purge"}, defaultInstallOptions())
+	if err != nil || !o.Remote || !o.Purge || o.Force || o.Config != remoteConfigDefault() || o.User != remoteAccountDefault() || o.Bin == defaultInstallOptions().Bin {
+		t.Errorf("uninstall -remote -purge: %+v %v", o, err)
+	}
+	if o, err := parseInstallArgs("uninstall", []string{"-remote", "-purge", "-force"}, defaultInstallOptions()); err != nil || !o.Force {
+		t.Errorf("uninstall -remote -purge -force: %+v %v", o, err)
+	}
+	for _, bad := range [][]string{{"-force"}, {"-remote", "-force"}, {"-purge", "-force"}, {"-remote", "-all"}, {"-remote", "-all", "-dry-run"}} {
+		if _, err := parseInstallArgs("uninstall", bad, defaultInstallOptions()); err == nil {
+			t.Errorf("uninstall %v: no error", bad)
+		}
+	}
+}
+
+// uninstall -remote -purge refuses while the outbox holds a bundle not pushed - the collector cannot know whether the
+// site's transfer carried it - naming the count, the newest window end and the loss; -force passes; a pushed bundle
+// counts as carried.
+func TestRemotePurgeGuard(t *testing.T) {
+	dir := t.TempDir()
+	outbox, state := filepath.Join(dir, "outbox"), filepath.Join(dir, "state")
+	p := filepath.Join(dir, "pgvigil-remote.yaml")
+	cfg := strings.Replace(remoteConfigTemplate(outbox, state), `site: ""`, `site: plant1`, 1)
+	cfg = strings.Replace(cfg, `collector: ""`, `collector: box1`, 1)
+	if err := os.WriteFile(p, []byte(cfg), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	o := installOptions{Config: p, Remote: true, Purge: true}
+	if err := remotePurgeGuard(o); err != nil {
+		t.Errorf("an empty outbox: %v", err)
+	}
+	end := time.Date(2026, 11, 16, 10, 5, 0, 0, time.UTC)
+	b := filepath.Join(outbox, filepath.FromSlash(format.Ref{Site: "plant1", Collector: "box1", InstanceKey: format.InstanceKey("SQL01"), Seq: 7, End: end}.Dir()))
+	if err := os.MkdirAll(b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, format.ManifestFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := remotePurgeGuard(o)
+	for _, want := range []string{"1 bundle", "2026-11-16 10:05:00 UTC", "lost", "-force"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("a bundle not pushed: want %q in %v", want, err)
+		}
+	}
+	o.Force = true
+	if err := remotePurgeGuard(o); err != nil {
+		t.Errorf("-force: %v", err)
+	}
+	o.Force = false
+	if err := os.WriteFile(b+".pushed", []byte(end.Format(time.RFC3339)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := remotePurgeGuard(o); err != nil {
+		t.Errorf("a pushed bundle only: %v", err)
+	}
 }
 
 // install -remote again over a new binary (the upgrade path -remote -upgrade's refusal names) finds its folder as the

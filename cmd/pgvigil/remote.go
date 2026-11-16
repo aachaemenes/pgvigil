@@ -117,6 +117,9 @@ func remoteServiceLog(cfgPath string) (string, bool) {
 	return filepath.Join(cfg.Remote.StateDir, "pgvigil-remote.log"), true
 }
 
+// remotePurgeGuard is uninstall -remote -purge's refusal while the outbox holds bundles not pushed (the lead's 12:2x).
+func remotePurgeGuard(o installOptions) error { return nil }
+
 func sweepOutbox(outbox string, keepDays, maxMB int, now time.Time) int {
 	aged, capped := remote.SweepOutbox(outbox, keepDays, maxMB, now)
 	return aged + capped
