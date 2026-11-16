@@ -34,6 +34,11 @@ import (
 // tab's), aggregates, and PostgreSQL 18's NOT NULL constraints (the column's own definition carries NOT NULL).
 // A function's body is read as text and hashed here (SHA-256, Go's crypto: no md5() on a FIPS server): the
 // definition holds the signature, language, volatility, security and settings, then "body sha256:<16 hex>".
+// A PostgreSQL 14+ SQL-standard body (BEGIN ATOMIC ... END, RETURN expr) has an empty prosrc (the pg_proc page:
+// 'typically an empty string'): it is read with pg_get_function_sqlbody (task A26-PG; see schemaObjectsFor), the server's own
+// decompiled text. Deparsing a body takes an AccessShareLock on every table it reads until the read's transaction ends,
+// as pg_get_viewdef does for a view: an ACCESS EXCLUSIVE lock held on such a table past lock_timeout fails the
+// database's read for that run (its stored snapshot stays).
 //
 // Every read is pg_monitor's: the catalogs and pg_get_*def are readable by every role.
 //
@@ -77,8 +82,9 @@ const schemaDBSQL = `
 SELECT 'db' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, now() AS read_at`
 
-// schemaObjectsSQL: every object of the database's own schemas, one row each; $1 is the cap plus one.
-const schemaObjectsSQL = `
+// schemaObjectsTmpl: every object of the database's own schemas, one row each; $1 is the cap plus one. The function
+// arm's body, body_prev and lateral read are filled by schemaObjectsFor.
+const schemaObjectsTmpl = `
 WITH ext AS (SELECT classid, objid FROM pg_depend WHERE deptype = 'e'),
 ns AS (
   SELECT n.oid, n.nspname, n.nspowner, n.nspacl FROM pg_namespace n
@@ -94,7 +100,7 @@ rel AS (
 obj AS (
   SELECT 'schema' AS okind, (pg_identify_object('pg_namespace'::regclass, n.oid, 0)).identity AS identity,
          n.nspname::text AS schema_name, n.nspname::text AS object_name, NULL::text AS parent,
-         'schema'::text AS definition, pg_get_userbyid(n.nspowner)::text AS owner, n.nspacl::text AS acl, NULL::text AS body
+         'schema'::text AS definition, pg_get_userbyid(n.nspowner)::text AS owner, n.nspacl::text AS acl, NULL::text AS body, NULL::text AS body_prev
     FROM ns n
   UNION ALL
   SELECT 'table', c.ident, c.nspname, c.relname, NULL,
@@ -106,7 +112,7 @@ obj AS (
            CASE WHEN c.reloptions IS NOT NULL THEN 'with (' || array_to_string(c.reloptions, ', ') || ')' END,
            CASE WHEN c.reltablespace <> 0 THEN 'tablespace ' || (SELECT t.spcname FROM pg_tablespace t WHERE t.oid = c.reltablespace) END,
            CASE WHEN c.relrowsecurity THEN 'row level security' END),
-         pg_get_userbyid(c.relowner), c.relacl::text, NULL
+         pg_get_userbyid(c.relowner), c.relacl::text, NULL, NULL
     FROM rel c WHERE c.relkind IN ('r', 'p', 'f')
   UNION ALL
   SELECT 'column', (pg_identify_object('pg_class'::regclass, c.oid, a.attnum)).identity, c.nspname, a.attname, c.ident,
@@ -118,25 +124,25 @@ obj AS (
            CASE WHEN a.attgenerated = 's' THEN 'generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') stored'
                 WHEN a.attgenerated = 'v' THEN 'generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') virtual'
                 WHEN d.adbin IS NOT NULL THEN 'default ' || pg_get_expr(d.adbin, d.adrelid) END),
-         NULL, a.attacl::text, NULL
+         NULL, a.attacl::text, NULL, NULL
     FROM rel c
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
    WHERE c.relkind IN ('r', 'p', 'f')
   UNION ALL
   SELECT 'index', c.ident, c.nspname, c.relname, t.ident,
-         pg_get_indexdef(c.oid) || CASE WHEN NOT i.indisvalid THEN ' (INVALID)' ELSE '' END, NULL, NULL, NULL
+         pg_get_indexdef(c.oid) || CASE WHEN NOT i.indisvalid THEN ' (INVALID)' ELSE '' END, NULL, NULL, NULL, NULL
     FROM rel c JOIN pg_index i ON i.indexrelid = c.oid JOIN rel t ON t.oid = i.indrelid
    WHERE c.relkind IN ('i', 'I')
   UNION ALL
   SELECT 'constraint', (pg_identify_object('pg_constraint'::regclass, k.oid, 0)).identity, c.nspname, k.conname, c.ident,
-         pg_get_constraintdef(k.oid) || CASE WHEN NOT k.convalidated THEN ' NOT VALID' ELSE '' END, NULL, NULL, NULL
+         pg_get_constraintdef(k.oid) || CASE WHEN NOT k.convalidated THEN ' NOT VALID' ELSE '' END, NULL, NULL, NULL, NULL
     FROM pg_constraint k JOIN rel c ON c.oid = k.conrelid
    WHERE k.contype <> 'n'
   UNION ALL
   SELECT 'trigger', (pg_identify_object('pg_trigger'::regclass, g.oid, 0)).identity, c.nspname, g.tgname, c.ident,
          pg_get_triggerdef(g.oid) || CASE g.tgenabled WHEN 'D' THEN ' (DISABLED)' WHEN 'R' THEN ' (REPLICA)' WHEN 'A' THEN ' (ALWAYS)' ELSE '' END,
-         NULL, NULL, NULL
+         NULL, NULL, NULL, NULL
     FROM pg_trigger g JOIN rel c ON c.oid = g.tgrelid
    WHERE NOT g.tgisinternal
   UNION ALL
@@ -154,13 +160,13 @@ obj AS (
            CASE WHEN p.prokind <> 'p' THEN 'cost ' || p.procost END,
            CASE WHEN p.proretset THEN 'rows ' || p.prorows END,
            CASE WHEN p.proconfig IS NOT NULL THEN 'set ' || array_to_string(p.proconfig, ', ') END),
-         pg_get_userbyid(p.proowner), p.proacl::text, coalesce(p.prosrc, '') || coalesce(' ' || p.probin, '')
-    FROM pg_proc p JOIN ns n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+         pg_get_userbyid(p.proowner), p.proacl::text, {{body}}, {{body_prev}}
+    FROM pg_proc p JOIN ns n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang{{lateral}}
    WHERE p.prokind IN ('f', 'p', 'w')
      AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_proc'::regclass AND ext.objid = p.oid)
   UNION ALL
   SELECT CASE c.relkind WHEN 'm' THEN 'materialized view' ELSE 'view' END, c.ident, c.nspname, c.relname, NULL,
-         pg_get_viewdef(c.oid, true), pg_get_userbyid(c.relowner), c.relacl::text, NULL
+         pg_get_viewdef(c.oid, true), pg_get_userbyid(c.relowner), c.relacl::text, NULL, NULL
     FROM rel c WHERE c.relkind IN ('v', 'm')
   UNION ALL
   SELECT 'sequence', c.ident, c.nspname, c.relname,
@@ -174,15 +180,58 @@ obj AS (
               FROM pg_depend dp
              WHERE dp.classid = 'pg_class'::regclass AND dp.objid = c.oid AND dp.refclassid = 'pg_class'::regclass
                AND dp.deptype IN ('a', 'i') AND dp.refobjsubid > 0 LIMIT 1)),
-         pg_get_userbyid(c.relowner), c.relacl::text, NULL
+         pg_get_userbyid(c.relowner), c.relacl::text, NULL, NULL
     FROM rel c JOIN pg_sequence s ON s.seqrelid = c.oid
 )
 SELECT 'obj' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, okind AS object_kind, identity, schema_name, object_name, parent,
-       definition, owner, acl, body
+       definition, owner, acl, body, body_prev
   FROM obj
  ORDER BY okind, identity
  LIMIT $1`
+
+// schemaBodyOld is a function's body as every version reads it: prosrc, then probin for a C function.
+const schemaBodyOld = `coalesce(p.prosrc, '') || coalesce(' ' || p.probin, '')`
+
+// schemaObjectsFor fills the function arm. sqlBody false (PostgreSQL 13, or a server without pg_get_function_sqlbody):
+// the body is schemaBodyOld, as before A26-PG. sqlBody true: pg_get_function_sqlbody(p.oid), the body of an
+// SQL-standard function alone ('BEGIN ATOMIC ... END', 'RETURN ...'; NULL for a string body and for a function dropped
+// under the read, which keep schemaBodyOld). It is pg_dump's own reader of such a body and is not in the docs' table of
+// catalog functions (Table 9.76), so schemaBodyProbeSQL asks for it on each connection and a 14+ server without it is
+// a collector error (schemaBodyChoice). No reference to prosqlbody: PostgreSQL 13 has no such column. body_prev is
+// schemaBodyOld beside an SQL-standard body only: the import's hash_prev (schemaFinishMode) is taken over it.
+func schemaObjectsFor(sqlBody bool) string {
+	r := strings.NewReplacer("{{body}}", schemaBodyOld, "{{body_prev}}", "NULL::text", "{{lateral}}", "")
+	if sqlBody {
+		r = strings.NewReplacer("{{body}}", "coalesce(sb.body, "+schemaBodyOld+")",
+			"{{body_prev}}", "CASE WHEN sb.body IS NOT NULL THEN "+schemaBodyOld+" END",
+			"{{lateral}}", "\n    CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body) sb")
+	}
+	return r.Replace(schemaObjectsTmpl)
+}
+
+// schemaObjectsSQL reads bodies as before (PostgreSQL 13, or no pg_get_function_sqlbody); schemaObjectsSQLBody reads a
+// 14+ SQL-standard body's text.
+var (
+	schemaObjectsSQL     = schemaObjectsFor(false)
+	schemaObjectsSQLBody = schemaObjectsFor(true)
+)
+
+// schemaBodyProbeSQL is asked on each connection before its objects (the batch path carries no server version, and an
+// instance's DSN may route another database to another server): the version and whether pg_get_function_sqlbody exists.
+const schemaBodyProbeSQL = `SELECT current_setting('server_version_num')::int, to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)') IS NOT NULL`
+
+// schemaBodyChoice: read SQL-standard bodies where the function exists; a server at 14 or later without it reads them
+// as before and says so (a collector_error row: the run is 'partial'), never silently.
+func schemaBodyChoice(version int, has bool) (sqlBody bool, note string) {
+	if has {
+		return true, ""
+	}
+	if version >= 140000 {
+		return false, fmt.Sprintf("pg_get_function_sqlbody is absent on PostgreSQL %d: SQL-standard function bodies (BEGIN ATOMIC, RETURN) are read as before, so a change of one is not seen", version/10000)
+	}
+	return false, ""
+}
 
 // schemaDDLStateSQL finds the event trigger's table (any schema, public first) and its two event triggers.
 const schemaDDLStateSQL = `
@@ -430,6 +479,8 @@ func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platfor
 			switch r["kind"] {
 			case "ddl", "ddl_cursor":
 				ddl = append(ddl, r)
+			case "collector_error":
+				final = append(final, r)
 			default:
 				objs = append(objs, r)
 			}
@@ -496,7 +547,13 @@ func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time, mode stri
 	if _, err := conn.Exec(ctx, `SET search_path = pg_catalog`); err != nil {
 		return nil, fmt.Errorf("search_path: %w", err)
 	}
-	db, objs, objErr := schemaObjects(ctx, conn, mode)
+	var version int
+	var hasSQLBody bool
+	if err := conn.QueryRow(ctx, schemaBodyProbeSQL).Scan(&version, &hasSQLBody); err != nil {
+		return nil, fmt.Errorf("the body probe: %w", err)
+	}
+	sqlBody, bodyNote := schemaBodyChoice(version, hasSQLBody)
+	db, objs, objErr := schemaObjects(ctx, conn, mode, sqlBody)
 	ddl, status, table, note := schemaDDL(ctx, conn, since)
 	if objErr != nil {
 		return ddl, objErr
@@ -505,14 +562,19 @@ func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time, mode stri
 	if note != "" {
 		db["ddl_log_note"] = note
 	}
-	out := make([]Row, 0, len(objs)+len(ddl)+1)
+	out := make([]Row, 0, len(objs)+len(ddl)+2)
 	out = append(out, db)
 	out = append(out, objs...)
+	if bodyNote != "" {
+		dat, _ := db["datname"].(string)
+		// never 'schema:<db>' (import_schema reads that source as a database in error): a note, the objects still count
+		out = append(out, Row{"kind": "collector_error", "source": "schema body:" + dat, "message": bodyNote})
+	}
 	return append(out, ddl...), nil
 }
 
 // schemaObjects reads the database row and its objects in one snapshot.
-func schemaObjects(ctx context.Context, conn *pgx.Conn, mode string) (Row, []Row, error) {
+func schemaObjects(ctx context.Context, conn *pgx.Conn, mode string, sqlBody bool) (Row, []Row, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin: %w", err)
@@ -529,7 +591,11 @@ func schemaObjects(ctx context.Context, conn *pgx.Conn, mode string) (Row, []Row
 	if len(dbRows) != 1 {
 		return nil, nil, fmt.Errorf("database: %d rows", len(dbRows))
 	}
-	r, err = tx.Query(ctx, schemaObjectsSQL, schemaMaxObjects+1)
+	objectsSQL := schemaObjectsSQL
+	if sqlBody {
+		objectsSQL = schemaObjectsSQLBody
+	}
+	r, err = tx.Query(ctx, objectsSQL, schemaMaxObjects+1)
 	if err != nil {
 		return nil, nil, fmt.Errorf("objects: %w", err)
 	}
@@ -651,20 +717,22 @@ func schemaFinishMode(objs []Row, mode string) {
 	for _, o := range objs {
 		def, _ := o["definition"].(string)
 		body, hasBody := o["body"].(string)
-		if hasBody {
-			sum := sha256.Sum256([]byte(body))
-			def += " body sha256:" + hex.EncodeToString(sum[:])[:16]
-		}
+		prev, hasPrev := o["body_prev"].(string)
 		delete(o, "body")
+		delete(o, "body_prev")
 		owner, _ := o["owner"].(string)
 		acl, _ := o["acl"].(string)
 		kind, _ := o["object_kind"].(string)
-		h := sha256.New()
-		for _, s := range []string{kind, def, owner, acl} {
-			h.Write([]byte(s))
-			h.Write([]byte{0})
+		// task A26-PG: beside an SQL-standard body, the hash the code before it took over the same row (its body
+		// schemaBodyOld, '' for such a function): import_schema takes a stored row with that hash as the body's
+		// baseline, not a change (the upgrade's first read)
+		if hasBody && hasPrev {
+			o["hash_prev"] = schemaRowHash(kind, schemaHashedDef(def, prev), owner, acl)
 		}
-		o["hash"] = hex.EncodeToString(h.Sum(nil))
+		if hasBody {
+			def = schemaHashedDef(def, body)
+		}
+		o["hash"] = schemaRowHash(kind, def, owner, acl)
 		// the definition's own hash: a change past the cut is seen even when the owner or ACL changed with it
 		dh := sha256.Sum256([]byte(def))
 		o["def_hash"] = hex.EncodeToString(dh[:])
@@ -679,6 +747,22 @@ func schemaFinishMode(objs []Row, mode string) {
 		}
 		o["definition"] = schemaCut(stored, schemaMaxDef)
 	}
+}
+
+// schemaHashedDef is a definition with its body's hash at the end ('body sha256:<16 hex>').
+func schemaHashedDef(def, body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return def + " body sha256:" + hex.EncodeToString(sum[:])[:16]
+}
+
+// schemaRowHash is a row's hash: kind, hashed form, owner and ACL, each followed by a zero byte.
+func schemaRowHash(kind, def, owner, acl string) string {
+	h := sha256.New()
+	for _, s := range []string{kind, def, owner, acl} {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // schemaHashesOnly puts the hashed form back in every row that carries a body's text; false when none does.

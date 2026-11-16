@@ -115,21 +115,73 @@ func TestSchemaDDLLogSQL(t *testing.T) {
 }
 
 // TestSchemaObjectsSQL: the read leaves out the catalogs, temporary relations and extension members, and the NOT NULL
-// constraints of PostgreSQL 18; identities are pg_identify_object's (the event trigger's text).
+// constraints of PostgreSQL 18; identities are pg_identify_object's (the event trigger's text). Both variants (task
+// A26-PG, the pass's N10): every check on each; neither names prosqlbody (PostgreSQL 13 has no such column); the old
+// variant never calls pg_get_function_sqlbody; the new one reads it once per function, the old expression beside it.
 func TestSchemaObjectsSQL(t *testing.T) {
-	for _, want := range []string{
-		"nspname NOT IN ('pg_catalog', 'information_schema')", "'^pg_(toast|temp_|toast_temp_)'", "deptype = 'e'",
-		"relpersistence <> 't'", "k.contype <> 'n'", "NOT g.tgisinternal", "pg_identify_object('pg_class'::regclass, c.oid, a.attnum)",
-		"LIMIT $1",
-		// the review fold: PostgreSQL 18's virtual columns, and the function attributes a CREATE OR REPLACE can change
-		"attgenerated = 'v'", "pg_get_function_arguments(p.oid)", "p.proparallel", "p.proleakproof", "p.procost",
-	} {
-		if !strings.Contains(schemaObjectsSQL, want) {
-			t.Errorf("schemaObjectsSQL lacks %q", want)
+	for name, q := range map[string]string{"schemaObjectsSQL": schemaObjectsSQL, "schemaObjectsSQLBody": schemaObjectsSQLBody} {
+		for _, want := range []string{
+			"nspname NOT IN ('pg_catalog', 'information_schema')", "'^pg_(toast|temp_|toast_temp_)'", "deptype = 'e'",
+			"relpersistence <> 't'", "k.contype <> 'n'", "NOT g.tgisinternal", "pg_identify_object('pg_class'::regclass, c.oid, a.attnum)",
+			"LIMIT $1",
+			// the review fold: PostgreSQL 18's virtual columns, and the function attributes a CREATE OR REPLACE can change
+			"attgenerated = 'v'", "pg_get_function_arguments(p.oid)", "p.proparallel", "p.proleakproof", "p.procost",
+			// A26-PG: the old expression stays in both, body_prev in the read
+			schemaBodyOld, "NULL::text AS body, NULL::text AS body_prev", "definition, owner, acl, body, body_prev",
+		} {
+			if !strings.Contains(q, want) {
+				t.Errorf("%s lacks %q", name, want)
+			}
+		}
+		for _, bad := range []string{"md5(", "prosqlbody", "{{"} {
+			if strings.Contains(q, bad) {
+				t.Errorf("%s holds %q", name, bad)
+			}
 		}
 	}
-	if strings.Contains(schemaObjectsSQL, "md5(") {
-		t.Error("md5() fails on a FIPS server: the body is hashed in Go")
+	if strings.Contains(schemaObjectsSQL, "pg_get_function_sqlbody") {
+		t.Error("schemaObjectsSQL calls pg_get_function_sqlbody: PostgreSQL 13 has none")
+	}
+	if !strings.Contains(schemaObjectsSQL, "p.proacl::text, "+schemaBodyOld+", NULL::text\n") {
+		t.Error("schemaObjectsSQL's function body is not the old expression with a NULL body_prev")
+	}
+	for _, want := range []string{
+		"CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body) sb",
+		"coalesce(sb.body, " + schemaBodyOld + ")", "CASE WHEN sb.body IS NOT NULL THEN " + schemaBodyOld + " END",
+	} {
+		if !strings.Contains(schemaObjectsSQLBody, want) {
+			t.Errorf("schemaObjectsSQLBody lacks %q", want)
+		}
+	}
+	if n := strings.Count(schemaObjectsSQLBody, "pg_get_function_sqlbody("); n != 1 {
+		t.Errorf("schemaObjectsSQLBody calls pg_get_function_sqlbody %d times, want once (its lateral)", n)
+	}
+}
+
+// TestSchemaBodyChoice: the probe's outcomes (task A26-PG, the pass's S1 and the lead's 'fails if absent'): 13 reads as
+// before with no note; 14 / 18 with the function read SQL-standard bodies; a 14+ server without it reads as before and
+// says so.
+func TestSchemaBodyChoice(t *testing.T) {
+	for _, c := range []struct {
+		version  int
+		has      bool
+		want     bool
+		wantNote string
+	}{
+		{130023, false, false, ""},
+		{140025, true, true, ""},
+		{180006, true, true, ""},
+		{140025, false, false, "pg_get_function_sqlbody is absent on PostgreSQL 14: "},
+		{180006, false, false, "pg_get_function_sqlbody is absent on PostgreSQL 18: "},
+	} {
+		got, note := schemaBodyChoice(c.version, c.has)
+		if got != c.want || (c.wantNote == "" && note != "") || (c.wantNote != "" && !strings.HasPrefix(note, c.wantNote)) {
+			t.Errorf("schemaBodyChoice(%d, %v) = %v, %q; want %v, %q...", c.version, c.has, got, note, c.want, c.wantNote)
+		}
+	}
+	if !strings.Contains(schemaBodyProbeSQL, "to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)') IS NOT NULL") ||
+		!strings.Contains(schemaBodyProbeSQL, "current_setting('server_version_num')::int") {
+		t.Errorf("schemaBodyProbeSQL: %s", schemaBodyProbeSQL)
 	}
 }
 
