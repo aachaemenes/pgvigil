@@ -81,9 +81,10 @@ func azureServerState(i Info) bool {
 const rightsNoAccessWhere = `d.state = 0 AND d.user_access = 0 AND d.name NOT IN (N'rdsadmin', N'gcloud_cloudsqladmin') AND HAS_DBACCESS(d.name) = 0`
 
 // msdbReaderTables: the msdb tables the collectors ask msdbReadable about - backups.go's backupFileTables, jobs.go's
-// jobTables, log shipping's two and its restores' restorehistory (TestRightsMsdbTables holds the list to every call);
+// jobTables (sysproxies among them), log shipping's two, its restores' restorehistory and the security read's
+// sysproxylogin (TestRightsMsdbTables holds the list to every msdbReadable call);
 // msdb_reader's check asks each.
-var msdbReaderTables = append(append(append([]string{}, backupFileTables...), jobTables...), "log_shipping_monitor_primary", "log_shipping_monitor_secondary", "restorehistory")
+var msdbReaderTables = append(append(append([]string{}, backupFileTables...), jobTables...), "log_shipping_monitor_primary", "log_shipping_monitor_secondary", "restorehistory", "sysproxylogin")
 
 // msdbReaderCheck: msdb is entered and every table of msdbReaderTables is readable.
 func msdbReaderCheck() string {
@@ -163,7 +164,7 @@ var Rights = []Right{
 		Grant: "GRANT SELECT ON dbo.restorehistory TO {p};", UserDB: "msdb",
 		Checks: []string{"HAS_PERMS_BY_NAME(N'msdb.dbo.restorehistory', 'OBJECT', 'SELECT')"}, On: notAzureDB},
 	{Key: "registry_instance", Name: "EXECUTE on master.dbo.xp_instance_regread",
-		For:   "Properties: the TCP port, the protocols and the encryption settings where the registry view does not hold them",
+		For:   "Properties: the TCP port, the protocols and the encryption settings where the registry view does not hold them; the security read's registry values (its notes name this grant)",
 		Check: "HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')",
 		Grant: "GRANT EXECUTE ON dbo.xp_instance_regread TO {p};", UserDB: "master",
 		Checks: []string{"HAS_PERMS_BY_NAME(N'master.dbo.xp_instance_regread', 'OBJECT', 'EXECUTE')",
@@ -225,7 +226,7 @@ var RightsExceptions = map[string]string{
 	"HAS_PERMS_BY_NAME(N'master.dbo.pgvigil_evict_plan', N'OBJECT', N'EXECUTE')": "the actions login's (docs/sqlserver-actions.md)",
 	"IS_SRVROLEMEMBER('sysadmin')":                                               "the actions door's refusal of a sysadmin login",
 	"HAS_PERMS_BY_NAME(NULL, NULL, ...)":                                         "a comment's ellipsis, not a statement",
-	// the j16 join: the checks of slices that met this catalogue there, each read in its own code
+	// the checks of the reads added after this catalogue, each read in its own code
 	"IS_SRVROLEMEMBER(N'sysadmin')":                                 "the Agent alerts script's own check of the login that runs it (a DBA's: msdb.dbo.sp_add_alert needs sysadmin, error 15003); pgvigil prints the script and never runs it",
 	"HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LINKED SERVER')":      "looked for, never asked for: whether the read login sees every linked server's login mappings (the linked-server checks say when it does not)",
 	"HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY LOGIN')":              "looked for, never asked for: the linked-server and security reads' alternative to VIEW ANY DEFINITION (it lets a login change logins)",
