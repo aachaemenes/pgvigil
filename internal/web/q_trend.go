@@ -15,9 +15,11 @@ import (
 )
 
 // fleetFileIOWindow is the newest raw window the fleet's file-IO latency reads until B21's hourly fileio (slice 418)
-// lands (the lead 11-15 18:1x: 3 days when proof-trend's fleet-scale row reads both under 10 s, else 1 day; box jobs
-// A2: a week of 100 instances x 40 files read raw takes 10-12 s at serve's work_mem, against its 15 s limit)
-const fleetFileIOWindow = 24 * time.Hour
+// lands (the lead 11-15 18:1x: 3 days when proof-trend's fleet-scale row reads both under 10 s, else 1 day). Measured
+// at 100 instances x 40 files in the collector's order on dba-lab-box: trend_series over 3 days 6.97 / 7.84 s
+// (b20-t1g1, load 12) and 8.31 / 8.98 s (the early run, load 8-12), over 1 day 4.11-7.01 s; box jobs A2: a week read
+// raw takes 10-12 s at serve's work_mem, against its 15 s limit
+const fleetFileIOWindow = 72 * time.Hour
 
 // instanceFileIOWindow: one instance's file-IO arms (by instance and by database) read at most a week (the lead 17:0x)
 const instanceFileIOWindow = 7 * 24 * time.Hour
