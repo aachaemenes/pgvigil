@@ -1,6 +1,11 @@
 package demo
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +56,49 @@ func TestHasEngine(t *testing.T) {
 	}
 	if len(pg) == 0 || hasEngine(pg, EngineSQLServer) {
 		t.Errorf("a PostgreSQL-only fleet of %d: hasEngine(%s) is not false", len(pg), EngineSQLServer)
+	}
+}
+
+// TestStorageParentsAreTheImportsOpens: the storage year's months are made ahead for exactly the parents
+// import_mssql_storage opens (its ensure_month_partition calls, in the last migration that defines it), so the year of
+// storage reads before the grid makes no month inside the import - the partition-deadlock proof's R8 (0158 added
+// mssql_database_space to the import: a parent left off the list had its year made inside import_mssql_storage).
+func TestStorageParentsAreTheImportsOpens(t *testing.T) {
+	ents, err := os.ReadDir("../repo/sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	def := regexp.MustCompile(`(?is)CREATE\s+OR\s+REPLACE\s+FUNCTION\s+pgvigil\.import_mssql_storage\s*\(.*?AS\s+\$\$(.*?)\$\$`)
+	comment := regexp.MustCompile(`--[^\n]*`)
+	opens := regexp.MustCompile(`ensure_month_partition\s*\(\s*'(\w+)'`)
+	var body, from string
+	for _, n := range names {
+		b, err := os.ReadFile(filepath.Join("../repo/sql", n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range def.FindAllStringSubmatch(comment.ReplaceAllString(string(b), ""), -1) {
+			body, from = m[1], n
+		}
+	}
+	if body == "" {
+		t.Fatal("no migration defines pgvigil.import_mssql_storage")
+	}
+	var want []string
+	for _, m := range opens.FindAllStringSubmatch(body, -1) {
+		want = append(want, m[1])
+	}
+	sort.Strings(want)
+	got := append([]string{}, mssqlStorageParents...)
+	sort.Strings(got)
+	if len(want) == 0 || strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("mssqlStorageParents = %v; import_mssql_storage (%s) opens %v", got, from, want)
 	}
 }
