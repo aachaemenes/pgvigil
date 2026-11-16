@@ -19,6 +19,9 @@
 //	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
 //	pgvigil uninstall -all [-bin p] [-config p] [-user a] [-dry-run] [-drop-repository [-confirm-database <name>] [-owner-dsn-file <path> | -owner-dsn-env <NAME>] [-dump <file> [-pg-dump <path>] | -no-dump]]
 //	pgvigil mcp       [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]                   read-only MCP tools on stdio (reader login)
+//	pgvigil install   -remote | uninstall -remote [-purge [-force]]                      the remote collector's own service (docs/remote-collector.md)
+//	pgvigil remote init -config f | bundle inspect [-key k]... <dir>                       the remote's signing key; a bundle read as plain JSON
+//	pgvigil ingest    -config pgvigil.yaml [-retry <site>/<collector>/<key>/<day>/<seq>-<end>]   one round of remote_sites: on ingest_dsn (run loops it)
 //	pgvigil version
 package main
 
@@ -186,7 +189,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|export|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|bundle|remote|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|export|tag|report|install|uninstall|mcp|mssql-xe|mssql-agent-alerts|import|bundle|remote|ingest|version> [-config file] [-once collection] [-instance name]")
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 
@@ -399,6 +402,14 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	if !ok {
 		return fmt.Errorf("repository schema is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", latest)
+	}
+	// the hub's remote sites (remote_sites:, docs/remote-collector.md): their rounds on ingest's own login, checked first
+	if len(cfg.RemoteSites) > 0 {
+		stop, err := startIngest(ctx, log, cfg)
+		if err != nil {
+			return err
+		}
+		defer stop()
 	}
 	// task 201: the heartbeat (the Collector page; many collectors may share a repository, one per host)
 	waitBeat, err := collect.StartHeartbeat(ctx, log, cfg.Repository.DSN(), collect.HeartbeatInfo{Version: version, SendsAlerts: len(ast.Channels) > 0, Probe: cfg.Probe, ProbeEveryMinute: cfg.ProbeEveryMinute})
