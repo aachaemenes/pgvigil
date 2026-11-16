@@ -100,6 +100,11 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 //     secondary behind' (a secondary 300 s behind; 0143's 'a secondary would lose data in a failover'). With a
 //     standby 400 s behind at two reads a minute apart, and an availability group's secondary the same, each HA
 //     finding stands in pgvigil.findings and neither of 0118's two names does.
+//  8. Two files re-create pgvigil.mssql_hadr_findings whole: 0142 (0066's view less its two replication arms, with one
+//     UNION ALL of its own mssql_repl_findings) and 0143 (every arm of the HA slice, and that same UNION ALL). In name
+//     order 0143 runs last and its view stands. A guard on the view as the store ends with it: it reads
+//     mssql_repl_findings, keeps 0143's arms, holds no replication arm of its own, and mssql_repl_findings is 0142's
+//     (0143 makes a stand-in of 0066's two arms only where the view is missing).
 func TestHAJoinOnAFreshStore(t *testing.T) {
 	// 5 minutes, under go test's own 10 for the package: a migrate that hangs ends here, where the cleanup still runs
 	// and drops the database (a package timeout would leave pgvha_<n> behind)
@@ -345,4 +350,22 @@ func TestHAJoinOnAFreshStore(t *testing.T) {
 		                AND f.setting IN ('standby lag', 'a secondary would lose data in a failover', 'replay lag', 'AG secondary behind')
 		              GROUP BY f.setting) x`, lagPG, lagMS),
 		"a secondary would lose data in a failover 1, standby lag 1")
+
+	// 8. the final mssql_hadr_findings: 0143's view with 0142's change in it
+	hadrView := str(`SELECT pg_get_viewdef('pgvigil.mssql_hadr_findings'::regclass)`)
+	replView := str(`SELECT pg_get_viewdef('pgvigil.mssql_repl_findings'::regclass)`)
+	for _, c := range []struct {
+		what, def, text string
+		holds           bool
+	}{
+		{"mssql_hadr_findings reads mssql_repl_findings (0142's one UNION ALL)", hadrView, "mssql_repl_findings", true},
+		{"mssql_hadr_findings keeps 0143's arms", hadrView, "a secondary would lose data in a failover", true},
+		{"mssql_hadr_findings holds 0066's 'a replication agent failed' arm itself", hadrView, "a replication agent failed", false},
+		{"mssql_hadr_findings holds 0066's 'undistributed commands' arm itself", hadrView, "undistributed commands over the threshold", false},
+		{"mssql_repl_findings is 0142's view (its 'replication latency' arm)", replView, "replication latency over the threshold", true},
+	} {
+		if strings.Contains(c.def, c.text) != c.holds {
+			t.Errorf("%s: %v, want %v", c.what, !c.holds, c.holds)
+		}
+	}
 }
