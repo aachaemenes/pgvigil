@@ -66,8 +66,8 @@ func TestPageSettingsCheck(t *testing.T) {
 
 // TestPageSettingsThresholdsCheck (ST5b): serve's judgement of a page instance's thresholds and paused intervals - a
 // SQL Server instance's only, each name one of mssql.ThresholdRows' (its own words), paused only for a collection of
-// the engine whose schedule is off; and a stored row read by Merge reaches mssql.ThresholdRows whole (the design
-// pass's F2: json.Number refused there).
+// the engine whose schedule is off (Merge's round trip of a stored row is TestMergedPageThresholdRows, in
+// scripts/st5b-wiring.patch: it needs PageInstance.SettingsRaw, a field of scripts/st5-wiring.patch).
 func TestPageSettingsThresholdsCheck(t *testing.T) {
 	for _, c := range []struct{ engine, raw, want string }{
 		{config.EngineSQLServer, `{"thresholds": {"redo_queue_kb": 1, "backup_exclude": ["Sales%"]}}`, ""},
@@ -89,15 +89,6 @@ func TestPageSettingsThresholdsCheck(t *testing.T) {
 		if c.want == "" && got != "" || c.want != "" && !strings.HasPrefix(got, c.want) {
 			t.Errorf("%s %s: %q, want %q", c.engine, c.raw, got, c.want)
 		}
-	}
-	all, skipped := config.Merge(nil, []config.PageInstance{{Name: "m1", Engine: config.EngineSQLServer, DSNRef: "file:/etc/pgvigil/m1",
-		SettingsRaw: []byte(`{"thresholds": {"redo_queue_kb": 512000, "backup_exclude": ["Sales%"]}}`)}}, "full")
-	if len(all) != 1 || len(skipped) != 0 {
-		t.Fatalf("merged %d, skipped %v", len(all), skipped)
-	}
-	rows, err := mssql.ThresholdRows(all[0].MSSQLThresholds)
-	if err != nil || len(rows) != 1 || rows[0]["redo_queue_kb"] != float64(512000) {
-		t.Errorf("mssql.ThresholdRows of the merged instance: %v (%v)", rows, err)
 	}
 }
 
