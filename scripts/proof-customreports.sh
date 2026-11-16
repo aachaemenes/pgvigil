@@ -187,8 +187,8 @@
 #     the comment naming -LocalFile and the tested releases; no stub ran (sys.dm_exec_procedure_stats holds none of
 #     pgcr_v). RED (ebf9a9c): no version on any tool, no install_script.
 #  UV. the versions on the page (headless Chromium, signed in, light; after U, before U2): pgcr-msr's Community tools page
-#     draws 'Installed community tools' under the tools, its columns procedure | kit | database | version | its date |
-#     tested by pgvigil | status, one row per procedure GET /api/community gives a version word, each row's cells equal to
+#     draws 'Installed community tools' under the tools, its columns procedure | kit | database | installed here (its
+#     text, read now) | its date | tested by pgvigil | status, one row per procedure GET /api/community gives a version word, each row's cells equal to
 #     that reply's (the same database, the page's own check), the status cell the word itself in its badge (ok for the
 #     tested version, warn for older and unread); master: 13 rows, every one 'the tested version', no mixed-versions note;
 #     'Print the install script' opens on its summary's click to the reply's install_script exactly ('nothing to install'),
@@ -2020,8 +2020,8 @@ assert not p.get('error'), f"DV {who}: the driver: {p.get('error')}"
 assert a.get('demo') is True, f"DV {who}: the demo serve's reply is not a demo instance's"
 assert p.get('heading'), f"DV {who}: no 'Installed community tools' heading on the demo's page"
 rows = p.get('rows') or []
-bad = [r for r in rows if r['status'] != 'the tested version' or r['version'] != own.get(r['procedure']) or r['its date'] != date.get(r['kit'])
-       or r['tested by pgvigil'] != r['version'] or r['database'] != '' or 'ok' not in r['_badge'].split()]
+bad = [r for r in rows if r['status'] != 'the tested version' or r['installed here (its text, read now)'] != own.get(r['procedure']) or r['its date'] != date.get(r['kit'])
+       or r['tested by pgvigil'] != r['installed here (its text, read now)'] or r['database'] != '' or 'ok' not in r['_badge'].split()]
 assert len(rows) == 13 and not bad, f"DV {who}: {len(rows)} rows; unlike the tested version: {bad[:3]}"
 api = [t for t in a['tools'] if t['kind'] == 'proc']
 assert len(api) == 13 and all(t.get('version_word') == 'the tested version' for t in api), f"DV {who}: the reply's words {sorted({str(t.get('version_word')) for t in api})}"
