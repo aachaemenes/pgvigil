@@ -511,7 +511,10 @@ SELECT c.host, c.s0 AS since, c.began, c.ran, c.members,
 --     or one with no connect, is no evidence; nor a down member's own row OF the anchor minute: the stop can fall
 --     inside that minute, after the member's last answer - SV in j15k: target2 stopped at :02, one member answered
 --     before it and its spell began a minute later; a minute's row cannot tell the answer's side of the stop. An
---     answer after the anchor minute, or any instance's outside the down set, is the server answering).
+--     answer after the anchor minute, or any instance's outside the down set, is the server answering). A LIMIT, kept:
+--     an instance on the target read every 5 or 60 minutes whose one run of the anchor minute answered before the stop
+--     is outside the down set until its next run fails, and its row rules the server out until then (or until that row
+--     leaves the 15 minutes) - the members alert on their own meanwhile; rare (a stop within seconds of that run).
 --   instances = every down instance on the target: a standing or never-answered member is held with them, never counted.
 CREATE OR REPLACE FUNCTION pgvigil.collector_server_down_at(p_host text, p_minute timestamptz)
 RETURNS TABLE (target text, since timestamptz, instances int[]) LANGUAGE sql STABLE AS $$

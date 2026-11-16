@@ -20,12 +20,16 @@ import (
 // anchor is M, the earliest new down spell's start. Cases, the beats' order of collector_spells_take minute by minute:
 //   - 'stop inside the minute' (the red): the server is down from M, the three its set - an answer BEFORE a member's own
 //     down spell began is no evidence the server answers. RED on 0121 as it was: no row (the member's answered row at
-//     M, at or after the anchor, ruled the server out for good).
+//     M, at or after the anchor, ruled the server out until that row left the 15-minute window).
 //   - 'stop at the minute's edge' (the control): the three down from M alike - one row on both.
 //   - 'a fourth answers' (the guard): a fourth instance on the target, never down, answers at M+1 - no row on both (an
 //     answer from an instance not in the down set at or after the anchor is the server answering).
 //   - 'a member answers after the anchor' (the guard): one member down at M, answered at M+1, down again from M+2 - no
 //     row on both (only the anchor minute's answers of the down set are ambiguous: an answer after it is the server's).
+//   - 'a slow fourth answered in the anchor minute' (the guard, the review's #1): the three down from M alike, a fourth
+//     instance on the target answered at M-2 .. M and has no row after M (read seldom) - no row on both: only a DOWN
+//     member's own row of M is exempt, an answer in M from an instance outside the down set is the server answering (a
+//     fix exempting every row of the anchor minute passes the four cases above and fails this one).
 func TestServerDownStopMinuteOnAStore(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
 	if dsn == "" {
@@ -36,12 +40,14 @@ func TestServerDownStopMinuteOnAStore(t *testing.T) {
 		mixedM  bool // one member answered 1 of 6 at M (before the stop)
 		fourth  bool // a fourth instance on the target answers at every minute
 		flap    bool // the second member answers at M+1
+		slow    bool // the fourth's rows end at M (it is read seldom)
 		wantRow bool
 	}{
-		{"stop inside the minute", true, false, false, true},
-		{"stop at the minute's edge", false, false, false, true},
-		{"a fourth answers", true, true, false, false},
-		{"a member answers after the anchor", false, false, true, false},
+		{"stop inside the minute", true, false, false, false, true},
+		{"stop at the minute's edge", false, false, false, false, true},
+		{"a fourth answers", true, true, false, false, false},
+		{"a member answers after the anchor", false, false, true, false, false},
+		{"a slow fourth answered in the anchor minute", false, true, false, true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -90,6 +96,9 @@ func TestServerDownStopMinuteOnAStore(t *testing.T) {
 			}
 			for off := -2; off <= 2; off++ {
 				for i, id := range ids {
+					if i == 3 && c.slow && off > 0 {
+						continue // the slow fourth: no row after M
+					}
 					opened, noanswer := row(off, i)
 					if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures, noanswer, target, interval_s)
 						VALUES (date_trunc('minute', now()) - interval '3 minutes' + make_interval(mins => $1), $2, $3, 6, $4, 6, 6 - $4, 0, $5, $6, 10)`,
