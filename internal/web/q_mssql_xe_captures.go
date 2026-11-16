@@ -61,13 +61,13 @@ const sqlXCWaitsSeries = `SELECT date_trunc('hour', event_at) AS snapshot_at, co
 
 const sqlXCWaitsTop = `SELECT coalesce(query_plan_hash, '(no plan hash)') AS query_plan_hash, count(*) AS waits,
        round(avg(duration_ms), 1) AS avg_ms, max(duration_ms) AS max_ms, sum(duration_ms) AS total_ms,
-       (array_agg(statement ORDER BY event_at DESC) FILTER (WHERE statement IS NOT NULL))[1] AS statement,
+       (array_agg(statement ORDER BY event_at DESC) FILTER (WHERE statement IS NOT NULL))[1] AS "statement@stmt",
        (array_agg(database_name ORDER BY event_at DESC))[1] AS database_name
   FROM pgvigil.mssql_xe_waits WHERE instance_id = $1 AND event_at > $2 AND event_at <= $3
  GROUP BY 1 ORDER BY avg_ms DESC NULLS LAST LIMIT 10`
 
 const sqlXCWaits = `SELECT event_at, event_name, wait_type, category, duration_ms, signal_ms, session_id, login_name, host_name, program_name,
-       database_name, query_plan_hash, statement
+       database_name, query_plan_hash, statement AS "statement@stmt"
   FROM pgvigil.mssql_xe_waits WHERE instance_id = $1 AND event_at > $2 AND event_at <= $3
  ORDER BY event_at DESC LIMIT 500`
 
@@ -86,7 +86,7 @@ const sqlXCWarningsByEvent = `SELECT event_name, sum(events) AS events, count(DI
 const sqlXCWarningsTop = `SELECT h.event_name, nullif(h.database_name, '') AS database_name, nullif(h.query_plan_hash, '') AS query_plan_hash,
        sum(h.events) AS events, max(s.event_at) AS last_at,
        (array_agg(s.detail ORDER BY s.event_at DESC NULLS LAST))[1] AS detail,
-       (array_agg(s.statement ORDER BY s.event_at DESC NULLS LAST) FILTER (WHERE s.statement IS NOT NULL))[1] AS statement
+       (array_agg(s.statement ORDER BY s.event_at DESC NULLS LAST) FILTER (WHERE s.statement IS NOT NULL))[1] AS "statement@stmt"
   FROM pgvigil.mssql_xe_warning_hours h
   LEFT JOIN pgvigil.mssql_xe_warning_samples s USING (instance_id, hour_at, event_name, database_name, query_plan_hash)
  WHERE h.instance_id = $1 AND h.hour_at > date_trunc('hour', $2::timestamptz) - interval '1 hour' AND h.hour_at <= $3
