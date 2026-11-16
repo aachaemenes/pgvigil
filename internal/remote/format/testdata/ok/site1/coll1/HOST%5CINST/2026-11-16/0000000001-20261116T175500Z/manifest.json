@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "pgvigil_version": "v0.4.0-dev",
+  "schema_level": "0329_remote",
+  "site": "site1",
+  "collector": "coll1",
+  "stream": "3f9c0a7e5b1d2c48",
+  "seq": 1,
+  "window_from": "2026-11-16T17:50:00Z",
+  "window_to": "2026-11-16T17:55:00Z",
+  "query_text": "hash",
+  "instance": {"engine": "sqlserver", "name": "HOST\\INST", "platform": "onprem", "server_version": "16.0.4295.3", "version_num": 16, "is_replica": false, "tags": ["env:prod"]},
+  "files": [
+    {"view": "mssql_activity", "name": "mssql_activity.ndjson.gz", "batches": 2, "rows": 3, "bytes": 222, "raw_bytes": 318, "sha256": "dd93b6f5196b9144cf9189787a9ed9173712f472d533614fa8beedd200bf0b5e"},
+    {"view": "mssql_ag", "name": "mssql_ag.ndjson.gz", "batches": 1, "rows": 2, "bytes": 108, "raw_bytes": 123, "sha256": "bc5648edab8af0761d72bf9a27cb8a6f3df340aafc171bd26edbfcda1785e040"}
+  ],
+  "sums_sha256": "1548679544dace85ff964d651b1e8396b3055407b9de67e5eff38765d67e09a9",
+  "reads": [
+    {"collection": "mssql_activity", "status": "ran", "runs": 2},
+    {"collection": "mssql_ag", "status": "failed", "runs": 2, "failed": 1},
+    {"collection": "mssql_jobs", "status": "skipped", "reason": "not_due"}
+  ],
+  "runs": [
+    {"collection": "mssql_activity", "at": "2026-11-16T17:51:00Z", "ms": 120, "status": "ok"},
+    {"collection": "mssql_ag", "at": "2026-11-16T17:51:30Z", "ms": 80, "status": "ok"},
+    {"collection": "mssql_activity", "at": "2026-11-16T17:52:00Z", "ms": 110, "status": "ok"},
+    {"collection": "mssql_ag", "at": "2026-11-16T17:53:30Z", "ms": 30000, "status": "error", "stage": "read", "note": "timeout after 30s"}
+  ],
+  "failures": [],
+  "cursors": [
+    {"source": "errorlog", "kind": "mssql", "file_name": "ERRORLOG", "file_offset": 4096, "last_event_at": "2026-11-16T17:52:10Z"},
+    {"source": "jobs", "kind": "seq", "seq": 1234}
+  ],
+  "heartbeat": {"host": "jump01", "started": "2026-11-16T17:00:00Z", "at": "2026-11-16T17:55:00Z", "instances": 1, "fail_streak": 0}
+}
