@@ -756,9 +756,10 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
 -- the tier itself is 0121's) =====
 -- the 'connect_time' threshold: an instance's average connect over its last 5 written minutes, in seconds, over 1.00 /
 -- 2.50 by default, at the root, a tag or an instance - both engines at the instance level (as 'uptime'); a unit of
--- 'seconds' joins the keys' check
+-- 'seconds' joins the keys' check. This file runs after 0141 and 0150 (the HA join), whose keys are stored in 'MB' and
+-- as a 'count' by then: the list is every unit a file below this one stores, or the check fails on those rows
 ALTER TABLE pgvigil.pg_threshold_keys DROP CONSTRAINT IF EXISTS pg_threshold_keys_unit_check;
-ALTER TABLE pgvigil.pg_threshold_keys ADD CONSTRAINT pg_threshold_keys_unit_check CHECK (unit IN ('seconds', 'minutes', 'hours', 'days'));
+ALTER TABLE pgvigil.pg_threshold_keys ADD CONSTRAINT pg_threshold_keys_unit_check CHECK (unit IN ('seconds', 'minutes', 'hours', 'days', 'MB', 'count'));
 INSERT INTO pgvigil.pg_threshold_keys (key, label, unit, direction, warn_default, crit_default, levels, max_value) VALUES
   ('connect_time', 'Connect time: an instance''s average connect over its last 5 written minutes', 'seconds', 'over', 1.00, 2.50, '{root,tag,instance}', 60)
 ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, unit = EXCLUDED.unit, direction = EXCLUDED.direction,
