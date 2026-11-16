@@ -49,7 +49,9 @@ var dynamicSites = map[string][]srcShape{
 
 var cursorTables = `log_cursor|mssql_cursor|mssql_jobs_cursor|mssql_backup_files_cursor|mssql_backup_history_cursor|` +
 	`mssql_backup_history_dbs|mssql_stats_db|mssql_constraint_db|mssql_index_db|mssql_qs_store|mssql_qs_plan|` +
-	`mssql_azuredb_read|mssql_hadr_reads`
+	`mssql_azuredb_read|mssql_hadr_reads|` +
+	// the schema due's inputs (answers_schema.go keeps them as the hub's functions write them)
+	`mssql_reader_state|mssql_trace_events|mssql_schema_dbs|mssql_schema_trace_gaps|schema_databases`
 
 type goPkg struct {
 	fset   *token.FileSet
