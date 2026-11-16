@@ -240,7 +240,7 @@ const schemaJSONCols = `(SELECT c.name AS n, TYPE_NAME(c.user_type_id) AS t, c.m
 func schemaKeyCols(objectID, indexID string) string {
 	return `ISNULL((SELECT c.name AS n, ic.is_descending_key AS d FROM sys.index_columns ic
     JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-   WHERE ic.object_id = ` + objectID + ` AND ic.index_id = ` + indexID + ` AND ic.key_ordinal > 0 ORDER BY ic.key_ordinal FOR JSON PATH), N'[]')`
+   WHERE ic.object_id = ` + objectID + ` AND ic.index_id = ` + indexID + ` AND ic.key_ordinal > 0 ORDER BY ic.key_ordinal FOR JSON PATH), N'[]') COLLATE DATABASE_DEFAULT`
 }
 
 var schemaObjectsSQL = `WITH o AS (
@@ -252,11 +252,11 @@ SELECT ` + schemaCols("'schema'", "s.name", "NULL", "NULL", "NULL", "N'schema'",
   FROM sys.schemas s WHERE s.schema_id < 16384 AND s.name NOT IN (N'sys', N'INFORMATION_SCHEMA', N'guest')
 UNION ALL
 SELECT ` + schemaCols("'table'", "o.sch", "o.name", "NULL", "NULL", `CONCAT(N'table',
-    CASE WHEN t.temporal_type = 2 THEN N' system-versioned, history ' + QUOTENAME(SCHEMA_NAME(h.schema_id)) + N'.' + QUOTENAME(h.name) END,
+    CASE WHEN t.temporal_type = 2 THEN N' system-versioned, history ' + QUOTENAME(SCHEMA_NAME(h.schema_id)) COLLATE DATABASE_DEFAULT + N'.' + QUOTENAME(h.name) COLLATE DATABASE_DEFAULT END,
     CASE WHEN t.temporal_type = 1 THEN N' history table' END,
-    CASE WHEN t.is_memory_optimized = 1 THEN N' memory-optimized ' + LOWER(t.durability_desc) END,
-    N' lock escalation ' + LOWER(t.lock_escalation_desc),
-    (SELECT TOP (1) N' partitioned by ' + ps.name + N' (' + pc.name + N')' FROM sys.indexes pi
+    CASE WHEN t.is_memory_optimized = 1 THEN N' memory-optimized ' + LOWER(t.durability_desc) COLLATE DATABASE_DEFAULT END,
+    N' lock escalation ' + LOWER(t.lock_escalation_desc) COLLATE DATABASE_DEFAULT,
+    (SELECT TOP (1) N' partitioned by ' + ps.name COLLATE DATABASE_DEFAULT + N' (' + pc.name COLLATE DATABASE_DEFAULT + N')' FROM sys.indexes pi
        JOIN sys.partition_schemes ps ON ps.data_space_id = pi.data_space_id
        JOIN sys.index_columns pic ON pic.object_id = pi.object_id AND pic.index_id = pi.index_id AND pic.partition_ordinal = 1
        JOIN sys.columns pc ON pc.object_id = pic.object_id AND pc.column_id = pic.column_id
@@ -271,23 +271,23 @@ UNION ALL
 SELECT ` + schemaCols(`CASE WHEN o.type IN ('P', 'PC', 'X', 'RF') THEN 'procedure' WHEN o.type IN ('TR', 'TA') THEN 'trigger' ELSE 'function' END`,
 	"o.sch", "o.name", `CASE WHEN o.type IN ('TR', 'TA') THEN SCHEMA_NAME(p.schema_id) END`, `CASE WHEN o.type IN ('TR', 'TA') THEN p.name END`,
 	`CONCAT(CASE WHEN o.type IN ('P', 'PC', 'X', 'RF') THEN N'procedure' WHEN o.type IN ('TR', 'TA') THEN N'trigger' ELSE N'function' END,
-    N' ', RTRIM(o.type),
+    N' ', RTRIM(o.type) COLLATE DATABASE_DEFAULT,
     N' parameters ', ISNULL((SELECT pa.name AS n, TYPE_NAME(pa.user_type_id) AS t, pa.max_length AS l, pa.precision AS p, pa.scale AS s,
-                                    pa.is_output AS o FROM sys.parameters pa WHERE pa.object_id = o.object_id ORDER BY pa.parameter_id FOR JSON PATH), N'[]'),
+                                    pa.is_output AS o FROM sys.parameters pa WHERE pa.object_id = o.object_id ORDER BY pa.parameter_id FOR JSON PATH), N'[]') COLLATE DATABASE_DEFAULT,
     CASE WHEN m.execute_as_principal_id = -2 THEN N' execute as owner'
          WHEN m.execute_as_principal_id IS NOT NULL THEN N' execute as ' + ISNULL(USER_NAME(m.execute_as_principal_id), N'?') END,
     CASE WHEN m.is_schema_bound = 1 THEN N' schemabinding' END,
     CASE WHEN m.object_id IS NOT NULL THEN N' ansi_nulls ' + CASE WHEN m.uses_ansi_nulls = 1 THEN N'on' ELSE N'off' END
                                          + N' quoted_identifier ' + CASE WHEN m.uses_quoted_identifier = 1 THEN N'on' ELSE N'off' END END,
     CASE WHEN m.object_id IS NOT NULL AND m.definition IS NULL THEN N' encrypted' END,
-    CASE WHEN am.object_id IS NOT NULL THEN CONCAT(N' clr ', asm.name, N'.', am.assembly_class, N'.' + am.assembly_method) END)`,
+    CASE WHEN am.object_id IS NOT NULL THEN CONCAT(N' clr ', asm.name COLLATE DATABASE_DEFAULT, N'.', am.assembly_class COLLATE DATABASE_DEFAULT, N'.' + am.assembly_method COLLATE DATABASE_DEFAULT) END)`,
 	"m.definition", "o.owner", "CASE WHEN m.definition IS NULL THEN 0 ELSE 1 END") + `
   FROM o LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
   LEFT JOIN sys.assembly_modules am ON am.object_id = o.object_id LEFT JOIN sys.assemblies asm ON asm.assembly_id = am.assembly_id
   LEFT JOIN sys.objects p ON p.object_id = o.parent_object_id
  WHERE o.type IN ('P', 'PC', 'X', 'RF', 'FN', 'IF', 'TF', 'FS', 'FT', 'AF', 'TR', 'TA') AND (o.type NOT IN ('TR', 'TA') OR o.parent_object_id <> 0)
 UNION ALL
-SELECT ` + schemaCols("'synonym'", "o.sch", "o.name", "NULL", "NULL", "CONCAT(N'synonym for ', sy.base_object_name)", "NULL", "o.owner", "0") + `
+SELECT ` + schemaCols("'synonym'", "o.sch", "o.name", "NULL", "NULL", "CONCAT(N'synonym for ', sy.base_object_name COLLATE DATABASE_DEFAULT)", "NULL", "o.owner", "0") + `
   FROM sys.synonyms sy JOIN o ON o.object_id = sy.object_id
 UNION ALL
 SELECT ` + schemaCols("'sequence'", "o.sch", "o.name", "NULL", "NULL", `CONCAT(N'sequence ', TYPE_NAME(sq.user_type_id),
@@ -298,8 +298,8 @@ SELECT ` + schemaCols("'sequence'", "o.sch", "o.name", "NULL", "NULL", `CONCAT(N
   FROM sys.sequences sq JOIN o ON o.object_id = sq.object_id
 UNION ALL
 SELECT ` + schemaCols("'type'", "SCHEMA_NAME(ty.schema_id)", "ty.name", "NULL", "NULL", `CONCAT(N'type ',
-    CASE WHEN ty.is_table_type = 1 THEN N'table ' + ISNULL(`+schemaJSONCols+`, N'[]')
-         WHEN ty.is_assembly_type = 1 THEN CONCAT(N'clr ', (SELECT CONCAT(a.name, N'.', aty.assembly_class) FROM sys.assembly_types aty
+    CASE WHEN ty.is_table_type = 1 THEN N'table ' + ISNULL(`+schemaJSONCols+`, N'[]') COLLATE DATABASE_DEFAULT
+         WHEN ty.is_assembly_type = 1 THEN CONCAT(N'clr ', (SELECT CONCAT(a.name COLLATE DATABASE_DEFAULT, N'.', aty.assembly_class COLLATE DATABASE_DEFAULT) FROM sys.assembly_types aty
                                                               JOIN sys.assemblies a ON a.assembly_id = aty.assembly_id WHERE aty.user_type_id = ty.user_type_id))
          ELSE TYPE_NAME(ty.system_type_id) + N'(' + CONVERT(nvarchar(10), ty.max_length) + N',' + CONVERT(nvarchar(5), ty.precision)
               + N',' + CONVERT(nvarchar(5), ty.scale) + N')' + CASE WHEN ty.is_nullable = 1 THEN N' null' ELSE N' not null' END END)`,
@@ -317,25 +317,25 @@ var schemaColumnsSQL = `SELECT ` + schemaCols("'column'", "SCHEMA_NAME(t.schema_
          WHEN TYPE_NAME(c.system_type_id) IN (N'datetime2', N'time', N'datetimeoffset') THEN N'(' + CONVERT(nvarchar(5), c.scale) + N')' END,
     CASE WHEN c.is_nullable = 1 THEN N' null' ELSE N' not null' END,
     CASE WHEN ic.object_id IS NOT NULL THEN N' identity(' + CONVERT(nvarchar(40), ic.seed_value) + N',' + CONVERT(nvarchar(40), ic.increment_value) + N')' END,
-    CASE WHEN cc.object_id IS NOT NULL THEN N' as ' + cc.definition + CASE WHEN cc.is_persisted = 1 THEN N' persisted' ELSE N'' END END,
-    N' collate ' + c.collation_name,
+    CASE WHEN cc.object_id IS NOT NULL THEN N' as ' + cc.definition COLLATE DATABASE_DEFAULT + CASE WHEN cc.is_persisted = 1 THEN N' persisted' ELSE N'' END END,
+    N' collate ' + c.collation_name COLLATE DATABASE_DEFAULT,
     CASE WHEN c.is_sparse = 1 THEN N' sparse' END)`, "NULL", "NULL", "0") + `
   FROM sys.columns c JOIN sys.tables t ON t.object_id = c.object_id AND t.is_ms_shipped = 0
   LEFT JOIN sys.identity_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id
   LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id`
 
 var schemaChildrenSQL = `SELECT ` + schemaCols("'index'", "SCHEMA_NAME(ob.schema_id)", "i.name", "SCHEMA_NAME(ob.schema_id)", "ob.name", `CONCAT(N'index ',
-    LOWER(i.type_desc), CASE WHEN i.is_unique = 1 THEN N' unique' END, N' keys ', `+schemaKeyCols("i.object_id", "i.index_id")+`,
+    LOWER(i.type_desc) COLLATE DATABASE_DEFAULT, CASE WHEN i.is_unique = 1 THEN N' unique' END, N' keys ', `+schemaKeyCols("i.object_id", "i.index_id")+`,
     N' include ', ISNULL((SELECT c.name AS n FROM sys.index_columns ic JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-                           WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1 ORDER BY c.name FOR JSON PATH), N'[]'),
-    CASE WHEN i.has_filter = 1 THEN N' where ' + i.filter_definition END, N' on ' + ds.name)`, "NULL", "NULL", "0") + `
+                           WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1 ORDER BY c.name FOR JSON PATH), N'[]') COLLATE DATABASE_DEFAULT,
+    CASE WHEN i.has_filter = 1 THEN N' where ' + i.filter_definition COLLATE DATABASE_DEFAULT END, N' on ' + ds.name COLLATE DATABASE_DEFAULT)`, "NULL", "NULL", "0") + `
   FROM sys.indexes i JOIN sys.objects ob ON ob.object_id = i.object_id AND ob.is_ms_shipped = 0 AND ob.type IN ('U', 'V')
   LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
  WHERE i.type > 0 AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 AND i.is_hypothetical = 0 AND i.name IS NOT NULL
 UNION ALL
 SELECT ` + schemaCols("'constraint'", "SCHEMA_NAME(kc.schema_id)", "kc.name", "SCHEMA_NAME(t.schema_id)", "t.name", `CONCAT(
-    CASE kc.type WHEN 'PK' THEN N'primary key ' ELSE N'unique ' END, LOWER(i.type_desc), N' keys ', `+schemaKeyCols("i.object_id", "i.index_id")+`,
-    N' on ' + ds.name)`, "NULL", "NULL", "0") + `
+    CASE kc.type WHEN 'PK' THEN N'primary key ' ELSE N'unique ' END, LOWER(i.type_desc) COLLATE DATABASE_DEFAULT, N' keys ', `+schemaKeyCols("i.object_id", "i.index_id")+`,
+    N' on ' + ds.name COLLATE DATABASE_DEFAULT)`, "NULL", "NULL", "0") + `
   FROM sys.key_constraints kc JOIN sys.tables t ON t.object_id = kc.parent_object_id AND t.is_ms_shipped = 0
   JOIN sys.indexes i ON i.object_id = kc.parent_object_id AND i.index_id = kc.unique_index_id
   LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
@@ -344,16 +344,16 @@ SELECT ` + schemaCols("'constraint'", "SCHEMA_NAME(fk.schema_id)", "fk.name", "S
     ISNULL((SELECT pc.name AS c, rc.name AS r FROM sys.foreign_key_columns fkc
               JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
               JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
-             WHERE fkc.constraint_object_id = fk.object_id ORDER BY fkc.constraint_column_id FOR JSON PATH), N'[]'),
-    N' references ', QUOTENAME(SCHEMA_NAME(r.schema_id)), N'.', QUOTENAME(r.name),
-    N' on delete ', LOWER(fk.delete_referential_action_desc), N' on update ', LOWER(fk.update_referential_action_desc))`, "NULL", "NULL", "0") + `
+             WHERE fkc.constraint_object_id = fk.object_id ORDER BY fkc.constraint_column_id FOR JSON PATH), N'[]') COLLATE DATABASE_DEFAULT,
+    N' references ', QUOTENAME(SCHEMA_NAME(r.schema_id)) COLLATE DATABASE_DEFAULT, N'.', QUOTENAME(r.name) COLLATE DATABASE_DEFAULT,
+    N' on delete ', LOWER(fk.delete_referential_action_desc) COLLATE DATABASE_DEFAULT, N' on update ', LOWER(fk.update_referential_action_desc) COLLATE DATABASE_DEFAULT)`, "NULL", "NULL", "0") + `
   FROM sys.foreign_keys fk JOIN sys.tables t ON t.object_id = fk.parent_object_id AND t.is_ms_shipped = 0
   JOIN sys.objects r ON r.object_id = fk.referenced_object_id
 UNION ALL
-SELECT ` + schemaCols("'constraint'", "SCHEMA_NAME(ck.schema_id)", "ck.name", "SCHEMA_NAME(t.schema_id)", "t.name", "CONCAT(N'check ', ck.definition)", "NULL", "NULL", "0") + `
+SELECT ` + schemaCols("'constraint'", "SCHEMA_NAME(ck.schema_id)", "ck.name", "SCHEMA_NAME(t.schema_id)", "t.name", "CONCAT(N'check ', ck.definition COLLATE DATABASE_DEFAULT)", "NULL", "NULL", "0") + `
   FROM sys.check_constraints ck JOIN sys.tables t ON t.object_id = ck.parent_object_id AND t.is_ms_shipped = 0
 UNION ALL
-SELECT ` + schemaCols("'constraint'", "SCHEMA_NAME(dc.schema_id)", "dc.name", "SCHEMA_NAME(t.schema_id)", "t.name", "CONCAT(N'default ', c.name, N' ', dc.definition)", "NULL", "NULL", "0") + `
+SELECT ` + schemaCols("'constraint'", "SCHEMA_NAME(dc.schema_id)", "dc.name", "SCHEMA_NAME(t.schema_id)", "t.name", "CONCAT(N'default ', c.name COLLATE DATABASE_DEFAULT, N' ', dc.definition COLLATE DATABASE_DEFAULT)", "NULL", "NULL", "0") + `
   FROM sys.default_constraints dc JOIN sys.tables t ON t.object_id = dc.parent_object_id AND t.is_ms_shipped = 0
   JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id`
 
