@@ -159,6 +159,74 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "cursor", "last_set_id": int64(80), "mark": int64(5)},
 			}},
 		}, map[string]string{"backup_sets": "seq", "backup_sets_mark": "seq", "backup_sets_unlisted": "list"}},
+		// part 2 (f): the per-database snapshot sources. import_mssql_stats (0092 L970-1035): st:<db> the read's time
+		// behind a per-database guard (mssql_stats_db), the 'databases' row dropping the older guard rows it does not name
+		{"mssql stats", "sqlserver", []sqlBatch{
+			{"mssql_stats", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
+				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
+			}},
+			{"mssql_stats", t0, []map[string]any{
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": false},
+				{"kind": "databases", "names": []any{"app"}},
+			}},
+			{"mssql_stats", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
+				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
+			}},
+		}, map[string]string{"st:app": "mssql", "st:crm": "mssql", "stats_dbs": "dbtimes"}},
+		// import_mssql_constraints (0164 L244-290): ct:<db> the same way; the 'databases' row drops every ct: cursor of
+		// a database it does not name, even one this batch read
+		{"mssql constraints", "sqlserver", []sqlBatch{
+			{"mssql_constraints", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "state", "server_utc": t0.Add(-time.Hour)},
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
+				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
+			}},
+			{"mssql_constraints", t0, []map[string]any{
+				{"kind": "state", "server_utc": t0},
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": false},
+				{"kind": "db", "database_name": "new", "database_id": 7, "read": true},
+				{"kind": "databases", "names": []any{"app"}},
+			}},
+			{"mssql_constraints", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "state", "server_utc": t0.Add(-30 * time.Minute)},
+				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
+				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
+			}},
+		}, map[string]string{"ct:app": "mssql", "ct:crm": "mssql", "ct:new": "mssql", "ct_dbs": "rows", "constraint_dbs": "dbtimes"}},
+		// import_mssql_querystore (0083 L271-470 under 0126 / 0157): qs_since:<db> the greatest ended interval of a
+		// database with a forced_read marker where its store row is; a batch with store rows drops the older ones
+		{"mssql querystore", "sqlserver", []sqlBatch{
+			{"mssql_querystore", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "store", "database_name": "app"}, {"kind": "store", "database_name": "crm"},
+				{"kind": "forced_read", "database_name": "app"},
+				{"kind": "interval", "database_name": "app", "interval_id": 7, "interval_start": t0.Add(-3 * time.Hour), "interval_end": t0.Add(-2 * time.Hour)},
+				{"kind": "interval", "database_name": "crm", "interval_id": 7, "interval_start": t0.Add(-3 * time.Hour), "interval_end": t0.Add(-2 * time.Hour)},
+			}},
+			{"mssql_querystore", t0, []map[string]any{
+				{"kind": "store", "database_name": "app"}, {"kind": "forced_read", "database_name": "app"},
+				{"kind": "interval", "database_name": "app", "interval_id": 6, "interval_start": t0.Add(-4 * time.Hour), "interval_end": t0.Add(-3 * time.Hour)},
+			}},
+			{"mssql_querystore", t0, []map[string]any{
+				{"kind": "store", "database_name": "crm"}, {"kind": "forced_read", "database_name": "crm"},
+				{"kind": "interval", "database_name": "crm", "interval_id": 8, "interval_start": t0.Add(-2 * time.Hour), "interval_end": t0.Add(-time.Hour)},
+			}},
+			{"mssql_querystore", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "store", "database_name": "app"}, {"kind": "forced_read", "database_name": "app"},
+				{"kind": "interval", "database_name": "app", "interval_id": 9, "interval_start": t0.Add(-time.Hour), "interval_end": t0},
+			}},
+		}, map[string]string{"qs_since:app": "seq", "qs_since:crm": "seq", "qs_stores": "dbtimes"}},
+		// import_mssql_azuredb_resources (0145 L135-185): azdb_since the greatest stored minute, no guard
+		{"mssql azuredb", "sqlserver", []sqlBatch{
+			{"mssql_azuredb_resources", t0, []map[string]any{
+				{"kind": "minute", "minute": t0.Add(-2 * time.Minute), "samples": 4},
+				{"kind": "minute", "minute": t0.Add(-time.Minute), "samples": 4},
+				{"kind": "minute", "minute": t0.Add(-3 * time.Minute), "samples": 4},
+			}},
+			{"mssql_azuredb_resources", t1, []map[string]any{{"kind": "minute", "minute": t0.Add(-10 * time.Minute), "samples": 4}}},
+			{"mssql_azuredb_resources", t1.Add(time.Minute), []map[string]any{{"kind": "note"}}},
+		}, map[string]string{"azdb_since": "seq"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var tag [4]byte
@@ -191,10 +259,19 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 					if err != nil || !same {
 						t.Errorf("%s: the store %q %d %v %d %v (%v), the rule %+v", src, f, off, last, seq, found, err, g)
 					}
-				case "list":
+				case "list", "rows", "dbtimes":
+					// list: a column of one row (the row there = found); rows / dbtimes: one row per name (none = not found),
+					// dbtimes as "db=unix-micros" of the row's snapshot_at
+					dbtimes := func(table string) string {
+						return `SELECT string_agg(database_name || '=' || (extract(epoch FROM snapshot_at) * 1000000)::bigint, ',' ORDER BY database_name COLLATE "C") FROM pgvigil.` + table + ` WHERE instance_id = $1 HAVING count(*) > 0`
+					}
 					q := map[string]string{
 						"backup_sets_unlisted": `SELECT array_to_string(ARRAY(SELECT u FROM unnest(unlisted) u ORDER BY u COLLATE "C"), ',') FROM pgvigil.mssql_backup_files_cursor WHERE instance_id = $1`,
 						"backup_history_dbs":   `SELECT string_agg(database_name, ',' ORDER BY database_name COLLATE "C") FROM pgvigil.mssql_backup_history_dbs WHERE instance_id = $1 HAVING count(*) > 0`,
+						"ct_dbs":               `SELECT string_agg(substr(source, 4), ',' ORDER BY substr(source, 4) COLLATE "C") FROM pgvigil.mssql_cursor WHERE instance_id = $1 AND source LIKE 'ct:%' HAVING count(*) > 0`,
+						"stats_dbs":            dbtimes("mssql_stats_db"),
+						"constraint_dbs":       dbtimes("mssql_constraint_db"),
+						"qs_stores":            dbtimes("mssql_qs_store"),
 					}[src]
 					var s string
 					err := pool.QueryRow(ctx, q, id).Scan(&s)
@@ -202,8 +279,15 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 					if errors.Is(err, pgx.ErrNoRows) {
 						err = nil
 					}
-					if err != nil || found != ok || (ok && s != strings.Join(g.Names, ",")) {
-						t.Errorf("%s: the store %q %v (%v), the rule %v %+v", src, s, found, err, ok, g)
+					want := strings.Join(g.Names, ",")
+					if reader == "dbtimes" {
+						want = dbsOf(g)
+					}
+					if reader != "list" {
+						ok = ok && len(g.Names) > 0
+					}
+					if err != nil || found != ok || (ok && s != want) {
+						t.Errorf("%s: the store %q %v (%v), the rule %v %q %+v", src, s, found, err, ok, want, g)
 					}
 				case "seq":
 					n, found, err := r.MSSQLSeqCursor(ctx, id, src)

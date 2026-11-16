@@ -1,6 +1,9 @@
 package remote
 
 import (
+	"encoding/json"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -244,5 +247,146 @@ func TestCursorMovesBackupFiles(t *testing.T) {
 	near := step(s, t1, db("crm", made.Add(30*time.Minute)))
 	if near = step(near, t1.Add(time.Minute), db("app", made)); names(near["backup_sets_unlisted"]) != "crm" {
 		t.Errorf("a creation time 30 minutes apart is the same database: %+v", near)
+	}
+}
+
+// dbsOf renders a kept per-database list ([database, time] entries) as "db=unix-micros" in name order.
+func dbsOf(c format.Cursor) string {
+	out := make([]string, 0, len(c.Names))
+	for _, n := range c.Names {
+		var f [2]string
+		if json.Unmarshal([]byte(n), &f) != nil {
+			out = append(out, "?"+n)
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, f[1])
+		if err != nil {
+			out = append(out, f[0]+"=?")
+			continue
+		}
+		out = append(out, f[0]+"="+strconv.FormatInt(t.UnixMicro(), 10))
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
+}
+
+func overlay(cur map[string]format.Cursor, moved map[string]format.Cursor) map[string]format.Cursor {
+	next := map[string]format.Cursor{}
+	for k, v := range cur {
+		next[k] = v
+	}
+	for k, v := range moved {
+		next[k] = v
+	}
+	return next
+}
+
+func um(t time.Time) string { return strconv.FormatInt(t.UnixMicro(), 10) }
+
+// import_mssql_stats (0092 L970-1035): per 'db' row, a newer read of that database stands (its mssql_stats_db time);
+// otherwise its time becomes this read's and, when it was read, 'st:<db>' takes the read's time (a plain write, never
+// greatest). The first 'databases' row with a names list drops the guard rows older than this read of the databases
+// it does not name; 'st:' cursors stay.
+func TestCursorMovesStats(t *testing.T) {
+	db := func(n string, read bool) map[string]any {
+		return map[string]any{"kind": "db", "database_name": n, "read": read}
+	}
+	s := overlay(nil, moves(t, "mssql_stats", t0, []map[string]any{db("app", true), db("crm", true), {"kind": "db", "database_name": nil, "read": true}}, nil))
+	if !s["st:app"].LastEventAt.Equal(t0) || !s["st:crm"].LastEventAt.Equal(t0) || s["st:app"].Kind != "mssql" || dbsOf(s["stats_dbs"]) != "app="+um(t0)+",crm="+um(t0) {
+		t.Fatalf("the first read: %+v", s)
+	}
+	b := t0.Add(time.Minute)
+	s = overlay(s, moves(t, "mssql_stats", b, []map[string]any{db("app", false), {"kind": "databases", "names": []any{"app"}}}, s))
+	if !s["st:app"].LastEventAt.Equal(t0) || dbsOf(s["stats_dbs"]) != "app="+um(b) || !s["st:crm"].LastEventAt.Equal(t0) {
+		t.Fatalf("app not read, crm not named: %+v", s)
+	}
+	c := t0.Add(30 * time.Second)
+	s = overlay(s, moves(t, "mssql_stats", c, []map[string]any{db("app", true), db("crm", true), {"kind": "databases", "names": "app"}}, s))
+	if !s["st:app"].LastEventAt.Equal(t0) || !s["st:crm"].LastEventAt.Equal(c) || dbsOf(s["stats_dbs"]) != "app="+um(b)+",crm="+um(c) {
+		t.Errorf("an older read: app's newer read stands, crm (its guard row dropped) goes back: %+v", s)
+	}
+}
+
+// import_mssql_constraints (0164 L244-290): the same per-database guard (mssql_constraint_db); a database not read
+// takes the read's time and no cursor; a read one also 'ct:<db>'. The first 'databases' row drops every 'ct:' cursor of
+// a database it does not name (even one this batch read) and the guard rows older than this read of those. A batch
+// without a state row carrying server_utc is refused by mssql_perf_check: nothing moves.
+func TestCursorMovesConstraints(t *testing.T) {
+	state := map[string]any{"kind": "state", "server_utc": t0}
+	db := func(n string, read bool) map[string]any {
+		return map[string]any{"kind": "db", "database_name": n, "read": read}
+	}
+	if got := moves(t, "mssql_constraints", t0, []map[string]any{db("app", true)}, nil); len(got) != 0 {
+		t.Errorf("no state row: %+v", got)
+	}
+	s := overlay(nil, moves(t, "mssql_constraints", t0, []map[string]any{state, db("app", true), db("crm", true)}, nil))
+	if !s["ct:app"].LastEventAt.Equal(t0) || !s["ct:crm"].LastEventAt.Equal(t0) || names(s["ct_dbs"]) != "app,crm" {
+		t.Fatalf("the first read: %+v", s)
+	}
+	b := t0.Add(time.Minute)
+	s = overlay(s, moves(t, "mssql_constraints", b, []map[string]any{state, db("app", false), db("new", true), {"kind": "databases", "names": []any{"app"}}}, s))
+	if !s["ct:app"].LastEventAt.Equal(t0) || s["ct:crm"].Kind != "null" || s["ct:new"].Kind != "null" || names(s["ct_dbs"]) != "app" ||
+		dbsOf(s["constraint_dbs"]) != "app="+um(b)+",new="+um(b) {
+		t.Fatalf("crm and new not named: %+v", s)
+	}
+	c := t0.Add(30 * time.Second)
+	s = overlay(s, moves(t, "mssql_constraints", c, []map[string]any{state, db("app", true), db("crm", true)}, s))
+	if !s["ct:app"].LastEventAt.Equal(t0) || !s["ct:crm"].LastEventAt.Equal(c) || names(s["ct_dbs"]) != "app,crm" {
+		t.Errorf("an older read: %+v", s)
+	}
+}
+
+// import_mssql_querystore (0083 L271-470, called unchanged by 0126 and 0157) behind mssql_hadr_read: each listed
+// store row is upserted at this read's time (its newest_interval kept); a batch with a store row drops the store rows
+// older than this read (their cursor with them); 'qs_since:<db>' is the greatest interval_start of the batch's ended
+// intervals of a database with a forced_read marker, where its store row is, as epoch seconds (floor).
+func TestCursorMovesQueryStore(t *testing.T) {
+	store := func(n string) map[string]any { return map[string]any{"kind": "store", "database_name": n} }
+	marker := func(n string) map[string]any { return map[string]any{"kind": "forced_read", "database_name": n} }
+	interval := func(n string, start time.Time) map[string]any {
+		return map[string]any{"kind": "interval", "database_name": n, "interval_start": start, "interval_end": start.Add(time.Hour)}
+	}
+	i1 := t0.Add(-3*time.Hour + 500*time.Millisecond)
+	s := overlay(nil, moves(t, "mssql_querystore", t0, []map[string]any{store("app"), store("crm"), marker("app"), interval("app", i1), interval("app", i1.Add(-time.Hour)), interval("crm", i1), interval("gone", i1), marker("gone")}, nil))
+	if s["qs_since:app"].Seq != i1.Unix() || s["qs_since:app"].Kind != "seq" {
+		t.Fatalf("app: %+v", s)
+	}
+	if _, ok := s["qs_since:crm"]; ok {
+		t.Errorf("crm had no marker: %+v", s)
+	}
+	if _, ok := s["qs_since:gone"]; ok {
+		t.Errorf("gone has no store row: %+v", s)
+	}
+	b := t0.Add(time.Minute)
+	s = overlay(s, moves(t, "mssql_querystore", b, []map[string]any{store("app"), marker("app"), interval("app", i1.Add(-2*time.Hour))}, s))
+	if s["qs_since:app"].Seq != i1.Unix() || dbsOf(s["qs_stores"]) != "app="+um(b) {
+		t.Errorf("an older interval, crm not listed: %+v", s)
+	}
+	s = overlay(s, moves(t, "mssql_querystore", b, []map[string]any{store("crm"), marker("crm"), interval("crm", i1.Add(time.Hour))}, s))
+	if s["qs_since:crm"].Seq != i1.Add(time.Hour).Unix() || dbsOf(s["qs_stores"]) != "app="+um(b)+",crm="+um(b) {
+		t.Errorf("crm again at the same time (app's row stays): %+v", s)
+	}
+	s = overlay(s, moves(t, "mssql_querystore", b.Add(time.Minute), []map[string]any{store("app")}, s))
+	if s["qs_since:crm"].Kind != "null" || dbsOf(s["qs_stores"]) != "app="+um(b.Add(time.Minute)) {
+		t.Errorf("crm's store row dropped: %+v", s)
+	}
+	if got := moves(t, "mssql_querystore", t0, []map[string]any{store("app"), marker("app"), interval("app", t1)}, s); len(got) != 0 {
+		t.Errorf("an older batch moved: %+v", got)
+	}
+}
+
+// import_mssql_azuredb_resources (0145 L135-185): 'azdb_since' is the greatest stored minute (GREATEST ignores the
+// NULL of a batch without minute rows), as epoch seconds; no guard.
+func TestCursorMovesAzureDB(t *testing.T) {
+	minute := func(m time.Time) map[string]any { return map[string]any{"kind": "minute", "minute": m, "samples": 4} }
+	if got := moves(t, "mssql_azuredb_resources", t0, []map[string]any{{"kind": "gap"}}, nil); len(got) != 0 {
+		t.Errorf("no minute row: %+v", got)
+	}
+	s := overlay(nil, moves(t, "mssql_azuredb_resources", t0, []map[string]any{minute(t0.Add(-2 * time.Minute)), minute(t0.Add(-time.Minute)), minute(t0.Add(-3 * time.Minute))}, nil))
+	if s["azdb_since"].Kind != "seq" || s["azdb_since"].Seq != t0.Add(-time.Minute).Unix() {
+		t.Fatalf("the newest minute: %+v", s)
+	}
+	if got := moves(t, "mssql_azuredb_resources", t1, []map[string]any{minute(t0.Add(-10 * time.Minute))}, s); got["azdb_since"].Seq != t0.Add(-time.Minute).Unix() {
+		t.Errorf("an older minute moved it back: %+v", got)
 	}
 }
