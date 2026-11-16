@@ -71,6 +71,11 @@
 #     instance, and its 'indexes' rows carry object_type, data_space_name, data_space_type, partition_function,
 #     table_created and the counters; its 'databases' rows carry parts_note.
 #     Red on the base: no part 'heaps'.
+#  XS THE PAGE (with PGVIGIL_SHOTS = a folder, and chromium and node here; the bundle built from this tree first): a headless
+#     Chromium signed in as the proof's user opens #/mssqlindexes?i=<ixr>: the 'Heaps' block lists as many rows as
+#     mssql_heap holds for the instance, the inventory shows 'indexed view' on cx_v_iv's row and 'ps_a ([k])' as a partition
+#     scheme, the usage-window grid has its 'parts not read' column with pgvr_deny's words; a full-page picture in the light
+#     and the dark scheme into PGVIGIL_SHOTS. Without PGVIGIL_SHOTS: 'XS not run' (not counted).
 #  NOT PROVEN here: the 20,000-row caps of the new parts (no such database in a container: the cap logic is the index
 #  read's, read in the code); SQL Server before 2022 (cs_rebuild_columns NULL and the note: the box's 2019 image runs D405's
 #  X15 trial); a memory-optimized table (left out as the index read leaves it out).
@@ -315,8 +320,8 @@ fi
 
 echo "== X3. data spaces and object type =="
 if ! has mssql_index object_type; then bad "X3: mssql_index has no column object_type"; else
-  sq "SELECT CONCAT_WS('|', s.name, o.name, i.name, RTRIM(o.type), ds.name, ds.type_desc, ISNULL(pf.name, '~'), ISNULL(pf.t, '~'), ISNULL(CAST(pf.fanout AS varchar(10)), '~'),
-      ISNULL(pf.r, '~'), ISNULL(pc.name, '~'), pt.unc)
+  sq "SELECT CONCAT_WS('|', s.name $DD, o.name $DD, i.name $DD, RTRIM(o.type) $DD, ds.name $DD, ds.type_desc $DD, ISNULL(pf.name $DD, '~'), ISNULL(pf.t $DD, '~'),
+      ISNULL(CAST(pf.fanout AS varchar(10)), '~'), ISNULL(pf.r $DD, '~'), ISNULL(pc.name $DD, '~'), pt.unc)
     FROM sys.indexes i JOIN sys.objects o ON o.object_id = i.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id
     JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     OUTER APPLY (SELECT f.name, f.fanout,
@@ -455,6 +460,62 @@ PY
 hc=$(pq "SELECT count(*) FROM pgvigil.mssql_heap WHERE instance_id = $I" 2>/dev/null || echo none)
 if [[ "$code" == 200 && "$xa" == "$hc|-|yes" ]]; then ok "XA: GET /api/mssql/indexes answers $hc heaps, the indexes' new columns and the databases' parts_note"
 else bad "XA: code $code; heaps|missing index keys|parts_note = '$xa' (wanted '$hc|-|yes')"; fi
+
+echo "== XS. the page =="
+if [[ -z "${PGVIGIL_SHOTS:-}" ]] || ! command -v chromium >/dev/null || ! command -v node >/dev/null; then echo "XS not run (PGVIGIL_SHOTS unset, or no chromium / node here)"
+else
+  mkdir -p "$PGVIGIL_SHOTS"; CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port="$CDP" --user-data-dir="$TMPD/chr" about:blank >"$TMPD/chr.out" 2>&1 & BG+=($!)
+  for _ in $(seq 1 100); do curl -s "http://127.0.0.1:$CDP/json" >/dev/null 2>&1 && break; sleep 0.1; done
+  cat > "$TMPD/shot.mjs" <<'JS'
+const [cdp, url, jar, out] = process.argv.slice(2);
+const fs = await import('node:fs');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const tabs = await (await fetch(`http://127.0.0.1:${cdp}/json`)).json();
+const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+let id = 0; const pend = new Map();
+ws.onmessage = m => { const d = JSON.parse(m.data); if (d.id && pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); } };
+const send = (method, params = {}) => new Promise(r => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async e => (await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true })).result?.result?.value;
+await send('Network.enable'); await send('Page.enable');
+// the session cookie curl received at the API login (Netscape format; '#HttpOnly_' marks an HttpOnly one)
+for (const line of fs.readFileSync(jar, 'utf8').split('\n')) {
+  const f = line.replace(/^#HttpOnly_/, '').split('\t');
+  if (f.length < 7 || line.startsWith('# ')) continue;
+  await send('Network.setCookie', { name: f[5], value: f[6], domain: f[0], path: f[2], httpOnly: line.startsWith('#HttpOnly_') });
+}
+const res = {};
+for (const scheme of ['light', 'dark']) {
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await send('Page.navigate', { url: 'about:blank' }); await sleep(200);
+  await send('Page.navigate', { url });
+  let got = null;
+  for (let i = 0; i < 200 && !got; i++) { await sleep(100); got = await ev(`[...document.querySelectorAll('h3')].some(h => h.textContent.startsWith('Heaps')) || null`); }
+  await sleep(500);
+  res[scheme] = await ev(`(() => {
+    const h = [...document.querySelectorAll('h3')].find(x => x.textContent.startsWith('Heaps'));
+    let rows = -1, n = h;
+    for (let k = 0; k < 4 && n && rows < 0; k++) { n = n.nextElementSibling; const t = n && (n.matches('table') ? n : n.querySelector('table')); if (t) rows = t.querySelectorAll('tbody tr').length; }
+    const cells = [...document.querySelectorAll('td')].map(td => td.textContent.trim());
+    const heads = [...document.querySelectorAll('th')].map(th => th.textContent.trim());
+    return { heaps: h ? rows : null, view: cells.includes('indexed view'), scheme: cells.includes('ps_a ([k])'), partsHead: heads.includes('parts not read'),
+             denyWords: cells.some(c => c.includes('foreign keys: not read')), title: h ? h.textContent : '' };
+  })()`);
+  const height = await ev('document.documentElement.scrollHeight');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: Math.min(height || 900, 12000), deviceScaleFactor: 1, mobile: false });
+  await sleep(300);
+  const shot = await send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(`${out}/d404-mssqlindexes-${scheme}.png`, Buffer.from(shot.result.data, 'base64'));
+}
+console.log(JSON.stringify(res));
+process.exit(0);
+JS
+  xs=$(timeout 120 node "$TMPD/shot.mjs" "$CDP" "$U/#/mssqlindexes?i=$I" "$TMPD/cj" "$PGVIGIL_SHOTS" 2>&1 | tail -1)
+  want="{\"heaps\":$hc,\"view\":true,\"scheme\":true,\"partsHead\":true,\"denyWords\":true,\"title\":\"Heaps ($hc)\"}"
+  if [[ "$xs" == "{\"light\":$want,\"dark\":$want}" ]]; then ok "XS: the page in both schemes: Heaps ($hc rows), 'indexed view', 'ps_a ([k])', 'parts not read' with pgvr_deny's words; pictures in $PGVIGIL_SHOTS"
+  else bad "XS: the page read '${xs:0:600}'"; echo "       wanted {light, dark} each $want"; fi
+fi
 
 echo "PROOF-D404: $NOK ok, $NF FAIL (SQL Server $VER)"
 [[ $NF == 0 ]]
