@@ -144,3 +144,65 @@ func TestRemoteStaleOnAsOf(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoteCollectorPart (E6): the Collector page's remote part names each remote collector with its site's silence -
+// sending inside 2 x expected_every, a warning past it, critical past 6 x, 'no bundle yet' before the first - and the
+// ledgers' counts as 0329's view gives them. No red of its own: the part is new (its red is its absence).
+func TestRemoteCollectorPart(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if !remoteFixture(ctx, t, pool) {
+		t.Skip("0329's views are on this store: this row seeds through its ledgers (not written yet)")
+	}
+	site := fmt.Sprintf("rcp%d", time.Now().UnixNano()%1000000000)
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.remote_collector_state WHERE site = $1`, site)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM pgvigil.remote_instance_state WHERE site = $1`, site)
+	}()
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.remote_collector_state VALUES
+	    ($1, 'ok', 'v0.4.0', 'h1', now(), 2, 0, now() - interval '10 minutes', 0, 0, NULL, 0, 0),
+	    ($1, 'warn', 'v0.4.0', 'h2', now(), 1, 0, now() - interval '3 hours', 1, 1, 'checksum', 2, 0),
+	    ($1, 'crit', 'v0.4.0', 'h3', now(), 1, 4, now() - interval '7 hours', 0, 0, NULL, 0, 1),
+	    ($1, 'none', 'v0.4.0', 'h4', now(), 0, 0, NULL, 0, 0, NULL, 0, 0)`, site); err != nil {
+		t.Fatal(err)
+	}
+	// the site's expected_every comes from its instances' rows: an hour for each collector's instance
+	if _, err := pool.Exec(ctx, `INSERT INTO pgvigil.remote_instance_state VALUES (-1001, $1 || '/a', 'postgres', $1, 'ok', now(), 300, 3600, now()),
+	    (-1002, $1 || '/b', 'postgres', $1, 'warn', now(), 300, 3600, now()), (-1003, $1 || '/c', 'postgres', $1, 'crit', now(), 300, 3600, now())`, site); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(ctx, sqlCollectorRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]map[string]any{}
+	for _, r := range all {
+		if r["site"] == site {
+			got[fmt.Sprint(r["collector"])] = r
+		}
+	}
+	for c, want := range map[string]string{"ok": "ok", "warn": "warning", "crit": "critical", "none": "no bundle yet"} {
+		if got[c] == nil || got[c]["silence"] != want {
+			t.Errorf("collector %s: silence %v, want %s", c, got[c]["silence"], want)
+		}
+	}
+	if r := got["warn"]; r == nil || r["newest_set_aside_reason"] != "checksum" || r["late"] != int32(2) || r["expected_every_secs"] != int32(3600) {
+		t.Errorf("collector warn's counts: %v", r)
+	}
+	if r := got["none"]; r == nil || r["expected_every_secs"] != int32(300) {
+		t.Errorf("a collector with no instance takes 300 s: %v", r)
+	}
+}

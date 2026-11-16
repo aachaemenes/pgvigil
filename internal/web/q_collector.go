@@ -20,6 +20,22 @@ SELECT s.collector_id, s.host, s.os, s.runs_as, s.version, s.pid, s.started_at, 
   FROM pgvigil.collector_status s
  ORDER BY CASE s.state WHEN 'up' THEN 1 WHEN 'not seen' THEN 2 WHEN 'retired' THEN 4 ELSE 3 END, s.beat_at DESC`
 
+// sqlCollectorRemote: the remote collectors (docs/remote-collector.md; migration 0329's remote_collector_state) - each
+// one's heartbeat as its newest bundle carried it, the bundles' gaps, set-asides (the newest reason), late ones and
+// conflicts, and its site's silence: no bundle for 2 x expected_every a warning, 6 x critical (the silence finding's
+// rule; expected_every is its instances' as ingest synced remote_sites:, 300 s when none is known)
+const sqlCollectorRemote = `
+SELECT c.site, c.collector, c.pgvigil_version, c.host, c.heartbeat_at, c.instances, c.fail_streak, c.newest_bundle_at,
+       c.gaps, c.set_aside, c.newest_set_aside_reason, c.late, c.conflicts, coalesce(e.expected_every_secs, 300) AS expected_every_secs,
+       CASE WHEN c.newest_bundle_at IS NULL THEN 'no bundle yet'
+            WHEN now() - c.newest_bundle_at > make_interval(secs => 6 * coalesce(e.expected_every_secs, 300)) THEN 'critical'
+            WHEN now() - c.newest_bundle_at > make_interval(secs => 2 * coalesce(e.expected_every_secs, 300)) THEN 'warning'
+            ELSE 'ok' END AS silence
+  FROM pgvigil.remote_collector_state c
+  LEFT JOIN LATERAL (SELECT max(r.expected_every_secs) AS expected_every_secs FROM pgvigil.remote_instance_state r
+                      WHERE r.site = c.site AND r.collector = c.collector) e ON true
+ ORDER BY c.site, c.collector`
+
 // sqlWatchdog: serve's watchdog ($1: on, off: <why>; empty outside serve)
 const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 
@@ -275,7 +291,8 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 			part{"repository", sqlCollectorRepository, nil},
 			part{"tables", sqlCollectorTables, nil},
 			part{"connections", sqlCollectorConns, nil},
-			part{"purges", sqlCollectorPurges, nil})
+			part{"purges", sqlCollectorPurges, nil},
+			part{"remote", sqlCollectorRemote, nil})
 	}
 	s.multiPart(w, r, parts)
 }

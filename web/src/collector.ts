@@ -221,6 +221,25 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
     ] as Col[], 'purge() has not run on this repository: pgvigil purge daily keeps it to the retention.'));
 
   sec.append(svc, find, runsPanel, failPanel, loadPanel, repoPanel);
+  // the remote collectors (docs/remote-collector.md): drawn only where a site's bundles have been loaded
+  const remote = rowsOf(d.remote ?? null);
+  const silenceKind: Record<string, string> = { ok: 'ok', warning: 'warn', critical: 'crit', 'no bundle yet': 'none' };
+  if (remote.length) sec.append(panel('Remote collectors', 'sites pgvigil cannot reach: each collector\'s newest bundle and how ingest took them',
+    el('p', { class: 'meta' }, 'A remote instance is as fresh as its site\'s bundles: its pages say \'as of\' the newest bundle, its findings fire as late '
+      + 'as the bundle interval plus the transfer, and a finding of it clears no sooner than its bundle interval plus the site\'s expected_every. '
+      + 'No live door reaches it: actions, EXPLAIN and every other live read are off on it, with the reason shown.'),
+    grid(remote, [
+      { key: 'site' }, { key: 'collector' },
+      { key: 'silence', fmt: (v: unknown) => badge(v === 'ok' ? 'sending' : String(v), silenceKind[String(v)] ?? ''),
+        title: 'no bundle for 2 x the site\'s expected_every: warning; 6 x: critical' },
+      { key: 'newest_bundle_at', label: 'newest bundle', fmt: fmtTime },
+      { key: 'expected_every_secs', label: 'expected every', num: true, fmt: (v: unknown) => v == null ? '' : fmtSecs(v) },
+      { key: 'heartbeat_at', label: 'collector beat', fmt: fmtTime }, { key: 'host' }, { key: 'pgvigil_version', label: 'version' },
+      { key: 'instances', num: true, fmt: fmtNum }, { key: 'fail_streak', label: 'fail streak', num: true, fmt: fmtNum },
+      { key: 'gaps', num: true, fmt: fmtNum }, { key: 'set_aside', label: 'set aside', num: true, fmt: fmtNum },
+      { key: 'newest_set_aside_reason', label: 'newest set-aside reason', wide: true },
+      { key: 'late', num: true, fmt: fmtNum }, { key: 'conflicts', num: true, fmt: fmtNum },
+    ] as Col[], 'No remote collector.')));
   // the Parquet export (pgvigil export): drawn only where one is configured or has run
   let x: Parts | null = null;
   try { x = await get<Parts>('export'); } catch (e) { sec.append(errorBox(e)); }
