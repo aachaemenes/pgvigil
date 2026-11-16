@@ -734,13 +734,9 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		if len(batch) == 0 {
 			return nil
 		}
-		payload, err := json.Marshal(batch)
+		n, _, err := importBatch(ctx, pool, m, pid, batch, string(facts))
 		if err != nil {
 			return err
-		}
-		var n int64
-		if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_`+m.Key+`($1, $2::jsonb, $3::jsonb)`, pid, string(payload), string(facts)).Scan(&n); err != nil {
-			return fmt.Errorf("insert: %w", err)
 		}
 		total += n
 		batch = batch[:0]
@@ -776,6 +772,21 @@ func importOne(ctx context.Context, src *sql.Conn, pool *pgxpool.Pool, m importM
 		return total, fmt.Errorf("read: %w", err)
 	}
 	return total, flush()
+}
+
+// importBatch is one batch of a mapping into the repository: one call of the mapping's function (one transaction: its
+// months' partitions, the instance's import lock, the rows). It answers the rows inserted and how many times the call
+// was taken again after a deadlock.
+func importBatch(ctx context.Context, pool *pgxpool.Pool, m importMapping, pid int, batch []map[string]any, facts string) (int64, int, error) {
+	payload, err := json.Marshal(batch)
+	if err != nil {
+		return 0, 0, err
+	}
+	var n int64
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.import_dbadash_`+m.Key+`($1, $2::jsonb, $3::jsonb)`, pid, string(payload), facts).Scan(&n); err != nil {
+		return 0, 0, fmt.Errorf("insert: %w", err)
+	}
+	return n, 0, nil
 }
 
 // importValue makes a DBADash value a JSON value for jsonb_to_recordset: a date as RFC 3339 in UTC (DBADash keeps
