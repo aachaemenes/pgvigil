@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestCursorMovesSeqRows(t *testing.T) {
 	if got["jobs"].Kind != "seq" || got["jobs"].Seq != 900 || got["jobs_mark"].Seq != 7 {
 		t.Errorf("jobs: %+v", got)
 	}
-	got = moves(t, "mssql_backups", t1, []map[string]any{{"kind": "cursor", "last_set_id": int64(55), "mark": int64(2)}}, nil)
+	got = moves(t, "mssql_backup_files", t1, []map[string]any{{"kind": "cursor", "last_set_id": int64(55), "mark": int64(2)}}, nil)
 	if got["backup_sets"].Seq != 55 || got["backup_sets_mark"].Seq != 2 {
 		t.Errorf("backup_sets: %+v", got)
 	}
@@ -96,5 +97,152 @@ func TestCursorMovesSchemaDDL(t *testing.T) {
 	}, nil)
 	if len(got) != 2 || !got["schema_ddl:app"].At.Equal(t0.Add(3*time.Minute)) || !got["schema_ddl:crm"].At.Equal(t0.Add(2*time.Minute)) {
 		t.Errorf("schema_ddl: %+v", got)
+	}
+}
+
+func at(t time.Time) *time.Time { return &t }
+
+func names(c format.Cursor) string { return strings.Join(c.Names, ",") }
+
+// mssql_hadr_read (0066 L134-153) guards jobs, backup_files and backup_history: a batch older than the collection's
+// last read moves nothing; the same time or later is the newest and is recorded. import_mssql_jobs takes the first
+// cursor row (LIMIT 1) and moves only when newest (0094 L217-222); a NULL mark is stored as NULL.
+func TestCursorMovesHadrGuard(t *testing.T) {
+	cur := map[string]format.Cursor{
+		"hadr_read:mssql_jobs": {Source: "hadr_read:mssql_jobs", Kind: "log", At: at(t1)},
+		"jobs":                 {Source: "jobs", Kind: "seq", Seq: 900},
+	}
+	if got := moves(t, "mssql_jobs", t0, []map[string]any{{"kind": "cursor", "last_history_id": int64(950), "mark": int64(8)}}, cur); len(got) != 0 {
+		t.Errorf("an older batch moved: %+v", got)
+	}
+	got := moves(t, "mssql_jobs", t1, []map[string]any{{"kind": "cursor", "last_history_id": int64(960), "mark": int64(9)}, {"kind": "cursor", "last_history_id": int64(970), "mark": int64(1)}}, cur)
+	if got["jobs"].Seq != 960 || got["jobs_mark"].Seq != 9 || !got["hadr_read:mssql_jobs"].At.Equal(t1) {
+		t.Errorf("the same time, the first cursor row: %+v", got)
+	}
+	later := t1.Add(time.Hour)
+	got = moves(t, "mssql_jobs", later, []map[string]any{{"kind": "cursor", "mark": int64(3)}, {"kind": "cursor", "last_history_id": int64(980)}}, cur)
+	if _, moved := got["jobs"]; moved || !got["hadr_read:mssql_jobs"].At.Equal(later) {
+		t.Errorf("a first cursor row without last_history_id moved jobs, or the read was not recorded: %+v", got)
+	}
+	got = moves(t, "mssql_jobs", later, []map[string]any{{"kind": "cursor", "last_history_id": int64(990)}}, cur)
+	if got["jobs"].Seq != 990 || got["jobs_mark"].Kind != "null" {
+		t.Errorf("a cursor row without its mark: %+v", got)
+	}
+}
+
+// import_mssql_backup_history (0191 L154-276): the first batch inserts the cursor row as the batch has it (restores
+// too, whatever restore_read says); later batches keep a value the batch does not carry (coalesce), move restores
+// only when restore_read = 'read', and send last_set_id to 0 on v_again (a cursor read listing a database the last
+// read did not list), the mark kept. A read listing databases replaces the list; an empty name is no database.
+func TestCursorMovesBackupHistory(t *testing.T) {
+	db := func(n string) map[string]any { return map[string]any{"kind": "database", "database_name": n} }
+	bh := func(id, mark int64) map[string]any {
+		return map[string]any{"kind": "cursor", "source": "backup_history", "last_id": id, "mark": mark}
+	}
+	rh := func(id, mark int64) map[string]any {
+		return map[string]any{"kind": "cursor", "source": "restore_history", "last_id": id, "mark": mark}
+	}
+	read := func(from int64, restore string) map[string]any {
+		return map[string]any{"kind": "read", "from_set_id": from, "restore_read": restore}
+	}
+	got := moves(t, "mssql_backup_history", t0, []map[string]any{db("app"), db(""), read(0, "no right"), bh(10, 1), rh(4, 9)}, nil)
+	if got["backup_history"].Seq != 10 || got["backup_history_mark"].Seq != 1 || got["restore_history"].Seq != 4 || got["restore_history_mark"].Seq != 9 ||
+		names(got["backup_history_dbs"]) != "app" || !got["hadr_read:mssql_backup_history"].At.Equal(t0) {
+		t.Fatalf("the first batch: %+v", got)
+	}
+	cur := got
+	got = moves(t, "mssql_backup_history", t1, []map[string]any{db("crm"), db("app"), read(10, "no right"), bh(20, 2), rh(5, 10)}, cur)
+	if got["backup_history"].Seq != 0 || got["backup_history_mark"].Seq != 2 || names(got["backup_history_dbs"]) != "app,crm" {
+		t.Errorf("again: %+v", got)
+	}
+	if _, moved := got["restore_history"]; moved {
+		t.Errorf("restores moved while not read: %+v", got)
+	}
+	if got := moves(t, "mssql_backup_history", t1, []map[string]any{db("app"), db("new"), read(10, "read")}, cur); got["backup_history"].Kind != "seq" || got["backup_history"].Seq != 0 {
+		t.Errorf("again without a cursor row: %+v", got)
+	}
+	got = moves(t, "mssql_backup_history", t1, []map[string]any{db("app"), read(10, "read"), rh(6, 11)}, cur)
+	if _, moved := got["backup_history"]; moved || got["restore_history"].Seq != 6 || names(got["backup_history_dbs"]) != "app" {
+		t.Errorf("no backup cursor row, restores read: %+v", got)
+	}
+	got = moves(t, "mssql_backup_history", t1, []map[string]any{read(10, "read"), bh(30, 3)}, cur)
+	if _, listed := got["backup_history_dbs"]; listed || got["backup_history"].Seq != 30 {
+		t.Errorf("a read listing no database: %+v", got)
+	}
+	if got := moves(t, "mssql_backup_history", t0.Add(-time.Minute), []map[string]any{db("app"), bh(40, 4)}, cur); len(got) != 0 {
+		t.Errorf("an older batch moved: %+v", got)
+	}
+}
+
+// import_mssql_backup_files (0140 L328-510): a read listing databases puts into 'unlisted' every database it does
+// not list that is unlisted already or holds stored sets, and deletes the sets of a database it does not list or
+// lists as created anew (more than 3900 s apart, mssql_recreated); a set is stored for a listed database, type full /
+// diff / log, finished no earlier than an hour before the database's creation. A cursor read ('from' > 0) listing an
+// unlisted database again sends the cursor to 0 and its mark to NULL (v_back); with no cursor row yet and a non-empty
+// list, the row is made at 0 with a NULL mark.
+func TestCursorMovesBackupFiles(t *testing.T) {
+	made := t0.Add(-240 * time.Hour)
+	db := func(n string, created time.Time) map[string]any {
+		return map[string]any{"kind": "database", "database_name": n, "created_utc": created}
+	}
+	set := func(n string, finish time.Time) map[string]any {
+		return map[string]any{"kind": "set", "database_name": n, "backup_type": "full", "is_copy_only": 0, "backup_set_id": int64(1), "finish_utc": finish}
+	}
+	read := func(from int64) map[string]any { return map[string]any{"kind": "read", "cursor": true, "from": from} }
+	cursor := func(id, mark int64) map[string]any {
+		return map[string]any{"kind": "cursor", "last_set_id": id, "mark": mark}
+	}
+	step := func(cur map[string]format.Cursor, when time.Time, rows ...map[string]any) map[string]format.Cursor {
+		next := map[string]format.Cursor{}
+		for k, v := range cur {
+			next[k] = v
+		}
+		for k, v := range moves(t, "mssql_backup_files", when, rows, cur) {
+			next[k] = v
+		}
+		return next
+	}
+	s := step(nil, t0, db("app", made), db("crm", made), set("crm", t0.Add(-time.Hour)), read(0), cursor(55, 2))
+	if s["backup_sets"].Seq != 55 || s["backup_sets_mark"].Seq != 2 || names(s["backup_sets_unlisted"]) != "" {
+		t.Fatalf("the first batch: %+v", s)
+	}
+	s = step(s, t1, db("app", made), read(55), cursor(60, 3))
+	if s["backup_sets"].Seq != 60 || names(s["backup_sets_unlisted"]) != "crm" {
+		t.Fatalf("crm not listed: %+v", s)
+	}
+	if back := step(s, t1.Add(time.Minute), db("app", made), db("crm", made), read(0), cursor(70, 4)); back["backup_sets"].Seq != 70 || back["backup_sets_mark"].Seq != 4 {
+		t.Errorf("a whole read ('from' 0) went back: %+v", back)
+	}
+	if old := moves(t, "mssql_backup_files", t0, []map[string]any{db("app", made), db("crm", made), read(60), cursor(70, 4)}, s); len(old) != 0 {
+		t.Errorf("an older batch moved: %+v", old)
+	}
+	s = step(s, t1.Add(time.Minute), db("app", made), db("crm", made), read(60), cursor(70, 4))
+	if s["backup_sets"].Seq != 0 || s["backup_sets_mark"].Kind != "null" || names(s["backup_sets_unlisted"]) != "" {
+		t.Errorf("crm listed again on a cursor read: %+v", s)
+	}
+
+	// no cursor row yet: the list makes the row at 0
+	s = step(nil, t0, db("app", made), db("crm", made), set("crm", t0.Add(-time.Hour)), set("app", made.Add(-2*time.Hour)))
+	if _, made := s["backup_sets"]; made {
+		t.Errorf("a row made with nothing unlisted: %+v", s)
+	}
+	s = step(s, t1, db("crm", made))
+	if _, made := s["backup_sets"]; made || names(s["backup_sets_unlisted"]) != "" {
+		t.Errorf("app's set finished over an hour before its creation is not stored, so app is not unlisted: %+v", s)
+	}
+	s = step(s, t1.Add(time.Minute), db("app", made))
+	if s["backup_sets"].Kind != "seq" || s["backup_sets"].Seq != 0 || s["backup_sets_mark"].Kind != "null" || names(s["backup_sets_unlisted"]) != "crm" {
+		t.Errorf("crm's stored set unlisted: the row made at 0: %+v", s)
+	}
+
+	// created anew: its sets go, so a later read that does not list it leaves it out of the list
+	s = step(nil, t0, db("crm", made), set("crm", t0.Add(-time.Hour)), cursor(5, 1))
+	again := step(s, t1, db("crm", made.Add(2*time.Hour)))
+	if again = step(again, t1.Add(time.Minute), db("app", made)); names(again["backup_sets_unlisted"]) != "" {
+		t.Errorf("a database created anew kept its sets: %+v", again)
+	}
+	near := step(s, t1, db("crm", made.Add(30*time.Minute)))
+	if near = step(near, t1.Add(time.Minute), db("app", made)); names(near["backup_sets_unlisted"]) != "crm" {
+		t.Errorf("a creation time 30 minutes apart is the same database: %+v", near)
 	}
 }

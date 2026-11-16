@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -298,4 +299,31 @@ func cut(t *testing.T, p string, n int) {
 	t.Helper()
 	b := readFile(t, p)
 	write(t, p, b[:len(b)-n])
+}
+
+// The cursor kinds: log, mssql and seq carry a read position; list carries the names a SQL function keeps beside its
+// cursor (backup_history's database list, backup_files' unlisted databases); null is a source the store holds as
+// NULL (its reader answers not found). Any other kind is refused; a list's names round-trip in order.
+func TestCursorKinds(t *testing.T) {
+	m := fixtureManifest(t)
+	for _, c := range []Cursor{{Source: "backup_history_dbs", Kind: "list", Names: []string{"app", "crm"}}, {Source: "backup_sets_mark", Kind: "null"}, {Source: "backup_sets_unlisted", Kind: "list"}} {
+		m.Cursors = []Cursor{c}
+		if err := m.check(); err != nil {
+			t.Errorf("%+v: %v", c, err)
+		}
+	}
+	for _, c := range []Cursor{{Source: "x", Kind: "set"}, {Source: "", Kind: "list"}, {Source: "y", Kind: "null", Seq: 3}, {Source: "z", Kind: "seq", Names: []string{"a"}}} {
+		m.Cursors = []Cursor{c}
+		if err := m.check(); err == nil {
+			t.Errorf("%+v: no error", c)
+		}
+	}
+	b, err := json.Marshal(Cursor{Source: "backup_history_dbs", Kind: "list", Names: []string{"crm", "app"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Cursor
+	if err := json.Unmarshal(b, &back); err != nil || len(back.Names) != 2 || back.Names[0] != "crm" || back.Names[1] != "app" {
+		t.Errorf("round trip %s: %v %+v", b, err, back)
+	}
 }

@@ -4,12 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type sqlBatch struct {
@@ -36,6 +40,11 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 	if _, err := r.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	pool, err := pgxpool.New(ctx, dsn) // the two kept lists have no reader in the repository: read their tables
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
 	a, b := t0.Add(-time.Hour), t0
 	for _, c := range []struct {
 		name, engine string
@@ -109,7 +118,7 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "read", "from_set_id": int64(0), "restore_read": "read"},
 				{"kind": "cursor", "source": "backup_history", "last_id": int64(30), "mark": int64(3)},
 			}},
-		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq", "restore_history_mark": "seq"}},
+		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq", "restore_history_mark": "seq", "backup_history_dbs": "list"}},
 		{"mssql backup history list", "sqlserver", []sqlBatch{
 			{"mssql_backup_history", t0.Add(-time.Hour), []map[string]any{
 				{"kind": "database", "database_name": "app"}, {"kind": "database", "database_name": "crm"},
@@ -121,7 +130,7 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "read", "from_set_id": int64(10), "restore_read": "read"},
 				{"kind": "cursor", "source": "backup_history", "last_id": int64(40), "mark": int64(4)},
 			}},
-		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq"}},
+		}, map[string]string{"backup_history": "seq", "backup_history_mark": "seq", "restore_history": "seq", "backup_history_dbs": "list"}},
 		// import_mssql_backup_files (0140 L328-510): a database whose stored sets a read deleted because it did not
 		// list it joins 'unlisted'; a cursor read ('from' > 0) that lists one of them again sends the cursor to 0 and
 		// its mark to NULL (v_back); an older batch moves nothing.
@@ -149,7 +158,7 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "read", "cursor": true, "from": int64(0)},
 				{"kind": "cursor", "last_set_id": int64(80), "mark": int64(5)},
 			}},
-		}, map[string]string{"backup_sets": "seq", "backup_sets_mark": "seq"}},
+		}, map[string]string{"backup_sets": "seq", "backup_sets_mark": "seq", "backup_sets_unlisted": "list"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var tag [4]byte
@@ -181,6 +190,20 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 					same := found == ok && (!ok || (f == g.FileName && off == g.FileOffset && seq == g.LastSeq && g.LastEventAt != nil && last.Equal(g.LastEventAt.Truncate(time.Microsecond))))
 					if err != nil || !same {
 						t.Errorf("%s: the store %q %d %v %d %v (%v), the rule %+v", src, f, off, last, seq, found, err, g)
+					}
+				case "list":
+					q := map[string]string{
+						"backup_sets_unlisted": `SELECT array_to_string(ARRAY(SELECT u FROM unnest(unlisted) u ORDER BY u COLLATE "C"), ',') FROM pgvigil.mssql_backup_files_cursor WHERE instance_id = $1`,
+						"backup_history_dbs":   `SELECT string_agg(database_name, ',' ORDER BY database_name COLLATE "C") FROM pgvigil.mssql_backup_history_dbs WHERE instance_id = $1 HAVING count(*) > 0`,
+					}[src]
+					var s string
+					err := pool.QueryRow(ctx, q, id).Scan(&s)
+					found := err == nil
+					if errors.Is(err, pgx.ErrNoRows) {
+						err = nil
+					}
+					if err != nil || found != ok || (ok && s != strings.Join(g.Names, ",")) {
+						t.Errorf("%s: the store %q %v (%v), the rule %v %+v", src, s, found, err, ok, g)
 					}
 				case "seq":
 					n, found, err := r.MSSQLSeqCursor(ctx, id, src)
