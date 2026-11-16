@@ -292,7 +292,7 @@ BEGIN
     -- with no error time at the distributor (failing_untimed), the first read that saw it failing (failing_seen, said
     -- in the findings); carried from the series' newer of its two previous reads that saw it failing (one clean read
     -- between, a retry's first seconds, never resets it) while the read is the same streak by the collector's key
-    -- (review q10wc N3: failing_anchor, the newest healthy session, and failing_cut, the last recovery inside a session,
+    -- (review q10wc N3: failing_anchor, the newest session that ended 2 / 4, and failing_cut, the last recovery inside a session,
     -- no newer than that read's - a new streak needs a newer one, a purge of old history only lowers them; the key, not
     -- the distributor's error times against the collector's clock); the same streak keeps the earlier of the two times
     -- (never later while it fails: an error row the distributor's cleanup removed leaves the stored time) with the flag

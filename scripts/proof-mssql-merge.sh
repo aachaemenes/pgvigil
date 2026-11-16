@@ -100,12 +100,14 @@
 #      - the carry (review q10wa S2 / S3, written before its red run on 56c29ff2), three reads: merge-untimed3 untimed,
 #        clean, untimed -> since the first read T0, failing_seen [red: the third read's time]; merge-retention 12 min
 #        then 8 min (an error purged) -> 12 min [red: 8]; merge-late-first untimed then timed 90 s -> T0, failing_seen
-#        [red: 90 s]; merge-new-streak 12 min then 90 s (a new error after the previous read) -> 90 s [green: the guard];
+#        [red: 90 s]; merge-new-streak 12 min then 90 s (a new error after the previous read) -> 90 s [green: N3, a newer anchor];
 #        N3 (the lead 17:2x, the streak key on every failing row, written before its red run on aa560520): the same
 #        streak while the key's anchor and cut are no newer; merge-recovered-untimed untimed, recovered, then timed 90 s
 #        with a newer anchor -> 90 s, no failing_seen [red: T0/true]; merge-skew 12 min then 8 min (an error time before
 #        the previous read) with a newer anchor -> 8 min [red: 12]; merge-new-cut 12 min then 8 min, a newer cut -> 8 min
-#        [red: 12]; the four rows above unchanged with their keys;
+#        [red: 12]; the four rows above unchanged with their keys; review n3 S2 (a key going DOWN is the same streak, so a
+#        carry comparing with '=' goes red): merge-purged 12 min then 8 min with the anchor purged to 0 -> 12 min,
+#        merge-cut-lowered 12 min then 8 min with the cut purged to 0 -> 12 min [green; red under that mutation];
 #      - Q10W the alert row: repl_agent_retrying at 60 minutes (instance), a merge row failing since 75 min, then a read
 #        in a retry's clean window (in progress, no since), then failing again since the same 75 min: 'keeps failing
 #        or retrying', none, 'keeps failing or retrying', the stored since still the 75 min (review q10wb N4) [green on
@@ -380,7 +382,7 @@ INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
 INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
   -- merge-recovered-then-failing: an error an hour ago, a recovery inside the session (clean for 54 minutes), then a
   -- new failure: since the new failure's first error, never the hour-old one
-  (2001, 19, N'No data needed to be merged.', 0), (2001, 19, N'an old failure', 2011), (2001, 19, N'Merged 1 data changes.', 0),
+  (2001, 19, N'No data needed to be merged.', 0), (2001, 19, N'expected cut: an old failure', 2011), (2001, 19, N'Merged 1 data changes.', 0),
   (2001, 19, N'No data needed to be merged.', 0), (2001, 19, N'expected since', 2012), (2001, 19, N'Retrying.', 0),
   (2001, 19, N'The process could not connect to Subscriber ''SUBX''.', 2013), (2001, 19, N'expected code 18456', 0);
 INSERT dbo.MSmerge_history (session_id, agent_id, comments, error_id) VALUES
@@ -498,7 +500,8 @@ warning:a replication agent keeps failing or retrying:merge / merge-untimed2:fal
   # (review q10wc N3 P6: a new streak, 90 s, no 'first read' words) [red on aa560520: T0/true]; merge-skew 12 min, then
   # 8 min with a newer anchor - an error time before the previous read, as a distributor clock behind the collector's
   # gives (P13: a new streak, 8 min) [red: 12 min]; merge-new-cut 12 min, then 8 min with the same anchor and a newer
-  # cut (a recovery inside the session: a new streak, 8 min) [red: 12 min]
+  # cut (a recovery inside the session: a new streak, 8 min) [red: 12 min]; merge-purged / merge-cut-lowered 12 min, then
+  # 8 min with the anchor / the cut lowered to 0 (the distributor's cleanup: the same streak, 12 min - review n3 S2)
   SC=$(q "select pgvigil.ensure_instance('proof-merge-carry-$HX', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
   T0=$(q "select now() - interval '5 minutes'"); F8=$(q "select now() - interval '8 minutes'")
   crow() { printf '%s, %s' "$(row merge "$1" "$2" null "$3" "$4" "${5:-}")" "$(job merge "$1" running)"; }   # crow <name> <subdb> <runstatus> <read> [extra]
@@ -508,17 +511,20 @@ warning:a replication agent keeps failing or retrying:merge / merge-untimed2:fal
   carry "$T0" "$(crow merge-untimed3 s31 6 "$T0" "$US$(K 5 0)")" "$(crow merge-retention s32 6 "$T0" "$S12$(K 5 0)")" \
               "$(crow merge-late-first s33 6 "$T0" "$US$(K 5 0)")" "$(crow merge-new-streak s34 6 "$T0" "$S12$(K 5 0)")" \
               "$(crow merge-recovered-untimed s35 6 "$T0" "$US$(K 5 0)")" "$(crow merge-skew s36 6 "$T0" "$S12$(K 5 0)")" \
-              "$(crow merge-new-cut s37 6 "$T0" "$S12$(K 5 0)")"
+              "$(crow merge-new-cut s37 6 "$T0" "$S12$(K 5 0)")" "$(crow merge-purged s38 6 "$T0" "$S12$(K 5 0)")" \
+              "$(crow merge-cut-lowered s39 6 "$T0" "$S12$(K 5 777)")"
   carry "$T1" "$(crow merge-untimed3 s31 3 "$T1")" "$(crow merge-retention s32 6 "$T1" "$S8$(K 5 0)")" \
               "$(crow merge-late-first s33 6 "$T1" "$S1$(K 5 0)")" "$(crow merge-new-streak s34 6 "$T1" "$S1$(K 9 0)")" \
               "$(crow merge-recovered-untimed s35 4 "$T1")" "$(crow merge-skew s36 6 "$T1" "$S8$(K 9 0)")" \
-              "$(crow merge-new-cut s37 6 "$T1" "$S8$(K 5 777)")"
+              "$(crow merge-new-cut s37 6 "$T1" "$S8$(K 5 777)")" "$(crow merge-purged s38 6 "$T1" "$S8$(K 0 0)")" \
+              "$(crow merge-cut-lowered s39 6 "$T1" "$S8$(K 5 0)")"
   carry "$T2" "$(crow merge-untimed3 s31 6 "$T2" "$US$(K 5 0)")" "$(crow merge-retention s32 6 "$T2" "$S8$(K 5 0)")" \
               "$(crow merge-late-first s33 6 "$T2" "$S1$(K 5 0)")" "$(crow merge-new-streak s34 6 "$T2" "$S1$(K 9 0)")" \
               "$(crow merge-recovered-untimed s35 6 "$T2" "$S1$(K 9 0)")" "$(crow merge-skew s36 6 "$T2" "$S8$(K 9 0)")" \
-              "$(crow merge-new-cut s37 6 "$T2" "$S8$(K 5 777)")"
+              "$(crow merge-new-cut s37 6 "$T2" "$S8$(K 5 777)")" "$(crow merge-purged s38 6 "$T2" "$S8$(K 0 0)")" \
+              "$(crow merge-cut-lowered s39 6 "$T2" "$S8$(K 5 0)")"
   CY=$(q "select string_agg(agent_name || '=' || coalesce(CASE failing_since WHEN '$T0'::timestamptz THEN 'T0' WHEN '$F12'::timestamptz THEN 'F12' WHEN '$F8'::timestamptz THEN 'F8' WHEN '$F1'::timestamptz THEN 'F1' WHEN '$T2'::timestamptz THEN 'T2' ELSE failing_since::text END, 'null') || '/' || coalesce(failing_seen::text, 'null'), ',' order by agent_name) from pgvigil.mssql_replication_state where instance_id = $SC" 2>/dev/null || echo error)
-  WCY="merge-late-first=T0/true,merge-new-cut=F8/null,merge-new-streak=F1/null,merge-recovered-untimed=F1/null,merge-retention=F12/null,merge-skew=F8/null,merge-untimed3=T0/true"
+  WCY="merge-cut-lowered=F12/null,merge-late-first=T0/true,merge-new-cut=F8/null,merge-new-streak=F1/null,merge-purged=F12/null,merge-recovered-untimed=F1/null,merge-retention=F12/null,merge-skew=F8/null,merge-untimed3=T0/true"
   if [ "$CY" = "$WCY" ]; then ok "T4: the carry: $CY"; else red "T4-carry" "got $CY, want $WCY"; fi
   # the alert row (the lead 16:1x): a 60-minute retrying rule is reached across a retry's clean first seconds - the
   # read in that window has no finding, the next read gives the same since back (0059's alert_state keeps an open

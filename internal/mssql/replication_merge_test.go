@@ -66,6 +66,7 @@ func TestReplicationMergeLive(t *testing.T) {
              WHERE h.agent_id = a.id AND h.comments = N'expected since')`)+` AS since,
   CAST((SELECT MAX(h.comments) FROM `+s+`.dbo.MSmerge_history h WHERE h.agent_id = a.id AND h.comments LIKE N'expected code %') AS nvarchar(100)) AS code,
   (SELECT TOP (1) 1 FROM `+s+`.dbo.MSmerge_history h WHERE h.agent_id = a.id AND h.comments = N'expected untimed') AS untimed,
+  (SELECT CAST(MAX(h.timestamp) AS bigint) FROM `+s+`.dbo.MSmerge_history h WHERE h.agent_id = a.id AND h.comments LIKE N'expected cut%') AS cut,
   (SELECT TOP (1) x.runstatus FROM `+s+`.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) AS runstatus,
   `+utcText(`(SELECT TOP (1) COALESCE(x.end_time, x.start_time) FROM `+s+`.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC)`)+` AS last_run
 FROM `+s+`.dbo.MSmerge_agents a`)
@@ -139,6 +140,9 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 			t.Errorf("%s: streak key anchor %v cut %v on a row failing %v (want both set when failing, both NULL otherwise)",
 				name, r["failing_anchor"], r["failing_cut"], failing)
 		}
+		if w["cut"] != nil && fmt.Sprint(r["failing_cut"]) != fmt.Sprint(w["cut"]) {
+			t.Errorf("%s: cut %v, want the marked error row's rowversion %v (its recovery inside the session)", name, r["failing_cut"], w["cut"])
+		}
 		t.Logf("%s: runstatus %v, failing since %v, untimed %v, error %v: %v", name, r["runstatus"], r["failing_since_utc"], r["failing_untimed"], r["error_code"], r["error_text"])
 	}
 	// the flicker: the retry's error row gives back the first failure's time, never its own
@@ -146,7 +150,8 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 		fmt.Sprint(a["failing_since_utc"]) != fmt.Sprint(c["failing_since_utc"]) {
 		t.Errorf("the flicker: merge-flicker-a since %v, merge-flicker-c since %v (want the same, not nil)", a["failing_since_utc"], c["failing_since_utc"])
 	}
-	// the streak key's cut: a recovery inside a session gives one (its row's rowversion), a plain retry none (0)
+	// the streak key's cut: a recovery inside a session gives one (the marked row's rowversion, checked above), a plain
+	// retry none (0)
 	if r := by["merge-recovered-then-failing"]; r == nil || r["failing_cut"] == nil || fmt.Sprint(r["failing_cut"]) == "0" {
 		t.Errorf("merge-recovered-then-failing: cut %v, want its in-session recovery's rowversion (not 0, not NULL)", r["failing_cut"])
 	}
