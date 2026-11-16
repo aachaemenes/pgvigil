@@ -5,9 +5,9 @@ Two collections and two tabs per instance, two fleet pages, and five Summary col
 | collection | every | reads | needs |
 | --- | --- | --- | --- |
 | `backup_tools` | 15 min | which backup tool the server's `archive_command` and `restore_command` name; that tool's own JSON, run on the collector's host; a standby's replay | pg_monitor (it reads both commands); the tool on the collector's host |
-| `rolechange` | 1 min | `pg_is_in_recovery()`, the timeline, `pg_control_system()`'s system identifier, the postmaster's start, the newest timeline history file in `pg_wal`; Patroni's `/cluster` where Patroni is seen | pg_monitor for `pg_control_*` and `pg_ls_waldir()` (without it those parts stay empty) |
+| `rolechange` | 1 min | `pg_is_in_recovery()`, the timeline, `pg_control_system()`'s system identifier, the postmaster's start, the newest timeline history file in `pg_wal`; Patroni's REST API where Patroni is seen or named (below) | pg_monitor for `pg_control_*` and `pg_ls_waldir()` (without it those parts stay empty); for Patroni, the collector's host reaching its REST API |
 
-`backup_tools` does not run on RDS, Aurora, Azure, Cloud SQL or AlloyDB: those platforms take their own backups (the `backups` collection in the README's table reads RDS and Aurora's snapshots and restore window). `rolechange` runs everywhere.
+`backup_tools` does not run on RDS, Aurora, Azure, Cloud SQL or AlloyDB: those platforms take their own backups (the `backups` collection in the README's table reads RDS and Aurora's snapshots and restore window). `rolechange` runs everywhere; its Patroni read on self-managed servers only.
 
 ## Base backups (pgBackRest, barman)
 
@@ -50,7 +50,37 @@ The **Server state** tab lists the instance's changes; the fleet **Replication**
 
 Instances are grouped into clusters by system identifier: per cluster the primary and its standbys, one row per member with its timeline and role since, how it is fed (streaming from a host, or `restore_command`), the primary's sender row that serves it (its sync state and replay lag: the `pg_stat_replication` row whose application name is the standby's `cluster_name` or instance name, or whose slot it uses), the slot and the WAL it keeps, and the role changes of 30 days. Two primaries in one cluster are said: a split, or a standby not read yet.
 
-**Patroni.** When a session whose application name starts with `Patroni` is connected (Patroni's own connection), `rolechange` asks `http://<the dsn's host>:8008/cluster` (Patroni's default REST port; a socket directory means this machine) with a 3-second limit and keeps each member: name, role (leader, replica, sync_standby, standby_leader), state, host, port, timeline and lag. No such session means no request. A REST API on another port or behind TLS is not read. A read that fails (no answer, not a cluster) keeps the read row with its message and takes the members away: Patroni's state is shown only while its endpoint answers.
+## Patroni
+
+**Where.** By default `rolechange` asks `http://<the dsn's host>:8008` (Patroni's default REST port; a socket directory means this machine), and only while a session whose application name starts with `Patroni` is connected (Patroni's own connections, `Patroni heartbeat` and `Patroni restapi`): no such session, no request. A REST API on another port, behind TLS or asking for a client certificate is named in the instance's `patroni:` block, and is then read whether or not a Patroni session is seen:
+
+```yaml
+instances:
+  - name: pg-a
+    dsn: env:PG_A_DSN
+    patroni:
+      url: https://10.0.0.5:8009          # http or https, a host and a port
+      ca_file: /etc/pgvigil/patroni-ca.pem  # the CA that signed restapi.certfile (empty: the system's roots)
+      cert_file: /etc/pgvigil/client.pem    # a client certificate, for restapi.verify_client
+      key_file: /etc/pgvigil/client.key
+```
+
+Patroni's GET endpoints take no password (restapi.authentication guards the unsafe ones), so the block holds none.
+
+**What.** Each request is a GET of at most 1 MB with a 3-second limit and no redirect: `/cluster` (the scope, the pause flag, each member's name, role - leader, standby_leader, sync_standby, quorum_standby, replica -, state, host, port, timeline, lag, a pending restart and its reason), then every member's own `/patroni` at its `api_url` in parallel, for what `/cluster` does not carry: when the member last reached the DCS (`dcs_last_seen`, the member's clock), whether failsafe mode holds its leader up, its own view of the pause and of a pending restart, its Patroni version and the cluster's system identifier. A member whose own API does not answer keeps its `/cluster` row with the message. When `/cluster` fails (Patroni answers it from the DCS: with the DCS down it does not), the endpoint's own `/patroni` is read alone, so a DCS outage still shows: the member's DCS contact ageing, failsafe mode. A member that joined just before the DCS was lost reads failsafe false: it is outside the leader's failsafe list (GET /failsafe on the leader shows that list), which is Patroni's own state, not a fault of the read. A read that fails keeps its message (an https endpoint asked over http, the reverse, a certificate no CA in `ca_file` signed and a client certificate asked for or not accepted each say so) and takes the members off the page: Patroni's state is shown only while its endpoint answers.
+
+**The checks** (check group `patroni`, the Summary's Replication column, the Server state tab and the fleet Replication page). A cluster read from several of its members is judged once, on one instance: among the fresh good reads of its scope and system identifier, a read of the whole cluster before a read of the endpoint's own member alone, then the lowest instance id (a reader that stops reading hands over after 120 s). Each age is the read's time less the first read that saw the condition, 10 s of slack letting the second read of the 1-minute schedule count as 1 minute:
+
+| check | when | default |
+| --- | --- | --- |
+| patroni no leader | no member in role leader or standby_leader (a paused cluster elects none until resumed) | critical after 1 min (pgmonitor 5.3.0 PatroniNoLeader) |
+| patroni member down | a member `/cluster` no longer lists (its Patroni stopped or its key expired in the DCS) and seen in the last 7 days, or listed in a state that does not serve (stopped, crashed, start failed, starting ...; running, streaming and in archive recovery serve) | critical after 1 min (pgmonitor PatroniPGIsRunning) |
+| patroni paused | the cluster in maintenance mode: no failover, no restart of a stopped member | critical after 15 min (pgmonitor PatroniIsPaused) |
+| patroni pending restart | a member whose settings wait for a restart (the reason: `max_connections 100 -> 120`) | warning after 30 min (pgmonitor PatroniPendingRestart) |
+| patroni DCS not reached | a member's last DCS contact before the read (the newest read of the member by any instance of the cluster) | warning 5 min, critical 30 min (pgmonitor PatroniDCSLastSeen) |
+| patroni API not answering | an instance's read failing for 2 reads in a row, where the `patroni:` block names the endpoint or it answered in the last 7 days | warning (pgvigil's own) |
+
+A Patroni session with no answer at the default endpoint and no `patroni:` block is an info finding, `patroni API not found`. A member removed for good drops out of the checks 7 days after it was last seen.
 
 ## Crashes (the Memory Dump column)
 
@@ -80,6 +110,11 @@ Every rule above takes its numbers from the thresholds store (the uptime and cra
 | `replay_delay` | minutes | over | warning 60, critical 240 |
 | `amcheck_age` | days | over | warning 7, critical 14 |
 | `crash` | hours | under | warning 168, critical 48 (DBA Dash's Memory Dump defaults, 0117) |
+| `patroni_no_leader` | minutes | over | critical 1 |
+| `patroni_member_down` | minutes | over | critical 1 |
+| `patroni_paused` | minutes | over | critical 15 |
+| `patroni_pending_restart` | minutes | over | warning 30 |
+| `patroni_dcs_last_seen` | minutes | over | warning 5, critical 30 |
 
 A level may set a warning, a critical or both: a rule fires past whichever is set (a critical alone fires only past it); since 0117 an uptime or crash level may set neither (Enabled off: that level judges nothing). `archive_age` takes whole minutes from 1 (0022's rule keeps minutes as a whole number). A threshold set in the UI at any level wins over the config file's `archive_warn_minutes`. The Thresholds page (Configuration) sets the root, a tag, an instance or a database; the Base backups and Server state tabs set their instance's, and each database's amcheck threshold. A write needs the UI login and goes through the actions door's audit login (`pgvigil.import_pg_threshold`): an edit ends the level's row and writes its successor with who and when, **Inherit** ends it so the level above applies, and a refused value (a word, a critical on the wrong side of the warning, a key at a level it does not take) writes nothing and says why.
 
@@ -89,4 +124,6 @@ Role changes and threshold rows are kept whole. Tools, backups, Patroni members 
 
 ## Proven
 
-`scripts/proof-pg-backups-roles.sh` on the lab box: a pgBackRest stanza's full and diff backups read with pgBackRest's own sizes and the WAL since; the tool off the host's PATH; a barman answer (a stand-in printing barman 3.20's JSON shape, a failed and a running backup without an end: barman itself is not run); an unreadable pgBackRest repository (status 99) keeping the backups (seeded); a streaming standby promoted (one promotion row, timed by its history file); a standby restored by pgBackRest and fed by `restore_command`; a SIGSEGV crash restart found once and acknowledged; the thresholds at each level with their refusals; Patroni's `/cluster` from a stand-in on port 8008; the rules on seeded rows. Not proven: barman and barman-cloud themselves, a real Patroni cluster, the pages in a browser.
+`scripts/proof-pg-backups-roles.sh` on the lab box: a pgBackRest stanza's full and diff backups read with pgBackRest's own sizes and the WAL since; the tool off the host's PATH; a barman answer (a stand-in printing barman 3.20's JSON shape, a failed and a running backup without an end: barman itself is not run); an unreadable pgBackRest repository (status 99) keeping the backups (seeded); a streaming standby promoted (one promotion row, timed by its history file); a standby restored by pgBackRest and fed by `restore_command`; a SIGSEGV crash restart found once and acknowledged; the thresholds at each level with their refusals; the rules on seeded rows. Not proven: barman and barman-cloud themselves, the pages in a browser.
+
+`scripts/proof-patroni.sh` on the lab box, a real cluster: Patroni 4.1.5 (PGDG's package) with three members on PostgreSQL 17 and one etcd 3.5: the three members read whole from the default endpoint; a pending restart and its reason, then gone after `patronictl restart`; the pause; a member's PostgreSQL stopped while paused (down on the second read); no leader (paused, the leader's container stopped), judged on another member after the hand-over; resumed and the old leader rejoined; etcd stopped (each member's own state: failsafe mode, the DCS contact ageing, the leader kept); the REST API moved to https on 8009, read with the CA and then with a client certificate, each wrong setting's message; the rules on seeded rows; the Go cases. Not proven: Consul, ZooKeeper and Kubernetes as the DCS, a standby cluster (standby_leader), the pages in a browser.
