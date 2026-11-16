@@ -148,7 +148,8 @@ export MS_FULL; MS_FULL=$(ms a26full "$PF"); export MS_NT; MS_NT=$(ms a26notrace
   printf '  - name: a26-mid\n    engine: sqlserver\n    dsn: env:MS_FULL\n    mssql_schema:\n      databases: ["mid"]\n'
 } > "$CFG"
 "$BIN" migrate -config "$CFG" > "$OUT" 2>&1 || { tail -5 "$OUT"; fail "migrate"; }
-eq "the newest migration" "$(q "select max(version) from pgvigil.schema_version")" "0267_mssql_schema.sql"
+# 0267 recorded, not 0267 the newest: a later migration (A26-PG's 0275, the join's own file) keeps this proof's objects
+eq "0267 recorded" "$(q "select count(*) from pgvigil.schema_version where version = '0267_mssql_schema.sql'")" "1"
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&1 || { tail -5 "$OUT" >&2; fail "collect $1 on $2"; }; }
 iid() { q "select instance_id from pgvigil.instances where name = '$1'"; }
 dbid() { sq "SELECT database_id FROM sys.databases WHERE name = N'$1'"; }
