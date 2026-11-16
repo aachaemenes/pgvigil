@@ -91,7 +91,10 @@
 #     the expected owner is sa (the default)'), sa's 'ok', and no finding row (info); the instance expecting <x>: the two
 #     swap; 'OFF' (any case): every row off; inherit: back; a database left out: no row. The default grid (A and V) counts
 #     the owner rows apart and asks them 'ok' (sa owns every user database there) once the key exists (review-24 B1). Until joined, scripts/blitzgap-join-draft-
-#     config.sql gives the keys and the checks their lines.
+#     config.sql gives the keys and the checks their lines. FOLD-55 (sp_Blitz 8.35 read, the lead 07:5x): master, model,
+#     msdb and tempdb against the original sa always - msdb owned by <x> is 'info' even while the instance expects <x>
+#     ('... (a system database: always the original sa)'), OFF and exclusions apply to them; a Managed Instance has no
+#     owner row, read or not (sp_Blitz leaves 55 out there).
 #  V. the version run: each further image repeats A, the default grid and the recovery, scoped MAXDOP and event
 #     session deviations.
 #  A met expected value for a server option leaves no day-one warning for it: not in the findings, not on the Checks
@@ -712,16 +715,32 @@ if [[ $(pq "SELECT count(*) FROM pgvigil.mssql_config_expect_keys() WHERE kind =
 fi
 eqv "C7 the key 'database owner' (sp_Blitz 55) is in the expected values' list" "$(pq "SELECT kind || ' ' || key || ' ' || vtype || ' ' || default_on || ' ' || rule FROM pgvigil.mssql_config_expect_keys() WHERE kind = 'database' AND key = 'owner'")" "database owner text true sp_Blitz 55"
 sqv "C7 setup: a database owned by sa and one owned by $OWN" "CREATE DATABASE pgv_own_sa; CREATE DATABASE pgv_own_x; ALTER AUTHORIZATION ON DATABASE::pgv_own_x TO [$OWN];"
+# msdb's owner can change (master, model, tempdb and distribution refuse: 15109 - Proof-Box probe 11-16 07:59)
+sqv "C7 setup: msdb owned by $OWN" "ALTER AUTHORIZATION ON DATABASE::msdb TO [$OWN];"
 collect mssql_checks || bad "C7: collect mssql_checks"
 eqv "C7 the default (sa): the database owned by $OWN is info, sa's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa ok, pgv_own_x info"
 eqv "C7 its words" "$(det 'database owner' pgv_own_x)" "the owner is $OWN; the expected owner is sa (the default)"
+# sp_Blitz 8.35 (20261114) L3831: master, model, msdb and tempdb against the original sa always (FOLD-55 b2)
+eqv "C7 the system databases against the original sa: master ok, msdb owned by $OWN info" "$(st 'database owner' master), $(st 'database owner' msdb)" "master ok, msdb info"
+eqv "C7 ... msdb's words" "$(det 'database owner' msdb)" "the owner is $OWN; the expected owner is sa (a system database: always the original sa)"
 eqv "C7 info makes no finding row" "$(pq "SELECT count(*) FROM pgvigil.mssql_config_check_findings WHERE instance_id = $IID AND check_name = 'database owner'")" 0
 eqv "C7 the expected owner set to $OWN on the instance" "$(exi "\"kind\":\"database\",\"key\":\"owner\",\"value\":\"$OWN\"")" done
 eqv "C7 ... then sa's database is info and $OWN's ok" "$(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "pgv_own_sa info, pgv_own_x ok"
+eqv "C7 ... a system database stays against sa: msdb info, master ok" "$(st 'database owner' msdb), $(st 'database owner' master)" "msdb info, master ok"
 eqv "C7 set OFF (any case): every row off" "$(exi '"kind":"database","key":"owner","value":"OFF"') $(st 'database owner' pgv_own_sa), $(st 'database owner' pgv_own_x)" "done pgv_own_sa off, pgv_own_x off"
+eqv "C7 ... the system databases' rows too" "$(st 'database owner' msdb), $(st 'database owner' master)" "msdb off, master off"
 eqv "C7 back to the default" "$(exn '"kind":"database","key":"owner"') $(st 'database owner' pgv_own_x)" "done pgv_own_x info"
 eqv "C7 a database left out" "$(exi '"kind":"database","key":"owner","value":"sa","exclusions":["pgv_own_x"]') $(st 'database owner' pgv_own_x)" "done no row"
+eqv "C7 a system database left out, the others kept" "$(exi '"kind":"database","key":"owner","value":"sa","exclusions":["msdb"]') $(st 'database owner' msdb) / $(st 'database owner' master)" "done no row / master ok"
 exn '"kind":"database","key":"owner"' >/dev/null
+# sp_Blitz 8.35 L870 leaves 55 out on Managed Instance (EngineEdition 8; kit issue #1919: sa is disabled there and the
+# admin is named when the instance is created) - no row at all, read or not (FOLD-55 b1; written rows)
+MI55=$(mkinst "mi55$SUF" azuresqlmi)
+eqv "C7 Managed Instance: no row before its databases are read" "$(st 'database owner' '' "$MI55")" "no row"
+pq "INSERT INTO pgvigil.mssql_database_option (instance_id, database_name, database_id, state, is_system, options, snapshot_at) VALUES ($MI55, 'pgv_mi_db', 5, 'ONLINE', false, '{\"owner\": \"pgv_mi_admin\"}', now()), ($MI55, 'msdb', 4, 'ONLINE', true, '{\"owner\": \"pgv_mi_admin\"}', now())" >/dev/null || bad "C7: the Managed Instance's written database rows"
+eqv "C7 ... nor with a user and a system database owned by its admin" "$(st 'database owner' '' "$MI55")" "no row"
+pq "DELETE FROM pgvigil.instances WHERE instance_id = $MI55" >/dev/null
+sqv "C7 undo: msdb back to sa" "ALTER AUTHORIZATION ON DATABASE::msdb TO sa;"
 sqv "C7 undo" "DROP DATABASE pgv_own_sa; DROP DATABASE pgv_own_x;"
 
 # ---- V: the version run ---------------------------------------------------------------------------------------------
