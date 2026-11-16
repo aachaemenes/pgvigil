@@ -513,33 +513,54 @@ for (const s of storageScopes.slice(2)) {
 // chip (its x back to the range before the zoom), on an instance of each engine
 const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
 // the own-page finder (in the page): a SQL Server Summary's status text of check KEY (Memory dumps, DB Mail) inside a
-// box (the header's reasons, the verdict card's reasons, the Not OK line), marked data-cc-own for the click: the
-// header's '+n more' opened first (a reason past the first six is on the page too), then the text by its data-group
-// ('group'), else a text of the box that names the check by its words and sits under no data-group ('words': it lost
-// its data-group, so no row here and no twin rule of the walk can find it - the row FAILs it); null when the box holds
-// no text of KEY. The words are the product's: the header's column label, the verdict line's phrase (verdict.ts), the
-// Not OK name (fleet.ts mssql[2])
+// box (the header's reasons, the verdict card's reasons, the Not OK line), marked data-cc-own for the click: every
+// '+n more' of the header opened first (a reason past the first six is on the page too), then the text by its
+// data-group ('group'), else a text of the box that names the check by its words and sits under no data-group
+// ('words': it lost its data-group, so no row here and no twin rule of the walk can find it - the row FAILs it), else,
+// where the box draws the band's own items (the header's reasons and the verdict card's: instheader.ts reasonLine,
+// verdict.ts L72), KEY listed in the band word's data-groups ('missing': a reason of the band with no text of it in
+// the box, whatever its words or element - the row FAILs it); null when the box holds no text of KEY and the band
+// does not list it. The words are the product's: the header's column label, the verdict line's phrase (verdict.ts),
+// the Not OK name (fleet.ts mssql[2])
 const ownWords = { dumps: '^(memory dumps?\\b|the server wrote memory dumps)', dbmail: '^(db mail\\b|database mail\\b|the server cannot send mail)' };
-const ownFind = (box, key) => `(() => { document.querySelectorAll('[data-cc-own]').forEach(e => e.removeAttribute('data-cc-own'));
-  const more = [...document.querySelectorAll('main .inst-reason button')].find(b => /^[+]\\d+ more$/.test(b.textContent.trim())); if (more) more.click();
+const ownFind = (box, key, band = null) => `(() => { document.querySelectorAll('[data-cc-own]').forEach(e => e.removeAttribute('data-cc-own'));
+  for (const m of [...document.querySelectorAll('main .inst-reason button')].filter(b => /^[+]\\d+ more$/.test(b.textContent.trim()))) m.click();
   const mark = (x, how) => { x.setAttribute('data-cc-own', '1'); const a = x.matches('a[href]') ? x : x.querySelector('a[href]'); return { how, link: !!a, text: x.textContent.trim().slice(0, 50) }; };
   for (const b of document.querySelectorAll(${JSON.stringify(box)})) { const x = b.querySelector(${JSON.stringify(`[data-group="${key}"]`)}); if (x) return mark(x, 'group'); }
   const w = new RegExp(${JSON.stringify(ownWords[key])}, 'i');
   for (const b of document.querySelectorAll(${JSON.stringify(box)})) for (const x of b.querySelectorAll('a, span, li')) if (!x.closest('[data-group]') && w.test(x.textContent.trim())) return mark(x, 'words');
+  const bw = ${band ? `document.querySelector(${JSON.stringify(band)})` : 'null'};
+  if (bw && (bw.getAttribute('data-groups') ?? '').split(' ').includes(${JSON.stringify(key)})) return { how: 'missing', link: false, text: '' };
   return null; })()`;
+// the click on the marked text and its landing (in the page); { lost: true } when the mark is gone (the Summary's
+// 30 s refresh drew the box again between the find and the click: the row finds it again once)
+const ownClick = (key) => `(async () => { const x = document.querySelector('[data-cc-own]'); if (!x || !x.isConnected) return { lost: true };
+  const a = x.matches('a[href]') ? x : x.querySelector('a[href]');
+  window.scrollTo(0, 0); a.click();
+  for (let i = 0; i < 20 && document.activeElement?.getAttribute('data-row') !== ${JSON.stringify(key)}; i++) await new Promise(r => setTimeout(r, 150));
+  const r = document.querySelector('main [data-row="${key}"]'), b = r?.getBoundingClientRect();
+  return { link: true, text: a.textContent.trim().slice(0, 50), focused: document.activeElement === r && !!r, top: b ? Math.round(b.top) : null, bars: Math.round(document.querySelector('#tabs')?.getBoundingClientRect().bottom ?? 0), vh: innerHeight, addr: location.hash }; })()`;
 // the finder's planted self-test: three texts of Memory dumps that lost their data-group (wanted 'words': the row
 // FAILs them), other words and another check's key in the same box (wanted null: not seen), a text with its
-// data-group (wanted 'group'); planted in a box of its own under main, removed after
+// data-group (wanted 'group'), a text of Memory dumps that only a '+1 more' draws (wanted 'words': the button is
+// opened first), a band that lists dumps over a box whose text of it has other words (wanted 'missing') and the same
+// band asked for dbmail, which it does not list (wanted null); planted in a box of its own under main, removed after
 const ownPlant = `(() => { const d = document.createElement('div'); d.id = 'ccp'; d.innerHTML =
   '<div class="ccp-h"><span class="reason-text">Memory Dump 3 files warning</span>, <a class="cell-link" data-group="backuplog" href="#/backups">Backup LOG 1 warning</a></div>'
   + '<ul class="ccp-v"><li class="warn"><span class="verdict-text">the server wrote memory dumps (3 files warning)</span></li></ul>'
   + '<p class="ccp-n"><span class="warn">Memory dumps 3 files warning</span></p>'
   + '<p class="ccp-x"><span class="warn">Backup LOG 1 warning</span></p>'
-  + '<p class="ccp-g"><a class="warn" data-group="dumps" href="#/summary">Memory dumps 3 files warning</a></p>';
+  + '<p class="ccp-g"><a class="warn" data-group="dumps" href="#/summary">Memory dumps 3 files warning</a></p>'
+  + '<div class="inst-reason ccp-m">' + ['drives', 'jobs', 'activity', 'backuplog', 'ag', 'filespace'].map(k => '<a class="cell-link" data-group="' + k + '" href="#/summary">' + k + ' 1 warning</a>').join(', ') + ', <button type="button" class="link">+1 more</button></div>'
+  + '<span class="ccp-band" data-groups="backuplog dumps"></span>'
+  + '<div class="ccp-d"><span class="reason-text">Crash dumps were written (3 files warning)</span></div>';
+  const more = d.querySelector('.ccp-m button'); more.addEventListener('click', () => { const t = document.createElement('span'); t.className = 'reason-text'; t.textContent = 'Memory Dump 3 files warning'; more.replaceWith(t); });
   document.querySelector('main').append(d); return true; })()`;
-const ownPlants = [['planted header text', '#ccp .ccp-h', 'dumps', 'words'], ['planted verdict text', '#ccp .ccp-v', 'dumps', 'words'],
-  ['planted Not OK text', '#ccp .ccp-n', 'dumps', 'words'], ['planted other words', '#ccp .ccp-x', 'dumps', null],
-  ['planted other check', '#ccp .ccp-h', 'dbmail', null], ['planted with its group', '#ccp .ccp-g', 'dumps', 'group']];
+const ownPlants = [['planted header text', '#ccp .ccp-h', 'dumps', null, 'words'], ['planted verdict text', '#ccp .ccp-v', 'dumps', null, 'words'],
+  ['planted Not OK text', '#ccp .ccp-n', 'dumps', null, 'words'], ['planted other words', '#ccp .ccp-x', 'dumps', null, null],
+  ['planted other check', '#ccp .ccp-h', 'dbmail', null, null], ['planted with its group', '#ccp .ccp-g', 'dumps', null, 'group'],
+  ['planted past +1 more', '#ccp .ccp-m', 'dumps', null, 'words'], ['planted band, other words', '#ccp .ccp-d', 'dumps', '#ccp .ccp-band', 'missing'],
+  ['planted band without the key', '#ccp .ccp-d', 'dbmail', '#ccp .ccp-band', null]];
 let ownTested = false;
 {
   if (await go('#/summary')) {
@@ -580,25 +601,28 @@ let ownTested = false;
       ownTested = true;
       await ev(ownPlant);
       const said = [];
-      for (const [name, box, key, want] of ownPlants) { const f = await ev(ownFind(box, key)); said.push([name, f ? f.how : null, want]); }
+      for (const [name, box, key, band, want] of ownPlants) { const f = await ev(ownFind(box, key, band)); said.push([name, f ? f.how : null, want]); }
       await ev(`document.getElementById('ccp')?.remove(); document.querySelectorAll('[data-cc-own]').forEach(e => e.removeAttribute('data-cc-own'))`);
       const asWanted = said.filter(([, got, want]) => got === want).length;
       pm(`${eng} ${inst.name}`, 'own-page self-test', eng, `${said.map(([n, got, want]) => `${n} -> ${got ?? 'not seen'}${got === want ? '' : ' (wanted ' + (want ?? 'not seen') + ')'}`).join(', ')} | ${asWanted} of ${ownPlants.length} as wanted`,
-        asWanted === ownPlants.length, 'the own-page finder over planted texts: a text that lost its data-group is found by its words and FAILs, other words and checks are not seen, a data-group is found');
+        asWanted === ownPlants.length, 'the own-page finder over planted texts: a text that lost its data-group is found by its words (past a +1 more too), a band reason with no text of it is missing, other words and checks are not seen, a data-group is found');
     }
-    if (eng === 'sqlserver') for (const [where, box] of [['header reason', 'main .inst-reason'], ['verdict reason', 'main .verdict-reasons'], ['Not OK name', 'main p.counts']]) for (const key of ['dumps', 'dbmail']) {
+    if (eng === 'sqlserver') for (const [where, box, band] of [['header reason', 'main .inst-reason', 'main .inst-header .band-word'], ['verdict reason', 'main .verdict-reasons', 'main .inst-header .band-word'], ['Not OK name', 'main p.counts', null]]) for (const key of ['dumps', 'dbmail']) {
       const was = await ev('location.hash');
-      const f = await ev(ownFind(box, key));
-      if (f?.how === 'words') { pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, `'${f.text}' has no data-group`, false, "a status text of this check that lost its data-group: no own-page row and no twin rule can find it"); continue; }
-      const got = !f ? null : !f.link ? { link: false, text: f.text } : await ev(`(async () => { const x = document.querySelector('[data-cc-own]');
-        const a = x.matches('a[href]') ? x : x.querySelector('a[href]');
-        window.scrollTo(0, 0); a.click();
-        for (let i = 0; i < 20 && document.activeElement?.getAttribute('data-row') !== ${JSON.stringify(key)}; i++) await new Promise(r => setTimeout(r, 150));
-        const r = document.querySelector('main [data-row="${key}"]'), b = r?.getBoundingClientRect();
-        return { link: true, text: a.textContent.trim().slice(0, 50), focused: document.activeElement === r && !!r, top: b ? Math.round(b.top) : null, bars: Math.round(document.querySelector('#tabs')?.getBoundingClientRect().bottom ?? 0), vh: innerHeight, addr: location.hash }; })()`, true);
-      if (!got) { pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, 'not on this page', true, `not seen: ${key} is not a reason of ${inst.name} now`); continue; }
+      const row = `own-page ${key} (${where})`;
+      // the find and the click, once more when the Summary drew the box again between them
+      let f = null, got = null;
+      for (let tries = 0; tries < 2; tries++) {
+        f = await ev(ownFind(box, key, band));
+        got = f?.how !== 'group' ? null : !f.link ? { link: false, text: f.text } : await ev(ownClick(key), true);
+        if (!got?.lost) break;
+      }
+      if (f?.how === 'words') { pm(`${eng} ${inst.name}`, row, eng, `'${f.text}' has no data-group`, false, "a status text of this check that lost its data-group: no own-page row and no twin rule can find it"); continue; }
+      if (f?.how === 'missing') { pm(`${eng} ${inst.name}`, row, eng, `the band word lists ${key}; no text of it in the ${where}s`, false, "a reason of the band has a text in this box that answers a click"); continue; }
+      if (got?.lost) { pm(`${eng} ${inst.name}`, row, eng, 'drawn again between its find and its click, twice', false, 'a status text whose page is this one jumps to its Server card row'); continue; }
+      if (!got) { pm(`${eng} ${inst.name}`, row, eng, 'not on this page', true, `not seen: ${key} is not a reason of ${inst.name} now`); continue; }
       const good = got.link && got.focused && got.top != null && got.top >= got.bars && got.top <= got.vh / 3 && got.addr === was;
-      pm(`${eng} ${inst.name}`, `own-page ${key} (${where})`, eng, got.link ? `'${got.text}': focus ${got.focused}, the row at ${got.top} px (the bars end at ${got.bars}) of ${got.vh}, the address ${got.addr === was ? 'unchanged' : 'now ' + got.addr}` : `'${got.text}' is text`, good,
+      pm(`${eng} ${inst.name}`, row, eng, got.link ? `'${got.text}': focus ${got.focused}, the row at ${got.top} px (the bars end at ${got.bars}) of ${got.vh}, the address ${got.addr === was ? 'unchanged' : 'now ' + got.addr}` : `'${got.text}' is text`, good,
         "a status text whose page is this one jumps to its Server card row: at the top of the view, focused, the address unchanged");
       await ev('window.scrollTo(0, 0)');
     }
