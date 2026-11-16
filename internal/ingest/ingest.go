@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/export"
 	"github.com/aachaemenes/pgvigil/internal/remote/format"
 )
 
@@ -151,6 +152,7 @@ type candidate struct {
 	ref    format.Ref
 	files  map[string]bool // the file names the listing holds
 	man    []byte          // manifest.json's bytes (nil: not there yet)
+	tooBig string          // manifest.json past format.MaxManifestBytes: why (never read further, never decoded)
 	digest string
 	stream string    // the manifest's, read loosely so a newer format still has one
 	seen   time.Time // the hub's first sight of the folder: the settle runs from here
@@ -288,7 +290,12 @@ func (in *Ingester) candidates(ctx context.Context, coll, key string, from time.
 	out := make([]*candidate, 0, len(byDir))
 	for dir, c := range byDir {
 		if c.files[format.ManifestFile] {
-			b, err := in.Site.Drop.Get(ctx, dir+"/"+format.ManifestFile)
+			b, err := export.GetMax(ctx, in.Site.Drop, dir+"/"+format.ManifestFile, format.MaxManifestBytes)
+			if errors.Is(err, export.ErrTooBig) {
+				c.tooBig = err.Error()
+				out = append(out, c)
+				continue
+			}
 			if err != nil {
 				return nil, err // listed but not read: the drop's, retried next round
 			}
@@ -384,6 +391,9 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 		}
 		return false, mark(kind, reason)
 	}
+	if c.tooBig != "" { // final: a copy still running is shorter, never longer
+		return false, mark(format.KindTooBig, c.tooBig)
+	}
 	if c.man == nil { // no manifest yet: a copy still running, or one that never finished
 		return aside(format.KindMissing, "manifest.json is not in the drop")
 	}
@@ -411,7 +421,10 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 		if !c.files[format.SigFile] {
 			return aside(KindSignature, "the collector signs and the bundle has no manifest.sig")
 		}
-		sig, err := in.Site.Drop.Get(ctx, c.ref.Dir()+"/"+format.SigFile)
+		sig, err := export.GetMax(ctx, in.Site.Drop, c.ref.Dir()+"/"+format.SigFile, format.MaxSigBytes)
+		if errors.Is(err, export.ErrTooBig) {
+			return false, mark(format.KindTooBig, err.Error())
+		}
 		if err != nil {
 			return aside(KindDropError, err.Error())
 		}
@@ -436,12 +449,15 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 	// 3. every view on pgvigil's own list, and the bundle's size within the cap
 	var raw int64
 	known := map[string]bool{format.ManifestFile: true, format.SigFile: true, format.SumsFile: true}
+	// each file's read cap: a view file its manifest bytes, the sums the manifest's cap, the signature its own
+	caps := map[string]int64{format.SigFile: format.MaxSigBytes, format.SumsFile: format.MaxManifestBytes}
 	for _, f := range m.Files {
 		if !in.Allow[f.View] {
 			return aside(KindUnknownView, fmt.Sprintf("view %s is not one a bundle may carry", f.View))
 		}
 		raw += f.RawBytes
 		known[f.Name] = true
+		caps[f.Name] = f.Bytes
 	}
 	max := in.MaxBundle
 	if max <= 0 {
@@ -494,7 +510,10 @@ func (in *Ingester) take(ctx context.Context, coll, key string, c *candidate, re
 		if name == format.ManifestFile || !known[name] {
 			continue
 		}
-		b, err := in.Site.Drop.Get(ctx, c.ref.Dir()+"/"+name)
+		b, err := export.GetMax(ctx, in.Site.Drop, c.ref.Dir()+"/"+name, caps[name])
+		if errors.Is(err, export.ErrTooBig) { // longer than the manifest says: final, read no further
+			return false, mark(format.KindTooBig, err.Error())
+		}
 		if err != nil {
 			return aside(KindDropError, err.Error())
 		}

@@ -115,6 +115,30 @@ func (d *folder) Get(_ context.Context, key string) ([]byte, error) {
 	return b, err
 }
 
+// GetMax reads key under max bytes: an object whose size is past max is refused before a byte is read (ErrTooBig), and no
+// more than max + 1 bytes are read of one that grows meanwhile.
+func (d *folder) GetMax(_ context.Context, key string, max int64) ([]byte, error) {
+	f, err := os.Open(d.path(key))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, errAbsent
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if st, err := f.Stat(); err == nil && st.Size() > max {
+		return nil, tooBig(key, max, st.Size(), true)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, tooBig(key, max, 0, false)
+	}
+	return b, nil
+}
+
 func (d *folder) Delete(_ context.Context, key string) error {
 	err := os.Remove(d.path(key))
 	if errors.Is(err, fs.ErrNotExist) {

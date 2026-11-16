@@ -102,6 +102,35 @@ func (d *blobDest) Get(ctx context.Context, key string) ([]byte, error) {
 	return io.ReadAll(out.Body)
 }
 
+// GetMax reads key under max bytes with a ranged download of max + 1 bytes: the blob's size from the answer's
+// Content-Range, ErrTooBig past max; a 0-byte blob (a range on it answers 416 InvalidRange) is empty.
+func (d *blobDest) GetMax(ctx context.Context, key string, max int64) ([]byte, error) {
+	out, err := d.c.DownloadStream(ctx, d.container, d.root+key, &azblob.DownloadStreamOptions{Range: azblob.HTTPRange{Offset: 0, Count: max + 1}})
+	if err != nil {
+		switch {
+		case bloberror.HasCode(err, bloberror.BlobNotFound):
+			return nil, errAbsent
+		case bloberror.HasCode(err, bloberror.InvalidRange):
+			return []byte{}, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = out.Body.Close() }()
+	if out.ContentRange != nil {
+		if total, ok := rangeTotal(*out.ContentRange); ok && total > max {
+			return nil, tooBig(key, max, total, true)
+		}
+	}
+	b, err := io.ReadAll(io.LimitReader(out.Body, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, tooBig(key, max, 0, false)
+	}
+	return b, nil
+}
+
 func (d *blobDest) Delete(ctx context.Context, key string) error {
 	_, err := d.c.DeleteBlob(ctx, d.container, d.root+key, nil)
 	if bloberror.HasCode(err, bloberror.BlobNotFound) {

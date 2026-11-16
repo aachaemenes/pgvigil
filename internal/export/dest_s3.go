@@ -170,6 +170,33 @@ func (d *s3Dest) Get(ctx context.Context, key string) ([]byte, error) {
 	return io.ReadAll(out.Body)
 }
 
+// GetMax reads key under max bytes with a Range of max + 1 bytes: the object's size from the answer's Content-Range,
+// ErrTooBig past max; a 0-byte object (S3 answers a range on it 416 InvalidRange) is empty.
+func (d *s3Dest) GetMax(ctx context.Context, key string, max int64) ([]byte, error) {
+	out, err := d.c.GetObject(ctx, &s3.GetObjectInput{Bucket: &d.bucket, Key: aws.String(d.root + key), Range: aws.String(fmt.Sprintf("bytes=0-%d", max))})
+	if err != nil {
+		switch {
+		case s3Code(err, "NoSuchKey", "NotFound"):
+			return nil, errAbsent
+		case s3Code(err, "InvalidRange"):
+			return []byte{}, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = out.Body.Close() }()
+	if total, ok := rangeTotal(aws.ToString(out.ContentRange)); ok && total > max {
+		return nil, tooBig(key, max, total, true)
+	}
+	b, err := io.ReadAll(io.LimitReader(out.Body, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, tooBig(key, max, 0, false)
+	}
+	return b, nil
+}
+
 func (d *s3Dest) Delete(ctx context.Context, key string) error {
 	_, err := d.c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &d.bucket, Key: aws.String(d.root + key)})
 	if s3Code(err, "NoSuchKey", "NotFound") {
