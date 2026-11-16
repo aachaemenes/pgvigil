@@ -215,6 +215,62 @@ func TestEveryMigrationTableIsClassed(t *testing.T) {
 	}
 }
 
+// Columns read to hold a statement's or a server's words, a login's name for an action or a credential: none leaves
+// by default - each is on the text or audit list, dropped, under the table's audit-rows predicate, or its table leaves
+// only with a carry. And a table an import rewrites after its row's hour is state: a window's final pass is at 24 h.
+func TestHeldByDefault(t *testing.T) {
+	held := map[string][]string{
+		"alert_held":              {"detail"},                                           // a plan finding's detail quotes its statement
+		"mssql_db_confcheck":      {"scoped_note"},                                      // 'not read: ' and the server's error
+		"mssql_replication_state": {"status_text", "error_text"},                        // the agents' history and error words
+		"mssql_xe_modules":        {"login_name", "host_name"},                          // who ran a module, from where
+		"pg_patroni_members":      {"api_url", "api_message", "pending_restart_reason"}, // the address as held; settings' values unmasked
+	}
+	rows := map[string]string{"mssql_session_by": "dimension IN ('login', 'address')"}
+	rewritten := []string{"instance_events", "investigations", "mssql_ola_commandlog"}
+	byName := map[string]Table{}
+	for _, x := range Catalog() {
+		byName[x.Name] = x
+	}
+	names := make([]string, 0, len(held))
+	for name := range held {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		x, ok := byName[name]
+		if !ok {
+			t.Errorf("%s: not in the map", name)
+			continue
+		}
+		if x.Class == LeftOut || x.Carry != "" {
+			continue
+		}
+		on := map[string]bool{}
+		for _, c := range append(append([]string{}, x.Text...), x.Audit...) {
+			on[c] = true
+		}
+		for _, d := range x.Drop {
+			on[d.Column] = true
+		}
+		for _, c := range held[name] {
+			if !on[c] {
+				t.Errorf("%s.%s leaves by default", name, c)
+			}
+		}
+	}
+	for name, p := range rows {
+		if x := byName[name]; x.Class != LeftOut && x.Carry == "" && x.AuditRows != p {
+			t.Errorf("%s: the rows %s leave by default", name, p)
+		}
+	}
+	for _, name := range rewritten {
+		if x := byName[name]; x.Class != State {
+			t.Errorf("%s: an import rewrites its rows after their hour - state, not %q", name, x.Class)
+		}
+	}
+}
+
 // lay over a small store: what stops a run, what is dropped under each carry, what is skipped and why.
 func TestLay(t *testing.T) {
 	m := []Table{
