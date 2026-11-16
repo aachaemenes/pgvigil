@@ -1,10 +1,10 @@
-diff --git i/internal/web/web.go w/internal/web/web.go
-index 6290ed6..f6d4e26 100644
---- i/internal/web/web.go
-+++ w/internal/web/web.go
-@@ -318,6 +318,9 @@ func (s *Server) Handler() http.Handler {
- 	api.HandleFunc("POST /api/community/run", s.CommunityRun)
- 	api.HandleFunc("POST /api/community/glenn/parse", s.CommunityGlennParse)
+diff --git c/internal/web/web.go i/internal/web/web.go
+index ef4401c7..45923cee 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -381,6 +381,9 @@ func (s *Server) Handler() http.Handler {
+ 	s.post(api, "POST /api/community/run", needOperator, s.CommunityRun)
+ 	s.post(api, "POST /api/community/glenn/parse", needViewer, s.CommunityGlennParse)
  	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
 +	// task CQ (487): a request of the queue - its state and its asker's result (wait up to 25 s), its cancel
 +	api.HandleFunc("GET /api/requests/{id}", s.RequestGet)
