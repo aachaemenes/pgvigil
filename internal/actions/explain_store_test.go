@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestExplainAnalyzeLoginsOnAStore (REPORT ROLE, the lead 13:1x): EXPLAIN ANALYZE runs the DBA's statement through its
+// TestExplainAnalyzeLoginsOnAStore (REPORT ROLE): EXPLAIN ANALYZE runs the DBA's statement through its
 // own login (explain_dsn), and on a database that is a pgvigil repository that login is refused when it may read the
 // UI's password hashes or become one who can. On a migrated repository (PGVIGIL_REPO_TEST_DSN, a superuser, keyword
 // form; skipped without it) ExplainAnalyze itself is run with three explain logins: a member of pg_read_all_data and a
