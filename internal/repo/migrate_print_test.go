@@ -194,3 +194,38 @@ func TestMigratePrintRefuses(t *testing.T) {
 		t.Fatalf("output after an unreadable file: %q", buf.String())
 	}
 }
+
+// TestMigratePrintMakesThePartitionsAhead (j16d1's migrateprint red): 'migrate -print' is the locked-down site's
+// install path, so the store its script builds must equal a migrated one - the script ends with migrate's own
+// partitions-ahead pass (0271: the window of AheadWindow, read when the script runs), after the last file and before
+// the unlock, each partition made by import_partition_make in a statement of its own (psql's \gexec), a failed make a
+// WARNING as migrate's is; the header no longer says the pass is left out.
+func TestMigratePrintMakesThePartitionsAhead(t *testing.T) {
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := printFor(t, migratePrintMeta{Build: "pgvigil test", Database: "pgv", Server: "18.1"}, names, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "not in this script: migrate's partitions-ahead pass") {
+		t.Error("the header still says the partitions-ahead pass is not in the script")
+	}
+	last := strings.LastIndex(out, "\nCOMMIT;\n")
+	unlock := strings.LastIndex(out, fmt.Sprintf("SELECT pg_advisory_unlock(%d);", migrateLockKey))
+	due := strings.LastIndex(out, "pgvigil.import_partitions_due(")
+	gexec := strings.LastIndex(out, "\n\\gexec\n")
+	if last < 0 || unlock < 0 || due < last || gexec < due || unlock < gexec {
+		t.Fatalf("the partitions-ahead pass is not between the last file's COMMIT (%d) and the unlock (%d): import_partitions_due at %d, \\gexec at %d", last, unlock, due, gexec)
+	}
+	pass := out[due:gexec]
+	for _, want := range []string{"pgvigil.import_partition_make(", "interval '48 hours'", "interval '1 month'", "RAISE WARNING"} {
+		if !strings.Contains(pass, want) {
+			t.Errorf("the pass lacks %q:\n%s", want, pass)
+		}
+	}
+	if _, err := printFor(t, migratePrintMeta{Build: "pgvigil test", Database: "pgv", Server: "18.1", HasTable: true}, names, names, nil); err != nil {
+		t.Fatal(err)
+	}
+}
