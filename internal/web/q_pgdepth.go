@@ -21,7 +21,7 @@ import (
 //	findings    pgvigil.pg_depth_findings of the instance
 // Every part is a read of the repository's own tables: nothing reaches the monitored server.
 
-const sqlPgDepthStatements = `SELECT * FROM pgvigil.statement_depth($1, $2, $3, $4, $5)`
+const sqlPgDepthStatements = `SELECT * FROM pgvigil.statement_depth($1, $2, $3, $4, $5) /* text: query=stmt */`
 
 const sqlPgDepthFunctions = `SELECT * FROM pgvigil.function_top($1, $2, $3, $4, $5)`
 

@@ -25,7 +25,7 @@ SELECT s.* FROM pgvigil.corruption_summary s WHERE s.instance_id = $1`
 
 // sqlCorruptionEvents is the newest 500 corruption events of 30 days, newest first.
 const sqlCorruptionEvents = `
-SELECT e.at, e.class, e.message, e.relation_path, e.datname, e.usename, e.pid, e.statement, e.detail, e.source
+SELECT e.at, e.class, e.message, e.relation_path, e.datname, e.usename, e.pid, e.statement AS "statement@stmt", e.detail, e.source
   FROM pgvigil.corruption_events e
  WHERE e.instance_id = $1 AND e.at > now() - interval '30 days'
  ORDER BY e.at DESC

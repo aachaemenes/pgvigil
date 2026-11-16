@@ -20,7 +20,7 @@ SELECT w.label, w.f AS from_at, w.t AS to_at, pgvigil.statement_baseline($1, w.f
                ('1 day earlier', $2::timestamptz - interval '1 day', $3::timestamptz - interval '1 day'),
                ('7 days earlier', $2::timestamptz - interval '7 days', $3::timestamptz - interval '7 days')) w(label, f, t)`
 
-const sqlCompareRows = `SELECT * FROM pgvigil.statement_compare($1, $2, $3, $4)`
+const sqlCompareRows = `SELECT * FROM pgvigil.statement_compare($1, $2, $3, $4) /* text: query=stmt */`
 
 const sqlCompareHistory = `SELECT * FROM pgvigil.statement_history($1, $2, $3, $4)`
 

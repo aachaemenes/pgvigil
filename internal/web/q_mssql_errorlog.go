@@ -290,7 +290,7 @@ SELECT count(*) AS samples
 const sqlMSSQLHealthWaits = `
 SELECT h.event_at, h.detail->>'wait_type' AS wait_type, pgvigil.mssql_health_num(h.detail, 'duration_ms') AS duration_ms,
        pgvigil.mssql_health_num(h.detail, 'signal_duration_ms') AS signal_duration_ms, h.detail->>'wait_resource' AS wait_resource,
-       pgvigil.mssql_health_num(h.detail, 'session_id') AS session_id, h.detail->>'statement' AS statement
+       pgvigil.mssql_health_num(h.detail, 'session_id') AS session_id, h.detail->>'statement' AS "statement@stmt"
   FROM pgvigil.mssql_health_components h
  WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'WAIT_INFO'
    AND coalesce(pgvigil.mssql_health_num(h.detail, 'session_id'), 0) <> 0 AND (h.detail->>'has_sql_text')::boolean

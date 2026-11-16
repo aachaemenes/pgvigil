@@ -49,8 +49,8 @@ func (s *Server) DrillDB(w http.ResponseWriter, r *http.Request) {
 		{"acl", `SELECT * FROM pgvigil.drill_db_acl($1, $2)`, []any{id, db}},
 		{"jobs", `SELECT scheduler, job_id, job_name, schedule, active, next_run, last_status, last_start, last_duration_secs, last_running,
        runs_7d, failures_7d, fail_streak, missed, over_average FROM pgvigil.drill_db_jobs($1, $2)`, []any{id, db}},
-		{"slow", `SELECT * FROM pgvigil.drill_db_slow($1, $2, $3, $4, $5)`, []any{id, db, from, to, drillN}},
-		{"statements", `SELECT * FROM pgvigil.drill_statements($1, $2, $3, $4, $5)`, []any{id, db, from, to, drillN}},
+		{"slow", `SELECT * FROM pgvigil.drill_db_slow($1, $2, $3, $4, $5) /* text: example=stmt */`, []any{id, db, from, to, drillN}},
+		{"statements", `SELECT * FROM pgvigil.drill_statements($1, $2, $3, $4, $5) /* text: query=stmt */`, []any{id, db, from, to, drillN}},
 		{"series_meta", `SELECT $1::timestamptz AS from_at, $2::timestamptz AS to_at, $3::int AS bucket_secs`, []any{sfrom, to, bucket}},
 	})
 }
@@ -77,10 +77,10 @@ func (s *Server) DrillTable(w http.ResponseWriter, r *http.Request) {
 	s.multi(w, r, []part{
 		{"table", `SELECT * FROM pgvigil.drill_table($1, $2, $3)`, []any{id, db, rel}},
 		{"series", `SELECT * FROM pgvigil.drill_table_series($1, $2, $3, $4, $5, $6)`, []any{id, db, rel, sfrom, to, bucket}},
-		{"vacuum", `SELECT * FROM pgvigil.drill_table_vacuum($1, $2, $3, $4, $5)`, []any{id, db, rel, from, to}},
+		{"vacuum", `SELECT * FROM pgvigil.drill_table_vacuum($1, $2, $3, $4, $5) /* text: detail=stmt */`, []any{id, db, rel, from, to}},
 		{"checks", `SELECT * FROM pgvigil.drill_table_checks($1, $2, $3)`, []any{id, db, rel}},
 		{"indexes", `SELECT * FROM pgvigil.drill_table_indexes($1, $2, $3)`, []any{id, db, rel}},
-		{"statements", `SELECT * FROM pgvigil.drill_table_statements($1, $2, $3, $4, $5, $6)`, []any{id, db, rel, from, to, drillN}},
+		{"statements", `SELECT * FROM pgvigil.drill_table_statements($1, $2, $3, $4, $5, $6) /* text: query=stmt */`, []any{id, db, rel, from, to, drillN}},
 		{"series_meta", `SELECT $1::timestamptz AS from_at, $2::timestamptz AS to_at, $3::int AS bucket_secs`, []any{sfrom, to, bucket}},
 	})
 }

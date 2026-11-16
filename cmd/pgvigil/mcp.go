@@ -29,7 +29,7 @@ import (
 func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	dsnFlag := fs.String("dsn", "env:PGVIGIL_MCP_DSN", "the reader login's connection string (or env:NAME / file:path)")
-	path := fs.String("config", "", "configuration file for the instances' collection intervals (optional)")
+	path := fs.String("config", "", "configuration file for the instances' collection intervals and query_text policies (optional; without it statement text is returned as stored)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -47,8 +47,10 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		return &configError{errors.New("-dsn does not parse as a PostgreSQL connection string")}
 	}
 	exp := expectedIntervals(&config.Config{}) // every collection's default interval
+	var cfg *config.Config
 	if *path != "" {
-		cfg, err := config.Load(*path)
+		var err error
+		cfg, err = config.Load(*path)
 		if err != nil {
 			return &configError{err}
 		}
@@ -68,6 +70,18 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
+	// TEXT-NOW: the statement text a tool returns follows each instance's query_text policy as the file states it now
+	// (internal/web/textread.go), as serve's pages do; with no file the door cannot know a policy and returns the text
+	// as it was stored, said in its log
+	if cfg != nil {
+		pc := web.PlansConfig{QueryText: map[string]string{}, DefaultQueryText: cfg.QueryText}
+		for _, in := range cfg.Instances {
+			pc.QueryText[in.Name] = in.QueryText
+		}
+		srv.SetPlans(pc)
+	} else {
+		log.Warn("pgvigil mcp without -config: statement text is returned as it was stored, not under each instance's query_text policy now; give -config so a policy changed since applies")
+	}
 	log.Info("pgvigil mcp ready on stdio", "login", user, "version", version)
 	return mcp.New(srv.Handler(), version, secret).Serve(ctx, os.Stdin, os.Stdout)
 }

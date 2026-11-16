@@ -526,6 +526,7 @@ func (s *Server) query(ctx context.Context, sql string, args ...any) (*table, er
 		t.Rows = append(t.Rows, v)
 	}
 	markRead(ctx, t, args)
+	markText(sql, t)
 	return t, rows.Err()
 }
 
@@ -782,7 +783,7 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	out.Chains, err = s.query(ctx, `SELECT * FROM pgvigil.blocking_chains($1, $2) ORDER BY head_pid, depth, pid`, id, *snap)
+	out.Chains, err = s.query(ctx, `SELECT * FROM pgvigil.blocking_chains($1, $2) ORDER BY head_pid, depth, pid /* text: head_query=stmt, waiter_query=stmt */`, id, *snap)
 	s.reply(w, r, out, err)
 }
 
@@ -864,7 +865,7 @@ func (s *Server) statements(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("order must be time, calls, io, mean, rows, temp or wal"))
 		return
 	}
-	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, $4, $5)`, id, from, to, order, limit)
+	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, $4, $5) /* text: query=stmt */`, id, from, to, order, limit)
 	s.reply(w, r, t, err)
 }
 
@@ -943,7 +944,7 @@ func (s *Server) slow(w http.ResponseWriter, r *http.Request) {
 			*f.dst = &val
 		}
 	}
-	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, $5, $6, $7, $8, 200)`,
+	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, $5, $6, $7, $8, 200) /* text: query=stmt */`,
 		id, from, to, minSecs, state, user, db, app)
 	s.reply(w, r, t, err)
 }

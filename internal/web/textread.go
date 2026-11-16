@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -444,4 +445,25 @@ func strOf(v any) *string {
 		return &s
 	}
 	return nil
+}
+
+// textMarkRE is a read's text marker, for a SELECT * over a function whose columns its SQL does not name: a comment
+// "/* text: query=stmt, instance_id=inst */" at the end of the SQL; query (web.go) tags those columns of the table it
+// returns as an alias would ("query@stmt"), so reply's rule applies to them.
+var textMarkRE = regexp.MustCompile(`/\* text: ([a-z_]+=[a-z]+(?:, [a-z_]+=[a-z]+)*) \*/`)
+
+// markText tags the columns a read's text marker names.
+func markText(sql string, t *table) {
+	m := textMarkRE.FindStringSubmatch(sql)
+	if m == nil || t == nil {
+		return
+	}
+	for _, pair := range strings.Split(m[1], ", ") {
+		name, role, _ := strings.Cut(pair, "=")
+		for i, c := range t.Columns {
+			if c == name {
+				t.Columns[i] = name + textRoleSep + role
+			}
+		}
+	}
 }

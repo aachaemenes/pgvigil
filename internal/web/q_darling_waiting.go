@@ -53,9 +53,9 @@ func (s *Server) Waiting(w http.ResponseWriter, r *http.Request) {
 	}
 	s.multiPart(w, r, []part{
 		{"snapshots", `SELECT * FROM pgvigil.mssql_waiting_snapshots($1, $2, $3)`, []any{id, from, to}},
-		{"tasks", `SELECT * FROM pgvigil.mssql_waiting_at($1, $2, $3)`, []any{id, at, wait}},
+		{"tasks", `SELECT * FROM pgvigil.mssql_waiting_at($1, $2, $3) /* text: statement=stmt */`, []any{id, at, wait}},
 		{"bytype", `SELECT * FROM pgvigil.mssql_waiting_by_type($1, $2, $3)`, []any{id, from, to}},
-		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3)`, []any{id, at, wait}},
+		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3) /* text: query=stmt */`, []any{id, at, wait}},
 		{"pgbytype", `SELECT * FROM pgvigil.pg_waiting_by_type($1, $2, $3)`, []any{id, from, to}},
 	})
 }

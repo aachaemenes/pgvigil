@@ -92,9 +92,15 @@ SELECT b.event_at, b.source, b.blocking_spid, b.blocking_ecid, b.blocking_status
  LIMIT 500`
 
 // sp_HumanEventsBlockViewer's findings and the blocked wait per lead blocker, object, database and login (migration 0116)
-const sqlMSSQLXEBlockFindings = `SELECT * FROM pgvigil.mssql_block_findings($1, $2, $3) LIMIT 5000`
+// check 9's object_name is the lead blocker's statement (0116 mssql_lead_name): the other checks' rows keep theirs
+const sqlMSSQLXEBlockFindings = `SELECT f.check_id, f.database_name, f.object_name AS "object_name@stmt", f.finding_group, f.finding, f.sort_order,
+       (f.check_id <> 9) AS "@keep"
+  FROM pgvigil.mssql_block_findings($1, $2, $3) f LIMIT 5000`
 
-const sqlMSSQLXEBlockRollup = `SELECT * FROM pgvigil.mssql_block_rollup($1, $2, $3)`
+// the 'lead' dimension's name is the lead blocker's statement; the other dimensions' names are databases, logins and objects
+const sqlMSSQLXEBlockRollup = `SELECT r.dimension, r.database_name, r.name AS "name@stmt", r.reports, r.blocked_sessions, r.total_wait_ms,
+       r.longest_wait_ms, r.first_at, r.last_at, (r.dimension <> 'lead') AS "@keep"
+  FROM pgvigil.mssql_block_rollup($1, $2, $3) r`
 
 const sqlMSSQLXESlowShapes = `
 SELECT e.shape_key, max(e.shape) AS "shape@shape", max(e.object_name) AS "object_name@obj", count(*) AS events, round(sum(e.duration_ms), 1) AS total_ms,

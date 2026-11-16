@@ -43,8 +43,8 @@ SELECT database, usr AS "user", state, application_name, addr, port, connect_tim
 const sqlPoolerConnServers = `
 SELECT database, usr AS "user", state, application_name, addr, port, connect_time, request_time, backend_pid,
        backend_match, paired_application, paired_addr, backend_state, backend_wait_type, backend_wait, backend_query_secs, backend_xact_secs,
-       blocking_pids, role, head_pid, head_state, head_application, head_query, head_via_pooler, head_client_application,
-       backend_query
+       blocking_pids, role, head_pid, head_state, head_application, head_query AS "head_query@stmt", head_via_pooler, head_client_application,
+       backend_query AS "backend_query@stmt"
   FROM pgvigil.pooler_conns($1, $2) WHERE kind = 'server'`
 
 const sqlPoolerConnTrace = `
@@ -71,7 +71,7 @@ WITH c AS (SELECT * FROM pgvigil.pooler_conns($1, $2)),
 w AS (SELECT database, usr, count(*) AS waiting, max(wait_us) AS longest_wait_us
         FROM c WHERE kind = 'client' AND state LIKE 'waiting%' GROUP BY database, usr),
 s AS (SELECT * FROM c WHERE kind = 'server' AND role IN ('blocked', 'in a cycle') AND head_pid IS NOT NULL)
-SELECT s.head_pid, max(s.head_state) AS head_state, max(s.head_application) AS head_application, max(s.head_query) AS head_query,
+SELECT s.head_pid, max(s.head_state) AS head_state, max(s.head_application) AS head_application, max(s.head_query) AS "head_query@stmt",
        bool_or(s.head_via_pooler) AS head_via_pooler, max(s.head_client_application) AS head_client_application,
        count(*) AS servers_behind,
        array_agg(DISTINCT s.database || '/' || s.usr) AS pools,

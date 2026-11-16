@@ -66,7 +66,7 @@ SELECT b.snapshot_at, b.head_session_id, b.victims, b.longest_wait_ms, b.in_snap
 
 // sqlMssqlHeadShare: the window's head statements, the largest blocked wait first (0114).
 const sqlMssqlHeadShare = `
-SELECT h.head_key, h.head_text_id, h.statement, h.full_chars, h.head_sessions, h.victims, h.blocked_wait_ms, h.range_blocked_wait_ms,
+SELECT h.head_key, h.head_text_id, h.statement AS "statement@stmt", h.full_chars, h.head_sessions, h.victims, h.blocked_wait_ms, h.range_blocked_wait_ms,
        h.heads, h.share_pct, h.lead, h.snapshots, h.first_seen, h.last_seen, h.head_login, h.head_program, h.head_host, h.head_database, h.implicit
   FROM pgvigil.mssql_head_share($1, $2, $3) h`
 
