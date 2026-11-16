@@ -11,7 +11,7 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, pro
 import { fleet, inTagScope } from './fleet';
 import { thresholdDialog, ThresholdPlace } from './pg_backups';
 
-type Parts = 'replicas' | 'databases' | 'distributed' | 'series' | 'failovers' | 'mirroring' | 'logshipping' | 'replication' | 'findings' | 'limits' | 'reads';
+type Parts = 'replicas' | 'databases' | 'distributed' | 'series' | 'failovers' | 'mirroring' | 'logshipping' | 'replication' | 'replseries' | 'repllimits' | 'findings' | 'limits' | 'reads';
 
 export const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 
@@ -135,19 +135,48 @@ const pubCols: Col[] = [
       ? "a merge publication's articles are kept in its publication database, not at the distributor" : v == null ? '' : fmtNum(v) },
   { key: 'distribution_db', label: 'distribution database' },
 ];
+// an agent's job: running, stopped, disabled, 'not here' (a pull subscription's agent runs at the subscriber); a job
+// meant to run all the time (-Continuous) that is not running is marked
+const jobCell = (v: unknown, r: Row) => v == null ? 'not read' : `${String(v)}${r.continuous === true ? ' (continuous)' : ''}`;
+const jobCls = (v: unknown, r: Row) => r.continuous === true && v != null && v !== 'running' && v !== 'not here' ? 'warn' : '';
+const errCell = (v: unknown, r: Row) => v == null && r.error_text == null ? '' : `${v != null ? `${String(v)}: ` : ''}${String(r.error_text ?? '')}`;
 const subCols: Col[] = [
   { key: 'publication' }, { key: 'publisher_db', label: 'from' },
   { key: 'subscriber', fmt: (v, r) => `${String(v ?? '')}.${String(r.subscriber_db ?? '')}` },
-  { key: 'subscription_type', label: 'type' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
+  { key: 'subscription_type', label: 'type' }, { key: 'subscription_status', label: 'subscription' },
+  // a merge agent is read as its subscription (agent 'merge': no subscription status, commands or latency at the distributor)
+  { key: 'agent_type', label: 'agent' },
+  { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
+  { key: 'job_state', label: 'job', fmt: jobCell, cls: jobCls },
   { key: 'undistributed', label: 'undistributed commands', num: true },
+  { key: 'latency_s', label: 'latency (oldest waiting)', num: true, fmt: fmtSecs },
   { key: 'est_catchup_s', label: 'est. to deliver', num: true, fmt: fmtSecs },
-  { key: 'latency_ms', label: 'latency (ms)', num: true }, { key: 'last_run_at', label: 'last report', fmt: fmtTime },
-  { key: 'status_text', label: 'message', wide: true },
+  { key: 'latency_ms', label: 'agent latency (ms)', num: true },
+  { key: 'failing_since', label: 'failing since', fmt: fmtTime, cls: v => v == null ? '' : 'crit' },
+  { key: 'last_run_at', label: 'last report', fmt: fmtTime },
+  { key: 'status_text', label: 'message', wide: true }, { key: 'error_code', label: 'error', fmt: errCell, wide: true },
 ];
 const agentCols: Col[] = [
   { key: 'agent_type', label: 'agent' }, { key: 'agent_name', label: 'name' }, { key: 'publisher_db', label: 'database' },
   { key: 'publication' }, { key: 'status', cls: (_, r) => statusCls(r.runstatus) },
+  { key: 'job_state', label: 'job', fmt: jobCell, cls: jobCls },
+  { key: 'failing_since', label: 'failing since', fmt: fmtTime, cls: v => v == null ? '' : 'crit' },
   { key: 'last_run_at', label: 'last report', fmt: fmtTime }, { key: 'status_text', label: 'message', wide: true },
+  { key: 'error_code', label: 'error', fmt: errCell, wide: true },
+];
+// the publisher side: each published database of this server, the distributor it names and what waits in its log
+const pubDbCols: Col[] = [
+  { key: 'database_name', label: 'database' }, { key: 'publication_type', label: 'publishes' },
+  { key: 'distributor', fmt: (v, r) => v == null ? 'none named' : `${String(v)}${r.distributor_local === true ? ' (this server)' : ' (another server)'}` },
+  { key: 'pending_xacts', label: 'transactions waiting for the log reader', num: true, cls: v => Number(v ?? 0) > 0 ? 'warn' : '' },
+  { key: 'log_reuse_wait', label: 'log reuse wait', fmt: words },
+  { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+];
+const replSeriesCols: Col[] = [
+  { key: 'snapshot_at', label: 'time', fmt: fmtTime }, { key: 'latency_s', label: 'latency, worst', num: true, fmt: fmtSecs },
+  { key: 'undistributed', label: 'commands waiting', num: true }, { key: 'delivery_rate', label: 'delivered / s', num: true, fmt: fmtNum },
+  { key: 'pending_xacts', label: 'transactions pending at the publisher', num: true }, { key: 'trans_per_s', label: 'read out / s', num: true, fmt: fmtNum },
+  { key: 'failing', label: 'failing agents', num: true }, { key: 'stopped', label: 'stopped agents', num: true }, { key: 'source', label: 'from' },
 ];
 
 // groupKind: what a group is, in words (the catalog's own flags)
@@ -314,10 +343,24 @@ export async function mssqlAvailability(ctx: Ctx): Promise<HTMLElement> {
     if (shipping.length) sec.append(el('h3', {}, 'Log shipping'), grid(shipping, shipCols),
       el('p', { class: 'meta' }, 'Every restoring database judged from restore history: ', el('a', { href: href(ctx, { tab: 'mssqllogshipping' }) }, 'HA/DR > Log Shipping'), '.'));
     if (repl.length) {
-      sec.append(el('h3', {}, 'Replication (as this distributor knows it)'),
-        el('h4', {}, 'Publications'), grid(repl.filter(r => r.kind === 'publication'), pubCols, 'No publication.'),
+      sec.append(el('h3', {}, 'Replication'));
+      const published = repl.filter(r => r.kind === 'published_db');
+      if (published.length) sec.append(el('h4', {}, 'Published databases (this server as publisher)'), grid(published, pubDbCols));
+      if (repl.some(r => r.kind !== 'published_db')) sec.append(
+        el('h4', {}, 'Publications (as this distributor knows them)'), grid(repl.filter(r => r.kind === 'publication'), pubCols, 'No publication.'),
         el('h4', {}, 'Subscriptions'), grid(repl.filter(r => r.kind === 'subscription'), subCols, 'No subscription.'),
-        el('h4', {}, 'Log reader, snapshot and merge agents'), grid(repl.filter(r => r.kind === 'agent'), agentCols, 'No agent.'));
+        el('h4', {}, 'Log reader and snapshot agents'), grid(repl.filter(r => r.kind === 'agent'), agentCols, 'No agent.'));
+      // the trend: the worst subscription's latency, and what waits at the distributor and in the published logs
+      const rs = rowsOf(d.replseries);
+      sec.append(lineChart('Replication latency: the oldest command waiting (the worst subscription)', rs,
+        [{ key: 'latency_s', label: 'latency' }], v => fmtSecs(v)));
+      sec.append(lineChart('Commands waiting at the distributor and transactions waiting in published logs', rs, [
+        { key: 'undistributed', label: 'commands waiting' }, { key: 'pending_xacts', label: 'transactions pending at the publisher' },
+      ]));
+      sec.append(el('details', {}, el('summary', {}, 'The charts\' numbers as a table'), grid(rs, replSeriesCols, 'No read in this window.')));
+      const lims = rowsOf(d.repllimits);
+      if (lims.length) sec.append(el('p', { class: 'meta' }, 'Thresholds in force: ' + lims.map(l =>
+        `${String(l.label)}: ${l.warn != null ? `warning ${String(l.warn)}` : 'no warning'}${l.crit != null ? `, critical ${String(l.crit)}` : ''} ${String(l.unit)} (${String(l.level)}${l.tag != null ? ` ${String(l.tag)}` : ''})`).join('; ') + '.'));
     }
     // a collection that could not read in full, or at all, says so with its reason; what is shown above is then its last read
     const notOk = reads.filter(r => r.status === 'partial' || r.status === 'error' || (r.status === 'skipped' && r.collection !== 'mssql_ag'));

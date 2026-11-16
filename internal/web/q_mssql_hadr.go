@@ -144,14 +144,30 @@ SELECT role, database_name, primary_server, primary_database, secondary_server, 
        snapshot_at
   FROM pgvigil.mssql_logshipping_state WHERE instance_id = $1 ORDER BY role, database_name`
 
+// the judged latency of a subscription is the age of the oldest command waiting for it (0 when none waits; 0142,
+// on the distributor's own clock)
 const sqlMSSQLReplication = `
 SELECT kind, distribution_db, publisher, publisher_db, publication, publication_type, articles, subscriber, subscriber_db,
-       subscription_type, agent_type, agent_name, runstatus,
+       subscription_type, subscription_status, agent_type, agent_name, runstatus,
        CASE runstatus WHEN 1 THEN 'started' WHEN 2 THEN 'succeeded' WHEN 3 THEN 'in progress' WHEN 4 THEN 'idle'
                       WHEN 5 THEN 'retrying' WHEN 6 THEN 'failed' END AS status,
-       status_text, last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s, snapshot_at
+       status_text, last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s, snapshot_at,
+       job_state, continuous, failing_since, error_code, error_text, oldest_pending_at,
+       CASE WHEN kind = 'subscription' THEN pgvigil.mssql_repl_latency(undistributed, pending_age_s) END AS latency_s,
+       database_name, distributor, distributor_local, log_reuse_wait, pending_xacts
   FROM pgvigil.mssql_replication_state WHERE instance_id = $1
- ORDER BY CASE kind WHEN 'publication' THEN 0 WHEN 'subscription' THEN 1 ELSE 2 END, publisher, publisher_db, publication, subscriber, agent_name`
+ ORDER BY CASE kind WHEN 'publication' THEN 0 WHEN 'subscription' THEN 1 WHEN 'agent' THEN 2 ELSE 3 END, publisher, publisher_db, publication,
+          subscriber, agent_name, database_name`
+
+// the replication trend (pgvigil.mssql_repl_series: the reads up to two days, the hours past that) and the
+// replication thresholds in force (pg_threshold: the instance's own, its tag's, the root's, the default)
+const sqlMSSQLReplSeries = `SELECT * FROM pgvigil.mssql_repl_series($1, $2, $3, $4)`
+
+const sqlMSSQLReplLimits = `
+SELECT k.key, k.label, k.unit, t.warn, t.crit, t.level, t.tag
+  FROM pgvigil.pg_threshold_keys k CROSS JOIN LATERAL pgvigil.pg_threshold($1, k.key) t
+ WHERE k.key IN ('repl_latency', 'repl_agent_retrying', 'repl_agent_silent')
+ ORDER BY k.key`
 
 const sqlMSSQLHADRFindings = `
 SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_hadr_findings
@@ -191,6 +207,8 @@ func (s *Server) MSSQLAvailability(w http.ResponseWriter, r *http.Request) {
 		{"mirroring", sqlMSSQLMirroring, []any{id}},
 		{"logshipping", sqlMSSQLLogShipping, []any{id}},
 		{"replication", sqlMSSQLReplication, []any{id}},
+		{"replseries", sqlMSSQLReplSeries, []any{id, from, to, step}},
+		{"repllimits", sqlMSSQLReplLimits, []any{id}},
 		{"findings", sqlMSSQLHADRFindings, []any{id}},
 		{"limits", sqlMSSQLHADRLimits, []any{id}},
 		{"reads", sqlMSSQLHADRReads, []any{id}},
