@@ -88,7 +88,7 @@ SELECT t.sub AS command, count(*) AS runs, min(t.event_at) AS first_at, max(t.ev
  LIMIT 200`
 
 const sqlMSSQLTraceDBCC = `
-SELECT t.event_at, t.sub AS command, t.database_name, t.login_name, t.host_name, t.program_name, t.session_id, t.statement
+SELECT t.event_at, t.sub AS command, t.database_name, t.login_name, t.host_name, t.program_name, t.session_id, t.statement AS "statement@stmt"
   FROM pgvigil.mssql_trace_events t
  WHERE t.instance_id = $1 AND t.event_at > $2 AND t.event_at <= $3 AND t.kind = 'dbcc'
  ORDER BY t.event_at DESC, t.event_key DESC
