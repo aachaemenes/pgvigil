@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aachaemenes/pgvigil/internal/jobmask"
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
 
@@ -74,15 +75,8 @@ SELECT 'job' AS kind, 'pgagent' AS scheduler, j.jobid::bigint AS job_id, j.jobna
            FROM pgagent.pga_jobstep st WHERE st.jstjobid = j.jobid), '{}'::jsonb)) AS definition
   FROM pgagent.pga_job j`
 
-// Masking of a job's text (a step's command or code, a connection string, a run's output), both engines: every
-// password it carries is replaced by <masked> before the row leaves the collector, by MaskCredentials (textpolicy.go,
-// task 415): the one mask of every stored text, which reads a value in T-SQL's doubled quotes inside a literal as one
-// value (the job mask's own expressions read it as an empty literal and kept the password after it).
-
-// MaskJobText is a job's text with every password it carries replaced by <masked>.
-func MaskJobText(s string) string {
-	return MaskCredentials(s)
-}
+// MaskJobText is a job's text with every password it carries replaced by <masked> (the rules: package jobmask).
+func MaskJobText(s string) string { return jobmask.Text(s) }
 
 // maskTree masks every string of a decoded jsonb value (a job's definition) in place.
 func maskTree(v any) any {
