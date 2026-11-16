@@ -8,6 +8,7 @@
 // only with no filter set, as it covers every error of the instance. Data from GET /api/collectorerrors.
 import { get, Row, rowsOf, Table } from './api';
 import { AckBody, ackDialog, ackOn, endAck, endButton, loadAckSafe, writeButton } from './ack';
+import { markNeed } from './needs';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { fleet, inTagScope, tagWords } from './fleet';
@@ -115,12 +116,13 @@ export async function collectorErrorsView(ctx: Ctx): Promise<HTMLElement> {
   const unack = (m: Row): HTMLElement => {
     const ids = (m.ack_ids as number[] | null) ?? [];
     if (!ids.length || !ackOn(ad, Number(m.instance_id))) return el('span');
-    return endButton(ids[0], `Unacknowledge the collector errors of ${String(m.instance)}`, async () => {
+    const b = endButton(ids[0], `Unacknowledge the collector errors of ${String(m.instance)}`, async () => {
       const not: string[] = [];
       for (const id of ids.slice(1)) { try { await endAck(id); } catch (e) { not.push(e instanceof Error ? e.message : String(e)); } }
       if (not.length) said = `${ids.length - not.length} of ${ids.length} acknowledgement rows of ${String(m.instance)} ended; not: ${[...new Set(not)].join('; ')}`;
       redraw();
     }, 'Unacknowledge');
+    return markNeed(b, 'ack/end'); // the button's need (endButton's) covers the rows it ends after the first
   };
   const ackButton = (r: Row, name: string): HTMLElement => writeButton(ad, 'Acknowledge', `Acknowledge the collector errors of ${name}`, () => ackDialog({
     title: `Acknowledge the collector errors of ${name}`,

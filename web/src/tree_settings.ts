@@ -5,7 +5,8 @@
 // draws an instance of pgvigil.yaml as before (the lines to copy) and hands a page instance to these two.
 import { Row, rowsOf, Table } from './api';
 import { badge, el, fmtNum, fmtSecs, fmtTime } from './ui';
-import { checkEvery, everyWords, fileOffOf, offOf, parseEvery, pauseResumeOf, postAdmin, saveSettings, Stored, withSchedule } from './settings_model';
+import { needControl } from './needs';
+import { Answer, checkEvery, everyWords, fileOffOf, offOf, parseEvery, pauseResumeOf, saveSettings, Stored, withSchedule } from './settings_model';
 
 interface CatalogueEntry { name: string; default_s: number; builtin_s: number; box: boolean; never: string }
 export interface PageCollections {
@@ -23,9 +24,22 @@ function readOnlyNote(d: PageCollections): HTMLElement {
     el('a', { href: '#/admin_instances?' + new URLSearchParams({ settings: d.instance }).toString() }, `The Settings of ${d.instance}`), ' in Admin > Instances show the same values.');
 }
 
-// the Save of a dialog: the whole object as changed, with the read as its expect; its answer in the status line
+// postAdmin POSTs a write of Admin > Instances and answers the server's outcome (a refusal, 409, carries its reason)
+async function postAdmin(path: string, data: Record<string, unknown>): Promise<Answer> {
+  const res = await fetch('/api/' + path, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
+    body: JSON.stringify(data),
+  });
+  let body: Record<string, unknown> = {};
+  try { body = await res.json(); } catch { /* an empty answer */ }
+  return { ok: res.ok, body };
+}
+
+// the Save of a dialog: the whole object as changed, with the read as its expect; its answer in the status line. The
+// write is an admin's (the server refuses any other role): below it the Save is drawn off with the role's words.
 function saveButton(d: PageCollections, status: HTMLElement, next: () => Stored | string): HTMLElement {
-  const b = el('button', { type: 'button' }, 'Save') as HTMLButtonElement;
+  const b = needControl(el('button', { type: 'button' }, 'Save') as HTMLButtonElement, 'admin/instances');
   b.addEventListener('click', async () => {
     const want = next();
     if (typeof want === 'string') { status.textContent = want; status.className = 'meta error'; return; }

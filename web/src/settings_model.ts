@@ -1,8 +1,9 @@
 // The settings of an instance added in Admin > Instances as one model (ST5b, the design pass's F7): the panel
 // (admin_settings.ts) and the tree's Pause / Resume Collections and Configure Schedule (treemenu.ts) each draw their own
 // table in DBA Dash's shape and share this - the stored object, reading what was typed, the floor and the ceiling, the
-// changes a dialog makes to the whole object, and the write (POST /api/admin/instances op 'settings' with expect: the
-// settings as read, so a change made meanwhile elsewhere is refused, never undone unseen).
+// changes a dialog makes to the whole object, and the write's body (POST /api/admin/instances op 'settings' with expect:
+// the settings as read, so a change made meanwhile elsewhere is refused, never undone unseen); the POST itself is the
+// caller's send (each page's own, beside the control that names its need), so this model imports nothing.
 
 export interface Stored {
   schedules?: Record<string, number>;          // seconds; 0 = off
@@ -121,19 +122,7 @@ export function patternsOf(text: string): string[] {
 }
 
 // the write of the whole object, with the settings it was read as
-type Answer = { ok: boolean; body: Record<string, unknown> };
+export type Answer = { ok: boolean; body: Record<string, unknown> };
 export function saveSettings(send: (path: string, data: Record<string, unknown>) => Promise<Answer>, name: string, settings: Stored, expect: Stored): Promise<Answer> {
   return send('admin/instances', { op: 'settings', name, settings, expect });
-}
-
-// postAdmin POSTs a write of Admin > Instances and answers the server's outcome (a refusal, 409, carries its reason)
-export async function postAdmin(path: string, data: Record<string, unknown>): Promise<Answer> {
-  const res = await fetch('/api/' + path, {
-    method: 'POST', credentials: 'same-origin',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' },
-    body: JSON.stringify(data),
-  });
-  let body: Record<string, unknown> = {};
-  try { body = await res.json(); } catch { /* an empty answer */ }
-  return { ok: res.ok, body };
 }
