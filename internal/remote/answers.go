@@ -15,10 +15,15 @@ import (
 // and no Admin rows: each answer is its SQL function's with none, over the collector's own pgvigil.yaml. Admin's
 // per-instance edits never reach a remote site (docs/remote-collector.md).
 
-// settingsAnswers are the settings functions' answers with no Admin rows. import_mssql_security_parts (0159): a part is
-// wanted only through an mssql_security_settings row, and a remote instance has none.
+// settingsAnswers are the settings functions' answers with no Admin rows. import_mssql_security_parts (0159 L1-12 of its
+// definition) reads mssql_security_settings, a view (0159 L540) that gives every rule its default when no config row
+// sets it: a part is wanted when one of its rules is on by default (mssql_security_rule_defs.default_on, 0159 L314-360),
+// auth always, logins also when owner_allow is on with no owner_allow list - so databases (owner_allow, owner_deny,
+// cert_expired, cert_expiring, orphaned_user on), auth (auth_scheme) and logins (sa_exists, windows_login_disabled,
+// windows_group_disabled, password_expiry) are wanted; registry, proxies and server_perms (every rule off) are not.
+// TestAnswersAgainstSQL holds it to the function on a store: a default changed in a migration turns that row red.
 var settingsAnswers = map[string]string{
-	"import_mssql_security_parts": `{"parts": {}}`,
+	"import_mssql_security_parts": `{"parts": {"auth": true, "databases": true, "logins": true, "proxies": false, "registry": false, "server_perms": false}}`,
 }
 
 // MSSQLSettings answers a collection's settings function as the repository's would with no Admin rows.

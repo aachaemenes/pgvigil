@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,7 +55,8 @@ func findCounter(l []counterEntry, object, counter, inst string) (counterEntry, 
 	return counterEntry{}, false
 }
 
-// The settings answer with no Admin rows (import_mssql_security_parts, 0159: no mssql_security_settings row -> no part)
+// The settings answer with no Admin rows (import_mssql_security_parts over mssql_security_settings' defaults, 0159: the
+// parts with a rule on by default, auth always)
 // and the counter list with no Admin rows (mssql_counter_list over the defaults and the yaml's root and instance lines,
 // 0152): the yaml's narrowest layer wins per object, counter and instance; a remove of a counter a page reads is
 // blocked; a remove of one instance of an every-instance counter is its 'except'; an add without a kind takes the kind
@@ -65,7 +67,8 @@ func TestStoreAnswers(t *testing.T) {
 	id, _ := s.EnsureInstanceEngine(ctx, "sqlserver", inst.Name, "onprem", "16.0", 16, false, nil)
 	b, err := s.MSSQLSettings(ctx, id, "import_mssql_security_parts")
 	var parts map[string]map[string]bool
-	if err != nil || json.Unmarshal(b, &parts) != nil || parts["parts"] == nil || len(parts["parts"]) != 0 {
+	want := map[string]bool{"auth": true, "databases": true, "logins": true, "proxies": false, "registry": false, "server_perms": false}
+	if err != nil || json.Unmarshal(b, &parts) != nil || !reflect.DeepEqual(parts["parts"], want) {
 		t.Errorf("security parts: %s %v", b, err)
 	}
 	if _, err := s.MSSQLSettings(ctx, id, "import_mssql_other_parts"); err == nil || !strings.Contains(err.Error(), "no remote answer") {
