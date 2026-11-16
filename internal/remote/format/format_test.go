@@ -191,6 +191,14 @@ func TestDecodeManifest(t *testing.T) {
 			t.Errorf("without %s: no error", key)
 		}
 	}
+	// each read carries its collection's interval on the collector (the hub's staleness judges by it)
+	m0, err := DecodeManifest(b)
+	if err != nil || m0.Reads[0].IntervalSecs != 60 || m0.Reads[1].IntervalSecs != 120 || m0.Reads[2].IntervalSecs != 0 {
+		t.Errorf("interval_secs: %v %+v", err, m0)
+	}
+	if _, err := DecodeManifest(bytes.Replace(b, []byte(`"interval_secs": 60`), []byte(`"interval_secs": -1`), 1)); err == nil {
+		t.Errorf("a negative interval: no error")
+	}
 	bad := bytes.Replace(b, []byte(`"status": "ran"`), []byte(`"status": "maybe"`), 1)
 	if _, err := DecodeManifest(bad); err == nil {
 		t.Errorf("a read status that is not ran / failed / skipped: no error")

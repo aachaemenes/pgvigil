@@ -219,6 +219,9 @@ type Read struct {
 	Runs       int    `json:"runs,omitempty"`
 	Failed     int    `json:"failed,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// IntervalSecs is the collection's interval on the collector (its yaml's schedules): the hub judges a remote
+	// collection's staleness by it, not by its own defaults. 0 = not scheduled (a skipped read 'off').
+	IntervalSecs int `json:"interval_secs,omitempty"`
 }
 
 // Run is one run of a collection: log_collection's arguments.
@@ -322,6 +325,8 @@ func (m *Manifest) check() error {
 			return fmt.Errorf("read %s: skipped needs a reason (off, not_due, not_applicable, running), got %q", r.Collection, r.Reason)
 		case r.Status != ReadRan && r.Status != ReadFailed && r.Status != ReadSkipped:
 			return fmt.Errorf("read %s: status %q is not ran, failed or skipped", r.Collection, r.Status)
+		case r.IntervalSecs < 0:
+			return fmt.Errorf("read %s: a negative interval", r.Collection)
 		}
 	}
 	for _, r := range m.Runs {

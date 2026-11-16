@@ -16,8 +16,8 @@
   ],
   "sums_sha256": "1548679544dace85ff964d651b1e8396b3055407b9de67e5eff38765d67e09a9",
   "reads": [
-    {"collection": "mssql_activity", "status": "ran", "runs": 2},
-    {"collection": "mssql_ag", "status": "failed", "runs": 2, "failed": 1},
+    {"collection": "mssql_activity", "status": "ran", "runs": 2, "interval_secs": 60},
+    {"collection": "mssql_ag", "status": "failed", "runs": 2, "failed": 1, "interval_secs": 120},
     {"collection": "mssql_jobs", "status": "skipped", "reason": "not_due"}
   ],
   "runs": [
