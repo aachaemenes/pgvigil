@@ -33,10 +33,30 @@ func TestNormalizeSQL(t *testing.T) {
 		{"select 'unterminated and the rest is literal; select secret", "select ?"},
 		{"select e from t where $2 = e", "select e from t where $2 = e"},
 		{"select \"a\"\"b\" from \"we're\"", "select \"a\"\"b\" from \"we're\""},
+		// TEXT-NOW-L row 1 (TEXT-NOW review 1 L5, D411 review 2 L2): a T-SQL binary literal and money, the hint forms,
+		// PostgreSQL 16's integer forms; a name holding 0x and a PostgreSQL parameter stay
+		{"SELECT 0xDEADBEEF, 0X2a00 FROM t WHERE b = 0x", "SELECT ?, ? FROM t WHERE b = ?"},
+		{"SELECT a FROM t OPTION (OPTIMIZE FOR (@p = $5.00, @q = 0x2A00))", "SELECT a FROM t OPTION (OPTIMIZE FOR (@p = ?, @q = ?))"},
+		{"select $12.50 * qty, -$3.25, $0.5 from o", "select ? * qty, -?, ? from o"},
+		{"select 0o17, 0b101, 1_000_000, 0x1F_FF from t", "select ?, ?, ?, ? from t"},
+		{"select col_0x1, t0xab, x0b1 from t where a = $1 and b = $12 and c = $1.name", "select col_0x1, t0xab, x0b1 from t where a = $1 and b = $12 and c = $1.name"},
+		// TEXT-NOW-L review: H1 the texts the old normalizer stored under normalized, repaired at read; M1 money with no
+		// integer or no fraction digits; L1 '_' in an exponent; a number after '.' (t.0x1) stays; the IN collapse sees
+		// the new forms; a PostgreSQL parameter's quoted field stays
+		{"select ?xDEADBEEF, ?X2a, ?o17, ?b101, ?_000_000, ?x1F_FF from t where b = ?x", "select ?, ?, ?, ?, ?, ? from t where b = ?"},
+		{"where price = $.5 and q > $12. and r = $3.", "where price = ? and q > ? and r = ?"},
+		{"select 1.5e1_0, 2e+1_0 from t", "select ?, ? from t"},
+		{"select t.0x1, $1.\"col\" from t", "select t.0x1, $1.\"col\" from t"},
+		{"select a from t where b in (0x01, 0x02, $1.00, 1_0)", "select a from t where b in (?)"},
 	}
 	for _, c := range cases {
 		if got := normalizeSQL(c.in); got != c.want {
 			t.Errorf("normalizeSQL(%q)\n got %q\nwant %q", c.in, got, c.want)
+		}
+		// idempotent: the stored normalized text read again under normalized is unchanged (the read rule runs the
+		// normalizer over text stored normalized too)
+		if again := normalizeSQL(c.want); again != c.want {
+			t.Errorf("normalizeSQL is not idempotent on %q: %q", c.want, again)
 		}
 	}
 }

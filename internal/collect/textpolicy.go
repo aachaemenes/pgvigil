@@ -927,13 +927,62 @@ func textHash(s string) int64 {
 
 var normInListRE = regexp.MustCompile(`(?i)(\bIN\s*)\(\s*\?(?:\s*,\s*\?)+\s*\)`)
 
-// normalizeSQL rewrites one statement in a single pass over its runes: comments (-- to the end of the
-// line, /* */ nested) are dropped, string literals ('..' with ” doubling, E'..' with backslash escapes,
-// B'..' X'..' N'..' U&'..', $tag$..$tag$ with the tag matched exactly) and numbers (not a parameter $n,
-// not part of an identifier) become ?, double-quoted identifiers stay whole, whitespace collapses to
-// one space, and IN (?, ?, ...) collapses to IN (?). One pass, so an unpaired quote inside a comment or
-// an escaped quote inside a string never desynchronises what follows. A text rule, not a parser: it is
-// meant to keep data out of the repository, not to produce pg_stat_statements' exact form.
+// moneyEnd: in[i] is a digit after '$'; the end of a money literal with a decimal point ($12.50, and $12. with no
+// fraction digits), or -1 when there is no point or a name follows it ($1.name, $1."col": a PostgreSQL parameter's
+// field), never a money literal.
+func moneyEnd(in []rune, i int) int {
+	for i < len(in) && unicode.IsDigit(in[i]) {
+		i++
+	}
+	if i >= len(in) || in[i] != '.' {
+		return -1
+	}
+	i++
+	if i < len(in) && (unicode.IsLetter(in[i]) || in[i] == '_' || in[i] == '"') {
+		return -1
+	}
+	for i < len(in) && unicode.IsDigit(in[i]) {
+		i++
+	}
+	return i
+}
+
+// radixRun: the end of the digits of a radix literal whose letter is in[i] (x, o or b), '_' between digits.
+func radixRun(in []rune, i int) int {
+	letter, j := in[i], i+1
+	for j < len(in) && (radixDigit(letter, in[j]) || in[j] == '_' && j+1 < len(in) && radixDigit(letter, in[j+1])) {
+		j++
+	}
+	return j
+}
+
+// radixAt: in[i] is '0' and in[i+1] a radix letter that begins a literal - x always (T-SQL writes an empty binary
+// value as 0x), o and b only with a digit of their base after them.
+func radixAt(in []rune, i int) bool {
+	if in[i+1] == 'x' || in[i+1] == 'X' {
+		return true
+	}
+	return i+2 < len(in) && radixDigit(in[i+1], in[i+2])
+}
+
+// radixDigit: r is a digit of the base the letter names (x hexadecimal, o octal, b binary).
+func radixDigit(letter, r rune) bool {
+	switch letter {
+	case 'x', 'X':
+		return unicode.IsDigit(r) || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F'
+	case 'o', 'O':
+		return r >= '0' && r <= '7'
+	}
+	return r == '0' || r == '1'
+}
+
+// normalizeSQL rewrites one statement in a single pass over its runes: comments (-- to the end of the line, /* */
+// nested) are dropped, string literals ('..' with ” doubling, E'..' with backslash escapes, B'..' X'..' N'..' U&'..',
+// $tag$..$tag$ with the tag matched exactly), numbers (not a parameter $n, not part of an identifier; '_' between
+// digits), 0x / 0o / 0b literals and money with a decimal point ($12.50) become ?, double-quoted identifiers stay
+// whole, whitespace collapses to one space, and IN (?, ?, ...) collapses to IN (?). One pass, so an unpaired quote
+// inside a comment or an escaped quote inside a string never desynchronises what follows. A text rule, not a parser: it
+// is meant to keep data out of the repository, not to produce pg_stat_statements' exact form.
 func normalizeSQL(s string) string {
 	in := []rune(s)
 	var out strings.Builder
@@ -1009,6 +1058,14 @@ func normalizeSQL(s string) string {
 		case (c == 'u' || c == 'U') && i+2 < n && in[i+1] == '&' && in[i+2] == '\'' && !isIdent(prev(i)): // U&'..'
 			i = skipQuoted(in, i+2, false)
 			emit('?')
+		case c == '$' && !isIdent(prev(i)) && i+2 < n && in[i+1] == '.' && unicode.IsDigit(in[i+2]):
+			// money with no integer digits ($.5; TEXT-NOW-L review M1): never a parameter or a dollar quote
+			j := i + 2
+			for j < n && unicode.IsDigit(in[j]) {
+				j++
+			}
+			emit('?')
+			i = j
 		case c == '$' && !isIdent(prev(i)) && i+1 < n && !unicode.IsDigit(in[i+1]): // $tag$ ... $tag$ (a $1 parameter falls through)
 			j := i + 1
 			for j < n && (in[j] == '_' || unicode.IsLetter(in[j]) || (j > i+1 && unicode.IsDigit(in[j]))) {
@@ -1025,14 +1082,37 @@ func normalizeSQL(s string) string {
 			}
 			emit(c) // not a dollar quote: a $ on its own
 			i++
+		case c == '$' && !isIdent(prev(i)) && i+1 < n && unicode.IsDigit(in[i+1]) && moneyEnd(in, i+1) >= 0:
+			// T-SQL money with a decimal point ($12.50, $12., -$3.25: the sign stays, as a number's does); $1, $1.name and
+			// $1."col", PostgreSQL's parameters, have no point or a name after it and fall through to stay as they are
+			emit('?')
+			i = moneyEnd(in, i+1)
+		case c == '0' && i+1 < n && strings.ContainsRune("xXoObB", in[i+1]) && !isIdent(prev(i)) && prev(i) != '.' && radixAt(in, i):
+			// a binary literal (T-SQL 0x..., an empty 0x too) or PostgreSQL 16's 0x / 0o / 0b integers, '_' between digits
+			emit('?')
+			i = radixRun(in, i+1)
+		case c == '?' && i+1 < n && !isIdent(prev(i)) && (strings.ContainsRune("xXoObB", in[i+1]) && radixAt(in, i) || in[i+1] == '_' && i+2 < n && unicode.IsDigit(in[i+2])):
+			// read-repair (TEXT-NOW-L review H1): a text the normalizer stored before 0x / 0o / 0b and '_' were literals
+			// ('0xDEADBEEF' -> '?xDEADBEEF', '1_000' -> '?_000') is read again under normalized: the '?' takes the digits
+			// it left behind
+			emit('?')
+			if in[i+1] == '_' {
+				j := i + 1
+				for j < n && (unicode.IsDigit(in[j]) || in[j] == '_' && j+1 < n && unicode.IsDigit(in[j+1])) {
+					j++
+				}
+				i = j
+			} else {
+				i = radixRun(in, i+1)
+			}
 		case (unicode.IsDigit(c) || (c == '.' && i+1 < n && unicode.IsDigit(in[i+1]))) && !isIdent(prev(i)) && prev(i) != '.':
 			j := i
-			for j < n && (unicode.IsDigit(in[j]) || in[j] == '.') {
+			for j < n && (unicode.IsDigit(in[j]) || in[j] == '.' || in[j] == '_' && j+1 < n && unicode.IsDigit(in[j+1])) {
 				j++
 			}
 			if j < n && (in[j] == 'e' || in[j] == 'E') && j+1 < n && (unicode.IsDigit(in[j+1]) || ((in[j+1] == '+' || in[j+1] == '-') && j+2 < n && unicode.IsDigit(in[j+2]))) {
 				j += 2
-				for j < n && unicode.IsDigit(in[j]) {
+				for j < n && (unicode.IsDigit(in[j]) || in[j] == '_' && j+1 < n && unicode.IsDigit(in[j+1])) { // PostgreSQL 16's 1e1_0 (review L1)
 					j++
 				}
 			}
