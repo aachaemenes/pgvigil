@@ -267,11 +267,11 @@ func TestPromExportOnAStore(t *testing.T) {
 		return ""
 	}
 	for name, words := range map[string]string{
-		"pgvigil_counters_batch_requests_per_second":      "a metric with no point at the newest read has no sample, never an older read's value",
+		"pgvigil_counters_batch_requests_per_second":     "a metric with no point at the newest read has no sample, never an older read's value",
 		"pgvigil_counters_write_transactions_per_second": "the server's total (_Total), never one database's",
-		"pgvigil_counters_agent_jobs_started":             "per read (every 5 min); never sum_over_time",
-		"pgvigil_counters_log_growths":                    "per read (every 5 min); never sum_over_time",
-		"pgvigil_collection_duration_seconds":             "the instance's worst collection is max by (server)",
+		"pgvigil_counters_agent_jobs_started":            "per read (every 5 min); never sum_over_time",
+		"pgvigil_counters_log_growths":                   "per read (every 5 min); never sum_over_time",
+		"pgvigil_collection_duration_seconds":            "the instance's worst collection is max by (server)",
 	} {
 		if h := help(name); !strings.Contains(h, words) {
 			t.Errorf("HELP of %s: %q lacks %q", name, h, words)
