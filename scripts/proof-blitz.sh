@@ -15,7 +15,8 @@
 #
 # Expected (written before the first run; job B's numbers, design lines 37 / 58 / 62 / 66):
 #  B0 (the setup, on any tree): the kit installs; an empty database with AUTO_CLOSE on (sp_Blitz 12, a rule the Checks
-#     tab judges too); the server's first minute waited out (sp_Blitz's CheckID 152 divides by the whole minutes since
+#     tab judges too; L1 has a user with SELECT there - sp_Blitz skips a database without SELECT - and its RSV carries
+#     check 12 on it); the server's first minute waited out (sp_Blitz's CheckID 152 divides by the whole minutes since
 #     the waits were cleared: Msg 8134 inside it until one has passed - review-22 bzproof B2); as the monitoring login
 #     L1 (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE, EXECUTE on master.dbo.sp_Blitz only) the RSV
 #     output's rows (CheckID -1 included: the 'Thanks!' and version rows) equal the COUNT read just before or just after
@@ -50,7 +51,8 @@
 #  F  sp_Blitz's database set to an empty database: skipped 'sp_Blitz is not in [<db>].[dbo]', no run; set to a
 #     database that does not exist: skipped 'no database <db> on this server', no run; L2's instance (no CONNECT ANY
 #     DATABASE, no user in the empty database) set to the empty database: skipped 'the login L2 has no access to the
-#     database [<db>]', no new run (a three-part name there is Msg 916: review-22 bzcoll S2).
+#     database [<db>]', no new run (a three-part name there is Msg 916: review-22 bzcoll S2); D's refused run moved
+#     back a week first (a refused run waits for the next slot).
 #  I  the site timeout 1 s: a run stored 'timed out', its error naming the 1 s timeout, no finding; collect says
 #     partial; the timeout back to 600 s.
 #  J  13 runs leave 12: 11 older runs seeded into the store, run A's moved back a week, a real run: 12 runs left, the
@@ -152,6 +154,9 @@ CREATE USER [$L1] FOR LOGIN [$L1]; CREATE USER [$L2] FOR LOGIN [$L2]; GRANT EXEC
 CREATE DATABASE [$DBE];" | sqin || die "B0: the logins"
 # a finding the Checks tab judges too (sp_Blitz 12, AUTO_CLOSE on a user database): K and P read its mark
 sq "ALTER DATABASE [$DBE] SET AUTO_CLOSE ON;" >/dev/null || die "B0: AUTO_CLOSE on $DBE"
+# sp_Blitz 8.34 skips every database where the caller has no SELECT (fn_my_permissions(name, 'DATABASE') into
+# #SkipChecks): L1 gets a user with SELECT there, or its runs never carry check 12 for it (b20-t2g2's K)
+sq "CREATE USER [$L1] FOR LOGIN [$L1]; GRANT SELECT TO [$L1];" "$DBE" >/dev/null || die "B0: $L1's user with SELECT in $DBE"
 # the server's first minute out (CheckID 152's Msg 8134, bzproof B2): DATEDIFF(MINUTE) as sp_Blitz counts it
 for _ in $(seq 1 45); do [[ $(sq "SELECT DATEDIFF(MINUTE, create_date, CURRENT_TIMESTAMP) FROM sys.databases WHERE name = N'tempdb'") -ge 1 ]] && break; sleep 3; done
 [[ $(sq "SELECT DATEDIFF(MINUTE, create_date, CURRENT_TIMESTAMP) FROM sys.databases WHERE name = N'tempdb'") -ge 1 ]] || die "B0: the server's first minute did not pass in 135 s"
@@ -165,7 +170,9 @@ blitzRSV() { as "$1" "$2" "$CALL, @OutputType = 'RSV';" | tr -d '\r' | grep -aE 
 between() { [[ $1 =~ ^[0-9]+$ && ( $1 == "$2" || $1 == "$3" ) ]]; }
 B0N=$(blitzCount "$L1" "$P1"); B0R=$(blitzRSV "$L1" "$P1" | wc -l); B0M=$(blitzCount "$L1" "$P1")
 [[ $B0N =~ ^[0-9]+$ && $B0N -gt 0 ]] && between "$B0R" "$B0N" "$B0M" || die "B0: as $L1 COUNT '$B0N' / '$B0M' and RSV $B0R rows disagree (the proof's parse); the COUNT reply: $(as "$L1" "$P1" "$CALL, @OutputType = 'COUNT';" | tr -d '\r' | grep -av '^[[:space:]]*$' | head -4 | tr '\n' ' ' | cut -c1-300)"
-echo "B0: OK (as the monitoring login sp_Blitz counts $B0N findings, RSV prints $B0R rows)"
+B0A=$(blitzRSV "$L1" "$P1" | awk -F$'\x1f' -v d="$DBE" '$2 == 12 && $5 == d' | wc -l)
+[[ $B0A == 1 ]] || die "B0: the seeded AUTO_CLOSE (CheckID 12 on $DBE) is in $B0A of $L1's RSV rows, want 1"
+echo "B0: OK (as the monitoring login sp_Blitz counts $B0N findings, RSV prints $B0R rows, CheckID 12 on $DBE among them)"
 
 echo "--- S. the store"
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
@@ -302,6 +309,8 @@ on "$II" true "$DBE"; collect "$NI" >/dev/null
 [[ $(cat "$OUT") == *"skipped: sp_Blitz is not in [$DBE].[dbo]"* && $(runs "$II") == 0 ]] && ok "F: an empty database: not installed, no run" || bad "F: $(cat "$OUT") runs $(runs "$II")"
 on "$II" true "nosuch_$SUF"; collect "$NI" >/dev/null
 [[ $(cat "$OUT") == *"skipped: no database nosuch_$SUF on this server"* && $(runs "$II") == 0 ]] && ok "F: a database that does not exist: said, no run" || bad "F: $(cat "$OUT") runs $(runs "$II")"
+# D's refused run is this week's: moved back a week first, or the due rule skips before the access read (b20-t2g2's F)
+q "update pgvigil.mssql_blitz_run set started_at = started_at - interval '8 days' where instance_id = $IV" >/dev/null
 r0=$(runs "$IV"); on "$IV" true "$DBE"; collect "$NV" >/dev/null
 [[ $(cat "$OUT") == *"skipped: the login $L2 has no access to the database [$DBE]"* && $(runs "$IV") == "$r0" ]] && ok "F: a database the login has no user in: no access, said, no run" || bad "F: no access: $(cat "$OUT") runs $r0 -> $(runs "$IV")"
 row F
@@ -347,7 +356,8 @@ print(parts, len(sh) == 1 and sh[0]['run_id'] == r2, sh[0]['newest_outcome'] if 
 PY
 ) || kv="unreadable: $(head -c 300 "$WORK/k.json")"
 [[ $kv == "findings,judged,last,runs,shown,state True timed out $R2N True True not due" ]] \
-  && ok "K: the six parts; shown = the newest successful run, the newest 'timed out' beside it; $R2N findings; judged right ($kv)" || bad "K: $kv"
+  && ok "K: the six parts; shown = the newest successful run, the newest 'timed out' beside it; $R2N findings; judged right ($kv)" \
+  || bad "K: $kv; findings as (check_id, judged): $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); t=d["findings"]; i=t["columns"].index("check_id"); k=t["columns"].index("judged"); print(sorted({(r[i], r[k]) for r in t["rows"]}, key=str))' "$WORK/k.json" 2>&1 | cut -c1-400)"
 row K
 
 echo "--- M. the import's guards"
