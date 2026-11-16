@@ -300,6 +300,12 @@ Prometheus text format, read with a signed-in session or `metrics.token` (`file:
 least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
 `metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
 
+## SQL Server schema history (mssql_schema)
+
+A SQL Server instance's `mssql_schema: {databases: [...]}` turns the schema history on for those databases (`*` every
+user database, a name that one, `-name` leaves one out); without it the collection `mssql_schema` is off. What it
+reads and keeps, and the rights it needs: [schema snapshots, SQL Server](schema.md#sql-server-mssql_schema).
+
 ## The repository's own sessions run without jit
 
 Every `pgvigil migrate` (and so `install -upgrade` and `demo`) sets `jit = off` on the repository database

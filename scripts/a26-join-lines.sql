@@ -1,0 +1,24 @@
+-- A26 (migration 0267, above 0190): the lines for the next join's own file 0300_join_release3.sql (the 03:3x rule).
+-- Not a migration of its own; the record of what the join places.
+--
+-- import_schema (0058's; re-created WHOLE in 0267 so this branch's proof runs it, as 0194 did for 0102's
+-- import_pg_job_actions_log): ONE arm, at the run's 'end' call, after the UPDATE that marks a database gone -
+--
+--   UPDATE pgvigil.schema_objects o SET is_present = false, snapshot_at = p_snapshot_at
+--     FROM pgvigil.schema_databases sd
+--    WHERE sd.instance_id = p_instance_id AND NOT sd.is_present
+--      AND o.instance_id = sd.instance_id AND o.dbid = sd.dbid AND o.is_present;
+--
+-- (its alias is sd, never d: d is import_schema's own loop record, which PL/pgSQL would bind 'd.instance_id' to)
+--
+-- Why (the lead's 14:4x, S10 of A26's design pass): 0058 marked only the database row, so a dropped or no longer
+-- connectable database's objects stayed present on the Schema tab and in the Diff page's compares, and purge's
+-- 'DELETE FROM pgvigil.schema_objects WHERE NOT is_present ...' line (0190 L317) never took them. Both engines.
+-- Nothing else of import_schema changes. No other joined object: A26 adds no findings arm (schema_findings already
+-- reads every engine's rows), no purge() line (the existing NOT is_present lines take the objects now) and no
+-- apply_roles line (its two collector doors are named import_mssql_schema and import_mssql_schema_due).
+--
+-- On a joined TABLE, nothing to re-create: 0267's trigger mssql_schema_trace_gap on 0091's mssql_reader_state (A26's
+-- own trigger and function; it copies a default-trace read's 'not read' note into A26's mssql_schema_trace_gaps). A
+-- join that re-creates mssql_reader_state, or 0091's reader import, keeps the trigger as it is; a join that renames
+-- the reader's note words updates the trigger's WHEN pattern '(were|could) not (be )?read' with them.

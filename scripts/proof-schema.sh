@@ -69,6 +69,13 @@
 #     rows (the batch's CREATE TABLE a2, the mapping) not kept; the lock is seen granted in pg_locks before the timer
 #     starts, and lk has no row in MDB's log (it ran unlogged).
 #  The ACLs above carry PostgreSQL 17's MAINTAIN privilege (m): on 16 and older the expected text lacks it.
+#  P12. [A26, expected before the run] public.pf's body kept as text under query_text full ('return i + 1' after its
+#     'body sha256:' line); public.pw(), whose body names a password, kept as its hash and '(body text not kept: it
+#     names a password or a secret)', no 'Hunter2abc' in schema_objects or schema_changes; P12u, with
+#     PGVIGIL_BIN_MAINSCHEMA (a build with main's internal/collect/schema.go): main's read stores pf as its hash alone,
+#     this binary's read under full after it records no change of MDB (else 'NOT PROVEN P12u'); under none pf is its
+#     hash alone; the flips none -> full record no change of ANY object of MDB; a body change (return i + 2) is one
+#     'changed' row with the two texts.
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -342,4 +349,44 @@ H4=$(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select (to_regclass('public.lk') is 
 echo "CREATE TABLE beside the held lock: $ms ms, lk exists|its log rows: $H4"
 [[ $ms -lt 3000 && $H4 == "true|0" ]] || fail "H: the lock wait"
 
-echo "PASS: proof-schema (A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object; F a burst of 6,000 log rows read in pages, the statement after it found, no temp-table row, each row kept once; F2 the run cap goes on run by run; G one import per database under a payload cap; H the publication guard, no password kept, a one-second lock wait)"
+echo "--- P12. a function's body as text (A26): under query_text full, then none, then full again, then changed"
+m1 'create function public.pf(i int) returns int language plpgsql as $f$ begin return i + 1; end $f$'
+m1 'create function public.pw() returns int language plpgsql as $f$ begin /* the app password Hunter2abc */ return 1; end $f$'
+collect
+P12A=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)'")
+[[ $P12A == *"body sha256:"* && $P12A == *"return i + 1"* ]] || fail "P12: under full the body is not kept as text: $P12A"
+# the B+C review's B2: a body naming a password keeps its hash and the words, never its text, under full too
+P12W=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pw()'")
+[[ $P12W == *"body sha256:"* && $P12W == *"(body text not kept: it names a password or a secret)" && $P12W != *Hunter2abc* ]] \
+  || fail "P12: a body naming a password is not its hash and the words: $P12W"
+[[ $(q "select (select count(*) from pgvigil.schema_objects where definition ~ 'Hunter2abc') + (select count(*) from pgvigil.schema_changes where coalesce(before, '') || coalesce(after, '') ~ 'Hunter2abc')") == 0 ]] \
+  || fail "P12: Hunter2abc reached the repository's schema tables"
+# P12u (the B+C review's S5): a store read by main's schema code (bodies as hashes) and then by this binary under full
+# records no change - the upgrade - and main's read after this binary's none either - the way back
+if [[ -n ${PGVIGIL_BIN_MAINSCHEMA:-} ]]; then
+  NU=$(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'")
+  "$PGVIGIL_BIN_MAINSCHEMA" collect -config "$CFG" -once schema >/dev/null 2>&1 || fail "P12u: main's schema read failed"
+  P12U=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)'")
+  [[ $P12U == *"body sha256:"* && $P12U != *"return i + 1"* ]] || fail "P12u: main's read did not store the hashed form: $P12U"
+  collect
+  [[ $(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'") == "$NU" ]] \
+    || fail "P12u: main's read then this binary's under full recorded a change"
+  echo "ok   P12u: main's read (bodies as hashes), then this binary's under full: no change of MDB"
+else echo "NOT PROVEN P12u: PGVIGIL_BIN_MAINSCHEMA not set (a build with main's internal/collect/schema.go)"; fi
+# the two flips: no change of ANY object of MDB (the B+C review's S5: not only pf's 'changed' rows)
+N12=$(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'")
+sed -i '/dsn: env:SBX_DSN/a\    query_text: none' "$CFG"
+collect
+P12B=$(q "select definition from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)'")
+[[ $P12B == *"body sha256:"* && $P12B != *"return i + 1"* ]] || fail "P12: under none the body is not its hash alone: $P12B"
+sed -i '/query_text: none/d' "$CFG"
+collect
+[[ $(q "select count(*) from pgvigil.schema_changes where instance_id = $i and datname = '$MDB'") == "$N12" ]] \
+  || fail "P12: flipping query_text recorded a change in MDB"
+m1 'create or replace function public.pf(i int) returns int language plpgsql as $f$ begin return i + 2; end $f$'
+collect
+P12C=$(q "select coalesce(before, '') || '|' || coalesce(after, '') from pgvigil.schema_changes where instance_id = $i and datname = '$MDB' and identity = 'public.pf(integer)' and change = 'changed' order by snapshot_at desc limit 1")
+[[ $P12C == *"return i + 1"*"|"*"return i + 2"* ]] || fail "P12: the body change is not before / after text: $P12C"
+echo "ok   P12: the body kept as text under full, a body naming a password as its hash and the words, as its hash under none, no change of MDB on the two flips, a body change with its before / after text"
+
+echo "PASS: proof-schema (P12 bodies as text by query_text, a body naming a password withheld, no change of MDB on the flips; A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object; F a burst of 6,000 log rows read in pages, the statement after it found, no temp-table row, each row kept once; F2 the run cap goes on run by run; G one import per database under a payload cap; H the publication guard, no password kept, a one-second lock wait)"

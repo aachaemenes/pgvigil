@@ -108,6 +108,25 @@ Two rules follow from how the binary checks the schema:
 
 There is no downgrade migration. The way back is the dump taken before the upgrade and the previous binary (below).
 
+### Schema history after A26 (migration 0267)
+
+- **Function bodies as text.** Where an instance's `query_text` is `full` (the default) the schema history keeps a
+  PostgreSQL function's or procedure's body as text (a password in it masked), as SQL Server's modules are: the first
+  read after the upgrade rewrites each stored definition and records **no** change (an object's hash is taken over its
+  body's SHA-256, as before). Under `normalized` or `none` nothing changes.
+- **A database may stop being snapshotted whole.** With bodies as text, a database's definitions can pass the 160 MB
+  one import takes: that database then keeps its bodies as hashes (a collector error 'schema text:<database>' says
+  "bodies kept as hashes"; the collection's line shows it when it is the run's first error), and only over 160 MB even
+  so is it not snapshotted.
+- **A body that names a password or a secret** (the DDL log's own test) is kept as its hash with the words "body text
+  not kept", under every policy.
+- **One false row.** A `query_text` change made between two reads in which an object's owner or ACL also changed
+  records one 'definition changed' row for it (the hash line becomes the text, or back); so does a database crossing
+  the 160 MB fall-back between two such reads. On the Diff page, an object changed and changed back across the upgrade
+  or a `query_text` change shows as 'different' (its two stored forms differ in format only).
+- **Gone databases.** A database gone from a read now takes its objects with it, so purge removes them; on the first
+  read after the upgrade the objects of databases gone earlier are marked gone.
+
 ## The upgrade from the offline bundle (no network needed)
 
 On a host without Internet access, or wherever the release came as a bundle ([airgap.md](airgap.md), "The offline

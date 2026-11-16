@@ -74,7 +74,8 @@ func (g *Gen) schemaRows(t time.Time) []Row {
 						"CREATE INDEX order_lines_status_idx ON public.order_lines USING btree (status)", "", "")
 				}
 				obj("function", "public.order_total(bigint)", "order_total", "",
-					"function returns numeric language sql stable body sha256:5d1f0c2a9e7b4c31", owner, "")
+					"function returns numeric language sql stable body sha256:5d1f0c2a9e7b4c31\n"+
+						"SELECT sum(amount) FROM public.order_lines WHERE order_id = $1", owner, "")
 			}
 		}
 		ddlLog := "not installed"

@@ -128,6 +128,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+  schema: 'Schema',
   mssqlqueries: 'Queries', custom: 'Custom',
   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
   // the instance's Reports folder (reports.ts)
@@ -137,7 +138,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
-  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
+  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions', 'schema'] },
   { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectionhealth', 'collectorerrors', 'custom'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },

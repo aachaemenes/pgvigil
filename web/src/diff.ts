@@ -3,8 +3,9 @@
 //   two instances            as each was last read (one engine on both sides)
 //   one instance, two times  from the change histories the repository keeps (settings, job versions, schema changes)
 //   two databases            of one instance: their schema objects as last read
-// Settings and jobs compare on both engines; schema objects on PostgreSQL only (the repository holds none of a SQL
-// Server instance), and the page says which sections it compared and how far back each store reaches. The picks ride
+// Settings, jobs and schema objects compare on both engines (a SQL Server instance's schema since task A26, where its
+// mssql_schema.databases names its databases), and the page says which sections it compared and how far back each
+// store reaches. The picks ride
 // in the hash (m, a, b, dba, dbb, ta, tb, all), so a diff is a link, and the last ones are kept in this browser.
 // Data: /api/diff (part=databases: the databases behind the two pickers).
 // The file also holds the text diff (lineDiff, textDiffView: code view, side by side, inline) and the structured compare of
@@ -19,7 +20,7 @@ import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl }
 type Mode = 'i' | 't' | 'd';
 interface Picks { m: Mode; a?: number; b?: number; dba?: string; dbb?: string; ta?: string; tb?: string; all: boolean }
 const keys = ['m', 'a', 'b', 'dba', 'dbb', 'ta', 'tb', 'all'];
-const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance (PostgreSQL)']];
+const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance']];
 const lsKey = 'pgvigil.diff';
 // a tag folder keeps its own picks (TAGALL): its pickers list its instances only, so a pick of another instance is dropped
 // there and the root's are kept; a folder with none of its own starts from the root's
@@ -66,10 +67,9 @@ function diffHref(ctx: Ctx, p: Picks): string {
   return `#/diff?${q}`;
 }
 
-// incomplete: why the picks are not enough for a diff ('' = they are); engine = instance A's
-function incomplete(p: Picks, engine?: string): string {
+// incomplete: why the picks are not enough for a diff ('' = they are)
+function incomplete(p: Picks): string {
   if (!p.a) return p.m === 'i' ? 'Pick instance A.' : 'Pick the instance.';
-  if (p.m === 'd' && engine === 'sqlserver') return 'Two databases are compared by their schema objects, which the repository holds for PostgreSQL only: pick a PostgreSQL instance.';
   if (p.m === 'i') {
     if (!p.b) return 'Pick instance B.';
     if (p.b === p.a) return 'A and B are the same instance: pick another B, or compare it at two times.';
@@ -115,7 +115,7 @@ function sidesBlock(sides: Row[], mode: string): HTMLElement {
     { key: 'at', label: 'as of', fmt: v => v == null ? 'the newest read' : fmtTime(v) },
     { key: 'settings_read', label: 'settings read', fmt: (v, r) => two(t(v), v == null ? '' : r.settings_from ? `history from ${fmtTime(r.settings_from)}` : r.engine === 'sqlserver' ? 'one earlier value per setting' : '') },
     { key: 'jobs_read', label: 'newest job version', fmt: (v, r) => two(t(v), r.jobs_from ? `versions from ${fmtTime(r.jobs_from)}` : '') },
-    { key: 'schema_read', label: 'schema read', fmt: (v, r) => r.engine === 'sqlserver' ? 'not collected' : two(t(v),
+    { key: 'schema_read', label: 'schema read', fmt: (v, r) => two(t(v),
       v == null ? '' : `${fmtNum(r.schema_databases)} database(s), first read ${fmtTime(r.schema_from)}`
         + (mode === 'snapshots' ? `; changes held from ${r.schema_changes_from ? fmtTime(r.schema_changes_from) : 'none yet'}` : '')) },
   ];
@@ -180,7 +180,7 @@ function schemaBlock(d: Record<string, Table | null>, cap: number, note: string,
     { key: 'differs', label: 'what differs', fmt: (v, r) => r.status === 'different' ? String(v ?? '')
       // a database on one side only: why (one instance at two times), and its object count
       : r.kind === 'database' ? `the database${Number(r.children) > 0 ? ` (${fmtNum(r.children)} objects)` : ''}${v ? ': ' + String(v) : ''}`
-        : Number(r.children) > 0 ? `with its ${fmtNum(r.children)} dependent object(s) (columns, indexes, constraints, triggers, owned sequences)` : '' },
+        : Number(r.children) > 0 ? `with its ${fmtNum(r.children)} dependent object(s) (its columns, indexes, constraints and triggers; on PostgreSQL its owned sequences too)` : '' },
     { key: 'a_definition', label: 'A', fmt: side('a') },
     { key: 'b_definition', label: 'B', fmt: side('b') },
   ];
@@ -264,7 +264,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
       s.value = cur ?? '';
     };
     let rows: Row[] = [], failed = '';
-    if (a && b && engineOf(a) !== 'sqlserver') {
+    if (a && b) {
       try { rows = rowsOf((await get<{ databases: Table | null }>('diff', { a, b, part: 'databases' })).databases); }
       catch (e) { failed = `The databases could not be listed (${e instanceof Error ? e.message : String(e)}). `; }
     }
@@ -272,8 +272,8 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     const namesOf = (id?: number) => rows.filter(r => Number(r.instance_id) === id).map(r => String(r.datname));
     const none = p.m === 'i' ? '(all, paired by name)' : p.m === 't' ? '(all databases)' : '(pick a database)';
     set(dbA, namesOf(a), p.dba, none); set(dbB, namesOf(b), p.dbb, none);
-    hint.textContent = failed + incomplete(p, engineOf(p.a));
-    offControl(go, incomplete(p, engineOf(p.a)) || null, hint);
+    hint.textContent = failed + incomplete(p);
+    offControl(go, incomplete(p) || null, hint);
   }
   // sync: the form shows the fields its mode uses; the picks are remembered
   function sync(refill = true) {
@@ -283,23 +283,21 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
     fB.hidden = p.m !== 'i';
     fDbB.hidden = p.m === 't';
     fTA.hidden = fTB.hidden = p.m !== 't';
-    const sql = engineOf(p.a) === 'sqlserver';
-    fDbA.hidden = sql && p.m !== 'd'; if (sql && p.m !== 'd') fDbB.hidden = true;
-    hint.textContent = incomplete(p, engineOf(p.a));
+    hint.textContent = incomplete(p);
     // Compare off while a pick is missing: the hint says which (a click would only repeat it: the walk's NOTHING row)
-    offControl(go, incomplete(p, engineOf(p.a)) || null, hint);
+    offControl(go, incomplete(p) || null, hint);
     try { localStorage.setItem(lsKeyOf(ctx), JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
     if (refill) void fillDatabases();
   }
   // the two-times mode with B empty (the newest read): an A time still ahead of the clock turns Compare off, and the
   // clock passing it changes no field - read again as the pointer or the focus reaches Compare
   const recheck = () => {
-    const why = incomplete(p, engineOf(p.a));
+    const why = incomplete(p);
     if ((go.getAttribute('aria-disabled') === 'true') !== !!why) { hint.textContent = why; offControl(go, why || null, hint); }
   };
   go.addEventListener('mouseenter', recheck); go.addEventListener('focus', recheck);
   go.addEventListener('click', () => {
-    const why = incomplete(p, engineOf(p.a));
+    const why = incomplete(p);
     if (why) { hint.textContent = why; return; }
     focusResult = true;
     const to = diffHref(ctx, p);
@@ -308,8 +306,8 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   });
   sec.append(modeBox, form,
     el('p', { class: 'meta' }, 'Two instances are compared as each was last read; one instance at two times from its change histories; '
-      + 'two databases of one instance by their schema objects. Settings and jobs compare on PostgreSQL and on SQL Server; schema '
-      + 'objects on PostgreSQL only (the repository holds none of a SQL Server instance). Differences only, unless identical rows are asked for.'));
+      + 'two databases of one instance by their schema objects. Settings, jobs and schema objects compare on PostgreSQL and on SQL Server '
+      + '(a SQL Server instance\'s schema where its mssql_schema.databases names its databases). Differences only, unless identical rows are asked for.'));
   sync(false);
   await fillDatabases();
 
@@ -317,7 +315,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   const result = el('div', { tabindex: '-1', role: 'region', 'aria-label': 'Diff result' });
   sec.append(result);
   const asked = keys.some(k => hashParam(k) !== undefined);
-  const why = incomplete(p, engineOf(p.a));
+  const why = incomplete(p);
   if (!asked || why) {
     result.append(el('p', { class: 'empty' }, asked ? why : 'Pick the two sides and press Compare.'));
     return sec;

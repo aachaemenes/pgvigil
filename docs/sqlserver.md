@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
 
 ## Collections
 
-Thirty-nine collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Forty collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -99,6 +99,7 @@ Thirty-nine collections; `mssql_checks` and `mssql_identity` are on [day-one che
 | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
 | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
+| `mssql_schema` | 15 min (off without `mssql_schema.databases`) | the schema history of the named databases: every object's definition, what changed between two reads, who by the default trace | VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | runs (its one database, at the daily read: no default trace; not proven there) | [schema snapshots](schema.md#sql-server-mssql_schema) |
 | `mssql_syshealth` | 5 min | system_health's sp_server_diagnostics results (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM) | VIEW SERVER STATE | not run | [readers](sqlserver-readers.md) |
 | `mssql_reports` | 1 hour | server role members, SQL logins with their password age, the error log's failed logins, the services' files, extended properties and the largest tables of each database | VIEW ANY DEFINITION (role members, logins, properties), VIEW SERVER STATE (services; with VIEW ANY DEFINITION the table sizes), EXECUTE on xp_readerrorlog or securityadmin (the failed logins; 2022 and later VIEW SERVER STATE or VIEW ANY ERROR LOG) | not run | [reports](reports.md) |
 
