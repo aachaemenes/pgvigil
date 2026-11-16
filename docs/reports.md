@@ -83,7 +83,7 @@ default) by the statistic over every sample of the range. A range over 31 days i
   included), SQL Server's the I/O stall. A sample under 1 IO a second draws no point.
 - The reach: raw samples are kept as long as `pgvigil purge` keeps them (30 days by default); a range that starts before
   the oldest sample drawn says 'samples kept back to <date> (purge); a year needs the hours (B21)'.
-- File I/O over the fleet reads the newest 1 day of raw (a row per file per minute), said under the chart, until B21's
+- File I/O over the fleet reads the newest 3 days of raw (a row per file per minute), said under the chart, until B21's
   hourly history lands; one instance's disk latency reads at most 7 days. By database (a SQL Server instance's own
   page): one line per database. PostgreSQL's `pg_stat_io` has no database split, and the fleet's by-database view waits
   for hourly history; both say so.
