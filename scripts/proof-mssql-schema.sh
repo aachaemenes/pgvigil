@@ -12,7 +12,8 @@
 #      sp_rename raises an Object:Altered (164) in the default trace.
 #  P1. an instance without mssql_schema: the collection 'skipped', 'off on this instance', no schema row of it.
 #  P2. the first read is the baseline: shop's kinds (schema, table, column, constraint, trigger, view, procedure,
-#      function, synonym, sequence, type; its first plain index is P3's) stored, no change; mssql_schema_dbs 'read'.
+#      function, synonym, sequence, type; its first plain index is P3's) stored, no change; mssql_schema_dbs 'read';
+#      shopcs (collation Latin1_General_100_CS_AS_SC_UTF8, shop's objects) 'read' with the same kinds.
 #  P7a. a database where the login is denied VIEW DEFINITION: 'not readable', no object, no change.
 #  P8. a database of 10,001 tables: 'partial', not snapshotted; P8b: not tried again on the next pass (its partial_at
 #      unchanged: the build review's S-2).
@@ -23,7 +24,7 @@
 #      text or the password (the B+C review's B2); on an instance with query_text none the procedure's change shows
 #      two 'body sha256:' lines; quiet (no DDL) kept present ('seen').
 #  P4. a rolled-back ALTER TABLE: no change on the next pass.
-#  P5. sp_rename: found (by the trace or a forced daily read), as R0 says.
+#  P5. sp_rename: found (by the trace or a forced daily read); its 164 waited for (30 polls), the count printed.
 #  P7b. a login without ALTER TRACE: the reader 'no right', no trace-driven read; on a26-full, DDL the reader stored and
 #      then a reader row 20 minutes stale: not trusted, so no 'ddl' read (shop's read_at unchanged); in A the API's
 #      trace part says trusted false for a26-notrace (the build review's S-6).
@@ -100,6 +101,9 @@ sq "CREATE LOGIN a26full WITH PASSWORD = '$PF', CHECK_POLICY = OFF; CREATE LOGIN
 sq "CREATE USER a26full FOR LOGIN a26full; CREATE USER a26notrace FOR LOGIN a26notrace;
     GRANT SELECT ON dbo.restorehistory TO a26full; GRANT SELECT ON dbo.restorehistory TO a26notrace;" msdb >/dev/null || fail "msdb's users"
 for d in shop quiet locked gone1 big mid; do sq "CREATE DATABASE [$d]" >/dev/null || fail "create $d"; done
+# after the others, so B1's reused id is still gone1's: a database whose collation is not the server's (the catalog
+# reads' COLLATE DATABASE_DEFAULT; the run-fix review's N2)
+sq "CREATE DATABASE [shopcs] COLLATE Latin1_General_100_CS_AS_SC_UTF8" >/dev/null || fail "create shopcs"
 sq "CREATE USER a26full FOR LOGIN a26full; DENY VIEW DEFINITION TO a26full;" locked >/dev/null || fail "the DENY in locked"
 sq "CREATE TABLE dbo.t (a int);" locked >/dev/null; sq "CREATE TABLE dbo.g (a int);" gone1 >/dev/null
 sq "CREATE TABLE dbo.q (a int);" quiet >/dev/null
@@ -131,6 +135,7 @@ CREATE SYNONYM dbo.syn_orders FOR dbo.Orders;
 GO
 SQL
 docker exec -i -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -C -b -I -U sa -d shop -i /dev/stdin < "$WORK/shop.sql" >/dev/null || fail "shop's objects"
+docker exec -i -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -C -b -I -U sa -d shopcs -i /dev/stdin < "$WORK/shop.sql" >/dev/null || fail "shopcs's objects"
 
 ms() { echo "sqlserver://$1:$2@127.0.0.1:$MPORT?database=master&encrypt=true&TrustServerCertificate=true"; }
 export MS_FULL; MS_FULL=$(ms a26full "$PF"); export MS_NT; MS_NT=$(ms a26notrace "$PT")
@@ -152,15 +157,17 @@ mstate() { q "select state from pgvigil.mssql_schema_dbs where instance_id = $(i
 changes() { q "select coalesce(string_agg(change || ' ' || kind || ' ' || identity, ', ' order by change, kind, identity), '') from pgvigil.schema_changes where instance_id = $(iid "$1") and dbid = $(dbid "$2") and snapshot_at = (select max(snapshot_at) from pgvigil.schema_changes where instance_id = $(iid "$1") and dbid = $(dbid "$2"))"; }
 nchanges() { q "select count(*) from pgvigil.schema_changes where instance_id = $(iid "$1") and dbid = $(dbid "$2")"; }
 pass() { collect mssql_defaulttrace "$1"; collect mssql_schema "$1"; }
-# tracewait <database> <object> <event class>: the default trace writes through a buffer, so a read made seconds after
-# a statement may not see it yet; wait (60 s at most) until the trace file holds the committed event, say how long
+# tracewait <database> <object[,object...]> <event class>: the default trace writes through a buffer, so a read made
+# seconds after a statement may not see it yet; poll (30 polls, 2 s apart) until the trace file holds the committed
+# event for any of the names, and say how long it took in wall seconds (each poll's own read included)
 tracewait() {
-  local n=0
+  local n=0 t0 names
+  t0=$(date +%s); names=$(sed "s/[^,][^,]*/N'&'/g" <<<"$2")
   until [ "$(sq "DECLARE @p nvarchar(260) = (SELECT path FROM sys.traces WHERE is_default = 1);
-      SELECT COUNT(*) FROM sys.fn_trace_gettable(@p, DEFAULT) t WHERE t.DatabaseName = N'$1' AND t.ObjectName = N'$2' AND t.EventClass = $3 AND t.EventSubClass = 1" | tail -1 | tr -dc '0-9')" -ge 1 ] 2>/dev/null; do
-    n=$((n + 1)); [ $n -gt 30 ] && { echo "  tracewait: the default trace holds no $3 for $1.$2 after 60 s"; return 0; }; sleep 2
+      SELECT COUNT(*) FROM sys.fn_trace_gettable(@p, DEFAULT) t WHERE t.DatabaseName = N'$1' AND t.ObjectName IN ($names) AND t.EventClass = $3 AND t.EventSubClass = 1" | tail -1 | tr -dc '0-9')" -ge 1 ] 2>/dev/null; do
+    n=$((n + 1)); [ $n -ge 30 ] && { echo "  tracewait: the default trace holds no $3 for $1 ($2) after 30 polls, $(( $(date +%s) - t0 )) s"; return 0; }; sleep 2
   done
-  echo "  tracewait: the default trace held $3 for $1.$2 after $((n * 2)) s"
+  echo "  tracewait: the default trace held $3 for $1 ($2) after $(( $(date +%s) - t0 )) s"
 }
 
 echo "--- R0. reads"
@@ -180,6 +187,8 @@ eq "P2: shop's state" "$(mstate a26-full shop)" read
 eq "P2: changes at the baseline" "$(nchanges a26-full shop)" 0
 KINDS=$(q "select string_agg(distinct kind, ',' order by kind) from pgvigil.schema_objects where instance_id = $(iid a26-full) and dbid = $(dbid shop) and is_present")
 eq "P2: shop's kinds" "$KINDS" "column,constraint,function,procedure,schema,sequence,synonym,table,trigger,type,view"
+eq "P2: shopcs's state (Latin1_General_100_CS_AS_SC_UTF8)" "$(mstate a26-full shopcs)" read
+eq "P2: shopcs's kinds" "$(q "select string_agg(distinct kind, ',' order by kind) from pgvigil.schema_objects where instance_id = $(iid a26-full) and dbid = $(dbid shopcs) and is_present")" "$KINDS"
 [ -n "$(q "select read_at from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid shop)")" ] || fail "P2: no read_at"
 eq "P7a: locked's state" "$(mstate a26-full locked)" "not readable"
 eq "P7a: locked's objects" "$(q "select count(*) from pgvigil.schema_objects where instance_id = $(iid a26-full) and dbid = $(dbid locked)")" 0
@@ -226,6 +235,7 @@ ok "P4 rollback: nothing"
 
 echo "--- P5. sp_rename"
 sq "EXEC sp_rename N'dbo.NewT', N'NewT2';" shop >/dev/null || fail "P5's sp_rename"
+tracewait shop NewT,NewT2 164
 collect mssql_defaulttrace a26-full
 R164=$(q "select count(*) from pgvigil.mssql_trace_events where instance_id = $(iid a26-full) and kind = 'ddl' and database_name = 'shop' and object_name in ('NewT', 'NewT2') and sub = 'alter'")
 echo "  the default trace's alter rows on NewT / NewT2 after sp_rename: $R164"
