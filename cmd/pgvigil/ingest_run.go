@@ -24,8 +24,29 @@ const ingestEvery = time.Minute
 // says it) and starts the loop. Without ingest_dsn: remote_sites: is not read and a line says so. stop ends the loop,
 // waits for it and closes the pool.
 func startIngest(ctx context.Context, log *slog.Logger, cfg *config.Config) (stop func(), err error) {
-	// RED: the wiring held back - nothing checked, nothing started
-	_, _, _, _, _ = ctx, log, cfg, ingest.Sites, pgxpool.New
-	_, _, _ = fmt.Sprint, strings.TrimSpace, time.Minute
-	return func() {}, nil
+	if strings.TrimSpace(cfg.IngestDSN()) == "" {
+		log.Warn("remote_sites: is not read: no ingest_dsn: (a login IN ROLE pgvigil_ingest alone; 'pgvigil roles' prints its CREATE ROLE)",
+			"sites", len(cfg.RemoteSites))
+		return func() {}, nil
+	}
+	sites, err := ingest.Sites(ctx, cfg.RemoteSites, ingest.OpenDrop)
+	if err != nil {
+		return nil, &configError{err}
+	}
+	pool, err := pgxpool.New(ctx, cfg.IngestDSN())
+	if err != nil {
+		return nil, &configError{fmt.Errorf("ingest_dsn: %w", err)}
+	}
+	if err := ingest.CheckIngestLogin(ctx, pool); err != nil {
+		pool.Close()
+		return nil, &configError{err}
+	}
+	lctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ingest.Loop(lctx, pool, sites, ingestEvery, log)
+	}()
+	log.Info("remote sites: ingest started", "sites", len(sites), "every", ingestEvery)
+	return func() { cancel(); <-done; pool.Close() }, nil
 }

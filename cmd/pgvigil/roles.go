@@ -46,6 +46,10 @@ CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
 -- own investigation records through the agent functions; any other role (pg_read_all_data, pg_monitor, the owner) is
 -- refused at its start.
 -- CREATE ROLE pgvigil_agent_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_agent;
+-- optional: the remote sites' ingest login (the configuration's ingest_dsn; only where a remote_sites: list is set,
+-- docs/remote-collector.md): IN ROLE pgvigil_ingest alone - it loads the sites' bundles through the ingest door and
+-- nothing else; the owner, a superuser and a member of pgvigil_collector are refused at its start.
+-- CREATE ROLE pgvigil_ingest_login LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_ingest;
 
 -- On each monitored PostgreSQL server: the monitoring login (pg_monitor is all it needs;
 -- on RDS, Aurora, Azure and Cloud SQL prefer the platform's IAM / Entra token login instead of a password)

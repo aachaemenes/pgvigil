@@ -116,6 +116,8 @@ func run(args []string) int {
 		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
 	case "bundle":
 		err = runBundle(ctx, log, args[1:])
+	case "ingest":
+		err = runIngest(ctx, log, args[1:])
 	case "remote":
 		if len(args) < 2 || args[1] != "init" {
 			fmt.Fprintln(os.Stderr, "usage: pgvigil remote init -config file   (the collector's signing key; docs/remote-collector.md)")
