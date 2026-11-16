@@ -29,7 +29,9 @@
 #     B5 a read across a month boundary (import_mssql_indexes called with next month's time on a copy of read 2's
 #        payload): the next month's partition made, its rows stored, the inventory imported;
 #     B6 the measure: bytes per usage row (pg_column_size, mean) and the import time of a 20,000-index batch with the
-#        history and through import_mssql_indexes_0092 alone, printed; the history under 3 times the old import's time.
+#        history and through import_mssql_indexes_0092 alone, printed; the history under 3 times the old import's time;
+#        a third figure, printed and not graded (the j16 LAST run's diagnostic of j16d3's red: which layer holds the
+#        time): the same batch through import_mssql_indexes_0164 alone (0164's layer and 0092's, 0169 renamed it).
 #     Red on f8e89d2: no table pgvigil.mssql_index_usage_read.
 #  C. missing-index requests kept per read (SQLWATCH PBI#13, F11):
 #     C1 a query asking for an index on dbo.t (c = @v) run 5 times between reads 1 and 2: two rows of one identity, seeks
@@ -203,12 +205,13 @@ inst() { # inst <name> <query_text> [yaml lines...]
   inst ixmon full
   inst ixbig full
   inst ixbig2 full
+  inst ixbig3 full
 } > "$TMPD/m.yaml"
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "A: migrate"; }
 col() { local i=$1; shift; for c in "$@"; do timeout 300 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance "$i" -once "$c" >"$TMPD/col-$i-$c.out" 2>&1 || { cat "$TMPD/col-$i-$c.out" >&2; fail "collect $i $c"; }; done; }
-for i in ixon ixdef ixnorm ixread ixsa ixmon ixbig ixbig2; do col "$i" mssql_instance; done
+for i in ixon ixdef ixnorm ixread ixsa ixmon ixbig ixbig2 ixbig3; do col "$i" mssql_instance; done
 iid() { pq "SELECT instance_id FROM pgvigil.instances WHERE name = '$1'"; }
-ION=$(iid ixon); IDEF=$(iid ixdef); INORM=$(iid ixnorm); IREAD=$(iid ixread); ISA=$(iid ixsa); IMON=$(iid ixmon); IBIG=$(iid ixbig); IBIG2=$(iid ixbig2)
+ION=$(iid ixon); IDEF=$(iid ixdef); INORM=$(iid ixnorm); IREAD=$(iid ixread); ISA=$(iid ixsa); IMON=$(iid ixmon); IBIG=$(iid ixbig); IBIG2=$(iid ixbig2); IBIG3=$(iid ixbig3)
 echo "ok   A: SQL Server $VER, pgvix and pgvac, instances ixon $ION / ixdef $IDEF / ixnorm $INORM / ixread $IREAD / ixsa $ISA"
 
 PGVIGIL_PASSWORD="$UPW" "$TMPD/pgvigil" user add -config "$TMPD/m.yaml" "$USR" >/dev/null 2>&1 || fail "A: user add"
@@ -346,8 +349,10 @@ b5=$(pq "SELECT to_regclass('pgvigil.$PART') IS NOT NULL, (SELECT count(*) FROM 
 IFS='|' read -r b5p b5rows b5ix <<<"$b5"
 [[ "$b5p" == t && "$b5rows" -gt 5 && "$b5rows" == "$b5ix" ]] || fail "B5: partition $b5p, rows $b5rows, inventory rows $b5ix"
 echo "ok   B5: a read at $NEXT made $PART, its $b5rows rows (delta 1 each) and the inventory imported"
-# B6: the measure: a 20,000-index batch through the wrapper (ixbig) and through 0092's import alone (ixbig2)
-pq "INSERT INTO pgvigil.mssql_index_db (instance_id, database_name, database_id, snapshot_at) VALUES ($IBIG, 'bigdb', 99, now() - interval '1 day'), ($IBIG2, 'bigdb', 99, now() - interval '1 day')" >/dev/null
+# B6: the measure: a 20,000-index batch through the wrapper (ixbig) and through 0092's import alone (ixbig2); the
+# diagnostic third figure through 0164's layer alone (ixbig3), when the tree has it
+pq "INSERT INTO pgvigil.mssql_index_db (instance_id, database_name, database_id, snapshot_at) VALUES ($IBIG, 'bigdb', 99, now() - interval '1 day'), ($IBIG2, 'bigdb', 99, now() - interval '1 day'), ($IBIG3, 'bigdb', 99, now() - interval '1 day')" >/dev/null
+HAS164=$(pq "SELECT to_regprocedure('pgvigil.import_mssql_indexes_0164(int, timestamptz, jsonb)') IS NOT NULL")
 big_sql() { echo "SELECT jsonb_build_array(jsonb_build_object('kind', 'state', 'server_utc', '$2', 'server_start', '2026-01-01T00:00:00Z'),
     jsonb_build_object('kind', 'db', 'database_id', 99, 'database_name', 'bigdb', 'database_state', 'ONLINE', 'created_at', '2025-01-01T00:00:00Z', 'restore_read', true, 'read', true, 'indexes', 20000))
   || (SELECT jsonb_agg(jsonb_build_object('kind', 'index', 'database_name', 'bigdb', 'database_id', 99, 'object_id', 1000 + n / 4, 'index_id', 1 + n % 4, 'schema_name', 'dbo',
@@ -357,11 +362,15 @@ tm() { local s e; s=$(date +%s%N); pq "$1" >/dev/null || fail "B6: $2"; e=$(date
 T1=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); T2=$(date -u -d '-1 hours' +%Y-%m-%dT%H:%M:%SZ)
 pq "SELECT pgvigil.import_mssql_indexes($IBIG, '$T1', ($(big_sql "$IBIG" "$T1" 0)))" >/dev/null || fail "B6: the first big batch"
 pq "SELECT pgvigil.import_mssql_indexes_0092($IBIG2, '$T1', ($(big_sql "$IBIG2" "$T1" 0)))" >/dev/null || fail "B6: the first big batch (0092)"
+[[ "$HAS164" == t ]] && { pq "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T1', ($(big_sql "$IBIG3" "$T1" 0)))" >/dev/null || fail "B6: the first big batch (0164)"; }
 MSW=$(tm "SELECT pgvigil.import_mssql_indexes($IBIG, '$T2', ($(big_sql "$IBIG" "$T2" 1)))" "the wrapper")
 MSO=$(tm "SELECT pgvigil.import_mssql_indexes_0092($IBIG2, '$T2', ($(big_sql "$IBIG2" "$T2" 1)))" "0092's import")
+MS164="no import_mssql_indexes_0164 on this tree"
+[[ "$HAS164" == t ]] && MS164="$(tm "SELECT pgvigil.import_mssql_indexes_0164($IBIG3, '$T2', ($(big_sql "$IBIG3" "$T2" 1)))" "0164's layer") ms"
 BPR=$(pq "SELECT round(avg(pg_column_size(u.*))) FROM pgvigil.mssql_index_usage_read u WHERE u.instance_id = $IBIG AND u.snapshot_at = '$T2'")
 NB=$(pq "SELECT count(*) FROM pgvigil.mssql_index_usage_read u WHERE u.instance_id = $IBIG AND u.snapshot_at = '$T2'")
 echo "MEASURE B6: a 20,000-index batch: the wrapper $MSW ms ($NB history rows), 0092's import alone $MSO ms; $BPR bytes per usage row (pg_column_size, mean)"
+echo "DIAG B6: the same batch through import_mssql_indexes_0164 alone (0164's layer over 0092's; the wrapper adds 0169's): $MS164 (printed, not graded)"
 [[ "$NB" == 20000 && $MSW -lt $(( 3 * MSO + 500 )) ]] || fail "B6: $NB history rows, the wrapper $MSW ms against $MSO ms"
 echo "ok   B6: the history costs under 3 times the old import's time"
 fi
