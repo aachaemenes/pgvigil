@@ -55,7 +55,10 @@ type Stats struct {
 	Replaced  int
 	Imports   int64
 	Rows      int64
-	Elapsed   time.Duration
+	// Retries counts the imports taken again after PostgreSQL ended them as a deadlock's victim (up to
+	// repo.ImportDeadlockTries each): 0 when every partition was made ahead (0271).
+	Retries int64
+	Elapsed time.Duration
 	// Anchor is the end of the seeded history: the catch-up ticks, one a minute, come after it.
 	Anchor time.Time
 }
@@ -145,6 +148,10 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	if len(taken) > 0 {
 		return nil, st, fmt.Errorf("instance(s) %s exist without the demo tag: nothing seeded; pick another -prefix", strings.Join(taken, ", "))
 	}
+	// every partition the seed writes is made before its workers start, each make a statement of its own (0271, N4):
+	// no import of the seed makes one inside its transaction, so two workers crossing a month side by side cannot
+	// deadlock on its parent
+	seedPartitions(ctx, pool, o, grid, specs)
 	for i, s := range specs {
 		var id int
 		engine := "postgres"
@@ -219,6 +226,46 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	return f, st, err
 }
 
+// mssqlStorageParents are the partitioned parents import_mssql_storage writes (0067): the SQL Server instances' year
+// of storage reads before the grid (mssql_demo.go, a read a day) lands in their months.
+var mssqlStorageParents = []string{"mssql_database_size", "mssql_volume_sample"}
+
+// seedWindow is the range of the seed's partitions: the months from the grid's first minute's (a minute before it:
+// SeedPooler's first read) to the month after the anchor's, the daily parent's days to two days after the anchor -
+// the collector's window at the anchor (repo.AheadWindow), from the grid's start.
+func seedWindow(grid []time.Time, end time.Time) (from, monthsTo, daysTo time.Time) {
+	_, monthsTo, daysTo = repo.AheadWindow(end)
+	return grid[0].UTC().Add(-time.Minute), monthsTo, daysTo
+}
+
+// seedPartitions makes the seed's partitions ahead (seedWindow; for a fleet with SQL Server instances also the storage
+// year's months). A failure or a busy partition is a warning, as in a collector's pass: the imports still make a
+// missing partition themselves.
+func seedPartitions(ctx context.Context, pool *pgxpool.Pool, o Options, grid []time.Time, specs []Spec) {
+	from, monthsTo, daysTo := seedWindow(grid, o.End)
+	res, err := repo.PartitionsAhead(ctx, pool, from, monthsTo, daysTo)
+	if yearAgo := o.End.UTC().Add(-365 * 24 * time.Hour); err == nil && hasEngine(specs, EngineSQLServer) && yearAgo.Before(from) {
+		var h repo.AheadResult
+		h, err = repo.PartitionsAheadOf(ctx, pool, mssqlStorageParents, yearAgo, from)
+		res.Due, res.Made, res.Busy = res.Due+h.Due, res.Made+h.Made, res.Busy+h.Busy
+	}
+	if (err != nil && ctx.Err() == nil) || res.Busy > 0 {
+		o.Log.Warn("demo seed: partitions ahead not all made (the imports make the rest)", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
+		return
+	}
+	o.Log.Info("demo seed: partitions ahead", "due", res.Due, "made", res.Made)
+}
+
+// hasEngine says whether a fleet holds an instance of the engine ("" is PostgreSQL).
+func hasEngine(specs []Spec, engine string) bool {
+	for _, s := range specs {
+		if s.Engine == engine {
+			return true
+		}
+	}
+	return false
+}
+
 // catchUpWindow is how far behind now a seed's anchor may be for the seed to tick up to now: the default anchor is
 // the minute the seed began, a few minutes back by the time the history is in; an anchor set far in the past (a
 // fixed one, for a comparison) is left where it is.
@@ -239,6 +286,7 @@ func (f *Fleet) catchUp(ctx context.Context, st *Stats) error {
 		}
 		st.Imports += ts.Imports
 		st.Rows += ts.Rows
+		st.Retries += ts.Retries
 	}
 	return nil
 }
@@ -252,6 +300,10 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 		return st, nil
 	}
 	began := time.Now()
+	if !t.Truncate(time.Hour).Equal(f.last.UTC().Truncate(time.Hour)) {
+		// a new hour: the partitions ahead of the trickle, as a collector's hourly pass makes them (sched)
+		f.partitionsPass(ctx, t)
+	}
 	err := f.each(ctx, &st, func(ctx context.Context, i int, imp *importer) error {
 		if err := imp.steps(ctx, f.ids[i], f.gens[i].Step(t)); err != nil {
 			return err
@@ -265,6 +317,14 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 	st.Instances = len(f.gens)
 	st.Elapsed = time.Since(began)
 	return st, err
+}
+
+// partitionsPass makes the partitions due at t (repo.AheadWindow); a failure or a busy partition is a warning.
+func (f *Fleet) partitionsPass(ctx context.Context, t time.Time) {
+	from, monthsTo, daysTo := repo.AheadWindow(t)
+	if res, err := repo.PartitionsAhead(ctx, f.pool, from, monthsTo, daysTo); (err != nil && ctx.Err() == nil) || res.Busy > 0 {
+		f.opts.Log.Warn("demo tick: partitions ahead not all made", "due", res.Due, "made", res.Made, "busy", res.Busy, "err", err)
+	}
 }
 
 // each runs fn for every instance on the worker pool; the first error stops the rest.
@@ -292,6 +352,7 @@ func (f *Fleet) each(ctx context.Context, st *Stats, fn func(context.Context, in
 			}
 			atomic.AddInt64(&st.Imports, imp.imports)
 			atomic.AddInt64(&st.Rows, imp.rows)
+			atomic.AddInt64(&st.Retries, imp.retries)
 		}()
 	}
 	for i := range f.gens {
@@ -314,6 +375,7 @@ type importer struct {
 	pool    *pgxpool.Pool
 	imports int64
 	rows    int64
+	retries int64 // imports taken again after a deadlock
 }
 
 func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
@@ -331,6 +393,7 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 			if err == nil || attempt == repo.ImportDeadlockTries || !repo.IsDeadlock(err) || ctx.Err() != nil {
 				break
 			}
+			m.retries++
 			select {
 			case <-ctx.Done():
 			case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
