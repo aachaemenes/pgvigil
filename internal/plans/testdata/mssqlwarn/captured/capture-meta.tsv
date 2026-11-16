@@ -13,9 +13,9 @@ case	udf_computed	0x4CC28D77E4C51351	2	est=ok	exec=ok	cache=ok	qs=ok	-
 case	mstvf_fixed	0xE1BB9FEA02252205	3	est=ok	exec=ok	cache=ok	qs=ok	-
 case	mstvf_interleaved	0x2FA3849474AD9EE3	3	est=ok	exec=ok	cache=ok	qs=ok	-
 case	table_var	0x89358397970903F2	1	est=ok	exec=ok	cache=none	qs=ok	-
-case	cursor_dynamic	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x0600050095F9B30E5038A6210E00000001000000000000000000000000000000000000000000000000000000
-case	cursor_ff	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x06000500FE9CA926804FA7210E00000001000000000000000000000000000000000000000000000000000000
-case	cursor_keyset	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x06000500D305D50340A749230E00000001000000000000000000000000000000000000000000000000000000
+case	cursor_dynamic	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x0600050095F9B30EC0FEBB210F00000001000000000000000000000000000000000000000000000000000000
+case	cursor_ff	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x06000500FE9CA92680B612230F00000001000000000000000000000000000000000000000000000000000000
+case	cursor_keyset	0x0000000000000000	5	est=ok	exec=ok	cache=ok (by text)	qs=ok (by text)	0x06000500D305D50350B52E230F00000001000000000000000000000000000000000000000000000000000000
 case	np_a	0x1A49D0B75D4A4301	1	est=ok	exec=ok	cache=ok	qs=ok	-
 case	np_b	0x1AA036E2BB7B69A5	1	est=ok	exec=ok	cache=ok	qs=ok	-
 case	np_c	0x1575A8ADB7B023A1	1	est=ok	exec=ok	cache=ok	qs=ok	-
@@ -54,3 +54,7 @@ case	ddl_create_index	nohash	1	est=ok	exec=ok	cache=none	qs=ok (by text)	-
 case	ddl_drop_index	nohash	1	est=ok	exec=ok	cache=none	qs=none	-
 case	ddl_create_table	nohash	1	est=ok	exec=ok	cache=none	qs=none	-
 case	ddl_drop_table	nohash	1	est=ok	exec=ok	cache=none	qs=none	-
+case	unparam_full	0x8AF8C24B3A1D2940	3	est=ok	exec=ok	cache=ok	qs=ok	-
+case	unparam_param	0x09E74C3EA51E230E	2	est=ok	exec=ok	cache=ok	qs=ok	-
+case	sel_writes	0x33B4ABE3730FCF66	1	est=ok	exec=ok	cache=ok	qs=ok	-
+case	tspool_big	0x131F3FD489EC9089	1	est=ok	exec=ok	cache=ok	qs=ok	-

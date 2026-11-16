@@ -102,4 +102,4 @@ udf_scalar	est	ctp=5 now=- rt=-	function_count@1,blitz_scalar_udf@1,is_forced_se
 unparam_full	cache	ctp=5 now=- rt=-	unparameterized_query	-	-	#7	trial: a FULL-optimized SELECT in a parameterless procedure reading a local variable (no ParameterList, an '@' column)
 unparam_param	cache	ctp=5 now=- rt=-	-	unparameterized_query	-	#7	the near miss: the same SELECT on a parameter (its ParameterList names @x)
 sel_writes	cache	ctp=5 now=- rt=bc	select_with_writes	-	-	#69	trial: STRING_AGG of 200,000 pads into a LOB, no spool: over 1,024 pages written a run
-tspool_big	cache	ctp=5 now=- rt=-	is_table_spool_expensive	-	-	#57	trial: a correlated TOP (5000) on 7 distinct keys under a lazy spool: IO * CPU * rows * rebinds at least a quarter of the cost
+tspool_big	cache	ctp=5 now=- rt=-	is_spool_expensive	is_table_spool_expensive	-	#55,#57	trial: the correlated TOP (5000) got an eager index spool (200 rows, 49 rebinds; measured), no lazy table spool: #57's hit side NOT PROVEN
