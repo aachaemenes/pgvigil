@@ -457,7 +457,8 @@ type promName struct {
 }
 
 // promNames: the 62 rows of the B24d name table (notes '### The name table'); TestPromNamesCoverTheCatalog fails on a
-// catalog key without a row. unit 'interval' = a count per interval exported per second.
+// catalog key without a row whose family is not on promNotExported. unit 'interval' = a count per interval exported
+// per second.
 var promNames = []promName{
 	{"sessions.total", "pgvigil_sessions", "", "count"},
 	{"sessions.active", "pgvigil_sessions_active", "", "count"},
@@ -522,6 +523,10 @@ var promNames = []promName{
 	{"host.swap_used", "pgvigil_host_swap_used_bytes", "", "bytes"},
 	{"host.load1", "pgvigil_host_load1", "", "count"},
 }
+
+// promNotExported: the metric_catalog families /metrics does not export yet, each with its words why - one rule per
+// family, so every key of such a family is left out and none has a promNames row.
+var promNotExported = map[string]string{}
 
 // promUnitWords is a HELP line's account of the conversion from the Metrics grid's unit.
 var promUnitWords = map[string]string{
