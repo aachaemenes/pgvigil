@@ -1,9 +1,9 @@
 // The 406 offControl row, clicked (scripts/proof-406-offcontrol.sh part O): an off plan read or Evict is drawn disabled
 // with its reason in words beside it. O1 the Plan cache page's Cached plans grid; O2 a running request's plan sources.
 // Usage (a headless Chromium on the CDP port, the demo served at the base url, the stage made):
-//   node scripts/offcontrol-check.mjs <cdp port> <base url/> <sql01 id> <query hash> <plan hash>
+//   node scripts/offcontrol-check.mjs <cdp port> <base url/> <sql01 id> <query hash> <plan hash> <plan handle>
 // Prints one line per case; exit 1 on a FAIL.
-const [port, U, ms, QH, PH] = process.argv.slice(2);
+const [port, U, ms, QH, PH, HANDLE] = process.argv.slice(2);
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r));
@@ -46,7 +46,7 @@ const FO = String(ent.fetch_off ?? '');
 if (!FO) fail(`the stage does not reach the off path: the entries reply says the plan read is on (${JSON.stringify(ent).slice(0, 200)})`);
 else console.log(`     the server's reason: ${FO}`);
 // what the scope holds instead, for a FAIL line
-const holds = scope => ev(`(document.querySelector(${JSON.stringify(scope)})?.innerText ?? '(no such element)').replace(/\\s+/g, ' ').slice(0, 400)`);
+const holds = scope => ev(`(document.querySelector(${JSON.stringify(scope)})?.innerText ?? '(no such element)').replace(/\\s+/g, ' ').slice(-600)`);
 
 // O1: the Plan cache page, the staged statement's Cached plans
 if (!await go(`#/mssqlplancache?i=${ms}`)) fail(`O1 #/mssqlplancache?i=${ms}: the page never drew`);
@@ -56,8 +56,9 @@ else {
   else {
     await ev(`document.querySelector('main button[aria-label="Cached plans of ${QH}"]').click()`);
     const box = await until(`(() => { const h = [...document.querySelectorAll('main h4')].find(x => /^Cached plans of /.test(x.textContent));
-      if (!h) return null; h.parentElement.setAttribute('data-offc', 'o1'); return !!h.parentElement.querySelector('table tbody tr'); })()`);
-    if (!box) fail(`O1: the Cached plans box never listed its entry (${await holds('main [data-offc="o1"]')})`);
+      if (!h) return null; h.parentElement.setAttribute('data-offc', 'o1');
+      return [...h.parentElement.querySelectorAll('table tbody tr')].some(tr => tr.textContent.includes(${JSON.stringify(HANDLE.slice(0, 18))})); })()`);
+    if (!box) fail(`O1: the Cached plans box never listed the staged entry ${HANDLE.slice(0, 18)}... (${await holds('main [data-offc="o1"]')})`);
     else {
       const reads = await offState('main [data-offc="o1"]', /^(Download \.sqlplan|Open|Download batch|Open batch)(:|$)/);
       const evict = await offState('main [data-offc="o1"]', /^(Evict|Evict the plan )/);
@@ -93,7 +94,9 @@ else {
     const listed = await until(`(() => { const t = document.querySelector('main .running-plans')?.innerText ?? ''; return /Reading/.test(t) || !t ? null : t; })()`);
     if (!listed) fail('O2: the plan sources never drew in 15 s');
     else {
-      const pc = await offState('main .running-plans', /: the plan cache plan$/);
+      const row = await ev(`[...document.querySelectorAll('main .running-plans table tbody tr')].some(tr => tr.querySelector('td')?.textContent.trim() === 'plan cache')`);
+      if (!row) { fail(`O2: no 'plan cache' row in the plan sources (${String(listed).replace(/\s+/g, ' ').slice(-600)})`); }
+      const pc = row ? await offState('main .running-plans', /: the plan cache plan$/) : [];
       const run = await offState('main .running-plans', /: the running plan$/);
       const why = [];
       for (const t of ['Download .sqlplan', 'Open']) {
@@ -103,7 +106,7 @@ else {
       }
       const ro = run.find(x => x.text === 'Open');
       if (ro && ro.off === 'true') why.push(`the running row's Open is off: ${JSON.stringify(ro)}`);
-      if (why.length) fail(`O2: ${why.join('; ')} (the sources: ${String(listed).replace(/\s+/g, ' ').slice(0, 400)})`);
+      if (!row) { /* said above */ } else if (why.length) fail(`O2: ${why.join('; ')} (the sources: ${String(listed).replace(/\s+/g, ' ').slice(-600)})`);
       else console.log(`ok   O2: the 'plan cache' row's Download .sqlplan and Open off ('${pc[0].note.slice(0, 120)}'); ${ro ? "the 'running' row's Open on" : "no 'running' row for these hashes"}`);
     }
   }

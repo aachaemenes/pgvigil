@@ -19,6 +19,8 @@
 #   O2 #/mssql_running?i=<sql01>: the request's Plan button lists a 'plan cache' row whose 'Download .sqlplan' and 'Open'
 #      are present, aria-disabled 'true', named by the note 'Plan cache: not read: ...'; the 'running' row's Open is on
 #      (no aria-disabled), as before.
+#   O1 and O2 first find the staged entry (its handle in the Cached plans grid; a 'plan cache' row in the sources), so a
+#   missing button is told apart from a stage that did not reach the page.
 #   Red on 75c72186 (rel-j15): O1 and O2 find no off button where they belong (offControl's note stands in the cell; a
 #   note shared by every row stays only in the last place it was put).
 set -euo pipefail
@@ -89,5 +91,5 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
-node scripts/offcontrol-check.mjs "$CDP" "$U/" "$SQL1" "$QH" "$PH" || fail "see the FAIL lines above"
+node scripts/offcontrol-check.mjs "$CDP" "$U/" "$SQL1" "$QH" "$PH" "$HANDLE" || fail "see the FAIL lines above"
 echo "PASS: proof-406-offcontrol"
