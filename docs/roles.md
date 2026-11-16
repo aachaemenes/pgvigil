@@ -114,6 +114,9 @@ a signed-in user of any role. This table is the server's own list: a test compar
 | `POST /api/jobs/actions/start` | operator | start a job |
 | `POST /api/ack` | operator | acknowledge, note, mute or black out one instance with an end (wider or open-ended: admin) |
 | `POST /api/ack/end` | operator | end an acknowledgement |
+| `POST /api/investigations` | operator | ask the site's agent to investigate a finding or answer a question (the agent works through pgvigil mcp) |
+| `POST /api/investigations/close` | operator | close an investigation request |
+| `POST /api/investigations/run` | operator | run an answered ask's stored SELECT (on the custom reports' store login, reports_dsn; each run is a row of the request's record, as a note) |
 | `POST /api/alerts/dismiss` | operator | dismiss an alert |
 | `POST /api/alerts/mute` | operator | pause, resume or edit a mute rule (an edit to every instance, a tag or no end: admin) |
 | `POST /api/alerts/test` | operator | send a test alert |

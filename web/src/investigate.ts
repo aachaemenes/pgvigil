@@ -7,6 +7,7 @@ import { get, LoginRequired, post } from './api';
 import { hashParam } from './dbinfo';
 import type { Ctx } from './router';
 import { badge, Col, el, fmtTime, grid, offControl } from './ui';
+import { needControl } from './needs';
 
 export interface InvRow {
   id: number; kind: string; instance_id?: number | null; instance?: string | null; setting?: string | null; value?: string | null;
@@ -129,6 +130,7 @@ export function investigateCol(list: InvList, offNote?: HTMLElement | null): Col
         'Note for the agent (optional)', 1000, false,
         note => post('investigations', { kind: 'finding', instance_id: Number(row.instance_id), setting: String(row.setting),
           value: String(row.value ?? ''), source: String(row.source ?? ''), note })));
+      needControl(b, 'investigations');   // the role (B24f): an investigation is an operator's
       return r ? el('span', {}, invLink(r.id, stateBadge(r)), ' ', b) : b;
     },
   };
@@ -182,6 +184,7 @@ async function detail(id: number, after: () => void): Promise<HTMLElement> {
         }
         run.disabled = false;
       });
+      needControl(run, 'investigations/run');   // the role (B24f): a run is a row of the record; after the server's reason, which stays first
       box.append(el('h4', {}, 'The answer\'s SELECT'), pre(rep.sql), el('div', {}, run), said, out);
     }
   }
@@ -189,7 +192,7 @@ async function detail(id: number, after: () => void): Promise<HTMLElement> {
     { key: 'at', fmt: fmtTime }, { key: 'event' }, { key: 'login' }, { key: 'rows', num: true }, { key: 'ms', num: true },
     { key: 'outcome', wide: true }, { key: 'text', label: 'statement or reason', wide: true }, { key: 'detail', label: 'the server\'s words', wide: true }]));
   if (r.state !== 'closed') {
-    const close = el('button', { type: 'button' }, 'Close the request');
+    const close = needControl(el('button', { type: 'button' }, 'Close the request'), 'investigations/close');
     const closeSaid = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
     if (!d.writable) { offControl(close, d.said, closeSaid); closeSaid.textContent = d.said; }
     else close.addEventListener('click', () => {
@@ -229,6 +232,7 @@ export async function investigationsView(_c: Ctx): Promise<HTMLElement> {
       go.disabled = false;
     }
   });
+  needControl(go, 'investigations');   // after the server's reason, which stays first
   sec.append(el('div', { class: 'askbox' }, el('label', {}, 'Ask a question', el('br'), ask), el('div', {}, go), said),
     el('p', { class: 'meta' }, reportWords));
   const cols: Col[] = [

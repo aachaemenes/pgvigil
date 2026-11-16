@@ -319,9 +319,9 @@ func (s *Server) Handler() http.Handler {
 	s.post(api, "POST /api/ack", needOperator, s.AckAdd)
 	s.post(api, "POST /api/ack/end", needOperator, s.AckEnd)
 	api.HandleFunc("GET /api/investigations", s.Investigations)
-	api.HandleFunc("POST /api/investigations", s.InvestigationAsk)
-	api.HandleFunc("POST /api/investigations/close", s.InvestigationClose)
-	api.HandleFunc("POST /api/investigations/run", s.InvestigationRun)
+	s.post(api, "POST /api/investigations", needOperator, s.InvestigationAsk)
+	s.post(api, "POST /api/investigations/close", needOperator, s.InvestigationClose)
+	s.post(api, "POST /api/investigations/run", needOperator, s.InvestigationRun) // the stored SELECT on the repository (reports_dsn); each run a row of the request's record
 	api.HandleFunc("GET /api/slow", s.slow)
 	api.HandleFunc("GET /api/slowqueries", s.SlowQueries)
 	api.HandleFunc("GET /api/compare", s.Compare)
