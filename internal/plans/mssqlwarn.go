@@ -34,14 +34,16 @@ type MSSQLWarnInput struct {
 	// Now is the server's clock in the zone the plan's statistics dates are written in (UTC on Azure SQL Database);
 	// the zero time = the stale statistics rule is not judged.
 	Now time.Time
-	// Runtime holds the statement's runtime averages; nil = every rule that needs one is not judged.
+	// Runtime holds one statement's runtime averages; nil = every rule that needs one is not judged.
 	Runtime *MSSQLRuntime
 }
 
-// MSSQLRuntime is a statement's runtime averages per execution. A nil field was not given: the rule that needs it is
-// not judged and says which number it lacked.
+// MSSQLRuntime is one statement's runtime averages per execution (sp_BlitzCache's numbers are per statement row). A
+// nil field was not given: the rule that needs it is not judged and says which number it lacked.
 type MSSQLRuntime struct {
-	// Stmt is the statement the numbers belong to, as MSSQLWarning.Stmt counts; 0 = the plan's only statement.
+	// Stmt is the statement the numbers belong to, as MSSQLWarning.Stmt counts; 0 = the plan's only statement (a plan
+	// holding more than one leaves the runtime rules not judged on each, saying so). The runtime rules judge that
+	// statement alone.
 	Stmt          int
 	Executions    *float64 // completed executions in the window
 	AvgCPUMS      *float64 // CPU per execution, ms
@@ -57,10 +59,10 @@ func Num(v float64) *float64 { return &v }
 // MSSQLWarning is one warning on one statement.
 type MSSQLWarning struct {
 	Code  string // the rule's name (sp_BlitzCache's column name where it has one)
-	Row   string // the Darling re-grade row it answers, '#27'
+	Row   string // the check's number, '#27', the same in every release
 	Stmt  int    // the statement's place in the document, from 1 (as PlanStatsUsed counts statements)
-	Plan  int    // the QueryPlan's place inside the statement, from 1 (a cursor statement holds one per operation)
-	Node  int    // the operator's NodeId; -1 = the statement as a whole
+	Plan  int    // the QueryPlan's place inside the statement, from 1 (a cursor statement holds one per operation); 0 = the statement as a whole
+	Node  int    // the NodeId of the operator, or of the operator holding the element warned on; -1 = none
 	Words string // what sp_BlitzCache says, then pgvigil's detail
 	Rule  string // where the rule and its threshold come from, 'sp_BlitzCache 8.34 L4941'
 }
@@ -196,9 +198,6 @@ func (n *xnode) all(name string) []*xnode {
 	return out
 }
 
-// has reports whether n's own subtree holds an element named name.
-func (n *xnode) has(name string) bool { return len(n.all(name)) > 0 }
-
 // child returns n's first child named name, or nil.
 func (n *xnode) child(name string) *xnode {
 	for _, k := range n.kids {
@@ -209,15 +208,15 @@ func (n *xnode) child(name string) *xnode {
 	return nil
 }
 
-// path follows child names from n; nil when a step is missing.
-func (n *xnode) path(names ...string) *xnode {
-	cur := n
-	for _, s := range names {
-		if cur = cur.child(s); cur == nil {
-			return nil
-		}
+// textCharset passes the document through when its declaration names a UTF-16 encoding (a .sqlplan file saved by
+// SQL Server Management Studio declares encoding="utf-16"): the plan is already text, a Go string, so the declared
+// encoding was the file's, not the string's. Any other declared encoding is refused.
+func textCharset(label string, input io.Reader) (io.Reader, error) {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "utf-16", "utf-16le", "utf-16be", "unicode", "ucs-2":
+		return input, nil
 	}
-	return cur
+	return nil, fmt.Errorf("the plan declares the encoding %q; pass it as text", label)
 }
 
 // parseShowplan reads a showplan document into its element tree; the root must be the showplan namespace's
@@ -227,6 +226,7 @@ func parseShowplan(plan string) (*xnode, error) {
 		return nil, fmt.Errorf("the plan is %d bytes, over the %d read", len(plan), MSSQLMaxPlan)
 	}
 	dec := xml.NewDecoder(strings.NewReader(plan))
+	dec.CharsetReader = textCharset
 	var root, cur *xnode
 	for {
 		tok, err := dec.Token()
@@ -277,6 +277,7 @@ type mstmt struct {
 	parallel bool     // any of its own operators parallel (L2451, per statement)
 	plans    []*xnode // its own QueryPlan elements
 	relops   []*xnode // its own RelOp elements
+	lookups  []*xnode // its own RelOps reading an index by lookup (a Key Lookup, a RID Lookup's IndexScan Lookup)
 }
 
 // statements numbers every statement element of the document in order and returns the judged ones.
@@ -298,6 +299,12 @@ func statements(root *xnode) []*mstmt {
 		for _, r := range s.relops {
 			if r.flag("Parallel") {
 				s.parallel = true
+			}
+			for _, is := range kidsPath(r, "IndexScan") {
+				if is.flag("Lookup") {
+					s.lookups = append(s.lookups, r)
+					break
+				}
 			}
 		}
 		out = append(out, s)
@@ -342,8 +349,9 @@ func MSSQLPlanWarnings(plan string, in MSSQLWarnInput) ([]MSSQLWarning, []MSSQLN
 	if err != nil {
 		return nil, nil, err
 	}
-	c := &wctx{in: in}
-	for _, s := range statements(root) {
+	stmts := statements(root)
+	c := &wctx{in: in, root: root, nstmt: len(stmts)}
+	for _, s := range stmts {
 		c.s = s
 		for _, r := range rules {
 			r(c)
@@ -356,16 +364,23 @@ func MSSQLPlanWarnings(plan string, in MSSQLWarnInput) ([]MSSQLWarning, []MSSQLN
 type wctx struct {
 	s     *mstmt
 	in    MSSQLWarnInput
+	root  *xnode
+	nstmt int // the judged statements in the document
 	warns []MSSQLWarning
 	nj    []MSSQLNotJudged
 }
 
+// add records a warning at an element of the statement: its plan's place, and the operator holding it (the element
+// itself when it is a RelOp); the statement element itself = Plan 0, Node -1.
 func (c *wctx) add(code, row string, at *xnode, words, rule string) {
 	w := MSSQLWarning{Code: code, Row: row, Stmt: c.s.ord, Node: -1, Words: words, Rule: rule}
-	if at != nil {
+	if at != nil && at != c.s.n {
 		w.Plan = c.s.planOrd(at)
-		if at.name == "RelOp" {
-			w.Node = nodeID(at)
+		for p := at; p != nil && p != c.s.n; p = p.parent {
+			if p.name == "RelOp" {
+				w.Node = nodeID(p)
+				break
+			}
 		}
 	}
 	c.warns = append(c.warns, w)
@@ -375,22 +390,32 @@ func (c *wctx) notJudged(code, why string) {
 	c.nj = append(c.nj, MSSQLNotJudged{Code: code, Stmt: c.s.ord, Why: why})
 }
 
-// ctp is the cost threshold, or 0 with the rule noted as not judged.
+// ctp is the cost threshold, or 0 with the rule noted as not judged (a threshold of 0 or less is none).
 func (c *wctx) ctp(code string) int {
 	if c.in.CostThreshold <= 0 {
 		c.notJudged(code, "no cost threshold for parallelism given")
+		return 0
 	}
 	return c.in.CostThreshold
 }
 
-// rt returns a runtime number, or ok false with the rule noted as not judged.
+// rt returns a runtime number of the statement under judgement, or ok false with the rule noted as not judged: no
+// runtime, the runtime another statement's, or the number not given.
 func (c *wctx) rt(code, what string, pick func(*MSSQLRuntime) *float64) (float64, bool) {
-	if c.in.Runtime != nil {
-		if p := pick(c.in.Runtime); p != nil {
+	r := c.in.Runtime
+	switch {
+	case r == nil:
+		c.notJudged(code, "no "+what+" given")
+	case r.Stmt > 0 && r.Stmt != c.s.ord:
+		c.notJudged(code, fmt.Sprintf("the runtime numbers are statement %d's", r.Stmt))
+	case r.Stmt <= 0 && c.nstmt > 1:
+		c.notJudged(code, fmt.Sprintf("the runtime numbers name no statement and the plan holds %d", c.nstmt))
+	default:
+		if p := pick(r); p != nil {
 			return *p, true
 		}
+		c.notJudged(code, "no "+what+" given")
 	}
-	c.notJudged(code, "no "+what+" given")
 	return 0, false
 }
 
@@ -411,23 +436,20 @@ func kidsPath(n *xnode, names ...string) []*xnode {
 	return cur
 }
 
-// udfs returns the distinct function names of the UserDefinedFunction elements in n's subtree, CLR or not.
-func udfs(n *xnode, clr bool) []string {
-	var out []string
+// udfNames returns the distinct function names of the UserDefinedFunction elements in n's own subtree, the T-SQL ones
+// and the CLR ones, in one walk.
+func udfNames(n *xnode) (tsql, clr []string) {
 	for _, u := range n.all("UserDefinedFunction") {
-		if u.flag("IsClrFunction") != clr {
-			continue
-		}
 		name := u.attr("FunctionName")
-		found := false
-		for _, o := range out {
-			found = found || o == name
-		}
-		if !found {
-			out = append(out, name)
+		if u.flag("IsClrFunction") {
+			if !slicesContains(clr, name) {
+				clr = append(clr, name)
+			}
+		} else if !slicesContains(tsql, name) {
+			tsql = append(tsql, name)
 		}
 	}
-	return out
+	return tsql, clr
 }
 
 // ops returns the statement's RelOps of one physical operator (and logical operator, when given).
@@ -491,24 +513,10 @@ func ruleBlitzImplicitConversion(c *wctx) {
 	}
 }
 
-// lookups are the statement's RelOps reading an index by lookup (a Key Lookup, a RID Lookup's IndexScan Lookup).
-func (s *mstmt) lookups() []*xnode {
-	var out []*xnode
-	for _, r := range s.relops {
-		for _, is := range kidsPath(r, "IndexScan") {
-			if is.flag("Lookup") {
-				out = append(out, r)
-				break
-			}
-		}
-	}
-	return out
-}
-
 // #27: the costliest lookup at least half the statement's cost, the statement at least half the cost threshold (integer
 // division, as @ctp is INT) (sp_BlitzCache 8.34 L4941; the lookup's cost L3553-3559).
 func ruleKeyLookupExpensive(c *wctx) {
-	lk := c.s.lookups()
+	lk := c.s.lookups
 	if len(lk) == 0 {
 		return
 	}
@@ -530,7 +538,7 @@ func ruleKeyLookupExpensive(c *wctx) {
 
 // #176: sp_Blitz's check 118 - any lookup, at any cost (sp_Blitz 8.34 L8402).
 func ruleLookup(c *wctx) {
-	if lk := c.s.lookups(); len(lk) > 0 {
+	if lk := c.s.lookups; len(lk) > 0 {
 		c.add("lookup", "#176", lk[0], fmt.Sprintf("RID or Key Lookups (%d): a covering index would avoid them", len(lk)), "sp_Blitz 8.34 check 118, L8402")
 	}
 }
@@ -560,7 +568,8 @@ func ruleFunctions(c *wctx) {
 		if len(kidsPath(r, "ComputeScalar", "DefinedValues", "DefinedValue", "ScalarOperator")) == 0 {
 			continue
 		}
-		for _, f := range udfs(r, false) {
+		t, k := udfNames(r)
+		for _, f := range t {
 			if !slicesContains(tsql, f) {
 				tsql = append(tsql, f)
 			}
@@ -568,7 +577,7 @@ func ruleFunctions(c *wctx) {
 				atT = r
 			}
 		}
-		for _, f := range udfs(r, true) {
+		for _, f := range k {
 			if !slicesContains(clr, f) {
 				clr = append(clr, f)
 			}
@@ -604,8 +613,11 @@ func ruleBlitzScalarUDF(c *wctx) {
 // #45: a UDF compared in a Filter (sp_BlitzCache 8.34 L3731-3737, L5048).
 func ruleComputedFilter(c *wctx) {
 	for _, r := range c.s.relops {
-		if len(kidsPath(r, "Filter", "Predicate", "ScalarOperator", "Compare", "ScalarOperator", "UserDefinedFunction")) > 0 && len(udfs(r, false)) > 0 {
-			c.add("is_computed_filter", "#45", r, "Filter UDF ("+strings.Join(udfs(r, false), ", ")+")", "sp_BlitzCache 8.34 L3731-3737, L5048")
+		if len(kidsPath(r, "Filter", "Predicate", "ScalarOperator", "Compare", "ScalarOperator", "UserDefinedFunction")) == 0 {
+			continue
+		}
+		if t, _ := udfNames(r); len(t) > 0 {
+			c.add("is_computed_filter", "#45", r, "Filter UDF ("+strings.Join(t, ", ")+")", "sp_BlitzCache 8.34 L3731-3737, L5048")
 			return
 		}
 	}
@@ -618,8 +630,11 @@ func ruleComputedScalar(c *wctx) {
 		for _, cr := range kidsPath(r, "ComputeScalar", "DefinedValues", "DefinedValue", "ColumnReference") {
 			computed = computed || cr.flag("ComputedColumn")
 		}
-		if computed && len(udfs(r, false)) > 0 {
-			c.add("is_computed_scalar", "#43", r, "Computed Column UDF ("+strings.Join(udfs(r, false), ", ")+")", "sp_BlitzCache 8.34 L3714-3720, L5046")
+		if !computed {
+			continue
+		}
+		if t, _ := udfNames(r); len(t) > 0 {
+			c.add("is_computed_scalar", "#43", r, "Computed Column UDF ("+strings.Join(t, ", ")+")", "sp_BlitzCache 8.34 L3714-3720, L5046")
 			return
 		}
 	}
@@ -639,19 +654,22 @@ func ruleMSTVF(c *wctx) {
 	}
 }
 
-// #23: a join with a table-valued function in the statement (sp_BlitzCache 8.34 L3478-3485: both under one operator,
-// the statement's top operator holding all).
+// #23: a join with a table-valued function in one of the statement's plans (sp_BlitzCache 8.34 L3478-3485: both under
+// one operator, a plan's top operator holding all; a cursor's operations are plans of their own).
 func ruleTVFJoin(c *wctx) {
-	var tvf *xnode
-	join := false
-	for _, r := range c.s.relops {
-		if tvf == nil && r.attr("LogicalOp") == "Table-valued function" {
-			tvf = r
+	for _, qp := range c.s.plans {
+		var tvf *xnode
+		join := false
+		for _, r := range qp.all("RelOp") {
+			if tvf == nil && r.attr("LogicalOp") == "Table-valued function" {
+				tvf = r
+			}
+			join = join || strings.Contains(r.attr("LogicalOp"), "Join")
 		}
-		join = join || strings.Contains(r.attr("LogicalOp"), "Join")
-	}
-	if tvf != nil && join {
-		c.add("tvf_join", "#23", tvf, "Function Join", "sp_BlitzCache 8.34 L3478-3485")
+		if tvf != nil && join {
+			c.add("tvf_join", "#23", tvf, "Function Join", "sp_BlitzCache 8.34 L3478-3485")
+			return
+		}
 	}
 }
 
@@ -667,7 +685,9 @@ func ruleTableVariable(c *wctx) {
 
 // #10, #12, #13: a cursor statement, its kind from its own CursorPlan. sp_BlitzCache reads the cursor from plan
 // attributes and zero hashes (L4980-4995), which a stored plan does not carry; its 'not forward only' words cannot
-// fire (L3632 sets only 1): pgvigil fires when the plan says ForwardOnly false.
+// fire (L3632 sets only 1): pgvigil fires when the plan says ForwardOnly false. A cursor is warned on once, at its
+// DECLARE (the CursorPlan with the cursor's type); its OPEN, FETCH, CLOSE and DEALLOCATE only when the plan holds no
+// DECLARE of it.
 func ruleCursor(c *wctx) {
 	if c.s.n.name != "StmtCursor" {
 		return
@@ -678,6 +698,9 @@ func ruleCursor(c *wctx) {
 		return
 	}
 	kind := cp.attr("CursorActualType")
+	if kind == "" && c.declared(cp.attr("CursorName")) {
+		return
+	}
 	c.add("is_cursor", "#10", c.s.n, strings.TrimSpace("Cursor "+kind+" "+cp.attr("CursorConcurrency")), "pgvigil (sp_BlitzCache 8.34 L4980-4995 reads plan attributes)")
 	if v, ok := cp.attrs["ForwardOnly"]; ok && (strings.EqualFold(v, "false") || v == "0") {
 		c.add("cursor_not_forward_only", "#12", c.s.n, "Cursor; not forward only", "pgvigil (sp_BlitzCache 8.34 L3632, L5014: its words never fire)")
@@ -685,6 +708,24 @@ func ruleCursor(c *wctx) {
 	if kind == "Dynamic" {
 		c.add("is_cursor_dynamic", "#13", c.s.n, "Cursor; dynamic", "sp_BlitzCache 8.34 L3659-3665")
 	}
+}
+
+// declared reports whether the document holds a cursor statement declaring the cursor named name (its CursorPlan
+// carries the cursor's type).
+func (c *wctx) declared(name string) bool {
+	found := false
+	c.root.walk(func(d *xnode) bool {
+		if found {
+			return false
+		}
+		if d.name == "StmtCursor" {
+			if cp := d.child("CursorPlan"); cp != nil && cp.attr("CursorName") == name && cp.attr("CursorActualType") != "" {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // #16: a serial plan just under the cost threshold (sp_BlitzCache 8.34 L4937, @ctp_threshold_pct L4845).
@@ -739,13 +780,16 @@ func ruleIndexSpool(c *wctx) {
 			}
 		}
 	}
-	rows, ok1 := c.rt("is_spool_more_rows", "rows returned", func(r *MSSQLRuntime) *float64 { return r.AvgRows })
-	if !ok1 {
+	rows, ok := c.rt("is_spool_more_rows", "rows returned", func(r *MSSQLRuntime) *float64 { return r.AvgRows })
+	if !ok {
 		return
 	}
-	exec := 1.0
-	if c.in.Runtime.Executions != nil && *c.in.Runtime.Executions != 0 {
-		exec = *c.in.Runtime.Executions
+	exec, ok := c.rt("is_spool_more_rows", "execution count", func(r *MSSQLRuntime) *float64 { return r.Executions })
+	if !ok {
+		return
+	}
+	if exec == 0 {
+		exec = 1 // ISNULL(NULLIF(ExecutionCount, 0), 1)
 	}
 	for _, r := range sp {
 		if n := numOr(r, "EstimateRows", 0); n >= rows/exec {
@@ -779,9 +823,12 @@ func ruleTableSpool(c *wctx) {
 	if !ok {
 		return
 	}
-	exec := 1.0
-	if c.in.Runtime.Executions != nil && *c.in.Runtime.Executions != 0 {
-		exec = *c.in.Runtime.Executions
+	exec, ok := c.rt("is_table_spool_more_rows", "execution count", func(r *MSSQLRuntime) *float64 { return r.Executions })
+	if !ok {
+		return
+	}
+	if exec == 0 {
+		exec = 1 // ISNULL(NULLIF(ExecutionCount, 0), 1)
 	}
 	for _, r := range sp {
 		if n := numOr(r, "EstimateRows", 0) * numOr(r, "EstimateRebinds", 0); n >= rows/exec {
