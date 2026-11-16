@@ -1,19 +1,10 @@
-// Unit tests of a remote instance's freshness: asof.ts (the 'as of' line, the site's silence) and instheader.ts's
-// freshness() for a remote instance's live row. Node, no DOM: each module is bundled by esbuild (web's own) and the
-// two bundles' paths given as the arguments, instheader first; the menus' listeners and uPlot's pixel ratio stubbed
-// as verdict.test.mjs does.
-//   web/node_modules/.bin/esbuild web/src/instheader.ts --bundle --format=esm --platform=neutral --main-fields=module,main --outfile=<tmp>/instheader.mjs
+// Unit tests of a remote instance's freshness (asof.ts: remoteFreshness, which instheader.ts's freshness() asks first,
+// the 'as of' line, the site's silence). Node, no DOM (asof.ts imports no page module): bundled by esbuild (web's
+// own) and the bundle's path given as the argument.
 //   web/node_modules/.bin/esbuild web/src/asof.ts --bundle --format=esm --platform=neutral --main-fields=module,main --outfile=<tmp>/asof.mjs
-//   node web/src/asof.test.mjs <tmp>/instheader.mjs <tmp>/asof.mjs
+//   node web/src/asof.test.mjs <tmp>/asof.mjs
 // Every row prints 'ok' or 'FAIL'; the exit is 1 when any failed.
-const noop = () => {};
-globalThis.document ??= { addEventListener: noop, removeEventListener: noop, querySelector: () => null, documentElement: { dataset: {} } };
-globalThis.matchMedia ??= () => ({ matches: false, addEventListener: noop, removeEventListener: noop });
-globalThis.devicePixelRatio ??= 1;
-globalThis.window ??= { addEventListener: noop, removeEventListener: noop, dispatchEvent: noop, matchMedia: globalThis.matchMedia };
-const load = p => import(new URL(p, 'file://' + process.cwd() + '/').href);
-const { freshness } = await load(process.argv[2]);
-const { asOfLine, quietLine } = await load(process.argv[3]);
+const { remoteFreshness: freshness, asOfLine, quietLine } = await import(new URL(process.argv[2], 'file://' + process.cwd() + '/').href);
 let bad = 0;
 const eq = (what, got, want) => {
   const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -42,7 +33,7 @@ eq('a collection stale against as_of (coll_stale from the live read) is stale, a
   freshness(remote(10, 12, { coll_stale: 1 }), now), 'stale');
 eq('an hourly site: a bundle every 60 min', asOfLine(remote(5, 6, { interval_secs: 3600 })),
   `as of ${clock(ago(5))} (remote collector c1 of site site1, a bundle every 60 min)`);
-// an instance the hub reads itself keeps PerformanceMonitor's rule (offline after 30 minutes by the repository's clock)
-eq('a pgvigil.yaml instance 50 min after its newest collection is offline', freshness({ last_collect_at: ago(50), coll_stale: 0 }, now), 'offline');
+// an instance the hub reads itself is not asof.ts's: instheader.ts keeps PerformanceMonitor's rule for it
+eq('a pgvigil.yaml instance has no remote freshness', freshness({ last_collect_at: ago(50), coll_stale: 0 }, now), null);
 eq('and has no as-of line', asOfLine({ last_collect_at: ago(5) }), '');
 process.exit(bad ? 1 : 0);

@@ -13,6 +13,15 @@ export function remoteOf(r: Row | undefined): Remote | null {
   return null; // OUTBOX V task 1: the red rows' stub
 }
 
+// remoteFreshness: a remote instance's freshness (instheader.ts freshness() asks it first): offline when its site
+// sent no bundle for 2 x expected_every (the site's silence) or its collector collected nothing healthy in the 30
+// minutes before its newest bundle; stale when a collection is stale against as_of (the live read's coll_stale);
+// else online. null for an instance the hub reads itself.
+export function remoteFreshness(r: Row | undefined, now = Date.now()): 'online' | 'stale' | 'offline' | null {
+  void r; void now;
+  return null; // OUTBOX V task 1: the red rows' stub
+}
+
 // asOfLine: 'as of <clock> (remote collector <c> of site <s>, a bundle every <interval>)'; '' for another instance
 export function asOfLine(r: Row | undefined): string {
   void r;
