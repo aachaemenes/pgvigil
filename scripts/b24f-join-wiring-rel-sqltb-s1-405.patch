@@ -1,31 +1,20 @@
-B24f's join wiring, section rel-sqltb-s1-405 (405's per-database backup thresholds, Admin > Protection; the lead 11-15 16:3x).
-Apply on the joined tree that holds rel-roles and rel-sqltb-s1-405 (its proof-pm313-rules-wiring patch applied: the route,
-q_mssql_protection.go and admin_protection.ts come in through it):
-  git apply -3 scripts/b24f-join-wiring-rel-sqltb-s1-405.patch
-Built on a pre-join copy of each file: rel-roles f421753c x rel-sqltb-s1-405 2370bd1c + that wiring patch whole (local commit
-476a1221, ref jw-pre-405; web.go's alert lines merged by hand), so -3 merges it onto the join's own resolution.
-What it does: s.post for POST /api/mssql/protection (admin: a database's backup thresholds are configuration others live
-with), its words in roles_wiring_sqltb_s1_405.go, needs.ts and docs/roles.md rows; the page folds the role into its
-'Edits are off here' sentence after the server's reason; Save row and each End carry the need.
-Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
-
-diff --git a/docs/roles.md b/docs/roles.md
-index 118b5eee..70493d66 100644
---- a/docs/roles.md
-+++ b/docs/roles.md
-@@ -119,6 +119,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+diff --git c/docs/roles.md i/docs/roles.md
+index 6f3a37fc..c75654d9 100644
+--- c/docs/roles.md
++++ i/docs/roles.md
+@@ -120,6 +120,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/admin/instances` | admin | add, edit, enable, disable, remove an instance |
  | `POST /api/admin/sources` | admin | a discovery source and its cloud settings (add, edit, enable, disable, remove, sync, sweep) |
  | `POST /api/admin/proposals` | admin | approve or ignore a proposed instance |
 +| `POST /api/mssql/protection` | admin | a SQL Server database's backup thresholds by tag or database (add, end) |
  | `POST /api/admin/dbadash_moves` | admin | move a DBA Dash instance |
+ | `POST /api/mssql/counteradmin` | admin | a SQL Server counter list row (Admin > Counters: add, end) |
  | `POST /api/admin/applications` | admin | an application |
- | `POST /api/admin/applications/contacts` | admin | an application's contacts |
-diff --git a/internal/web/roles_wiring_sqltb_s1_405.go b/internal/web/roles_wiring_sqltb_s1_405.go
+diff --git c/internal/web/roles_wiring_sqltb_s1_405.go i/internal/web/roles_wiring_sqltb_s1_405.go
 new file mode 100644
 index 00000000..94297872
 --- /dev/null
-+++ b/internal/web/roles_wiring_sqltb_s1_405.go
++++ i/internal/web/roles_wiring_sqltb_s1_405.go
 @@ -0,0 +1,7 @@
 +package web
 +
@@ -34,23 +23,23 @@ index 00000000..94297872
 +func init() {
 +	routeWhat["POST /api/mssql/protection"] = "changing a database's backup thresholds"
 +}
-diff --git a/internal/web/web.go b/internal/web/web.go
-index f595c2f9..a14039c8 100644
---- a/internal/web/web.go
-+++ b/internal/web/web.go
-@@ -275,7 +275,7 @@ func (s *Server) Handler() http.Handler {
+diff --git c/internal/web/web.go i/internal/web/web.go
+index f99a6c0f..3c6813cf 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -293,7 +293,7 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/alertrules", s.AlertRules)
  	s.post(api, "POST /api/alertrules", needAdmin, s.AlertRuleWrite)
  	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
 -	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
 +	s.post(api, "POST /api/mssql/protection", needAdmin, s.MSSQLProtectionWrite)
  	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
- 	s.post(api, "POST /api/alerts/test", needOperator, s.AlertTest)
- 	s.post(api, "POST /api/alerts/dismiss", needOperator, s.AlertDismiss)
-diff --git a/web/src/admin_protection.ts b/web/src/admin_protection.ts
+ 	api.HandleFunc("GET /api/alertscope", s.AlertScope)                     // task 403a: windows, held sends, flapping, overrides, history, digests
+ 	s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator; wide or open-ended: admin, in its handler)
+diff --git c/web/src/admin_protection.ts i/web/src/admin_protection.ts
 index 597b22f8..ef03abd8 100644
---- a/web/src/admin_protection.ts
-+++ b/web/src/admin_protection.ts
+--- c/web/src/admin_protection.ts
++++ i/web/src/admin_protection.ts
 @@ -6,13 +6,15 @@
  import { get, post, Row, rowsOf, Table } from './api';
  import { Ctx } from './router';
@@ -86,15 +75,15 @@ index 597b22f8..ef03abd8 100644
      b.addEventListener('click', () => { void send({ op: 'end', override_id: Number(r.override_id) }); });
      const short = off ? el('span', { class: 'off-reason' }, 'off here: the line above says why') : undefined;
      return el('span', {}, b, ' ', offControl(b, off, short));
-diff --git a/web/src/needs.ts b/web/src/needs.ts
-index f3a5ff8c..b41f8d7b 100644
---- a/web/src/needs.ts
-+++ b/web/src/needs.ts
+diff --git c/web/src/needs.ts i/web/src/needs.ts
+index 7f147333..e630059a 100644
+--- c/web/src/needs.ts
++++ i/web/src/needs.ts
 @@ -35,6 +35,7 @@ export const routeNeeds = {
    'admin/instances': ['admin', 'changing an instance'],
    'admin/sources': ['admin', 'changing a discovery source'],
    'admin/proposals': ['admin', 'approving or ignoring a proposed instance'],
 +  'mssql/protection': ['admin', "changing a database's backup thresholds"],
    'admin/dbadash_moves': ['admin', 'moving a DBA Dash instance'],
+   'mssql/counteradmin': ['admin', 'changing a SQL Server counter list'],
    'admin/applications': ['admin', 'changing an application'],
-   'admin/applications/contacts': ['admin', "changing an application's contacts"],
