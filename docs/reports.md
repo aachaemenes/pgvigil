@@ -27,6 +27,7 @@ A report that PostgreSQL has a twin of shows both engines in the same grids, the
 | SQL Login Password Age | yes | yes | yes | Top, Password Age (Days: older than, both grids), Disabled Logins | Summary (counts in 0-1, 2-7, 8-14, 15-30, 31-90, 91-180, 181-365 days, over a year, unknown), Oldest Passwords; PostgreSQL login roles, PostgreSQL password expiry | SQL Server: `sys.sql_logins` with `LOGINPROPERTY` (new read); PostgreSQL: the roles collection's VALID UNTIL and the password method (new read) |
 | Table Size | yes | yes | yes | Top, Growth Days | Table Size | SQL Server: the largest tables of each database (new read), each database at its newest read; PostgreSQL: the tables collection, its newest read in the Growth Days |
 | Recycle Bin | yes | | | | Recycle Bin | instances made inactive, and active ones no collection reached for a day |
+| Trend | yes | yes | yes | Metric, Statistic, Bucket, Hour of day, Top, Engine; Disk latency by instance or by database on an instance | One chart, a line per instance (or per database), the Series grid and the Not drawn grid | `GET /api/trend` over raw samples (0273's `trend_series`; below) |
 
 Time: Deadlocks, Deadlock Charts, Query Stats and Query Stats Charts follow the page's range (the time picker); the others take their **Days** choice (1, 2, 7, 14, 30, 60, 90, 180 or 365) as DBA Dash's do. Every choice of a toolbar is remembered per browser.
 
@@ -61,6 +62,35 @@ A part the login may not read is named in the run's note (the run is *partial*) 
 | passwords | `pg_authid`: the method of each login role's password, worked out on the server from the stored secret's prefix (`SCRAM-SHA-256$...`, `md5...`); only the method's name leaves the server, never the hash | a superuser, or a role granted SELECT on pg_authid (Amazon RDS, Aurora, Azure and Cloud SQL do not let even their admin role read it) | 'no right' (not a failure, the run is not partial): a monitoring login should be neither; the report says "not read" |
 
 Migration `0105_reports.sql` holds their tables (`mssql_server_role_members`, `mssql_sql_logins`, `mssql_failed_logins`, `mssql_service_ext`, `mssql_table_size`, `pg_role_passwords`, `report_db_properties`, `report_read_state`) and imports (`import_mssql_reports`, `import_reports`): an older read imported after a newer one changes nothing; the collector login may call the imports and read none of the tables; the reader login reads them.
+
+## Trend (B20-1)
+
+One metric over the range, a statistic inside each hour or day bucket, one line per instance: the top N (1-20, 5 by
+default) by the statistic over every sample of the range. A range over 31 days is drawn by the day.
+
+| Metric | SQL Server | PostgreSQL |
+| --- | --- | --- |
+| OS CPU % | 100 - `mssql_cpu_sample.idle_pct` | `host_sample.cpu_pct` (system_stats or CloudWatch); none = 'no host read' |
+| SQL CPU % | `mssql_cpu_sample.sql_pct` | none: PostgreSQL has no engine share of the host CPU |
+| Disk latency (ms) | stall / IO over a sample's files (`mssql_fileio_sample`) | `pg_stat_io` deltas (`iostats_rate`, track_io_timing on), else CloudWatch Read / WriteLatency |
+| Active | `mssql_requests_summary.requests` | `activity_summary.active` |
+| Free memory % | `available_kb / physical_kb` | `(mem_free + mem_cache) / mem_total` |
+| Connections | sessions - background (`mssql_session_summary`) | `activity_summary.total` |
+
+- Statistics: p50, p95, p98, p99, max; free memory ranks lowest first (p50, p5, p2, p1, min). A percentile is
+  `percentile_cont` inside the bucket. Hour of day keeps one hour in the viewer's time zone.
+- Disk latency ranks within each engine: PostgreSQL's is `pg_stat_io`'s read and write call time (the OS cache
+  included), SQL Server's the I/O stall. A sample under 1 IO a second draws no point.
+- The reach: raw samples are kept as long as `pgvigil purge` keeps them (30 days by default); a range that starts before
+  the oldest sample drawn says 'samples kept back to <date> (purge); a year needs the hours (B21)'.
+- File I/O over the fleet reads the newest 1 day of raw (a row per file per minute), said under the chart, until B21's
+  hourly history lands; one instance's disk latency reads at most 7 days. By database (a SQL Server instance's own
+  page): one line per database. PostgreSQL's `pg_stat_io` has no database split, and the fleet's by-database view waits
+  for hourly history; both say so.
+- `GET /api/trend?metric=&stat=&bucket=&from=&to=` with `hour=`, `tz=`, `top=`, `engine=both|postgres|sqlserver`,
+  `instance=` and `by=database`: `{metric, label, bucket, stat, from, to (what was read), top, shown, of, words,
+  series: [{instance_id, name, engine, database, rank, reach, points: [{at, v, n}]}], none: [{instance_id, name, engine,
+  why}]}`. NOT PROVEN: eight pages reading the fleet's file I/O at once (only one read at a time was timed).
 
 ## The API
 
