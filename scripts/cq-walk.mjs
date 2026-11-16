@@ -9,6 +9,7 @@
 //   W6 sp_WhoIsActive @delta_interval 50: Run, Cancel once the page says it runs (the page's wait answers at an end
 //       or after 25 s; the worker reads a running cancel on its 5 s poll), the status line's end words saying cancel
 //       and closed before ' Request <n>.'; the panel's result section: badge 'cancelled' (never 'failed'), its words
+//       saying cancel as a note, no error box
 //   W7 / W8 the Running pages of both instances in queue mode: every off control and its words
 //   W9 sp_WhoIsActive @filter_type 'bogus' (the procedure's own RAISERROR): the status line's end is its words, closed
 //       before ' Request <n>.'; the panel: badge 'failed' and the procedure's words in the panel (r10's W6 shot: a
@@ -76,7 +77,7 @@ const runTool = async (r, page, tool, inputs = {}, cancelWhenRunning = false) =>
   if (!opened) { row(r, page, `the tool ${tool.name}`, 'no clickable tool of that name on the page', false); return null; }
   if (!await until(`!!(${panel(tool.name)})`)) { row(r, page, tool.name, 'its panel never drew', false); await shot(`${r}-no-panel`); return null; }
   for (const [k, v] of Object.entries(inputs)) {
-    const set = await ev(`(() => { const i = [...(${panel(tool.name)}).querySelectorAll('input')].find(i => (i.getAttribute('aria-label') ?? '').toLowerCase().includes(${JSON.stringify(k)}));
+    const set = await ev(`(() => { const i = [...(${panel(tool.name)}).querySelectorAll('input')].find(i => { const l = (i.getAttribute('aria-label') ?? '').toLowerCase(); return l === ${JSON.stringify('@' + k)} || l.startsWith(${JSON.stringify('@' + k + ' (')}); });
       if (!i) return false; i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()`);
     if (!set) {
       const labels = await ev(`[...(${panel(tool.name)}).querySelectorAll('input')].map(i => i.getAttribute('aria-label')).slice(0, 40).join(', ')`);

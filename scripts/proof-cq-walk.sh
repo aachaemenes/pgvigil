@@ -126,7 +126,7 @@ rm -rf "$OUT/log/chrome-profile"
 # ---- the repository's own rows of the walk's requests --------------------------------------------------------------
 IDS=$(awk '{print $2}' "$OUT/requests.txt" 2>/dev/null | grep -E '^[0-9]+$' | paste -sd, -)
 if [[ -n "$IDS" ]]; then
-  rq "select r.request_id, r.kind, r.instance, r.state, r.ui_user, r.taken_host, r.keep, d.result is not null as result_stored, r.cleared_at is not null as cleared, left(coalesce(r.outcome, r.refusal, ''), 120)
+  rq "select r.request_id, r.kind, r.instance, r.state, r.ui_user, r.taken_host, r.keep, d.result is not null as result_stored, r.cleared_at is not null as cleared, left(coalesce(nullif(r.outcome, ''), nullif(r.refusal, ''), ''), 120)
         from pgvigil.action_requests r left join pgvigil.ui_action_data d using (request_id) where r.request_id in ($IDS) order by 1" > "$OUT/rows.txt"
   rq "select payload->>'request_id', op, tool, instance, instance_id, ui_user, outcome, rows, payload->>'via', payload->>'collector'
         from pgvigil.custom_report_log where payload->>'via' = 'queue' and (payload->>'request_id')::bigint in ($IDS) order by 1" > "$OUT/audit.txt" 2>&1
