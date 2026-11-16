@@ -98,7 +98,7 @@ func TestCursorMovesSchemaDDL(t *testing.T) {
 		{"kind": "ddl", "datname": nil, "logged_at": t1},
 		{"kind": "table", "datname": "app"},
 	}, nil)
-	if len(got) != 2 || !got["schema_ddl:app"].At.Equal(t0.Add(3*time.Minute)) || !got["schema_ddl:crm"].At.Equal(t0.Add(2*time.Minute)) {
+	if len(got) != 2 || !atOf(got["schema_ddl:app"]).Equal(t0.Add(3*time.Minute)) || !atOf(got["schema_ddl:crm"]).Equal(t0.Add(2*time.Minute)) {
 		t.Errorf("schema_ddl: %+v", got)
 	}
 }
@@ -119,12 +119,12 @@ func TestCursorMovesHadrGuard(t *testing.T) {
 		t.Errorf("an older batch moved: %+v", got)
 	}
 	got := moves(t, "mssql_jobs", t1, []map[string]any{{"kind": "cursor", "last_history_id": int64(960), "mark": int64(9)}, {"kind": "cursor", "last_history_id": int64(970), "mark": int64(1)}}, cur)
-	if got["jobs"].Seq != 960 || got["jobs_mark"].Seq != 9 || !got["hadr_read:mssql_jobs"].At.Equal(t1) {
+	if got["jobs"].Seq != 960 || got["jobs_mark"].Seq != 9 || !atOf(got["hadr_read:mssql_jobs"]).Equal(t1) {
 		t.Errorf("the same time, the first cursor row: %+v", got)
 	}
 	later := t1.Add(time.Hour)
 	got = moves(t, "mssql_jobs", later, []map[string]any{{"kind": "cursor", "mark": int64(3)}, {"kind": "cursor", "last_history_id": int64(980)}}, cur)
-	if _, moved := got["jobs"]; moved || !got["hadr_read:mssql_jobs"].At.Equal(later) {
+	if _, moved := got["jobs"]; moved || !atOf(got["hadr_read:mssql_jobs"]).Equal(later) {
 		t.Errorf("a first cursor row without last_history_id moved jobs, or the read was not recorded: %+v", got)
 	}
 	got = moves(t, "mssql_jobs", later, []map[string]any{{"kind": "cursor", "last_history_id": int64(990)}}, cur)
@@ -150,7 +150,7 @@ func TestCursorMovesBackupHistory(t *testing.T) {
 	}
 	got := moves(t, "mssql_backup_history", t0, []map[string]any{db("app"), db(""), read(0, "no right"), bh(10, 1), rh(4, 9)}, nil)
 	if got["backup_history"].Seq != 10 || got["backup_history_mark"].Seq != 1 || got["restore_history"].Seq != 4 || got["restore_history_mark"].Seq != 9 ||
-		names(got["backup_history_dbs"]) != "app" || !got["hadr_read:mssql_backup_history"].At.Equal(t0) {
+		names(got["backup_history_dbs"]) != "app" || !atOf(got["hadr_read:mssql_backup_history"]).Equal(t0) {
 		t.Fatalf("the first batch: %+v", got)
 	}
 	cur := got
@@ -283,26 +283,31 @@ func overlay(cur map[string]format.Cursor, moved map[string]format.Cursor) map[s
 
 func um(t time.Time) string { return strconv.FormatInt(t.UnixMicro(), 10) }
 
-// import_mssql_stats (0092 L970-1035): per 'db' row, a newer read of that database stands (its mssql_stats_db time);
+// import_mssql_stats (0092 L970-1035): mssql_perf_check (L973) refuses a batch without a state row carrying
+// server_utc (nothing moves); per 'db' row, a newer read of that database stands (its mssql_stats_db time);
 // otherwise its time becomes this read's and, when it was read, 'st:<db>' takes the read's time (a plain write, never
 // greatest). The first 'databases' row with a names list drops the guard rows older than this read of the databases
 // it does not name; 'st:' cursors stay.
 func TestCursorMovesStats(t *testing.T) {
+	state := map[string]any{"kind": "state", "server_utc": t0}
 	db := func(n string, read bool) map[string]any {
 		return map[string]any{"kind": "db", "database_name": n, "read": read}
 	}
-	s := overlay(nil, moves(t, "mssql_stats", t0, []map[string]any{db("app", true), db("crm", true), {"kind": "db", "database_name": nil, "read": true}}, nil))
-	if !s["st:app"].LastEventAt.Equal(t0) || !s["st:crm"].LastEventAt.Equal(t0) || s["st:app"].Kind != "mssql" || dbsOf(s["stats_dbs"]) != "app="+um(t0)+",crm="+um(t0) {
+	if got := moves(t, "mssql_stats", t0, []map[string]any{db("app", true)}, nil); len(got) != 0 {
+		t.Errorf("no state row (mssql_perf_check, 0092 L973): %+v", got)
+	}
+	s := overlay(nil, moves(t, "mssql_stats", t0, []map[string]any{state, db("app", true), db("crm", true), {"kind": "db", "database_name": nil, "read": true}}, nil))
+	if !lastAt(s["st:app"]).Equal(t0) || !lastAt(s["st:crm"]).Equal(t0) || s["st:app"].Kind != "mssql" || dbsOf(s["stats_dbs"]) != "app="+um(t0)+",crm="+um(t0) {
 		t.Fatalf("the first read: %+v", s)
 	}
 	b := t0.Add(time.Minute)
-	s = overlay(s, moves(t, "mssql_stats", b, []map[string]any{db("app", false), {"kind": "databases", "names": []any{"app"}}}, s))
-	if !s["st:app"].LastEventAt.Equal(t0) || dbsOf(s["stats_dbs"]) != "app="+um(b) || !s["st:crm"].LastEventAt.Equal(t0) {
+	s = overlay(s, moves(t, "mssql_stats", b, []map[string]any{state, db("app", false), {"kind": "databases", "names": []any{"app"}}}, s))
+	if !lastAt(s["st:app"]).Equal(t0) || dbsOf(s["stats_dbs"]) != "app="+um(b) || !lastAt(s["st:crm"]).Equal(t0) {
 		t.Fatalf("app not read, crm not named: %+v", s)
 	}
 	c := t0.Add(30 * time.Second)
-	s = overlay(s, moves(t, "mssql_stats", c, []map[string]any{db("app", true), db("crm", true), {"kind": "databases", "names": "app"}}, s))
-	if !s["st:app"].LastEventAt.Equal(t0) || !s["st:crm"].LastEventAt.Equal(c) || dbsOf(s["stats_dbs"]) != "app="+um(b)+",crm="+um(c) {
+	s = overlay(s, moves(t, "mssql_stats", c, []map[string]any{state, db("app", true), db("crm", true), {"kind": "databases", "names": "app"}}, s))
+	if !lastAt(s["st:app"]).Equal(t0) || !lastAt(s["st:crm"]).Equal(c) || dbsOf(s["stats_dbs"]) != "app="+um(b)+",crm="+um(c) {
 		t.Errorf("an older read: app's newer read stands, crm (its guard row dropped) goes back: %+v", s)
 	}
 }
@@ -320,18 +325,18 @@ func TestCursorMovesConstraints(t *testing.T) {
 		t.Errorf("no state row: %+v", got)
 	}
 	s := overlay(nil, moves(t, "mssql_constraints", t0, []map[string]any{state, db("app", true), db("crm", true)}, nil))
-	if !s["ct:app"].LastEventAt.Equal(t0) || !s["ct:crm"].LastEventAt.Equal(t0) || names(s["ct_dbs"]) != "app,crm" {
+	if !lastAt(s["ct:app"]).Equal(t0) || !lastAt(s["ct:crm"]).Equal(t0) || names(s["ct_dbs"]) != "app,crm" {
 		t.Fatalf("the first read: %+v", s)
 	}
 	b := t0.Add(time.Minute)
 	s = overlay(s, moves(t, "mssql_constraints", b, []map[string]any{state, db("app", false), db("new", true), {"kind": "databases", "names": []any{"app"}}}, s))
-	if !s["ct:app"].LastEventAt.Equal(t0) || s["ct:crm"].Kind != "null" || s["ct:new"].Kind != "null" || names(s["ct_dbs"]) != "app" ||
+	if !lastAt(s["ct:app"]).Equal(t0) || s["ct:crm"].Kind != "null" || s["ct:new"].Kind != "null" || names(s["ct_dbs"]) != "app" ||
 		dbsOf(s["constraint_dbs"]) != "app="+um(b)+",new="+um(b) {
 		t.Fatalf("crm and new not named: %+v", s)
 	}
 	c := t0.Add(30 * time.Second)
 	s = overlay(s, moves(t, "mssql_constraints", c, []map[string]any{state, db("app", true), db("crm", true)}, s))
-	if !s["ct:app"].LastEventAt.Equal(t0) || !s["ct:crm"].LastEventAt.Equal(c) || names(s["ct_dbs"]) != "app,crm" {
+	if !lastAt(s["ct:app"]).Equal(t0) || !lastAt(s["ct:crm"]).Equal(c) || names(s["ct_dbs"]) != "app,crm" {
 		t.Errorf("an older read: %+v", s)
 	}
 }
@@ -386,7 +391,22 @@ func TestCursorMovesAzureDB(t *testing.T) {
 	if s["azdb_since"].Kind != "seq" || s["azdb_since"].Seq != t0.Add(-time.Minute).Unix() {
 		t.Fatalf("the newest minute: %+v", s)
 	}
-	if got := moves(t, "mssql_azuredb_resources", t1, []map[string]any{minute(t0.Add(-10 * time.Minute))}, s); got["azdb_since"].Seq != t0.Add(-time.Minute).Unix() {
-		t.Errorf("an older minute moved it back: %+v", got)
+	if s = overlay(s, moves(t, "mssql_azuredb_resources", t1, []map[string]any{minute(t0.Add(-10 * time.Minute))}, s)); s["azdb_since"].Seq != t0.Add(-time.Minute).Unix() {
+		t.Errorf("an older minute moved it back: %+v", s)
 	}
+}
+
+// lastAt and atOf read a cursor's time, the zero time when it has none (a missing cursor fails its row, never panics).
+func lastAt(c format.Cursor) time.Time {
+	if c.LastEventAt == nil {
+		return time.Time{}
+	}
+	return *c.LastEventAt
+}
+
+func atOf(c format.Cursor) time.Time {
+	if c.At == nil {
+		return time.Time{}
+	}
+	return *c.At
 }

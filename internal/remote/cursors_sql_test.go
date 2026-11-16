@@ -159,18 +159,22 @@ func TestCursorRulesAgainstSQL(t *testing.T) {
 				{"kind": "cursor", "last_set_id": int64(80), "mark": int64(5)},
 			}},
 		}, map[string]string{"backup_sets": "seq", "backup_sets_mark": "seq", "backup_sets_unlisted": "list"}},
-		// part 2 (f): the per-database snapshot sources. import_mssql_stats (0092 L970-1035): st:<db> the read's time
+		// part 2 (f): the per-database snapshot sources. import_mssql_stats (0092 L970-1035; mssql_perf_check L973 wants
+		// the state row): st:<db> the read's time
 		// behind a per-database guard (mssql_stats_db), the 'databases' row dropping the older guard rows it does not name
 		{"mssql stats", "sqlserver", []sqlBatch{
 			{"mssql_stats", t0.Add(-time.Hour), []map[string]any{
+				{"kind": "state", "server_utc": t0.Add(-time.Hour)},
 				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
 				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
 			}},
 			{"mssql_stats", t0, []map[string]any{
+				{"kind": "state", "server_utc": t0},
 				{"kind": "db", "database_name": "app", "database_id": 5, "read": false},
 				{"kind": "databases", "names": []any{"app"}},
 			}},
 			{"mssql_stats", t0.Add(-30 * time.Minute), []map[string]any{
+				{"kind": "state", "server_utc": t0.Add(-30 * time.Minute)},
 				{"kind": "db", "database_name": "app", "database_id": 5, "read": true},
 				{"kind": "db", "database_name": "crm", "database_id": 6, "read": true},
 			}},
