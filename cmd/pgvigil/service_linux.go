@@ -642,6 +642,36 @@ func linuxItems(inst installOptions, _ bool) []removal {
 			items = append(items, removal{what: "the purge unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
 		}
 	}
+	// the scheduled Parquet export docs/parquet-export.md tells operators to lay down (deploy/pgvigil-export.service and
+	// .timer, the export login's connection string in pgvigil-export.env): the same reasons as the purge's
+	xTimer, xSvc := "/etc/systemd/system/pgvigil-export.timer", "/etc/systemd/system/pgvigil-export.service"
+	items = append(items, removal{what: "the scheduled Parquet export (systemd units " + xTimer + " and " + xSvc + ")", present: present(xTimer) || present(xSvc), remove: func() error {
+		if systemdRunning() {
+			if present(xTimer) {
+				if out, err := systemctl("disable", "--now", "pgvigil-export.timer"); err != nil {
+					return fmt.Errorf("systemctl disable --now pgvigil-export.timer: %v: %s", err, out)
+				}
+			}
+			if out, err := systemctl("stop", "pgvigil-export.service"); err != nil && present(xSvc) {
+				return fmt.Errorf("systemctl stop pgvigil-export.service: %v: %s", err, out)
+			}
+		}
+		for _, f := range []string{xTimer, xSvc} {
+			if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		if systemdRunning() {
+			_, _ = systemctl("daemon-reload")
+			_, _ = systemctl("reset-failed", "pgvigil-export.timer", "pgvigil-export.service")
+		}
+		return nil
+	}})
+	for _, d := range []string{xTimer + ".d", xSvc + ".d"} {
+		if present(d) {
+			items = append(items, removal{what: "the export unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
+		}
+	}
 	items = append(items, removal{what: "the service pgvigil (systemd unit " + unitPath + ")", present: present(unitPath), remove: func() error {
 		if systemdRunning() {
 			if out, err := systemctl("disable", "--now", "pgvigil.service"); err != nil {
@@ -670,13 +700,17 @@ func linuxItems(inst installOptions, _ bool) []removal {
 	for _, f := range purgeEnvFiles(purgeSvc, filepath.Join(cfgDir, "pgvigil-purge.env")) {
 		items = append(items, removal{what: "the purge's env file " + f + " (the repository owner's connection string)", present: present(f), remove: removeFile(f)})
 	}
+	// the export's env file (the export login's connection string), where README's place beside the config has one
+	if f := filepath.Join(cfgDir, "pgvigil-export.env"); present(f) {
+		items = append(items, removal{what: "the Parquet export's env file " + f + " (the export login's connection string)", present: true, remove: removeFile(f)})
+	}
 	// the page's credential folders (task 204): the passwords of the monitored servers added in the page; -all takes
 	// them with the rest (a decommissioned host keeps no monitored server's password)
 	creds, credOwn := credentialItems(cfgDir, os.RemoveAll)
 	items = append(items, creds...)
 	// on Linux the installer writes the configuration and the environment file (the logs go to the journal); the
 	// credential folders and the purge's env file go just above
-	own := append([]string{filepath.Base(inst.Config), envName, "pgvigil-purge.env"}, credOwn...)
+	own := append([]string{filepath.Base(inst.Config), envName, "pgvigil-purge.env", "pgvigil-export.env"}, credOwn...)
 	folder := removal{what: "the configuration folder " + cfgDir, present: present(cfgDir)}
 	if other := foreignFiles(cfgDir, own...); len(other) > 0 {
 		folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"

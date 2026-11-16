@@ -304,3 +304,35 @@ application that shares the repository database keeps jit on for its own login. 
 only: a connection already open keeps its jit until it reconnects, so restart Grafana (or reconnect its data source)
 and any pooler's server connections after the migrate. Connections to a monitored instance are unchanged: that
 server's jit is its owner's choice.
+
+## The Parquet export (export:)
+
+Absent = off. [parquet-export.md](parquet-export.md) is the whole page; these are the keys.
+
+```yaml
+export:
+  name: prod-repo                 # required: the folder under the destination and part of every file name
+                                  #   (lower case, a letter first, a letter or digit last, no '__', at most 31)
+  dsn: env:PGVIGIL_EXPORT_DSN     # required: the export's login, IN ROLE pgvigil_exporter (or pgvigil_reader) alone;
+                                  #   env:NAME or file:/path - a connection string written here is refused
+  state_dir: /var/lib/pgvigil/export   # required: the lock and the files being built
+  destination:                    # required: one of
+    type: folder                  #   folder:     path
+    path: /srv/pgvigil-export     #   s3:         bucket, prefix, region, endpoint (an S3-compatible store), profile
+                                  #   azure_blob: container, prefix, and connection_string: env:NAME | sas_url: env:NAME
+                                  #               | account_url (the default credential)
+  settle_minutes: 20              # a window is first exported this long after it ends
+  final_after_hours: 24           # it is exported again, as final, once it is this old
+  max_window_age_hours: 48        # how far back a run looks for hours to export; an older hour with no manifest is
+                                  #   named as aged out (its final pass is owed at any age)
+  max_windows_per_run: 12
+  snapshot_max_bytes: 256MB       # a whole-table export over it (its size on disk with its indexes) is left out and
+                                  #   named; 0 = no line
+  statement_timeout: 120s         # of the reading session
+  carry: []                       # text (statement, plan and log text), audit (action logs, audit trails, logins,
+                                  #   roles and grants): each OFF unless named
+  tables: { exclude: [] }         # more tables left out by name (a name that is no table is refused); what the map
+                                  #   leaves out cannot be put back in
+```
+
+A key the section does not know is refused (exit 3): a mistyped key must not pass as a default.

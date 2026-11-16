@@ -62,6 +62,8 @@ type Config struct {
 	// MSSQLCounters adds counters to every SQL Server instance's counter list or removes them (docs/configuration.md,
 	// 'mssql_counters'); an instance's own lines are narrower and win.
 	MSSQLCounters CounterEdits `yaml:"mssql_counters"`
+	// Export is the repository's read-only export to Parquet (`pgvigil export`); absent = off (export.go).
+	Export *Export `yaml:"export"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -667,6 +669,11 @@ func (c *Config) Validate() error {
 	}
 	if err := validateCounterEdits("root", c.MSSQLCounters); err != nil {
 		return err
+	}
+	if c.Export != nil {
+		if err := c.Export.validate(); err != nil {
+			return err
+		}
 	}
 	seen := map[string]bool{}
 	for i := range c.Instances {

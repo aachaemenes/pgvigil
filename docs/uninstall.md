@@ -71,8 +71,10 @@ A run without a terminal (a script, a configuration tool) names the database ins
    (`HKLM\Software\Policies\pgvigil`) and this user's settings (`HKCU\Software\pgvigil`); the machine PATH entry
    `install.ps1` added.
 8. The scheduled purge README sets up: on Linux the timer and its service (`/etc/systemd/system/pgvigil-purge.timer`
-   and `.service`, disabled and stopped, `daemon-reload`); on Windows each scheduled task whose action runs a pgvigil
-   executable with `purge` (deleted with `schtasks /Delete`). Then the service definition (Linux: the unit, disabled,
+   and `.service`, disabled and stopped, `daemon-reload`), and in the same way the scheduled Parquet export's
+   (`pgvigil-export.timer` and `.service`, with `/etc/pgvigil/pgvigil-export.env`; what it wrote at its
+   destination is yours and is not touched); on Windows each scheduled task whose action runs a pgvigil
+   executable with `purge` or `export` (deleted with `schtasks /Delete`). Then the service definition (Linux: the unit, disabled,
    `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`).
 9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` and `reports.dsn` on Windows), the purge's env
    file (Linux: the `EnvironmentFile=` the purge unit names, `/etc/pgvigil/pgvigil-purge.env` by README: the

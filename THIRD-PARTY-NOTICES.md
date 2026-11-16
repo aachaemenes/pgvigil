@@ -193,6 +193,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## The Parquet export's file contract
+
+The Parquet export (internal/export, docs/parquet-export.md) follows the file contract of PerformanceMonitor 3.13.0's exporter closely: the layout `<prefix>/<name>/<table>/<table>__<name>__<from>__<to>.parquet`, one JSON manifest per window under `_manifests/` written after the data, a file no manifest lists being an unfinished run, the three table kinds a consumer dedupes by identity, the manifest's per-file row count, size and sha256, and the session settings of the reading login (PerformanceMonitor, Exporter/README.md and Exporter/file-contract.md; MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC). The code and the text are pgvigil's own; no file of that project is in pgvigil, and its exporter writes through DuckDB where pgvigil's writes through parquet-go. The MIT licence printed under "The SQL Server collections" above applies with this copyright line.
+
 ## Read, not copied
 
 The DBADash door (internal/dbadash, task 55) reads a DBA Dash repository (Trimble, MIT) through SQL against its tables dbo.Instances, dbo.Summary, dbo.CollectionDates, dbo.DBVersionHistory and (DBA Dash 4.25.0 or later) dbo.CollectionRunStatus with a read-only login; the table and column names and the status codes (1 Critical, 2 Warning, 3 N/A, 4 OK) are DBA Dash's own, read from the repository DBA Dash 4.24.1 built in the proof; no code of DBA Dash is copied. The SQL Server driver is github.com/microsoft/go-mssqldb (BSD 3-Clause), listed with every module in docs/notices.md.

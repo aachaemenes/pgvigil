@@ -30,6 +30,10 @@ CREATE ROLE %[2]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth
 -- report on the store is refused and the page says why. Name its dsn in reports_dsn (env:NAME or file:/path), as
 -- the repository's.
 CREATE ROLE pgvigil_reports LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
+-- optional: the Parquet export's login (the configuration's export.dsn; only where an export: section is set):
+-- pgvigil_exporter is pgvigil_reader plus the one door that records the export's windows for the Collector page.
+-- A login that could write anything else is refused by 'pgvigil export'.
+-- CREATE ROLE pgvigil_export LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_exporter;
 -- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
 -- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
 -- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;

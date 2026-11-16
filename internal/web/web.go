@@ -231,6 +231,7 @@ func (s *Server) Handler() http.Handler {
 	// the collector's error log (0198)
 	api.HandleFunc("GET /api/collectorerrors", s.CollectorErrors)
 	api.HandleFunc("GET /api/collector", s.Collector) // task 201
+	api.HandleFunc("GET /api/export", s.Export)
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
 	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)

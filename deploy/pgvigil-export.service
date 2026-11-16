@@ -1,0 +1,45 @@
+[Unit]
+Description=pgvigil repository export to Parquet (pgvigil export)
+Documentation=https://github.com/aachaemenes/pgvigil
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pgvigil
+# the EXPORT's login on the repository (IN ROLE pgvigil_exporter; a login that could write is refused):
+# PGVIGIL_EXPORT_DSN=postgres://pgvigil_export:...@repo-host:5432/pgvigil?sslmode=require
+# the export uses no other login. The cloud credentials of an s3 or azure_blob destination come from the host's
+# role, or from this file's AWS_* / AZURE_* variables
+EnvironmentFile=/etc/pgvigil/pgvigil-export.env
+# /var/lib/pgvigil/export, the export's state_dir: the one path it writes (a folder destination is named with
+# ReadWritePaths= in a drop-in)
+StateDirectory=pgvigil/export
+ExecStart=/usr/local/bin/pgvigil export -config /etc/pgvigil/pgvigil.yaml
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged

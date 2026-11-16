@@ -8,7 +8,9 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 | `github.com/Azure/azure-sdk-for-go/sdk/azcore` | MIT | [LICENSE.txt](https://github.com/Azure/azure-sdk-for-go/blob/sdk/azcore/v1.23.1/sdk/azcore/LICENSE.txt) |
 | `github.com/Azure/azure-sdk-for-go/sdk/azidentity` | MIT | [LICENSE.txt](https://github.com/Azure/azure-sdk-for-go/blob/sdk/azidentity/v1.14.1/sdk/azidentity/LICENSE.txt) |
 | `github.com/Azure/azure-sdk-for-go/sdk/internal` | MIT | [LICENSE.txt](https://github.com/Azure/azure-sdk-for-go/blob/sdk/internal/v1.12.0/sdk/internal/LICENSE.txt) |
+| `github.com/Azure/azure-sdk-for-go/sdk/storage/azblob` | MIT | [LICENSE.txt](https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/LICENSE.txt) |
 | `github.com/AzureAD/microsoft-authentication-library-for-go/apps` | MIT | [LICENSE](https://github.com/AzureAD/microsoft-authentication-library-for-go/blob/v1.8.0/LICENSE) |
+| `github.com/andybalholm/brotli` | MIT | [LICENSE](https://github.com/andybalholm/brotli/blob/v1.1.1/LICENSE) |
 | `github.com/aws/aws-sdk-go-v2` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/v1.47.8/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/aws/protocol/eventstream/v1.7.26/aws/protocol/eventstream/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/config` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.33.16/config/LICENSE.txt) |
@@ -23,9 +25,12 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 | `github.com/aws/aws-sdk-go-v2/service/databasemigrationservice` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/databasemigrationservice/v1.75.8/service/databasemigrationservice/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/ec2` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/ec2/v1.344.2/service/ec2/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/internal/accept-encoding/v1.13.24/service/internal/accept-encoding/LICENSE.txt) |
+| `github.com/aws/aws-sdk-go-v2/service/internal/checksum` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/internal/checksum/v1.11.12/service/internal/checksum/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/internal/presigned-url/v1.14.11/service/internal/presigned-url/LICENSE.txt) |
+| `github.com/aws/aws-sdk-go-v2/service/internal/s3shared` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/internal/s3shared/v1.20.11/service/internal/s3shared/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/pi` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/pi/v1.46.8/service/pi/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/rds` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/rds/v1.132.2/service/rds/LICENSE.txt) |
+| `github.com/aws/aws-sdk-go-v2/service/s3` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/s3/v1.114.9/service/s3/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/secretsmanager` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/secretsmanager/v1.50.11/service/secretsmanager/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/signin` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/signin/v1.12.4/service/signin/LICENSE.txt) |
 | `github.com/aws/aws-sdk-go-v2/service/sso` | Apache-2.0 | [LICENSE.txt](https://github.com/aws/aws-sdk-go-v2/blob/service/sso/v1.39.4/service/sso/LICENSE.txt) |
@@ -49,11 +54,23 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 | `github.com/jcmturner/goidentity/v6` | Apache-2.0 | [LICENSE](https://github.com/jcmturner/goidentity/blob/v6.0.1/v6/LICENSE) |
 | `github.com/jcmturner/gokrb5/v8` | Apache-2.0 | [LICENSE](https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/LICENSE) |
 | `github.com/jcmturner/rpc/v2` | Apache-2.0 | [LICENSE](https://github.com/jcmturner/rpc/blob/v2.0.3/v2/LICENSE) |
+| `github.com/klauspost/compress` | Apache-2.0 | [LICENSE](https://github.com/klauspost/compress/blob/v1.17.9/LICENSE) |
+| `github.com/klauspost/compress/internal/snapref` | BSD-3-Clause | [LICENSE](https://github.com/klauspost/compress/blob/v1.17.9/internal/snapref/LICENSE) |
+| `github.com/klauspost/compress/s2` | BSD-3-Clause | [LICENSE](https://github.com/klauspost/compress/blob/v1.17.9/s2/LICENSE) |
+| `github.com/klauspost/compress/snappy` | BSD-3-Clause | [LICENSE](https://github.com/klauspost/compress/blob/v1.17.9/snappy/LICENSE) |
+| `github.com/klauspost/compress/zstd/internal/xxhash` | MIT | [LICENSE.txt](https://github.com/klauspost/compress/blob/v1.17.9/zstd/internal/xxhash/LICENSE.txt) |
 | `github.com/kylelemons/godebug` | Apache-2.0 | [LICENSE](https://github.com/kylelemons/godebug/blob/v1.1.0/LICENSE) |
 | `github.com/microsoft/go-mssqldb` | BSD-3-Clause | [LICENSE.txt](https://github.com/microsoft/go-mssqldb/blob/v1.11.2/LICENSE.txt) |
 | `github.com/microsoft/go-mssqldb/internal/github.com/swisscom/mssql-always-encrypted/pkg` | MIT | [LICENSE.txt](https://github.com/microsoft/go-mssqldb/blob/v1.11.2/internal/github.com/swisscom/mssql-always-encrypted/LICENSE.txt) |
+| `github.com/parquet-go/bitpack` | Apache-2.0 | [LICENSE](https://github.com/parquet-go/bitpack/blob/v1.0.0/LICENSE) |
+| `github.com/parquet-go/jsonlite` | MIT | [LICENSE](https://github.com/parquet-go/jsonlite/blob/v1.0.0/LICENSE) |
+| `github.com/parquet-go/parquet-go` | Apache-2.0 | [LICENSE](https://github.com/parquet-go/parquet-go/blob/v0.32.0/LICENSE) |
+| `github.com/parquet-go/parquet-go/bloom/xxhash` | MIT | [LICENSE](https://github.com/parquet-go/parquet-go/blob/v0.32.0/bloom/xxhash/LICENSE) |
+| `github.com/parquet-go/parquet-go/encoding/thrift` | MIT | [LICENSE](https://github.com/parquet-go/parquet-go/blob/v0.32.0/encoding/thrift/LICENSE) |
+| `github.com/pierrec/lz4/v4` | BSD-3-Clause | [LICENSE](https://github.com/pierrec/lz4/blob/v4.1.21/LICENSE) |
 | `github.com/pkg/browser` | BSD-2-Clause | [LICENSE](https://github.com/pkg/browser/blob/5ac0b6a4141c/LICENSE) |
 | `github.com/shopspring/decimal` | MIT | [LICENSE](https://github.com/shopspring/decimal/blob/v1.4.0/LICENSE) |
+| `github.com/twpayne/go-geom` | BSD-2-Clause | [LICENSE](https://github.com/twpayne/go-geom/blob/v1.6.1/LICENSE) |
 | `golang.org/x/crypto` | BSD-3-Clause | [v0.58.0:LICENSE](https://cs.opensource.google/go/x/crypto/+/v0.58.0:LICENSE) |
 | `golang.org/x/net` | BSD-3-Clause | [v0.60.0:LICENSE](https://cs.opensource.google/go/x/net/+/v0.60.0:LICENSE) |
 | `golang.org/x/oauth2` | BSD-3-Clause | [v0.38.0:LICENSE](https://cs.opensource.google/go/x/oauth2/+/v0.38.0:LICENSE) |
@@ -61,6 +78,7 @@ Every Go module linked into `pgvigil` (`./cmd/pgvigil`), and every package of on
 | `golang.org/x/sys` | BSD-3-Clause | [v0.49.0:LICENSE](https://cs.opensource.google/go/x/sys/+/v0.49.0:LICENSE) |
 | `golang.org/x/term` | BSD-3-Clause | [v0.47.0:LICENSE](https://cs.opensource.google/go/x/term/+/v0.47.0:LICENSE) |
 | `golang.org/x/text` | BSD-3-Clause | [v0.43.0:LICENSE](https://cs.opensource.google/go/x/text/+/v0.43.0:LICENSE) |
+| `google.golang.org/protobuf` | BSD-3-Clause | [LICENSE](https://github.com/protocolbuffers/protobuf-go/blob/v1.34.2/LICENSE) |
 | `gopkg.in/yaml.v3` | MIT | [LICENSE](https://github.com/go-yaml/yaml/blob/v3.0.1/LICENSE) |
 
 ## Source of the MPL-2.0 modules
@@ -72,6 +90,7 @@ These files are used unmodified; their source, at the exact version linked:
 ## Copyright notices of the BSD-2-Clause modules
 
 - `github.com/pkg/browser@v0.0.0-20240102092130-5ac0b6a4141c`: Copyright (c) 2014, Dave Cheney <dave@cheney.net> (BSD-2-Clause, its licence file linked above)
+- `github.com/twpayne/go-geom@v1.6.1`: Copyright (c) 2013, Tom Payne (BSD-2-Clause, its licence file linked above)
 
 ## The web UI
 

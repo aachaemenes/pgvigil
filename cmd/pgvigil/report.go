@@ -304,12 +304,15 @@ var keepKeys = map[string]bool{
 	"every": true, "rule": true, "compare": true, "warning": true, "critical": true,
 	// reports: daily_checks: the switch, its hour and its zone (the addresses, the user and the channel are masked)
 	"enabled": true, "at": true, "tz": true,
+	// export: its knobs and the kind of destination; its name, paths, bucket, container and endpoint name the site
+	"type": true, "settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
+	"snapshot_max_bytes": true, "statement_timeout": true,
 }
 
 // keepTrees are the keys under which every value is a setting: collection names with their intervals, threshold
 // names with their numbers (a threshold that is no number, backup_exclude's database patterns, is masked), action
 // names, the tag keys the tree groups by.
-var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "disabled": true, "actions": true, "group_by": true}
+var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "disabled": true, "actions": true, "group_by": true, "carry": true}
 
 // knownKeys are the keys of the configuration file (the yaml tags of config.Config, alerts.Settings and
 // collect.CustomCheck, and custom: itself; TestReportKnowsEveryConfigKey holds the list to them). A key that is not
@@ -343,6 +346,10 @@ var knownKeys = map[string]bool{
 	"tenant": true, "client_id": true, "client_secret": true, "cloud": true, "login_url": true, "slack": true,
 	"bot_token": true, "api_url": true, "app_id": true, "slack_actions": true, "slack_apps": true,
 	"team_id": true, "enterprise_id": true, "signing_secret": true, "users": true,
+	"export": true, "state_dir": true, "destination": true, "type": true, "path": true, "bucket": true, "prefix": true,
+	"account_url": true, "container": true, "connection_string": true, "sas_url": true,
+	"settle_minutes": true, "max_window_age_hours": true, "max_windows_per_run": true, "final_after_hours": true,
+	"snapshot_max_bytes": true, "statement_timeout": true, "carry": true, "tables": true, "exclude": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
@@ -361,7 +368,7 @@ var (
 // address (its path is the token), a routing key.
 func secretKey(k string) bool {
 	k = strings.ToLower(k)
-	for _, w := range []string{"dsn", "pass", "pwd", "secret", "token", "key", "url", "credential", "auth", "sig", "pgbouncer"} {
+	for _, w := range []string{"dsn", "pass", "pwd", "secret", "token", "key", "url", "credential", "auth", "sig", "pgbouncer", "connection"} {
 		if strings.Contains(k, w) {
 			return true
 		}
