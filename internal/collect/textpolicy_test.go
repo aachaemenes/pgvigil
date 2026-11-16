@@ -2,6 +2,8 @@ package collect
 
 import (
 	"encoding/json"
+	"encoding/xml"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -349,28 +351,70 @@ func TestMaskCredentials(t *testing.T) {
 	}
 }
 
+// xmlParses reads s as XML to its end: nil when it is well-formed.
+func xmlParses(s string) error {
+	d := xml.NewDecoder(strings.NewReader(s))
+	for {
+		_, err := d.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
 // TestMaskXMLProcessingInstruction (415-PI): a processing instruction holds raw text and is masked as a comment and a
-// CDATA section are. sp_WhoIsActive writes a session's sql_text and sql_command as one (<?query -- ... --?>), so the
-// statement of a session - an xp_cmdshell command with sqlcmd's -P, an ALTER LOGIN - sat in it unmasked: the cell
-// starts with "<?", was taken for an XML document and its instruction written back as it came. <masked> inside an
-// instruction keeps the document XML (only "?>" ends one). An instruction with no credential keeps its bytes; one the
-// text ends inside is masked as a cut document; a second pass changes nothing; and the row's mask (every text mode)
-// leaves the secret in no column.
+// CDATA section are. The fault was the shared function's: a cell that starts with "<?" is taken for an XML document,
+// and its instruction was written back as it came. Two community shapes put a statement in one: sp_WhoIsActive's
+// formatted output (@format_output 1 or 2) writes a session's sql_text and sql_command as <?query -- ... --?> (its
+// non-formatted output, the collector's own call, has no wrapper), and the DarlingData procedures write a statement
+// as <?query ... ?> with no comment lines - so an xp_cmdshell command with sqlcmd's password switch or an ALTER LOGIN
+// sat in the cell unmasked for a caller that stores such cells. <masked> inside an instruction keeps the document
+// XML. SQL Server writes a "?>" inside an instruction's text as it is (read on SQL Server 2022), so the instruction
+// ends at the "?>" that markup or the text's end follows. A showplan an instruction wraps (sp_WhoIsActive's
+// <?query_plan ... ?> for a plan that cannot be an xml value) is masked as a document, so it is still XML once taken
+// out of the wrapper. An instruction with no credential keeps its bytes; one the text ends inside is masked as it
+// stands (raw text: nothing in it is decoded); a second pass changes nothing; and the row's mask (every credential
+// column, every text mode) leaves the secret nowhere.
 func TestMaskXMLProcessingInstruction(t *testing.T) {
+	alter := "<?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi2secret'\r\n--?>"
+	// the DarlingData shape of a cell: the statement on the target's line, no comment lines
+	darling := strings.NewReplacer("<?query --\r\n", "<?query ", "\r\n--?>", "?>")
+	// keep: every byte of s but the secret, which is <masked>
+	keep := func(s, secret string) string { return strings.Replace(s, secret, "<masked>", 1) }
 	cmd := "<?query --\r\nEXEC master..xp_cmdshell 'sqlcmd -S srv1 -U loader -P Pi1secret -Q \"EXEC dbo.load\"'\r\n--?>"
 	cases := []struct{ name, in, secret, want string }{
 		{"sp_WhoIsActive sql_text, sqlcmd -P", cmd, "Pi1secret",
 			"<?query --\r\nEXEC master..xp_cmdshell 'sqlcmd -S srv1 -U loader -P <masked> -Q \"EXEC dbo.load\"'\r\n--?>"},
-		{"sp_WhoIsActive sql_command, ALTER LOGIN", "<?query --\nALTER LOGIN app WITH PASSWORD = 'Pi2secret'\n--?>", "Pi2secret",
-			"<?query --\nALTER LOGIN app WITH PASSWORD = '<masked>'\n--?>"},
-		{"an instruction inside a document", "<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = N'Pi3secret';\n--?></sql_text><login_name>app</login_name></row>", "Pi3secret",
+		{"sp_WhoIsActive sql_command, ALTER LOGIN", alter, "Pi2secret", keep(alter, "Pi2secret")},
+		{"an instruction inside a document", "<row><sql_text><?query --\r\nCREATE LOGIN x WITH PASSWORD = N'Pi3secret';\r\n--?></sql_text><login_name>app</login_name></row>", "Pi3secret",
 			// the mask writes a masked literal without its N prefix, as it does in a statement (the 'tsql login' case)
-			"<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = '<masked>';\n--?></sql_text><login_name>app</login_name></row>"},
+			"<row><sql_text><?query --\r\nCREATE LOGIN x WITH PASSWORD = '<masked>';\r\n--?></sql_text><login_name>app</login_name></row>"},
 		{"a connection string in an instruction", "<?query --\nSELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=s2;UID=u;PWD=Pi4secret;', 'SELECT 1')\n--?>", "Pi4secret", ""},
+		{"the DarlingData shape, ALTER LOGIN", darling.Replace(alter), "Pi2secret", keep(darling.Replace(alter), "Pi2secret")},
+		{"the DarlingData shape, the xp_cmdshell command", darling.Replace(cmd), "Pi1secret", keep(darling.Replace(cmd), "Pi1secret")},
+		{"two instructions in one cell", alter + strings.Replace(alter, "Pi2secret", "Pi2other", 1), "Pi2", keep(alter, "Pi2secret") + keep(alter, "Pi2secret")},
+		{"an instruction after a declaration", "<?xml version=\"1.0\"?>" + alter, "Pi2secret", "<?xml version=\"1.0\"?>" + keep(alter, "Pi2secret")},
+		{"white space before the instruction", "\r\n  " + alter, "Pi2secret", "\r\n  " + keep(alter, "Pi2secret")},
+		// SQL Server writes a "?>" inside an instruction's text as it is: the instruction ends where markup or the
+		// text's end follows, so the value's tail is not left behind as a text node
+		{"a ?> inside the value", "<?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi4a?>tail4a'\r\n--?>", "tail4a",
+			"<?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?>"},
+		{"a ?> inside the value, in a document", "<row><sql_text><?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi4a?>tail4a'\r\n--?></sql_text></row>", "tail4a",
+			"<row><sql_text><?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?></sql_text></row>"},
 		{"no credential: its bytes kept", "<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>", "",
 			"<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>"},
 		{"the declaration kept", "<?xml version=\"1.0\" encoding=\"utf-8\"?><a b=\"1\"/>", "", "<?xml version=\"1.0\" encoding=\"utf-8\"?><a b=\"1\"/>"},
 		{"cut inside the instruction", "<?query --\nALTER LOGIN app WITH PASSWORD = 'Pi5secr", "Pi5secr", ""},
+		// an instruction or a comment the text ends inside is raw text: an entity in it is the statement's own bytes,
+		// never decoded - outside the credential nothing changes, and a value's tail is not split off at an entity
+		{"cut inside the instruction: nothing decoded", "<?query --\r\nSELECT '&amp;' AS a; ALTER LOGIN app WITH PASSWORD = 'Pi7secr", "Pi7secr",
+			"<?query --\r\nSELECT '&amp;' AS a; ALTER LOGIN app WITH PASSWORD = '<masked>'"},
+		{"cut inside the instruction: an entity inside the value", "<?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi8&#39;tail8", "tail8",
+			"<?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'"},
+		{"cut inside a comment: nothing decoded", "<a><!-- SELECT '&amp;'; password=Pi9secr", "Pi9secr", "<a><!-- SELECT '&amp;'; password=<masked>"},
 	}
 	for _, c := range cases {
 		got := MaskXML(c.in)
@@ -387,14 +431,58 @@ func TestMaskXMLProcessingInstruction(t *testing.T) {
 			t.Errorf("%s: the instruction lost its end: %q", c.name, got)
 		}
 	}
-	// the row, under every text mode: the cell in a statement column, in a message and in a report - no column keeps
-	// the secret; under full the statement is the masked instruction
+	// a showplan an instruction wraps: masked as a document from <ShowPlanXML on - a password-named parameter's value
+	// goes (the text mask has no rule for it), and a masked literal is written escaped, so the plan taken out of the
+	// wrapper (the wrapper's own use: "save the XML below as a .SQLPLAN file") is still XML
+	planOpen := `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.564"><BatchSequence><Batch><Statements>`
+	planEnd := `</Statements></Batch></BatchSequence></ShowPlanXML>`
+	parm := `<StmtSimple StatementText="EXEC dbo.rotate @password" StatementId="1"><QueryPlan><ParameterList><ColumnReference Column="@password" ParameterDataType="nvarchar(50)" ParameterCompiledValue="N'Pi6secret'" /></ParameterList></QueryPlan></StmtSimple>`
+	stmt := `<StmtSimple StatementText="ALTER LOGIN app WITH PASSWORD = 'Pi6secret'" StatementId="1" />`
+	wrapHead := "<?query_plan --\r\n-- Could not render showplan due to XML data type limitations. \r\n--\r\n"
+	for _, c := range []struct{ name, in, has string }{
+		{"a wrapped plan, a password-named parameter", wrapHead + planOpen + parm + planEnd + "\r\n--?>", `ParameterCompiledValue="&apos;&lt;masked&gt;&apos;"`},
+		{"a wrapped plan, a password in its statement", wrapHead + planOpen + stmt + planEnd + "\r\n--?>", `PASSWORD = &apos;&lt;masked&gt;&apos;"`},
+		{"a wrapped plan the text ends inside", wrapHead + planOpen + parm + `<StmtSimple StatementText="SELECT`, `ParameterCompiledValue="&apos;&lt;masked&gt;&apos;"`},
+	} {
+		got := MaskXML(c.in)
+		if strings.Contains(got, "Pi6secret") {
+			t.Errorf("%s: the secret is still there: %q", c.name, got)
+		}
+		if !strings.Contains(got, c.has) {
+			t.Errorf("%s: no %s in %q", c.name, c.has, got)
+		}
+		if again := MaskXML(got); again != got {
+			t.Errorf("%s: a second pass changed the text: %q -> %q", c.name, got, again)
+		}
+		if !strings.HasSuffix(c.in, "?>") {
+			continue
+		}
+		if !strings.HasSuffix(got, "\r\n--?>") {
+			t.Errorf("%s: the instruction lost its end: %q", c.name, got)
+		}
+		from, to := strings.Index(got, "<ShowPlanXML"), strings.LastIndex(got, planEnd)
+		if from < 0 || to < from {
+			t.Errorf("%s: the plan is not whole: %q", c.name, got)
+		} else if err := xmlParses(got[from : to+len(planEnd)]); err != nil {
+			t.Errorf("%s: the plan inside the instruction is no longer XML (%v): %q", c.name, err, got)
+		}
+	}
+	// the row, under every text mode: the cell in every column the credential mask runs over (a plan's JSON form
+	// too), with white space before it and behind a byte-order mark - nothing keeps the secret; under full the
+	// statement is the masked instruction
 	for _, mode := range []string{"full", "normalized", "none"} {
-		rows := []Row{{"statement": cmd, "query": cmd, "message": cmd, "report": cmd, "shape": cmd}}
+		all := Row{}
+		for _, k := range credentialKeys {
+			all[k] = cmd
+		}
+		all["plan"] = map[string]any{"Plan": map[string]any{"Filter": cmd, "Output": []any{cmd}}}
+		rows := []Row{all, {"statement": "\r\n " + cmd, "message": "\ufeff" + cmd}}
 		ApplyTextPolicy(rows, mode)
-		for k, v := range rows[0] {
-			if s, ok := v.(string); ok && strings.Contains(s, "Pi1secret") {
-				t.Errorf("mode %s: column %s keeps the secret: %q", mode, k, s)
+		for i, r := range rows {
+			for k, v := range r {
+				if j, _ := json.Marshal(v); strings.Contains(string(j), "Pi1secret") {
+					t.Errorf("mode %s: row %d column %s keeps the secret: %s", mode, i, k, j)
+				}
 			}
 		}
 		if mode == "full" && rows[0]["statement"] != cases[0].want {
