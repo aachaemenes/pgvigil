@@ -472,7 +472,7 @@ SELECT b.rule, b.label, '', NULL, NULL, NULL, 'dbachecks policy',
 UNION ALL
 -- line 3b of scripts/blitzgap-join-lines.sql: sp_Blitz 55 (BLITZ-GAP) - each database's owner (0090's options, the
 -- mssql_checks collection) against the expected owner: the original sa (sid 0x01, 0159's logins: a renamed sa keeps its
--- place) unless a scope names another; before the logins are read, master's own owner (it cannot change: Msg 15109),
+-- place) unless a scope names another; before the logins are read, master's own owner (INFERRED: it cannot change, Msg 15109),
 -- else 'sa'; master, model, msdb and tempdb against the original sa always, a scope's owner never (sp_Blitz 8.35 L3831);
 -- 'off' (any case) turns it off and exclusions leave a database out, system ones too; info, so no finding row; an owner
 -- whose SID maps to no login is sp_Blitz 213's (the Checks tab); dbatools, dbadmin, dbmaintenance, gcloud_cloudsqladmin

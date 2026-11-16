@@ -12,7 +12,7 @@
 --    a. the list rules' own-row part leaves the key out (55 has its own part): src's WHERE
 --       ... OR (k.kind = 'database' AND k.key <> 'owner')
 --    b. two more parts, after the last: each database's owner against the expected owner (the original sa, sid 0x01
---       from 0159's logins - master's own owner while they are not read, else 'sa' - unless a scope names another; master, model, msdb and tempdb
+--       from 0159's logins - master's own owner while they are not read (inferred: it cannot change, Msg 15109), else 'sa' - unless a scope names another; master, model, msdb and tempdb
 --       against the original sa always, a scope's owner never - sp_Blitz 8.35 L3831; 'off' in any case off, exclusions
 --       leave any database out; 'info' when it differs, so no finding row; 'not applicable' when the SID maps to no login;
 --       dbatools, dbadmin, dbmaintenance, gcloud_cloudsqladmin and rdsadmin left out by name - sp_Blitz 8.35 L590-596;
