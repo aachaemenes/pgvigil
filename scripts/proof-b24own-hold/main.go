@@ -16,27 +16,30 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 )
 
-func main() {
+func main() { os.Exit(run()) }
+
+// run holds the session; its deferred cancel runs before main exits with the code it returns
+func run() int {
 	if len(os.Args) != 3 || os.Getenv("PGV_HOLD_DSN") == "" {
 		fmt.Fprintln(os.Stderr, "usage: PGV_HOLD_DSN=<dsn> proof-b24own-hold <seconds> <batch>")
-		os.Exit(2)
+		return 2
 	}
 	secs, err := strconv.Atoi(os.Args[1])
 	if err != nil || secs <= 0 {
 		fmt.Fprintln(os.Stderr, "seconds must be a positive number")
-		os.Exit(2)
+		return 2
 	}
 	db, err := sql.Open("sqlserver", os.Getenv("PGV_HOLD_DSN"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secs)*time.Second)
 	defer cancel()
 	c, err := db.Conn(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	done := make(chan error, 1)
 	go func() { _, err := c.ExecContext(ctx, os.Args[2]); done <- err }()
@@ -50,4 +53,5 @@ func main() {
 	case <-ctx.Done():
 	}
 	_ = c.Close()
+	return 0
 }
