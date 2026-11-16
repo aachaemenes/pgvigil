@@ -12,7 +12,7 @@ to, it reads one row per object:
 | index                       | `pg_get_indexdef`, marked `(INVALID)` when invalid                                     |
 | constraint                  | `pg_get_constraintdef`, marked `NOT VALID` when not validated                          |
 | trigger                     | `pg_get_triggerdef`, marked when disabled, replica or always                           |
-| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source; where the instance's `query_text` is `full` (the default) the source's text follows it, masked (since A26: the history shows what changed) - except a body that names a password or a secret (the DDL log's own test: `password`, `secret`, `pwd`, a `user:password@` address, `CREATE` / `ALTER SERVER`, `USER MAPPING`, `SUBSCRIPTION`), kept as its hash with the words "body text not kept", and a database whose bodies fell back to hashes (over 160 MB); a `BEGIN ATOMIC` SQL function's source is empty in the catalog, so its text is an empty line |
+| function, procedure         | the kind, its arguments with their names and defaults, result, language, volatility, strictness, `security definer`, leakproof, parallel safety, cost and rows, its `SET` settings, and `body sha256:<16 hex>` of its source; where the instance's `query_text` is `full` (the default) the source's text follows it, masked (since A26: the history shows what changed) - except a body that names a password or a secret (the DDL log's own test: `password`, `secret`, `pwd`, a `user:password@` address, `CREATE` / `ALTER SERVER`, `USER MAPPING`, `SUBSCRIPTION`), kept as its hash with the words "body text not kept", and a database whose bodies fell back to hashes (over 160 MB); a PostgreSQL 14+ SQL-standard body (`BEGIN ATOMIC ... END`, `RETURN expr`) is read with `pg_get_function_sqlbody`, the server's decompiled text (see SQL-standard bodies below) |
 | view, materialized view     | `pg_get_viewdef`                                                                       |
 | sequence                    | the type, start, increment, min, max, cache, cycle, and the column that owns it (an owned sequence belongs to that table) |
 
@@ -29,6 +29,32 @@ Extensions tab), aggregates, and PostgreSQL 18's NOT NULL constraints (the colum
 `not null`). A function's body is hashed by pgvigil itself (SHA-256, Go's crypto), so the read works on a server
 where FIPS mode disables `md5()`. A definition longer than 20,000 characters is stored cut, but its hash is taken
 over the whole text, so a change after the cut still shows.
+
+**SQL-standard bodies (PostgreSQL 14 and later):** a `BEGIN ATOMIC ... END` or `RETURN expr` body has an empty
+`prosrc` in the catalog, so pgvigil reads it with `pg_get_function_sqlbody`, the function pg_dump itself reads such a
+body with (it is not in PostgreSQL's documented table of catalog functions). Each database's read first asks the
+server whether it has the function: PostgreSQL 13 reads every body as before; a server at 14 or later without it reads
+them as before too and the collection is 'partial' with the note `schema body:<database>: pg_get_function_sqlbody is
+absent ...`, never silently. The text is the server's decompiled form, not the text that was typed: names come
+schema-qualified, constants print under the session's `TimeZone`, `DateStyle`, `IntervalStyle` and
+`extra_float_digits`, comments are dropped (an edit of a comment alone records nothing), and `SELECT *` is expanded
+when the function is created. So, as for a view: renaming a table the body reads changes the body (a 'changed' row for
+the function, with no matched statement - the event trigger logs the ALTER under the table), and a major-version
+upgrade that prints the same body differently records one 'changed' row per such function, with both texts.
+Deparsing a body takes an `AccessShareLock` on every table it reads until the read's transaction ends, as
+`pg_get_viewdef` does for a view: an `ACCESS EXCLUSIVE` lock on such a table (an `ALTER TABLE` rewrite, `VACUUM FULL`,
+`TRUNCATE`) held past the collector's `lock_timeout` (2 s) fails that database's read for the hour (its stored snapshot
+stays), and a DDL that arrives during the read waits behind it. One body whose deparse raises an error fails the
+database's read.
+
+**The upgrade to SQL-standard bodies:** the first read after it records each such body as its baseline, not a change:
+beside each body the collector sends the hash the earlier version took of the same row (over the empty source), and
+the import takes a stored row with that hash as the body's baseline - its text is stored, its `last_changed` kept (an
+arm in `import_schema`, not an equal hash as when `query_text` changes). A real change of such a body between the
+earlier version's last read and this version's first read is taken as that baseline (the earlier version could not
+see it either). An owner, ACL or settings change in that interval still records its rows, and the definition's row
+then shows the body appearing. The way back is not silent: an earlier version's read after this one records one
+'changed' row per such function (its body goes back to empty).
 
 **Rights:** pg_monitor, nothing more. The catalogs and the `pg_get_*def` functions are readable by every role.
 
