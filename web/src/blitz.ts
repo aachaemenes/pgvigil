@@ -74,7 +74,7 @@ function runLine(sh: Row | undefined): HTMLElement[] {
   const msgs = Array.isArray(sh.messages) ? sh.messages as Row[] : [];
   if (msgs.length) {
     out.push(el('details', { class: 'blitz-msgs' }, el('summary', {}, `The server's messages of that run (${msgs.length})`),
-      el('ul', {}, ...msgs.map(m => el('li', {}, (m.proc === 'pgvigil' ? 'pgvigil: ' : `Msg ${m.number ?? 0}, severity ${m.severity ?? 0}${m.line ? ', line ' + m.line : ''}${m.proc ? ' (' + m.proc + ')' : ''}: `) + String(m.message ?? ''))))));
+      el('ul', {}, ...msgs.map(m => el('li', {}, (m.proc === 'pgvigil' ? 'pgvigil: ' : `Msg ${m.number ?? 0}, severity ${m.severity ?? 0}${m.line ? `, line ${m.line}` : ''}${m.proc ? ` (${m.proc})` : ''}: `) + String(m.message ?? ''))))));
   }
   return out;
 }
