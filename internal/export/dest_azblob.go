@@ -59,7 +59,9 @@ func NewAzureBlob(o BlobOptions) (Destination, error) {
 	if root != "" {
 		root += "/"
 	}
-	root += o.Name + "/"
+	if o.Name != "" { // no name: the prefix itself (a remote collector's push, the hub's drops)
+		root += o.Name + "/"
+	}
 	return &blobDest{c: c, container: o.Container, root: root, label: "azure blob container " + o.Container + "/" + root + " by " + how}, nil
 }
 
