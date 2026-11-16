@@ -1,18 +1,8 @@
-B24f's join wiring, section rel-sqltb-s1 (402's Admin > Counters; the lead 11-15 16:3x).
-Apply on the joined tree that holds rel-roles and rel-sqltb-s1 (its proof-mssql-counters-wiring patch applied):
-  git apply -3 scripts/b24f-join-wiring-rel-sqltb-s1.patch
-Built on a pre-join copy of each file: rel-roles f421753c x rel-sqltb-s1 9fc9a889 + that wiring patch's web.go hunk (local
-commit 13ee35e7, ref jw-pre-s1; merged clean), so -3 merges it onto the join's own resolution.
-What it does: s.post for POST /api/mssql/counteradmin (admin: a counter list is configuration others live with), its
-words in roles_wiring_sqltb_s1.go, needs.ts and docs/roles.md rows; Admin > Counters folds the role into its 'Edits are
-off here' sentence after the server's reason; Save row and each End carry the need.
-Proof: TestEveryPostHasANeed, TestRolesDocMatches, TestPageNeedsMatch and TestPagesNameTheirNeeds on the joined tree; tsc there.
-
-diff --git a/docs/roles.md b/docs/roles.md
-index 118b5eee..be5f402d 100644
---- a/docs/roles.md
-+++ b/docs/roles.md
-@@ -120,6 +120,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+diff --git c/docs/roles.md i/docs/roles.md
+index 2c06fb0f..6f3a37fc 100644
+--- c/docs/roles.md
++++ i/docs/roles.md
+@@ -121,6 +121,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
  | `POST /api/admin/sources` | admin | a discovery source and its cloud settings (add, edit, enable, disable, remove, sync, sweep) |
  | `POST /api/admin/proposals` | admin | approve or ignore a proposed instance |
  | `POST /api/admin/dbadash_moves` | admin | move a DBA Dash instance |
@@ -20,11 +10,11 @@ index 118b5eee..be5f402d 100644
  | `POST /api/admin/applications` | admin | an application |
  | `POST /api/admin/applications/contacts` | admin | an application's contacts |
  | `POST /api/admin/applications/assign` | admin | assign instances to an application |
-diff --git a/internal/web/roles_wiring_sqltb_s1.go b/internal/web/roles_wiring_sqltb_s1.go
+diff --git c/internal/web/roles_wiring_sqltb_s1.go i/internal/web/roles_wiring_sqltb_s1.go
 new file mode 100644
 index 00000000..07caacff
 --- /dev/null
-+++ b/internal/web/roles_wiring_sqltb_s1.go
++++ i/internal/web/roles_wiring_sqltb_s1.go
 @@ -0,0 +1,7 @@
 +package web
 +
@@ -33,11 +23,11 @@ index 00000000..07caacff
 +func init() {
 +	routeWhat["POST /api/mssql/counteradmin"] = "changing a SQL Server counter list"
 +}
-diff --git a/internal/web/web.go b/internal/web/web.go
-index de8d1d1c..a6722de6 100644
---- a/internal/web/web.go
-+++ b/internal/web/web.go
-@@ -358,7 +358,7 @@ func (s *Server) Handler() http.Handler {
+diff --git c/internal/web/web.go i/internal/web/web.go
+index 27eb015c..f99a6c0f 100644
+--- c/internal/web/web.go
++++ i/internal/web/web.go
+@@ -400,7 +400,7 @@ func (s *Server) Handler() http.Handler {
  	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
  	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
  	api.HandleFunc("GET /api/mssql/counteradmin", s.MSSQLCounterAdmin)
@@ -46,19 +36,19 @@ index de8d1d1c..a6722de6 100644
  	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
  	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
  	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)
-diff --git a/web/src/metrics.ts b/web/src/metrics.ts
-index 039f9985..723be154 100644
---- a/web/src/metrics.ts
-+++ b/web/src/metrics.ts
-@@ -13,6 +13,7 @@ import { conditionWords, fmtMetric, ruleButton, ruleDialog, RulesDoor, scopeWord
- import { Ctx, href, rangeLabel, window_ } from './router';
+diff --git c/web/src/metrics.ts i/web/src/metrics.ts
+index b3c6b859..120617f6 100644
+--- c/web/src/metrics.ts
++++ i/web/src/metrics.ts
+@@ -15,6 +15,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
  import { whatIsThis } from './sqlview';
  import { Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
+ import { collectionTickKey, subNoun, subSeries, subWords, tickStore, visibleFamilies } from './metricfam';
 +import { markNeed, routeWhy } from './needs';
  
- interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null }
- interface SeriesData { step_secs: number; series: Table | null; metric: Table | null }
-@@ -311,7 +312,8 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
+ interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null; collections?: Table | null }
+ // the 'Collection Metrics' tick, per browser; with storage off it lasts this page's life (module state survives the
+@@ -348,7 +349,8 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
    type AdminData = { writable?: boolean; reason?: string; config: Table | null; defaults: Table | null; log: Table | null; catalog: Table | null };
    let d: AdminData;
    try { d = await get<AdminData>('mssql/counteradmin'); } catch (e) { sec.append(errorBox(e)); return sec; }
@@ -68,7 +58,7 @@ index 039f9985..723be154 100644
    sec.append(el('p', { class: 'meta' }, 'Each SQL Server instance reads the counters of its list: the defaults below, then pgvigil.yaml\'s mssql_counters lines (the root\'s, the instance\'s), then the rows here. For each counter the narrowest scope wins (an instance over a tag over the fleet); at one scope a row here wins over pgvigil.yaml. A change is read at the instance\'s next read.'),
      ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
    const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite', tabindex: '-1' });
-@@ -349,7 +351,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
+@@ -386,7 +388,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
      inst.replaceChildren(...all.map(r => el('option', { value: String(r.instance_id) }, String(r.name))));
    } catch { /* the instance list is optional for fleet and tag rows */ }
    showScope();
@@ -77,7 +67,7 @@ index 039f9985..723be154 100644
    save.addEventListener('click', () => {
      if (!object.value.trim() || !counter.value.trim()) { said.textContent = 'Name the object and the counter.'; return; }
      void send({ op: 'add', scope: scope.value, tag: tag.value, instance_id: Number(inst.value || 0), object: object.value.trim(), counter: counter.value.trim(),
-@@ -364,7 +366,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
+@@ -401,7 +403,7 @@ export async function adminCountersView(_ctx: Ctx): Promise<HTMLElement> {
  
    // Admin's live rows, each with its End
    const endCell = (_v: unknown, r: Row) => {
@@ -86,10 +76,10 @@ index 039f9985..723be154 100644
      // End asks first, as Alert rules' End does (part 3's NIT 10)
      b.addEventListener('click', () => { if (window.confirm(`End row ${String(r.config_id)} (${String(r.object)} / ${String(r.counter)})? The counter list goes back to the word below it.`)) void send({ op: 'end', config_id: Number(r.config_id) }); });
      // the page's 'Edits are off here' line carries the long reason; each row says it short, a space after the button
-diff --git a/web/src/needs.ts b/web/src/needs.ts
-index f3a5ff8c..f3b55835 100644
---- a/web/src/needs.ts
-+++ b/web/src/needs.ts
+diff --git c/web/src/needs.ts i/web/src/needs.ts
+index c41fc09e..7f147333 100644
+--- c/web/src/needs.ts
++++ i/web/src/needs.ts
 @@ -36,6 +36,7 @@ export const routeNeeds = {
    'admin/sources': ['admin', 'changing a discovery source'],
    'admin/proposals': ['admin', 'approving or ignoring a proposed instance'],
