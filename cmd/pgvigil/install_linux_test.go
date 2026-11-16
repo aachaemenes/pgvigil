@@ -46,3 +46,42 @@ func TestStartFailure(t *testing.T) {
 		}
 	}
 }
+
+// install --remote's unit (R14): the hub unit's hardening with write access to the outbox and the state folder only
+// (ReadWritePaths), ProtectSystem=strict and ProtectHome=yes kept, its own name, account and config so a box can run a hub
+// collector beside it; deploy/pgvigil-remote.service is the same text for a hand install.
+func TestRemoteUnitMatchesDeployFile(t *testing.T) {
+	want, err := os.ReadFile("../../deploy/pgvigil-remote.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := renderRemoteUnit(remoteBin, remoteConfig, remoteEnvFile, remoteAccount, remoteOutbox, remoteStateDir)
+	if got != string(want) {
+		t.Errorf("the remote unit drifted from deploy/pgvigil-remote.service:\n%s", got)
+	}
+	for _, line := range []string{"ReadWritePaths=/var/lib/pgvigil-remote/outbox /var/lib/pgvigil-remote/state", "ProtectSystem=strict", "ProtectHome=yes",
+		"User=pgvigil-remote", "ExecStart=/usr/local/bin/pgvigil run -config /etc/pgvigil-remote/pgvigil-remote.yaml", "RestartPreventExitStatus=3"} {
+		if !strings.Contains(got, line+"\n") {
+			t.Errorf("the remote unit lacks %q", line)
+		}
+	}
+	if remoteUnitPath == unitPath || remoteAccount == defaultInstallOptions().User {
+		t.Errorf("the remote unit shares the hub collector's name or account")
+	}
+}
+
+// A remote collector's folders are absolute and, under ProtectHome=yes, never under /home (refused at install, in words).
+func TestRemoteFoldersChecked(t *testing.T) {
+	for _, c := range []struct{ outbox, state, want string }{
+		{"/var/lib/pgvigil-remote/outbox", "/var/lib/pgvigil-remote/state", ""},
+		{"/home/ops/outbox", "/var/lib/pgvigil-remote/state", "ProtectHome"},
+		{"/var/lib/pgvigil-remote/outbox", "/home/ops/state", "ProtectHome"},
+		{"outbox", "/var/lib/pgvigil-remote/state", "absolute"},
+		{"/var/lib/x", "/var/lib/x", "two folders"},
+	} {
+		err := checkRemoteFolders(c.outbox, c.state)
+		if (c.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s / %s: %v, want %q", c.outbox, c.state, err, c.want)
+		}
+	}
+}
