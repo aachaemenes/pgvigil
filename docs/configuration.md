@@ -286,6 +286,20 @@ that reached a door names it in its audit row (`custom_report_log`): `file` (an 
 page door's credential in memory while it runs. While a serve cannot read the repository, its last doors stay as they
 were: a disable written through another serve reaches it once its reads work again.
 
+### Prometheus endpoint
+
+```yaml
+doors:
+  prometheus_metrics: on    # GET /metrics for Prometheus (docs/prometheus.md)
+metrics:
+  token: file:/etc/pgvigil/metrics.token
+```
+
+`doors.prometheus_metrics` turns on `GET /metrics` (docs/prometheus.md): every active instance's newest figures in the
+Prometheus text format, read with a signed-in session or `metrics.token` (`file:/path` or `env:NAME`, 32 bytes at
+least); it opens server names, engines, platforms, versions and every figure to whoever reads that Prometheus. Its
+`metrics:` block holds `token`, `cache_seconds`, `databases`, `max_databases`, `include_databases` and `tags`.
+
 ## The repository's own sessions run without jit
 
 Every `pgvigil migrate` (and so `install -upgrade` and `demo`) sets `jit = off` on the repository database
