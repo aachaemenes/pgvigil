@@ -349,6 +349,59 @@ func TestMaskCredentials(t *testing.T) {
 	}
 }
 
+// TestMaskXMLProcessingInstruction (415-PI): a processing instruction holds raw text and is masked as a comment and a
+// CDATA section are. sp_WhoIsActive writes a session's sql_text and sql_command as one (<?query -- ... --?>), so the
+// statement of a session - an xp_cmdshell command with sqlcmd's -P, an ALTER LOGIN - sat in it unmasked: the cell
+// starts with "<?", was taken for an XML document and its instruction written back as it came. <masked> inside an
+// instruction keeps the document XML (only "?>" ends one). An instruction with no credential keeps its bytes; one the
+// text ends inside is masked as a cut document; a second pass changes nothing; and the row's mask (every text mode)
+// leaves the secret in no column.
+func TestMaskXMLProcessingInstruction(t *testing.T) {
+	cmd := "<?query --\r\nEXEC master..xp_cmdshell 'sqlcmd -S srv1 -U loader -P Pi1secret -Q \"EXEC dbo.load\"'\r\n--?>"
+	cases := []struct{ name, in, secret, want string }{
+		{"sp_WhoIsActive sql_text, sqlcmd -P", cmd, "Pi1secret",
+			"<?query --\r\nEXEC master..xp_cmdshell 'sqlcmd -S srv1 -U loader -P <masked> -Q \"EXEC dbo.load\"'\r\n--?>"},
+		{"sp_WhoIsActive sql_command, ALTER LOGIN", "<?query --\nALTER LOGIN app WITH PASSWORD = 'Pi2secret'\n--?>", "Pi2secret",
+			"<?query --\nALTER LOGIN app WITH PASSWORD = '<masked>'\n--?>"},
+		{"an instruction inside a document", "<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = N'Pi3secret';\n--?></sql_text><login_name>app</login_name></row>", "Pi3secret",
+			"<row><sql_text><?query --\nCREATE LOGIN x WITH PASSWORD = N'<masked>';\n--?></sql_text><login_name>app</login_name></row>"},
+		{"a connection string in an instruction", "<?query --\nSELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=s2;UID=u;PWD=Pi4secret;', 'SELECT 1')\n--?>", "Pi4secret", ""},
+		{"no credential: its bytes kept", "<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>", "",
+			"<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>"},
+		{"the declaration kept", "<?xml version=\"1.0\" encoding=\"utf-8\"?><a b=\"1\"/>", "", "<?xml version=\"1.0\" encoding=\"utf-8\"?><a b=\"1\"/>"},
+		{"cut inside the instruction", "<?query --\nALTER LOGIN app WITH PASSWORD = 'Pi5secr", "Pi5secr", ""},
+	}
+	for _, c := range cases {
+		got := MaskXML(c.in)
+		if c.secret != "" && strings.Contains(got, c.secret) {
+			t.Errorf("%s: the secret %q is still there: %q", c.name, c.secret, got)
+		}
+		if c.want != "" && got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+		if again := MaskXML(got); again != got {
+			t.Errorf("%s: a second pass changed the text: %q -> %q", c.name, got, again)
+		}
+		if strings.HasSuffix(c.in, "?>") && !strings.HasSuffix(got, "?>") {
+			t.Errorf("%s: the instruction lost its end: %q", c.name, got)
+		}
+	}
+	// the row, under every text mode: the cell in a statement column, in a message and in a report - no column keeps
+	// the secret; under full the statement is the masked instruction
+	for _, mode := range []string{"full", "normalized", "none"} {
+		rows := []Row{{"statement": cmd, "query": cmd, "message": cmd, "report": cmd, "shape": cmd}}
+		ApplyTextPolicy(rows, mode)
+		for k, v := range rows[0] {
+			if s, ok := v.(string); ok && strings.Contains(s, "Pi1secret") {
+				t.Errorf("mode %s: column %s keeps the secret: %q", mode, k, s)
+			}
+		}
+		if mode == "full" && rows[0]["statement"] != cases[0].want {
+			t.Errorf("mode full: statement = %q, want %q", rows[0]["statement"], cases[0].want)
+		}
+	}
+}
+
 // TestMaskXML: the credential mask of an XML document (a showplan, a deadlock graph, a blocked process report) masks
 // each attribute value and text node and writes <masked> escaped, so the document stays XML (the join of 406's plans
 // with 415's mask: the text mask wrote a raw <masked> there); CDATA and comments are masked as raw text; a document with
