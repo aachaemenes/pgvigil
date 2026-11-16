@@ -155,7 +155,7 @@ DECLARE
   o   record;
 BEGIN
   IF (SELECT count(*) FROM pgvigil.investigation_journal WHERE investigation_id = p_id)
-     >= CASE WHEN p_event IN ('claimed', 'renewed', 'select', 'run') THEN 195 ELSE 200 END THEN
+     >= (CASE WHEN p_event IN ('claimed', 'renewed', 'select', 'run') THEN 195 ELSE 200 END) THEN   -- in parentheses: an IF ends at its first THEN
     RETURN NULL;
   END IF;
   SELECT * INTO o FROM pgvigil.investigation_outcome(p_outcome);
