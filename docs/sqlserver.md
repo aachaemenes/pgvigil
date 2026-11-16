@@ -57,12 +57,13 @@ Not proven by these runs: a Windows host on any version, an edition other than D
 
 ## Collections
 
-Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Thirty-five collections; `mssql_checks`, `mssql_identity` and `mssql_blitz` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
 | `mssql_instance` | 1 hour | the server's description (version, edition, update level, collation, clustered, Always On enabled), every row of `sys.configurations` with the previous value and the time a value in use changed, the CPU count, memory and start time | nothing for the first two; VIEW SERVER STATE for the third (partial without it) | runs | this page |
 | `mssql_traceflags` | 1 hour | the trace flags on globally (`DBCC TRACESTATUS(-1)`) and their history | any login | not run | [jobs and configuration history](jobs.md) |
+| `mssql_blitz` | 1 hour; a run once a week, when due | the First Responder Kit's sp_Blitz where the DBA installed it (`@CheckServerInfo = 1, @CheckUserDatabaseObjects = 0`), each run stored with its findings and the server's messages; off by default | EXECUTE on sp_Blitz and VIEW SERVER STATE (VIEW ANY DEFINITION and CONNECT ANY DATABASE: more of its checks) | not run | [day-one checks](sqlserver-checks.md#sp_blitz-weekly) |
 | `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
 | `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
 | `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |

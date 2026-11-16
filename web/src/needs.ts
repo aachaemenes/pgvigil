@@ -45,6 +45,7 @@ export const routeNeeds = {
   'alertrules/end': ['admin', 'ending an alert rule'],
   'drives/thresholds': ['admin', 'changing a drive threshold'],
   'pg/thresholds': ['admin', 'changing a PostgreSQL threshold'],
+  'mssql/blitz/settings': ['admin', 'changing the weekly sp_Blitz'],
   'jobs/thresholds': ['admin', 'changing a job threshold'],
   'jobs/exclusions': ['admin', 'changing a job exclusion'],
   'customreports': ['admin', 'changing a custom report'],

@@ -57,6 +57,13 @@ type Timeouter interface {
 	Timeout() time.Duration
 }
 
+// PlanCollector is what a collector adds when the repository decides whether, and how, a run goes ahead (B20-2's
+// weekly sp_Blitz: the instance's switch, the site default, the due rule, the database the procedure is in and its
+// statement's timeout). RunOnce calls RunPlanned in place of Run; an ErrSkip from it is a skipped run with its words.
+type PlanCollector interface {
+	RunPlanned(ctx context.Context, conn *sql.Conn, info Info, plan func(context.Context) (repo.BlitzPlan, error)) ([]collect.Row, error)
+}
+
 // runTimeout is the SQL Server side's deadline for one run of a collector.
 func runTimeout(c Collector) time.Duration {
 	if t, ok := c.(Timeouter); ok && t.Timeout() > 0 {
@@ -534,6 +541,13 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			defer ccancel()
 			return r.MSSQLSeqCursor(cctx, instanceID, source)
+		})
+	} else if pc, ok := c.(PlanCollector); ok {
+		// B20-2: the repository says whether the run goes ahead (the switch, the due rule) and how
+		rows, err = pc.RunPlanned(sctx, conn, info, func(_ context.Context) (repo.BlitzPlan, error) {
+			pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			defer pcancel()
+			return r.MSSQLBlitzPlan(pctx, instanceID)
 		})
 	} else {
 		rows, err = c.Run(sctx, conn, info)
