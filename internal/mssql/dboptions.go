@@ -67,7 +67,7 @@ var databaseOptions = []DatabaseOption{
 	{"ledger", "ledger", ""},
 	{"owner", "owner", "a login that exists"},
 	{"collation", "collation", "the server's own"},
-	{"replication", "replication", "none"},
+	{"replicated", "replication", "none"},
 	{"snapshot_of", "snapshot of", ""},
 	{"log_size_mb", "log size (MB)", ""},
 	{"log_used_pct", "log used %", "under 75"},
@@ -87,8 +87,9 @@ var bitOptions = []string{"read_only", "auto_close", "auto_shrink", "auto_create
 const databasesColsSQL = `SELECT CAST(name AS nvarchar(128)) AS name FROM sys.all_columns WHERE object_id = OBJECT_ID(N'sys.databases')`
 
 // databasesSQL: one row per database. The first three %s are the columns newer servers have, or NULL; the next five
-// the replication flags and their words for the grid (sp_Blitz 19), NULL where a platform's sys.databases lacks them. The last good
-// CHECKDB is the server's local time in the database's boot page: its age is taken on the server, its instant moved
+// the replication flags and their words for the grid (sp_Blitz 19; 'replicated': REPLICATION is a T-SQL keyword, and the
+// words say 'published (merge)': the read-only test refuses a statement holding 'MERGE '), NULL where a platform lacks
+// them. The last good CHECKDB is the server's local time in the database's boot page: its age is taken on the server, its instant moved
 // to UTC by the server's own offset (utcText); 1900-01-01 = never. A database that is not started gives NULL (not read).
 var databasesSQL = `SELECT d.database_id, d.name AS database_name, CAST(d.state_desc AS nvarchar(60)) AS state,
   CAST(d.user_access_desc AS nvarchar(60)) AS user_access, CAST(d.is_read_only AS int) AS read_only, CAST(d.is_in_standby AS int) AS in_standby,
@@ -111,7 +112,7 @@ var databasesSQL = `SELECT d.database_id, d.name AS database_name, CAST(d.state_
   %s AS adr, %s AS optimized_locking, %s AS ledger,
   CAST(CASE WHEN d.source_database_id IS NULL THEN 0 ELSE 1 END AS int) AS is_snapshot,
   CAST(DB_NAME(d.source_database_id) AS nvarchar(128)) AS snapshot_of,
-  %s AS published, %s AS merge_published, %s AS subscribed, %s AS distributor, %s AS replication,
+  %s AS published, %s AS merge_published, %s AS subscribed, %s AS distributor, %s AS replicated,
   CAST(d.log_reuse_wait_desc AS nvarchar(60)) AS log_reuse_wait,
   CAST(SERVERPROPERTY('Collation') AS nvarchar(128)) AS server_collation,
   DATEDIFF(day, d.create_date, GETDATE()) AS age_days,
@@ -294,7 +295,7 @@ var databaseRules = []dbRule{
 		return "", "", ""
 	}},
 	// BLITZ-GAP (the lead 05:2x): sp_Blitz 19, 21 and 77, judged by pgvigil over its own read of sys.databases
-	{"replication", AreaDBOptions, "replication in use", func(d dbFacts, _ serverFacts) (string, string, string) {
+	{"replicated", AreaDBOptions, "replication in use", func(d dbFacts, _ serverFacts) (string, string, string) {
 		var on []string
 		for _, f := range []struct{ key, words string }{
 			{"published", "published for transactional or snapshot replication"}, {"merge_published", "published for merge replication"},
@@ -612,7 +613,7 @@ func databasesQuery(have map[string]bool) string {
 		return "CAST(NULL AS int)"
 	}
 	pub, mrg, sub, dis := col("is_published"), col("is_merge_published"), col("is_subscribed"), col("is_distributor")
-	repl := "CAST(STUFF(CASE WHEN " + pub + " = 1 THEN ', published' ELSE '' END + CASE WHEN " + mrg + " = 1 THEN ', merge published' ELSE '' END + " +
+	repl := "CAST(STUFF(CASE WHEN " + pub + " = 1 THEN ', published' ELSE '' END + CASE WHEN " + mrg + " = 1 THEN ', published (merge)' ELSE '' END + " +
 		"CASE WHEN " + sub + " = 1 THEN ', subscribed' ELSE '' END + CASE WHEN " + dis + " = 1 THEN ', distributor' ELSE '' END, 1, 2, '') AS nvarchar(100))"
 	return fmt.Sprintf(databasesSQL, col("is_accelerated_database_recovery_on"), col("is_optimized_locking_on"), col("is_ledger_on"),
 		pub, mrg, sub, dis, repl)

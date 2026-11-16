@@ -381,10 +381,10 @@ func TestDatabaseRules(t *testing.T) {
 		{collect.Row{"checkdb_age_min": int64(7*1440 + 12*60)}, "last_good_checkdb", "warn", "warning", AreaCheckDB, "dbachecks LastGoodCheckDb"},
 		{collect.Row{"checkdb_age_min": int64(15 * 1440)}, "last_good_checkdb", "crit", "critical", AreaCheckDB, "sp_Blitz 68"},
 		// BLITZ-GAP (the lead 05:2x): replication in use, TDE, a database snapshot
-		{collect.Row{"published": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
-		{collect.Row{"merge_published": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
-		{collect.Row{"subscribed": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
-		{collect.Row{"distributor": int64(1)}, "replication", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"published": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"merge_published": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"subscribed": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
+		{collect.Row{"distributor": int64(1)}, "replicated", "warn", "info", AreaDBOptions, "sp_Blitz 19"},
 		{collect.Row{"encrypted": int64(1)}, "encrypted", "warn", "info", AreaDBOptions, "sp_Blitz 21"},
 		{collect.Row{"is_snapshot": int64(1), "snapshot_of": "src"}, "snapshot_of", "warn", "info", AreaDBOptions, "sp_Blitz 77"},
 	}
