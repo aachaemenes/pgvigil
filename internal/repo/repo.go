@@ -629,7 +629,9 @@ func (r *Repo) HoursRetention(ctx context.Context) (map[string]int, error) {
 // by the function's own rule: the month after the partition's (UTC) lies before now minus days - an hours table's
 // (pgvigil.hours_retention, 0139) by its own days, or by hours[table] when given (purge -hours, before it is set).
 // It takes every partitioned series in the schema, so a series the function does not yet name
-// would be listed though kept.
+// would be listed though kept. The month is parsed only from a name that ends in one, inside a CASE: the server may test
+// a WHERE's conditions on every pg_class row before the join, in any order, and a TOAST table pg_toast_<six digits>
+// ending in no month (the database past OID 100,000) failed the whole list with 22008 (proof-purge's OID row).
 func (r *Repo) PurgeCandidates(ctx context.Context, days int, hours map[string]int) ([]string, error) {
 	var have bool
 	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('pgvigil.hours_retention') IS NOT NULL`).Scan(&have); err != nil {
@@ -651,8 +653,9 @@ SELECT c.relname
   JOIN pg_class p ON p.oid = i.inhparent
   JOIN pg_namespace ns ON ns.oid = p.relnamespace
  WHERE ns.nspname = 'pgvigil'
-   AND c.relname ~ '_[0-9]{6}$'
-   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC'
+   AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
+   AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
+        + interval '1 month') AT TIME ZONE 'UTC'
        < now() - make_interval(days => `+age+`)
    AND cardinality($2::text[]) = cardinality($3::int[])
  ORDER BY c.relname`, days, names, ages)

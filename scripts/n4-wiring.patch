@@ -1,0 +1,38 @@
+diff --git i/internal/repo/sql/0139_job_stats_hourly.sql w/internal/repo/sql/0139_job_stats_hourly.sql
+index 3d7c70c8..33885d67 100644
+--- i/internal/repo/sql/0139_job_stats_hourly.sql
++++ w/internal/repo/sql/0139_job_stats_hourly.sql
+@@ -454,8 +454,12 @@ BEGIN
+     SELECT c.relname
+       FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+      WHERE i.inhparent = 'pgvigil.job_stats_hourly'::regclass
+-       AND c.relname ~ '_[0-9]{6}$'
+-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
++       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
++       -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
++       -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
++       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
++       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
++            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => v_days)
+      ORDER BY c.relname
+   LOOP
+     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index 9dbcf660..80990021 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -205,8 +205,12 @@ BEGIN
+                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+                          'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'mssql_azuredb_minute')
+-       AND c.relname ~ '_[0-9]{6}$'
+-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
++       -- a name ending in a month (YYYYMM), parsed inside a CASE: the server may test these conditions on every pg_class
++       -- row before the join, in any order, and a TOAST table pg_toast_<six digits> ending in no month (a database past
++       -- OID 100,000) failed the whole purge with 22008 (proof-purge's OID row)
++       AND c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$'
++       AND (CASE WHEN c.relname ~ '_[0-9]{4}(0[1-9]|1[0-2])$' THEN to_date(right(c.relname, 6) || '01', 'YYYYMMDD') END
++            + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
+      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
+      -- ACCESS EXCLUSIVE on its parent)
+      ORDER BY p.relname, c.relname
