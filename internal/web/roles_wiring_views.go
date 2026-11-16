@@ -37,8 +37,9 @@ const viewSharedRefused = "changing a shared view needs the admin role"
 
 // viewRoleWords answers the store's refusal of a shared write: the store is the one judge of a shared write (shared_ok
 // is roleCan(r)["admin"], true only on a positive admin read: never failing open) and the one writer of ui_view_log, so
-// the refused attempt is logged before this answers - 403 in the role's words (B24f's text), or roleOK's 503 words
-// when the role could not be read.
+// the refused attempt is logged before this answers - 403 in the role's words (B24f's text). A role that could not be
+// read never gets here: the route's needViewer gate (roleOK) answers 503 before the handler, and that request is not
+// logged (q_views.go); the 503 below only keeps the words right if this is called from another path.
 func (s *Server) viewRoleWords(r *http.Request) (int, string) {
 	wh, ok := whoOf(r)
 	if !ok {

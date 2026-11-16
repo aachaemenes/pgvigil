@@ -19,7 +19,7 @@ import (
 
 // TestViewWritesLogEveryRefusalOnAStore: the store is the one judge of a shared write and the one
 // writer of ui_view_log - every write attempt that reaches it leaves one row, a refusal too. Below admin, a save that
-// makes a view shared, an edit of the shared view and its delete are answered 403 in the role's words (B24f's text)
+// makes a view shared, an edit of the shared view, an edit that un-shares it and its delete are answered 403 in the role's words (B24f's text)
 // AND leave exactly one 'forbidden' row each; an admin's shared save is done; a personal view's refusals keep the
 // store's own words (S2b). A migrated store (PGVIGIL_REPO_TEST_DSN); users of its own, removed after.
 func TestViewWritesLogEveryRefusalOnAStore(t *testing.T) {
@@ -84,6 +84,8 @@ func TestViewWritesLogEveryRefusalOnAStore(t *testing.T) {
 	for _, c := range []struct{ what, path, body, op string }{
 		{"u2's shared save", "/api/views", `{"kind":"page","page":"root:fleet","name":"u2shared` + suf + `","shared":true,"state":{"params":{}}}`, "create"},
 		{"u2's edit of the shared view", "/api/views", `{"view_id":` + team + `,"version":1,"kind":"page","page":"root:fleet","name":"team` + suf + `","shared":true,"state":{"params":{"focus":"1"}}}`, "save"},
+		// an edit that un-shares it: the body says personal, the stored view is shared (0259 import_view_save reads both)
+		{"u2's un-sharing edit of the shared view", "/api/views", `{"view_id":` + team + `,"version":1,"kind":"page","page":"root:fleet","name":"team` + suf + `","shared":false,"state":{"params":{}}}`, "save"},
 		{"u2's delete of the shared view", "/api/views/delete", `{"view_id":` + team + `,"version":1}`, "delete"},
 	} {
 		before := rows(u2, c.op, "forbidden")

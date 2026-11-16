@@ -30,9 +30,10 @@ import (
 // 403, conflict 409 (a stale version names the stored one; a taken name), each refusal in words. Shared writes: an
 // admin's (B24f's 'change shared views' right); the store judges them through shared_ok and logs a refusal like any,
 // serve answers it in the role's words (roles_wiring_views.go viewRoleWords); pgvigil.yaml views.shared_editors is read
-// and no longer decides. A request that never reaches the store (no X-Pgvigil header, views off, no login, a body
-// unreadable, over 256 KB or holding a NUL, a payload the door refuses) is answered and not logged: no user, or nothing
-// the store can judge.
+// and no longer decides. A request that never reaches the store (no X-Pgvigil header, views off, no login, a role
+// that could not be read - the route's needViewer gate answers 503 before the handler -, a body unreadable, over
+// 256 KB or holding a NUL, a payload the door refuses) is answered and not logged: no user, or nothing the store can
+// judge.
 //                                                                     -> Server.Views, Server.ViewSave, Server.ViewDelete
 
 // viewBodyMax: a request body; the store refuses a state over 64 KB in words (and logs it), so the body may hold more.
