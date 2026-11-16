@@ -1,8 +1,8 @@
-diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
-index a7afc66f..7f5dca46 100644
---- i/cmd/pgvigil/report.go
-+++ w/cmd/pgvigil/report.go
-@@ -325,6 +325,8 @@ var knownKeys = map[string]bool{
+diff --git c/cmd/pgvigil/report.go i/cmd/pgvigil/report.go
+index ddc90c4c..65b8269b 100644
+--- c/cmd/pgvigil/report.go
++++ i/cmd/pgvigil/report.go
+@@ -336,6 +336,8 @@ var knownKeys = map[string]bool{
  	"helo": true, "url": true, "format": true, "dir": true, "routing_key": true,
  	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
  	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
@@ -10,12 +10,12 @@ index a7afc66f..7f5dca46 100644
 +	"procedure": true, "database": true,
  	"warning": true, "critical": true,
  	"reports": true, "daily_checks": true, "enabled": true, "at": true, "tz": true, "as": true, "channel": true,
- }
-diff --git i/internal/mssql/mssql.go w/internal/mssql/mssql.go
-index d9e48226..8c3a3f0d 100644
---- i/internal/mssql/mssql.go
-+++ w/internal/mssql/mssql.go
-@@ -57,6 +57,14 @@ type Timeouter interface {
+ 	// tasks 403a / 403b / B24k (alerts.Settings): a channel's digest and checks, Pushover, Zabbix, Azure Monitor, the
+diff --git c/internal/mssql/mssql.go i/internal/mssql/mssql.go
+index ff136ae2..b9ac1dc1 100644
+--- c/internal/mssql/mssql.go
++++ i/internal/mssql/mssql.go
+@@ -71,6 +71,14 @@ type Timeouter interface {
  	Timeout() time.Duration
  }
  
@@ -30,7 +30,7 @@ index d9e48226..8c3a3f0d 100644
  // runTimeout is the SQL Server side's deadline for one run of a collector.
  func runTimeout(c Collector) time.Duration {
  	if t, ok := c.(Timeouter); ok && t.Timeout() > 0 {
-@@ -442,6 +450,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
+@@ -519,6 +527,11 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
  		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
  	}
  	start := time.Now()
@@ -42,10 +42,10 @@ index d9e48226..8c3a3f0d 100644
  	limit := runTimeout(c)
  	sctx, cancel := context.WithTimeout(ctx, limit)
  	defer cancel()
-@@ -500,7 +513,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
- 	}
+@@ -631,7 +644,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
  	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
  	var rows []collect.Row
+ 	cursorFailed := false // the read of the collector's own cursor failed: the repository's side, stage 'import' (0198)
 -	if cc, ok := c.(CursorCollector); ok {
 +	if ic, ok := c.(InstanceCollector); ok {
 +		rows, err = ic.RunInstance(sctx, conn, info, in)
@@ -53,24 +53,24 @@ index d9e48226..8c3a3f0d 100644
  		rows, err = cc.RunFrom(sctx, conn, info, func(_ context.Context, source string) (int64, bool, error) {
  			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
  			defer ccancel()
-diff --git i/web/src/main.ts w/web/src/main.ts
-index 9642837e..a2c2b585 100644
---- i/web/src/main.ts
-+++ w/web/src/main.ts
-@@ -100,7 +100,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
+diff --git c/web/src/main.ts i/web/src/main.ts
+index a7070a72..cc27f39d 100644
+--- c/web/src/main.ts
++++ i/web/src/main.ts
+@@ -110,7 +110,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
  const mssqlPages: Record<string, Render> = {
    summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
-   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_xewaits: mssqlXEWaits, mssql_xewarnings: mssqlXEWarnings, mssql_xemodules: mssqlXEModules, mssql_xecaptures: mssqlXECaptures, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
 -  jobstimeline: jobsTimelineView,
 +  jobstimeline: jobsTimelineView, custom: customView,
-   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
-   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
-   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
-diff --git i/web/src/router.ts w/web/src/router.ts
-index 1e611c44..8a3f5b6c 100644
---- i/web/src/router.ts
-+++ w/web/src/router.ts
-@@ -93,13 +93,14 @@ export const rootGroups: TabGroup[] = [
+   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); s.append(await geoReplBlock(c).catch(() => document.createElement('span'))); s.append(await cloudReplicasBlock(c).catch(() => document.createElement('span'))); return s; },
+   mssqllogshipping: mssqlLogShippingView, mssqlmirroring: mssqlMirroringView, mssqlag: mssqlAgView,
+   mssqlbackups: mssqlBackups, mssqlrestore: mssqlRestore, mssqljobs: mssqlJobs, mssqlmaintenance: mssqlMaintenanceView, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+diff --git c/web/src/router.ts i/web/src/router.ts
+index 65e2fc9d..32fd1abe 100644
+--- c/web/src/router.ts
++++ i/web/src/router.ts
+@@ -93,14 +93,15 @@ export const rootGroups: TabGroup[] = [
  // pageEngine: the fleet pages that hold one engine alone, by their DATA (the TAGTREE review A #2, a read of every root
  // page's handler and SQL on 11-14): a SQL filter on the engine (versions 0063 L200, corruption 0063 L216, tablesize
  // 0086 L211), tables only one engine's collections write (internal/engines Specs: collect.All for PostgreSQL - host
@@ -80,28 +80,29 @@ index 1e611c44..8a3f5b6c 100644
  // the page's own words (reports.ts L430 / L577, the options pages). A tag folder whose instances are all of the other
  // engine leaves them out, as a strip should; every other page holds both engines.
  export const pageEngine: Record<string, 'sqlserver' | 'postgres'> = {
-   mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver',
+   mssqlrisks: 'sqlserver', mssqltempdb: 'sqlserver', rp_flushed: 'sqlserver', rp_services: 'sqlserver', azuresummary: 'sqlserver', mssqlerrors: 'sqlserver',
+   mssqllogshipping: 'sqlserver', mssqlmirroring: 'sqlserver', mssqlag: 'sqlserver',
    pgrisks: 'postgres', pgreplication: 'postgres', extensions: 'postgres', corruption: 'postgres', versions: 'postgres',
 -  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', custom: 'postgres', disks: 'postgres',
 +  tablesize: 'postgres', backups: 'postgres', roles: 'postgres', dms: 'postgres', disks: 'postgres',
    storage: 'postgres', growth: 'postgres', indexes: 'postgres', jobs: 'postgres',
    // the Imported servers page (Doors) holds SQL Server instances alone (dbadash.ts): a PostgreSQL-only folder has no Doors folder
    dbadash: 'sqlserver',
-@@ -126,7 +127,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
-   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+@@ -127,7 +128,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlpool: 'Elastic pool', mssqlazure: 'Azure', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
    mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
-   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlsecurity: 'Security', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
 -  mssqlqueries: 'Queries',
 +  mssqlqueries: 'Queries', custom: 'Custom',
-   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health', mssqlerrors: 'SQL Server errors',
    // the instance's Reports folder (reports.ts)
    rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
-@@ -136,7 +137,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+@@ -137,7 +138,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
  export const mssqlInstanceGroups: TabGroup[] = [
-   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
-   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
--  { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
-+  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'custom'] },
-   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
+   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'mssql_xewaits', 'mssql_xewarnings', 'mssql_xemodules', 'mssql_xecaptures', 'findings'] },
+   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlsecurity', 'mssqlactions'] },
+-  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors'] },
++  { key: 'checks', name: 'Checks', tabs: ['collectiondates', 'collectorerrors', 'custom'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['mssqlbackups', 'mssqlrestore', 'mssqllogshipping', 'mssqlmirroring', 'mssqlag', 'availability'] },
    { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
-   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'mssqlmaintenance', 'jobstimeline'] },
