@@ -470,7 +470,7 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
 // ImportDeadlockTries is how many times Import (and the demo seed's importer) runs one import that PostgreSQL ends with a deadlock.
 const ImportDeadlockTries = 3
 
-// IsDeadlock: PostgreSQL ended the statement's transaction as a deadlock's victim (SQLSTATE 40P01).
+// IsDeadlock reports whether PostgreSQL ended the statement's transaction as a deadlock's victim (SQLSTATE 40P01).
 func IsDeadlock(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
