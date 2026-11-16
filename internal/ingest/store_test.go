@@ -161,6 +161,32 @@ func TestRemoteObjectsOnAStore(t *testing.T) {
 	    AND has_table_privilege('pgvigil_reader', 'pgvigil.remote_collector_state', 'SELECT') AND has_table_privilege('pgvigil_reader', 'pgvigil.remote_collection_interval', 'SELECT')`); v != true {
 		t.Errorf("SELECT on the three views for pgvigil_reader: %v", v)
 	}
+	// (g) the column contract slice V reads (review B, 12:1x): the site's expected_every on its collectors' row
+	if v := one("remote_collector_state's expected_every", `SELECT expected_every_secs FROM pgvigil.remote_collector_state WHERE site = $1 AND collector = 'c1'`, site); fmt.Sprint(v) != "60" {
+		t.Errorf("remote_collector_state.expected_every_secs: %v, want 60 (the site's)", v)
+	}
+	// an instance whose only bundle is still loading names its collector
+	id2, err := ensure("SQL02")
+	if err != nil {
+		t.Fatalf("import_remote_ensure SQL02: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT pgvigil.remote_bundle_begin($1, 'c2', 'SQL02', 'st2', 1, $2, $3, 'd9', $4)`, site, end.Add(-5*time.Minute), end, id2); err != nil {
+		t.Fatalf("remote_bundle_begin SQL02: %v", err)
+	}
+	if v := one("a loading instance's collector", `SELECT coalesce(collector, '(null)') FROM pgvigil.remote_instance_state WHERE instance_id = $1`, id2); fmt.Sprint(v) != "c2" {
+		t.Errorf("remote_instance_state.collector of an instance whose only bundle is loading: %v, want c2", v)
+	}
+	// (h) the hub's own file never takes a site's name: ensure_instance, both forms, refuses it; the site's own next
+	// bundle still ensures it
+	for _, q := range []string{`SELECT pgvigil.ensure_instance($1, 'onprem', '16.0', 160000, false, '{}'::text[], 'sqlserver')`,
+		`SELECT pgvigil.ensure_instance($1, 'onprem', '16.0', 160000, false, '{}'::text[])`} {
+		if _, err := pool.Exec(ctx, q, site+"/SQL01"); err == nil || !strings.Contains(err.Error(), "is read by remote site") {
+			t.Errorf("%s... of a site's instance: %v, want 'is read by remote site'", q[:60], err)
+		}
+	}
+	if again, err := ensure("SQL01"); err != nil || again != id {
+		t.Errorf("the site's own ensure after the refusals: %d %v, want %d", again, err, id)
+	}
 }
 
 // TestRemoteJoinDraftOnAStore (H1, the join lines): with scripts/remote-join-draft.sql applied (the box job applies it
