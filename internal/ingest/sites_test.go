@@ -36,3 +36,12 @@ func TestSitesRefuseASharedDrop(t *testing.T) {
 		}
 	}
 }
+
+// a bucket or container drop with no prefix is refused in words (at the root its bundles would mix with anything else)
+func TestOpenDropNeedsAPrefix(t *testing.T) {
+	for _, typ := range []string{"s3", "azure_blob"} {
+		if _, err := OpenDrop(context.Background(), config.ExportDestination{Type: typ, Bucket: "b", Container: "c", Prefix: "/"}); err == nil || !strings.Contains(err.Error(), "needs its prefix") {
+			t.Errorf("%s with no prefix: %v, want 'needs its prefix'", typ, err)
+		}
+	}
+}

@@ -3,7 +3,6 @@ package ingest
 import (
 	"context"
 	"fmt"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -11,22 +10,21 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/export"
 )
 
-// OpenDrop opens a site's drop read-only through internal/export (ingest calls only its Get and List). A bucket or
-// container drop needs a prefix: internal/export roots its keys at '<prefix>/<name>/', so the prefix's last part is
-// the name and the bundles' folders start under it.
+// OpenDrop opens a site's drop read-only through internal/export (ingest calls only its Get and List): its keys
+// rooted at the drop's prefix (no name). A bucket or container drop needs its prefix: at the bucket's root the
+// bundles would mix with anything else kept there, so it is refused in words.
 func OpenDrop(ctx context.Context, d config.ExportDestination) (Drop, error) {
 	switch d.Type {
 	case "s3", "azure_blob":
 		p := strings.Trim(d.Prefix, "/")
 		if p == "" {
-			return nil, fmt.Errorf("a %s drop needs its prefix: the folder of the bucket or container the site's bundles land in", d.Type)
+			return nil, fmt.Errorf("a %s drop needs its prefix: the folder of the bucket or container the site's bundles land in (at the root they would mix with anything else kept there)", d.Type)
 		}
-		dir, name := path.Split(p)
 		if d.Type == "s3" {
-			return export.NewS3(ctx, export.S3Options{Bucket: d.Bucket, Prefix: strings.Trim(dir, "/"), Region: d.Region, Endpoint: d.Endpoint, Profile: d.Profile, Name: name})
+			return export.NewS3(ctx, export.S3Options{Bucket: d.Bucket, Prefix: p, Region: d.Region, Endpoint: d.Endpoint, Profile: d.Profile})
 		}
-		return export.NewAzureBlob(export.BlobOptions{AccountURL: d.AccountURL, Container: d.Container, Prefix: strings.Trim(dir, "/"),
-			ConnectionString: d.ConnectionString(), SASURL: d.SASURL(), Name: name})
+		return export.NewAzureBlob(export.BlobOptions{AccountURL: d.AccountURL, Container: d.Container, Prefix: p,
+			ConnectionString: d.ConnectionString(), SASURL: d.SASURL()})
 	}
 	return export.NewFolder(d.Path), nil
 }
