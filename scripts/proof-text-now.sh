@@ -24,7 +24,10 @@
 #  M. mixed: no reply string is a stored text of erp01 or sql01 (their own routes and the fleet's: Running, Slow
 #     queries, Reports); the fleet routes still show a stored text of another instance (the rule places each row by
 #     its own instance, it does not hide the fleet).
-#  Red on d04bc70a (rel-j15dl): N, Z and M fail - the routes return the texts stored under full.
+#  A. the alert sends (the lead's T1 red row): `pgvigil alerts` with a file-drop channel under full drops at least one
+#     alert whose value or detail is a stored text (a head statement: decisive); under none no dropped file holds a
+#     stored text or the start of one (the head statement cut to "(not shown: ...)").
+#  Red on d04bc70a (rel-j15dl): N, Z, M and A (none) fail - the routes and the sends return the texts stored under full.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -236,7 +239,11 @@ for l in bad:
     per[route][0] += 1; per[route][1].add(rest.split(" of instance")[0])
 for route in sorted(per): print(f"   LEAK {route}: {per[route][0]} strings, {', '.join(sorted(per[route][1]))}")
 print("   example leaks: " + " | ".join(bad[:3]))
+alert_hits = sum(1 for c in walk["calls"] if c["who"] == "alert" for s in c.get("strings", []) if hits(s))
+if any(c["who"] == "alert" for c in walk["calls"]):
+    print(f"   the alert sends: {alert_hits} dropped string(s) are stored texts")
 if pol == "full":
+    if not alert_hits: print("   the alert sends under full drop no stored text: A is NOT DECISIVE")
     sites = sorted(set(t[0] for t in texts))
     print("   sites the seed filled and no reply showed: " + ", ".join(s for s in sites if not shown[s]) or "none")
     sys.exit(0 if sum(shown.values()) else 1)
@@ -273,10 +280,30 @@ sys.exit(1 if bad else 0)
 EOF
 }
 
+alerts_with() {   # $1 = the policy: one pass of `pgvigil alerts` with a file drop named for it; its files join the walk
+  local d="$WORK/drop-$1"; mkdir -p "$d"
+  { cat "$WORK/$1.yaml"; echo "alerts:"; echo "  - name: textnow_$1"; echo "    kind: file"; echo "    file:"; echo "      dir: $d"; } > "$WORK/$1-alerts.yaml"
+  "$WORK/pgvigil" alerts -config "$WORK/$1-alerts.yaml" > "$WORK/alerts-$1.log" 2>&1 || { tail -5 "$WORK/alerts-$1.log"; fail "pgvigil alerts under $1"; }
+  python3 - "$WORK/walk-$1.json" "$d" <<'PY'
+import json, os, sys
+w = json.load(open(sys.argv[1])); acc = []
+def strings(v):
+    if isinstance(v, str): acc.append(v)
+    elif isinstance(v, dict): [strings(x) for x in v.values()]
+    elif isinstance(v, list): [strings(x) for x in v]
+files = sorted(os.listdir(sys.argv[2]))
+for f in files: strings(json.load(open(os.path.join(sys.argv[2], f))))
+w["calls"].append({"path": "pgvigil alerts (file drop)", "who": "alert", "status": 200, "params": {}, "strings": acc})
+json.dump(w, open(sys.argv[1], "w"))
+print(f"alerts under {os.path.basename(sys.argv[2])[5:]}: {len(files)} file(s) dropped")
+PY
+}
+
 rc=0
 for pol in full none normalized mixed; do
   serve_with "$pol"
   walk "$pol"
+  [[ "$pol" == full || "$pol" == none ]] && alerts_with "$pol"
   judge "$pol" || rc=1
 done
 [[ $rc -eq 0 ]] && echo "PASS" || { echo "FAIL"; exit 1; }
