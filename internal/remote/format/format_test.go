@@ -3,8 +3,6 @@ package format
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
@@ -257,8 +255,6 @@ func regz(t *testing.T, dir string, m *Manifest, view, body string) {
 	write(t, filepath.Join(dir, SumsFile), sums.Bytes())
 	m.SumsSHA256 = sha(sums.Bytes())
 }
-
-func sha(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 
 func readFile(t *testing.T, p string) []byte {
 	t.Helper()
