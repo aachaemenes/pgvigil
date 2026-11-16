@@ -228,7 +228,7 @@ UNION ALL` + replMergeSubscriptions(db, mapped, names)
   CASE WHEN h.delivery_rate > 0 THEN u.undistributed / h.delivery_rate END AS est_catchup_s,
   ` + utcText("old.entry_time") + ` AS oldest_pending_utc,
   CASE WHEN old.entry_time IS NOT NULL THEN DATEDIFF(second, old.entry_time, GETDATE()) END AS oldest_pending_age_s,
-  ` + replFailingCols() + `, CAST(NULL AS int) AS failing_untimed
+  ` + replFailingCols() + `, CAST(NULL AS int) AS failing_untimed, CAST(NULL AS int) AS failing_anchor, CAST(NULL AS bigint) AS failing_cut
 FROM ` + d + `.dbo.MSdistribution_agents a
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
 LEFT JOIN ` + replServers(d, mapped) + ` sub ON sub.server_id = a.subscriber_id
@@ -277,6 +277,10 @@ const mergeRecoveryHoldMin = 10
 // the import takes the first read that saw it). The error = the newest MSmerge_history row of the streak that names an
 // error id, its MSrepl_errors row with an error code first. MSmerge_history has no time of its own: its timestamp
 // (rowversion) orders the rows, MSrepl_errors.time dates the errors.
+// The streak key (review q10wc N3, the lead 2026-11-15): on a failing row failing_anchor = the newest healthy session
+// (0: none) and failing_cut = the last recovery inside a session as its rowversion (0: none). A new streak needs a
+// newer one of them (a purge of old history only lowers them), so the import tells a retry of one streak from a new
+// failure by the key, never by comparing the distributor's error times with the collector's clock.
 func replMergeSubscriptions(db string, mapped, names bool) string {
 	d := quoteName(db)
 	hold := strconv.Itoa(mergeRecoveryHoldMin)
@@ -310,7 +314,9 @@ SELECT 'subscription', ` + literal(db) + `, a.id,
   ` + utcText("COALESCE(h.end_time, h.start_time)") + `, ` + utcText("h.start_time") + `,
   CAST(NULL AS int), h.delivery_rate, CAST(NULL AS bigint), CAST(NULL AS float), CAST(NULL AS varchar(33)), CAST(NULL AS int),
   ` + utcText("mt.since") + `, NULLIF(me.error_code, N''), me.error_text,
-  CASE WHEN mf.first_id IS NOT NULL AND mt.since IS NULL THEN 1 END
+  CASE WHEN mf.first_id IS NOT NULL AND mt.since IS NULL THEN 1 END,
+  CASE WHEN mf.first_id IS NOT NULL THEN ISNULL(ISNULL(m3.ok3, m24.ok24), 0) END,
+  CASE WHEN mf.first_id IS NOT NULL THEN ISNULL(CAST(mc.cut AS bigint), 0) END
 FROM ` + d + `.dbo.MSmerge_agents a
 LEFT JOIN ` + replServers(d, mapped) + ` srv ON srv.server_id = a.publisher_id
 LEFT JOIN ` + replServers(d, mapped) + ` sub ON sub.server_id = a.subscriber_id

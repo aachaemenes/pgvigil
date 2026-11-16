@@ -101,6 +101,11 @@
 #        clean, untimed -> since the first read T0, failing_seen [red: the third read's time]; merge-retention 12 min
 #        then 8 min (an error purged) -> 12 min [red: 8]; merge-late-first untimed then timed 90 s -> T0, failing_seen
 #        [red: 90 s]; merge-new-streak 12 min then 90 s (a new error after the previous read) -> 90 s [green: the guard];
+#        N3 (the lead 17:2x, the streak key on every failing row, written before its red run on aa560520): the same
+#        streak while the key's anchor and cut are no newer; merge-recovered-untimed untimed, recovered, then timed 90 s
+#        with a newer anchor -> 90 s, no failing_seen [red: T0/true]; merge-skew 12 min then 8 min (an error time before
+#        the previous read) with a newer anchor -> 8 min [red: 12]; merge-new-cut 12 min then 8 min, a newer cut -> 8 min
+#        [red: 12]; the four rows above unchanged with their keys;
 #      - Q10W the alert row: repl_agent_retrying at 60 minutes (instance), a merge row failing since 75 min, then a read
 #        in a retry's clean window (in progress, no since), then failing again since the same 75 min: 'keeps failing
 #        or retrying', none, 'keeps failing or retrying', the stored since still the 75 min (review q10wb N4) [green on
@@ -483,24 +488,38 @@ warning:a replication agent keeps failing or retrying:merge / merge-failing'
   WUF='warning:a replication agent failed:merge / merge-untimed:true
 warning:a replication agent keeps failing or retrying:merge / merge-untimed2:false'
   if [ "$UT" = "true/true true/true " ] && [ "$UT2" = "true/null true/null " ] && [ "$UF" = "$WUF" ]; then ok "T4: the untimed fallback: $UT, $UT2, $(echo "$UF" | tr '\n' ' ')"; else red "T4-untimed" "$UT / $UT2 / $(echo "$UF" | tr '\n' ' ')"; fi
-  # the carry (review q10wa S2 / S3), three reads T0, T1, T2 on one instance: merge-untimed3 untimed, clean, untimed
-  # (one clean read between never resets: since T0, failing_seen); merge-retention since 12 min, then 8 min (its first
-  # error row purged at the distributor: an earlier stored time is kept while the series stays failing, 12 min);
-  # merge-late-first untimed, then timed since 90 s (the streak's oldest session had no error row: the first read
-  # that saw it stays, T0, failing_seen); merge-new-streak since 12 min, then 90 s (an error after the previous read
-  # while it held a real error time: a new streak, 90 s - the guard)
+  # the carry (review q10wa S2 / S3; N3, the lead 17:2x: by the streak key, not by clocks), three reads T0, T1, T2 on one
+  # instance; every failing row carries its key (failing_anchor = the newest healthy session, failing_cut = the last
+  # in-session recovery; a new streak needs a newer one of them): merge-untimed3 untimed, clean, untimed (one clean read
+  # between never resets: since T0, failing_seen); merge-retention since 12 min, then 8 min, same key (its first error
+  # row purged at the distributor: the earlier time kept, 12 min); merge-late-first untimed, then timed 90 s, same key
+  # (the first read that saw it stays, T0, failing_seen); merge-new-streak 12 min, then 90 s with a newer anchor (a new
+  # streak, 90 s); merge-recovered-untimed untimed, a real recovery (ended 4), then timed 90 s with a newer anchor
+  # (review q10wc N3 P6: a new streak, 90 s, no 'first read' words) [red on aa560520: T0/true]; merge-skew 12 min, then
+  # 8 min with a newer anchor - an error time before the previous read, as a distributor clock behind the collector's
+  # gives (P13: a new streak, 8 min) [red: 12 min]; merge-new-cut 12 min, then 8 min with the same anchor and a newer
+  # cut (a recovery inside the session: a new streak, 8 min) [red: 12 min]
   SC=$(q "select pgvigil.ensure_instance('proof-merge-carry-$HX', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
   T0=$(q "select now() - interval '5 minutes'"); F8=$(q "select now() - interval '8 minutes'")
-  carry() {   # carry <read time> <untimed3 extra> <retention since> <late-first extra> <new-streak since>
-    q "select pgvigil.import_mssql_replication($SC, '$1'::timestamptz, '[$(row merge merge-untimed3 s31 null "${2%%|*}" "$1" "${2#*|}"), $(job merge merge-untimed3 running),
-      $(row merge merge-retention s32 null 6 "$1" ", \"failing_since_utc\": \"$3\""), $(job merge merge-retention running),
-      $(row merge merge-late-first s33 null 6 "$1" "$4"), $(job merge merge-late-first running),
-      $(row merge merge-new-streak s34 null 6 "$1" ", \"failing_since_utc\": \"$5\""), $(job merge merge-new-streak running)]'::jsonb)" >/dev/null; }
-  carry "$T0" '6|, "failing_untimed": 1' "$F12" ', "failing_untimed": 1' "$F12"
-  carry "$T1" '3|' "$F8" ", \"failing_since_utc\": \"$F1\"" "$F1"
-  carry "$T2" '6|, "failing_untimed": 1' "$F8" ", \"failing_since_utc\": \"$F1\"" "$F1"
+  crow() { printf '%s, %s' "$(row merge "$1" "$2" null "$3" "$4" "${5:-}")" "$(job merge "$1" running)"; }   # crow <name> <subdb> <runstatus> <read> [extra]
+  K() { printf ', "failing_anchor": %s, "failing_cut": %s' "$1" "$2"; }                                    # the streak key
+  US=', "failing_untimed": 1'; S12=", \"failing_since_utc\": \"$F12\""; S8=", \"failing_since_utc\": \"$F8\""; S1=", \"failing_since_utc\": \"$F1\""
+  carry() { local at=$1; shift; local rows; rows=$(IFS=,; echo "$*"); q "select pgvigil.import_mssql_replication($SC, '$at'::timestamptz, '[$rows]'::jsonb)" >/dev/null; }
+  carry "$T0" "$(crow merge-untimed3 s31 6 "$T0" "$US$(K 5 0)")" "$(crow merge-retention s32 6 "$T0" "$S12$(K 5 0)")" \
+              "$(crow merge-late-first s33 6 "$T0" "$US$(K 5 0)")" "$(crow merge-new-streak s34 6 "$T0" "$S12$(K 5 0)")" \
+              "$(crow merge-recovered-untimed s35 6 "$T0" "$US$(K 5 0)")" "$(crow merge-skew s36 6 "$T0" "$S12$(K 5 0)")" \
+              "$(crow merge-new-cut s37 6 "$T0" "$S12$(K 5 0)")"
+  carry "$T1" "$(crow merge-untimed3 s31 3 "$T1")" "$(crow merge-retention s32 6 "$T1" "$S8$(K 5 0)")" \
+              "$(crow merge-late-first s33 6 "$T1" "$S1$(K 5 0)")" "$(crow merge-new-streak s34 6 "$T1" "$S1$(K 9 0)")" \
+              "$(crow merge-recovered-untimed s35 4 "$T1")" "$(crow merge-skew s36 6 "$T1" "$S8$(K 9 0)")" \
+              "$(crow merge-new-cut s37 6 "$T1" "$S8$(K 5 777)")"
+  carry "$T2" "$(crow merge-untimed3 s31 6 "$T2" "$US$(K 5 0)")" "$(crow merge-retention s32 6 "$T2" "$S8$(K 5 0)")" \
+              "$(crow merge-late-first s33 6 "$T2" "$S1$(K 5 0)")" "$(crow merge-new-streak s34 6 "$T2" "$S1$(K 9 0)")" \
+              "$(crow merge-recovered-untimed s35 6 "$T2" "$S1$(K 9 0)")" "$(crow merge-skew s36 6 "$T2" "$S8$(K 9 0)")" \
+              "$(crow merge-new-cut s37 6 "$T2" "$S8$(K 5 777)")"
   CY=$(q "select string_agg(agent_name || '=' || coalesce(CASE failing_since WHEN '$T0'::timestamptz THEN 'T0' WHEN '$F12'::timestamptz THEN 'F12' WHEN '$F8'::timestamptz THEN 'F8' WHEN '$F1'::timestamptz THEN 'F1' WHEN '$T2'::timestamptz THEN 'T2' ELSE failing_since::text END, 'null') || '/' || coalesce(failing_seen::text, 'null'), ',' order by agent_name) from pgvigil.mssql_replication_state where instance_id = $SC" 2>/dev/null || echo error)
-  if [ "$CY" = "merge-late-first=T0/true,merge-new-streak=F1/null,merge-retention=F12/null,merge-untimed3=T0/true" ]; then ok "T4: the carry: $CY"; else red "T4-carry" "$CY"; fi
+  WCY="merge-late-first=T0/true,merge-new-cut=F8/null,merge-new-streak=F1/null,merge-recovered-untimed=F1/null,merge-retention=F12/null,merge-skew=F8/null,merge-untimed3=T0/true"
+  if [ "$CY" = "$WCY" ]; then ok "T4: the carry: $CY"; else red "T4-carry" "got $CY, want $WCY"; fi
   # the alert row (the lead 16:1x): a 60-minute retrying rule is reached across a retry's clean first seconds - the
   # read in that window has no finding, the next read gives the same since back (0059's alert_state keeps an open
   # alert through a gap shorter than the channel's clear delay, 600 s by default: read, not changed here)

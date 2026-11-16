@@ -133,12 +133,25 @@ FROM `+s+`.dbo.MSmerge_agents a`)
 		if fmt.Sprint(r["failing_untimed"]) != fmt.Sprint(w["untimed"]) {
 			t.Errorf("%s: failing with no error time %v, want %v", name, r["failing_untimed"], w["untimed"])
 		}
+		// the streak key (N3): a failing row carries its anchor and cut, a row not failing neither
+		failing := r["failing_since_utc"] != nil || r["failing_untimed"] != nil
+		if failing != (r["failing_anchor"] != nil) || failing != (r["failing_cut"] != nil) {
+			t.Errorf("%s: streak key anchor %v cut %v on a row failing %v (want both set when failing, both NULL otherwise)",
+				name, r["failing_anchor"], r["failing_cut"], failing)
+		}
 		t.Logf("%s: runstatus %v, failing since %v, untimed %v, error %v: %v", name, r["runstatus"], r["failing_since_utc"], r["failing_untimed"], r["error_code"], r["error_text"])
 	}
 	// the flicker: the retry's error row gives back the first failure's time, never its own
 	if a, c := by["merge-flicker-a"], by["merge-flicker-c"]; a == nil || c == nil || a["failing_since_utc"] == nil ||
 		fmt.Sprint(a["failing_since_utc"]) != fmt.Sprint(c["failing_since_utc"]) {
 		t.Errorf("the flicker: merge-flicker-a since %v, merge-flicker-c since %v (want the same, not nil)", a["failing_since_utc"], c["failing_since_utc"])
+	}
+	// the streak key's cut: a recovery inside a session gives one (its row's rowversion), a plain retry none (0)
+	if r := by["merge-recovered-then-failing"]; r == nil || r["failing_cut"] == nil || fmt.Sprint(r["failing_cut"]) == "0" {
+		t.Errorf("merge-recovered-then-failing: cut %v, want its in-session recovery's rowversion (not 0, not NULL)", r["failing_cut"])
+	}
+	if r := by["merge-retrying"]; r == nil || fmt.Sprint(r["failing_cut"]) != "0" || fmt.Sprint(r["failing_anchor"]) == "0" {
+		t.Errorf("merge-retrying: anchor %v cut %v, want its newest healthy session and no cut (0)", r["failing_anchor"], r["failing_cut"])
 	}
 	pubs, err := QueryRows(ctx, conn, replPublicationsFor(stub, false))
 	if err != nil {
