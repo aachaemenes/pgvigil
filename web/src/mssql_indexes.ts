@@ -8,6 +8,10 @@
 // scatter, the untrusted keys and constraints, a statistic's histogram on demand (off unless an admin turns it on:
 // it shows the column's real values) and a fragmentation read on demand (a job of serve's: off unless an admin turns
 // it on, one at a time per instance, with Cancel).
+// Darling slice 3, task D404 (sp_BlitzIndex 8.34's and sp_IndexCleanup 2.11's sources): the inventory says which rows are
+// an indexed view's, names an index's partition scheme and column, and gives the table's create date; a Heaps block lists
+// the heaps of user tables (size, rows, reads, writes, forwarded fetches, deletes); a database's row says which part of
+// the read was not stored and why.
 import { get, post, rowsOf, Row, Table } from './api';
 import { lineChart, seriesColors } from './chart';
 import { Ctx, window_ } from './router';
@@ -16,7 +20,7 @@ import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid, offControl }
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlIndexesTab = 'mssqlindexes';
 
-type Parts = Record<'state' | 'databases' | 'indexes' | 'verdicts' | 'missing' | 'statsdbs' | 'stats' | 'findings', Table | null>;
+type Parts = Record<'state' | 'databases' | 'indexes' | 'heaps' | 'verdicts' | 'missing' | 'statsdbs' | 'stats' | 'findings', Table | null>;
 type Depth = Record<'state' | 'usage_series' | 'missing_series' | 'missing_top' | 'untrusted' | 'constraint_dbs' | 'fragmentation' | 'switches', Table | null>;
 const sev = (v: unknown) => v ? badge(String(v), v === 'warning' ? 'warn' : 'info') : '';
 const yes = (v: unknown) => v ? 'yes' : '';
@@ -101,7 +105,8 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'database' },
       { key: 'usage_days', label: 'days of counters', num: true, cls: (_v, r) => r.judged ? 'ok' : 'warn' },
       { key: 'usage_reason', label: 'since' }, { key: 'usage_since', label: 'at', fmt: fmtTime },
-      { key: 'guard', wide: true }, { key: 'indexes', num: true }, { key: 'note', wide: true }, { key: 'read_at', label: 'read', fmt: fmtTime }]));
+      { key: 'guard', wide: true }, { key: 'indexes', num: true }, { key: 'note', wide: true },
+      { key: 'parts_note', label: 'parts not read', wide: true }, { key: 'read_at', label: 'read', fmt: fmtTime }]));
     if (dp) out.push(...usageOverTime(dp));
     else out.push(el('h3', {}, 'User actions over time'), errorBox(dpErr));
     out.push(el('h3', {}, 'Indexes a rule names'), grid(rowsOf(d.verdicts), [
@@ -143,7 +148,10 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     if (dp) out.push(...fragmentation(dp, dbName));
     const cols: Col[] = [
       { key: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' }, { key: 'index_name', label: 'index' },
-      { key: 'index_type', label: 'type', fmt: v => String(v ?? '').toLowerCase() }, { key: 'rule', fmt: (v, r) => v ? badge(String(v), r.severity === 'warning' ? 'warn' : 'info') : '' },
+      { key: 'index_type', label: 'type', fmt: v => String(v ?? '').toLowerCase() },
+      { key: 'object_type', label: 'view', fmt: v => v === 'V' ? 'indexed view' : '' },
+      { key: 'data_space_name', label: 'partition scheme', fmt: (v, r) => r.data_space_type === 'PARTITION_SCHEME' ? `${String(v)}${r.partition_column ? ' (' + String(r.partition_column) + ')' : ''}` : '' },
+      { key: 'rule', fmt: (v, r) => v ? badge(String(v), r.severity === 'warning' ? 'warn' : 'info') : '' },
       { key: 'is_disabled', label: 'disabled', fmt: v => v ? badge('disabled', 'warn') : '' },
       { key: 'keys' }, { key: 'includes' }, { key: 'filter_definition', label: 'filter' },
       { key: 'is_unique', label: 'unique', fmt: yes }, { key: 'is_primary_key', label: 'PK', fmt: yes }, { key: 'ignore_dup_key', label: 'IGNORE_DUP_KEY', fmt: yes },
@@ -152,7 +160,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'writes', label: 'updates', num: true },
       { key: 'scans_per_seek', label: 'scans per seek', num: true, fmt: (_v, r) => ratio(r.user_scans, r.user_seeks, 'no seek') },
       { key: 'updates_per_read', label: 'updates per read', num: true, fmt: (_v, r) => ratio(r.writes, r.reads, 'no read') },
-      { key: 'last_read', label: 'last read', fmt: fmtTime },
+      { key: 'last_read', label: 'last read', fmt: fmtTime }, { key: 'table_created', label: 'table created', fmt: fmtTime },
       { key: 'compression' }, { key: 'fill_factor', label: 'fill factor', num: true }, { key: 'definition', fmt: script, wide: true },
       { key: 'index_id', label: 'trend', fmt: (_v, r) => {
         const b = el('button', { type: 'button', class: 'link' }, 'trend');
@@ -165,6 +173,18 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     out.push(el('h3', {}, `Inventory (${fmtNum(ix.length)}${ix.length >= 5000 ? ', the largest' : ''})`));
     if (histOff) out.push(el('p', { class: 'meta' }, 'Histogram: ' + histOff + '.'));
     out.push(grid(ix, cols));
+    const heaps = rowsOf(d.heaps);
+    out.push(el('h3', {}, `Heaps (${fmtNum(heaps.length)}${heaps.length >= 5000 ? ', the largest' : ''})`),
+      el('p', { class: 'meta' }, 'Tables with no clustered index. Reads and writes count since the usage window began; forwarded fetches and deletes come from '
+        + 'sys.dm_db_index_operational_stats and count only since the table\'s metadata entered the server\'s cache, which can be later than the server\'s start.'),
+      grid(heaps, [
+        { key: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
+        { key: 'size_mb', label: 'size (MB)', num: true }, { key: 'row_count', label: 'rows', num: true },
+        { key: 'reads', num: true }, { key: 'writes', label: 'updates', num: true },
+        { key: 'forwarded_fetch_count', label: 'forwarded fetches', num: true }, { key: 'leaf_delete_count', label: 'deletes', num: true },
+        { key: 'data_space_name', label: 'partition scheme', fmt: (v, r) => r.data_space_type === 'PARTITION_SCHEME' ? `${String(v)}${r.partition_column ? ' (' + String(r.partition_column) + ')' : ''}` : '' },
+        { key: 'compression' }, { key: 'last_read', label: 'last read', fmt: fmtTime }, { key: 'table_created', label: 'table created', fmt: fmtTime }],
+        'No heap: every user table has a clustered index.'));
     body.replaceChildren(...out);
   }
 

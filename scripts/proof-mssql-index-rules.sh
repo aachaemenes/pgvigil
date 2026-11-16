@@ -440,12 +440,12 @@ code=$(curl -s -o "$TMPD/ix.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil:
 xa=$(python3 - "$TMPD/ix.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
+# each part is a table {columns: [...], rows: [[...], ...]} (web/src/api.ts rowsOf)
+cols = lambda t: (t or {}).get('columns') or []
 heaps = d.get('heaps')
-ix = d.get('indexes') or []
-dbs = d.get('databases') or []
 want = ['object_type', 'data_space_name', 'data_space_type', 'partition_function', 'table_created', 'row_lock_wait_count', 'forwarded_fetch_count']
-miss = [k for k in want if not ix or k not in ix[0]]
-print('%s|%s|%s' % ('none' if heaps is None else len(heaps), ','.join(miss) or '-', 'yes' if dbs and 'parts_note' in dbs[0] else 'no'))
+miss = [k for k in want if k not in cols(d.get('indexes'))]
+print('%s|%s|%s' % ('none' if heaps is None else len(heaps.get('rows') or []), ','.join(miss) or '-', 'yes' if 'parts_note' in cols(d.get('databases')) else 'no'))
 PY
 )
 hc=$(pq "SELECT count(*) FROM pgvigil.mssql_heap WHERE instance_id = $I" 2>/dev/null || echo none)

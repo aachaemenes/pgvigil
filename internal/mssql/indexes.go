@@ -34,6 +34,10 @@ import (
 // keys in another order, the same leading column). The DISABLE line and the merged definition the page shows are
 // text for a DBA to read: pgvigil runs neither.
 //
+// After a database's index read, five more reads of it (indexparts.go; Darling slice 3, task D404): the data spaces,
+// operational counters and filter columns of each index, the columnstore segments that keep no deep data, the heaps,
+// the table shapes and the foreign keys' columns. A part that fails is named on the database's row; the rest stand.
+//
 // The missing-index requests (sys.dm_db_missing_index_group_stats, _groups and _details) are read for the whole
 // server, the ixMissingCap with the most benefit: the columns the optimizer asked for and how often. They are the
 // optimizer's hints, one per query shape, with no regard for the indexes that exist or for each other: the page
@@ -362,6 +366,8 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 	if dbs, err = oldestFirst(ctx, dbs, "ix:", cursor); err != nil {
 		return err
 	}
+	// D404: whether the columnstore segments keep their deep data here (read once per run)
+	deep := hasDeepData(ctx, conn)
 	for _, db := range dbs {
 		names = append(names, db.name)
 		batch := []collect.Row{st, db.row}
@@ -404,7 +410,14 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 				batch = append(batch, collect.Row{"kind": "collector_error", "source": "sys.index_columns",
 					"message": fmt.Sprintf("%s: the column list of %d index(es) could not be read; they are not stored", db.name, bad)})
 			}
+			// D404: the parts read after the index read (indexparts.go); a part that fails leaves the rest standing
+			pr := readIndexParts(ctx, conn, db, idx, deep)
+			db.row["parts_read"], db.row["parts_capped"], db.row["parts_note"] = append([]string{}, pr.read...), append([]string{}, pr.capped...), nil
+			if len(pr.notes) > 0 {
+				db.row["parts_note"] = strings.Join(pr.notes, "; ")
+			}
 			batch = append(batch, idx...)
+			batch = append(batch, pr.rows...)
 		}
 		if err := emit(batch); err != nil {
 			return err
