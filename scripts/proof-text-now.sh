@@ -41,6 +41,12 @@ PORT=""
 for _ in $(seq 1 20); do p=$((21000 + RANDOM % 9000)); if ! ss -ltnH "( sport = :$p )" | grep -q .; then PORT=$p; break; fi; done
 [[ -n "$PORT" ]] || fail "no free port"
 
+# the lead's file web.go changes only through the WIRING patch (the reply hook, query's marker, three inline reads):
+# applied to this run's copy when the tree holds textread.go and web.go lacks the hook (a red tree has neither)
+if [[ -f scripts/textnow-wiring.patch && -f internal/web/textread.go ]] && ! grep -q applyTextNow internal/web/web.go; then
+  git apply scripts/textnow-wiring.patch 2>/dev/null || patch -p1 --no-backup-if-mismatch < scripts/textnow-wiring.patch >/dev/null || fail "the wiring patch does not apply"
+  echo "the wiring patch applied (scripts/textnow-wiring.patch)"
+fi
 echo "== build pgvigil and seed the demo into $DB"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
