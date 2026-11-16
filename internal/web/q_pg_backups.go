@@ -210,12 +210,25 @@ SELECT p.instance_id, i.name AS instance, p.url, p.ok, p.message, p.scope, p.mem
   FROM pgvigil.pg_patroni_read p JOIN pgvigil.instances i ON i.instance_id = p.instance_id AND i.is_active
  ORDER BY p.scope NULLS LAST, i.name`
 
+// sqlPgHadrLinks is each replication link from both of its sides (0141 / 0150's pg_repl_link_health: the sender's
+// row, the standby's own read, the link's check); pg_backups.ts draws the link grid from this part.
+const sqlPgHadrLinks = `SELECT source, sending_id, sending, link, application_name, client_addr, slot_name, system_identifier, standby_id, standby, status, sender_state, sync_state, sender_lag_bytes, sender_flush_bytes, sender_lag_secs, receiver_status, sender_host, has_receiver, standby_lag_bytes, min_apply_delay_ms, replay_paused, last_seen, checked_at, standby_read_at, check_name, severity, finding_id, detail FROM pgvigil.pg_repl_link_health ORDER BY system_identifier NULLS LAST, sending NULLS LAST, link`
+
+// sqlPgSubscriptions is every logical subscription with its publisher's side and its check (0141's pg_logical_status).
+const sqlPgSubscriptions = `SELECT instance_id, instance, datname, subname, enabled, in_recovery, publications, slot_name, worker_pid, last_msg_at, silent_secs, sync_workers, rels_ready, apply_errors, sync_errors, conflicts, disabled_since, read_at, publisher_id, publisher, sender_state, sender_lag_bytes, sender_lag_secs, severity, check_name, detail FROM pgvigil.pg_logical_status ORDER BY instance, datname, subname`
+
+// sqlPgPublications is every publication the logical collection read (0141's pg_logical_pubs).
+const sqlPgPublications = `SELECT p.instance_id, i.name AS instance, p.datname, p.pubname, p.all_tables, p.operations, p.table_count, p.read_at FROM pgvigil.pg_logical_pubs p JOIN pgvigil.instances i ON i.instance_id = p.instance_id AND i.is_active WHERE p.is_present ORDER BY i.name, p.datname, p.pubname`
+
 // PgReplicationFleet is the fleet Replication page.
 func (s *Server) PgReplicationFleet(w http.ResponseWriter, r *http.Request) {
 	s.multiPart(w, r, []part{
 		{"links", sqlPgLinks, nil},
 		{"patroni", sqlPgPatroniFleet, nil},
 		{"changes", sqlPgRoleChanges, []any{nil}},
+		{"hadr_links", sqlPgHadrLinks, nil},
+		{"subscriptions", sqlPgSubscriptions, nil},
+		{"publications", sqlPgPublications, nil},
 	})
 }
 
