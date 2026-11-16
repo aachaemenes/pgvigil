@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -384,6 +385,8 @@ func TestMaskXMLProcessingInstruction(t *testing.T) {
 	darling := strings.NewReplacer("<?query --\r\n", "<?query ", "\r\n--?>", "?>")
 	// keep: every byte of s but the secret, which is <masked>
 	keep := func(s, secret string) string { return strings.Replace(s, secret, "<masked>", 1) }
+	// declIn: the cell of a statement that holds an XML document in a literal before its ALTER LOGIN
+	declIn := strings.Replace(alter, "ALTER", "DECLARE @d xml = N'<?xml version=\"1.0\"?><a/>'; ALTER", 1)
 	cmd := "<?query --\r\nEXEC master..xp_cmdshell 'sqlcmd -S srv1 -U loader -P Pi1secret -Q \"EXEC dbo.load\"'\r\n--?>"
 	cases := []struct{ name, in, secret, want string }{
 		{"sp_WhoIsActive sql_text, sqlcmd -P", cmd, "Pi1secret",
@@ -404,6 +407,20 @@ func TestMaskXMLProcessingInstruction(t *testing.T) {
 			"<?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?>"},
 		{"a ?> inside the value, in a document", "<row><sql_text><?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi4a?>tail4a'\r\n--?></sql_text></row>", "tail4a",
 			"<row><sql_text><?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?></sql_text></row>"},
+		// the cell is the instruction: one that opens the text and is not the XML declaration ends at the text's last
+		// "?>", so an XML declaration inside a literal of the statement ("?>" and then "<") does not end it
+		{"a declaration inside the statement", declIn, "Pi2secret", keep(declIn, "Pi2secret")},
+		{"a declaration inside the statement, the DarlingData shape", darling.Replace(declIn), "Pi2secret", keep(darling.Replace(declIn), "Pi2secret")},
+		{"a ?> and markup inside the value", "<?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi4b?><tailB1'\r\n--?>", "tailB1",
+			"<?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?>"},
+		{"a ?> inside the value, the DarlingData shape", "<?query ALTER LOGIN app WITH PASSWORD = 'Pi4a?>tail4a'?>", "tail4a", "<?query ALTER LOGIN app WITH PASSWORD = '<masked>'?>"},
+		{"a ?> in a comment line of the statement", "<?query --\r\n-- the old ?> rule\r\nALTER LOGIN app WITH PASSWORD = 'Pi2secret'\r\n--?>", "Pi2secret",
+			"<?query --\r\n-- the old ?> rule\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?>"},
+		{"a value that ends in ??>", "<?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi4d??>'\r\n--?>", "Pi4d", "<?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'\r\n--?>"},
+		// a cell the text ends inside, after a "?>" of its statement: what follows is the statement still
+		{"cut after a ?> inside the value", "<?query --\r\nALTER LOGIN app WITH PASSWORD = 'Pi4c?>tail4c", "tail4c", "<?query --\r\nALTER LOGIN app WITH PASSWORD = '<masked>'"},
+		// a cell's end does not move on the second pass, though the mask wrote <masked> right after a "?>" of the text
+		{"a mask written right after a ?> of the statement", "<?q net use z?> pw pwd&#61;abc?>", "", ""},
 		{"no credential: its bytes kept", "<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>", "",
 			"<?query --\nSELECT a FROM t WHERE a < 2 AND b > N'x' -- ? > and <tag>\n--?>"},
 		{"the declaration kept", "<?xml version=\"1.0\" encoding=\"utf-8\"?><a b=\"1\"/>", "", "<?xml version=\"1.0\" encoding=\"utf-8\"?><a b=\"1\"/>"},
@@ -487,6 +504,32 @@ func TestMaskXMLProcessingInstruction(t *testing.T) {
 		}
 		if mode == "full" && rows[0]["statement"] != cases[0].want {
 			t.Errorf("mode full: statement = %q, want %q", rows[0]["statement"], cases[0].want)
+		}
+	}
+}
+
+// TestMaskXMLInstructionCost (the review of the instruction's end): a text of many instructions none of which markup
+// or the text's end follows is read once, not once for each instruction - as a cell and inside a document; and a
+// wrapper inside a wrapped plan is not followed further, so a text of nested wrappers is one pass and no depth (each
+// level held a copy of what was left: about 2 GB for these 256 KB).
+func TestMaskXMLInstructionCost(t *testing.T) {
+	many := strings.Repeat("<??>x", (1<<18)/5)
+	deep := strings.Repeat("<?a <ShowPlanXML>", (1<<18)/17)
+	for _, c := range []struct{ name, in string }{{"a text of instructions", many}, {"a document of instructions", "<r>" + many + "</r>"}, {"nested wrappers", deep}} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		out := MaskXML(c.in)
+		d := time.Since(start)
+		runtime.ReadMemStats(&after)
+		if d > 2*time.Second {
+			t.Errorf("%s: 256 KB took %v", c.name, d)
+		}
+		if mb := (after.TotalAlloc - before.TotalAlloc) >> 20; mb > 64 {
+			t.Errorf("%s: %d MB allocated for 256 KB", c.name, mb)
+		}
+		if out != c.in {
+			t.Errorf("%s: a text with no credential changed (%d bytes for %d)", c.name, len(out), len(c.in))
 		}
 	}
 }
