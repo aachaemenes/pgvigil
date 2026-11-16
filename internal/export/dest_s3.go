@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -38,15 +39,30 @@ type s3Dest struct {
 	label  string
 }
 
-// NewS3 opens the destination. It makes no request: the first List or Put does.
+// s3CompatibleRegion is the signing region of an S3-compatible store named by its endpoint when neither the
+// destination nor the AWS configuration names one: such a store signs with any region, and the SDK needs one. An AWS
+// host never takes it (awsHost). It is the one listed exception of the hard-coded partition scan
+// (internal/collect/aws_partition_test.go, awsExceptions).
+const s3CompatibleRegion = "us-east-1"
+
+// awsHost says whether an endpoint is one of AWS's own hosts, in any partition (China's domain carries one label
+// more): such a host is never signed with s3CompatibleRegion. The scan's other listed exception.
+func awsHost(endpoint string) bool {
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Hostname()
+	}
+	return strings.Contains("."+strings.ToLower(host)+".", ".amazonaws.com.")
+}
+
+// NewS3 opens the destination. It makes no request: the first List or Put does. The signing region is the
+// destination's own, else the AWS configuration's (AWS_REGION, the profile's region); only then, for an endpoint
+// that is not AWS's, s3CompatibleRegion. An AWS destination with no region anywhere is refused: pgvigil picks no
+// AWS region (a government endpoint must never sign as a commercial region).
 func NewS3(ctx context.Context, o S3Options) (Destination, error) {
 	var opts []func(*awsconfig.LoadOptions) error
-	region := o.Region
-	if region == "" && o.Endpoint != "" {
-		region = "us-east-1" // a store named by its endpoint signs with any region; the SDK needs one
-	}
-	if region != "" {
-		opts = append(opts, awsconfig.WithRegion(region))
+	if o.Region != "" {
+		opts = append(opts, awsconfig.WithRegion(o.Region))
 	}
 	if o.Profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(o.Profile))
@@ -54,6 +70,16 @@ func NewS3(ctx context.Context, o S3Options) (Destination, error) {
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("export.destination: the AWS configuration: %w", err)
+	}
+	if cfg.Region == "" {
+		if o.Endpoint == "" || awsHost(o.Endpoint) {
+			where := "AWS S3"
+			if o.Endpoint != "" {
+				where = o.Endpoint
+			}
+			return nil, fmt.Errorf("export.destination: no region for %s: set export.destination.region (or AWS_REGION, or the profile's region) - pgvigil picks no AWS region", where)
+		}
+		cfg.Region = s3CompatibleRegion
 	}
 	client := s3.NewFromConfig(cfg, func(so *s3.Options) {
 		if o.Endpoint != "" {

@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,7 +120,24 @@ func TestHardCodedAWSScanFinds(t *testing.T) {
 	}
 }
 
-// hardCodedAWS lists each scanned file under root that holds a forbidden name, as "<path>: <name>".
+// awsExceptions are the names a file may hold, each ONCE, with the product reason the scan cannot tell from a
+// hard-coded partition; a second use in that file, or the name in any other file, is a hit.
+var awsExceptions = []struct{ file, name, why string }{
+	{"internal/export/dest_s3.go", "us-east-1", "s3CompatibleRegion: the signing region of an S3-compatible store named by its endpoint when neither the destination nor the AWS configuration names one (such a store signs with any region, the SDK needs one); never used for an AWS host"},
+	{"internal/export/dest_s3.go", ".amazonaws.com", "awsHost: tells an AWS endpoint from an S3-compatible one, so that an AWS host with no region is refused instead of signing with s3CompatibleRegion"},
+}
+
+func awsExcepted(rel, name string) bool {
+	for _, e := range awsExceptions {
+		if e.file == rel && e.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// hardCodedAWS lists each scanned file under root that holds a forbidden name, as "<path>: <name>" (a listed
+// exception used more than once: "<path>: <name> (<n> uses; its exception is one)").
 func hardCodedAWS(root string) ([]string, error) {
 	forbidden := []string{"arn:aws:", "arn:aws-us-gov:", ".amazonaws.com", "us-east-1", "us-east-2", "us-west-", "us-gov-"}
 	var hits []string
@@ -145,7 +163,11 @@ func hardCodedAWS(root string) ([]string, error) {
 			return err
 		}
 		for _, f := range forbidden {
-			if strings.Contains(string(b), f) {
+			switch n, ex := strings.Count(string(b), f), awsExcepted(filepath.ToSlash(rel), f); {
+			case n == 0 || (n == 1 && ex):
+			case ex:
+				hits = append(hits, fmt.Sprintf("%s: %s (%d uses; its exception is one)", p, f, n))
+			default:
 				hits = append(hits, p+": "+f)
 			}
 		}

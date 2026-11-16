@@ -191,7 +191,10 @@ from an older file is null. The repository's encoding must be UTF8.
   that a second writer is refused), so the file system must have hard links - not a share or a mount without
   them (CIFS without the unix extensions, blobfuse, s3fs). `-check` tries it.
 - `s3`: `bucket`, `prefix`, `region`, and for an S3-compatible store its `endpoint`; `profile` to name one.
-  Credentials come from the AWS default chain, never from this file. Rights on the prefix: `s3:PutObject`,
+  Credentials come from the AWS default chain, never from this file. The signing region is `region`, else the AWS
+  configuration's (`AWS_REGION`, the profile's region); an S3-compatible store with neither signs with a fixed
+  default (such a store takes any region), and an AWS endpoint - or AWS with no `endpoint` - with neither is refused
+  with the setting to fill: pgvigil picks no AWS region. Rights on the prefix: `s3:PutObject`,
   `s3:GetObject`, `s3:DeleteObject`, `s3:AbortMultipartUpload`, and `s3:ListBucket` on the bucket. A file over
   64 MB goes up in parts. pgvigil sends no checksum trailer of its own (S3-compatible stores differ on them).
 - `azure_blob`: `container`, `prefix`, and one way in: `connection_string: env:NAME`, `sas_url: env:NAME` (the
