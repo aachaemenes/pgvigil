@@ -23,9 +23,12 @@ import (
 // TestPromNamesCoverTheCatalog freezes the B24d name table against metric_catalog as the migrations leave it: every
 // file that defines the view is read in order (a full definition replaces the keys, an append to the live view adds
 // its rows, a view of catalog rows the definition reads - the SQL Server counters - is read from its newest definer),
-// and every key of the newest set has exactly one row in promNames OR its family is on promNotExported, never both;
-// every promNames row names a catalog key; the names are Prometheus names, unique, never '_total' (gauges), a
-// per-database name only on the database family, and every unit has its conversion words.
+// and every key of the newest set has exactly one row in promNames OR is on promNotExported (a KEY with its words,
+// never a family: PROMEXPORT's DECIDE 2 leaves counters.percent_log_used out alone), never both; every promNames row
+// names a catalog key; the names are Prometheus names, unique, never '_total' (gauges), a per-database name only on
+// the database family, and every unit has its conversion words. PROMEXPORT (D5, S6): the four SQL Server families'
+// rows follow the name rule (promRuleName) but for the frozen exceptions, 43 counters, 2 xe, 1 waits, 5 collection;
+// every family with a promNames row is one metrics_newest's newest definition reads.
 func TestPromNamesCoverTheCatalog(t *testing.T) {
 	cat, base, err := promCatalog(filepath.Join("..", "repo", "sql"))
 	if err != nil {
@@ -43,6 +46,7 @@ func TestPromNamesCoverTheCatalog(t *testing.T) {
 	exportedFamilies := map[string]bool{}
 	name := regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
 	seen, names := map[string]bool{}, map[string]bool{}
+	perFamily := map[string]int{}
 	for _, p := range promNames {
 		c, ok := cat[p.key]
 		if !ok {
@@ -50,19 +54,34 @@ func TestPromNamesCoverTheCatalog(t *testing.T) {
 		}
 		unit := c.unit
 		exportedFamilies[c.family] = true
-		if why, off := promNotExported[c.family]; off {
-			t.Errorf("%s: a promNames row, and its family %s is on promNotExported (%s)", p.key, c.family, why)
+		if why, off := promNotExported[p.key]; off {
+			t.Errorf("%s: a promNames row, and the key is on promNotExported (%s)", p.key, why)
 		}
 		if seen[p.key] {
 			t.Errorf("%s: two rows", p.key)
 		}
 		seen[p.key] = true
-		want := map[string]string{"database.deadlocks": "count", "server.checkpoints": "count", "server.checkpoints_req": "count"}[p.key]
+		// the conversions that are not the catalog's unit: a count per interval exported per second, and the page
+		// splits per 100 batches exported per batch (S6 c)
+		conv := map[string]string{"database.deadlocks": "interval", "server.checkpoints": "interval", "server.checkpoints_req": "interval",
+			"counters.page_splits_per_100_batches": "per_100"}[p.key]
 		switch {
-		case (want != "") != (p.unit == "interval"):
-			t.Errorf("%s: unit %q - 'interval' belongs on exactly the three per-interval counts", p.key, p.unit)
-		case p.unit != "interval" && p.unit != unit:
+		case conv != "" && p.unit != conv:
+			t.Errorf("%s: unit %q, want %q (the catalog's %q converted)", p.key, p.unit, conv, unit)
+		case conv == "" && (p.unit == "interval" || p.unit == "per_100"):
+			t.Errorf("%s: unit %q - 'interval' belongs on exactly the three per-interval counts, 'per_100' on the page splits per 100 batches", p.key, p.unit)
+		case conv == "" && p.unit != unit:
 			t.Errorf("%s: unit %q, the catalog says %q", p.key, p.unit, unit)
+		}
+		if f := c.family; f == "counters" || f == "xe" || f == "waits" || f == "collection" {
+			want, frozen := promRuleExceptions[p.key]
+			if !frozen {
+				want = promRuleName(f, strings.TrimPrefix(p.key, f+"."), unit)
+			}
+			if p.name != want {
+				t.Errorf("%s: name %q, the rule gives %q", p.key, p.name, want)
+			}
+			perFamily[f]++
 		}
 		if _, ok := promUnitWords[p.unit]; !ok {
 			t.Errorf("%s: no conversion words for unit %q", p.key, p.unit)
@@ -86,38 +105,81 @@ func TestPromNamesCoverTheCatalog(t *testing.T) {
 			t.Errorf("%s: the instance total is a pgvigil_instance_* name, apart from the per-database series", p.key)
 		}
 	}
-	off := map[string]int{}
 	for k, c := range cat {
-		if _, ok := promNotExported[c.family]; ok {
-			off[c.family]++
+		if _, ok := promNotExported[k]; ok {
 			continue
 		}
 		if !seen[k] {
-			t.Errorf("metric_catalog key %s has no row in promNames, and its family %s is not on promNotExported", k, c.family)
+			t.Errorf("metric_catalog key %s has no row in promNames and is not on promNotExported (family %s)", k, c.family)
 		}
 	}
-	for f, why := range promNotExported {
-		switch {
-		case off[f] == 0:
-			t.Errorf("promNotExported names %s, a family with no metric_catalog key", f)
-		case exportedFamilies[f]:
-			t.Errorf("promNotExported names %s, whose keys have promNames rows", f)
+	for k, why := range promNotExported {
+		switch _, ok := cat[k]; {
+		case !ok:
+			t.Errorf("promNotExported names %s, not a metric_catalog key (the list holds keys, never a family)", k)
 		case strings.TrimSpace(why) == "":
-			t.Errorf("promNotExported names %s without its words", f)
+			t.Errorf("promNotExported names %s without its words", k)
 		}
 	}
-	t.Logf("not exported: %v", off)
-	// a family on the list is one metrics_newest does not read: the day it reads one, the list's line goes and its
-	// names come in (the endpoint skips a key without a promNames row)
+	// DECIDE 2 (the lead 08:1x): Percent Log Used's _Total is the server's whole log space - one database's log near
+	// full among empty ones reads low - so it is the one key left out, with its words, until per-database series come
+	if len(promNotExported) != 1 || strings.TrimSpace(promNotExported["counters.percent_log_used"]) == "" {
+		t.Errorf("promNotExported: %v - want counters.percent_log_used alone, with its words", promNotExported)
+	}
+	for f, n := range map[string]int{"counters": 43, "xe": 2, "waits": 1, "collection": 5} {
+		if perFamily[f] != n {
+			t.Errorf("family %s: %d promNames rows, want %d", f, perFamily[f], n)
+		}
+	}
+	for k := range promRuleExceptions {
+		if !seen[k] {
+			t.Errorf("promRuleExceptions names %s, which has no promNames row", k)
+		}
+	}
+	// a family with promNames rows is one metrics_newest reads: a family it does not read would be named and never sampled
 	reads, err := promNewestReads(filepath.Join("..", "repo", "sql"))
 	if err != nil || reads == "" {
 		t.Fatalf("metrics_newest's newest definition: %q, %v", reads, err)
 	}
-	for f := range promNotExported {
-		if strings.Contains(reads, "'"+f+"'") {
-			t.Errorf("metrics_newest reads the family %s now: take it off promNotExported and give its keys promNames rows", f)
+	for f := range exportedFamilies {
+		if !strings.Contains(reads, "'"+f+"'") {
+			t.Errorf("the family %s has promNames rows and metrics_newest's newest definition does not read it", f)
 		}
 	}
+}
+
+// promRuleName is PROMEXPORT's name rule (D5, S6) for a key of the four SQL Server families: pgvigil_<family>_<metric>,
+// a trailing _s read as _per_second, a percent as _ratio (its _pct dropped), milliseconds as _seconds (its _ms
+// dropped), seconds with _seconds; the xe's per minute as _per_second, the waits' seconds per core per minute as
+// _per_core_ratio. promRuleExceptions are the names the rule would get wrong, frozen with their reasons.
+func promRuleName(family, metric, unit string) string {
+	switch unit {
+	case "per_min":
+		return "pgvigil_" + family + "_" + strings.TrimSuffix(metric, "_per_min") + "_per_second"
+	case "s_core_min":
+		return "pgvigil_" + family + "_" + strings.TrimSuffix(metric, "_s_per_core_min") + "_per_core_ratio"
+	}
+	m, tail := metric, ""
+	if strings.HasSuffix(m, "_s") {
+		m, tail = strings.TrimSuffix(m, "_s"), "_per_second"
+	}
+	switch unit {
+	case "pct":
+		m = strings.TrimSuffix(m, "_pct") + "_ratio"
+	case "ms":
+		m = strings.TrimSuffix(m, "_ms") + "_seconds"
+	case "secs":
+		m += "_seconds"
+	}
+	return "pgvigil_" + family + "_" + m + tail
+}
+
+var promRuleExceptions = map[string]string{
+	"counters.errors_total_s":              "pgvigil_counters_errors_per_second",                    // S6 e: not a counter's _total
+	"counters.compiles_per_100_batches":    "pgvigil_counters_compilations_per_batch_ratio",         // S6 b: / 100 = per batch
+	"counters.recompiles_per_100_compiles": "pgvigil_counters_recompilations_per_compilation_ratio", // S6 b
+	"counters.page_splits_per_100_batches": "pgvigil_counters_page_splits_per_batch",                // S6 c: per_100
+	"counters.ple_per_4gb":                 "pgvigil_counters_page_life_expectancy_per_4gb_seconds", // D5: the counter's own name
 }
 
 // promKey is a metric_catalog key's family and unit.
@@ -348,6 +410,9 @@ func TestPromValueAndEscape(t *testing.T) {
 	}{
 		{"pct", 87.5, nil, 0.875, true}, {"ms", 1500, nil, 1.5, true}, {"mb", 1.5, nil, 1572864, true},
 		{"interval", 3, &sec, 0.05, true}, {"interval", 3, nil, 0, false}, {"count", 7, nil, 7, true},
+		// PROMEXPORT (S6 a, c): the xe's per minute and the waits' seconds per core per minute / 60, the page splits per
+		// 100 batches / 100
+		{"per_min", 120, nil, 2, true}, {"s_core_min", 30, nil, 0.5, true}, {"per_100", 250, nil, 2.5, true},
 	} {
 		got, ok := promValue(c.unit, c.in, c.secs)
 		if ok != c.ok || (ok && got != c.want) {
