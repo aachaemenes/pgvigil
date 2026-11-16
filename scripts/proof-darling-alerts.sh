@@ -34,7 +34,7 @@
 #     a download, a status line or a redraw of the page, or is disabled with
 #     its reason (the demo serves read only); 0 FAIL.
 #  A. #/admin (its route the WIRING BLOCK's): five tabs - Servers (a row per instance of /api/instances), Notification
-#     routes, Alert settings (the sentence and the eight built-in thresholds of 0118), Threshold overrides, Server actions
+#     routes, Alert settings (the sentence and the six built-in thresholds of 0118), Threshold overrides, Server actions
 #     (three switches per SQL Server instance) -, each its heading and a grid, no error box, the tab in the address
 #     (atab=); its links and buttons in C.
 #  P. shots of #/alerts, an alert page, #/alertrules and #/admin in the light and the dark theme.
@@ -47,11 +47,13 @@
 #     pass sends it to a file drop; after VACUUM and a read the finding is gone, and a pass that misses it, a read and a
 #     pass clear the alert (the sender's clear rule: a read newer than the pass that first missed it);
 #     F2-F5 seeded at the collected rows (no standby, 10 GB slot, small volume or AG here: NOT PROVEN on a live engine):
-#     replay lag 45 s warning / 400 s critical / 10 s none, slot WAL 12 GB warning / 60 GB critical / 9 GB none, a
+#     F2 a sender's replay lag of 45 s / 400 s / 10 s raises NO 'replay lag' here (the HA join dropped 0118's arm: a
+#     link's lag is 0141's 'standby lag', proven by proof-pg-hadr.sh), slot WAL 12 GB warning / 60 GB critical / 9 GB none, a
 #     volume of 20 GB with 4.5 GB free warning, one of 15 GB with 1.8 GB free critical (its drive threshold 5 % / 2 %,
 #     so its percent rule raises nothing), 8 GB with 4 GB free none (10 GB or smaller), 500 GB with 3 GB free none (its
-#     percent rule judges it), 40 GB with 8 GB free none; an AG database 400 s behind warning / 20 s none; the rows
-#     recovered raise nothing.
+#     percent rule judges it), 40 GB with 8 GB free none; F5 an AG database 400 s behind raises NO 'AG secondary
+#     behind' here (the HA join dropped 0118's arm: 0143's 'a secondary would lose data in a failover' judges it,
+#     proven by proof-mssql-hadr.sh); the rows recovered raise nothing.
 #     F6 live: an instance reached through a loopback forwarder: the forwarder stopped, its next read fails to connect
 #     (the collector records it through import_connect_failure: the WIRING BLOCK; its note 'connect: ...')
 #     -> 'server unreachable' (critical) on it alone, sent to the file drop; the forwarder back, the next read connects
@@ -142,8 +144,8 @@ await shot('alerts');
 // the proof's own expectations: concrete (setting -> family) pairs read from the SQL that writes the findings (0118,
 // 0021, 0006, 0024, 0067, 0074, 0085), not the page's rules; an alert rule's alert is 'Alert rule'; a setting outside the
 // table is opened and its section required, its family printed, not graded
-const WANT = { 'dead tuples piling up': 'Vacuum', 'database xid age': 'Vacuum', 'autovacuum is off': 'Vacuum', 'replay lag': 'Replication',
-  'replication slot retaining WAL': 'Replication', 'inactive replication slot': 'Replication', 'AG secondary behind': 'Replication',
+const WANT = { 'dead tuples piling up': 'Vacuum', 'database xid age': 'Vacuum', 'autovacuum is off': 'Vacuum',
+  'replication slot retaining WAL': 'Replication', 'inactive replication slot': 'Replication',
   'swap used': 'Memory', 'a volume under 5 GB free': 'Storage and IO', 'a volume under 10 % free': 'Storage and IO', 'runnable queue per scheduler': 'CPU',
   'scheduler pressure': 'CPU', 'server unreachable': 'The instance', 'the redo queue is over its threshold': 'Replication',
   'the log send queue is over its threshold': 'Replication', 'log shipping is behind its threshold': 'Replication', 'a database is suspended': 'Replication', 'lock_timeout': 'The instance', 'autovacuum_max_workers': 'The instance', 'work_mem': 'The instance' };
@@ -303,9 +305,9 @@ check(len(links) > 0 and not odd, f"C: every link's target read: {len(links)} li
 a = d.get('admin') or {}; tabsA = {t['label']: t for t in a.get('tabs', [])}
 want_tabs = ['Servers', 'Notification routes', 'Alert settings', 'Threshold overrides', 'Server actions']
 check(list(tabsA) == want_tabs and all(t['h3'] == t['label'] and not t['error'] and t['rows'] for t in tabsA.values())
-      and tabsA['Servers']['rows'][0] == a.get('instances') and tabsA['Alert settings']['rows'][0] == 8 and (tabsA['Alert settings'].get('sentence') or '').startswith('pgvigil ')
+      and tabsA['Servers']['rows'][0] == a.get('instances') and tabsA['Alert settings']['rows'][0] == 6 and (tabsA['Alert settings'].get('sentence') or '').startswith('pgvigil ')
       and tabsA['Server actions']['rows'][0] == 3 * a.get('sqlservers', -1) and all('atab=' in t['hash'] for t in tabsA.values()),
-      f"A: #/admin's tabs {list(tabsA)}: each its heading and grid, no error box; Servers {tabsA.get('Servers', {}).get('rows')} = {a.get('instances')} instances, the built-in thresholds 8 rows and the sentence, Server actions {tabsA.get('Server actions', {}).get('rows')} = 3 x {a.get('sqlservers')} SQL Server instances, the tab in the address")
+      f"A: #/admin's tabs {list(tabsA)}: each its heading and grid, no error box; Servers {tabsA.get('Servers', {}).get('rows')} = {a.get('instances')} instances, the built-in thresholds 6 rows and the sentence, Server actions {tabsA.get('Server actions', {}).get('rows')} = 3 x {a.get('sqlservers')} SQL Server instances, the tab in the address")
 cl = d['clicks']; kinds = {}
 for c in cl: kinds[c['kind']] = kinds.get(c['kind'], 0) + 1
 badc = [c for c in cl if c['kind'] in ('link-error', 'none', 'gone') or (c['kind'] == 'disabled' and not c.get('why')) or (c['kind'] == 'link' and not c.get('landing', {}).get('h2'))]
@@ -442,11 +444,11 @@ seed "insert into pgvigil.drive_thresholds (level, instance_id, drive, warn_pct,
 seed "insert into pgvigil.mssql_ag_database_state (instance_id, group_id, replica_server, database_name, snapshot_at, group_name, secondary_lag_s) values
   ($IID, 'g1', 'r2', 'd30db_behind', now(), 'd30ag', 400), ($IID, 'g1', 'r2', 'd30db_ok', now(), 'd30ag', 20)"
 L=$(tiers 'replay lag'); S=$(tiers 'replication slot retaining WAL'); V=$(tiers 'a volume under 5 GB free'); A=$(tiers 'AG secondary behind')
-[[ $L == "critical:d30_s_crit,warning:d30_s_warn" ]] || fail "F2: replay lag tiers '$L' (want 400 s critical, 45 s warning, 10 s none)"
+[[ -z $L ]] || fail "F2: 'replay lag' findings '$L' on the seeded senders (want none: the HA join dropped 0118's arm, a link's lag is 0141's 'standby lag')"
 [[ $S == "critical:d30_slot_crit,warning:d30_slot_warn" ]] || fail "F3: slot WAL tiers '$S' (want 60 GB critical, 12 GB warning, 9 GB none)"
 [[ $V == "critical:D30C:,warning:D30W:" ]] || fail "F4: volume tiers '$V' (want D30C: 1.8 of 15 GB critical, D30W: 4.5 of 20 GB warning; D30S: 8 GB, D30P: 0.6 % and D30O: 8 GB free none): drives_now $(rq "select string_agg(drive || ' ' || free_pct || '% ' || status, ', ' order by drive) from pgvigil.drives_now where instance_id = $IID and drive like 'D30%'")"
-[[ $A == "warning:d30ag: d30db_behind on r2" ]] || fail "F5: AG lag '$A' (want 400 s warning, 20 s none)"
-ok "F2-F5: replay lag ($L), slot WAL ($S), volume free GB ($V), AG secondary ($A): PerformanceMonitor's tiers, each below-threshold row raising nothing"
+[[ -z $A ]] || fail "F5: 'AG secondary behind' findings '$A' on the seeded AG database (want none: the HA join dropped 0118's arm, 0143's data-loss finding judges it)"
+ok "F2-F5: slot WAL ($S), volume free GB ($V): PerformanceMonitor's tiers, each below-threshold row raising nothing; no 'replay lag' and no 'AG secondary behind' on the seeded rows (dropped at the HA join)"
 seed "delete from pgvigil.replication_sample where instance_id = $IID and key like 'd30_%'"
 seed "update pgvigil.mssql_volumes set free_bytes = total_bytes where instance_id = $IID"
 seed "update pgvigil.mssql_ag_database_state set secondary_lag_s = 0 where instance_id = $IID"

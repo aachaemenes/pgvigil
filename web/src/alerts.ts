@@ -649,13 +649,13 @@ export const alertCol: Col = {
 // What this pgvigil runs with, in one place and read only: the configuration file (pgvigil.yaml) and Admin > Instances are
 // the sources of the instances; the file is the source of the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
 // change is made). The tab rides in the address (atab=). The route and the tab are the shell's (a WIRING BLOCK).
-// builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC)
+// builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC).
+// Its replay lag and AG lag defaults are not rows here: since the HA join the replication rules judge both ('standby lag',
+// 'a secondary would lose data in a failover') with tiers set on the Thresholds page
 const builtIn: Row[] = [
   { finding: 'dead tuples piling up', engine: 'PostgreSQL', warning: '1,000,000 dead tuples in a table', critical: '10,000,000', from: 'template pg-autovacuum-dead-tuples' },
-  { finding: 'replay lag', engine: 'PostgreSQL', warning: '30 s', critical: '5 min', from: 'template pg-replication-lag' },
   { finding: 'replication slot retaining WAL', engine: 'PostgreSQL', warning: '10 GB', critical: '50 GB', from: 'template pg-replication-slot-wal' },
   { finding: 'a volume under 5 GB free', engine: 'SQL Server', warning: 'under 5 GB free, on a volume over 10 GB whose percent threshold (Drives) raises nothing', critical: '2 GB or less (the same volumes: needs a percent threshold under 20 %)', from: 'LowDiskThresholdGb, DiskCriticalFreeGb' },
-  { finding: 'AG secondary behind', engine: 'SQL Server', warning: '300 s behind the primary', critical: '', from: 'agLagAlertSeconds' },
   { finding: 'runnable queue per scheduler', engine: 'SQL Server', warning: '8 per scheduler (5 min)', critical: '16', from: 'RunnableQueueWarning / CriticalPerScheduler' },
   { finding: 'long-running requests', engine: 'SQL Server', warning: '30 min (BACKUP, RESTORE, WAITFOR, Service Broker waits and system sessions left out)', critical: '', from: 'LongRunningQueryThresholdMinutes, LongRunningQueryExcludeBackups' },
   { finding: 'server unreachable', engine: 'both', warning: '', critical: 'the newest read could not connect or log in', from: 'Server Unreachable (ConnectionAlertPolicy)' },

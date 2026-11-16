@@ -136,7 +136,8 @@
 #   read a failed read of an instance counts as a FAIL (the stopped standby's read in R3 excepted), and a failed
 #        repository query answers 'QUERY FAILED' (a negative row cannot pass on an empty answer)
 #   (info) 0118's own 'replay lag' arm (darling_alert_findings: a sender 30 s behind) is counted where L3T and L3D run;
-#        the lead drops that arm at the join; the proof does not judge it.
+#        the HA join dropped that arm (0118 edited in place), so both info lines read 0 on the joined tree; the proof
+#        does not judge it.
 # Not proven here: a promotion (the role-change drop of a server's links), a failed 'standby' or 'senders' read leaving
 # the state as it was, a receiver that connects and then fails (the hysteresis is in the import, its row R2X's), the
 # 'replaced' test (a standby back under another link: a slot added or dropped, two standbys of one name), a standby
