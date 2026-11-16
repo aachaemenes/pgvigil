@@ -105,16 +105,17 @@ BEGIN
     SELECT /* case:unparam */ id FROM dbo.big2 WHERE k = @x;
 END;
 GO
--- the same local variable in a join, FULL-optimized: still no ParameterList (the #7 hit side); and with a parameter
+-- the same local variable in a join, FULL-optimized: still no ParameterList (the #7 hit side); and with a parameter (each
+-- select list its own, so neither shares missing_ix's QueryHash)
 CREATE PROCEDURE dbo.p_unparam_full AS
 BEGIN
     DECLARE @x int = 5;
-    SELECT /* case:unparam_full */ b.id FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = @x;
+    SELECT /* case:unparam_full */ b.id, b.k FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = @x;
 END;
 GO
 CREATE PROCEDURE dbo.p_unparam_param @x int AS
 BEGIN
-    SELECT /* case:unparam_param */ b.id FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = @x;
+    SELECT /* case:unparam_param */ b.id, t.v FROM dbo.big2 AS b JOIN dbo.tiny AS t ON t.k = b.k WHERE b.v = @x;
 END;
 GO
 -- a second database with automatic statistics off: a column read there has no statistics

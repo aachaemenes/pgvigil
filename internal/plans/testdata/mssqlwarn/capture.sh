@@ -206,6 +206,10 @@ while read -r name runs to; do
   echo "case $name: est $est, statements $nstmt, hash $hash, handle ${ph:0:24}, exec $ex x$runs, cache $cache, qs $qs"
   printf 'case\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$hash" "$nstmt" "est=$est" "exec=$ex" "cache=$cache" "qs=$qs" "$ph" >> "$OUT/capture-meta.tsv"
 done < "$WORK/cases/list"
+# the oracle's rows reach their case by QueryHash (literals, parameters and comments do not change it): two cases whose
+# statements share one would share sp_BlitzCache's rows, the last case taking them all
+DUP=$(awk -F'\t' '$1 == "case" && $3 ~ /^0x/ && $3 != "0x0000000000000000" {n[$3] = n[$3] " " $2} END {for (h in n) if (split(n[h], x, " ") > 1) print h ":" n[h]}' "$OUT/capture-meta.tsv")
+[[ -z "$DUP" ]] || fail "cases share a QueryHash (make their statements differ in shape): $DUP"
 
 # ---- the oracle: sp_BlitzCache 8.34 @ExpertMode = 1, its raw columns ------------------------------------------------
 COLS="QueryHash PlanHandle StatementStartOffset StatementEndOffset QueryPlanCost ExecutionCount AverageCPU AverageReturnedRows AverageWrites AvgSpills CompileTime is_parallel compile_timeout busy_loops unparameterized_query missing_index_count is_cursor is_forward_only_cursor is_cursor_dynamic near_parallel plan_warnings implicit_conversions tvf_join is_forced_serial is_key_lookup_expensive key_lookup_cost is_remote_query_expensive remote_query_cost trace_flags_session function_count clr_function_count is_table_variable relop_warnings is_table_scan backwards_scan forced_index columnstore_row_mode is_computed_scalar is_sort_expensive sort_cost is_computed_filter index_ops index_dml table_dml low_cost_high_cpu stale_stats is_adaptive index_spool_cost index_spool_rows table_spool_cost table_spool_rows is_spool_expensive is_spool_more_rows is_table_spool_expensive is_table_spool_more_rows estimated_rows is_bad_estimate is_paul_white_electric is_row_goal is_big_spills is_mstvf is_nonsargable select_with_writes Warnings"
