@@ -1,10 +1,14 @@
-// Unit tests of a remote instance's freshness (asof.ts: remoteFreshness, which instheader.ts's freshness() asks first,
-// the 'as of' line, the site's silence). Node, no DOM (asof.ts imports no page module): bundled by esbuild (web's
+// Unit tests of a remote instance's freshness (asof.ts: remoteFreshness, and freshness() - the header's rule, which asks
+// it first -, the 'as of' line, the site's silence). Node, no DOM (asof.ts imports no page module): bundled by esbuild (web's
 // own) and the bundle's path given as the argument.
 //   web/node_modules/.bin/esbuild web/src/asof.ts --bundle --format=esm --platform=neutral --main-fields=module,main --outfile=<tmp>/asof.mjs
 //   node web/src/asof.test.mjs <tmp>/asof.mjs
 // Every row prints 'ok' or 'FAIL'; the exit is 1 when any failed.
-const { remoteFreshness: freshness, asOfLine, quietLine } = await import(new URL(process.argv[2], 'file://' + process.cwd() + '/').href);
+const mod = await import(new URL(process.argv[2], 'file://' + process.cwd() + '/').href);
+const { remoteFreshness: freshness, asOfLine, quietLine } = mod;
+// freshness(): the header's own rule (instheader.ts re-exports it from asof.ts: review B S7 / C S7) - a remote
+// instance by its bundle and its site's cadence first, PerformanceMonitor's 30-minute rule for any other
+const headerFreshness = typeof mod.freshness === 'function' ? mod.freshness : () => 'freshness() is not in asof.ts';
 let bad = 0;
 const eq = (what, got, want) => {
   const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -36,4 +40,13 @@ eq('an hourly site: a bundle every 60 min', asOfLine(remote(5, 6, { interval_sec
 // an instance the hub reads itself is not asof.ts's: instheader.ts keeps PerformanceMonitor's rule for it
 eq('a pgvigil.yaml instance has no remote freshness', freshness({ last_collect_at: ago(50), coll_stale: 0 }, now), null);
 eq('and has no as-of line', asOfLine({ last_collect_at: ago(5) }), '');
+eq("the header's freshness: a remote instance 45 min after its newest bundle on an hourly site is online (asof.ts first)",
+  headerFreshness(remote(45, 50), now), 'online');
+eq("the header's freshness: a pgvigil.yaml instance 50 min after its newest collection is offline (the 30-minute rule)",
+  headerFreshness({ last_collect_at: ago(50), coll_stale: 0 }, now), 'offline');
+eq("the header's freshness: a pgvigil.yaml instance 5 min after its newest collection, a collection stale, is stale",
+  headerFreshness({ last_collect_at: ago(5), coll_stale: 1 }, now), 'stale');
+eq("the header's freshness: no collection ever is awaiting", headerFreshness({ coll_stale: 0 }, now), 'awaiting');
+eq("an instance whose collector is not known yet: 'a remote collector of site <s>'", asOfLine(remote(5, 6, { collector: null })),
+  `as of ${clock(ago(5))} (a remote collector of site site1, a bundle every 5 min)`);
 process.exit(bad ? 1 : 0);
