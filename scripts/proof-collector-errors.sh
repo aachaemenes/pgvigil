@@ -27,8 +27,8 @@
 #                    tag, note, hits (lines it hides in the window)
 #     part cannot  - error_number, why: a listed number pgvigil keeps no row of (said, not collected)
 #     part agstate - instance_id, instance, state: an instance whose AlwaysOn_health capture was not read
-#   GET /api/mssql/summary?part=collect - Collection Health's cell (ch_level, ch_n: B6G-N's, honouring the mark: the j16
-#     join) and detail after the instance's 'collector errors' mark
+#   GET /api/mssql/summary?part=collect - Collection Health's cell (ch_level, ch_n: B6G-N's, honouring the mark) and
+#     detail after the instance's 'collector errors' mark
 #
 # Rows (expected; RED = on main ebf9a9c's build):
 #  A. real runs on the target: activity with its import refused (error, Import), schema with ONE database's part refused
@@ -57,13 +57,13 @@
 #     count of 9 fail; the instance=, below-0256 and no-write rows pass. RED (96ff6ed1, dated at the start, the failure
 #     first): the export behind then failing dated at its failure, each row dated at its start (not the range's end), no
 #     'since' in the notes, the export rows not the newest; the rest pass.
-#  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n: the j16 join moved the row there from the
+#  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n: the row moved there from the
 #     errors_24h / failing columns B6G-N's Collection Health replaced; counted from the acknowledgement - the errors at
 #     or under its mark never count again, A5): X's 1 / 1 (c2 warning) / detail 'c2: the last
 #     run failed'; acknowledged up to its newest log_id -> 0 / 0 / no such line, the error view's rows acked; an
 #     older-started run logged after it -> 1 / 1; a second acknowledgement -> 0 / 0; Unacknowledge (every live row
 #     ended) -> 1 / 2 (c2, c3); a live row with seen_state 'x' -> the part still answers, 1 / 2; ack_log holds every add
-#     and end. RED (the join's): the cell stays 1 / 1 after the acknowledgement on a Collection Health that reads no ack.
+#     and end. RED (before the cell read the mark): the cell stays 1 / 1 after the acknowledgement on a Collection Health that reads no ack.
 #  E. a skip only with skipped=1; no Retry anywhere (no 'retries' column). RED: no route.
 #  F. the stream, own seeded rows: 824 (sev 24, page (1:178064), database ID 5 -> 'database ID 5 (now inv)'), 9002 on
 #     two instances ('salesdb', 'hr'), 823 (no database: empty), 1480 from AlwaysOn_health (sev 10, a listed number:
