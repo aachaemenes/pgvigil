@@ -9,7 +9,7 @@ import (
 )
 
 // s16RedGateCases are S16's Red Gate SQL Backup texts (scripts/proof-mssql-jobmask.sh rg1-rg6, its @@SUF@@ written
-// out as Kq7v), each with its key.
+// out as Kq7v) and the j16 join review 5's rg7-rg9, each with its key.
 var s16RedGateCases = []struct{ name, in, secret string }{
 	{"rg1", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = ''/b/db1.sqb'' WITH PASSWORD = ''S16rg1Kq7v'', KEYSIZE = 256"'`, "S16rg1Kq7v"},
 	{"rg2", `DECLARE @ReturnCode int EXECUTE @ReturnCode = dbo.sqlbackup N'-SQL "BACKUP DATABASE [db1] TO DISK = N''/b/db1.sqb'' WITH CHECKSUM, PASSWORD = N''S16rg2Kq7v''"' IF @ReturnCode <> 0 RAISERROR('Error performing SQLBackup backup.', 16, 1)`, "S16rg2Kq7v"},
@@ -17,6 +17,11 @@ var s16RedGateCases = []struct{ name, in, secret string }{
 	{"rg4", `EXECUTE master..sqbutility 1032, N'db1', N'/b', 'D', '24h', 'S16rg4Kq7v'`, "S16rg4Kq7v"},
 	{"rg5", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = [/b/db1.sqb] WITH PASSWORD = [ab]]S16rg5Kq7v] "'`, "S16rg5Kq7v"},
 	{"rg6", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = [/b/db1.sqb] WITH PASSWORD = [ab,S16rg6Kq7v] "'`, "S16rg6Kq7v"},
+	// the j16 join's review 5 #1 / #2: an escaped quote inside a doubled value; a bracketed value holding a quote, or
+	// ]] after a space
+	{"rg7", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = ''/b/db1.sqb'' WITH PASSWORD = ''ab''''S16rg7Kq7v'', KEYSIZE = 256"'`, "S16rg7Kq7v"},
+	{"rg8", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = [/b/db1.sqb] WITH PASSWORD = [ab''S16rg8Kq7v] "'`, "S16rg8Kq7v"},
+	{"rg9", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = [/b/db1.sqb] WITH PASSWORD = [a b]]S16rg9Kq7v] "'`, "S16rg9Kq7v"},
 }
 
 // TestMaskJobTextComposed (J16 JOBMASK LEAK): MaskJobText composes two masks - package jobmask's job rules (S16 /

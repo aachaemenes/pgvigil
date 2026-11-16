@@ -332,6 +332,11 @@ var maskCredentialCases = []struct{ name, in, secret, want string }{
 		"select dblink('host=h password=''<masked>'' dbname=d', 'select 1')"},
 	{"doubled -Password", `EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password ''od5secret'' -Query x"'`, "od5secret",
 		`EXEC xp_cmdshell 'powershell -c "Invoke-Sqlcmd -Password <masked> -Query x"'`},
+	// the j16 join's review 5 #1: an escaped quote inside a doubled value (four quotes) is part of the value
+	{"doubled with an escaped quote", "EXEC (N'ALTER LOGIN a WITH PASSWORD = ''ab''''Ap2secret''')", "Ap2secret",
+		"EXEC (N'ALTER LOGIN a WITH PASSWORD = ''<masked>''')"},
+	{"Red Gate doubled with an escaped quote", `EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = ''/b/db1.sqb'' WITH PASSWORD = ''ab''''Rg7secret'', KEYSIZE = 256"'`, "Rg7secret",
+		`EXECUTE master..sqlbackup '-SQL "BACKUP DATABASE [db1] TO DISK = ''/b/db1.sqb'' WITH PASSWORD = ''<masked>'', KEYSIZE = 256"'`},
 	// finding 4: the quote that closes the enclosing literal never starts a value
 	{"closing quote 1", "UPDATE t SET kind = 'password' WHERE id = 5", "", "UPDATE t SET kind = 'password' WHERE id = 5"},
 	{"closing quote 2", "SELECT * FROM t WHERE auth_method = 'password' OR auth_method = 'md5'", "",
