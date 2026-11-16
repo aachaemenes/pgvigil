@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034   # sourced by bash scripts; the names it sets are its callers' to read
 # kitsetup.sh - the SQL Server state the community tools are run against, shared by capture-community-samples.sh and
 # kitwatch.sh (sourced, never run). A tool's rows - and for some tools the shape of its answer - depend on what the
 # server holds, so both scripts build the same state in the same order: a SQL Server container, the kits in master,

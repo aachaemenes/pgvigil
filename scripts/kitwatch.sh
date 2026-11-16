@@ -73,6 +73,7 @@ envfail() {
   exit 3
 }
 fail() { envfail "$*"; }   # the setup library's failures are the environment's
+# shellcheck disable=SC2317   # run by the EXIT trap, never called directly
 cleanup() {
   # the work folder first, and nothing here may stop on an unset name (set -u in a trap ends it, the exit then 1)
   local p
@@ -211,7 +212,7 @@ runtool() {
   local d=$1 tool=$2 params=$3 name=${4:-$2} code
   code=$(post "{\"instance_id\":$MSID,\"tool\":\"$tool\",\"database\":\"\"}" "$d/$name.params.json" community/params) || true
   [[ $code == 200 ]] || printf '{"params": [], "left_out": [], "help_sets": [], "error": %s}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "form answered $code")" > "$d/$name.params.json"
-  for try in 1 2; do
+  for _ in 1 2; do
     code=$(post "{\"instance_id\":$MSID,\"tool\":\"$tool\",\"database\":\"\",\"params\":$params,\"timeout_secs\":60,\"exact_types\":true}" "$d/$name.run.json" community/run) || true
     [[ $code == 200 ]] || printf '{"runs": [{"outcome": "failed", "error": %s, "sets": []}]}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "the run answered $code")" > "$d/$name.run.json"
     grep -qiE '"error": ?"[^"]*(deadline exceeded|timeout)' "$d/$name.run.json" || break
@@ -309,7 +310,7 @@ pass() {
     if [[ $label == pinned && -z $kv ]]; then envfail "mssql_kits did not read the pinned $kp version: $(cut -f2 "$d/kits.$kp.tsv")"; fi
   done
   # the page's advice call: its outcome is a tool line of its own (F3)
-  local advice=done
+  local advice='done'
   ks_keeper || advice="failed: $KS_WHY"
   ks_workload || envfail "state not reached ($label): $KS_WHY"
   serve_up
