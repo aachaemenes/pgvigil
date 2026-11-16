@@ -254,6 +254,9 @@ function mssqlStateCell(_: unknown, r: Row): string | Node {
   return r.mssql_note ? el('span', {}, b, ` (${String(r.mssql_note)})`) : b;
 }
 
+// X18: a pass read or seen = OK (the others carry their warning badge)
+const mssqlStateCls = (_: unknown, r: Row): string => r.mssql_state === 'read' || r.mssql_state === 'seen' ? 'status ok' : '';
+
 // schemaView: one instance's Schema tab.
 export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElement> {
   const d = await get<SchemaData>('schema', { instance, ...window_(ctx) });
@@ -298,7 +301,7 @@ export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElemen
     { key: 'objects', num: true },
     { key: 'changes', label: 'changes in the range', num: true },
     { key: 'dropped', label: 'dropped (not partitions)', num: true },
-    mssql ? { key: 'mssql_state', label: 'last pass', wide: true, fmt: mssqlStateCell }
+    mssql ? { key: 'mssql_state', label: 'last pass', wide: true, fmt: mssqlStateCell, cls: mssqlStateCls }
       : { key: 'ddl_log', label: 'event trigger', fmt: (v, r) => r.ddl_log_note ? el('span', {}, ddlBadge(v), ` (${String(r.ddl_log_note)})`) : ddlBadge(v) },
     { key: 'first_read', label: 'compared since', fmt: fmtTime },
     { key: 'snapshot_at', label: 'read', fmt: fmtTime },

@@ -657,7 +657,7 @@ export async function mssqlXECaptures(ctx: Ctx): Promise<HTMLElement> {
         el('p', { class: 'meta' }, 'Optional Extended Events sessions beside pgvigil\'s four: off until the server\'s DBA runs the script below; pgvigil never makes, '
           + 'changes or drops one. Each is its own session, pgvigil_<install id>_<capture>.'),
         el('h3', {}, 'The sessions'),
-        grid(rowsOf(d.state), [{ key: 'capture', fmt: v => captureWords[text(v)] ?? text(v) }, { key: 'state', fmt: v => badge(text(v), v === 'running' ? 'ok' : v === 'stopped' ? 'warn' : '') },
+        grid(rowsOf(d.state), [{ key: 'capture', fmt: v => captureWords[text(v)] ?? text(v) }, { key: 'state', fmt: v => badge(text(v), v === 'running' ? 'ok' : v === 'stopped' ? 'warn' : 'none') },
           { key: 'session_name', label: 'session' }, { key: 'target' }, { key: 'new_events', label: 'events at the last read', num: true },
           { key: 'lost_events', label: 'lost', num: true }, { key: 'snapshot_at', label: 'read', fmt: fmtTime }],
           'Not read yet: the captures reader (mssql_xe_captures) runs every minute.'),

@@ -171,7 +171,8 @@ const patroniMemberCols: Col[] = [{ key: 'member' }, { key: 'role' }, { key: 'st
   { key: 'lag_bytes', label: 'lag', num: true, fmt: (v, r) => v == null ? String(r.lag_text ?? '') : fmtBytes(v) },
   { key: 'pending_restart', label: 'pending restart', fmt: (v, r) => v === true ? badge(String(r.pending_restart_reason ?? 'yes'), 'warn') : '' },
   { key: 'dcs_age_s', label: 'DCS last seen', num: true, fmt: (v, r) => v == null ? '' : `${fmtSecs(v)} before the read${r.failsafe_active === true ? ' (failsafe mode holds the leader)' : ''}` },
-  { key: 'api_ok', label: 'own API', fmt: (v, r) => v == null ? '' : v === true ? String(r.version ?? 'ok') : badge(String(r.api_message ?? 'no answer'), 'warn') },
+  { key: 'api_ok', label: 'own API', fmt: (v, r) => v == null ? '' : v === true ? String(r.version ?? 'ok') : badge(String(r.api_message ?? 'no answer'), 'warn'),
+    cls: v => v === true ? 'status ok' : '' },   // X18: the API answered = OK
   { key: 'snapshot_at', label: 'seen', fmt: fmtTime }];
 // patroniSection: the Patroni block of one instance - the read's line, the checks of its cluster (pg_patroni_checks)
 // and its members - or null where the instance has no Patroni read. ONE renderer for the two pages that show it: the
@@ -426,7 +427,8 @@ export async function pgReplicationFleetView(ctx: Ctx): Promise<HTMLElement> {
   }
   if (pat.length) out.push(el('section', {}, el('h3', {}, 'Patroni'),
     grid(pat, [{ key: 'scope' }, { key: 'instance', label: 'read through', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgstate') }, { key: 'ok', label: 'answered', fmt: v => yes(v) },
-      { key: 'leader', fmt: (v, r) => r.ok !== true ? '' : v == null ? badge('none', 'crit') : String(v) },
+      { key: 'leader', fmt: (v, r) => r.ok !== true ? '' : v == null ? badge('none', 'crit') : String(v),
+        cls: (v, r) => r.ok === true && v != null ? 'status ok' : '' },   // X18: a named leader = OK
       { key: 'paused', fmt: v => v === true ? badge('paused', 'warn') : '' },
       { key: 'judges', label: 'checks', fmt: v => v === true ? 'judged here' : '' },
       { key: 'member_list', label: 'members', wide: true, fmt: v => Array.isArray(v) ? v.map((m: Row) => patroniMemberText(m)).join('; ') : '' },
@@ -443,7 +445,8 @@ function linkCols(ctx: Ctx): Col[] {
   const linkState = (v: unknown, r: Row) => {
     const t = String(v ?? '');
     const bySev = r.severity === 'critical' ? 'crit' : r.severity === 'warning' ? 'warn' : '';
-    return badge(t, bySev || (t.startsWith('down') ? 'crit' : t.startsWith('missing') || t === 'replay paused' || t === 'sending server not read' ? 'warn' : t.startsWith('streaming') ? 'ok' : ''));
+    // X18: a link state no finding and no rule names is N/A
+    return badge(t, bySev || (t.startsWith('down') ? 'crit' : t.startsWith('missing') || t === 'replay paused' || t === 'sending server not read' ? 'warn' : t.startsWith('streaming') ? 'ok' : 'none'));
   };
   const bytes = (v: unknown) => v == null ? '' : fmtBytes(v);
   return [
@@ -459,7 +462,8 @@ function linkCols(ctx: Ctx): Col[] {
     { key: 'sender_state', label: 'sender' },
     { key: 'sender_lag_bytes', label: 'not replayed (sender)', num: true, fmt: bytes },
     { key: 'sender_lag_secs', label: 'replay_lag', num: true, fmt: v => v == null ? '' : fmtSecs(Math.round(num(v))) },
-    { key: 'receiver_status', label: 'receiver', fmt: (v, r) => r.standby_id == null ? '' : v == null ? (r.has_receiver === false ? badge('none', 'warn') : '') : String(v) },
+    { key: 'receiver_status', label: 'receiver', fmt: (v, r) => r.standby_id == null ? '' : v == null ? (r.has_receiver === false ? badge('none', 'warn') : '') : String(v),
+      cls: (v, r) => r.standby_id != null && v != null ? 'status ok' : '' },   // X18: a receiver present = OK
     { key: 'standby_lag_bytes', label: 'not replayed (standby)', num: true, fmt: bytes },
     { key: 'min_apply_delay_ms', label: 'apply delay', num: true, fmt: v => v == null || num(v) === 0 ? '' : fmtSecs(Math.round(num(v) / 1000)) },
     { key: 'last_seen', label: 'sender last seen', fmt: fmtTime },
@@ -478,7 +482,8 @@ function subscriptionCols(ctx: Ctx): Col[] {
     { key: 'instance', label: 'subscriber', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'replication') },
     { key: 'subname', label: 'subscription', fmt: (v, r) => `${String(r.datname ?? '')}.${String(v ?? '')}` },
     { key: 'enabled', fmt: v => v == null ? '' : v ? badge('enabled', 'ok') : badge('disabled', 'warn') },
-    { key: 'worker_pid', label: 'apply worker', fmt: (v, r) => r.in_recovery ? 'standby: not run here' : v == null ? badge('none', r.enabled ? 'crit' : '') : `pid ${String(v)}` },
+    { key: 'worker_pid', label: 'apply worker', fmt: (v, r) => r.in_recovery ? 'standby: not run here' : v == null ? badge('none', r.enabled ? 'crit' : 'none') : `pid ${String(v)}`,
+      cls: (v, r) => r.in_recovery ? 'status none' : v != null ? 'status ok' : '' },   // X18: a standby's = N/A, a running worker = OK
     { key: 'publications' },
     { key: 'rels_ready', label: 'tables ready' },
     { key: 'apply_errors', label: 'apply errors', num: true },

@@ -286,9 +286,12 @@ const daysTxt = (v: unknown, r: Row) => {
   const t = `${fmtNum(n)} days`;
   return n < 7 ? badge(t, 'crit') : n < 30 ? badge(t, 'warn') : t;
 };
+// X18: no forecast read and too little history = N/A, not filling and 30 days or more = OK
+const daysCls = (v: unknown, r: Row): string => r.forecast_read === false ? 'status none'
+  : v == null ? (r.growth_30d_per_day == null ? 'status none' : 'status ok') : Number(v) < 30 ? '' : 'status ok';
 const forecastCols: Col[] = [
   { key: 'growth_30d_per_day', label: 'growth / day (30 days)', num: true, fmt: (v, r) => r.forecast_read === false ? greyNA() : perDay(v) },
-  { key: 'days_until_full', label: 'days until full', num: true, fmt: daysTxt },
+  { key: 'days_until_full', label: 'days until full', num: true, fmt: daysTxt, cls: daysCls },
   { key: 'days_until_full_7', label: 'at the 7-day rate', num: true, fmt: (v, r) => r.forecast_read === false ? greyNA() : v == null ? '' : `${fmtNum(v)} days` },
 ];
 
@@ -581,14 +584,17 @@ function drivesSection(depth: DepthParts): HTMLElement {
   if (!p) { box.append(notRead(gap || 'mssql_storage_depth has not read this instance yet')); return box; }
   const onC = (v: unknown) => p.host_platform === 'Windows' && /^c:/i.test(String(v ?? '')) ? badge(String(v), 'warn') : String(v ?? '');
   box.append(grid([{ what: 'default data path', path: p.default_data_path }, { what: 'default log path', path: p.default_log_path }],
-    [{ key: 'what' }, { key: 'path', fmt: onC }]));
+    [{ key: 'what' }, { key: 'path', fmt: onC,
+      // X18: the system drive rules judge a Windows path only; one off C: = OK
+      cls: v => v == null || v === '' ? '' : p.host_platform !== 'Windows' ? 'status none' : /^c:/i.test(String(v)) ? '' : 'status ok' }]));
   if (p.host_platform !== 'Windows') box.append(el('p', { class: 'meta' }, 'The system drive rules (a path on C:) are not on Linux.'));
   if (!p.drives_read) box.append(notRead(String(p.drives_note ?? 'the fixed drives')));
   else {
     box.append(el('h4', {}, 'Fixed drives'), grid(rowsOf(depth.drives), [
       { key: 'drive' }, { key: 'drive_type', label: 'type' }, { key: 'free_bytes', label: 'free', num: true, fmt: fmtBytes },
       { key: 'total_bytes', label: 'size', num: true, fmt: v => v == null ? 'size not read' : fmtBytes(v) },
-      { key: 'free_pct', label: 'free %', num: true, fmt: (v, r) => v == null ? '' : r.status === 'critical' ? badge(pct(v), 'crit') : r.status === 'warning' ? badge(pct(v), 'warn') : pct(v) },
+      { key: 'free_pct', label: 'free %', num: true, fmt: (v, r) => v == null ? '' : r.status === 'critical' ? badge(pct(v), 'crit') : r.status === 'warning' ? badge(pct(v), 'warn') : pct(v),
+        cls: freeCls },   // X18: the drive's threshold colour, as the Drives grid above
       { key: 'files', label: 'database files', num: true },
     ]), el('p', { class: 'meta' }, 'Size not read: SQL Server gives only the free bytes of a drive without database files'
       + (p.host_platform === 'Linux' ? '; on Linux SQL Server lists only /.' : '.')));

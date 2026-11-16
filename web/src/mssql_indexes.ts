@@ -373,7 +373,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     smp.addEventListener('click', () => start('SAMPLED'));
     out.push(el('div', { class: 'toolbar' }, lim, ' ', smp, ' ', cost, ' ', note, ' ', costOut), status, box);
     if (reads.length) out.push(el('h4', {}, 'The last reads'), grid(reads, [
-      { key: 'database' }, { key: 'mode' }, { key: 'state', fmt: v => badge(String(v), v === 'done' ? 'ok' : v === 'running' ? 'info' : 'warn') },
+      { key: 'database' }, { key: 'mode' }, { key: 'state', fmt: v => badge(String(v), v === 'done' ? 'ok' : v === 'running' ? 'none' : 'warn') },   // X18: running = N/A (not judged yet)
       { key: 'ui_user', label: 'asked by' }, { key: 'started_at', label: 'started', fmt: fmtTime }, { key: 'ended_at', label: 'ended', fmt: fmtTime },
       { key: 'objects_read', label: 'rows read', num: true }, { key: 'rows_kept', label: 'kept', num: true }, { key: 'note', wide: true },
       { key: 'read_id', label: 'rows', fmt: (v, r) => { if (r.state === 'running') return ''; const b = el('button', { type: 'button', class: 'link' }, 'show'); b.addEventListener('click', () => { void follow(Number(v)); }); return b; } }]));

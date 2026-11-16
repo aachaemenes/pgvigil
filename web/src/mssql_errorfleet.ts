@@ -23,7 +23,7 @@ export function learnLink(n: number): HTMLAnchorElement {
 const sevBadge = (v: unknown): string | Node => {
   if (v == null) return '';
   const n = Number(v);
-  return badge(String(n), n >= 20 ? 'crit' : n >= 17 ? 'warn' : '');
+  return badge(String(n), n >= 20 ? 'crit' : n >= 17 ? 'warn' : 'none');   // X18: under 17 = N/A, a status class on every badge
 };
 
 export async function mssqlErrorFleetView(ctx: Ctx): Promise<HTMLElement> {
