@@ -150,10 +150,11 @@ SELECT @v, CONVERT(char(8), @d, 112);`).Scan(&ver, &verDate)
 		rd.note(fmt.Sprintf("the run's findings were cut at %d rows", blitzRowsMax))
 	}
 	switch {
-	case permErr != nil:
-		rd.note("which databases sp_Blitz's per-database checks read was not read: " + permErr.Error())
-	case dbSel < dbAll:
-		rd.noteFirst(blitzDBSkipNote(dbAll, dbSel, login))
+	case permErr != nil: // review-23 N3: first and in the page's prefix, so the section shows it
+		rd.noteFirst("sp_Blitz's per-database checks: pgvigil could not read which databases they check " +
+			"(fn_my_permissions in " + bracket(db) + "): " + permErr.Error())
+	default:
+		rd.noteFirst(blitzDBNote(dbAll, dbSel, login, bracket(db)))
 	}
 	outcome, why := blitzOutcome(rd, err, timedOut, int(timeout/time.Second))
 	run := collect.Row{"kind": "run", "outcome": outcome, "seconds": secs, "login": login, "proc_db": db,
@@ -349,9 +350,11 @@ func (rd *blitzRead) noteFirst(s string) {
 }
 
 // blitzDBPermsSQL is sp_Blitz 8.34's own @db_perms read (its lines 'Databases where we don't have read permissions'):
-// every database, and those where fn_my_permissions(<db>, 'DATABASE') lists SELECT. Read from sp_Blitz's database,
-// that function lists only what a server right implies (b20-b0diag3: a SELECT granted to the login's user inside a
-// database does not count; diag5: SELECT ALL USER SECURABLES does not either), so the default grants read none.
+// every database, and those where fn_my_permissions(<db>, 'DATABASE') lists SELECT. That function answers for the
+// database it runs in whatever database it is named (review-23 B1's probe), so run in sp_Blitz's own database it lists
+// SELECT for every database exactly when the login holds SELECT there - a database-level SELECT for its user in that
+// database (master, or the DBA database on RDS: b20-b0diag6 / diag7), CONTROL SERVER or sysadmin - and for none
+// otherwise; SELECT ALL USER SECURABLES does not count (diag5). pgvigil's default grants hold none of them.
 const blitzDBPermsSQL = `SELECT (SELECT COUNT(*) FROM sys.databases),
   (SELECT COUNT(DISTINCT d.database_id) FROM sys.databases AS d CROSS APPLY fn_my_permissions(d.name, N'DATABASE') AS fmp
     WHERE fmp.permission_name = N'SELECT')`
@@ -362,18 +365,31 @@ func blitzDBPerms(ctx context.Context, conn *sql.Conn, db string) (all, sel int,
 	return all, sel, err
 }
 
-// blitzDBSkipNote is the run's note when sp_Blitz's per-database checks leave databases out (the lead 05:0x: the
-// page never stays silent about it).
-func blitzDBSkipNote(all, sel int, login string) string {
-	what := fmt.Sprintf("ran on no database (0 of %d)", all)
-	if sel > 0 {
-		what = fmt.Sprintf("left out %d of %d databases", all-sel, all)
+// blitzDBNote is the run's first message: which of the two states the instance is in for sp_Blitz's per-database
+// checks (the lead 05:0x: the page never stays silent; 05:5x: the message says the state in words, and the opt-in is
+// an admin's, in one place, naming what it opens). Only the checks that read sp_Blitz's own list of the databases it
+// may check follow that list; its database-option checks that read sys.databases directly run either way (review-23
+// S1). db is sp_Blitz's database, bracketed.
+func blitzDBNote(all, sel int, login, db string) string {
+	read := "sp_Blitz builds its list of the databases it may check with fn_my_permissions(<database>, 'DATABASE') run in " +
+		db + ", its own database, and that read answers for " + db + " whatever database it names"
+	switch {
+	case sel >= all:
+		return fmt.Sprintf("sp_Blitz's per-database checks ran on every database (%d of %d): ", sel, all) + read +
+			": the login " + login + " holds SELECT in " + db + " (a database-level SELECT for its user there, CONTROL SERVER or sysadmin)."
+	case sel > 0:
+		return fmt.Sprintf("sp_Blitz's per-database checks could read %d of %d databases: ", sel, all) + read +
+			", and it listed SELECT for the login " + login + fmt.Sprintf(" on %d; the checks that read that list left the others out.", sel)
 	}
-	return "sp_Blitz's per-database checks " + what + ": sp_Blitz reads which databases it may check with " +
-		"fn_my_permissions(<database>, 'DATABASE') from its own database, and that read lists SELECT for the login " + login +
-		" only through a server right - a SELECT granted inside a database does not count, and SELECT ALL USER SECURABLES " +
-		"does not change it; only sysadmin does, which pgvigil never asks for. The Checks tab judges the database " +
-		"options on its own (auto-close, auto-shrink, page verify, the statistics options, the owner, the last good DBCC CHECKDB)."
+	return fmt.Sprintf("sp_Blitz's per-database checks ran on no database (0 of %d) - those that read its own list of the "+
+		"databases it may check (backups, the recovery model, auto-close, auto-shrink, page verify, the statistics options, "+
+		"the owner, the compatibility level, the collation, encryption, snapshots, where the files are); its checks of "+
+		"database options that read sys.databases directly (delayed durability, Service Broker and the like) still ran. ", all) +
+		read + ": the login " + login + " holds no SELECT in " + db + ", so the list is empty. The opt-in is an admin's: " +
+		"a database-level SELECT for the login's user in " + db + " - every table and view in " + db + " becomes readable to " +
+		"the login; pgvigil's default grants never ask for it. With the default grants pgvigil judges auto-close, " +
+		"auto-shrink, page verify, the statistics options, an owner that maps to no login and the last good DBCC CHECKDB " +
+		"on the Checks tab, and the backups and the recovery model on the Backups tab."
 }
 
 // joined is the text of the messages at severity min or more, in their order.
