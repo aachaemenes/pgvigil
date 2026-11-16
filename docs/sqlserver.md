@@ -144,7 +144,7 @@ CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
 GRANT EXECUTE ON master.sys.xp_readerrorlog TO [pgvigil_monitor];
 ```
 
-On Azure SQL Database the login block is the first three lines only, run in `master` (or a contained user in the database, with `VIEW DATABASE STATE` and, for the schema and maintenance reads, `VIEW DEFINITION` in the database); not proven here.
+On Azure SQL Database the login block is the first three lines only, run in `master` (or a contained user in the database, with `VIEW DATABASE STATE` and, for the schema read, `VIEW DEFINITION` in the database); not proven here.
 
 A collection that needs a right the login lacks does not fail the instance: it stores what it could read, and its row on the Collections page says `partial` with the missing right.
 

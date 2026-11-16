@@ -127,7 +127,7 @@ func TestRightsCatalogueShape(t *testing.T) {
 
 // TestRightsOnPlatforms: which rights are listed where. Azure SQL Database lists its database right - or, on Basic,
 // S0, S1 and in an elastic pool, ##MS_ServerStateReader## (Detect asks the server-level right there) - and the database's
-// VIEW DEFINITION (the schema and maintenance reads' probe; VIEW ANY DEFINITION is a server right it does not have); a managed platform
+// VIEW DEFINITION (the schema read's probe; VIEW ANY DEFINITION is a server right it does not have); a managed platform
 // lists the registry rights as not applying; Cloud SQL lists CONNECT ANY DATABASE as not grantable; before SQL Server
 // 2022 the audit's events say why; Amazon RDS lists its own reader.
 func TestRightsOnPlatforms(t *testing.T) {
