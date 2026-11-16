@@ -1,0 +1,241 @@
+diff --git i/cmd/pgvigil/report.go w/cmd/pgvigil/report.go
+index a87ac1d8..dc2c0d49 100644
+--- i/cmd/pgvigil/report.go
++++ w/cmd/pgvigil/report.go
+@@ -286,8 +286,10 @@ func osRelease() string {
+ var keepKeys = map[string]bool{
+ 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
+ 	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
+-	// doors: (the page door's switch, on or off)
+-	"page_instance_reads": true,
++	// doors: (the page door's switch, on or off; task 403b K5: the Slack door's switch)
++	"page_instance_reads": true, "slack_actions": true,
++	// tasks 403a / B24k: a channel's digest hour, the Zabbix mode and plain opt-in, the Azure cloud
++	"digest_hour": true, "mode": true, "allow_plain": true, "cloud": true,
+ 	// alerts:
+ 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
+ 	"clear_after": true, "port": true, "tls": true, "format": true,
+@@ -320,6 +322,14 @@ var knownKeys = map[string]bool{
+ 	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
+ 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
+ 	"warning": true, "critical": true,
++	// tasks 403a / 403b / B24k (alerts.Settings): a channel's digest and checks, Pushover, Zabbix, Azure Monitor, the
++	// Slack bot and the Slack door's apps (a token, a secret or an address under them is shown as its env: name only)
++	"digest_hour": true, "checks": true, "pushover": true, "token": true, "user": true, "device": true, "zabbix": true,
++	"mode": true, "server": true, "key": true, "tls_ca": true, "tls_cert": true, "tls_key": true, "tls_server_issuer": true,
++	"tls_server_subject": true, "allow_plain": true, "azuremonitor": true, "endpoint": true, "dcr_id": true, "stream": true,
++	"tenant": true, "client_id": true, "client_secret": true, "cloud": true, "login_url": true, "slack": true,
++	"bot_token": true, "channel": true, "api_url": true, "app_id": true, "slack_actions": true, "slack_apps": true,
++	"team_id": true, "enterprise_id": true, "signing_secret": true, "users": true,
+ }
+ 
+ // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index ec97781a..8fed717c 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -170,6 +170,20 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 	if why := srv.StoreReportsOff(ctx); why != "" {
+ 		log.Warn("custom reports on the store are off", "reason", why)
+ 	}
++	// task 403b K5: the Slack door (doors.slack_actions and slack_apps: in the file), off by default. serve reads only
++	// the door's part of the file and its apps' signing secrets (never the channels, whose tokens are not on serve);
++	// with the switch on, a fault there stops serve with its reason, and the door needs the UI login's users
++	door, derr := alerts.LoadSlackDoor(*path)
++	if derr != nil {
++		return derr
++	}
++	if door != nil {
++		if *noLogin {
++			return errors.New("doors.slack_actions needs the UI login (a click writes as the pgvigil user its Slack user maps to): serve without -no-login, or turn the door off")
++		}
++		web.SetSlackDoor(door)
++		log.Info("the Slack door is on", "path", alerts.SlackPath, "apps", strings.Join(door.AppIDs(), ","))
++	}
+ 	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
+ 	for _, in := range cfg.Instances {
+ 		pc.Gates[in.Name] = actions.ExplainGate{Enabled: in.ExplainAnalyze, DSN: in.ExplainDSN(),
+diff --git i/docs/mcp.md w/docs/mcp.md
+index 153d897f..604a328c 100644
+--- i/docs/mcp.md
++++ w/docs/mcp.md
+@@ -22,6 +22,7 @@
+ | `plan_findings` | `plan_id`, or `instance` with `queryid`, `from`, `to`, `hours` | one captured plan with the plan rules it hits, or the plans captured in a window (default 24 hours) to find a `plan_id` | `/api/plan`, `/api/plans` |
+ | `table_state` | `instance`, `table` (name or schema.table), `database` | the table's latest sizes, tuples, bloat, visibility, vacuum and analyze history, scans, XID age and checks, with its database's summary | `/api/tables` |
+ | `storage_forecast` | `instance` (optional) | volumes with free space, growth per day and days until full; with `instance`, also database and table growth and the storage checks; without it, the fleet and the repository's own size | `/api/storage`, `/api/storage/fleet` |
++| `alert_history` | `instance`, `from`, `to`, `hours` | one instance's alerts over the window (default 24 hours, at most 90 days, the alert log's reach): each firing with its clearance, severity, check, value, threshold, channels and sends; and its findings history (each open, close, severity change and hourly sample), sent or not | `/api/alertscope` |
+ 
+ An instance is named by its name (as `fleet_summary` lists it) or its `instance_id`. Times are RFC 3339 (`2026-11-09T08:00:00Z`). Each list in a reply is cut at 200 rows and each text at 20,000 characters; a cut says so in the reply.
+ 
+diff --git i/internal/config/pagedoor.go w/internal/config/pagedoor.go
+index 31fe0805..47f4629b 100644
+--- i/internal/config/pagedoor.go
++++ w/internal/config/pagedoor.go
+@@ -21,6 +21,9 @@ type Doors struct {
+ 	// PageInstanceReads turns on Community tools and custom reports for the instances added in Admin > Instances.
+ 	// Off by default.
+ 	PageInstanceReads bool `yaml:"page_instance_reads"`
++	// SlackActions turns on the Slack door (task 403b K5): Acknowledge and Mute 1 h on a Slack bot's posts, POST
++	// /api/slack/actions outside the UI login, for the apps listed under slack_apps:. Off by default.
++	SlackActions bool `yaml:"slack_actions"`
+ }
+ 
+ // PageReadsOff is the refusal while the switch is off.
+diff --git i/internal/mcp/applications_test.go w/internal/mcp/applications_test.go
+index 9da543d4..89dd2f05 100644
+--- i/internal/mcp/applications_test.go
++++ w/internal/mcp/applications_test.go
+@@ -44,6 +44,7 @@ var toolCalls = []struct{ name, args string }{
+ 	{"table_state", `{"instance":"Alpha","table":"orders"}`},
+ 	{"storage_forecast", `{}`},
+ 	{"storage_forecast", `{"instance":"beta"}`},
++	{"alert_history", `{"instance":"beta","hours":48}`}, // task 403b
+ }
+ 
+ func allTools(t *testing.T, h http.Handler) string {
+diff --git i/internal/mcp/mcp_test.go w/internal/mcp/mcp_test.go
+index 6207dd6e..22d14df6 100644
+--- i/internal/mcp/mcp_test.go
++++ w/internal/mcp/mcp_test.go
+@@ -126,8 +126,8 @@ func TestProtocol(t *testing.T) {
+ 		t.Errorf("an unknown version gets the newest: got %v", v)
+ 	}
+ 	list := got["3"]["result"].(map[string]any)["tools"].([]any)
+-	if len(list) != 7 {
+-		t.Errorf("tools = %d, want 7", len(list))
++	if len(list) != 8 { // task 403b: alert_history
++		t.Errorf("tools = %d, want 8", len(list))
+ 	}
+ 	for _, x := range list {
+ 		a := x.(map[string]any)["annotations"].(map[string]any)
+diff --git i/internal/mcp/tools.go w/internal/mcp/tools.go
+index 7afb52bc..5153c508 100644
+--- i/internal/mcp/tools.go
++++ w/internal/mcp/tools.go
+@@ -75,7 +75,7 @@ var (
+ )
+ 
+ func tools() []tool {
+-	return []tool{
++	return append([]tool{
+ 		{Name: "fleet_summary", Title: "Fleet summary",
+ 			Description: "Every monitored PostgreSQL instance (platform, version, sessions, failing collections) and the fleet's failing daily checks (critical first): the starting point.",
+ 			args:        []arg{{name: "severity", typ: "string", desc: "only checks of this severity", enum: []string{"critical", "warning"}}},
+@@ -111,7 +111,7 @@ func tools() []tool {
+ 			Description: "Volumes with free space, growth per day over 7 and 30 days and the days until full, soonest first; with instance, also its database and table growth and storage checks.",
+ 			args:        []arg{{name: "instance", typ: "string", desc: "one instance (name or instance_id); without it, the whole fleet and the repository's own size"}},
+ 			run:         storageForecast},
+-	}
++	}, alertTools()...) // task 403b: alert_history (tools_alerts.go)
+ }
+ 
+ func toolList() []any {
+diff --git i/internal/repo/sql/0190_join_release2.sql w/internal/repo/sql/0190_join_release2.sql
+index a994399a..13642c62 100644
+--- i/internal/repo/sql/0190_join_release2.sql
++++ w/internal/repo/sql/0190_join_release2.sql
+@@ -189,9 +189,12 @@ BEGIN
+                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
+                          'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                          'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+-                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute')
++                         'mssql_session_tempdb', 'mssql_activity_read', 'mssql_pool_minute', 'findings_history')
+        AND c.relname ~ '_[0-9]{6}$'
+-       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
++       -- task 403a: the alert log and the findings history are kept 90 days at least (PM Added 20's three months)
++       AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days =>
++             CASE p.relname WHEN 'alert_log' THEN greatest(p_days, 90)
++                            WHEN 'findings_history' THEN greatest(p_days, pgvigil.findings_history_days()) ELSE p_days END)
+      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
+      -- ACCESS EXCLUSIVE on its parent)
+      ORDER BY p.relname, c.relname
+@@ -202,6 +205,7 @@ BEGIN
+   END LOOP;
+   DELETE FROM pgvigil.job_runs WHERE start_time < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
++  n := n + pgvigil.alert_threads_purge();   -- task 403b K2 (0154): the Slack bot's threads of closed occurrences, after 90 days
+   DELETE FROM pgvigil.activity_summary WHERE snapshot_at < now() - make_interval(days => p_days);
+   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+   DELETE FROM pgvigil.statements_info WHERE snapshot_at < now() - make_interval(days => p_days);
+@@ -438,7 +442,9 @@ SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding
+        f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at
+   FROM (SELECT x.instance_id, x.severity, x.setting, x.value, x.suggested, x.detail, x.source, x.at FROM pgvigil.findings x
+         UNION ALL
+-        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y) f
++        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y
++        UNION ALL   -- tasks 403b / B24k (0154): the alert channels' own findings (failing, quota low; 'pgvigil repository', no instance)
++        SELECT z.instance_id, z.severity, z.setting, z.value, z.suggested, z.detail, z.source, z.at FROM pgvigil.alert_channel_findings z) f
+   LEFT JOIN pgvigil.instances i USING (instance_id)
+   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
+  WHERE i.is_active OR f.source = 'pgvigil repository';
+@@ -465,19 +471,23 @@ LANGUAGE sql STABLE SET jit = off AS $$
+     SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
+            coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
+            coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery,
+-           coalesce(c.repo_wide, true) AS repo_wide
++           coalesce(c.repo_wide, true) AS repo_wide,
++           coalesce(c.checks, '{}') AS checks, coalesce(c.digest, false) AS digest   -- task 403a (0154: A31, the digest hold)
+       FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
+            AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean,
+-                repo_wide boolean)
++                repo_wide boolean, checks text[], digest boolean)
+   ), sc AS (   -- every finding in a channel's scope, any severity (a repository-wide one: every channel but a route's,
+                -- task 310 - an application contact's route says repo_wide false)
+-    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
++    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, ch.clear_after_secs AS ch_clear_after,
++           coalesce(ch.digest, false) AS ch_digest, f.*
+       FROM ch JOIN pgvigil.alert_findings f
+-        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide)
++        ON (pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR (f.source = 'pgvigil repository' AND ch.repo_wide))
++       AND pgvigil.alert_checks_match(ch.checks, f.source, f.setting)   -- task 403a: a channel's checks: list (A31, 0154)
+      ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
+   ), m AS (    -- the ones at or above its floor that nothing holds
+     SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor
+-       AND pgvigil.ack_hold(p_at, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value) IS NULL
++       AND pgvigil.alert_hold(p_at, sc.channel, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value,
++                              sc.severity, sc.ch_clear_after, sc.ch_digest) IS NULL   -- task 403a: every hold (0154), acks first
+        AND NOT (pgvigil.collector_shared_cause(sc.source, sc.setting)
+                 AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
+   ), s AS (
+diff --git i/internal/web/q_alert_rules.go w/internal/web/q_alert_rules.go
+index 5ce82256..2e76b44a 100644
+--- i/internal/web/q_alert_rules.go
++++ w/internal/web/q_alert_rules.go
+@@ -105,12 +105,14 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
+ // where it does not: those are read only here, the file is their source.
+ const sqlThresholdsInForce = `
+ SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
+-       e.database, e.rule_id, e.name AS rule_name, e.scope, coalesce(e.tag, e.instance_name) AS target, e.op,
++       e.database, e.rule_id, e.name AS rule_name, e.scope,
++       coalesce(e.tag, e.instance_name, pgvigil.alert_scope_text(e.scope_tags)) AS target, e.op,   -- task 403a: a tag list's words
+        e.warning, e.critical, e.for_minutes, NULL::text AS value,
+        (SELECT string_agg('rule ' || o.rule_id || ' (' || o.scope || coalesce(' ' || coalesce(o.tag, o.instance_name), '') || ')', ', '
+                           ORDER BY o.level DESC, o.rule_id DESC)
+           FROM pgvigil.alert_rule_scope o
+          WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
++           AND o.op_family = e.op_family   -- task 403a: rules of another kind work beside it, they are not overridden
+            AND o.rule_id <> e.rule_id) AS overrides,
+        coalesce(t.tags, '{}'::text[]) AS tags
+   FROM pgvigil.alert_rules_effective e
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 6290ed6e..18aea373 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -257,6 +257,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
+ 	api.HandleFunc("POST /api/alertrules", s.AlertRuleWrite)
+ 	api.HandleFunc("POST /api/alertrules/end", s.AlertRuleEnd)
++	api.HandleFunc("GET /api/alertscope", s.AlertScope)          // task 403a: windows, held sends, flapping, overrides, history, digests
++	api.HandleFunc("POST /api/alertwindows", s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator, B24f)
+ 	api.HandleFunc("POST /api/alerts/test", s.AlertTest)
+ 	api.HandleFunc("POST /api/alerts/dismiss", s.AlertDismiss)
+ 	api.HandleFunc("POST /api/alerts/mute", s.AlertMute)
+@@ -415,6 +417,8 @@ func (s *Server) Handler() http.Handler {
+ 	mux.HandleFunc("POST /api/login", s.login)
+ 	mux.HandleFunc("POST /api/logout", s.logout)
+ 	mux.HandleFunc("GET /api/session", s.sessionInfo)
++	// task 403b K5: the Slack door, outside the UI login (the signature is its authentication); 404 while it is off
++	mux.HandleFunc("POST /api/slack/actions", s.slackActions)
+ 	mux.Handle("/api/", s.requireLogin(withReadWindow(api)))
+ 	sub, err := fs.Sub(dist, "dist")
+ 	if err != nil {

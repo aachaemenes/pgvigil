@@ -33,6 +33,18 @@ const outcomeBadge = (v: unknown) =>
 
 const list = (v: unknown): string => Array.isArray(v) && v.length ? v.join(', ') : '';
 
+// heldNote (task B24k): a channel its destination's last answer holds - Pushover's 429 until its reset, another 4xx
+// until the configuration changes or a Send test goes through. The sender writes the hold at the head of the
+// attempt's error ('held until <time>: ...', 'held until the configuration changes (<hash>): ...'); nothing is sent to
+// the channel while it stands.
+export function heldNote(lastError: unknown): HTMLElement | '' {
+  const e = String(lastError ?? '');
+  const t = /^held until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ): /.exec(e);
+  if (t) return Date.parse(t[1]) > Date.now() ? badge(`held until ${fmtTime(t[1])}`, 'warn') : '';
+  if (/^held until the configuration changes \([0-9a-f]{12}\): /.test(e)) return badge('held: change its configuration, or Send test', 'warn');
+  return '';
+}
+
 // scopeText: what a channel covers, in words
 export function scopeText(r: Row): string {
   const inst = list(r.instances), tags = list(r.tags);
@@ -78,7 +90,7 @@ const channelCols = (ad: AckData, redraw: () => void): Col[] => [
   { key: 'open_alerts', label: 'open alerts', num: true, fmt: v => fmtNum(v) },
   { key: 'last_sent_at', label: 'last sent', fmt: fmtTime },
   { key: 'last_attempt_at', label: 'last attempt', fmt: fmtTime },
-  { key: 'last_outcome', label: 'outcome', fmt: outcomeBadge },
+  { key: 'last_outcome', label: 'outcome', fmt: (v, r) => { const h = heldNote(r.last_error); return h ? el('span', {}, outcomeBadge(v), ' ', h) : outcomeBadge(v); } },
   { key: 'last_error', label: 'error', wide: true },
   { key: 'max_per_hour', label: 'send cap', fmt: (_v, r) => capText(r) },
   { key: 'templates', fmt: v => v ? String(v) : 'built in' },
@@ -194,6 +206,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     missing.tests ? notRead('tests') : grid(rowsOf(d.tests), testCols, 'No test was asked in the time range.'));
   sec.append(el('h3', {}, `Held sends ${rangeLabel(ctx)} `, whatIsThis('What a mute, a silence or a blackout kept from a channel: the alert, the channel, the first and last pass of the sender that held it, and how many passes.', 'Held sends')),
     grid(rowsOf(ad.suppressed).filter(inFolder), heldCols, 'Nothing held in the time range.'));
+  sec.append(await whyHeldView(ctx, inLog));
   sec.append(el('h3', {}, `Send log ${rangeLabel(ctx)}`),
     grid(log, logCols, 'No send attempt in the time range.'));
   sec.append(el('h3', {}, `Acknowledge log ${rangeLabel(ctx)}`),
@@ -771,4 +784,48 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(seg, body);
   await show(cur);
   return sec;
+}
+
+// whyHeldView (task 403a, PM Added 9): every send a window, the digest carry-over or the flapping hold kept from a
+// channel, one line per alert and channel saying why (0154's alert_held_all; the acks' own holds are Held sends
+// above), and the rule series marked flapping now. A repository before 0154 shows neither.
+const holdWords: Record<string, string> = {
+  blackout: 'a blackout window', mute: 'a mute window', digest: 'held for the daily digest', flapping: 'flapping: sent once, its repeats held',
+  attached: 'attached under a standing CPU, blocking or deadlock alert',
+};
+// heldBy names what holds a row: the rule, the anchor alert (an attached hold's hold_id is its anchor's first send,
+// not an id), or the window
+const heldBy = (r: Row): string =>
+  r.hold_source === 'rule' ? `rule ${String(r.hold_id)}`
+    : r.hold_source === 'anchor' ? `under ${r.anchor != null && r.anchor !== '' ? String(r.anchor) : 'an alert no longer open'}`
+      : `window ${String(r.hold_id)}`;
+async function whyHeldView(ctx: Ctx, inLog: (r: Row) => boolean): Promise<HTMLElement> {
+  const box = el('div', {});
+  let held: Row[], flapping: Row[];
+  try {
+    held = rowsOf((await get<{ held?: Table | null }>('alertscope', { ...window_(ctx), part: 'held' })).held)
+      .filter(r => r.hold_source !== 'ack').map(r => ({ ...r, instance: r.instance_name })).filter(inLog);
+    flapping = rowsOf((await get<{ flapping?: Table | null }>('alertscope', { part: 'flapping' })).flapping);
+  } catch { return box; }
+  box.append(el('h3', {}, `Why held: windows, digest, flapping and attached ${rangeLabel(ctx)} `, whatIsThis('One line per alert and channel a window, the daily digest, the flapping hold or a standing CPU, blocking or deadlock alert kept from that channel: which hold (the window, the rule or the anchor alert), the first and last pass that held it and how many. A digest-held alert reaches its channel in the daily digest only; a flapping one was sent once, then its repeats were held until its last 12 results steady; an attached one is listed in the recovery of the alert it sits under, or fires as itself if it still stands when that alert ends.', 'Why held')),
+    grid(held, [
+      { key: 'hold_kind', label: 'why', fmt: (v, r) => `${holdWords[String(v)] ?? String(v)} (${heldBy(r)})` },
+      { key: 'instance_name', label: 'instance' },
+      { key: 'setting', label: 'alert', fmt: (v, r) => [r.source, v].filter(x => x != null && x !== '').map(String).join(': ') },
+      { key: 'severity' },
+      { key: 'channel' },
+      { key: 'first_at', label: 'first held', fmt: fmtTime },
+      { key: 'last_at', label: 'last held', fmt: fmtTime },
+      { key: 'passes', num: true },
+    ], 'Nothing held by a window, the digest, the flapping hold or an anchor alert in the time range.'),
+    el('h3', {}, 'Flapping now'),
+    grid(flapping, [
+      { key: 'flapping_since', label: 'flapping since', fmt: fmtTime },
+      { key: 'instance' },
+      { key: 'metric', fmt: (v, r) => `${String(v)}${r.database != null ? ` [${String(r.database)}]` : ''}` },
+      { key: 'rule_id', label: 'rule', num: true, fmt: (v, r) => `${String(v)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''}` },
+      { key: 'state' },
+      { key: 'results', label: 'last 12 results', fmt: v => Array.isArray(v) ? (v as unknown[]).map(String).join(' ') : '' },
+    ], 'No alert rule series is flapping.'));
+  return box;
 }

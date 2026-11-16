@@ -424,6 +424,52 @@ func TestLineCap(t *testing.T) {
 	}
 }
 
+// task 403b (A38, D1 = a): a Teams card gives each alert with a page an 'Open in pgvigil' button, and a pass's long
+// alerts with their addresses split into cards that stay under 24 KB each
+func TestTeamsOpenButton(t *testing.T) {
+	a := crit
+	a.Detail = strings.Repeat("x", 2000)
+	a.URL = "https://pgvigil.example.org/#/alert?k=" + strings.Repeat("f", 64) + "&t=1800000000"
+	r := a
+	r.Event = "resolved"
+	ws := &webhookSender{format: "teams"}
+	b, _ := ws.payload(msg(a, r))
+	if strings.Count(string(b), `"Action.OpenUrl"`) != 1 || !strings.Contains(string(b), `"Open in pgvigil"`) {
+		t.Errorf("one button, for the firing alert only: %s", b)
+	}
+	var m []Alert
+	for range maxPerMessage {
+		m = append(m, a)
+	}
+	parts := batchesCost(m, false, ws.budget(), ws.lineCost)
+	if len(parts) < 2 {
+		t.Errorf("25 long alerts in %d card(s)", len(parts))
+	}
+	for i, p := range parts {
+		if b, _ := ws.payload(msg(p...)); len(b) > 24<<10 {
+			t.Errorf("card %d is %d bytes", i, len(b))
+		}
+	}
+	// the K2-K5 review's finding 16: lines full of SQL's <> (six bytes each once JSON-escaped) still make cards
+	// under 24 KB, and no alert is lost between them
+	sql := a
+	sql.Detail = strings.Repeat("a <> b AND c <> d ", 60)
+	m = m[:0]
+	for range maxPerMessage {
+		m = append(m, sql)
+	}
+	n := 0
+	for i, p := range batchesCost(m, false, ws.budget(), ws.lineCost) {
+		n += len(p)
+		if b, _ := ws.payload(msg(p...)); len(b) > 24<<10 {
+			t.Errorf("an escaped card %d is %d bytes (%d alerts)", i, len(b), len(p))
+		}
+	}
+	if n != len(m) {
+		t.Errorf("%d of %d alerts in the cards", n, len(m))
+	}
+}
+
 func TestDotSafe(t *testing.T) {
 	if s := dotSafe("a\r\n.\r\nb\nc\rd"); strings.ContainsAny(s, "\r\n") {
 		t.Errorf("%q", s)
@@ -450,7 +496,7 @@ func TestFileDrop(t *testing.T) {
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, ents[0].Name()))
 	var v map[string]any
-	if err := json.Unmarshal(b, &v); err != nil || v["severity"] != "critical" || v["channel"] != "t" || v["source"] != "pgvigil" {
+	if err := json.Unmarshal(b, &v); err != nil || v["severity"] != "critical" || v["channel"] != "t" || v["sender"] != "pgvigil" || v["source"] != "pgvigil host" {
 		t.Errorf("file %s: %v", b, err)
 	}
 	if fi, _ := ents[0].Info(); fi.Mode().Perm() != 0o640 {
@@ -459,5 +505,39 @@ func TestFileDrop(t *testing.T) {
 	gone, _ := (&FileDrop{Dir: filepath.Join(dir, "missing")}).build()
 	if err := gone.send(context.Background(), msg(crit)); err == nil {
 		t.Error("a missing directory: no error")
+	}
+}
+
+// task 403b (the lead 01:3x): a file carries the alert's own source; the envelope's constant is "sender": "pgvigil".
+// Red on 9a48c364: the envelope's own field "source" shadowed the alert's, so every file said "pgvigil".
+func TestFileDropSource(t *testing.T) {
+	dir := t.TempDir()
+	s, err := (&FileDrop{Dir: dir}).build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := crit
+	rule.FindingKey, rule.Source, rule.Setting = "fedcba9876543210", "alert rule", "cpu above 90 %"
+	if err := s.send(context.Background(), msg(crit, rule)); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 2 {
+		t.Fatalf("files %v, want one per alert", ents)
+	}
+	want := map[string]string{crit.FindingKey: "pgvigil host", rule.FindingKey: "alert rule"}
+	for _, e := range ents {
+		b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		var v map[string]any
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatalf("file %s: %v", b, err)
+		}
+		key, _ := v["finding_key"].(string)
+		if src, _ := v["source"].(string); src != want[key] {
+			t.Errorf("file %s: source %q, want the alert's own %q", e.Name(), src, want[key])
+		}
+		if v["sender"] != "pgvigil" || v["channel"] != "t" {
+			t.Errorf("file %s: sender %v channel %v, want pgvigil and t", e.Name(), v["sender"], v["channel"])
+		}
 	}
 }

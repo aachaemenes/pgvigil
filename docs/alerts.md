@@ -1,8 +1,9 @@
 # Alerts out
 
 pgvigil sends its findings to the channels your configuration names: an SMTP relay, a webhook (Microsoft Teams, Slack,
-Discord, Google Chat or a generic JSON body), PagerDuty (its Events API v2), Opsgenie (its Alert API v2) and a file drop
-(one JSON file per alert, for a site with no way out). **Nothing is sent unless a channel is configured.** With no `alerts:` list pgvigil sends nothing, and the Alerts tab and the send log say so.
+Discord, Google Chat or a generic JSON body), PagerDuty (its Events API v2), Opsgenie (its Alert API v2), Pushover, Zabbix
+(its sender protocol or its API), Azure Monitor Logs (the Logs Ingestion API) and a file drop (one JSON file per alert,
+for a site with no way out). **Nothing is sent unless a channel is configured.** With no `alerts:` list pgvigil sends nothing, and the Alerts tab and the send log say so.
 
 The collector sends. It runs a pass every minute inside `pgvigil run`, and `pgvigil alerts -config pgvigil.yaml` runs
 one pass by hand. Each pass reads the repository's findings, works out what each channel owes, sends it and records
@@ -27,6 +28,8 @@ alerts:
     recovery: true                # a message when the finding clears (default true)
     clear_after: 10m              # how long a finding must stay gone before it is resolved (default 10m; 0 = at once)
     max_per_hour: 30              # optional send cap (default 0 = none); see "The send cap"
+    digest_hour: 8                # optional: one daily digest at 08:00 in timezone; see "Windows and the daily digest"
+    checks: [backups]             # optional: only the findings of these checks (a source or setting; default all)
     templates:                    # optional; see "Templates"
       subject: {firing: "{severity}: {setting} on {instance}"}
       line: {resolved: "OK again: {instance} {setting}"}
@@ -85,13 +88,39 @@ alert open and quiet: no repeat, no recovery. If it rises again it is not sent a
 An SMTP message or a webhook post carries up to 25 alerts, each line cut at 600 bytes; more go in the next message of
 the same pass. A file drop
 writes one file per alert: `<UTC time>-<event>-<channel>-<key>.json`. Each file is written under a temporary name and
-renamed, so a reader never sees half of one.
+renamed, so a reader never sees half of one. A file is one JSON object: `sender` (always `pgvigil`), `channel`,
+`sent_at` (UTC, to the millisecond), then the alert's own fields - `event`, `finding_key`, `instance_id`, `instance`,
+`severity`, `source` (the finding's source: a check such as `pgvigil host`, `alert rule`, or `pgvigil repository`),
+`setting`, `value`, `detail`, `suggested`, `finding_at`, `first_sent_at`, `sent_before` and `url` (`instance_id`,
+`detail`, `suggested`, `finding_at`, `first_sent_at` and `url` are left out when empty). Changed after v0.3.0: a file
+of v0.3.0 carried `"source": "pgvigil"` on every alert (the envelope's constant hid the alert's own source); `source`
+is now the alert's own, and the constant moved to `sender`. A reader that matched `"source": "pgvigil"` to know a
+pgvigil file reads `sender` instead.
 
 A send that fails moves nothing: the next pass owes the same alerts. Inside `pgvigil run`, a failing channel is tried
 again after 1, 2, 4, 8, 16 and then every 30 minutes, and the other channels go on. Delivery is **at least once**: a
 send that went out but whose record in the repository then failed (the repository unreachable, the process killed) is
 sent again by the next pass. Two senders at the same time (the service and a `pgvigil alerts` by hand) do not both
 send: a pass holds an advisory lock in the repository, and a second sender skips its pass.
+
+A webhook that answers 429 with a `Retry-After` of 10 seconds or less (in seconds, or as a date) is waited out inside
+the send's 30 seconds and posted once more; the second answer stands. A longer `Retry-After`, none, or a second 429
+fails that send as above, and the log's error says which.
+
+**Alert channel failing.** When a channel's last three send attempts (alerts or a Send test) all failed or were
+refused, or its destination's answer holds it (Pushover's), the repository raises its own finding *alert channel
+failing* (warning, instance `pgvigil`, its value the channel's name; critical while one of those failed sends carried
+an alert that is critical now, so a channel losing criticals is told to the channels at a critical floor too), and the
+other channels are sent it like any repository-wide alert: every channel at or under its severity, scoped ones too,
+never an application contact's route. A channel whose `checks:` list leaves out *alert channel failing* (or `pgvigil
+repository`) is not told, and a channel in its quiet hours is told after them while it stands; no window or digest
+holds it (none holds a repository-wide alert). The detail names the channel's kind and destination (a webhook's scheme
+and host only), the newest failed attempt and its error; its time is the first failed attempt of the streak (failing
+since). The failing channel itself is never sent its own alert. The next send that goes through ends it, and the other
+channels get its recovery. A channel that nothing is owed to makes no attempt, so the alert stands, repeating on the
+other channels, until a send goes through: once the destination is fixed, press the channel's **Send test** on the
+Alerts page, and a test that goes through ends it. A channel whose floor is critical hears it only while criticals are
+being lost: set one channel at warning to hear of every failing channel.
 
 One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
@@ -327,6 +356,122 @@ The sender gives the evaluation 30 seconds a pass: past that the rules keep thei
 pass's summary line says "alert rules not judged" with the reason, and the findings still go out. A rule on a
 database that is later dropped stays held until someone ends the rule.
 
+## Windows and the daily digest
+
+A **window** holds alerts on chosen weekdays during a daily span in an IANA time zone, for one instance, a tag list
+or every instance (or the scope of an alert rule, copied). Make one on the Alert rules page, under **Windows**.
+
+- **blackout** and **mute**: nothing is sent while the window holds. The held sends are logged. The Alerts page says
+  why each one was held, under **Why held**.
+- **digest**: info and warning alerts (or info alone) are held for the channel's **daily digest**. A critical alert is
+  never held this way: it pages at once. A digest window holds alerts only on channels that have a `digest_hour`; on
+  any other channel it holds nothing, so no alert waits for a digest that never comes.
+- A span whose end comes before its start runs across midnight, as part of the day it starts; an end of 00:00 runs to
+  midnight, and a whole day is 00:00 to 24:00.
+- Local time follows the zone's own rules. On a spring-forward day a span inside the skipped hour holds nothing. In
+  the repeated hour of a fall-back day, it holds for both passes of that hour.
+- A window never holds pgvigil's own alerts about the repository or a collector.
+- When several holds match, the first wins: a blackout over a mute, a mute over the digest, the digest over the
+  flapping hold.
+
+A channel with `digest_hour` gets one message a day at that hour, in its `timezone`. It lists the alerts a digest
+window held on it since its last digest, grouped by instance and check: how many, when first and last held, the
+highest severity and the newest detail, at most 40 groups and then '+N more'.
+- **Empty days.** Nothing is sent on a day with none.
+- **What does not stop it.** The digest waits out the channel's quiet hours and back-off and counts against its
+  `max_per_hour`. A failed digest is tried again on the next pass. An hour missed while pgvigil was down is sent once,
+  carrying everything since the last digest.
+- **After the window.** An alert first held by a digest window, and never sent on that channel, stays held after the
+  window ends while it keeps standing. It reaches the channel in each day's digest while it stands, and no recovery is
+  sent for it. It ends once the finding has been gone for the channel's `clear_after`; quiet hours, a back-off or a
+  restart of pgvigil do not end it. An escalation past the window's ceiling is sent at once.
+- **The digest's zone.** `timezone` must be an IANA name the repository knows (not `Local`); a channel whose zone the
+  repository does not know gets no digest until it does.
+- **Where it can be set.** Only on a mail, chat or file channel: a PagerDuty or Opsgenie channel opens an incident per
+  alert and is refused. A route channel takes its base channel's digest hour.
+
+**Rule kinds.** Beside `above` and `below`, a rule can be:
+- `rises`: the rise from one sample to the next is beyond the value;
+- `above_baseline`: above the same local hour's average over the last 7 days, widened by a band (default 20 %), AND
+  above the rule's own value. Until 7 days of that hour are known, the rule judges by its own value alone, and its
+  alert says 'no baseline yet (N of 7 days)'. A day without samples in that hour counts as unknown. So does the hour a
+  spring-forward day skips: for a week after, that hour judges by the rule's own value.
+
+Rules of different kinds on one metric and scope work side by side. Within one kind, an instance's rule wins over a
+tag-list rule, and a tag-list rule over the fleet's. Between two tag lists, the one with more AND terms wins, then the
+newer rule. The rules grid says which rule overrides which, and on how many instances.
+
+**Tag lists.** A rule or a window may cover a tag list, for example `(env:prod OR env:stage) AND app:billing`: within
+one key any value, across keys every key. Keys are compared without case. A tag that no instance carries widens
+nothing.
+
+**Flapping** (SQLWATCH's rule). A rule's series whose last 12 results within 6 hours change 4 to 7 times
+(a change ratio of 0.35 to 0.65) is marked flapping. Its alert is sent once, saying so, and its repeats and re-firings
+are held until the ratio falls under 0.35. An escalation is still sent. A rule can opt out ('never hold as
+flapping'). The Alerts page lists the series flapping now.
+
+**Findings history.** Every finding's open, close and severity change is kept, whatever the channels, plus one sample
+an hour while it stands, for 90 days. The Alert rules page draws one instance's timeline.
+
+`checks:` on a channel limits it to the findings of those checks (a finding's source or setting, without case; the
+check a mute rule names). For example, backups go to one team and blocking to another.
+
+## The Slack bot, attachment, and Acknowledge from Slack
+
+**The Slack bot** (`kind: slack`, `slack: {bot_token: env:SLACK_BOT_TOKEN, channel: C0123ABCD}`, task 403b) posts through
+Slack's Web API (`chat.postMessage`) with a bot token (`xoxb-...`, through `env:` or `file:` only), to the channel's id
+(never its name). Unlike the incoming webhook, every alert keeps a thread: a repeat, an escalation (also shown in the
+channel) and the recovery are replies in the thread of the post that first carried the alert. A post carries up to 20
+alerts; the replies are sent one per thread, each as its own send, after the new alerts and at most 20 a pass (the rest
+go next pass), one Slack call a second. A post whose thread Slack no longer takes is posted anew. `api_url` is
+`https://slack.com/api` (the default) or `https://slack-gov.com/api` for GovSlack. A finding's text is escaped, so it
+never mentions a person or the channel. Every alert with a page address carries an *Open in pgvigil* button; Teams cards
+(the webhook's `teams` format) carry the same button, which opens the alert's page, where it is acknowledged.
+NOT PROVEN LIVE: the lab's Slack app has the incoming-webhook scope only and no Slack token is stored; the proof runs the
+bot against a stand-in of Slack's API.
+
+**Attachment** (Changed 24). While a CPU, blocking or deadlock alert stands on a channel (sent there, not held, not a
+flapping rule's), a new finding on the same instance is attached to it there instead of being sent: no new message,
+page or incident on any channel kind. What makes a finding an anchor is a fixed list (`pgvigil.alert_anchor_checks`):
+a rule on the metrics `cpu.sql_pct`, `cpu.total_pct`, `host.cpu_pct`, `requests.blocked`, `requests.heads`,
+`sessions.waiting_lock` or `database.deadlocks`, SQL Server's
+*a blocking chain* and *deadlocks in the last hour* - never a word in a check's name. A finding attaches only while the
+anchor's first send is at most 60 minutes old and the finding was never sent on that channel; it then stays attached
+while that occurrence stands. A critical alert and an escalation are never attached, and an anchor is never attached
+itself. On the Slack bot each attached finding is one reply in the anchor's thread; on every channel the anchor's
+recovery lists what was attached while it stood, and a daily digest lists them. When the anchor resolves, a finding
+that still stands fires as itself, its line saying what it was attached to. Two findings that fire in the same pass as
+their anchor go in the same message as it.
+
+**Acknowledge and Mute 1 h from Slack** (A38) - a door outside the UI login, OFF by default:
+
+```yaml
+doors: {slack_actions: true}          # the one switch (Site settings lists it); default false
+slack_apps:
+  - app_id: A0123ABCD                 # the Slack app whose Interactivity Request URL is https://<serve>/api/slack/actions
+    team_id: T0123ABCD                # its workspace (enterprise_id: E0123ABCD on Enterprise Grid)
+    signing_secret: env:SLACK_SIGNING_SECRET
+    users: {U0123ABCD: alice}         # Slack user id -> pgvigil user: who may click
+alerts:
+  - {name: ops-slack, kind: slack, slack: {bot_token: env:SLACK_BOT_TOKEN, channel: C0123ABCD, app_id: A0123ABCD}}
+```
+
+With the door on, a Slack bot channel's posts carry *Acknowledge* and *Mute 1 h* on each new or escalated alert. serve
+mounts `POST /api/slack/actions` (404 while the door is off) and reads only the door's part of the file and the listed
+apps' signing secrets, never a channel's token: a serve host needs no bot token. With the switch on, serve refuses to
+start under `-no-login`, or with a fault in that part (an app's entry, a secret it cannot read, no app listed), and
+says which. Each request is checked before anything in it is read: its
+size, its form type, a timestamp within 5 minutes, and Slack's signature (HMAC-SHA256 over the raw body, compared in
+constant time) against the app's secret; then the payload's app and workspace must be that app's. A replayed request
+is not taken twice. A click is then refused, to the clicker alone, when the Slack user is not mapped, the mapped
+pgvigil user is disabled or gone, acknowledgements are off on this server, the clicked post's alert has cleared (a newer
+post carries the open one), or it is already acknowledged or muted. Otherwise it is written as the mapped user through
+the actions door's audit login (client `slack:<workspace>/<user>`, the Slack identity in the audit row): *Acknowledge*
+stops that alert's repeats on every channel while it stands; *Mute 1 h* holds it on every channel for an hour, its
+escalation included (the button asks first). The outcome is posted back through the click's reply address. Limits: 20
+requests a second, 30 clicks a minute per Slack user. After the roles (B24f), a click needs the operator role.
+NOT PROVEN LIVE: no public address and no Slack token in the lab; the proof signs requests itself.
+
 ## Destinations and the rules they keep
 
 - **Only the configured destination.** A webhook's redirect is never followed: the send is refused, and the log says
@@ -363,6 +508,66 @@ database that is later dropped stays held until someone ends the rule.
   scheme and host are shown.
 - **The air-gapped site** uses the file drop. pgvigil writes into a directory and the site's own tooling picks the
   files up.
+- **Pushover** (`kind: pushover`, `pushover: {token: env:PO_TOKEN, user: env:PO_USER, device: phone1}`) sends each
+  alert as one notification through Pushover's Messages API: the title is the subject, the message the alert's line,
+  the link the alert's page; priority 1 for critical (shown and sounded in quiet hours), 0 for warning, -1 for info,
+  a recovery and a test. Priority 2 (repeated until acknowledged) is not offered: the channel's own `repeat` does
+  that. The application token and the user or group key come through `env:` or `file:` and never show. Pushover's
+  answers decide what follows: a 200 with status 1 is sent; a 429 (the month's messages used up) holds the channel -
+  nothing is posted - until the reset Pushover names; another 4xx (a key wrong, a device unknown) holds it until its
+  configuration changes or a Send test goes through (a Send test that fails leaves the hold). The Alerts page marks a
+  held channel, and a held channel raises *alert channel failing* on the other channels. A daily digest goes as one
+  notification (its group lines, cut within 1,024 characters, priority 0). Under 10 % of the month's messages left,
+  the repository raises *pushover quota low* on every channel. NOT PROVEN LIVE (no Pushover account was made), and
+  its proof against a stub of Pushover's documented answers has not run yet.
+- **Zabbix** (`kind: zabbix`) sends each message's alerts as values of one item of one Zabbix host: a trapper item
+  of type text, key `pgvigil.alert` by default, its *Allowed hosts* naming the machine that sends. Each value is the
+  alert as a JSON object (event, severity, instance, source, setting, value, detail, url, finding_key, line).
+  - `mode: sender` (the default): Zabbix's sender protocol to the server or a proxy, port 10051.
+    `zabbix: {server: zabbix.example.org, host: pgvigil, tls_ca: /etc/pgvigil/zbx-ca.pem, tls_cert: /etc/pgvigil/zbx.crt, tls_key: /etc/pgvigil/zbx.key}`.
+    The send counts only when Zabbix processed every value. A value it did not process comes back as a count, and the
+    log line names the causes to look for (the item missing, not a trapper item or disabled, the host not monitored,
+    the sender not in *Allowed hosts*); the Zabbix server's own log has the reason. To a server off loopback the
+    connection is TLS with certificates: the host's certificate and key (the host's encryption set to accept a
+    certificate). With `tls_server_issuer` or `tls_server_subject` set, the server's certificate is checked as Zabbix
+    checks one: its chain to `tls_ca` and those strings, no host name (Zabbix reads no Subject Alternative Name); with
+    neither, its chain and the server's name. The strings are written as Zabbix writes them - the lowest level first,
+    `CN=Zabbix server,OU=Development group,O=Zabbix SIA,DC=zabbix,DC=com`, special characters escaped with `\` - and
+    compared exactly; a refusal prints the string pgvigil read. Go has no PSK: a site on PSK uses `mode: api`. Plain
+    text goes to a loopback server only, or with `allow_plain: true` (an admin's opt-in, logged at start and shown in
+    the destination). NOT PROVEN until the container proof runs: certificate TLS against a Zabbix 7.0 server (whether
+    the handshake comes before the protocol's header), and a value's own timestamp kept per value.
+  - `mode: api`: the HTTP API's `history.push` (Zabbix 7.0), `zabbix: {mode: api, url: https://zabbix.example.org/zabbix, token: env:ZBX_TOKEN, host: pgvigil}`,
+    the token sent in `Authorization: Bearer`, over https (plain only to loopback or with `allow_plain`). A value
+    Zabbix refuses comes back with its own words.
+  - A site that wants a webhook instead points the `webhook` kind (`format: json`) at an HTTP agent item with trapping
+    enabled.
+- **Azure Monitor Logs** (`kind: azuremonitor`) writes each alert as a row of a Log Analytics custom table through
+  the Logs Ingestion API; never the HTTP Data Collector API (a workspace key), whose support Microsoft ended on
+  2026-09-14.
+  `azuremonitor: {endpoint: https://<the DCR's logs ingestion endpoint>, dcr_id: dcr-..., stream: Custom-PgvigilAlerts, tenant: <tenant id>, client_id: <app id>, client_secret: env:AZ_SECRET, cloud: public}`
+  (`cloud`: public, usgov or china: the sign-in host is login.microsoftonline.com, login.microsoftonline.us or
+  login.partner.microsoftonline.cn, the audience monitor.azure.com, .us or .cn). The token (client credentials) is
+  kept until five minutes before it expires and fetched again once after a 401. A call carries under 1 MB, more rows
+  go in several calls, and a detail is cut at 60,000 bytes (the service truncates a field over 64 KB). A 400 shows
+  Azure's message. The site makes, once: an app registration with a secret, the table, and a data collection rule
+  whose input stream takes the columns below, with the role *Monitoring Metrics Publisher* on the rule for the app.
+  NOT PROVEN LIVE (no Log Analytics workspace was made), and its proof against a stub of the documented answers has
+  not run yet.
+
+  The table `PgvigilAlerts_CL` and the stream `Custom-PgvigilAlerts` take these columns, the only ones pgvigil sends
+  (the shape of Microsoft's samples; compare with the JSON view of your rule):
+
+  ```json
+  {"streamDeclarations": {"Custom-PgvigilAlerts": {"columns": [
+     {"name": "TimeGenerated", "type": "datetime"}, {"name": "Event", "type": "string"},
+     {"name": "Severity", "type": "string"}, {"name": "Instance", "type": "string"},
+     {"name": "Source", "type": "string"}, {"name": "Check", "type": "string"},
+     {"name": "Value", "type": "string"}, {"name": "Detail", "type": "string"},
+     {"name": "Link", "type": "string"}, {"name": "FindingKey", "type": "string"}]}},
+   "dataFlows": [{"streams": ["Custom-PgvigilAlerts"], "destinations": ["<your workspace destination>"],
+                  "transformKql": "source", "outputStream": "Custom-PgvigilAlerts_CL"}]}
+  ```
 
 ## Alerts to an application's contacts
 
@@ -493,6 +698,30 @@ Writes from the UI go through `pgvigil.import_alert_test`, `pgvigil.import_alert
 `pgvigil.import_ack_change` (the actions door's audit login, as `import_ack`; `POST /api/alerts/test`,
 `/api/alerts/dismiss`, `/api/alerts/mute`). The sender reads the requests through `pgvigil.alert_tests_due` and answers
 through `pgvigil.alert_test_record`; its login needs nothing new (0093 grants `pgvigil_alerter` the test table).
+
+## In the repository (migration 0154)
+
+| Object | What it holds |
+|---|---|
+| `pgvigil.alert_windows` | Every blackout, mute and digest window: its scope, weekdays, daily span, zone, the digest's ceiling, who made and ended it (an edit ends the row and writes its successor). Not purged (an audit). |
+| `pgvigil.alert_window_log` | Every attempt from the UI, done or refused. |
+| `pgvigil.alert_held` | The sends a window, the digest carry-over or the flapping hold kept from a channel (first, last, passes, the newest detail); `alert_held_all` adds 0073's `ack_suppressed`. |
+| `pgvigil.alert_hold(...)` | The one hold test of the sender (`alert_mark` and `alert_due`). |
+| `pgvigil.digest_log` | Every digest: sent, failed, refused or empty. `digest_due`, `digest_items` and `digest_record` are the sender's. |
+| `pgvigil.findings_history` | The findings history (monthly partitions, kept 90 days); `findings_history_run` writes it each pass. |
+| `pgvigil.alert_rules` | Gains `scope_tags`, `band_pct`, `zone`, `ignore_flapping` and the kind (`op_family`); `op` takes `rises` and `above_baseline`; one live rule per metric, scope, series and kind. |
+| `pgvigil.alert_rule_state` | Keyed by kind too; gains the last 12 results, `flapping_since` and the baseline judged against. |
+| `pgvigil.alert_rule_baseline` | The hour's baseline per baseline rule, instance and series. |
+| `pgvigil.alert_rule_overrides` | Per live rule, the rule of its kind in force instead of it, and on how many instances. |
+| `pgvigil.alert_channel_quota` | A destination's monthly quota from its newest answer (Pushover's); `alert_channel_quota_low` is the finding *pushover quota low* under 10 % left, and `alert_channel_findings` is both channel findings, the view `alert_findings` reads. |
+| `pgvigil.alert_threads` | The Slack bot's thread per alert occurrence (the post's ts and the Slack channel's id), written with the send's attempt; `alert_threads_purge` drops a closed one's after 90 days. |
+| `pgvigil.alert_anchor_checks` | What makes a finding an anchor for attachment (rule metrics, exact check names); `alert_anchor` is the test, and `alert_held` keeps an attached send with its anchor. |
+| `pgvigil.alert_channel_failing` | Each configured channel whose last three send attempts failed, or that its destination's answer holds: the repository-wide finding *alert channel failing* (a view over `alert_log`, read through `alert_findings`; the index `alert_log_channel_at_idx` serves it). |
+
+Writes from the UI go through `pgvigil.import_alert_window` and `pgvigil.import_alert_rule` (the actions door's audit
+login; `POST /api/alertwindows`, `/api/alertrules`); the pages read `GET /api/alertscope`. Its part `alerts` is one
+instance's alerts over the window (`instance_id` required; filtered by the instance before its limit of 1,000), which
+the MCP tool `alert_history` reads with the instance's findings history, up to 90 days back ([mcp.md](mcp.md)).
 
 ## Proof
 
