@@ -45,6 +45,10 @@ func haJoinFreshStore(t *testing.T, ctx context.Context) *Repo {
 	}
 	cfg.ConnConfig.Database = name
 	cfg.ConnConfig.RuntimeParams["application_name"] = "pgvigil-repo"
+	// jit off, as serve's own pool (web.go: the findings view crosses jit_above_cost on a near-empty store and each read
+	// then compiles for a minute). Migrate sets it on the database for NEW sessions only, and this pool's first session
+	// is the one that migrates: without the line every read of pgvigil.findings below would run on it with jit on.
+	cfg.ConnConfig.RuntimeParams["jit"] = "off"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
