@@ -331,7 +331,7 @@ var part1 = []string{"implicit_conversions", "blitz_implicit_conversion", "is_ke
 	"is_spool_more_rows", "is_table_spool_expensive", "is_table_spool_more_rows", "is_sort_expensive",
 	"is_remote_query_expensive", "is_big_spills"}
 
-const builtParts = 1
+const builtParts = 2
 
 func checked(code string) bool {
 	return builtParts >= 2 || slices.Contains(part1, code)
@@ -545,16 +545,48 @@ var oracleSkip = map[string]string{
 	"is_cursor":               "sp_BlitzCache's Cursor rests on plan attributes and zero hashes (8.34 L4980-4995), not the plan",
 }
 
-// oneSpool are the codes sp_BlitzCache judges on one of a statement's spools: its spools CTE keeps each distinct spool
-// row and the UPDATE ... JOIN on QueryHash takes one of them (8.34 L3825-3870), where pgvigil judges each. On a
-// statement holding more than one such spool the compare is one way: sp_BlitzCache fires = pgvigil fires.
-var oneSpool = map[string][2]string{
-	"is_spool_expensive": {"Index Spool", "Eager Spool"}, "is_spool_more_rows": {"Index Spool", "Eager Spool"},
-	"is_table_spool_expensive": {"Table Spool", "Lazy Spool"}, "is_table_spool_more_rows": {"Table Spool", "Lazy Spool"},
+// oneOf are the codes sp_BlitzCache judges on one of a statement's candidate operators where pgvigil judges each (the
+// design's 'any node' departure, F3): the spools (its spools CTE keeps each distinct spool row and the UPDATE ... JOIN
+// on QueryHash takes one, 8.34 L3825-3870), the busy loop (one operator's CASE per statement, L3461-3470) and the scan
+// flags (L3677-3702, L3916-3922). On a statement holding more than one candidate the compare is one way: sp_BlitzCache
+// fires = pgvigil fires.
+var oneOf = map[string]func(*mstmt) int{
+	"is_spool_expensive":       func(s *mstmt) int { return len(s.ops("Index Spool", "Eager Spool")) },
+	"is_spool_more_rows":       func(s *mstmt) int { return len(s.ops("Index Spool", "Eager Spool")) },
+	"is_table_spool_expensive": func(s *mstmt) int { return len(s.ops("Table Spool", "Lazy Spool")) },
+	"is_table_spool_more_rows": func(s *mstmt) int { return len(s.ops("Table Spool", "Lazy Spool")) },
+	"busy_loops":               func(s *mstmt) int { return len(s.relops) },
+	"is_table_scan":            func(s *mstmt) int { return len(s.relops) },
+	"backwards_scan":           func(s *mstmt) int { return len(s.relops) },
+	"forced_index":             func(s *mstmt) int { return len(s.relops) },
+	"columnstore_row_mode":     func(s *mstmt) int { return len(s.relops) },
 }
 
-// The capture's oracle rows: 49 cases, a cursor's batch two rows (its DECLARE and its FETCH).
-const oracleRowsAtLeast = 52
+// anyNodeSeen are the one-way compares where pgvigil fires and sp_BlitzCache's kept operator did not, each read: a
+// statement where some operator meets the rule and sp_BlitzCache's UPDATE kept another's 0 (the busy loop's inner
+// side, a heap's Table Scan under a spool or a function; win_spool's three lazy spools, of which capture 3's
+// sp_BlitzCache kept NodeId 2 - 500 rows, no rebind - where capture 2's kept NodeId 10). A new one fails until it is
+// read and named here.
+var anyNodeSeen = []string{"adaptive/1:busy_loops", "cursor_ff/1:busy_loops", "cursor_ff/2:busy_loops",
+	"forced_ix/1:busy_loops", "idx_spool/1:is_table_scan", "lookup_cheap/1:busy_loops", "mstvf_interleaved/1:is_table_scan",
+	"tspool_hit/1:is_table_scan", "win_spool/1:busy_loops", "win_spool/1:is_table_spool_more_rows"}
+
+// The capture's oracle rows: 53 cases, a cursor's batch two rows (its DECLARE and its FETCH).
+const oracleRowsAtLeast = 56
+
+// A Warnings element's set flags are named in one order on every read (the words of #18 / #2 are compared and kept):
+// the element's own children in document order, then its flags sorted. No captured plan sets two flags on one element,
+// so the element is built here (a helper's order, not a rule's proof).
+func TestMSSQLWarningKindsOrder(t *testing.T) {
+	w := &xnode{name: "Warnings", attrs: map[string]string{"UnmatchedIndexes": "true", "SpatialGuess": "1", "NoJoinPredicate": "false", "FullUpdateForOnlineIndexBuild": "true"},
+		kids: []*xnode{{name: "SpillToTempDb"}, {name: "ColumnsWithNoStatistics"}, {name: "SpillToTempDb"}}}
+	const want = "SpillToTempDb, ColumnsWithNoStatistics, FullUpdateForOnlineIndexBuild, SpatialGuess, UnmatchedIndexes"
+	for i := 0; i < 50; i++ {
+		if got := warningKinds(w); got != want {
+			t.Fatalf("read %d: %q, want %q", i+1, got, want)
+		}
+	}
+}
 
 func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 	oracle := readOracle(t)
@@ -565,6 +597,7 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 	}
 	sort.Strings(names)
 	rows, compared, oneWay := 0, 0, 0
+	var pgvigilOnly []string // one-way compares where pgvigil fires and sp_BlitzCache's kept operator did not
 	for _, name := range names {
 		for i, r := range oracle[name] {
 			rows++
@@ -581,10 +614,13 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 					}
 					wantFire := oc.fire(r[oc.col])
 					have := has(warns, plan, code, s.ord)
-					if op, ok := oneSpool[code]; ok && len(s.ops(op[0], op[1])) > 1 {
+					if cand, ok := oneOf[code]; ok && cand(s) > 1 {
 						oneWay++
 						if wantFire && !have {
-							t.Errorf("%s (statement %d, %d spools): sp_BlitzCache 8.34 fires (%s = %q), pgvigil does not", code, s.ord, len(s.ops(op[0], op[1])), oc.col, r[oc.col])
+							t.Errorf("%s (statement %d, %d candidates): sp_BlitzCache 8.34 fires (%s = %q), pgvigil does not", code, s.ord, cand(s), oc.col, r[oc.col])
+						}
+						if have && !wantFire {
+							pgvigilOnly = append(pgvigilOnly, fmt.Sprintf("%s/%d:%s", name, i+1, code))
 						}
 						continue
 					}
@@ -596,7 +632,11 @@ func TestMSSQLPlanWarningsBlitzCache(t *testing.T) {
 			})
 		}
 	}
-	t.Logf("oracle rows %d, compared %d, one-way spool compares %d", rows, compared, oneWay)
+	t.Logf("oracle rows %d, compared %d, one-way compares %d; pgvigil alone fires on %d: %v", rows, compared, oneWay, len(pgvigilOnly), pgvigilOnly)
+	sort.Strings(pgvigilOnly)
+	if !slices.Equal(pgvigilOnly, anyNodeSeen) {
+		t.Errorf("pgvigil alone fires on %v; the read ones are %v", pgvigilOnly, anyNodeSeen)
+	}
 	if rows < oracleRowsAtLeast || compared != rows {
 		t.Errorf("compared %d of %d oracle rows (the capture holds at least %d)", compared, rows, oracleRowsAtLeast)
 	}
