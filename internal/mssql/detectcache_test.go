@@ -61,13 +61,14 @@ func TestDetectCache(t *testing.T) {
 }
 
 // Every collection gives the same Applies answer on the cached detect as on the fresh one, for each Kind with the
-// login's rights on and off and with and without a pool tag (Applies reads only the Info; the cache keeps the
-// detect's Info and sets the pool tag from the configuration).
+// login's rights on and off and with and without a pool tag or the linked server test tag (Applies reads only the
+// Info; the cache keeps the detect's Info and sets both tags from the configuration: task 409's
+// mssql_linkedserver_test applies by the tag - review B #6 of the j16 candidate: undoing a8fe3d0d stayed green).
 func TestCachedSkipEveryCollection(t *testing.T) {
 	at := time.Now()
 	for _, kind := range []Kind{KindServer, KindRDS, KindAzureDB, KindAzureMI, KindCloudSQL} {
 		for _, rights := range []bool{false, true} {
-			for _, tags := range [][]string{nil, {"pool:x"}} {
+			for _, tags := range [][]string{nil, {"pool:x"}, {LinkedServerTestTag}} {
 				in := config.Instance{Name: "cache-every", Engine: config.EngineSQLServer, DSNRaw: "env:A", Tags: tags}
 				fresh := Info{Kind: kind, Major: 16, VersionNum: 160000, EngineEdition: 3, HADREnabled: rights,
 					ViewServerState: rights, ViewAnyDefinition: rights, MsdbAccess: rights, ViewDatabaseState: rights,
@@ -81,6 +82,7 @@ func TestCachedSkipEveryCollection(t *testing.T) {
 					t.Fatal("no cached detect")
 				}
 				fresh.PoolTag = poolTag(in)
+				fresh.LinkedServerTest = linkedServerTest(in)
 				for _, c := range All() {
 					a1, w1 := c.Applies(fresh)
 					a2, w2 := c.Applies(cached)
