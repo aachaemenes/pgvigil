@@ -407,6 +407,10 @@ func (d *DMS) LatencyWarn() int {
 type Backups struct {
 	// ArchiveWarnMinutes is the age of the last archived WAL file past which a finding is raised while WAL waits; 0 = 60.
 	ArchiveWarnMinutes int `yaml:"archive_warn_minutes"`
+	// ReadTools lets the collector run the backup tool the server names (pgbackrest info, barman list-backups and
+	// show-servers, barman-cloud-backup-list) and read its configuration on the collector's host (task 302's fold F1:
+	// off by default - it runs programs as the collector's account and opens files that hold a repository's keys).
+	ReadTools bool `yaml:"read_tools"`
 }
 
 // ArchiveWarn returns the archive-age threshold in minutes (60 when unset).

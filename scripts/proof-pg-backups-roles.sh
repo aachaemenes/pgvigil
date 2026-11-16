@@ -190,10 +190,16 @@ instances:
   - name: pv-primary
     dsn: env:MON_DSN
     tags: [proofpg]
+    backups:
+      read_tools: true
   - name: pv-standby
     dsn: env:SB_DSN
+    backups:
+      read_tools: true
   - name: pv-fileship
     dsn: env:FS_DSN
+    backups:
+      read_tools: true
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
 SHIM=$WORK/shim; mkdir -p "$SHIM"

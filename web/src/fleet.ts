@@ -10,7 +10,7 @@ import { versionCell } from './versions';
 // pgaudit: the PostgreSQL instances' pgaudit cells (readAuditFleet); pgauditFailed: that read failed
 // collect: every instance's collection ages and errors (Snapshot Age, Collection Errors (24hrs)); roots: the root's uptime
 // and memory dump thresholds (the Summary's Options dialogs)
-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; at: number }
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; collect: Row[]; roots: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; pgBaseNotRead: Set<number>; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 // the pgaudit cells are read at most every 5 minutes, a forced refresh included (the Summary's auto refresh forces one
@@ -35,8 +35,12 @@ export async function fleet(force = false): Promise<Fleet> {
   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
     get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; collect: Table | null; roots: Table | null; failed?: boolean }>('mssql/summary', {})
       .catch(() => ({ cells: null, servers: null, pgdb: null, collect: null, roots: null, failed: true })),
-    auditRead()])
-    .then(([i, c, v, m, a]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), collect: rowsOf(m.collect), roots: rowsOf(m.roots), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed, at: Date.now() }))
+    auditRead(),
+    // task 302: the instances whose base backups are not read (the read_tools opt-in off): their Backup FULL cell is
+    // grey, never green; optional like the versions read (a repository before 0148: no instance is marked)
+    get<{ fleet: Table | null }>('pg/backup_dest/fleet', {}).catch(() => ({ fleet: null }))])
+    .then(([i, c, v, m, a, bd]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), collect: rowsOf(m.collect), roots: rowsOf(m.roots), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed,
+      pgBaseNotRead: new Set(rowsOf(bd.fleet).filter(r => r.base_not_read === true).map(r => Number(r.instance_id))), at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -283,6 +287,11 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
     if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)) && (!g.names || g.names(String(c.check_name ?? ''), String(c.check_group))));
+    // Backup FULL on PostgreSQL with the tool read off (task 302's opt-in): no check row is no verdict - grey, never OK
+    if (g.key === 'full' && hit.length === 0 && f.pgBaseNotRead.has(id)) {
+      out[g.key] = { level: 0, n: 0, none: true, text: 'not read', detail: ['base backups not read: the backup tool read is off for this instance (pgvigil.yaml backups: read_tools: true)'] };
+      continue;
+    }
     // Host and Disk read "no sample" on an instance the host collection has never reached (no system_stats, no
     // CloudWatch door: Azure, Cloud SQL): an empty check list there is not OK
     if ((g.key === 'host' || g.key === 'disk') && r.host_at == null && hit.length === 0) {

@@ -42,6 +42,7 @@ instances:
     #                                  # Audit); they can carry data: absent = the class, command and object only
     # backups:
     #   archive_warn_minutes: 60         # the last archived WAL older than this while WAL waits is a finding
+    #   read_tools: true                 # run the backup tool the server names and read its configuration here (off by default)
     schedules:
       instance: 30m
     # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the

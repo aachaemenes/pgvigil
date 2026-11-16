@@ -312,6 +312,9 @@ func (s *Server) Handler() http.Handler {
 	// task 162 (q_pg_backups.go): base backups, server state, the fleet Replication page, the thresholds
 	api.HandleFunc("GET /api/pg/backups", s.PgBackups)
 	api.HandleFunc("GET /api/pg/backups/fleet", s.PgBackupsFleet)
+	api.HandleFunc("GET /api/pg/backup_dest", s.PgBackupDest)
+	api.HandleFunc("GET /api/pg/backup_dest/fleet", s.PgBackupDestFleet)
+	api.HandleFunc("POST /api/pg/backup_dest", s.PgBackupDestWrite)
 	api.HandleFunc("GET /api/pg/state", s.PgState)
 	api.HandleFunc("GET /api/pg/replication", s.PgReplicationFleet)
 	api.HandleFunc("GET /api/pg/thresholds", s.PgThresholds)

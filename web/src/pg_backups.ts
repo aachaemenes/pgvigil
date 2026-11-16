@@ -17,6 +17,7 @@ import { AckBody, AckData, ackDialog, ackWhy, loadAckSafe, offBeside, seatWhy, w
 import { Ctx, href } from './router';
 import { fleet, fleetWideNote, inTagScope, tagsOf, tagWords, writtenTag } from './fleet';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { pgBackupDestFleet, pgBackupDestFleetCols, pgBackupDestSection } from './pg_backup_dest';
 
 type Parts<K extends string> = Record<K, Table | null>;
 
@@ -218,6 +219,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
           ['threshold', thresholdLine({ warn: rep.warn_min, crit: rep.crit_min, unit: 'minutes', direction: 'over', level: rep.threshold_level })],
         ])));
     }
+    out.push(await pgBackupDestSection(id, name, ad, () => void draw()));
     out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw(), ad));
     box.replaceChildren(...out);
   };
@@ -227,12 +229,14 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
 
 // pgBaseBackupsFleetSection: every self-managed instance's base backups by tool and every standby's replay.
 export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> {
-  const [d, ids] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx)]);
+  const [d, ids, dest] = await Promise.all([get<Parts<'tools' | 'replay'>>('pg/backups/fleet', {}), tagIds(ctx), pgBackupDestFleet().catch(() => new Map<number, Row>())]);
   const keep = (r: Row) => !ids || ids.has(Number(r.instance_id));
   const tools = rowsOf(d.tools).filter(keep), rep = rowsOf(d.replay).filter(keep);
+  // task 302: where the backups go, for EVERY PostgreSQL instance in scope (an rsync, cp or wal-g server has no tool row)
+  const where = [...dest.values()].filter(keep);
   const cols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, { key: 'tool' }, { key: 'name', label: 'stanza / server' },
-    { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: v => v == null ? badge('ok', 'ok') : sev(v) },
+    { key: 'state', fmt: stateBadge }, { key: 'worst', label: 'rules', fmt: (v, r) => v != null ? sev(v) : r.state === 'not_read' ? badge('not read', '') : badge('ok', 'ok') },
     { key: 'last_label', label: 'last backup' }, { key: 'last_type', label: 'kind' }, { key: 'last_age_h', label: 'age', num: true, fmt: hours },
     { key: 'full_age_h', label: 'full age', num: true, fmt: hours }, { key: 'last_db_size_bytes', label: 'size', num: true, fmt: fmtBytes },
     { key: 'wal_since_bytes', label: 'WAL since', num: true, fmt: fmtBytes }, { key: 'message', wide: true },
@@ -246,6 +250,9 @@ export async function pgBaseBackupsFleetSection(ctx: Ctx): Promise<HTMLElement> 
   return el('section', {}, el('h2', {}, 'Base backups (pgBackRest, barman)'),
     el('p', { class: 'meta' }, `${tools.length} tool read(s) on ${new Set(tools.map(t => t.instance_id)).size} instance(s); ${rep.length} standby(s).`),
     grid(tools, cols, 'No self-managed server names pgBackRest or barman in its archive_command or restore_command.'),
+    el('h3', {}, 'Where the backups go'),
+    grid(where, [{ key: 'instance', fmt: (v, r) => instLink(ctx, v, r.instance_id, 'pgbackups') }, ...pgBackupDestFleetCols,
+      { key: 'secret_seen', label: 'a credential in the command', fmt: v => v === true ? badge('yes (not stored)', 'warn') : '' }], 'No PostgreSQL instance in scope.'),
     el('h3', {}, 'Standbys: replay'), grid(rep, rcols, 'No standby read yet.'));
 }
 
