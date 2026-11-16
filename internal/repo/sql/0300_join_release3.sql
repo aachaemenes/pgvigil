@@ -2120,6 +2120,39 @@ BEGIN
 END $$;
 
 -- ====================================================================================================================
+-- pgvigil.metrics_sample_times: base none (new in a j16 item)
+--   #1 T B24d 9bd7f716: 0196_metrics_newest.sql L265 (merge-base ebf9a9c2 none) - 0196: new in B24d
+--   #2 D B24d 16d67e88: scripts/b24d-join-lines.sql against 0196 at 9bd7f716 - A15: the counters / xe / waits / collection arms
+-- ====================================================================================================================
+-- [j16 #1 B24d 9bd7f716]
+CREATE OR REPLACE FUNCTION pgvigil.metrics_sample_times(p_ids int[] DEFAULT NULL)
+RETURNS TABLE (instance_id int, family text, at timestamptz)
+LANGUAGE sql STABLE SET jit = off AS $$
+  SELECT i.instance_id, f.family, t.at
+    FROM pgvigil.instances i
+    CROSS JOIN LATERAL (SELECT DISTINCT c.family FROM pgvigil.metric_catalog c WHERE c.engine IN (i.engine, 'any')) f
+    CROSS JOIN LATERAL (SELECT CASE f.family
+             -- [j16 #2 B24d 16d67e88]
+             WHEN 'sessions'   THEN (SELECT max(x.snapshot_at) FROM pgvigil.activity_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'database'   THEN (SELECT max(x.snapshot_at) FROM pgvigil.dbstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'server'     THEN (SELECT max(x.snapshot_at) FROM pgvigil.serverstats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'io'         THEN (SELECT max(x.snapshot_at) FROM pgvigil.iostats x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'host'       THEN (SELECT max(x.snapshot_at) FROM pgvigil.host_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'requests'   THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_requests_summary x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'cpu'        THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_cpu_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'scheduler'  THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'memory'     THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_memory_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'counters'   THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_counter_read x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'xe'         THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_attention_reads x WHERE x.instance_id = i.instance_id AND x.read_done AND x.state = 'running' AND x.snapshot_at <= now())
+             WHEN 'waits'      THEN (SELECT max(x.snapshot_at) FROM pgvigil.mssql_wait_sample x WHERE x.instance_id = i.instance_id AND x.snapshot_at <= now())
+             WHEN 'collection' THEN (SELECT max(x.hour) + interval '1 hour' FROM pgvigil.collection_health_hour x WHERE x.instance_id = i.instance_id AND x.hour + interval '1 hour' <= now())
+           -- [j16 #1 B24d 9bd7f716]
+           END AS at) t
+   WHERE i.instance_id = ANY (coalesce(p_ids, ARRAY(SELECT x.instance_id FROM pgvigil.instances x WHERE x.is_active)))
+     AND t.at IS NOT NULL
+$$;
+
+-- ====================================================================================================================
 -- pgvigil.import_schema: base 0058_schema.sql L121
 --   #1 T A26 5b6bcff0: 0267_mssql_schema.sql L127 (merge-base 32c7aace 0058_schema.sql) - a26-join-lines.sql: the 'end' arm
 --   #2 T A26-PG 24b477f4: 0275_schema_sqlbody.sql L26 (merge-base 32c7aace 0058_schema.sql) - a26pg-join-lines.sql (1) hash_prev, (2) the baseline arm
