@@ -1,0 +1,103 @@
+B24f's join wiring, section rel-cq (task CQ 487, the request queue; at rel-cq's own DONE - the lead 11-15 16:3x).
+Apply on the joined tree that holds rel-roles and rel-cq (its cq-wiring-a2 patch applied):
+  git apply -3 scripts/b24f-join-wiring-rel-cq.patch
+Built on a pre-join copy of each file: rel-roles f421753c x rel-cq ccde1fcf + that wiring patch's web.go hunk (local commit
+d86caf4a, ref jw-pre-cq; merged clean), so -3 merges it onto the join's own resolution.
+What it does: s.post with needOperator for POST /api/requests/{id}/cancel (a queued request is a community run, an
+operator's: its asker's cancel); its words in roles_wiring_cq.go, needs.ts and docs/roles.md rows; roles_test.go's
+pageNeedRow takes a route with {id} and request.ts (its template post) joins pageOtherRts; the waiting request's Cancel
+carries the need.
+Proof: the four role checks on the joined tree; tsc there.
+
+diff --git a/docs/roles.md b/docs/roles.md
+index 118b5eee..f72e3a96 100644
+--- a/docs/roles.md
++++ b/docs/roles.md
+@@ -113,6 +113,7 @@ a signed-in user of any role. This table is the server's own list: a test compar
+ | `POST /api/plans/analyze` | operator | EXPLAIN ANALYZE (runs the statement) |
+ | `POST /api/plans/hypo` | operator | try a hypothetical index |
+ | `POST /api/indexes/advise` | operator | run the index advisor (hypothetical indexes and EXPLAIN on the monitored server; nothing is created) |
++| `POST /api/requests/{id}/cancel` | operator | cancel one's own queued request (a community run in queue mode) |
+ | `POST /api/community/run` | operator | run a community tool (a script runs as the read login in a rolled-back transaction) |
+ | `POST /api/reportmail/send` | operator | send a report by mail now |
+ | `POST /api/reportmail/test` | operator | send a schedule's test mail |
+diff --git a/internal/web/roles_test.go b/internal/web/roles_test.go
+index a0f67487..1ccb9a1e 100644
+--- a/internal/web/roles_test.go
++++ b/internal/web/roles_test.go
+@@ -173,7 +173,7 @@ func TestRolesDocMatches(t *testing.T) {
+ // route above viewer names that route's need. Both checks read the source.
+ 
+ // pageNeedRow is a line of web/src/needs.ts's routeNeeds table:   'ack/end': ['operator', 'ending an acknowledgement'],
+-var pageNeedRow = regexp.MustCompile(`^\s*'([a-z_/]+)':\s*\['(operator|admin)',\s*(?:'([^']*)'|"([^"]*)")\],\s*$`)
++var pageNeedRow = regexp.MustCompile(`^\s*'([a-z_/{}]+)':\s*\['(operator|admin)',\s*(?:'([^']*)'|"([^"]*)")\],\s*$`)
+ 
+ // pageNeeds reads the table: route (as api.post names it) -> need, what
+ func pageNeeds(t *testing.T) map[string][2]string {
+@@ -246,6 +246,7 @@ var (
+ 		"app_import.ts":      {"admin/applications/import"},
+ 		"uptimedialog.ts":    {"pg/thresholds"},
+ 		"pg_backups.ts":      {"pg/thresholds"},
++		"request.ts":         {"requests/{id}/cancel"},
+ 	}
+ )
+ 
+diff --git a/internal/web/roles_wiring_cq.go b/internal/web/roles_wiring_cq.go
+new file mode 100644
+index 00000000..df000c87
+--- /dev/null
++++ b/internal/web/roles_wiring_cq.go
+@@ -0,0 +1,7 @@
++package web
++
++// B24f's join wiring for rel-cq (the lead 11-15 16:3x): the refusal words of its write, kept beside roles.go's routeWhat
++// in a file of their own so each branch's wiring touches no line another branch's does
++func init() {
++	routeWhat["POST /api/requests/{id}/cancel"] = "cancelling a queued request"
++}
+diff --git a/internal/web/web.go b/internal/web/web.go
+index cf0b038a..8f80897c 100644
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -338,7 +338,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
+ 	// task CQ (487): a request of the queue - its state and its asker's result (wait up to 25 s), its cancel
+ 	api.HandleFunc("GET /api/requests/{id}", s.RequestGet)
+-	api.HandleFunc("POST /api/requests/{id}/cancel", s.RequestCancel)
++	s.post(api, "POST /api/requests/{id}/cancel", needOperator, s.RequestCancel)
+ 	api.HandleFunc("GET /api/extensions", s.Extensions)
+ 	api.HandleFunc("GET /api/roles", s.Roles)
+ 	api.HandleFunc("GET /api/versions", s.Versions)
+diff --git a/web/src/needs.ts b/web/src/needs.ts
+index f3a5ff8c..cf76fa17 100644
+--- a/web/src/needs.ts
++++ b/web/src/needs.ts
+@@ -30,6 +30,7 @@ export const routeNeeds = {
+   'plans/analyze': ['operator', 'running EXPLAIN ANALYZE'],
+   'plans/hypo': ['operator', 'trying a hypothetical index'],
+   'community/run': ['operator', 'running a community tool'],
++  'requests/{id}/cancel': ['operator', 'cancelling a queued request'],
+   'reportmail/send': ['operator', 'sending a report by mail'],
+   'reportmail/test': ['operator', 'sending a test report mail'],
+   'admin/instances': ['admin', 'changing an instance'],
+diff --git a/web/src/request.ts b/web/src/request.ts
+index ef6e4759..9dc2365c 100644
+--- a/web/src/request.ts
++++ b/web/src/request.ts
+@@ -9,6 +9,7 @@
+ import { LoginRequired, post } from './api';
+ import { InstanceRun, ResultSet } from './customreports';
+ import { el, fmtTime } from './ui';
++import { needControl } from './needs';
+ 
+ export interface Queued { request_id: number; expires_at?: string; detail?: string; via?: string }
+ 
+@@ -70,7 +71,7 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((done, fail
+ // button while it waits or runs; it returns the end (its result, for the asker). It stops (an AbortError) when status
+ // leaves the page.
+ export async function waitRequest(q: Queued, status: HTMLElement): Promise<RequestEnd> {
+-  const cancel = el('button', { type: 'button', class: 'link' }, 'Cancel');
++  const cancel = needControl(el('button', { type: 'button', class: 'link' }, 'Cancel'), 'requests/{id}/cancel');   // the role (B24f)
+   const words = el('span', {}, 'Waiting for the collector to take it.');
+   const said = el('span', { class: 'meta' }, ` Request ${q.request_id}.`);
+   status.replaceChildren(words, said, ' ', cancel);
