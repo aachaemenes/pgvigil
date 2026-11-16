@@ -64,6 +64,23 @@
 #     two log rows. 'insert into t values (9)' on pgcr-a: failed, 'read-only transaction', t still 2 rows. A function
 #     report public.pgcr_fn with k = 7: one row k 7, sq 49. [review 1 fold] min_n 'abc': 400, nothing sent, one log row
 #     run / refused naming the parameter.
+#  I. [B20-3] insight cards (DBA Dash N49; written before the first run, red on rel-b20 a280cead): a result set of exactly
+#     two columns InsightSeverity and Insight (matched case-insensitively: PostgreSQL lowers an unquoted alias) is a card
+#     set - the run's set carries cards [{severity, insight}] in row order; severity Info / Warning / Critical, read
+#     case-insensitively, an unknown or NULL one Info; a row with an empty or NULL Insight left out; the Insight as
+#     stored (the server changes no link). I1 'pgcr cards' (store, unquoted aliases, 7 rows): 5 cards - Warning, Critical
+#     ('critical'), Info ('Shouty'), Info ('INFO', a data: link), Info (NULL) - the javascript: one as stored. I2 quoted
+#     aliases: 1 card. I3 a third column: no cards key, a grid of its row. I4 no rows: cards []. I5 a tag run (postgres,
+#     env:pgcr): the done run's set the same 5 cards, the superuser's refused. I6 SQL Server, two sets: the first 1 card,
+#     the second a grid (master, tempdb), no cards key. The pages (part U; I7-I13): the store report's page 5
+#     .insight-card with data-severity in that order and no grid; only the https link an <a> (https://example.test/d),
+#     the javascript: and data: links their text; the three-column report a grid and no card; the tag run's page the done
+#     instance's 5 cards, no grid; SQL Server's page 1 card, 1 grid, no 'result set 2' heading (the numbering skips the
+#     card set); the page's Export .xlsx and its mail (the bar's Mail..., Send now with an address and a planted channel
+#     option, POST /api/reportmail/send paused in the browser and failed: nothing queued) each carry the 5 lines
+#     '<severity>: <insight>'; Send now off on this serve = I13 NOT PROVEN with its words. On a280cead (no cards): I1, I2,
+#     I4, I5, I6, I7, I8, I10, I11, I12 FAIL (no cards key, a grid drawn), I13 FAIL or NOT PROVEN, I3 and I9 ok; the
+#     proof's end 'FAIL: I: <n> card row(s) failed', every other part as before.
 #  F. folders: folder_add Ops; a report saved into Ops/Daily: the folders read lists Ops and Ops/Daily; move to Ops: its
 #     folder Ops; folder_rename Ops -> Team/Ops: the report in Team/Ops and the folders Team, Team/Ops, Team/Ops/Daily;
 #     folder_delete Team: refused (it holds a report) with one 'refused' log row; the report moved to the top,
@@ -794,6 +811,44 @@ ok "N: kept 60 s (two GETs, one checked_at $k1, the second in $k2ms ms, under 25
 [[ $(runlog) == "$(nruns)" ]] || fail "A: $(runlog) run rows for $(nruns) runs"
 ok "A: $(nruns) runs, $(nruns) run rows in the log"
 
+# ---- I: insight cards (B20-3) ------------------------------------------------------------------------------------
+# A failure here is counted (IF) and the proof goes on, so a red run names every card row; the count fails the proof at
+# its end, before the PASS line.
+C3REP=""; CPGREP=""; CMSREP=""
+IF=0; ifail() { echo "FAIL I: $*"; IF=$((IF + 1)); }
+# cards <run index> <set index>: the set's cards as [severity, insight] pairs, or 'none' when the set carries no cards key
+cards() { js "json.dumps([[c.get('severity'), c.get('insight')] for c in d['runs'][$1]['sets'][$2]['cards']]) if 'cards' in d['runs'][$1]['sets'][$2] else 'none'"; }
+CBODY="SELECT s AS InsightSeverity, i AS Insight FROM (VALUES ('Warning', 'disk [D:](https://example.test/d) at 91%'), ('critical', 'a [bad](javascript:alert(1)) link'), ('Shouty', 'unknown severity'), ('Info', ''), ('INFO', 'a [data](data:text/html,x) link'), (NULL, 'no severity'), ('Warning', NULL)) v(s, i)"
+CWANT='[["Warning", "disk [D:](https://example.test/d) at 91%"], ["Critical", "a [bad](javascript:alert(1)) link"], ["Info", "unknown severity"], ["Info", "a [data](data:text/html,x) link"], ["Info", "no severity"]]'
+[[ $(post customreports "$(add "name=pgcr cards" "body=$CBODY")") == 200 ]] || fail "I: add pgcr cards: $(cat "$WORK/body")"
+CREP=$(js "d['report_id']")
+if [[ $(run "{\"report_id\":$CREP,\"target\":\"fleet\"}") == 200 && $(js "d['runs'][0]['outcome']") == done ]]; then
+  got=$(cards 0 0); [[ $got == "$CWANT" ]] && ok "I1: 'pgcr cards' (unquoted aliases): 5 cards in row order, 'critical' / 'INFO' read as Critical / Info, 'Shouty' and NULL as Info, the empty and the NULL insight left out, the javascript: and data: insights as stored" || ifail "I1: 'pgcr cards' cards: $got (want $CWANT)"
+else ifail "I1: the run: $(cat "$WORK/body")"; fi
+[[ $(post customreports "$(add "name=pgcr cards quoted" 'body=SELECT '"'"'Warning'"'"' AS "InsightSeverity", '"'"'quoted aliases'"'"' AS "Insight"')") == 200 ]] || fail "I: add the quoted one: $(cat "$WORK/body")"
+rid=$(js "d['report_id']")
+[[ $(run "{\"report_id\":$rid,\"target\":\"fleet\"}") == 200 && $(cards 0 0) == '[["Warning", "quoted aliases"]]' ]] && ok "I2: quoted aliases \"InsightSeverity\" / \"Insight\": 1 card" || ifail "I2: quoted aliases: $(cards 0 0 2>/dev/null) $(head -c 300 "$WORK/body")"
+[[ $(post customreports "$(add "name=pgcr cards three" "body=SELECT 'Warning' AS insightseverity, 'x' AS insight, 1 AS n")") == 200 ]] || fail "I: add the three-column one: $(cat "$WORK/body")"
+rid=$(js "d['report_id']"); C3REP=$rid
+[[ $(run "{\"report_id\":$rid,\"target\":\"fleet\"}") == 200 && $(cards 0 0) == none && $(js "d['runs'][0]['sets'][0]['rows']") == "[['Warning', 'x', 1]]" ]] && ok "I3: a third column: no cards, the set a grid of its rows" || ifail "I3: three columns: cards $(cards 0 0 2>/dev/null), $(head -c 300 "$WORK/body")"
+[[ $(post customreports "$(add "name=pgcr cards none" "body=SELECT 'Warning'::text AS InsightSeverity, 'x'::text AS Insight WHERE false")") == 200 ]] || fail "I: add the empty one: $(cat "$WORK/body")"
+rid=$(js "d['report_id']")
+[[ $(run "{\"report_id\":$rid,\"target\":\"fleet\"}") == 200 && $(cards 0 0) == '[]' ]] && ok "I4: no rows: cards [] (no rows, no cards)" || ifail "I4: no rows: cards $(cards 0 0 2>/dev/null)"
+# I5: a tag run of a PostgreSQL report: each done instance run carries its cards (the superuser's refused, as in P)
+[[ $(post customreports "$(add "name=pgcr cards pg" engine=postgres "body=$CBODY")") == 200 ]] || fail "I: add the PostgreSQL one: $(cat "$WORK/body")"
+rid=$(js "d['report_id']"); CPGREP=$rid
+tick; [[ $(post customreports/run "{\"report_id\":$rid,\"target\":\"tag\",\"tag\":\"env:pgcr\"}") == 200 ]] || fail "I5: the tag: $(cat "$WORK/body")"
+tick   # the tag ran twice: two log rows
+got=$(js "json.dumps(sorted([r['outcome'], [[c.get('severity'), c.get('insight')] for c in r['sets'][0]['cards']] if r['outcome'] == 'done' and r['sets'] and 'cards' in r['sets'][0] else None] for r in d['runs']))")
+[[ $got == "[[\"done\", $CWANT], [\"refused\", null]]" ]] && ok "I5: a tag run (env:pgcr): the done instance's set carries the 5 cards, the superuser's run refused" || ifail "I5: the tag run: $got"
+# I6: SQL Server, two sets - the cards, then a grid
+if [[ -z "$SKIP_MSSQL" ]]; then
+  [[ $(post customreports "$(add "name=pgcr cards ms" engine=sqlserver "body=SELECT N'Warning' AS InsightSeverity, N'mssql card' AS Insight; SELECT name FROM sys.databases WHERE database_id <= 2 ORDER BY database_id")") == 200 ]] || fail "I6: add: $(cat "$WORK/body")"
+  rid=$(js "d['report_id']"); CMSREP=$rid
+  [[ $(run "{\"report_id\":$rid,\"target\":\"instance\",\"instance_id\":$MRID}") == 200 && $(js "d['runs'][0]['outcome']") == done && $(cards 0 0) == '[["Warning", "mssql card"]]' && $(cards 0 1) == none \
+     && $(js "d['runs'][0]['sets'][1]['rows']") == "[['master'], ['tempdb']]" ]] && ok "I6: SQL Server, two sets: the first 1 card, the second a grid (master, tempdb)" || ifail "I6: SQL Server: cards $(cards 0 0 2>/dev/null) / $(cards 0 1 2>/dev/null), $(head -c 300 "$WORK/body")"
+else NOTPROVEN+=("I6 (SQL Server's card set beside a grid): PGVIGIL_SKIP_MSSQL"); fi
+
 # ---- U: the pages ----------------------------------------------------------------------------------------------------------
 if [[ -n "${PGVIGIL_SKIP_PAGES:-}" ]]; then NOTPROVEN+=("NOT PROVEN (PAGES): PGVIGIL_SKIP_PAGES"); else
   for t in chromium node npm; do command -v $t >/dev/null || fail "U: $t is not on this machine (PGVIGIL_SKIP_PAGES=1 leaves the pages out)"; done
@@ -833,6 +888,124 @@ JS
   [[ $h4v == "a report on the store runs only as a login IN ROLE pgvigil_reader alone: reports_dsn in pgvigil.yaml names one"*"|true" ]] || fail "H4: the no-key serve's store report page (said|Run aria-disabled): ${h4v:0:300}"
   sleep 2; [[ $(logn) == "$L4" ]] || fail "H4: the no-key serve's page ran the store report on open (a log row)"
   ok "H4: the no-key serve's page of a store report: Run off (aria-disabled) with the words in its p.said paragraph (the one report mail carries), and no run on open (no log row)"
+  # [B20-3] the insight cards on the pages (part I's reports; a failure counts in IF): each card a .insight-card with
+  # data-severity, only an http / https link an <a>, a javascript: or data: one kept as its text; no grid for a card
+  # set; a tag run's cards inside the done instance's box; SQL Server's grid after its card set numbered without it; the
+  # page's Export .xlsx and its mail (the bar's Mail..., the send intercepted in the browser, never sent) carry each
+  # card as a text line '<severity>: <insight>'
+  cat > "$WORK/cards.mjs" <<'JS'
+const [port, U, dl, cookie, crep, c3, cpg, cms, mrid] = process.argv.slice(2);
+const fs = await import('node:fs');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+const bws = new WebSocket(ver.webSocketDebuggerUrl);
+await new Promise(r => bws.addEventListener('open', r));
+bws.send(JSON.stringify({ id: 1, method: 'Browser.setDownloadBehavior', params: { behavior: 'allow', downloadPath: dl } }));
+await new Promise(r => bws.addEventListener('message', r));
+const t = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+const ws = new WebSocket(t.webSocketDebuggerUrl);
+await new Promise((r, j) => { ws.addEventListener('open', r); ws.addEventListener('error', j); });
+let id = 0; const wait = new Map(); const paused = [];
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (d.id && wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } else if (d.method === 'Fetch.requestPaused') paused.push(d.params); });
+const cmd = (method, params = {}) => new Promise(res => { const i = ++id; wait.set(i, res); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); return d.result?.result?.value; };
+const until = async (expr, ms = 30000) => { for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(250)) if (await ev(expr)) return true; return false; };
+await cmd('Network.enable'); await cmd('Page.enable');
+await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
+const out = {};
+const read = `(() => { const r = document.querySelector('main .report-result'); if (!r) return null;
+  return { cards: [...r.querySelectorAll('.insight-card')].map(c => ({ sev: c.dataset.severity ?? null, text: (c.textContent || '').replace(/\\s+/g, ' ').trim(),
+    links: [...c.querySelectorAll('a')].map(a => a.getAttribute('href')) })), grids: r.querySelectorAll('table.grid').length,
+    heads: [...r.querySelectorAll('h3')].map(h => h.textContent.trim()) }; })()`;
+const page = async (key, hash) => {
+  await cmd('Page.navigate', { url: U + hash });
+  // drawn: the result holds a card, a grid or an outcome line (an old build draws a grid for a card set)
+  await until(`!!document.querySelector('main .report-result') && (!!document.querySelector('main .report-result .insight-card, main .report-result table.grid'))`);
+  await sleep(600);
+  out[key] = await ev(read);
+};
+await page('store', `#/customreports?report=${crep}`);
+// the page's Export .xlsx of the store card report
+const before = new Set(fs.readdirSync(dl));
+await ev(`(() => { const b = [...document.querySelectorAll('#bar button')].find(b => /Export \\.xlsx/.test(b.textContent)); if (b) b.click(); return !!b; })()`);
+for (let i = 0; i < 100 && !out.xlsx; i++) { await sleep(200); const f = fs.readdirSync(dl).find(x => !before.has(x) && x.endsWith('.xlsx')); if (f) out.xlsx = f; }
+// its mail: the bar's Mail... dialog; an address and (none on this server) a planted smtp channel option, then Send
+// now with POST /api/reportmail/send paused in the browser - its body read, the request failed, nothing queued
+out.mail = { state: 'no dialog' };
+if (await ev(`(() => { const b = [...document.querySelectorAll('#bar button')].find(x => x.textContent === 'Mail...'); if (!b) return false; b.click(); return true; })()`) && await until(`!!document.querySelector('dialog[open]')`, 15000)) {
+  await sleep(400);
+  await cmd('Fetch.enable', { patterns: [{ urlPattern: '*/api/reportmail/send*', requestStage: 'Request' }] });
+  out.mail = await ev(`(() => { const d = document.querySelector('dialog[open]'); const send = [...d.querySelectorAll('button')].find(b => b.textContent.trim() === 'Send now');
+    if (!send) return { state: 'no Send now' };
+    const ta = d.querySelector('textarea'); const sel = [...d.querySelectorAll('select')].find(s => /Channel/.test(s.closest('label')?.textContent ?? ''));
+    if (ta) { ta.value = 'cards@pgvigil.test'; ta.dispatchEvent(new Event('input', { bubbles: true })); }
+    if (sel && !sel.value) { sel.append(new Option('pgcr-planted', 'pgcr-planted')); sel.value = 'pgcr-planted'; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+    const off = send.getAttribute('aria-disabled') === 'true' || send.disabled;
+    if (off) return { state: 'off', why: send.title || (d.textContent || '').replace(/\\s+/g, ' ').slice(0, 200) };
+    send.click(); return { state: 'clicked' }; })()`);
+  if (out.mail.state === 'clicked') {
+    for (let i = 0; i < 100 && !paused.length; i++) await sleep(200);
+    if (paused.length) {
+      const p = paused[0];
+      try { out.mail = { state: 'sent', html: JSON.parse(p.request.postData ?? '{}').html ?? '' }; } catch (e) { out.mail = { state: 'unreadable body', why: String(e) }; }
+      await cmd('Fetch.failRequest', { requestId: p.requestId, errorReason: 'Aborted' });
+    } else out.mail = { state: 'no send request in 20 s' };
+  }
+  await cmd('Fetch.disable');
+  await ev(`(() => { for (const d of document.querySelectorAll('dialog[open]')) { d.close(); d.remove(); } })()`);
+}
+await page('three', `#/customreports?report=${c3}`);
+await page('tag', `#/customreports?report=${cpg}&tag=env:pgcr`);
+if (cms) await page('ms', `#/customreports?report=${cms}&i=${mrid}`);
+console.log(JSON.stringify(out));
+await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
+process.exit(0);
+JS
+  cj=$(timeout 180 node "$WORK/cards.mjs" "$CDP" "$U/" "$WORK/dl" "$COOKIE" "$CREP" "$C3REP" "$CPGREP" "$CMSREP" "${MRID:-}" 2>&1 | tail -1) || ifail "I page: the driver (its exit, or 180 s): ${cj:0:300}"
+  echo "$cj" > "$WORK/cards.json"
+  while IFS= read -r line; do
+    case $line in ok*) echo "$line" ;; FAIL*) ifail "${line#FAIL }" ;; "note "*"NOT PROVEN"*) echo "$line"; NOTPROVEN+=("${line#note }") ;; *) echo "$line" ;; esac
+  done < <(python3 - "$WORK/cards.json" "$WORK/dl" "$CWANT" <<'PY'
+import json, sys, zipfile, os, html
+try: d = json.load(open(sys.argv[1]))
+except Exception as e: print(f"FAIL I page: the driver's answer is not JSON ({e}): {open(sys.argv[1]).read()[:300]}"); sys.exit(0)
+want = json.loads(sys.argv[3]); lines = [f"{s}: {t}" for s, t in want]
+st = d.get('store') or {}
+cs = st.get('cards') or []
+sev = [c.get('sev') for c in cs]
+if sev == [s for s, _ in want] and st.get('grids') == 0: print(f"ok   I7: the store card report's page: 5 cards ({', '.join(sev)}), no grid")
+else: print(f"FAIL I7: the store card report's page: severities {sev}, grids {st.get('grids')} (want {[s for s, _ in want]}, 0)")
+links = [l for c in cs for l in c.get('links', [])]
+bad = cs[1]['text'] if len(cs) > 1 else ''
+if links == ['https://example.test/d'] and 'javascript:alert(1)' in bad and len(cs) > 3 and 'data:text/html,x' in cs[3]['text']:
+    print("ok   I8: only the https link is an <a> (https://example.test/d); the javascript: and data: links stay text")
+else: print(f"FAIL I8: the links: {links}; the javascript: card's text {bad[:120]!r}")
+th = d.get('three') or {}
+if th.get('grids') == 1 and not th.get('cards'): print("ok   I9: the three-column report: a grid, no card")
+else: print(f"FAIL I9: the three-column report's page: {th}")
+tg = d.get('tag') or {}
+if len(tg.get('cards') or []) == 5 and tg.get('grids') == 0: print("ok   I10: the tag run's page: the done instance's 5 cards, no grid")
+else: print(f"FAIL I10: the tag run's page: {len(tg.get('cards') or [])} cards, {tg.get('grids')} grids, heads {tg.get('heads')}")
+if 'ms' in d:
+    ms = d['ms'] or {}
+    if len(ms.get('cards') or []) == 1 and ms.get('grids') == 1 and not any('result set 2' in h for h in ms.get('heads', [])): print(f"ok   I11: SQL Server's page: 1 card, 1 grid, the grid numbered without the card set (heads {ms.get('heads')})")
+    else: print(f"FAIL I11: SQL Server's page: {ms}")
+x = d.get('xlsx')
+if not x: print("FAIL I12: Export .xlsx of the card report downloaded nothing")
+else:
+    z = zipfile.ZipFile(os.path.join(sys.argv[2], x))
+    text = html.unescape(' '.join(z.read(n).decode('utf-8', 'replace') for n in z.namelist() if n.startswith('xl/') and n.endswith('.xml')))
+    miss = [l for l in lines if l not in text]
+    print("ok   I12: Export .xlsx carries the 5 cards as text lines" if not miss else f"FAIL I12: Export .xlsx ({x}) lacks the lines {miss}")
+m = d.get('mail') or {}
+if m.get('state') == 'sent':
+    body = html.unescape(m.get('html') or '')
+    miss = [l for l in lines if l not in body]
+    print("ok   I13: the page's mail (Send now, intercepted in the browser) carries the 5 cards as text lines" if not miss else f"FAIL I13: the mail's body lacks the lines {miss}")
+elif m.get('state') == 'off': print(f"note I13: NOT PROVEN (the mail's cards): Send now is off on this serve: {m.get('why', '')[:200]}")
+else: print(f"FAIL I13: the mail: {m}")
+PY
+)
   cat > "$WORK/pages.mjs" <<'JS'
 const [port, U, axePath, dl, cookie, srep, msr, pga, msa] = process.argv.slice(2);
 const fs = await import('node:fs');
@@ -1800,6 +1973,7 @@ print(f"ok   S: pgvigil demo -serve -config: the real instance shows its own sta
 PY
 fi
 
+(( IF )) && fail "I: $IF card row(s) failed (the FAIL I lines above)"
 echo
 for n in "${NOTPROVEN[@]}"; do echo "NOT PROVEN: $n"; done
 echo "PASS proof-customreports ($(nruns) runs)$([[ ${#NOTPROVEN[@]} -gt 0 ]] && echo ", with ${#NOTPROVEN[@]} part(s) not proven")"
