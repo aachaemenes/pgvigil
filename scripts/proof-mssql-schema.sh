@@ -152,6 +152,16 @@ mstate() { q "select state from pgvigil.mssql_schema_dbs where instance_id = $(i
 changes() { q "select coalesce(string_agg(change || ' ' || kind || ' ' || identity, ', ' order by change, kind, identity), '') from pgvigil.schema_changes where instance_id = $(iid "$1") and dbid = $(dbid "$2") and snapshot_at = (select max(snapshot_at) from pgvigil.schema_changes where instance_id = $(iid "$1") and dbid = $(dbid "$2"))"; }
 nchanges() { q "select count(*) from pgvigil.schema_changes where instance_id = $(iid "$1") and dbid = $(dbid "$2")"; }
 pass() { collect mssql_defaulttrace "$1"; collect mssql_schema "$1"; }
+# tracewait <database> <object> <event class>: the default trace writes through a buffer, so a read made seconds after
+# a statement may not see it yet; wait (60 s at most) until the trace file holds the committed event, say how long
+tracewait() {
+  local n=0
+  until [ "$(sq "DECLARE @p nvarchar(260) = (SELECT path FROM sys.traces WHERE is_default = 1);
+      SELECT COUNT(*) FROM sys.fn_trace_gettable(@p, DEFAULT) t WHERE t.DatabaseName = N'$1' AND t.ObjectName = N'$2' AND t.EventClass = $3 AND t.EventSubClass = 1" | tail -1 | tr -dc '0-9')" -ge 1 ] 2>/dev/null; do
+    n=$((n + 1)); [ $n -gt 30 ] && { echo "  tracewait: the default trace holds no $3 for $1.$2 after 60 s"; return 0; }; sleep 2
+  done
+  echo "  tracewait: the default trace held $3 for $1.$2 after $((n * 2)) s"
+}
 
 echo "--- R0. reads"
 echo "  the default trace's ObjectType names: $(sq "SELECT STRING_AGG(subclass_name, ',') WITHIN GROUP (ORDER BY subclass_name) FROM (SELECT DISTINCT subclass_name FROM sys.trace_subclass_values WHERE trace_column_id = 28) x" | cut -c1-600)"
@@ -184,6 +194,7 @@ sleep 1; TP2=$(date -u +%FT%TZ); sleep 1
 echo "--- P3. DDL, one pass"
 sq "CREATE TABLE dbo.NewT (a int); ALTER TABLE dbo.Orders ADD note nvarchar(20) NULL; CREATE INDEX ix_orders_d ON dbo.Orders (d); DROP TABLE dbo.Gone;" shop >/dev/null || fail "P3's DDL"
 sq "EXEC (N'ALTER VIEW dbo.v_orders AS SELECT id, d, note FROM dbo.Orders'); EXEC (N'ALTER PROCEDURE dbo.p_key AS BEGIN OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = ''S3cretTwo''; SELECT 2 AS two; END'); EXEC (N'ALTER FUNCTION dbo.f_two() RETURNS int AS BEGIN RETURN 3; END');" shop >/dev/null || fail "P3's ALTERs"
+tracewait shop f_two 164
 pass a26-full; pass a26-hash
 echo "  P3 after the pass: reader $(q "select state || ' at ' || snapshot_at || coalesce(' note: ' || left(note, 300), '') from pgvigil.mssql_reader_state where instance_id = $(iid a26-full) and reader = 'defaulttrace'")"
 echo "  P3 shop's ddl events: $(q "select count(*) || ' from ' || coalesce(min(event_at)::text, '-') || ' to ' || coalesce(max(event_at)::text, '-') || ' ' || coalesce(string_agg(sub || ' ' || coalesce(object_name, '?') || '/' || coalesce(object_type, '?'), ', ' order by event_at), '') from pgvigil.mssql_trace_events where instance_id = $(iid a26-full) and kind = 'ddl' and database_name = 'shop'" | cut -c1-900)"
@@ -233,6 +244,7 @@ eq "P7b: the reader's state" "$(q "select state from pgvigil.mssql_reader_state 
 eq "P7b: no trace-driven read" "$(nchanges a26-notrace shop)" "$N7"
 RA=$(q "select read_at from pgvigil.mssql_schema_dbs where instance_id = $(iid a26-full) and database_id = $(dbid shop)")
 sq "CREATE TABLE dbo.P7bT (a int);" shop >/dev/null || fail "P7b's DDL"
+tracewait shop P7bT 46
 collect mssql_defaulttrace a26-full
 eq "P7b: the reader stored the DDL" "$(q "select count(*) > 0 from pgvigil.mssql_trace_events where instance_id = $(iid a26-full) and kind = 'ddl' and database_name = 'shop' and object_name = 'P7bT'")" t
 q "update pgvigil.mssql_reader_state set snapshot_at = snapshot_at - interval '20 minutes' where instance_id = $(iid a26-full) and reader = 'defaulttrace'" >/dev/null
@@ -255,6 +267,7 @@ else echo "NOT PROVEN B1: the server gave reborn id $NEW, not gone1's $OLD"; B1W
 echo "--- P6. a restore over shop"
 sq "BACKUP DATABASE shop TO DISK = N'/var/opt/mssql/data/shop_a26.bak' WITH INIT;" >/dev/null || fail "P6's backup"
 sq "CREATE TABLE dbo.AfterBackup (a int);" shop >/dev/null
+tracewait shop AfterBackup 46
 pass a26-full
 eq "P6: the table after the backup" "$(changes a26-full shop)" "added table dbo.AfterBackup"
 sq "RESTORE DATABASE shop FROM DISK = N'/var/opt/mssql/data/shop_a26.bak' WITH REPLACE;" >/dev/null || fail "P6's restore"
@@ -271,6 +284,7 @@ ok "S10: a dropped database's objects marked gone"
 echo "--- S9. a 2,000-procedure database's whole re-read"
 collect mssql_defaulttrace a26-mid; collect mssql_schema a26-mid
 sq "EXEC (N'ALTER PROCEDURE dbo.p7 AS BEGIN SELECT 7; END');" mid >/dev/null
+tracewait mid p7 164
 collect mssql_defaulttrace a26-mid
 W0=$(q "select pg_current_wal_lsn()"); T0=$(date +%s.%N)
 collect mssql_schema a26-mid
