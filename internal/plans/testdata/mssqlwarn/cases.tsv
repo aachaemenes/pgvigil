@@ -34,7 +34,7 @@ udf_filter	cache	ctp=5 now=- rt=-	is_computed_filter,blitz_scalar_udf	-	-	#45	tr
 udf_computed	cache	ctp=5 now=- rt=-	is_computed_scalar,function_count	-	-	#43	a computed column over the UDF
 mstvf_fixed	cache	ctp=5 now=- rt=-	is_mstvf,tvf_join	-	-	#63,#23	interleaved execution off: the fixed 100-row estimate
 mstvf_interleaved	cache	ctp=5 now=- rt=-	tvf_join	is_mstvf	-	#63,#23	the near miss: interleaved execution gives the TVF its real 72 rows
-table_var	cache	ctp=5 now=- rt=-	is_table_variable	-	-	#34	a table variable in the batch
+table_var	qs	ctp=5 now=- rt=-	is_table_variable	-	-	#34	a table variable in the batch
 cursor_dynamic	cache	ctp=5 now=- rt=-	is_cursor,cursor_not_forward_only,is_cursor_dynamic	-	-	#10,#12,#13	a DYNAMIC cursor
 cursor_ff	cache	ctp=5 now=- rt=-	is_cursor	cursor_not_forward_only,is_cursor_dynamic	-	#10,#12,#13	the near miss: a FAST_FORWARD cursor
 cursor_ff	cache	ctp=5 now=- rt=-	-	is_paul_white_electric	-	#60	no Switch in a FAST_FORWARD cursor's plan (capture 2): #60 NOT PROVEN
