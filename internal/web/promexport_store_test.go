@@ -22,9 +22,10 @@ import (
 //     has a sample of each of the 51 exported names (a collection's under the label collection, never database), none
 //     of counters.percent_log_used (promNotExported), and with metrics.databases on and max_databases 1 every
 //     collection's series still (the collection family is not cut).
-//   - 'pex-b': the batch rate under the per-batch floor (5/s) at the NEWEST instance read only, and no scheduler count
-//     at its reads of the newest 6 minutes: no compilations-per-batch or page-splits-per-batch sample and no waits
-//     sample - never the older read's value, which metric_points still has (B2).
+//   - 'pex-b': the batch rate under the per-batch floor (5/s) at the NEWEST instance read only: no compilations-per-batch
+//     or page-splits-per-batch sample - never the older read's value, which metric_points still has (B2); and no
+//     scheduler count in the 15 minutes the waits formula reaches back for one (0152's mssql_wait_core_points: the
+//     newest count in (point - 15 min, point]): no waits sample (every fresh point has no value).
 //   - the HELP words: the counters' newest-read edge, the per-read counts' 'never sum_over_time', the collection
 //     family's 'max by (server)'.
 func TestPromExportOnAStore(t *testing.T) {
@@ -147,7 +148,8 @@ func TestPromExportOnAStore(t *testing.T) {
 	    JOIN (SELECT x.*, (row_number() OVER (PARTITION BY x.instance_id ORDER BY x.series_id))::int AS sx
 	            FROM pgvigil.mssql_counter_series x WHERE x.instance_id = ANY($1::int[])) s
 	      ON s.instance_id = r.instance_id AND (s.object = 'Databases') = (r.scope = 'database')`, ids, t0)
-	// the waits at every instance read; the scheduler count at every read of pex-a, at pex-b's older than 6 minutes only
+	// the waits at every instance read; the scheduler count at every read of pex-a, at pex-b's older than 15 minutes only
+	// (peg-green1: counts 6 minutes back were inside the formula's 15-minute reach, so pex-b's newest waits point had a value)
 	exec("waits", `INSERT INTO pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, is_benign, waiting_tasks, wait_ms, signal_ms, interval_secs)
 	  SELECT i, $2::timestamptz - make_interval(mins => k), w.t, w.b, 1, 3000 + 100 * k + w.f, 0, 60
 	    FROM unnest($1::int[]) i CROSS JOIN generate_series(0, 20) k
@@ -155,7 +157,7 @@ func TestPromExportOnAStore(t *testing.T) {
 	exec("schedulers", `INSERT INTO pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers)
 	  SELECT x.i, $2::timestamptz - make_interval(mins => k), 4
 	    FROM unnest($1::int[]) WITH ORDINALITY AS x(i, ix) CROSS JOIN generate_series(0, 20) k
-	   WHERE x.ix = 1 OR k >= 6`, ids, t0)
+	   WHERE x.ix = 1 OR k >= 16`, ids, t0)
 	// the attention capture: a read a minute, done, running; three client timeouts stored at each read
 	exec("attention reads", `INSERT INTO pgvigil.mssql_attention_reads (instance_id, snapshot_at, state, read_done, counter)
 	  SELECT i, $2::timestamptz - make_interval(mins => k), 'running', true, 2000 - 3 * k
