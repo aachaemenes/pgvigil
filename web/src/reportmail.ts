@@ -125,6 +125,7 @@ export function routeOf(hash = location.hash): string {
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
   const pb = await pageBook(ctx, root, m.tab), book = pb.items.map(f => f.sec);
+  const grids = pb.found.filter(f => !f.el.classList.contains('insight-cards'));   // a report's insight cards are no grid (B20-3)
   if (!book.length) throw new Error('nothing to mail: no grid on this page');
   const secs = sections(root!, m.tab);
   const nums = numbers(root!);
@@ -135,7 +136,7 @@ export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<Mai
   return {
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
     html: mailHtml(m, secs, nums, title, notesOf(root!, m.tab)), xlsx, xlsx_name: exportName(m, 'xlsx'),
-    grids: pb.found.length, rows: pb.found.reduce((n, f) => n + f.sec.rows.length, 0),   // the page's grids, as before: no tiles, cards' or charts' rows
+    grids: grids.length, rows: grids.reduce((n, f) => n + f.sec.rows.length, 0),   // the page's grids, as before: no tiles, cards' or charts' rows
   };
 }
 
