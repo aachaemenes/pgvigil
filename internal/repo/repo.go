@@ -129,6 +129,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 			_ = tx.Rollback(ctx)
 			return applied, fmt.Errorf("migration %s: %w", n, err)
 		}
+		// the file's Go step (remask.go's goSteps), in the same transaction, before the file is recorded
+		if step := goSteps[n]; step != nil {
+			if err := step(ctx, tx); err != nil {
+				_ = tx.Rollback(ctx)
+				return applied, fmt.Errorf("migration %s, its Go step: %w", n, err)
+			}
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO pgvigil.schema_version (version) VALUES ($1)`, n); err != nil {
 			_ = tx.Rollback(ctx)
 			return applied, err

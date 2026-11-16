@@ -209,6 +209,13 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cur
 	if err != nil {
 		return nil, err
 	}
+	// a job's description is its author's text and may carry a connection string: masked as a step's command is
+	// (pgAgent's description is, through the definition), before the row, the version and the script are built
+	for _, j := range rows {
+		if d, ok := j["description"].(string); ok {
+			j["description"] = collect.MaskJobText(d)
+		}
+	}
 	steps, err := QueryRows(ctx, conn, jobStepsSQL)
 	if err != nil {
 		return nil, err
