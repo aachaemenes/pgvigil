@@ -869,13 +869,17 @@ END $do$;
 -- out), the CPU and logical reads over the runs that read their session at their end, the import over the runs that
 -- wrote or tried to. Failed holds the import's failures too (DBA Dash's FailedCount + ImportFailedCount); pgvigil has no
 -- retries, so its Partial is DBA Dash's 'Retried / Partial'. Scope: p_instance (0 = any), p_instances (NULL = any),
--- p_collection ('' = every collection); the hour rows from the hour that holds p_from, the runs from p_from.
+-- p_collection ('' = every collection); the hour rows from the hour that holds p_from, the runs from p_from; a NULL bound
+-- or cap reads nothing (the review of J5 (a) #5: a NULL p_from walked back through all of history). Custom plans set
+-- here, not left to the caller (#4): the window statement is one cached plan run up to 11 times a call, and a generic
+-- plan of it reads the hour-led key with the scope as a filter - the serve sets force_custom_plan on its pool, but a
+-- PgBouncer that drops the startup parameter, or any other caller, would not.
 CREATE OR REPLACE FUNCTION pgvigil.collection_perf_rows(p_from timestamptz, p_to timestamptz, p_instance int, p_instances int[],
                                                         p_collection text, p_cap int)
 RETURNS TABLE (at timestamptz, instance_id int, instance text, engine text, collection text, period text, outcome text, stage text,
                runs bigint, failed bigint, partial bigint, duration_ms bigint, max_duration_ms bigint, cpu_ms bigint,
                logical_reads bigint, import_ms bigint)
-LANGUAGE plpgsql STABLE SET jit = off AS $$
+LANGUAGE plpgsql STABLE SET jit = off SET plan_cache_mode = force_custom_plan AS $$
 #variable_conflict use_column
 DECLARE
   v_first timestamptz := date_trunc('hour', p_from AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';     -- the first hour row's hour
@@ -885,7 +889,7 @@ DECLARE
   v_out   bigint := 0;
   v_got   bigint;
 BEGIN
-  IF p_to <= p_from OR p_cap IS NULL OR p_cap < 0 THEN
+  IF p_from IS NULL OR p_to IS NULL OR p_to <= p_from OR p_cap IS NULL OR p_cap < 0 THEN
     RETURN;
   END IF;
   LOOP

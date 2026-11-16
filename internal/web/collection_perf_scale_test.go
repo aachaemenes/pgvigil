@@ -14,7 +14,8 @@ import (
 
 // TestCollectionPerfScaleJ5 (the review of B6g-3 #6, the lead's 13:3x (a): measure first; a box row on a store seeded
 // at fleet scale by .vis/scale-seed.sql, PGVIGIL_SCALE_DSN - skipped without it): the Collection Performance report's
-// read at the root over 8 days - one collection, and every collection - as the page reads it: one GET runs rows, charts
+// read over 8 days - at the root for one collection and for every collection, then one instance and a sparse scope
+// (the review of J5 (a) #6) - as the page reads it: one GET runs rows, charts
 // and meta in series (web.go multi), so the read is their sum. Each statement under EXPLAIN (ANALYZE, BUFFERS, TIMING
 // OFF) three times (per-node timing would add a clock read per row: the review of B6g part c #6) - the median - and once
 // with TIMING ON for its top node and buffers; the session as the serve sets it (jit off, custom plans: web.go). The
@@ -54,15 +55,37 @@ func TestCollectionPerfScaleJ5(t *testing.T) {
 		}
 		return p[0].ExecutionTime, p[0].Plan
 	}
-	for _, c := range []struct{ name, coll string }{{"one collection", "activity"}, {"every collection", ""}} {
+	// the review of J5 (a) #6: beside the two reads at the root, the walk's own cost - one instance (60 rows an hour: the
+	// cap at about 84 hours, 8 windows) and a sparse scope (10 instances of one collection: 1,920 rows in 8 days, under the
+	// cap, so the walk goes to the range's first hour, its last window 128 hours wide)
+	var one int
+	var ten []int32
+	if err := pool.QueryRow(ctx, `SELECT min(instance_id) FROM pgvigil.instances WHERE name LIKE 'sc-i%'`).Scan(&one); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT array_agg(instance_id ORDER BY instance_id) FROM (SELECT instance_id FROM pgvigil.instances
+	   WHERE name LIKE 'sc-i%' ORDER BY instance_id LIMIT 10) x`).Scan(&ten); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name  string
+		inst  int
+		insts []int32
+		coll  string
+	}{{"one collection", 0, nil, "activity"}, {"every collection", 0, nil, ""}, {"one instance", one, nil, ""},
+		{"a sparse scope (10 instances, one collection)", 0, ten, "activity"}} {
+		var insts any
+		if c.insts != nil {
+			insts = c.insts
+		}
 		sum := 0.0
 		for _, st := range []struct {
 			name string
 			sql  string
 			args []any
 		}{
-			{"rows", sqlCollPerfRows, []any{from, to, 0, nil, c.coll, collPerfCap}},
-			{"charts", sqlCollPerfCharts, []any{from, to, 0, nil, c.coll}},
+			{"rows", sqlCollPerfRows, []any{from, to, c.inst, insts, c.coll, collPerfCap}},
+			{"charts", sqlCollPerfCharts, []any{from, to, c.inst, insts, c.coll}},
 			{"meta", sqlCollPerfMeta, nil},
 		} {
 			var ms []float64
