@@ -293,7 +293,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/alertrules", s.AlertRules)
 	s.post(api, "POST /api/alertrules", needAdmin, s.AlertRuleWrite)
 	api.HandleFunc("GET /api/mssql/protection", s.MSSQLProtection)
-	api.HandleFunc("POST /api/mssql/protection", s.MSSQLProtectionWrite)
+	s.post(api, "POST /api/mssql/protection", needAdmin, s.MSSQLProtectionWrite)
 	s.post(api, "POST /api/alertrules/end", needAdmin, s.AlertRuleEnd)
 	api.HandleFunc("GET /api/alertscope", s.AlertScope)                     // task 403a: windows, held sends, flapping, overrides, history, digests
 	s.post(api, "POST /api/alertwindows", needOperator, s.AlertWindowWrite) // task 403a: blackout, mute and digest windows (operator; wide or open-ended: admin, in its handler)

@@ -6,13 +6,15 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx } from './router';
 import { el, errorBox, fmtTime, grid, offControl } from './ui';
+import { markNeed, routeWhy } from './needs';
 
 export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Backup ages (SQL Server)'));
   type Data = { writable?: boolean; reason?: string; overrides: Table | null; log: Table | null };
   let d: Data;
   try { d = await get<Data>('mssql/protection'); } catch (e) { sec.append(errorBox(e)); return sec; }
-  const off = d.writable ? null : (d.reason ?? 'not writable here');
+  // the server's reason first, then the role (B24f: a database's backup thresholds are configuration others live with, admin)
+  const off = d.writable ? routeWhy('mssql/protection') : (d.reason ?? 'not writable here');
   sec.append(el('p', { class: 'meta' }, 'A database is judged late when its newest full backup is older than its full backup hours, or its newest log backup older than its log backup minutes. Set them here for a tag or for one database; an instance\'s own ages are set in pgvigil.yaml (mssql_thresholds). The narrowest wins: a database row, then the instance\'s pgvigil.yaml, then its tags (the strictest when two disagree), then the default of 168 hours and 60 minutes. 0 = not judged.'),
     ...(off ? [el('p', { class: 'meta' }, `Edits are off here: ${off}`)] : []));
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
@@ -38,7 +40,7 @@ export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
   } catch { /* the instance list is needed for a database row only */ }
   showScope();
   const num = (i: HTMLInputElement): number | null => i.value.trim() === '' ? null : Number(i.value);
-  const save = el('button', { type: 'button' }, 'Save row') as HTMLButtonElement;
+  const save = markNeed(el('button', { type: 'button' }, 'Save row') as HTMLButtonElement, 'mssql/protection');
   save.addEventListener('click', () => {
     if (num(full) === null && num(logm) === null) { said.textContent = 'Set the full backup hours, the log backup minutes, or both.'; return; }
     void send({ op: 'add', scope: scope.value, tag: tag.value.trim(), instance_id: Number(inst.value || 0), database_name: db.value.trim(),
@@ -48,7 +50,7 @@ export async function adminProtectionView(_ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Set an age'),
     el('div', { class: 'toolbar', style: 'flex-wrap:wrap;gap:.5rem' }, scope, tag, inst, db, full, logm, note, save, saveNote), said);
   const endCell = (_v: unknown, r: Row) => {
-    const b = el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.override_id)}` }, 'End') as HTMLButtonElement;
+    const b = markNeed(el('button', { type: 'button', class: 'link', 'aria-label': `End row ${String(r.override_id)}` }, 'End') as HTMLButtonElement, 'mssql/protection');
     b.addEventListener('click', () => { void send({ op: 'end', override_id: Number(r.override_id) }); });
     const short = off ? el('span', { class: 'off-reason' }, 'off here: the line above says why') : undefined;
     return el('span', {}, b, ' ', offControl(b, off, short));

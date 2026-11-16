@@ -35,6 +35,7 @@ export const routeNeeds = {
   'admin/instances': ['admin', 'changing an instance'],
   'admin/sources': ['admin', 'changing a discovery source'],
   'admin/proposals': ['admin', 'approving or ignoring a proposed instance'],
+  'mssql/protection': ['admin', "changing a database's backup thresholds"],
   'admin/dbadash_moves': ['admin', 'moving a DBA Dash instance'],
   'mssql/counteradmin': ['admin', 'changing a SQL Server counter list'],
   'admin/applications': ['admin', 'changing an application'],
