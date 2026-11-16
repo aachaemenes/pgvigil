@@ -188,6 +188,8 @@ store's own.
 - Alerts are as fresh as the interval plus the transfer; a recent-window finding cannot fire past its window
   ([remote-windows.md](remote-windows.md)).
 - Admin's per-instance edits on the hub never reach a remote collector: its settings are its own `pgvigil.yaml`.
+- The SQL Server error log's search strings an admin sets per instance on the hub (`errorlog:search`) never reach a
+  remote site either: a remote instance's error log is read with no search strings.
 - `/metrics` ([prometheus.md](prometheus.md)) exports a remote instance's newest loaded values with no timestamp of
   their own: its series lag by the bundle interval plus the transfer.
 - An Event Grid notification instead of polling is a later option.
