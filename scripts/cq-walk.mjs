@@ -6,8 +6,12 @@
 //   W2 / W4 Community tools of the SQL Server / PostgreSQL instance: the tool list, every off control and its words
 //   W3 / W5 the tool's name opens its panel, Run sends it through the queue: the status line's words in order
 //       (waiting / running on <host> / ran on <host> ... Request <n>.), the result's tables and rows on the page
-//   W6 sp_WhoIsActive @delta_interval 30: Run, Cancel while it runs, the status line's end words
+//   W6 sp_WhoIsActive @delta_interval 50: Run, Cancel once the page says it runs (the page's wait answers at an end
+//       or after 25 s; the worker reads a running cancel on its 5 s poll), the status line's end words saying cancel
 //   W7 / W8 the Running pages of both instances in queue mode: every off control and its words
+// A run's result counts only as the panel's own result section (section.report-result): its badge 'done' and a table
+// with rows (the form's parameter table is not a result). An off control counts only with its words (title and the
+// note a person reads); W2 wants one at least (the walk's SQL Server has no Darling Data installed).
 // Writes <out>/clicks.tsv (row, page, clicked, what the page said), <out>/requests.txt (the request ids the walk made,
 // one 'row id' per line) and a shot per row (<out>/W<n>-<what>.png). Exit 1 on a FAIL.
 const [port, U, user, out, msId, pgId, pgTool] = process.argv.slice(2);
@@ -50,8 +54,10 @@ const row = (r, page, clicked, said, good) => {
 const made = [];
 // offs: every off control in main, its label and its words (title, else the note it points to)
 const offs = () => ev(`[...document.querySelectorAll('main [aria-disabled="true"]')].map(c => {
-  const n = c.getAttribute('aria-describedby'); const w = c.title || (n && document.getElementById(n)?.textContent) || '';
-  return (c.getAttribute('aria-label') || c.textContent || '').trim().slice(0, 60) + ': ' + w.trim(); })`);
+  const n = c.getAttribute('aria-describedby'); const note = ((n && document.getElementById(n)?.textContent) || '').trim(); const t = (c.title || '').trim();
+  return { label: (c.getAttribute('aria-label') || c.textContent || '').trim().slice(0, 60), words: t && note && note !== t ? t + ' [note: ' + note + ']' : t || note }; })`);
+const offWords = (o) => o.map(x => `${x.label}: ${x.words}`).join(' || ') || 'none';
+const silent = (o) => o.filter(x => !x.words.trim()).map(x => x.label);
 const tools = async (inst) => (await ev(`fetch('/api/community?instance=${inst}', {credentials: 'same-origin'}).then(r => r.json())`))?.tools ?? [];
 // panel: the tool's own section - its h3 a direct child and a 'Run <name>' button in it (the page's first group heading
 // can carry the tool's name too: sp_WhoIsActive's group is 'sp_WhoIsActive', so the page's own section, whose first h3
@@ -79,11 +85,11 @@ const runTool = async (r, page, tool, inputs = {}, cancelWhenRunning = false) =>
   if (clicked !== 'clicked') { row(r, page, runWords, clicked ?? 'no Run button', false); return null; }
   const seen = []; let cancelled = false; const t0 = Date.now();
   for (;;) {
-    const st = await ev(`(() => { const s = (${panel(tool.name)})?.querySelector('p[role="status"]'); return s ? s.textContent : ''; })()`);
+    const st = await ev(`(() => { const s = (${panel(tool.name)})?.querySelector(':scope > p[role="status"]'); return s ? s.textContent : ''; })()`);
     if (st && seen[seen.length - 1] !== st) seen.push(st);
     if (cancelWhenRunning && !cancelled && /^Running on /.test(st)) {
-      await shot(`${r}-running`);
-      cancelled = await ev(`(() => { const b = [...(${panel(tool.name)}).querySelectorAll('p[role="status"] button')].find(b => b.textContent === 'Cancel'); if (!b) return false; b.click(); return true; })()`);
+      cancelled = await ev(`(() => { const b = [...(${panel(tool.name)}).querySelectorAll(':scope > p[role="status"] button')].find(b => b.textContent === 'Cancel'); if (!b) return false; b.click(); return true; })()`);
+      if (cancelled) await shot(`${r}-cancel-asked`);
     }
     if (/Request \d+\.$/.test(st.trim()) && !/^(Waiting|Running) /.test(st) && !/Cancel$/.test(st.trim())) break;
     if (Date.now() - t0 > 150000) break;
@@ -92,60 +98,78 @@ const runTool = async (r, page, tool, inputs = {}, cancelWhenRunning = false) =>
   const end = seen[seen.length - 1] ?? '';
   const id = Number((end.match(/Request (\d+)\./) ?? [])[1] ?? 0);
   if (id) made.push(`${r} ${id}`);
-  const res = await ev(`(() => { const s = ${panel(tool.name)}; const ts = [...s.querySelectorAll('table')];
-    return { tables: ts.length, rows: ts.map(t => t.querySelectorAll('tbody tr').length), err: [...s.querySelectorAll('.error')].map(e => e.textContent).join(' | ').slice(0, 300) }; })()`);
+  const res = await ev(`(() => { const s = ${panel(tool.name)}; const x = s?.querySelector('section.report-result');
+    if (!x) return { badge: '', tables: 0, rows: [], err: 'no result section', note: '' };
+    const ts = [...x.querySelectorAll('table')].filter(t => !t.classList.contains('grid-empty'));
+    return { badge: x.querySelector('.badge')?.textContent ?? '', tables: ts.length, rows: ts.map(t => t.querySelectorAll('tbody tr').length),
+      err: [...x.querySelectorAll('.error')].map(e => e.textContent).join(' | ').slice(0, 300),
+      note: [...x.querySelectorAll('p.empty, p.refused')].map(e => e.textContent).join(' | ').slice(0, 300) }; })()`);
   await shot(`${r}-${tool.id}`);
   return { seen, end, id, res, cancelled };
 };
 
+// fenced: a row that throws is a FAIL row with the error's words, and the walk goes on
+const fenced = async (r, page, fn) => { try { await fn(); } catch (e) { row(r, page, 'the row', `the walk itself failed here: ${String(e?.message ?? e).slice(0, 300)}`, false); } };
 // W1 sign in: the page's own login form
-await cmd('Page.navigate', { url: U }); await sleep(800);
-const form = await until(`!!document.querySelector('input[type="password"]')`, 15000);
-if (form) {
-  await ev(`(() => { const u = document.querySelector('input[autocomplete="username"], input[name="username"], input[type="text"]'); const p = document.querySelector('input[type="password"]');
-    u.value = ${JSON.stringify(user)}; p.value = ${JSON.stringify(process.env.CQ_WALK_PW ?? '')};
-    for (const i of [u, p]) i.dispatchEvent(new Event('input', {bubbles: true}));
-    (p.form?.querySelector('button[type="submit"], button') ?? [...document.querySelectorAll('button')].find(b => /sign in|log in/i.test(b.textContent)))?.click(); })()`);
-}
-const inside = await until(`!document.querySelector('input[type="password"]') && !!document.querySelector('main h2')`, 20000);
-await shot('W1-signed-in');
-row('W1', 'the sign-in', form ? 'the login form: user, password, its button' : 'no login form drew', inside ? `signed in as ${user}; the page: ${await ev(`document.querySelector('main h2')?.textContent`)}` : 'still on the login form', !!(form && inside));
+await fenced('W1', 'the sign-in', async () => {
+  await cmd('Page.navigate', { url: U }); await sleep(800);
+  const form = await until(`!!document.querySelector('input[type="password"]')`, 15000);
+  if (form) {
+    await ev(`(() => { const u = document.querySelector('input[autocomplete="username"], input[name="username"], input[type="text"]'); const p = document.querySelector('input[type="password"]');
+      u.value = ${JSON.stringify(user)}; p.value = ${JSON.stringify(process.env.CQ_WALK_PW ?? '')};
+      for (const i of [u, p]) i.dispatchEvent(new Event('input', {bubbles: true}));
+      (p.form?.querySelector('button[type="submit"], button') ?? [...document.querySelectorAll('button')].find(b => /sign in|log in/i.test(b.textContent)))?.click(); })()`);
+  }
+  const inside = await until(`!document.querySelector('input[type="password"]') && !!document.querySelector('main h2')`, 20000);
+  await shot('W1-signed-in');
+  row('W1', 'the sign-in', form ? 'the login form: user, password, its button' : 'no login form drew', inside ? `signed in as ${user}; the page: ${await ev(`document.querySelector('main h2')?.textContent`)}` : 'still on the login form', !!(form && inside));
+});
 
-const enginePages = [['W2', 'W3', msId, 'sp_Blitz', 'SQL Server'], ['W4', 'W5', pgId, pgTool, 'PostgreSQL']];
-for (const [rl, rr, inst, toolId, engine] of enginePages) {
+const enginePages = [['W2', 'W3', msId, 'sp_Blitz', 'SQL Server', true], ['W4', 'W5', pgId, pgTool, 'PostgreSQL', false]];
+for (const [rl, rr, inst, toolId, engine, needOff] of enginePages) {
   const page = `#/community?i=${inst} (${engine})`;
-  if (!await go(`#/community?i=${inst}`)) { row(rl, page, 'the page', 'never drew', false); continue; }
-  const ts = await tools(inst);
-  const o = await offs();
-  await shot(`${rl}-tools`);
-  row(rl, page, 'the tool list', `${ts.length} tools; ${o.length} off control(s): ${o.join(' || ') || 'none'}`, ts.length > 0);
-  const tool = ts.find(t => t.id === toolId);
-  if (!tool) { row(rr, page, toolId, 'not in the instance\'s tool list', false); continue; }
-  const r = await runTool(rr, page, tool);
-  if (!r) continue;
-  const good = r.id > 0 && /^Ran on /.test(r.end) && r.res.tables > 0 && !r.res.err;
-  row(rr, page, `${tool.name} -> Run ${tool.name}`, `status: ${r.seen.join(' -> ')}; result: ${r.res.tables} table(s), rows ${JSON.stringify(r.res.rows)}${r.res.err ? '; error: ' + r.res.err : ''}`, good);
+  let ts = [];
+  await fenced(rl, page, async () => {
+    if (!await go(`#/community?i=${inst}`)) { row(rl, page, 'the page', 'never drew', false); return; }
+    ts = await tools(inst);
+    const o = await offs();
+    await shot(`${rl}-tools`);
+    const mute = silent(o);
+    row(rl, page, 'the tool list', `${ts.length} tools; ${o.length} off control(s): ${offWords(o)}${mute.length ? '; WITHOUT WORDS: ' + mute.join(', ') : ''}`,
+      ts.length > 0 && !mute.length && (!needOff || o.length > 0));
+  });
+  await fenced(rr, page, async () => {
+    const tool = ts.find(t => t.id === toolId);
+    if (!tool) { row(rr, page, toolId, 'not in the instance\'s tool list', false); return; }
+    const r = await runTool(rr, page, tool);
+    if (!r) return;
+    const good = r.id > 0 && /^Ran on /.test(r.end) && r.res.badge === 'done' && r.res.tables > 0 && r.res.rows.some(n => n > 0) && !r.res.err;
+    row(rr, page, `${tool.name} -> Run ${tool.name}`, `status: ${r.seen.join(' -> ')}; result: badge '${r.res.badge}', ${r.res.tables} table(s), rows ${JSON.stringify(r.res.rows)}${r.res.err ? '; error: ' + r.res.err : ''}${r.res.note ? '; note: ' + r.res.note : ''}`, good);
+  });
 }
 
-// W6 Cancel through the queue: sp_WhoIsActive sampling 30 s
-{
+// W6 Cancel through the queue: sp_WhoIsActive sampling 50 s (inside the form's 60 s timeout)
+await fenced('W6', `#/community?i=${msId} (SQL Server)`, async () => {
   const page = `#/community?i=${msId} (SQL Server)`;
-  if (await go(`#/community?i=${msId}`)) {
-    const tool = (await tools(msId)).find(t => t.id === 'sp_WhoIsActive');
-    const r = tool ? await runTool('W6', page, tool, { delta_interval: '30' }, true) : null;
-    if (!tool) row('W6', page, 'sp_WhoIsActive', 'not in the tool list', false);
-    else if (r) row('W6', page, `sp_WhoIsActive @delta_interval 30 -> Run -> Cancel while it runs`, `status: ${r.seen.join(' -> ')}`, r.cancelled && r.id > 0 && !/^Ran on /.test(r.end));
-  } else row('W6', page, 'the page', 'never drew', false);
-}
+  if (!await go(`#/community?i=${msId}`)) { row('W6', page, 'the page', 'never drew', false); return; }
+  const tool = (await tools(msId)).find(t => t.id === 'sp_WhoIsActive');
+  if (!tool) { row('W6', page, 'sp_WhoIsActive', 'not in the tool list', false); return; }
+  const r = await runTool('W6', page, tool, { delta_interval: '50' }, true);
+  if (r) row('W6', page, `sp_WhoIsActive @delta_interval 50 -> Run -> Cancel while it runs`, `status: ${r.seen.join(' -> ')}`,
+    r.cancelled && r.id > 0 && !/^Ran on /.test(r.end) && /cancel/i.test(r.end));
+});
 
 // W7 / W8 the Running pages: the action doors in queue mode
 for (const [r, hash, engine] of [['W7', `#/mssql_running?i=${msId}`, 'SQL Server'], ['W8', `#/activity?i=${pgId}`, 'PostgreSQL']]) {
-  if (!await go(hash)) { row(r, `${hash} (${engine})`, 'the page', 'never drew', false); continue; }
-  await sleep(1500);
-  const o = await offs();
-  const notes = await ev(`[...document.querySelectorAll('main')].map(m => (m.innerText.match(/[^.\\n]*not through the queue yet[^.\\n]*/g) ?? []).slice(0, 3).join(' | ')).join('')`);
-  await shot(`${r}-running-page`);
-  row(r, `${hash} (${engine})`, 'the page in queue mode', `${o.length} off control(s): ${o.slice(0, 12).join(' || ') || 'none'}${notes ? '; the page says: ' + notes : ''}`, true);
+  await fenced(r, `${hash} (${engine})`, async () => {
+    if (!await go(hash)) { row(r, `${hash} (${engine})`, 'the page', 'never drew', false); return; }
+    await sleep(1500);
+    const o = await offs();
+    const notes = await ev(`[...document.querySelectorAll('main')].map(m => (m.innerText.match(/[^.\\n]*not through the queue yet[^.\\n]*/g) ?? []).slice(0, 3).join(' | ')).join('')`);
+    await shot(`${r}-running-page`);
+    const mute = silent(o);
+    row(r, `${hash} (${engine})`, 'the page in queue mode', `${o.length} off control(s): ${offWords(o.slice(0, 12))}${mute.length ? '; WITHOUT WORDS: ' + mute.join(', ') : ''}${notes ? '; the page says: ' + notes : ''}`, !mute.length);
+  });
 }
 
 fs.writeFileSync(`${out}/clicks.tsv`, 'row\tpage\tclicked\tthe page said\tgrade\n' + rows.join('\n') + '\n');

@@ -29,13 +29,14 @@ ok() { echo "ok   $*"; }
 cleanup() {
   for p in "$CHR" "$SERVE" "$RUN"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
   wait 2>/dev/null || true
+  rm -rf "$OUT/log/chrome-profile"   # the browser's profile holds the UI session's cookie: never fetched as evidence
   local k c   # the containers before the network they sit on: the newest first
   for (( k = ${#MADE[@]} - 1; k >= 0; k-- )); do c=${MADE[k]}; case $c in net:*) docker network rm "${c#net:}" >/dev/null 2>&1 ;; *) docker rm -f -v "$c" >/dev/null 2>&1 ;; esac; done
   rm -f "$OUT/col.yaml" "$OUT/serve.yaml" "$OUT/owner.yaml"
   return 0
 }
 trap cleanup EXIT
-for t in docker psql node curl python3 ss od; do command -v $t >/dev/null || fail "$t is not on this machine"; done
+for t in docker psql node curl free ss od; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 CHROME=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
 [[ -n "$CHROME" ]] || fail "no chromium on this machine"
 BIN=$(realpath "${PGVIGIL_BIN:?names the pgvigil binary}")
@@ -82,9 +83,9 @@ ok "PostgreSQL 16 in $PCT with pg_stat_statements, the login cqw_mon (pg_monitor
 # the SQL Server: the First Responder Kit and sp_WhoIsActive, a read login
 for f in frk-install-all.sql sp_WhoIsActive.sql; do sqf "$CDIR/$f" || fail "$f did not install"; done
 RPW="Rd$(od -An -N10 -tx1 /dev/urandom | tr -d ' \n')!b2"
-sq "CREATE LOGIN cqw_reader WITH PASSWORD = '$RPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO cqw_reader; GRANT VIEW ANY DEFINITION TO cqw_reader; GRANT CONNECT ANY DATABASE TO cqw_reader; CREATE USER cqw_reader FOR LOGIN cqw_reader;" >/dev/null
-sq "CREATE USER cqw_reader FOR LOGIN cqw_reader; ALTER ROLE db_datareader ADD MEMBER cqw_reader;" msdb >/dev/null
-sq "DECLARE @s nvarchar(max) = N''; SELECT @s += N'GRANT EXECUTE ON dbo.' + QUOTENAME(name) + N' TO cqw_reader; ' FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1; EXEC (@s);" >/dev/null
+sq "CREATE LOGIN cqw_reader WITH PASSWORD = '$RPW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO cqw_reader; GRANT VIEW ANY DEFINITION TO cqw_reader; GRANT CONNECT ANY DATABASE TO cqw_reader; CREATE USER cqw_reader FOR LOGIN cqw_reader;" >/dev/null || fail "the SQL Server read login"
+sq "CREATE USER cqw_reader FOR LOGIN cqw_reader; ALTER ROLE db_datareader ADD MEMBER cqw_reader;" msdb >/dev/null || fail "the read login's msdb user"
+sq "DECLARE @s nvarchar(max) = N''; SELECT @s += N'GRANT EXECUTE ON dbo.' + QUOTENAME(name) + N' TO cqw_reader; ' FROM sys.procedures WHERE is_ms_shipped = 0 AND schema_id = 1; EXEC (@s);" >/dev/null || fail "the read login's EXECUTE grants"
 export CQ_MS="sqlserver://cqw_reader:$RPW@127.0.0.1:$MP?database=master&encrypt=true&TrustServerCertificate=true"
 ok "SQL Server 2022 in $MCT, the First Responder Kit and sp_WhoIsActive installed ($(sq "SELECT count(*) FROM sys.procedures WHERE name LIKE N'sp[_]Blitz%' OR name = N'sp_WhoIsActive'" | tr -dc '0-9') procedures), the login cqw_reader"
 
@@ -99,12 +100,16 @@ for w in $(seq 0 179); do
   sleep 1
 done
 [[ -n "$PGID" && -n "$MSID" ]] || fail "the collector did not register both instances in 180 s: $(tail -5 "$OUT/log/run.log")"
+[[ $(rq "select count(*) from pgvigil.action_doors where kind = 'community_run' and name = '' and open") -ge 2 ]] || fail "the collector published no open community door for both instances in 180 s: $(tail -5 "$OUT/log/run.log")"
+[[ $(rq "select count(distinct instance) from pgvigil.cq_tools where present") -ge 2 ]] || fail "the collector published no present tool for both instances in 180 s: $(tail -5 "$OUT/log/run.log")"
 ok "the collector holds walk-pg (id $PGID) and walk-ms (id $MSID) after $w s: community doors open $(rq "select count(*) from pgvigil.action_doors where kind = 'community_run' and name = '' and open"), tools present $(rq "select count(*) from pgvigil.cq_tools where present")"
 UIUSER=walk_alice; UIPW="Ui$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$OUT/owner.yaml" $UIUSER >/dev/null 2>&1 || fail "user add"
 { printf 'repository:\n  dsn: env:CQ_COL\nactions:\n  via: queue\ninstances:\n'; inst CQ_NONE CQ_NONE; } > "$OUT/serve.yaml"
 UP=$(freeport); U="http://127.0.0.1:$UP/"
-"$BIN" serve -config "$OUT/serve.yaml" -dsn env:CQ_UI -listen "127.0.0.1:$UP" > "$OUT/log/serve.log" 2>&1 & SERVE=$!
+# serve gets none of the servers' or the owner's credentials in its environment: queue mode connects to nothing but the
+# repository, and the log line below is not its only proof
+env -u CQ_PG -u CQ_MS -u CQ_OWNER -u CQ_COL -u MSSQL_SA_PASSWORD -u SQLCMDPASSWORD "$BIN" serve -config "$OUT/serve.yaml" -dsn env:CQ_UI -listen "127.0.0.1:$UP" > "$OUT/log/serve.log" 2>&1 & SERVE=$!
 for _ in $(seq 1 60); do curl -sf -o /dev/null "$U" && break; sleep 1; done
 curl -sf -o /dev/null "$U" || fail "serve does not answer: $(tail -5 "$OUT/log/serve.log")"
 grep -q 'connects to no monitored server' "$OUT/log/serve.log" || fail "serve's log does not say queue mode: $(tail -5 "$OUT/log/serve.log")"
@@ -114,6 +119,7 @@ ok "serve in queue mode on $U (it connects to no monitored server), the UI user 
 CP=$(freeport)
 "$CHROME" --headless=new --no-sandbox --disable-gpu --remote-debugging-port="$CP" --user-data-dir="$OUT/log/chrome-profile" about:blank > "$OUT/log/chromium.log" 2>&1 & CHR=$!
 for _ in $(seq 1 30); do curl -sf -o /dev/null "http://127.0.0.1:$CP/json/version" && break; sleep 1; done
+curl -sf -o /dev/null "http://127.0.0.1:$CP/json/version" || fail "chromium's debug port never answered: $(tail -5 "$OUT/log/chromium.log")"
 CQ_WALK_PW=$UIPW node scripts/cq-walk.mjs "$CP" "$U" "$UIUSER" "$OUT" "$MSID" "$PGID" "$PGTOOL"; WRC=$?
 rm -rf "$OUT/log/chrome-profile"
 
@@ -135,5 +141,8 @@ if [[ -n "$IDS" ]]; then
     esac
   done < "$OUT/requests.txt"
 else echo "FAIL: the walk made no request"; WRC=1; fi
+# the logs go back as evidence: none may hold a password this run made
+leak=0; for v in "$PW" "$RPW" "$UIPW" "$MSSQL_SA_PASSWORD"; do grep -rqF -- "$v" "$OUT" 2>/dev/null && leak=1; done
+[[ $leak == 0 ]] && ok "no password of this run in $OUT (the logs, clicks.tsv, rows.txt)" || { echo "FAIL: a password of this run is written under $OUT"; WRC=1; }
 [[ $WRC == 0 ]] && echo "OK cq walk $N: every row ok" || echo "cq walk $N: FAIL (rc $WRC)"
 exit $WRC
