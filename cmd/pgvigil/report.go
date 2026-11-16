@@ -370,7 +370,7 @@ var knownKeys = map[string]bool{
 	// the remote collector's remote: block and a hub's remote_sites: (config/remote.go); a site's or a collector's
 	// name, a folder, a drop and a public key name the site, so only the knobs are kept (keepKeys)
 	"remote": true, "site": true, "collector": true, "outbox": true, "keep_days": true, "max_mb": true, "sign": true, "push": true,
-	"remote_sites": true, "drop": true, "expected_every": true, "gap_wait": true, "collectors": true, "keys": true,
+	"remote_sites": true, "ingest_dsn": true, "drop": true, "expected_every": true, "gap_wait": true, "collectors": true, "keys": true,
 }
 
 // safeValue is the shape of a setting: a word, a number, a duration, a clock range, a time zone. A value of another

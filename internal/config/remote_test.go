@@ -180,3 +180,23 @@ func TestRemoteSampleLoads(t *testing.T) {
 		t.Errorf("the sample's instances / query_text: %d instance(s), %q", len(c.Instances), c.QueryText)
 	}
 }
+
+// ingest_dsn (OUTBOX H FOLD 1+2+3, B5 as the slice lead answered): a hub's ingest login beside remote_sites: (env: /
+// file:); without remote_sites: it would read nothing - refused; a remote collector's file may not hold it
+func TestIngestDSNKey(t *testing.T) {
+	t.Setenv("R", "host=h dbname=r")
+	t.Setenv("ING", "host=h dbname=r user=ingest1")
+	cfg, err := loadRaw(t, sitesOK+"ingest_dsn: env:ING\n")
+	if err != nil {
+		t.Fatalf("a hub with remote_sites: and ingest_dsn: %v", err)
+	}
+	if got := cfg.IngestDSN(); got != "host=h dbname=r user=ingest1" {
+		t.Errorf("IngestDSN: %q", got)
+	}
+	if _, err := loadRaw(t, "repository:\n  dsn: env:R\ninstances: []\ningest_dsn: env:ING\n"); err == nil || !strings.Contains(err.Error(), "ingest_dsn") || !strings.Contains(err.Error(), "remote_sites") {
+		t.Errorf("ingest_dsn without remote_sites: %v, want it refused naming both", err)
+	}
+	if _, err := loadRaw(t, remoteOK+"ingest_dsn: env:ING\n"); err == nil || !strings.Contains(err.Error(), "ingest_dsn") {
+		t.Errorf("a remote collector's file with ingest_dsn: %v, want it refused", err)
+	}
+}
