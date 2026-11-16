@@ -27,7 +27,8 @@ WITH inst AS (
          ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
          ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit']),
          ('checkdb', ARRAY['mssql_checks']), ('logspace', ARRAY['mssql_checks']), ('corruption', ARRAY['mssql_checks']),
-         ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity']), ('elasticpool', ARRAY['mssql_pool'])
+         ('alerts', ARRAY['mssql_checks']), ('identity', ARRAY['mssql_identity']), ('elasticpool', ARRAY['mssql_pool']),
+         ('custom', ARRAY['mssql_custom'])
 ), runs AS (
   -- the last run of each of the group's collections (collection_dates keeps one row per collection): old = older
   -- than three of its intervals, the rule of the daily check 'collection stale' ($1 the intervals, $2 the age for
@@ -52,10 +53,17 @@ WITH inst AS (
   -- collection of the group is skipped on this kind of server; never = nothing ran yet
   SELECT instance_id, key, read_at, err,
          -- Elastic Pool Storage where mssql_pool never ran is n/a, not 'not yet': most servers are in no pool, and a
-         -- store from before mssql_pool holds no run of it
+         -- store from before mssql_pool holds no run of it; Custom Checks too where mssql_custom never ran (the file has
+         -- no SQL Server check: the collection connects to no instance for it, ST6), or where no check has been listed
+         -- for the instance within two of its cadences (none of the file reaches it, or the file's last SQL Server
+         -- check was taken out: custom_findings' own rule) - DBA Dash's N/A, never an OK of nothing; a last run that
+         -- failed (a fence refusal, a connection) is 'failed' with its reason, never n/a (the code review's S2, N5)
          -- Disk on Azure SQL Database is n/a (B2a): mssql_storage reads the database's files there, and the platform has no volumes
          CASE WHEN key = 'disk' AND EXISTS (SELECT 1 FROM pgvigil.instances x WHERE x.instance_id = runs.instance_id AND x.platform = 'azuresqldb') THEN 'n/a'
-              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key = 'elasticpool' THEN 'n/a' ELSE 'never' END AS state
+              WHEN key = 'custom' AND failed = 0 AND NOT EXISTS (
+                SELECT 1 FROM pgvigil.custom_checks cc WHERE cc.instance_id = runs.instance_id AND cc.is_present
+                   AND cc.snapshot_at >= now() - make_interval(secs => greatest(2 * cc.every_secs, 300))) THEN 'n/a'
+              WHEN fresh > 0 THEN 'ok' WHEN old > 0 THEN 'stale' WHEN failed > 0 THEN 'failed' WHEN skipped > 0 OR key IN ('elasticpool', 'custom') THEN 'n/a' ELSE 'never' END AS state
     FROM runs
 ), f AS (
   SELECT instance_id, severity, setting, value, detail,
@@ -230,6 +238,18 @@ WITH inst AS (
                          || coalesce(', critical over ' || trim_scale(ps.critical * 100) || ' %', '') || ')'] END,
          ps.minute
     FROM inst i LEFT JOIN LATERAL pgvigil.mssql_pool_storage_status(i.instance_id) ps ON true
+  UNION ALL
+  -- Custom Checks (ST6b; DBA Dash's CustomCheckStatus, the worst of its custom check's rows): the instance's custom
+  -- findings - a status check's rows at Status 1 / 2 (DBA Dash's custom check), a threshold crossed, a failed or late
+  -- check (custom_findings, 0269)
+  SELECT st.instance_id, 'custom', true,
+         count(cf.instance_id) FILTER (WHERE cf.severity = 'critical')::int, count(cf.instance_id) FILTER (WHERE cf.severity = 'warning')::int, NULL::text,
+         coalesce((array_agg(cf.setting || coalesce(': ' || nullif(cf.value, ''), '') ORDER BY cf.severity, cf.setting)
+                   FILTER (WHERE cf.instance_id IS NOT NULL))[1:12], '{}'),
+         NULL::timestamptz
+    FROM st LEFT JOIN pgvigil.custom_findings cf ON cf.instance_id = st.instance_id
+   WHERE st.key = 'custom'
+   GROUP BY st.instance_id
 )
 SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
        c.value, c.detail, st.read_at, st.err, c.since

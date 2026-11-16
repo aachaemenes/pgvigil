@@ -217,7 +217,8 @@ echo "findings: listed $NF1; key removed $NF2; listings 11 minutes old $NF3"
 
 echo "--- G. the catalogue of docs/custom.md"
 head_cfg; echo "custom:" >> "$CFG"
-awk '/^```yaml$/ {on = 1; next} /^```$/ {on = 0} on' docs/custom.md | awk '/^  - name: idle_in_transaction/ {skip = 1} /^  - name: / && !/idle_in_transaction/ {skip = 0} !skip' \
+# the catalogue's own section only: another section's example (SQL Server checks, ST6) is no catalogue entry
+sed -n '/^## The catalogue/,$p' docs/custom.md | awk '/^```yaml$/ {on = 1; next} /^```$/ {on = 0} on' | awk '/^  - name: idle_in_transaction/ {skip = 1} /^  - name: / && !/idle_in_transaction/ {skip = 0} !skip' \
   | grep -v '^custom:$' | sed "s/^  - name: \(.*\)$/  - name: \1\n    instances: [$A]/" >> "$CFG"
 n=$(sed -n '/^custom:$/,$p' "$CFG" | grep -c '^  - name: ')
 echo "catalogue checks: $n"; [[ $n == 18 ]] || fail "G: the catalogue has $n checks"

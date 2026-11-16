@@ -22,14 +22,37 @@ function statusCell(r: Row): Node {
   return span;
 }
 const num = (v: unknown) => v == null ? '' : fmtNum(v);
-const valueCell = (r: Row): string => r.status === 'error' ? '' : r.rule === 'rows' ? `${fmtNum(r.row_count)} rows` : r.value == null ? 'no value' : num(r.value);
+const valueCell = (r: Row): string => r.status === 'error' ? '' : r.rule === 'rows' ? `${fmtNum(r.row_count)} rows`
+  : r.rule === 'status' ? `${num(r.value ?? 0)} of ${fmtNum(r.row_count ?? 0)} rows at warning or critical` : r.value == null ? 'no value' : num(r.value);
 const thresholds = (r: Row): string => {
+  if (r.rule === 'status') return 'each row\'s Status';
   const p: string[] = [];
   if (r.warning != null) p.push(`warning ${String(r.compare)} ${num(r.warning)}`);
   if (r.critical != null) p.push(`critical ${String(r.compare)} ${num(r.critical)}`);
   return p.length ? p.join(', ') : 'none';
 };
-const ruleCell = (r: Row): string => r.rule === 'rows' ? 'row count' : `value${r.value_column ? ' (' + String(r.value_column) + ')' : ''}`;
+const ruleCell = (r: Row): string => r.rule === 'rows' ? 'row count' : r.rule === 'status' ? 'status (each row its own)'
+  : `value${r.value_column ? ' (' + String(r.value_column) + ')' : ''}`;
+
+// a status check's rows (DBA Dash's custom check, ST6b): Status 1 critical, 2 warning, 3 N/A, 4 OK
+const statusWord: Record<number, [string, string]> = { 1: ['critical', 'crit'], 2: ['warning', 'warn'], 3: ['N/A', ''], 4: ['OK', 'ok'] };
+// c is the check's latest run: the set is the last good run's (a failed run keeps it), dated so (the code review's S3)
+function statusGrid(rows: Row[], c: Row): HTMLElement {
+  const box = el('div');
+  const empty = !c.status ? 'The check has not run yet.'
+    : c.status === 'error' ? 'The latest run failed (its error is in the list above) and no earlier run kept a row.'
+    : 'The latest run returned no rows (DBA Dash\'s N/A).';
+  box.append(grid(rows, [
+    { key: 'test' }, { key: 'context' },
+    { key: 'status', num: true, fmt: v => { const w = statusWord[Number(v)] ?? [String(v ?? ''), '']; return badge(w[0], w[1]); } },
+    { key: 'info', wide: true, fmt: v => v == null ? '' : String(v) },
+  ], empty));
+  const at = rows.map(r => String(r.snapshot_at ?? '')).sort().pop();
+  if (rows.length && at) box.append(el('p', { class: 'meta' }, `These rows are the run of ${fmtTime(at)}`
+    + (c.status === 'error' ? ': the latest run failed, so its last good run\'s rows stand (as DBA Dash keeps them).' : '.')));
+  if (c.note) box.append(el('p', { class: 'meta' }, String(c.note)));
+  return box;
+}
 
 const checkCols: Col[] = [
   { key: 'check_name', label: 'check' },
@@ -55,12 +78,17 @@ function rowsGrid(r: Row): HTMLElement {
 
 export async function customView(ctx: Ctx): Promise<HTMLElement> {
   const w = window_(ctx);
-  const d = await get<Record<'checks' | 'series' | 'findings' | 'gone', Table | null>>('custom', { instance: ctx.instance, from: w.from, to: w.to });
+  const d = await get<Record<'checks' | 'series' | 'findings' | 'gone' | 'instance' | 'statusrows', Table | null>>('custom', { instance: ctx.instance, from: w.from, to: w.to });
+  const statusRows = rowsOf(d.statusrows);
   const checks = withRank(rowsOf(d.checks)), series = rowsOf(d.series), gone = rowsOf(d.gone);
+  // a SQL Server instance's checks are written for it (engine: sqlserver, ST6) and run behind another fence
+  const ms = rowsOf(d.instance)[0]?.engine === 'sqlserver';
   const sec = el('section', {}, el('h2', {}, 'Custom checks'));
   if (!checks.length) {
     sec.append(el('p', { class: 'empty' }, 'No custom check runs on this instance: the configuration\'s custom: list names none for it '
-      + '(a check runs on the instances and tags it names, or on every instance when it names neither). The catalogue of ready-made checks is in docs/custom.md.'));
+      + (ms ? '(a SQL Server check is written with engine: sqlserver, or as a procedure:, and runs on the SQL Server instances and tags it names, or on every SQL Server instance when it names neither). '
+        : '(a check runs on the instances and tags it names, or on every instance when it names neither). ')
+      + 'The catalogue of ready-made checks is in docs/custom.md.'));
     if (gone.length) sec.append(el('h3', {}, 'Taken off this instance'), grid(gone, [{ key: 'check_name', label: 'check' }, { key: 'targets', label: 'ran on' }, { key: 'gone_at', label: 'gone since', fmt: fmtTime }]));
     return sec;
   }
@@ -73,10 +101,17 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
     tile('failed', fmtNum(err), err ? 'crit' : 'ok'),
     tile('not run in 2 cadences', fmtNum(late), late ? 'warn' : 'ok')));
   sec.append(el('p', { class: 'meta' },
-    'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
-    + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. '
+    (ms ? 'Each check is the DBA\'s own T-SQL from the configuration (its sql:, or the EXEC of its procedure:), run by the collector as the instance\'s read login, '
+      + 'each on a connection of its own, inside a transaction that is rolled back, under READ UNCOMMITTED (it never waits on the application, and may read rows not yet committed), 30 s at most. '
+      + 'The collection runs only while that login holds no right beyond the documented read login\'s (on the server, or a right that writes in any database it can open: '
+      + 'a database-wide EXECUTE, a grant on a schema or an object, a schema it owns): the rights, not the transaction, keep a check from writing. '
+      + 'A check that ends its transaction (what it changed before is kept), or makes, starts or stops a trace, is shown failed (pgvigil leaves the trace as it is). Its result is its first result set. '
+      : 'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
+      + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. ')
     + 'A value check judges its value column (or the column named value, else the first) of the first row; a row-count check judges the rows returned. '
-    + 'Critical is tested before warning; no value (no row, or NULL) judges nothing. At most 100 rows of a run are kept, and only under query_text full. '
+    + (ms ? 'A status check (DBA Dash\'s custom check, such as dbo.DBADash_CustomCheck) returns Test, Context, Status and Info: each row is judged by its own Status (1 critical, 2 warning, 3 N/A, 4 OK), one finding per row at 1 or 2. ' : '')
+    + 'Critical is tested before warning; no value (no row, or NULL) judges nothing. At most 100 rows of a run are kept, and only under query_text full'
+    + (ms ? ' (a status check keeps at most 1,000 of its rows, the worst first, under any query_text; their Info only under full). ' : '. ')
     + 'Not run in 2 cadences: the collection still visits the instance but the check\'s latest run is more than two cadences behind it.'));
   sec.append(el('h3', {}, 'Checks'), grid(checks, checkCols));
 
@@ -99,7 +134,8 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Latest rows and SQL'));
   for (const c of checks) {
     const det = el('details', { 'data-sheet': String(c.check_name) }, el('summary', {}, `${String(c.check_name)}: ${c.status ? String(c.status) : 'never run'}, ${fmtNum(c.row_count ?? 0)} rows`));
-    det.append(rowsGrid(c), el('pre', { class: 'sql', tabindex: '0' }, String(c.sql ?? '')));
+    det.append(c.rule === 'status' ? statusGrid(statusRows.filter(x => x.check_name === c.check_name), c) : rowsGrid(c),
+      el('pre', { class: 'sql', tabindex: '0' }, String(c.sql ?? '')));
     sec.append(det);
   }
   if (gone.length) sec.append(el('h3', {}, 'Taken off this instance'), grid(gone, [{ key: 'check_name', label: 'check' }, { key: 'targets', label: 'ran on' }, { key: 'gone_at', label: 'gone since', fmt: fmtTime }]));
@@ -109,7 +145,9 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
 // customReportView: every check of the fleet with its latest run, the worst first (keep narrows it to a tag folder;
 // instLink makes the instance name a link to its Custom tab).
 export async function customReportView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
-  const d = await get<Record<'report', Table | null>>('custom');
+  const d = await get<Record<'report' | 'fleet', Table | null>>('custom');
+  // the SQL Server form is named only to a fleet that holds a SQL Server instance (the wording rule)
+  const fleetMs = rowsOf(d.fleet)[0]?.sqlserver === true;
   let rows = withRank(rowsOf(d.report));
   if (keep) rows = rows.filter(keep);
   const count = (s: string) => rows.filter(r => r.status === s).length;
@@ -126,7 +164,9 @@ export async function customReportView(keep?: (r: Row) => boolean, instLink?: (n
       + 'Each instance\'s Custom tab has the chart and the rows.'),
     grid(rows, [
       { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
+      { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },
       { key: 'platform' },
       ...checkCols.filter(c => !['duration_ms', 'description'].includes(c.key)),
-    ], 'No custom check runs in the fleet: the configuration has no custom: list, or it names no instance.'));
+    ], 'No custom check runs in the fleet: the configuration has no custom: list, or it names no instance'
+      + (fleetMs ? ' (a SQL Server check is written with engine: sqlserver, or as a procedure:).' : '.')));
 }

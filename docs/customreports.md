@@ -111,8 +111,13 @@ start and starts anyway. Behind PgBouncer, the reports login's startup settings 
 `track_extra_parameters` line).
 
 SQL Server has no read-only session. What keeps a report from writing there is the read login's rights:
-[the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`) and no
-more, never sysadmin: a run on a login that is a member of sysadmin is refused before anything is sent. The rollback
+[the login](sqlserver.md#the-login) (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`, `ALTER
+TRACE`) and no more. Before anything is sent, a run reads the login's rights and is refused, naming each one, when the
+login holds a right outside that list on the server, may impersonate another login, or holds a right that writes in
+any database it can open (a database-wide right, or a grant on a schema or an object, but the read ones and `EXECUTE`
+on one procedure; a database-wide `EXECUTE` is refused) - the same fence as the [SQL Server custom
+checks](custom.md#sql-server-checks) (a sysadmin is refused first). Community tools keep their own fence (a sysadmin is refused, nothing more): they run named procedures
+pgvigil knows, and some need rights a read-only list would refuse. The rollback
 undoes what a write-capable login did inside the transaction; it does not undo a `COMMIT` the report itself sends,
 which is why the rights are the guard. A report that reads a table needs `SELECT` on it (`db_datareader` in that
 database, or a grant); a procedure report needs `EXECUTE` on the procedure.
