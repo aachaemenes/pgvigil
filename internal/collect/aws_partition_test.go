@@ -102,6 +102,8 @@ func TestHardCodedAWSScanFinds(t *testing.T) {
 	plant("internal/x/x.go", "package x\n\nconst host = \".amazonaws.com\"\n")
 	plant("internal/x/x_test.go", "package x\n\nconst r = \"us-east-1\"\n")
 	plant("internal/demo/d.go", "package demo\n\nconst r = \"us-east-2\"\n")
+	// a listed exception holds its file's name once: not a hit
+	plant("internal/export/dest_s3.go", "package export\n\nconst r = \"us-east-1\"\nconst h = \".amazonaws.com.\"\n")
 	hits, err := hardCodedAWS(root)
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +111,11 @@ func TestHardCodedAWSScanFinds(t *testing.T) {
 	got := strings.Join(hits, "; ")
 	if len(hits) != 2 || !strings.Contains(got, "0999_x.sql: us-gov-") || !strings.Contains(got, "x.go: .amazonaws.com") {
 		t.Fatalf("the scan found %q, want the planted migration's us-gov- and x.go's .amazonaws.com only", got)
+	}
+	// an exception is one use in its own file: a second use there is a hit
+	plant("internal/export/dest_s3.go", "package export\n\nconst r = \"us-east-1\"\nconst s = \"us-east-1\"\n")
+	if hits, err = hardCodedAWS(root); err != nil || !strings.Contains(strings.Join(hits, "; "), "dest_s3.go: us-east-1 (2 uses") {
+		t.Fatalf("a listed name used twice in its file: %q, %v; want a hit", hits, err)
 	}
 }
 
