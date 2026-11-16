@@ -171,3 +171,54 @@ func TestChecksJudgedCoversTheRules(t *testing.T) {
 		}
 	}
 }
+
+// TestBlitzNoteFirst: the per-database note heads the messages and survives a full list (the lead 05:0x).
+func TestBlitzNoteFirst(t *testing.T) {
+	var rd blitzRead
+	rd.add(mssqldb.Error{Class: 0, Message: "a notice"})
+	rd.add(mssqldb.Error{Class: 16, Number: 229, Message: "an error"})
+	rd.noteFirst("first")
+	if len(rd.msgs) != 3 || rd.msgs[0].proc != "pgvigil" || rd.msgs[0].text != "first" || rd.msgs[2].number != 229 {
+		t.Fatalf("msgs %+v", rd.msgs)
+	}
+	var full blitzRead
+	for i := 0; i < blitzMsgsMax-1; i++ {
+		full.add(mssqldb.Error{Class: 16, Message: "an error"})
+	}
+	full.add(mssqldb.Error{Class: 0, Message: "the newest notice"})
+	full.noteFirst("first")
+	if len(full.msgs) != blitzMsgsMax || full.msgs[0].text != "first" {
+		t.Fatalf("a full list: %d messages, the first %+v", len(full.msgs), full.msgs[0])
+	}
+	for _, m := range full.msgs {
+		if m.text == "the newest notice" {
+			t.Errorf("the notice kept, an error dropped")
+		}
+	}
+	var errsOnly blitzRead
+	for i := 0; i < blitzMsgsMax; i++ {
+		errsOnly.add(mssqldb.Error{Class: 16, Number: int32(i + 1), Message: "an error"})
+	}
+	errsOnly.noteFirst("first")
+	if len(errsOnly.msgs) != blitzMsgsMax || errsOnly.msgs[0].text != "first" || errsOnly.msgs[blitzMsgsMax-1].number != blitzMsgsMax-1 {
+		t.Errorf("a list of errors: %d messages, the last %+v", len(errsOnly.msgs), errsOnly.msgs[len(errsOnly.msgs)-1])
+	}
+}
+
+// TestBlitzDBSkipNote: the words for none and for some databases read.
+func TestBlitzDBSkipNote(t *testing.T) {
+	none, some := blitzDBSkipNote(5, 0, "mon"), blitzDBSkipNote(5, 2, "mon")
+	for _, c := range []struct{ got, want string }{
+		{none, "sp_Blitz's per-database checks ran on no database (0 of 5): "},
+		{some, "sp_Blitz's per-database checks left out 3 of 5 databases: "},
+	} {
+		if !strings.HasPrefix(c.got, c.want) {
+			t.Errorf("%q does not start %q", c.got, c.want)
+		}
+		for _, w := range []string{"fn_my_permissions", "the login mon", "SELECT ALL USER SECURABLES", "sysadmin"} {
+			if !strings.Contains(c.got, w) {
+				t.Errorf("%q lacks %q", c.got, w)
+			}
+		}
+	}
+}

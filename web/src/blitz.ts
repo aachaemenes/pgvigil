@@ -86,6 +86,9 @@ function runLine(sh: Row | undefined): HTMLElement[] {
     out.push(el('p', { class: 'meta blitz-newest' }, `The newest run (${fmtTime(sh.newest_at)}) ${sh.newest_outcome}${sh.newest_error ? ': ' + String(sh.newest_error) : ''}.` + (sh.run_id != null ? ' The findings below are from the successful run above.' : '')));
   }
   const msgs = Array.isArray(sh.messages) ? sh.messages as Row[] : [];
+  // never silent (the lead 05:0x): the collector's note when sp_Blitz's per-database checks left databases out, in its words
+  const skip = msgs.find(m => m.proc === 'pgvigil' && String(m.message ?? '').startsWith("sp_Blitz's per-database checks"));
+  if (skip) out.push(el('p', { class: 'warn blitz-dbskip' }, String(skip.message)));
   if (msgs.length) {
     out.push(el('details', { class: 'blitz-msgs' }, el('summary', {}, `The server's messages of that run (${msgs.length})`),
       el('ul', {}, ...msgs.map(m => el('li', {}, (m.proc === 'pgvigil' ? 'pgvigil: ' : `Msg ${m.number ?? 0}, severity ${m.severity ?? 0}${m.line ? `, line ${m.line}` : ''}${m.proc ? ` (${m.proc})` : ''}: `) + String(m.message ?? ''))))));
