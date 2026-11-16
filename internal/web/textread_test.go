@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -63,8 +64,12 @@ var textFuncAllowed = map[string]string{
 var (
 	// a table's read: its name, and its alias when it has one (an un-aliased read names its columns bare)
 	sqlTableRE = regexp.MustCompile(`pgvigil\.(\w+)(?:\s+(?:AS\s+)?([a-z][a-z0-9_]*))?`)
-	// a CTE that selects a table's every column: the CTE's name and the table (a function's read is sqlCallRE's)
-	sqlStarCTERE = regexp.MustCompile(`(\w+)\s+AS\s+(?:(?:NOT\s+)?MATERIALIZED\s+)?\(\s*SELECT\s+(?:DISTINCT\s+)?(?:\w+\.)?\*\s+FROM\s+pgvigil\.(\w+)\b(?:[^(\w]|$)`)
+	// a CTE's head ('WITH name AS (' or ', name AS ('), its body from the parenthesis on
+	sqlCTEHeadRE = regexp.MustCompile(`(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)(\w+)\s+AS\s+(?:(?:NOT\s+)?MATERIALIZED\s+)?\(`)
+	// a select list's star, bare or by its source's name or alias ('SELECT *', 'SELECT st.*', ', b.*')
+	sqlStarRE = regexp.MustCompile(`(?:\bSELECT\s+(?:DISTINCT\s+)?|,\s*)(?:(\w+)\.)?\*`)
+	// a source a FROM or JOIN names, with its alias when it has one (fromSources drops a schema's or a function's)
+	sqlFromRE = regexp.MustCompile(`(?:FROM|JOIN)\s+(\w+)(?:[ \t\n]+(?:AS\s+)?([a-z][a-z0-9_]*))?`)
 	// a function's read, whatever columns the SQL takes from it
 	sqlCallRE = regexp.MustCompile(`pgvigil\.(\w+)\(`)
 	textTagRE = regexp.MustCompile(`"[a-z_]*@[a-z]+"`)
@@ -74,8 +79,8 @@ var (
 func textTagged(sql string) bool { return textTagRE.MatchString(sql) || textMarkRE.MatchString(sql) }
 
 // readsStoredText lists the storedText columns a SQL text names: through a table's alias, bare beside an
-// un-aliased table, or through a CTE that selects a table's every column ('lg AS (SELECT g.* FROM pgvigil.t g ...)'
-// then 'lg.col', or the CTE under an alias of its own).
+// un-aliased table, or through a CTE that selects a stored text table's every column (starCTEs: 'lg AS (SELECT g.*
+// FROM pgvigil.t g ...)' then 'lg.col', or the CTE under an alias of its own).
 func readsStoredText(sql string) []string {
 	var out []string
 	for _, m := range sqlTableRE.FindAllStringSubmatch(sql, -1) {
@@ -89,21 +94,118 @@ func readsStoredText(sql string) []string {
 			}
 		}
 	}
-	for _, m := range sqlStarCTERE.FindAllStringSubmatch(sql, -1) {
-		names := []string{m[1]}
-		for _, a := range regexp.MustCompile(`(?:FROM|JOIN)\s+`+m[1]+`\s+(?:AS\s+)?([a-z][a-z0-9_]*)`).FindAllStringSubmatch(sql, -1) {
-			names = append(names, a[1])
+	for name, tables := range starCTEs(sql) {
+		names := []string{name}
+		for _, f := range fromSources(sql) {
+			if f[0] == name && f[1] != "" {
+				names = append(names, f[1])
+			}
 		}
-		for _, c := range storedText[m[2]] {
-			for _, n := range names {
-				if regexp.MustCompile(`\b` + n + `\.` + c + `\b`).MatchString(sql) {
-					out = append(out, "pgvigil."+m[2]+"."+c+" (through "+m[1]+")")
-					break
+		for _, t := range tables {
+			for _, c := range storedText[t] {
+				for _, n := range names {
+					if regexp.MustCompile(`\b` + n + `\.` + c + `\b`).MatchString(sql) {
+						out = append(out, "pgvigil."+t+"."+c+" (through "+name+")")
+						break
+					}
 				}
 			}
 		}
 	}
+	sort.Strings(out)
 	return out
+}
+
+// starCTEs: each CTE of a SQL text whose select list takes every column of a stored text table - a star bare or by
+// the table's name or alias, extra columns beside it or not - or of such a CTE (a chain, to its end), with the tables.
+func starCTEs(sql string) map[string][]string {
+	type cte struct{ name, body string }
+	var ctes []cte
+	for _, m := range sqlCTEHeadRE.FindAllStringSubmatchIndex(sql, -1) {
+		ctes = append(ctes, cte{sql[m[2]:m[3]], sql[m[1]:closeParen(sql, m[1]-1)]})
+	}
+	out := map[string][]string{}
+	for changed := true; changed; {
+		changed = false
+		for _, c := range ctes {
+			if _, done := out[c.name]; done {
+				continue
+			}
+			src := map[string][]string{} // a source's name or alias: the stored text tables behind it
+			var all []string
+			for _, m := range sqlTableRE.FindAllStringSubmatch(c.body, -1) {
+				if _, ok := storedText[m[1]]; ok {
+					src[m[1]] = append(src[m[1]], m[1])
+					if m[2] != "" {
+						src[m[2]] = append(src[m[2]], m[1])
+					}
+					all = append(all, m[1])
+				}
+			}
+			for _, f := range fromSources(c.body) {
+				if ts, ok := out[f[0]]; ok {
+					src[f[0]] = append(src[f[0]], ts...)
+					if f[1] != "" {
+						src[f[1]] = append(src[f[1]], ts...)
+					}
+					all = append(all, ts...)
+				}
+			}
+			var got []string
+			for _, s := range sqlStarRE.FindAllStringSubmatch(c.body, -1) {
+				if s[1] == "" {
+					got = append(got, all...)
+				} else {
+					got = append(got, src[s[1]]...)
+				}
+			}
+			if len(got) > 0 {
+				out[c.name] = got
+				changed = true
+			}
+		}
+	}
+	return out
+}
+
+// fromSources: each source a FROM or JOIN names without a schema (a CTE's name), with its alias ("" when none); a
+// name followed by '.' (a schema) or '(' (a function) is not one.
+func fromSources(s string) [][2]string {
+	var out [][2]string
+	for _, m := range sqlFromRE.FindAllStringSubmatchIndex(s, -1) {
+		if e := m[3]; e < len(s) && (s[e] == '.' || s[e] == '(') {
+			continue
+		}
+		alias := ""
+		if m[4] >= 0 {
+			alias = s[m[4]:m[5]]
+		}
+		out = append(out, [2]string{s[m[2]:m[3]], alias})
+	}
+	return out
+}
+
+// closeParen is the index of the parenthesis that closes the one at open (a quoted '...' read past), or len(s).
+func closeParen(s string, open int) int {
+	depth, quoted := 0, false
+	for i := open; i < len(s); i++ {
+		switch c := s[i]; {
+		case quoted:
+			if c == '\'' {
+				quoted = false
+			}
+		case c == '\'':
+			quoted = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(s)
 }
 
 // textFunc is a function a SQL text reads and the stored text column its body names.
@@ -153,14 +255,18 @@ func funcBodies(t *testing.T) map[string]string {
 	return body
 }
 
-// packageSQL calls f with every string literal of the package's non-test files that holds a SELECT, with its position
-// and the name it is bound to (the const / var it starts, else the function it sits in).
+// packageSQL calls f with every SQL text of the package's non-test files that holds a SELECT - each string literal,
+// and each concatenation folded to its whole text (a const or var of the package named in it folded in too, but one
+// textReadAllowed lists; any other part ' ? '), since a CTE built in one constant is read in the next - with its
+// position and the name it is bound to (the const / var it starts, else the function it sits in).
 func packageSQL(t *testing.T, f func(pos token.Position, name, sql string)) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("the package's files: %v", err)
 	}
+	var afs []*ast.File
+	vals := map[string]ast.Expr{} // the package's const and var values by name
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
 			continue
@@ -169,14 +275,62 @@ func packageSQL(t *testing.T, f func(pos token.Position, name, sql string)) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		name := map[*ast.BasicLit]string{}
+		afs = append(afs, af)
+		for _, d := range af.Decls {
+			if gd, ok := d.(*ast.GenDecl); ok && (gd.Tok == token.CONST || gd.Tok == token.VAR) {
+				for _, sp := range gd.Specs {
+					vs := sp.(*ast.ValueSpec)
+					for i, n := range vs.Names {
+						if i < len(vs.Values) {
+							vals[n.Name] = vs.Values[i]
+						}
+					}
+				}
+			}
+		}
+	}
+	var fold func(e ast.Expr, depth int) string
+	fold = func(e ast.Expr, depth int) string {
+		switch x := e.(type) {
+		case *ast.BasicLit:
+			if s, err := strconv.Unquote(x.Value); err == nil && x.Kind == token.STRING {
+				return s
+			}
+		case *ast.ParenExpr:
+			return fold(x.X, depth)
+		case *ast.BinaryExpr:
+			if x.Op == token.ADD {
+				return fold(x.X, depth) + fold(x.Y, depth)
+			}
+		case *ast.Ident:
+			// a constant listed in textReadAllowed stays out: its entry says why its reads are not returned and
+			// what the constants built on it tag (sqlLogGroupBase, repFailedCTE)
+			if _, allowed := textReadAllowed[x.Name]; allowed {
+				break
+			}
+			if v, ok := vals[x.Name]; ok && depth < 16 {
+				return fold(v, depth+1)
+			}
+		}
+		return " ? "
+	}
+	for _, af := range afs {
+		name := map[ast.Node]string{}
+		bind := func(n ast.Node, to string) {
+			switch n.(type) {
+			case *ast.BasicLit, *ast.BinaryExpr:
+				if _, seen := name[n]; !seen {
+					name[n] = to
+				}
+			}
+		}
 		ast.Inspect(af, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.ValueSpec:
 				for _, v := range x.Values {
 					ast.Inspect(v, func(m ast.Node) bool {
-						if bl, ok := m.(*ast.BasicLit); ok && len(x.Names) > 0 {
-							name[bl] = x.Names[0].Name
+						if len(x.Names) > 0 {
+							bind(m, x.Names[0].Name)
 						}
 						return true
 					})
@@ -184,11 +338,7 @@ func packageSQL(t *testing.T, f func(pos token.Position, name, sql string)) {
 			case *ast.FuncDecl:
 				if x.Body != nil {
 					ast.Inspect(x.Body, func(m ast.Node) bool {
-						if bl, ok := m.(*ast.BasicLit); ok {
-							if _, seen := name[bl]; !seen {
-								name[bl] = x.Name.Name
-							}
-						}
+						bind(m, x.Name.Name)
 						return true
 					})
 				}
@@ -204,6 +354,17 @@ func packageSQL(t *testing.T, f func(pos token.Position, name, sql string)) {
 				f(fset.Position(bl.Pos()), name[bl], sql)
 			}
 			return true
+		})
+		// each outermost concatenation, whole (its literals were read one by one above)
+		ast.Inspect(af, func(n ast.Node) bool {
+			be, ok := n.(*ast.BinaryExpr)
+			if !ok || be.Op != token.ADD {
+				return true
+			}
+			if sql := fold(be, 0); strings.Contains(sql, "SELECT") {
+				f(fset.Position(be.Pos()), name[be], sql)
+			}
+			return false
 		})
 	}
 }
@@ -264,8 +425,10 @@ func TestStoredTextFuncsMarked(t *testing.T) {
 
 // TestTextGuardsFlag: the read shapes the two guards missed before review 2 (an un-aliased table's bare column,
 // explicit columns over a function, a table added since) and before the closing run (a column read through a CTE
-// that selects a table's every column: 0119's mssql_memory_findings_between reads its statement as lg.statement)
-// are flagged; their tagged forms pass; a CTE over a stored text table that returns none of its text is not flagged.
+// that takes a stored text table's every column: 0119's mssql_memory_findings_between reads its statement as
+// lg.statement; a star beside other columns, a CTE over such a CTE, a bare star over one) are flagged; their tagged
+// forms are flagged and tagged; a CTE over a stored text table that returns none of its text is not flagged; and a
+// CTE built in one constant and read in the next reaches the guards whole (packageSQL's fold).
 func TestTextGuardsFlag(t *testing.T) {
 	body := funcBodies(t)
 	for _, sql := range []string{
@@ -274,23 +437,50 @@ func TestTextGuardsFlag(t *testing.T) {
 		"SELECT m.detail FROM pgvigil.mssql_running_findings m",
 		"WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g WHERE g.instance_id = $1)\nSELECT lg.session_id, lg.statement FROM lg",
 		"WITH q AS MATERIALIZED (SELECT * FROM pgvigil.mssql_requests) SELECT r.session_id, r.statement FROM q r",
+		"WITH s AS (SELECT st.*, now() AS due FROM pgvigil.alert_state st) SELECT s.check_name, s.value FROM s",
+		"WITH r AS (SELECT b.* FROM pgvigil.mssql_blocked_reports b), d AS (SELECT r.*, 1 AS lvl FROM r) SELECT d.blocked_statement FROM d",
+		"WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g), x AS (SELECT * FROM lg) SELECT x.statement FROM x",
 	} {
 		if len(readsStoredText(sql)) == 0 || textTagged(sql) {
 			t.Errorf("not flagged: %q", sql)
 		}
 	}
-	if none := "WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g) SELECT lg.session_id, lg.granted_kb FROM lg"; len(readsStoredText(none)) != 0 {
-		t.Errorf("flagged with no stored text returned: %q (%v)", none, readsStoredText(none))
+	for _, none := range []string{
+		"WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g) SELECT lg.session_id, lg.granted_kb FROM lg",
+		"WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g), ls AS (SELECT 1 AS n) SELECT ls.n, lg.granted_kb FROM lg, ls",
+	} {
+		if got := readsStoredText(none); len(got) != 0 {
+			t.Errorf("flagged with no stored text returned: %q (%v)", none, got)
+		}
 	}
-	if ok := "WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g) SELECT lg.statement AS \"statement@stmt\" FROM lg"; !textTagged(ok) {
-		t.Errorf("a tagged CTE read not seen as tagged: %q", ok)
+	for _, ok := range []string{
+		"WITH lg AS (SELECT g.* FROM pgvigil.mssql_memory_grant_query g) SELECT lg.statement AS \"statement@stmt\" FROM lg",
+		"SELECT snapshot_at AS at, detail AS \"detail@logdetail\", kind AS \"@logkind\"\n  FROM pgvigil.log_events\n WHERE kind = 'auth_fail'",
+	} {
+		if len(readsStoredText(ok)) == 0 || !textTagged(ok) {
+			t.Errorf("a tagged read not seen as a read, or not as tagged: %q", ok)
+		}
 	}
 	fn := "SELECT f.check_name, f.detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3) f"
 	if len(funcsReadingText(fn, body)) == 0 || textTagged(fn) {
 		t.Errorf("not flagged: %q", fn)
 	}
-	if ok := "SELECT snapshot_at AS at, detail AS \"detail@logdetail\", kind AS \"@logkind\"\n  FROM pgvigil.log_events\n WHERE kind = 'auth_fail'"; !textTagged(ok) {
-		t.Errorf("a tagged read not seen as tagged: %q", ok)
+	whole := map[string]bool{}
+	packageSQL(t, func(_ token.Position, name, sql string) {
+		switch {
+		case name == "sqlMSSQLXEBlockedHeads" && strings.Contains(sql, "pgvigil.mssql_blocked_reports b") && strings.Contains(sql, "b.blocking_statement"):
+		case name == "sqlSlowGroups" && strings.Contains(sql, "pgvigil.slow_events_all e") && strings.Contains(sql, "e.statement"):
+		default:
+			return
+		}
+		if len(readsStoredText(sql)) > 0 && textTagged(sql) {
+			whole[name] = true
+		}
+	})
+	for _, name := range []string{"sqlMSSQLXEBlockedHeads", "sqlSlowGroups"} {
+		if !whole[name] {
+			t.Errorf("%s: its CTE and the read of it never reached the guards as one text (packageSQL's fold)", name)
+		}
 	}
 }
 
