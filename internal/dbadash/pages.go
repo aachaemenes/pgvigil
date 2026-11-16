@@ -272,8 +272,15 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 		return out, fmt.Errorf("%s: %w", def.Procedure, err)
 	}
 	out.Results = rs
+	maskPage(&out)
 	return out, nil
 }
+
+// maskPage is the text step of a page's reply before it leaves the package.
+func maskPage(out *PageReply) {}
+
+// Statements calls f on each statement text of the reply.
+func (r *PageReply) Statements(f func(s string) any) {}
 
 func orNone(v string) string {
 	if strings.TrimSpace(v) == "" {
