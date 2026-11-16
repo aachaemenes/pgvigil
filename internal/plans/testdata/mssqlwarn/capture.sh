@@ -94,9 +94,10 @@ export MSSQL_SA_PASSWORD
 MADE=1
 docker run -d --name "$CT" --cpuset-cpus 0-3 --memory 6g -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_PID=Developer \
   -e MSSQL_MEMORY_LIMIT_MB=4096 "$IMG" >/dev/null || fail "docker run $IMG"
-sqi() {   # sqi <database> <timeout s>: one session over stdin, its output on stdout (-y 0: long values whole)
+sqi() {   # sqi <database> <timeout s>: one session over stdin, its output on stdout (-y 0: long values whole; sqlcmd
+          # refuses -h with -y 0, so each result keeps its header: a tabular read prefixes its lines and greps them)
   docker exec -i -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" "$CT" "$SQLCMD" -S localhost -C -b -I -U sa \
-    -d "$1" -t "$2" -y 0 -h -1 -i /dev/stdin
+    -d "$1" -t "$2" -y 0 -i /dev/stdin
 }
 for _ in $(seq 1 90); do echo "SELECT 1;" | sqi master 10 > "$WORK/probe.out" 2>&1 && break; sleep 2; done
 if ! echo "SELECT 1;" | sqi master 10 > "$WORK/probe.out" 2>&1; then
@@ -107,14 +108,16 @@ if ! echo "SELECT 1;" | sqi master 10 > "$WORK/probe.out" 2>&1; then
 fi
 printf '%s\n' "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;" \
   "EXEC sp_configure 'max degree of parallelism', 2; EXEC sp_configure 'cost threshold for parallelism', 5; RECONFIGURE;" \
-  | sqi master 60 >/dev/null || fail "sp_configure"
-sqi master 600 < "$BC" >/dev/null || fail "sp_BlitzCache.sql did not install"
-sqi master 1800 < "$WORK/cases/setup.sql" >/dev/null || fail "the setup of capture.sql failed"
-SERVER=$(printf '%s\n' "SET NOCOUNT ON; SELECT CONCAT(CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), ' ', (SELECT cpu_count FROM sys.dm_os_sys_info), ' ', (SELECT CAST(value AS varchar(10)) FROM sys.configurations WHERE name = 'max degree of parallelism'), ' ', (SELECT CAST(value AS varchar(10)) FROM sys.configurations WHERE name = 'cost threshold for parallelism'), ' ', (SELECT CAST(value AS varchar(10)) FROM warnlab.sys.database_scoped_configurations WHERE name = 'LAST_QUERY_PLAN_STATS'));" \
-  | sqi master 60 | tr -d '\r' | sed '/^$/d' | tail -1)
+  | sqi master 60 > "$WORK/step.out" 2>&1 || fail "sp_configure: $(tr -d '\r' < "$WORK/step.out" | grep -m1 -E 'Msg|rror' | cut -c1-200)"
+sqi master 600 < "$BC" > "$WORK/step.out" 2>&1 || fail "sp_BlitzCache.sql did not install: $(tr -d '\r' < "$WORK/step.out" | grep -m1 -A1 -E 'Msg|rror' | tr '\n' ' ' | cut -c1-240)"
+sqi master 1800 < "$WORK/cases/setup.sql" > "$WORK/step.out" 2>&1 || fail "the setup of capture.sql failed: $(tr -d '\r' < "$WORK/step.out" | grep -m1 -A1 -E 'Msg|rror' | tr '\n' ' ' | cut -c1-240)"
+echo "ok   the server set, sp_BlitzCache installed, warnlab built"
+SERVER=$(printf '%s\n' "SET NOCOUNT ON; SELECT CONCAT('SRV ', CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), ' ', (SELECT cpu_count FROM sys.dm_os_sys_info), ' ', (SELECT CAST(value AS varchar(10)) FROM sys.configurations WHERE name = 'max degree of parallelism'), ' ', (SELECT CAST(value AS varchar(10)) FROM sys.configurations WHERE name = 'cost threshold for parallelism'), ' ', (SELECT CAST(value AS varchar(10)) FROM warnlab.sys.database_scoped_configurations WHERE name = 'LAST_QUERY_PLAN_STATS'));" \
+  | sqi master 60 | tr -d '\r' | sed -n 's/^SRV //p' | tail -1)
 read -r MSV CPUS MAXDOP CTP LQPS <<< "$SERVER"
-[[ $MSV == 16.* ]] || fail "the image is not SQL Server 2022 (ProductVersion $MSV)"
-TFS=$(printf '%s\n' "SET NOCOUNT ON; DBCC TRACESTATUS (-1) WITH NO_INFOMSGS;" | sqi master 60 | tr -d '\r' | sed '/^$/d' | awk '{print $1}' | paste -sd, -)
+[[ $MSV == 16.* ]] || fail "the image is not SQL Server 2022 (ProductVersion '$MSV')"
+TFS=$(printf '%s\n' "SET NOCOUNT ON; CREATE TABLE #wl_tf (TraceFlag int, Status int, Global int, Session int); INSERT #wl_tf EXEC (N'DBCC TRACESTATUS (-1) WITH NO_INFOMSGS'); SELECT CONCAT('TF ', TraceFlag) FROM #wl_tf;" \
+  | sqi master 60 | tr -d '\r' | sed -n 's/^TF //p' | paste -sd, -)
 echo "server $MSV cpus $CPUS maxdop $MAXDOP ctp $CTP lqps $LQPS global-flags ${TFS:-none}"
 [[ -z "$TFS" ]] || fail "a global trace flag is on ($TFS): the oracle would read another plan"
 
@@ -193,9 +196,9 @@ done
 printf '%s\n' "SET NOCOUNT ON;" \
   "EXEC master.dbo.sp_BlitzCache @ExpertMode = 1, @Top = 1000, @DatabaseName = N'warnlab', @HideSummary = 1, @SortOrder = 'CPU';" \
   "IF OBJECT_ID(N'warnlab.dbo.bc_out') IS NOT NULL DROP TABLE warnlab.dbo.bc_out;" \
-  "SELECT CONCAT_WS(NCHAR(9), $SEL) AS line INTO warnlab.dbo.bc_out FROM ##BlitzCacheProcs WHERE SPID = @@SPID AND QueryType = N'Statement';" \
-  | sqi master 1800 > /dev/null 2> "$WORK/bc.err" || fail "sp_BlitzCache: $(tr -d '\r' < "$WORK/bc.err" | grep -m1 -E 'Msg|rror' | cut -c1-200)"
-printf '%s\n' "SET NOCOUNT ON; SELECT line FROM dbo.bc_out;" | sqi warnlab 120 | tr -d '\r' | sed '/^$/d' > "$WORK/bc.tsv"
+  "SELECT CONCAT(N'BC', NCHAR(9), CONCAT_WS(NCHAR(9), $SEL)) AS line INTO warnlab.dbo.bc_out FROM ##BlitzCacheProcs WHERE SPID = @@SPID AND QueryType = N'Statement';" \
+  | sqi master 1800 > "$WORK/bc.out" 2>&1 || fail "sp_BlitzCache: $(tr -d '\r' < "$WORK/bc.out" | grep -m1 -E 'Msg|rror' | cut -c1-200)"
+printf '%s\n' "SET NOCOUNT ON; SELECT line FROM dbo.bc_out;" | sqi warnlab 120 | tr -d '\r' | sed -n 's/^BC\t//p' > "$WORK/bc.tsv"
 python3 -I - "$OUT/capture-meta.tsv" "$WORK/bc.tsv" "$OUT/blitzcache-8.34.tsv" "$COLS" <<'PY'
 import sys
 meta, raw, dst, cols = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split()
