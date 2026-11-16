@@ -74,6 +74,13 @@ func (r *Repo) Close() { r.pool.Close() }
 // (a collector restarted by systemd while an operator runs `pgvigil migrate`).
 const migrateLockKey int64 = 7265471133001
 
+// schemaVersionDDL is the bootstrap every migrate runs before the files (and 'migrate -print' prints).
+const schemaVersionDDL = `CREATE SCHEMA IF NOT EXISTS pgvigil;
+CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
+  version    text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);`
+
 // Migrate applies pending migration files in name order; returns how many ran.
 // The whole run holds a session advisory lock on one dedicated connection, so a
 // second migrate waits and then finds nothing to do. Then the partitions ahead (0271, N4),
@@ -99,11 +106,7 @@ func (r *Repo) migrateFiles(ctx context.Context) (int, error) {
 	}
 	defer func() { _, _ = c.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockKey) }()
 
-	if _, err := c.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS pgvigil;
-CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
-  version    text PRIMARY KEY,
-  applied_at timestamptz NOT NULL DEFAULT now()
-);`); err != nil {
+	if _, err := c.Exec(ctx, schemaVersionDDL); err != nil {
 		return 0, fmt.Errorf("schema_version: %w", err)
 	}
 	info, warn, err := repositoryJITOff(ctx, c.Conn())
