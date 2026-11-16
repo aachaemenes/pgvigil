@@ -16,7 +16,8 @@
 #     part insights - one row per suggestion kind: kind, instances, text, help
 #     part marks    - instance_id, instance, mark (the highest live 'collector errors' log_id), ack_ids
 #     the service's own failures: instance_id NULL, instance '(the service)', collection 'alerts' | 'report mail' |
-#     'DBA Dash import', never with instance=; service=1 lists them alone
+#     'DBA Dash import' | 'export', each with the link of the page that handles it, never with instance=; service=1
+#     lists them alone
 #   GET /api/mssql/errorfleet?[instance=][&tag=][&from=&to=][&n=][&noise=1]
 #     part byerror - error_number, severity (worst), occurrences (not hidden), instances, first_at, last_at, message,
 #                    hidden; a number whose every line is hidden is left out unless noise=1
@@ -42,15 +43,20 @@
 #     and a refused report mail, a configured repository not read - and not the unconfigured one, not a sent alert; none
 #     at instance=; the reads write nothing (acks, ack_log, collection_log, collection_dates unchanged). RED: no route.
 #  Cx. the Parquet export's service row (export_service, 0256): a configured export with a window whose last attempt
-#     failed (beside it a window that failed and then went well, and a later window ok) and one 4 hours behind (its
-#     last run 4 hours back) are two '(the service)' rows - collection 'export', Error, Other, link '#/collector', the
-#     note export_service's detail; an export turned off (runs, no state) and a current one are no rows; none at
-#     instance=; the service row's Errors count, now 8, lists its eight rows. Each row is dated when its trouble began
-#     - the earliest last attempt of a window still failed (not the export's last run, not the window that recovered),
-#     else 3 hours after its newest window - so a range ending a minute after that time holds it and a range ending a
-#     minute before does not. With export_service gone (a repository below 0256) the page still answers: the six other
-#     service rows, no export row. The reads write nothing (export_runs, export_state unchanged). RED (498f7bcc): no
-#     export row - the two rows, the dates and the count of 8 fail; the page below 0256 and the no-write rows pass.
+#     failed (beside it a window that failed and then went well, and a later window ok), one 4 hours behind (its last
+#     run 4 hours back) and one behind for longer that then failed a window are three '(the service)' rows - collection
+#     'export', Error, Other, link '#/collector', the note export_service's detail ending ' - since <its start> UTC';
+#     an export turned off (runs, no state) and a current one are no rows; none at instance=; the service row's Errors
+#     count, now 9, lists its nine rows. The trouble starts at the earlier of the earliest last attempt of a window still
+#     failed and 3 hours after the newest window (not the export's last run, not the window that recovered, not the
+#     later failure of an export already behind): a range ending a minute after that start holds the row, a range
+#     ending a minute before does not. The row is a state read at the range's end, so it is dated there (now for a range
+#     that ends later) and its note says since when: the newest rows of the error list. With export_service gone (a
+#     repository below 0256) the page still answers: the six other service rows, no export row. The reads write nothing
+#     (export_runs, export_state unchanged). RED (498f7bcc): no export row - the rows, their dates and notes and the
+#     count of 9 fail; the instance=, below-0256 and no-write rows pass. RED (96ff6ed1, dated at the start, the failure
+#     first): the export behind then failing dated at its failure, each row dated at its start (not the range's end), no
+#     'since' in the notes, the export rows not the newest; the rest pass.
 #  D. the acknowledgement, on Collection Health's cell (ch_level / ch_n: the j16 join moved the row there from the
 #     errors_24h / failing columns B6G-N's Collection Health replaced; counted from the acknowledgement - the errors at
 #     or under its mark never count again, A5): X's 1 / 1 (c2 warning) / detail 'c2: the last
@@ -260,13 +266,16 @@ check "$(q "select (select count(*) from pgvigil.acks) || '/' || (select count(*
 echo "--- Cx. the Parquet export's service row"
 # seeded straight into 0256's tables (the door's own rows are proof-parquet.sh's): cerrx fails window A at its last
 # attempt XF; window B failed earlier (XB) and then went well; its newest window is this hour's, so it is not behind.
-# cerry stopped 4 hours ago: its newest window ended at XE - 4 h, so it has been behind since XE - 1 h. cerrz was turned
-# off (runs, no state); cerrw is current.
+# cerry stopped 4 hours ago: its newest window ended at XE - 4 h, so it has been behind since XE - 1 h. cerrv has been
+# behind since XE - 70 min (its newest window ended XE - 250 min) and then failed a window at XE - 10 min: its trouble
+# began when it fell behind. cerrz was turned off (runs, no state); cerrw is current.
 XE=$(date -u +%s); XH=$(( XE / 3600 * 3600 )); xts() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
-XF=$((XE - 1200)); XB=$((XE - 3000)); YS=$((XE - 3600))
+XF=$((XE - 1200)); XB=$((XE - 3000)); YS=$((XE - 3600)); VS=$((XE - 4200)); VF=$((XE - 600))
+ymd() { date -u -d "@$1" '+%Y-%m-%d %H:%M'; }
 q "insert into pgvigil.export_state (name, destination, configured_at, last_run_at, last_outcome, last_error, newest_window_to) values
      ('cerrx', 's3://cerr/x', '$(xts $((XE - 86400)))', '$(xts $((XE - 300)))', 'ok', NULL, '$(xts $XH)'),
      ('cerry', 's3://cerr/y', '$(xts $((XE - 86400)))', '$(xts $((XE - 14000)))', 'ok', NULL, '$(xts $((XE - 14400)))'),
+     ('cerrv', 's3://cerr/v', '$(xts $((XE - 86400)))', '$(xts $VF)', 'failed', 's3: 500 InternalError', '$(xts $((VS - 10800)))'),
      ('cerrw', 's3://cerr/w', '$(xts $((XE - 86400)))', '$(xts $((XE - 300)))', 'ok', NULL, '$(xts $XH)')" >/dev/null
 q "insert into pgvigil.export_runs (name, window_from, window_to, started_at, finished_at, outcome, error, login) values
      ('cerrx', '$(xts $((XH - 10800)))', '$(xts $((XH - 7200)))', '$(xts $((XF - 60)))', '$(xts $XF)', 'failed', 's3: 403 AccessDenied', 'proof'),
@@ -274,22 +283,34 @@ q "insert into pgvigil.export_runs (name, window_from, window_to, started_at, fi
      ('cerrx', '$(xts $((XH - 7200)))', '$(xts $((XH - 3600)))', '$(xts $((XE - 360)))', '$(xts $((XE - 330)))', 'ok', NULL, 'proof'),
      ('cerrx', '$(xts $((XH - 3600)))', '$(xts $XH)', '$(xts $((XE - 330)))', '$(xts $((XE - 300)))', 'ok', NULL, 'proof'),
      ('cerry', '$(xts $((XE - 18000)))', '$(xts $((XE - 14400)))', '$(xts $((XE - 14060)))', '$(xts $((XE - 14000)))', 'ok', NULL, 'proof'),
+     ('cerrv', '$(xts $((VS - 14400)))', '$(xts $((VS - 10800)))', '$(xts $((VS - 10760)))', '$(xts $((VS - 10700)))', 'ok', NULL, 'proof'),
+     ('cerrv', '$(xts $((XH - 3600)))', '$(xts $XH)', '$(xts $((VF - 60)))', '$(xts $VF)', 'failed', 's3: 500 InternalError', 'proof'),
      ('cerrz', '$(xts $((XH - 3600)))', '$(xts $XH)', '$(xts $((XE - 400)))', '$(xts $((XE - 390)))', 'failed', 's3: gone', 'proof'),
      ('cerrw', '$(xts $((XH - 3600)))', '$(xts $XH)', '$(xts $((XE - 330)))', '$(xts $((XE - 300)))', 'ok', NULL, 'proof')" >/dev/null
 X0=$(q "select (select count(*) from pgvigil.export_runs) || '/' || (select count(*) from pgvigil.export_state)")
 get "/api/collectorerrors?view=error&service=1&coll=export&$W"
-check "$(py "sorted(str(r['note'])[:max(0, str(r['note']).find(':'))] for r in T('rows'))")" "['Parquet export cerrx', 'Parquet export cerry']" \
-  "Cx: the failing export and the one behind are rows; the export turned off and the current one are not"
-check "$(py "all((r['instance'], r['instance_id'], r['type'], r['stage'], r['link'], r['acked']) == ('(the service)', None, 'Error', 'Other', '#/collector', False) for r in T('rows')) and len(T('rows')) == 2")|$(py "any('1 window(s) failed at their last attempt' in str(r['note']) and 's3: 403 AccessDenied' in str(r['note']) for r in T('rows'))")|$(py "any('4 hours behind' in str(r['note']) for r in T('rows'))")" \
+check "$(py "sorted(str(r['note'])[:max(0, str(r['note']).find(':'))] for r in T('rows'))")" "['Parquet export cerrv', 'Parquet export cerrx', 'Parquet export cerry']" \
+  "Cx: the failing export, the one behind and the one behind then failing are rows; the export turned off and the current one are not"
+check "$(py "all((r['instance'], r['instance_id'], r['type'], r['stage'], r['link'], r['acked']) == ('(the service)', None, 'Error', 'Other', '#/collector', False) for r in T('rows')) and len(T('rows')) == 3")|$(py "any('1 window(s) failed at their last attempt' in str(r['note']) and 's3: 403 AccessDenied' in str(r['note']) for r in T('rows'))")|$(py "any('4 hours behind' in str(r['note']) for r in T('rows'))")" \
   "True|True|True" "Cx: each '(the service)', Error, Other, linked to #/collector, never acknowledged; the notes are export_service's"
 get "/api/collectorerrors?view=error&instance=$PGI&$W"
 check "$(py "sum(1 for r in T('rows') if r['collection'] == 'export' or r['instance'] == '(the service)')")" "0" "Cx: no export row at one instance"
 get "/api/collectorerrors?view=instance&$W"; SE=$(py "one(T('rows'), instance='(the service)').get('errors')")
 get "/api/collectorerrors?view=error&service=1&type=Error&$W"; SE2=$(py "len(T('rows'))")
-check "$SE|$SE2" "8|8" "Cx: the service row's Errors count, eight, lists its eight rows"
+check "$SE|$SE2" "9|9" "Cx: the service row's Errors count, nine, lists its nine rows"
 seen() { get "/api/collectorerrors?view=error&service=1&coll=export&to=$(xts "$2")"; py "any(str(r['note']).startswith('Parquet export $1:') for r in T('rows'))"; }
-check "$(seen cerrx $((XF + 60)))|$(seen cerrx $((XF - 60)))|$(seen cerry $((YS + 60)))|$(seen cerry $((YS - 60)))" "True|False|True|False" \
-  "Cx: dated when the trouble began - a range ending a minute after the failed window's last attempt (3 hours after the newest window) holds the row, one ending a minute before does not"
+check "$(seen cerrx $((XF + 60)))|$(seen cerrx $((XF - 60)))|$(seen cerry $((YS + 60)))|$(seen cerry $((YS - 60)))|$(seen cerrv $((VS + 60)))|$(seen cerrv $((VS - 60)))" "True|False|True|False|True|False" \
+  "Cx: the trouble's start - a range ending a minute after it (the failed window's last attempt; 3 hours after the newest window; for the export behind then failing, when it fell behind) holds the row, one ending a minute before does not"
+# the row is a state read at the range's end: dated there (now for a range ending later), its note saying since when
+atx() { get "/api/collectorerrors?view=error&service=1&coll=export&${3:-to=$(xts "$2")}"; py "next((round(__import__('datetime').datetime.fromisoformat(str(r['at']).replace('Z', '+00:00')).timestamp()) for r in T('rows') if str(r['note']).startswith('Parquet export $1:')), None)"; }
+NOWX=$(date -u +%s); ATN=$(atx cerry 0 "to=$(xts $((XE + 3600)))"); NOWY=$(date -u +%s)
+check "$(atx cerrx $((XF + 120)))|$([ -n "$ATN" ] && [ "$ATN" != None ] && [ "$ATN" -ge $((NOWX - 2)) ] && [ "$ATN" -le $((NOWY + 2)) ] && echo now)" "$((XF + 120))|now" \
+  "Cx: dated at the range's end (a range ending 2 minutes after cerrx's start), and now for a range that ends later"
+get "/api/collectorerrors?view=error&service=1&coll=export&$W"
+check "$(py "'|'.join(str(r['note']).split(' - since ')[-1] for r in sorted(T('rows'), key=lambda r: r['note']))")" "$(ymd $VS) UTC|$(ymd $XF) UTC|$(ymd $YS) UTC" \
+  "Cx: each note ends ' - since <the trouble's start> UTC'"
+get "/api/collectorerrors?view=error&service=1&$W"
+check "$(py "[r['collection'] for r in T('rows')][:3]")" "['export', 'export', 'export']" "Cx: the export rows, read now, are the newest of the error list"
 q "alter view pgvigil.export_service rename to export_service_cerr" >/dev/null
 XC=$(curl -s -o "$WORK/r.json" -w '%{http_code}' "$U2/api/collectorerrors?view=error&service=1&$W")
 check "$XC|$(py "sorted(r['collection'] for r in T('rows'))")" "200|['DBA Dash import', 'alerts', 'alerts', 'alerts', 'report mail', 'report mail']" \
