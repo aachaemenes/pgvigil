@@ -376,7 +376,17 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
   const out: { sec: Section; el: Element }[] = [];
   let cardHead: Look | undefined;   // a property card's sheet: its 'item | value' header in the page's grid-header look
   const cardHeads = () => { const l = cardHead ??= (root instanceof Element ? gridHeadLook(root) : undefined); return l ? [l, l] : undefined; };
-  for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, h5, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, h5, table.grid, table.props')) {
+  for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, h5, table.grid, table.props, p.empty[data-cols], .insight-cards' : 'h2, h3, h4, h5, table.grid, table.props, .insight-cards')) {
+    // a report's insight cards (B20-3, cards.ts): a section of one column, a card a line '<severity>: <insight>', under
+    // the heading above them - the workbook's sheet and the mail's table carry the cards as text
+    if (e.classList.contains('insight-cards')) {
+      const { heading, within, own } = hs.of(e);
+      let lines: unknown = [];
+      try { lines = JSON.parse((e as HTMLElement).dataset.lines ?? '[]'); } catch { lines = []; }
+      if (Array.isArray(lines) && lines.length) out.push({ sec: { name: `${heading} - insights`, within, ...(own ? { own } : {}), cols: ['insight'],
+        rows: lines.map(l => [{ v: String(l), kind: 'text' as Kind, text: String(l) }]) }, el: e });
+      continue;
+    }
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') { hs.see(e); continue; }
     const { heading, within, own } = hs.of(e);
     // a grid with no row (ui.ts grid: its note carries its columns' names): a sheet of its header row alone, as DBA Dash
