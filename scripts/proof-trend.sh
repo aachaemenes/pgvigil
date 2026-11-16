@@ -64,6 +64,7 @@ ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 die() { echo "FAIL: $*"; exit 1; }
 cleanup() {
+  [[ -n "${PGVIGIL_PROOF_OUT:-}" ]] && mkdir -p "$PGVIGIL_PROOF_OUT" && cp "$WORK"/*.log "$PGVIGIL_PROOF_OUT"/ 2>/dev/null
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$SRV2" ]] && kill "$SRV2" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -181,11 +182,13 @@ expected() {
 # rankexp <metric> <fraction> <from> <to>: 'instance|rank' over every sample of the range
 rankexp() {
   local f="percentile_cont($2) within group (order by v)"; [[ $2 == max ]] && f="max(v)"; [[ $2 == min ]] && f="min(v)"
-  q "select instance_id || '|' || round(($f)::numeric, 4) from (${VAL[$1]}) x where at > '$3'::timestamptz and at <= '$4'::timestamptz group by 1 order by 1"
+  q "select instance_id || '|' || round(($f)::numeric, 4) from (${VAL[$1]}) x where at > '$3'::timestamptz and at <= '$4'::timestamptz group by instance_id order by 1"
 }
 startserve "$CFG" "$WORK/serve.log"; SRV=$SPID; U=$URL
-api() {   # api <query string> <file>: the answer's code; the body in the file
-  curl -s -o "$2" -w '%{http_code}' "$U/api/trend?$1"
+api() {   # api <query string> <file>: the answer's code; the body in the file (no answer: the serve's last lines on stderr)
+  local c; c=$(curl -s -o "$2" -w '%{http_code}' "$U/api/trend?$1")
+  [[ $c == 000 ]] && { echo "  (no answer to $1; serve alive: $(kill -0 "$SRV" 2>/dev/null && echo yes || echo no); its log: $(tail -5 "$WORK/serve.log" | tr '\n' ' ' | cut -c1-600))" >&2; }
+  echo "$c"
 }
 cat > "$WORK/chk.py" <<'PY'
 import json, sys
@@ -198,7 +201,11 @@ try:
 except Exception as e:
     # jq mode prints nothing for an answer that is not JSON (a row then fails on its own test, never passes on 'bad ...')
     if mode != 'jq':
-        print('bad the answer is not JSON (%s): %s' % (type(e).__name__, open(f, errors='replace').read(160).replace('\n', ' ')))
+        try:
+            body = open(f, errors='replace').read(160).replace('\n', ' ')
+        except OSError:
+            body = '(no answer file)'
+        print('bad the answer is not JSON (%s): %s' % (type(e).__name__, body))
     sys.exit(0)
 if mode == 'jq':
     try:
@@ -312,8 +319,11 @@ VAL[latency_db]="select instance_id, snapshot_at as at, sum(read_stall_ms + writ
    from pgvigil.mssql_fileio_sample where instance_id = $S1 and database_name = 'db_a' group by 1, 2 having sum(reads + writes) / max(interval_secs) >= 1"
 expected latency_db hour 0.95 "$FROM7" "$TO" > "$WORK/b1.exp"
 python3 - "$WORK/b1.json" > "$WORK/b1a.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1])) if open(sys.argv[1]).read(1) in '{[' else {}
+import json, os, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
 d['series'] = [s for s in d.get('series') or [] if s.get('database') == 'db_a']
 print(json.dumps(d))
 PY
