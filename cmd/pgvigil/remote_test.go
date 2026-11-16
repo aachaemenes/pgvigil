@@ -120,3 +120,43 @@ func TestRemoteInit(t *testing.T) {
 		t.Errorf("a manifest signed with the key: %v", err)
 	}
 }
+
+// install -remote: the remote names by default (the lead's 11:5x), -config / -user still choose; never with -upgrade.
+func TestInstallRemoteArgs(t *testing.T) {
+	o, err := parseInstallArgs("install", []string{"-remote"}, defaultInstallOptions())
+	if err != nil || !o.Remote || o.Config != remoteConfigDefault() || o.User != remoteAccountDefault() {
+		t.Errorf("-remote: %+v %v", o, err)
+	}
+	o, err = parseInstallArgs("install", []string{"-remote", "-config", "/srv/r.yaml", "-user", "collector"}, defaultInstallOptions())
+	if err != nil || o.Config != "/srv/r.yaml" || o.User != "collector" {
+		t.Errorf("-remote with -config and -user: %+v %v", o, err)
+	}
+	if _, err := parseInstallArgs("install", []string{"-remote", "-upgrade"}, defaultInstallOptions()); err == nil {
+		t.Errorf("-remote -upgrade: no error")
+	}
+	if o, err := parseInstallArgs("install", nil, defaultInstallOptions()); err != nil || o.Remote || o.Config == remoteConfigDefault() {
+		t.Errorf("no -remote: %+v %v", o, err)
+	}
+}
+
+// The remote sample config the installer writes is not ready until its site and an instance are filled in (the service
+// is enabled, not started); a filled one is ready.
+func TestRemoteReady(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pgvigil-remote.yaml")
+	if err := os.WriteFile(p, []byte(remoteConfigTemplate(filepath.Join(dir, "outbox"), filepath.Join(dir, "state"))), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if ready, why := remoteReady(p); ready || why == "" {
+		t.Errorf("the sample: ready %v (%s)", ready, why)
+	}
+	filled := strings.Replace(remoteConfigTemplate(filepath.Join(dir, "outbox"), filepath.Join(dir, "state")), `site: ""`, `site: plant1`, 1)
+	filled = strings.Replace(filled, `collector: ""`, `collector: box1`, 1)
+	filled = strings.Replace(filled, "instances: []", "instances:\n  - name: pg1\n    dsn: host=127.0.0.1 user=pgvigil dbname=postgres", 1)
+	if err := os.WriteFile(p, []byte(filled), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if ready, why := remoteReady(p); !ready {
+		t.Errorf("a filled config: not ready (%s)", why)
+	}
+}
