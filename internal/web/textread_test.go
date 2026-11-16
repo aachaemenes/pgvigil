@@ -57,6 +57,7 @@ var textReadAllowed = map[string]string{
 	"sqlPoolerFindings":       "memory_findings filtered to the two pooler checks (they quote no statement)",
 	"sqlMSSQLStorageChecks":   "mssql_storage_findings without the version store checks (the only ones of the view that quote a statement)",
 	"sqlAckLive":              "mssql_deadlocks.processes only inside mssql_deadlock_is_monitors() in a WHERE (0165: the monitor's own deadlocks left out); returns a count and a time",
+	"sqlWaitingOwnHidden":     "counts over mssql_waiting_at() / pg_waiting_at() (the default's hidden and the read's own); returns no text",
 	"sqlHealthCal":            "mssql_deadlocks.processes only inside mssql_deadlock_is_monitors() in a WHERE (0165: the monitor's own deadlocks left out); returns a count",
 }
 

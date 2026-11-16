@@ -140,7 +140,7 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
        extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
        extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,
        extract(epoch FROM s.snapshot_at - s.state_change)::int AS state_secs,
-       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query, s.is_own,
+       s.backend_xmin_age, s.xid_assigned, s.query_id, q.query AS "query@stmt", s.is_own,
        ` + ownHidePg + ` AS hide,
        s.query_start AS order_query_start
   FROM pgvigil.activity_sample s
@@ -151,7 +151,7 @@ SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usenam
 // reason shows them (B24 OWN; the activity handler's WIRING uses it); sqlSessionsOwnHidden counts what the default hid.
 const sqlSessionsOwn = `SELECT x.pid, x.backend_start, x.leader_pid, x.backend_type, x.datname, x.usename, x.application_name, x.client,
        x.state, x.wait_event_type, x.wait_event, x.blocking_pids, x.is_blocker, x.query_secs, x.xact_secs, x.state_secs,
-       x.backend_xmin_age, x.xid_assigned, x.query_id, x.query, x.is_own
+       x.backend_xmin_age, x.xid_assigned, x.query_id, x."query@stmt", x.is_own
   FROM (` + sqlSessionsOwnInner + `) x
  WHERE $3::boolean OR NOT x.hide
  ORDER BY x.is_blocker DESC, cardinality(x.blocking_pids) > 0 DESC, x.order_query_start NULLS LAST`

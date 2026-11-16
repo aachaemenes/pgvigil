@@ -98,7 +98,8 @@ SELECT y.*
 // 1,001 are read, cut = the 1,001st exists, and it (the oldest) is dropped
 const sqlInstanceAlerts = `
 SELECT x.*, count(*) OVER () > 1000 AS cut
-  FROM (SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source, o.setting, o.value,
+  FROM (SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id AS "instance_id@inst", o.instance, o.source,
+               o.setting AS "setting@fcheck", o.value AS "value@fvalue",
                ` + alertThreshold + ` AS threshold, o.channels, o.sends, o.occurrence, o.finding_key
           FROM pgvigil.alert_occurrences o
          WHERE o.instance_id = $3 AND o.fired_at < $2 AND (o.cleared_at IS NULL OR o.cleared_at >= $1)

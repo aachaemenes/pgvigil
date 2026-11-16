@@ -86,7 +86,7 @@ SELECT i.instance_id, i.name, i.engine, m.snapshot_at,
        extract(epoch FROM now() - m.snapshot_at)::bigint,
        m.sessions::bigint, m.requests::bigint, r.idle_in_txn::bigint,
        m.blocked::bigint, m.heads::bigint, floor(m.longest_wait_ms / 1000.0)::bigint,
-       floor(l.elapsed_ms / 1000.0)::bigint, l.session_id, l.statement,
+       floor(l.elapsed_ms / 1000.0)::bigint, l.session_id, l.statement AS "longest_stmt@stmt",
        floor(r.oldest_tran_ms / 1000.0)::bigint,
        r.max_grant_kb::bigint, r.sum_grant_kb::bigint, r.tempdb_waits::bigint, r.tempdb_wait_ms::bigint,
        r.tempdb_alloc_waits::bigint, r.tempdb_alloc_wait_ms::bigint

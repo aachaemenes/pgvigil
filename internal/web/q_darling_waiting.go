@@ -28,6 +28,13 @@ func waitingWait(r *http.Request) (*string, error) {
 	return &v, nil
 }
 
+// sqlWaitingOwnHidden: the tasks / backends the default hid; the read's own tasks in all (the tiles' 'includes n of
+// pgvigil's own'); since: when the repository began to mark them (a read before it marks none). Counts only: it returns
+// no text of the two functions it reads.
+const sqlWaitingOwnHidden = `SELECT (SELECT count(*) FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE w.hide AND NOT $4::boolean) AS tasks,
+       (SELECT count(*) FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE w.hide AND NOT $4::boolean) AS pg,
+       (SELECT count(*) FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE w.is_own) AS own_tasks, ` + ownSince + ` AS since`
+
 // Waiting is the Waiting tasks tab of either engine.
 func (s *Server) Waiting(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -60,10 +67,6 @@ func (s *Server) Waiting(w http.ResponseWriter, r *http.Request) {
 		{"bytype", `SELECT * FROM pgvigil.mssql_waiting_by_type($1, $2, $3, $4)`, []any{id, from, to, own}},
 		{"pg", `SELECT * FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE $4::boolean OR NOT w.hide /* text: query=stmt */`, []any{id, at, wait, own}},
 		{"pgbytype", `SELECT * FROM pgvigil.pg_waiting_by_type($1, $2, $3, $4)`, []any{id, from, to, own}},
-		// own_hidden: the tasks / backends the default hid; the read's own tasks in all (the tiles' 'includes n of
-		// pgvigil's own'); since: when the repository began to mark them (a read before it marks none)
-		{"own_hidden", `SELECT (SELECT count(*) FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE w.hide AND NOT $4::boolean) AS tasks,
-       (SELECT count(*) FROM pgvigil.pg_waiting_at($1, $2, $3) w WHERE w.hide AND NOT $4::boolean) AS pg,
-       (SELECT count(*) FROM pgvigil.mssql_waiting_at($1, $2, $3) w WHERE w.is_own) AS own_tasks, ` + ownSince + ` AS since`, []any{id, at, wait, own}},
+		{"own_hidden", sqlWaitingOwnHidden, []any{id, at, wait, own}},
 	})
 }

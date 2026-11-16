@@ -433,7 +433,7 @@ WITH ` + hadrScope + `, rs AS (
                        AND x.changed_before > coalesce(s.changed_after, s.changed_before) - interval '2 minutes'
                        AND x.changed_before <= s.changed_before + interval '2 minutes')
 )
-SELECT rc.instance_id, n.name AS instance, rc.group_name, rc.replica_server,
+SELECT rc.instance_id AS "instance_id@inst", n.name AS instance, rc.group_name, rc.replica_server,
        CASE WHEN rc.new_role = 1 THEN 'Became Primary' WHEN rc.prev_role = 1 THEN 'No Longer Primary'
             ELSE concat(CASE rc.prev_role WHEN 1 THEN 'PRIMARY' ELSE 'SECONDARY' END, ' => ', CASE rc.new_role WHEN 1 THEN 'PRIMARY' ELSE 'SECONDARY' END) END AS change,
        CASE rc.prev_role WHEN 1 THEN 'PRIMARY' WHEN 2 THEN 'SECONDARY' END AS previous_role,
@@ -445,7 +445,9 @@ SELECT rc.instance_id, n.name AS instance, rc.group_name, rc.replica_server,
        coalesce(CASE WHEN age.is_forced OR age.is_manual THEN age.statement END,
                 CASE WHEN ie.priority <= 3 THEN ie.reason END,
                 CASE WHEN age.is_lease THEN 'Lease expired' END,
-                ie.reason) AS reason,
+                ie.reason) AS "reason@stmt",
+       -- the reason is a stored statement only when a manual or forced failover's DDL gave it; else words and messages, as read
+       NOT (age.is_forced OR age.is_manual) AS "@keep",
        rc.source
   FROM rc
   JOIN names n ON n.instance_id = rc.instance_id
@@ -490,7 +492,8 @@ var sqlHADRAgHealthEvents = `
 WITH ` + hadrScope + `
 SELECT e.event_at, e.event_name, e.ag_name, e.replica_name, NULL::text AS database_name, NULL::text AS component,
        e.previous_state, e.current_state, e.ddl_action, e.ddl_phase,
-       e.error_number, coalesce(e.statement, e.message) AS details
+       e.error_number, coalesce(e.statement, e.message) AS "details@stmt",
+       e.statement IS NULL AS "@keep"   -- an event without a statement: its message, as read
   FROM pgvigil.mssql_ag_events e
   JOIN sc ON sc.instance_id = e.instance_id
  WHERE e.event_at >= $3::timestamptz AND e.event_at < $4::timestamptz
