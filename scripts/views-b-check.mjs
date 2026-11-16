@@ -377,7 +377,16 @@ if (E.VB_SHOTS) await run('SHOTS', async () => {
   const pages = [['summary', '#/summary?view=none'], ['perfsummary', '#/perfsummary?view=none'], ['slowqueries', '#/slowqueries?view=none'],
     ...(E.VB_PG ? [['slowqueries-instance', `#/slowqueries?i=${E.VB_PG}&view=none`]] : []),
     ...(E.VB_MSSQL ? [['mssql-slow', `#/mssql_slow?i=${E.VB_MSSQL}&view=none`]] : [])];
-  const made = [], unseen = [];
+  // seen(): the control and every drawn line of its menu inside the window and on top at their centres (no band and no
+  // upward-opened menu over them); 'no menu' while the views read has not drawn it yet
+  const SEEN = `(() => { const b = document.querySelector('[data-view-control]'); if (!b) return 'no control';
+    const its = [...document.querySelectorAll('div.menu[role=menu] [role=menuitem]')].filter(x => x.getClientRects().length);
+    if (!its.length) return 'no menu';
+    const on = x => { const r = x.getBoundingClientRect(); if (r.top < 0 || r.bottom > innerHeight) return false;
+      const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!t && x.contains(t); };
+    return !on(b) ? 'the control hidden' : its.every(on) ? 'ok' : 'a menu line hidden'; })()`;
+  const menuUp = async () => { await openMenu(); let s = 'no menu'; for (let i = 0; i < 20 && (s = await P.ev(SEEN)) === 'no menu'; i++) await sleep(250); return s; };
+  const made = [], scrolled = [], unseen = [];
   for (const theme of ['light', 'dark']) {
     await go('#/about');
     await P.ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
@@ -385,19 +394,24 @@ if (E.VB_SHOTS) await run('SHOTS', async () => {
     for (const [name, h] of pages) {
       await go(h);
       if (await vcText() === null) continue;
-      // a control below the top third of the window (SQL Server's Slow queries: under its statement grid) is brought up
-      // first, or the picture is the page's top without the menu
-      await P.ev(`(() => { const b = document.querySelector('[data-view-control]'); if (b.getBoundingClientRect().top > innerHeight / 3) b.scrollIntoView({ block: 'center' }); return 'ok'; })()`);
-      await sleep(300);
-      await openMenu();
-      // the picture counts only with the control and every line of its menu inside the window
-      const inView = await P.ev(`(() => { const r = [document.querySelector('[data-view-control]'), ...document.querySelectorAll('div.menu[role=menu] [role=menuitem]')].map(x => x.getBoundingClientRect()); return r.length > 1 && r.every(x => x.top >= 0 && x.bottom <= innerHeight); })()`);
-      if (!inView) unseen.push(`${name}-${theme}`);
+      const shot = `${name}-${theme}`;
+      let s = await menuUp();
+      // a page whose menu is not seen as loaded (SQL Server's Slow queries: the control under its statement grid) is
+      // scrolled, the control centred, and the menu opened again; a page already seen keeps its frame
+      if (s !== 'ok' && s !== 'no menu') {
+        await P.ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); document.querySelector('[data-view-control]').scrollIntoView({ block: 'center' }); 'ok'`);
+        await sleep(300);
+        scrolled.push(shot);
+        s = await menuUp();
+      }
       const d = await P.send('Page.captureScreenshot', { format: 'png' });
-      if (d.result?.data) { fs.writeFileSync(`${E.VB_SHOTS}/views-b-${name}-${theme}.png`, Buffer.from(d.result.data, 'base64')); made.push(`${name}-${theme}`); }
+      // read again after the capture: a scroll or a redraw in between drops the menu (ui.ts dropMenu)
+      if (s === 'ok') s = await P.ev(SEEN);
+      if (s !== 'ok') unseen.push(`${shot} (${s})`);
+      if (d.result?.data) { fs.writeFileSync(`${E.VB_SHOTS}/views-b-${shot}.png`, Buffer.from(d.result.data, 'base64')); made.push(shot); }
     }
   }
-  check('SHOTS', made.length === pages.length * 2 && !unseen.length, `${made.length} of ${pages.length * 2} pictures in ${E.VB_SHOTS}: ${made.join(', ')}; the menu outside the window: ${unseen.join(', ') || 'none'}`);
+  check('SHOTS', made.length === pages.length * 2 && !unseen.length, `${made.length} of ${pages.length * 2} pictures in ${E.VB_SHOTS}: ${made.join(', ')}; scrolled: ${scrolled.join(', ') || 'none'}; not seen: ${unseen.join(', ') || 'none'}`);
 });
 
 console.log(failed ? `${failed} case(s) failed` : 'all cases ok');
