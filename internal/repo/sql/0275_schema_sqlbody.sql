@@ -13,8 +13,10 @@
 -- Inert for SQL Server: import_mssql_schema calls this function with rows that carry no hash_prev (o.hash = NULL is
 -- never true), and for a PostgreSQL collector before A26-PG (no hash_prev): import_schema behaves as 0267's.
 -- What is lost, said in docs/schema.md: a real change of such a body between the old code's last read and the new
--- code's first read is taken as the baseline (the old code could not see it either). The way back is not silent: an
--- older collector's read after this one records one 'changed' row per such function (the body goes back to empty).
+-- code's first read is taken as the baseline (the old code could not see it either); so, at any time, is one contrived
+-- change: a LANGUAGE sql AS '' function (an empty string body) replaced by an SQL-standard body with the same
+-- signature and settings. The way back is not silent: an older collector's read after this one records one 'changed'
+-- row per such function (the body goes back to empty).
 --
 -- The join (03:3x): scripts/a26pg-join-lines.sql records the arm and the payload column for the next join's own file;
 -- A26-PG joins in the SAME join file as A26's 0267 (or above the newest join), or two import_schema bodies reach the

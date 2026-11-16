@@ -146,7 +146,7 @@ func TestSchemaObjectsSQL(t *testing.T) {
 		t.Error("schemaObjectsSQL's function body is not the old expression with a NULL body_prev")
 	}
 	for _, want := range []string{
-		"CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body) sb",
+		"CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body OFFSET 0) sb",
 		"coalesce(sb.body, " + schemaBodyOld + ")", "CASE WHEN sb.body IS NOT NULL THEN " + schemaBodyOld + " END",
 	} {
 		if !strings.Contains(schemaObjectsSQLBody, want) {
@@ -154,13 +154,13 @@ func TestSchemaObjectsSQL(t *testing.T) {
 		}
 	}
 	if n := strings.Count(schemaObjectsSQLBody, "pg_get_function_sqlbody("); n != 1 {
-		t.Errorf("schemaObjectsSQLBody calls pg_get_function_sqlbody %d times, want once (its lateral)", n)
+		t.Errorf("schemaObjectsSQLBody names pg_get_function_sqlbody %d times, want once (its lateral, kept a subquery by OFFSET 0)", n)
 	}
 }
 
 // TestSchemaBodyChoice: the probe's outcomes (task A26-PG, the pass's S1 and the lead's 'fails if absent'): 13 reads as
-// before with no note; 14 / 18 with the function read SQL-standard bodies; a 14+ server without it reads as before and
-// says so.
+// before with no note; 14 / 18 with the function read SQL-standard bodies; a 14+ server without it, or where the login
+// may not run it (the build review's S3: the probe asks for EXECUTE), reads as before and says so.
 func TestSchemaBodyChoice(t *testing.T) {
 	for _, c := range []struct {
 		version  int
@@ -171,15 +171,15 @@ func TestSchemaBodyChoice(t *testing.T) {
 		{130023, false, false, ""},
 		{140025, true, true, ""},
 		{180006, true, true, ""},
-		{140025, false, false, "pg_get_function_sqlbody is absent on PostgreSQL 14: "},
-		{180006, false, false, "pg_get_function_sqlbody is absent on PostgreSQL 18: "},
+		{140025, false, false, "pg_get_function_sqlbody is absent or not executable by the monitoring login on PostgreSQL 14: "},
+		{180006, false, false, "pg_get_function_sqlbody is absent or not executable by the monitoring login on PostgreSQL 18: "},
 	} {
 		got, note := schemaBodyChoice(c.version, c.has)
 		if got != c.want || (c.wantNote == "" && note != "") || (c.wantNote != "" && !strings.HasPrefix(note, c.wantNote)) {
 			t.Errorf("schemaBodyChoice(%d, %v) = %v, %q; want %v, %q...", c.version, c.has, got, note, c.want, c.wantNote)
 		}
 	}
-	if !strings.Contains(schemaBodyProbeSQL, "to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)') IS NOT NULL") ||
+	if !strings.Contains(schemaBodyProbeSQL, "coalesce(has_function_privilege(to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)'), 'EXECUTE'), false)") ||
 		!strings.Contains(schemaBodyProbeSQL, "current_setting('server_version_num')::int") {
 		t.Errorf("schemaBodyProbeSQL: %s", schemaBodyProbeSQL)
 	}

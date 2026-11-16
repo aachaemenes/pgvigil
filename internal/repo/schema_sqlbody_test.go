@@ -27,7 +27,9 @@ func TestImportSchema0275Is0267PlusTheBaselineArm(t *testing.T) {
 		return s[i : i+j]
 	}
 	const column = `, r->>'hash_prev' AS hash_prev`
-	const arm = `      -- A26-PG (0275): a PostgreSQL 14+ SQL-standard body read for the first time (the code before it hashed the
+	// the arm's place is part of it: the first statement inside IF NOT v_base (the build review's N2)
+	const arm = `    IF NOT v_base THEN
+      -- A26-PG (0275): a PostgreSQL 14+ SQL-standard body read for the first time (the code before it hashed the
       -- function's empty prosrc): a present stored row whose hash is the read's hash_prev, and not the read's hash,
       -- takes the read's definition, hash and def_hash here, so the diff below records no change for it and the
       -- upsert keeps its last_changed - the upgrade's first read is the body's baseline. Any other difference of the
@@ -42,7 +44,7 @@ func TestImportSchema0275Is0267PlusTheBaselineArm(t *testing.T) {
 	if strings.Count(got, arm) != 1 || strings.Count(got, column) != 1 {
 		t.Fatalf("0275's import_schema holds the arm %d times and the column %d times, want once each", strings.Count(got, arm), strings.Count(got, column))
 	}
-	got = strings.Replace(strings.Replace(got, arm, "", 1), column, "", 1)
+	got = strings.Replace(strings.Replace(got, arm, "    IF NOT v_base THEN\n", 1), column, "", 1)
 	if want := body("0267_mssql_schema.sql"); got != want {
 		gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
 		for k := 0; k < len(gl) && k < len(wl); k++ {

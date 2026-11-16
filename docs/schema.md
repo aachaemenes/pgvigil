@@ -33,9 +33,11 @@ over the whole text, so a change after the cut still shows.
 **SQL-standard bodies (PostgreSQL 14 and later):** a `BEGIN ATOMIC ... END` or `RETURN expr` body has an empty
 `prosrc` in the catalog, so pgvigil reads it with `pg_get_function_sqlbody`, the function pg_dump itself reads such a
 body with (it is not in PostgreSQL's documented table of catalog functions). Each database's read first asks the
-server whether it has the function: PostgreSQL 13 reads every body as before; a server at 14 or later without it reads
-them as before too and the collection is 'partial' with the note `schema body:<database>: pg_get_function_sqlbody is
-absent ...`, never silently. The text is the server's decompiled form, not the text that was typed: names come
+server whether the monitoring login may run the function: PostgreSQL 13 reads every body as before; on a server at 14
+or later where it may not (the function absent, or `EXECUTE` on it revoked from `PUBLIC`) the bodies are read as
+before too and each such database gets the collector error `schema body:<database>: pg_get_function_sqlbody is absent
+or not executable ...`, so the collection is 'partial' (its line shows the run's first collector error), never silent;
+the database's snapshot is still taken. The text is the server's decompiled form, not the text that was typed: names come
 schema-qualified, constants print under the session's `TimeZone`, `DateStyle`, `IntervalStyle` and
 `extra_float_digits`, comments are dropped (an edit of a comment alone records nothing), and `SELECT *` is expanded
 when the function is created. So, as for a view: renaming a table the body reads changes the body (a 'changed' row for
@@ -53,10 +55,12 @@ the import takes a stored row with that hash as the body's baseline - its text i
 arm in `import_schema`, not an equal hash as when `query_text` changes). A real change of such a body between the
 earlier version's last read and this version's first read is taken as that baseline (the earlier version could not
 see it either). An owner, ACL or settings change in that interval still records its rows, and the definition's row
-then shows the body appearing. The way back is not silent: an earlier version's read after this one records one
+then shows the body appearing. The same arm takes one contrived change silently at any time: a `LANGUAGE sql AS ''`
+function (an empty string body) replaced by an SQL-standard body with the same signature and settings. The way back is not silent: an earlier version's read after this one records one
 'changed' row per such function (its body goes back to empty).
 
-**Rights:** pg_monitor, nothing more. The catalogs and the `pg_get_*def` functions are readable by every role.
+**Rights:** pg_monitor, nothing more. The catalogs and the `pg_get_*def` functions are readable by every role, and so
+is `pg_get_function_sqlbody` (`EXECUTE` is `PUBLIC`'s by default).
 
 **Size:** the collector hands the repository one database at a time (its event-trigger rows, then its objects), and a
 last call that marks a database neither read nor in error as gone; PostgreSQL refuses a jsonb array over 256 MB, so

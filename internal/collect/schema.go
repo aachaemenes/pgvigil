@@ -196,7 +196,8 @@ const schemaBodyOld = `coalesce(p.prosrc, '') || coalesce(' ' || p.probin, '')`
 // schemaObjectsFor fills the function arm. sqlBody false (PostgreSQL 13, or a server without pg_get_function_sqlbody):
 // the body is schemaBodyOld, as before A26-PG. sqlBody true: pg_get_function_sqlbody(p.oid), the body of an
 // SQL-standard function alone ('BEGIN ATOMIC ... END', 'RETURN ...'; NULL for a string body and for a function dropped
-// under the read, which keep schemaBodyOld). It is pg_dump's own reader of such a body and is not in the docs' table of
+// under the read, which keep schemaBodyOld; OFFSET 0 keeps the lateral a subquery, so the server deparses each body
+// once - a plain lateral is flattened into both expressions). It is pg_dump's own reader of such a body and is not in the docs' table of
 // catalog functions (Table 9.76), so schemaBodyProbeSQL asks for it on each connection and a 14+ server without it is
 // a collector error (schemaBodyChoice). No reference to prosqlbody: PostgreSQL 13 has no such column. body_prev is
 // schemaBodyOld beside an SQL-standard body only: the import's hash_prev (schemaFinishMode) is taken over it.
@@ -205,7 +206,7 @@ func schemaObjectsFor(sqlBody bool) string {
 	if sqlBody {
 		r = strings.NewReplacer("{{body}}", "coalesce(sb.body, "+schemaBodyOld+")",
 			"{{body_prev}}", "CASE WHEN sb.body IS NOT NULL THEN "+schemaBodyOld+" END",
-			"{{lateral}}", "\n    CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body) sb")
+			"{{lateral}}", "\n    CROSS JOIN LATERAL (SELECT pg_get_function_sqlbody(p.oid) AS body OFFSET 0) sb")
 	}
 	return r.Replace(schemaObjectsTmpl)
 }
@@ -218,17 +219,19 @@ var (
 )
 
 // schemaBodyProbeSQL is asked on each connection before its objects (the batch path carries no server version, and an
-// instance's DSN may route another database to another server): the version and whether pg_get_function_sqlbody exists.
-const schemaBodyProbeSQL = `SELECT current_setting('server_version_num')::int, to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)') IS NOT NULL`
+// instance's DSN may route another database to another server): the version and whether the login may run
+// pg_get_function_sqlbody - present AND executable (a REVOKE EXECUTE ... FROM PUBLIC would otherwise fail every read
+// with 'permission denied'); NULL on PostgreSQL 13 (no such function), so false.
+const schemaBodyProbeSQL = `SELECT current_setting('server_version_num')::int, coalesce(has_function_privilege(to_regprocedure('pg_catalog.pg_get_function_sqlbody(oid)'), 'EXECUTE'), false)`
 
-// schemaBodyChoice: read SQL-standard bodies where the function exists; a server at 14 or later without it reads them
-// as before and says so (a collector_error row: the run is 'partial'), never silently.
+// schemaBodyChoice: read SQL-standard bodies where the login may run the function; a server at 14 or later where it
+// may not reads them as before and says so (a collector_error row: the run is 'partial'), never silently.
 func schemaBodyChoice(version int, has bool) (sqlBody bool, note string) {
 	if has {
 		return true, ""
 	}
 	if version >= 140000 {
-		return false, fmt.Sprintf("pg_get_function_sqlbody is absent on PostgreSQL %d: SQL-standard function bodies (BEGIN ATOMIC, RETURN) are read as before, so a change of one is not seen", version/10000)
+		return false, fmt.Sprintf("pg_get_function_sqlbody is absent or not executable by the monitoring login on PostgreSQL %d: SQL-standard function bodies (BEGIN ATOMIC, RETURN) are read as before, so a change of one is not seen", version/10000)
 	}
 	return false, ""
 }
@@ -550,7 +553,8 @@ func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time, mode stri
 	var version int
 	var hasSQLBody bool
 	if err := conn.QueryRow(ctx, schemaBodyProbeSQL).Scan(&version, &hasSQLBody); err != nil {
-		return nil, fmt.Errorf("the body probe: %w", err)
+		ddl, _, _, _ := schemaDDL(ctx, conn, since) // the trigger's rows still go in, as after a failed objects read
+		return ddl, fmt.Errorf("the body probe: %w", err)
 	}
 	sqlBody, bodyNote := schemaBodyChoice(version, hasSQLBody)
 	db, objs, objErr := schemaObjects(ctx, conn, mode, sqlBody)
