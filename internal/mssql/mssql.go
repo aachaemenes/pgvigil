@@ -543,11 +543,12 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			return r.MSSQLSeqCursor(cctx, instanceID, source)
 		})
 	} else if pc, ok := c.(PlanCollector); ok {
-		// B20-2: the repository says whether the run goes ahead (the switch, the due rule) and how
+		// B20-2: the repository says whether the run goes ahead (the switch, the due rule) and how, asked at the run's
+		// start: the instant Import stores it under below
 		rows, err = pc.RunPlanned(sctx, conn, info, func(_ context.Context) (repo.BlitzPlan, error) {
 			pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
 			defer pcancel()
-			return r.MSSQLBlitzPlan(pctx, instanceID)
+			return r.MSSQLBlitzPlan(pctx, instanceID, start)
 		})
 	} else {
 		rows, err = c.Run(sctx, conn, info)
