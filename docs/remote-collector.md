@@ -11,24 +11,28 @@ The bundle's format is [remote-bundle-format.md](remote-bundle-format.md).
 ## What the remote collector does, and does not do
 
 - It runs `pgvigil run` with a `remote:` block and no `repository:` block: no repository, no web page, no alerts, no
-  report mail, no DBA Dash door, no request queue. A file with both blocks is refused.
-- It reads its instances (from its own `pgvigil.yaml` only) with their usual read-only logins: `pg_monitor` on
+  report mail, no DBA Dash door, no request queue. A file that also sets a `repository.dsn` (or a hub's
+  `remote_sites:`, `export:`, `dbadash:` or `reports_dsn`) is refused.
+- It reads its instances (from its own `pgvigil-remote.yaml` only) with their usual read-only logins: `pg_monitor` on
   PostgreSQL, the read-only grants of [sqlserver.md](sqlserver.md) on SQL Server.
 - It writes only two folders: the **outbox** (the bundles) and the **state folder** (how far each source was read,
-  the bundle sequence, a lock). A restart neither sends a row twice nor skips one: the sequence is reserved before a
-  bundle opens, the bundle is written as `.part` and renamed whole, and only then are the read positions kept; a
-  crash in between is recovered from the newest finished bundle's manifest.
+  the bundle sequence, a lock, and the signing key when it signs). A restart neither sends a log line or event twice
+  nor skips one: the sequence is reserved before a bundle opens, the bundle is written as `.part` and renamed whole,
+  and only then are the read positions kept; a crash in between is recovered from the newest finished bundle's
+  manifest. A snapshot read (sessions, waits, counters) is simply not taken while the collector is down.
 - No statement text leaves it. `query_text` is `hash` (the default on a remote collector: each text column holds the
   SHA-256 of its normalized form, so the same statement groups across intervals) or `none` (no text at all); `full`
   and `normalized` are refused at start ('no statement text leaves a remote collector'). Passwords in log lines and
   job steps are masked before anything is written, as on any collector.
 - It connects to nothing outside the site except, when `push:` is set, HTTPS to one Azure Blob storage account (or
-  its private endpoint), and, for an RDS or Aurora instance with an `aws:` block, that region's AWS APIs.
+  its private endpoint) - under a managed identity also the VM's own link-local metadata endpoint for its token -,
+  and, for an RDS or Aurora instance with an `aws:` block, that region's AWS APIs.
 
 ## Install on the site's box
 
 The release carries `pgvigil-remote-<tag>-linux-amd64.tar.gz` and `pgvigil-remote-<tag>-windows-amd64.zip` beside the
-offline bundles, listed in the signed `SHA256SUMS.offline` ([airgap.md](airgap.md) has the verification). Each holds
+offline bundles, listed in the signed `SHA256SUMS.offline` ([airgap.md](airgap.md) has the verification: put
+`pgvigil-remote-<tag>-<os>-amd64.<ext>` where its recipe names `pgvigil-offline-*`). Each holds
 the binaries (plain and FIPS), the installer, this page and a sample `pgvigil-remote.yaml`.
 
 ```yaml
@@ -57,8 +61,11 @@ instances:
 - Windows: `.\install.ps1 -Remote` installs the Windows service and makes the two folders with an ACL for the service
   account only.
 
-`pgvigil bundle inspect <bundle folder>` prints a bundle's manifest and every line as plain JSON, with the result of
-its sums and, when it is signed, of its signature: what a security team reads before a bundle leaves.
+`pgvigil bundle inspect [-key ed25519:<public key>]... [-max-mb N] <bundle folder>` prints a bundle's manifest, the
+result of its sums and row counts, and its signature's: checked only against a key given with `-key` (without one a
+signed bundle reads 'signed, not checked (no -key given)'). Only a bundle that passes its checks has every line
+printed, as plain JSON; `-max-mb` (512 by default) caps what a view file may uncompress to. It is what a security
+team reads before a bundle leaves.
 
 ## Getting the bundles out
 
@@ -70,23 +77,29 @@ Two ways, whichever the site allows.
 remote:
   push:
     type: azure_blob
-    account_url: https://plantexport.blob.core.windows.net
     container: pgvigil-bundles
+    prefix: bundles                              # the folder in the container; the hub's drop names the same one
     sas_url: file:/etc/pgvigil-remote/push.sas   # a SAS on that container with Create and Write only
 ```
 
+- `sas_url` names the file (or `env:` variable) that holds the storage account's address with the SAS token after
+  `?`: `https://<account>.blob.core.windows.net/?sv=...`. The container is `container:`. Not the Azure Portal's
+  container 'Blob SAS URL', which already ends in the container's name.
 - The credential may only write: a SAS with **Create + Write** on that container (no Read, List or Delete), or, on an
-  Azure VM, its managed identity with a custom role holding only the blob write data actions on that container (leave
-  `sas_url` out: the default credential is used). A retry overwrites the same bytes.
+  Azure VM, its managed identity with a custom role holding only the blob write data actions on that container (then
+  `account_url: https://<account>.blob.core.windows.net` in place of `sas_url`: a destination takes exactly one way
+  in - `sas_url`, `account_url` or `connection_string`). A retry overwrites the same bytes.
 - Each finished bundle is uploaded view files and `SHA256SUMS` first, `manifest.json` last: a blob is visible only
   once it is committed, so a hub that finds the manifest finds every file whole.
-- A failed upload is retried each interval; the outbox is the queue. The hub polls the container with a read-only
-  credential (Read + List).
+- A failed upload is tried three times, then again at the next interval; the outbox is the queue. The hub polls the
+  container with a read-only credential (Read + List).
 
 **(b) The outbox folder, moved by the site's own tool** (a box that may not reach cloud storage): an Azure Blob
 container, an S3 or GCS bucket the hub reads with a read-only key; an SMB / NFS share or an SFTP drop the hub reads; a
 one-way copy or USB for a closed network. Whatever moves it must leave out `*.part` folders and should upload under a
-temporary name where it can; a bundle copied half-way is retried by the hub, never loaded half-way (below).
+temporary name where it can; a bundle copied half-way is retried by the hub, never loaded half-way (below). It must
+add no file of its own: a file the manifest does not list (`Thumbs.db`, `desktop.ini`, `.DS_Store`) sets the bundle
+aside ('extra').
 Filebeat may carry the files where a log pipeline is the only way out, only if it delivers them unchanged (the sums
 prove it): there is no second format.
 
@@ -98,37 +111,58 @@ An Event Grid notification instead of polling is a later option, not in v0.4.0.
 # the hub's pgvigil.yaml
 remote_sites:
   - name: plant-east
-    drop:                                   # folder | s3 (GCS: s3 with its endpoint and HMAC keys) | azure_blob
+    drop:                                   # folder | s3 (GCS through its S3 endpoint) | azure_blob
       type: azure_blob
-      account_url: https://plantexport.blob.core.windows.net
       container: pgvigil-bundles
-      sas_url: env:PLANT_EAST_READ_SAS       # Read + List only
+      prefix: bundles                       # the push's prefix: the folder the site's bundles land in
+      sas_url: env:PLANT_EAST_READ_SAS      # Read + List only: the account's address with the token, as above
     tags: [site:plant-east]
     expected_every: 5m      # how often a bundle arrives: the interval for a direct push, the copy's cadence otherwise
     gap_wait: 15m           # a missing bundle is waited for this long (3 x expected_every by default)
     collectors:
       - name: c1
         keys: []            # 'ed25519:<public key>' as pgvigil remote init prints it, when the collector signs
+  - name: plant-west
+    drop:                                   # a GCS bucket through its S3 endpoint (or any S3 bucket)
+      type: s3
+      bucket: pgvigil-bundles-west
+      prefix: bundles
+      endpoint: https://storage.googleapis.com
+      region: auto
+      profile: plant-west-read              # this site's own HMAC read key: a profile in the hub's AWS credentials file
+    collectors:
+      - name: c1
 ```
 
-Inside `pgvigil run` (and `pgvigil ingest -once`; `pgvigil ingest -retry <bundle>` loads a set-aside bundle's missing
-part later) the hub, one loop per site:
+A bucket or container drop needs its `prefix:` (refused at start without one: at the bucket's root the bundles would
+mix with anything else kept there); a folder drop is read where it is. Each site has its own drop and its own read key:
+two sites on one drop are refused at start, and on S3 or GCS each site reads with its own `profile:`, never one
+environment key shared by two sites.
 
-- lists `<site>/<collector>/<instance-key>/<day>/` from the day of its newest loaded bundle to today, and never writes,
-  moves or deletes anything in a drop;
+Inside `pgvigil run` (and `pgvigil ingest -once`) the hub runs one loop per site, one at a time across every hub
+process on the repository:
+
+- lists `<site>/<collector>/` once a round for its instance keys (a lifecycle rule on the drop keeps that listing
+  short), then each key's `<day>/` folders from the day of its newest loaded bundle to today; it never writes, moves or
+  deletes anything in a drop;
 - checks each bundle in order: the signature first when the collector lists keys; the manifest's site, collector,
   instance and sequence against the configuration and the folder; the format version (a newer one is set aside and
   read after the hub's upgrade); every view against pgvigil's own list (an unknown view is refused); each file's
-  size, sum and row count. A file missing or short while the bundle is younger than the settle time is a copy still
-  running: retried. Every other failure sets the bundle aside with its reason, kept in the repository until a person
-  clears it;
+  size, sum and row count. A file missing or short while the bundle is younger than the settle time (`gap_wait`,
+  counted from the bundle's window end) is a copy still running: retried. Past it the bundle is set aside 'missing' or
+  'short', and read again by itself once it appears whole with the same manifest. Every other failure sets the bundle
+  aside with its reason, kept in the repository until `pgvigil ingest -retry <site>/<collector>/<instance-key>/<day>/<seq>-<end>`
+  (the bundle's folder in its drop), run once the drop's copy is put right, clears its mark and reads the site again;
+  the batches already in stay in;
 - loads the batches in their order, **each batch in its own transaction with its ledger row**, so a bundle that stops
   part-way resumes at its first batch not loaded, and a bundle seen twice is loaded once;
 - keeps each instance's bundles in sequence: a missing one is waited for `gap_wait`, then the gap is recorded and the
-  instance goes on; a stalled bundle holds its instance's later ones for `gap_wait`, then is set aside.
+  instance goes on; a stalled bundle holds its instance's later ones for `gap_wait`, then is set aside. A bundle older
+  than one already loaded is marked late and never loaded, `-retry` or not.
 
 The site's instances are named `<site>/<name>` (`plant-east/SQL01`), so two sites' `SQL01` never meet, and carry the
-site's tags. A name another site or the hub's own file holds is refused ('name owned elsewhere'). An instance an admin
+site's tags. A name another site or the hub's own file holds is refused and its bundle set aside ('instance
+<site>/<name> is owned elsewhere'). An instance an admin
 disabled stays disabled. One repository holds every site; a viewer of it reads every instance (a tag is no access
 boundary): a repository per client is the way to keep clients apart.
 
@@ -138,7 +172,10 @@ boundary): a repository per client is the way to keep clients apart.
   bundle every <interval>)`. Its collections are judged fresh or stale against that time, with the intervals its
   collector reported, never against the hub's clock: a site that copies once an hour is not 'offline' between
   copies. Its header turns Offline when the site sends nothing for twice `expected_every` ('site <s> has gone quiet:
-  last bundle <age>'), or when its collector collected nothing healthy in the 30 minutes before its newest bundle.
+  last bundle <time>'), or when its collector collected nothing healthy in the 30 minutes before its newest bundle.
+- **A failed read shows as failed.** A read that failed on the site (a login refused, a secret not found, a query that
+  failed) shows as failed with its reason, from the bundle's manifest, as for an instance the hub reads itself: never
+  as healthy, never as a gap.
 - **No live door.** Actions (cancel, terminate, kill, a job's start, stop, enable or disable, a backup's verify, a plan
   evict), EXPLAIN and EXPLAIN ANALYZE, the planner check, the index advisor, Community tools, a custom report that runs
   on the instance, a histogram, a fragmentation read and a plan read by its handle are off on it, each with the same
@@ -154,7 +191,8 @@ boundary): a repository per client is the way to keep clients apart.
 ## Alerts and findings
 
 - A site that sends nothing raises its silence finding: per site, a warning after twice `expected_every` and critical
-  after six times (`site <s> has gone quiet: last bundle <time>`), and the same per instance.
+  after six times (`site <s> has gone quiet: last bundle <time>`), and the same per instance (`instance <site>/<name>
+  of site <s> has gone quiet: last bundle <time>`).
 - Every other finding of a remote instance is computed from its bundles as they arrive, so it fires as late as the
   bundle interval plus the transfer. A finding judged over a recent window cannot fire at all once the delay is longer
   than its window. [remote-windows.md](remote-windows.md) lists which findings fire late, which cannot fire past a
@@ -187,12 +225,16 @@ store's own.
 
 - Alerts are as fresh as the interval plus the transfer; a recent-window finding cannot fire past its window
   ([remote-windows.md](remote-windows.md)).
-- Admin's per-instance edits on the hub never reach a remote collector: its settings are its own `pgvigil.yaml`.
+- Admin's per-instance edits on the hub never reach a remote collector: its settings are its own `pgvigil-remote.yaml`.
 - The SQL Server error log's search strings an admin sets per instance on the hub (`errorlog:search`) never reach a
   remote site either: a remote instance's error log is read with no search strings.
-- `/metrics` ([prometheus.md](prometheus.md)) exports a remote instance's newest loaded values with no timestamp of
-  their own: its series lag by the bundle interval plus the transfer.
+- `/metrics` ([prometheus.md](prometheus.md)) exports a remote instance's newest loaded values and leaves out a value
+  older than its freshness (10 minutes; IO 30 minutes; host 15 minutes): once a site's delay passes that, its series
+  are absent rather than late, and an alert on a missing series fires between bundles.
+  `pgvigil_sample_timestamp_seconds{server, family}` gives its newest sample's time.
 - An Event Grid notification instead of polling is a later option.
+- A remote collector in a Kubernetes pod is not in v0.4.0, and nothing in it precludes one: a read-only root with the
+  two folders set where the pod may write, and credentials by `env:` / `file:`.
 
 ## Not proven
 

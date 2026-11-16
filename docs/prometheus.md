@@ -102,8 +102,10 @@ instances expect about 42,400 series by default; `databases: on` adds 10 series 
 longest dbstats, serverstats or iostats interval, 15 minutes at least), as on the Metrics page.
 
 An instance a remote collector reads ([remote-collector.md](remote-collector.md)) is exported from its newest loaded
-bundle, with no timestamp of its own: its series lag by the bundle interval plus the transfer, so a Prometheus alert on
-it fires that much later than on an instance pgvigil reads itself.
+bundle, under the same freshness as any instance: once its site's delay (the bundle interval plus the transfer) passes
+a family's freshness (10 minutes; IO 30 minutes; host 15 minutes), that family's series are absent rather than late,
+so an alert on a missing series fires between bundles. `pgvigil_sample_timestamp_seconds{server, family}` gives its
+newest sample's time; alert on that age, set past the site's delay, for a remote instance.
 
 ## Not proven
 

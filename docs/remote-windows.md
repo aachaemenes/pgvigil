@@ -23,9 +23,9 @@ fire again with each bundle.
 
 PostgreSQL settings and the setting rules, a database's frozen-xid age, the extensions, the versions, the roles, a
 table over its vacuum threshold, wraparound, amcheck's damage, invalid, duplicate and redundant indexes, a job that
-fails again and again, a pgAgent schedule missed, backup destinations and the backup chain checks, the restore checks,
-SQL Server's security checks, a NUL backup, two backup destinations on one volume, the WAL state's ages, and the
-database options other than the connection limit.
+fails again and again, backup destinations and PostgreSQL's backup chain checks, the restore checks, SQL Server's
+security checks, two backup destinations on one volume, the WAL state's ages, the database options, and a database's
+connection limit when it is invalid (-2) or 0. (SQL Server's backup checks are windowed: below, 2 h 10 min.)
 
 ## Windowed findings (cannot fire once the delay passes the window)
 
@@ -36,11 +36,12 @@ does not fire; with a shorter delay it judges part of the window, so it fires la
 |---|---|
 | 2 to 3 minutes | the pooler's waiters (2 min), an availability group's data loss (3 min), a PostgreSQL cluster's checks (3 min) |
 | 5 minutes | SQL Server running requests, an availability group's state and queues (5 to 5.5 min), blocking, the runnable queue, a Patroni cluster's state |
-| 10 minutes | host CPU, a vacuum running over an hour or waiting on a lock, Extended Events capture state, a session waiting, long transactions and long requests, a database's connection limit, a poison wait (10 to 20 min) |
+| 10 minutes | host CPU, a vacuum running over an hour or waiting on a lock, Extended Events capture state, a session waiting, long transactions and long requests, a database's sessions against its connection limit, a poison wait (10 to 20 min) |
 | 15 minutes | host swap, log shipping, replication (SQL Server), tempdb and the version store, CPU, schedulers, memory and grants, waits, slot WAL, 'a job runs far longer than its average' (its gate; see the age tests) |
 | 20 to 30 minutes | SQL Server audit definitions (20 min), the readers' state, PostgreSQL replication and DMS (30 min) |
 | 1 hour | disk free, storage forecast, I/O burst balance, queue and latency, backups' read, Performance Insights, deadlocks and blocked reports, ring-buffer drops, failovers, file I/O, system events, the lead blocker, audit events, system_health, a replay delay, a Patroni API, tempdb writes, the alert rules on a metric whose freshness is an hour or less (below) |
 | 2 hours | the comparison with the baseline (and the import skips a read 2 hours old: it never refreshes past that delay), the buffer cache, SQL Server audit counts, the alert rules on a 2-hour metric |
+| 2 h 10 min | SQL Server's 'no recent full backup', 'no recent log backup', 'no recent differential backup' and 'a backup went to NUL' (each judges the backup read of the last 2 h 10 min: past that delay they never fire, they do not fire late) |
 | 3 hours | volumes and files, tempdb's size, Query Store, the plan cache, the instance checks and configuration checks, maintenance |
 | 13 hours | SQL Server index usage and statistics |
 | 1 day | an inactive replication slot, temp spills, schema changes, session-set changes, corruption in the log, a job that failed (24 h by default, `job_failed_hours`), base backups, statements evicted, restarts, SQL Server error log and trace, a command that failed in maintenance, pgaudit rules (their own window, a day by default) |
