@@ -252,7 +252,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		log.Warn("actions: the verifies left by a stopped serve were not swept", "err", err)
 	}
 	go srv.VerifySweepsHourly(ctx)
-	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
+	dbadash.SetRepositories(cfg.DBADash)              // the imported servers' live screens (task 168) read the repositories through serve
+	dbadash.SetQueryText(dbadash.ConfigTextMode(cfg)) // IMPORTMASK: serve's history import stores under each instance's query_text
 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
 	pgJobs := map[string][]string{}
 	for _, in := range cfg.Instances {
