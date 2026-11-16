@@ -352,6 +352,13 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
    WHERE n.id = p_id
 $$;
 
+-- ui_investigation_question: an ask's question, its first 200 characters, for serve's list (the UI login reads the
+-- owner-only data table only through ui_ functions: the ui_ rule)
+CREATE OR REPLACE FUNCTION pgvigil.ui_investigation_question(p_id bigint)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT left(d.question, 200) FROM pgvigil.ui_investigation_data d WHERE d.investigation_id = p_id
+$$;
+
 -- investigations_purge: requests that ended (reported, closed, expired) more than p_days ago after they were asked;
 -- an open or claimed one is never purged. The journal and the texts go with them (ON DELETE CASCADE).
 CREATE OR REPLACE FUNCTION pgvigil.investigations_purge(p_days int DEFAULT 90)

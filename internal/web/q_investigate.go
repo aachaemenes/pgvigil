@@ -81,10 +81,9 @@ const listMax = 500
 // agent that last claimed it (kept after the report: the view's claimed_by says only who holds it now).
 const sqlInvestigations = `
 SELECT n.id, n.kind, n.instance_id, n.instance_name AS instance, n.setting, n.finding_value AS value, n.finding_source AS source,
-       left(d.question, 200) AS question, n.severity, n.state, n.asked_by, n.asked_at, n.expires_at, n.claimed_by,
+       CASE WHEN n.kind = 'ask' THEN pgvigil.ui_investigation_question(n.id) END AS question, n.severity, n.state, n.asked_by, n.asked_at, n.expires_at, n.claimed_by,
        n.last_agent AS agent, n.lease_until, n.claims, n.verdict, n.reported_at, n.closed_by, n.closed_at
   FROM pgvigil.investigations_now n
-  LEFT JOIN pgvigil.ui_investigation_data d ON d.investigation_id = n.id
  WHERE ($1::text IS NULL OR n.state = $1) AND ($2::int IS NULL OR n.instance_id = $2)
  ORDER BY n.id DESC
  LIMIT 501`
