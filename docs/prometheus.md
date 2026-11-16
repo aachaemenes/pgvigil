@@ -128,10 +128,11 @@ previous one while a render runs, and never a body older than twice `cache_secon
 waits for the render up to its `X-Prometheus-Scrape-Timeout-Seconds` and gets 503 when it fails or does not end
 (Prometheus then records `up` = 0). The reply is gzip when Prometheus asks for it (it does by default). At 1,000
 PostgreSQL instances expect about 42,400 series by default; a SQL Server instance adds 46 (counters, Extended Events,
-waits) and 5 per collection it runs (about 30: about 196); `databases: on` adds 10 series per exported database, up to
-`max_databases` per PostgreSQL instance (about 82,400 at 1,000 instances with five databases each; the upper bound is
-10 x `max_databases` per PostgreSQL instance, 500 at the default cut). A rate's lookback is each instance's own (3 x its
-longest dbstats, serverstats or iostats interval, 15 minutes at least), as on the Metrics page.
+waits) and 5 per collection it runs (about 196 at 30 collections, an estimate, not a measured count); `databases: on`
+adds 10 series per exported database, up to `max_databases` per PostgreSQL instance (about 82,400 at 1,000 instances
+with five databases each; the upper bound is 10 x `max_databases` per PostgreSQL instance, 500 at the default cut). A
+rate's lookback is each instance's own (3 x its longest dbstats, serverstats or iostats interval, 15 minutes at least),
+as on the Metrics page.
 
 ## Not proven
 
