@@ -6,6 +6,7 @@ import (
 	"html"
 	"io"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -21,6 +22,10 @@ import (
 //     (ScalarString and ConstValue); the plan has no ParameterList to name it;
 //   - p5:  the same statement without RECOMPILE - the value sits in the ParameterList's ParameterCompiledValue;
 //   - p2:  SELECT ... WHERE id = @i OPTION (RECOMPILE) - no credential, the constant (42).
+// live-p5r is a LIVE plan (the shape 406's mssql_live_plans store): sys.dm_exec_query_statistics_xml of a running
+// procedure ... WHERE name = @password ... OPTION (RECOMPILE, MAXDOP 1, MAXRECURSION 0) on a scratch SQL Server 2022
+// 16.0.4325.4 container (P5R-MASK's observation run sqltb-s3-p5r-obs3; its own statements and fake value 'hunter2', no
+// client text): no StatementText at all, no ParameterList, the value in ScalarString and ConstValue (quotes written raw).
 
 func readPlanFixture(t *testing.T, name string) string {
 	t.Helper()
@@ -196,6 +201,9 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 	tCut := pre + strings.Repeat("x", 3999-len(pre))                 // 3,999 characters
 	tShort := pre + strings.Repeat("x", 3998-len(pre))               // 3,998: not at the cut
 	tWide := pre + strings.Repeat("x", 3997-len(pre)) + "\U0001F600" // 3,998 runes, 3,999 UTF-16 code units
+	stmtNT := func(body string) string {                             // a statement as a live plan writes it: no StatementText
+		return `<StmtSimple StatementId="1" StatementType="SELECT" QueryHash="0x41C46A69E5A0DC66"><QueryPlan>` + body + `</QueryPlan></StmtSimple>`
+	}
 	paramsI := `<ParameterList><ColumnReference Column="@i" ParameterDataType="int" ParameterCompiledValue="(42)" /></ParameterList>`
 	// M2 (read on 16.0.4325.4, sqltb-s3-p5r-obs2): Query Store stores an auto-parameterized statement's own text as
 	// parameterized ('... WHERE [password]=@1'; forced: '... where pwd_hash = @0') with no ParameterizedText, and the
@@ -247,6 +255,8 @@ func TestMaskXMLCredentialRegions(t *testing.T) {
 		{"M2 an auto-parameter with no credential word kept", head + stmt(tPlain, seek("[@1]")+plist("@1", "(42)")) + tail,
 			head + stmt(mt(tPlain), seek("[@1]")+plist("@1", "(42)")) + tail, nil},
 		{"a non-ASCII letter before the word", head + stmt(tUmlaut, seek(val)) + tail, head + stmt(mt(tUmlaut), seek(mlit)) + tail, []string{"hunter2"}},
+		{"a live plan's statement: no StatementText, no ParameterList", head + stmtNT(seek(val)) + tail, head + stmtNT(seek(mlit)) + tail, []string{"hunter2"}},
+		{"no StatementText but a ParameterList: kept", head + stmtNT(seek("(7)")+paramsI) + tail, head + stmtNT(seek("(7)")+paramsI) + tail, nil},
 		{"a non-ASCII letter after the word, listed", head + stmt(tListed, seek("[@password\u00c4]")+plist("@password\u00c4", val)) + tail,
 			head + stmt(mt(tListed), seek("[@password\u00c4]")+plist("@password\u00c4", mlit)) + tail, []string{"hunter2"}},
 	} {
@@ -326,5 +336,36 @@ func TestMaskPlanCredStatementsCost(t *testing.T) {
 	t.Logf("MaskXML whole over every statement a credential one: %v, %d MB", d, mb)
 	if strings.Contains(out, "hunter2") {
 		t.Errorf("MaskXML whole: a value is still there")
+	}
+}
+
+// TestMaskXMLLivePlan: a live plan carries no StatementText (and here no ParameterList), so nothing names the
+// parameter its RECOMPILE value came from: every literal of its expressions is masked (the lead 11-16 04:4x, (a): under
+// every policy, locked down by default), and every other attribute keeps its bytes.
+func TestMaskXMLLivePlan(t *testing.T) {
+	live := readPlanFixture(t, "live-p5r")
+	if strings.Contains(live, "StatementText=") || strings.Contains(live, "<ParameterList") || !strings.Contains(live, "hunter2") {
+		t.Fatalf("live-p5r is not the capture this row reads (no StatementText, no ParameterList, the value): the row tests nothing")
+	}
+	got := MaskXML(live)
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("live-p5r: the stored live plan still holds the value compiled under RECOMPILE")
+	}
+	expr := regexp.MustCompile(`\s(ScalarString|ConstValue|Expression|RemoteQuery)="[^"]*"`)
+	if a, b := expr.ReplaceAllString(got, ` $1=""`), expr.ReplaceAllString(live, ` $1=""`); a != b {
+		t.Errorf("live-p5r: an attribute other than an expression changed")
+	}
+	for _, want := range []string{`ConstValue="&apos;&lt;masked&gt;&apos;"`, `ConstValue="(&lt;masked&gt;)"`, `ScalarString="[Expr1008]+(&lt;masked&gt;)"`,
+		`ScalarString="[Recr1003]&lt;(&lt;masked&gt;)"`, `ScalarString="Count(*)"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("live-p5r: no %s in the masked plan", want)
+		}
+	}
+	if strings.Contains(got, `ConstValue="(1)"`) || strings.Contains(got, `(20000000)`) {
+		t.Errorf("live-p5r: a constant of the statement was not masked")
+	}
+	wellFormed(t, "live-p5r", got)
+	if again := MaskXML(got); again != got {
+		t.Errorf("live-p5r: a second pass changed the text")
 	}
 }
