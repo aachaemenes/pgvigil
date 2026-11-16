@@ -291,9 +291,10 @@ END $$;
 -- import_investigation_event: serve's other writes (the audit login). op close {id, ui_user, reason}: a person ends a
 -- request; op run {id, ui_user, rows, ms, outcome, sql}: the audit of an ask's Run, written before its rows are shown
 -- (refused = the rows are withheld). op run is the actions door's audit login's alone - a member of pgvigil_collector
--- (session_user: this function runs SECURITY DEFINER, so current_user is its owner); any other caller, the request
--- queue's pgvigil_requester among them (0300 grants it the function for a later release's queue path), is refused
--- 42501, so no other login writes run lines under a name of its choosing or fills a request's 195 rows of calls.
+-- (session_user: this function runs SECURITY DEFINER, so current_user is its owner); any other caller that may call it
+-- is refused 42501, so no other login writes run lines under a name of its choosing or fills a request's 195 rows of
+-- calls. The request queue's pgvigil_requester holds neither investigation function in j16 (0300; a later release grants
+-- the queue's ask path with guards of its own).
 CREATE OR REPLACE FUNCTION pgvigil.import_investigation_event(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
