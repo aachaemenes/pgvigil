@@ -7,54 +7,27 @@ import (
 )
 
 // A showplan's ParameterList names each parameter's compiled value, and MaskXML masks a credential-named one's there
-// (maskPlanParmRE). Under OPTION (RECOMPILE), or for a local variable a statement compiles with its value, there is no
-// ParameterList entry: the value is compiled into the plan as a constant of the statement's expressions (a seek's
-// ScalarString and ConstValue, a conversion warning's Expression), where nothing names the parameter it came from. So a
-// statement whose own text names a credential-named @parameter that its plan does not list with a value has every
-// literal of those expression attributes masked - its strings, numbers and binary values alike (a number may be the
-// secret), the constants a reader can no longer tell apart. The statement's text, every other attribute, and every
-// other statement of the plan keep their bytes.
+// (maskPlanParmRE). Under OPTION (RECOMPILE), or for a local variable a statement compiles with its value, the value is
+// compiled into the plan as a constant of the statement's expressions (a seek's ScalarString and ConstValue, a
+// conversion warning's Expression, the statement a linked server is sent as its RemoteQuery), where nothing names the
+// parameter it came from - and a live plan may list the parameter and carry the constant too. So a statement whose own
+// text names a credential-named @parameter has every literal of those expression attributes masked - its strings,
+// numbers and binary values alike (a number may be the secret), the constants a reader can no longer tell apart -
+// whether or not its plan lists the parameter. The statement's text, every other attribute, and every other statement
+// of the plan keep their bytes. The names are read from the document as it came in, before the tag pass masks it: that
+// pass writes 'PasswordHash = @PasswordHash' as 'PasswordHash = <masked>', which names no parameter.
+//
+// The rule goes by the name in the statement's own text: a value copied into a variable or a parameter of another name,
+// or a name with a non-ASCII letter before the word, keeps its constants (docs/security.html, 'Known limits of that
+// mask').
 
 var (
 	// planCredParamRE: a credential-named parameter or variable, the names MaskCredentials' parameter form knows
 	planCredParamRE = regexp.MustCompile(`(?i)@\w*(?:password|passwd|pwd|secret)\w*`)
-	// planExprAttrs: the attributes of a showplan that hold an expression with its constants
-	planExprAttrs = map[string]bool{"ScalarString": true, "ConstValue": true, "Expression": true}
+	// planExprAttrs: the attributes of a showplan that hold an expression with its constants (a Remote operator's
+	// RemoteSource names the linked server and holds none)
+	planExprAttrs = map[string]bool{"ScalarString": true, "ConstValue": true, "Expression": true, "RemoteQuery": true}
 )
-
-// planTag is one start tag of a document: where it begins, its end, and its element's name.
-type planTag struct {
-	at, end int
-	name    string
-}
-
-// planTags lists the start tags of s in order (a '<' and a letter; comments, CDATA sections, instructions and end tags
-// are not start tags; a tag the text ends inside ends the list).
-func planTags(s string) []planTag {
-	var out []planTag
-	for i := 0; i < len(s); {
-		lt := strings.IndexByte(s[i:], '<')
-		if lt < 0 {
-			break
-		}
-		i += lt
-		if i+1 >= len(s) || !isASCIILetter(s[i+1]) {
-			i++
-			continue
-		}
-		e := xmlTagEnd(s[i:])
-		if e < 0 {
-			break
-		}
-		n := i + 1
-		for n < len(s) && (isASCIILetter(s[n]) || s[n] >= '0' && s[n] <= '9' || s[n] == '_' || s[n] == ':' || s[n] == '-' || s[n] == '.') {
-			n++
-		}
-		out = append(out, planTag{i, i + e, s[i+1 : n]})
-		i += e
-	}
-	return out
-}
 
 func isASCIILetter(c byte) bool { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' }
 
@@ -80,59 +53,86 @@ func planAttr(tag, name string) (string, bool) {
 	return "", false
 }
 
-// maskPlanCredStatements is the statement pass of MaskXML over a document already masked tag by tag: each showplan
-// statement (a Stmt... element, up to the next one) whose text names a credential-named @parameter that no
-// ColumnReference of it lists with a compiled or runtime value has its expression attributes' literals masked
-// (maskPlanLiterals). Idempotent.
+// hasPlanExprAttr: the start tag may hold one of planExprAttrs (a cheap look before the attribute-by-attribute pass).
+func hasPlanExprAttr(tag string) bool {
+	for a := range planExprAttrs {
+		if strings.Contains(tag, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// maskPlanCredStatements is the statement pass of MaskXML, run over the document as it came in, before the tag pass:
+// each showplan statement (a Stmt... start tag, up to the next one) whose StatementText names a credential-named
+// @parameter has its expression attributes' literals masked (maskPlanLiterals). The start tags are read as maskXML
+// reads them: a comment's, a CDATA section's and an instruction's body is raw text, not tags, and an instruction ends
+// where piEnd says (a showplan an instruction wraps is masked by the plan's own maskXML inside it, maskRaw); a tag the
+// text ends inside ends the pass. One pass and no list of tags; s itself comes back when nothing is masked.
+// Idempotent: a masked literal reads back as itself.
 func maskPlanCredStatements(s string) string {
 	if !strings.Contains(s, "StatementText=") {
 		return s
 	}
-	tags := planTags(s)
-	var starts []int
-	for k, t := range tags {
-		if strings.HasPrefix(t.name, "Stmt") {
-			starts = append(starts, k)
-		}
-	}
-	if len(starts) == 0 {
-		return s
-	}
 	var b strings.Builder
-	b.Grow(len(s))
-	pos := 0
-	for n, k := range starts {
-		last := len(tags)
-		if n+1 < len(starts) {
-			last = starts[n+1]
+	pos, in, changed := 0, false, false // pos: s is written up to here; in: the tags read belong to a statement that names one
+	opens, noEnd := len(s)-len(strings.TrimLeft(s, " \t\r\n")), false
+	for i := 0; i < len(s); {
+		lt := strings.IndexByte(s[i:], '<')
+		if lt < 0 {
+			break
 		}
-		text, _ := planAttr(s[tags[k].at:tags[k].end], "StatementText")
-		unlisted := map[string]bool{}
-		for _, p := range planCredParamRE.FindAllString(text, -1) {
-			unlisted[strings.ToLower(p)] = true
-		}
-		if len(unlisted) > 0 {
-			for _, t := range tags[k:last] {
-				if t.name != "ColumnReference" {
-					continue
-				}
-				tag := s[t.at:t.end]
-				col, _ := planAttr(tag, "Column")
-				_, compiled := planAttr(tag, "ParameterCompiledValue")
-				_, runtime := planAttr(tag, "ParameterRuntimeValue")
-				if compiled || runtime {
-					delete(unlisted, strings.ToLower(col))
-				}
+		i += lt
+		rest := s[i:]
+		end := 0 // the length of a raw section rest begins with (a comment, a CDATA section, an instruction)
+		switch {
+		case strings.HasPrefix(rest, "<!--"):
+			if end = strings.Index(rest[4:], "-->"); end >= 0 {
+				end += 4 + 3
 			}
+		case strings.HasPrefix(rest, "<![CDATA["):
+			if end = strings.Index(rest[9:], "]]>"); end >= 0 {
+				end += 9 + 3
+			}
+		case strings.HasPrefix(rest, "<?"):
+			end = piEnd(rest, i == opens, &noEnd)
+		case len(rest) < 2 || !isASCIILetter(rest[1]):
+			i++ // an end tag, a declaration: no attributes of a statement
+			continue
+		default:
+			end = -2
 		}
-		if len(unlisted) == 0 {
+		if end == -1 {
+			break // the text ends inside the section: the rest is raw
+		}
+		if end > 0 {
+			i += end
 			continue
 		}
-		for _, t := range tags[k:last] {
-			b.WriteString(s[pos:t.at])
-			b.WriteString(maskPlanExprAttrs(s[t.at:t.end]))
-			pos = t.end
+		e := xmlTagEnd(rest)
+		if e < 0 {
+			break
 		}
+		tag := rest[:e]
+		if strings.HasPrefix(tag, "<Stmt") {
+			text, _ := planAttr(tag, "StatementText")
+			in = planCredParamRE.MatchString(text)
+		}
+		if in && hasPlanExprAttr(tag) {
+			if m := maskPlanExprAttrs(tag); m != tag {
+				if !changed {
+					b.Grow(len(s) + len(s)/8)
+					changed = true
+				}
+				b.WriteString(s[pos:i])
+				b.WriteString(m)
+				pos = i + e
+			}
+		}
+		i += e
+	}
+	if !changed {
+		return s
 	}
 	b.WriteString(s[pos:])
 	return b.String()

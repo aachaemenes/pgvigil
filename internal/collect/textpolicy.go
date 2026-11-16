@@ -97,9 +97,9 @@ func MaskCredentials(s string) string {
 // blocked process report pages parse it). Each attribute value and each text node is decoded, masked as MaskCredentials
 // masks a text, and written back escaped only when the mask changed it (<masked> as &lt;masked&gt;), so the document
 // stays XML and every value the mask leaves alone keeps its bytes. A showplan's ColumnReference of a password-named @
-// parameter has its compiled and runtime values masked, and a statement that names such a parameter without listing
-// its value (OPTION (RECOMPILE) compiles it in as a constant) has its expressions' literals masked
-// (maskPlanCredStatements).
+// parameter has its compiled and runtime values masked, and a statement whose text names such a parameter has its
+// expressions' literals masked (OPTION (RECOMPILE) compiles the value in as a constant; maskPlanCredStatements, run
+// first, over the names as they came in).
 //
 // A CDATA section, a comment and a processing instruction hold raw text and are masked as they stand (<masked> inside
 // one keeps the document XML). An instruction can be a whole cell: sp_WhoIsActive's formatted output writes a
@@ -119,6 +119,7 @@ func maskXML(s string, inPlan bool) string {
 	if s == "" {
 		return s
 	}
+	s = maskPlanCredStatements(s)
 	var b strings.Builder
 	b.Grow(len(s))
 	// opens: where an instruction that opens the text begins (only white space before it); noEnd: a scan found no
@@ -169,7 +170,7 @@ func maskXML(s string, inPlan bool) string {
 		}
 		i += end
 	}
-	return maskPlanCredStatements(b.String())
+	return b.String()
 }
 
 // piEnd is the length of the processing instruction s begins with (s starts "<?"); -1 when s holds no end of it.
